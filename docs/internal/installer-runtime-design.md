@@ -50,11 +50,11 @@ repository.
 
 ```text
 katlc
-  renders manifests, native systemd artifacts, Ignition, mkosi inputs, and
-  artifact metadata
+  renders manifests, native systemd artifacts, mkosi inputs, and artifact
+  metadata
 
 mkosi
-  builds installer-image, runtime root artifacts, UKIs, sysexts, and confexts
+  builds installer-image, runtime root artifacts, UKIs, and sysexts
 
 installer-image
   boots the target node into a controlled live environment
@@ -94,7 +94,7 @@ The default installer should include:
 kernel and initramfs
 systemd, udev, journald
 systemd-networkd and systemd-resolved
-Ignition or an Ignition-compatible first-boot apply path
+installer input discovery and local handoff support
 openssh-server
 ca-certificates
 curl
@@ -131,7 +131,7 @@ The installer can receive materials in three ways:
 ```text
 network install
   user-managed PXE/iPXE or another network boot path boots installer-image and
-  passes URLs for Ignition and install manifest data.
+  passes install manifest data or enough metadata for katlos-install to fetch it.
 
 offline install
   ISO/USB boots installer-image with a bundled material set.
@@ -147,13 +147,13 @@ The material set contains:
 ```text
 install manifest
 node selection metadata
-installer Ignition config
+installer input metadata
 runtime root artifact
 runtime UKI or kernel/initramfs assets
 systemd-boot entry templates or generation metadata
 sysext artifacts
-confext artifacts
-checksums and signatures
+generated confext inputs
+checksums and signatures for fetched artifacts
 trust roots needed to verify the above
 optional recovery SSH authorized keys
 ```
@@ -169,7 +169,7 @@ on PXE, matchbox, or pre-rendered kernel parameters. This also supports workflow
 where a remote KVM device boots a mounted installer ISO and the operator applies
 machine configuration afterwards.
 
-If no install manifest is supplied by kernel command line, installer Ignition,
+If no install manifest is supplied by kernel command line,
 embedded media, or a known local path, `katlos-install` should enter a waiting
 mode instead of failing immediately or mutating disks.
 
@@ -213,7 +213,7 @@ Katl owns:
 
 ```text
 installer-image artifacts
-installer Ignition input contract
+installer input contract
 install manifest schema
 runtime artifacts
 artifact metadata and verification inputs
@@ -234,10 +234,11 @@ The first network boot flow should therefore be generic:
 
 ```text
 1. User-managed boot infrastructure boots installer-image.
-2. Boot configuration passes an Ignition URL or embeds equivalent Ignition input.
-3. installer-image boots and applies installer Ignition.
-4. Ignition configures the live installer environment and leaves install input
-   for katlos-install.
+2. Boot configuration passes an install manifest URL, embedded manifest, or
+   enough Katl boot metadata for katlos-install to discover install input.
+3. installer-image boots the installer UKI and starts katlos-install.
+4. katlos-install configures the live installer environment enough to fetch or
+   accept install input.
 5. katlos-install downloads/verifies artifacts, prepares the target disk, lays
    out the runtime OS, installs boot metadata, and reboots.
 6. The machine boots from the installed disk, assuming firmware boot order is
@@ -249,7 +250,7 @@ explicitly expands scope. Examples should show the boot input contract, not make
 Katl responsible for provisioning. A boot configuration may pass:
 
 ```text
-ignition.config.url=<installer ignition URL>
+katl.manifest.url=<install manifest URL>
 katl.node=<optional explicit node name>
 katl.install.mode=auto
 console=...
@@ -258,11 +259,13 @@ console=...
 The durable install policy should be in the install manifest consumed by
 `katlos-install`, not embedded in PXE/iPXE/matchbox logic.
 
-## Ignition Role
+## Installer Input Role
 
-Ignition remains useful, but it should be scoped.
+Katl does not use Ignition in the core installer or runtime configuration path.
+The installer input contract is owned by `katlos-install` and the install
+manifest schema.
 
-Installer Ignition may configure:
+Installer input may configure:
 
 ```text
 hostname for the live installer environment
@@ -278,7 +281,8 @@ temporary files consumed by katlos-install under /etc/katl or /run/katl
 non-target device discovery or site-specific installer environment setup
 ```
 
-Installer Ignition must not own:
+Installer input must not bypass `katlos-install` ownership of durable install
+actions:
 
 ```text
 root disk partitioning policy
@@ -288,16 +292,17 @@ bootloader installation
 steady-state runtime configuration
 ```
 
-Disk formatting and mount locations for the installed node belong in the install
-manifest. Ignition may deliver that manifest or write it to disk for
-`katlos-install`, but `katlos-install` is the component that validates and
-applies it. This includes:
+The manifest may select the target disk and authorize destructive install. Once
+selected, the root disk belongs to Katl. Root disk partitioning, root slot
+filesystems, state filesystem, labels, alignment, and sizing policy are Katl
+implementation details, not user-configurable install policy. Boot metadata,
+embedded media, or local handoff may deliver the manifest or write it to disk
+for `katlos-install`, but `katlos-install` is the component that validates and
+applies it. The user-facing install policy includes:
 
 ```text
 target root disk selector
 destructive install permission
-root-a/root-b sizes
-state partition policy
 extra data disk selectors
 extra data disk filesystems
 extra data disk mount points
@@ -307,14 +312,14 @@ runtime systemd mount units or generated fstab-equivalent artifacts
 ## Install Manifest
 
 The install manifest is the durable user input consumed by `katlos-install`.
-Installer Ignition, kernel arguments, embedded media, and local handoff mode may
-all deliver the manifest, but they must not define a separate install policy
-model.
+Kernel arguments, embedded media, user-managed network boot metadata, and local
+handoff mode may all deliver the manifest, but they must not define a separate
+install policy model.
 
 The initial schema is versioned as:
 
 ```text
-apiVersion: katl.install/v1alpha1
+apiVersion: install.katl.dev/v1alpha1
 kind: InstallManifest
 ```
 
@@ -341,11 +346,12 @@ node
   and runtime or installer SSH authorized keys
 
 install
-  destructive install guard, target root disk selector, root-a/root-b sizes,
-  state partition policy, optional etcd partition, and extra data disks
+  destructive install guard, target root disk selector, and optional extra data
+  disks
 
 artifacts
-  runtime root artifact, optional UKI, sysexts, confexts, and required digests
+  runtime root artifact, optional UKI, sysexts, generated confext inputs, and
+  required digests
 
 trust
   CA certificates or artifact verification public keys used before fetching or
@@ -387,13 +393,13 @@ destructive guard
   formatting, or root slot writes
 
 root slots
-  root-a and root-b sizes must both fit the runtime root artifact, must be large
-  enough for update headroom, and must leave enough room for ESP, optional
-  XBOOTLDR, optional etcd, and minimum state partition size
+  Katl's selected root-a and root-b sizes must both fit the runtime root
+  artifact, must be large enough for update headroom, and must leave enough room
+  for ESP, optional XBOOTLDR, optional etcd, and minimum state partition size
 
 state partition
-  sizePolicy=remaining means the state partition consumes remaining disk after
-  fixed partitions; minSizeMiB must be satisfied after planning
+  Katl's state partition policy consumes remaining disk after fixed partitions;
+  minimum state size must be satisfied after planning
 
 artifacts
   every install artifact must have a URL and SHA-256 digest; digest mismatches
@@ -416,7 +422,7 @@ extra disks
   /var/lib/containerd, and /var/lib/etcd must be rejected
 ```
 
-Runtime first-boot Ignition or seed material may configure:
+Runtime first-boot seed material may configure:
 
 ```text
 node identity seed
@@ -426,8 +432,9 @@ activation pointers for confext and sysext artifacts
 first-boot marker files
 ```
 
-Long-lived `/etc` configuration should come from generated confext artifacts.
-Ignition is bootstrap material, not the steady-state configuration manager.
+Long-lived `/etc` configuration should come from generated confext generations.
+The first-boot path is bootstrap material, not the steady-state configuration
+manager.
 
 ## katlos-install
 
@@ -455,7 +462,8 @@ formatting writable filesystems
 writing immutable runtime artifacts into root slots
 installing systemd-boot
 installing UKIs and loader entries
-installing sysext and confext artifacts
+installing sysext artifacts
+materializing generated confext from trusted manifest input
 generating runtime mount units for /var, /etc/kubernetes, and extra disks
 writing runtime seed data
 writing install records under /var/lib/katl
@@ -525,7 +533,6 @@ No. mkosi builds the artifacts before install time:
 runtime root artifact
 runtime UKI
 sysext artifacts
-confext artifacts
 installer-image
 ```
 
@@ -589,7 +596,7 @@ target architecture
 runtime version or build id
 root filesystem feature requirements, if any
 compatible boot artifact or UKI digest and command-line metadata
-compatible sysext and confext artifact digests
+compatible sysext artifact digests and generated confext generation metadata
 minimum root slot size
 created timestamp
 ```
@@ -679,6 +686,44 @@ Should the installer zero unused trailing bytes in root slots for
 Should UKI compatibility be represented as a direct UKI digest, a boot metadata
   digest, or a generation record digest once update signing is introduced?
 ```
+
+## Generated Confext Contract
+
+Users should not supply confext images directly in the default path. Users
+supply Katl install manifests and native file content. Katl materializes that
+input into generated confext content.
+
+For the initial install, `katlos-install` owns this conversion:
+
+```text
+read validated install manifest
+validate allowed /etc paths, ownership, modes, and symlink behavior
+render native file content into a generation-scoped confext tree or image
+write extension-release metadata
+stage the confext under /var/lib/katl/generations/<generation-id>/
+select that confext with the same generation metadata as the root slot and
+  sysext set
+```
+
+Generated confext must be switched with the selected generation. It must not
+drift independently from the selected root slot, UKI, boot metadata, or sysext
+set.
+
+A future runtime Katl agent will perform the same logical operation for later
+configuration changes on an already installed node. The agent can come after the
+first installer milestones, but the install-time layout must leave room for it:
+
+```text
+receive desired Katl configuration
+validate trust and policy
+render a new generated confext generation
+activate it through systemd-confext
+record success, failure, and rollback metadata
+```
+
+The runtime agent should not become a general-purpose configuration management
+system. It applies Katl-generated configuration generations while preserving
+native systemd/Linux file semantics.
 
 ## Runtime OS Composition
 
@@ -895,7 +940,7 @@ Immutable by default:
 /usr
 runtime root slots
 sysext artifacts
-confext artifacts
+generated confext artifacts
 booted UKI
 systemd-boot entries outside Katl update operations
 ```

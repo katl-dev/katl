@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://katl.dev/schemas/install-manifest-v1alpha1.schema.json",
+  "$id": "https://install.katl.dev/schemas/install-manifest-v1alpha1.schema.json",
   "title": "Katl install manifest v1alpha1",
   "type": "object",
   "additionalProperties": false,
@@ -16,7 +16,7 @@
   ],
   "properties": {
     "apiVersion": {
-      "const": "katl.install/v1alpha1"
+      "const": "install.katl.dev/v1alpha1"
     },
     "kind": {
       "const": "InstallManifest"
@@ -208,9 +208,7 @@
       "additionalProperties": false,
       "required": [
         "allowDestructiveInstall",
-        "targetDisk",
-        "rootSlots",
-        "statePartition"
+        "targetDisk"
       ],
       "properties": {
         "allowDestructiveInstall": {
@@ -219,87 +217,6 @@
         },
         "targetDisk": {
           "$ref": "#/$defs/diskSelector"
-        },
-        "rootSlots": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "rootA",
-            "rootB"
-          ],
-          "properties": {
-            "rootA": {
-              "$ref": "#/$defs/rootSlot"
-            },
-            "rootB": {
-              "$ref": "#/$defs/rootSlot"
-            }
-          }
-        },
-        "statePartition": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "filesystem",
-            "sizePolicy"
-          ],
-          "properties": {
-            "filesystem": {
-              "enum": [
-                "ext4",
-                "xfs"
-              ]
-            },
-            "sizePolicy": {
-              "const": "remaining"
-            },
-            "minSizeMiB": {
-              "type": "integer",
-              "minimum": 1024
-            }
-          }
-        },
-        "etcdPartition": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "enabled"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "filesystem": {
-              "enum": [
-                "ext4",
-                "xfs"
-              ]
-            },
-            "sizeMiB": {
-              "type": "integer",
-              "minimum": 1024
-            }
-          },
-          "allOf": [
-            {
-              "if": {
-                "properties": {
-                  "enabled": {
-                    "const": true
-                  }
-                },
-                "required": [
-                  "enabled"
-                ]
-              },
-              "then": {
-                "required": [
-                  "filesystem",
-                  "sizeMiB"
-                ]
-              }
-            }
-          ]
         },
         "extraDisks": {
           "type": "array",
@@ -331,13 +248,23 @@
           "items": {
             "$ref": "#/$defs/namedArtifact"
           }
-        },
-        "confexts": {
-          "type": "array",
-          "default": [],
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/namedArtifact"
+        }
+      }
+    },
+    "etc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files"
+      ],
+      "properties": {
+        "files": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/etcFilePath"
+          },
+          "additionalProperties": {
+            "type": "string"
           }
         }
       }
@@ -553,6 +480,13 @@
         }
       }
     },
+    "etcFilePath": {
+      "type": "string",
+      "pattern": "^/etc/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$",
+      "not": {
+        "pattern": "^/etc/kubernetes(/|$)"
+      }
+    },
     "generationID": {
       "type": "string",
       "minLength": 1,
@@ -585,19 +519,6 @@
         "sizeBytes": {
           "type": "integer",
           "minimum": 1
-        }
-      }
-    },
-    "rootSlot": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "sizeMiB"
-      ],
-      "properties": {
-        "sizeMiB": {
-          "type": "integer",
-          "minimum": 1024
         }
       }
     },

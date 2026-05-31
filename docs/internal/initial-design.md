@@ -1,18 +1,25 @@
 # Technical Design: Katl, a systemd-native Kubernetes Cluster OS Builder
 
+Status note: this is an early working design and still contains historical
+exploration. For installer/runtime component direction, prefer
+`docs/internal/installer-runtime-design.md` and the ADRs under
+`docs/internal/adrs/`. In particular, ADR-001 supersedes earlier Ignition
+guidance: Katl no longer uses Ignition in the core install or runtime
+configuration path. `katlos-install` handles initial installer input and builds
+the first generated confext; a later runtime agent will apply subsequent
+configuration generations.
+
 ## 1. Summary
 
 Katl builds a Kubernetes-focused operating system generator for home-lab clusters. It is not a general-purpose Linux distribution and it is not a Talos-like minimal custom userspace. It is closer to CoreOS or Flatcar in operational model, but scoped specifically around producing Kubernetes-ready nodes using modern systemd primitives.
 
 The system compiles high-level cluster and node configuration into:
 
-* PXE boot assets.
-* USB/ISO installer assets.
-* Ignition configuration.
+* Installer UKI and later wrapper assets.
+* Install manifests.
 * Runtime OS images.
 * `systemd-sysext` images for host components.
-* `systemd-confext` images for `/etc` configuration.
-* Matchbox profiles/groups for network boot.
+* Generated `systemd-confext` configuration generations.
 * Optional recovery assets.
 
 The primary user-facing tool is `katlc`, the Katl compiler. Given a Katl configuration repository, `katlc` should produce bootable installer assets and update artifacts that can be published to GitHub Releases, an OCI registry, an object store, or a matchbox asset directory.
@@ -36,7 +43,7 @@ Typical users:
 * Run 1–10 physical or virtual nodes.
 * Currently use Talos, Flatcar, Fedora CoreOS, Debian, Ubuntu, NixOS, or hand-built nodes.
 * Want boring, repeatable, recoverable Kubernetes nodes.
-* Are comfortable editing YAML, systemd-networkd units, Ignition, and Git repositories.
+* Are comfortable editing YAML, systemd-networkd units, native Linux/systemd files, and Git repositories.
 * Prefer generated infrastructure over click-driven installers.
 * Want immutable-ish OS operation without losing access to familiar Linux/systemd tools.
 * Want PXE installs for bare metal, but also want USB/ISO installs for ad-hoc or recovery workflows.
@@ -48,8 +55,8 @@ This project should not aim at users who want a fully managed Kubernetes applian
 ## 3.1 Primary goals
 
 1. Build a Kubernetes node operating system using mkosi and systemd-native primitives.
-2. Support both PXE/iPXE installs through matchbox and USB/ISO installs.
-3. Use Ignition for first-boot node configuration.
+2. Support user-managed network boot and later USB/ISO installs without owning the provisioning layer.
+3. Use Katl-native install manifests and generated confext for node configuration rather than Ignition.
 4. Use `systemd-sysext` for host component extensions.
 5. Use `systemd-confext` for `/etc` configuration overlays.
 6. Compile high-level cluster/node config into native systemd artifacts with minimal abstraction.
@@ -1126,10 +1133,9 @@ The build should emit:
 ```text
 dist/
   installer/
-    katl-installer.kernel
-    katl-installer.initrd
     katl-installer.uki
-    katl-installer.iso
+    # v0 target: one bootable installer UKI containing the installer initrd
+    # and katlos-install. ISO/USB wrappers can come later.
 
   runtime/
     katl-runtime-v2026.05.31.squashfs
@@ -1441,7 +1447,8 @@ The GitHub Actions path for end users should not require privileged virtualizati
 
 2. Should the runtime root use SquashFS, EROFS, dm-verity ext4, or another read-only format?
 
-   * Initial recommendation: SquashFS root slots because the mental model is simple and the artifact is naturally read-only.
+   * v0 decision: SquashFS root slots because the mental model is simple and the artifact is naturally read-only.
+   * The SquashFS image is built before install time and written directly into the selected root slot partition.
    * Later option: EROFS or dm-verity once the base install/update path is stable.
 
 3. Should kubeadm auto-init be a v1 feature?

@@ -1,5 +1,5 @@
 {
-  "apiVersion": "katl.install/v1alpha1",
+  "apiVersion": "install.katl.dev/v1alpha1",
   "kind": "InstallManifest",
   "metadata": {
     "name": "lab-node-01",
@@ -24,19 +24,6 @@
       "byID": "/dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK",
       "minSizeMiB": 32768
     },
-    "rootSlots": {
-      "rootA": {
-        "sizeMiB": 4096
-      },
-      "rootB": {
-        "sizeMiB": 4096
-      }
-    },
-    "statePartition": {
-      "filesystem": "ext4",
-      "sizePolicy": "remaining",
-      "minSizeMiB": 8192
-    },
     "extraDisks": []
   },
   "artifacts": {
@@ -48,8 +35,13 @@
       "url": "https://artifacts.example.invalid/katl/katl.efi",
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     },
-    "sysexts": [],
-    "confexts": []
+    "sysexts": []
+  },
+  "etc": {
+    "files": {
+      "/etc/hostname": "lab-node-01\n",
+      "/etc/ssh/sshd_config.d/10-katl.conf": "PasswordAuthentication no\nPermitRootLogin no\n"
+    }
   },
   "trust": {
     "roots": [
