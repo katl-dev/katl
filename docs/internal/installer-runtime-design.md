@@ -1080,6 +1080,9 @@ boot attempt state
 health state
 ```
 
+The focused generation metadata decision is recorded in
+`docs/internal/generation-metadata-model.md`.
+
 The first install writes `root-a` and marks it pending. Runtime health
 completion marks it good. Updates later write `root-b`, set it as the next boot
 candidate, and rely on systemd-boot boot counting plus Katl health state to
