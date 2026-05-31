@@ -31,6 +31,7 @@ type BlockDevice struct {
 	WWN                 string
 	Serial              string
 	Model               string
+	GPTLabel            string
 	SizeBytes           uint64
 	ReadOnly            bool
 	FilesystemSignature string
