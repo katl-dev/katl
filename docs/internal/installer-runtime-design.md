@@ -894,6 +894,9 @@ etc-kubernetes.mount
 This keeps the immutable runtime root small while making writable application
 state normal and predictable.
 
+The initial writable state directory layout is recorded in
+`docs/internal/writable-state-layout.md`.
+
 For the first implementation, placing UKIs and loader entries on the ESP is
 acceptable and may be simpler. If Katl uses XBOOTLDR, it should use a firmware
 and `systemd-boot` readable filesystem by default. Use vfat initially rather

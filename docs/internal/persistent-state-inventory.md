@@ -13,6 +13,9 @@ Native `/var` paths stay native. Mutable state under `/etc` is limited to
 explicit projections for machine identity, Kubernetes PKI/kubeconfigs/static
 pod manifests, and SSH host identity.
 
+The initial on-disk `/var` layout is recorded in
+`docs/internal/writable-state-layout.md`.
+
 Generated confext owns steady-state configuration under `/etc`, but it must not
 own kubeadm output, SSH host keys, or machine identity.
 
