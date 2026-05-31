@@ -3,7 +3,9 @@ package confext
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -17,11 +19,12 @@ const (
 )
 
 type NativeEtcFile struct {
-	Path string
-	Type NativeEtcFileType
-	Mode fs.FileMode
-	UID  int
-	GID  int
+	Path    string
+	Content string
+	Type    NativeEtcFileType
+	Mode    fs.FileMode
+	UID     int
+	GID     int
 }
 
 type NativeEtcFilePlan struct {
@@ -30,6 +33,28 @@ type NativeEtcFilePlan struct {
 	Mode        fs.FileMode
 	UID         int
 	GID         int
+}
+
+type GenerationTreeRequest struct {
+	GenerationsRoot string
+	GenerationID    string
+	Files           []NativeEtcFile
+	Extension       ExtensionRelease
+	Chown           func(path string, uid int, gid int) error
+}
+
+type ExtensionRelease struct {
+	Name         string
+	ID           string
+	VersionID    string
+	ConfextLevel int
+}
+
+type GenerationTree struct {
+	GenerationDir        string
+	ConfextDir           string
+	ExtensionReleasePath string
+	Files                []NativeEtcFilePlan
 }
 
 func ValidateNativeEtcBundle(confextRoot string, files []NativeEtcFile) ([]NativeEtcFilePlan, error) {
@@ -89,20 +114,97 @@ func ValidateNativeEtcBundle(confextRoot string, files []NativeEtcFile) ([]Nativ
 		})
 	}
 
+	sort.Slice(plans, func(i, j int) bool {
+		return plans[i].Path < plans[j].Path
+	})
+
 	return plans, nil
 }
 
 func NativeEtcFilesFromManifest(files map[string]string) []NativeEtcFile {
 	nativeFiles := make([]NativeEtcFile, 0, len(files))
-	for path := range files {
+	for path, content := range files {
 		nativeFiles = append(nativeFiles, NativeEtcFile{
-			Path: path,
-			Mode: 0o644,
-			UID:  0,
-			GID:  0,
+			Path:    path,
+			Content: content,
+			Mode:    0o644,
+			UID:     0,
+			GID:     0,
 		})
 	}
 	return nativeFiles
+}
+
+func RenderGenerationTree(request GenerationTreeRequest) (GenerationTree, error) {
+	if strings.TrimSpace(request.GenerationsRoot) == "" {
+		return GenerationTree{}, fmt.Errorf("generations root is required")
+	}
+	if !filepath.IsAbs(request.GenerationsRoot) {
+		return GenerationTree{}, fmt.Errorf("generations root must be absolute")
+	}
+	generationID, err := normalizeGenerationID(request.GenerationID)
+	if err != nil {
+		return GenerationTree{}, err
+	}
+
+	extension, err := normalizeExtensionRelease(request.Extension)
+	if err != nil {
+		return GenerationTree{}, err
+	}
+
+	generationDir := filepath.Join(filepath.Clean(request.GenerationsRoot), generationID)
+	confextDir := filepath.Join(generationDir, "confext")
+	plans, err := ValidateNativeEtcBundle(confextDir, request.Files)
+	if err != nil {
+		return GenerationTree{}, err
+	}
+
+	contentByPath := make(map[string]string, len(request.Files))
+	for _, file := range request.Files {
+		normalizedPath, err := normalizeNativeEtcPath(file.Path)
+		if err != nil {
+			return GenerationTree{}, err
+		}
+		contentByPath[normalizedPath] = file.Content
+	}
+
+	chown := request.Chown
+	if chown == nil {
+		chown = os.Chown
+	}
+
+	for _, plan := range plans {
+		if err := os.MkdirAll(filepath.Dir(plan.ConfextPath), 0o755); err != nil {
+			return GenerationTree{}, fmt.Errorf("create parent for %s: %w", plan.Path, err)
+		}
+		if err := os.WriteFile(plan.ConfextPath, []byte(contentByPath[plan.Path]), plan.Mode); err != nil {
+			return GenerationTree{}, fmt.Errorf("write %s: %w", plan.Path, err)
+		}
+		if err := os.Chmod(plan.ConfextPath, plan.Mode); err != nil {
+			return GenerationTree{}, fmt.Errorf("chmod %s: %w", plan.Path, err)
+		}
+		if err := chown(plan.ConfextPath, plan.UID, plan.GID); err != nil {
+			return GenerationTree{}, fmt.Errorf("chown %s: %w", plan.Path, err)
+		}
+	}
+
+	extensionPath := filepath.Join(confextDir, "etc", "extension-release.d", "extension-release."+extension.Name)
+	if err := os.MkdirAll(filepath.Dir(extensionPath), 0o755); err != nil {
+		return GenerationTree{}, fmt.Errorf("create extension-release directory: %w", err)
+	}
+	if err := os.WriteFile(extensionPath, []byte(renderExtensionRelease(extension)), 0o644); err != nil {
+		return GenerationTree{}, fmt.Errorf("write extension-release metadata: %w", err)
+	}
+	if err := chown(extensionPath, 0, 0); err != nil {
+		return GenerationTree{}, fmt.Errorf("chown extension-release metadata: %w", err)
+	}
+
+	return GenerationTree{
+		GenerationDir:        generationDir,
+		ConfextDir:           confextDir,
+		ExtensionReleasePath: extensionPath,
+		Files:                plans,
+	}, nil
 }
 
 func normalizeNativeEtcPath(path string) (string, error) {
@@ -127,6 +229,9 @@ func normalizeNativeEtcPath(path string) (string, error) {
 	}
 	if normalized == "/etc/kubernetes" || strings.HasPrefix(normalized, "/etc/kubernetes/") {
 		return "", fmt.Errorf("native /etc file path %q cannot own kubeadm-managed /etc/kubernetes state", path)
+	}
+	if normalized == "/etc/extension-release.d" || strings.HasPrefix(normalized, "/etc/extension-release.d/") {
+		return "", fmt.Errorf("native /etc file path %q cannot own generated confext extension-release metadata", path)
 	}
 
 	return normalized, nil
@@ -159,4 +264,49 @@ func pathWithinRoot(root, path string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, "../") && !filepath.IsAbs(rel)
+}
+
+func normalizeGenerationID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("generation id is required")
+	}
+	if strings.ContainsAny(value, `/\`) || value == "." || value == ".." || filepath.Clean(value) != value {
+		return "", fmt.Errorf("generation id %q must be a single path segment", value)
+	}
+	return value, nil
+}
+
+func normalizeExtensionRelease(release ExtensionRelease) (ExtensionRelease, error) {
+	if release.Name == "" {
+		release.Name = "katl-node"
+	}
+	if release.ID == "" {
+		release.ID = "katl"
+	}
+	if release.VersionID == "" {
+		release.VersionID = "0.1.0"
+	}
+	if release.ConfextLevel == 0 {
+		release.ConfextLevel = 1
+	}
+
+	for field, value := range map[string]string{
+		"name":       release.Name,
+		"id":         release.ID,
+		"version_id": release.VersionID,
+	} {
+		if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\n\r/") {
+			return ExtensionRelease{}, fmt.Errorf("extension-release %s %q is invalid", field, value)
+		}
+	}
+	if release.ConfextLevel < 1 {
+		return ExtensionRelease{}, fmt.Errorf("extension-release confext level must be positive")
+	}
+
+	return release, nil
+}
+
+func renderExtensionRelease(release ExtensionRelease) string {
+	return fmt.Sprintf("ID=%s\nVERSION_ID=%s\nCONFEXT_LEVEL=%d\n", release.ID, release.VersionID, release.ConfextLevel)
 }
