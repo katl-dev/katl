@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/katl-vm [options]
+
+Boot the M1 installer image with direct QEMU and optional serial smoke matching.
+
+Options:
+  --image PATH            Raw disk image to boot (default: build/mkosi/katl-installer.raw)
+  --serial-log PATH       Serial log path (default: build/qemu/katl-serial.log)
+  --state-dir PATH        QEMU scratch directory (default: build/qemu)
+  --firmware-code PATH    OVMF code image, or KATL_OVMF_CODE
+  --firmware-vars PATH    OVMF vars template, or KATL_OVMF_VARS
+  --kvm auto|on|off       Acceleration policy (default: auto)
+  --timeout DURATION      Smoke timeout, passed to timeout(1); defaults to 90s with --expect
+  --expect TEXT           Exit successfully when TEXT appears in the serial log
+  --ram SIZE              Guest RAM in MiB (default: 2048)
+  --cpus N                Guest CPU count (default: 2)
+  -h, --help              Show this help
+USAGE
+}
+
+repo_root="$(git rev-parse --show-toplevel)"
+image="$repo_root/build/mkosi/katl-installer.raw"
+serial_log="$repo_root/build/qemu/katl-serial.log"
+state_dir="$repo_root/build/qemu"
+firmware_code="${KATL_OVMF_CODE:-}"
+firmware_vars="${KATL_OVMF_VARS:-}"
+kvm=auto
+timeout_duration=
+expect=
+ram=2048
+cpus=2
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --image|-image)
+            image="$2"
+            shift 2
+            ;;
+        --serial-log|-serial-log)
+            serial_log="$2"
+            shift 2
+            ;;
+        --state-dir|-state-dir)
+            state_dir="$2"
+            shift 2
+            ;;
+        --firmware-code|-firmware-code)
+            firmware_code="$2"
+            shift 2
+            ;;
+        --firmware-vars|-firmware-vars)
+            firmware_vars="$2"
+            shift 2
+            ;;
+        --kvm|-kvm)
+            kvm="$2"
+            shift 2
+            ;;
+        --timeout|-timeout)
+            timeout_duration="$2"
+            shift 2
+            ;;
+        --expect|-expect)
+            expect="$2"
+            shift 2
+            ;;
+        --ram|-ram)
+            ram="$2"
+            shift 2
+            ;;
+        --cpus|-cpus)
+            cpus="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+case "$kvm" in
+    auto|on|off) ;;
+    *)
+        echo "error: --kvm must be auto, on, or off" >&2
+        exit 2
+        ;;
+esac
+
+if [[ ! -e "$image" ]]; then
+    echo "error: image not found: $image" >&2
+    echo "run scripts/mkosi -f build first" >&2
+    exit 1
+fi
+
+qemu="$(command -v qemu-system-x86_64 || true)"
+if [[ -z "$qemu" ]]; then
+    echo "error: qemu-system-x86_64 not found in PATH" >&2
+    exit 1
+fi
+
+pick_first_file() {
+    local path
+    for path in "$@"; do
+        [[ "$path" == *OVMF-xen* ]] && continue
+        if [[ -f "$path" ]]; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [[ -z "$firmware_code" ]]; then
+    firmware_code="$(pick_first_file \
+        /usr/share/OVMF/OVMF_CODE.fd \
+        /usr/share/OVMF/OVMF_CODE_4M.fd \
+        /usr/share/edk2/ovmf/OVMF_CODE.fd \
+        /usr/share/qemu/OVMF_CODE.fd \
+        /run/current-system/sw/share/qemu/edk2-x86_64-code.fd \
+        /nix/store/*-OVMF-*-fd/FV/OVMF_CODE.fd || true)"
+fi
+
+if [[ -z "$firmware_vars" && -n "$firmware_code" ]]; then
+    firmware_dir="$(dirname "$firmware_code")"
+    firmware_vars="$(pick_first_file \
+        "$firmware_dir/OVMF_VARS.fd" \
+        "$firmware_dir/OVMF_VARS_4M.fd" \
+        "$firmware_dir/OVMF_VARS.ms.fd" \
+        "$firmware_dir/../OVMF_VARS.fd" || true)"
+fi
+
+if [[ -z "$firmware_vars" ]]; then
+    firmware_vars="$(pick_first_file \
+        /usr/share/OVMF/OVMF_VARS.fd \
+        /usr/share/OVMF/OVMF_VARS_4M.fd \
+        /usr/share/edk2/ovmf/OVMF_VARS.fd \
+        /usr/share/qemu/OVMF_VARS.fd \
+        /nix/store/*-OVMF-*-fd/FV/OVMF_VARS.fd || true)"
+fi
+
+if [[ -z "$firmware_code" || -z "$firmware_vars" ]]; then
+    echo "error: OVMF firmware not found" >&2
+    echo "set KATL_OVMF_CODE/KATL_OVMF_VARS or pass --firmware-code/--firmware-vars" >&2
+    exit 1
+fi
+
+mkdir -p "$state_dir/tmp" "$(dirname "$serial_log")"
+: >"$serial_log"
+
+vars_copy="$state_dir/OVMF_VARS.fd"
+cp "$firmware_vars" "$vars_copy"
+
+accel=tcg
+if [[ "$kvm" == on || "$kvm" == auto ]]; then
+    if [[ -e /dev/kvm ]]; then
+        accel=kvm
+    elif [[ "$kvm" == on ]]; then
+        echo "error: --kvm=on requested but /dev/kvm is not visible" >&2
+        exit 1
+    else
+        echo "KVM unavailable: /dev/kvm is not visible; using QEMU TCG" >&2
+    fi
+fi
+
+echo "serial log: ${serial_log#$repo_root/}" >&2
+echo "firmware: $firmware_code" >&2
+echo "acceleration: $accel" >&2
+
+qemu_args=(
+    -machine "q35,accel=$accel"
+    -cpu max
+    -smp "$cpus"
+    -m "$ram"
+    -display none
+    -monitor none
+    -serial "file:$serial_log"
+    -drive "if=pflash,format=raw,readonly=on,file=$firmware_code"
+    -drive "if=pflash,format=raw,file=$vars_copy"
+    -drive "if=virtio,format=raw,file=$image,snapshot=on"
+    -device virtio-rng-pci
+    -netdev user,id=net0
+    -device virtio-net-pci,netdev=net0
+)
+
+TMPDIR="$state_dir/tmp" "$qemu" "${qemu_args[@]}" &
+qemu_pid=$!
+
+cleanup() {
+    if kill -0 "$qemu_pid" >/dev/null 2>&1; then
+        kill "$qemu_pid" >/dev/null 2>&1 || true
+        wait "$qemu_pid" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+if [[ -z "$expect" ]]; then
+    wait "$qemu_pid"
+    exit $?
+fi
+
+if [[ -z "$timeout_duration" ]]; then
+    timeout_duration=90s
+fi
+
+if timeout "$timeout_duration" bash -c '
+    set -euo pipefail
+    expect="$1"
+    serial_log="$2"
+    qemu_pid="$3"
+    while true; do
+        if grep -Fq -- "$expect" "$serial_log"; then
+            exit 0
+        fi
+        if ! kill -0 "$qemu_pid" >/dev/null 2>&1; then
+            exit 125
+        fi
+        sleep 0.25
+    done
+' bash "$expect" "$serial_log" "$qemu_pid"; then
+    echo "matched serial signal \"$expect\" in ${serial_log#$repo_root/}" >&2
+    exit 0
+fi
+
+status=$?
+if [[ "$status" -eq 124 ]]; then
+    echo "error: timed out after $timeout_duration waiting for \"$expect\"" >&2
+else
+    echo "error: QEMU exited before serial signal \"$expect\" appeared" >&2
+fi
+
+tail -n 80 "$serial_log" >&2 || true
+exit "$status"

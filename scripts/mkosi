@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44}"
+runtime="${KATL_CONTAINER_RUNTIME:-}"
+
+if [[ -z "$runtime" ]]; then
+    if command -v podman >/dev/null 2>&1; then
+        runtime=podman
+    elif command -v docker >/dev/null 2>&1; then
+        runtime=docker
+    else
+        echo "error: docker or podman is required to run the mkosi builder" >&2
+        exit 1
+    fi
+fi
+
+case "$runtime" in
+    docker | podman)
+        ;;
+    *)
+        echo "error: unsupported container runtime: $runtime" >&2
+        exit 1
+        ;;
+esac
+
+image_exists() {
+    case "$runtime" in
+        docker)
+            docker image inspect "$image" >/dev/null 2>&1
+            ;;
+        podman)
+            podman image exists "$image" >/dev/null 2>&1
+            ;;
+    esac
+}
+
+if ! image_exists; then
+    build_flags=(
+        build
+        --file "$repo_root/Containerfile.mkosi"
+        --tag "$image"
+    )
+
+    if [[ "$runtime" == podman ]]; then
+        build_flags+=(--signature-policy "$repo_root/containers-policy.json")
+    fi
+
+    "$runtime" "${build_flags[@]}" "$repo_root"
+fi
+
+if [[ $# -eq 0 ]]; then
+    set -- -f build
+fi
+
+run_flags=(
+    run
+    --rm
+    --privileged
+    --volume "$repo_root:/work"
+    --workdir /work
+    --env "HOST_UID=$(id -u)"
+    --env "HOST_GID=$(id -g)"
+)
+
+if [[ "$runtime" == podman ]]; then
+    run_flags+=(--userns=keep-id --user root)
+fi
+
+if [[ -t 0 && -t 1 ]]; then
+    run_flags+=(--interactive --tty)
+fi
+
+"$runtime" "${run_flags[@]}" "$image" bash -lc '
+    set -uo pipefail
+    mkosi "$@"
+    status=$?
+    if [[ -d build ]]; then
+        chown -R "$HOST_UID:$HOST_GID" build || true
+    fi
+    exit "$status"
+' bash "$@"

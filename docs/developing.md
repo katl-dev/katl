@@ -50,15 +50,15 @@ updates, libvirt as a requirement, GUI tools, and end-user asset publishing.
 
 ## Required For M1
 
-- `mkosi`: builds the installer OS image.
+- `scripts/mkosi`: builds the installer OS image.
 - `qemu-system-x86_64`: boots the image locally.
 - KVM access: the VM test runner should see `/dev/kvm`.
 - UEFI firmware for QEMU, such as edk2/OVMF firmware descriptors.
 - `bd`: tracks project tasks.
 - `git commit-wrapped`: required for agent-authored commits.
 
-Go is expected for Katl command and harness code, but it is not required until
-we start adding Go packages or the automated smoke harness.
+Go is reserved for Katl product code, including installer/runtime code that
+runs in the built image. Early build and boot wrappers should stay thin shell.
 
 ## Nix Dev Shell
 

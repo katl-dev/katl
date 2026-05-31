@@ -1,0 +1,27 @@
+FROM registry.fedoraproject.org/fedora:44
+
+RUN dnf5 -y install \
+        bash \
+        ca-certificates \
+        cpio \
+        dnf5 \
+        dosfstools \
+        e2fsprogs \
+        findutils \
+        git-core \
+        kmod \
+        mkosi \
+        mtools \
+        opensc \
+        openssl \
+        rpm \
+        systemd \
+        systemd-boot-unsigned \
+        systemd-ukify \
+        tar \
+        util-linux \
+        xfsprogs \
+        zstd \
+    && dnf5 clean all
+
+WORKDIR /work
