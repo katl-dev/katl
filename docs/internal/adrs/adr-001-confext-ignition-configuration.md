@@ -1,4 +1,4 @@
-# ADR-001: Katl node provisioning uses Katl-native install manifests and on-node confext construction
+# ADR-001: Katl-native configuration becomes generated confext without Ignition
 
 ## Status
 
@@ -6,58 +6,105 @@ Accepted
 
 ## Context
 
-Katl is a systemd-native Kubernetes Cluster OS builder. The installed operating system is Katlos.
+Katl is a systemd-native Kubernetes node OS builder. The installed runtime OS is
+a pared down Fedora-derived system for kubeadm/kubelet, not a bespoke Linux
+distribution and not a managed Kubernetes distribution.
 
-Katl targets technically capable home-lab Kubernetes operators running small clusters, typically 1–10 nodes. The goal is to provide a boring, repeatable, recoverable Kubernetes node OS that reaches a deterministic `kubeadm`-ready state. Katl is not intended to be a general-purpose Linux distribution, a Talos clone, or a fully managed Kubernetes distribution.
+Katl needs to configure a node across three phases:
 
-Earlier design iterations considered using Ignition for first-boot provisioning and prebuilt `systemd-confext` images for node configuration. This would have produced a flow similar to:
+```text
+build time
+  katlc and mkosi produce installer and runtime artifacts
+
+install time
+  katlos-install prepares the target disk and writes the first node generation
+
+runtime
+  a future Katl agent applies later configuration generations
+```
+
+Earlier design iterations considered using Ignition for the live installer
+environment or first-boot provisioning. That would add another provisioning
+language and another boot phase:
 
 ```text
 Katl config
   -> rendered Ignition
-  -> installer writes generic OS
+  -> installer applies some state
   -> first boot runs Ignition
-  -> Ignition writes node config
   -> runtime activates sysext/confext
   -> node reaches kubeadm-ready state
 ```
 
-However, Katl already requires a real installer. The installer must apply a user-defined disk layout, create filesystems on the actual target disk, install Katlos, seed runtime state, configure boot entries, and install or stage extension artifacts. Because the installer is already responsible for turning a generic runtime into a specific installed node, using Ignition adds another provisioning language and boot phase without enough benefit.
-
-Similarly, exposing confext images directly as the primary user-facing configuration artifact creates unnecessary complexity. Users should not need to understand or build confext images merely to configure hostname, networking, SSH, kubeadm input files, or systemd drop-ins.
-
-At the same time, Katl should avoid the Talos-style approach of defining a rich domain-specific machine configuration schema and internally translating it into low-level Linux/systemd configuration. That approach would force Katl to become an operator/rendering layer for every Linux subsystem it touches: `systemd-networkd`, `sshd`, `containerd`, `kubelet`, `kubeadm`, `resolved`, `timesyncd`, `sysctl`, `modules-load`, and so on.
-
-Katl needs a thinner model:
+The current direction no longer uses Ignition. The installer replaces the small
+amount of installer-environment setup that Ignition would have handled:
 
 ```text
-User supplies install metadata and native file content.
-Katl installer materializes those files into a confext-compatible tree on the installed node.
-Katlos activates that confext at boot.
+receive install input
+configure enough network for artifact fetches and local handoff
+validate manifests and artifacts
+prepare the target disk
+write the runtime root artifact
+materialize the first generated confext
+install boot metadata
+reboot into the installed runtime OS
 ```
 
-This keeps Katl’s configuration surface generic while preserving an immutable/generated runtime model.
+Katl also should not require users to supply prebuilt confext images. Confext is
+an internal runtime mechanism and artifact boundary. Users should supply
+Katl-native configuration and native file content; Katl turns that into a
+confext tree or image.
+
+At the same time, Katl should avoid a Talos-style rich machine configuration
+schema that hides native Linux/systemd configuration. Katl should not model
+every option in `systemd-networkd`, `sshd`, `containerd`, `kubelet`, `kubeadm`,
+`resolved`, `timesyncd`, `sysctl`, `modules-load`, and related systems.
+
+Katl needs a thin model:
+
+```text
+User supplies install metadata and native configuration content.
+katlos-install turns initial node configuration into a generated confext.
+The runtime OS activates that confext at boot.
+A later Katl runtime agent turns subsequent user configuration into new confext
+  generations and applies them.
+```
 
 ## Decision
 
-Katl will not use Ignition in the golden path.
+Katl will not use Ignition in the core install or runtime configuration path.
 
-Katl will use a Katl-native install manifest as the provisioning contract between generated assets, PXE/ISO boot, the installer, and the installed runtime.
+Katl will use a Katl-native install manifest as the initial provisioning
+contract between generated assets, the installer UKI, `katlos-install`, and the
+installed runtime OS.
 
-Katl users will not be required to supply prebuilt confext images. Instead, users will provide generic-shaped manifests containing:
+Users will not be required to build or provide confext images directly. Users
+will provide generic-shaped Katl configuration containing:
 
-* install metadata,
-* node identity and matching metadata,
-* artifact references,
-* disk layout,
-* SSH access policy,
-* sysext selections,
-* native `/etc` file content,
-* bootstrap metadata.
+```text
+install metadata
+node identity and matching metadata
+artifact references and digests
+target root disk selection and destructive install authorization
+SSH access policy
+sysext selections
+native /etc file content
+bootstrap metadata
+```
 
-The Katl installer will build a node-local confext tree or image from the manifest during installation.
+For the initial install, `katlos-install` will build a node-local generated
+confext tree or image from the install manifest and stage it into the installed
+runtime OS before first boot.
 
-The generated confext will be staged into the installed Katlos system before first boot. When Katlos boots, `systemd-confext` activates the prebuilt local confext, giving the node its generated `/etc` configuration without requiring Ignition.
+For later configuration changes, a Katl runtime agent will perform the same
+logical operation on the running node: validate user-supplied configuration,
+materialize a new generated confext generation, activate it through systemd
+primitives, and record generation metadata. The runtime agent can come later,
+but the install-time format must leave room for it.
+
+Generated confext content must be generation-scoped. It must not be a single
+global `/var/lib/katl/confext/current` tree that can drift independently from
+the selected root slot, sysext set, and boot metadata.
 
 ## Consequences
 
@@ -69,20 +116,22 @@ The install flow becomes:
 
 ```text
 Katl config
-  -> Katl build
-  -> PXE/ISO assets and install manifests
-  -> Katl installer
-  -> disk layout + runtime install + sysext install + local confext build
+  -> katlc renders build inputs, manifests, and metadata
+  -> mkosi builds the installer UKI and runtime artifacts
+  -> installer UKI boots
+  -> katlos-install receives an install manifest
+  -> katlos-install lays out disk, writes runtime, and builds initial confext
   -> reboot
-  -> Katlos activates sysext/confext
+  -> runtime OS activates sysext/confext
   -> node reaches kubeadm-ready state
 ```
 
-This avoids a separate first-boot provisioning language and avoids debugging a three-phase model of installer, Ignition, and runtime.
+This avoids debugging a three-phase model of installer, Ignition, and runtime
+first-boot provisioning.
 
-Katl remains a thin systemd-native OS generator instead of becoming a rich machine-configuration API.
-
-Networking, for example, can be supplied as native `systemd-networkd` files:
+Katl remains a thin systemd-native OS generator instead of becoming a rich
+machine-configuration API. Networking, for example, can be supplied as native
+`systemd-networkd` files:
 
 ```yaml
 etc:
@@ -97,60 +146,85 @@ etc:
       DNS=10.1.53.1
 ```
 
-Katl does not need to model every possible `systemd-networkd` feature. It only needs to validate that a file is allowed, place it in the right tree, and optionally run native validation tools.
+Katl only needs to validate allowed paths, ownership, modes, and optionally run
+native verification tools. It does not need to model every possible
+`systemd-networkd` feature.
 
-The user experience is simpler:
+The user experience is:
 
 ```text
 I define the node.
 Katl installs it.
-Katlos boots with that config.
+The runtime OS boots with that config.
+Later, a Katl agent can apply config updates through new confext generations.
 ```
-
-instead of:
-
-```text
-I define the node.
-Katl renders Ignition.
-Ignition writes files.
-Something else turns those files into runtime state.
-```
-
-This also lets PXE and ISO paths share the same core install contract. PXE/matchbox can serve per-node install manifests. ISO images can embed all node manifests and allow node selection by MAC address, UUID, DMI serial, or explicit boot argument.
 
 ### Negative consequences
 
-Katl must own more installer logic.
+Katl must own more installer and runtime-agent logic.
 
 The installer must be able to:
 
-* parse and validate Katl install manifests,
-* materialize native file bundles,
-* build a confext-compatible tree or image,
-* write extension metadata,
-* stage the generated confext in the installed target,
-* configure active extension pointers,
-* write first-boot state,
-* validate the target installation.
+```text
+parse and validate Katl install manifests
+receive install input without Ignition
+materialize native file bundles
+build a confext-compatible tree or image
+write extension metadata
+stage the generated confext in generation-scoped state
+configure active extension pointers
+write first-boot and generation state
+validate the target installation
+```
+
+The future runtime agent must eventually be able to:
+
+```text
+validate user-supplied runtime configuration
+materialize new confext generations
+coordinate confext activation with systemd
+record generation metadata
+support rollback to a previous generated config set
+avoid mutating kubeadm-owned state
+```
 
 Katl cannot delegate those concerns to Ignition.
 
-Existing matchbox/Ignition workflows cannot be reused directly. Matchbox remains useful for PXE templating, machine matching, and serving boot assets, but it will serve Katl install manifests rather than Ignition configs.
+Existing matchbox/Ignition workflows cannot be reused directly. User-managed
+PXE/iPXE/matchbox remains useful for booting the installer UKI and passing or
+serving install manifest input, but Katl does not own that provisioning layer.
 
-There is less compatibility with the Fedora CoreOS/Flatcar provisioning ecosystem. Katl is explicitly choosing a project-specific install contract over an existing provisioning format.
+There is less compatibility with the Fedora CoreOS/Flatcar provisioning
+ecosystem. Katl is choosing a project-specific install contract over an existing
+provisioning format.
 
-Prebuilt, signed confext images are not the default artifact in the simple path. If the installer builds the confext locally from a manifest, the manifest must be signed and verified carefully because it effectively defines the node’s `/etc`.
+Because user configuration becomes generated `/etc`, manifests and later config
+updates are security-sensitive. They must come through a trusted Katl input path
+before they are materialized into confext. Generated confexts do not need to be
+signed in the default path because they are produced on the target node from
+already trusted input. Signing generated confexts can be added later if it
+proves useful.
 
-## Detailed design
+## Detailed Design
 
-## Katl install manifest
+## Install Input
 
-A Katl install manifest is the primary provisioning artifact.
+The install manifest is the initial provisioning artifact. It may be supplied
+by any installer input path supported by `katlos-install`:
 
-Example:
+```text
+kernel command line or boot metadata
+local file bundled next to the installer material
+local handoff HTTP API
+user-managed network boot metadata
+```
+
+Katl does not require or render Ignition for these paths.
+
+## Example Install Manifest Shape
 
 ```yaml
-apiVersion: katl.dev/v1alpha1
+apiVersion: install.katl.dev/v1alpha1
 kind: InstallManifest
 metadata:
   nodeName: ms01-01
@@ -162,40 +236,19 @@ spec:
   install:
     disk: /dev/disk/by-id/nvme-Samsung_...
     wipe: true
-    layout:
-      partitionTable: gpt
-      partitions:
-        - name: esp
-          type: esp
-          size: 1GiB
-          filesystem:
-            type: vfat
-          mount:
-            path: /efi
-
-        - name: root
-          type: linux-generic
-          size: 8GiB
-          filesystem:
-            type: erofs
-          mount:
-            path: /
-
-        - name: var
-          type: linux-generic
-          size: remaining
-          filesystem:
-            type: ext4
-          mount:
-            path: /var
 
   runtime:
-    ref: ghcr.io/katl/katlos-runtime:v0.1.0
-    digest: sha256:...
+    root:
+      ref: https://assets.example/katl-runtime-v0.1.0.squashfs
+      format: squashfs
+      sizeBytes: 123456789
+      digest: sha256:...
+    boot:
+      ukiDigest: sha256:...
 
   sysext:
     - name: kubernetes
-      ref: ghcr.io/katl/sysext/kubernetes:v1.34.2-katl.0
+      ref: https://assets.example/kubernetes-v1.34.2.raw
       digest: sha256:...
 
   bootstrap:
@@ -226,108 +279,113 @@ spec:
         controlPlaneEndpoint: 10.45.0.10:6443
 ```
 
-The manifest is intentionally generic. Katl understands install mechanics, artifact references, and file placement. Katl does not deeply understand every subsystem represented by the file contents.
+The manifest is intentionally generic. Katl understands install mechanics,
+artifact references, artifact verification, and file placement. Katl does not
+deeply understand every subsystem represented by file contents.
 
-## Manifest responsibilities
+The target root disk is selected by the user and then owned by Katl. Users do
+not configure the root disk partition table, root slot sizes, root slot
+filesystem format, state partition filesystem, partition labels, or alignment.
+Those are Katl implementation details controlled by the installer/runtime
+profile. Extra non-root data disks can have a separate explicit policy later.
 
-The manifest may define:
+## Installer Responsibilities
 
-```text
-node matching
-target disk
-disk layout
-runtime artifact
-sysext artifacts
-file bundle for /etc
-SSH policy
-bootstrap mode
-trust policy
-first-boot state
-```
-
-The manifest should not require Katl to provide rich schemas for:
-
-```text
-systemd-networkd
-sshd
-containerd
-kubeadm
-kubelet
-resolved
-timesyncd
-sysctl
-modules-load
-modprobe
-```
-
-Native files are the primary escape hatch and the primary configuration mechanism.
-
-## Installer responsibilities
-
-The Katl installer consumes the install manifest and performs the installation.
+`katlos-install` consumes the install manifest and performs the installation.
 
 It must:
 
 ```text
-identify/select the node
+identify or select the node
 verify the manifest
 verify referenced artifacts
-apply the target disk layout
+apply Katl's target disk layout
 create filesystems on the real target disk
-install the Katlos runtime
-install boot entries
+write the prebuilt SquashFS runtime root artifact into root-a
+install boot metadata for the selected generation
 install or stage sysext artifacts
-materialize /etc file bundle into a confext-compatible tree
+materialize /etc file bundle into a generated confext tree or image
 write confext extension metadata
-stage the confext into the installed system
-write Katl node state
+stage the confext into generation-scoped installed state
+write Katl node and generation state
 write first-boot marker
 reboot
 ```
 
 The installer does not run Ignition.
 
-The installer does not need to run kubeadm.
+The installer does not run kubeadm by default.
 
 The installer does not install Cilium, CoreDNS, Rook, Flux, or workloads.
 
-## Confext construction
+## Confext Construction
 
-The installer builds a confext from the manifest’s `etc.files` section.
+The installer builds the first generated confext from the manifest's `etc.files`
+section.
 
-Conceptual staging layout:
+Conceptual generation-scoped staging layout:
 
 ```text
-/target/var/lib/katl/confext/current/
-  etc/
-    hostname
-    systemd/
-      network/
-        10-lan.network
-      system/
-        ...
-    ssh/
-      sshd_config.d/
-        10-katl.conf
-    katl/
-      kubeadm-init.yaml
-    extension-release.d/
-      extension-release.katl-node
+/target/var/lib/katl/generations/<generation-id>/
+  manifest.json
+  metadata.json
+  confext/
+    etc/
+      hostname
+      systemd/
+        network/
+          10-lan.network
+        system/
+          ...
+      ssh/
+        sshd_config.d/
+          10-katl.conf
+      katl/
+        kubeadm-init.yaml
+      extension-release.d/
+        extension-release.katl-node
 ```
 
-The extension metadata should identify compatibility with the Katlos runtime, for example:
+The extension metadata should identify compatibility with the runtime OS
+generation, for example:
 
 ```text
-ID=katlos
+ID=katl
 VERSION_ID=0.1.0
 CONFEXT_LEVEL=1
 ```
 
-The generated confext may initially be a directory tree. Later, Katl may package it as a raw confext image with verity/signature support.
+The generated confext may initially be a directory tree. Later, Katl may package
+it as a raw confext image with verity/signature support.
 
-The runtime activates this local confext during boot using `systemd-confext`.
+The runtime activates only the selected generation's confext using
+`systemd-confext`. Activation should be coordinated with the selected root slot,
+boot metadata, and sysext set.
 
-## `/etc` ownership boundaries
+## Runtime Agent Responsibilities
+
+A future Katl runtime agent will reuse the same configuration model after first
+boot. It is not required for the first installer milestone, but the initial
+layout must leave room for it.
+
+The agent should eventually:
+
+```text
+receive or discover desired Katl configuration
+validate input trust and policy
+render native file content into a new confext generation
+verify generated file paths, modes, ownership, and metadata
+stage the confext under /var/lib/katl/generations/<generation-id>/
+activate the new generation through systemd-confext
+record success or failure
+support rollback to a previous generated config set
+```
+
+The agent should not become a general-purpose configuration management system.
+It applies Katl-generated configuration generations and preserves native
+systemd/Linux file semantics.
+
+## `/etc` Ownership Boundaries
 
 Katl-generated steady-state config should live in the generated confext.
 
@@ -358,6 +416,11 @@ Kubeadm should own:
 /etc/kubernetes/manifests
 ```
 
+Because the runtime root is read-only, `/etc/kubernetes` needs an explicit
+persistent projection from writable state, such as a systemd bind mount sourced
+from `/var/lib/katl/kubernetes` or another validated state path. It must not be
+made part of the generated confext.
+
 Katl should place kubeadm input config under:
 
 ```text
@@ -377,19 +440,18 @@ or:
 kubeadm join --config /etc/katl/kubeadm-join.yaml
 ```
 
-This avoids making `/etc/kubernetes` read-only or confext-owned.
+## Runtime Boot
 
-## Runtime boot
-
-Katlos boots with the confext already present.
+The runtime OS boots with the selected generation's confext already present.
 
 Runtime flow:
 
 ```text
-mount filesystems
-ensure machine-id exists
+mount filesystems, including writable state at /var
+ensure stable machine identity is available
 activate sysext
-activate confext
+activate selected generation confext
+project writable /etc/kubernetes from state
 start systemd-networkd
 start sshd
 start containerd
@@ -397,79 +459,57 @@ start kubelet
 reach katl-kubeadm-ready.target
 ```
 
-A small `katl-firstboot.service` may exist, but it is not a general provisioning system.
+A small first-boot service may exist, but it is not a general provisioning
+system.
 
 It may:
 
 ```text
-ensure machine-id exists
-generate SSH host keys if absent
 validate Katl install state
 ensure active extension links exist
+generate or persist SSH host keys if absent
 mark first boot complete
 ```
 
-It should not be responsible for writing arbitrary configuration files. That happened during install.
+It should not be responsible for writing arbitrary configuration files. Initial
+configuration was materialized by `katlos-install`; later configuration changes
+belong to the Katl runtime agent.
 
-## PXE/matchbox path
+## Network Boot Path
 
-Matchbox remains the preferred PXE path, but it serves Katl assets instead of Ignition.
+Katl does not own how a machine reaches the installer. Users may use
+PXE/iPXE/matchbox, a mounted ISO, a remote KVM workflow, or another boot
+process.
 
-Flow:
-
-```text
-node PXE boots
-matchbox matches node by MAC/UUID
-matchbox serves iPXE profile
-iPXE boots Katl installer
-installer fetches Katl install manifest
-installer applies manifest
-installer reboots into Katlos
-```
-
-Matchbox may serve:
+Generic flow:
 
 ```text
-installer kernel/initrd/UKI
-install manifest
-runtime artifact references
-sysext artifact references
+user-managed boot infrastructure boots the Katl installer UKI
+boot metadata or local handoff supplies the Katl install manifest
+katlos-install applies the manifest
+katlos-install reboots into the installed runtime OS
 ```
 
 No Ignition config is required.
 
-## ISO path
+## Local Handoff Path
 
-The ISO contains:
+If no manifest is preseeded, `katlos-install` may start a small HTTP handoff
+server in the installer environment. The operator or test harness submits the
+same install manifest used by preseeded installs.
 
-```text
-Katl installer
-Katlos runtime artifact
-sysext artifacts
-all node install manifests
-node selection metadata
-```
-
-Flow:
-
-```text
-boot ISO
-select node by cmdline, MAC, UUID, DMI serial, or interactive prompt
-installer applies selected manifest
-installer builds local confext
-installer reboots into Katlos
-```
-
-No Ignition stage is required.
+The handoff API is only for initial installer input. It is not the runtime
+configuration agent and must stop accepting config once installation starts.
 
 ## Security
 
-Because the manifest defines files that will become `/etc`, it is security-sensitive.
+Because user configuration defines files that become `/etc`, it is
+security-sensitive.
 
-The installer must verify:
+The installer and future runtime agent must verify:
 
 ```text
-manifest signature
+manifest or configuration trust according to active Katl policy
 artifact digests
 artifact signatures
 allowed file paths
@@ -477,11 +517,18 @@ file modes and ownership
 symlink behavior
 no path traversal
 no writes outside allowed confext root
+generation metadata consistency
 ```
+
+Generated confexts do not require their own signatures in the default path.
+They are generated locally from trusted manifest/configuration input and tracked
+through generation metadata. Later support for signed generated confext images is
+an optional hardening or distribution improvement, not a requirement for this
+ADR.
 
 File paths in `etc.files` must be absolute paths under `/etc`.
 
-The installer should reject:
+The installer and runtime agent should reject:
 
 ```text
 paths containing ..
@@ -490,126 +537,87 @@ unexpected symlinks
 device nodes
 setuid files unless explicitly allowed
 dangerous ownership/mode combinations unless explicitly allowed
+attempts to own kubeadm mutable output under /etc/kubernetes
 ```
 
 SSH access should default to key-only auth.
 
-Secrets should not be stored in plain text in normal manifests unless the user explicitly accepts that risk. Future work may add encrypted manifest sections using SOPS/age or TPM-sealed material.
+Secrets should not be stored in plain text in normal manifests unless the user
+explicitly accepts that risk. Future work may add encrypted configuration
+sections using SOPS/age or TPM-sealed material.
 
-## Alternatives considered
+## Alternatives Considered
 
 ## Alternative 1: Use Ignition
 
-Rejected for the golden path.
+Rejected for the core path.
 
-Ignition would be useful if Katlos were a generic cloud-style image that self-provisions entirely on first boot. Katl instead has a real installer that already applies disk layout and materializes node state. Ignition would add a second provisioning contract and another boot phase.
+Ignition would be useful if the runtime OS were a generic cloud-style image that
+self-provisions entirely on first boot. Katl has a real installer and will have
+a runtime agent for later configuration generations. Ignition would add another
+configuration language and boot phase without enough benefit.
 
-This would make the flow more complex:
-
-```text
-Katl manifest
-  -> Ignition config
-  -> installer seed
-  -> first boot provisioning
-  -> confext activation
-```
-
-The chosen model is simpler:
-
-```text
-Katl manifest
-  -> installer materializes installed state
-  -> confext activation
-```
-
-Ignition may be considered later as an import/export compatibility target, but not as a core mechanism.
+Ignition may be considered later only as an import/export compatibility target,
+not as a mechanism required by the installer or runtime.
 
 ## Alternative 2: Users supply prebuilt confext images
 
 Rejected as the primary interface.
 
-Prebuilt confext images are useful for reproducibility, signing, and advanced workflows, but they are too much complexity for the default UX.
+Prebuilt confext images are useful for reproducibility, signing, and advanced
+workflows, but they are too much complexity for the default user interface.
 
-The default user should supply native files and metadata, not extension images.
+The default user should supply Katl configuration and native file content, not
+extension images.
 
-Katl may later support:
-
-```text
-katl build confext
-```
-
-or CI-built signed confext artifacts, but this should be an optimization, not a requirement.
+Katl may later support CI-built signed confext artifacts as an optimization, but
+this should not be required for the default install flow.
 
 ## Alternative 3: Rich Talos-style machine config
 
 Rejected.
 
-A rich schema would eventually force Katl to model and render many Linux subsystems. This conflicts with the design goal of using native systemd/Linux configuration directly.
+A rich schema would eventually force Katl to model and render many Linux
+subsystems. This conflicts with the design goal of using native systemd/Linux
+configuration directly.
 
-Katl should not need a new frontend field to support a new `systemd-networkd` feature.
+Katl should not need a new frontend field to support a new
+`systemd-networkd` feature.
 
 ## Alternative 4: Mutable `/etc` written directly by installer
 
 Rejected as the default.
 
-The installer could simply write files directly into `/etc`, but that weakens the generated/immutable model.
+The installer could write files directly into `/etc`, but that weakens the
+generated/immutable model.
 
 Using confext gives Katl:
 
 ```text
 clear ownership of generated config
-atomic-ish replacement of config sets
+generation-scoped replacement of config sets
 rollback path
 less configuration drift
 read-only merged config at runtime
 alignment with systemd-native primitives
 ```
 
-Some paths, especially kubeadm output under `/etc/kubernetes`, remain writable by design.
+Some paths, especially kubeadm output under `/etc/kubernetes`, remain writable
+by design through explicit state projection.
 
-## Implementation notes
+## Final Decision Summary
 
-Initial implementation can use a directory-based confext rather than a raw disk image.
+Katl will use Katl-native install manifests and later Katl-native runtime
+configuration instead of Ignition.
 
-Example active layout:
+Users will provide generic configuration containing install metadata and native
+file content. They will not provide confext images directly in the default path.
 
-```text
-/var/lib/katl/confext/
-  current/
-    etc/
-      ...
-  previous/
-    etc/
-      ...
-```
+`katlos-install` will build the first node-local generated confext during
+installation.
 
-A later implementation can produce:
+A future Katl runtime agent will build and apply later generated confext
+generations on the running node.
 
-```text
-/var/lib/katl/confext/
-  katl-node-v1.confext.raw
-  katl-node-v2.confext.raw
-```
-
-The local confext should be treated as generated state. Users should edit the source manifest and reinstall/rebuild rather than editing the generated tree directly.
-
-A future `katlctl` may support:
-
-```bash
-katlctl status
-katlctl diff-confext
-katlctl activate-confext previous
-katlctl rebuild-confext /path/to/manifest
-```
-
-## Final decision summary
-
-Katl will use a Katl-native install manifest rather than Ignition.
-
-Katl users will provide generic manifests containing install metadata and native file content.
-
-The Katl installer will build a node-local confext from those native files during installation.
-
-Katlos will activate that confext at runtime using `systemd-confext`.
-
-This keeps Katl simple, avoids a Talos-style rendering engine, avoids Ignition complexity, and preserves a systemd-native immutable runtime model.
+The runtime OS will activate selected confext generations with
+`systemd-confext`, coordinated with root slot, sysext, and generation metadata.
