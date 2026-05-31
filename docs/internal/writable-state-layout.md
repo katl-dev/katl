@@ -77,6 +77,10 @@ Kubelet and containerd package tmpfiles may create deeper subdirectories below
 their state roots. Katl's responsibility is that `/var` is mounted and the
 top-level persistent view is available before those services start.
 
+The `/etc/kubernetes` projection from
+`/var/lib/katl/kubernetes/etc-kubernetes` is defined in
+`docs/internal/etc-kubernetes-projection.md`.
+
 ## Follow-up Gates
 
 Mount units and tmpfiles snippets should be verified with `systemd-analyze

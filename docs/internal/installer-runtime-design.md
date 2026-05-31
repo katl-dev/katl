@@ -1013,6 +1013,8 @@ onto:
 with a systemd bind mount unit ordered before kubelet and kubeadm automation.
 If confext overlays `/etc`, this bind mount should be validated after confext is
 active so the overlay does not hide the persistent Kubernetes subtree.
+The focused projection decision is recorded in
+`docs/internal/etc-kubernetes-projection.md`.
 
 Ephemeral state:
 
