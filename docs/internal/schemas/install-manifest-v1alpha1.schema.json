@@ -251,24 +251,6 @@
         }
       }
     },
-    "etc": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "files"
-      ],
-      "properties": {
-        "files": {
-          "type": "object",
-          "propertyNames": {
-            "$ref": "#/$defs/etcFilePath"
-          },
-          "additionalProperties": {
-            "type": "string"
-          }
-        }
-      }
-    },
     "trust": {
       "type": "object",
       "additionalProperties": false,
@@ -478,13 +460,6 @@
           "type": "boolean",
           "default": false
         }
-      }
-    },
-    "etcFilePath": {
-      "type": "string",
-      "pattern": "^/etc/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$",
-      "not": {
-        "pattern": "^/etc/kubernetes(/|$)"
       }
     },
     "generationID": {

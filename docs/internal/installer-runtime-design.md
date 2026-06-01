@@ -152,7 +152,7 @@ runtime root artifact
 runtime UKI or kernel/initramfs assets
 systemd-boot entry templates or generation metadata
 sysext artifacts
-generated confext inputs
+Katl configuration domain inputs
 checksums and signatures for fetched artifacts
 trust roots needed to verify the above
 optional recovery SSH authorized keys
@@ -350,8 +350,7 @@ install
   disks
 
 artifacts
-  runtime root artifact, optional UKI, sysexts, generated confext inputs, and
-  required digests
+  runtime root artifact, optional UKI, sysexts, and required digests
 
 trust
   CA certificates or artifact verification public keys used before fetching or
@@ -690,15 +689,31 @@ Should UKI compatibility be represented as a direct UKI digest, a boot metadata
 ## Generated Confext Contract
 
 Users should not supply confext images directly in the default path. Users
-supply Katl install manifests and native file content. Katl materializes that
-input into generated confext content.
+supply Katl install manifests and configuration in known domains. Katl
+materializes that input into generated confext content.
+
+The configuration API should be small and explicit. It is not an arbitrary
+`/etc` passthrough. Each supported domain defines:
+
+```text
+user-facing input shape
+native file syntax, when passthrough is useful
+rendered target path under /etc
+validation rules
+runtime apply, reload, or restart behavior
+```
+
+For example, a `networkd` domain can allow native `.network`, `.netdev`, and
+`.link` file content while Katl owns rendering those files under
+`/etc/systemd/network/` and applying changes with `systemd-networkd` and
+`networkctl`.
 
 For the initial install, `katlos-install` owns this conversion:
 
 ```text
 read validated install manifest
-validate allowed /etc paths, ownership, modes, and symlink behavior
-render native file content into a generation-scoped confext tree or image
+validate known configuration domains and their output paths
+render domain configuration into a generation-scoped confext tree or image
 write extension-release metadata
 stage the confext under /var/lib/katl/generations/<generation-id>/
 select that confext with the same generation metadata as the root slot and
@@ -716,7 +731,7 @@ first installer milestones, but the install-time layout must leave room for it:
 ```text
 receive desired Katl configuration
 validate trust and policy
-render a new generated confext generation
+render known configuration domains into a new generated confext generation
 activate it through systemd-confext
 record success, failure, and rollback metadata
 ```

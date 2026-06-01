@@ -25,8 +25,8 @@ later runtime configuration updates
 ```
 
 Users should not be required to build or provide confext artifacts directly.
-They should provide Katl configuration and selected native file content. Katl
-then validates that input and renders the generated configuration artifacts.
+They should provide Katl configuration in known domains. Katl then validates
+that input and renders the generated configuration artifacts.
 
 ## Decision
 
@@ -37,8 +37,8 @@ For first install, `katlos-install`:
 ```text
 reads the install manifest
 validates user-supplied configuration
-rejects files outside the allowed generated /etc surface
-rejects mutable or Katl-owned paths
+rejects configuration outside known domains
+rejects attempts to write arbitrary /etc paths or Katl-owned paths
 renders a generation-scoped generated confext tree or image
 writes extension-release metadata
 stages the generated confext under /var/lib/katl/generations/<generation-id>/
@@ -62,13 +62,26 @@ leave room for that model.
 
 ## User-Facing Input
 
-Users provide Katl configuration and an install manifest. They may provide native
-file content for allowed generated `/etc` paths.
+Users provide Katl configuration and an install manifest. Configuration is
+domain-scoped. A domain can preserve native syntax while still keeping Katl in
+control of the destination path and apply behavior.
+
+Example:
+
+```text
+networkd domain
+  accepts native .network, .netdev, and .link content
+  renders into /etc/systemd/network/
+  applies through systemd-networkd/networkctl behavior
+```
+
+This is a thin abstraction, not an arbitrary `/etc` passthrough.
 
 Users do not provide:
 
 ```text
 prebuilt confext artifacts in the default path
+arbitrary `/etc` file paths
 host account definitions
 sudo, PAM, passwd, shadow, or sysusers policy
 root disk partitioning or root filesystem policy
@@ -165,9 +178,10 @@ Generated confext validation is security-sensitive because it writes effective
 runtime `/etc` content. Validation must reject:
 
 ```text
-non-/etc paths
-path traversal
-duplicate normalized paths
+unknown configuration domains
+raw user-supplied /etc paths outside a domain renderer
+path traversal inside any domain renderer
+duplicate normalized outputs
 unsafe file modes or owners
 unsupported file types
 attempts to own /etc/kubernetes
@@ -183,6 +197,7 @@ Rollback must switch root, sysext, and confext together.
 Implementation follow-up:
 
 ```text
+replace arbitrary etc.files handling with known configuration domain renderers
 enforce the fixed host user and SSH policy in generated confext validation
 render Katl-owned sshd policy and katl authorized keys
 wire generated confext activation into generation selection

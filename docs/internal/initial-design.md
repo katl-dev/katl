@@ -128,7 +128,7 @@ destructive install authorization
 node identity inputs such as hostname and SSH public keys
 artifact references and digests
 extra non-root data disk requests
-native file content that is allowed to become generated /etc configuration
+configuration in known Katl domains, using native syntax where useful
 ```
 
 Users do not supply:
@@ -140,12 +140,31 @@ root or state filesystem choices
 host account definitions
 sudo, PAM, passwd, shadow, or sysusers policy
 prebuilt confext artifacts in the default path
+arbitrary `/etc` file paths
 Kubernetes-generated mutable state under /etc/kubernetes
 ```
 
-`katlos-install` validates user input and materializes allowed `/etc` content
-into a generation-scoped generated confext. A later runtime Katl agent will use
-the same model for configuration updates on installed nodes.
+Katl is not a general-purpose OS configuration system. The configuration surface
+should be small, explicit, and domain-scoped, but thin enough that users are not
+forced through a lossy abstraction. For example, a networkd domain may accept
+native `.network`, `.netdev`, and `.link` content, but Katl owns the destination
+under `/etc/systemd/network/` and owns the apply behavior with
+`systemd-networkd`/`networkctl`.
+
+Initial domains should be limited to things required to install and operate a
+kubeadm-ready node:
+
+```text
+node identity and hostname
+katl SSH authorized keys
+networkd units
+kubeadm input files under /etc/katl
+extra data disk mounts
+```
+
+Additional domains should be added deliberately when users need them. They must
+define their render paths, validation rules, and runtime apply/restart behavior
+before becoming part of the user-facing configuration API.
 
 ## Rejected Configuration Bootstrap
 
