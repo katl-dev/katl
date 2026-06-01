@@ -40,7 +40,7 @@
   "etc": {
     "files": {
       "/etc/hostname": "lab-node-01\n",
-      "/etc/ssh/sshd_config.d/10-katl.conf": "PasswordAuthentication no\nPermitRootLogin no\n"
+      "/etc/katl/node.yaml": "node: lab-node-01\n"
     }
   },
   "trust": {

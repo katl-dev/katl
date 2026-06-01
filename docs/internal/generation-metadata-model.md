@@ -12,9 +12,16 @@ Katl stores generation records under:
 ```
 
 Each record selects one complete bootable generation: root slot, root artifact,
-UKI, sysext set, generated confext set, kernel command line, and health state.
-Rollback must switch the whole record rather than independently switching root,
-sysext, and confext state.
+UKI, sysext set, generated confext set, and kernel command line. Rollback must
+switch the whole record rather than independently switching root, sysext, and
+confext state.
+
+The first implementation stores mutable boot and health status fields in the
+same `metadata.json` file as the generation selection. The selection fields are
+immutable after generation creation; only the status fields may be updated by
+boot health, rollback, or explicit repair tooling. A later schema can split
+immutable generation spec and mutable status into separate files without
+changing the selection model.
 
 ## Required Fields
 
@@ -34,8 +41,8 @@ Required fields:
 | `confexts[]` | Generated confext name, path, activation path, digest, and compatibility metadata |
 | `kernelCommandLine[]` | Kernel arguments selected for this generation |
 | `createdAt` | Generation creation timestamp |
-| `bootState` | Pending, trying, good, failed, or superseded boot state |
-| `healthState` | Unknown, healthy, unhealthy, or deferred runtime health state |
+| `bootState` | Mutable pending, trying, good, failed, or superseded boot state |
+| `healthState` | Mutable unknown, healthy, unhealthy, or deferred runtime health state |
 
 The Go scaffold in `internal/installer/generation` implements this initial
 record shape and deterministic content identifiers for generated trees.
@@ -67,6 +74,19 @@ installed generation.
 
 Boot attempt and health state transitions are defined in
 `docs/internal/boot-health-semantics.md`.
+
+## Status Mutation
+
+Only these fields are mutable after the generation is created:
+
+```text
+bootState
+healthState
+```
+
+All other fields describe the selected root, UKI, command line, sysext set, and
+generated confext set. Those fields must not be changed in place during a normal
+update. A new desired runtime state gets a new generation directory.
 
 ## Updates
 

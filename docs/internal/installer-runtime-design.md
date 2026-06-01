@@ -261,9 +261,9 @@ The durable install policy should be in the install manifest consumed by
 
 ## Installer Input Role
 
-Katl does not use Ignition in the core installer or runtime configuration path.
 The installer input contract is owned by `katlos-install` and the install
-manifest schema.
+manifest schema. Katl uses its own typed input model rather than delegating
+installer or runtime configuration to an external first-boot configurator.
 
 Installer input may configure:
 
@@ -768,6 +768,32 @@ is an intentional part of the operating model, not just a recovery escape hatch.
 The default policy should be key-only access, no password login, and generated
 systemd/sshd configuration rather than an ad-hoc mutable setup.
 
+Katl owns host user and SSH policy. Users may supply SSH public keys, but they
+do not define Linux users, sudo policy, PAM policy, sysusers snippets, or sshd
+policy files. The runtime host identity model is:
+
+```text
+root
+  password locked; no SSH login
+
+katl
+  the only SSH login account; key-only authentication
+
+package/system users
+  created by required base packages
+
+katl-agent
+  optional later no-login service identity if the runtime agent needs one
+```
+
+Katl should render the `katl` account, authorized keys, and sshd policy. The
+generated policy should include no password authentication, no root login, and
+`AllowUsers katl` or an equivalent restriction. User-supplied generated confext
+input must not write account or authentication control files such as
+`/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/gshadow`, `/etc/sudoers*`,
+`/etc/pam.d/*`, `/etc/security/*`, `/etc/subuid`, `/etc/subgid`,
+`/etc/sysusers.d/*`, or `/etc/ssh/sshd_config*`.
+
 A booted generation is assembled from these layers:
 
 ```text
@@ -1085,8 +1111,11 @@ The focused generation metadata decision is recorded in
 
 The first install writes `root-a` and marks it pending. Runtime health
 completion marks it good. Updates later write `root-b`, set it as the next boot
-candidate, and rely on systemd-boot boot counting plus Katl health state to
-decide whether to keep or roll back.
+candidate with a bounded trial mechanism, and rely on Katl health state to
+decide whether to promote or roll back. The first trial mechanism should keep the
+previous known-good generation as the default boot entry and try the candidate
+with systemd-boot one-shot selection or explicit boot counting. A candidate must
+not become the permanent default until it reaches the boot-complete target.
 The focused boot health decision is recorded in
 `docs/internal/boot-health-semantics.md`.
 
@@ -1140,8 +1169,9 @@ is where immutable root, confext, kubeadm, and systemd boot ordering intersect.
    Initial recommendation: use SquashFS root slots first. Revisit EROFS and
    dm-verity after the install and update loop works.
 
-5. Should installer and recovery SSH be enabled by default?
+5. Should SSH be enabled by default?
 
-   Initial recommendation: key-only SSH should be enabled for installer,
-   runtime, and recovery profiles because the target users need practical
-   debugging access.
+   Current decision: key-only SSH should be available for installer, runtime,
+   and recovery profiles because the target users need practical debugging
+   access. The only runtime SSH login account is `katl`; users supply keys, not
+   host account policy.

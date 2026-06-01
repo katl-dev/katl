@@ -22,15 +22,17 @@ activation pointed at the failed generation.
 ## Known-Good Rule
 
 A generation becomes known-good only after it reaches the configured boot health
-signal and its record is updated to:
+signal and its health state is updated to:
 
 ```text
-bootState: good
 healthState: healthy
 ```
 
-The previous known-good generation is the newest generation record with those
-states that is not the currently failed generation.
+The previous known-good generation is the newest generation record with
+`healthState: healthy` that is not the currently failed or currently tried
+generation. Its `bootState` may be `good` or `superseded`; superseded means a
+healthy generation is no longer the active default, not that it is unsafe for
+rollback.
 
 ## Failed Boot Rollback
 
@@ -81,9 +83,11 @@ Boot entries must identify the generation they boot. A generation-specific UKI
 or loader entry should point to the selected root PARTUUID and include enough
 metadata for the runtime to find its generation record.
 
-The selector may use systemd-boot's one-shot or default-entry behavior in the
-first implementation. Boot counting can be layered on later; the generation
-record remains the source of truth for root and extension selection.
+The first implementation should keep the previous known-good generation as the
+default boot entry and try a candidate with systemd-boot one-shot selection. A
+candidate must not become the default entry until it reaches the configured
+boot health target. Explicit boot counting can be layered on later; the
+generation record remains the source of truth for root and extension selection.
 
 ## Validation
 

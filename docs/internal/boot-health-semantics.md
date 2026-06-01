@@ -56,7 +56,8 @@ failed
   exhausted attempts or explicit health failure
 
 superseded
-  no longer selected because a newer good generation replaced it
+  healthy generation no longer selected because a newer healthy generation
+  replaced it
 ```
 
 Health values:
@@ -77,9 +78,15 @@ deferred
 
 ## Attempt Count
 
-The initial update policy allows one attempted boot for a new generation. If it
-does not reach `katl-boot-complete.target`, Katl should fall back to the
-previous known-good generation on the next boot.
+The initial update policy allows one attempted boot for a new generation. The
+candidate generation must be tried with a bounded boot mechanism: keep the
+previous known-good generation as the default and select the candidate with
+systemd-boot one-shot state, or use explicit boot counting when that is wired and
+tested.
+
+If the candidate does not reach `katl-boot-complete.target`, the next boot must
+return to the previous known-good generation instead of repeatedly booting the
+candidate.
 
 Later work may use systemd-boot boot counting for multiple attempts, but the
 first policy should keep rollback behavior easy to validate in QEMU.

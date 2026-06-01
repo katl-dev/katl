@@ -26,8 +26,9 @@ exist on the state partition:
 | Directory | Owner | Mode | Purpose |
 | --- | --- | --- | --- |
 | `/var/lib/katl` | `root:root` | `0755` | Katl persistent state root |
-| `/var/lib/katl/generations` | `root:root` | `0755` | Immutable per-generation records and staged extension content |
+| `/var/lib/katl/generations` | `root:root` | `0755` | Per-generation records, staged extension content, and boot status |
 | `/var/lib/katl/generations/<id>` | `root:root` | `0755` | One root/sysext/confext generation |
+| `/var/lib/katl/generations/<id>/metadata.json` | `root:root` | `0644` | Generation selection plus mutable boot/health status fields |
 | `/var/lib/katl/generations/<id>/confext` | `root:root` | `0755` | Generated confext tree or image for the generation |
 | `/var/lib/katl/generations/<id>/sysext` | `root:root` | `0755` | Sysext artifacts selected with the generation |
 | `/var/lib/katl/identity` | `root:root` | `0755` | Stable machine identity backing files |
@@ -41,9 +42,12 @@ exist on the state partition:
 | `/var/lib/etcd` | `root:root` | created by kubeadm/etcd or mount | Etcd data when not using a dedicated etcd partition |
 | `/var/log/journal` | `root:systemd-journal` | created by systemd-journald | Persistent journal, only when enabled |
 
-Generation directories are immutable after creation except through explicit
-repair tooling. Mutable pointers such as "current" should not live inside an
-individual generation directory.
+Generation content is immutable after creation except through explicit repair
+tooling. In the first metadata schema, `metadata.json` also carries mutable
+`bootState` and `healthState` fields. Those status fields may be updated by boot
+health, rollback, or repair tooling; root slot, UKI, sysext, and confext
+selection fields must not be changed in place. Mutable pointers such as
+"current" should not live inside an individual generation directory.
 
 ## Activation State
 
