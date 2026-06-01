@@ -11,6 +11,12 @@ import (
 	"git.cbannister.xyz/chris/katl/internal/installer"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "katlos-install: %v\n", err)
@@ -25,9 +31,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	manifestPath := flags.String("manifest", "", "path to install manifest")
 	stateDir := flags.String("state-dir", "/var/lib/katl/install", "installer state directory")
 	listStates := flags.Bool("list-states", false, "print the installer state order and exit")
+	showVersion := flags.Bool("version", false, "print build metadata and exit")
 
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+
+	if *showVersion {
+		fmt.Fprintf(stdout, "katlos-install version=%s commit=%s date=%s\n", version, commit, date)
+		return nil
 	}
 
 	plan := installer.DefaultPlan()

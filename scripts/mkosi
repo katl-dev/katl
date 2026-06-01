@@ -4,6 +4,11 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
+build_commit="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
+mkosi_env=(--environment "KATL_BUILD_COMMIT=$build_commit")
+if [[ -n "${KATL_VERSION:-}" ]]; then
+    mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
+fi
 
 if [[ -z "$runtime" ]]; then
     if command -v podman >/dev/null 2>&1; then
@@ -101,4 +106,4 @@ fi
         chown -R "$HOST_UID:$HOST_GID" build || true
     fi
     exit "$status"
-' bash "$@"
+' bash "${mkosi_env[@]}" "$@"
