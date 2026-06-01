@@ -139,6 +139,7 @@ root slot sizes
 root or state filesystem choices
 host account definitions
 sudo, PAM, passwd, shadow, or sysusers policy
+machine-id values or machine-id policy
 prebuilt confext artifacts in the default path
 arbitrary `/etc` file paths
 Kubernetes-generated mutable state under /etc/kubernetes
@@ -318,6 +319,12 @@ Persistent state lives under `/var`:
 `/etc/kubernetes` is the main writable `/etc` exception. It is kubeadm/kubelet
 output and must be projected from `/var/lib/katl/kubernetes/etc-kubernetes`
 with a bind mount. Generated confext must not own `/etc/kubernetes`.
+
+`/etc/machine-id` is also special. `katlos-install` generates a random machine
+ID during install, persists it under `/var/lib/katl/identity/machine-id`, and
+exposes it early enough for systemd and D-Bus consumers. The file should be
+write-protected after install and stable across runtime boots and updates, but
+it does not need to be deterministic or preserved across reinstalling the node.
 
 `/run` is ephemeral. It may hold boot-local activation links and handoff state,
 but it must not hold persistent node identity.

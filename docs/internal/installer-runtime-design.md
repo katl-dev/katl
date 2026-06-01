@@ -342,8 +342,8 @@ metadata
   manifest name, generation identifier, and optional labels
 
 node
-  explicit node name or hardware selector, plus hostname, machine-id policy,
-  and runtime or installer SSH authorized keys
+  explicit node name or hardware selector, plus hostname and runtime or
+  installer SSH authorized keys
 
 install
   destructive install guard, target root disk selector, and optional extra data
@@ -409,9 +409,9 @@ trust roots
   loaded before artifact verification
 
 SSH and identity
-  SSH enabled requires at least one authorized key; machineIDPolicy=provided
-  requires a 32-character lowercase hex machine ID; generated machine IDs must
-  be recorded in install metadata and boot settings
+  SSH enabled requires at least one authorized key; machine-id is not user
+  supplied in v0; katlos-install generates a random machine-id during install
+  and records it in persistent state and boot settings
 
 extra disks
   selectors must not resolve to the target root disk or its partitions; mount
@@ -1084,6 +1084,12 @@ install, records it under `/var/lib/katl/identity/machine-id`, and renders
 PID 1 the identity before normal mounts or services run. Later work can move
 this into the initrd if kernel command line exposure becomes unacceptable.
 
+The generated value is random per install. It is not derived from hardware,
+hostname, manifest content, or build inputs, and Katl does not preserve it across
+a destructive reinstall. After install the backing file should be root-owned and
+write-protected. It remains stable across normal runtime boots, root slot
+switches, and updates because it lives on the writable state partition.
+
 This must be proven in QEMU. A late normal service is not sufficient because
 systemd and D-Bus consumers read machine identity early in boot.
 
@@ -1185,7 +1191,7 @@ The focused boot health decision is recorded in
 `docs/internal/boot-health-semantics.md`.
 
 `katlos-install` must render final loader entries on the target node because the
-entries need final partition UUIDs, generated machine identity policy, boot
+entries need final partition UUIDs, the install-generated machine-id value, boot
 attempt naming, and generation metadata. Build-time assets may provide templates,
 but not final installed entries.
 

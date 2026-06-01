@@ -88,22 +88,11 @@
           "additionalProperties": false,
           "required": [
             "hostname",
-            "machineIDPolicy",
             "ssh"
           ],
           "properties": {
             "hostname": {
               "$ref": "#/$defs/dnsLabel"
-            },
-            "machineIDPolicy": {
-              "enum": [
-                "generated",
-                "provided"
-              ]
-            },
-            "machineID": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{32}$"
             },
             "ssh": {
               "oneOf": [
@@ -149,45 +138,7 @@
                 }
               ]
             }
-          },
-          "allOf": [
-            {
-              "if": {
-                "properties": {
-                  "machineIDPolicy": {
-                    "const": "provided"
-                  }
-                },
-                "required": [
-                  "machineIDPolicy"
-                ]
-              },
-              "then": {
-                "required": [
-                  "machineID"
-                ]
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "machineIDPolicy": {
-                    "const": "generated"
-                  }
-                },
-                "required": [
-                  "machineIDPolicy"
-                ]
-              },
-              "then": {
-                "not": {
-                  "required": [
-                    "machineID"
-                  ]
-                }
-              }
-            }
-          ]
+          }
         }
       },
       "oneOf": [

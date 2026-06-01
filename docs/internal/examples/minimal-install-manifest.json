@@ -9,7 +9,6 @@
     "name": "lab-node-01",
     "identity": {
       "hostname": "lab-node-01",
-      "machineIDPolicy": "generated",
       "ssh": {
         "enabled": true,
         "authorizedKeys": [

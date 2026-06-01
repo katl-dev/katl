@@ -32,7 +32,7 @@ exist on the state partition:
 | `/var/lib/katl/generations/<id>/confext` | `root:root` | `0755` | Generated confext tree or image for the generation |
 | `/var/lib/katl/generations/<id>/sysext` | `root:root` | `0755` | Sysext artifacts selected with the generation |
 | `/var/lib/katl/identity` | `root:root` | `0755` | Stable machine identity backing files |
-| `/var/lib/katl/identity/machine-id` | `root:root` | `0444` | Stable systemd machine ID backing file |
+| `/var/lib/katl/identity/machine-id` | `root:root` | `0444` | Random install-generated systemd machine ID backing file |
 | `/var/lib/katl/kubernetes` | `root:root` | `0755` | Kubernetes projected state namespace |
 | `/var/lib/katl/kubernetes/etc-kubernetes` | `root:root` | `0755` | Backing store for projected `/etc/kubernetes` |
 | `/var/lib/katl/ssh` | `root:root` | `0755` | SSH projected state namespace |
@@ -48,6 +48,12 @@ tooling. In the first metadata schema, `metadata.json` also carries mutable
 health, rollback, or repair tooling; root slot, UKI, sysext, and confext
 selection fields must not be changed in place. Mutable pointers such as
 "current" should not live inside an individual generation directory.
+
+`katlos-install` creates `/var/lib/katl/identity/machine-id` with a random
+machine ID during install. It is stable across normal boots and updates because
+it lives on the state partition, but it is not deterministic and does not need
+to survive a destructive reinstall. The backing file should be root-owned and
+write-protected after install.
 
 ## Activation State
 
