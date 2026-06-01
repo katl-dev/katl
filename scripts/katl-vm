@@ -14,6 +14,11 @@ Options:
   --target-disk-size SIZE Size for a created target disk (default: 20G)
   --target-disk-format F  Target disk format: qcow2 or raw (default: qcow2)
   --target-disk-cleanup   Remove a target disk created by this run after successful exit
+  --handoff-manifest PATH POST manifest after detecting local handoff serial output
+  --handoff-timeout DUR   Time to wait for handoff serial output (default: 90s)
+  --handoff-post-url URL  Host-reachable POST /v1/install URL override
+  --handoff-host-port N   Forward host 127.0.0.1:N to guest handoff port
+  --handoff-guest-port N  Guest handoff port for host forwarding (default: 8080)
   --serial-log PATH       Serial log path (default: build/qemu/katl-serial.log)
   --state-dir PATH        QEMU scratch directory (default: build/qemu)
   --firmware-code PATH    OVMF code image, or KATL_OVMF_CODE
@@ -35,6 +40,11 @@ target_disk_size=20G
 target_disk_format=qcow2
 target_disk_cleanup=0
 target_disk_created=0
+handoff_manifest=
+handoff_timeout=90s
+handoff_post_url=
+handoff_host_port=
+handoff_guest_port=8080
 serial_log="$repo_root/build/qemu/katl-serial.log"
 state_dir="$repo_root/build/qemu"
 firmware_code="${KATL_OVMF_CODE:-}"
@@ -84,6 +94,31 @@ while [[ $# -gt 0 ]]; do
         --target-disk-cleanup|-target-disk-cleanup)
             target_disk_cleanup=1
             shift
+            ;;
+        --handoff-manifest|-handoff-manifest)
+            require_value "$1" "${2:-}"
+            handoff_manifest="$2"
+            shift 2
+            ;;
+        --handoff-timeout|-handoff-timeout)
+            require_value "$1" "${2:-}"
+            handoff_timeout="$2"
+            shift 2
+            ;;
+        --handoff-post-url|-handoff-post-url)
+            require_value "$1" "${2:-}"
+            handoff_post_url="$2"
+            shift 2
+            ;;
+        --handoff-host-port|-handoff-host-port)
+            require_value "$1" "${2:-}"
+            handoff_host_port="$2"
+            shift 2
+            ;;
+        --handoff-guest-port|-handoff-guest-port)
+            require_value "$1" "${2:-}"
+            handoff_guest_port="$2"
+            shift 2
             ;;
         --serial-log|-serial-log)
             require_value "$1" "${2:-}"
@@ -162,6 +197,13 @@ if [[ -n "$uki" && ! -f "$uki" ]]; then
     echo "error: installer UKI not found: $uki" >&2
     exit 1
 fi
+if [[ -n "$handoff_manifest" && ! -f "$handoff_manifest" ]]; then
+    echo "error: handoff manifest not found: $handoff_manifest" >&2
+    exit 1
+fi
+if [[ -n "$handoff_manifest" && -z "$handoff_post_url" && -z "$handoff_host_port" ]]; then
+    handoff_host_port=18080
+fi
 
 if [[ -z "$uki" ]]; then
     if [[ ! -f "$image" ]]; then
@@ -180,6 +222,11 @@ if [[ -z "$qemu" ]]; then
     exit 1
 fi
 qemu_img="$(command -v qemu-img || true)"
+curl="$(command -v curl || true)"
+if [[ -n "$handoff_manifest" && -z "$curl" ]]; then
+    echo "error: curl not found in PATH; cannot post handoff manifest" >&2
+    exit 1
+fi
 
 pick_first_file() {
     local path
@@ -310,6 +357,17 @@ if [[ -n "$target_disk" ]]; then
     add_virtio_drive "format=$target_disk_format,file=$target_disk"
     echo "target disk: $target_disk ($target_disk_format, created=$target_disk_created)" >&2
 fi
+if [[ -n "$handoff_manifest" ]]; then
+    echo "handoff manifest: $handoff_manifest" >&2
+    if [[ -n "$handoff_host_port" ]]; then
+        echo "handoff forward: 127.0.0.1:$handoff_host_port -> guest :$handoff_guest_port" >&2
+    fi
+fi
+
+netdev="user,id=net0"
+if [[ -n "$handoff_host_port" ]]; then
+    netdev+=",hostfwd=tcp:127.0.0.1:$handoff_host_port-:$handoff_guest_port"
+fi
 
 # shellcheck disable=SC2054
 qemu_args=(
@@ -324,7 +382,7 @@ qemu_args=(
     -drive "if=pflash,format=raw,file=$vars_copy"
     "${boot_drives[@]}"
     -device virtio-rng-pci
-    -netdev user,id=net0
+    -netdev "$netdev"
     -device virtio-net-pci,netdev=net0
 )
 
@@ -344,7 +402,95 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+submit_handoff() (
+    set -euo pipefail
+
+    local announcement_file="$state_dir/handoff.announcement"
+    local response_file="$state_dir/handoff-response.json"
+    local announcement url token post_url curl_status
+
+    set +e
+    # shellcheck disable=SC2016
+    timeout "$handoff_timeout" bash -c '
+        set -euo pipefail
+        serial_log="$1"
+        qemu_pid="$2"
+        while true; do
+            line="$(grep -F "katlos-install waiting for config at " "$serial_log" | tail -n 1 || true)"
+            if [[ "$line" == *"/v1/install token="* ]]; then
+                printf "%s\n" "$line"
+                exit 0
+            fi
+            if ! kill -0 "$qemu_pid" >/dev/null 2>&1; then
+                exit 125
+            fi
+            sleep 0.25
+        done
+    ' bash "$serial_log" "$qemu_pid" >"$announcement_file"
+    curl_status=$?
+    set -e
+
+    if [[ "$curl_status" -eq 124 ]]; then
+        echo "error: timed out after $handoff_timeout waiting for handoff announcement" >&2
+        return 124
+    fi
+    if [[ "$curl_status" -ne 0 ]]; then
+        echo "error: QEMU exited before handoff announcement appeared" >&2
+        return "$curl_status"
+    fi
+
+    announcement="$(<"$announcement_file")"
+    url="${announcement#* config at }"
+    url="${url%% token=*}"
+    token="${announcement##* token=}"
+    token="${token%%[[:space:]]*}"
+
+    if [[ -z "$url" || "$url" == "$announcement" || -z "$token" || "$token" == "$announcement" ]]; then
+        echo "error: could not parse handoff URL/token from serial announcement: $announcement" >&2
+        return 1
+    fi
+
+    post_url="$url"
+    if [[ -n "$handoff_post_url" ]]; then
+        post_url="$handoff_post_url"
+    elif [[ -n "$handoff_host_port" ]]; then
+        post_url="http://127.0.0.1:$handoff_host_port/v1/install"
+    fi
+
+    echo "handoff URL: $url" >&2
+    echo "handoff POST: $post_url" >&2
+
+    set +e
+    "$curl" --fail-with-body --show-error --silent \
+        --connect-timeout 5 \
+        --max-time 30 \
+        --request POST \
+        --header "Authorization: Bearer $token" \
+        --header "Content-Type: application/json" \
+        --data-binary "@$handoff_manifest" \
+        "$post_url" >"$response_file"
+    curl_status=$?
+    set -e
+
+    if [[ "$curl_status" -ne 0 ]]; then
+        echo "error: handoff POST failed with curl status $curl_status; response follows" >&2
+        cat "$response_file" >&2 || true
+        return "$curl_status"
+    fi
+
+    echo "handoff response: ${response_file#"$repo_root"/}" >&2
+)
+
+handoff_pid=
+if [[ -n "$handoff_manifest" ]]; then
+    submit_handoff &
+    handoff_pid=$!
+fi
+
 if [[ -z "$expect" ]]; then
+    if [[ -n "$handoff_pid" ]]; then
+        wait "$handoff_pid"
+    fi
     wait "$qemu_pid"
     exit $?
 fi
@@ -374,6 +520,9 @@ status=$?
 set -e
 
 if [[ "$status" -eq 0 ]]; then
+    if [[ -n "$handoff_pid" ]]; then
+        wait "$handoff_pid"
+    fi
     echo "matched serial signal \"$expect\" in ${serial_log#"$repo_root"/}" >&2
     exit 0
 fi
