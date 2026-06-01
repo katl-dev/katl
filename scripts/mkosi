@@ -143,7 +143,7 @@ fi
   "compression": "zstd",
   "generation": "${KATL_BUILD_COMMIT:-unknown}",
   "architecture": "$arch",
-  "runtimeInterface": "katl-runtime-v0",
+  "runtimeInterface": "katl-runtime-1",
   "created": "$created"
 }
 EOF
@@ -177,9 +177,9 @@ EOF
   "version": "${KATL_BUILD_COMMIT:-unknown}",
   "payloadVersion": "v1.34",
   "architecture": "$arch",
-  "runtimeInterface": "katl-runtime-v0",
+  "runtimeInterface": "katl-runtime-1",
   "compatibleRuntime": {
-    "interface": "katl-runtime-v0",
+    "interface": "katl-runtime-1",
     "artifactPath": "katl-runtime-root.squashfs",
     "artifactSHA256": "$runtime_sha"
   },

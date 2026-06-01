@@ -4,6 +4,7 @@ set -euo pipefail
 artifact="${1:-build/mkosi/katl-kubernetes.raw}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
+runtime_root="${KATL_RUNTIME_ROOT:-build/mkosi/katl-runtime-root}"
 
 fail() {
     echo "error: $*" >&2
@@ -48,6 +49,8 @@ need stat
 [[ -f "$artifact" ]] || fail "artifact not found: $artifact"
 [[ -f "$metadata" ]] || fail "metadata not found: $metadata"
 [[ -f "$checksum" ]] || fail "checksum not found: $checksum"
+[[ -f "$runtime_root/usr/lib/os-release" ]] || fail "runtime os-release not found: $runtime_root/usr/lib/os-release"
+grep -Fq "SYSEXT_LEVEL=katl-runtime-1" "$runtime_root/usr/lib/os-release" || fail "runtime os-release missing SYSEXT_LEVEL=katl-runtime-1"
 
 (cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
 
@@ -57,7 +60,7 @@ json_has '"name": "kubernetes"'
 json_has '"kind": "sysext"'
 json_has '"format": "sysext"'
 json_has '"payloadVersion": "v1.34"'
-json_has '"runtimeInterface": "katl-runtime-v0"'
+json_has '"runtimeInterface": "katl-runtime-1"'
 json_has '"compatibleRuntime"'
 json_has "\"sizeBytes\": $size"
 json_has "\"sha256\": \"$sha256\""
@@ -86,7 +89,7 @@ done
 
 release="$(dump.erofs --cat --path /usr/lib/extension-release.d/extension-release.katl-kubernetes "$part" 2>&1)"
 grep -Fq "ID=fedora" <<<"$release" || fail "extension-release missing ID=fedora"
-grep -Fq "VERSION_ID=44" <<<"$release" || fail "extension-release missing VERSION_ID=44"
+grep -Fq "SYSEXT_LEVEL=katl-runtime-1" <<<"$release" || fail "extension-release missing SYSEXT_LEVEL=katl-runtime-1"
 grep -Fq "SYSEXT_ID=katl-kubernetes" <<<"$release" || fail "extension-release missing SYSEXT_ID"
 grep -Fq "ARCHITECTURE=x86-64" <<<"$release" || fail "extension-release missing architecture"
 

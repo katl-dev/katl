@@ -66,9 +66,9 @@ func TestReadSysext(t *testing.T) {
   "version": "abc123",
   "payloadVersion": "v1.34",
   "architecture": "x86_64",
-  "runtimeInterface": "katl-runtime-v0",
+  "runtimeInterface": "katl-runtime-1",
   "compatibleRuntime": {
-    "interface": "katl-runtime-v0",
+    "interface": "katl-runtime-1",
     "artifactPath": "katl-runtime-root.squashfs",
     "artifactSHA256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
@@ -85,7 +85,7 @@ func TestReadSysext(t *testing.T) {
 	if meta.Kind != ArtifactSysext || meta.PayloadVersion != "v1.34" {
 		t.Fatalf("meta = %#v", meta)
 	}
-	if meta.CompatibleRuntime == nil || meta.CompatibleRuntime.Interface != "katl-runtime-v0" {
+	if meta.CompatibleRuntime == nil || meta.CompatibleRuntime.Interface != "katl-runtime-1" {
 		t.Fatalf("compatible runtime = %#v", meta.CompatibleRuntime)
 	}
 }
