@@ -146,7 +146,6 @@ The material set contains:
 
 ```text
 install manifest
-node selection metadata
 installer input metadata
 runtime root artifact
 runtime UKI or kernel/initramfs assets
@@ -154,8 +153,7 @@ systemd-boot entry templates or generation metadata
 sysext artifacts
 Katl configuration domain inputs
 checksums and signatures for fetched artifacts
-trust roots needed to verify the above
-optional recovery SSH authorized keys
+optional artifact trust policy once signing is introduced
 ```
 
 For network installs, the material set may be fetched from any user-managed
@@ -270,12 +268,9 @@ Installer input may configure:
 ```text
 hostname for the live installer environment
 networking needed to fetch install materials, including static networkd config
-DNS, NTP, proxy, and CA trust needed during install
-SSH authorized keys for installer access
+DNS, NTP, proxy, and CA trust needed by the live installer
 installer manifest URL or embedded install manifest
 artifact base URLs or mirror hints, if not already in the manifest
-artifact verification trust roots
-node selectors or explicit node name
 autoinstall, hold-for-debug, or wait-for-config flags
 temporary files consumed by katlos-install under /etc/katl or /run/katl
 non-target device discovery or site-specific installer environment setup
@@ -306,7 +301,6 @@ destructive install permission
 extra data disk selectors
 extra data disk filesystems
 extra data disk mount points
-runtime systemd mount units or generated fstab-equivalent artifacts
 ```
 
 ## Install Manifest
@@ -339,11 +333,10 @@ The v1alpha1 manifest contains these top-level sections:
 
 ```text
 metadata
-  manifest name, generation identifier, and optional labels
+  manifest name
 
 node
-  explicit node name or hardware selector, plus hostname and runtime or
-  installer SSH authorized keys
+  hostname and `katl` runtime SSH authorized keys
 
 install
   destructive install guard, target root disk selector, and optional extra data
@@ -351,15 +344,13 @@ install
 
 artifacts
   runtime root artifact, optional UKI, sysexts, and required digests
-
-trust
-  CA certificates or artifact verification public keys used before fetching or
-  trusting install materials
-
-boot
-  EFI-only boot settings, bootloader install policy, loader entry name, and
-  additional kernel arguments
 ```
+
+The v0 manifest deliberately does not expose metadata labels, user-chosen
+generation IDs, node matching selectors, SSH enable/disable policy, installer
+SSH overrides, artifact trust roots, bootloader policy, loader entry names,
+kernel arguments, or extra disk mount options. Those can be added later through
+explicit design and Beads when there is a concrete implementation need.
 
 The manifest is intentionally explicit about destructive installation:
 
@@ -402,23 +393,22 @@ state partition
 
 artifacts
   every install artifact must have a URL and SHA-256 digest; digest mismatches
-  fail before mutation where possible and before boot metadata is installed
-
-trust roots
-  each remote trust root must itself be pinned by digest; trust material must be
-  loaded before artifact verification
+  fail before mutation where possible and before boot metadata is installed;
+  signing and external trust-root policy are deferred
 
 SSH and identity
-  SSH enabled requires at least one authorized key; machine-id is not user
-  supplied in v0; katlos-install generates a random machine-id during install
-  and records it in persistent state and boot settings
+  at least one `katl` authorized key is required; SSH disablement and installer
+  SSH overrides are deferred; machine-id is not user supplied in v0;
+  katlos-install generates a random machine-id during install and records it in
+  persistent state and boot settings
 
 extra disks
   selectors must not resolve to the target root disk or its partitions; mount
   paths must normalize under /srv or /var/lib/katl/extra; duplicate normalized
   mount paths, parent/child mount conflicts, and reserved paths such as /,
   /boot, /efi, /usr, /etc, /run, /tmp, /var, /var/lib/kubelet,
-  /var/lib/containerd, and /var/lib/etcd must be rejected
+  /var/lib/containerd, and /var/lib/etcd must be rejected; custom mount options
+  are deferred
 ```
 
 Runtime first-boot seed material may configure:

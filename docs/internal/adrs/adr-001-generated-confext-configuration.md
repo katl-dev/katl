@@ -84,6 +84,10 @@ prebuilt confext artifacts in the default path
 arbitrary `/etc` file paths
 host account definitions
 sudo, PAM, passwd, shadow, or sysusers policy
+metadata labels or user-chosen generation IDs in v0
+node matching selectors in v0
+bootloader, loader entry, or kernel argument policy in v0
+artifact trust-root or signing policy in v0
 root disk partitioning or root filesystem policy
 kubeadm output under /etc/kubernetes
 ```

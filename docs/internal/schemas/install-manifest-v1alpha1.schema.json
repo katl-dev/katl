@@ -10,9 +10,7 @@
     "metadata",
     "node",
     "install",
-    "artifacts",
-    "trust",
-    "boot"
+    "artifacts"
   ],
   "properties": {
     "apiVersion": {
@@ -30,16 +28,6 @@
       "properties": {
         "name": {
           "$ref": "#/$defs/dnsLabel"
-        },
-        "generation": {
-          "$ref": "#/$defs/generationID"
-        },
-        "labels": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          }
         }
       }
     },
@@ -50,39 +38,6 @@
         "identity"
       ],
       "properties": {
-        "name": {
-          "$ref": "#/$defs/dnsLabel"
-        },
-        "selector": {
-          "type": "object",
-          "additionalProperties": false,
-          "minProperties": 1,
-          "properties": {
-            "macAddresses": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": {
-                "$ref": "#/$defs/macAddress"
-              }
-            },
-            "dmiProductUUID": {
-              "$ref": "#/$defs/uuid"
-            },
-            "serialNumber": {
-              "type": "string",
-              "minLength": 1
-            },
-            "labels": {
-              "type": "object",
-              "minProperties": 1,
-              "additionalProperties": {
-                "type": "string",
-                "minLength": 1
-              }
-            }
-          }
-        },
         "identity": {
           "type": "object",
           "additionalProperties": false,
@@ -95,64 +50,25 @@
               "$ref": "#/$defs/dnsLabel"
             },
             "ssh": {
-              "oneOf": [
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "enabled",
-                    "authorizedKeys"
-                  ],
-                  "properties": {
-                    "enabled": {
-                      "const": true
-                    },
-                    "authorizedKeys": {
-                      "type": "array",
-                      "minItems": 1,
-                      "uniqueItems": true,
-                      "items": {
-                        "$ref": "#/$defs/sshAuthorizedKey"
-                      }
-                    },
-                    "installerAuthorizedKeys": {
-                      "type": "array",
-                      "uniqueItems": true,
-                      "items": {
-                        "$ref": "#/$defs/sshAuthorizedKey"
-                      }
-                    }
-                  }
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "enabled"
-                  ],
-                  "properties": {
-                    "enabled": {
-                      "const": false
-                    }
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authorizedKeys"
+              ],
+              "properties": {
+                "authorizedKeys": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "$ref": "#/$defs/sshAuthorizedKey"
                   }
                 }
-              ]
+              }
             }
           }
         }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "name"
-          ]
-        },
-        {
-          "required": [
-            "selector"
-          ]
-        }
-      ]
+      }
     },
     "install": {
       "type": "object",
@@ -201,94 +117,6 @@
           }
         }
       }
-    },
-    "trust": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "roots"
-      ],
-      "properties": {
-        "roots": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "name",
-              "type"
-            ],
-            "properties": {
-              "name": {
-                "$ref": "#/$defs/dnsLabel"
-              },
-              "type": {
-                "enum": [
-                  "ca-certificate-pem",
-                  "minisign-public-key",
-                  "cosign-public-key"
-                ]
-              },
-              "inline": {
-                "type": "string",
-                "minLength": 1
-              },
-              "url": {
-                "type": "string",
-                "format": "uri"
-              },
-              "sha256": {
-                "$ref": "#/$defs/sha256"
-              }
-            },
-            "oneOf": [
-              {
-                "required": [
-                  "inline"
-                ]
-              },
-              {
-                "required": [
-                  "url",
-                  "sha256"
-                ]
-              }
-            ]
-          }
-        }
-      }
-    },
-    "boot": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "efi",
-        "installBootloader",
-        "loaderEntryName"
-      ],
-      "properties": {
-        "efi": {
-          "const": true
-        },
-        "installBootloader": {
-          "type": "boolean"
-        },
-        "loaderEntryName": {
-          "$ref": "#/$defs/dnsLabel"
-        },
-        "kernelArgs": {
-          "type": "array",
-          "default": [],
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_.-]+(=\\S+)?$"
-          }
-        }
-      }
     }
   },
   "$defs": {
@@ -326,10 +154,6 @@
           "minLength": 1
         },
         "serial": {
-          "type": "string",
-          "minLength": 1
-        },
-        "model": {
           "type": "string",
           "minLength": 1
         },
@@ -394,16 +218,6 @@
             "path": {
               "type": "string",
               "pattern": "^/(srv|var/lib/katl/extra)/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
-            },
-            "options": {
-              "type": "array",
-              "default": [],
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "^[A-Za-z0-9_.=-]+$"
-              }
             }
           }
         },
@@ -412,16 +226,6 @@
           "default": false
         }
       }
-    },
-    "generationID": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
-    },
-    "macAddress": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"
     },
     "namedArtifact": {
       "type": "object",
@@ -455,10 +259,6 @@
     "sshAuthorizedKey": {
       "type": "string",
       "pattern": "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com) [A-Za-z0-9+/=]+( .*)?$"
-    },
-    "uuid": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     }
   }
 }

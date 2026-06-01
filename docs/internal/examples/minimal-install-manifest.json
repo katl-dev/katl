@@ -2,15 +2,12 @@
   "apiVersion": "install.katl.dev/v1alpha1",
   "kind": "InstallManifest",
   "metadata": {
-    "name": "lab-node-01",
-    "generation": "2026.05.31-001"
+    "name": "lab-node-01"
   },
   "node": {
-    "name": "lab-node-01",
     "identity": {
       "hostname": "lab-node-01",
       "ssh": {
-        "enabled": true,
         "authorizedKeys": [
           "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKatlExampleRuntimeKeyReplaceMe katl@example"
         ]
@@ -22,8 +19,7 @@
     "targetDisk": {
       "byID": "/dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK",
       "minSizeMiB": 32768
-    },
-    "extraDisks": []
+    }
   },
   "artifacts": {
     "runtimeRoot": {
@@ -35,22 +31,5 @@
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     },
     "sysexts": []
-  },
-  "trust": {
-    "roots": [
-      {
-        "name": "lab-ca",
-        "type": "ca-certificate-pem",
-        "inline": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUKATLExampleOnlyReplaceMe000000000000000wCgYIKoZIzj0EAwIwEjEQMA4GA1UEAwwHa2F0bC1jYTAeFw0yNjA1MzEwMDAwMDBaFw0yNzA1MzEwMDAwMDBaMBIxEDAOBgNVBAMMB2thdGwtY2EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARKATLExampleOnlyReplaceMe000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000o0IwQDAOBgNVHQ8BAf8EBAMCAqQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUKATLExampleOnlyReplaceMe000000000000000wCgYIKoZIzj0EAwIDSAAwRQIgKATLExampleOnlyReplaceMe000000000000000000000000000000000CIQDKATLExampleOnlyReplaceMe0000000000000000000000000000000\n-----END CERTIFICATE-----"
-      }
-    ]
-  },
-  "boot": {
-    "efi": true,
-    "installBootloader": true,
-    "loaderEntryName": "katl",
-    "kernelArgs": [
-      "console=ttyS0"
-    ]
   }
 }

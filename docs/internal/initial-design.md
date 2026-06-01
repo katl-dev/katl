@@ -128,18 +128,28 @@ destructive install authorization
 node identity inputs such as hostname and SSH public keys
 artifact references and digests
 extra non-root data disk requests
-configuration in known Katl domains, using native syntax where useful
 ```
+
+The v0 install manifest should stay minimal: metadata name, hostname, `katl`
+SSH authorized keys, target root disk, destructive install guard, runtime
+artifacts, optional sysext artifacts, and extra non-root data disks. Extra disks
+remain in scope because they exercise real install/runtime disk handling.
 
 Users do not supply:
 
 ```text
+node matching selectors or hardware inventory policy
+metadata labels or user-chosen generation IDs
 root disk partition table
 root slot sizes
 root or state filesystem choices
 host account definitions
 sudo, PAM, passwd, shadow, or sysusers policy
 machine-id values or machine-id policy
+installer SSH override policy
+artifact trust-root or signing policy in v0
+bootloader, loader entry, or kernel argument policy
+extra disk mount options
 prebuilt confext artifacts in the default path
 arbitrary `/etc` file paths
 Kubernetes-generated mutable state under /etc/kubernetes
@@ -152,8 +162,8 @@ native `.network`, `.netdev`, and `.link` content, but Katl owns the destination
 under `/etc/systemd/network/` and owns the apply behavior with
 `systemd-networkd`/`networkctl`.
 
-Initial domains should be limited to things required to install and operate a
-kubeadm-ready node:
+Known configuration domains should be added only when implementation work needs
+them. The first likely additions for kubeadm-readiness are:
 
 ```text
 node identity and hostname
