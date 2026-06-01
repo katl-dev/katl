@@ -51,7 +51,27 @@ if ! image_exists; then
 fi
 
 if [[ $# -eq 0 ]]; then
-    set -- -f build
+    set -- --profile installer-image -f build
+else
+    case "$1" in
+        build-installer)
+            shift
+            set -- --profile installer-image -f build "$@"
+            ;;
+        build-runtime)
+            shift
+            set -- --profile runtime -f build "$@"
+            ;;
+        installer-image | runtime)
+            profile="$1"
+            shift
+            if [[ $# -eq 0 ]]; then
+                set -- --profile "$profile" -f build
+            else
+                set -- --profile "$profile" "$@"
+            fi
+            ;;
+    esac
 fi
 
 run_flags=(
@@ -72,6 +92,7 @@ if [[ -t 0 && -t 1 ]]; then
     run_flags+=(--interactive --tty)
 fi
 
+# shellcheck disable=SC2016
 "$runtime" "${run_flags[@]}" "$image" bash -lc '
     set -uo pipefail
     mkosi "$@"
