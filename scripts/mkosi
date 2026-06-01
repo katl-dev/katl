@@ -2,13 +2,14 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go}"
+image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
 mkosi_env=(--environment "KATL_BUILD_COMMIT=$build_commit")
 if [[ -n "${KATL_VERSION:-}" ]]; then
     mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
 fi
+emit_runtime_artifact=0
 
 if [[ -z "$runtime" ]]; then
     if command -v podman >/dev/null 2>&1; then
@@ -65,6 +66,7 @@ else
             ;;
         build-runtime)
             shift
+            emit_runtime_artifact=1
             set -- --profile runtime -f build "$@"
             ;;
         installer-image | runtime)
@@ -87,6 +89,8 @@ run_flags=(
     --workdir /work
     --env "HOST_UID=$(id -u)"
     --env "HOST_GID=$(id -g)"
+    --env "KATL_BUILD_COMMIT=$build_commit"
+    --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
 )
 
 if [[ "$runtime" == podman ]]; then
@@ -102,6 +106,42 @@ fi
     set -uo pipefail
     mkosi "$@"
     status=$?
+    if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
+        root=build/mkosi/katl-runtime-root
+        artifact=build/mkosi/katl-runtime-root.squashfs
+        if [[ ! -d "$root" ]]; then
+            echo "error: runtime root directory not found: $root" >&2
+            status=1
+        elif ! command -v mksquashfs >/dev/null 2>&1; then
+            echo "error: mksquashfs is required to package the runtime root" >&2
+            status=1
+        else
+            rm -f "$artifact" "$artifact.sha256" "$artifact.json"
+            if ! mksquashfs "$root" "$artifact" -noappend -all-root -comp zstd; then
+                status=1
+            else
+                size=$(stat -c %s "$artifact")
+                sha256=$(sha256sum "$artifact" | awk "{print \$1}")
+                created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                arch=$(uname -m)
+                printf "%s  %s\n" "$sha256" "$(basename "$artifact")" > "$artifact.sha256"
+                cat > "$artifact.json" <<EOF
+{
+  "name": "runtime-root",
+  "kind": "runtime-root",
+  "format": "squashfs",
+  "path": "$(basename "$artifact")",
+  "sizeBytes": $size,
+  "sha256": "$sha256",
+  "compression": "zstd",
+  "generation": "${KATL_BUILD_COMMIT:-unknown}",
+  "architecture": "$arch",
+  "created": "$created"
+}
+EOF
+            fi
+        fi
+    fi
     if [[ -d build ]]; then
         chown -R "$HOST_UID:$HOST_GID" build || true
     fi

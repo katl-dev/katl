@@ -16,6 +16,7 @@ RUN dnf5 -y install \
         opensc \
         openssl \
         rpm \
+        squashfs-tools \
         systemd \
         systemd-boot-unsigned \
         systemd-ukify \
