@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact="${1:-build/mkosi/katl-kubernetes.raw}"
+metadata="${artifact}.json"
+checksum="${artifact}.sha256"
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+json_has() {
+    grep -Fq "$1" "$metadata" || fail "metadata missing $1"
+}
+
+has_path() {
+    local path="$1"
+    local output
+    output="$(dump.erofs --path "$path" "$part" 2>&1)" || fail "inspect $path failed"
+    if grep -Fq "read inode failed" <<<"$output"; then
+        fail "missing sysext path: $path"
+    fi
+}
+
+misses_path() {
+    local path="$1"
+    local output
+    output="$(dump.erofs --path "$path" "$part" 2>&1)" || fail "inspect $path failed"
+    if ! grep -Fq "read inode failed" <<<"$output"; then
+        fail "unexpected sysext path: $path"
+    fi
+}
+
+need awk
+need dd
+need dump.erofs
+need fdisk
+need fsck.erofs
+need grep
+need sha256sum
+need stat
+
+[[ -f "$artifact" ]] || fail "artifact not found: $artifact"
+[[ -f "$metadata" ]] || fail "metadata not found: $metadata"
+[[ -f "$checksum" ]] || fail "checksum not found: $checksum"
+
+(cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
+
+size="$(stat -c %s "$artifact")"
+sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+json_has '"name": "kubernetes"'
+json_has '"kind": "sysext"'
+json_has '"format": "sysext"'
+json_has '"payloadVersion": "v1.34"'
+json_has '"runtimeInterface": "katl-runtime-v0"'
+json_has '"compatibleRuntime"'
+json_has "\"sizeBytes\": $size"
+json_has "\"sha256\": \"$sha256\""
+
+read -r start sectors < <(fdisk -l "$artifact" | awk -v name="$(basename "$artifact")" '$1 ~ name "1$" {print $2, $4; exit}')
+[[ -n "${start:-}" && -n "${sectors:-}" ]] || fail "root partition not found in $artifact"
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+part="$tmpdir/katl-kubernetes.erofs"
+dd if="$artifact" of="$part" bs=512 skip="$start" count="$sectors" status=none
+fsck.erofs "$part"
+
+for path in \
+    /usr/bin/kubeadm \
+    /usr/bin/kubectl \
+    /usr/bin/kubelet \
+    /usr/bin/crictl \
+    /usr/bin/conntrack \
+    /usr/bin/ethtool \
+    /usr/bin/socat \
+    /usr/bin/iptables-nft
+do
+    has_path "$path"
+done
+
+release="$(dump.erofs --cat --path /usr/lib/extension-release.d/extension-release.katl-kubernetes "$part" 2>&1)"
+grep -Fq "ID=fedora" <<<"$release" || fail "extension-release missing ID=fedora"
+grep -Fq "VERSION_ID=44" <<<"$release" || fail "extension-release missing VERSION_ID=44"
+grep -Fq "SYSEXT_ID=katl-kubernetes" <<<"$release" || fail "extension-release missing SYSEXT_ID"
+grep -Fq "ARCHITECTURE=x86-64" <<<"$release" || fail "extension-release missing architecture"
+
+for path in \
+    /etc/yum.repos.d/kubernetes.repo \
+    /usr/bin/bash \
+    /usr/bin/helm \
+    /usr/bin/flux \
+    /usr/bin/cilium \
+    /usr/bin/rook \
+    /usr/bin/coredns
+do
+    misses_path "$path"
+done
+
+echo "ok: $artifact"
