@@ -9,6 +9,7 @@ RUN dnf5 -y install \
         e2fsprogs \
         findutils \
         git-core \
+        golang \
         kmod \
         mkosi \
         mtools \

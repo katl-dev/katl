@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44}"
+image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 
 if [[ -z "$runtime" ]]; then

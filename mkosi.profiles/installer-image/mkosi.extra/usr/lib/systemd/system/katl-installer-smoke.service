@@ -1,0 +1,12 @@
+[Unit]
+Description=Katl installer smoke signal
+DefaultDependencies=no
+ConditionPathExists=/etc/initrd-release
+Before=initrd.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/katlos-install --list-states
+ExecStart=/usr/bin/printf 'Katl installer ready\n'
+StandardOutput=journal+console
+StandardError=journal+console

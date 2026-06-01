@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+builddir="${BUILDDIR:-/tmp}"
+repo="${SRCDIR:-}"
+
+mkdir -p "$DESTDIR/usr/bin"
+
+if [[ ! -f "$repo/go.mod" && -f /work/go.mod ]]; then
+    repo=/work
+fi
+
+if [[ ! -f "$repo/go.mod" ]]; then
+    echo "error: could not find repository root for katlos-install build" >&2
+    exit 1
+fi
+
+cd "$repo"
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="$builddir/go-mod" \
+go build -trimpath -buildvcs=false -o "$DESTDIR/usr/bin/katlos-install" ./cmd/katlos-install
