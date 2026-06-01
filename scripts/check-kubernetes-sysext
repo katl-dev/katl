@@ -5,6 +5,15 @@ artifact="${1:-build/mkosi/katl-kubernetes.raw}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
 runtime_root="${KATL_RUNTIME_ROOT:-build/mkosi/katl-runtime-root}"
+kube_manifest="${KATL_KUBERNETES_MANIFEST:-mkosi.profiles/kubernetes-sysext/kubernetes.env}"
+
+if [[ ! -f "$kube_manifest" ]]; then
+    echo "error: Kubernetes manifest not found: $kube_manifest" >&2
+    exit 1
+fi
+
+# shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
+source "$kube_manifest"
 
 fail() {
     echo "error: $*" >&2
@@ -59,7 +68,16 @@ sha256="$(sha256sum "$artifact" | awk '{print $1}')"
 json_has '"name": "kubernetes"'
 json_has '"kind": "sysext"'
 json_has '"format": "sysext"'
-json_has '"payloadVersion": "v1.34"'
+json_has "\"payloadVersion\": \"$KATL_KUBERNETES_MINOR\""
+json_has '"sourceRepo"'
+json_has "\"id\": \"$KATL_KUBERNETES_REPO_ID\""
+json_has "\"baseURL\": \"$KATL_KUBERNETES_REPO_BASEURL\""
+json_has "\"minor\": \"$KATL_KUBERNETES_MINOR\""
+json_has '"packageVersions"'
+json_has "\"kubeadm\": \"$KATL_KUBERNETES_KUBEADM_VERSION\""
+json_has "\"kubelet\": \"$KATL_KUBERNETES_KUBELET_VERSION\""
+json_has "\"kubectl\": \"$KATL_KUBERNETES_KUBECTL_VERSION\""
+json_has "\"cri-tools\": \"$KATL_KUBERNETES_CRITOOLS_VERSION\""
 json_has '"runtimeInterface": "katl-runtime-1"'
 json_has '"compatibleRuntime"'
 json_has "\"sizeBytes\": $size"

@@ -5,6 +5,9 @@ repo_root="$(git rev-parse --show-toplevel)"
 image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
+kube_manifest="$repo_root/mkosi.profiles/kubernetes-sysext/kubernetes.env"
+# shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
+source "$kube_manifest"
 mkosi_env=(--environment "KATL_BUILD_COMMIT=$build_commit")
 if [[ -n "${KATL_VERSION:-}" ]]; then
     mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
@@ -73,6 +76,15 @@ else
         build-kubernetes-sysext)
             shift
             emit_kubernetes_sysext=1
+            repo_file="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.sandbox/etc/yum.repos.d/kubernetes.repo"
+            grep -Fxq "baseurl=$KATL_KUBERNETES_REPO_BASEURL" "$repo_file" || {
+                echo "error: Kubernetes repo file does not match $kube_manifest" >&2
+                exit 1
+            }
+            grep -Fxq "gpgkey=$KATL_KUBERNETES_REPO_GPGKEY" "$repo_file" || {
+                echo "error: Kubernetes repo key does not match $kube_manifest" >&2
+                exit 1
+            }
             set -- --profile kubernetes-sysext -f build "$@"
             ;;
         installer-image | runtime)
@@ -98,6 +110,13 @@ run_flags=(
     --env "KATL_BUILD_COMMIT=$build_commit"
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
     --env "KATL_EMIT_KUBERNETES_SYSEXT=$emit_kubernetes_sysext"
+    --env "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR"
+    --env "KATL_KUBERNETES_REPO_ID=$KATL_KUBERNETES_REPO_ID"
+    --env "KATL_KUBERNETES_REPO_BASEURL=$KATL_KUBERNETES_REPO_BASEURL"
+    --env "KATL_KUBERNETES_KUBEADM_VERSION=$KATL_KUBERNETES_KUBEADM_VERSION"
+    --env "KATL_KUBERNETES_KUBELET_VERSION=$KATL_KUBERNETES_KUBELET_VERSION"
+    --env "KATL_KUBERNETES_KUBECTL_VERSION=$KATL_KUBERNETES_KUBECTL_VERSION"
+    --env "KATL_KUBERNETES_CRITOOLS_VERSION=$KATL_KUBERNETES_CRITOOLS_VERSION"
 )
 
 if [[ "$runtime" == podman ]]; then
@@ -111,8 +130,31 @@ fi
 # shellcheck disable=SC2016
 "$runtime" "${run_flags[@]}" "$image" bash -lc '
     set -uo pipefail
-    mkosi "$@"
-    status=$?
+    log=$(mktemp)
+    trap "rm -f \"$log\"" EXIT
+    mkosi "$@" 2>&1 | tee "$log"
+    status=${PIPESTATUS[0]}
+    pkg_version() {
+        local package="$1"
+        local want_repo="$2"
+        local name repo version
+        while read -r name _ version repo _; do
+            if [[ "$name" == "$package" ]]; then
+                break
+            fi
+            repo=
+            version=
+        done < "$log"
+        if [[ -z "${version:-}" ]]; then
+            echo "error: could not determine resolved version for $package" >&2
+            return 1
+        fi
+        if [[ "$repo" != "$want_repo" ]]; then
+            echo "error: $package resolved from $repo, want $want_repo" >&2
+            return 1
+        fi
+        printf "%s" "$version"
+    }
     if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
         root=build/mkosi/katl-runtime-root
         artifact=build/mkosi/katl-runtime-root.squashfs
@@ -158,6 +200,13 @@ EOF
             echo "error: Kubernetes sysext artifact not found: $artifact" >&2
             status=1
         else
+            kubeadm_version=$(pkg_version kubeadm "${KATL_KUBERNETES_REPO_ID:-kubernetes}") || status=1
+            kubelet_version=$(pkg_version kubelet "${KATL_KUBERNETES_REPO_ID:-kubernetes}") || status=1
+            kubectl_version=$(pkg_version kubectl "${KATL_KUBERNETES_REPO_ID:-kubernetes}") || status=1
+            critools_version=$(pkg_version cri-tools "${KATL_KUBERNETES_REPO_ID:-kubernetes}") || status=1
+            if [[ "$status" -ne 0 ]]; then
+                exit "$status"
+            fi
             if [[ -f "$runtime_meta" ]]; then
                 runtime_sha=$(sed -n "s/.*\"sha256\": \"\\([^\"]*\\)\".*/\\1/p" "$runtime_meta" | head -n 1)
             fi
@@ -175,8 +224,19 @@ EOF
   "sizeBytes": $size,
   "sha256": "$sha256",
   "version": "${KATL_BUILD_COMMIT:-unknown}",
-  "payloadVersion": "v1.34",
+  "payloadVersion": "${KATL_KUBERNETES_MINOR:-v1.34}",
   "architecture": "$arch",
+  "sourceRepo": {
+    "id": "${KATL_KUBERNETES_REPO_ID:-kubernetes}",
+    "baseURL": "${KATL_KUBERNETES_REPO_BASEURL:-}",
+    "minor": "${KATL_KUBERNETES_MINOR:-v1.34}"
+  },
+  "packageVersions": {
+    "kubeadm": "$kubeadm_version",
+    "kubelet": "$kubelet_version",
+    "kubectl": "$kubectl_version",
+    "cri-tools": "$critools_version"
+  },
   "runtimeInterface": "katl-runtime-1",
   "compatibleRuntime": {
     "interface": "katl-runtime-1",

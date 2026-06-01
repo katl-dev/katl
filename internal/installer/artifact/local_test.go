@@ -66,6 +66,17 @@ func TestReadSysext(t *testing.T) {
   "version": "abc123",
   "payloadVersion": "v1.34",
   "architecture": "x86_64",
+  "sourceRepo": {
+    "id": "kubernetes",
+    "baseURL": "https://pkgs.k8s.io/core:/stable:/v1.34/rpm/",
+    "minor": "v1.34"
+  },
+  "packageVersions": {
+    "kubeadm": "0:1.34.8-150500.1.1",
+    "kubelet": "0:1.34.8-150500.1.1",
+    "kubectl": "0:1.34.8-150500.1.1",
+    "cri-tools": "0:1.34.0-150500.1.1"
+  },
   "runtimeInterface": "katl-runtime-1",
   "compatibleRuntime": {
     "interface": "katl-runtime-1",
@@ -87,5 +98,11 @@ func TestReadSysext(t *testing.T) {
 	}
 	if meta.CompatibleRuntime == nil || meta.CompatibleRuntime.Interface != "katl-runtime-1" {
 		t.Fatalf("compatible runtime = %#v", meta.CompatibleRuntime)
+	}
+	if meta.SourceRepo == nil || meta.SourceRepo.ID != "kubernetes" {
+		t.Fatalf("source repo = %#v", meta.SourceRepo)
+	}
+	if meta.PackageVersions["kubeadm"] != "0:1.34.8-150500.1.1" {
+		t.Fatalf("package versions = %#v", meta.PackageVersions)
 	}
 }

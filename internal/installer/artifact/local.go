@@ -8,20 +8,28 @@ import (
 )
 
 type LocalMeta struct {
-	Name              string       `json:"name"`
-	Kind              ArtifactKind `json:"kind"`
-	Format            string       `json:"format"`
-	Path              string       `json:"path"`
-	SizeBytes         int64        `json:"sizeBytes"`
-	SHA256            string       `json:"sha256"`
-	Compression       string       `json:"compression,omitempty"`
-	Generation        string       `json:"generation,omitempty"`
-	Version           string       `json:"version,omitempty"`
-	PayloadVersion    string       `json:"payloadVersion,omitempty"`
-	Architecture      string       `json:"architecture"`
-	RuntimeInterface  string       `json:"runtimeInterface,omitempty"`
-	CompatibleRuntime *Compat      `json:"compatibleRuntime,omitempty"`
-	Created           string       `json:"created"`
+	Name              string            `json:"name"`
+	Kind              ArtifactKind      `json:"kind"`
+	Format            string            `json:"format"`
+	Path              string            `json:"path"`
+	SizeBytes         int64             `json:"sizeBytes"`
+	SHA256            string            `json:"sha256"`
+	Compression       string            `json:"compression,omitempty"`
+	Generation        string            `json:"generation,omitempty"`
+	Version           string            `json:"version,omitempty"`
+	PayloadVersion    string            `json:"payloadVersion,omitempty"`
+	Architecture      string            `json:"architecture"`
+	SourceRepo        *SourceRepo       `json:"sourceRepo,omitempty"`
+	PackageVersions   map[string]string `json:"packageVersions,omitempty"`
+	RuntimeInterface  string            `json:"runtimeInterface,omitempty"`
+	CompatibleRuntime *Compat           `json:"compatibleRuntime,omitempty"`
+	Created           string            `json:"created"`
+}
+
+type SourceRepo struct {
+	ID      string `json:"id"`
+	BaseURL string `json:"baseURL"`
+	Minor   string `json:"minor"`
 }
 
 type Compat struct {
