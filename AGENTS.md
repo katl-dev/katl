@@ -15,7 +15,7 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 
 ## Scaffolding Boundary
 
-- Early milestones should prove one small build, boot, or test loop at a time before expanding scope.
+- Early work should prove one small build, boot, or test loop at a time before expanding scope.
 - Build paths should use `scripts/mkosi` or an equivalent thin container wrapper around mkosi.
 - Boot paths should use a thin direct QEMU script or `mkosi vm` when adequate. Do not add a Go VM runner unless the user explicitly asks for it or the wrapper has meaningful state/parsing that needs tests.
 - The first smoke check may be a simple timeout plus serial-log match for `Katl hello`.
@@ -49,8 +49,10 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 - Review `git status --short` before editing, staging, or committing.
 - Only stage and commit files that are part of the current task. Do not sweep unrelated local changes into a commit.
 - Prefer explicit path staging, for example `git add AGENTS.md docs/internal/initial-design.md`.
-- Use `git commit-wrapped` for commits so commit messages go through the project wrapper.
-- Write commit messages with a concise subject and a body. The body should briefly describe what changed and, when it is not obvious, why the change was made.
+- Agents must use `git commit-wrapped` for commits and must supply both a title and a body.
+- Commit titles must use the `area: summary` shape expected by `git commit-wrapped`; the summary phrase after `area:` must complete the sentence "When merged, this change will ...".
+- Commit bodies must be self-contained and concise. Describe what changed in plain English, and include the reason or context when it is not obvious from the diff. Follow the Linux kernel commit-log style: make the body useful to a future reader of permanent project history, not just to the current reviewer.
+- Do not create subject-only commits. If a change is too small to explain in one short body paragraph, say exactly what changed and why it is intentionally small.
 - Do not rewrite history, reset, or discard user changes unless the user explicitly asks for that operation.
 - If unrelated work is present in the tree, leave it alone and mention it in the handoff if it affects verification.
 
