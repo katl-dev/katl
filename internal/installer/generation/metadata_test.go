@@ -233,6 +233,90 @@ func TestCompatReject(t *testing.T) {
 	}
 }
 
+func TestABFixtures(t *testing.T) {
+	first := abRecord(t, "2026.06.01-001", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.34.8", time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC))
+	if first.BootState != "pending" || first.HealthState != "unknown" {
+		t.Fatalf("first state = %s/%s, want pending/unknown", first.BootState, first.HealthState)
+	}
+	if first.Root.Slot != "root-a" || !strings.Contains(strings.Join(first.KernelCommandLine, " "), first.Root.PartitionUUID) {
+		t.Fatalf("first boot selection = %#v", first)
+	}
+
+	active := markGood(first)
+	candidate := abRecord(t, "2026.06.01-002", "root-b", "66666666-7777-8888-9999-000000000000", "0.2.0", "v1.35.1", time.Date(2026, 6, 2, 8, 0, 0, 0, time.UTC))
+	candidate.BootState = "trying"
+	if candidate.Root.Slot != "root-b" || !strings.Contains(candidate.Boot.UKIPath, candidate.GenerationID) {
+		t.Fatalf("candidate boot selection = %#v", candidate)
+	}
+
+	booted := markGood(candidate)
+	if booted.BootState != "good" || booted.HealthState != "healthy" {
+		t.Fatalf("booted state = %s/%s, want good/healthy", booted.BootState, booted.HealthState)
+	}
+
+	failed := candidate
+	failed.BootState = "failed"
+	failed.HealthState = "unhealthy"
+	selected, ok := selectRollback([]Record{active, failed}, failed.GenerationID)
+	if !ok {
+		t.Fatal("selectRollback() ok = false, want previous known-good generation")
+	}
+	if selected.GenerationID != active.GenerationID || selected.Root.Slot != "root-a" || selected.Confexts[0].Path == failed.Confexts[0].Path {
+		t.Fatalf("rollback selection = %#v, want active root-a generation", selected)
+	}
+}
+
+func abRecord(t *testing.T, id string, slot string, uuid string, version string, kube string, created time.Time) Record {
+	t.Helper()
+	request := validFirstInstallRequest(t.TempDir())
+	request.GenerationID = id
+	request.RuntimeVersion = version
+	request.RootSlot = slot
+	request.RootPartitionUUID = uuid
+	request.UKIPath = "/efi/EFI/Linux/katl-" + id + ".efi"
+	request.KernelCommandLine = []string{"root=PARTUUID=" + uuid, "rootfstype=squashfs", "ro"}
+	request.GeneratedConfext.Path = filepath.Join("/var/lib/katl/generations", id, "confext")
+	request.Sysexts = []ExtensionRef{{
+		Name:            "kubernetes",
+		Path:            filepath.Join("/var/lib/katl/generations", id, "sysext", "kubernetes.raw"),
+		ActivationPath:  "/run/extensions/kubernetes.raw",
+		SHA256:          strings.Repeat("b", 64),
+		ArtifactVersion: "k8s-" + kube,
+		PayloadVersion:  kube,
+		Architecture:    "x86_64",
+		Compatibility: ExtensionCompatibility{
+			RuntimeInterfaces: []string{"katl-runtime-1"},
+		},
+	}}
+	request.CreatedAt = created
+	record, err := NewFirstInstallRecord(request)
+	if err != nil {
+		t.Fatalf("NewFirstInstallRecord() error = %v", err)
+	}
+	return record
+}
+
+func markGood(record Record) Record {
+	record.BootState = "good"
+	record.HealthState = "healthy"
+	return record
+}
+
+func selectRollback(records []Record, failedID string) (Record, bool) {
+	var selected Record
+	ok := false
+	for _, record := range records {
+		if record.GenerationID == failedID || record.HealthState != "healthy" {
+			continue
+		}
+		if !ok || record.CreatedAt.After(selected.CreatedAt) {
+			selected = record
+			ok = true
+		}
+	}
+	return selected, ok
+}
+
 func validFirstInstallRequest(root string) FirstInstallRequest {
 	return FirstInstallRequest{
 		GenerationID:          "2026.05.31-001",
