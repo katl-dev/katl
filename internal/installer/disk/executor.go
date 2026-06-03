@@ -10,13 +10,17 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 }
 
+type RootSlotInstaller func(context.Context, RootSlotInstallRequest) (RootSlotInstallResult, error)
+
 type DiskExecutor struct {
 	Commands           CommandRunner
+	InstallRootSlot    RootSlotInstaller
 	RecordStateMounted func(context.Context) error
 }
 
 type DiskExecutionRequest struct {
 	Plan              DiskLayoutPlan
+	RootSlotInstall   *RootSlotInstallRequest
 	AllowDestructive  bool
 	DryRun            bool
 	TargetMountPrefix string
@@ -50,7 +54,23 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 		return DiskExecutionResult{}, fmt.Errorf("command runner is required")
 	}
 
+	installRootSlot := e.InstallRootSlot
+	if installRootSlot == nil {
+		installRootSlot = func(ctx context.Context, request RootSlotInstallRequest) (RootSlotInstallResult, error) {
+			return WriteRootSlot(request)
+		}
+	}
+
 	for _, operation := range operations {
+		if isRootWrite(operation) && request.RootSlotInstall != nil {
+			if err := validateRootWrite(operation, request.RootSlotInstall.Plan); err != nil {
+				return DiskExecutionResult{}, err
+			}
+			if _, err := installRootSlot(ctx, *request.RootSlotInstall); err != nil {
+				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
+			}
+			continue
+		}
 		if err := e.Commands.Run(ctx, operation.Command, operation.Args...); err != nil {
 			return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 		}
@@ -77,7 +97,9 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 	for _, partition := range plan.Partitions {
 		switch partition.Name {
 		case "root-a", "root-b":
-			operations = append(operations, DiskOperation{Name: "write-" + partition.Name, Command: "katlos-write-root-slot", Args: []string{partition.GPTLabel}, Destructive: true})
+			if RootSlot(partition.Name) == plan.Boot.RootSlot {
+				operations = append(operations, DiskOperation{Name: "write-" + partition.Name, Command: "katlos-write-root-slot", Args: []string{partition.GPTLabel}, Destructive: true})
+			}
 		default:
 			operations = append(operations, DiskOperation{Name: "format-" + partition.Name, Command: "mkfs." + partition.Filesystem, Args: []string{"-L", partition.GPTLabel}, Destructive: true})
 		}
@@ -129,6 +151,17 @@ func ValidateAppliedLayout(facts HardwareFacts, plan DiskLayoutPlan) error {
 		}
 	}
 
+	return nil
+}
+
+func isRootWrite(operation DiskOperation) bool {
+	return operation.Name == "write-root-a" || operation.Name == "write-root-b"
+}
+
+func validateRootWrite(operation DiskOperation, plan RootSlotWritePlan) error {
+	if len(operation.Args) != 1 || operation.Args[0] != plan.TargetPartition.GPTLabel {
+		return fmt.Errorf("%s target label does not match root slot plan", operation.Name)
+	}
 	return nil
 }
 

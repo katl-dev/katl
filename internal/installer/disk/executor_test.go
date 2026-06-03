@@ -1,8 +1,10 @@
 package disk
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +26,9 @@ func TestDiskExecutorDryRunOutput(t *testing.T) {
 	}
 	if result.Operations[0].Name != "wipe-target-signatures" || result.Operations[0].Command != "wipefs" {
 		t.Fatalf("first operation = %#v", result.Operations[0])
+	}
+	if countOps(result.Operations, "write-root-a") != 1 || countOps(result.Operations, "write-root-b") != 0 {
+		t.Fatalf("root write operations = %#v", result.Operations)
 	}
 }
 
@@ -58,6 +63,82 @@ func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	}
 	if recorded != 1 {
 		t.Fatalf("state mount checkpoint count = %d, want 1", recorded)
+	}
+}
+
+func TestDiskExecutorWritesRootSlot(t *testing.T) {
+	artifact := []byte("runtime-root")
+	target := newMemSlot(len(artifact) + 4096)
+	commands := &NoopCommandRunner{}
+	installed := 0
+	recorded := 0
+
+	_, err := (DiskExecutor{
+		Commands: commands,
+		InstallRootSlot: func(ctx context.Context, request RootSlotInstallRequest) (RootSlotInstallResult, error) {
+			installed++
+			if request.Plan.Slot != RootSlotA || request.Plan.TargetPartition.GPTLabel != GPTLabelRootA {
+				t.Fatalf("root slot plan = %#v", request.Plan)
+			}
+			return WriteRootSlot(request)
+		},
+		RecordStateMounted: func(context.Context) error {
+			recorded++
+			return nil
+		},
+	}).Execute(context.Background(), DiskExecutionRequest{
+		Plan:             executorPlan(),
+		RootSlotInstall:  rootInstall(artifact, target),
+		AllowDestructive: true,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if installed != 1 {
+		t.Fatalf("root slot installs = %d, want 1", installed)
+	}
+	if recorded != 1 {
+		t.Fatalf("state mount checkpoint count = %d, want 1", recorded)
+	}
+	if countCalls(commands.Calls, "katlos-write-root-slot") != 0 {
+		t.Fatalf("root slot external command calls = %#v", commands.Calls)
+	}
+	if got := string(target.data[:len(artifact)]); got != string(artifact) {
+		t.Fatalf("written bytes = %q, want artifact", got)
+	}
+	if !target.synced {
+		t.Fatal("target was not synced")
+	}
+}
+
+func TestDiskExecutorStopsOnRootSlotFailure(t *testing.T) {
+	artifact := []byte("runtime-root")
+	target := newMemSlot(len(artifact))
+	recorded := 0
+
+	_, err := (DiskExecutor{
+		Commands: &NoopCommandRunner{},
+		RecordStateMounted: func(context.Context) error {
+			recorded++
+			return nil
+		},
+	}).Execute(context.Background(), DiskExecutionRequest{
+		Plan: executorPlan(),
+		RootSlotInstall: &RootSlotInstallRequest{
+			Plan:     writePlan([]byte("expected")),
+			Artifact: bytes.NewReader([]byte("corrupt!")),
+			Target:   target,
+		},
+		AllowDestructive: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "write-root-a") || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("Execute() error = %v, want write-root-a digest failure", err)
+	}
+	if recorded != 0 {
+		t.Fatalf("state mount checkpoint count = %d, want 0", recorded)
+	}
+	if target.writes != 0 {
+		t.Fatalf("target writes = %d, want 0", target.writes)
 	}
 }
 
@@ -96,8 +177,8 @@ func executorPlan() DiskLayoutPlan {
 		TargetDiskPath: "/dev/nvme0n1",
 		Partitions: []PartitionPlan{
 			{Name: "esp", GPTLabel: GPTLabelESP, Filesystem: "vfat", MountPath: "/efi"},
-			{Name: "root-a", GPTLabel: GPTLabelRootA, Filesystem: "squashfs", MountPath: "/"},
-			{Name: "root-b", GPTLabel: GPTLabelRootB, Filesystem: "squashfs"},
+			{Name: "root-a", GPTLabel: GPTLabelRootA, Filesystem: "squashfs", MountPath: "/", SizeMiB: 1024},
+			{Name: "root-b", GPTLabel: GPTLabelRootB, Filesystem: "squashfs", SizeMiB: 1024},
 			{Name: "state", GPTLabel: GPTLabelState, Filesystem: "ext4", MountPath: "/var"},
 		},
 		ExtraMounts: []ExtraDiskPlan{
@@ -105,6 +186,34 @@ func executorPlan() DiskLayoutPlan {
 		},
 		Boot: BootTargetMetadata{RootSlot: RootSlotA, RootPartitionLabel: GPTLabelRootA},
 	}
+}
+
+func rootInstall(data []byte, target RootSlotDevice) *RootSlotInstallRequest {
+	return &RootSlotInstallRequest{
+		Plan:     writePlan(data),
+		Artifact: bytes.NewReader(data),
+		Target:   target,
+	}
+}
+
+func countOps(operations []DiskOperation, name string) int {
+	count := 0
+	for _, operation := range operations {
+		if operation.Name == name {
+			count++
+		}
+	}
+	return count
+}
+
+func countCalls(calls []CommandCall, name string) int {
+	count := 0
+	for _, call := range calls {
+		if call.Name == name {
+			count++
+		}
+	}
+	return count
 }
 
 type NoopCommandRunner struct {

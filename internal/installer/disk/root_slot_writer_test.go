@@ -14,6 +14,7 @@ func TestWriteRootSlotOK(t *testing.T) {
 	artifact := []byte("runtime-root")
 	target := newMemSlot(len(artifact) + 4096)
 	copy(target.data[len(artifact):], []byte("trailing bytes stay outside digest"))
+	trailing := append([]byte(nil), target.data[len(artifact):]...)
 
 	result, err := WriteRootSlot(RootSlotInstallRequest{
 		Plan:     writePlan(artifact),
@@ -32,6 +33,9 @@ func TestWriteRootSlotOK(t *testing.T) {
 	}
 	if !target.synced {
 		t.Fatal("target was not synced")
+	}
+	if !bytes.Equal(target.data[len(artifact):], trailing) {
+		t.Fatalf("trailing bytes changed")
 	}
 }
 
