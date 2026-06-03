@@ -66,6 +66,9 @@ func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	if recorded != 1 {
 		t.Fatalf("state mount checkpoint count = %d, want 1", recorded)
 	}
+	if countCalls(commands.Calls, "bootctl") != 1 {
+		t.Fatalf("bootctl calls = %#v", commands.Calls)
+	}
 }
 
 func TestDiskExecutorRequiresRootSlotInstall(t *testing.T) {
@@ -128,6 +131,49 @@ func TestDiskExecutorWritesRootSlot(t *testing.T) {
 	}
 }
 
+func TestDiskExecutorInstallsBoot(t *testing.T) {
+	artifact := []byte("runtime-root")
+	commands := &NoopCommandRunner{}
+
+	result, err := (DiskExecutor{Commands: commands}).Execute(context.Background(), DiskExecutionRequest{
+		Plan:             executorPlan(),
+		RootSlotInstall:  rootInstall(artifact, newMemSlot(len(artifact))),
+		AllowDestructive: true,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Boot == nil {
+		t.Fatalf("boot result is nil")
+	}
+	if result.Boot.ESP.PartitionUUID == "" || result.Boot.RootPartitionUUID == "" {
+		t.Fatalf("boot result = %#v", result.Boot)
+	}
+	if countCalls(commands.Calls, "bootctl") != 1 {
+		t.Fatalf("bootctl calls = %#v", commands.Calls)
+	}
+}
+
+func TestDiskExecutorRejectsXBOOTLDR(t *testing.T) {
+	plan := executorPlan()
+	plan.Partitions = append(plan.Partitions[:1], append([]PartitionPlan{
+		{Name: "xbootldr", GPTLabel: GPTLabelXBOOTLDR, Filesystem: "ext4", MountPath: "/boot"},
+	}, plan.Partitions[1:]...)...)
+	commands := &NoopCommandRunner{}
+
+	_, err := (DiskExecutor{Commands: commands}).Execute(context.Background(), DiskExecutionRequest{
+		Plan:             plan,
+		RootSlotInstall:  rootInstall([]byte("runtime-root"), newMemSlot(len("runtime-root"))),
+		AllowDestructive: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "XBOOTLDR filesystem") {
+		t.Fatalf("Execute() error = %v, want XBOOTLDR filesystem failure", err)
+	}
+	if len(commands.Calls) != 0 {
+		t.Fatalf("command calls = %#v, want none", commands.Calls)
+	}
+}
+
 func TestDiskExecutorStopsOnRootSlotFailure(t *testing.T) {
 	artifact := []byte("runtime-root")
 	target := newMemSlot(len(artifact))
@@ -175,6 +221,7 @@ func TestValidateAppliedLayout(t *testing.T) {
 			},
 		},
 		Mounts: []MountFact{
+			{Source: "/dev/nvme0n1p1", Target: "/efi", Filesystem: "vfat"},
 			{Source: "/dev/nvme0n1p4", Target: "/var", Filesystem: "ext4"},
 			{Source: "/dev/sdb", Target: "/srv/data", Filesystem: "xfs"},
 		},
@@ -245,4 +292,17 @@ type CommandCall struct {
 func (r *NoopCommandRunner) Run(_ context.Context, name string, args ...string) error {
 	r.Calls = append(r.Calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
 	return nil
+}
+
+func (r *NoopCommandRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.Calls = append(r.Calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
+	if name == "blkid" {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "PARTLABEL=") {
+				label := strings.TrimPrefix(arg, "PARTLABEL=")
+				return []byte("uuid-" + strings.ToLower(label) + "\n"), nil
+			}
+		}
+	}
+	return []byte(""), nil
 }

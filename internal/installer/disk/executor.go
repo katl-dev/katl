@@ -15,6 +15,7 @@ type RootSlotInstaller func(context.Context, RootSlotInstallRequest) (RootSlotIn
 type DiskExecutor struct {
 	Commands           CommandRunner
 	InstallRootSlot    RootSlotInstaller
+	InstallBoot        BootInstaller
 	RootSlotState      SlotStore
 	RecordStateMounted func(context.Context) error
 }
@@ -31,6 +32,7 @@ type DiskExecutionRequest struct {
 type DiskExecutionResult struct {
 	Operations []DiskOperation
 	DryRun     bool
+	Boot       *BootResult
 }
 
 type DiskOperation struct {
@@ -43,6 +45,9 @@ type DiskOperation struct {
 var ErrDestructiveInstallNotAllowed = errors.New("destructive install is not allowed")
 
 func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest) (DiskExecutionResult, error) {
+	if err := checkBootPlan(request.Plan); err != nil {
+		return DiskExecutionResult{}, err
+	}
 	operations := BuildDiskOperations(request.Plan, request.TargetMountPrefix)
 	if hasDestructiveOperations(operations) && !request.AllowDestructive {
 		return DiskExecutionResult{}, ErrDestructiveInstallNotAllowed
@@ -62,7 +67,6 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 			return WriteRootSlot(request)
 		}
 	}
-
 	for _, operation := range operations {
 		if isRootWrite(operation) {
 			if request.RootSlotInstall == nil {
@@ -74,6 +78,27 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 			if _, err := runRootSlot(ctx, e.RootSlotState, *request.RootSlotInstall, request.RetryRootSlot, installRootSlot); err != nil {
 				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 			}
+			continue
+		}
+		if operation.Name == "install-systemd-boot" {
+			installBoot := e.InstallBoot
+			bootRequest := BootRequest{
+				Plan:              request.Plan,
+				TargetMountPrefix: request.TargetMountPrefix,
+			}
+			if installBoot == nil {
+				commands, ok := e.Commands.(OutputCommandRunner)
+				if !ok {
+					return DiskExecutionResult{}, fmt.Errorf("%s: boot command runner must support output", operation.Name)
+				}
+				bootRequest.Commands = commands
+				installBoot = InstallBoot
+			}
+			boot, err := installBoot(ctx, bootRequest)
+			if err != nil {
+				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
+			}
+			result.Boot = &boot
 			continue
 		}
 		if err := e.Commands.Run(ctx, operation.Command, operation.Args...); err != nil {
@@ -117,6 +142,10 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 		}
 	}
 
+	if _, ok := findPartitionByName(plan.Partitions, "esp"); ok {
+		operations = append(operations, DiskOperation{Name: "install-systemd-boot", Command: "bootctl", Args: []string{"install"}, Destructive: true})
+	}
+
 	for _, extra := range plan.ExtraMounts {
 		if extra.Wipe {
 			operations = append(operations, DiskOperation{Name: "wipe-extra-" + extra.Name, Command: "wipefs", Args: []string{"--all", extra.DevicePath}, Destructive: true})
@@ -148,6 +177,12 @@ func ValidateAppliedLayout(facts HardwareFacts, plan DiskLayoutPlan) error {
 	}
 	if !mountExists(facts.Mounts, "/var") {
 		return fmt.Errorf("state partition is not mounted at /var")
+	}
+	if !mountExists(facts.Mounts, "/efi") {
+		return fmt.Errorf("ESP partition is not mounted at /efi")
+	}
+	if _, ok := findPartitionByName(plan.Partitions, "xbootldr"); ok && !mountExists(facts.Mounts, "/boot") {
+		return fmt.Errorf("XBOOTLDR partition is not mounted at /boot")
 	}
 
 	for _, extra := range plan.ExtraMounts {
