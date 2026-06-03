@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"git.cbannister.xyz/chris/katl/internal/installer"
-	"git.cbannister.xyz/chris/katl/internal/installer/handoff"
+	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/handoff"
 )
 
 var (

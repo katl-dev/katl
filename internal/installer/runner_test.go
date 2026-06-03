@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.cbannister.xyz/chris/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/generation"
 )
 
 func TestDefaultPlanOrder(t *testing.T) {

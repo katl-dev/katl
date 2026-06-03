@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.cbannister.xyz/chris/katl/internal/installer/artifact"
+	"github.com/zariel/katl/internal/installer/artifact"
 )
 
 func TestRootWriteFirst(t *testing.T) {

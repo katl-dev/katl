@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"git.cbannister.xyz/chris/katl/internal/installer/generation"
-	"git.cbannister.xyz/chris/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/manifest"
 )
 
 type StepID string

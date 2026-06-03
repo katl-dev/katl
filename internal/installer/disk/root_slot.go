@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"git.cbannister.xyz/chris/katl/internal/installer/artifact"
+	"github.com/zariel/katl/internal/installer/artifact"
 )
 
 type RootSlotWriteRequest struct {

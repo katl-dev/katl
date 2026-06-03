@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"git.cbannister.xyz/chris/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer"
 )
 
 func TestVersion(t *testing.T) {

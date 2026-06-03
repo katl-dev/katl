@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"git.cbannister.xyz/chris/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/generation"
 )
 
 func TestESPCheck(t *testing.T) {

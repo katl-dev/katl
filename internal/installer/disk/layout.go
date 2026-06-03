@@ -5,7 +5,7 @@ import (
 	"path"
 	"strings"
 
-	"git.cbannister.xyz/chris/katl/internal/installer/discovery"
+	"github.com/zariel/katl/internal/installer/discovery"
 )
 
 const (

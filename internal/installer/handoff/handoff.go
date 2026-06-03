@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"git.cbannister.xyz/chris/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/manifest"
 )
 
 type HandoffState string

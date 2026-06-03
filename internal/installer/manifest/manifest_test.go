@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.cbannister.xyz/chris/katl/internal/installer/disk"
+	"github.com/zariel/katl/internal/installer/disk"
 )
 
 func TestDecodeAcceptsMinimal(t *testing.T) {

@@ -1,3 +1,3 @@
-module git.cbannister.xyz/chris/katl
+module github.com/zariel/katl
 
 go 1.26
