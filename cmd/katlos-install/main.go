@@ -37,6 +37,7 @@ func runManifest(ctx context.Context, manifestPath, stateDir string) error {
 	runner := installer.NewRunner(installer.PreseededManifestPlan(), &installer.Context{
 		ManifestPath: manifestPath,
 		StateDir:     stateDir,
+		TargetRoot:   "/mnt/target",
 		Commands:     installer.NewExecCommandRunner(),
 		Store:        installer.NewFileStateStore(stateDir),
 	})

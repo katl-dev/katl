@@ -42,6 +42,14 @@ file_has() {
     grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
 }
 
+root_locked() {
+    local output password
+    output="$(unsquashfs -cat "$artifact" etc/shadow)" || fail "read /etc/shadow failed"
+    password="$(awk -F: '$1 == "root" {print $2}' <<<"$output")"
+    [[ -n "$password" ]] || fail "/etc/shadow missing root entry"
+    [[ "$password" == \!* || "$password" == \** ]] || fail "root account is not locked"
+}
+
 need awk
 need grep
 need sha256sum
@@ -77,6 +85,7 @@ for path in \
     /usr/bin/networkctl \
     /usr/bin/resolvectl \
     /usr/bin/sshd \
+    /usr/bin/ssh-keygen \
     /usr/bin/containerd \
     /usr/bin/crun \
     /usr/lib/systemd/system/katl-runtime-boot-signal.service \
@@ -85,6 +94,7 @@ do
     has_path "$path"
 done
 
+root_locked
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime reached systemd userspace"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "StandardOutput=journal+console"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "SyslogIdentifier=katl-runtime-boot"

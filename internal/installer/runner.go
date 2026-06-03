@@ -3,6 +3,12 @@ package installer
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"git.cbannister.xyz/chris/katl/internal/installer/generation"
+	"git.cbannister.xyz/chris/katl/internal/installer/manifest"
 )
 
 type StepID string
@@ -30,11 +36,16 @@ const (
 )
 
 type Context struct {
-	ManifestPath string
-	StateDir     string
-	Commands     CommandRunner
-	Store        StateStore
-	Completed    []StepID
+	ManifestPath   string
+	StateDir       string
+	TargetRoot     string
+	BootRoot       string
+	Commands       CommandRunner
+	Store          StateStore
+	Manifest       manifest.Manifest
+	LoaderRecord   *generation.Record
+	IdentityRandom io.Reader
+	Completed      []StepID
 }
 
 type Step interface {
@@ -62,7 +73,7 @@ func NewPlan(options PlanOptions) Plan {
 	}
 
 	plan = append(plan,
-		stubStep{id: LoadManifest},
+		loadManifestStep{},
 		stubStep{id: SelectNode},
 		stubStep{id: CollectHardwareFacts},
 		stubStep{id: VerifyTrust},
@@ -74,7 +85,7 @@ func NewPlan(options PlanOptions) Plan {
 		stubStep{id: InstallRootSlot},
 		stubStep{id: InstallBootArtifacts},
 		stubStep{id: InstallExtensions},
-		stubStep{id: InstallSeed},
+		installSeedStep{},
 		stubStep{id: InstallMountUnits},
 		stubStep{id: WriteInstallRecord},
 		stubStep{id: VerifyTarget},
@@ -125,6 +136,72 @@ func (r Runner) Run(ctx context.Context) error {
 	return nil
 }
 
+type loadManifestStep struct{}
+
+func (loadManifestStep) ID() StepID {
+	return LoadManifest
+}
+
+func (loadManifestStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.ManifestPath == "" {
+		return fmt.Errorf("manifest path is required")
+	}
+	file, err := os.Open(install.ManifestPath)
+	if err != nil {
+		return fmt.Errorf("open manifest: %w", err)
+	}
+	defer file.Close()
+	decoded, err := manifest.Decode(file)
+	if err != nil {
+		return err
+	}
+	install.Manifest = decoded
+	return recordStep(ctx, install, LoadManifest)
+}
+
+type installSeedStep struct{}
+
+func (installSeedStep) ID() StepID {
+	return InstallSeed
+}
+
+func (installSeedStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.TargetRoot == "" {
+		return fmt.Errorf("target root is required")
+	}
+	request := generation.IdentityRequest{
+		AuthorizedKeys: install.Manifest.Node.Identity.SSH.AuthorizedKeys,
+		Random:         install.IdentityRandom,
+	}
+	if install.LoaderRecord != nil {
+		bootRoot := install.BootRoot
+		if bootRoot == "" {
+			bootRoot = filepath.Join(install.TargetRoot, "efi")
+		}
+		if _, err := generation.WriteInstallIdentity(generation.InstallIdentityRequest{
+			TargetRoot: install.TargetRoot,
+			BootRoot:   bootRoot,
+			Identity:   request,
+			Loader:     generation.LoaderRequest{Record: *install.LoaderRecord},
+		}); err != nil {
+			return err
+		}
+	} else if _, err := generation.WriteIdentity(install.TargetRoot, request); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, InstallSeed)
+}
+
 type stubStep struct {
 	id StepID
 }
@@ -139,10 +216,13 @@ func (s stubStep) Run(ctx context.Context, install *Context) error {
 		return ctx.Err()
 	default:
 	}
+	return recordStep(ctx, install, s.id)
+}
 
-	install.Completed = append(install.Completed, s.id)
+func recordStep(ctx context.Context, install *Context, id StepID) error {
+	install.Completed = append(install.Completed, id)
 	return install.Store.SaveCheckpoint(ctx, Checkpoint{
-		CurrentStep:    s.id,
+		CurrentStep:    id,
 		CompletedSteps: append([]StepID(nil), install.Completed...),
 	})
 }
