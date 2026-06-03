@@ -80,12 +80,16 @@ selected sysext and are activated through generation metadata.
 
 ## Generated Configuration Boundary
 
-Katl-generated configuration may provide kubeadm input under `/etc/katl`.
+Katl-generated configuration may provide kubeadm input under `/etc/katl` by
+rendering a selected `KubeadmConfig` object. The kubeadm config itself remains
+native kubeadm YAML in the user's config repository; Katl only owns the
+reference, validation, and render path.
+
 Examples:
 
 ```text
-/etc/katl/kubeadm-init.yaml
-/etc/katl/kubeadm-patches/
+/etc/katl/kubeadm/control-plane/config.yaml
+/etc/katl/kubeadm/control-plane/patches/
 ```
 
 Generated confext must not provide or overwrite kubeadm output:
@@ -108,14 +112,17 @@ Katl input file. It must not pre-seed certificates, static pod manifests, or
 admin kubeconfigs under `/etc/kubernetes`. A passing smoke proves kubeadm can
 create those files on the writable projection.
 
+The focused input API decision is recorded in
+`docs/internal/kubeadm-config-input-design.md`.
+
 ## kubeadm Init Configuration
 
-The first smoke should invoke kubeadm with a generated config file and explicit
-test-only add-on skips:
+The first smoke should invoke kubeadm with an installed named config file and
+explicit test-only add-on skips:
 
 ```text
 kubeadm init \
-  --config /etc/katl/kubeadm-init.yaml \
+  --config /etc/katl/kubeadm/control-plane/config.yaml \
   --skip-phases=addon/coredns,addon/kube-proxy
 ```
 
@@ -198,7 +205,8 @@ The implementation should grow in small gates:
 4. Verify `containerd.service` is active and `crictl info` can reach the CRI.
 5. Verify `kubeadm`, `kubelet`, `kubectl`, and `crictl` resolve from the
    selected Kubernetes sysext.
-6. Render or install `/etc/katl/kubeadm-init.yaml` for the test VM.
+6. Render or install `/etc/katl/kubeadm/control-plane/config.yaml` for the test
+   VM.
 7. Run `kubeadm init` with add-on phases skipped.
 8. Assert kubeadm output appeared under `/etc/kubernetes`.
 9. Assert the control-plane static pod manifests exist.

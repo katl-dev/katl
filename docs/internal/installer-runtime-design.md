@@ -863,7 +863,7 @@ Kubernetes sysext provides kubeadm, kubelet, kubectl, and closely related CLI
 selected generation metadata records the Kubernetes sysext artifact, digest,
   activation path, and compatibility metadata
 systemd-sysext activates only the selected generation's Kubernetes sysext
-generated confext renders kubeadm input under /etc/katl
+generated confext renders selected native kubeadm input under /etc/katl/kubeadm
 /etc/kubernetes is a writable bind mount backed by
   /var/lib/katl/kubernetes/etc-kubernetes
 containerd is running before the kubeadm-ready target
@@ -872,6 +872,10 @@ kubelet binary and service wiring are present, with final start/enable policy
 katl-kubeadm-ready.target is reached only after the required local prerequisites
   are active
 ```
+
+The kubeadm input API is a thin reference to native kubeadm YAML, not an
+init/join action embedded in node configuration. The focused decision is
+recorded in `docs/internal/kubeadm-config-input-design.md`.
 
 The Kubernetes sysext is a Katl artifact produced by mkosi from declared package
 inputs. In early development it can be built locally. Later CI can publish the

@@ -169,13 +169,19 @@ them. The first likely additions for kubeadm-readiness are:
 node identity and hostname
 katl SSH authorized keys
 networkd units
-kubeadm input files under /etc/katl
+kubeadm config references that render native kubeadm YAML under /etc/katl
 extra data disk mounts
 ```
 
 Additional domains should be added deliberately when users need them. They must
 define their render paths, validation rules, and runtime apply/restart behavior
 before becoming part of the user-facing configuration API.
+
+Kubeadm configuration is intentionally a thin reference to native kubeadm files,
+not YAML embedded as a string and not an init/join action. Node configuration
+selects a named kubeadm config, Katl validates and renders it under
+`/etc/katl/kubeadm/`, and an operator or test harness decides when to run
+`kubeadm init`, `kubeadm join`, or later kubeadm upgrade commands.
 
 ## Rejected Configuration Bootstrap
 
@@ -434,6 +440,9 @@ docs/internal/writable-state-layout.md
 
 docs/internal/etc-kubernetes-projection.md
   Persistent /etc/kubernetes projection.
+
+docs/internal/kubeadm-config-input-design.md
+  Native kubeadm config input API, validation boundary, and render paths.
 
 docs/internal/go-vm-test-harness-design.md
   Go-authored VM scenario harness for install, update, rollback, and

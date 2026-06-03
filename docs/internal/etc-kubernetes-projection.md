@@ -77,10 +77,10 @@ Kubeadm and kubelet own the projected subtree:
 /etc/kubernetes/manifests
 ```
 
-Katl-generated kubeadm input should live under `/etc/katl`, for example
-`/etc/katl/kubeadm-init.yaml` or `/etc/katl/kubeadm-join.yaml`, and kubeadm
-automation should call kubeadm with those config paths. Kubeadm output remains
-in projected `/etc/kubernetes`.
+Katl-generated kubeadm input should live under `/etc/katl/kubeadm/<name>/`, for
+example `/etc/katl/kubeadm/control-plane/config.yaml`. Operator-run bootstrap
+tools or test harnesses call kubeadm with those config paths. Kubeadm output
+remains in projected `/etc/kubernetes`.
 
 ## Deferred Work
 
