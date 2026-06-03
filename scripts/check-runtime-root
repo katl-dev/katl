@@ -34,6 +34,14 @@ misses_path() {
     fi
 }
 
+file_has() {
+    local path="${1#/}"
+    local pattern="$2"
+    local output
+    output="$(unsquashfs -cat "$artifact" "$path")" || fail "read /$path failed"
+    grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
+}
+
 need awk
 need grep
 need sha256sum
@@ -70,10 +78,16 @@ for path in \
     /usr/bin/resolvectl \
     /usr/bin/sshd \
     /usr/bin/containerd \
-    /usr/bin/crun
+    /usr/bin/crun \
+    /usr/lib/systemd/system/katl-runtime-boot-signal.service \
+    /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
 do
     has_path "$path"
 done
+
+file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime reached systemd userspace"
+file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "StandardOutput=journal+console"
+file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "SyslogIdentifier=katl-runtime-boot"
 
 for path in \
     /usr/bin/mkosi \

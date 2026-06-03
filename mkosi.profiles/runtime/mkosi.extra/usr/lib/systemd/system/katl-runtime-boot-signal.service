@@ -1,0 +1,14 @@
+[Unit]
+Description=Emit Katl runtime boot signal
+Documentation=man:systemd.service(5)
+After=systemd-journald.service
+ConditionPathExists=/usr/lib/os-release
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-runtime-boot
+ExecStart=/usr/bin/printf 'Katl runtime reached systemd userspace\n'
+
+[Install]
+WantedBy=multi-user.target
