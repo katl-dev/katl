@@ -133,6 +133,8 @@ fi
     set -uo pipefail
     log=$(mktemp)
     trap "rm -f \"$log\"" EXIT
+    mkdir -p /work/build/go-mod
+    GOMODCACHE=/work/build/go-mod go mod download
     mkosi "$@" 2>&1 | tee "$log"
     status=${PIPESTATUS[0]}
     pkg_version() {

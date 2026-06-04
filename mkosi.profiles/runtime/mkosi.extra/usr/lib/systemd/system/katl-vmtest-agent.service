@@ -1,0 +1,22 @@
+[Unit]
+Description=Katl vmtest guest agent
+Documentation=man:systemd.service(5)
+After=basic.target
+ConditionKernelCommandLine=katl.vmtest_agent=1
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent
+Restart=on-failure
+RestartSec=1s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run /var/log/journal
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=katl-vmtest-agent
+
+[Install]
+WantedBy=multi-user.target

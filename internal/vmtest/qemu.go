@@ -37,6 +37,7 @@ type VMConfig struct {
 	PollInterval time.Duration
 	HostForwards []HostForward
 	VSock        VSockConfig
+	Agent        AgentControlConfig
 }
 
 type HostForward struct {
@@ -57,6 +58,11 @@ type VSockPlan struct {
 	Device   string `json:"device,omitempty"`
 }
 
+type AgentControlConfig struct {
+	RequireHealth bool
+	Timeout       time.Duration
+}
+
 type VMPlan struct {
 	QEMUPath       string
 	Args           []string
@@ -73,6 +79,11 @@ type VMExecutor interface {
 	Run(ctx context.Context, name string, args []string, serial io.Writer) error
 }
 
+type AgentHealthClient interface {
+	Health(ctx context.Context) error
+	Close() error
+}
+
 type ExecVMExecutor struct{}
 
 func (ExecVMExecutor) Run(ctx context.Context, name string, args []string, serial io.Writer) error {
@@ -83,8 +94,9 @@ func (ExecVMExecutor) Run(ctx context.Context, name string, args []string, seria
 }
 
 type VMRunner struct {
-	Executor VMExecutor
-	probe    probe
+	Executor       VMExecutor
+	AgentConnector func(ctx context.Context, plan VSockPlan, transcript string) (AgentHealthClient, error)
+	probe          probe
 }
 
 func PlanVM(result Result, config VMConfig) (VMPlan, error) {
@@ -147,6 +159,11 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 	defer ticker.Stop()
 	for {
 		if serialHas(serialLog, config.Expect) {
+			if err := r.checkAgent(ctx, result, config); err != nil {
+				cancel()
+				<-done
+				return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
+			}
 			cancel()
 			<-done
 			return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
@@ -154,6 +171,9 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 		select {
 		case err := <-done:
 			if serialHas(serialLog, config.Expect) {
+				if checkErr := r.checkAgent(ctx, result, config); checkErr != nil {
+					return finishVM(result, phaseName(config), StatusFailed, checkErr.Error(), started, time.Now().UTC())
+				}
 				return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
 			}
 			if err == nil {
@@ -167,6 +187,53 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 		case <-ticker.C:
 		}
 	}
+}
+
+func (r VMRunner) checkAgent(ctx context.Context, result Result, config VMConfig) error {
+	if !config.Agent.RequireHealth {
+		return nil
+	}
+	if !result.VSock.Enabled {
+		return errors.New("vmtest agent health requires vsock")
+	}
+	timeout := config.Agent.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	agentCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	connector := r.AgentConnector
+	if connector == nil {
+		connector = func(ctx context.Context, plan VSockPlan, transcript string) (AgentHealthClient, error) {
+			client, err := DialAgent(ctx, plan.GuestCID, plan.Port, transcript)
+			if err != nil {
+				return nil, err
+			}
+			return agentHealthClient{client: client}, nil
+		}
+	}
+	client, err := connector(agentCtx, result.VSock, result.Artifacts.VSockTranscript)
+	if err != nil {
+		return fmt.Errorf("connect vmtest agent: %w", err)
+	}
+	defer client.Close()
+	if err := client.Health(agentCtx); err != nil {
+		return fmt.Errorf("vmtest agent health failed: %w", err)
+	}
+	return nil
+}
+
+type agentHealthClient struct {
+	client *AgentClient
+}
+
+func (c agentHealthClient) Health(ctx context.Context) error {
+	_, err := c.client.Health(ctx)
+	return err
+}
+
+func (c agentHealthClient) Close() error {
+	return c.client.Close()
 }
 
 func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {

@@ -113,8 +113,10 @@ type ArtifactPaths struct {
 	InstallManifest      string `json:"installManifest,omitempty"`
 	HandoffRequest       string `json:"handoffRequest,omitempty"`
 	HandoffResponse      string `json:"handoffResponse,omitempty"`
+	VSockTranscript      string `json:"vsockTranscript,omitempty"`
 	ManifestsDir         string `json:"manifestsDir"`
 	DisksDir             string `json:"disksDir"`
+	GuestDir             string `json:"guestDir"`
 }
 
 type PhaseResult struct {
@@ -530,8 +532,10 @@ func pathsFor(runDir string) ArtifactPaths {
 		InstallManifest:      filepath.Join(runDir, "manifests", "install-manifest.json"),
 		HandoffRequest:       filepath.Join(runDir, "manifests", "handoff-request.json"),
 		HandoffResponse:      filepath.Join(runDir, "manifests", "handoff-response.json"),
+		VSockTranscript:      filepath.Join(runDir, "qemu", "vsock-transcript.jsonl"),
 		ManifestsDir:         filepath.Join(runDir, "manifests"),
 		DisksDir:             filepath.Join(runDir, "disks"),
+		GuestDir:             filepath.Join(runDir, "guest"),
 	}
 }
 

@@ -88,12 +88,14 @@ for path in \
     /usr/bin/ssh-keygen \
     /usr/bin/containerd \
     /usr/bin/crun \
+    /usr/lib/katl/vmtest/katl-vmtest-agent \
     /usr/lib/systemd/system/systemd-networkd.service \
     /usr/lib/systemd/system/systemd-resolved.service \
     /usr/lib/systemd/system/systemd-timesyncd.service \
     /usr/lib/systemd/system/sshd.service \
     /usr/lib/systemd/system/containerd.service \
     /usr/lib/systemd/system/katl-runtime-boot-signal.service \
+    /usr/lib/systemd/system/katl-vmtest-agent.service \
     /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
 do
     has_path "$path"
@@ -103,6 +105,8 @@ root_locked
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime reached systemd userspace"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "StandardOutput=journal+console"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "SyslogIdentifier=katl-runtime-boot"
+file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ConditionKernelCommandLine=katl.vmtest_agent=1"
+file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent"
 
 for path in \
     /usr/bin/mkosi \

@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package katl.vmtest.v1;
+
+option go_package = "github.com/zariel/katl/internal/vmtest/proto;vmtestpb";
+
+message VmtestRequest {
+  string request_id = 1;
+  uint32 timeout_ms = 2;
+
+  oneof operation {
+    HealthRequest health = 10;
+    RunCommandRequest run_command = 11;
+    ReadFileRequest read_file = 12;
+    ExportJournalRequest export_journal = 13;
+  }
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string agent_version = 1;
+  string hostname = 2;
+  string boot_id = 3;
+}
+
+message RunCommandRequest {
+  repeated string argv = 1;
+  string working_directory = 2;
+  repeated EnvVar environment = 3;
+  uint32 stdout_limit = 4;
+  uint32 stderr_limit = 5;
+  bool sensitive_output = 6;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
+}
+
+message CommandResult {
+  int32 exit_status = 1;
+  bytes stdout = 2;
+  bytes stderr = 3;
+  bool stdout_truncated = 4;
+  bool stderr_truncated = 5;
+  uint32 stdout_bytes = 6;
+  uint32 stderr_bytes = 7;
+}
+
+message ReadFileRequest {
+  string path = 1;
+  uint32 max_bytes = 2;
+  bool sensitive = 3;
+}
+
+message FileResult {
+  bytes content = 1;
+  bool truncated = 2;
+  uint32 size_bytes = 3;
+  string redaction = 4;
+}
+
+message ExportJournalRequest {
+  repeated string units = 1;
+  string boot_id = 2;
+  uint32 max_bytes = 3;
+}
+
+message JournalResult {
+  string text = 1;
+  bool truncated = 2;
+  uint32 size_bytes = 3;
+}
+
+message VmtestError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  map<string, string> details = 4;
+}
+
+message VmtestResponse {
+  string request_id = 1;
+  uint64 duration_ms = 2;
+
+  oneof result {
+    HealthResponse health = 10;
+    CommandResult command = 11;
+    FileResult file = 12;
+    JournalResult journal = 13;
+    VmtestError error = 100;
+  }
+}

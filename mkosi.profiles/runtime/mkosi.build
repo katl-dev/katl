@@ -5,14 +5,14 @@ builddir="${BUILDDIR:-/tmp}"
 repo="${SRCDIR:-}"
 version="${KATL_VERSION:-0.0.0-dev}"
 
-mkdir -p "$DESTDIR/usr/bin"
+mkdir -p "$DESTDIR/usr/lib/katl/vmtest"
 
 if [[ ! -f "$repo/go.mod" && -f /work/go.mod ]]; then
     repo=/work
 fi
 
 if [[ ! -f "$repo/go.mod" ]]; then
-    echo "error: could not find repository root for katlos-install build" >&2
+    echo "error: could not find repository root for katl-vmtest-agent build" >&2
     exit 1
 fi
 
@@ -38,5 +38,5 @@ go build \
     -trimpath \
     -buildvcs=false \
     -ldflags="-X main.version=$version -X main.commit=$commit -X main.date=$date" \
-    -o "$DESTDIR/usr/bin/katlos-install" \
-    ./cmd/katlos-install
+    -o "$DESTDIR/usr/lib/katl/vmtest/katl-vmtest-agent" \
+    ./cmd/katl-vmtest-agent
