@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -48,6 +49,12 @@ type DiskPlan struct {
 
 type DiskRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
+}
+
+type ExecDiskRunner struct{}
+
+func (ExecDiskRunner) Run(ctx context.Context, name string, args ...string) error {
+	return exec.CommandContext(ctx, name, args...).Run()
 }
 
 func TargetDisk(name, format, size string) DiskFixture {

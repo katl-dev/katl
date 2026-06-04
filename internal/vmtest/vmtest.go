@@ -103,13 +103,18 @@ const (
 )
 
 type ArtifactPaths struct {
-	Scenario        string `json:"scenario"`
-	Result          string `json:"result"`
-	QEMUCommand     string `json:"qemuCommand"`
-	InstallerSerial string `json:"installerSerial"`
-	RuntimeSerial   string `json:"runtimeSerial"`
-	ManifestsDir    string `json:"manifestsDir"`
-	DisksDir        string `json:"disksDir"`
+	Scenario             string `json:"scenario"`
+	Result               string `json:"result"`
+	QEMUCommand          string `json:"qemuCommand"`
+	InstallerQEMUCommand string `json:"installerQEMUCommand,omitempty"`
+	RuntimeQEMUCommand   string `json:"runtimeQEMUCommand,omitempty"`
+	InstallerSerial      string `json:"installerSerial"`
+	RuntimeSerial        string `json:"runtimeSerial"`
+	InstallManifest      string `json:"installManifest,omitempty"`
+	HandoffRequest       string `json:"handoffRequest,omitempty"`
+	HandoffResponse      string `json:"handoffResponse,omitempty"`
+	ManifestsDir         string `json:"manifestsDir"`
+	DisksDir             string `json:"disksDir"`
 }
 
 type PhaseResult struct {
@@ -515,13 +520,18 @@ func clean(name string) string {
 
 func pathsFor(runDir string) ArtifactPaths {
 	return ArtifactPaths{
-		Scenario:        filepath.Join(runDir, "scenario.json"),
-		Result:          filepath.Join(runDir, "result.json"),
-		QEMUCommand:     filepath.Join(runDir, "qemu", "qemu-command.txt"),
-		InstallerSerial: filepath.Join(runDir, "qemu", "installer-serial.log"),
-		RuntimeSerial:   filepath.Join(runDir, "qemu", "runtime-serial.log"),
-		ManifestsDir:    filepath.Join(runDir, "manifests"),
-		DisksDir:        filepath.Join(runDir, "disks"),
+		Scenario:             filepath.Join(runDir, "scenario.json"),
+		Result:               filepath.Join(runDir, "result.json"),
+		QEMUCommand:          filepath.Join(runDir, "qemu", "qemu-command.txt"),
+		InstallerQEMUCommand: filepath.Join(runDir, "qemu", "installer-qemu-command.txt"),
+		RuntimeQEMUCommand:   filepath.Join(runDir, "qemu", "runtime-qemu-command.txt"),
+		InstallerSerial:      filepath.Join(runDir, "qemu", "installer-serial.log"),
+		RuntimeSerial:        filepath.Join(runDir, "qemu", "runtime-serial.log"),
+		InstallManifest:      filepath.Join(runDir, "manifests", "install-manifest.json"),
+		HandoffRequest:       filepath.Join(runDir, "manifests", "handoff-request.json"),
+		HandoffResponse:      filepath.Join(runDir, "manifests", "handoff-response.json"),
+		ManifestsDir:         filepath.Join(runDir, "manifests"),
+		DisksDir:             filepath.Join(runDir, "disks"),
 	}
 }
 

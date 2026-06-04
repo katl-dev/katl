@@ -19,23 +19,22 @@ func RunInstallerBoot(ctx context.Context, runner Runner, scenario Scenario, con
 	if err != nil {
 		return Result{}, err
 	}
+	result = BootInstaller(ctx, result, config, vmRunner)
+	if err := runner.Write(scenario, result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func BootInstaller(ctx context.Context, result Result, config InstallerBootConfig, vmRunner VMRunner) Result {
 	if err := checkInstallerBoot(config); err != nil {
-		result.Status = StatusFailed
-		result.FailureSummary = err.Error()
-		if writeErr := runner.Write(scenario, result); writeErr != nil {
-			return result, writeErr
-		}
-		return result, nil
+		return finishVM(result, "installer", StatusFailed, err.Error(), runnerTime(), runnerTime())
 	}
 	vm := config.VM
 	vm.Phase = "installer"
 	vm.Expect = first(vm.Expect, config.Expect, "Katl installer ready")
 	vm.Boot = VMBoot{UKI: config.InstallerUKI}
-	result = vmRunner.Run(ctx, result, vm)
-	if err := runner.Write(scenario, result); err != nil {
-		return result, err
-	}
-	return result, nil
+	return vmRunner.Run(ctx, result, vm)
 }
 
 func checkInstallerBoot(config InstallerBootConfig) error {
