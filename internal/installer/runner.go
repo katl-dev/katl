@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
 )
 
@@ -44,8 +45,10 @@ type Context struct {
 	Store          StateStore
 	Manifest       manifest.Manifest
 	LoaderRecord   *generation.Record
+	KubeadmConfigs map[string]kubeadmconfig.Plan
 	IdentityRandom io.Reader
 	Completed      []StepID
+	Chown          func(path string, uid int, gid int) error
 }
 
 type Step interface {
@@ -87,7 +90,7 @@ func NewPlan(options PlanOptions) Plan {
 		stubStep{id: InstallExtensions},
 		installSeedStep{},
 		stubStep{id: InstallMountUnits},
-		stubStep{id: WriteInstallRecord},
+		writeInstallRecordStep{},
 		stubStep{id: VerifyTarget},
 		stubStep{id: Reboot},
 	)
@@ -200,6 +203,35 @@ func (installSeedStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	return recordStep(ctx, install, InstallSeed)
+}
+
+type writeInstallRecordStep struct{}
+
+func (writeInstallRecordStep) ID() StepID {
+	return WriteInstallRecord
+}
+
+func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.LoaderRecord == nil {
+		return fmt.Errorf("loader generation record is required to materialize generated confext")
+	}
+	result, err := MaterializeInstallRecord(InstallRecordRequest{
+		TargetRoot:     install.TargetRoot,
+		Manifest:       install.Manifest,
+		KubeadmConfigs: install.KubeadmConfigs,
+		Record:         *install.LoaderRecord,
+		Chown:          install.Chown,
+	})
+	if err != nil {
+		return err
+	}
+	install.LoaderRecord = &result.Record
+	return recordStep(ctx, install, WriteInstallRecord)
 }
 
 type stubStep struct {

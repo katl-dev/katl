@@ -241,6 +241,70 @@ func TestRenderGenerationTreeRejectsUnsafeGenerationInput(t *testing.T) {
 	}
 }
 
+func TestRenderGenerationTreeRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	confextDir := filepath.Join(root, "good", "confext")
+	if err := os.MkdirAll(confextDir, 0o755); err != nil {
+		t.Fatalf("mkdir confext: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(confextDir, "etc")); err != nil {
+		t.Fatalf("symlink etc: %v", err)
+	}
+
+	_, err := RenderGenerationTree(GenerationTreeRequest{
+		GenerationsRoot: root,
+		GenerationID:    "good",
+		Files:           []NativeEtcFile{{Path: "/etc/systemd/network/10-lan.network", Content: "[Match]\nName=enp1s0\n"}},
+		Chown:           func(string, int, int) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to follow symlink") {
+		t.Fatalf("RenderGenerationTree() error = %v, want symlink rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "systemd/network/10-lan.network")); !os.IsNotExist(err) {
+		t.Fatalf("outside write err = %v, want no escaped write", err)
+	}
+}
+
+func TestRenderGenerationTreeRejectsHardlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	outsideFile := filepath.Join(outside, "hostname")
+	if err := os.WriteFile(outsideFile, []byte("outside\n"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	targetPath := filepath.Join(root, "good", "confext", "etc", "hostname")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir target parent: %v", err)
+	}
+	if err := os.Link(outsideFile, targetPath); err != nil {
+		t.Fatalf("hardlink target: %v", err)
+	}
+
+	_, err := RenderGenerationTree(GenerationTreeRequest{
+		GenerationsRoot: root,
+		GenerationID:    "good",
+		Files:           []NativeEtcFile{{Path: "/etc/hostname", Content: "inside\n"}},
+		Chown:           func(string, int, int) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite hard-linked") {
+		t.Fatalf("RenderGenerationTree() error = %v, want hardlink rejection", err)
+	}
+	data, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("read outside: %v", err)
+	}
+	if string(data) != "outside\n" {
+		t.Fatalf("outside file was modified: %q", data)
+	}
+}
+
 func assertFile(t *testing.T, path string, wantContent string, wantMode fs.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)

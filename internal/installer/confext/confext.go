@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 type NativeEtcFileType string
@@ -140,6 +141,9 @@ func RenderGenerationTree(request GenerationTreeRequest) (GenerationTree, error)
 
 	generationDir := filepath.Join(filepath.Clean(request.GenerationsRoot), generationID)
 	confextDir := filepath.Join(generationDir, "confext")
+	if err := mkdirAllNoSymlink(filepath.Clean(request.GenerationsRoot), confextDir, 0o755); err != nil {
+		return GenerationTree{}, err
+	}
 	plans, err := ValidateNativeEtcBundle(confextDir, request.Files)
 	if err != nil {
 		return GenerationTree{}, err
@@ -156,18 +160,12 @@ func RenderGenerationTree(request GenerationTreeRequest) (GenerationTree, error)
 
 	chown := request.Chown
 	if chown == nil {
-		chown = os.Chown
+		chown = os.Lchown
 	}
 
 	for _, plan := range plans {
-		if err := os.MkdirAll(filepath.Dir(plan.ConfextPath), 0o755); err != nil {
-			return GenerationTree{}, fmt.Errorf("create parent for %s: %w", plan.Path, err)
-		}
-		if err := os.WriteFile(plan.ConfextPath, []byte(contentByPath[plan.Path]), plan.Mode); err != nil {
+		if err := writeConfextRegularFile(confextDir, plan.ConfextPath, []byte(contentByPath[plan.Path]), plan.Mode); err != nil {
 			return GenerationTree{}, fmt.Errorf("write %s: %w", plan.Path, err)
-		}
-		if err := os.Chmod(plan.ConfextPath, plan.Mode); err != nil {
-			return GenerationTree{}, fmt.Errorf("chmod %s: %w", plan.Path, err)
 		}
 		if err := chown(plan.ConfextPath, plan.UID, plan.GID); err != nil {
 			return GenerationTree{}, fmt.Errorf("chown %s: %w", plan.Path, err)
@@ -175,10 +173,7 @@ func RenderGenerationTree(request GenerationTreeRequest) (GenerationTree, error)
 	}
 
 	extensionPath := filepath.Join(confextDir, "etc", "extension-release.d", "extension-release."+extension.Name)
-	if err := os.MkdirAll(filepath.Dir(extensionPath), 0o755); err != nil {
-		return GenerationTree{}, fmt.Errorf("create extension-release directory: %w", err)
-	}
-	if err := os.WriteFile(extensionPath, []byte(renderExtensionRelease(extension)), 0o644); err != nil {
+	if err := writeConfextRegularFile(confextDir, extensionPath, []byte(renderExtensionRelease(extension)), 0o644); err != nil {
 		return GenerationTree{}, fmt.Errorf("write extension-release metadata: %w", err)
 	}
 	if err := chown(extensionPath, 0, 0); err != nil {
@@ -250,6 +245,103 @@ func pathWithinRoot(root, path string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, "../") && !filepath.IsAbs(rel)
+}
+
+func mkdirAllNoSymlink(root, path string, mode fs.FileMode) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if !pathWithinRoot(root, path) && root != path {
+		return fmt.Errorf("%s would write outside confext root", path)
+	}
+	current := string(filepath.Separator)
+	for _, segment := range strings.Split(strings.TrimPrefix(root, string(filepath.Separator)), string(filepath.Separator)) {
+		if segment == "" {
+			continue
+		}
+		current = filepath.Join(current, segment)
+		if err := ensureDirectoryNoSymlink(current, mode); err != nil {
+			return err
+		}
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	for _, segment := range strings.Split(rel, string(filepath.Separator)) {
+		if segment == "" || segment == "." {
+			continue
+		}
+		current = filepath.Join(current, segment)
+		if err := ensureDirectoryNoSymlink(current, mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureDirectoryNoSymlink(path string, mode fs.FileMode) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return os.Mkdir(path, mode)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to follow symlink in generated confext path: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("generated confext path component is not a directory: %s", path)
+	}
+	return nil
+}
+
+func writeConfextRegularFile(root, path string, content []byte, mode fs.FileMode) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if !pathWithinRoot(root, path) {
+		return fmt.Errorf("%s would write outside confext root", path)
+	}
+	if err := mkdirAllNoSymlink(root, filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to follow symlink in generated confext path: %s", path)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("generated confext target is not a regular file: %s", path)
+		}
+		if linkCount(info) > 1 {
+			return fmt.Errorf("refusing to overwrite hard-linked generated confext file: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	n, err := file.Write(content)
+	if err != nil {
+		return err
+	}
+	if n != len(content) {
+		return fmt.Errorf("short write: wrote %d of %d bytes", n, len(content))
+	}
+	return file.Chmod(mode)
+}
+
+func linkCount(info fs.FileInfo) uint64 {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 1
+	}
+	return uint64(stat.Nlink)
 }
 
 func normalizeGenerationID(value string) (string, error) {
