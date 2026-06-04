@@ -111,6 +111,28 @@ func TestVMDiskBoot(t *testing.T) {
 	}
 }
 
+func TestVMEFITreeBoot(t *testing.T) {
+	result, config := vmFixture(t)
+	efiTree := filepath.Join(t.TempDir(), "esp")
+	config.Boot.UKI = ""
+	config.Boot.EFITree = efiTree
+	config.Boot.ImageSnapshot = false
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if !hasArg(plan.Args, "if=virtio,index=0,format=raw,file=fat:rw:"+efiTree) {
+		t.Fatalf("EFI tree drive missing from args: %#v", plan.Args)
+	}
+	if !hasArg(plan.Args, "if=virtio,index=1,format=qcow2,file="+config.Boot.Image) {
+		t.Fatalf("disk drive missing from args: %#v", plan.Args)
+	}
+}
+
 func TestVMVSock(t *testing.T) {
 	result, config := vmFixture(t)
 	config.VSock.Enabled = true

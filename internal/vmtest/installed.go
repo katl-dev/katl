@@ -12,11 +12,12 @@ import (
 )
 
 type InstalledRuntimeConfig struct {
-	Disk         string
-	DiskFormat   DiskFormat
-	ESPArtifacts string
-	Expect       string
-	VM           VMConfig
+	Disk               string
+	DiskFormat         DiskFormat
+	ESPArtifacts       string
+	RequireVMTestAgent bool
+	Expect             string
+	VM                 VMConfig
 }
 
 func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRuntimeConfig, runner VMRunner) Result {
@@ -31,6 +32,9 @@ func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRun
 		ImageFormat:   diskFormat(config.DiskFormat),
 		ImageSnapshot: true,
 	}
+	if config.RequireVMTestAgent {
+		vm.Boot.EFITree = runtimeESPPath(result)
+	}
 	return runner.Run(ctx, result, vm)
 }
 
@@ -44,10 +48,71 @@ func PrepareInstalledRuntime(result Result, config InstalledRuntimeConfig) error
 	if config.ESPArtifacts == "" {
 		return errors.New("ESP artifacts directory is required")
 	}
-	if err := copyDir(config.ESPArtifacts, filepath.Join(result.RunDir, "esp")); err != nil {
+	esp := runtimeESPPath(result)
+	if err := copyDir(config.ESPArtifacts, esp); err != nil {
 		return err
 	}
-	return CheckESP(filepath.Join(result.RunDir, "esp"))
+	if config.RequireVMTestAgent {
+		if err := InjectESPOption(esp, "katl.vmtest_agent=1"); err != nil {
+			return err
+		}
+	}
+	return CheckESP(esp)
+}
+
+func runtimeESPPath(result Result) string {
+	return filepath.Join(result.RunDir, "esp")
+}
+
+func InjectESPOption(root string, option string) error {
+	option = strings.TrimSpace(option)
+	if option == "" || strings.ContainsAny(option, " \t\n\r") {
+		return fmt.Errorf("loader option %q must not contain whitespace", option)
+	}
+	entries := filepath.Join(root, "loader", "entries")
+	var changed int
+	err := filepath.WalkDir(entries, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".conf" {
+			return nil
+		}
+		if err := injectLoaderOption(path, option); err != nil {
+			return err
+		}
+		changed++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return errors.New("ESP artifacts contain no loader entries")
+	}
+	return nil
+}
+
+func injectLoaderOption(path string, option string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "options ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		for _, field := range fields[1:] {
+			if field == option {
+				return nil
+			}
+		}
+		lines[i] = line + " " + option
+		return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+	}
+	return fmt.Errorf("loader entry %s has no options line", path)
 }
 
 func CheckESP(root string) error {

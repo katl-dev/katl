@@ -18,6 +18,7 @@ import (
 
 type VMBoot struct {
 	UKI           string
+	EFITree       string
 	Image         string
 	ImageFormat   DiskFormat
 	ImageSnapshot bool
@@ -383,11 +384,20 @@ func vmDrives(result Result, boot VMBoot) ([]string, string, error) {
 		index++
 	}
 	efiTree := filepath.Join(result.QEMUDir, "efi")
+	if boot.UKI != "" && boot.EFITree != "" {
+		return nil, "", errors.New("VM boot requires at most one of UKI or EFI tree")
+	}
 	if boot.UKI != "" {
 		add("format=raw,file=fat:rw:" + efiTree)
 		if boot.Image != "" {
 			add(imageSpec(boot))
 		}
+	} else if boot.EFITree != "" {
+		add("format=raw,file=fat:rw:" + boot.EFITree)
+		if boot.Image == "" {
+			return nil, "", errors.New("VM boot from EFI tree requires disk image")
+		}
+		add(imageSpec(boot))
 	} else {
 		if boot.Image == "" {
 			return nil, "", errors.New("VM boot requires UKI or disk image")
