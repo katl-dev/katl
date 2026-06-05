@@ -100,6 +100,11 @@ These can be added later as day-2 sysexts, user-managed GitOps, or explicit Katl
 domains with their own design and tests. They must not enter through a generic
 patch layer.
 
+The opt-in platform API endpoint routing capability is the current durable
+example for this boundary. Its contract is documented in
+`docs/internal/platform-api-endpoint-routing-capability.md`; it does not make
+BIRD or API VIP advertisement part of the initial node configuration API.
+
 ## Validation Expectations
 
 Every supported domain must fail closed on invalid or unsafe input.

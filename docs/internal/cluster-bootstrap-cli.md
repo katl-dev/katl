@@ -251,6 +251,10 @@ by the same manifests; use the post-handoff stable endpoint wait for that shape.
 
 Do not add kubePrism as an initial requirement.
 
+The opt-in host/platform endpoint helper design, including BIRD-mediated routing
+and pre-Cilium advertisement, is tracked separately in
+`docs/internal/platform-api-endpoint-routing-capability.md`.
+
 ## Kubeconfig Output
 
 After kubeadm init succeeds and the API is reachable, the command writes an

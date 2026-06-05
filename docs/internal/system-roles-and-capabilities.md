@@ -16,6 +16,9 @@ explicit supported node configuration domains
 
 Capability overlays remain a day-2 design topic. They need a clearer input
 model, merge model, and test contract before they become user-facing.
+The opt-in platform API endpoint routing capability is one concrete deferred
+capability and is documented in
+`docs/internal/platform-api-endpoint-routing-capability.md`.
 
 This document builds on `docs/internal/supported-node-config-domains.md`: every
 rendered output must still land in a supported systemd-native domain or bounded
@@ -178,6 +181,10 @@ examples that do not require arbitrary templates or shell hooks
 Future capability overlays must compile to supported domains, select an explicit
 day-2 sysext/app contract, or remain user GitOps. They must not smuggle
 application lifecycle into config rendering.
+
+The platform API endpoint routing capability follows that rule: it is opt-in,
+dynamic-routing-oriented, and expected to use an explicit app sysext or bounded
+native inputs rather than becoming a hidden `systemRole`.
 
 ## Rejected Options
 
