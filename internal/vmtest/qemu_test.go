@@ -52,6 +52,86 @@ func TestVMPlan(t *testing.T) {
 	}
 }
 
+func TestVMBridgeNetwork(t *testing.T) {
+	result, config := vmFixture(t)
+	config.Network = VMNetworkConfig{Mode: VMNetworkBridge, Bridge: "katlbr0"}
+	config.HostForwards = nil
+
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if !hasArg(plan.Args, "bridge,id=net0,br=katlbr0") {
+		t.Fatalf("bridge netdev missing from args: %#v", plan.Args)
+	}
+}
+
+func TestVMBridgeNetworkFromEnv(t *testing.T) {
+	result, config := vmFixture(t)
+	config.Network = VMNetworkConfig{Mode: VMNetworkBridge}
+	config.HostForwards = nil
+
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+		env: func(name string) string {
+			switch name {
+			case "KATL_VMTEST_BRIDGE":
+				return "katlbr1"
+			case "KATL_QEMU_BRIDGE_HELPER":
+				return "/usr/lib/qemu/qemu-bridge-helper"
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if !hasArg(plan.Args, "bridge,id=net0,br=katlbr1,helper=/usr/lib/qemu/qemu-bridge-helper") {
+		t.Fatalf("bridge netdev missing from args: %#v", plan.Args)
+	}
+}
+
+func TestVMBridgeNetworkRejectsHostForwardsAndMissingBridge(t *testing.T) {
+	result, config := vmFixture(t)
+	config.Network = VMNetworkConfig{Mode: VMNetworkBridge, Bridge: "katlbr0"}
+	_, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "host forwards") {
+		t.Fatalf("planVM() error = %v, want host forwards rejection", err)
+	}
+
+	config.HostForwards = nil
+	config.Network.Bridge = ""
+	_, err = planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+		env:      func(string) string { return "" },
+	})
+	if err == nil || !strings.Contains(err.Error(), "KATL_VMTEST_BRIDGE") {
+		t.Fatalf("planVM() error = %v, want bridge env rejection", err)
+	}
+
+	config.Network.Bridge = "../katlbr0"
+	_, err = planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported character") {
+		t.Fatalf("planVM() error = %v, want invalid bridge name rejection", err)
+	}
+}
+
 func TestVMPrepare(t *testing.T) {
 	result, config := vmFixture(t)
 	plan, err := planVM(result, config, probe{

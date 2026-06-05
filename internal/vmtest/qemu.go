@@ -36,9 +36,23 @@ type VMConfig struct {
 	Expect       string
 	Timeout      time.Duration
 	PollInterval time.Duration
+	Network      VMNetworkConfig
 	HostForwards []HostForward
 	VSock        VSockConfig
 	Agent        AgentControlConfig
+}
+
+type VMNetworkMode string
+
+const (
+	VMNetworkUser   VMNetworkMode = "user"
+	VMNetworkBridge VMNetworkMode = "bridge"
+)
+
+type VMNetworkConfig struct {
+	Mode   VMNetworkMode
+	Bridge string
+	Helper string
 }
 
 type HostForward struct {
@@ -270,6 +284,10 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	if err != nil {
 		return VMPlan{}, err
 	}
+	network, err := qemuNetdev(config.Network, config.HostForwards, probe)
+	if err != nil {
+		return VMPlan{}, err
+	}
 	serial := result.Artifacts.InstallerSerial
 	if runtimeSerialPhase(config.Phase) {
 		serial = result.Artifacts.RuntimeSerial
@@ -296,7 +314,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	}
 	args = append(args,
 		"-device", "virtio-rng-pci",
-		"-netdev", netdev(config.HostForwards),
+		"-netdev", network,
 		"-device", "virtio-net-pci,netdev=net0",
 	)
 	if vsock.Enabled {
@@ -344,6 +362,9 @@ func normalizeVM(config VMConfig) VMConfig {
 	}
 	if config.CPUs == 0 {
 		config.CPUs = 2
+	}
+	if config.Network.Mode == "" {
+		config.Network.Mode = VMNetworkUser
 	}
 	if config.Boot.ImageFormat == "" {
 		config.Boot.ImageFormat = DiskRaw
@@ -418,12 +439,53 @@ func imageSpec(boot VMBoot) string {
 	return spec
 }
 
-func netdev(forwards []HostForward) string {
-	spec := "user,id=net0"
-	for _, forward := range forwards {
-		spec += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-:%d", forward.HostPort, forward.GuestPort)
+func qemuNetdev(network VMNetworkConfig, forwards []HostForward, probe probe) (string, error) {
+	switch network.Mode {
+	case "", VMNetworkUser:
+		spec := "user,id=net0"
+		for _, forward := range forwards {
+			spec += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-:%d", forward.HostPort, forward.GuestPort)
+		}
+		return spec, nil
+	case VMNetworkBridge:
+		if len(forwards) > 0 {
+			return "", errors.New("host forwards require user-mode networking")
+		}
+		bridge := strings.TrimSpace(first(network.Bridge, probe.env("KATL_VMTEST_BRIDGE")))
+		if bridge == "" {
+			return "", errors.New("bridge networking requires VMNetworkConfig.Bridge or KATL_VMTEST_BRIDGE")
+		}
+		if err := validateBridgeName(bridge); err != nil {
+			return "", err
+		}
+		spec := "bridge,id=net0,br=" + bridge
+		helper := strings.TrimSpace(first(network.Helper, probe.env("KATL_QEMU_BRIDGE_HELPER")))
+		if helper != "" {
+			if strings.ContainsAny(helper, " \t\n\r,") {
+				return "", fmt.Errorf("bridge helper path %q contains unsupported whitespace or comma", helper)
+			}
+			spec += ",helper=" + helper
+		}
+		return spec, nil
+	default:
+		return "", fmt.Errorf("VM network mode %q is unsupported", network.Mode)
 	}
-	return spec
+}
+
+func validateBridgeName(value string) error {
+	if value == "" {
+		return errors.New("bridge name is required")
+	}
+	if len(value) > 15 {
+		return fmt.Errorf("bridge name %q is longer than 15 characters", value)
+	}
+	for _, r := range value {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.'
+		if !ok {
+			return fmt.Errorf("bridge name %q contains unsupported character %q", value, r)
+		}
+	}
+	return nil
 }
 
 var cidReservations = struct {
