@@ -1,0 +1,497 @@
+package configapply
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/zariel/katl/internal/installer/confext"
+	"github.com/zariel/katl/internal/installer/configdomain"
+	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/kubeadmconfig"
+	"github.com/zariel/katl/internal/installer/manifest"
+)
+
+const (
+	NodeConfigurationChangeAPIVersion = "katl.dev/v1alpha1"
+	ConfigRequestAuditKind            = "ConfigRequestAudit"
+)
+
+type TrustedBundleRequest struct {
+	Root                     string
+	SourceID                 string
+	DesiredVersion           string
+	NodeName                 string
+	ApplyMode                string
+	GenerationID             string
+	CurrentManifest          manifest.Manifest
+	CurrentRecord            generation.Record
+	ClusterDefaults          NodeOverlay
+	SystemRoleOverrides      map[string]NodeOverlay
+	NodeOverrides            map[string]NodeOverlay
+	KubeadmConfigs           map[string]kubeadmconfig.Plan
+	KubernetesVersion        string
+	KubernetesActivationPath string
+	Executor                 *Executor
+	Chown                    func(path string, uid int, gid int) error
+	Now                      func() time.Time
+}
+
+type NodeOverlay struct {
+	Identity       *IdentityOverlay
+	SystemRole     string
+	Networkd       *manifest.NetworkdConfig
+	Kubernetes     *manifest.KubernetesConfig
+	UnsafeEtcFiles []confext.NativeEtcFile
+	KubeadmChanged bool
+	LivePreflight  map[string]bool
+}
+
+type IdentityOverlay struct {
+	Hostname       string
+	AuthorizedKeys []string
+}
+
+type TrustedBundleResult struct {
+	Manifest     manifest.Manifest
+	Files        []confext.NativeEtcFile
+	Tree         confext.GenerationTree
+	Plan         Result
+	Status       generation.ConfigApplyStatus
+	Audit        ConfigRequestAudit
+	MetadataPath string
+	StatusPath   string
+	AuditPath    string
+}
+
+type ConfigRequestAudit struct {
+	APIVersion          string                           `json:"apiVersion"`
+	Kind                string                           `json:"kind"`
+	SourceID            string                           `json:"sourceID"`
+	DesiredVersion      string                           `json:"desiredVersion"`
+	RequestDigest       string                           `json:"requestDigest"`
+	RequestedApplyMode  string                           `json:"requestedApplyMode"`
+	AcceptedApplyMode   string                           `json:"acceptedApplyMode,omitempty"`
+	ChangedDomains      []string                         `json:"changedDomains,omitempty"`
+	PreviousGeneration  string                           `json:"previousGenerationID,omitempty"`
+	CandidateGeneration string                           `json:"candidateGenerationID,omitempty"`
+	Decision            string                           `json:"decision"`
+	Diagnostics         []Diagnostic                     `json:"diagnostics,omitempty"`
+	Kubeadm             generation.KubeadmActionRequired `json:"kubeadm,omitempty"`
+	FailureReason       string                           `json:"failureReason,omitempty"`
+	UpdatedAt           time.Time                        `json:"updatedAt"`
+}
+
+func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (TrustedBundleResult, error) {
+	if strings.TrimSpace(request.Root) == "" {
+		return TrustedBundleResult{}, fmt.Errorf("runtime root is required")
+	}
+	sourceID, err := cleanAuditSegment("sourceID", request.SourceID)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	desiredVersion, err := cleanDesiredVersion(request.DesiredVersion)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	if strings.TrimSpace(request.GenerationID) == "" {
+		return TrustedBundleResult{}, fmt.Errorf("generation id is required")
+	}
+	now := request.now()
+	merged, changes, unsafeFiles, err := mergeRuntimeConfig(request)
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", nil, nil, err, now)
+		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Audit: audit}, err
+	}
+	if err := manifest.Validate(merged); err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit}, err
+	}
+	matrixDecision, err := Plan(request.ApplyMode, changes)
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, matrixDecision.Diagnostics, err, now)
+		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit}, err
+	}
+	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
+		Manifest:                 merged,
+		KubeadmConfigs:           request.KubeadmConfigs,
+		KubernetesVersion:        firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.CurrentRecord)),
+		KubernetesActivationPath: firstNonEmpty(request.KubernetesActivationPath, selectedKubernetesActivationPath(request.CurrentRecord)),
+	})
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit}, err
+	}
+	files = append(files, unsafeFiles...)
+	tree, err := confext.RenderGenerationTree(confext.GenerationTreeRequest{
+		GenerationsRoot: filepath.Join(filepath.Clean(request.Root), strings.TrimPrefix(generation.GenerationRecordsDir, "/")),
+		GenerationID:    request.GenerationID,
+		Files:           files,
+		Extension: confext.ExtensionRelease{
+			Name:         "katl-node",
+			ID:           "katl",
+			VersionID:    request.CurrentRecord.RuntimeVersion,
+			ConfextLevel: 1,
+		},
+		Chown: request.Chown,
+	})
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Audit: audit}, err
+	}
+	digest, err := generation.DigestDirectory(tree.ConfextDir)
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit}, err
+	}
+	plan, err := PlanChange(request.CurrentRecord, NodeConfigurationChange{
+		APIVersion:   NodeConfigurationChangeAPIVersion,
+		Kind:         NodeConfigurationChangeKind,
+		GenerationID: request.GenerationID,
+		SourceDigest: requestDigest(request),
+		Apply:        Apply{Mode: request.ApplyMode},
+		Changes:      changes,
+		GeneratedConfext: generation.GeneratedConfext{
+			Name:           "katl-node",
+			Path:           filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, request.GenerationID, "confext")),
+			ActivationPath: "/run/confexts/katl-node",
+			SHA256:         digest,
+			Compatibility: generation.ConfextCompatibility{
+				ID:           "katl",
+				VersionID:    request.CurrentRecord.RuntimeVersion,
+				ConfextLevel: 1,
+			},
+		},
+		Kubeadm:     kubeadmActionRequired(changes),
+		RequestedAt: now,
+	})
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit}, err
+	}
+	metadataPath, err := generation.MetadataPath(request.Root, plan.GenerationRecord.GenerationID)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	if err := generation.WriteRecord(metadataPath, plan.GenerationRecord); err != nil {
+		return TrustedBundleResult{}, err
+	}
+	statusPath, err := generation.ConfigApplyStatusPath(request.Root, plan.GenerationRecord.GenerationID)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	status := plan.Status
+	status, err = generation.MarkConfigApplyPhase(status, initialPhase(plan.Decision.AcceptedMode), now)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	if err := generation.WriteConfigApplyStatus(statusPath, status); err != nil {
+		return TrustedBundleResult{}, err
+	}
+	if plan.Decision.AcceptedMode == generation.ApplyModeLive {
+		if request.Executor == nil {
+			return TrustedBundleResult{}, fmt.Errorf("live apply executor is required")
+		}
+		executor := *request.Executor
+		executor.StatusPath = statusPath
+		status, err = executor.ExecuteLive(ctx, plan)
+		if err != nil {
+			audit := request.audit(sourceID, desiredVersion, generation.ConfigApplyActionFailed, changes, nil, err, now)
+			audit.CandidateGeneration = plan.GenerationRecord.GenerationID
+			audit.AcceptedApplyMode = plan.Decision.AcceptedMode
+			auditPath, _ := writeAudit(request.Root, sourceID, desiredVersion, audit)
+			return TrustedBundleResult{
+				Manifest:     merged,
+				Files:        files,
+				Tree:         tree,
+				Plan:         plan,
+				Status:       status,
+				Audit:        audit,
+				MetadataPath: metadataPath,
+				StatusPath:   statusPath,
+				AuditPath:    auditPath,
+			}, err
+		}
+	}
+	audit := request.audit(sourceID, desiredVersion, DecisionAccepted, changes, nil, nil, now)
+	audit.CandidateGeneration = plan.GenerationRecord.GenerationID
+	audit.AcceptedApplyMode = plan.Decision.AcceptedMode
+	auditPath, err := writeAudit(request.Root, sourceID, desiredVersion, audit)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	return TrustedBundleResult{
+		Manifest:     merged,
+		Files:        files,
+		Tree:         tree,
+		Plan:         plan,
+		Status:       status,
+		Audit:        audit,
+		MetadataPath: metadataPath,
+		StatusPath:   statusPath,
+		AuditPath:    auditPath,
+	}, nil
+}
+
+func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Change, []confext.NativeEtcFile, error) {
+	merged := request.CurrentManifest
+	domains := domainAccumulator{}
+	var unsafeFiles []confext.NativeEtcFile
+	applyOverlay(&merged.Node, request.ClusterDefaults, &domains, &unsafeFiles)
+	roleOverlay := request.SystemRoleOverrides[merged.Node.SystemRole]
+	applyOverlay(&merged.Node, roleOverlay, &domains, &unsafeFiles)
+	if request.NodeName != "" {
+		applyOverlay(&merged.Node, request.NodeOverrides[request.NodeName], &domains, &unsafeFiles)
+	}
+	if len(domains.domains) == 0 {
+		return manifest.Manifest{}, nil, nil, fmt.Errorf("runtime configuration change has no supported changed domains")
+	}
+	return merged, domains.changes(request.ClusterDefaults, roleOverlay, request.NodeOverrides[request.NodeName]), unsafeFiles, nil
+}
+
+func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
+	if overlay.Identity != nil {
+		if overlay.Identity.Hostname != "" {
+			node.Identity.Hostname = overlay.Identity.Hostname
+			domains.add(DomainNodeIdentity)
+			domains.add(DomainBootstrapNodeMetadata)
+		}
+		if overlay.Identity.AuthorizedKeys != nil {
+			node.Identity.SSH.AuthorizedKeys = append([]string(nil), overlay.Identity.AuthorizedKeys...)
+			domains.add(DomainSSHOperatorAccess)
+		}
+	}
+	if overlay.SystemRole != "" {
+		node.SystemRole = overlay.SystemRole
+		domains.add(DomainSystemRole)
+		domains.add(DomainBootstrapNodeMetadata)
+	}
+	if overlay.Networkd != nil {
+		node.Networkd = *overlay.Networkd
+		domains.add(DomainNetworkd)
+	}
+	if overlay.Kubernetes != nil {
+		node.Kubernetes = *overlay.Kubernetes
+		domains.add(DomainSelectedKubeadmConfig)
+		domains.add(DomainBootstrapNodeMetadata)
+	}
+	if overlay.KubeadmChanged {
+		domains.add(DomainKubeadmConfig)
+	}
+	if len(overlay.UnsafeEtcFiles) > 0 {
+		*unsafeFiles = append(*unsafeFiles, overlay.UnsafeEtcFiles...)
+		domains.add(DomainArbitraryEtc)
+	}
+}
+
+type domainAccumulator struct {
+	domains []string
+	seen    map[string]struct{}
+}
+
+func (a *domainAccumulator) add(domain string) {
+	if a.seen == nil {
+		a.seen = map[string]struct{}{}
+	}
+	if _, ok := a.seen[domain]; ok {
+		return
+	}
+	a.seen[domain] = struct{}{}
+	a.domains = append(a.domains, domain)
+}
+
+func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
+	preflight := map[string]bool{}
+	for _, overlay := range overlays {
+		for domain, ok := range overlay.LivePreflight {
+			if ok {
+				preflight[domain] = true
+			}
+		}
+	}
+	changes := make([]Change, 0, len(a.domains))
+	for _, domain := range a.domains {
+		changes = append(changes, Change{Domain: domain, LivePreflightOK: preflight[domain]})
+	}
+	return changes
+}
+
+func kubeadmActionRequired(changes []Change) generation.KubeadmActionRequired {
+	for _, change := range changes {
+		if change.Domain == DomainKubeadmConfig || change.Domain == DomainSelectedKubeadmConfig {
+			return generation.KubeadmActionRequired{
+				Required: true,
+				Reason:   "rendered kubeadm desired input changed and requires an explicit kubeadm-aware action",
+			}
+		}
+	}
+	return generation.KubeadmActionRequired{}
+}
+
+func initialPhase(mode string) string {
+	if mode == generation.ApplyModeNextBoot {
+		return generation.ConfigApplyPhaseNextBoot
+	}
+	return generation.ConfigApplyPhaseRendered
+}
+
+func (request TrustedBundleRequest) audit(sourceID, desiredVersion, decision string, changes []Change, diagnostics []Diagnostic, cause error, now time.Time) ConfigRequestAudit {
+	if decision == "" {
+		if cause != nil {
+			decision = DecisionRejected
+		} else {
+			decision = DecisionAccepted
+		}
+	}
+	domains := make([]string, 0, len(changes))
+	for _, change := range changes {
+		domains = append(domains, change.Domain)
+	}
+	return ConfigRequestAudit{
+		APIVersion:         generation.APIVersion,
+		Kind:               ConfigRequestAuditKind,
+		SourceID:           sourceID,
+		DesiredVersion:     desiredVersion,
+		RequestDigest:      requestDigest(request),
+		RequestedApplyMode: request.ApplyMode,
+		ChangedDomains:     domains,
+		PreviousGeneration: request.CurrentRecord.GenerationID,
+		Decision:           decision,
+		Diagnostics:        diagnostics,
+		Kubeadm:            kubeadmActionRequired(changes),
+		FailureReason:      generation.RedactConfigApplyMessage(errorString(cause)),
+		UpdatedAt:          now.UTC(),
+	}
+}
+
+func writeAudit(root, sourceID, desiredVersion string, audit ConfigRequestAudit) (string, error) {
+	path := filepath.Join(filepath.Clean(root), "var/lib/katl/config-requests", sourceID, desiredVersion+".json")
+	data, err := json.MarshalIndent(audit, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal config request audit: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("create config request audit directory: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return "", fmt.Errorf("write config request audit: %w", err)
+	}
+	return path, nil
+}
+
+func cleanAuditSegment(name, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	if value != filepath.Base(value) || value == "." || value == ".." {
+		return "", fmt.Errorf("%s %q must be a single path segment", name, value)
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._+-", r) {
+			continue
+		}
+		return "", fmt.Errorf("%s %q contains unsupported character %q", name, value, r)
+	}
+	return value, nil
+}
+
+func cleanDesiredVersion(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("desiredVersion is required")
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return "", fmt.Errorf("desiredVersion %q must be an unsigned decimal sequence number", value)
+		}
+	}
+	return value, nil
+}
+
+func requestDigest(request TrustedBundleRequest) string {
+	type digestInput struct {
+		SourceID             string
+		DesiredVersion       string
+		NodeName             string
+		ApplyMode            string
+		GenerationID         string
+		CurrentManifest      manifest.Manifest
+		ClusterDefaults      NodeOverlay
+		SystemRoleOverrides  map[string]NodeOverlay
+		NodeOverrides        map[string]NodeOverlay
+		KubeadmConfigs       map[string]kubeadmconfig.Plan
+		KubernetesVersion    string
+		KubernetesActivation string
+	}
+	data, _ := json.Marshal(digestInput{
+		SourceID:             request.SourceID,
+		DesiredVersion:       request.DesiredVersion,
+		NodeName:             request.NodeName,
+		ApplyMode:            request.ApplyMode,
+		GenerationID:         request.GenerationID,
+		CurrentManifest:      request.CurrentManifest,
+		ClusterDefaults:      request.ClusterDefaults,
+		SystemRoleOverrides:  request.SystemRoleOverrides,
+		NodeOverrides:        request.NodeOverrides,
+		KubeadmConfigs:       request.KubeadmConfigs,
+		KubernetesVersion:    request.KubernetesVersion,
+		KubernetesActivation: request.KubernetesActivationPath,
+	})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (request TrustedBundleRequest) now() time.Time {
+	if request.Now != nil {
+		return request.Now()
+	}
+	return time.Now().UTC()
+}
+
+func selectedKubernetesPayloadVersion(record generation.Record) string {
+	for _, sysext := range record.Sysexts {
+		if sysext.Name == "kubernetes" {
+			return sysext.PayloadVersion
+		}
+	}
+	return ""
+}
+
+func selectedKubernetesActivationPath(record generation.Record) string {
+	for _, sysext := range record.Sysexts {
+		if sysext.Name == "kubernetes" {
+			return sysext.ActivationPath
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}

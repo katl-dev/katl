@@ -1,0 +1,300 @@
+package configapply
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zariel/katl/internal/installer/confext"
+	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/kubeadmconfig"
+	"github.com/zariel/katl/internal/installer/manifest"
+)
+
+func TestApplyTrustedBundleRendersAndExecutesLiveNetworkd(t *testing.T) {
+	root := t.TempDir()
+	activator := &fakeActivator{}
+	runner := &fakeCommandRunner{}
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeLive,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "20-uplink.network",
+				Content: "[Match]\nName=ens3\n[Network]\nDHCP=yes\n",
+			}}},
+			LivePreflight: map[string]bool{DomainNetworkd: true},
+		},
+		Executor: &Executor{Runner: runner, Activator: activator, Now: fixedNow},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive || result.Status.Phase != generation.ConfigApplyPhaseActive {
+		t.Fatalf("plan/status = %#v %#v", result.Plan.Decision, result.Status)
+	}
+	if activator.activated != "2026.06.05-002" {
+		t.Fatalf("activated generation = %q", activator.activated)
+	}
+	networkdPath := filepath.Join(result.Tree.ConfextDir, "etc/systemd/network/20-uplink.network")
+	data, err := os.ReadFile(networkdPath)
+	if err != nil {
+		t.Fatalf("read networkd file: %v", err)
+	}
+	if !strings.Contains(string(data), "DHCP=yes") {
+		t.Fatalf("networkd content = %q", data)
+	}
+	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
+	if err != nil {
+		t.Fatalf("ReadConfigApplyStatus() error = %v", err)
+	}
+	if persisted.Phase != generation.ConfigApplyPhaseActive {
+		t.Fatalf("persisted phase = %q", persisted.Phase)
+	}
+	if result.Audit.SourceID != "operator" || result.Audit.DesiredVersion != "2" || result.Audit.Decision != DecisionAccepted {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+}
+
+func TestApplyTrustedBundleResolvesRoleAndNodeOverlaysForNextBoot(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+		SystemRoleOverrides: map[string]NodeOverlay{
+			"control-plane": {
+				Identity: &IdentityOverlay{AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestRoleKey katl"}},
+			},
+		},
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {
+				SystemRole: "worker",
+				Identity:   &IdentityOverlay{Hostname: "worker-1"},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Manifest.Node.SystemRole != "worker" || result.Manifest.Node.Identity.Hostname != "worker-1" {
+		t.Fatalf("merged node = %#v", result.Manifest.Node)
+	}
+	for _, domain := range []string{DomainNetworkd, DomainSSHOperatorAccess, DomainSystemRole, DomainNodeIdentity} {
+		if !containsDomain(result.Plan.Decision.ChangedDomains, domain) {
+			t.Fatalf("changed domains = %#v, missing %s", result.Plan.Decision.ChangedDomains, domain)
+		}
+	}
+	if result.Status.Phase != generation.ConfigApplyPhaseNextBoot {
+		t.Fatalf("status phase = %q", result.Status.Phase)
+	}
+}
+
+func TestApplyTrustedBundleStagesKubeadmDesiredInputWithoutClusterMutation(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			KubeadmChanged: true,
+		},
+		CurrentManifest: manifestWithKubeadm(),
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"control-plane": kubeadmPlan("control-plane"),
+		},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	kubeadmPath := filepath.Join(result.Tree.ConfextDir, "etc/katl/kubeadm/control-plane/config.yaml")
+	data, err := os.ReadFile(kubeadmPath)
+	if err != nil {
+		t.Fatalf("read kubeadm desired input: %v", err)
+	}
+	if !strings.Contains(string(data), "InitConfiguration") {
+		t.Fatalf("kubeadm content = %q", data)
+	}
+	if !result.Plan.GenerationRecord.ConfigApply.Kubeadm.Required || !result.Status.Kubeadm.Required {
+		t.Fatalf("kubeadm action required missing: %#v %#v", result.Plan.GenerationRecord.ConfigApply.Kubeadm, result.Status.Kubeadm)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeNextBoot {
+		t.Fatalf("decision = %#v", result.Plan.Decision)
+	}
+}
+
+func TestApplyTrustedBundleRejectsUnsafeEtcPathsBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			UnsafeEtcFiles: confextFiles{{Path: "/etc/kubernetes/admin.conf", Content: "secret\n"}}.native(),
+		},
+	}))
+	if err == nil {
+		t.Fatalf("ApplyTrustedBundle() error = nil, result = %#v", result)
+	}
+	if !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("error = %q, want rejection", err)
+	}
+	if result.Tree.ConfextDir != "" {
+		t.Fatalf("unsafe request rendered tree: %#v", result.Tree)
+	}
+	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainArbitraryEtc) {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+}
+
+func TestApplyTrustedBundleRecordsRollbackStatusOnActivationFailure(t *testing.T) {
+	root := t.TempDir()
+	activator := &fakeActivator{activateErr: os.ErrPermission}
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeLive,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "20-uplink.network",
+				Content: "[Match]\nName=ens3\n[Network]\nDHCP=yes\n",
+			}}},
+			LivePreflight: map[string]bool{DomainNetworkd: true},
+		},
+		Executor: &Executor{Runner: &fakeCommandRunner{}, Activator: activator, Now: fixedNow},
+	}))
+	if err == nil {
+		t.Fatalf("ApplyTrustedBundle() error = nil, result = %#v", result)
+	}
+	if result.Status.Phase != generation.ConfigApplyPhaseRolledBack || result.Status.Rollback == nil {
+		t.Fatalf("status = %#v, want rollback status", result.Status)
+	}
+	if result.Status.Rollback.TargetGenerationID != "2026.06.05-001" {
+		t.Fatalf("rollback target = %#v", result.Status.Rollback)
+	}
+	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
+	if err != nil {
+		t.Fatalf("ReadConfigApplyStatus() error = %v", err)
+	}
+	if persisted.Phase != generation.ConfigApplyPhaseRolledBack {
+		t.Fatalf("persisted phase = %q", persisted.Phase)
+	}
+}
+
+func trustedBundleRequest(root string, override TrustedBundleRequest) TrustedBundleRequest {
+	request := TrustedBundleRequest{
+		Root:            root,
+		SourceID:        "operator",
+		DesiredVersion:  "2",
+		NodeName:        "cp-1",
+		ApplyMode:       generation.ApplyModeNextBoot,
+		GenerationID:    "2026.06.05-002",
+		CurrentManifest: baseManifest(),
+		CurrentRecord:   currentRecord(),
+		Chown:           func(string, int, int) error { return nil },
+		Now:             fixedNow,
+	}
+	if override.ApplyMode != "" {
+		request.ApplyMode = override.ApplyMode
+	}
+	if override.GenerationID != "" {
+		request.GenerationID = override.GenerationID
+	}
+	if override.CurrentManifest.Kind != "" {
+		request.CurrentManifest = override.CurrentManifest
+	}
+	if override.CurrentRecord.Kind != "" {
+		request.CurrentRecord = override.CurrentRecord
+	}
+	request.ClusterDefaults = override.ClusterDefaults
+	request.SystemRoleOverrides = override.SystemRoleOverrides
+	request.NodeOverrides = override.NodeOverrides
+	request.KubeadmConfigs = override.KubeadmConfigs
+	request.Executor = override.Executor
+	return request
+}
+
+func baseManifest() manifest.Manifest {
+	return manifest.Manifest{
+		APIVersion: manifest.APIVersion,
+		Kind:       manifest.Kind,
+		Node: manifest.NodeConfig{
+			Identity: manifest.NodeIdentity{
+				Hostname: "cp-1",
+				SSH: manifest.SSHIdentity{
+					AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestBaseKey katl"},
+				},
+			},
+			SystemRole: "control-plane",
+		},
+		Install: manifest.InstallConfig{
+			AllowDestructiveInstall: true,
+			TargetDisk:              manifest.DiskSelector{ByID: "disk/by-id/test"},
+		},
+		KatlosImage: manifest.KatlosImage{
+			LocalRef:     "images/katlos.raw",
+			SHA256:       strings.Repeat("a", 64),
+			SizeBytes:    1024,
+			Version:      "0.1.0",
+			Architecture: "x86_64",
+			Role:         "install",
+		},
+	}
+}
+
+func manifestWithKubeadm() manifest.Manifest {
+	m := baseManifest()
+	m.Node.Kubernetes.Kubeadm.ConfigRef = "control-plane"
+	return m
+}
+
+func kubeadmPlan(name string) kubeadmconfig.Plan {
+	return kubeadmconfig.Plan{
+		Name: name,
+		Config: kubeadmconfig.File{
+			RenderPath: "/etc/katl/kubeadm/" + name + "/config.yaml",
+			Content: []byte(strings.Join([]string{
+				"apiVersion: kubeadm.k8s.io/v1beta4",
+				"kind: InitConfiguration",
+				"---",
+				"apiVersion: kubeadm.k8s.io/v1beta4",
+				"kind: ClusterConfiguration",
+				"kubernetesVersion: v1.36.1",
+				"",
+			}, "\n")),
+			Mode: 0o644,
+		},
+		Documents: []kubeadmconfig.Document{
+			{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration"},
+			{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "ClusterConfiguration", KubernetesVersion: "v1.36.1"},
+		},
+	}
+}
+
+func containsDomain(domains []string, want string) bool {
+	for _, domain := range domains {
+		if domain == want {
+			return true
+		}
+	}
+	return false
+}
+
+type confextFile struct {
+	Path    string
+	Content string
+}
+
+type confextFiles []confextFile
+
+func (files confextFiles) native() []confext.NativeEtcFile {
+	out := make([]confext.NativeEtcFile, 0, len(files))
+	for _, file := range files {
+		out = append(out, confext.NativeEtcFile{Path: file.Path, Content: file.Content})
+	}
+	return out
+}
