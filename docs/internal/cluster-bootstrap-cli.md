@@ -241,23 +241,37 @@ initial kubeadm endpoint
   equivalent endpoint from the compiled plan
 
 stable endpoint handoff
-  use a user-declared VIP, DNS name, BIRD-routed endpoint, or load balancer
-  after user bootstrap resources make it reachable
+  use a user-declared VIP, DNS name, routed endpoint, or load balancer as the
+  stable operator-facing API endpoint
 ```
 
 Katl does not own BIRD, VIP, kube-vip, ingress, load balancer, or DNS lifecycle
 as part of this command. The command may wait for a user-declared endpoint after
 API readiness and either before or after optional user bootstrap resources run.
-The before-manifests mode is for user-owned bootstrap resources, such as Cilium,
-that must contact an already reachable stable API endpoint while they start.
+There are two stable endpoint wait phases:
+
+```text
+pre-manifest stable endpoint
+  the endpoint is independently reachable before user manifests apply; use this
+  when early resources such as Cilium must contact the stable endpoint while
+  they start
+
+post-handoff stable endpoint
+  the endpoint becomes reachable only after user bootstrap resources run; use
+  this for endpoints created or advertised by those resources
+```
+
 Do not use before-manifests mode for an endpoint that is created or advertised
-by the same manifests; use the post-handoff stable endpoint wait for that shape.
+by the same manifests.
 
 Do not add kubePrism as an initial requirement.
 
 The opt-in host/platform endpoint helper design, including BIRD-mediated routing
 and pre-Cilium advertisement, is tracked separately in
 `docs/internal/platform-api-endpoint-routing-capability.md`.
+
+The broader user story and operator contract for platform API endpoints is
+documented in `docs/internal/platform-api-endpoint-user-story.md`.
 
 ## Kubeconfig Output
 

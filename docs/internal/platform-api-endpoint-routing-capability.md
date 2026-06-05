@@ -12,10 +12,16 @@ This decision builds on:
 
 ```text
 docs/internal/cluster-bootstrap-cli.md
+docs/internal/platform-api-endpoint-user-story.md
 docs/internal/platform-api-endpoint-helper-input-schema.md
 docs/internal/system-roles-and-capabilities.md
 docs/internal/supported-node-config-domains.md
 ```
+
+`docs/internal/platform-api-endpoint-user-story.md` defines the baseline Katl
+operator story for endpoint reachability. This document only covers the opt-in
+dynamic-routing helper for users who do not already have an independently
+reachable platform API endpoint.
 
 ## Decision
 
