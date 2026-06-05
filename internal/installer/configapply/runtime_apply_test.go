@@ -129,6 +129,207 @@ func TestApplyTrustedBundleStagesKubeadmDesiredInputWithoutClusterMutation(t *te
 	}
 }
 
+func TestApplyTrustedBundleReplaysSameRequestWithoutRenderingAgain(t *testing.T) {
+	root := t.TempDir()
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	})
+	first, err := ApplyTrustedBundle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first ApplyTrustedBundle() error = %v", err)
+	}
+	replay, err := ApplyTrustedBundle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("replay ApplyTrustedBundle() error = %v", err)
+	}
+	if replay.AuditPath != first.AuditPath || replay.Audit.RequestDigest != first.Audit.RequestDigest {
+		t.Fatalf("replay audit = %#v, want %#v", replay.Audit, first.Audit)
+	}
+	if replay.MetadataPath != first.MetadataPath || replay.StatusPath != first.StatusPath {
+		t.Fatalf("replay paths = %s %s, want %s %s", replay.MetadataPath, replay.StatusPath, first.MetadataPath, first.StatusPath)
+	}
+	if replay.Plan.GenerationRecord.GenerationID != first.Plan.GenerationRecord.GenerationID || replay.Status.GenerationID != first.Status.GenerationID {
+		t.Fatalf("replay record/status = %#v %#v", replay.Plan.GenerationRecord, replay.Status)
+	}
+	if replay.Tree.ConfextDir != "" {
+		t.Fatalf("replay rendered a new tree: %#v", replay.Tree)
+	}
+}
+
+func TestApplyTrustedBundleRejectsSameVersionDigestConflictBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	first, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("first ApplyTrustedBundle() error = %v", err)
+	}
+	conflict, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-003",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nAddress=192.0.2.10/24\n",
+			}}},
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "different request digest") {
+		t.Fatalf("conflict ApplyTrustedBundle() error = %v, result = %#v", err, conflict)
+	}
+	if conflict.AuditPath != first.AuditPath || conflict.Audit.RequestDigest != first.Audit.RequestDigest {
+		t.Fatalf("conflict audit = %#v, want existing audit %#v", conflict.Audit, first.Audit)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "var/lib/katl/generations/2026.06.05-003")); !os.IsNotExist(statErr) {
+		t.Fatalf("conflicting request created generation dir: %v", statErr)
+	}
+}
+
+func TestApplyTrustedBundleRejectsStaleVersionBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	_, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		DesiredVersion: "10",
+		ApplyMode:      generation.ApplyModeNextBoot,
+		GenerationID:   "2026.06.05-010",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("newer ApplyTrustedBundle() error = %v", err)
+	}
+	stale, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		DesiredVersion: "2",
+		ApplyMode:      generation.ApplyModeNextBoot,
+		GenerationID:   "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "older than recorded version 10") {
+		t.Fatalf("stale ApplyTrustedBundle() error = %v, result = %#v", err, stale)
+	}
+	if stale.Audit.Decision != DecisionRejected || stale.Audit.FailureReason == "" {
+		t.Fatalf("stale audit = %#v", stale.Audit)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "var/lib/katl/generations/2026.06.05-002")); !os.IsNotExist(statErr) {
+		t.Fatalf("stale request created generation dir: %v", statErr)
+	}
+}
+
+func TestApplyTrustedBundleRejectsRuntimeSelectionOverridesBeforeRender(t *testing.T) {
+	tests := []struct {
+		name       string
+		override   TrustedBundleRequest
+		wantReason string
+	}{
+		{
+			name:       "kubernetes version",
+			override:   TrustedBundleRequest{KubernetesVersion: "v1.37.0"},
+			wantReason: "sysext version selection",
+		},
+		{
+			name:       "activation path",
+			override:   TrustedBundleRequest{KubernetesActivationPath: "/run/extensions/katl-kubernetes.raw"},
+			wantReason: "raw Kubernetes sysext activation paths",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			override := tt.override
+			override.ApplyMode = generation.ApplyModeNextBoot
+			override.GenerationID = "2026.06.05-002"
+			override.ClusterDefaults = NodeOverlay{
+				Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+					Name:    "10-common.network",
+					Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+				}}},
+			}
+			result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, override))
+			if err == nil || !strings.Contains(err.Error(), tt.wantReason) {
+				t.Fatalf("ApplyTrustedBundle() error = %v, want %q; result = %#v", err, tt.wantReason, result)
+			}
+			if result.Audit.Decision != DecisionRejected || result.Audit.FailureReason == "" {
+				t.Fatalf("audit = %#v", result.Audit)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "var/lib/katl/generations/2026.06.05-002")); !os.IsNotExist(statErr) {
+				t.Fatalf("selection override created generation dir: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestApplyTrustedBundleRejectsRuntimeSelectionOverrideReplay(t *testing.T) {
+	root := t.TempDir()
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:         generation.ApplyModeNextBoot,
+		GenerationID:      "2026.06.05-002",
+		KubernetesVersion: "v1.37.0",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	})
+	audit := request.audit("operator", "2", DecisionAccepted, []Change{{Domain: DomainNetworkd}}, nil, nil, fixedNow())
+	if _, err := writeAudit(root, "operator", "2", audit); err != nil {
+		t.Fatalf("writeAudit() error = %v", err)
+	}
+	result, err := ApplyTrustedBundle(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "sysext version selection") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want sysext rejection; result = %#v", err, result)
+	}
+	if result.Audit.Decision != DecisionRejected {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "var/lib/katl/generations/2026.06.05-002")); !os.IsNotExist(statErr) {
+		t.Fatalf("selection override replay created generation dir: %v", statErr)
+	}
+}
+
+func TestApplyTrustedBundleRejectsLeadingZeroDesiredVersion(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		DesiredVersion: "02",
+		ApplyMode:      generation.ApplyModeNextBoot,
+		GenerationID:   "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "leading zeroes") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want leading-zero rejection; result = %#v", err, result)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "var/lib/katl/generations/2026.06.05-002")); !os.IsNotExist(statErr) {
+		t.Fatalf("leading-zero request created generation dir: %v", statErr)
+	}
+}
+
 func TestApplyTrustedBundleRejectsUnsafeEtcPathsBeforeRender(t *testing.T) {
 	root := t.TempDir()
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
@@ -204,6 +405,15 @@ func trustedBundleRequest(root string, override TrustedBundleRequest) TrustedBun
 	if override.GenerationID != "" {
 		request.GenerationID = override.GenerationID
 	}
+	if override.SourceID != "" {
+		request.SourceID = override.SourceID
+	}
+	if override.DesiredVersion != "" {
+		request.DesiredVersion = override.DesiredVersion
+	}
+	if override.NodeName != "" {
+		request.NodeName = override.NodeName
+	}
 	if override.CurrentManifest.Kind != "" {
 		request.CurrentManifest = override.CurrentManifest
 	}
@@ -214,7 +424,15 @@ func trustedBundleRequest(root string, override TrustedBundleRequest) TrustedBun
 	request.SystemRoleOverrides = override.SystemRoleOverrides
 	request.NodeOverrides = override.NodeOverrides
 	request.KubeadmConfigs = override.KubeadmConfigs
+	request.KubernetesVersion = override.KubernetesVersion
+	request.KubernetesActivationPath = override.KubernetesActivationPath
 	request.Executor = override.Executor
+	if override.Chown != nil {
+		request.Chown = override.Chown
+	}
+	if override.Now != nil {
+		request.Now = override.Now
+	}
 	return request
 }
 

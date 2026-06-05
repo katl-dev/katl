@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -100,10 +101,24 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 	if err != nil {
 		return TrustedBundleResult{}, err
 	}
+	request.SourceID = sourceID
+	request.DesiredVersion = desiredVersion
 	if strings.TrimSpace(request.GenerationID) == "" {
 		return TrustedBundleResult{}, fmt.Errorf("generation id is required")
 	}
 	now := request.now()
+	if err := rejectRuntimeSelectionOverrides(request); err != nil {
+		audit := request.audit(sourceID, desiredVersion, DecisionRejected, nil, nil, err, now)
+		auditPath, _ := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Audit: audit, AuditPath: auditPath}, err
+	}
+	replay, ok, err := request.checkFreshness(sourceID, desiredVersion, now)
+	if err != nil {
+		return replay, err
+	}
+	if ok {
+		return replay, nil
+	}
 	merged, changes, unsafeFiles, err := mergeRuntimeConfig(request)
 	if err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", nil, nil, err, now)
@@ -378,7 +393,7 @@ func (request TrustedBundleRequest) audit(sourceID, desiredVersion, decision str
 }
 
 func writeAudit(root, sourceID, desiredVersion string, audit ConfigRequestAudit) (string, error) {
-	path := filepath.Join(filepath.Clean(root), "var/lib/katl/config-requests", sourceID, desiredVersion+".json")
+	path := auditPath(root, sourceID, desiredVersion)
 	data, err := json.MarshalIndent(audit, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal config request audit: %w", err)
@@ -390,6 +405,136 @@ func writeAudit(root, sourceID, desiredVersion string, audit ConfigRequestAudit)
 		return "", fmt.Errorf("write config request audit: %w", err)
 	}
 	return path, nil
+}
+
+func auditPath(root, sourceID, desiredVersion string) string {
+	return filepath.Join(filepath.Clean(root), "var/lib/katl/config-requests", sourceID, desiredVersion+".json")
+}
+
+func (request TrustedBundleRequest) checkFreshness(sourceID, desiredVersion string, now time.Time) (TrustedBundleResult, bool, error) {
+	path := auditPath(request.Root, sourceID, desiredVersion)
+	existing, err := readAudit(path)
+	if err == nil {
+		if existing.RequestDigest != requestDigest(request) {
+			return TrustedBundleResult{Audit: existing, AuditPath: path}, false, fmt.Errorf("desiredVersion %s for sourceID %s already has a different request digest", desiredVersion, sourceID)
+		}
+		return replayResult(request.Root, existing, path), true, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return TrustedBundleResult{}, false, err
+	}
+	latest, ok, err := latestVersion(request.Root, sourceID)
+	if err != nil {
+		return TrustedBundleResult{}, false, err
+	}
+	if ok && compareVersion(desiredVersion, latest) < 0 {
+		staleErr := fmt.Errorf("desiredVersion %s for sourceID %s is older than recorded version %s", desiredVersion, sourceID, latest)
+		audit := request.audit(sourceID, desiredVersion, DecisionRejected, nil, nil, staleErr, now)
+		auditPath, _ := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Audit: audit, AuditPath: auditPath}, false, staleErr
+	}
+	return TrustedBundleResult{}, false, nil
+}
+
+func rejectRuntimeSelectionOverrides(request TrustedBundleRequest) error {
+	if strings.TrimSpace(request.KubernetesVersion) != "" {
+		return fmt.Errorf("runtime config apply does not accept Kubernetes sysext version selection")
+	}
+	if strings.TrimSpace(request.KubernetesActivationPath) != "" {
+		return fmt.Errorf("runtime config apply does not accept raw Kubernetes sysext activation paths")
+	}
+	return nil
+}
+
+func readAudit(path string) (ConfigRequestAudit, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ConfigRequestAudit{}, err
+	}
+	var audit ConfigRequestAudit
+	if err := json.Unmarshal(data, &audit); err != nil {
+		return ConfigRequestAudit{}, fmt.Errorf("decode config request audit: %w", err)
+	}
+	return audit, nil
+}
+
+func replayResult(root string, audit ConfigRequestAudit, auditPath string) TrustedBundleResult {
+	result := TrustedBundleResult{
+		Audit:     audit,
+		AuditPath: auditPath,
+	}
+	if strings.TrimSpace(audit.CandidateGeneration) == "" {
+		return result
+	}
+	metadataPath, err := generation.MetadataPath(root, audit.CandidateGeneration)
+	if err == nil {
+		if record, readErr := generation.ReadRecord(metadataPath); readErr == nil {
+			result.Plan.GenerationRecord = record
+			result.MetadataPath = metadataPath
+		}
+	}
+	statusPath, err := generation.ConfigApplyStatusPath(root, audit.CandidateGeneration)
+	if err == nil {
+		if status, readErr := generation.ReadConfigApplyStatus(statusPath); readErr == nil {
+			result.Status = status
+			result.StatusPath = statusPath
+		}
+	}
+	return result
+}
+
+func latestVersion(root, sourceID string) (string, bool, error) {
+	dir := filepath.Join(filepath.Clean(root), "var/lib/katl/config-requests", sourceID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read config request audit directory: %w", err)
+	}
+	var latest string
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		version := strings.TrimSuffix(entry.Name(), ".json")
+		if _, err := cleanDesiredVersion(version); err != nil {
+			continue
+		}
+		if latest == "" || compareVersion(version, latest) > 0 {
+			latest = version
+		}
+	}
+	if latest == "" {
+		return "", false, nil
+	}
+	return latest, true, nil
+}
+
+func compareVersion(left, right string) int {
+	left = normalizeVersion(left)
+	right = normalizeVersion(right)
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
+}
+
+func normalizeVersion(value string) string {
+	value = strings.TrimLeft(strings.TrimSpace(value), "0")
+	if value == "" {
+		return "0"
+	}
+	return value
 }
 
 func cleanAuditSegment(name, value string) (string, error) {
@@ -418,6 +563,9 @@ func cleanDesiredVersion(value string) (string, error) {
 		if r < '0' || r > '9' {
 			return "", fmt.Errorf("desiredVersion %q must be an unsigned decimal sequence number", value)
 		}
+	}
+	if len(value) > 1 && value[0] == '0' {
+		return "", fmt.Errorf("desiredVersion %q must not contain leading zeroes", value)
 	}
 	return value, nil
 }
