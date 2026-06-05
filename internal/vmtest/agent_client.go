@@ -58,6 +58,7 @@ func DialAgent(ctx context.Context, cid, port uint32, transcript string) (*Agent
 
 func (c *AgentClient) Health(ctx context.Context) (*vmtestpb.HealthResponse, error) {
 	resp, err := c.Do(ctx, &vmtestpb.VmtestRequest{
+		TimeoutMs: requestTimeoutMS(ctx),
 		Operation: &vmtestpb.VmtestRequest_Health{Health: &vmtestpb.HealthRequest{}},
 	})
 	if err != nil {
@@ -72,6 +73,7 @@ func (c *AgentClient) Health(ctx context.Context) (*vmtestpb.HealthResponse, err
 
 func (c *AgentClient) RunCommand(ctx context.Context, req *vmtestpb.RunCommandRequest) (*vmtestpb.CommandResult, error) {
 	resp, err := c.Do(ctx, &vmtestpb.VmtestRequest{
+		TimeoutMs: requestTimeoutMS(ctx),
 		Operation: &vmtestpb.VmtestRequest_RunCommand{RunCommand: req},
 	})
 	if err != nil {
@@ -86,6 +88,7 @@ func (c *AgentClient) RunCommand(ctx context.Context, req *vmtestpb.RunCommandRe
 
 func (c *AgentClient) ReadFile(ctx context.Context, req *vmtestpb.ReadFileRequest) (*vmtestpb.FileResult, error) {
 	resp, err := c.Do(ctx, &vmtestpb.VmtestRequest{
+		TimeoutMs: requestTimeoutMS(ctx),
 		Operation: &vmtestpb.VmtestRequest_ReadFile{ReadFile: req},
 	})
 	if err != nil {
@@ -100,6 +103,7 @@ func (c *AgentClient) ReadFile(ctx context.Context, req *vmtestpb.ReadFileReques
 
 func (c *AgentClient) ExportJournal(ctx context.Context, req *vmtestpb.ExportJournalRequest) (*vmtestpb.JournalResult, error) {
 	resp, err := c.Do(ctx, &vmtestpb.VmtestRequest{
+		TimeoutMs: requestTimeoutMS(ctx),
 		Operation: &vmtestpb.VmtestRequest_ExportJournal{ExportJournal: req},
 	})
 	if err != nil {
@@ -122,9 +126,13 @@ func (c *AgentClient) Do(ctx context.Context, req *vmtestpb.VmtestRequest) (*vmt
 	if req.TimeoutMs == 0 && c.DefaultTimeout > 0 {
 		req.TimeoutMs = uint32(c.DefaultTimeout.Milliseconds())
 	}
-	if c.DefaultTimeout > 0 {
+	timeout := c.DefaultTimeout
+	if req.TimeoutMs > 0 {
+		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+	}
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.DefaultTimeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	started := c.clock()
@@ -159,6 +167,25 @@ func (c *AgentClient) Do(ctx context.Context, req *vmtestpb.VmtestRequest) (*vmt
 		c.writeTranscript(summaryForError(req.RequestId, method, started, c.clock(), err))
 		return nil, err
 	}
+}
+
+func requestTimeoutMS(ctx context.Context) uint32 {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	timeout := time.Until(deadline)
+	if timeout <= 0 {
+		return 1
+	}
+	ms := timeout.Milliseconds()
+	if ms <= 0 {
+		return 1
+	}
+	if ms > int64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(ms)
 }
 
 func (c *AgentClient) Close() error {

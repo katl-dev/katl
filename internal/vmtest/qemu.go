@@ -271,7 +271,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		return VMPlan{}, err
 	}
 	serial := result.Artifacts.InstallerSerial
-	if config.Phase == "runtime" {
+	if runtimeSerialPhase(config.Phase) {
 		serial = result.Artifacts.RuntimeSerial
 	}
 	args := []string{
@@ -521,6 +521,10 @@ func phaseName(config VMConfig) string {
 		return config.Phase
 	}
 	return "qemu"
+}
+
+func runtimeSerialPhase(phase string) bool {
+	return phase == "runtime" || phase == "kubeadm-api-smoke"
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {

@@ -61,3 +61,49 @@ func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 		t.Fatalf("vsock transcript did not record successful health: %s", transcript)
 	}
 }
+
+func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
+	options := DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime kubeadm API smoke")
+	}
+	disk := RequireEnv(t, "KATL_INSTALLED_DISK")
+	esp := RequireEnv(t, "KATL_INSTALLED_ESP_ARTIFACTS")
+
+	runner := NewRunner(options)
+	runner.RequireHost(t, HostRequirements{
+		QEMU: true,
+		OVMF: true,
+		KVM:  options.KVM,
+	})
+	result, err := runner.Plan(Scenario{
+		Name: "installed-runtime-kubeadm-api-smoke",
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	result = RunInstalledKubeadmAPISmoke(ctx, result, KubeadmAPISmokeConfig{
+		Runtime: InstalledRuntimeConfig{
+			Disk:         disk,
+			DiskFormat:   DiskFormat(first(os.Getenv("KATL_INSTALLED_DISK_FORMAT"), string(DiskRaw))),
+			ESPArtifacts: esp,
+			VM: VMConfig{
+				KVM:     options.KVM,
+				RAMMiB:  4096,
+				CPUs:    2,
+				Timeout: 18 * time.Minute,
+				VSock: VSockConfig{
+					Enabled: true,
+				},
+			},
+		},
+	}, VMRunner{})
+	if err := runner.Write(Scenario{Name: "installed-runtime-kubeadm-api-smoke"}, result); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
+	}
+}
