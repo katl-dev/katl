@@ -78,6 +78,185 @@ func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
 	}
 }
 
+func TestRunAppliesUserBootstrapAfterAPIReadinessAndUsesStableEndpoint(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	manifestOne := writeBootstrapManifest(t, "01-cni.yaml", "cni")
+	manifestTwo := writeBootstrapManifest(t, "02-flux.yaml", "flux")
+	inv := validSingleNodeInventory()
+	inv.Bootstrap = &inventory.Bootstrap{
+		Manifests: []inventory.BootstrapManifest{
+			{Path: manifestOne},
+			{Path: manifestTwo},
+		},
+		Waits: []inventory.BootstrapWait{{
+			Kind:      BootstrapWaitCondition,
+			Namespace: "kube-system",
+			Name:      "deployment/cilium-operator",
+			Condition: "Available",
+		}},
+		StableEndpoint: "api.stable.test:6443",
+	}
+	var events []string
+	nodeRunner := &fakeNodeRunner{
+		events: &events,
+		credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+	}
+	bootstrapRunner := &fakeBootstrapRunner{
+		events: &events,
+		result: BootstrapResult{StableEndpointReady: true},
+	}
+	result, err := Run(context.Background(), Request{
+		Inventory:           inv,
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner:       nodeRunner,
+		BootstrapRunner:  bootstrapRunner,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	wantPhases := []string{"plan", "readiness", "kubeadm-init", "api-ready", "api-ready-after-join", "user-bootstrap", "kubeconfig"}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, wantPhases) {
+		t.Fatalf("phases = %#v, want %#v", got, wantPhases)
+	}
+	if got, want := events, []string{"init:cp-1", "ready:cp-1", "ready:cp-1", "bootstrap"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	if len(bootstrapRunner.requests) != 1 {
+		t.Fatalf("bootstrap calls = %d, want 1", len(bootstrapRunner.requests))
+	}
+	request := bootstrapRunner.requests[0]
+	if request.Server != "10.0.0.11:6443" {
+		t.Fatalf("bootstrap server = %q", request.Server)
+	}
+	if result.Plan.Bootstrap.Manifests[0].Path != manifestOne {
+		t.Fatalf("plan bootstrap = %#v", result.Plan.Bootstrap)
+	}
+	if got, want := manifestPaths(request.Manifests), []string{manifestOne, manifestTwo}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("manifest order = %#v, want %#v", got, want)
+	}
+	if len(request.Waits) != 2 || request.Waits[1].Kind != BootstrapWaitStableEndpoint || request.Waits[1].Name != "api.stable.test:6443" {
+		t.Fatalf("waits = %#v, want explicit wait plus stable endpoint", request.Waits)
+	}
+	if result.Kubeconfig.Server != "https://api.stable.test:6443" {
+		t.Fatalf("kubeconfig server = %q, want stable endpoint", result.Kubeconfig.Server)
+	}
+}
+
+func TestRunRejectsInvalidBootstrapYAMLBeforeKubeadm(t *testing.T) {
+	nodeRunner := &fakeNodeRunner{}
+	bootstrapRunner := &fakeBootstrapRunner{}
+	_, err := Run(context.Background(), Request{
+		Inventory: validSingleNodeInventory(),
+		Bootstrap: UserBootstrap{Manifests: []BootstrapManifest{{
+			Path:    "bad.yaml",
+			Content: []byte("apiVersion: ["),
+		}}},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner:       nodeRunner,
+		BootstrapRunner:  bootstrapRunner,
+	})
+	if err == nil || !strings.Contains(err.Error(), "decode YAML") {
+		t.Fatalf("Run() error = %v, want YAML validation failure", err)
+	}
+	if len(nodeRunner.calls) != 0 || len(bootstrapRunner.requests) != 0 {
+		t.Fatalf("execution happened after invalid YAML: node=%#v bootstrap=%#v", nodeRunner.calls, bootstrapRunner.requests)
+	}
+}
+
+func TestRunDoesNotApplyUserBootstrapBeforeAPIReadiness(t *testing.T) {
+	nodeRunner := &fakeNodeRunner{apiErr: errors.New("not ready yet")}
+	bootstrapRunner := &fakeBootstrapRunner{}
+	_, err := Run(context.Background(), Request{
+		Inventory: validSingleNodeInventory(),
+		Bootstrap: UserBootstrap{Manifests: []BootstrapManifest{{
+			Path:    "cni.yaml",
+			Content: []byte(validBootstrapManifest("cni")),
+		}}},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner:       nodeRunner,
+		BootstrapRunner:  bootstrapRunner,
+	})
+	if err == nil || !strings.Contains(err.Error(), "wait for API readiness") {
+		t.Fatalf("Run() error = %v, want API readiness failure", err)
+	}
+	if len(bootstrapRunner.requests) != 0 {
+		t.Fatalf("bootstrap runner was called before API readiness: %#v", bootstrapRunner.requests)
+	}
+}
+
+func TestRunStopsAfterUserBootstrapServerFailureAndRedactsSecret(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	secret := "abcdef.0123456789abcdef"
+	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("server-side apply failed with token " + secret)}
+	result, err := Run(context.Background(), Request{
+		Inventory:           validSingleNodeInventory(),
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+		Bootstrap: UserBootstrap{Manifests: []BootstrapManifest{{
+			Path:    "cni.yaml",
+			Content: []byte(validBootstrapManifest("cni")),
+		}}},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner: &fakeNodeRunner{credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		}},
+		BootstrapRunner: bootstrapRunner,
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want bootstrap failure")
+	}
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("error = %q, want redacted token", err.Error())
+	}
+	if got := phaseNames(result.Phases); containsString(got, "kubeconfig") {
+		t.Fatalf("phases = %#v, kubeconfig should not run after bootstrap failure", got)
+	}
+	if _, statErr := os.Stat(out); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("kubeconfig output stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestRunStopsAfterUserBootstrapWaitFailure(t *testing.T) {
+	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("wait condition deployment/cilium failed")}
+	result, err := Run(context.Background(), Request{
+		Inventory: validSingleNodeInventory(),
+		Bootstrap: UserBootstrap{
+			Waits: []BootstrapWait{{
+				Kind:      BootstrapWaitCondition,
+				Namespace: "kube-system",
+				Name:      "deployment/cilium",
+				Condition: "Available",
+			}},
+		},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner: &fakeNodeRunner{credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		}},
+		BootstrapRunner: bootstrapRunner,
+	})
+	if err == nil || !strings.Contains(err.Error(), "wait condition") {
+		t.Fatalf("Run() error = %v, want wait failure", err)
+	}
+	if got := phaseNames(result.Phases); containsString(got, "kubeconfig") {
+		t.Fatalf("phases = %#v, kubeconfig should not run after wait failure", got)
+	}
+}
+
 func TestRunRefusesNotReadyNodesBeforeKubeadm(t *testing.T) {
 	nodeRunner := &fakeNodeRunner{}
 	_, err := Run(context.Background(), Request{Inventory: validInventory()}, Dependencies{
@@ -269,12 +448,154 @@ func TestTransportRunnerWaitsForAPIReady(t *testing.T) {
 	}
 }
 
+func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
+	dir := t.TempDir()
+	commands := &fakeKubectlCommandRunner{}
+	result, err := (KubectlBootstrapRunner{
+		CommandRunner: commands,
+		TempDir:       dir,
+	}).RunUserBootstrap(context.Background(), BootstrapRequest{
+		Server:         "10.0.0.11:6443",
+		StableEndpoint: "api.stable.test:6443",
+		Credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+		Manifests: []BootstrapManifest{{
+			Path:    "01-cni.yaml",
+			Content: []byte(validBootstrapManifest("cni")),
+		}},
+		Waits: []BootstrapWait{
+			{Kind: BootstrapWaitAPIReady},
+			{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"},
+			{Kind: BootstrapWaitCondition, Namespace: "kube-system", Name: "deployment/cilium-operator", Condition: "Available"},
+			{Kind: BootstrapWaitNodesReady},
+			{Kind: BootstrapWaitStableEndpoint, Name: "api.stable.test:6443"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunUserBootstrap() error = %v", err)
+	}
+	if len(result.AppliedManifests) != 1 || len(result.Waits) != 5 || !result.StableEndpointReady {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(commands.calls) != 6 {
+		t.Fatalf("kubectl calls = %#v, want 6 calls", commands.calls)
+	}
+	if got := commands.calls[0][5:]; !reflect.DeepEqual(got, []string{"apply", "-f", filepath.Join(dir, "0000.yaml")}) {
+		t.Fatalf("first kubectl args = %#v, want apply", commands.calls[0])
+	}
+	if got := commands.calls[1][5:]; !reflect.DeepEqual(got, []string{"get", "--raw=/readyz"}) {
+		t.Fatalf("api ready args = %#v", commands.calls[1])
+	}
+	if got := commands.calls[2][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "get", "daemonset/cilium"}) {
+		t.Fatalf("resource wait args = %#v", commands.calls[2])
+	}
+	if got := commands.calls[3][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "wait", "--for=condition=Available", "deployment/cilium-operator", "--timeout=5m"}) {
+		t.Fatalf("condition wait args = %#v", commands.calls[3])
+	}
+	if got := commands.calls[4][5:]; !reflect.DeepEqual(got, []string{"wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m"}) {
+		t.Fatalf("nodes wait args = %#v", commands.calls[4])
+	}
+	for _, call := range commands.calls {
+		if len(call) < 5 || call[3] != "--context" || call[4] != "katl-bootstrap" {
+			t.Fatalf("kubectl call lacks explicit context: %#v", call)
+		}
+	}
+	initialKubeconfig := readFileString(t, commands.calls[0][2])
+	if !strings.Contains(initialKubeconfig, "server: https://10.0.0.11:6443") {
+		t.Fatalf("initial bootstrap kubeconfig did not normalize server:\n%s", initialKubeconfig)
+	}
+	stableKubeconfig := readFileString(t, commands.calls[5][2])
+	if !strings.Contains(stableKubeconfig, "server: https://api.stable.test:6443") {
+		t.Fatalf("stable bootstrap kubeconfig did not normalize server:\n%s", stableKubeconfig)
+	}
+}
+
+func TestKubectlBootstrapRunnerPollsAndRedactsWaitFailures(t *testing.T) {
+	secret := "abcdef.0123456789abcdef"
+	commands := &fakeKubectlCommandRunner{
+		results: []readiness.CommandResult{
+			{ExitStatus: 1, Stderr: "missing token " + secret},
+			{ExitStatus: 1, Stderr: "still missing token " + secret},
+		},
+	}
+	_, err := (KubectlBootstrapRunner{
+		CommandRunner: commands,
+		TempDir:       t.TempDir(),
+		Timeout:       2 * time.Millisecond,
+		PollInterval:  time.Millisecond,
+		ProbeTimeout:  time.Millisecond,
+	}).RunUserBootstrap(context.Background(), BootstrapRequest{
+		Server: "10.0.0.11:6443",
+		Credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+		Waits: []BootstrapWait{{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"}},
+	})
+	if err == nil {
+		t.Fatal("RunUserBootstrap() error = nil, want wait timeout")
+	}
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("error = %q, want redacted token", err.Error())
+	}
+	if len(commands.calls) < 2 {
+		t.Fatalf("kubectl calls = %#v, want polling retry", commands.calls)
+	}
+}
+
 func phaseNames(phases []Phase) []string {
 	names := make([]string, len(phases))
 	for i, phase := range phases {
 		names[i] = phase.Name
 	}
 	return names
+}
+
+func manifestPaths(manifests []BootstrapManifest) []string {
+	paths := make([]string, len(manifests))
+	for i, manifest := range manifests {
+		paths[i] = manifest.Path
+	}
+	return paths
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func validBootstrapManifest(name string) string {
+	return `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ` + name + `
+`
+}
+
+func writeBootstrapManifest(t *testing.T, name, objectName string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(validBootstrapManifest(objectName)), 0o644); err != nil {
+		t.Fatalf("write bootstrap manifest: %v", err)
+	}
+	return path
+}
+
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
 }
 
 func validInventory() inventory.Inventory {
@@ -357,13 +678,15 @@ func (c failingChecker) CheckReadiness(_ context.Context, _ inventory.PlannedNod
 
 type fakeNodeRunner struct {
 	calls       []string
+	events      *[]string
 	credentials AdminCredentials
 	join        JoinMaterial
 	err         error
+	apiErr      error
 }
 
 func (r *fakeNodeRunner) RunKubeadmInit(_ context.Context, node inventory.PlannedNode) (AdminCredentials, error) {
-	r.calls = append(r.calls, "init:"+node.Name)
+	r.record("init:" + node.Name)
 	if r.err != nil {
 		return AdminCredentials{}, r.err
 	}
@@ -371,7 +694,7 @@ func (r *fakeNodeRunner) RunKubeadmInit(_ context.Context, node inventory.Planne
 }
 
 func (r *fakeNodeRunner) CreateWorkerJoin(_ context.Context, initNode inventory.PlannedNode) (JoinMaterial, error) {
-	r.calls = append(r.calls, "join-material:"+initNode.Name)
+	r.record("join-material:" + initNode.Name)
 	if r.err != nil {
 		return JoinMaterial{}, r.err
 	}
@@ -379,13 +702,56 @@ func (r *fakeNodeRunner) CreateWorkerJoin(_ context.Context, initNode inventory.
 }
 
 func (r *fakeNodeRunner) RunWorkerJoin(_ context.Context, node inventory.PlannedNode, _ JoinMaterial) error {
-	r.calls = append(r.calls, "join-worker:"+node.Name)
+	r.record("join-worker:" + node.Name)
 	return r.err
 }
 
 func (r *fakeNodeRunner) WaitAPIReady(_ context.Context, initNode inventory.PlannedNode) error {
-	r.calls = append(r.calls, "ready:"+initNode.Name)
+	r.record("ready:" + initNode.Name)
+	if r.apiErr != nil {
+		return r.apiErr
+	}
 	return r.err
+}
+
+func (r *fakeNodeRunner) record(call string) {
+	r.calls = append(r.calls, call)
+	if r.events != nil {
+		*r.events = append(*r.events, call)
+	}
+}
+
+type fakeBootstrapRunner struct {
+	events   *[]string
+	requests []BootstrapRequest
+	result   BootstrapResult
+	err      error
+}
+
+func (r *fakeBootstrapRunner) RunUserBootstrap(_ context.Context, request BootstrapRequest) (BootstrapResult, error) {
+	r.requests = append(r.requests, request)
+	if r.events != nil {
+		*r.events = append(*r.events, "bootstrap")
+	}
+	if r.err != nil {
+		return BootstrapResult{}, r.err
+	}
+	return r.result, nil
+}
+
+type fakeKubectlCommandRunner struct {
+	calls   [][]string
+	results []readiness.CommandResult
+}
+
+func (r *fakeKubectlCommandRunner) Run(_ context.Context, argv []string) (readiness.CommandResult, error) {
+	r.calls = append(r.calls, append([]string(nil), argv...))
+	if len(r.results) > 0 {
+		result := r.results[0]
+		r.results = r.results[1:]
+		return result, nil
+	}
+	return readiness.CommandResult{ExitStatus: 0}, nil
 }
 
 type fakeTransport struct {

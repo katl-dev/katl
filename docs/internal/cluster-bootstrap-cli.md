@@ -42,6 +42,18 @@ Important options:
 
 --dry-run
   validate inventory, access, readiness, and phase plan without running kubeadm
+
+--bootstrap-manifest <path>
+  ordered Kubernetes manifest file or bundle to apply after API readiness;
+  repeat the flag for multiple files
+
+--bootstrap-wait <wait>
+  bounded post-bootstrap wait; supported forms are api-ready, nodes-ready,
+  resource-exists[:namespace]:kind/name, and
+  condition[:namespace]:kind/name:Condition
+
+--bootstrap-stable-endpoint <host:port>
+  stable API endpoint to verify after user bootstrap before writing kubeconfig
 ```
 
 The command is a bounded coordinator. It runs phases, writes outputs, reports
@@ -60,6 +72,20 @@ systemRole
 access method and credentials reference, not inline secret values
 kubeadm configRef or rendered config path
 selected Kubernetes payload version
+```
+
+The cluster input may also reference a bounded, user-owned bootstrap handoff:
+
+```text
+bootstrap.manifests[].path
+  ordered manifest file or bundle path
+
+bootstrap.waits[]
+  bounded waits using api-ready, nodes-ready, resource-exists with kind/name,
+  or condition with kind/name plus condition
+
+bootstrap.stableEndpoint
+  optional API endpoint to verify before kubeconfig output uses it
 ```
 
 Addresses may come from the cluster plan, inventory, or `--node-address`
@@ -141,8 +167,9 @@ The bootstrap command runs phases in this order:
 7. join remaining worker nodes
 8. join additional control-plane nodes later, when that path is implemented
 9. wait for API readiness using the init or declared endpoint
-10. write operator kubeconfig
-11. optionally run light user bootstrap handoff after API readiness
+10. optionally run light user bootstrap handoff after API readiness
+11. write operator kubeconfig, using a declared stable endpoint only after the
+    endpoint handoff wait succeeds
 12. print next steps and exit
 ```
 

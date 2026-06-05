@@ -228,7 +228,12 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	overwriteKubeconfig := flags.Bool("overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	dryRun := flags.Bool("dry-run", false, "validate and print the bootstrap plan without running kubeadm")
 	vmtestTranscriptDir := flags.String("vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
+	var bootstrapManifestPaths stringList
+	var bootstrapWaitValues stringList
 	flags.Var(&addresses, "node-address", "node address override in node=address form")
+	flags.Var(&bootstrapManifestPaths, "bootstrap-manifest", "ordered Kubernetes manifest file or bundle to apply after API readiness")
+	flags.Var(&bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, or condition[:namespace]:kind/name:Condition")
+	bootstrapStableEndpoint := flags.String("bootstrap-stable-endpoint", "", "stable API endpoint host:port to wait for before writing kubeconfig")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -243,6 +248,10 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	if err != nil {
 		return err
 	}
+	bootstrap, err := parseUserBootstrap(bootstrapManifestPaths.values, bootstrapWaitValues.values, *bootstrapStableEndpoint)
+	if err != nil {
+		return err
+	}
 	result, err := runBootstrap(ctx, cluster.Request{
 		Inventory:            inv,
 		InitNode:             *initNode,
@@ -251,6 +260,7 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 		KubeconfigOut:        *kubeconfigOut,
 		OverwriteKubeconfig:  *overwriteKubeconfig,
 		DryRun:               *dryRun,
+		Bootstrap:            bootstrap,
 	}, bootstrapDependencies(*vmtestTranscriptDir))
 	printBootstrapResult(stdout, result)
 	return err
@@ -261,6 +271,7 @@ func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
 	return cluster.Dependencies{
 		ReadinessChecker: readiness.Checker{Agent: transport},
 		NodeRunner:       cluster.TransportRunner{Transport: transport},
+		BootstrapRunner:  cluster.KubectlBootstrapRunner{},
 	}
 }
 
@@ -296,9 +307,10 @@ func loadInventory(path string) (inventory.Inventory, error) {
 }
 
 type inventoryDocument struct {
-	ControlPlaneEndpoint string         `yaml:"controlPlaneEndpoint"`
-	KubernetesVersion    string         `yaml:"kubernetesVersion"`
-	Nodes                []nodeDocument `yaml:"nodes"`
+	ControlPlaneEndpoint string               `yaml:"controlPlaneEndpoint"`
+	KubernetesVersion    string               `yaml:"kubernetesVersion"`
+	Bootstrap            *inventory.Bootstrap `yaml:"bootstrap"`
+	Nodes                []nodeDocument       `yaml:"nodes"`
 }
 
 type nodeDocument struct {
@@ -345,6 +357,7 @@ func (d inventoryDocument) inventory() inventory.Inventory {
 	return inventory.Inventory{
 		ControlPlaneEndpoint: d.ControlPlaneEndpoint,
 		KubernetesVersion:    d.KubernetesVersion,
+		Bootstrap:            d.Bootstrap,
 		Nodes:                nodes,
 	}
 }
@@ -369,6 +382,118 @@ func (o *addressOverrides) Set(value string) error {
 		o.values = make(map[string]string)
 	}
 	o.values[strings.TrimSpace(name)] = strings.TrimSpace(address)
+	return nil
+}
+
+type stringList struct {
+	values []string
+}
+
+func (l *stringList) String() string {
+	if l == nil {
+		return ""
+	}
+	return strings.Join(l.values, ",")
+}
+
+func (l *stringList) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("value is required")
+	}
+	l.values = append(l.values, value)
+	return nil
+}
+
+func parseUserBootstrap(manifestPaths, waitValues []string, stableEndpoint string) (cluster.UserBootstrap, error) {
+	bootstrap := cluster.UserBootstrap{StableEndpoint: strings.TrimSpace(stableEndpoint)}
+	for _, path := range manifestPaths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return cluster.UserBootstrap{}, fmt.Errorf("bootstrap manifest path is required")
+		}
+		bootstrap.Manifests = append(bootstrap.Manifests, cluster.BootstrapManifest{Path: path})
+	}
+	for _, value := range waitValues {
+		wait, err := parseBootstrapWait(value)
+		if err != nil {
+			return cluster.UserBootstrap{}, err
+		}
+		bootstrap.Waits = append(bootstrap.Waits, wait)
+	}
+	return bootstrap, nil
+}
+
+func parseBootstrapWait(value string) (cluster.BootstrapWait, error) {
+	value = strings.TrimSpace(value)
+	parts := strings.Split(value, ":")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	switch parts[0] {
+	case cluster.BootstrapWaitAPIReady, cluster.BootstrapWaitNodesReady:
+		if len(parts) != 1 {
+			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait %q does not accept arguments", parts[0])
+		}
+		return cluster.BootstrapWait{Kind: parts[0]}, nil
+	case cluster.BootstrapWaitResourceExists:
+		namespace, name, err := parseWaitResource(parts[1:])
+		if err != nil {
+			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait resource-exists: %w", err)
+		}
+		return cluster.BootstrapWait{Kind: parts[0], Namespace: namespace, Name: name}, nil
+	case cluster.BootstrapWaitCondition:
+		if len(parts) != 3 && len(parts) != 4 {
+			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait condition requires condition[:namespace]:kind/name:Condition")
+		}
+		namespace := ""
+		name := parts[1]
+		condition := parts[2]
+		if len(parts) == 4 {
+			namespace = parts[1]
+			name = parts[2]
+			condition = parts[3]
+		}
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(condition) == "" {
+			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait condition requires kind/name and Condition")
+		}
+		if err := validateWaitResourceTarget(name); err != nil {
+			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait condition: %w", err)
+		}
+		return cluster.BootstrapWait{Kind: parts[0], Namespace: namespace, Name: name, Condition: condition}, nil
+	default:
+		return cluster.BootstrapWait{}, fmt.Errorf("unsupported bootstrap wait %q", value)
+	}
+}
+
+func parseWaitResource(parts []string) (string, string, error) {
+	switch len(parts) {
+	case 1:
+		if strings.TrimSpace(parts[0]) == "" {
+			return "", "", fmt.Errorf("kind/name is required")
+		}
+		if err := validateWaitResourceTarget(parts[0]); err != nil {
+			return "", "", err
+		}
+		return "", parts[0], nil
+	case 2:
+		if strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return "", "", fmt.Errorf("namespace and kind/name are required")
+		}
+		if err := validateWaitResourceTarget(parts[1]); err != nil {
+			return "", "", err
+		}
+		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("requires resource-exists[:namespace]:kind/name")
+	}
+}
+
+func validateWaitResourceTarget(name string) error {
+	kind, resource, ok := strings.Cut(strings.TrimSpace(name), "/")
+	if !ok || strings.TrimSpace(kind) == "" || strings.TrimSpace(resource) == "" || strings.Contains(resource, "/") {
+		return fmt.Errorf("target must be kind/name")
+	}
 	return nil
 }
 

@@ -1,10 +1,17 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,11 +37,13 @@ type Request struct {
 	ClusterName          string
 	ContextName          string
 	UserName             string
+	Bootstrap            UserBootstrap
 }
 
 type Dependencies struct {
 	ReadinessChecker inventory.ReadinessChecker
 	NodeRunner       NodeRunner
+	BootstrapRunner  BootstrapRunner
 }
 
 type NodeRunner interface {
@@ -42,6 +51,47 @@ type NodeRunner interface {
 	CreateWorkerJoin(ctx context.Context, initNode inventory.PlannedNode) (JoinMaterial, error)
 	RunWorkerJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error
 	WaitAPIReady(ctx context.Context, initNode inventory.PlannedNode) error
+}
+
+type BootstrapRunner interface {
+	RunUserBootstrap(ctx context.Context, request BootstrapRequest) (BootstrapResult, error)
+}
+
+type UserBootstrap struct {
+	Manifests      []BootstrapManifest
+	Waits          []BootstrapWait
+	StableEndpoint string
+}
+
+type BootstrapManifest struct {
+	Path    string `json:"path,omitempty"`
+	Content []byte `json:"-"`
+	SHA256  string `json:"sha256,omitempty"`
+}
+
+type BootstrapWait struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Condition string `json:"condition,omitempty"`
+}
+
+type BootstrapRequest struct {
+	Server         string
+	StableEndpoint string
+	Credentials    AdminCredentials
+	Manifests      []BootstrapManifest
+	Waits          []BootstrapWait
+}
+
+type BootstrapResult struct {
+	AppliedManifests    []BootstrapManifest
+	Waits               []BootstrapWait
+	StableEndpointReady bool
+}
+
+type KubectlCommandRunner interface {
+	Run(ctx context.Context, argv []string) (readiness.CommandResult, error)
 }
 
 type AdminCredentials struct {
@@ -59,6 +109,7 @@ type Result struct {
 	Phases     []Phase
 	Readiness  inventory.ReadinessReport
 	Kubeconfig kubeconfig.Result
+	Bootstrap  BootstrapResult
 	NextStep   string
 	DryRun     bool
 }
@@ -69,6 +120,14 @@ type Phase struct {
 	Action inventory.BootstrapAction `json:"action,omitempty"`
 	Status string                    `json:"status"`
 }
+
+const (
+	BootstrapWaitAPIReady       = "api-ready"
+	BootstrapWaitResourceExists = "resource-exists"
+	BootstrapWaitCondition      = "condition"
+	BootstrapWaitNodesReady     = "nodes-ready"
+	BootstrapWaitStableEndpoint = "stable-endpoint"
+)
 
 func Run(ctx context.Context, request Request, deps Dependencies) (Result, error) {
 	inv := request.Inventory
@@ -85,6 +144,10 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	}
 	result := Result{Plan: plan, DryRun: request.DryRun}
 	result.addPhase("plan", "", "", "passed")
+	bootstrap, err := prepareBootstrap(mergeBootstrap(planBootstrap(plan.Bootstrap), request.Bootstrap))
+	if err != nil {
+		return result, err
+	}
 	if err := rejectUnsupportedControlPlaneJoin(plan); err != nil {
 		result.addPhase("control-plane-join", "", inventory.ActionControlPlaneJoin, "failed")
 		return result, err
@@ -148,12 +211,35 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	}
 	result.addPhase("api-ready-after-join", initNode.Name, "", "passed")
 
+	stableEndpointReady := false
+	if bootstrap.enabled() {
+		if deps.BootstrapRunner == nil {
+			return result, errors.New("bootstrap handoff runner is required")
+		}
+		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
+			Server:         bootstrapServer(initNode, plan),
+			StableEndpoint: bootstrap.StableEndpoint,
+			Credentials:    credentials,
+			Manifests:      bootstrap.Manifests,
+			Waits:          bootstrap.waitsWithEndpoint(),
+		})
+		if err != nil {
+			result.addPhase("user-bootstrap", "", "", "failed")
+			return result, fmt.Errorf("user bootstrap handoff: %s", inventory.Redact(err.Error()))
+		}
+		result.Bootstrap = bootstrapResult
+		stableEndpointReady = bootstrapResult.StableEndpointReady
+		result.addPhase("user-bootstrap", "", "", "passed")
+	}
+
 	kubeconfigResult, err := kubeconfig.Write(kubeconfig.Request{
 		Path:      request.KubeconfigOut,
 		Overwrite: request.OverwriteKubeconfig,
 		Endpoint: kubeconfig.EndpointSelection{
 			InitialEndpoint:      endpointForNode(initNode),
 			ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
+			StableEndpoint:       bootstrap.StableEndpoint,
+			StableEndpointReady:  stableEndpointReady,
 		},
 		ClusterName:              valueOrDefault(request.ClusterName, "katl"),
 		ContextName:              valueOrDefault(request.ContextName, "katl"),
@@ -170,6 +256,192 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	result.NextStep = kubeconfigResult.NextStep()
 	result.addPhase("kubeconfig", "", "", "passed")
 	return result, nil
+}
+
+func prepareBootstrap(bootstrap UserBootstrap) (UserBootstrap, error) {
+	bootstrap.StableEndpoint = strings.TrimSpace(bootstrap.StableEndpoint)
+	if bootstrap.StableEndpoint != "" {
+		if err := validateEndpointLike(bootstrap.StableEndpoint); err != nil {
+			return UserBootstrap{}, fmt.Errorf("bootstrap stable endpoint: %w", err)
+		}
+	}
+	manifests := make([]BootstrapManifest, 0, len(bootstrap.Manifests))
+	for _, manifest := range bootstrap.Manifests {
+		loaded, err := loadBootstrapManifest(manifest)
+		if err != nil {
+			return UserBootstrap{}, err
+		}
+		manifests = append(manifests, loaded)
+	}
+	waits := make([]BootstrapWait, 0, len(bootstrap.Waits))
+	for _, wait := range bootstrap.Waits {
+		normalized, err := normalizeBootstrapWait(wait)
+		if err != nil {
+			return UserBootstrap{}, err
+		}
+		waits = append(waits, normalized)
+	}
+	bootstrap.Manifests = manifests
+	bootstrap.Waits = waits
+	return bootstrap, nil
+}
+
+func planBootstrap(bootstrap *inventory.Bootstrap) UserBootstrap {
+	if bootstrap == nil {
+		return UserBootstrap{}
+	}
+	result := UserBootstrap{StableEndpoint: bootstrap.StableEndpoint}
+	for _, manifest := range bootstrap.Manifests {
+		result.Manifests = append(result.Manifests, BootstrapManifest{Path: manifest.Path})
+	}
+	for _, wait := range bootstrap.Waits {
+		result.Waits = append(result.Waits, BootstrapWait{
+			Kind:      wait.Kind,
+			Namespace: wait.Namespace,
+			Name:      wait.Name,
+			Condition: wait.Condition,
+		})
+	}
+	return result
+}
+
+func mergeBootstrap(plan, request UserBootstrap) UserBootstrap {
+	result := UserBootstrap{
+		Manifests: append([]BootstrapManifest(nil), plan.Manifests...),
+		Waits:     append([]BootstrapWait(nil), plan.Waits...),
+	}
+	if strings.TrimSpace(request.StableEndpoint) != "" {
+		result.StableEndpoint = request.StableEndpoint
+	} else {
+		result.StableEndpoint = plan.StableEndpoint
+	}
+	result.Manifests = append(result.Manifests, request.Manifests...)
+	result.Waits = append(result.Waits, request.Waits...)
+	return result
+}
+
+func loadBootstrapManifest(manifest BootstrapManifest) (BootstrapManifest, error) {
+	manifest.Path = strings.TrimSpace(manifest.Path)
+	if len(manifest.Content) == 0 {
+		if manifest.Path == "" {
+			return BootstrapManifest{}, fmt.Errorf("bootstrap manifest path or content is required")
+		}
+		data, err := os.ReadFile(manifest.Path)
+		if err != nil {
+			return BootstrapManifest{}, fmt.Errorf("read bootstrap manifest %s: %w", manifest.Path, err)
+		}
+		manifest.Content = data
+	}
+	if err := validateBootstrapYAML(manifest.Content); err != nil {
+		return BootstrapManifest{}, fmt.Errorf("bootstrap manifest %s: %w", valueOrDefault(manifest.Path, "<inline>"), err)
+	}
+	sum := sha256.Sum256(manifest.Content)
+	manifest.SHA256 = hex.EncodeToString(sum[:])
+	return manifest, nil
+}
+
+func validateBootstrapYAML(data []byte) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	seen := false
+	for {
+		var doc any
+		err := decoder.Decode(&doc)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return fmt.Errorf("decode YAML: %w", err)
+		}
+		if doc == nil {
+			continue
+		}
+		seen = true
+	}
+	if !seen {
+		return fmt.Errorf("contains no Kubernetes YAML documents")
+	}
+	return nil
+}
+
+func (b UserBootstrap) enabled() bool {
+	return len(b.Manifests) > 0 || len(b.Waits) > 0 || strings.TrimSpace(b.StableEndpoint) != ""
+}
+
+func (b UserBootstrap) waitsWithEndpoint() []BootstrapWait {
+	waits := append([]BootstrapWait(nil), b.Waits...)
+	if strings.TrimSpace(b.StableEndpoint) != "" {
+		waits = append(waits, BootstrapWait{Kind: BootstrapWaitStableEndpoint, Name: b.StableEndpoint})
+	}
+	return waits
+}
+
+func normalizeBootstrapWait(wait BootstrapWait) (BootstrapWait, error) {
+	wait.Kind = strings.TrimSpace(wait.Kind)
+	wait.Namespace = strings.TrimSpace(wait.Namespace)
+	wait.Name = strings.TrimSpace(wait.Name)
+	wait.Condition = strings.TrimSpace(wait.Condition)
+	switch wait.Kind {
+	case BootstrapWaitAPIReady, BootstrapWaitNodesReady:
+		return wait, nil
+	case BootstrapWaitResourceExists:
+		if wait.Name == "" {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait resource-exists requires name")
+		}
+		if err := validateResourceTarget(wait.Name); err != nil {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait resource-exists: %w", err)
+		}
+		return wait, nil
+	case BootstrapWaitCondition:
+		if wait.Name == "" || wait.Condition == "" {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait condition requires name and condition")
+		}
+		if err := validateResourceTarget(wait.Name); err != nil {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait condition: %w", err)
+		}
+		return wait, nil
+	case BootstrapWaitStableEndpoint:
+		if wait.Name == "" {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait stable-endpoint requires endpoint name")
+		}
+		if err := validateEndpointLike(wait.Name); err != nil {
+			return BootstrapWait{}, err
+		}
+		return wait, nil
+	case "":
+		return BootstrapWait{}, fmt.Errorf("bootstrap wait kind is required")
+	default:
+		return BootstrapWait{}, fmt.Errorf("bootstrap wait kind %q is unsupported", wait.Kind)
+	}
+}
+
+func validateResourceTarget(name string) error {
+	kind, resource, ok := strings.Cut(strings.TrimSpace(name), "/")
+	if !ok || strings.TrimSpace(kind) == "" || strings.TrimSpace(resource) == "" || strings.Contains(resource, "/") {
+		return fmt.Errorf("target must be kind/name")
+	}
+	return nil
+}
+
+func bootstrapServer(initNode inventory.PlannedNode, plan inventory.Plan) string {
+	if plan.ControlPlaneEndpoint != "" {
+		return plan.ControlPlaneEndpoint
+	}
+	return endpointForNode(initNode)
+}
+
+func validateEndpointLike(endpoint string) error {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return fmt.Errorf("endpoint is required")
+	}
+	if strings.HasPrefix(endpoint, "https://") {
+		endpoint = strings.TrimPrefix(endpoint, "https://")
+	}
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("endpoint must be host:port or https://host:port")
+	}
+	return nil
 }
 
 func (r *Result) addPhase(name, node string, action inventory.BootstrapAction, status string) {
@@ -222,6 +494,238 @@ func valueOrDefault(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+type KubectlBootstrapRunner struct {
+	CommandRunner KubectlCommandRunner
+	TempDir       string
+	Timeout       time.Duration
+	PollInterval  time.Duration
+	ProbeTimeout  time.Duration
+}
+
+func (r KubectlBootstrapRunner) RunUserBootstrap(ctx context.Context, request BootstrapRequest) (BootstrapResult, error) {
+	if strings.TrimSpace(request.Server) == "" {
+		return BootstrapResult{}, fmt.Errorf("bootstrap API server endpoint is required")
+	}
+	dir, cleanup, err := r.workDir()
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	defer cleanup()
+
+	kubeconfigPath, err := r.writeKubeconfig(dir, request.Server, request.Credentials)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	result := BootstrapResult{}
+	for index, manifest := range request.Manifests {
+		path, err := r.writeManifest(dir, index, manifest)
+		if err != nil {
+			return result, err
+		}
+		if err := r.runKubectl(ctx, []string{"--kubeconfig", kubeconfigPath, "--context", "katl-bootstrap", "apply", "-f", path}); err != nil {
+			return result, err
+		}
+		result.AppliedManifests = append(result.AppliedManifests, manifest)
+	}
+	for _, wait := range request.Waits {
+		if wait.Kind == BootstrapWaitStableEndpoint {
+			if strings.TrimSpace(request.StableEndpoint) == "" {
+				request.StableEndpoint = wait.Name
+			}
+			stableKubeconfig, err := r.writeKubeconfig(dir, request.StableEndpoint, request.Credentials)
+			if err != nil {
+				return result, err
+			}
+			if err := r.pollKubectl(ctx, []string{"--kubeconfig", stableKubeconfig, "--context", "katl-bootstrap", "get", "--raw=/readyz"}); err != nil {
+				return result, err
+			}
+			result.StableEndpointReady = true
+			result.Waits = append(result.Waits, wait)
+			continue
+		}
+		args, err := waitKubectlArgs(kubeconfigPath, wait)
+		if err != nil {
+			return result, err
+		}
+		if wait.Kind == BootstrapWaitAPIReady || wait.Kind == BootstrapWaitResourceExists {
+			err = r.pollKubectl(ctx, args)
+		} else {
+			err = r.runKubectl(ctx, args)
+		}
+		if err != nil {
+			return result, err
+		}
+		result.Waits = append(result.Waits, wait)
+	}
+	return result, nil
+}
+
+func (r KubectlBootstrapRunner) workDir() (string, func(), error) {
+	if strings.TrimSpace(r.TempDir) != "" {
+		if err := os.MkdirAll(r.TempDir, 0o700); err != nil {
+			return "", func() {}, fmt.Errorf("create bootstrap temp dir: %w", err)
+		}
+		return r.TempDir, func() {}, nil
+	}
+	dir, err := os.MkdirTemp("", "katl-bootstrap-*")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create bootstrap temp dir: %w", err)
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+func (r KubectlBootstrapRunner) writeKubeconfig(dir, endpoint string, credentials AdminCredentials) (string, error) {
+	server, err := kubeconfig.SelectServer(kubeconfig.EndpointSelection{InitialEndpoint: endpoint})
+	if err != nil {
+		return "", err
+	}
+	data, err := kubeconfig.Render(kubeconfig.RenderRequest{
+		Server:                   server,
+		ClusterName:              "katl-bootstrap",
+		ContextName:              "katl-bootstrap",
+		UserName:                 "katl-bootstrap-admin",
+		CertificateAuthorityData: credentials.CertificateAuthorityData,
+		ClientCertificateData:    credentials.ClientCertificateData,
+		ClientKeyData:            credentials.ClientKeyData,
+	})
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "kubeconfig")
+	if strings.Contains(endpoint, "api") {
+		sum := sha256.Sum256([]byte(endpoint))
+		path = filepath.Join(dir, "kubeconfig-"+hex.EncodeToString(sum[:])[:8])
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", fmt.Errorf("write bootstrap kubeconfig: %w", err)
+	}
+	return path, nil
+}
+
+func (r KubectlBootstrapRunner) writeManifest(dir string, index int, manifest BootstrapManifest) (string, error) {
+	name := fmt.Sprintf("%04d.yaml", index)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, manifest.Content, 0o600); err != nil {
+		return "", fmt.Errorf("write bootstrap manifest: %w", err)
+	}
+	return path, nil
+}
+
+func (r KubectlBootstrapRunner) runKubectl(ctx context.Context, args []string) error {
+	return r.runKubectlWithTimeout(ctx, args, r.timeout())
+}
+
+func (r KubectlBootstrapRunner) runKubectlProbe(ctx context.Context, args []string) error {
+	return r.runKubectlWithTimeout(ctx, args, r.probeTimeout())
+}
+
+func (r KubectlBootstrapRunner) pollKubectl(ctx context.Context, args []string) error {
+	timeout := r.timeout()
+	interval := r.pollInterval()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if err := r.runKubectlProbe(ctx, args); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("bounded kubectl wait timed out after %s: %w", timeout, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+func (r KubectlBootstrapRunner) runKubectlWithTimeout(ctx context.Context, args []string, timeout time.Duration) error {
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
+	argv := append([]string{"kubectl"}, args...)
+	runner := r.CommandRunner
+	if runner == nil {
+		runner = execKubectlCommandRunner{}
+	}
+	result, err := runner.Run(ctx, argv)
+	if err != nil {
+		return err
+	}
+	if result.ExitStatus != 0 {
+		return commandError(argv, result)
+	}
+	return nil
+}
+
+func (r KubectlBootstrapRunner) timeout() time.Duration {
+	if r.Timeout != 0 {
+		return r.Timeout
+	}
+	return 5 * time.Minute
+}
+
+func (r KubectlBootstrapRunner) pollInterval() time.Duration {
+	if r.PollInterval != 0 {
+		return r.PollInterval
+	}
+	return 2 * time.Second
+}
+
+func (r KubectlBootstrapRunner) probeTimeout() time.Duration {
+	if r.ProbeTimeout != 0 {
+		return r.ProbeTimeout
+	}
+	return 10 * time.Second
+}
+
+type execKubectlCommandRunner struct{}
+
+func (execKubectlCommandRunner) Run(ctx context.Context, argv []string) (readiness.CommandResult, error) {
+	if len(argv) == 0 {
+		return readiness.CommandResult{}, fmt.Errorf("argv is required")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exitStatus := int32(0)
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitStatus = int32(exitErr.ExitCode())
+		} else {
+			return readiness.CommandResult{}, err
+		}
+	}
+	return readiness.CommandResult{
+		ExitStatus: exitStatus,
+		Stdout:     stdout.String(),
+		Stderr:     stderr.String(),
+	}, nil
+}
+
+func waitKubectlArgs(kubeconfigPath string, wait BootstrapWait) ([]string, error) {
+	base := []string{"--kubeconfig", kubeconfigPath, "--context", "katl-bootstrap"}
+	if wait.Namespace != "" {
+		base = append(base, "-n", wait.Namespace)
+	}
+	switch wait.Kind {
+	case BootstrapWaitAPIReady:
+		return append(base, "get", "--raw=/readyz"), nil
+	case BootstrapWaitResourceExists:
+		return append(base, "get", wait.Name), nil
+	case BootstrapWaitCondition:
+		return append(base, "wait", "--for=condition="+wait.Condition, wait.Name, "--timeout=5m"), nil
+	case BootstrapWaitNodesReady:
+		return append(base, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m"), nil
+	default:
+		return nil, fmt.Errorf("bootstrap wait kind %q is unsupported", wait.Kind)
+	}
 }
 
 type TransportRunner struct {

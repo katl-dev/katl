@@ -35,9 +35,27 @@ const (
 )
 
 type Inventory struct {
-	ControlPlaneEndpoint string `json:"controlPlaneEndpoint"`
-	KubernetesVersion    string `json:"kubernetesVersion"`
-	Nodes                []Node `json:"nodes"`
+	ControlPlaneEndpoint string     `json:"controlPlaneEndpoint"`
+	KubernetesVersion    string     `json:"kubernetesVersion"`
+	Bootstrap            *Bootstrap `json:"bootstrap,omitempty" yaml:"bootstrap"`
+	Nodes                []Node     `json:"nodes"`
+}
+
+type Bootstrap struct {
+	Manifests      []BootstrapManifest `json:"manifests,omitempty" yaml:"manifests"`
+	Waits          []BootstrapWait     `json:"waits,omitempty" yaml:"waits"`
+	StableEndpoint string              `json:"stableEndpoint,omitempty" yaml:"stableEndpoint"`
+}
+
+type BootstrapManifest struct {
+	Path string `json:"path" yaml:"path"`
+}
+
+type BootstrapWait struct {
+	Kind      string `json:"kind" yaml:"kind"`
+	Namespace string `json:"namespace,omitempty" yaml:"namespace"`
+	Name      string `json:"name,omitempty" yaml:"name"`
+	Condition string `json:"condition,omitempty" yaml:"condition"`
 }
 
 type Node struct {
@@ -71,6 +89,7 @@ type Plan struct {
 	InitNode             string            `json:"initNode"`
 	ControlPlaneEndpoint string            `json:"controlPlaneEndpoint"`
 	KubernetesVersion    string            `json:"kubernetesVersion"`
+	Bootstrap            *Bootstrap        `json:"bootstrap,omitempty"`
 	Nodes                []PlannedNode     `json:"nodes"`
 	AddressOverrides     []AddressOverride `json:"addressOverrides,omitempty"`
 }
@@ -183,6 +202,7 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 		InitNode:             initNode,
 		ControlPlaneEndpoint: controlPlaneEndpoint,
 		KubernetesVersion:    version,
+		Bootstrap:            request.Inventory.Bootstrap,
 		Nodes:                nodes,
 		AddressOverrides:     overrides,
 	}, nil

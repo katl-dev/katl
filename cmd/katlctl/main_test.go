@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +78,13 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 		"--overwrite-kubeconfig",
 		"--dry-run",
 		"--vmtest-transcript-dir", "artifacts/transcripts",
+		"--bootstrap-manifest", "01-cni.yaml",
+		"--bootstrap-manifest", "02-flux.yaml",
+		"--bootstrap-wait", "api-ready",
+		"--bootstrap-wait", "resource-exists:kube-system:daemonset/cilium",
+		"--bootstrap-wait", "condition:kube-system:deployment/cilium-operator:Available",
+		"--bootstrap-wait", "nodes-ready",
+		"--bootstrap-stable-endpoint", "api.stable.test:6443",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
@@ -90,6 +98,21 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	if got.AddressOverrides["worker-1"] != "10.0.0.22" {
 		t.Fatalf("address overrides = %#v", got.AddressOverrides)
 	}
+	if got.Bootstrap.StableEndpoint != "api.stable.test:6443" {
+		t.Fatalf("bootstrap stable endpoint = %q", got.Bootstrap.StableEndpoint)
+	}
+	if len(got.Bootstrap.Manifests) != 2 || got.Bootstrap.Manifests[0].Path != "01-cni.yaml" || got.Bootstrap.Manifests[1].Path != "02-flux.yaml" {
+		t.Fatalf("bootstrap manifests = %#v", got.Bootstrap.Manifests)
+	}
+	wantWaits := []cluster.BootstrapWait{
+		{Kind: cluster.BootstrapWaitAPIReady},
+		{Kind: cluster.BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"},
+		{Kind: cluster.BootstrapWaitCondition, Namespace: "kube-system", Name: "deployment/cilium-operator", Condition: "Available"},
+		{Kind: cluster.BootstrapWaitNodesReady},
+	}
+	if !reflect.DeepEqual(got.Bootstrap.Waits, wantWaits) {
+		t.Fatalf("bootstrap waits = %#v, want %#v", got.Bootstrap.Waits, wantWaits)
+	}
 	runner, ok := gotDeps.NodeRunner.(cluster.TransportRunner)
 	if !ok {
 		t.Fatalf("NodeRunner = %T", gotDeps.NodeRunner)
@@ -100,6 +123,9 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	}
 	if transport.TranscriptDir != "artifacts/transcripts" {
 		t.Fatalf("TranscriptDir = %q", transport.TranscriptDir)
+	}
+	if _, ok := gotDeps.BootstrapRunner.(cluster.KubectlBootstrapRunner); !ok {
+		t.Fatalf("BootstrapRunner = %T", gotDeps.BootstrapRunner)
 	}
 	out := stdout.String()
 	for _, want := range []string{
@@ -119,6 +145,35 @@ func TestClusterBootstrapRequiresInventory(t *testing.T) {
 	err := run(context.Background(), []string{"cluster", "bootstrap"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "--inventory is required") {
 		t.Fatalf("run() error = %v, want inventory error", err)
+	}
+}
+
+func TestClusterBootstrapRejectsInvalidBootstrapWait(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	old := runBootstrap
+	runBootstrap = func(context.Context, cluster.Request, cluster.Dependencies) (cluster.Result, error) {
+		t.Fatal("runBootstrap should not be called for invalid bootstrap wait")
+		return cluster.Result{}, nil
+	}
+	t.Cleanup(func() { runBootstrap = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "bootstrap",
+		"--inventory", inventoryPath,
+		"--bootstrap-wait", "condition:kube-system:deployment/cilium:",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "bootstrap wait condition") {
+		t.Fatalf("run() error = %v, want wait validation failure", err)
+	}
+
+	err = run(context.Background(), []string{
+		"cluster", "bootstrap",
+		"--inventory", inventoryPath,
+		"--bootstrap-wait", "resource-exists:pods",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "target must be kind/name") {
+		t.Fatalf("run() error = %v, want kind/name validation failure", err)
 	}
 }
 
