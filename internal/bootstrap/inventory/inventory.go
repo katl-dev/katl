@@ -101,6 +101,18 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 	var controlPlanes []string
 	version := strings.TrimSpace(request.Inventory.KubernetesVersion)
 	for _, node := range request.Inventory.Nodes {
+		name := strings.TrimSpace(node.Name)
+		if err := validateName(name); err != nil {
+			return Plan{}, err
+		}
+		originalAddress[name] = strings.TrimSpace(node.Address)
+		if override, ok := request.AddressOverride[name]; ok {
+			override = strings.TrimSpace(override)
+			if override == "" {
+				return Plan{}, fmt.Errorf("address override for node %q is empty", name)
+			}
+			node.Address = override
+		}
 		planned, err := normalizeNode(node, version)
 		if err != nil {
 			return Plan{}, err
@@ -109,20 +121,10 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 			return Plan{}, fmt.Errorf("duplicate node name %q", planned.Name)
 		}
 		seen[planned.Name] = struct{}{}
-		originalAddress[planned.Name] = planned.Address
 		if version == "" {
 			version = planned.KubernetesVersion
 		} else if planned.KubernetesVersion != version {
 			return Plan{}, fmt.Errorf("node %q Kubernetes version %q does not match inventory version %q", planned.Name, planned.KubernetesVersion, version)
-		}
-		if override, ok := request.AddressOverride[planned.Name]; ok {
-			override = strings.TrimSpace(override)
-			if override == "" {
-				return Plan{}, fmt.Errorf("address override for node %q is empty", planned.Name)
-			}
-			nodes = append(nodes, planned)
-			nodes[len(nodes)-1].Address = override
-			continue
 		}
 		nodes = append(nodes, planned)
 	}

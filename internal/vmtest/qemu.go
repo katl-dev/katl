@@ -227,15 +227,34 @@ func (r VMRunner) checkAgent(ctx context.Context, result Result, config VMConfig
 			return agentHealthClient{client: client}, nil
 		}
 	}
-	client, err := connector(agentCtx, result.VSock, result.Artifacts.VSockTranscript)
-	if err != nil {
-		return fmt.Errorf("connect vmtest agent: %w", err)
+	poll := config.PollInterval
+	if poll == 0 {
+		poll = 250 * time.Millisecond
 	}
-	defer client.Close()
-	if err := client.Health(agentCtx); err != nil {
-		return fmt.Errorf("vmtest agent health failed: %w", err)
+	var lastErr error
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		client, err := connector(agentCtx, result.VSock, result.Artifacts.VSockTranscript)
+		if err != nil {
+			lastErr = fmt.Errorf("connect vmtest agent: %w", err)
+		} else {
+			if err := client.Health(agentCtx); err != nil {
+				lastErr = fmt.Errorf("vmtest agent health failed: %w", err)
+			} else {
+				return client.Close()
+			}
+			_ = client.Close()
+		}
+		select {
+		case <-agentCtx.Done():
+			if lastErr != nil {
+				return lastErr
+			}
+			return agentCtx.Err()
+		case <-ticker.C:
+		}
 	}
-	return nil
 }
 
 type agentHealthClient struct {

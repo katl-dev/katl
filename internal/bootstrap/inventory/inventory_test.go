@@ -72,6 +72,24 @@ func TestPlanInventoryResolvesNodeKubernetesVersion(t *testing.T) {
 	}
 }
 
+func TestPlanInventoryAppliesAddressOverrideBeforeValidation(t *testing.T) {
+	inv := validInventory()
+	inv.Nodes[1].Address = ""
+	plan, err := PlanInventory(PlanRequest{
+		Inventory:       inv,
+		AddressOverride: map[string]string{"worker-1": "10.0.0.99"},
+	})
+	if err != nil {
+		t.Fatalf("PlanInventory() error = %v", err)
+	}
+	if got := plan.Nodes[1].Address; got != "10.0.0.99" {
+		t.Fatalf("worker address = %q", got)
+	}
+	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Before != "" || plan.AddressOverrides[0].Address != "10.0.0.99" {
+		t.Fatalf("address overrides = %#v", plan.AddressOverrides)
+	}
+}
+
 func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name string
@@ -211,6 +229,13 @@ func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 				return PlanRequest{Inventory: inv, AddressOverride: map[string]string{"missing": "10.0.0.99"}}
 			},
 			want: "unknown node",
+		},
+		{
+			name: "empty override",
+			mut: func(inv Inventory) PlanRequest {
+				return PlanRequest{Inventory: inv, AddressOverride: map[string]string{"worker-1": " "}}
+			},
+			want: "address override",
 		},
 	}
 	for _, tt := range tests {
