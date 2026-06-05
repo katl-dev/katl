@@ -158,6 +158,43 @@ RequiredBy=systemd-confext.service
 	}
 }
 
+func TestKubeadmReadyRuntimeUnits(t *testing.T) {
+	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	if err != nil {
+		t.Fatalf("RenderState() error = %v", err)
+	}
+	wantTarget := `[Unit]
+Description=Katl kubeadm-ready handoff point
+Documentation=man:systemd.target(5)
+Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service
+After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service
+
+[Install]
+WantedBy=multi-user.target
+`
+	if assets.KubeadmReadyTarget != wantTarget {
+		t.Fatalf("katl-kubeadm-ready.target:\n%s\nwant:\n%s", assets.KubeadmReadyTarget, wantTarget)
+	}
+	wantContainerd := `[Unit]
+Requires=var.mount
+After=var.mount
+Before=katl-kubeadm-ready.target
+RequiresMountsFor=/var/lib/containerd
+`
+	if assets.ContainerdDropIn != wantContainerd {
+		t.Fatalf("containerd drop-in:\n%s\nwant:\n%s", assets.ContainerdDropIn, wantContainerd)
+	}
+	wantKubelet := `[Unit]
+Requires=containerd.service etc-kubernetes.mount
+After=var.mount containerd.service etc-kubernetes.mount
+Before=katl-kubeadm-ready.target
+RequiresMountsFor=/var/lib/kubelet /etc/kubernetes
+`
+	if assets.KubeletDropIn != wantKubelet {
+		t.Fatalf("kubelet drop-in:\n%s\nwant:\n%s", assets.KubeletDropIn, wantKubelet)
+	}
+}
+
 func TestWriteState(t *testing.T) {
 	root := t.TempDir()
 	assets, err := WriteState(root, StateRequest{PartitionUUID: statePartUUID})
@@ -167,11 +204,18 @@ func TestWriteState(t *testing.T) {
 	assertFile(t, filepath.Join(root, "etc/systemd/system/var.mount"), assets.VarMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-generation-activate.service"), assets.GenerationActivate)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
+	assertSymlink(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"), "../katl-kubeadm-ready.target")
+	assertFile(t, filepath.Join(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf"), assets.ContainerdDropIn)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf"), assets.KubeletDropIn)
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/systemd-sysext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/systemd-confext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-state-projection-check.service"), assets.StateCheckService)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-runtime-handoff-status.service"), assets.RuntimeStatus)
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service"), "../katl-runtime-handoff-status.service")
+	assertMissing(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/kubelet.service"))
+	assertMissing(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-init.service"))
+	assertMissing(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-join.service"))
 	assertFile(t, filepath.Join(root, "etc/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
 	assertDir(t, filepath.Join(root, "var/lib/katl"), 0o755)
 	assertDir(t, filepath.Join(root, "var/lib/katl/generations"), 0o755)
@@ -228,8 +272,8 @@ func TestStateUnitsVerify(t *testing.T) {
 	writeUnit(t, root, "usr/lib/systemd/system/sysinit.target", "[Unit]\nDescription=System Initialization\n")
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-sysext.service", "[Unit]\nDescription=System Extension Images\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-confext.service", "[Unit]\nDescription=System Configuration Extension Images\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/containerd.service", "[Unit]\nDescription=Containerd\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/kubelet.service", "[Unit]\nDescription=Kubelet\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
-	writeUnit(t, root, "usr/lib/systemd/system/katl-kubeadm-ready.target", "[Unit]\nDescription=Katl kubeadm-ready\n")
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-generation-activate", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-runtime-status", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/printf", "#!/bin/sh\nexit 0\n")
@@ -244,8 +288,11 @@ func TestStateUnitsVerify(t *testing.T) {
 		"/etc/systemd/system/var.mount",
 		"/etc/systemd/system/etc-kubernetes.mount",
 		"/etc/systemd/system/katl-generation-activate.service",
+		"/etc/systemd/system/katl-kubeadm-ready.target",
 		"/etc/systemd/system/katl-state-projection-check.service",
-		"/etc/systemd/system/katl-runtime-handoff-status.service")
+		"/etc/systemd/system/katl-runtime-handoff-status.service",
+		"/usr/lib/systemd/system/containerd.service",
+		"/usr/lib/systemd/system/kubelet.service")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("systemd-analyze verify failed: %v\n%s", err, output)

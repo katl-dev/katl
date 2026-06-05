@@ -26,6 +26,9 @@ type StateAssets struct {
 	VarMount           string
 	EtcKubernetesMount string
 	GenerationActivate string
+	KubeadmReadyTarget string
+	ContainerdDropIn   string
+	KubeletDropIn      string
 	StateCheckService  string
 	RuntimeStatus      string
 	Tmpfiles           string
@@ -70,6 +73,9 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		}, "\n"),
 		EtcKubernetesMount: kubernetesMount,
 		GenerationActivate: renderGenerationActivateService(),
+		KubeadmReadyTarget: renderKubeadmReadyTarget(),
+		ContainerdDropIn:   renderContainerdDropIn(),
+		KubeletDropIn:      renderKubeletDropIn(),
 		StateCheckService:  renderStateCheckService(),
 		RuntimeStatus:      renderRuntimeStatusService(),
 		Tmpfiles:           renderTmpfiles(dirs),
@@ -123,6 +129,42 @@ func renderGenerationActivateService() string {
 		"[Install]",
 		"RequiredBy=systemd-sysext.service",
 		"RequiredBy=systemd-confext.service",
+		"",
+	}, "\n")
+}
+
+func renderKubeadmReadyTarget() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Katl kubeadm-ready handoff point",
+		"Documentation=man:systemd.target(5)",
+		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service",
+		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
+func renderContainerdDropIn() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Requires=var.mount",
+		"After=var.mount",
+		"Before=katl-kubeadm-ready.target",
+		"RequiresMountsFor=/var/lib/containerd",
+		"",
+	}, "\n")
+}
+
+func renderKubeletDropIn() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Requires=containerd.service etc-kubernetes.mount",
+		"After=var.mount containerd.service etc-kubernetes.mount",
+		"Before=katl-kubeadm-ready.target",
+		"RequiresMountsFor=/var/lib/kubelet /etc/kubernetes",
 		"",
 	}, "\n")
 }
@@ -183,6 +225,18 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-generation-activate.service", assets.GenerationActivate, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-kubeadm-ready.target", assets.KubeadmReadyTarget, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target", "../katl-kubeadm-ready.target"); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf", assets.ContainerdDropIn, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf", assets.KubeletDropIn, 0o644); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeSymlink(root, "etc/systemd/system/systemd-sysext.service.requires/katl-generation-activate.service", "../katl-generation-activate.service"); err != nil {
