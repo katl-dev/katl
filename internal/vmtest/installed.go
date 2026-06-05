@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,14 +22,41 @@ type InstalledRuntimeConfig struct {
 }
 
 type installedRuntimeRecord struct {
-	APIVersion         string `json:"apiVersion"`
-	Kind               string `json:"kind"`
-	Disk               string `json:"disk"`
-	DiskFormat         string `json:"diskFormat"`
-	ESPArtifacts       string `json:"espArtifacts"`
-	RequireVMTestAgent bool   `json:"requireVMTestAgent"`
-	FixtureManifest    string `json:"fixtureManifest,omitempty"`
-	NodeMetadata       string `json:"nodeMetadata,omitempty"`
+	APIVersion         string                         `json:"apiVersion"`
+	Kind               string                         `json:"kind"`
+	Disk               string                         `json:"disk"`
+	DiskFormat         string                         `json:"diskFormat"`
+	ESPArtifacts       string                         `json:"espArtifacts"`
+	RequireVMTestAgent bool                           `json:"requireVMTestAgent"`
+	FixtureManifest    string                         `json:"fixtureManifest,omitempty"`
+	Fixture            *installedRuntimeFixtureRecord `json:"fixture,omitempty"`
+	NodeMetadata       string                         `json:"nodeMetadata,omitempty"`
+}
+
+type installedRuntimeFixtureRecord struct {
+	APIVersion   string                       `json:"apiVersion"`
+	Kind         string                       `json:"kind"`
+	NodeName     string                       `json:"nodeName,omitempty"`
+	SystemRole   string                       `json:"systemRole,omitempty"`
+	Disk         installedRuntimeFixtureDisk  `json:"disk"`
+	ESPArtifacts installedRuntimeFixtureESP   `json:"espArtifacts"`
+	NodeMetadata *installedRuntimeFixtureFile `json:"nodeMetadata,omitempty"`
+}
+
+type installedRuntimeFixtureDisk struct {
+	Path   string `json:"path"`
+	Format string `json:"format"`
+	SHA256 string `json:"sha256"`
+}
+
+type installedRuntimeFixtureESP struct {
+	Path       string `json:"path"`
+	TreeSHA256 string `json:"treeSHA256"`
+}
+
+type installedRuntimeFixtureFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 func RunInstalledRuntime(ctx context.Context, result Result, config InstalledRuntimeConfig, runner VMRunner) Result {
@@ -78,6 +106,11 @@ func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) e
 	if err := os.MkdirAll(filepath.Dir(result.Artifacts.InstalledRuntime), 0o755); err != nil {
 		return err
 	}
+	fixtureManifest := os.Getenv("KATL_INSTALLED_FIXTURE_MANIFEST")
+	fixture, err := readInstalledRuntimeFixture(fixtureManifest)
+	if err != nil {
+		return err
+	}
 	record := installedRuntimeRecord{
 		APIVersion:         "katl.dev/v1alpha1",
 		Kind:               "InstalledRuntimeVMTestInput",
@@ -85,10 +118,35 @@ func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) e
 		DiskFormat:         string(diskFormat(config.DiskFormat)),
 		ESPArtifacts:       config.ESPArtifacts,
 		RequireVMTestAgent: config.RequireVMTestAgent,
-		FixtureManifest:    os.Getenv("KATL_INSTALLED_FIXTURE_MANIFEST"),
+		FixtureManifest:    fixtureManifest,
+		Fixture:            fixture,
 		NodeMetadata:       os.Getenv("KATL_INSTALLED_NODE_METADATA"),
 	}
 	return writeJSON(result.Artifacts.InstalledRuntime, record)
+}
+
+func readInstalledRuntimeFixture(path string) (*installedRuntimeFixtureRecord, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read installed runtime fixture manifest: %w", err)
+	}
+	var record installedRuntimeFixtureRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, fmt.Errorf("decode installed runtime fixture manifest: %w", err)
+	}
+	if record.APIVersion != "katl.dev/v1alpha1" || record.Kind != "InstalledRuntimeVMTestFixture" {
+		return nil, fmt.Errorf("installed runtime fixture manifest has apiVersion=%q kind=%q", record.APIVersion, record.Kind)
+	}
+	if strings.TrimSpace(record.Disk.Path) == "" || strings.TrimSpace(record.Disk.Format) == "" || strings.TrimSpace(record.Disk.SHA256) == "" {
+		return nil, errors.New("installed runtime fixture manifest disk binding is incomplete")
+	}
+	if strings.TrimSpace(record.ESPArtifacts.Path) == "" || strings.TrimSpace(record.ESPArtifacts.TreeSHA256) == "" {
+		return nil, errors.New("installed runtime fixture manifest ESP binding is incomplete")
+	}
+	return &record, nil
 }
 
 func runtimeESPPath(result Result) string {

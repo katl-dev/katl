@@ -97,6 +97,8 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 		t.Fatalf("write disk: %v", err)
 	}
 	esp := espFixture(t)
+	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp)
+	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", fixtureManifest)
 	result, err := NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",
@@ -142,12 +144,47 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	if input.Disk != disk || input.DiskFormat != string(DiskRaw) || input.ESPArtifacts != esp || !input.RequireVMTestAgent {
 		t.Fatalf("installed runtime input = %#v", input)
 	}
+	if input.FixtureManifest != fixtureManifest {
+		t.Fatalf("fixture manifest = %q, want %q", input.FixtureManifest, fixtureManifest)
+	}
+	if input.Fixture == nil || input.Fixture.Disk.SHA256 != strings.Repeat("1", 64) || input.Fixture.ESPArtifacts.TreeSHA256 != strings.Repeat("2", 64) {
+		t.Fatalf("fixture binding = %#v", input.Fixture)
+	}
 	source, err := os.ReadFile(loaderEntry(t, esp))
 	if err != nil {
 		t.Fatalf("read source loader entry: %v", err)
 	}
 	if strings.Contains(string(source), "katl.vmtest_agent=1") {
 		t.Fatalf("source ESP artifact was mutated: %s", source)
+	}
+}
+
+func TestInstalledRuntimeRejectsMalformedFixtureManifest(t *testing.T) {
+	root := t.TempDir()
+	disk := filepath.Join(root, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	manifest := filepath.Join(root, "installed-runtime-fixture.json")
+	if err := os.WriteFile(manifest, []byte(`{"kind":"Wrong"}`), 0o644); err != nil {
+		t.Fatalf("write fixture manifest: %v", err)
+	}
+	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", manifest)
+	result, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}).Plan(Scenario{Name: "runtime"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	result.start(time.Now().UTC())
+	result = RunInstalledRuntime(context.Background(), result, InstalledRuntimeConfig{
+		Disk:         disk,
+		DiskFormat:   DiskRaw,
+		ESPArtifacts: espFixture(t),
+	}, VMRunner{})
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "installed runtime fixture manifest has") {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 }
 
@@ -162,6 +199,33 @@ func readInstalledRuntimeInput(t *testing.T, path string) installedRuntimeRecord
 		t.Fatalf("decode installed runtime input: %v", err)
 	}
 	return record
+}
+
+func writeInstalledFixtureManifest(t *testing.T, root string, disk string, esp string) string {
+	t.Helper()
+	path := filepath.Join(root, "installed-runtime-fixture.json")
+	content, err := json.MarshalIndent(installedRuntimeFixtureRecord{
+		APIVersion: "katl.dev/v1alpha1",
+		Kind:       "InstalledRuntimeVMTestFixture",
+		NodeName:   "node-1",
+		SystemRole: "control-plane",
+		Disk: installedRuntimeFixtureDisk{
+			Path:   disk,
+			Format: "raw",
+			SHA256: strings.Repeat("1", 64),
+		},
+		ESPArtifacts: installedRuntimeFixtureESP{
+			Path:       esp,
+			TreeSHA256: strings.Repeat("2", 64),
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture manifest: %v", err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("write fixture manifest: %v", err)
+	}
+	return path
 }
 
 func espFixture(t *testing.T) string {
