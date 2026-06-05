@@ -208,3 +208,6 @@ wire generated confext activation into generation selection
 prove the boot ordering in QEMU
 define the later runtime agent input and trust policy
 ```
+
+The runtime input and trust policy follow-up is now recorded in
+`adr-003-runtime-config-input-and-trust.md`.

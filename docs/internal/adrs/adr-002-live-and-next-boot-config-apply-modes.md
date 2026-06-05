@@ -7,7 +7,9 @@ Date: 2026-06-05.
 This ADR defines how later Katl runtime configuration changes choose between
 immediate live application and staging for the next boot. It builds on
 `adr-001-generated-confext-configuration.md` and
-`supported-node-config-domains.md`.
+`supported-node-config-domains.md`. The input transport, trust roots, freshness,
+and audit policy for those requests are defined in
+`adr-003-runtime-config-input-and-trust.md`.
 
 ## Context
 
