@@ -232,7 +232,7 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	var bootstrapWaitValues stringList
 	flags.Var(&addresses, "node-address", "node address override in node=address form")
 	flags.Var(&bootstrapManifestPaths, "bootstrap-manifest", "ordered Kubernetes manifest file or bundle to apply after API readiness")
-	flags.Var(&bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, or condition[:namespace]:kind/name:Condition")
+	flags.Var(&bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
 	bootstrapStableEndpoint := flags.String("bootstrap-stable-endpoint", "", "stable API endpoint host:port to wait for before writing kubeconfig")
 	bootstrapStableEndpointBeforeManifests := flags.Bool("bootstrap-stable-endpoint-before-manifests", false, "wait for stable API endpoint before applying bootstrap manifests")
 
@@ -439,13 +439,25 @@ func parseBootstrapWait(value string) (cluster.BootstrapWait, error) {
 		if len(parts) != 1 {
 			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait %q does not accept arguments", parts[0])
 		}
-		return cluster.BootstrapWait{Kind: parts[0]}, nil
+		return cluster.ValidateBootstrapWait(cluster.BootstrapWait{Kind: parts[0]})
 	case cluster.BootstrapWaitResourceExists:
 		namespace, name, err := parseWaitResource(parts[1:])
 		if err != nil {
 			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait resource-exists: %w", err)
 		}
-		return cluster.BootstrapWait{Kind: parts[0], Namespace: namespace, Name: name}, nil
+		return cluster.ValidateBootstrapWait(cluster.BootstrapWait{Kind: parts[0], Namespace: namespace, Name: name})
+	case cluster.BootstrapWaitRolloutStatus:
+		namespace, name, err := parseWaitResource(parts[1:])
+		if err != nil {
+			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait rollout-status: %w", err)
+		}
+		return cluster.ValidateBootstrapWait(cluster.BootstrapWait{Kind: parts[0], Namespace: namespace, Name: name})
+	case cluster.BootstrapWaitPodsReady:
+		namespace, selector, err := parseWaitSelector(parts[1:])
+		if err != nil {
+			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait pods-ready: %w", err)
+		}
+		return cluster.ValidateBootstrapWait(cluster.BootstrapWait{Kind: parts[0], Namespace: namespace, Selector: selector})
 	case cluster.BootstrapWaitCondition:
 		if len(parts) != 3 && len(parts) != 4 {
 			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait condition requires condition[:namespace]:kind/name:Condition")
@@ -464,9 +476,26 @@ func parseBootstrapWait(value string) (cluster.BootstrapWait, error) {
 		if err := validateWaitResourceTarget(name); err != nil {
 			return cluster.BootstrapWait{}, fmt.Errorf("bootstrap wait condition: %w", err)
 		}
-		return cluster.BootstrapWait{Kind: parts[0], Namespace: namespace, Name: name, Condition: condition}, nil
+		return cluster.ValidateBootstrapWait(cluster.BootstrapWait{Kind: parts[0], Namespace: namespace, Name: name, Condition: condition})
 	default:
 		return cluster.BootstrapWait{}, fmt.Errorf("unsupported bootstrap wait %q", value)
+	}
+}
+
+func parseWaitSelector(parts []string) (string, string, error) {
+	switch len(parts) {
+	case 1:
+		if strings.TrimSpace(parts[0]) == "" {
+			return "", "", fmt.Errorf("selector is required")
+		}
+		return "", parts[0], nil
+	case 2:
+		if strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return "", "", fmt.Errorf("namespace and selector are required")
+		}
+		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("requires pods-ready[:namespace]:selector")
 	}
 }
 

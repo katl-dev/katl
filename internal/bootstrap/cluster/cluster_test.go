@@ -93,6 +93,10 @@ func TestRunAppliesUserBootstrapAfterAPIReadinessAndUsesStableEndpoint(t *testin
 			Namespace: "kube-system",
 			Name:      "deployment/cilium-operator",
 			Condition: "Available",
+		}, {
+			Kind:      BootstrapWaitPodsReady,
+			Namespace: "kube-system",
+			Selector:  "k8s-app=kube-dns",
 		}},
 		StableEndpoint: "api.stable.test:6443",
 	}
@@ -141,8 +145,13 @@ func TestRunAppliesUserBootstrapAfterAPIReadinessAndUsesStableEndpoint(t *testin
 	if got, want := manifestPaths(request.Manifests), []string{manifestOne, manifestTwo}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("manifest order = %#v, want %#v", got, want)
 	}
-	if len(request.Waits) != 2 || request.Waits[1].Kind != BootstrapWaitStableEndpoint || request.Waits[1].Name != "api.stable.test:6443" {
-		t.Fatalf("waits = %#v, want explicit wait plus stable endpoint", request.Waits)
+	wantWaits := []BootstrapWait{
+		{Kind: BootstrapWaitCondition, Namespace: "kube-system", Name: "deployment/cilium-operator", Condition: "Available"},
+		{Kind: BootstrapWaitPodsReady, Namespace: "kube-system", Selector: "k8s-app=kube-dns"},
+		{Kind: BootstrapWaitStableEndpoint, Name: "api.stable.test:6443"},
+	}
+	if !reflect.DeepEqual(request.Waits, wantWaits) {
+		t.Fatalf("waits = %#v, want %#v", request.Waits, wantWaits)
 	}
 	if result.Kubeconfig.Server != "https://api.stable.test:6443" {
 		t.Fatalf("kubeconfig server = %q, want stable endpoint", result.Kubeconfig.Server)
@@ -785,6 +794,8 @@ func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
 		Waits: []BootstrapWait{
 			{Kind: BootstrapWaitAPIReady},
 			{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"},
+			{Kind: BootstrapWaitRolloutStatus, Namespace: "kube-system", Name: "deployment/coredns"},
+			{Kind: BootstrapWaitPodsReady, Namespace: "kube-system", Selector: "k8s-app=kube-dns"},
 			{Kind: BootstrapWaitCondition, Namespace: "kube-system", Name: "deployment/cilium-operator", Condition: "Available"},
 			{Kind: BootstrapWaitNodesReady},
 			{Kind: BootstrapWaitStableEndpoint, Name: "api.stable.test:6443"},
@@ -793,11 +804,11 @@ func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunUserBootstrap() error = %v", err)
 	}
-	if len(result.AppliedManifests) != 1 || len(result.Waits) != 5 || !result.StableEndpointReady {
+	if len(result.AppliedManifests) != 1 || len(result.Waits) != 7 || !result.StableEndpointReady {
 		t.Fatalf("result = %#v", result)
 	}
-	if len(commands.calls) != 6 {
-		t.Fatalf("kubectl calls = %#v, want 6 calls", commands.calls)
+	if len(commands.calls) != 8 {
+		t.Fatalf("kubectl calls = %#v, want 8 calls", commands.calls)
 	}
 	if got := commands.calls[0][5:]; !reflect.DeepEqual(got, []string{"apply", "-f", filepath.Join(dir, "0000.yaml")}) {
 		t.Fatalf("first kubectl args = %#v, want apply", commands.calls[0])
@@ -808,11 +819,17 @@ func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
 	if got := commands.calls[2][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "get", "daemonset/cilium"}) {
 		t.Fatalf("resource wait args = %#v", commands.calls[2])
 	}
-	if got := commands.calls[3][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "wait", "--for=condition=Available", "deployment/cilium-operator", "--timeout=5m"}) {
-		t.Fatalf("condition wait args = %#v", commands.calls[3])
+	if got := commands.calls[3][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=5m"}) {
+		t.Fatalf("rollout wait args = %#v", commands.calls[3])
 	}
-	if got := commands.calls[4][5:]; !reflect.DeepEqual(got, []string{"wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m"}) {
-		t.Fatalf("nodes wait args = %#v", commands.calls[4])
+	if got := commands.calls[4][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "wait", "--for=condition=Ready", "pod", "-l", "k8s-app=kube-dns", "--timeout=5m"}) {
+		t.Fatalf("pods-ready wait args = %#v", commands.calls[4])
+	}
+	if got := commands.calls[5][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "wait", "--for=condition=Available", "deployment/cilium-operator", "--timeout=5m"}) {
+		t.Fatalf("condition wait args = %#v", commands.calls[5])
+	}
+	if got := commands.calls[6][5:]; !reflect.DeepEqual(got, []string{"wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m"}) {
+		t.Fatalf("nodes wait args = %#v", commands.calls[6])
 	}
 	for _, call := range commands.calls {
 		if len(call) < 5 || call[3] != "--context" || call[4] != "katl-bootstrap" {
@@ -823,9 +840,45 @@ func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
 	if !strings.Contains(initialKubeconfig, "server: https://10.0.0.11:6443") {
 		t.Fatalf("initial bootstrap kubeconfig did not normalize server:\n%s", initialKubeconfig)
 	}
-	stableKubeconfig := readFileString(t, commands.calls[5][2])
+	stableKubeconfig := readFileString(t, commands.calls[7][2])
 	if !strings.Contains(stableKubeconfig, "server: https://api.stable.test:6443") {
 		t.Fatalf("stable bootstrap kubeconfig did not normalize server:\n%s", stableKubeconfig)
+	}
+}
+
+func TestPrepareBootstrapRejectsInvalidPodSelectorWait(t *testing.T) {
+	_, err := prepareBootstrap(UserBootstrap{
+		Waits: []BootstrapWait{{Kind: BootstrapWaitPodsReady, Namespace: "kube-system", Selector: "app = coredns"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "bootstrap wait pods-ready") {
+		t.Fatalf("prepareBootstrap() error = %v, want selector validation failure", err)
+	}
+}
+
+func TestKubectlBootstrapRunnerStopsOnRolloutFailure(t *testing.T) {
+	commands := &fakeKubectlCommandRunner{
+		defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "deployment exceeded progress deadline"},
+	}
+	_, err := (KubectlBootstrapRunner{
+		CommandRunner: commands,
+		TempDir:       t.TempDir(),
+	}).RunUserBootstrap(context.Background(), BootstrapRequest{
+		Server: "10.0.0.11:6443",
+		Credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+		Waits: []BootstrapWait{{Kind: BootstrapWaitRolloutStatus, Namespace: "kube-system", Name: "deployment/coredns"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "deployment exceeded progress deadline") {
+		t.Fatalf("RunUserBootstrap() error = %v, want rollout failure", err)
+	}
+	if len(commands.calls) != 1 {
+		t.Fatalf("kubectl calls = %#v, want one rollout status call", commands.calls)
+	}
+	if got := commands.calls[0][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=5m"}) {
+		t.Fatalf("rollout wait args = %#v", commands.calls[0])
 	}
 }
 

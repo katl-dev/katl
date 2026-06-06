@@ -57,6 +57,7 @@ type BootstrapWait struct {
 	Namespace string `json:"namespace,omitempty" yaml:"namespace"`
 	Name      string `json:"name,omitempty" yaml:"name"`
 	Condition string `json:"condition,omitempty" yaml:"condition"`
+	Selector  string `json:"selector,omitempty" yaml:"selector"`
 }
 
 type Node struct {

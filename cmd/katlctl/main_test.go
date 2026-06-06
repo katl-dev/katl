@@ -82,6 +82,8 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 		"--bootstrap-manifest", "02-flux.yaml",
 		"--bootstrap-wait", "api-ready",
 		"--bootstrap-wait", "resource-exists:kube-system:daemonset/cilium",
+		"--bootstrap-wait", "rollout-status:kube-system:daemonset/cilium",
+		"--bootstrap-wait", "pods-ready:kube-system:k8s-app=kube-dns",
 		"--bootstrap-wait", "condition:kube-system:deployment/cilium-operator:Available",
 		"--bootstrap-wait", "nodes-ready",
 		"--bootstrap-stable-endpoint", "api.stable.test:6443",
@@ -111,6 +113,8 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	wantWaits := []cluster.BootstrapWait{
 		{Kind: cluster.BootstrapWaitAPIReady},
 		{Kind: cluster.BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"},
+		{Kind: cluster.BootstrapWaitRolloutStatus, Namespace: "kube-system", Name: "daemonset/cilium"},
+		{Kind: cluster.BootstrapWaitPodsReady, Namespace: "kube-system", Selector: "k8s-app=kube-dns"},
 		{Kind: cluster.BootstrapWaitCondition, Namespace: "kube-system", Name: "deployment/cilium-operator", Condition: "Available"},
 		{Kind: cluster.BootstrapWaitNodesReady},
 	}
@@ -178,6 +182,15 @@ func TestClusterBootstrapRejectsInvalidBootstrapWait(t *testing.T) {
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "target must be kind/name") {
 		t.Fatalf("run() error = %v, want kind/name validation failure", err)
+	}
+
+	err = run(context.Background(), []string{
+		"cluster", "bootstrap",
+		"--inventory", inventoryPath,
+		"--bootstrap-wait", "pods-ready:kube-system:app = coredns",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "bootstrap wait pods-ready") {
+		t.Fatalf("run() error = %v, want selector validation failure", err)
 	}
 }
 

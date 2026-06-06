@@ -27,7 +27,11 @@ const (
 	defaultAPIPort      = "6443"
 )
 
-var certificateKeyLinePattern = regexp.MustCompile(`(?i)^[a-f0-9]{64}$`)
+var (
+	certificateKeyLinePattern = regexp.MustCompile(`(?i)^[a-f0-9]{64}$`)
+	labelDNSPattern           = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	labelNamePattern          = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
+)
 
 type Request struct {
 	Inventory            inventory.Inventory
@@ -81,6 +85,7 @@ type BootstrapWait struct {
 	Namespace string `json:"namespace,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Condition string `json:"condition,omitempty"`
+	Selector  string `json:"selector,omitempty"`
 }
 
 type BootstrapRequest struct {
@@ -135,6 +140,8 @@ const (
 	BootstrapWaitCondition      = "condition"
 	BootstrapWaitNodesReady     = "nodes-ready"
 	BootstrapWaitStableEndpoint = "stable-endpoint"
+	BootstrapWaitRolloutStatus  = "rollout-status"
+	BootstrapWaitPodsReady      = "pods-ready"
 )
 
 func Run(ctx context.Context, request Request, deps Dependencies) (Result, error) {
@@ -332,6 +339,7 @@ func planBootstrap(bootstrap *inventory.Bootstrap) UserBootstrap {
 			Namespace: wait.Namespace,
 			Name:      wait.Name,
 			Condition: wait.Condition,
+			Selector:  wait.Selector,
 		})
 	}
 	return result
@@ -424,6 +432,7 @@ func normalizeBootstrapWait(wait BootstrapWait) (BootstrapWait, error) {
 	wait.Namespace = strings.TrimSpace(wait.Namespace)
 	wait.Name = strings.TrimSpace(wait.Name)
 	wait.Condition = strings.TrimSpace(wait.Condition)
+	wait.Selector = strings.TrimSpace(wait.Selector)
 	switch wait.Kind {
 	case BootstrapWaitAPIReady, BootstrapWaitNodesReady:
 		return wait, nil
@@ -443,6 +452,22 @@ func normalizeBootstrapWait(wait BootstrapWait) (BootstrapWait, error) {
 			return BootstrapWait{}, fmt.Errorf("bootstrap wait condition: %w", err)
 		}
 		return wait, nil
+	case BootstrapWaitRolloutStatus:
+		if wait.Name == "" {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait rollout-status requires name")
+		}
+		if err := validateResourceTarget(wait.Name); err != nil {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait rollout-status: %w", err)
+		}
+		return wait, nil
+	case BootstrapWaitPodsReady:
+		if wait.Selector == "" {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait pods-ready requires selector")
+		}
+		if err := validateLabelSelector(wait.Selector); err != nil {
+			return BootstrapWait{}, fmt.Errorf("bootstrap wait pods-ready: %w", err)
+		}
+		return wait, nil
 	case BootstrapWaitStableEndpoint:
 		if wait.Name == "" {
 			return BootstrapWait{}, fmt.Errorf("bootstrap wait stable-endpoint requires endpoint name")
@@ -458,12 +483,92 @@ func normalizeBootstrapWait(wait BootstrapWait) (BootstrapWait, error) {
 	}
 }
 
+func ValidateBootstrapWait(wait BootstrapWait) (BootstrapWait, error) {
+	return normalizeBootstrapWait(wait)
+}
+
 func validateResourceTarget(name string) error {
 	kind, resource, ok := strings.Cut(strings.TrimSpace(name), "/")
 	if !ok || strings.TrimSpace(kind) == "" || strings.TrimSpace(resource) == "" || strings.Contains(resource, "/") {
 		return fmt.Errorf("target must be kind/name")
 	}
 	return nil
+}
+
+func validateLabelSelector(selector string) error {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return fmt.Errorf("selector is required")
+	}
+	for _, requirement := range strings.Split(selector, ",") {
+		requirement = strings.TrimSpace(requirement)
+		if requirement == "" {
+			return fmt.Errorf("selector has an empty requirement")
+		}
+		if strings.ContainsAny(requirement, " \t\r\n") {
+			return fmt.Errorf("selector requirement %q contains unsupported whitespace", requirement)
+		}
+		key := requirement
+		for _, op := range []string{"!=", "==", "="} {
+			if before, after, ok := strings.Cut(requirement, op); ok {
+				key = before
+				if !validLabelValue(after) {
+					return fmt.Errorf("selector requirement %q has invalid value", requirement)
+				}
+				break
+			}
+		}
+		if !validLabelKey(key) {
+			return fmt.Errorf("selector requirement %q has invalid key", requirement)
+		}
+	}
+	return nil
+}
+
+func validLabelKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" || strings.HasPrefix(key, "!") {
+		return false
+	}
+	prefix, name, hasPrefix := strings.Cut(key, "/")
+	if hasPrefix {
+		if !validDNSSubdomain(prefix) {
+			return false
+		}
+		key = name
+	}
+	return validLabelName(key)
+}
+
+func validLabelValue(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && validLabelName(value)
+}
+
+func validDNSSubdomain(value string) bool {
+	if value == "" || len(value) > 253 {
+		return false
+	}
+	for _, part := range strings.Split(value, ".") {
+		if !validDNSLabel(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func validDNSLabel(value string) bool {
+	if value == "" || len(value) > 63 {
+		return false
+	}
+	return labelDNSPattern.MatchString(value)
+}
+
+func validLabelName(value string) bool {
+	if value == "" || len(value) > 63 {
+		return false
+	}
+	return labelNamePattern.MatchString(value)
 }
 
 func bootstrapServer(initNode inventory.PlannedNode, plan inventory.Plan) string {
@@ -780,6 +885,10 @@ func waitKubectlArgs(kubeconfigPath string, wait BootstrapWait) ([]string, error
 		return append(base, "wait", "--for=condition="+wait.Condition, wait.Name, "--timeout=5m"), nil
 	case BootstrapWaitNodesReady:
 		return append(base, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m"), nil
+	case BootstrapWaitRolloutStatus:
+		return append(base, "rollout", "status", wait.Name, "--timeout=5m"), nil
+	case BootstrapWaitPodsReady:
+		return append(base, "wait", "--for=condition=Ready", "pod", "-l", wait.Selector, "--timeout=5m"), nil
 	default:
 		return nil, fmt.Errorf("bootstrap wait kind %q is unsupported", wait.Kind)
 	}
