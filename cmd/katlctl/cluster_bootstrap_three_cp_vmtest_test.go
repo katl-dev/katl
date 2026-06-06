@@ -91,6 +91,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	nodes := []vmtest.RunningInstalledRuntimeNode{cp1Node, cp2Node, cp3Node}
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
 	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
+	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
 	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
 	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
@@ -105,6 +106,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		PublishedFixtures:  threeControlPlanePublishedFixtureDirs(),
 		Inventory:          inventoryPath,
 		Kubeconfig:         kubeconfigPath,
+		KubeconfigMetadata: kubeconfigMetadataPath,
 		BootstrapStdout:    stdoutPath,
 		BootstrapStderr:    stderrPath,
 		BootstrapFixture:   bootstrapFixture.manifestValue(),
@@ -133,6 +135,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	}, bootstrapFixture), &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
+	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
 	if err != nil {
 		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, nodes...)
@@ -223,6 +226,7 @@ type threeControlPlaneArtifactManifest struct {
 	PublishedFixtures  map[string]string           `json:"publishedFixtures,omitempty"`
 	Inventory          string                      `json:"inventory"`
 	Kubeconfig         string                      `json:"kubeconfig"`
+	KubeconfigMetadata string                      `json:"kubeconfigMetadata,omitempty"`
 	BootstrapStdout    string                      `json:"bootstrapStdout"`
 	BootstrapStderr    string                      `json:"bootstrapStderr"`
 	BootstrapFixture   *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
@@ -743,6 +747,7 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 		NodeRunDirs:        map[string]string{"cp-1": "/tmp/cp-1-run"},
 		FixtureInputs:      inputs,
 		PublishedFixtures:  got,
+		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
 		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/ha-cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
 		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
 		KubectlDiagnostics: map[string]string{"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt"},
@@ -768,6 +773,9 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-1-guest/diagnostics-summary.json" || manifest.Diagnostics["cp-3"] != "/tmp/cp-3-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
+	}
+	if manifest.KubeconfigMetadata != "/tmp/run/operator-kubeconfig-metadata.json" {
+		t.Fatalf("artifact manifest kubeconfig metadata = %q", manifest.KubeconfigMetadata)
 	}
 	if manifest.BootstrapFixture == nil || !stringSlicesEqual(manifest.BootstrapFixture.Manifests, []string{"/tmp/ha-cni.yaml"}) || !stringSlicesEqual(manifest.BootstrapFixture.Waits, []string{"nodes-ready"}) {
 		t.Fatalf("artifact manifest bootstrap fixture = %#v", manifest.BootstrapFixture)

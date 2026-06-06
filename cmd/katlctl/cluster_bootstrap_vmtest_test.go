@@ -92,6 +92,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
 	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
+	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
 	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
 	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
@@ -106,6 +107,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		PublishedFixtures:      twoNodePublishedFixtureDirs(),
 		Inventory:              inventoryPath,
 		Kubeconfig:             kubeconfigPath,
+		KubeconfigMetadata:     kubeconfigMetadataPath,
 		BootstrapStdout:        stdoutPath,
 		BootstrapStderr:        stderrPath,
 		BootstrapFixture:       bootstrapFixture.manifestValue(),
@@ -131,6 +133,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	}, bootstrapFixture), &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
+	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
 	if err != nil {
 		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
@@ -227,6 +230,7 @@ type twoNodeArtifactManifest struct {
 	PublishedFixtures      map[string]string           `json:"publishedFixtures,omitempty"`
 	Inventory              string                      `json:"inventory"`
 	Kubeconfig             string                      `json:"kubeconfig"`
+	KubeconfigMetadata     string                      `json:"kubeconfigMetadata,omitempty"`
 	BootstrapStdout        string                      `json:"bootstrapStdout"`
 	BootstrapStderr        string                      `json:"bootstrapStderr"`
 	BootstrapFixture       *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
@@ -677,6 +681,32 @@ func writeTwoNodeDiagnosticJSON(path string, value any) error {
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
+type kubeconfigMetadata struct {
+	Path      string `json:"path"`
+	Exists    bool   `json:"exists"`
+	SizeBytes int64  `json:"sizeBytes,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Modified  string `json:"modified,omitempty"`
+	StatError string `json:"statError,omitempty"`
+}
+
+func writeKubeconfigMetadata(kubeconfigPath, metadataPath string) error {
+	metadata := kubeconfigMetadata{Path: kubeconfigPath}
+	info, err := os.Stat(kubeconfigPath)
+	switch {
+	case err == nil:
+		metadata.Exists = true
+		metadata.SizeBytes = info.Size()
+		metadata.Mode = fmt.Sprintf("%#o", info.Mode().Perm())
+		metadata.Modified = info.ModTime().UTC().Format(time.RFC3339Nano)
+	case errors.Is(err, os.ErrNotExist):
+		metadata.Exists = false
+	default:
+		metadata.StatError = err.Error()
+	}
+	return writeTwoNodeDiagnosticJSON(metadataPath, metadata)
+}
+
 func kubeadmRefForNode(name string) string {
 	if name == "worker-1" {
 		return "worker"
@@ -766,6 +796,7 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 		WorkerRunDir:       "/tmp/worker-run",
 		FixtureInputs:      inputs,
 		PublishedFixtures:  got,
+		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
 		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
 		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-guest/diagnostics-summary.json", "worker-1": "/tmp/worker-guest/diagnostics-summary.json"},
 		KubectlDiagnostics: map[string]string{"nodesWide": "/tmp/run/kubectl-get-nodes-wide.txt"},
@@ -792,11 +823,57 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-guest/diagnostics-summary.json" || manifest.Diagnostics["worker-1"] != "/tmp/worker-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
 	}
+	if manifest.KubeconfigMetadata != "/tmp/run/operator-kubeconfig-metadata.json" {
+		t.Fatalf("artifact manifest kubeconfig metadata = %q", manifest.KubeconfigMetadata)
+	}
 	if manifest.BootstrapFixture == nil || !stringSlicesEqual(manifest.BootstrapFixture.Manifests, []string{"/tmp/cni.yaml"}) || !stringSlicesEqual(manifest.BootstrapFixture.Waits, []string{"nodes-ready"}) {
 		t.Fatalf("artifact manifest bootstrap fixture = %#v", manifest.BootstrapFixture)
 	}
 	if manifest.KubectlDiagnostics["nodesWide"] != "/tmp/run/kubectl-get-nodes-wide.txt" {
 		t.Fatalf("artifact manifest kubectl diagnostics = %#v", manifest.KubectlDiagnostics)
+	}
+}
+
+func TestWriteKubeconfigMetadata(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfigPath := filepath.Join(dir, "operator-kubeconfig.yaml")
+	metadataPath := filepath.Join(dir, "metadata", "operator-kubeconfig-metadata.json")
+	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+	if err := writeKubeconfigMetadata(kubeconfigPath, metadataPath); err != nil {
+		t.Fatalf("writeKubeconfigMetadata() error = %v", err)
+	}
+	var metadata kubeconfigMetadata
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata.Path != kubeconfigPath || !metadata.Exists || metadata.SizeBytes == 0 || metadata.Mode != "0600" || metadata.Modified == "" || metadata.StatError != "" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	if strings.Contains(string(data), "apiVersion") || strings.Contains(string(data), "Config") {
+		t.Fatalf("metadata leaked kubeconfig content:\n%s", data)
+	}
+
+	missingPath := filepath.Join(dir, "missing.yaml")
+	missingMetadataPath := filepath.Join(dir, "missing-metadata.json")
+	if err := writeKubeconfigMetadata(missingPath, missingMetadataPath); err != nil {
+		t.Fatalf("write missing kubeconfig metadata: %v", err)
+	}
+	data, err = os.ReadFile(missingMetadataPath)
+	if err != nil {
+		t.Fatalf("read missing metadata: %v", err)
+	}
+	metadata = kubeconfigMetadata{}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatalf("decode missing metadata: %v", err)
+	}
+	if metadata.Path != missingPath || metadata.Exists || metadata.SizeBytes != 0 || metadata.Mode != "" || metadata.Modified != "" || metadata.StatError != "" {
+		t.Fatalf("missing metadata = %#v", metadata)
 	}
 }
 
