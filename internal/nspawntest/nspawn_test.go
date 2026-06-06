@@ -193,6 +193,50 @@ func TestPrepareFixtureSelfProvisionsRuntimeHelpers(t *testing.T) {
 	}
 }
 
+func TestPrepareFixtureReplacesUnmarkedDefaultRootWithForce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture requires POSIX execution")
+	}
+	repo := repoRootForTest(t)
+	dir := t.TempDir()
+	sourceRoot := filepath.Join(dir, "source-root")
+	for _, path := range []string{
+		"usr/bin/sh",
+		"usr/bin/cp",
+		"usr/bin/grep",
+		"usr/bin/mktemp",
+		"usr/bin/systemd-analyze",
+	} {
+		writeGuestExecutable(t, filepath.Join(sourceRoot, path))
+	}
+	stateDir := filepath.Join(dir, "state")
+	staleRoot := filepath.Join(stateDir, "root")
+	if err := os.MkdirAll(staleRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleRoot, "stale"), []byte("old"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "prepare-nspawn-userspace-fixture"),
+		"--source-root", sourceRoot,
+		"--state-dir", stateDir,
+		"--force",
+	)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GOCACHE=/tmp/katl-go-cache")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prepare fixture error = %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(staleRoot, "stale")); !os.IsNotExist(err) {
+		t.Fatalf("stale file stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(staleRoot, ".katl-nspawn-fixture")); err != nil {
+		t.Fatalf("managed marker missing after replacement: %v", err)
+	}
+}
+
 func TestPrepareDefaultRootLeavesOverridesAlone(t *testing.T) {
 	options := Options{Enabled: true, Root: "/custom/root"}
 	if err := PrepareDefaultRoot(context.Background(), &options, "/missing/repo"); err != nil {

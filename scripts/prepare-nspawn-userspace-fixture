@@ -212,6 +212,10 @@ remove_managed_root() {
     rm -rf "$root"
 }
 
+can_replace_unmarked_root() {
+    [[ "$force" == 1 && "$root" == "$(real "$state_dir/root")" ]]
+}
+
 validate_root() {
     [[ -d "$root" ]] || fail "nspawn root not found: $(rel "$root")"
     guest_executable sh usr/bin/sh bin/sh
@@ -246,7 +250,7 @@ if [[ "$check_only" -eq 0 ]]; then
         fail "no nspawn userspace source found; run scripts/mkosi build-runtime or pass --source-root/--source-image"
     fi
 
-    if [[ -e "$root" && ! -e "$root/.katl-nspawn-fixture" ]]; then
+    if [[ -e "$root" && ! -e "$root/.katl-nspawn-fixture" ]] && ! can_replace_unmarked_root; then
         fail "refusing to replace unmanaged nspawn root: $(rel "$root")"
     fi
     if [[ -e "$root" && "$force" != 1 ]]; then
