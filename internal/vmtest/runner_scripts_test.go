@@ -96,6 +96,17 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		t.Fatalf("child strict env = %#v", childEnv)
 	}
 
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if runIndex.Kind != "VMTestRun" || runIndex.Status != "go-test" {
+		t.Fatalf("run index = %#v", runIndex)
+	}
+	if runIndex.RunID != "run-1" || runIndex.WorldManifest != filepath.Join(runDir, "world.json") || runIndex.HostCapabilities != filepath.Join(runDir, "host-capabilities.json") {
+		t.Fatalf("run index paths = %#v", runIndex)
+	}
+	if !reflect.DeepEqual(runIndex.GoTestArgs, []string{"./internal/vmtest/scenarios", "-run", "^TestTwoNode$", "-count=99", "-timeout", "2m"}) {
+		t.Fatalf("run index go test args = %#v", runIndex.GoTestArgs)
+	}
+
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
 	}
@@ -442,6 +453,16 @@ func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 	if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("go test ran for setup-failed world, stat err = %v", err)
 	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if runIndex.Status != "setup-failed" {
+		t.Fatalf("run index status = %q, want setup-failed", runIndex.Status)
+	}
+	if !reflect.DeepEqual(runIndex.GoTestArgs, []string{"./internal/vmtest"}) {
+		t.Fatalf("run index go test args = %#v", runIndex.GoTestArgs)
+	}
+	if len(runIndex.SetupFailures) != 1 || !strings.Contains(runIndex.SetupFailures[0], "invalid CIDR prefix") {
+		t.Fatalf("run index setup failures = %#v", runIndex.SetupFailures)
+	}
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
 	}
@@ -745,6 +766,29 @@ func readKeyValues(t *testing.T, path string) map[string]string {
 
 type vmtestHostCapabilities struct {
 	Missing []string `json:"missing"`
+}
+
+type vmtestRunIndex struct {
+	Kind             string   `json:"kind"`
+	RunID            string   `json:"runID"`
+	WorldManifest    string   `json:"worldManifest"`
+	HostCapabilities string   `json:"hostCapabilities"`
+	Status           string   `json:"status"`
+	GoTestArgs       []string `json:"goTestArgs"`
+	SetupFailures    []string `json:"setupFailures"`
+}
+
+func readRunIndex(t *testing.T, path string) vmtestRunIndex {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	var index vmtestRunIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		t.Fatalf("Unmarshal(%s) error = %v", path, err)
+	}
+	return index
 }
 
 func readCapabilities(t *testing.T, path string) vmtestHostCapabilities {

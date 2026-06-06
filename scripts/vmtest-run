@@ -15,6 +15,7 @@ scenario_dir="$run_dir/scenarios"
 network_dir="$run_dir/network"
 world_manifest="$run_dir/world.json"
 host_capabilities_json="$run_dir/host-capabilities.json"
+run_index="$run_dir/run.json"
 lease_file="$network_dir/leases.json"
 keep_policy="${KATL_VMTEST_KEEP:-failed}"
 network_backend="${KATL_VMTEST_NETWORK_BACKEND:-bridge}"
@@ -465,6 +466,40 @@ write_world() {
         }' >"$world_manifest"
 }
 
+write_run_index() {
+    local status="$1"
+    shift
+    local setup_failure_text=""
+    if [[ "${#setup_failures[@]}" -gt 0 ]]; then
+        setup_failure_text="$(printf '%s\n' "${setup_failures[@]}")"
+    fi
+    jq -n \
+        --arg runID "$run_id" \
+        --arg runDir "$run_dir" \
+        --arg artifactDir "$artifact_dir" \
+        --arg scenarioDir "$scenario_dir" \
+        --arg worldManifest "$world_manifest" \
+        --arg hostCapabilities "$host_capabilities_json" \
+        --arg leaseFile "$lease_file" \
+        --arg status "$status" \
+        --arg setupFailures "$setup_failure_text" \
+        --args \
+        '{
+          apiVersion: "katl.dev/v1alpha1",
+          kind: "VMTestRun",
+          runID: $runID,
+          runDir: $runDir,
+          artifactDir: $artifactDir,
+          scenarioDir: $scenarioDir,
+          worldManifest: $worldManifest,
+          hostCapabilities: $hostCapabilities,
+          networkLeaseFile: $leaseFile,
+          status: $status,
+          goTestArgs: $ARGS.positional,
+          setupFailures: ($setupFailures | split("\n") | map(select(length > 0)))
+        }' -- "$@" >"$run_index"
+}
+
 cleanup_network() {
     local exit_code=$?
     if [[ "$bridge_created" == 1 ]]; then
@@ -485,9 +520,11 @@ need jq
 mkdir -p "$artifact_dir" "$scenario_dir" "$network_dir"
 jq -n '{}' >"$lease_file"
 write_host_capabilities
+write_run_index "setup" "$@"
 trap cleanup_network EXIT
 validate_network
 if [[ "${#setup_failures[@]}" -gt 0 ]]; then
+    write_run_index "setup-failed" "$@"
     printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
     exit 2
 fi
@@ -504,5 +541,6 @@ export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
 export KATL_VMTEST_BRIDGE="$network_bridge"
 
 final_status="go-test"
+write_run_index "$final_status" "$@"
 printf 'vmtest run dir: %s\n' "$run_dir" >&2
 exec "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "$@"
