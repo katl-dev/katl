@@ -57,13 +57,25 @@ func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
 		return twoNodeSmokeRun{}, false
 	}
 	world := vmtest.RequireWorld(t)
-	run, err := planTwoNodeWorldSmokeRun(world, katlRepoRoot(t), firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), vmtest.DefaultOptions().KVM)
+	repo := katlRepoRoot(t)
+	kvm := vmtest.DefaultOptions().KVM
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, twoNodeWorldRuntimeSpecs(), kvm); err != nil {
+		failWorldFixtureSetup(t, world, "installed-runtime-two-node-kubeadm-join", err)
+	}
+	run, err := planTwoNodeWorldSmokeRun(world, repo, firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), kvm)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node kubeadm join smoke prerequisites missing", missing)
 	return run, true
+}
+
+func twoNodeWorldRuntimeSpecs() []vmtest.NodeSpec {
+	return []vmtest.NodeSpec{
+		{Name: "cp-1", Role: vmtest.ControlPlane},
+		{Name: "worker-1", Role: vmtest.Worker},
+	}
 }
 
 func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (twoNodeSmokeRun, error) {

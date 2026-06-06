@@ -48,10 +48,6 @@ func ensureInstalledRuntimeWorldFixture(world World, spec NodeSpec, produce func
 	return err
 }
 
-func isMissingPublishedFirstInstallRuntimeFixture(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "published installed runtime fixture is missing")
-}
-
 func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec, kvm KVMPolicy) (installedRuntimeWorldRun, error) {
 	scenario, err := world.PlanScenario(name)
 	if err != nil {
@@ -77,11 +73,4 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 	run.Fixture = node.Fixture
 	run.Config = node.Config
 	return run, nil
-}
-
-func firstKVM(value, fallback KVMPolicy) KVMPolicy {
-	if value != "" {
-		return value
-	}
-	return fallback
 }

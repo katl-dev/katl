@@ -11,24 +11,8 @@ import (
 	"time"
 )
 
-type firstInstallFixtureContractRun struct {
-	Runner          Runner
-	WorldScenario   *WorldScenario
-	InstallerBoot   InstallerBootConfig
-	RuntimeArtifact string
-	RuntimeESP      string
-	NodeMetadata    string
-	ManifestPath    string
-	Repo            string
-	TargetDisk      DiskFixture
-	UseInstalledESP bool
-}
-
-type producedInstalledRuntimeFixture struct {
-	ManifestPath string
-	Disk         string
-	ESPArtifacts string
-}
+type firstInstallFixtureContractRun = FirstInstallRuntimeFixtureContract
+type producedInstalledRuntimeFixture = ProducedInstalledRuntimeFixture
 
 func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	contract := firstInstallFixtureContractRunFor(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
@@ -140,6 +124,7 @@ func firstInstallFixtureContractRunFor(t *testing.T, spec NodeSpec) firstInstall
 		Repo:            repoRoot(t),
 		TargetDisk:      targetDiskFixture,
 		UseInstalledESP: useInstalledESP,
+		Node:            spec,
 	}
 }
 
@@ -168,103 +153,19 @@ func firstInstallFixtureContractRunForWorld(t *testing.T, world World, repo stri
 		Repo:            worldRun.Repo,
 		TargetDisk:      worldRun.Config.TargetDisk,
 		UseInstalledESP: worldRun.Config.UseInstalledESP,
+		Node:            spec,
 	}
 }
 
 func produceFirstInstallRuntimeFixture(t *testing.T, contract firstInstallFixtureContractRun) producedInstalledRuntimeFixture {
 	t.Helper()
-	requiredTools := []string{"jq", "sha256sum"}
-	if contract.UseInstalledESP {
-		requiredTools = append(requiredTools, "sfdisk", "mcopy")
-	}
-	for _, tool := range requiredTools {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Fatalf("%s is required to package installed runtime fixtures: %v", tool, err)
-		}
-	}
-
-	runner := contract.Runner
-	runner.RequireHost(t, HostRequirements{
-		QEMU:    true,
-		QEMUImg: true,
-		OVMF:    true,
-		KVM:     runner.options().KVM,
-		MTools:  true,
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-
-	vm := VMConfig{
-		KVM:     runner.options().KVM,
-		RAMMiB:  4096,
-		CPUs:    2,
-		Timeout: 12 * time.Minute,
-		VSock: VSockConfig{
-			Enabled: true,
-		},
-		Agent: AgentControlConfig{
-			RequireHealth: true,
-			Timeout:       30 * time.Second,
-		},
-	}
-	firstResult, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-installed-runtime-fixture"}, FirstInstallConfig{
-		Installer: InstallerBootConfig{
-			InstallerUKI:    contract.InstallerBoot.InstallerUKI,
-			InstallerKernel: contract.InstallerBoot.InstallerKernel,
-			InstallerInitrd: contract.InstallerBoot.InstallerInitrd,
-			CommandLine:     contract.InstallerBoot.CommandLine,
-			RuntimeArtifact: contract.RuntimeArtifact,
-			VM:              vm,
-		},
-		Runtime: InstalledRuntimeConfig{
-			ESPArtifacts:       contract.RuntimeESP,
-			RequireVMTestAgent: true,
-			VM:                 vm,
-		},
-		UseInstalledESP: contract.UseInstalledESP,
-		ManifestPath:    contract.ManifestPath,
-		PreseedManifest: true,
-		TargetDisk:      contract.TargetDisk,
-	})
+	fixture, err := ProduceFirstInstallRuntimeFixture(ctx, contract)
 	if err != nil {
-		t.Fatalf("RunFirstInstall() error = %v", err)
+		t.Fatalf("produce first-install runtime fixture: %v", err)
 	}
-	if firstResult.Status != StatusPassed {
-		t.Fatalf("first install status = %q, failure = %q, run dir = %s", firstResult.Status, firstResult.FailureSummary, firstResult.RunDir)
-	}
-	installedDisk := targetDiskPath(t, firstResult)
-	fixtureESP := contract.RuntimeESP
-	if contract.UseInstalledESP {
-		fixtureESP = firstResult.Artifacts.InstalledESP
-		if _, err := os.Stat(fixtureESP); err != nil {
-			t.Fatalf("installed ESP artifacts %s are unavailable: %v", fixtureESP, err)
-		}
-	}
-	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
-	createFixture := createInstalledRuntimeFixtureCommand(ctx, contract.Repo, installedDisk, fixtureESP, string(DiskQCOW2), fixtureDir, contract.NodeMetadata)
-	output, err := createFixture.CombinedOutput()
-	if err != nil {
-		t.Fatalf("create installed runtime fixture failed: %v\n%s", err, output)
-	}
-
-	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
-	packagedDisk := filepath.Join(fixtureDir, "installed-runtime.qcow2")
-	packagedESP := filepath.Join(fixtureDir, "esp")
-	checkFixture := resolveInstalledRuntimeFixtureCommand(ctx, contract.Repo, packagedDisk, packagedESP, fixtureManifest, string(DiskQCOW2), filepath.Join(fixtureDir, "recheck"), packagedNodeMetadata(fixtureDir, contract.NodeMetadata))
-	output, err = checkFixture.CombinedOutput()
-	if err != nil {
-		t.Fatalf("check installed runtime fixture failed: %v\n%s", err, output)
-	}
-	if contract.WorldScenario != nil {
-		if _, err := WritePublishedFirstInstallRuntimeFixture(contract.WorldScenario.World.RunDir, "first-install-installed-runtime-fixture", fixtureManifest, DiskQCOW2); err != nil {
-			t.Fatalf("publish first-install runtime fixture: %v", err)
-		}
-	}
-	return producedInstalledRuntimeFixture{
-		ManifestPath: fixtureManifest,
-		Disk:         packagedDisk,
-		ESPArtifacts: packagedESP,
-	}
+	return fixture
 }
 
 func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
@@ -503,13 +404,6 @@ func resolveInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, 
 		args = append(args, "--node-metadata", nodeMetadata)
 	}
 	return exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "resolve-installed-runtime-fixture"), args...)
-}
-
-func packagedNodeMetadata(fixtureDir, nodeMetadata string) string {
-	if nodeMetadata == "" {
-		return ""
-	}
-	return filepath.Join(fixtureDir, "node.json")
 }
 
 func TestFirstInstallFixtureCommandsCarryNodeMetadata(t *testing.T) {

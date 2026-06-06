@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,8 +10,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zariel/katl/internal/vmtest"
 )
@@ -20,6 +23,43 @@ func publishedRuntimeBuildRoots(world vmtest.World, repo string) []string {
 		filepath.Join(world.RunDir, "build"),
 		filepath.Join(repo, "build"),
 	}
+}
+
+func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, specs []vmtest.NodeSpec, kvm vmtest.KVMPolicy) error {
+	timeout := time.Duration(firstInt(len(specs), 1)) * 30 * time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return vmtest.EnsurePublishedFirstInstallRuntimeFixtures(ctx, world, repo, specs, vmtest.FirstInstallRuntimeFixtureOptions{
+		Input: vmtest.DefaultFirstInstallWorldInputFromEnv(vmtest.FirstInstallWorldPreseed, katlctlEnvBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")),
+		KVM:   kvm,
+	})
+}
+
+func failWorldFixtureSetup(t *testing.T, world vmtest.World, scenarioName string, err error) {
+	t.Helper()
+	scenario, scenarioErr := world.PlanScenario(scenarioName)
+	if scenarioErr != nil {
+		t.Fatalf("plan world setup failure scenario: %v; original error: %v", scenarioErr, err)
+	}
+	failTwoNodeWorldSetup(t, scenario, err)
+}
+
+func katlctlEnvBool(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return false
+	}
+	parsed, err := strconv.ParseBool(value)
+	return err == nil && parsed
+}
+
+func firstInt(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func writeKatlctlPublishedInstalledRuntimeFixture(t *testing.T, root, name, nodeName string, role vmtest.NodeRole) string {

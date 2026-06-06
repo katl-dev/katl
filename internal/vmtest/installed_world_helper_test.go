@@ -1,9 +1,11 @@
 package vmtest
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +122,55 @@ func TestEnsureInstalledRuntimeWorldFixtureUsesExistingWorldFixture(t *testing.T
 	}
 }
 
+func TestEnsurePublishedFirstInstallRuntimeFixturesProducesMissingSpecs(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	var produced []string
+
+	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{
+		{Name: "cp-1", Role: ControlPlane},
+		{Name: "worker-1", Role: Worker},
+	}, FirstInstallRuntimeFixtureOptions{
+		Input: input,
+		KVM:   KVMOff,
+		Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+			produced = append(produced, contract.Node.Name)
+			manifest := writePublishedInstalledRuntimeFixture(t, world.RunDir, FirstInstallRuntimeFixtureScenarioName(contract.Node), contract.Node.Name, contract.Node.Role, time.Unix(10, 0))
+			return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() error = %v", err)
+	}
+	if !reflect.DeepEqual(produced, []string{"cp-1", "worker-1"}) {
+		t.Fatalf("produced = %#v", produced)
+	}
+	for _, spec := range []NodeSpec{{Name: "cp-1", Role: ControlPlane}, {Name: "worker-1", Role: Worker}} {
+		if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "build")}, spec); err != nil {
+			t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots(%#v) error = %v", spec, err)
+		}
+	}
+}
+
+func TestEnsurePublishedFirstInstallRuntimeFixturesReusesExistingFixture(t *testing.T) {
+	world := testWorld(t)
+	writePublishedInstalledRuntimeFixture(t, world.RunDir, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+
+	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, t.TempDir(), []NodeSpec{
+		{Name: "cp-1", Role: ControlPlane},
+		{Name: "cp-1", Role: ControlPlane},
+	}, FirstInstallRuntimeFixtureOptions{
+		Produce: func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+			t.Fatal("producer was called for an existing fixture")
+			return ProducedInstalledRuntimeFixture{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() error = %v", err)
+	}
+}
+
 func TestWritePublishedFirstInstallRuntimeFixture(t *testing.T) {
 	root := t.TempDir()
 	sourceDir := t.TempDir()
@@ -181,4 +232,16 @@ func writePublishedInstalledRuntimeFixture(t *testing.T, repo, name, nodeName st
 		t.Fatalf("Chtimes(%s) error = %v", publishedManifest, err)
 	}
 	return fixtureManifest
+}
+
+func firstInstallFixtureInputForTest(t *testing.T) FirstInstallWorldInput {
+	t.Helper()
+	sourceDir := t.TempDir()
+	return FirstInstallWorldInput{
+		Installer:       InstallerBootConfig{InstallerUKI: writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")},
+		RuntimeArtifact: writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime"),
+		InstallManifest: writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), firstManifest()),
+		UseInstalledESP: true,
+		TargetDiskSize:  "20G",
+	}
 }

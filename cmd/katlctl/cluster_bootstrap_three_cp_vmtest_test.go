@@ -61,13 +61,26 @@ func threeControlPlaneWorldSmokeRun(t *testing.T) (threeControlPlaneSmokeRun, bo
 		return threeControlPlaneSmokeRun{}, false
 	}
 	world := vmtest.RequireWorld(t)
-	run, err := planThreeControlPlaneWorldSmokeRun(world, katlRepoRoot(t), firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), vmtest.DefaultOptions().KVM)
+	repo := katlRepoRoot(t)
+	kvm := vmtest.DefaultOptions().KVM
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, threeControlPlaneWorldRuntimeSpecs(), kvm); err != nil {
+		failWorldFixtureSetup(t, world, "installed-runtime-three-control-plane-stacked-etcd", err)
+	}
+	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), kvm)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "three-control-plane stacked-etcd smoke prerequisites missing", missing)
 	return run, true
+}
+
+func threeControlPlaneWorldRuntimeSpecs() []vmtest.NodeSpec {
+	return []vmtest.NodeSpec{
+		{Name: "cp-1", Role: vmtest.ControlPlane},
+		{Name: "cp-2", Role: vmtest.ControlPlane},
+		{Name: "cp-3", Role: vmtest.ControlPlane},
+	}
 }
 
 func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (threeControlPlaneSmokeRun, error) {
