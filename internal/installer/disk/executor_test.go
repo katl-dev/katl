@@ -50,6 +50,38 @@ func TestDiskExecutorRefusesDestructiveActionsWithoutPermission(t *testing.T) {
 	}
 }
 
+func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
+	plan := executorPlan()
+	commands := &NoopCommandRunner{}
+	if _, err := (DiskExecutor{Commands: commands}).ExecuteGroup(context.Background(), DiskExecutionRequest{
+		Plan:             plan,
+		AllowDestructive: true,
+	}, PartitionOperations); err != nil {
+		t.Fatalf("ExecuteGroup(partition) error = %v", err)
+	}
+	if got := callNames(commands.Calls); !strings.Contains(got, "sfdisk") || !strings.Contains(got, "partprobe") || !strings.Contains(got, "udevadm") {
+		t.Fatalf("partition calls = %s", got)
+	}
+	if strings.Contains(callNames(commands.Calls), "mkfs.") || strings.Contains(callNames(commands.Calls), "mount") {
+		t.Fatalf("partition group ran later operations: %#v", commands.Calls)
+	}
+
+	commands = &NoopCommandRunner{}
+	result, err := (DiskExecutor{Commands: commands}).ExecuteGroup(context.Background(), DiskExecutionRequest{
+		Plan:             plan,
+		AllowDestructive: true,
+	}, MountOperations)
+	if err != nil {
+		t.Fatalf("ExecuteGroup(mount) error = %v", err)
+	}
+	if result.Boot == nil || result.Boot.RootPartitionUUID == "" {
+		t.Fatalf("boot result = %#v", result.Boot)
+	}
+	if countCalls(commands.Calls, "mkdir") == 0 || countCalls(commands.Calls, "mount") == 0 || countCalls(commands.Calls, "bootctl") != 1 {
+		t.Fatalf("mount calls = %#v", commands.Calls)
+	}
+}
+
 func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	artifact := []byte("runtime-root")
 	commands := &NoopCommandRunner{}
@@ -298,6 +330,14 @@ func countCalls(calls []CommandCall, name string) int {
 		}
 	}
 	return count
+}
+
+func callNames(calls []CommandCall) string {
+	names := make([]string, 0, len(calls))
+	for _, call := range calls {
+		names = append(names, call.Name)
+	}
+	return strings.Join(names, " ")
 }
 
 type NoopCommandRunner struct {

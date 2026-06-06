@@ -114,9 +114,9 @@ func NewPlan(options PlanOptions) Plan {
 		collectHardwareFactsStep{},
 		verifyKatlosImageStep{},
 		planInstallStep{},
-		stubStep{id: PrepareDisk},
-		stubStep{id: CreatePartitions},
-		stubStep{id: FormatFilesystems},
+		prepareDiskStep{},
+		createPartitionsStep{},
+		formatFilesystemsStep{},
 		mountTargetStep{},
 		installRootSlotStep{},
 		installBootArtifactsStep{},
@@ -362,6 +362,45 @@ func runtimeRootSizeMiB(sizeBytes int64) uint64 {
 	return uint64((sizeBytes + mib - 1) / mib)
 }
 
+type prepareDiskStep struct{}
+
+func (prepareDiskStep) ID() StepID {
+	return PrepareDisk
+}
+
+func (prepareDiskStep) Run(ctx context.Context, install *Context) error {
+	if err := executeDiskGroup(ctx, install, disk.PrepareOperations); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, PrepareDisk)
+}
+
+type createPartitionsStep struct{}
+
+func (createPartitionsStep) ID() StepID {
+	return CreatePartitions
+}
+
+func (createPartitionsStep) Run(ctx context.Context, install *Context) error {
+	if err := executeDiskGroup(ctx, install, disk.PartitionOperations); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, CreatePartitions)
+}
+
+type formatFilesystemsStep struct{}
+
+func (formatFilesystemsStep) ID() StepID {
+	return FormatFilesystems
+}
+
+func (formatFilesystemsStep) Run(ctx context.Context, install *Context) error {
+	if err := executeDiskGroup(ctx, install, disk.FormatOperations); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, FormatFilesystems)
+}
+
 type mountTargetStep struct{}
 
 func (mountTargetStep) ID() StepID {
@@ -373,6 +412,13 @@ func (mountTargetStep) Run(ctx context.Context, install *Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+	result, err := executeDiskGroupResult(ctx, install, disk.MountOperations)
+	if err != nil {
+		return err
+	}
+	if result.Boot != nil && strings.TrimSpace(result.Boot.RootPartitionUUID) != "" {
+		install.RootPartitionUUID = result.Boot.RootPartitionUUID
 	}
 	if install.KatlosImage != nil && install.RootSlotPlan != nil && install.LoaderRecord == nil {
 		if strings.TrimSpace(install.RootPartitionUUID) == "" {
@@ -393,6 +439,36 @@ func (mountTargetStep) Run(ctx context.Context, install *Context) error {
 		install.LoaderRecord = &record
 	}
 	return recordStep(ctx, install, MountTarget)
+}
+
+func executeDiskGroup(ctx context.Context, install *Context, group disk.DiskOperationGroup) error {
+	_, err := executeDiskGroupResult(ctx, install, group)
+	return err
+}
+
+func executeDiskGroupResult(ctx context.Context, install *Context, group disk.DiskOperationGroup) (disk.DiskExecutionResult, error) {
+	select {
+	case <-ctx.Done():
+		return disk.DiskExecutionResult{}, ctx.Err()
+	default:
+	}
+	if install.DiskLayout == nil {
+		return disk.DiskExecutionResult{}, nil
+	}
+	executor := disk.DiskExecutor{Commands: install.Commands}
+	result, err := executor.ExecuteGroup(ctx, diskExecutionRequest(install), group)
+	if err != nil {
+		return disk.DiskExecutionResult{}, err
+	}
+	return result, nil
+}
+
+func diskExecutionRequest(install *Context) disk.DiskExecutionRequest {
+	return disk.DiskExecutionRequest{
+		Plan:              *install.DiskLayout,
+		AllowDestructive:  install.Manifest.Install.AllowDestructiveInstall,
+		TargetMountPrefix: install.TargetRoot,
+	}
 }
 
 type installRootSlotStep struct{}

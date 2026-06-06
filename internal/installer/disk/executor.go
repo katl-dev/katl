@@ -49,6 +49,15 @@ type DiskOperation struct {
 	Destructive bool
 }
 
+type DiskOperationGroup string
+
+const (
+	PrepareOperations   DiskOperationGroup = "prepare"
+	PartitionOperations DiskOperationGroup = "partition"
+	FormatOperations    DiskOperationGroup = "format"
+	MountOperations     DiskOperationGroup = "mount"
+)
+
 var ErrDestructiveInstallNotAllowed = errors.New("destructive install is not allowed")
 
 func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest) (DiskExecutionResult, error) {
@@ -56,6 +65,18 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 		return DiskExecutionResult{}, err
 	}
 	operations := BuildDiskOperations(request.Plan, request.TargetMountPrefix)
+	return e.executeOperations(ctx, request, operations)
+}
+
+func (e DiskExecutor) ExecuteGroup(ctx context.Context, request DiskExecutionRequest, group DiskOperationGroup) (DiskExecutionResult, error) {
+	if err := checkBootPlan(request.Plan); err != nil {
+		return DiskExecutionResult{}, err
+	}
+	operations := filterOperations(BuildDiskOperations(request.Plan, request.TargetMountPrefix), group)
+	return e.executeOperations(ctx, request, operations)
+}
+
+func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecutionRequest, operations []DiskOperation) (DiskExecutionResult, error) {
 	if hasDestructiveOperations(operations) && !request.AllowDestructive {
 		return DiskExecutionResult{}, ErrDestructiveInstallNotAllowed
 	}
@@ -129,6 +150,31 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 	return result, nil
 }
 
+func filterOperations(operations []DiskOperation, group DiskOperationGroup) []DiskOperation {
+	filtered := make([]DiskOperation, 0, len(operations))
+	for _, operation := range operations {
+		if operationInGroup(operation, group) {
+			filtered = append(filtered, operation)
+		}
+	}
+	return filtered
+}
+
+func operationInGroup(operation DiskOperation, group DiskOperationGroup) bool {
+	switch group {
+	case PrepareOperations:
+		return operation.Name == "wipe-target-signatures" || strings.HasPrefix(operation.Name, "wipe-extra-")
+	case PartitionOperations:
+		return operation.Name == "create-gpt" || operation.Name == "reread-partitions" || operation.Name == "settle-partitions"
+	case FormatOperations:
+		return strings.HasPrefix(operation.Name, "format-")
+	case MountOperations:
+		return strings.HasPrefix(operation.Name, "create-mountpoint-") || strings.HasPrefix(operation.Name, "mount-") || operation.Name == "install-systemd-boot"
+	default:
+		return false
+	}
+}
+
 func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOperation {
 	if targetMountPrefix == "" {
 		targetMountPrefix = "/mnt/target"
@@ -155,6 +201,7 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 			if partition.Name == "state" {
 				name = "mount-state"
 			}
+			operations = append(operations, DiskOperation{Name: "create-mountpoint-" + partition.Name, Command: "mkdir", Args: []string{"-p", targetMountPrefix + partition.MountPath}})
 			operations = append(operations, DiskOperation{Name: name, Command: "mount", Args: []string{"LABEL=" + partition.GPTLabel, targetMountPrefix + partition.MountPath}})
 		}
 	}
@@ -168,6 +215,7 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 			operations = append(operations, DiskOperation{Name: "wipe-extra-" + extra.Name, Command: "wipefs", Args: []string{"--all", extra.DevicePath}, Destructive: true})
 		}
 		operations = append(operations, DiskOperation{Name: "format-extra-" + extra.Name, Command: "mkfs." + extra.Filesystem, Args: []string{extra.DevicePath}, Destructive: true})
+		operations = append(operations, DiskOperation{Name: "create-mountpoint-extra-" + extra.Name, Command: "mkdir", Args: []string{"-p", targetMountPrefix + extra.MountPath}})
 		operations = append(operations, DiskOperation{Name: "mount-extra-" + extra.Name, Command: "mount", Args: []string{extra.DevicePath, targetMountPrefix + extra.MountPath}})
 	}
 

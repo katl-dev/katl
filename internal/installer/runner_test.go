@@ -311,6 +311,7 @@ func TestRunnerCapturesRootUUIDAfterMountTarget(t *testing.T) {
 	payload := planningPayload()
 	commands := &recordingOutputRunner{
 		outputs: map[string][]byte{
+			"blkid -t PARTLABEL=KATL_ESP -s PARTUUID -o value":    []byte("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n"),
 			"blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value": []byte("11111111-2222-3333-4444-555555555555\n"),
 		},
 	}
@@ -337,7 +338,7 @@ func TestRunnerCapturesRootUUIDAfterMountTarget(t *testing.T) {
 	if install.LoaderRecord.Root.PartitionUUID != install.RootPartitionUUID || install.LoaderRecord.Root.Slot != string(disk.RootSlotA) {
 		t.Fatalf("loader root = %#v", install.LoaderRecord.Root)
 	}
-	if got := strings.Join(commands.OutputCalls, ";"); got != "blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value" {
+	if got := strings.Join(commands.OutputCalls, ";"); got != "blkid -t PARTLABEL=KATL_ESP -s PARTUUID -o value;blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value" {
 		t.Fatalf("output calls = %#v", commands.OutputCalls)
 	}
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall, MountTarget}) {
@@ -358,13 +359,62 @@ func TestRunnerMountTargetRequiresOutputForRootUUID(t *testing.T) {
 
 	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, mountTargetStep{}}
 	err := NewRunner(plan, install).Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "command runner must support output") {
+	if err == nil || !strings.Contains(err.Error(), "support output") {
 		t.Fatalf("Run() error = %v, want output command runner failure", err)
 	}
 	if install.LoaderRecord != nil {
 		t.Fatalf("loader record = %#v, want nil", install.LoaderRecord)
 	}
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
+func TestRunnerExecutesDiskOperationSteps(t *testing.T) {
+	store := &MemoryStateStore{}
+	payload := planningPayload()
+	commands := &recordingOutputRunner{
+		outputs: map[string][]byte{
+			"blkid -t PARTLABEL=KATL_ESP -s PARTUUID -o value":    []byte("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n"),
+			"blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value": []byte("11111111-2222-3333-4444-555555555555\n"),
+		},
+	}
+	install := &Context{
+		ManifestPath:   writeManifest(t),
+		TargetRoot:     t.TempDir(),
+		Commands:       commands,
+		Store:          store,
+		KatlosResolver: &recordingKatlosResolver{payload: payload},
+		Discovery:      discovery.StaticDiscoverySource{Facts: planningFacts()},
+	}
+
+	plan := Plan{
+		loadManifestStep{},
+		collectHardwareFactsStep{},
+		verifyKatlosImageStep{},
+		planInstallStep{},
+		prepareDiskStep{},
+		createPartitionsStep{},
+		formatFilesystemsStep{},
+		mountTargetStep{},
+	}
+	if err := NewRunner(plan, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	calls := commandNames(commands.Calls)
+	for _, name := range []string{"wipefs", "sfdisk", "partprobe", "udevadm", "mkfs.vfat", "mkfs.ext4", "mkdir", "mount", "bootctl"} {
+		if !strings.Contains(calls, name) {
+			t.Fatalf("command calls %q missing %s; calls = %#v", calls, name, commands.Calls)
+		}
+	}
+	if commands.Inputs["sfdisk"] == "" || !strings.Contains(commands.Inputs["sfdisk"], `name="KATL_ROOT_A"`) {
+		t.Fatalf("sfdisk input = %q", commands.Inputs["sfdisk"])
+	}
+	if install.LoaderRecord == nil || install.LoaderRecord.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("loader record = %#v", install.LoaderRecord)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall, PrepareDisk, CreatePartitions, FormatFilesystems, MountTarget}) {
 		t.Fatalf("completed steps = %#v", got)
 	}
 }
@@ -1051,7 +1101,17 @@ func (o *recordingRootSlotOpener) OpenRootSlotDevice(_ context.Context, target d
 type recordingOutputRunner struct {
 	NoopCommandRunner
 	outputs     map[string][]byte
+	Inputs      map[string]string
 	OutputCalls []string
+}
+
+func (r *recordingOutputRunner) RunInput(_ context.Context, input string, name string, args ...string) error {
+	if r.Inputs == nil {
+		r.Inputs = make(map[string]string)
+	}
+	r.Calls = append(r.Calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
+	r.Inputs[name] = input
+	return nil
 }
 
 func (r *recordingOutputRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -1061,6 +1121,14 @@ func (r *recordingOutputRunner) Output(_ context.Context, name string, args ...s
 		return data, nil
 	}
 	return nil, fmt.Errorf("unexpected output command %s", call)
+}
+
+func commandNames(calls []CommandCall) string {
+	names := make([]string, 0, len(calls))
+	for _, call := range calls {
+		names = append(names, call.Name)
+	}
+	return strings.Join(names, " ")
 }
 
 type failingStep struct {
