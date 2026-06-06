@@ -110,6 +110,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		EtcdReport:        etcdReportPath,
 		Transcripts:       transcriptPaths(transcriptDir, nodes),
 		EtcdTranscripts:   transcriptPaths(etcdTranscriptDir, nodes),
+		Diagnostics:       diagnosticSummaryPaths(nodes),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +221,7 @@ type threeControlPlaneArtifactManifest struct {
 	EtcdReport        string                      `json:"etcdReport"`
 	Transcripts       map[string]string           `json:"transcripts"`
 	EtcdTranscripts   map[string]string           `json:"etcdTranscripts"`
+	Diagnostics       map[string]string           `json:"diagnostics,omitempty"`
 }
 
 func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPlaneArtifactManifest) error {
@@ -667,6 +669,7 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 		NodeRunDirs:       map[string]string{"cp-1": "/tmp/cp-1-run"},
 		FixtureInputs:     inputs,
 		PublishedFixtures: got,
+		Diagnostics:       map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
 	}); err != nil {
 		t.Fatalf("writeThreeControlPlaneArtifactManifest() error = %v", err)
 	}
@@ -686,5 +689,8 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.FixtureInputs["cp-1"].KatlOSFixtureManifest != "/tmp/cp-1-katlos.json" || manifest.FixtureInputs["cp-3"].KatlOSFixtureManifest != "/tmp/cp-3-katlos.json" {
 		t.Fatalf("artifact manifest KatlOS fixture inputs = %#v", manifest.FixtureInputs)
+	}
+	if manifest.Diagnostics["cp-1"] != "/tmp/cp-1-guest/diagnostics-summary.json" || manifest.Diagnostics["cp-3"] != "/tmp/cp-3-guest/diagnostics-summary.json" {
+		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
 	}
 }

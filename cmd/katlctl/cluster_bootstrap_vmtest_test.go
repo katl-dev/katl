@@ -110,6 +110,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		KubectlOutput:          kubectlOut,
 		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
 		WorkerTranscript:       twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
+		Diagnostics:            diagnosticSummaryPaths([]vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +225,7 @@ type twoNodeArtifactManifest struct {
 	KubectlOutput          string                      `json:"kubectlOutput"`
 	ControlPlaneTranscript string                      `json:"controlPlaneTranscript"`
 	WorkerTranscript       string                      `json:"workerTranscript"`
+	Diagnostics            map[string]string           `json:"diagnostics,omitempty"`
 }
 
 type nodeFixtureInput struct {
@@ -590,6 +592,20 @@ func uint32String(value uint32) string {
 	return strconv.FormatUint(uint64(value), 10)
 }
 
+func diagnosticSummaryPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	out := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		if node.Name == "" || node.Result.Artifacts.GuestDir == "" {
+			continue
+		}
+		out[node.Name] = filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics-summary.json")
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	t.Setenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR", "/tmp/cp")
 	t.Setenv("KATL_WORKER_PUBLISHED_FIXTURE_DIR", "/tmp/worker")
@@ -610,6 +626,7 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 		WorkerRunDir:       "/tmp/worker-run",
 		FixtureInputs:      inputs,
 		PublishedFixtures:  got,
+		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-guest/diagnostics-summary.json", "worker-1": "/tmp/worker-guest/diagnostics-summary.json"},
 	}); err != nil {
 		t.Fatalf("writeTwoNodeArtifactManifest() error = %v", err)
 	}
@@ -629,6 +646,20 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.FixtureInputs["cp-1"].KatlOSFixtureManifest != "/tmp/cp-katlos.json" || manifest.FixtureInputs["worker-1"].KatlOSFixtureManifest != "/tmp/worker-katlos.json" {
 		t.Fatalf("artifact manifest KatlOS fixture inputs = %#v", manifest.FixtureInputs)
+	}
+	if manifest.Diagnostics["cp-1"] != "/tmp/cp-guest/diagnostics-summary.json" || manifest.Diagnostics["worker-1"] != "/tmp/worker-guest/diagnostics-summary.json" {
+		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
+	}
+}
+
+func TestDiagnosticSummaryPaths(t *testing.T) {
+	got := diagnosticSummaryPaths([]vmtest.RunningInstalledRuntimeNode{
+		{Name: "cp-1", Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{GuestDir: "/tmp/cp-guest"}}},
+		{Name: "worker-1", Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{GuestDir: "/tmp/worker-guest"}}},
+		{Name: "ignored"},
+	})
+	if got["cp-1"] != "/tmp/cp-guest/diagnostics-summary.json" || got["worker-1"] != "/tmp/worker-guest/diagnostics-summary.json" {
+		t.Fatalf("diagnostic summary paths = %#v", got)
 	}
 }
 
