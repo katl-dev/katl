@@ -2,6 +2,8 @@ package vmtest
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +20,6 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime config apply smoke")
 	}
-	options.Missing = MissingSkips
 	runner := NewRunner(options)
 	runtime := InstalledRuntimeConfig{}
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-config-apply-modes", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
@@ -27,17 +28,18 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	} else {
 		_ = RequireWorld(t)
 	}
-	helper := buildConfigApplySmokeHelper(t)
-
-	runner.RequireHost(t, HostRequirements{
+	scenario := Scenario{Name: "installed-runtime-config-apply-modes"}
+	result, err := runner.Plan(scenario)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	result = requireConfigApplyVMHost(t, runner, scenario, result, HostRequirements{
 		QEMU: true,
 		OVMF: true,
 		KVM:  runner.options().KVM,
 	})
-	result, err := runner.Plan(Scenario{Name: "installed-runtime-config-apply-modes"})
-	if err != nil {
-		t.Fatalf("Plan() error = %v", err)
-	}
+	helper := buildConfigApplySmokeHelper(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	node, err := StartInstalledRuntimeNode(ctx, result, InstalledRuntimeNodeConfig{
@@ -81,8 +83,78 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	uploadConfigApplySmokeInputs(t, ctx, guest, helper)
 	runConfigApplyModeSmoke(t, ctx, guest, currentGeneration)
 	node.Result.finish(StatusPassed, "", runner.time())
-	if err := runner.Write(Scenario{Name: "installed-runtime-config-apply-modes"}, node.Result); err != nil {
+	if err := runner.Write(scenario, node.Result); err != nil {
 		t.Fatalf("Write() error = %v", err)
+	}
+}
+
+func requireConfigApplyVMHost(t testTB, runner Runner, scenario Scenario, result Result, requirements HostRequirements) Result {
+	t.Helper()
+	result.start(runner.time())
+	if err := runner.CheckHost(requirements); err != nil {
+		status := StatusFailed
+		if runner.options().Missing == MissingSkips {
+			status = StatusSkipped
+		}
+		var prereq PrereqError
+		if errors.As(err, &prereq) {
+			result.Missing = prereq.Missing
+		}
+		result.finish(status, err.Error(), runner.time())
+		if writeErr := runner.Write(scenario, result); writeErr != nil {
+			t.Fatalf("write config-apply vmtest result for %q failed: %v\nvmtest run dir: %s", scenario.Name, writeErr, result.RunDir)
+			return result
+		}
+		if status == StatusSkipped {
+			t.Skipf("%v\nvmtest run dir: %s", err, result.RunDir)
+			return result
+		}
+		t.Fatalf("%v\nvmtest run dir: %s", err, result.RunDir)
+	}
+	return result
+}
+
+func TestRequireConfigApplyVMHostWritesFailedResult(t *testing.T) {
+	tb := &fakeTB{}
+	runner := Runner{
+		Options: Options{
+			Enabled:   true,
+			StateRoot: t.TempDir(),
+			RunID:     "run-1",
+			Missing:   MissingFails,
+		},
+		probe: probe{
+			lookPath: func(string) (string, error) {
+				return "", errors.New("missing qemu")
+			},
+		},
+		now: func() time.Time {
+			return time.Unix(10, 0)
+		},
+	}
+	scenario := Scenario{Name: "installed-runtime-config-apply-modes"}
+	result, err := runner.Plan(scenario)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	got := requireConfigApplyVMHost(tb, runner, scenario, result, HostRequirements{QEMU: true})
+	if !tb.failed || tb.skipped {
+		t.Fatalf("failed=%v skipped=%v message=%q", tb.failed, tb.skipped, tb.message)
+	}
+	if got.Status != StatusFailed || !strings.Contains(got.FailureSummary, "qemu-system-x86_64") {
+		t.Fatalf("result = %#v", got)
+	}
+	data, err := os.ReadFile(got.Artifacts.Result)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var stored Result
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if stored.Status != StatusFailed || len(stored.Missing) == 0 || stored.Phases[0].Name != "host-prerequisites" {
+		t.Fatalf("stored result = %#v", stored)
 	}
 }
 
