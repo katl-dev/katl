@@ -183,7 +183,7 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
-		InstallerRunner: fakeVM(installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n"),
+		InstallerRunner: fakeVM(preseedInstallerEvidence() + installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n"),
 		RuntimeRunner:   fakeVM("Katl state projection ready"),
 	})
 	if err != nil {
@@ -223,6 +223,44 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 	}
 	if !strings.Contains(string(input), "/run/katl/preseed/install-manifest.json") {
 		t.Fatalf("preseed input = %s", input)
+	}
+}
+
+func TestFirstInstallPreseedManifestRequiresEvidence(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	_, vmConfig := vmFixture(t)
+	vmConfig.HostForwards = nil
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "first-install-preseed"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    uki,
+			RuntimeArtifact: runtime,
+			VM:              vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: espFixture(t),
+			VM:           vmConfig,
+		},
+		Manifest:        []byte(firstManifest()),
+		PreseedManifest: true,
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		PreseedRunner:   fakePreseedRunner{},
+		InstallerRunner: fakeVM(installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n"),
+		RuntimeRunner:   fakeVM("Katl state projection ready"),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %q, want failed", result.Status)
+	}
+	if !strings.Contains(result.FailureSummary, "installer serial missing preseed signal") {
+		t.Fatalf("FailureSummary = %q", result.FailureSummary)
 	}
 }
 
@@ -377,6 +415,15 @@ func (fileDiskRunner) Run(_ context.Context, _ string, args ...string) error {
 
 func fakeVM(signal string) VMRunner {
 	return fakeVMWithExecutor(vmExec{write: signal})
+}
+
+func preseedInstallerEvidence() string {
+	return strings.Join([]string{
+		"katl input: mounted seed device /dev/disk/by-label/KATLSEED at /run/katl/preseed",
+		"katl input: copied /run/katl/preseed/install-input.json to /run/katl/install-input.json",
+		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json manifestURL=",
+		"",
+	}, "\n")
 }
 
 func fakeVMWithExecutor(executor VMExecutor) VMRunner {

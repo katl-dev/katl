@@ -230,13 +230,16 @@ if [[ -n "$artifact_index" ]]; then
     fi
 fi
 
-[[ -n "$installer_uki" ]] || fail "--installer-uki is required"
-[[ -f "$installer_uki" ]] || fail "installer UKI not found: $(rel "$installer_uki")"
 if [[ -n "$installer_kernel" || -n "$installer_initrd" ]]; then
     [[ -n "$installer_kernel" ]] || fail "--installer-kernel is required when --installer-initrd is set"
     [[ -n "$installer_initrd" ]] || fail "--installer-initrd is required when --installer-kernel is set"
     [[ -f "$installer_kernel" ]] || fail "installer kernel not found: $(rel "$installer_kernel")"
     [[ -f "$installer_initrd" ]] || fail "installer initrd not found: $(rel "$installer_initrd")"
+else
+    [[ -n "$installer_uki" ]] || fail "--installer-uki is required unless --installer-kernel and --installer-initrd are set"
+fi
+if [[ -n "$installer_uki" ]]; then
+    [[ -f "$installer_uki" ]] || fail "installer UKI not found: $(rel "$installer_uki")"
 fi
 [[ -n "$katlos_image" ]] || fail "--katlos-image is required"
 [[ -f "$katlos_image" ]] || fail "KatlOS image not found: $(rel "$katlos_image")"
@@ -252,7 +255,9 @@ if [[ -n "$node_metadata" ]]; then
     [[ -f "$node_metadata" ]] || fail "node metadata not found: $(rel "$node_metadata")"
 fi
 
-installer_uki="$(real "$installer_uki")"
+if [[ -n "$installer_uki" ]]; then
+    installer_uki="$(real "$installer_uki")"
+fi
 if [[ -n "$installer_kernel" ]]; then
     installer_kernel="$(real "$installer_kernel")"
 fi
@@ -289,11 +294,15 @@ validate_sha256 "KatlOS image SHA-256" "$katlos_image_sha256"
 validate_sha256 "installer UKI SHA-256" "$installer_uki_sha256"
 validate_sha256 "node metadata SHA-256" "$node_metadata_sha256"
 
-actual_installer_uki_sha256="$(file_sha "$installer_uki")"
-if [[ -n "$installer_uki_sha256" && "$actual_installer_uki_sha256" != "$installer_uki_sha256" ]]; then
-    fail "installer UKI sha256 does not match $installer_uki"
+if [[ -n "$installer_uki" ]]; then
+    actual_installer_uki_sha256="$(file_sha "$installer_uki")"
+    if [[ -n "$installer_uki_sha256" && "$actual_installer_uki_sha256" != "$installer_uki_sha256" ]]; then
+        fail "installer UKI sha256 does not match $installer_uki"
+    fi
+    installer_uki_sha256="$actual_installer_uki_sha256"
+else
+    installer_uki_sha256=""
 fi
-installer_uki_sha256="$actual_installer_uki_sha256"
 
 image_sha256="$(file_sha "$katlos_image")"
 if [[ -n "$katlos_image_sha256" && "$image_sha256" != "$katlos_image_sha256" ]]; then
@@ -349,8 +358,6 @@ if [[ "$check_only" -eq 1 ]]; then
 fi
 
 resolver_args=(
-    --installer-uki "$installer_uki"
-    --installer-uki-sha256 "$installer_uki_sha256"
     --runtime-artifact "$runtime_artifact"
     --runtime-artifact-sha256 "$runtime_sha256"
     --use-installed-esp
@@ -361,6 +368,8 @@ resolver_args=(
 )
 if [[ -n "$installer_kernel" ]]; then
     resolver_args+=(--installer-kernel "$installer_kernel" --installer-initrd "$installer_initrd")
+else
+    resolver_args+=(--installer-uki "$installer_uki" --installer-uki-sha256 "$installer_uki_sha256")
 fi
 if [[ -n "$node_metadata" ]]; then
     resolver_args+=(--node-metadata "$node_metadata")
@@ -422,7 +431,15 @@ EOF
     printf 'source %q\n' "$env_file"
     printf 'recheck_dir=%q\n' "$state_dir/katlos-recheck"
     # shellcheck disable=SC2016
-    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    printf 'recheck_args=(--katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_INSTALLER_KERNEL:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--installer-kernel "$KATL_INSTALLER_KERNEL" --installer-initrd "$KATL_INSTALLER_INITRD")\n'
+    printf 'else\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256")\n'
+    printf 'fi\n'
     # shellcheck disable=SC2016
     printf 'if [[ -n "${KATL_MKOSI_ARTIFACT_INDEX:-}" ]]; then\n'
     # shellcheck disable=SC2016
@@ -451,7 +468,15 @@ chmod +x "$run_script"
     printf 'source %q\n' "$env_file"
     printf 'recheck_dir=%q\n' "$state_dir/katlos-recheck-serial"
     # shellcheck disable=SC2016
-    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    printf 'recheck_args=(--katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_INSTALLER_KERNEL:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--installer-kernel "$KATL_INSTALLER_KERNEL" --installer-initrd "$KATL_INSTALLER_INITRD")\n'
+    printf 'else\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256")\n'
+    printf 'fi\n'
     # shellcheck disable=SC2016
     printf 'if [[ -n "${KATL_MKOSI_ARTIFACT_INDEX:-}" ]]; then\n'
     # shellcheck disable=SC2016

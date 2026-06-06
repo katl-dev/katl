@@ -111,6 +111,9 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		now := runner.time()
 		result.addPhase("guest-handoff", StatusPassed, "", now, now)
 	} else if config.PreseedManifest {
+		if err := requirePreseedInstallerEvidence(result); err != nil {
+			return failFirst(runner, scenario, result, "preseed", err)
+		}
 		now := runner.time()
 		result.addPhase("preseed", StatusPassed, "", now, now)
 	} else {
@@ -223,6 +226,24 @@ func requireGuestHandoff(result Result) error {
 			return errors.New("guest handoff response artifact is missing")
 		}
 		return fmt.Errorf("stat guest handoff response: %w", err)
+	}
+	return nil
+}
+
+func requirePreseedInstallerEvidence(result Result) error {
+	serial, err := os.ReadFile(result.Artifacts.InstallerSerial)
+	if err != nil {
+		return fmt.Errorf("read installer serial for preseed evidence: %w", err)
+	}
+	text := string(serial)
+	for _, signal := range []string{
+		"katl input: mounted seed device",
+		"katl input: copied",
+		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json",
+	} {
+		if !strings.Contains(text, signal) {
+			return fmt.Errorf("installer serial missing preseed signal %q", signal)
+		}
 	}
 	return nil
 }
