@@ -48,8 +48,6 @@ func DefaultFirstInstallWorldInputFromEnv(mode FirstInstallWorldMode, useInstall
 	return FirstInstallWorldInput{
 		Installer:       FirstInstallInstallerBootFromEnv(),
 		RuntimeArtifact: strings.TrimSpace(os.Getenv("KATL_RUNTIME_ARTIFACT")),
-		RuntimeESP:      strings.TrimSpace(first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))),
-		NodeMetadata:    strings.TrimSpace(first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))),
 		InstallManifest: strings.TrimSpace(os.Getenv("KATL_INSTALL_MANIFEST")),
 		Mode:            mode,
 		UseInstalledESP: useInstalledESP,

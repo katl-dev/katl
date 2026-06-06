@@ -25,6 +25,18 @@ func firstInstallWorldRunForMode(t *testing.T, name string, spec NodeSpec, useIn
 	return run, true
 }
 
+func TestDefaultFirstInstallWorldInputIgnoresManualFixtureEnv(t *testing.T) {
+	t.Setenv("KATL_RUNTIME_ESP_ARTIFACTS", "/tmp/runtime-esp")
+	t.Setenv("KATL_INSTALLED_ESP_ARTIFACTS", "/tmp/installed-esp")
+	t.Setenv("KATL_RUNTIME_NODE_METADATA", "/tmp/runtime-node.json")
+	t.Setenv("KATL_INSTALLED_NODE_METADATA", "/tmp/installed-node.json")
+
+	input := DefaultFirstInstallWorldInputFromEnv(FirstInstallWorldPreseed, false)
+	if input.RuntimeESP != "" || input.NodeMetadata != "" {
+		t.Fatalf("manual fixture env leaked into world input: %#v", input)
+	}
+}
+
 func TestPlanFirstInstallWorldRunStagesInputs(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()

@@ -116,7 +116,7 @@ func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) e
 	if err != nil {
 		return err
 	}
-	nodeMetadata := first(config.NodeMetadata, os.Getenv("KATL_INSTALLED_NODE_METADATA"))
+	nodeMetadata := strings.TrimSpace(config.NodeMetadata)
 	if fixture != nil && strings.TrimSpace(nodeMetadata) == "" && fixture.NodeMetadata != nil {
 		nodeMetadata, err = fixtureRelativePath(fixtureManifest, fixture.NodeMetadata.Path)
 		if err != nil {

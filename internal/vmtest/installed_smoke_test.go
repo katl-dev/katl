@@ -107,8 +107,6 @@ func firstInstallFixtureContractRunForWorld(t *testing.T, world World, repo stri
 	worldRun, err := planFirstInstallWorldRun(world, "first-install-installed-runtime-fixture", repo, spec, firstInstallWorldInput{
 		Installer:       firstInstallInstallerBootFromEnv(),
 		RuntimeArtifact: strings.TrimSpace(os.Getenv("KATL_RUNTIME_ARTIFACT")),
-		RuntimeESP:      strings.TrimSpace(first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))),
-		NodeMetadata:    strings.TrimSpace(first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))),
 		InstallManifest: strings.TrimSpace(os.Getenv("KATL_INSTALL_MANIFEST")),
 		UseInstalledESP: envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"),
 		TargetDiskSize:  first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"),

@@ -392,6 +392,31 @@ func TestInstalledRuntimeAcceptsRelativeFixturePaths(t *testing.T) {
 	}
 }
 
+func TestInstalledRuntimeRecordIgnoresAmbientNodeMetadata(t *testing.T) {
+	root := t.TempDir()
+	ambientMetadata := writeFixtureFile(t, filepath.Join(root, "ambient-node.json"), `{"kind":"NodeMetadata"}`)
+	t.Setenv("KATL_INSTALLED_NODE_METADATA", ambientMetadata)
+
+	result, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-no-env-metadata",
+	}).Plan(Scenario{Name: "runtime"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if err := writeInstalledRuntimeRecord(result, InstalledRuntimeConfig{
+		Disk:         filepath.Join(root, "disk.raw"),
+		DiskFormat:   DiskRaw,
+		ESPArtifacts: filepath.Join(root, "esp"),
+	}); err != nil {
+		t.Fatalf("writeInstalledRuntimeRecord() error = %v", err)
+	}
+	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
+	if input.NodeMetadata != "" {
+		t.Fatalf("node metadata = %q, want empty", input.NodeMetadata)
+	}
+}
+
 func readInstalledRuntimeInput(t *testing.T, path string) installedRuntimeRecord {
 	t.Helper()
 	data, err := os.ReadFile(path)
