@@ -42,6 +42,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
 	}
+	if strings.Contains(string(output), `{"Action":"run"`) {
+		t.Fatalf("vmtest-run emitted JSON without caller -json:\n%s", output)
+	}
 
 	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
 	if err != nil {
@@ -63,7 +66,6 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	wantGoArgs := []string{
 		"test",
 		"-count=1",
-		"-json",
 		"-exec",
 		filepath.Join(repo, "scripts", "vmtest-exec"),
 		"./internal/vmtest/scenarios",
@@ -99,13 +101,57 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if summary.Status != "passed" || summary.ExitCode != 0 {
 		t.Fatalf("summary = %#v", summary)
 	}
+	if summary.GoTestLog != filepath.Join(runDir, "go-test.log") {
+		t.Fatalf("summary go test log = %q", summary.GoTestLog)
+	}
 	if !reflect.DeepEqual(summary.Args, []string{"./internal/vmtest/scenarios", "-run", "^TestTwoNode$", "-timeout", "2m"}) {
 		t.Fatalf("summary args = %#v", summary.Args)
 	}
-	if _, err := os.Stat(filepath.Join(runDir, "go-test.json")); err != nil {
-		t.Fatalf("go-test.json missing: %v", err)
+	if _, err := os.Stat(filepath.Join(runDir, "go-test.log")); err != nil {
+		t.Fatalf("go-test.log missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "go-test.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("go-test.json exists unexpectedly: %v", err)
 	}
 	assertJSONEmptyObject(t, filepath.Join(runDir, "network", "leases.json"))
+}
+
+func TestVMTestRunForwardsJSONFlag(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"),
+		"-json",
+		"./internal/vmtest/scenarios",
+		"-run", "^TestTwoNode$",
+	)
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_RUN_ID=run-json",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run -json failed: %v\n%s", err, output)
+	}
+
+	goArgs := readLines(t, goArgsPath)
+	if !contains(goArgs, "-json") {
+		t.Fatalf("go args missing caller -json: %#v", goArgs)
+	}
+	if !strings.Contains(string(output), `{"Action":"run","Package":"fake/vmtest"}`) {
+		t.Fatalf("output missing JSON events:\n%s", output)
+	}
 }
 
 func TestVMTestRunPropagatesChildExit(t *testing.T) {
@@ -340,12 +386,27 @@ if [[ -z "$exec_wrapper" ]]; then
     echo "missing -exec" >&2
     exit 92
 fi
-printf '{"Action":"run","Package":"fake/vmtest"}\n'
+json_output=0
+for arg in "${args[@]}"; do
+    if [[ "$arg" == "-json" ]]; then
+        json_output=1
+    fi
+done
+if [[ "$json_output" == 1 ]]; then
+    printf '{"Action":"run","Package":"fake/vmtest"}\n'
+else
+    printf '=== RUN   TestForwarded\n'
+fi
 set +e
 "$exec_wrapper" "$KATL_FAKE_CHILD" "-test.run=^Forwarded$" "-test.v" "child-extra"
 exit_code=$?
 set -e
-printf '{"Action":"pass","Package":"fake/vmtest"}\n'
+if [[ "$json_output" == 1 ]]; then
+    printf '{"Action":"pass","Package":"fake/vmtest"}\n'
+else
+    printf -- '--- PASS: TestForwarded (0.00s)\n'
+    printf 'ok  \tfake/vmtest\t0.001s\n'
+fi
 exit "$exit_code"
 `)
 	writeExecutable(t, fakeChild, `#!/usr/bin/env bash
@@ -486,9 +547,10 @@ func readKeyValues(t *testing.T, path string) map[string]string {
 }
 
 type vmtestRunSummary struct {
-	Status   string   `json:"status"`
-	ExitCode int      `json:"exitCode"`
-	Args     []string `json:"args"`
+	Status    string   `json:"status"`
+	ExitCode  int      `json:"exitCode"`
+	GoTestLog string   `json:"goTestLog"`
+	Args      []string `json:"args"`
 }
 
 func readSummary(t *testing.T, path string) vmtestRunSummary {

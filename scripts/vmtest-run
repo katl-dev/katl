@@ -15,7 +15,7 @@ network_dir="$run_dir/network"
 world_manifest="$run_dir/world.json"
 host_capabilities_json="$run_dir/host-capabilities.json"
 lease_file="$network_dir/leases.json"
-go_test_json="$run_dir/go-test.json"
+go_test_log="$run_dir/go-test.log"
 summary_json="$run_dir/summary.json"
 keep_policy="${KATL_VMTEST_KEEP:-failed}"
 host_policy="${KATL_VMTEST_HOST_POLICY:-}"
@@ -50,6 +50,7 @@ Usage: scripts/vmtest-run [go test package patterns and flags...]
 
 Create a temporary Katl VM test world and run Go test binaries through
 scripts/vmtest-exec. Arguments are forwarded to go test after forcing -count=1.
+Pass the normal go test -json flag when JSON event output is wanted.
 
 Environment:
   KATL_VMTEST_HOST_POLICY=skip|fail        Host capability gap handling (default: fail)
@@ -274,7 +275,7 @@ write_summary() {
         --arg runDir "$run_dir" \
         --arg worldManifest "$world_manifest" \
         --arg hostCapabilities "$host_capabilities_json" \
-        --arg goTestJSON "$go_test_json" \
+        --arg goTestLog "$go_test_log" \
         --arg status "$status" \
         --argjson exitCode "$exit_code" \
         --args \
@@ -285,7 +286,7 @@ write_summary() {
           runDir: $runDir,
           worldManifest: $worldManifest,
           hostCapabilities: $hostCapabilities,
-          goTestJSON: $goTestJSON,
+          goTestLog: $goTestLog,
           status: $status,
           exitCode: $exitCode,
           args: $ARGS.positional
@@ -373,7 +374,7 @@ export KATL_VMTEST_RUN_DIR="$run_dir"
 export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
 
 set +e
-"$go_bin" test -count=1 -json -exec "$repo_root/scripts/vmtest-exec" "${filtered_args[@]}" 2>&1 | tee "$go_test_json"
+"$go_bin" test -count=1 -exec "$repo_root/scripts/vmtest-exec" "${filtered_args[@]}" 2>&1 | tee "$go_test_log"
 exit_code=${PIPESTATUS[0]}
 set -e
 
