@@ -339,7 +339,6 @@ type threeControlPlaneArtifactManifest struct {
 	InstalledRuntimeInputs map[string]string           `json:"installedRuntimeInputs,omitempty"`
 	VSockTranscripts       map[string]string           `json:"vsockTranscripts,omitempty"`
 	FixtureInputs          map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
-	PublishedFixtures      map[string]string           `json:"publishedFixtures,omitempty"`
 	Inventory              string                      `json:"inventory"`
 	Kubeconfig             string                      `json:"kubeconfig"`
 	KubeconfigMetadata     string                      `json:"kubeconfigMetadata,omitempty"`
@@ -363,8 +362,7 @@ func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs th
 		QEMUCommands:           qemuCommandPaths(nodes),
 		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
 		VSockTranscripts:       vsockTranscriptPaths(nodes),
-		FixtureInputs:          threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP2Disk, inputs.CP3Disk, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
-		PublishedFixtures:      threeControlPlanePublishedFixtureDirs(),
+		FixtureInputs:          threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP1DiskFormat, inputs.CP2Disk, inputs.CP2DiskFormat, inputs.CP3Disk, inputs.CP3DiskFormat, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
 		Inventory:              filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
 		Kubeconfig:             filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
 		KubeconfigMetadata:     filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
@@ -392,19 +390,11 @@ func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPl
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
-func threeControlPlanePublishedFixtureDirs() map[string]string {
-	return compactStringMap(map[string]string{
-		"cp-1": firstString(os.Getenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR")),
-		"cp-2": os.Getenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR"),
-		"cp-3": os.Getenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR"),
-	})
-}
-
-func threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata string) map[string]nodeFixtureInput {
+func threeControlPlaneFixtureInputs(cp1Disk, cp1Format, cp2Disk, cp2Format, cp3Disk, cp3Format, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata string) map[string]nodeFixtureInput {
 	return map[string]nodeFixtureInput{
-		"cp-1": fixtureInput(cp1Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT"), os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp1ESP, cp1Fixture, cp1Metadata, firstString(os.Getenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR")), firstString(os.Getenv("KATL_CONTROL_PLANE_1_KATLOS_FIXTURE_MANIFEST"), os.Getenv("KATL_CONTROL_PLANE_KATLOS_FIXTURE_MANIFEST"))),
-		"cp-2": fixtureInput(cp2Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp2ESP, cp2Fixture, cp2Metadata, os.Getenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_2_KATLOS_FIXTURE_MANIFEST")),
-		"cp-3": fixtureInput(cp3Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp3ESP, cp3Fixture, cp3Metadata, os.Getenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_3_KATLOS_FIXTURE_MANIFEST")),
+		"cp-1": fixtureInput(cp1Disk, cp1Format, cp1ESP, cp1Fixture, cp1Metadata),
+		"cp-2": fixtureInput(cp2Disk, cp2Format, cp2ESP, cp2Fixture, cp2Metadata),
+		"cp-3": fixtureInput(cp3Disk, cp3Format, cp3ESP, cp3Fixture, cp3Metadata),
 	}
 }
 
@@ -933,19 +923,8 @@ func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testin
 	}
 }
 
-func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
-	t.Setenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR", "/tmp/cp-1")
-	t.Setenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR", "/tmp/cp-2")
-	t.Setenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR", "/tmp/cp-3")
-	t.Setenv("KATL_CONTROL_PLANE_1_KATLOS_FIXTURE_MANIFEST", "/tmp/cp-1-katlos.json")
-	t.Setenv("KATL_CONTROL_PLANE_2_KATLOS_FIXTURE_MANIFEST", "/tmp/cp-2-katlos.json")
-	t.Setenv("KATL_CONTROL_PLANE_3_KATLOS_FIXTURE_MANIFEST", "/tmp/cp-3-katlos.json")
-	t.Setenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT", "qcow2")
-	got := threeControlPlanePublishedFixtureDirs()
-	if got["cp-1"] != "/tmp/cp-1" || got["cp-2"] != "/tmp/cp-2" || got["cp-3"] != "/tmp/cp-3" {
-		t.Fatalf("published fixtures = %#v", got)
-	}
-	inputs := threeControlPlaneFixtureInputs("cp1.raw", "cp2.qcow2", "cp3.raw", "cp1-esp", "cp2-esp", "cp3-esp", "cp1-fixture.json", "cp2-fixture.json", "cp3-fixture.json", "cp1-node.json", "cp2-node.json", "cp3-node.json")
+func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
+	inputs := threeControlPlaneFixtureInputs("cp1.raw", string(vmtest.DiskRaw), "cp2.qcow2", "qcow2", "cp3.raw", string(vmtest.DiskRaw), "cp1-esp", "cp2-esp", "cp3-esp", "cp1-fixture.json", "cp2-fixture.json", "cp3-fixture.json", "cp1-node.json", "cp2-node.json", "cp3-node.json")
 	if inputs["cp-2"].DiskFormat != "qcow2" || inputs["cp-3"].DiskFormat != string(vmtest.DiskRaw) {
 		t.Fatalf("fixture input formats = %#v", inputs)
 	}
@@ -970,7 +949,6 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 			"cp-1": "/tmp/cp-1-run/qemu/vsock-transcript.jsonl",
 		},
 		FixtureInputs:      inputs,
-		PublishedFixtures:  got,
 		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
 		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/ha-cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
 		SerialLogs:         map[string]string{"cp-1": "/tmp/cp-1-run/qemu/runtime-serial.log"},
@@ -987,14 +965,8 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode artifact manifest: %v", err)
 	}
-	if manifest.PublishedFixtures["cp-1"] != "/tmp/cp-1" || manifest.PublishedFixtures["cp-2"] != "/tmp/cp-2" || manifest.PublishedFixtures["cp-3"] != "/tmp/cp-3" {
-		t.Fatalf("artifact manifest published fixtures = %#v", manifest.PublishedFixtures)
-	}
-	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp1-fixture.json" || manifest.FixtureInputs["cp-3"].PublishedFixtureDir != "/tmp/cp-3" {
+	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp1-fixture.json" || manifest.FixtureInputs["cp-3"].NodeMetadata != "cp3-node.json" {
 		t.Fatalf("artifact manifest fixture inputs = %#v", manifest.FixtureInputs)
-	}
-	if manifest.FixtureInputs["cp-1"].KatlOSFixtureManifest != "/tmp/cp-1-katlos.json" || manifest.FixtureInputs["cp-3"].KatlOSFixtureManifest != "/tmp/cp-3-katlos.json" {
-		t.Fatalf("artifact manifest KatlOS fixture inputs = %#v", manifest.FixtureInputs)
 	}
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-1-guest/diagnostics-summary.json" || manifest.Diagnostics["cp-3"] != "/tmp/cp-3-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
