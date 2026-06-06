@@ -199,6 +199,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 		"--run-id", "run-1",
 		"--git-revision", "test",
 		"--fedora-repository", "fedora=https://example.invalid/fedora/44",
+		"--mkosi-version", "26",
 	}, &stdout, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("prepare refresh error = %v", err)
@@ -209,6 +210,12 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	}
 	if len(manifest.Artifacts) != 4 || len(manifest.PackageSets) != 2 || manifest.PackageSets[0].LockDigest == "" || manifest.PackageSets[1].LockDigest == "" {
 		t.Fatalf("manifest artifacts=%d packageSets=%#v", len(manifest.Artifacts), manifest.PackageSets)
+	}
+	if len(manifest.Tools) != 1 || manifest.Tools[0].Name != "mkosi" || manifest.Tools[0].Version != "26" {
+		t.Fatalf("manifest tools = %#v", manifest.Tools)
+	}
+	if manifest.MkosiProfiles[0].ConfigDigest == "" || manifest.MkosiProfiles[1].ConfigDigest == "" {
+		t.Fatalf("manifest mkosiProfiles = %#v", manifest.MkosiProfiles)
 	}
 	kubernetesSet := manifest.PackageSets[1]
 	if kubernetesSet.Name != "kubernetes-sysext" || packageNEVRA(kubernetesSet.Packages, "kubeadm") != "kubeadm-0:1.36.1-150500.1.1.x86_64" {
@@ -226,6 +233,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 		"--run-id", "run-1",
 		"--git-revision", "test",
 		"--fedora-repository", "fedora=https://example.invalid/fedora/44",
+		"--mkosi-version", "26",
 	}, &stdout, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("prepare strict error = %v", err)
@@ -264,6 +272,7 @@ func TestRunPrepareMkosiStrictRejectsKubernetesDrift(t *testing.T) {
 		"--mode", "refresh",
 		"--run-id", "run-1",
 		"--git-revision", "test",
+		"--mkosi-version", "26",
 	}
 	if err := run(args, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("prepare refresh error = %v", err)
@@ -278,6 +287,7 @@ func TestRunPrepareMkosiStrictRejectsKubernetesDrift(t *testing.T) {
 		"--mode", "strict",
 		"--run-id", "run-1",
 		"--git-revision", "test",
+		"--mkosi-version", "26",
 	}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "NEVRA drift") {
 		t.Fatalf("prepare strict error = %v, want NEVRA drift", err)
@@ -313,6 +323,7 @@ func TestRunPrepareMkosiStrictRejectsDrift(t *testing.T) {
 		"--mode", "refresh",
 		"--run-id", "run-1",
 		"--git-revision", "test",
+		"--mkosi-version", "26",
 	}
 	if err := run(refreshArgs, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("prepare refresh error = %v", err)
@@ -327,6 +338,7 @@ func TestRunPrepareMkosiStrictRejectsDrift(t *testing.T) {
 		"--mode", "strict",
 		"--run-id", "run-1",
 		"--git-revision", "test",
+		"--mkosi-version", "26",
 	}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "NEVRA drift") {
 		t.Fatalf("prepare strict error = %v, want NEVRA drift", err)

@@ -78,6 +78,9 @@ func VerifyPackageLock(verification PackageLockVerification) error {
 	if !validSHA256(verification.LockDigest) {
 		return errors.New("lock digest must be lowercase SHA-256")
 	}
+	if err := compareTools(verification.Manifest.Tools, verification.Lock.Tools); err != nil {
+		return err
+	}
 
 	manifestProfiles := map[string]MkosiProfile{}
 	for _, profile := range verification.Manifest.MkosiProfiles {
@@ -105,6 +108,12 @@ func VerifyPackageLock(verification PackageLockVerification) error {
 		}
 		if manifestProfile.PackageSetRef != lockedProfile.PackageSetRef {
 			return fmt.Errorf("mkosi profile %q package set drift: got %q, want %q", lockedProfile.Name, manifestProfile.PackageSetRef, lockedProfile.PackageSetRef)
+		}
+		if lockedProfile.MkosiVersion != "" {
+			mkosiVersion := toolVersion(verification.Manifest.Tools, "mkosi")
+			if mkosiVersion != lockedProfile.MkosiVersion {
+				return fmt.Errorf("mkosi profile %q mkosi version drift: got %q, want %q", lockedProfile.Name, mkosiVersion, lockedProfile.MkosiVersion)
+			}
 		}
 
 		lockedSet, ok := lockSets[lockedProfile.PackageSetRef]
@@ -156,6 +165,7 @@ func PackageLockFromManifest(manifest Manifest) (PackageLock, error) {
 		Kind:       PackageLockKind,
 		Tools:      append([]Tool(nil), manifest.Tools...),
 	}
+	mkosiVersion := toolVersion(manifest.Tools, "mkosi")
 	for _, profile := range manifest.MkosiProfiles {
 		if _, ok := sets[profile.PackageSetRef]; !ok {
 			return PackageLock{}, fmt.Errorf("mkosi profile %q package set %q is missing from manifest", profile.Name, profile.PackageSetRef)
@@ -165,6 +175,7 @@ func PackageLockFromManifest(manifest Manifest) (PackageLock, error) {
 			Path:          profile.Path,
 			ConfigDigest:  profile.ConfigDigest,
 			PackageSetRef: profile.PackageSetRef,
+			MkosiVersion:  mkosiVersion,
 		})
 	}
 	for _, set := range manifest.PackageSets {
@@ -227,6 +238,48 @@ func ValidatePackageLock(lock PackageLock) error {
 		}
 	}
 	return nil
+}
+
+func compareTools(got, want []Tool) error {
+	if len(want) == 0 {
+		return nil
+	}
+	gotTools := map[string]Tool{}
+	for _, tool := range got {
+		gotTools[tool.Name] = tool
+	}
+	wantTools := map[string]Tool{}
+	for _, tool := range want {
+		wantTools[tool.Name] = tool
+		actual, ok := gotTools[tool.Name]
+		if !ok {
+			return fmt.Errorf("tool %q is missing from resource manifest", tool.Name)
+		}
+		if tool.Version != "" && actual.Version != tool.Version {
+			return fmt.Errorf("tool %q version drift: got %q, want %q", tool.Name, actual.Version, tool.Version)
+		}
+		if tool.Path != "" && actual.Path != tool.Path {
+			return fmt.Errorf("tool %q path drift: got %q, want %q", tool.Name, actual.Path, tool.Path)
+		}
+		if tool.Digest != "" && actual.Digest != tool.Digest {
+			return fmt.Errorf("tool %q digest drift", tool.Name)
+		}
+	}
+	for _, tool := range got {
+		if _, ok := wantTools[tool.Name]; !ok {
+			return fmt.Errorf("resource manifest contains unlocked tool %q", tool.Name)
+		}
+	}
+	return nil
+}
+
+func toolVersion(tools []Tool, name string) string {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return tool.Version
+		}
+	}
+	return ""
 }
 
 func validateLockedPackageSet(set PackageLockPackageSet) error {

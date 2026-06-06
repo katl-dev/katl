@@ -118,9 +118,11 @@ command writes that lock from the manifest's generated mkosi profile and package
 records and prints the lock digest. The resource-test preparation path should
 use `prepare-mkosi` for the standard build outputs. It records runtime RPMs from
 the runtime root and Kubernetes package identities from the sysext metadata when
-`katl-kubernetes.raw.json` is present. The lower-level `add-artifact` and
-`add-rpm-package-set` commands remain available for focused resource preparation
-and custom suites.
+`katl-kubernetes.raw.json` is present. It also records the mkosi version and
+profile config digests for the package-producing profiles so strict mode catches
+profile or tool drift before scenario execution. The lower-level `add-artifact`
+and `add-rpm-package-set` commands remain available for focused resource
+preparation and custom suites.
 
 ## Resource Graph
 

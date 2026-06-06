@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,6 +213,7 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	runID := flags.String("run-id", "", "resource-test run id")
 	gitRevision := flags.String("git-revision", "", "git revision to record")
 	fedoraRepo := flags.String("fedora-repository", "fedora=", "Fedora repository in id=baseURL form")
+	mkosiVersionFlag := flags.String("mkosi-version", "auto", "mkosi version to record; auto detects mkosi and empty disables recording")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -232,6 +234,13 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	}
 
 	manifest := resourcetest.NewManifest(*runID, resourcetest.GitState{Revision: *gitRevision})
+	mkosiVersion, err := resolveMkosiVersion(*mkosiVersionFlag)
+	if err != nil {
+		return err
+	}
+	if mkosiVersion != "" {
+		manifest.Tools = append(manifest.Tools, resourcetest.Tool{Name: "mkosi", Version: mkosiVersion})
+	}
 	if err := addMkosiArtifacts(&manifest, *mkosiDir); err != nil {
 		return err
 	}
@@ -419,6 +428,10 @@ func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, r
 	if err != nil {
 		return err
 	}
+	profileDigest, err := profileConfigDigest("mkosi.profiles/runtime")
+	if err != nil {
+		return err
+	}
 	manifest.PackageSets = upsertPackageSet(manifest.PackageSets, resourcetest.PackageSet{
 		Name:         "runtime",
 		Source:       "mkosi.profiles/runtime",
@@ -432,6 +445,7 @@ func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, r
 	manifest.MkosiProfiles = upsertMkosiProfile(manifest.MkosiProfiles, resourcetest.MkosiProfile{
 		Name:          "runtime",
 		Path:          "mkosi.profiles/runtime",
+		ConfigDigest:  profileDigest,
 		PackageSetRef: "runtime",
 	})
 	return nil
@@ -465,6 +479,10 @@ func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath strin
 	if err != nil {
 		return fmt.Errorf("read Kubernetes sysext packages from %s: %w", metadataPath, err)
 	}
+	profileDigest, err := profileConfigDigest("mkosi.profiles/kubernetes-sysext")
+	if err != nil {
+		return err
+	}
 	repo := resourcetest.PackageRepository{
 		ID:      metadata.SourceRepo.ID,
 		BaseURL: metadata.SourceRepo.BaseURL,
@@ -482,6 +500,7 @@ func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath strin
 	manifest.MkosiProfiles = upsertMkosiProfile(manifest.MkosiProfiles, resourcetest.MkosiProfile{
 		Name:          "kubernetes-sysext",
 		Path:          "mkosi.profiles/kubernetes-sysext",
+		ConfigDigest:  profileDigest,
 		PackageSetRef: "kubernetes-sysext",
 	})
 	return nil
@@ -509,6 +528,95 @@ func kubernetesPackages(metadata kubernetesSysextMetadata) ([]resourcetest.Packa
 		packages = append(packages, resourcetest.Package{Name: name, NEVRA: nevra})
 	}
 	return packages, nil
+}
+
+func resolveMkosiVersion(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if value != "auto" {
+		return value, nil
+	}
+	path, err := exec.LookPath("mkosi")
+	if err != nil {
+		return "", nil
+	}
+	output, err := exec.Command(path, "--version").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("detect mkosi version: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	fields := strings.Fields(strings.TrimSpace(string(output)))
+	if len(fields) >= 2 && fields[0] == "mkosi" {
+		return fields[1], nil
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func profileConfigDigest(profilePath string) (string, error) {
+	resolvedPath := resolveExistingPath(profilePath)
+	hash := sha256.New()
+	if err := filepath.WalkDir(resolvedPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(resolvedPath, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			digest, err := fileSHA256(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(hash, "file\x00%s\x00%s\n", rel, digest)
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(hash, "symlink\x00%s\x00%s\n", rel, target)
+			return nil
+		}
+		if !entry.IsDir() {
+			fmt.Fprintf(hash, "other\x00%s\x00%#o\n", rel, info.Mode())
+		}
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("hash mkosi profile %s: %w", profilePath, err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func resolveExistingPath(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return path
+	}
+	for {
+		candidate := filepath.Join(cwd, path)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			return path
+		}
+		cwd = parent
+	}
 }
 
 func artifactFromPath(name, kind, path string) (resourcetest.Artifact, bool, error) {

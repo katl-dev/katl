@@ -55,6 +55,18 @@ func TestVerifyPackageLockRejectsRepositoryDrift(t *testing.T) {
 	}
 }
 
+func TestVerifyPackageLockRejectsToolDrift(t *testing.T) {
+	lock := validPackageLock()
+	digest := digestForLock(t, lock)
+	manifest := manifestForPackageLock(digest)
+	manifest.Tools[0].Version = "27"
+
+	err := VerifyPackageLock(PackageLockVerification{Lock: lock, Manifest: manifest, LockDigest: digest})
+	if err == nil || !strings.Contains(err.Error(), "tool \"mkosi\" version drift") {
+		t.Fatalf("VerifyPackageLock() error = %v, want mkosi version drift", err)
+	}
+}
+
 func TestVerifyPackageLockRejectsMissingLockData(t *testing.T) {
 	lock := validPackageLock()
 	lock.PackageSets = nil
@@ -97,6 +109,9 @@ func TestPackageLockFromManifest(t *testing.T) {
 	if lock.Kind != PackageLockKind || lock.PackageSets[0].Repositories[0].ID != "fedora" {
 		t.Fatalf("lock = %#v", lock)
 	}
+	if lock.MkosiProfiles[0].MkosiVersion != "26" {
+		t.Fatalf("lock mkosiVersion = %q, want 26", lock.MkosiProfiles[0].MkosiVersion)
+	}
 }
 
 func TestPackageLockFromManifestRejectsMissingRepositoryData(t *testing.T) {
@@ -126,6 +141,9 @@ func validPackageLock() PackageLock {
 		Tools: []Tool{{
 			Name:    "mkosi",
 			Version: "26",
+		}, {
+			Name:    "go",
+			Version: "go1.26",
 		}},
 		MkosiProfiles: []PackageLockProfile{{
 			Name:          "runtime",
@@ -155,6 +173,13 @@ func validPackageLock() PackageLock {
 
 func manifestForPackageLock(lockDigest string) Manifest {
 	manifest := validManifest()
+	manifest.Tools = []Tool{{
+		Name:    "mkosi",
+		Version: "26",
+	}, {
+		Name:    "go",
+		Version: "go1.26",
+	}}
 	manifest.PackageSets[0] = PackageSet{
 		Name:         "runtime",
 		Source:       "mkosi.profiles/runtime",
