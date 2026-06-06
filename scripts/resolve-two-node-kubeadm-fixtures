@@ -321,9 +321,19 @@ tree_sha() {
     (
         cd "$root"
         while IFS= read -r -d '' path; do
-            local rel="${path#./}"
-            printf '%s  %s\n' "$(file_sha "$path")" "$rel"
-        done < <(find . -type f -print0 | sort -z)
+            local rel_path="${path#./}"
+            local mode
+            mode="$(stat -c '%a' "$path")"
+            if [[ -L "$path" ]]; then
+                fail "ESP artifacts contain unsupported non-regular entry: $rel_path"
+            elif [[ -d "$path" ]]; then
+                printf 'dir %s %s\n' "$mode" "$rel_path"
+            elif [[ -f "$path" ]]; then
+                printf 'file %s %s %s\n' "$mode" "$(file_sha "$path")" "$rel_path"
+            else
+                fail "ESP artifacts contain unsupported non-regular entry: $rel_path"
+            fi
+        done < <(find . -mindepth 1 -print0 | sort -z)
     ) | sha256sum | awk '{print $1}'
 }
 
