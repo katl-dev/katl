@@ -2,7 +2,6 @@ package vmtest
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -95,36 +94,12 @@ func firstInstallFixtureContractRunFor(t *testing.T, spec NodeSpec) firstInstall
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run first-install fixture smoke")
 	}
-	options.Missing = MissingSkips
-	options.Keep = KeepAlways
-	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
-	targetDiskFixture := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
 	if strings.TrimSpace(os.Getenv(WorldManifestEnv)) != "" {
 		world := RequireWorld(t)
 		return firstInstallFixtureContractRunForWorld(t, world, repoRoot(t), spec)
 	}
-	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
-	if runtimeESP == "" && !useInstalledESP {
-		t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install fixture smoke")
-	}
-	nodeMetadata := first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))
-	if nodeMetadata != "" {
-		if _, err := os.Stat(nodeMetadata); err != nil {
-			t.Skipf("node metadata %s is unavailable: %v", nodeMetadata, err)
-		}
-	}
-	return firstInstallFixtureContractRun{
-		Runner:          NewRunner(options),
-		InstallerBoot:   firstInstallInstallerBoot(t),
-		RuntimeArtifact: RequireEnv(t, "KATL_RUNTIME_ARTIFACT"),
-		RuntimeESP:      runtimeESP,
-		NodeMetadata:    nodeMetadata,
-		ManifestPath:    RequireEnv(t, "KATL_INSTALL_MANIFEST"),
-		Repo:            repoRoot(t),
-		TargetDisk:      targetDiskFixture,
-		UseInstalledESP: useInstalledESP,
-		Node:            spec,
-	}
+	_ = RequireWorld(t)
+	return firstInstallFixtureContractRun{}
 }
 
 func firstInstallFixtureContractRunForWorld(t *testing.T, world World, repo string, spec NodeSpec) firstInstallFixtureContractRun {
@@ -173,41 +148,12 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run first-install serial smoke")
 	}
-	options.Missing = MissingSkips
-	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
-	effectiveUseInstalledESP := useInstalledESP
-	var runner Runner
-	var installerBoot InstallerBootConfig
-	var runtimeArtifact, runtimeESP, manifestPath string
-	targetDisk := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
-	if worldRun, ok := firstInstallWorldRunFor(t, "first-install-serial-runtime", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP); ok {
-		runner = worldRun.Runner
-		installerBoot = worldRun.Config.Installer
-		runtimeArtifact = worldRun.Config.Installer.RuntimeArtifact
-		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
-		manifestPath = worldRun.Config.ManifestPath
-		targetDisk = worldRun.Config.TargetDisk
-		effectiveUseInstalledESP = worldRun.Config.UseInstalledESP
-	} else {
-		installerBoot = firstInstallInstallerBoot(t)
-		runtimeArtifact = RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
-		runtimeESP = first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
-		if runtimeESP == "" && !useInstalledESP {
-			t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install serial smoke")
-		}
-		manifestPath = RequireEnv(t, "KATL_INSTALL_MANIFEST")
-		runner = NewRunner(options)
+	worldRun, ok := firstInstallWorldRunFor(t, "first-install-serial-runtime", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP)
+	if !ok {
+		_ = RequireWorld(t)
 	}
-	var requiredTools []string
-	if effectiveUseInstalledESP {
-		requiredTools = append(requiredTools, "sfdisk", "mcopy")
-	}
-	for _, tool := range requiredTools {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Fatalf("%s is required to run first-install serial smoke: %v", tool, err)
-		}
-	}
+	runner := worldRun.Runner
 
 	runner.RequireHost(t, HostRequirements{
 		QEMU:    true,
@@ -227,21 +173,21 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	}
 	result, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-serial-runtime"}, FirstInstallConfig{
 		Installer: InstallerBootConfig{
-			InstallerUKI:    installerBoot.InstallerUKI,
-			InstallerKernel: installerBoot.InstallerKernel,
-			InstallerInitrd: installerBoot.InstallerInitrd,
-			CommandLine:     installerBoot.CommandLine,
-			RuntimeArtifact: runtimeArtifact,
+			InstallerUKI:    worldRun.Config.Installer.InstallerUKI,
+			InstallerKernel: worldRun.Config.Installer.InstallerKernel,
+			InstallerInitrd: worldRun.Config.Installer.InstallerInitrd,
+			CommandLine:     worldRun.Config.Installer.CommandLine,
+			RuntimeArtifact: worldRun.Config.Installer.RuntimeArtifact,
 			VM:              vm,
 		},
 		Runtime: InstalledRuntimeConfig{
-			ESPArtifacts: runtimeESP,
+			ESPArtifacts: worldRun.Config.Runtime.ESPArtifacts,
 			VM:           vm,
 		},
-		UseInstalledESP: effectiveUseInstalledESP,
-		ManifestPath:    manifestPath,
+		UseInstalledESP: worldRun.Config.UseInstalledESP,
+		ManifestPath:    worldRun.Config.ManifestPath,
 		PreseedManifest: true,
-		TargetDisk:      targetDisk,
+		TargetDisk:      worldRun.Config.TargetDisk,
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -264,41 +210,12 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run first-install local handoff smoke")
 	}
-	options.Missing = MissingSkips
-	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
-	effectiveUseInstalledESP := useInstalledESP
-	var runner Runner
-	var installerBoot InstallerBootConfig
-	var runtimeArtifact, runtimeESP, manifestPath string
-	targetDisk := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
-	if worldRun, ok := firstInstallWorldRunForMode(t, "first-install-local-handoff-runtime", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP, firstInstallWorldGuestHandoff); ok {
-		runner = worldRun.Runner
-		installerBoot = worldRun.Config.Installer
-		runtimeArtifact = worldRun.Config.Installer.RuntimeArtifact
-		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
-		manifestPath = worldRun.Config.ManifestPath
-		targetDisk = worldRun.Config.TargetDisk
-		effectiveUseInstalledESP = worldRun.Config.UseInstalledESP
-	} else {
-		installerBoot = firstInstallInstallerBoot(t)
-		runtimeArtifact = RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
-		runtimeESP = first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
-		if runtimeESP == "" && !useInstalledESP {
-			t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install local handoff smoke")
-		}
-		manifestPath = RequireEnv(t, "KATL_INSTALL_MANIFEST")
-		runner = NewRunner(options)
+	worldRun, ok := firstInstallWorldRunForMode(t, "first-install-local-handoff-runtime", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP, firstInstallWorldGuestHandoff)
+	if !ok {
+		_ = RequireWorld(t)
 	}
-	var requiredTools []string
-	if effectiveUseInstalledESP {
-		requiredTools = append(requiredTools, "sfdisk", "mcopy")
-	}
-	for _, tool := range requiredTools {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Fatalf("%s is required to run first-install local handoff smoke: %v", tool, err)
-		}
-	}
+	runner := worldRun.Runner
 
 	runner.RequireHost(t, HostRequirements{
 		QEMU:    true,
@@ -317,21 +234,21 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	}
 	result, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-local-handoff-runtime"}, FirstInstallConfig{
 		Installer: InstallerBootConfig{
-			InstallerUKI:    installerBoot.InstallerUKI,
-			InstallerKernel: installerBoot.InstallerKernel,
-			InstallerInitrd: installerBoot.InstallerInitrd,
-			CommandLine:     installerBoot.CommandLine,
-			RuntimeArtifact: runtimeArtifact,
+			InstallerUKI:    worldRun.Config.Installer.InstallerUKI,
+			InstallerKernel: worldRun.Config.Installer.InstallerKernel,
+			InstallerInitrd: worldRun.Config.Installer.InstallerInitrd,
+			CommandLine:     worldRun.Config.Installer.CommandLine,
+			RuntimeArtifact: worldRun.Config.Installer.RuntimeArtifact,
 			VM:              vm,
 		},
 		Runtime: InstalledRuntimeConfig{
-			ESPArtifacts: runtimeESP,
+			ESPArtifacts: worldRun.Config.Runtime.ESPArtifacts,
 			VM:           vm,
 		},
-		UseInstalledESP: effectiveUseInstalledESP,
-		ManifestPath:    manifestPath,
+		UseInstalledESP: worldRun.Config.UseInstalledESP,
+		ManifestPath:    worldRun.Config.ManifestPath,
 		GuestHandoff:    true,
-		TargetDisk:      targetDisk,
+		TargetDisk:      worldRun.Config.TargetDisk,
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -355,27 +272,6 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 		t.Fatalf("runtime serial did not record state projection: %s", serial)
 	}
 	_ = targetDiskPath(t, result)
-}
-
-func firstInstallInstallerBoot(t *testing.T) InstallerBootConfig {
-	t.Helper()
-	boot := firstInstallInstallerBootFromEnv()
-	if boot.InstallerKernel != "" || boot.InstallerInitrd != "" {
-		if boot.InstallerKernel == "" || boot.InstallerInitrd == "" {
-			t.Fatal("set both KATL_INSTALLER_KERNEL and KATL_INSTALLER_INITRD")
-		}
-		for name, path := range map[string]string{
-			"KATL_INSTALLER_KERNEL": boot.InstallerKernel,
-			"KATL_INSTALLER_INITRD": boot.InstallerInitrd,
-		} {
-			if _, err := os.Stat(path); err != nil {
-				t.Fatalf("%s is unavailable: %v", name, err)
-			}
-		}
-		return boot
-	}
-	boot.InstallerUKI = RequireEnv(t, "KATL_INSTALLER_UKI")
-	return boot
 }
 
 func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
@@ -415,47 +311,7 @@ func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime vmtest agent smoke")
 	}
-	options.Missing = MissingSkips
-	disk, esp := requireInstalledRuntimeFixture(t, options, "installed-runtime-vmtest-agent")
-
-	runner := NewRunner(options)
-	runner.RequireHost(t, HostRequirements{
-		QEMU: true,
-		OVMF: true,
-		KVM:  options.KVM,
-	})
-	result, err := runner.Plan(Scenario{
-		Name: "installed-runtime-vmtest-agent",
-	})
-	if err != nil {
-		t.Fatalf("Plan() error = %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	result = RunInstalledRuntime(ctx, result, InstalledRuntimeConfig{
-		Disk:               disk,
-		DiskFormat:         DiskFormat(first(os.Getenv("KATL_INSTALLED_DISK_FORMAT"), string(DiskRaw))),
-		ESPArtifacts:       esp,
-		RequireVMTestAgent: true,
-		VM: VMConfig{
-			KVM:     options.KVM,
-			Timeout: 3 * time.Minute,
-			VSock: VSockConfig{
-				Enabled: true,
-			},
-			Agent: AgentControlConfig{
-				RequireHealth: true,
-				Timeout:       20 * time.Second,
-			},
-		},
-	}, VMRunner{})
-	if err := runner.Write(Scenario{Name: "installed-runtime-vmtest-agent"}, result); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	if result.Status != StatusPassed {
-		t.Fatalf("Status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
-	}
-	requireInstalledRuntimeAgentHealth(t, result)
+	_ = RequireWorld(t)
 }
 
 func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
@@ -494,46 +350,7 @@ func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime kubeadm-ready smoke")
 	}
-	options.Missing = MissingSkips
-	disk, esp := requireInstalledRuntimeFixture(t, options, "installed-runtime-kubeadm-ready")
-
-	runner := NewRunner(options)
-	runner.RequireHost(t, HostRequirements{
-		QEMU: true,
-		OVMF: true,
-		KVM:  options.KVM,
-	})
-	result, err := runner.Plan(Scenario{
-		Name: "installed-runtime-kubeadm-ready",
-	})
-	if err != nil {
-		t.Fatalf("Plan() error = %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
-	defer cancel()
-	result = RunInstalledKubeadmReadySmoke(ctx, result, KubeadmReadySmokeConfig{
-		Runtime: InstalledRuntimeConfig{
-			Disk:         disk,
-			DiskFormat:   DiskFormat(first(os.Getenv("KATL_INSTALLED_DISK_FORMAT"), string(DiskRaw))),
-			ESPArtifacts: esp,
-			VM: VMConfig{
-				KVM:     options.KVM,
-				RAMMiB:  4096,
-				CPUs:    2,
-				Timeout: 5 * time.Minute,
-				VSock: VSockConfig{
-					Enabled: true,
-				},
-			},
-		},
-	}, VMRunner{})
-	if err := runner.Write(Scenario{Name: "installed-runtime-kubeadm-ready"}, result); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	if result.Status != StatusPassed {
-		t.Fatalf("Status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
-	}
-	requireInstalledRuntimeKubeadmReadyTranscript(t, result)
+	_ = RequireWorld(t)
 }
 
 func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
@@ -574,45 +391,7 @@ func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime kubeadm API smoke")
 	}
-	options.Missing = MissingSkips
-	disk, esp := requireInstalledRuntimeFixture(t, options, "installed-runtime-kubeadm-api-smoke")
-
-	runner := NewRunner(options)
-	runner.RequireHost(t, HostRequirements{
-		QEMU: true,
-		OVMF: true,
-		KVM:  options.KVM,
-	})
-	result, err := runner.Plan(Scenario{
-		Name: "installed-runtime-kubeadm-api-smoke",
-	})
-	if err != nil {
-		t.Fatalf("Plan() error = %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
-	result = RunInstalledKubeadmAPISmoke(ctx, result, KubeadmAPISmokeConfig{
-		Runtime: InstalledRuntimeConfig{
-			Disk:         disk,
-			DiskFormat:   DiskFormat(first(os.Getenv("KATL_INSTALLED_DISK_FORMAT"), string(DiskRaw))),
-			ESPArtifacts: esp,
-			VM: VMConfig{
-				KVM:     options.KVM,
-				RAMMiB:  4096,
-				CPUs:    2,
-				Timeout: 18 * time.Minute,
-				VSock: VSockConfig{
-					Enabled: true,
-				},
-			},
-		},
-	}, VMRunner{})
-	if err := runner.Write(Scenario{Name: "installed-runtime-kubeadm-api-smoke"}, result); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	if result.Status != StatusPassed {
-		t.Fatalf("Status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
-	}
+	_ = RequireWorld(t)
 }
 
 func requireInstalledRuntimeAgentHealth(t *testing.T, result Result) {
@@ -641,37 +420,6 @@ func requireInstalledRuntimeKubeadmReadyTranscript(t *testing.T, result Result) 
 	if !strings.Contains(string(transcript), `"method":"RunCommand"`) || !strings.Contains(string(transcript), "katl-kubeadm-ready.target") {
 		t.Fatalf("vsock transcript did not record kubeadm-ready checks: %s", transcript)
 	}
-}
-
-func requireInstalledRuntimeFixture(t *testing.T, options Options, scenarioName string) (string, string) {
-	t.Helper()
-	disk := os.Getenv("KATL_INSTALLED_DISK")
-	esp := os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS")
-	if disk != "" && esp != "" {
-		return disk, esp
-	}
-	var missing []string
-	if disk == "" {
-		missing = append(missing, "KATL_INSTALLED_DISK")
-	}
-	if esp == "" {
-		missing = append(missing, "KATL_INSTALLED_ESP_ARTIFACTS")
-	}
-	message := fmt.Sprintf("set %s or run scripts/resolve-installed-runtime-fixture", strings.Join(missing, " and "))
-	runner := NewRunner(options)
-	result, err := runner.Plan(Scenario{Name: scenarioName})
-	if err == nil {
-		now := runner.time()
-		result.start(now)
-		result.finish(StatusSkipped, message, now)
-		result.Missing = append(result.Missing, MissingPrerequisite{
-			Name:   strings.Join(missing, ","),
-			Detail: message,
-		})
-		_ = runner.Write(Scenario{Name: scenarioName}, result)
-	}
-	t.Skip(message)
-	return "", ""
 }
 
 func targetDiskPath(t *testing.T, result Result) string {

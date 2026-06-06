@@ -25,12 +25,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		runner = worldRun.Runner
 		runtime = worldRun.Config
 	} else {
-		disk, esp := requireInstalledRuntimeFixture(t, options, "installed-runtime-config-apply-modes")
-		runtime = InstalledRuntimeConfig{
-			Disk:         disk,
-			DiskFormat:   DiskFormat(first(os.Getenv("KATL_INSTALLED_DISK_FORMAT"), string(DiskRaw))),
-			ESPArtifacts: esp,
-		}
+		_ = RequireWorld(t)
 	}
 	helper := buildConfigApplySmokeHelper(t)
 
