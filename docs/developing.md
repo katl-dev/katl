@@ -199,12 +199,13 @@ runtime disk.
 
 After the generated first-install wrapper passes, it publishes a packaged copy of
 the installed runtime under `<state-dir>/published-installed-runtime/`. Source
-that directory's `vmtest.env` to run the direct installed-runtime smokes, or use
-its `published-first-install-runtime-fixture.json` manifest as an input to the
-two-node and three-control-plane fixture resolvers. The published directory keeps
-the installed disk, disk format, ESP tree, fixture manifest, optional
-`node.json`, and their checksum bindings together so later VM smokes do not
-depend on the source run layout.
+that directory's `vmtest.env` to run the direct installed-runtime smokes. The
+top-level KatlOS-image fixture manifest also records that published runtime
+directory, so later multi-node resolvers can consume either the top-level
+`katlos-image-fixture.json` or the published runtime directory directly. The
+published directory keeps the installed disk, disk format, ESP tree, fixture
+manifest, optional `node.json`, and their checksum bindings together so later VM
+smokes do not depend on the source run layout.
 
 ## Two-Node Kubeadm VM Fixtures
 
@@ -222,6 +223,19 @@ two-node inputs with:
 scripts/resolve-two-node-kubeadm-fixtures \
   --control-plane-published-dir build/first-install-cp-1/published-installed-runtime \
   --worker-published-dir build/first-install-worker-1/published-installed-runtime \
+  --control-plane-address 10.88.0.11 \
+  --worker-address 10.88.0.12 \
+  --bridge katlbr0
+```
+
+If each node came from `scripts/resolve-first-install-katlos-image-fixture`, you
+can pass those top-level fixture manifests directly and let the resolver expand
+their published installed-runtime directories:
+
+```sh
+scripts/resolve-two-node-kubeadm-fixtures \
+  --control-plane-katlos-fixture build/first-install-cp-1/katlos-image-fixture.json \
+  --worker-katlos-fixture build/first-install-worker-1/katlos-image-fixture.json \
   --control-plane-address 10.88.0.11 \
   --worker-address 10.88.0.12 \
   --bridge katlbr0
@@ -286,6 +300,20 @@ scripts/resolve-three-control-plane-kubeadm-fixtures \
   --cp1-published-dir build/first-install-cp-1/published-installed-runtime \
   --cp2-published-dir build/first-install-cp-2/published-installed-runtime \
   --cp3-published-dir build/first-install-cp-3/published-installed-runtime \
+  --cp1-address 10.88.0.11 \
+  --cp2-address 10.88.0.12 \
+  --cp3-address 10.88.0.13 \
+  --bridge katlbr0
+```
+
+If the three installed control-plane nodes came from KatlOS-image first-install
+fixtures, pass the top-level fixture manifests directly:
+
+```sh
+scripts/resolve-three-control-plane-kubeadm-fixtures \
+  --cp1-katlos-fixture build/first-install-cp-1/katlos-image-fixture.json \
+  --cp2-katlos-fixture build/first-install-cp-2/katlos-image-fixture.json \
+  --cp3-katlos-fixture build/first-install-cp-3/katlos-image-fixture.json \
   --cp1-address 10.88.0.11 \
   --cp2-address 10.88.0.12 \
   --cp3-address 10.88.0.13 \
