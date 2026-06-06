@@ -21,7 +21,6 @@ import (
 func publishedRuntimeBuildRoots(world vmtest.World, repo string) []string {
 	return []string{
 		filepath.Join(world.RunDir, "build"),
-		filepath.Join(repo, "build"),
 	}
 }
 

@@ -1243,6 +1243,35 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	}
 }
 
+func TestPlanTwoNodeWorldSmokeRunRejectsRepoOnlyPublishedFixtures(t *testing.T) {
+	world := twoNodeTestWorld(t)
+	repo := t.TempDir()
+	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-cp", "cp-1", vmtest.ControlPlane)
+	writeKatlctlPublishedInstalledRuntimeFixture(t, repo, "repo-worker", "worker-1", vmtest.Worker)
+
+	run, err := planTwoNodeWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
+	if err == nil || !strings.Contains(err.Error(), "published installed runtime fixture is missing") {
+		t.Fatalf("planTwoNodeWorldSmokeRun() error = %v, want missing world fixture", err)
+	}
+	if run.WorldScenario == nil {
+		t.Fatal("planTwoNodeWorldSmokeRun() did not return world scenario on setup failure")
+	}
+	data, err := os.ReadFile(run.WorldScenario.ResultPath)
+	if err != nil {
+		t.Fatalf("read world setup result: %v", err)
+	}
+	var result struct {
+		Status         vmtest.WorldStatus `json:"status"`
+		FailureSummary string             `json:"failureSummary"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode world setup result: %v", err)
+	}
+	if result.Status != vmtest.WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "published installed runtime fixture is missing") {
+		t.Fatalf("world setup result = %#v", result)
+	}
+}
+
 func twoNodeTestWorld(t *testing.T) vmtest.World {
 	t.Helper()
 	root := t.TempDir()
