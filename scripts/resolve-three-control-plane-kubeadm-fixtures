@@ -1,0 +1,656 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+run_id="${KATL_THREE_CONTROL_PLANE_FIXTURES_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+state_root="${KATL_THREE_CONTROL_PLANE_FIXTURES_STATE_ROOT:-$repo_root/build/three-control-plane-kubeadm-fixtures}"
+state_dir="${KATL_THREE_CONTROL_PLANE_FIXTURES_STATE_DIR:-$state_root/$run_id}"
+env_file="${KATL_THREE_CONTROL_PLANE_FIXTURES_ENV:-$state_dir/vmtest.env}"
+run_script="$state_dir/run-three-control-plane-stacked-etcd.sh"
+manifest="$state_dir/fixtures.json"
+
+shared_esp_artifacts="${KATL_INSTALLED_ESP_ARTIFACTS:-}"
+cp1_disk="${KATL_CONTROL_PLANE_1_INSTALLED_DISK:-${KATL_CONTROL_PLANE_INSTALLED_DISK:-}}"
+cp2_disk="${KATL_CONTROL_PLANE_2_INSTALLED_DISK:-}"
+cp3_disk="${KATL_CONTROL_PLANE_3_INSTALLED_DISK:-}"
+cp1_esp_artifacts="${KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS:-${KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS:-$shared_esp_artifacts}}"
+cp2_esp_artifacts="${KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS:-$shared_esp_artifacts}"
+cp3_esp_artifacts="${KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS:-$shared_esp_artifacts}"
+cp1_node_metadata="${KATL_CONTROL_PLANE_1_NODE_METADATA:-${KATL_CONTROL_PLANE_NODE_METADATA:-}}"
+cp2_node_metadata="${KATL_CONTROL_PLANE_2_NODE_METADATA:-}"
+cp3_node_metadata="${KATL_CONTROL_PLANE_3_NODE_METADATA:-}"
+cp1_fixture_manifest="${KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST:-${KATL_CONTROL_PLANE_FIXTURE_MANIFEST:-}}"
+cp2_fixture_manifest="${KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST:-}"
+cp3_fixture_manifest="${KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST:-}"
+cp1_address="${KATL_CONTROL_PLANE_1_ADDRESS:-${KATL_CONTROL_PLANE_ADDRESS:-}}"
+cp2_address="${KATL_CONTROL_PLANE_2_ADDRESS:-}"
+cp3_address="${KATL_CONTROL_PLANE_3_ADDRESS:-}"
+cp1_format="${KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT:-${KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT:-raw}}"
+cp2_format="${KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT:-raw}"
+cp3_format="${KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT:-raw}"
+kubernetes_version="${KATL_KUBERNETES_VERSION:-v1.36.1}"
+bridge="${KATL_VMTEST_BRIDGE:-}"
+bridge_helper="${KATL_QEMU_BRIDGE_HELPER:-}"
+bridge_check="${KATL_THREE_CONTROL_PLANE_FIXTURES_BRIDGE_CHECK:-on}"
+vmtest_keep="${KATL_VMTEST_KEEP:-failed}"
+vmtest_state_root="${KATL_VMTEST_STATE_ROOT:-$state_dir/vm-runs}"
+env_file_set=0
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/resolve-three-control-plane-kubeadm-fixtures [options]
+
+Resolve and preflight the installed runtime fixtures needed by the opt-in
+three-control-plane stacked-etcd VM smoke. The disks must come from cp-1, cp-2,
+and cp-3 install materials. The command does not mutate or build disks; it
+validates existing node-specific disk paths, node metadata, fixture manifests,
+bridge addresses, and ESP artifact trees, then writes a sourceable env file plus
+a run wrapper under build/.
+
+Options:
+  --cp1-disk PATH        Installed cp-1 disk, or KATL_CONTROL_PLANE_1_INSTALLED_DISK
+  --cp2-disk PATH        Installed cp-2 disk, or KATL_CONTROL_PLANE_2_INSTALLED_DISK
+  --cp3-disk PATH        Installed cp-3 disk, or KATL_CONTROL_PLANE_3_INSTALLED_DISK
+  --cp1-esp DIR          Rendered cp-1 ESP tree, or KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS
+  --cp2-esp DIR          Rendered cp-2 ESP tree, or KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS
+  --cp3-esp DIR          Rendered cp-3 ESP tree, or KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS
+  --esp-artifacts DIR    Shared rendered ESP tree for all three nodes
+  --cp1-metadata P       cp-1 /etc/katl/node.json, or KATL_CONTROL_PLANE_1_NODE_METADATA
+  --cp2-metadata P       cp-2 /etc/katl/node.json, or KATL_CONTROL_PLANE_2_NODE_METADATA
+  --cp3-metadata P       cp-3 /etc/katl/node.json, or KATL_CONTROL_PLANE_3_NODE_METADATA
+  --cp1-fixture P        cp-1 fixture manifest binding disk/ESP/metadata checksums
+  --cp2-fixture P        cp-2 fixture manifest binding disk/ESP/metadata checksums
+  --cp3-fixture P        cp-3 fixture manifest binding disk/ESP/metadata checksums
+  --cp1-address A        Bridge-reachable cp-1 address, or KATL_CONTROL_PLANE_1_ADDRESS
+  --cp2-address A        Bridge-reachable cp-2 address, or KATL_CONTROL_PLANE_2_ADDRESS
+  --cp3-address A        Bridge-reachable cp-3 address, or KATL_CONTROL_PLANE_3_ADDRESS
+  --cp1-format F         cp-1 disk format: raw or qcow2 (default: raw)
+  --cp2-format F         cp-2 disk format: raw or qcow2 (default: raw)
+  --cp3-format F         cp-3 disk format: raw or qcow2 (default: raw)
+  --kubernetes-version V Kubernetes payload version for smoke inventory (default: v1.36.1)
+  --bridge NAME          QEMU bridge name to export as KATL_VMTEST_BRIDGE
+  --bridge-helper PATH   QEMU bridge helper to export as KATL_QEMU_BRIDGE_HELPER
+  --state-dir DIR        Output directory for generated env, manifest, and ESP copies
+  --env-file PATH        Sourceable env output path (default: <state-dir>/vmtest.env)
+  -h, --help             Show this help
+
+After this command succeeds:
+  source <state-dir>/vmtest.env
+  <state-dir>/run-three-control-plane-stacked-etcd.sh
+USAGE
+}
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        fail "$option requires a value"
+    fi
+}
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+json() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    printf "%s" "$value"
+}
+
+real() {
+    realpath -m "$1"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cp1-disk|--control-plane-1-disk)
+            need_value "$1" "${2:-}"
+            cp1_disk="$2"
+            shift 2
+            ;;
+        --cp2-disk|--control-plane-2-disk)
+            need_value "$1" "${2:-}"
+            cp2_disk="$2"
+            shift 2
+            ;;
+        --cp3-disk|--control-plane-3-disk)
+            need_value "$1" "${2:-}"
+            cp3_disk="$2"
+            shift 2
+            ;;
+        --cp1-esp|--control-plane-1-esp)
+            need_value "$1" "${2:-}"
+            cp1_esp_artifacts="$2"
+            shift 2
+            ;;
+        --cp2-esp|--control-plane-2-esp)
+            need_value "$1" "${2:-}"
+            cp2_esp_artifacts="$2"
+            shift 2
+            ;;
+        --cp3-esp|--control-plane-3-esp)
+            need_value "$1" "${2:-}"
+            cp3_esp_artifacts="$2"
+            shift 2
+            ;;
+        --esp-artifacts)
+            need_value "$1" "${2:-}"
+            cp1_esp_artifacts="$2"
+            cp2_esp_artifacts="$2"
+            cp3_esp_artifacts="$2"
+            shift 2
+            ;;
+        --cp1-metadata|--control-plane-1-metadata)
+            need_value "$1" "${2:-}"
+            cp1_node_metadata="$2"
+            shift 2
+            ;;
+        --cp2-metadata|--control-plane-2-metadata)
+            need_value "$1" "${2:-}"
+            cp2_node_metadata="$2"
+            shift 2
+            ;;
+        --cp3-metadata|--control-plane-3-metadata)
+            need_value "$1" "${2:-}"
+            cp3_node_metadata="$2"
+            shift 2
+            ;;
+        --cp1-fixture|--control-plane-1-fixture)
+            need_value "$1" "${2:-}"
+            cp1_fixture_manifest="$2"
+            shift 2
+            ;;
+        --cp2-fixture|--control-plane-2-fixture)
+            need_value "$1" "${2:-}"
+            cp2_fixture_manifest="$2"
+            shift 2
+            ;;
+        --cp3-fixture|--control-plane-3-fixture)
+            need_value "$1" "${2:-}"
+            cp3_fixture_manifest="$2"
+            shift 2
+            ;;
+        --cp1-address|--control-plane-1-address)
+            need_value "$1" "${2:-}"
+            cp1_address="$2"
+            shift 2
+            ;;
+        --cp2-address|--control-plane-2-address)
+            need_value "$1" "${2:-}"
+            cp2_address="$2"
+            shift 2
+            ;;
+        --cp3-address|--control-plane-3-address)
+            need_value "$1" "${2:-}"
+            cp3_address="$2"
+            shift 2
+            ;;
+        --cp1-format|--control-plane-1-format)
+            need_value "$1" "${2:-}"
+            cp1_format="$2"
+            shift 2
+            ;;
+        --cp2-format|--control-plane-2-format)
+            need_value "$1" "${2:-}"
+            cp2_format="$2"
+            shift 2
+            ;;
+        --cp3-format|--control-plane-3-format)
+            need_value "$1" "${2:-}"
+            cp3_format="$2"
+            shift 2
+            ;;
+        --kubernetes-version)
+            need_value "$1" "${2:-}"
+            kubernetes_version="$2"
+            shift 2
+            ;;
+        --bridge)
+            need_value "$1" "${2:-}"
+            bridge="$2"
+            shift 2
+            ;;
+        --bridge-helper)
+            need_value "$1" "${2:-}"
+            bridge_helper="$2"
+            shift 2
+            ;;
+        --state-dir)
+            need_value "$1" "${2:-}"
+            state_dir="$2"
+            if [[ "$env_file_set" -eq 0 ]]; then
+                env_file="$state_dir/vmtest.env"
+            fi
+            run_script="$state_dir/run-three-control-plane-stacked-etcd.sh"
+            manifest="$state_dir/fixtures.json"
+            vmtest_state_root="$state_dir/vm-runs"
+            shift 2
+            ;;
+        --env-file)
+            need_value "$1" "${2:-}"
+            env_file="$2"
+            env_file_set=1
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            fail "unknown argument: $1"
+            ;;
+    esac
+done
+
+validate_format() {
+    local label="$1"
+    local format="$2"
+    case "$format" in
+        qcow2|raw) ;;
+        *) fail "$label format must be raw or qcow2" ;;
+    esac
+}
+
+validate_format "cp-1" "$cp1_format"
+validate_format "cp-2" "$cp2_format"
+validate_format "cp-3" "$cp3_format"
+
+[[ -n "$cp1_disk" ]] || fail "--cp1-disk is required"
+[[ -f "$cp1_disk" ]] || fail "cp-1 disk not found: $(rel "$cp1_disk")"
+[[ -n "$cp2_disk" ]] || fail "--cp2-disk is required"
+[[ -f "$cp2_disk" ]] || fail "cp-2 disk not found: $(rel "$cp2_disk")"
+[[ -n "$cp3_disk" ]] || fail "--cp3-disk is required"
+[[ -f "$cp3_disk" ]] || fail "cp-3 disk not found: $(rel "$cp3_disk")"
+[[ -n "$cp1_esp_artifacts" ]] || fail "--cp1-esp is required"
+[[ -d "$cp1_esp_artifacts" ]] || fail "cp-1 ESP artifacts directory not found: $(rel "$cp1_esp_artifacts")"
+[[ -n "$cp2_esp_artifacts" ]] || fail "--cp2-esp is required"
+[[ -d "$cp2_esp_artifacts" ]] || fail "cp-2 ESP artifacts directory not found: $(rel "$cp2_esp_artifacts")"
+[[ -n "$cp3_esp_artifacts" ]] || fail "--cp3-esp is required"
+[[ -d "$cp3_esp_artifacts" ]] || fail "cp-3 ESP artifacts directory not found: $(rel "$cp3_esp_artifacts")"
+[[ -n "$cp1_node_metadata" ]] || fail "--cp1-metadata is required"
+[[ -f "$cp1_node_metadata" ]] || fail "cp-1 node metadata not found: $(rel "$cp1_node_metadata")"
+[[ -n "$cp2_node_metadata" ]] || fail "--cp2-metadata is required"
+[[ -f "$cp2_node_metadata" ]] || fail "cp-2 node metadata not found: $(rel "$cp2_node_metadata")"
+[[ -n "$cp3_node_metadata" ]] || fail "--cp3-metadata is required"
+[[ -f "$cp3_node_metadata" ]] || fail "cp-3 node metadata not found: $(rel "$cp3_node_metadata")"
+[[ -n "$cp1_fixture_manifest" ]] || fail "--cp1-fixture is required"
+[[ -f "$cp1_fixture_manifest" ]] || fail "cp-1 fixture manifest not found: $(rel "$cp1_fixture_manifest")"
+[[ -n "$cp2_fixture_manifest" ]] || fail "--cp2-fixture is required"
+[[ -f "$cp2_fixture_manifest" ]] || fail "cp-2 fixture manifest not found: $(rel "$cp2_fixture_manifest")"
+[[ -n "$cp3_fixture_manifest" ]] || fail "--cp3-fixture is required"
+[[ -f "$cp3_fixture_manifest" ]] || fail "cp-3 fixture manifest not found: $(rel "$cp3_fixture_manifest")"
+[[ -n "$cp1_address" ]] || fail "--cp1-address is required"
+[[ -n "$cp2_address" ]] || fail "--cp2-address is required"
+[[ -n "$cp3_address" ]] || fail "--cp3-address is required"
+[[ -n "$kubernetes_version" ]] || fail "--kubernetes-version is required"
+[[ -n "$bridge" ]] || fail "--bridge or KATL_VMTEST_BRIDGE is required"
+
+cp1_disk="$(real "$cp1_disk")"
+cp2_disk="$(real "$cp2_disk")"
+cp3_disk="$(real "$cp3_disk")"
+cp1_esp_artifacts="$(real "$cp1_esp_artifacts")"
+cp2_esp_artifacts="$(real "$cp2_esp_artifacts")"
+cp3_esp_artifacts="$(real "$cp3_esp_artifacts")"
+cp1_node_metadata="$(real "$cp1_node_metadata")"
+cp2_node_metadata="$(real "$cp2_node_metadata")"
+cp3_node_metadata="$(real "$cp3_node_metadata")"
+cp1_fixture_manifest="$(real "$cp1_fixture_manifest")"
+cp2_fixture_manifest="$(real "$cp2_fixture_manifest")"
+cp3_fixture_manifest="$(real "$cp3_fixture_manifest")"
+state_dir="$(real "$state_dir")"
+env_file="$(real "$env_file")"
+run_script="$(real "$run_script")"
+manifest="$(real "$manifest")"
+vmtest_state_root="$(real "$vmtest_state_root")"
+
+ensure_distinct() {
+    local label="$1"
+    shift
+    local -a values=("$@")
+    local i j
+    for ((i = 0; i < ${#values[@]}; i++)); do
+        for ((j = i + 1; j < ${#values[@]}; j++)); do
+            [[ "${values[$i]}" != "${values[$j]}" ]] || fail "$label values must be distinct"
+        done
+    done
+}
+
+ensure_distinct "control-plane disk" "$cp1_disk" "$cp2_disk" "$cp3_disk"
+ensure_distinct "control-plane node metadata" "$cp1_node_metadata" "$cp2_node_metadata" "$cp3_node_metadata"
+ensure_distinct "control-plane fixture manifest" "$cp1_fixture_manifest" "$cp2_fixture_manifest" "$cp3_fixture_manifest"
+ensure_distinct "control-plane address" "$cp1_address" "$cp2_address" "$cp3_address"
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+need jq
+need sha256sum
+
+validate_address() {
+    local label="$1"
+    local address="$2"
+    local octets IFS=.
+    [[ "$address" =~ ^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$ ]] ||
+        fail "$label address must be an IPv4 address without scheme, path, or port: $address"
+    read -r -a octets <<<"$address"
+    for octet in "${octets[@]}"; do
+        [[ "$octet" =~ ^[0-9]+$ ]] || fail "$label address is invalid: $address"
+        ((octet >= 0 && octet <= 255)) || fail "$label address octet is out of range: $address"
+    done
+    if ((octets[0] == 0 || octets[0] == 127 || octets[0] >= 224)); then
+        fail "$label address must not be unspecified, loopback, multicast, or reserved: $address"
+    fi
+    if ((octets[0] == 169 && octets[1] == 254)); then
+        fail "$label address must not be link-local: $address"
+    fi
+    if ((octets[0] == 192 && octets[1] == 0 && octets[2] == 2)) ||
+        ((octets[0] == 198 && octets[1] == 51 && octets[2] == 100)) ||
+        ((octets[0] == 203 && octets[1] == 0 && octets[2] == 113)); then
+        fail "$label address must not use documentation-only TEST-NET ranges: $address"
+    fi
+}
+
+validate_bridge() {
+    local label="$1"
+    local value="$2"
+    [[ -z "$value" ]] && return 0
+    case "$value" in
+        *[[:space:],]*)
+            fail "$label must not contain whitespace or comma"
+            ;;
+    esac
+}
+
+validate_address "cp-1" "$cp1_address"
+validate_address "cp-2" "$cp2_address"
+validate_address "cp-3" "$cp3_address"
+validate_bridge "bridge name" "$bridge"
+validate_bridge "bridge helper" "$bridge_helper"
+
+ip_to_int() {
+    local address="$1"
+    local a b c d
+    IFS=. read -r a b c d <<<"$address"
+    printf '%u\n' "$(((a << 24) + (b << 16) + (c << 8) + d))"
+}
+
+file_sha() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+tree_sha() {
+    local root="$1"
+    (
+        cd "$root"
+        while IFS= read -r -d '' path; do
+            local rel_path="${path#./}"
+            local mode
+            mode="$(stat -c '%a' "$path")"
+            if [[ -L "$path" ]]; then
+                fail "ESP artifacts contain unsupported non-regular entry: $rel_path"
+            elif [[ -d "$path" ]]; then
+                printf 'dir %s %s\n' "$mode" "$rel_path"
+            elif [[ -f "$path" ]]; then
+                printf 'file %s %s %s\n' "$mode" "$(file_sha "$path")" "$rel_path"
+            else
+                fail "ESP artifacts contain unsupported non-regular entry: $rel_path"
+            fi
+        done < <(find . -mindepth 1 -print0 | sort -z)
+    ) | sha256sum | awk '{print $1}'
+}
+
+address_in_cidr() {
+    local address="$1"
+    local cidr="$2"
+    local network="${cidr%/*}"
+    local prefix="${cidr#*/}"
+    local address_int network_int mask
+    [[ "$prefix" =~ ^[0-9]+$ ]] || return 1
+    ((prefix >= 0 && prefix <= 32)) || return 1
+    address_int="$(ip_to_int "$address")"
+    network_int="$(ip_to_int "$network")"
+    if ((prefix == 0)); then
+        mask=0
+    else
+        mask=$((0xffffffff << (32 - prefix) & 0xffffffff))
+    fi
+    (((address_int & mask) == (network_int & mask)))
+}
+
+check_bridge_address() {
+    local label="$1"
+    local address="$2"
+    local cidr matched=0
+    local -a cidrs
+    local address_int host network prefix network_int mask broadcast_int
+    if [[ "$bridge_check" == off ]]; then
+        return 0
+    fi
+    need ip
+    [[ -d "/sys/class/net/$bridge/bridge" ]] || fail "bridge $bridge is not a Linux bridge"
+    mapfile -t cidrs < <(ip -4 -o addr show dev "$bridge" scope global | awk '{print $4}')
+    [[ "${#cidrs[@]}" -gt 0 ]] || fail "bridge $bridge has no global IPv4 address"
+    for cidr in "${cidrs[@]}"; do
+        host="${cidr%/*}"
+        prefix="${cidr#*/}"
+        if [[ "$address" == "$host" ]]; then
+            fail "$label address $address is assigned to bridge $bridge"
+        fi
+        if address_in_cidr "$address" "$cidr"; then
+            address_int="$(ip_to_int "$address")"
+            network="${cidr%/*}"
+            network_int="$(ip_to_int "$network")"
+            if ((prefix == 0)); then
+                mask=0
+            else
+                mask=$((0xffffffff << (32 - prefix) & 0xffffffff))
+            fi
+            network_int=$((network_int & mask))
+            broadcast_int=$((network_int | (0xffffffff ^ mask)))
+            if ((address_int == network_int || address_int == broadcast_int)); then
+                fail "$label address $address is the network or broadcast address for $cidr"
+            fi
+            matched=1
+            break
+        fi
+    done
+    [[ "$matched" -eq 1 ]] || fail "$label address $address is not inside any IPv4 subnet on bridge $bridge"
+}
+
+check_node_metadata() {
+    local path="$1"
+    local node="$2"
+    jq -e \
+        --arg node "$node" \
+        --arg version "$kubernetes_version" '
+        .apiVersion == "katl.dev/v1alpha1" and
+        .kind == "NodeMetadata" and
+        .identity.hostname == $node and
+        .systemRole == "control-plane" and
+        .kubeadm.configRef == "control-plane" and
+        .kubeadm.configPath == "/etc/katl/kubeadm/control-plane/config.yaml" and
+        .kubeadm.intent == "control-plane" and
+        .kubernetes.payloadVersion == $version
+        ' "$path" >/dev/null ||
+        fail "$path must be NodeMetadata for $node role=control-plane Kubernetes=$kubernetes_version"
+}
+
+manifest_path() {
+    local manifest_path="$1"
+    local query="$2"
+    local value base
+    value="$(jq -er "$query" "$manifest_path")"
+    base="$(dirname "$manifest_path")"
+    if [[ "$value" == /* ]]; then
+        real "$value"
+    else
+        real "$base/$value"
+    fi
+}
+
+check_fixture_manifest() {
+    local manifest_path="$1"
+    local node="$2"
+    local disk="$3"
+    local format="$4"
+    local esp="$5"
+    local metadata="$6"
+    local manifest_disk manifest_esp manifest_metadata
+    local want_disk_sha want_esp_sha want_metadata_sha
+
+    jq -e --arg node "$node" '
+        .apiVersion == "katl.dev/v1alpha1" and
+        .kind == "InstalledRuntimeVMTestFixture" and
+        .nodeName == $node and
+        .systemRole == "control-plane"
+        ' "$manifest_path" >/dev/null ||
+        fail "$manifest_path must describe $node role=control-plane"
+
+    manifest_disk="$(manifest_path "$manifest_path" '.disk.path')"
+    manifest_esp="$(manifest_path "$manifest_path" '.espArtifacts.path')"
+    manifest_metadata="$(manifest_path "$manifest_path" '.nodeMetadata.path')"
+    [[ "$manifest_disk" == "$disk" ]] || fail "$manifest_path disk path $manifest_disk does not match $disk"
+    [[ "$manifest_esp" == "$esp" ]] || fail "$manifest_path ESP path $manifest_esp does not match $esp"
+    [[ "$manifest_metadata" == "$metadata" ]] || fail "$manifest_path node metadata path $manifest_metadata does not match $metadata"
+    [[ "$(jq -er '.disk.format' "$manifest_path")" == "$format" ]] || fail "$manifest_path disk format does not match $format"
+
+    want_disk_sha="$(jq -er '.disk.sha256' "$manifest_path")"
+    want_esp_sha="$(jq -er '.espArtifacts.treeSHA256' "$manifest_path")"
+    want_metadata_sha="$(jq -er '.nodeMetadata.sha256' "$manifest_path")"
+    [[ "$(file_sha "$disk")" == "$want_disk_sha" ]] || fail "$manifest_path disk sha256 does not match $disk"
+    [[ "$(tree_sha "$esp")" == "$want_esp_sha" ]] || fail "$manifest_path ESP treeSHA256 does not match $esp"
+    [[ "$(file_sha "$metadata")" == "$want_metadata_sha" ]] || fail "$manifest_path node metadata sha256 does not match $metadata"
+}
+
+preflight_node() {
+    local disk="$1"
+    local format="$2"
+    local esp="$3"
+    local run_dir="$4"
+    "$repo_root/scripts/check-installed-disk-smoke" \
+        --disk "$disk" \
+        --format "$format" \
+        --esp-artifacts "$esp" \
+        --state-dir "$run_dir" \
+        --preflight-only >/dev/null
+}
+
+check_bridge_address "cp-1" "$cp1_address"
+check_bridge_address "cp-2" "$cp2_address"
+check_bridge_address "cp-3" "$cp3_address"
+check_node_metadata "$cp1_node_metadata" "cp-1"
+check_node_metadata "$cp2_node_metadata" "cp-2"
+check_node_metadata "$cp3_node_metadata" "cp-3"
+check_fixture_manifest "$cp1_fixture_manifest" "cp-1" "$cp1_disk" "$cp1_format" "$cp1_esp_artifacts" "$cp1_node_metadata"
+check_fixture_manifest "$cp2_fixture_manifest" "cp-2" "$cp2_disk" "$cp2_format" "$cp2_esp_artifacts" "$cp2_node_metadata"
+check_fixture_manifest "$cp3_fixture_manifest" "cp-3" "$cp3_disk" "$cp3_format" "$cp3_esp_artifacts" "$cp3_node_metadata"
+
+mkdir -p "$state_dir"
+preflight_node "$cp1_disk" "$cp1_format" "$cp1_esp_artifacts" "$state_dir/cp-1-preflight"
+preflight_node "$cp2_disk" "$cp2_format" "$cp2_esp_artifacts" "$state_dir/cp-2-preflight"
+preflight_node "$cp3_disk" "$cp3_format" "$cp3_esp_artifacts" "$state_dir/cp-3-preflight"
+
+mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manifest")"
+{
+    printf '# Generated by scripts/resolve-three-control-plane-kubeadm-fixtures\n'
+    printf '# Source this file before running the three-control-plane stacked-etcd VM smoke.\n'
+    printf 'export KATL_VMTEST_RUN=%q\n' "1"
+    printf 'export KATL_VMTEST_KEEP=%q\n' "$vmtest_keep"
+    printf 'export KATL_VMTEST_STATE_ROOT=%q\n' "$vmtest_state_root"
+    printf 'export KATL_CONTROL_PLANE_1_INSTALLED_DISK=%q\n' "$cp1_disk"
+    printf 'export KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT=%q\n' "$cp1_format"
+    printf 'export KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS=%q\n' "$cp1_esp_artifacts"
+    printf 'export KATL_CONTROL_PLANE_1_NODE_METADATA=%q\n' "$cp1_node_metadata"
+    printf 'export KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST=%q\n' "$cp1_fixture_manifest"
+    printf 'export KATL_CONTROL_PLANE_2_INSTALLED_DISK=%q\n' "$cp2_disk"
+    printf 'export KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT=%q\n' "$cp2_format"
+    printf 'export KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS=%q\n' "$cp2_esp_artifacts"
+    printf 'export KATL_CONTROL_PLANE_2_NODE_METADATA=%q\n' "$cp2_node_metadata"
+    printf 'export KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST=%q\n' "$cp2_fixture_manifest"
+    printf 'export KATL_CONTROL_PLANE_3_INSTALLED_DISK=%q\n' "$cp3_disk"
+    printf 'export KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT=%q\n' "$cp3_format"
+    printf 'export KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS=%q\n' "$cp3_esp_artifacts"
+    printf 'export KATL_CONTROL_PLANE_3_NODE_METADATA=%q\n' "$cp3_node_metadata"
+    printf 'export KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST=%q\n' "$cp3_fixture_manifest"
+    printf 'export KATL_CONTROL_PLANE_1_ADDRESS=%q\n' "$cp1_address"
+    printf 'export KATL_CONTROL_PLANE_2_ADDRESS=%q\n' "$cp2_address"
+    printf 'export KATL_CONTROL_PLANE_3_ADDRESS=%q\n' "$cp3_address"
+    printf 'export KATL_KUBERNETES_VERSION=%q\n' "$kubernetes_version"
+    printf 'export KATL_VMTEST_BRIDGE=%q\n' "$bridge"
+    if [[ -n "$bridge_helper" ]]; then
+        printf 'export KATL_QEMU_BRIDGE_HELPER=%q\n' "$bridge_helper"
+    fi
+} >"$env_file"
+
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -euo pipefail\n'
+    printf 'cd %q\n' "$repo_root"
+    printf 'source %q\n' "$env_file"
+    # shellcheck disable=SC2016
+    printf 'GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./cmd/katlctl -run '\''^TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke$'\'' -count=1 -timeout 60m -katl.vmtest.run\n'
+} >"$run_script"
+chmod +x "$run_script"
+
+cat >"$manifest" <<EOF
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "ThreeControlPlaneStackedEtcdVMTestFixtures",
+  "controlPlanes": [
+    {
+      "nodeName": "cp-1",
+      "systemRole": "control-plane",
+      "disk": "$(json "$cp1_disk")",
+      "diskFormat": "$(json "$cp1_format")",
+      "espArtifacts": "$(json "$cp1_esp_artifacts")",
+      "nodeMetadata": "$(json "$cp1_node_metadata")",
+      "fixtureManifest": "$(json "$cp1_fixture_manifest")",
+      "address": "$(json "$cp1_address")",
+      "preflightRunDir": "$(json "$state_dir/cp-1-preflight")"
+    },
+    {
+      "nodeName": "cp-2",
+      "systemRole": "control-plane",
+      "disk": "$(json "$cp2_disk")",
+      "diskFormat": "$(json "$cp2_format")",
+      "espArtifacts": "$(json "$cp2_esp_artifacts")",
+      "nodeMetadata": "$(json "$cp2_node_metadata")",
+      "fixtureManifest": "$(json "$cp2_fixture_manifest")",
+      "address": "$(json "$cp2_address")",
+      "preflightRunDir": "$(json "$state_dir/cp-2-preflight")"
+    },
+    {
+      "nodeName": "cp-3",
+      "systemRole": "control-plane",
+      "disk": "$(json "$cp3_disk")",
+      "diskFormat": "$(json "$cp3_format")",
+      "espArtifacts": "$(json "$cp3_esp_artifacts")",
+      "nodeMetadata": "$(json "$cp3_node_metadata")",
+      "fixtureManifest": "$(json "$cp3_fixture_manifest")",
+      "address": "$(json "$cp3_address")",
+      "preflightRunDir": "$(json "$state_dir/cp-3-preflight")"
+    }
+  ],
+  "bridge": "$(json "$bridge")",
+  "kubernetesVersion": "$(json "$kubernetes_version")",
+  "envFile": "$(json "$env_file")",
+  "runScript": "$(json "$run_script")"
+}
+EOF
+
+echo "fixture env: $(rel "$env_file")"
+echo "fixture manifest: $(rel "$manifest")"
+echo "run script: $(rel "$run_script")"
+echo "next: source $(rel "$env_file")"
+echo "next: $(rel "$run_script")"

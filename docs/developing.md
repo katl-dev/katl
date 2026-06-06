@@ -243,32 +243,40 @@ operator bootstrap path to run `kubeadm init` on `cp-1`, join `cp-2` and `cp-3`
 serially, verify the resulting node objects, verify stacked-etcd health and
 membership, and create a restricted etcd snapshot artifact.
 
-Set the fixture environment in the shell that runs the test:
+Resolve those local inputs into a sourceable environment with:
 
 ```sh
-export KATL_VMTEST_RUN=1
-export KATL_VMTEST_BRIDGE=katlbr0
-export KATL_CONTROL_PLANE_1_INSTALLED_DISK=build/local/cp-1.qcow2
-export KATL_CONTROL_PLANE_2_INSTALLED_DISK=build/local/cp-2.qcow2
-export KATL_CONTROL_PLANE_3_INSTALLED_DISK=build/local/cp-3.qcow2
-export KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS=build/local/cp-1-esp
-export KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS=build/local/cp-2-esp
-export KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS=build/local/cp-3-esp
-export KATL_CONTROL_PLANE_1_NODE_METADATA=build/local/cp-1-node.json
-export KATL_CONTROL_PLANE_2_NODE_METADATA=build/local/cp-2-node.json
-export KATL_CONTROL_PLANE_3_NODE_METADATA=build/local/cp-3-node.json
-export KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST=build/local/cp-1-fixture.json
-export KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST=build/local/cp-2-fixture.json
-export KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST=build/local/cp-3-fixture.json
-export KATL_CONTROL_PLANE_1_ADDRESS=10.88.0.11
-export KATL_CONTROL_PLANE_2_ADDRESS=10.88.0.12
-export KATL_CONTROL_PLANE_3_ADDRESS=10.88.0.13
-export KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT=qcow2
-export KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT=qcow2
-export KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT=qcow2
+scripts/resolve-three-control-plane-kubeadm-fixtures \
+  --cp1-disk build/local/cp-1.qcow2 \
+  --cp2-disk build/local/cp-2.qcow2 \
+  --cp3-disk build/local/cp-3.qcow2 \
+  --cp1-esp build/local/cp-1-esp \
+  --cp2-esp build/local/cp-2-esp \
+  --cp3-esp build/local/cp-3-esp \
+  --cp1-metadata build/local/cp-1-node.json \
+  --cp2-metadata build/local/cp-2-node.json \
+  --cp3-metadata build/local/cp-3-node.json \
+  --cp1-fixture build/local/cp-1-fixture.json \
+  --cp2-fixture build/local/cp-2-fixture.json \
+  --cp3-fixture build/local/cp-3-fixture.json \
+  --cp1-address 10.88.0.11 \
+  --cp2-address 10.88.0.12 \
+  --cp3-address 10.88.0.13 \
+  --cp1-format qcow2 \
+  --cp2-format qcow2 \
+  --cp3-format qcow2 \
+  --bridge katlbr0
 ```
 
-Then run:
+The command preflights each disk against its ESP tree, verifies each node
+metadata file matches `cp-1`, `cp-2`, or `cp-3`, rejects shared disk, metadata,
+fixture, or address inputs, checks fixture manifest checksums, checks that the
+bridge exists with an IPv4 subnet containing all three node addresses, and
+writes generated files under `build/three-control-plane-kubeadm-fixtures/`.
+Source the generated `vmtest.env` or run the generated wrapper to execute
+`TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke`.
+
+To run the smoke directly after sourcing the generated env:
 
 ```sh
 GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./cmd/katlctl \
