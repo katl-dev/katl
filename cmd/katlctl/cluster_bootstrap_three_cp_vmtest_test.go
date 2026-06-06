@@ -310,8 +310,48 @@ func verifyBootstrapTranscripts(transcriptDir string, nodes []string) error {
 		if !sensitiveFile {
 			return fmt.Errorf("%s transcript has no sensitive file entry", node)
 		}
+		if err := verifyThreeControlPlaneKubeadmTranscript(node, entries); err != nil {
+			return fmt.Errorf("%s transcript: %w", node, err)
+		}
 	}
 	return nil
+}
+
+func verifyThreeControlPlaneKubeadmTranscript(node string, entries []transcriptEntry) error {
+	switch node {
+	case "cp-1":
+		if transcriptHasCommand(entries, "kubeadm", "join") {
+			return errors.New("unexpected kubeadm join command on init control-plane")
+		}
+		if !transcriptHasCommand(entries, "kubeadm", "init") {
+			return errors.New("missing kubeadm init command")
+		}
+	case "cp-2", "cp-3":
+		if transcriptHasCommand(entries, "kubeadm", "init") {
+			return errors.New("unexpected kubeadm init command on joining control-plane")
+		}
+		if !transcriptHasCommand(entries, "kubeadm", "join") {
+			return errors.New("missing kubeadm control-plane join command")
+		}
+		if !transcriptHasCommandArg(entries, "kubeadm", "join", "--control-plane") {
+			return errors.New("kubeadm join command missing --control-plane")
+		}
+	}
+	return nil
+}
+
+func transcriptHasCommandArg(entries []transcriptEntry, first, second, arg string) bool {
+	for _, entry := range entries {
+		if entry.Method != "RunCommand" || len(entry.Argv) < 2 || entry.Argv[0] != first || entry.Argv[1] != second {
+			continue
+		}
+		for _, got := range entry.Argv[2:] {
+			if got == arg {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type threeControlPlaneEtcdReport struct {
@@ -558,6 +598,35 @@ func TestThreeControlPlaneInventoryAndEtcdVerificationHelpers(t *testing.T) {
 	config := threeControlPlaneNodeConfig("cp-2", "disk.qcow2", "esp", "fixture.json", "node.json", vmtest.DiskQCOW2, vmtest.KVMOff, 43202)
 	if config.Runtime.FixtureManifest != "fixture.json" || config.Runtime.NodeMetadata != "node.json" {
 		t.Fatalf("runtime provenance = fixture %q metadata %q", config.Runtime.FixtureManifest, config.Runtime.NodeMetadata)
+	}
+}
+
+func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
+	dir := t.TempDir()
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-1"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "phase", "upload-certs", "--upload-certs"}, Redaction: "output", SensitiveOutput: true},
+	})
+	for _, node := range []string{"cp-2", "cp-3"} {
+		writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, node), []transcriptEntry{
+			{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+			{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+			{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--certificate-key", "[REDACTED CERTIFICATE KEY]"}, Redaction: "output", SensitiveOutput: true},
+		})
+	}
+	if err := verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"}); err != nil {
+		t.Fatalf("verifyBootstrapTranscripts() error = %v", err)
+	}
+
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+	})
+	err := verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
+	if err == nil || !strings.Contains(err.Error(), "unexpected kubeadm init command on joining control-plane") {
+		t.Fatalf("verifyBootstrapTranscripts() error = %v, want cp-2 init rejection", err)
 	}
 }
 
