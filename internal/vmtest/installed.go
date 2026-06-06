@@ -16,6 +16,8 @@ type InstalledRuntimeConfig struct {
 	Disk               string
 	DiskFormat         DiskFormat
 	ESPArtifacts       string
+	FixtureManifest    string
+	NodeMetadata       string
 	RequireVMTestAgent bool
 	Expect             string
 	VM                 VMConfig
@@ -106,7 +108,7 @@ func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) e
 	if err := os.MkdirAll(filepath.Dir(result.Artifacts.InstalledRuntime), 0o755); err != nil {
 		return err
 	}
-	fixtureManifest := os.Getenv("KATL_INSTALLED_FIXTURE_MANIFEST")
+	fixtureManifest := first(config.FixtureManifest, os.Getenv("KATL_INSTALLED_FIXTURE_MANIFEST"))
 	fixture, err := readInstalledRuntimeFixture(fixtureManifest)
 	if err != nil {
 		return err
@@ -120,7 +122,7 @@ func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) e
 		RequireVMTestAgent: config.RequireVMTestAgent,
 		FixtureManifest:    fixtureManifest,
 		Fixture:            fixture,
-		NodeMetadata:       os.Getenv("KATL_INSTALLED_NODE_METADATA"),
+		NodeMetadata:       first(config.NodeMetadata, os.Getenv("KATL_INSTALLED_NODE_METADATA")),
 	}
 	return writeJSON(result.Artifacts.InstalledRuntime, record)
 }

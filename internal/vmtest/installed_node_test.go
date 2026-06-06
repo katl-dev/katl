@@ -17,6 +17,11 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		t.Fatalf("write disk: %v", err)
 	}
 	esp := espFixture(t)
+	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp)
+	nodeMetadata := filepath.Join(root, "node.json")
+	if err := os.WriteFile(nodeMetadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
+		t.Fatalf("write node metadata: %v", err)
+	}
 	parent, err := NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",
@@ -46,10 +51,12 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 	node, err := StartInstalledRuntimeNode(context.Background(), parent, InstalledRuntimeNodeConfig{
 		Name: "cp-1",
 		Runtime: InstalledRuntimeConfig{
-			Disk:         disk,
-			DiskFormat:   DiskRaw,
-			ESPArtifacts: esp,
-			VM:           vmConfig,
+			Disk:            disk,
+			DiskFormat:      DiskRaw,
+			ESPArtifacts:    esp,
+			FixtureManifest: fixtureManifest,
+			NodeMetadata:    nodeMetadata,
+			VM:              vmConfig,
 		},
 	}, runner)
 	if err != nil {
@@ -81,6 +88,13 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 	}
 	if !strings.Contains(string(entry), "katl.vmtest_agent=1") {
 		t.Fatalf("vmtest agent flag missing from copied loader entry: %s", entry)
+	}
+	input := readInstalledRuntimeInput(t, node.Result.Artifacts.InstalledRuntime)
+	if input.FixtureManifest != fixtureManifest || input.NodeMetadata != nodeMetadata {
+		t.Fatalf("installed runtime input provenance = %#v", input)
+	}
+	if input.Fixture == nil || input.Fixture.NodeName != "node-1" || input.Fixture.SystemRole != "control-plane" {
+		t.Fatalf("fixture metadata = %#v", input.Fixture)
 	}
 	if err := node.Stop(); err != context.Canceled {
 		t.Fatalf("Stop() error = %v, want context.Canceled", err)

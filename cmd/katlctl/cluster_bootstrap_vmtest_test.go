@@ -27,6 +27,10 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	workerDisk := vmtest.RequireEnv(t, "KATL_WORKER_INSTALLED_DISK")
 	cpESP := requireNodeESP(t, "KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS")
 	workerESP := requireNodeESP(t, "KATL_WORKER_INSTALLED_ESP_ARTIFACTS")
+	cpFixture := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_FIXTURE_MANIFEST")
+	workerFixture := vmtest.RequireEnv(t, "KATL_WORKER_FIXTURE_MANIFEST")
+	cpMetadata := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_NODE_METADATA")
+	workerMetadata := vmtest.RequireEnv(t, "KATL_WORKER_NODE_METADATA")
 	cpAddress := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_ADDRESS")
 	workerAddress := vmtest.RequireEnv(t, "KATL_WORKER_ADDRESS")
 	kubernetesVersion := firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1")
@@ -54,10 +58,12 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	cpNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
 		Name: "cp-1",
 		Runtime: vmtest.InstalledRuntimeConfig{
-			Disk:         cpDisk,
-			DiskFormat:   vmtest.DiskFormat(firstString(os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw))),
-			ESPArtifacts: cpESP,
-			VM:           twoNodeVMConfig(options.KVM, 43101),
+			Disk:            cpDisk,
+			DiskFormat:      vmtest.DiskFormat(firstString(os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw))),
+			ESPArtifacts:    cpESP,
+			FixtureManifest: cpFixture,
+			NodeMetadata:    cpMetadata,
+			VM:              twoNodeVMConfig(options.KVM, 43101),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -69,10 +75,12 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	workerNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
 		Name: "worker-1",
 		Runtime: vmtest.InstalledRuntimeConfig{
-			Disk:         workerDisk,
-			DiskFormat:   vmtest.DiskFormat(firstString(os.Getenv("KATL_WORKER_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw))),
-			ESPArtifacts: workerESP,
-			VM:           twoNodeVMConfig(options.KVM, 43102),
+			Disk:            workerDisk,
+			DiskFormat:      vmtest.DiskFormat(firstString(os.Getenv("KATL_WORKER_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw))),
+			ESPArtifacts:    workerESP,
+			FixtureManifest: workerFixture,
+			NodeMetadata:    workerMetadata,
+			VM:              twoNodeVMConfig(options.KVM, 43102),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
