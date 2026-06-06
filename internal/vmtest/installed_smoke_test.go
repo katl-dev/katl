@@ -275,6 +275,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	options.Missing = MissingSkips
 	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
+	effectiveUseInstalledESP := useInstalledESP
 	var runner Runner
 	var installerBoot InstallerBootConfig
 	var runtimeArtifact, runtimeESP, manifestPath string
@@ -286,6 +287,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
 		manifestPath = worldRun.Config.ManifestPath
 		targetDisk = worldRun.Config.TargetDisk
+		effectiveUseInstalledESP = worldRun.Config.UseInstalledESP
 	} else {
 		installerBoot = firstInstallInstallerBoot(t)
 		runtimeArtifact = RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
@@ -297,7 +299,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		runner = NewRunner(options)
 	}
 	var requiredTools []string
-	if useInstalledESP {
+	if effectiveUseInstalledESP {
 		requiredTools = append(requiredTools, "sfdisk", "mcopy")
 	}
 	for _, tool := range requiredTools {
@@ -335,7 +337,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 			ESPArtifacts: runtimeESP,
 			VM:           vm,
 		},
-		UseInstalledESP: useInstalledESP,
+		UseInstalledESP: effectiveUseInstalledESP,
 		ManifestPath:    manifestPath,
 		PreseedManifest: true,
 		TargetDisk:      targetDisk,
@@ -364,6 +366,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	options.Missing = MissingSkips
 	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
+	effectiveUseInstalledESP := useInstalledESP
 	var runner Runner
 	var installerBoot InstallerBootConfig
 	var runtimeArtifact, runtimeESP, manifestPath string
@@ -375,6 +378,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
 		manifestPath = worldRun.Config.ManifestPath
 		targetDisk = worldRun.Config.TargetDisk
+		effectiveUseInstalledESP = worldRun.Config.UseInstalledESP
 	} else {
 		installerBoot = firstInstallInstallerBoot(t)
 		runtimeArtifact = RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
@@ -386,7 +390,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 		runner = NewRunner(options)
 	}
 	var requiredTools []string
-	if useInstalledESP {
+	if effectiveUseInstalledESP {
 		requiredTools = append(requiredTools, "sfdisk", "mcopy")
 	}
 	for _, tool := range requiredTools {
@@ -423,7 +427,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 			ESPArtifacts: runtimeESP,
 			VM:           vm,
 		},
-		UseInstalledESP: useInstalledESP,
+		UseInstalledESP: effectiveUseInstalledESP,
 		ManifestPath:    manifestPath,
 		GuestHandoff:    true,
 		TargetDisk:      targetDisk,
