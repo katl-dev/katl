@@ -343,6 +343,118 @@ func TestVMTestRunExplicitSelectionContinuesWithHostGap(t *testing.T) {
 	}
 }
 
+func TestVMTestRunNspawnSelectionAvoidsVMHostSetup(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, false)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "Nspawn", "-timeout", "2m")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_QEMU="+filepath.Join(tmp, "missing-qemu"),
+		"KATL_VMTEST_QEMU_IMG="+filepath.Join(tmp, "missing-qemu-img"),
+		"KATL_OVMF_CODE="+filepath.Join(tmp, "missing-code.fd"),
+		"KATL_OVMF_VARS="+filepath.Join(tmp, "missing-vars.fd"),
+		"KATL_VMTEST_KVM_DEVICE="+filepath.Join(tmp, "missing-kvm"),
+		"KATL_VMTEST_VSOCK_DEVICE="+filepath.Join(tmp, "missing-vsock"),
+		"KATL_VMTEST_TUN_DEVICE="+filepath.Join(tmp, "missing-tun"),
+		"KATL_QEMU_BRIDGE_CONF="+filepath.Join(tmp, "missing-bridge.conf"),
+		"KATL_VMTEST_RUN_ID=run-nspawn-only",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+	goArgs := readLines(t, goArgsPath)
+	if !reflect.DeepEqual(goArgs, []string{
+		"test",
+		"-count=1",
+		"-exec",
+		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"./internal/vmtest",
+		"-run",
+		"Nspawn",
+		"-timeout",
+		"2m",
+	}) {
+		t.Fatalf("go args = %#v", goArgs)
+	}
+	if ipLog := strings.TrimSpace(readScriptFile(t, host.ipLog)); ipLog != "" {
+		t.Fatalf("nspawn-only run touched bridge networking:\n%s", ipLog)
+	}
+	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+	for _, unexpected := range []string{"qemu", "qemu-img", "ovmf", "kvm", "vsock", "bridge", "tun", "qemu-bridge-helper", "qemu-bridge-acl"} {
+		if contains(caps.Missing, unexpected) {
+			t.Fatalf("nspawn-only missing capabilities include %q: %#v", unexpected, caps.Missing)
+		}
+	}
+	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
+	if err != nil {
+		t.Fatalf("LoadWorld() error = %v", err)
+	}
+	if world.Capabilities["systemd-nspawn"] != WorldStatusPassed {
+		t.Fatalf("systemd-nspawn capability = %q", world.Capabilities["systemd-nspawn"])
+	}
+	if world.Capabilities["qemu"] != WorldStatusDisabled || world.Capabilities["bridge"] != WorldStatusDisabled {
+		t.Fatalf("VM capabilities were probed for nspawn-only run: %#v", world.Capabilities)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "passed" || summary.ExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestVMTestRunNspawnSelectionFailsOnNspawnHostGap(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, false)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "Nspawn")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_NSPAWN_ALLOW_UNPRIVILEGED=0",
+		"KATL_VMTEST_RUN_ID=run-nspawn-host-gap",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("go test ran for nspawn setup failure, stat err = %v", err)
+	}
+	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+	if !contains(caps.Missing, "nspawn-privileges") {
+		t.Fatalf("missing capabilities = %#v", caps.Missing)
+	}
+	if contains(caps.Missing, "qemu") || contains(caps.Missing, "bridge") {
+		t.Fatalf("nspawn host gap included VM capabilities: %#v", caps.Missing)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "setup-failed" || summary.ExitCode != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestVMTestRunFlagOnlySelectionDefaultsPackage(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()

@@ -46,6 +46,7 @@ cap_awk="disabled"
 cap_realpath="disabled"
 cap_systemd_nspawn="disabled"
 cap_kubectl="disabled"
+capability_scope="full"
 missing_capabilities=()
 setup_failures=()
 
@@ -103,7 +104,7 @@ have_command() {
     command -v "$1" >/dev/null 2>&1
 }
 
-probe_capabilities() {
+probe_vm_capabilities() {
     if have_command "$qemu_bin"; then
         cap_qemu="passed"
     else
@@ -134,6 +135,9 @@ probe_capabilities() {
         missing_capabilities+=("vsock")
         cap_vsock="$(missing_status missing)"
     fi
+}
+
+probe_fixture_tool_capabilities() {
     if have_command mformat && have_command mcopy && have_command truncate; then
         cap_mtools="passed"
     else
@@ -170,6 +174,9 @@ probe_capabilities() {
         missing_capabilities+=("kubectl")
         cap_kubectl="$(missing_status missing)"
     fi
+}
+
+probe_nspawn_capabilities() {
     if have_command systemd-nspawn; then
         if [[ "${EUID:-$(id -u)}" == 0 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == 1 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == true ]]; then
             cap_systemd_nspawn="passed"
@@ -181,6 +188,19 @@ probe_capabilities() {
         missing_capabilities+=("systemd-nspawn")
         cap_systemd_nspawn="$(missing_status missing)"
     fi
+}
+
+probe_capabilities() {
+    case "$capability_scope" in
+        nspawn)
+            probe_nspawn_capabilities
+            ;;
+        *)
+            probe_vm_capabilities
+            probe_fixture_tool_capabilities
+            probe_nspawn_capabilities
+            ;;
+    esac
 }
 
 ipv4_to_int() {
@@ -526,6 +546,68 @@ filter_count_args() {
     fi
 }
 
+select_capability_scope() {
+    if is_nspawn_only_selection "$@"; then
+        capability_scope="nspawn"
+    else
+        capability_scope="full"
+    fi
+}
+
+is_nspawn_only_selection() {
+    local has_internal_vmtest_package=0
+    local has_nspawn_selection=0
+    local expect_selection_value=0
+    local expect_ignored_value=0
+    local arg value
+    while [[ $# -gt 0 ]]; do
+        arg="$1"
+        if [[ "$expect_ignored_value" == 1 ]]; then
+            expect_ignored_value=0
+            shift
+            continue
+        fi
+        if [[ "$expect_selection_value" == 1 ]]; then
+            value="$arg"
+            if [[ "$value" == *Nspawn* || "$value" == *nspawn* ]]; then
+                has_nspawn_selection=1
+            fi
+            expect_selection_value=0
+            shift
+            continue
+        fi
+        case "$arg" in
+            -run|-list)
+                expect_selection_value=1
+                ;;
+            -run=*|-list=*)
+                value="${arg#*=}"
+                if [[ "$value" == *Nspawn* || "$value" == *nspawn* ]]; then
+                    has_nspawn_selection=1
+                fi
+                ;;
+            -bench|-skip)
+                expect_ignored_value=1
+                ;;
+            -bench=*|-skip=*)
+                ;;
+            -timeout|-benchtime|-cpu|-parallel|-shuffle|-coverprofile|-covermode|-coverpkg|-outputdir)
+                expect_ignored_value=1
+                ;;
+            -*)
+                ;;
+            ./internal/vmtest|github.com/zariel/katl/internal/vmtest)
+                has_internal_vmtest_package=1
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+        shift
+    done
+    [[ "$has_internal_vmtest_package" == 1 && "$has_nspawn_selection" == 1 ]]
+}
+
 filtered_args=()
 if [[ $# -eq 0 ]]; then
     filtered_args=("./...")
@@ -538,20 +620,25 @@ else
         preflight_required=1
     fi
 fi
+select_capability_scope "${filtered_args[@]}"
 
 need jq
 mkdir -p "$artifact_dir" "$scenario_dir" "$network_dir"
 jq -n '{}' >"$lease_file"
 write_host_capabilities
 trap cleanup_network EXIT
-validate_network
+if [[ "$capability_scope" != "nspawn" ]]; then
+    validate_network
+fi
 if [[ "${#setup_failures[@]}" -gt 0 ]]; then
     printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
     write_summary "setup-failed" 2 "${filtered_args[@]}"
     exit 2
 fi
 probe_capabilities
-setup_network
+if [[ "$capability_scope" != "nspawn" ]]; then
+    setup_network
+fi
 write_host_capabilities
 write_world
 
@@ -562,7 +649,7 @@ if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
         write_summary "$final_status" 0 "${filtered_args[@]}"
         exit 0
     fi
-    if [[ "$preflight_required" == 1 ]]; then
+    if [[ "$preflight_required" == 1 || "$capability_scope" == "nspawn" ]]; then
         final_status="setup-failed"
         printf 'setup failed: missing required host capabilities: %s\n' "${missing_capabilities[*]}" >&2
         write_summary "$final_status" 1 "${filtered_args[@]}"
