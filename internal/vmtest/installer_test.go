@@ -51,6 +51,46 @@ func TestInstallerBoot(t *testing.T) {
 	}
 }
 
+func TestInstallerBootDirectKernel(t *testing.T) {
+	root := t.TempDir()
+	kernel := writeFixture(t, root, "katl-installer.vmlinuz", "kernel")
+	initrd := writeFixture(t, root, "katl-installer.initrd", "initrd")
+	runtime := writeFixture(t, root, "katl-runtime-root.squashfs", "runtime")
+	_, vmConfig := vmFixture(t)
+	vmConfig.Expect = "Katl installer ready"
+	runner := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	})
+	result, err := RunInstallerBoot(context.Background(), runner, Scenario{Name: "installer-boot-direct"}, InstallerBootConfig{
+		InstallerKernel: kernel,
+		InstallerInitrd: initrd,
+		CommandLine:     []string{"console=ttyS0,115200n8"},
+		RuntimeArtifact: runtime,
+		VM:              vmConfig,
+	}, VMRunner{
+		Executor: vmExec{write: "Katl installer ready"},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunInstallerBoot() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	command, err := os.ReadFile(result.Artifacts.QEMUCommand)
+	if err != nil {
+		t.Fatalf("read qemu command: %v", err)
+	}
+	if !strings.Contains(string(command), "-kernel") || !strings.Contains(string(command), kernel) || strings.Contains(string(command), "fat:rw:") {
+		t.Fatalf("qemu command = %q", command)
+	}
+}
+
 func TestInstallerBootFailure(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(Options{
@@ -64,7 +104,7 @@ func TestInstallerBootFailure(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("Status = %q", result.Status)
 	}
-	if !strings.Contains(result.FailureSummary, "installer UKI") {
+	if !strings.Contains(result.FailureSummary, "installer UKI or kernel/initrd") {
 		t.Fatalf("FailureSummary = %q", result.FailureSummary)
 	}
 	loaded := readResult(t, result.Artifacts.Result)

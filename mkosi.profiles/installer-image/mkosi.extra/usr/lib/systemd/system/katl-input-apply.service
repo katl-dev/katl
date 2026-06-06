@@ -1,6 +1,8 @@
 [Unit]
 Description=Apply Katl installer preseed input
 DefaultDependencies=no
+Wants=systemd-udev-trigger.service
+After=systemd-udev-trigger.service
 Before=initrd.target
 
 [Service]

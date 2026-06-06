@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyInput(t *testing.T) {
@@ -85,6 +86,34 @@ func TestApplyInputSkipsMissingSeedDevice(t *testing.T) {
 	assertFile(t, filepath.Join(runDir, "install-input.json"), `{"waitForConfig":true}`)
 	if len(commands.Calls) != 0 {
 		t.Fatalf("commands = %#v, want no seed mount", commands.Calls)
+	}
+}
+
+func TestApplyInputWaitsForSeedDevice(t *testing.T) {
+	root := t.TempDir()
+	device := filepath.Join(root, "seed-device")
+	preseed := filepath.Join(root, "mounted-seed")
+	runDir := filepath.Join(root, "run")
+	writeTestFile(t, filepath.Join(preseed, "install-input.json"), `{"manifestPath":"/run/katl/install-manifest.json"}`)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		writeTestFile(t, device, "")
+	}()
+
+	commands := &NoopCommandRunner{}
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		SeedDevices: []string{device},
+		SeedMount:   preseed,
+		SeedWait:    time.Second,
+		Commands:    commands,
+		RunDir:      runDir,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+	assertFile(t, filepath.Join(runDir, "install-input.json"), `{"manifestPath":"/run/katl/install-manifest.json"}`)
+	if len(commands.Calls) != 1 || commands.Calls[0].Name != "mount" {
+		t.Fatalf("commands = %#v, want mount", commands.Calls)
 	}
 }
 

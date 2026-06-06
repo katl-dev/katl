@@ -207,6 +207,42 @@ func TestVMDiskBoot(t *testing.T) {
 	}
 }
 
+func TestVMDirectKernelBoot(t *testing.T) {
+	result, config := vmFixture(t)
+	kernel := writeFixture(t, t.TempDir(), "installer.vmlinuz", "kernel")
+	initrd := writeFixture(t, t.TempDir(), "installer.initrd", "initrd")
+	config.Boot = VMBoot{
+		Kernel:      kernel,
+		Initrd:      initrd,
+		CommandLine: []string{"console=ttyS0,115200n8", "katl.install.mode=auto"},
+	}
+	config.OVMFCode = ""
+	config.OVMFVars = ""
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+		env:      func(string) string { return "" },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if !hasArg(plan.Args, "-kernel") || !hasArg(plan.Args, kernel) || !hasArg(plan.Args, "-initrd") || !hasArg(plan.Args, initrd) {
+		t.Fatalf("direct kernel args missing: %#v", plan.Args)
+	}
+	if !hasArg(plan.Args, "console=ttyS0,115200n8 katl.install.mode=auto") {
+		t.Fatalf("kernel command line missing: %#v", plan.Args)
+	}
+	for _, arg := range plan.Args {
+		if strings.Contains(arg, "pflash") || strings.Contains(arg, "OVMF") || strings.Contains(arg, "fat:rw:") {
+			t.Fatalf("direct kernel args include firmware boot media: %#v", plan.Args)
+		}
+	}
+	if err := prepareVM(plan, config); err != nil {
+		t.Fatalf("prepareVM() error = %v", err)
+	}
+}
+
 func TestVMEFITreeBoot(t *testing.T) {
 	result, config := vmFixture(t)
 	efiTree := filepath.Join(t.TempDir(), "esp")

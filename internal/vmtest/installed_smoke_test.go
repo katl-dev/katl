@@ -19,7 +19,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	options.Missing = MissingSkips
 	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
-	installerUKI := RequireEnv(t, "KATL_INSTALLER_UKI")
+	installerBoot := firstInstallInstallerBoot(t)
 	runtimeArtifact := RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
 	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
 	if runtimeESP == "" && !useInstalledESP {
@@ -69,7 +69,10 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	}
 	firstResult, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-installed-runtime-fixture"}, FirstInstallConfig{
 		Installer: InstallerBootConfig{
-			InstallerUKI:    installerUKI,
+			InstallerUKI:    installerBoot.InstallerUKI,
+			InstallerKernel: installerBoot.InstallerKernel,
+			InstallerInitrd: installerBoot.InstallerInitrd,
+			CommandLine:     installerBoot.CommandLine,
 			RuntimeArtifact: runtimeArtifact,
 			VM:              vm,
 		},
@@ -189,7 +192,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	options.Missing = MissingSkips
 	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
-	installerUKI := RequireEnv(t, "KATL_INSTALLER_UKI")
+	installerBoot := firstInstallInstallerBoot(t)
 	runtimeArtifact := RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
 	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
 	if runtimeESP == "" && !useInstalledESP {
@@ -225,7 +228,10 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	}
 	result, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-serial-runtime"}, FirstInstallConfig{
 		Installer: InstallerBootConfig{
-			InstallerUKI:    installerUKI,
+			InstallerUKI:    installerBoot.InstallerUKI,
+			InstallerKernel: installerBoot.InstallerKernel,
+			InstallerInitrd: installerBoot.InstallerInitrd,
+			CommandLine:     installerBoot.CommandLine,
 			RuntimeArtifact: runtimeArtifact,
 			VM:              vm,
 		},
@@ -252,6 +258,35 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		t.Fatalf("runtime serial did not record state projection: %s", serial)
 	}
 	_ = targetDiskPath(t, result)
+}
+
+func firstInstallInstallerBoot(t *testing.T) InstallerBootConfig {
+	t.Helper()
+	kernel := strings.TrimSpace(os.Getenv("KATL_INSTALLER_KERNEL"))
+	initrd := strings.TrimSpace(os.Getenv("KATL_INSTALLER_INITRD"))
+	if kernel != "" || initrd != "" {
+		if kernel == "" || initrd == "" {
+			t.Fatal("set both KATL_INSTALLER_KERNEL and KATL_INSTALLER_INITRD")
+		}
+		for name, path := range map[string]string{
+			"KATL_INSTALLER_KERNEL": kernel,
+			"KATL_INSTALLER_INITRD": initrd,
+		} {
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("%s is unavailable: %v", name, err)
+			}
+		}
+		return InstallerBootConfig{
+			InstallerKernel: kernel,
+			InstallerInitrd: initrd,
+			CommandLine: []string{
+				"console=ttyS0,115200n8",
+				"systemd.log_target=console",
+				"loglevel=6",
+			},
+		}
+	}
+	return InstallerBootConfig{InstallerUKI: RequireEnv(t, "KATL_INSTALLER_UKI")}
 }
 
 func createInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, esp, format, stateDir, nodeMetadata string) *exec.Cmd {

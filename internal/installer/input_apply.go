@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type InputApplyRequest struct {
@@ -14,6 +15,7 @@ type InputApplyRequest struct {
 	PreseedDirs []string
 	SeedDevices []string
 	SeedMount   string
+	SeedWait    time.Duration
 	Commands    CommandRunner
 	RunDir      string
 	EtcDir      string
@@ -77,19 +79,9 @@ func mountSeedDevice(ctx context.Context, request InputApplyRequest, stdout io.W
 	if len(devices) == 0 {
 		return nil
 	}
-	var device string
-	for _, candidate := range devices {
-		if candidate == "" {
-			continue
-		}
-		if _, err := os.Stat(candidate); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return fmt.Errorf("stat seed device %s: %w", candidate, err)
-		}
-		device = candidate
-		break
+	device, err := waitSeedDevice(ctx, devices, request.SeedWait)
+	if err != nil {
+		return err
 	}
 	if device == "" {
 		return nil
@@ -110,6 +102,34 @@ func mountSeedDevice(ctx context.Context, request InputApplyRequest, stdout io.W
 	}
 	fmt.Fprintf(stdout, "katl input: mounted seed device %s at %s\n", device, mountPoint)
 	return nil
+}
+
+func waitSeedDevice(ctx context.Context, devices []string, wait time.Duration) (string, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		for _, candidate := range devices {
+			if candidate == "" {
+				continue
+			}
+			if _, err := os.Stat(candidate); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return "", fmt.Errorf("stat seed device %s: %w", candidate, err)
+			}
+			return candidate, nil
+		}
+		if wait <= 0 || !time.Now().Before(deadline) {
+			return "", nil
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func applyDir(dir, runDir, etcDir string, stdout io.Writer) (int, error) {

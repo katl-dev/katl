@@ -248,6 +248,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			PreseedDirs: preseedDirs,
 			SeedDevices: installer.DefaultSeedDevices,
 			SeedMount:   installer.DefaultSeedMount,
+			SeedWait:    2 * time.Second,
 			Commands:    installer.NewExecCommandRunner(),
 			RunDir:      *runDir,
 			EtcDir:      *etcDir,

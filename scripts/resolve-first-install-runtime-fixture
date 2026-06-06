@@ -11,6 +11,8 @@ serial_run_script="$state_dir/run-first-install-target-disk-serial-smoke.sh"
 manifest="$state_dir/fixture.json"
 
 installer_uki="${KATL_INSTALLER_UKI:-}"
+installer_kernel="${KATL_INSTALLER_KERNEL:-}"
+installer_initrd="${KATL_INSTALLER_INITRD:-}"
 runtime_artifact="${KATL_RUNTIME_ARTIFACT:-}"
 runtime_esp="${KATL_RUNTIME_ESP_ARTIFACTS:-${KATL_INSTALLED_ESP_ARTIFACTS:-}}"
 node_metadata="${KATL_RUNTIME_NODE_METADATA:-${KATL_INSTALLED_NODE_METADATA:-}}"
@@ -39,6 +41,8 @@ generates a wrapper for TestFirstInstallTargetDiskFixtureContract.
 
 Options:
   --installer-uki PATH       Installer UKI, or KATL_INSTALLER_UKI
+  --installer-kernel PATH    Installer kernel, or KATL_INSTALLER_KERNEL
+  --installer-initrd PATH    Installer initrd, or KATL_INSTALLER_INITRD
   --runtime-artifact PATH    Runtime root artifact, or KATL_RUNTIME_ARTIFACT
   --runtime-esp DIR          Rendered runtime ESP tree, or KATL_RUNTIME_ESP_ARTIFACTS
   --use-installed-esp        Extract and use the ESP written into the target disk
@@ -96,6 +100,16 @@ while [[ $# -gt 0 ]]; do
         --installer-uki)
             need_value "$1" "${2:-}"
             installer_uki="$2"
+            shift 2
+            ;;
+        --installer-kernel)
+            need_value "$1" "${2:-}"
+            installer_kernel="$2"
+            shift 2
+            ;;
+        --installer-initrd)
+            need_value "$1" "${2:-}"
+            installer_initrd="$2"
             shift 2
             ;;
         --runtime-artifact)
@@ -180,8 +194,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$installer_uki" ]] || fail "--installer-uki is required"
-[[ -f "$installer_uki" ]] || fail "installer UKI not found: $(rel "$installer_uki")"
+if [[ -n "$installer_kernel" || -n "$installer_initrd" ]]; then
+    [[ -n "$installer_kernel" ]] || fail "--installer-kernel is required when --installer-initrd is set"
+    [[ -n "$installer_initrd" ]] || fail "--installer-initrd is required when --installer-kernel is set"
+    [[ -f "$installer_kernel" ]] || fail "installer kernel not found: $(rel "$installer_kernel")"
+    [[ -f "$installer_initrd" ]] || fail "installer initrd not found: $(rel "$installer_initrd")"
+else
+    [[ -n "$installer_uki" ]] || fail "--installer-uki is required unless --installer-kernel and --installer-initrd are set"
+    [[ -f "$installer_uki" ]] || fail "installer UKI not found: $(rel "$installer_uki")"
+fi
 [[ -n "$runtime_artifact" ]] || fail "--runtime-artifact is required"
 [[ -f "$runtime_artifact" ]] || fail "runtime artifact not found: $(rel "$runtime_artifact")"
 case "$use_installed_esp" in
@@ -206,7 +227,15 @@ if [[ -n "$node_metadata" ]]; then
     [[ -f "$node_metadata" ]] || fail "node metadata not found: $(rel "$node_metadata")"
 fi
 
-installer_uki="$(real "$installer_uki")"
+if [[ -n "$installer_uki" ]]; then
+    installer_uki="$(real "$installer_uki")"
+fi
+if [[ -n "$installer_kernel" ]]; then
+    installer_kernel="$(real "$installer_kernel")"
+fi
+if [[ -n "$installer_initrd" ]]; then
+    installer_initrd="$(real "$installer_initrd")"
+fi
 runtime_artifact="$(real "$runtime_artifact")"
 if [[ -n "$runtime_esp" ]]; then
     runtime_esp="$(real "$runtime_esp")"
@@ -267,7 +296,9 @@ validate_sha256 "runtime artifact SHA-256" "$runtime_artifact_sha256"
 validate_sha256 "install manifest SHA-256" "$install_manifest_sha256"
 validate_sha256 "node metadata SHA-256" "$node_metadata_sha256"
 
-installer_uki_sha256="$(verify_sha256 "installer UKI" "$installer_uki" "$installer_uki_sha256")"
+if [[ -n "$installer_uki" ]]; then
+    installer_uki_sha256="$(verify_sha256 "installer UKI" "$installer_uki" "$installer_uki_sha256")"
+fi
 runtime_artifact_sha256="$(verify_sha256 "runtime artifact" "$runtime_artifact" "$runtime_artifact_sha256")"
 install_manifest_sha256="$(verify_sha256 "install manifest" "$install_manifest" "$install_manifest_sha256")"
 if [[ -n "$node_metadata" ]]; then
@@ -326,7 +357,13 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$serial
     printf 'export KATL_VMTEST_RUN=%q\n' "1"
     printf 'export KATL_VMTEST_KEEP=%q\n' "$vmtest_keep"
     printf 'export KATL_VMTEST_STATE_ROOT=%q\n' "$vmtest_state_root"
-    printf 'export KATL_INSTALLER_UKI=%q\n' "$installer_uki"
+    if [[ -n "$installer_uki" ]]; then
+        printf 'export KATL_INSTALLER_UKI=%q\n' "$installer_uki"
+    fi
+    if [[ -n "$installer_kernel" ]]; then
+        printf 'export KATL_INSTALLER_KERNEL=%q\n' "$installer_kernel"
+        printf 'export KATL_INSTALLER_INITRD=%q\n' "$installer_initrd"
+    fi
     printf 'export KATL_RUNTIME_ARTIFACT=%q\n' "$runtime_artifact"
     if [[ -n "$runtime_esp" ]]; then
         printf 'export KATL_RUNTIME_ESP_ARTIFACTS=%q\n' "$runtime_esp"
@@ -352,7 +389,15 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$serial
     printf 'source %q\n' "$env_file"
     printf 'recheck_dir=%q\n' "$state_dir/recheck"
     # shellcheck disable=SC2016
-    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --runtime-artifact "$KATL_RUNTIME_ARTIFACT" --install-manifest "$KATL_INSTALL_MANIFEST" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --runtime-artifact-sha256 "$KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256" --install-manifest-sha256 "$KATL_FIRST_INSTALL_MANIFEST_SHA256" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    printf 'recheck_args=(--runtime-artifact "$KATL_RUNTIME_ARTIFACT" --install-manifest "$KATL_INSTALL_MANIFEST" --runtime-artifact-sha256 "$KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256" --install-manifest-sha256 "$KATL_FIRST_INSTALL_MANIFEST_SHA256" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_INSTALLER_KERNEL:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--installer-kernel "$KATL_INSTALLER_KERNEL" --installer-initrd "$KATL_INSTALLER_INITRD")\n'
+    printf 'else\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256")\n'
+    printf 'fi\n'
     # shellcheck disable=SC2016
     printf 'if [[ "${KATL_FIRST_INSTALL_USE_INSTALLED_ESP:-0}" == "1" ]]; then\n'
     printf '    recheck_args+=(--use-installed-esp)\n'
@@ -398,7 +443,15 @@ chmod +x "$run_script"
     printf 'source %q\n' "$env_file"
     printf 'recheck_dir=%q\n' "$state_dir/recheck-serial"
     # shellcheck disable=SC2016
-    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --runtime-artifact "$KATL_RUNTIME_ARTIFACT" --install-manifest "$KATL_INSTALL_MANIFEST" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --runtime-artifact-sha256 "$KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256" --install-manifest-sha256 "$KATL_FIRST_INSTALL_MANIFEST_SHA256" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    printf 'recheck_args=(--runtime-artifact "$KATL_RUNTIME_ARTIFACT" --install-manifest "$KATL_INSTALL_MANIFEST" --runtime-artifact-sha256 "$KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256" --install-manifest-sha256 "$KATL_FIRST_INSTALL_MANIFEST_SHA256" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_INSTALLER_KERNEL:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--installer-kernel "$KATL_INSTALLER_KERNEL" --installer-initrd "$KATL_INSTALLER_INITRD")\n'
+    printf 'else\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256")\n'
+    printf 'fi\n'
     # shellcheck disable=SC2016
     printf 'if [[ "${KATL_FIRST_INSTALL_USE_INSTALLED_ESP:-0}" == "1" ]]; then\n'
     printf '    recheck_args+=(--use-installed-esp)\n'
@@ -428,6 +481,8 @@ cat >"$manifest" <<EOF
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "FirstInstallRuntimeFixtureResolution",
   "installerUKI": "$(json "$installer_uki")",
+  "installerKernel": "$(json "$installer_kernel")",
+  "installerInitrd": "$(json "$installer_initrd")",
   "installerUKISHA256": "$(json "$installer_uki_sha256")",
   "runtimeArtifact": "$(json "$runtime_artifact")",
   "runtimeArtifactSHA256": "$(json "$runtime_artifact_sha256")",

@@ -18,6 +18,9 @@ import (
 
 type VMBoot struct {
 	UKI           string
+	Kernel        string
+	Initrd        string
+	CommandLine   []string
 	EFITree       string
 	Image         string
 	ImageFormat   DiskFormat
@@ -353,20 +356,32 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		}
 		qemu = found
 	}
-	if config.OVMFCode == "" {
-		config.OVMFCode = probe.env("KATL_OVMF_CODE")
-	}
-	if config.OVMFVars == "" {
-		config.OVMFVars = probe.env("KATL_OVMF_VARS")
-	}
-	if config.OVMFCode == "" || config.OVMFVars == "" {
-		return VMPlan{}, errors.New("OVMF firmware is required: set OVMFCode/OVMFVars or KATL_OVMF_CODE/KATL_OVMF_VARS")
-	}
-	if _, err := probe.stat(config.OVMFCode); err != nil {
-		return VMPlan{}, fmt.Errorf("OVMF code not readable: %w", err)
-	}
-	if _, err := probe.stat(config.OVMFVars); err != nil {
-		return VMPlan{}, fmt.Errorf("OVMF vars not readable: %w", err)
+	directKernel := config.Boot.Kernel != ""
+	if directKernel {
+		if _, err := probe.stat(config.Boot.Kernel); err != nil {
+			return VMPlan{}, fmt.Errorf("VM kernel not readable: %w", err)
+		}
+		if config.Boot.Initrd != "" {
+			if _, err := probe.stat(config.Boot.Initrd); err != nil {
+				return VMPlan{}, fmt.Errorf("VM initrd not readable: %w", err)
+			}
+		}
+	} else {
+		if config.OVMFCode == "" {
+			config.OVMFCode = probe.env("KATL_OVMF_CODE")
+		}
+		if config.OVMFVars == "" {
+			config.OVMFVars = probe.env("KATL_OVMF_VARS")
+		}
+		if config.OVMFCode == "" || config.OVMFVars == "" {
+			return VMPlan{}, errors.New("OVMF firmware is required: set OVMFCode/OVMFVars or KATL_OVMF_CODE/KATL_OVMF_VARS")
+		}
+		if _, err := probe.stat(config.OVMFCode); err != nil {
+			return VMPlan{}, fmt.Errorf("OVMF code not readable: %w", err)
+		}
+		if _, err := probe.stat(config.OVMFVars); err != nil {
+			return VMPlan{}, fmt.Errorf("OVMF vars not readable: %w", err)
+		}
 	}
 	accel, err := qemuAccel(config.KVM, probe)
 	if err != nil {
@@ -388,8 +403,20 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		"-display", "none",
 		"-monitor", "none",
 		"-serial", "file:" + serial,
-		"-drive", "if=pflash,format=raw,readonly=on,file=" + config.OVMFCode,
-		"-drive", "if=pflash,format=raw,file=" + filepath.Join(result.QEMUDir, "OVMF_VARS.fd"),
+	}
+	if directKernel {
+		args = append(args, "-kernel", config.Boot.Kernel)
+		if config.Boot.Initrd != "" {
+			args = append(args, "-initrd", config.Boot.Initrd)
+		}
+		if len(config.Boot.CommandLine) > 0 {
+			args = append(args, "-append", strings.Join(config.Boot.CommandLine, " "))
+		}
+	} else {
+		args = append(args,
+			"-drive", "if=pflash,format=raw,readonly=on,file="+config.OVMFCode,
+			"-drive", "if=pflash,format=raw,file="+filepath.Join(result.QEMUDir, "OVMF_VARS.fd"),
+		)
 	}
 	driveArgs, efiTree, err := vmDrives(result, config)
 	if err != nil {
@@ -415,8 +442,8 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		Accel:          accel,
 		SerialLog:      serial,
 		CommandFile:    result.Artifacts.QEMUCommand,
-		OVMFVars:       filepath.Join(result.QEMUDir, "OVMF_VARS.fd"),
-		OVMFVarsSource: config.OVMFVars,
+		OVMFVars:       firstPath(!directKernel, filepath.Join(result.QEMUDir, "OVMF_VARS.fd")),
+		OVMFVarsSource: firstPath(!directKernel, config.OVMFVars),
 		EFITree:        efiTree,
 		VSock:          vsock,
 	}, nil
@@ -429,8 +456,10 @@ func prepareVM(plan VMPlan, config VMConfig) error {
 	if err := os.MkdirAll(filepath.Dir(plan.CommandFile), 0o755); err != nil {
 		return err
 	}
-	if err := copyFile(plan.OVMFVarsSource, plan.OVMFVars, 0o600); err != nil {
-		return err
+	if plan.OVMFVarsSource != "" {
+		if err := copyFile(plan.OVMFVarsSource, plan.OVMFVars, 0o600); err != nil {
+			return err
+		}
 	}
 	if config.Boot.UKI != "" {
 		bootPath := filepath.Join(plan.EFITree, "EFI", "BOOT", "BOOTX64.EFI")
@@ -481,6 +510,13 @@ func normalizeVM(config VMConfig) VMConfig {
 	if config.Boot.ImageFormat == "" {
 		config.Boot.ImageFormat = DiskRaw
 	}
+	if len(config.Boot.CommandLine) == 0 && config.Boot.Kernel != "" {
+		config.Boot.CommandLine = []string{
+			"console=ttyS0,115200n8",
+			"systemd.log_target=console",
+			"loglevel=6",
+		}
+	}
 	if config.VSock.Enabled && config.VSock.Port == 0 {
 		config.VSock.Port = 10240
 	}
@@ -525,10 +561,20 @@ func vmDrives(result Result, config VMConfig) ([]string, string, error) {
 		index++
 	}
 	efiTree := filepath.Join(result.QEMUDir, "efi")
-	if boot.UKI != "" && boot.EFITree != "" {
-		return nil, "", errors.New("VM boot requires at most one of UKI or EFI tree")
+	bootModes := 0
+	for _, value := range []string{boot.UKI, boot.EFITree, boot.Kernel} {
+		if value != "" {
+			bootModes++
+		}
 	}
-	if boot.UKI != "" {
+	if bootModes > 1 {
+		return nil, "", errors.New("VM boot requires at most one of UKI, EFI tree, or kernel")
+	}
+	if boot.Kernel != "" {
+		if boot.Image != "" {
+			add(imageSpec(boot))
+		}
+	} else if boot.UKI != "" {
 		if config.EFIDiskImage {
 			add("format=raw,file=" + filepath.Join(result.QEMUDir, "efi.img"))
 		} else {
@@ -579,6 +625,13 @@ func imageSpec(boot VMBoot) string {
 		spec += ",snapshot=on"
 	}
 	return spec
+}
+
+func firstPath(ok bool, path string) string {
+	if !ok {
+		return ""
+	}
+	return path
 }
 
 func qemuNetdev(network VMNetworkConfig, forwards []HostForward, probe probe) (string, error) {

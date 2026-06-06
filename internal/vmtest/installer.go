@@ -9,6 +9,9 @@ import (
 
 type InstallerBootConfig struct {
 	InstallerUKI    string
+	InstallerKernel string
+	InstallerInitrd string
+	CommandLine     []string
 	RuntimeArtifact string
 	Expect          string
 	VM              VMConfig
@@ -33,15 +36,35 @@ func BootInstaller(ctx context.Context, result Result, config InstallerBootConfi
 	vm := config.VM
 	vm.Phase = "installer"
 	vm.Expect = first(vm.Expect, config.Expect, "Katl installer ready")
-	vm.Boot = VMBoot{UKI: config.InstallerUKI}
+	if config.InstallerKernel != "" {
+		vm.Boot = VMBoot{
+			Kernel:      config.InstallerKernel,
+			Initrd:      config.InstallerInitrd,
+			CommandLine: config.CommandLine,
+		}
+	} else {
+		vm.Boot = VMBoot{UKI: config.InstallerUKI}
+	}
 	return vmRunner.Run(ctx, result, vm)
 }
 
 func checkInstallerBoot(config InstallerBootConfig) error {
-	if config.InstallerUKI == "" {
-		return errors.New("installer UKI is required")
-	}
-	if _, err := os.Stat(config.InstallerUKI); err != nil {
+	if config.InstallerKernel != "" || config.InstallerInitrd != "" {
+		if config.InstallerKernel == "" {
+			return errors.New("installer kernel is required when installer initrd is set")
+		}
+		if config.InstallerInitrd == "" {
+			return errors.New("installer initrd is required when installer kernel is set")
+		}
+		if _, err := os.Stat(config.InstallerKernel); err != nil {
+			return fmt.Errorf("installer kernel not found: %w", err)
+		}
+		if _, err := os.Stat(config.InstallerInitrd); err != nil {
+			return fmt.Errorf("installer initrd not found: %w", err)
+		}
+	} else if config.InstallerUKI == "" {
+		return errors.New("installer UKI or kernel/initrd is required")
+	} else if _, err := os.Stat(config.InstallerUKI); err != nil {
 		return fmt.Errorf("installer UKI not found: %w", err)
 	}
 	if config.RuntimeArtifact != "" {

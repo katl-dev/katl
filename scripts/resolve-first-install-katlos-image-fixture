@@ -12,6 +12,8 @@ manifest="$state_dir/katlos-image-fixture.json"
 
 artifact_index="${KATL_MKOSI_ARTIFACT_INDEX:-}"
 installer_uki="${KATL_INSTALLER_UKI:-}"
+installer_kernel="${KATL_INSTALLER_KERNEL:-}"
+installer_initrd="${KATL_INSTALLER_INITRD:-}"
 installer_uki_sha256="${KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256:-}"
 katlos_image="${KATL_KATLOS_IMAGE:-}"
 katlos_image_sha256="${KATL_KATLOS_IMAGE_SHA256:-}"
@@ -35,6 +37,8 @@ the installer.
 Options:
   --artifact-index PATH     mkosi artifact index for installer/image discovery
   --installer-uki PATH       Installer UKI, or KATL_INSTALLER_UKI
+  --installer-kernel PATH    Installer kernel, or KATL_INSTALLER_KERNEL
+  --installer-initrd PATH    Installer initrd, or KATL_INSTALLER_INITRD
   --installer-uki-sha256 H   Expected installer UKI SHA-256
   --katlos-image PATH        KatlOS install image, or KATL_KATLOS_IMAGE
   --katlos-image-sha256 H    Expected KatlOS image SHA-256
@@ -120,6 +124,16 @@ while [[ $# -gt 0 ]]; do
             installer_uki="$2"
             shift 2
             ;;
+        --installer-kernel)
+            need_value "$1" "${2:-}"
+            installer_kernel="$2"
+            shift 2
+            ;;
+        --installer-initrd)
+            need_value "$1" "${2:-}"
+            installer_initrd="$2"
+            shift 2
+            ;;
         --installer-uki-sha256)
             need_value "$1" "${2:-}"
             installer_uki_sha256="$2"
@@ -199,9 +213,17 @@ if [[ -n "$artifact_index" ]]; then
     artifact_index="$(real "$artifact_index")"
     [[ -f "$artifact_index" ]] || fail "artifact index not found: $(rel "$artifact_index")"
     index_installer_uki="$("$repo_root/scripts/mkosi-artifacts" path installer-uki "$artifact_index")"
+    index_installer_kernel="$("$repo_root/scripts/mkosi-artifacts" path installer-kernel "$artifact_index")"
+    index_installer_initrd="$("$repo_root/scripts/mkosi-artifacts" path installer-initrd "$artifact_index")"
     index_katlos_image="$("$repo_root/scripts/mkosi-artifacts" path katlos-install-image "$artifact_index")"
     if [[ -z "$installer_uki" ]]; then
         installer_uki="$index_installer_uki"
+    fi
+    if [[ -z "$installer_kernel" ]]; then
+        installer_kernel="$index_installer_kernel"
+    fi
+    if [[ -z "$installer_initrd" ]]; then
+        installer_initrd="$index_installer_initrd"
     fi
     if [[ -z "$katlos_image" ]]; then
         katlos_image="$index_katlos_image"
@@ -210,6 +232,12 @@ fi
 
 [[ -n "$installer_uki" ]] || fail "--installer-uki is required"
 [[ -f "$installer_uki" ]] || fail "installer UKI not found: $(rel "$installer_uki")"
+if [[ -n "$installer_kernel" || -n "$installer_initrd" ]]; then
+    [[ -n "$installer_kernel" ]] || fail "--installer-kernel is required when --installer-initrd is set"
+    [[ -n "$installer_initrd" ]] || fail "--installer-initrd is required when --installer-kernel is set"
+    [[ -f "$installer_kernel" ]] || fail "installer kernel not found: $(rel "$installer_kernel")"
+    [[ -f "$installer_initrd" ]] || fail "installer initrd not found: $(rel "$installer_initrd")"
+fi
 [[ -n "$katlos_image" ]] || fail "--katlos-image is required"
 [[ -f "$katlos_image" ]] || fail "KatlOS image not found: $(rel "$katlos_image")"
 [[ -n "$install_manifest" ]] || fail "--install-manifest is required"
@@ -225,10 +253,24 @@ if [[ -n "$node_metadata" ]]; then
 fi
 
 installer_uki="$(real "$installer_uki")"
+if [[ -n "$installer_kernel" ]]; then
+    installer_kernel="$(real "$installer_kernel")"
+fi
+if [[ -n "$installer_initrd" ]]; then
+    installer_initrd="$(real "$installer_initrd")"
+fi
 katlos_image="$(real "$katlos_image")"
 if [[ -n "${index_installer_uki:-}" ]]; then
     index_installer_uki="$(real "$index_installer_uki")"
     [[ "$installer_uki" == "$index_installer_uki" ]] || fail "artifact index installer-uki resolves to $(rel "$index_installer_uki"), not $(rel "$installer_uki")"
+fi
+if [[ -n "${index_installer_kernel:-}" && -n "$installer_kernel" ]]; then
+    index_installer_kernel="$(real "$index_installer_kernel")"
+    [[ "$installer_kernel" == "$index_installer_kernel" ]] || fail "artifact index installer-kernel resolves to $(rel "$index_installer_kernel"), not $(rel "$installer_kernel")"
+fi
+if [[ -n "${index_installer_initrd:-}" && -n "$installer_initrd" ]]; then
+    index_installer_initrd="$(real "$index_installer_initrd")"
+    [[ "$installer_initrd" == "$index_installer_initrd" ]] || fail "artifact index installer-initrd resolves to $(rel "$index_installer_initrd"), not $(rel "$installer_initrd")"
 fi
 if [[ -n "${index_katlos_image:-}" ]]; then
     index_katlos_image="$(real "$index_katlos_image")"
@@ -317,6 +359,9 @@ resolver_args=(
     --state-dir "$state_dir"
     --env-file "$env_file"
 )
+if [[ -n "$installer_kernel" ]]; then
+    resolver_args+=(--installer-kernel "$installer_kernel" --installer-initrd "$installer_initrd")
+fi
 if [[ -n "$node_metadata" ]]; then
     resolver_args+=(--node-metadata "$node_metadata")
     if [[ -n "$actual_node_metadata_sha256" ]]; then
@@ -336,6 +381,10 @@ published_system_role="$(jq -er '.publishedSystemRole // ""' "$runtime_fixture_m
     fi
     printf 'export KATL_KATLOS_IMAGE=%q\n' "$katlos_image"
     printf 'export KATL_KATLOS_IMAGE_SHA256=%q\n' "$image_sha256"
+    if [[ -n "$installer_kernel" ]]; then
+        printf 'export KATL_INSTALLER_KERNEL=%q\n' "$installer_kernel"
+        printf 'export KATL_INSTALLER_INITRD=%q\n' "$installer_initrd"
+    fi
 } >>"$env_file"
 
 cat >"$manifest" <<EOF
@@ -345,6 +394,8 @@ cat >"$manifest" <<EOF
   "artifactIndex": "$(json "$artifact_index")",
   "installerUKI": "$(json "$installer_uki")",
   "installerUKISHA256": "$(json "$installer_uki_sha256")",
+  "installerKernel": "$(json "$installer_kernel")",
+  "installerInitrd": "$(json "$installer_initrd")",
   "katlosImage": "$(json "$katlos_image")",
   "katlosImageSHA256": "$(json "$image_sha256")",
   "katlosImageSizeBytes": $image_size,
