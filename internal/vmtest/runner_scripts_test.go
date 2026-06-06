@@ -56,7 +56,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.Network.Backend != NetworkBridge || world.Network.LeaseFile != filepath.Join(runDir, "network", "leases.json") {
 		t.Fatalf("world network = %#v", world.Network)
 	}
-	for _, capability := range []string{"qemu", "qemu-img", "ovmf", "kvm", "vsock", "bridge", "mtools"} {
+	for _, capability := range []string{"qemu", "qemu-img", "ovmf", "kvm", "vsock", "bridge", "mtools", "sfdisk"} {
 		if world.Capabilities[capability] != WorldStatusPassed {
 			t.Fatalf("capability %s = %q", capability, world.Capabilities[capability])
 		}
@@ -455,6 +455,7 @@ func writeFakeHostTools(t *testing.T, dir string, bridgeExists bool) fakeHostToo
 	writeExecutable(t, filepath.Join(dir, "mformat"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, filepath.Join(dir, "mcopy"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, filepath.Join(dir, "truncate"), "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, filepath.Join(dir, "sfdisk"), "#!/usr/bin/env bash\nexit 0\n")
 	if err := os.WriteFile(tools.ovmfCode, []byte("code"), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", tools.ovmfCode, err)
 	}
