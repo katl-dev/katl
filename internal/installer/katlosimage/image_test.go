@@ -1,10 +1,13 @@
 package katlosimage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -202,6 +205,94 @@ func TestLocalResolverRejectsBadTopLevelDigest(t *testing.T) {
 	}
 }
 
+func TestRemoteResolverDownloadsAndMountsURL(t *testing.T) {
+	imageBytes := []byte("remote squashfs image")
+	sum := sha256.Sum256(imageBytes)
+	expected := expectedImage()
+	expected.LocalRef = ""
+	expected.URL = "https://artifacts.example.invalid/katlos-install.squashfs"
+	expected.SHA256 = hex.EncodeToString(sum[:])
+	expected.SizeBytes = uint64(len(imageBytes))
+	mounter := &fixtureMountRunner{populate: func(root string) {
+		writeImagePayloadAt(t, root, func(*Index) {})
+	}}
+	client := &fixtureHTTPClient{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(bytes.NewReader(imageBytes)),
+	}}
+
+	payload, err := (RemoteResolver{
+		WorkDir:  filepath.Join(t.TempDir(), "work"),
+		Commands: mounter,
+		Client:   client,
+	}).ResolveKatlosImage(context.Background(), expected)
+	if err != nil {
+		t.Fatalf("ResolveKatlosImage() error = %v", err)
+	}
+
+	if client.requestURL != expected.URL {
+		t.Fatalf("request URL = %q, want %q", client.requestURL, expected.URL)
+	}
+	if len(mounter.calls) != 1 || mounter.calls[0][0] != "mount" {
+		t.Fatalf("mount calls = %#v", mounter.calls)
+	}
+	if payload.Root != mounter.calls[0][4] {
+		t.Fatalf("payload root = %q, mountpoint = %q", payload.Root, mounter.calls[0][4])
+	}
+}
+
+func TestRemoteResolverRejectsBadTopLevelDigest(t *testing.T) {
+	expected := expectedImage()
+	expected.LocalRef = ""
+	expected.URL = "https://artifacts.example.invalid/katlos-install.squashfs"
+	expected.SizeBytes = uint64(len("remote image"))
+
+	_, err := (RemoteResolver{
+		WorkDir:  t.TempDir(),
+		Commands: &fixtureMountRunner{},
+		Client: &fixtureHTTPClient{response: &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader("remote image")),
+		}},
+	}).ResolveKatlosImage(context.Background(), expected)
+	if err == nil || !strings.Contains(err.Error(), "does not match manifest") {
+		t.Fatalf("ResolveKatlosImage() error = %v, want digest mismatch", err)
+	}
+}
+
+func TestResolverSelectsLocalOrRemoteRef(t *testing.T) {
+	mediaRoot := t.TempDir()
+	imageRoot := filepath.Join(mediaRoot, "payloads", "katlos-install.squashfs")
+	writeImagePayloadAt(t, imageRoot, func(*Index) {})
+	if _, err := (Resolver{MediaRoot: mediaRoot}).ResolveKatlosImage(context.Background(), expectedImage()); err != nil {
+		t.Fatalf("local ResolveKatlosImage() error = %v", err)
+	}
+
+	imageBytes := []byte("remote image")
+	sum := sha256.Sum256(imageBytes)
+	expected := expectedImage()
+	expected.LocalRef = ""
+	expected.URL = "https://artifacts.example.invalid/katlos-install.squashfs"
+	expected.SHA256 = hex.EncodeToString(sum[:])
+	expected.SizeBytes = uint64(len(imageBytes))
+	mounter := &fixtureMountRunner{populate: func(root string) {
+		writeImagePayloadAt(t, root, func(*Index) {})
+	}}
+	if _, err := (Resolver{
+		WorkDir:  t.TempDir(),
+		Commands: mounter,
+		Client: &fixtureHTTPClient{response: &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(bytes.NewReader(imageBytes)),
+		}},
+	}).ResolveKatlosImage(context.Background(), expected); err != nil {
+		t.Fatalf("remote ResolveKatlosImage() error = %v", err)
+	}
+}
+
 func writeImagePayload(t *testing.T, edit func(*Index)) (string, Index) {
 	t.Helper()
 	root := t.TempDir()
@@ -351,4 +442,15 @@ func (r *fixtureMountRunner) Run(_ context.Context, name string, args ...string)
 		r.populate(args[3])
 	}
 	return nil
+}
+
+type fixtureHTTPClient struct {
+	response   *http.Response
+	err        error
+	requestURL string
+}
+
+func (c *fixtureHTTPClient) Do(request *http.Request) (*http.Response, error) {
+	c.requestURL = request.URL.String()
+	return c.response, c.err
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -49,6 +50,36 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 }
 
+type HTTPClient interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+type Resolver struct {
+	MediaRoot string
+	WorkDir   string
+	Commands  CommandRunner
+	Client    HTTPClient
+}
+
+func (r Resolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
+	switch {
+	case strings.TrimSpace(expected.LocalRef) != "":
+		return (LocalResolver{
+			MediaRoot: r.MediaRoot,
+			WorkDir:   r.WorkDir,
+			Commands:  r.Commands,
+		}).ResolveKatlosImage(ctx, expected)
+	case strings.TrimSpace(expected.URL) != "":
+		return (RemoteResolver{
+			WorkDir:  r.WorkDir,
+			Commands: r.Commands,
+			Client:   r.Client,
+		}).ResolveKatlosImage(ctx, expected)
+	default:
+		return Payload{}, fmt.Errorf("KatlOS image URL or localRef is required")
+	}
+}
+
 type LocalResolver struct {
 	MediaRoot string
 	WorkDir   string
@@ -83,19 +114,34 @@ func (r LocalResolver) ResolveKatlosImage(ctx context.Context, expected manifest
 	if err := verifyImageFile(imagePath, expected.SHA256); err != nil {
 		return Payload{}, err
 	}
-	if r.Commands == nil {
-		return Payload{}, fmt.Errorf("mount command runner is required")
+	mountPoint, err := mountImageFile(ctx, imagePath, expected.SHA256, r.WorkDir, r.Commands)
+	if err != nil {
+		return Payload{}, err
 	}
-	mountRoot := r.WorkDir
-	if mountRoot == "" {
-		mountRoot = filepath.Join(os.TempDir(), "katlos-image")
+	return ResolveDirectory(ctx, mountPoint, expected)
+}
+
+type RemoteResolver struct {
+	WorkDir  string
+	Commands CommandRunner
+	Client   HTTPClient
+}
+
+func (r RemoteResolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
+	if strings.TrimSpace(expected.URL) == "" {
+		return Payload{}, fmt.Errorf("KatlOS image URL is required for remote resolver")
 	}
-	mountPoint := filepath.Join(mountRoot, expected.SHA256)
-	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
-		return Payload{}, fmt.Errorf("create KatlOS image mountpoint: %w", err)
+	workDir := r.WorkDir
+	if workDir == "" {
+		workDir = filepath.Join(os.TempDir(), "katlos-image")
 	}
-	if err := r.Commands.Run(ctx, "mount", "-o", "ro,loop", imagePath, mountPoint); err != nil {
-		return Payload{}, fmt.Errorf("mount KatlOS image: %w", err)
+	imagePath, err := downloadImage(ctx, expected, workDir, r.Client)
+	if err != nil {
+		return Payload{}, err
+	}
+	mountPoint, err := mountImageFile(ctx, imagePath, expected.SHA256, workDir, r.Commands)
+	if err != nil {
+		return Payload{}, err
 	}
 	return ResolveDirectory(ctx, mountPoint, expected)
 }
@@ -214,6 +260,76 @@ func verifyImageFile(imagePath string, expectedSHA256 string) error {
 		return fmt.Errorf("KatlOS image digest %s does not match manifest %s", got, expectedSHA256)
 	}
 	return nil
+}
+
+func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir string, client HTTPClient) (string, error) {
+	if err := validateSHA256(expected.SHA256); err != nil {
+		return "", fmt.Errorf("KatlOS image SHA-256 is invalid: %w", err)
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, expected.URL, nil)
+	if err != nil {
+		return "", fmt.Errorf("create KatlOS image request: %w", err)
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch KatlOS image: %w", err)
+	}
+	if response == nil {
+		return "", fmt.Errorf("fetch KatlOS image: empty response")
+	}
+	if response.Body == nil {
+		return "", fmt.Errorf("fetch KatlOS image: empty response body")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch KatlOS image: status %s", response.Status)
+	}
+	downloadDir := filepath.Join(workDir, "downloads")
+	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+		return "", fmt.Errorf("create KatlOS image download dir: %w", err)
+	}
+	imagePath := filepath.Join(downloadDir, expected.SHA256+".squashfs")
+	file, err := os.OpenFile(imagePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create KatlOS image download: %w", err)
+	}
+	hash := sha256.New()
+	written, copyErr := io.Copy(file, io.TeeReader(response.Body, hash))
+	closeErr := file.Close()
+	if copyErr != nil {
+		return "", fmt.Errorf("download KatlOS image: %w", copyErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("close KatlOS image download: %w", closeErr)
+	}
+	if expected.SizeBytes > 0 && uint64(written) != expected.SizeBytes {
+		return "", fmt.Errorf("KatlOS image size %d does not match manifest %d", written, expected.SizeBytes)
+	}
+	got := hex.EncodeToString(hash.Sum(nil))
+	if got != expected.SHA256 {
+		return "", fmt.Errorf("KatlOS image digest %s does not match manifest %s", got, expected.SHA256)
+	}
+	return imagePath, nil
+}
+
+func mountImageFile(ctx context.Context, imagePath string, digest string, workDir string, commands CommandRunner) (string, error) {
+	if commands == nil {
+		return "", fmt.Errorf("mount command runner is required")
+	}
+	if workDir == "" {
+		workDir = filepath.Join(os.TempDir(), "katlos-image")
+	}
+	mountPoint := filepath.Join(workDir, "mounts", digest)
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		return "", fmt.Errorf("create KatlOS image mountpoint: %w", err)
+	}
+	if err := commands.Run(ctx, "mount", "-o", "ro,loop", imagePath, mountPoint); err != nil {
+		return "", fmt.Errorf("mount KatlOS image: %w", err)
+	}
+	return mountPoint, nil
 }
 
 func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.FirstInstallRequest, error) {
