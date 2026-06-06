@@ -200,9 +200,11 @@ runtime disk.
 After the generated first-install wrapper passes, it publishes the packaged
 installed runtime under `<state-dir>/published-installed-runtime/`. Source that
 directory's `vmtest.env` to run the direct installed-runtime smokes, or use its
-`installed-runtime-fixture.json`, `installed-runtime.qcow2`, `esp/`, and
-`node.json` paths as inputs to the two-node and three-control-plane fixture
-resolvers.
+`published-first-install-runtime-fixture.json` manifest as an input to the
+two-node and three-control-plane fixture resolvers. The published manifest keeps
+the installed disk, disk format, ESP tree, fixture manifest, and optional
+`node.json` path together so later VM smokes do not need those paths copied out
+by hand.
 
 ## Two-Node Kubeadm VM Fixtures
 
@@ -211,8 +213,22 @@ disks, rendered per-node ESP artifact trees, per-node `/etc/katl/node.json`
 metadata files, per-node fixture manifests that bind those artifacts by checksum,
 and bridge-reachable addresses for the guests. The control-plane disk must be
 installed from `cp-1` materials, and the worker disk must be installed from
-`worker-1` materials. Resolve those local inputs into a sourceable environment
-with:
+`worker-1` materials.
+
+If each node came from a published first-install fixture directory, resolve the
+two-node inputs with:
+
+```sh
+scripts/resolve-two-node-kubeadm-fixtures \
+  --control-plane-published-dir build/first-install-cp-1/published-installed-runtime \
+  --worker-published-dir build/first-install-worker-1/published-installed-runtime \
+  --control-plane-address 10.88.0.11 \
+  --worker-address 10.88.0.12 \
+  --bridge katlbr0
+```
+
+To resolve loose local inputs instead, pass the disk, ESP, metadata, and fixture
+manifest paths directly:
 
 ```sh
 scripts/resolve-two-node-kubeadm-fixtures \
@@ -264,6 +280,20 @@ serially, verify the resulting node objects, verify stacked-etcd health and
 membership, and create a restricted etcd snapshot artifact.
 
 Resolve those local inputs into a sourceable environment with:
+
+```sh
+scripts/resolve-three-control-plane-kubeadm-fixtures \
+  --cp1-published-dir build/first-install-cp-1/published-installed-runtime \
+  --cp2-published-dir build/first-install-cp-2/published-installed-runtime \
+  --cp3-published-dir build/first-install-cp-3/published-installed-runtime \
+  --cp1-address 10.88.0.11 \
+  --cp2-address 10.88.0.12 \
+  --cp3-address 10.88.0.13 \
+  --bridge katlbr0
+```
+
+To resolve loose local inputs instead, pass each node's disk, ESP, metadata, and
+fixture manifest paths directly:
 
 ```sh
 scripts/resolve-three-control-plane-kubeadm-fixtures \
@@ -334,15 +364,16 @@ virt-host-validate qemu
 virsh -c qemu:///system list --all
 ```
 
-Check QEMU can discover UEFI firmware:
+Check UEFI firmware configuration for direct QEMU runs:
 
 ```sh
-ls /run/current-system/sw/share/qemu/firmware
-ls /run/current-system/sw/share/qemu/edk2-x86_64-code.fd
+test -n "${KATL_OVMF_CODE:-}" && test -r "$KATL_OVMF_CODE"
+test -n "${KATL_OVMF_VARS:-}" && test -r "$KATL_OVMF_VARS"
 ```
 
-The exact firmware path is host-specific. On some distributions the equivalent
-files live under `/usr/share/OVMF` or `/usr/share/qemu`.
+If those variables are unset, `scripts/katl-vm` tries common distribution
+firmware locations. Set `KATL_OVMF_CODE` and `KATL_OVMF_VARS` explicitly when
+the host keeps OVMF/edk2 firmware somewhere else.
 
 ## Common Issues
 
