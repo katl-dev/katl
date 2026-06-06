@@ -44,12 +44,20 @@ func EnsurePublishedFirstInstallRuntimeFixtures(ctx context.Context, world World
 	if produce == nil {
 		produce = ProduceFirstInstallRuntimeFixture
 	}
+	var errs []error
 	for _, spec := range specs {
 		if err := ensurePublishedFirstInstallRuntimeFixture(ctx, world, repo, spec, options, produce); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("%s: %w", first(strings.TrimSpace(spec.Name), FirstInstallRuntimeFixtureScenarioName(spec)), err))
 		}
 	}
-	return nil
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	default:
+		return errors.Join(errs...)
+	}
 }
 
 func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World, repo string, spec NodeSpec, options FirstInstallRuntimeFixtureOptions, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) error {

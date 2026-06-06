@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -178,6 +179,35 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesWritesSetupFailureWhenProduce
 	readJSONForTest(t, resultPath, &result)
 	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "first install generator failed") {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestEnsurePublishedFirstInstallRuntimeFixturesWritesSetupFailureForEachFailedSpec(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	specs := []NodeSpec{
+		{Name: "cp-1", Role: ControlPlane},
+		{Name: "worker-1", Role: Worker},
+	}
+
+	err := EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, specs, FirstInstallRuntimeFixtureOptions{
+		Input: input,
+		KVM:   KVMOff,
+		Produce: func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+			return ProducedInstalledRuntimeFixture{}, fmt.Errorf("%s fixture generator failed", contract.Node.Name)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cp-1 fixture generator failed") || !strings.Contains(err.Error(), "worker-1 fixture generator failed") {
+		t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures() error = %v, want both generator failures", err)
+	}
+	for _, spec := range specs {
+		var result scenarioResult
+		resultPath := filepath.Join(world.ScenarioDir, clean(FirstInstallRuntimeFixtureScenarioName(spec)), "result.json")
+		readJSONForTest(t, resultPath, &result)
+		if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, spec.Name+" fixture generator failed") {
+			t.Fatalf("%s result = %#v", spec.Name, result)
+		}
 	}
 }
 
