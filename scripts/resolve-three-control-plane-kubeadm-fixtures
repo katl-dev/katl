@@ -297,6 +297,23 @@ published_path() {
     fi
 }
 
+check_published_digest() {
+    local dir="$1"
+    local label="$2"
+    local field="$3"
+    local fixture_query="$4"
+    local published_manifest="$dir/published-first-install-runtime-fixture.json"
+    local fixture_manifest got want
+    if ! jq -e --arg field "$field" 'has($field)' "$published_manifest" >/dev/null; then
+        return 0
+    fi
+    fixture_manifest="$(published_path "$dir" '.fixtureManifest // .sourceFixtureManifest')"
+    [[ -f "$fixture_manifest" ]] || fail "$label fixture manifest not found: $(rel "$fixture_manifest")"
+    got="$(jq -er --arg field "$field" '.[$field]' "$published_manifest")"
+    want="$(jq -er "$fixture_query" "$fixture_manifest")"
+    [[ "$got" == "$want" ]] || fail "$label published $field does not match packaged fixture manifest"
+}
+
 load_published_fixture() {
     local label="$1"
     local dir="$2"
@@ -311,9 +328,15 @@ load_published_fixture() {
         (.disk | type == "string") and
         (.diskFormat | type == "string") and
         (.espArtifacts | type == "string") and
-        (((.fixtureManifest // .sourceFixtureManifest) | type) == "string")
+        (((.fixtureManifest // .sourceFixtureManifest) | type) == "string") and
+        ((.diskSHA256 // "") | type == "string") and
+        ((.espArtifactsTreeSHA256 // "") | type == "string") and
+        ((.nodeMetadataSHA256 // "") | type == "string")
         ' "$dir/published-first-install-runtime-fixture.json" >/dev/null ||
         fail "$label published fixture manifest is invalid"
+    check_published_digest "$dir" "$label" "diskSHA256" '.disk.sha256'
+    check_published_digest "$dir" "$label" "espArtifactsTreeSHA256" '.espArtifacts.treeSHA256'
+    check_published_digest "$dir" "$label" "nodeMetadataSHA256" '.nodeMetadata.sha256'
     case "$label" in
         cp-1)
             cp1_disk="${cp1_disk:-$(published_path "$dir" '.disk')}"
