@@ -438,24 +438,7 @@ func collectTwoNodeDiagnostics(transcriptDir string, nodes ...vmtest.RunningInst
 			continue
 		}
 		guest := vmtest.NewGuestControl(node.Result, client)
-		report := guest.CollectDiagnostics(diagCtx, vmtest.GuestDiagnostics{
-			Timeout: 20 * time.Second,
-			Commands: []vmtest.GuestCommandRequest{
-				{Name: "kubeadm-ready", Argv: []string{"systemctl", "status", "katl-kubeadm-ready.target"}},
-				{Name: "containerd", Argv: []string{"systemctl", "status", "containerd.service"}},
-				{Name: "kubelet", Argv: []string{"systemctl", "status", "kubelet.service"}},
-				{Name: "crictl-ps", Argv: []string{"crictl", "ps", "-a"}},
-			},
-			Files: []vmtest.GuestFileRequest{
-				{Name: "node-metadata", Path: "/etc/katl/node.json"},
-				{Name: "kubeadm-config", Path: "/etc/katl/kubeadm/" + kubeadmRefForNode(node.Name) + "/config.yaml"},
-				{Name: "admin-kubeconfig", Path: "/etc/kubernetes/admin.conf"},
-			},
-			Journals: []vmtest.GuestJournalRequest{{
-				Name:  "kubelet-journal",
-				Units: []string{"kubelet.service", "containerd.service"},
-			}},
-		})
+		report := guest.CollectDiagnostics(diagCtx, twoNodeBootstrapDiagnostics(node.Name))
 		if len(report.Errors) > 0 {
 			summary.DiagnosticErrors = filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics-errors.json")
 			summary.CollectionErrors = append(summary.CollectionErrors, report.Errors...)
@@ -464,6 +447,39 @@ func collectTwoNodeDiagnostics(transcriptDir string, nodes ...vmtest.RunningInst
 		_ = writeTwoNodeDiagnosticJSON(filepath.Join(node.Result.Artifacts.GuestDir, "diagnostics-summary.json"), summary)
 		_ = client.Close()
 	}
+}
+
+func twoNodeBootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
+	plan := vmtest.GuestDiagnostics{
+		Timeout: 20 * time.Second,
+		Commands: []vmtest.GuestCommandRequest{
+			{Name: "kubeadm-ready", Argv: []string{"systemctl", "status", "katl-kubeadm-ready.target"}},
+			{Name: "containerd", Argv: []string{"systemctl", "status", "containerd.service"}},
+			{Name: "kubelet", Argv: []string{"systemctl", "status", "kubelet.service"}},
+			{Name: "crictl-ps", Argv: []string{"crictl", "ps", "-a"}},
+			{Name: "etc-kubernetes-mount", Argv: []string{"findmnt", "--target", "/etc/kubernetes", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS"}},
+			{Name: "kubeadm-version", Argv: []string{"kubeadm", "version", "-o", "short"}},
+		},
+		Files: []vmtest.GuestFileRequest{
+			{Name: "node-metadata", Path: "/etc/katl/node.json"},
+			{Name: "kubeadm-config", Path: "/etc/katl/kubeadm/" + kubeadmRefForNode(node) + "/config.yaml"},
+			{Name: "kubelet-kubeconfig", Path: "/etc/kubernetes/kubelet.conf"},
+		},
+		Journals: []vmtest.GuestJournalRequest{{
+			Name:  "runtime-handoff",
+			Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "containerd.service", "kubelet.service"},
+		}},
+	}
+	if node == "cp-1" {
+		plan.Files = append(plan.Files,
+			vmtest.GuestFileRequest{Name: "admin-kubeconfig", Path: "/etc/kubernetes/admin.conf"},
+			vmtest.GuestFileRequest{Name: "kube-apiserver-manifest", Path: "/etc/kubernetes/manifests/kube-apiserver.yaml"},
+			vmtest.GuestFileRequest{Name: "kube-controller-manager-manifest", Path: "/etc/kubernetes/manifests/kube-controller-manager.yaml"},
+			vmtest.GuestFileRequest{Name: "kube-scheduler-manifest", Path: "/etc/kubernetes/manifests/kube-scheduler.yaml"},
+			vmtest.GuestFileRequest{Name: "etcd-manifest", Path: "/etc/kubernetes/manifests/etcd.yaml"},
+		)
+	}
+	return plan
 }
 
 type twoNodeDiagnosticSummary struct {
@@ -613,6 +629,65 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	if manifest.FixtureInputs["cp-1"].KatlOSFixtureManifest != "/tmp/cp-katlos.json" || manifest.FixtureInputs["worker-1"].KatlOSFixtureManifest != "/tmp/worker-katlos.json" {
 		t.Fatalf("artifact manifest KatlOS fixture inputs = %#v", manifest.FixtureInputs)
 	}
+}
+
+func TestTwoNodeBootstrapDiagnosticsAreNodeAware(t *testing.T) {
+	cp := twoNodeBootstrapDiagnostics("cp-1")
+	if !diagnosticCommand(cp, "etc-kubernetes-mount") || !diagnosticCommand(cp, "kubeadm-version") {
+		t.Fatalf("control-plane diagnostics commands = %#v", cp.Commands)
+	}
+	if !diagnosticFile(cp, "admin-kubeconfig", "/etc/kubernetes/admin.conf") {
+		t.Fatalf("control-plane diagnostics files = %#v, want admin kubeconfig", cp.Files)
+	}
+	if !diagnosticFile(cp, "kube-apiserver-manifest", "/etc/kubernetes/manifests/kube-apiserver.yaml") || !diagnosticFile(cp, "etcd-manifest", "/etc/kubernetes/manifests/etcd.yaml") {
+		t.Fatalf("control-plane diagnostics files = %#v, want static pod manifests", cp.Files)
+	}
+	if len(cp.Journals) != 1 || cp.Journals[0].Name != "runtime-handoff" || !diagnosticJournalUnit(cp, "runtime-handoff", "katl-runtime-handoff-status.service") {
+		t.Fatalf("control-plane diagnostics journals = %#v", cp.Journals)
+	}
+
+	worker := twoNodeBootstrapDiagnostics("worker-1")
+	if !diagnosticFile(worker, "kubeadm-config", "/etc/katl/kubeadm/worker/config.yaml") {
+		t.Fatalf("worker diagnostics files = %#v, want worker kubeadm config", worker.Files)
+	}
+	if diagnosticFile(worker, "admin-kubeconfig", "/etc/kubernetes/admin.conf") {
+		t.Fatalf("worker diagnostics files = %#v, must not read control-plane admin kubeconfig", worker.Files)
+	}
+	if diagnosticFile(worker, "kube-apiserver-manifest", "/etc/kubernetes/manifests/kube-apiserver.yaml") {
+		t.Fatalf("worker diagnostics files = %#v, must not expect control-plane static pods", worker.Files)
+	}
+}
+
+func diagnosticCommand(plan vmtest.GuestDiagnostics, name string) bool {
+	for _, command := range plan.Commands {
+		if command.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func diagnosticFile(plan vmtest.GuestDiagnostics, name, path string) bool {
+	for _, file := range plan.Files {
+		if file.Name == name && file.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func diagnosticJournalUnit(plan vmtest.GuestDiagnostics, name, unit string) bool {
+	for _, journal := range plan.Journals {
+		if journal.Name != name {
+			continue
+		}
+		for _, got := range journal.Units {
+			if got == unit {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestVerifyTwoNodeBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
