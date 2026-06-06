@@ -100,6 +100,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	}
 	if err := writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
 		NodeRunDirs:       nodeRunDirs(nodes),
+		FixtureInputs:     threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata),
 		PublishedFixtures: threeControlPlanePublishedFixtureDirs(),
 		Inventory:         inventoryPath,
 		Kubeconfig:        kubeconfigPath,
@@ -208,16 +209,17 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 }
 
 type threeControlPlaneArtifactManifest struct {
-	NodeRunDirs       map[string]string `json:"nodeRunDirs"`
-	PublishedFixtures map[string]string `json:"publishedFixtures,omitempty"`
-	Inventory         string            `json:"inventory"`
-	Kubeconfig        string            `json:"kubeconfig"`
-	BootstrapStdout   string            `json:"bootstrapStdout"`
-	BootstrapStderr   string            `json:"bootstrapStderr"`
-	KubectlOutput     string            `json:"kubectlOutput"`
-	EtcdReport        string            `json:"etcdReport"`
-	Transcripts       map[string]string `json:"transcripts"`
-	EtcdTranscripts   map[string]string `json:"etcdTranscripts"`
+	NodeRunDirs       map[string]string           `json:"nodeRunDirs"`
+	FixtureInputs     map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
+	PublishedFixtures map[string]string           `json:"publishedFixtures,omitempty"`
+	Inventory         string                      `json:"inventory"`
+	Kubeconfig        string                      `json:"kubeconfig"`
+	BootstrapStdout   string                      `json:"bootstrapStdout"`
+	BootstrapStderr   string                      `json:"bootstrapStderr"`
+	KubectlOutput     string                      `json:"kubectlOutput"`
+	EtcdReport        string                      `json:"etcdReport"`
+	Transcripts       map[string]string           `json:"transcripts"`
+	EtcdTranscripts   map[string]string           `json:"etcdTranscripts"`
 }
 
 func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPlaneArtifactManifest) error {
@@ -237,6 +239,14 @@ func threeControlPlanePublishedFixtureDirs() map[string]string {
 		"cp-2": os.Getenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR"),
 		"cp-3": os.Getenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR"),
 	})
+}
+
+func threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata string) map[string]nodeFixtureInput {
+	return map[string]nodeFixtureInput{
+		"cp-1": fixtureInput(cp1Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT"), os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp1ESP, cp1Fixture, cp1Metadata, firstString(os.Getenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR"), os.Getenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR"))),
+		"cp-2": fixtureInput(cp2Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp2ESP, cp2Fixture, cp2Metadata, os.Getenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR")),
+		"cp-3": fixtureInput(cp3Disk, firstString(os.Getenv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)), cp3ESP, cp3Fixture, cp3Metadata, os.Getenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR")),
+	}
 }
 
 func assertThreeControlPlaneBootstrapPhases(t *testing.T, output string) {
@@ -555,13 +565,19 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	t.Setenv("KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR", "/tmp/cp-1")
 	t.Setenv("KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR", "/tmp/cp-2")
 	t.Setenv("KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR", "/tmp/cp-3")
+	t.Setenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT", "qcow2")
 	got := threeControlPlanePublishedFixtureDirs()
 	if got["cp-1"] != "/tmp/cp-1" || got["cp-2"] != "/tmp/cp-2" || got["cp-3"] != "/tmp/cp-3" {
 		t.Fatalf("published fixtures = %#v", got)
 	}
+	inputs := threeControlPlaneFixtureInputs("cp1.raw", "cp2.qcow2", "cp3.raw", "cp1-esp", "cp2-esp", "cp3-esp", "cp1-fixture.json", "cp2-fixture.json", "cp3-fixture.json", "cp1-node.json", "cp2-node.json", "cp3-node.json")
+	if inputs["cp-2"].DiskFormat != "qcow2" || inputs["cp-3"].DiskFormat != string(vmtest.DiskRaw) {
+		t.Fatalf("fixture input formats = %#v", inputs)
+	}
 	path := filepath.Join(t.TempDir(), "three-control-plane-artifacts.json")
 	if err := writeThreeControlPlaneArtifactManifest(path, threeControlPlaneArtifactManifest{
 		NodeRunDirs:       map[string]string{"cp-1": "/tmp/cp-1-run"},
+		FixtureInputs:     inputs,
 		PublishedFixtures: got,
 	}); err != nil {
 		t.Fatalf("writeThreeControlPlaneArtifactManifest() error = %v", err)
@@ -576,5 +592,8 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.PublishedFixtures["cp-1"] != "/tmp/cp-1" || manifest.PublishedFixtures["cp-2"] != "/tmp/cp-2" || manifest.PublishedFixtures["cp-3"] != "/tmp/cp-3" {
 		t.Fatalf("artifact manifest published fixtures = %#v", manifest.PublishedFixtures)
+	}
+	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp1-fixture.json" || manifest.FixtureInputs["cp-3"].PublishedFixtureDir != "/tmp/cp-3" {
+		t.Fatalf("artifact manifest fixture inputs = %#v", manifest.FixtureInputs)
 	}
 }
