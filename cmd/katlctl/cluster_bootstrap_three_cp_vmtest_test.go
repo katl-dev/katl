@@ -39,6 +39,25 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	})
 	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
 	etcdTranscriptDir := filepath.Join(result.RunDir, "etcd-transcripts")
+	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
+	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
+	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
+	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
+	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
+	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
+	etcdReportPath := filepath.Join(result.RunDir, "etcd-report.json")
+	bootstrapFixture := bootstrapFixtureInputsFromEnv()
+	plannedNodes := make([]vmtest.RunningInstalledRuntimeNode, 0, 3)
+	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
+		nodeResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plannedNodes = append(plannedNodes, vmtest.RunningInstalledRuntimeNode{Name: name, Result: nodeResult})
+	}
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, transcriptDir, etcdTranscriptDir, plannedNodes, bootstrapFixture); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 
@@ -66,39 +85,10 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	defer stopNode(t, cp3Node)
 
 	nodes := []vmtest.RunningInstalledRuntimeNode{cp1Node, cp2Node, cp3Node}
-	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
-	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
-	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
-	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
-	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
-	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
-	etcdReportPath := filepath.Join(result.RunDir, "etcd-report.json")
-	bootstrapFixture := bootstrapFixtureInputsFromEnv()
 	if err := writeThreeControlPlaneInventory(inventoryPath, inputs.KubernetesVersion, nodes); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
-		NodeRunDirs:            nodeRunDirs(nodes),
-		NodeResults:            nodeResultPaths(nodes),
-		QEMUCommands:           qemuCommandPaths(nodes),
-		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
-		VSockTranscripts:       vsockTranscriptPaths(nodes),
-		FixtureInputs:          threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP2Disk, inputs.CP3Disk, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
-		PublishedFixtures:      threeControlPlanePublishedFixtureDirs(),
-		Inventory:              inventoryPath,
-		Kubeconfig:             kubeconfigPath,
-		KubeconfigMetadata:     kubeconfigMetadataPath,
-		BootstrapStdout:        stdoutPath,
-		BootstrapStderr:        stderrPath,
-		BootstrapFixture:       bootstrapFixture.manifestValue(),
-		KubectlOutput:          kubectlOut,
-		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
-		EtcdReport:             etcdReportPath,
-		Transcripts:            transcriptPaths(transcriptDir, nodes),
-		EtcdTranscripts:        transcriptPaths(etcdTranscriptDir, nodes),
-		SerialLogs:             serialLogPaths(nodes),
-		Diagnostics:            diagnosticSummaryPaths(nodes),
-	}); err != nil {
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, transcriptDir, etcdTranscriptDir, nodes, bootstrapFixture); err != nil {
 		t.Fatal(err)
 	}
 
@@ -285,6 +275,31 @@ type threeControlPlaneArtifactManifest struct {
 	EtcdTranscripts        map[string]string           `json:"etcdTranscripts"`
 	SerialLogs             map[string]string           `json:"serialLogs,omitempty"`
 	Diagnostics            map[string]string           `json:"diagnostics,omitempty"`
+}
+
+func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs threeControlPlaneSmokeInputs, transcriptDir, etcdTranscriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
+	return writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
+		NodeRunDirs:            nodeRunDirs(nodes),
+		NodeResults:            nodeResultPaths(nodes),
+		QEMUCommands:           qemuCommandPaths(nodes),
+		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
+		VSockTranscripts:       vsockTranscriptPaths(nodes),
+		FixtureInputs:          threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP2Disk, inputs.CP3Disk, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
+		PublishedFixtures:      threeControlPlanePublishedFixtureDirs(),
+		Inventory:              filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
+		Kubeconfig:             filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
+		KubeconfigMetadata:     filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
+		BootstrapStdout:        filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
+		BootstrapStderr:        filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
+		BootstrapFixture:       bootstrapFixture.manifestValue(),
+		KubectlOutput:          filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
+		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
+		EtcdReport:             filepath.Join(result.RunDir, "etcd-report.json"),
+		Transcripts:            transcriptPaths(transcriptDir, nodes),
+		EtcdTranscripts:        transcriptPaths(etcdTranscriptDir, nodes),
+		SerialLogs:             serialLogPaths(nodes),
+		Diagnostics:            diagnosticSummaryPaths(nodes),
+	})
 }
 
 func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPlaneArtifactManifest) error {
@@ -748,6 +763,57 @@ func TestThreeControlPlaneSmokeInputsFromEnv(t *testing.T) {
 	}
 	if inputs.CP1DiskFormat != "qcow2" || inputs.CP2DiskFormat != "raw" || inputs.CP3DiskFormat != string(vmtest.DiskRaw) || inputs.KubernetesVersion != "v1.test.1" {
 		t.Fatalf("input versions and formats = %#v", inputs)
+	}
+}
+
+func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
+	result, err := vmtest.NewRunner(vmtest.Options{
+		StateRoot: t.TempDir(),
+		RunID:     "run-1",
+	}).Plan(vmtest.Scenario{Name: "three-cp"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	nodes := make([]vmtest.RunningInstalledRuntimeNode, 0, 3)
+	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
+		nodeResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, name)
+		if err != nil {
+			t.Fatalf("plan %s: %v", name, err)
+		}
+		nodes = append(nodes, vmtest.RunningInstalledRuntimeNode{Name: name, Result: nodeResult})
+	}
+	if err := writeThreeControlPlaneSmokeArtifactManifest(result, threeControlPlaneSmokeInputs{
+		CP1Disk:     "cp1.raw",
+		CP1ESP:      "esp",
+		CP1Fixture:  "cp1-fixture.json",
+		CP1Metadata: "cp1-node.json",
+		CP2Disk:     "cp2.raw",
+		CP2ESP:      "esp",
+		CP2Fixture:  "cp2-fixture.json",
+		CP2Metadata: "cp2-node.json",
+		CP3Disk:     "cp3.raw",
+		CP3ESP:      "esp",
+		CP3Fixture:  "cp3-fixture.json",
+		CP3Metadata: "cp3-node.json",
+	}, filepath.Join(result.RunDir, "agent-transcripts"), filepath.Join(result.RunDir, "etcd-transcripts"), nodes, bootstrapFixtureInputs{}); err != nil {
+		t.Fatalf("writeThreeControlPlaneSmokeArtifactManifest() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"))
+	if err != nil {
+		t.Fatalf("read artifact manifest: %v", err)
+	}
+	var manifest threeControlPlaneArtifactManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode artifact manifest: %v", err)
+	}
+	if manifest.NodeRunDirs["cp-2"] != nodes[1].Result.RunDir || manifest.SerialLogs["cp-3"] != nodes[2].Result.Artifacts.RuntimeSerial {
+		t.Fatalf("planned run dirs/serials = %#v %#v", manifest.NodeRunDirs, manifest.SerialLogs)
+	}
+	if manifest.QEMUCommands["cp-1"] != nodes[0].Result.Artifacts.QEMUCommand || manifest.InstalledRuntimeInputs["cp-3"] != nodes[2].Result.Artifacts.InstalledRuntime {
+		t.Fatalf("planned artifact indexes = qemu %#v installed %#v", manifest.QEMUCommands, manifest.InstalledRuntimeInputs)
+	}
+	if manifest.EtcdTranscripts["cp-2"] != twoNodeBootstrapTranscriptPath(filepath.Join(result.RunDir, "etcd-transcripts"), "cp-2") {
+		t.Fatalf("etcd transcripts = %#v", manifest.EtcdTranscripts)
 	}
 }
 

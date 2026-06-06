@@ -101,6 +101,36 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 	}
 }
 
+func TestPlannedInstalledRuntimeNodeResult(t *testing.T) {
+	parent, err := NewRunner(Options{
+		StateRoot: "/tmp/katl-vmtest",
+		RunID:     "run-1",
+	}).Plan(Scenario{Name: "two-node"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	result, err := PlannedInstalledRuntimeNodeResult(parent, " cp 1 ")
+	if err != nil {
+		t.Fatalf("PlannedInstalledRuntimeNodeResult() error = %v", err)
+	}
+	wantRunDir := filepath.Join(parent.RunDir, "nodes", "cp-1")
+	if result.RunID != "run-1-cp-1" || result.RunDir != wantRunDir {
+		t.Fatalf("planned node result runID=%q runDir=%q", result.RunID, result.RunDir)
+	}
+	if result.Artifacts.QEMUCommand != filepath.Join(wantRunDir, "qemu", "qemu-command.txt") {
+		t.Fatalf("planned qemu command = %q", result.Artifacts.QEMUCommand)
+	}
+	if result.Artifacts.RuntimeSerial != filepath.Join(wantRunDir, "qemu", "runtime-serial.log") {
+		t.Fatalf("planned runtime serial = %q", result.Artifacts.RuntimeSerial)
+	}
+	if result.VSock.Enabled || result.Phases != nil {
+		t.Fatalf("planned result = %#v", result)
+	}
+	if _, err := PlannedInstalledRuntimeNodeResult(parent, " "); err == nil {
+		t.Fatal("PlannedInstalledRuntimeNodeResult() error = nil, want empty name rejection")
+	}
+}
+
 type longRunningVMExec struct {
 	ready string
 }

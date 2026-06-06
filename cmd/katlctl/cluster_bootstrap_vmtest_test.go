@@ -34,9 +34,31 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		SharedBridge: true,
 	})
 	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
+	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
+	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
+	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
+	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
+	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
+	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
+	bootstrapFixture := bootstrapFixtureInputsFromEnv()
+	cpResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "cp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "worker-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plannedNodes := []vmtest.RunningInstalledRuntimeNode{
+		{Name: "cp-1", Result: cpResult},
+		{Name: "worker-1", Result: workerResult},
+	}
+	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, plannedNodes, bootstrapFixture); err != nil {
+		t.Fatal(err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-
 	cpNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
 		Name: "cp-1",
 		Runtime: vmtest.InstalledRuntimeConfig{
@@ -73,38 +95,10 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	defer stopNode(t, workerNode)
 
 	nodes := []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}
-	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
-	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
-	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
-	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
-	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
-	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
-	bootstrapFixture := bootstrapFixtureInputsFromEnv()
 	if err := writeTwoNodeInventory(inventoryPath, inputs.KubernetesVersion, cpNode, workerNode); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
-		ControlPlaneRunDir:     cpNode.Result.RunDir,
-		WorkerRunDir:           workerNode.Result.RunDir,
-		NodeResults:            nodeResultPaths(nodes),
-		QEMUCommands:           qemuCommandPaths(nodes),
-		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
-		VSockTranscripts:       vsockTranscriptPaths(nodes),
-		FixtureInputs:          twoNodeFixtureInputs(inputs.ControlPlaneDisk, inputs.WorkerDisk, inputs.ControlPlaneESP, inputs.WorkerESP, inputs.ControlPlaneFixture, inputs.WorkerFixture, inputs.ControlPlaneMetadata, inputs.WorkerMetadata),
-		PublishedFixtures:      twoNodePublishedFixtureDirs(),
-		Inventory:              inventoryPath,
-		Kubeconfig:             kubeconfigPath,
-		KubeconfigMetadata:     kubeconfigMetadataPath,
-		BootstrapStdout:        stdoutPath,
-		BootstrapStderr:        stderrPath,
-		BootstrapFixture:       bootstrapFixture.manifestValue(),
-		KubectlOutput:          kubectlOut,
-		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
-		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
-		WorkerTranscript:       twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
-		SerialLogs:             serialLogPaths(nodes),
-		Diagnostics:            diagnosticSummaryPaths(nodes),
-	}); err != nil {
+	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, nodes, bootstrapFixture); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
@@ -358,6 +352,32 @@ type twoNodeArtifactManifest struct {
 	WorkerTranscript       string                      `json:"workerTranscript"`
 	SerialLogs             map[string]string           `json:"serialLogs,omitempty"`
 	Diagnostics            map[string]string           `json:"diagnostics,omitempty"`
+}
+
+func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmokeInputs, transcriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
+	nodeByName := nodeMap(nodes)
+	return writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
+		ControlPlaneRunDir:     nodeByName["cp-1"].Result.RunDir,
+		WorkerRunDir:           nodeByName["worker-1"].Result.RunDir,
+		NodeResults:            nodeResultPaths(nodes),
+		QEMUCommands:           qemuCommandPaths(nodes),
+		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
+		VSockTranscripts:       vsockTranscriptPaths(nodes),
+		FixtureInputs:          twoNodeFixtureInputs(inputs.ControlPlaneDisk, inputs.WorkerDisk, inputs.ControlPlaneESP, inputs.WorkerESP, inputs.ControlPlaneFixture, inputs.WorkerFixture, inputs.ControlPlaneMetadata, inputs.WorkerMetadata),
+		PublishedFixtures:      twoNodePublishedFixtureDirs(),
+		Inventory:              filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
+		Kubeconfig:             filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
+		KubeconfigMetadata:     filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
+		BootstrapStdout:        filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
+		BootstrapStderr:        filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
+		BootstrapFixture:       bootstrapFixture.manifestValue(),
+		KubectlOutput:          filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
+		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
+		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
+		WorkerTranscript:       twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
+		SerialLogs:             serialLogPaths(nodes),
+		Diagnostics:            diagnosticSummaryPaths(nodes),
+	})
 }
 
 type nodeFixtureInput struct {
@@ -1115,6 +1135,57 @@ func TestRequireSmokePrereqsWritesSkippedResult(t *testing.T) {
 	}
 	if len(result.Missing) != 1 || result.Missing[0].Name != "KATL_REQUIRED_INPUT" {
 		t.Fatalf("result missing prerequisites = %#v", result.Missing)
+	}
+}
+
+func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
+	result, err := vmtest.NewRunner(vmtest.Options{
+		StateRoot: t.TempDir(),
+		RunID:     "run-1",
+	}).Plan(vmtest.Scenario{Name: "two-node"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	cpResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "cp-1")
+	if err != nil {
+		t.Fatalf("plan cp-1: %v", err)
+	}
+	workerResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "worker-1")
+	if err != nil {
+		t.Fatalf("plan worker-1: %v", err)
+	}
+	nodes := []vmtest.RunningInstalledRuntimeNode{
+		{Name: "cp-1", Result: cpResult},
+		{Name: "worker-1", Result: workerResult},
+	}
+	if err := writeTwoNodeSmokeArtifactManifest(result, twoNodeSmokeInputs{
+		ControlPlaneDisk:     "cp.raw",
+		ControlPlaneESP:      "esp",
+		ControlPlaneFixture:  "cp-fixture.json",
+		ControlPlaneMetadata: "cp-node.json",
+		WorkerDisk:           "worker.raw",
+		WorkerESP:            "esp",
+		WorkerFixture:        "worker-fixture.json",
+		WorkerMetadata:       "worker-node.json",
+	}, filepath.Join(result.RunDir, "agent-transcripts"), nodes, bootstrapFixtureInputs{}); err != nil {
+		t.Fatalf("writeTwoNodeSmokeArtifactManifest() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(result.ManifestDir, "two-node-artifacts.json"))
+	if err != nil {
+		t.Fatalf("read artifact manifest: %v", err)
+	}
+	var manifest twoNodeArtifactManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode artifact manifest: %v", err)
+	}
+	if manifest.ControlPlaneRunDir != cpResult.RunDir || manifest.WorkerRunDir != workerResult.RunDir {
+		t.Fatalf("run dirs = %q %q", manifest.ControlPlaneRunDir, manifest.WorkerRunDir)
+	}
+	if manifest.SerialLogs["cp-1"] != cpResult.Artifacts.RuntimeSerial || manifest.QEMUCommands["worker-1"] != workerResult.Artifacts.QEMUCommand {
+		t.Fatalf("planned artifact indexes = serial %#v qemu %#v", manifest.SerialLogs, manifest.QEMUCommands)
+	}
+	if manifest.InstalledRuntimeInputs["worker-1"] != workerResult.Artifacts.InstalledRuntime || manifest.VSockTranscripts["cp-1"] != cpResult.Artifacts.VSockTranscript {
+		t.Fatalf("planned runtime indexes = installed %#v vsock %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
 	}
 }
 

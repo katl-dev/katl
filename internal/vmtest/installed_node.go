@@ -28,7 +28,10 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	if name == "" {
 		return RunningInstalledRuntimeNode{}, errors.New("installed runtime node name is required")
 	}
-	result := nodeResult(parent, name)
+	result, err := PlannedInstalledRuntimeNodeResult(parent, name)
+	if err != nil {
+		return RunningInstalledRuntimeNode{}, err
+	}
 	runtime := config.Runtime
 	runtime.RequireVMTestAgent = true
 	if err := PrepareInstalledRuntime(result, runtime); err != nil {
@@ -102,6 +105,14 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		cancel: stop,
 		done:   done,
 	}, nil
+}
+
+func PlannedInstalledRuntimeNodeResult(parent Result, name string) (Result, error) {
+	name = clean(strings.TrimSpace(name))
+	if name == "" {
+		return Result{}, errors.New("installed runtime node name is required")
+	}
+	return nodeResult(parent, name), nil
 }
 
 func (n RunningInstalledRuntimeNode) Stop() error {
