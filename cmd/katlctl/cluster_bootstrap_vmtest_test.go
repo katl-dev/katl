@@ -725,6 +725,10 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 			{Name: "crictl-ps", Argv: []string{"crictl", "ps", "-a"}},
 			{Name: "etc-kubernetes-mount", Argv: []string{"findmnt", "--target", "/etc/kubernetes", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS"}},
 			{Name: "kubeadm-version", Argv: []string{"kubeadm", "version", "-o", "short"}},
+			{Name: "kubeadm-journal", Argv: []string{"journalctl", "--no-pager", "--output=short-monotonic", "-b", "_COMM=kubeadm"}},
+			{Name: "kubeadm-pki", Argv: []string{"find", "/etc/kubernetes/pki", "-maxdepth", "2", "-type", "f", "-printf", "%M %u %g %s %p\n"}},
+			{Name: "kubelet-state", Argv: []string{"find", "/var/lib/kubelet", "-maxdepth", "2", "-printf", "%M %u %g %s %p\n"}},
+			{Name: "kubernetes-logs", Argv: []string{"find", "/var/log/containers", "/var/log/pods", "-maxdepth", "2", "-printf", "%M %u %g %s %p\n"}},
 		},
 		Files: []vmtest.GuestFileRequest{
 			{Name: "node-metadata", Path: "/etc/katl/node.json"},
@@ -1365,6 +1369,11 @@ func TestBootstrapDiagnosticsAreNodeAware(t *testing.T) {
 	if !diagnosticCommand(cp, "etc-kubernetes-mount") || !diagnosticCommand(cp, "kubeadm-version") {
 		t.Fatalf("control-plane diagnostics commands = %#v", cp.Commands)
 	}
+	for _, want := range []string{"kubeadm-journal", "kubeadm-pki", "kubelet-state", "kubernetes-logs"} {
+		if !diagnosticCommand(cp, want) {
+			t.Fatalf("control-plane diagnostics commands = %#v, want %s", cp.Commands, want)
+		}
+	}
 	if !diagnosticFile(cp, "admin-kubeconfig", "/etc/kubernetes/admin.conf") {
 		t.Fatalf("control-plane diagnostics files = %#v, want admin kubeconfig", cp.Files)
 	}
@@ -1386,6 +1395,11 @@ func TestBootstrapDiagnosticsAreNodeAware(t *testing.T) {
 	worker := bootstrapDiagnostics("worker-1")
 	if !diagnosticFile(worker, "kubeadm-config", "/etc/katl/kubeadm/worker/config.yaml") {
 		t.Fatalf("worker diagnostics files = %#v, want worker kubeadm config", worker.Files)
+	}
+	for _, want := range []string{"kubeadm-journal", "kubeadm-pki", "kubelet-state", "kubernetes-logs"} {
+		if !diagnosticCommand(worker, want) {
+			t.Fatalf("worker diagnostics commands = %#v, want %s", worker.Commands, want)
+		}
 	}
 	if diagnosticFile(worker, "admin-kubeconfig", "/etc/kubernetes/admin.conf") {
 		t.Fatalf("worker diagnostics files = %#v, must not read control-plane admin kubeconfig", worker.Files)
