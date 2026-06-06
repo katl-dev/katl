@@ -3,6 +3,8 @@ package installer
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -60,6 +62,8 @@ type Context struct {
 	RootProfile       manifest.RootDiskProfile
 	DiskLayout        *disk.DiskLayoutPlan
 	RootSlotPlan      *disk.RootSlotWritePlan
+	RootSlotTarget    disk.RootSlotDevice
+	RootSlotInstaller disk.RootSlotInstaller
 	CurrentRootSlot   disk.RootSlot
 	RootPartitionUUID string
 	GenerationID      string
@@ -113,9 +117,9 @@ func NewPlan(options PlanOptions) Plan {
 		stubStep{id: CreatePartitions},
 		stubStep{id: FormatFilesystems},
 		stubStep{id: MountTarget},
-		stubStep{id: InstallRootSlot},
-		stubStep{id: InstallBootArtifacts},
-		stubStep{id: InstallExtensions},
+		installRootSlotStep{},
+		installBootArtifactsStep{},
+		installExtensionsStep{},
 		installSeedStep{},
 		stubStep{id: InstallMountUnits},
 		writeInstallRecordStep{},
@@ -355,6 +359,177 @@ func runtimeRootSizeMiB(sizeBytes int64) uint64 {
 	}
 	const mib = 1024 * 1024
 	return uint64((sizeBytes + mib - 1) / mib)
+}
+
+type installRootSlotStep struct{}
+
+func (installRootSlotStep) ID() StepID {
+	return InstallRootSlot
+}
+
+func (installRootSlotStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.KatlosImage == nil && install.RootSlotPlan == nil {
+		return recordStep(ctx, install, InstallRootSlot)
+	}
+	if install.KatlosImage == nil {
+		return fmt.Errorf("KatlOS image payload is required to install root slot")
+	}
+	if install.RootSlotPlan == nil {
+		return fmt.Errorf("root slot plan is required")
+	}
+	if install.RootSlotTarget == nil {
+		return fmt.Errorf("root slot target is required")
+	}
+	source, err := os.Open(install.KatlosImage.ComponentPath(install.KatlosImage.Runtime))
+	if err != nil {
+		return fmt.Errorf("open runtime root component: %w", err)
+	}
+	defer source.Close()
+	installer := install.RootSlotInstaller
+	if installer == nil {
+		installer = func(context.Context, disk.RootSlotInstallRequest) (disk.RootSlotInstallResult, error) {
+			return disk.WriteRootSlot(disk.RootSlotInstallRequest{
+				Plan:     *install.RootSlotPlan,
+				Artifact: source,
+				Target:   install.RootSlotTarget,
+			})
+		}
+	}
+	if _, err := installer(ctx, disk.RootSlotInstallRequest{
+		Plan:     *install.RootSlotPlan,
+		Artifact: source,
+		Target:   install.RootSlotTarget,
+	}); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, InstallRootSlot)
+}
+
+type installBootArtifactsStep struct{}
+
+func (installBootArtifactsStep) ID() StepID {
+	return InstallBootArtifacts
+}
+
+func (installBootArtifactsStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.KatlosImage == nil {
+		return recordStep(ctx, install, InstallBootArtifacts)
+	}
+	if install.LoaderRecord == nil {
+		return fmt.Errorf("loader generation record is required to install boot artifacts")
+	}
+	target, err := targetPathForAbsolute(install.TargetRoot, install.LoaderRecord.Boot.UKIPath)
+	if err != nil {
+		return err
+	}
+	if err := copyVerifiedComponent(install.KatlosImage.ComponentPath(install.KatlosImage.Boot), target, install.KatlosImage.Boot); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, InstallBootArtifacts)
+}
+
+type installExtensionsStep struct{}
+
+func (installExtensionsStep) ID() StepID {
+	return InstallExtensions
+}
+
+func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.KatlosImage == nil {
+		return recordStep(ctx, install, InstallExtensions)
+	}
+	if install.LoaderRecord == nil {
+		return fmt.Errorf("loader generation record is required to install extensions")
+	}
+	var target string
+	for _, ref := range install.LoaderRecord.Sysexts {
+		if ref.Name == "kubernetes" {
+			target = ref.Path
+			break
+		}
+	}
+	if target == "" {
+		return fmt.Errorf("Kubernetes sysext record is required")
+	}
+	path, err := targetPathForAbsolute(install.TargetRoot, target)
+	if err != nil {
+		return err
+	}
+	if err := copyVerifiedComponent(install.KatlosImage.ComponentPath(install.KatlosImage.Kubernetes), path, install.KatlosImage.Kubernetes); err != nil {
+		return err
+	}
+	return recordStep(ctx, install, InstallExtensions)
+}
+
+func targetPathForAbsolute(root string, path string) (string, error) {
+	if strings.TrimSpace(root) == "" {
+		return "", fmt.Errorf("target root is required")
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("target path %q must be absolute", path)
+	}
+	clean := filepath.Clean(path)
+	if clean == string(filepath.Separator) {
+		return "", fmt.Errorf("target path must not be root")
+	}
+	return filepath.Join(root, strings.TrimPrefix(clean, string(filepath.Separator))), nil
+}
+
+func copyVerifiedComponent(source string, target string, component katlosimage.Component) error {
+	info, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("stat %s component: %w", component.Name, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s component is not a regular file", component.Name)
+	}
+	if info.Size() != component.SizeBytes {
+		return fmt.Errorf("%s component size %d does not match index %d", component.Name, info.Size(), component.SizeBytes)
+	}
+	src, err := os.Open(source)
+	if err != nil {
+		return fmt.Errorf("open %s component: %w", component.Name, err)
+	}
+	defer src.Close()
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create %s target directory: %w", component.Name, err)
+	}
+	dst, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open %s target: %w", component.Name, err)
+	}
+	hash := sha256.New()
+	written, copyErr := io.Copy(dst, io.TeeReader(src, hash))
+	closeErr := dst.Close()
+	if copyErr != nil {
+		return fmt.Errorf("copy %s component: %w", component.Name, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close %s target: %w", component.Name, closeErr)
+	}
+	if written != component.SizeBytes {
+		return fmt.Errorf("copy %s component wrote %d bytes, want %d", component.Name, written, component.SizeBytes)
+	}
+	got := hex.EncodeToString(hash.Sum(nil))
+	if got != component.SHA256 {
+		return fmt.Errorf("%s component digest %s does not match index %s", component.Name, got, component.SHA256)
+	}
+	return nil
 }
 
 type installSeedStep struct{}

@@ -3,7 +3,10 @@ package installer
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer/discovery"
+	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
@@ -297,6 +301,56 @@ func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
 		t.Fatalf("planned record should not include node confext before WriteInstallRecord: %#v", record.Confexts)
 	}
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
+func TestRunnerInstallsKatlosImageComponents(t *testing.T) {
+	payload, contents := writeInstallPayload(t)
+	store := &MemoryStateStore{}
+	targetRoot := t.TempDir()
+	rootTarget := newRunnerRootSlot(len(contents.runtime) + 4096)
+	install := &Context{
+		TargetRoot:  targetRoot,
+		Commands:    &NoopCommandRunner{},
+		Store:       store,
+		KatlosImage: &payload,
+		RootSlotPlan: &disk.RootSlotWritePlan{
+			Slot:              disk.RootSlotA,
+			TargetPartition:   disk.RootSlotTarget{GPTLabel: disk.GPTLabelRootA},
+			ArtifactDigest:    payload.Runtime.SHA256,
+			ExpectedSizeBytes: payload.Runtime.SizeBytes,
+		},
+		RootSlotTarget: rootTarget,
+		LoaderRecord: &generation.Record{
+			GenerationID: "2026.06.06-001",
+			Root: generation.RootSelection{
+				Slot: "root-a",
+			},
+			Boot: generation.BootSelection{
+				UKIPath: "/efi/EFI/Linux/katl-2026.06.06-001.efi",
+			},
+			Sysexts: []generation.ExtensionRef{{
+				Name: "kubernetes",
+				Path: "/var/lib/katl/generations/2026.06.06-001/sysext/kubernetes.raw",
+			}},
+		},
+	}
+
+	plan := Plan{installRootSlotStep{}, installBootArtifactsStep{}, installExtensionsStep{}}
+	if err := NewRunner(plan, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got := string(rootTarget.data[:len(contents.runtime)]); got != string(contents.runtime) {
+		t.Fatalf("root slot bytes = %q, want runtime payload", got)
+	}
+	if !rootTarget.synced {
+		t.Fatal("root slot target was not synced")
+	}
+	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-2026.06.06-001.efi"), string(contents.boot))
+	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/sysext/kubernetes.raw"), string(contents.kubernetes))
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{InstallRootSlot, InstallBootArtifacts, InstallExtensions}) {
 		t.Fatalf("completed steps = %#v", got)
 	}
 }
@@ -780,6 +834,105 @@ func planningFacts() discovery.HardwareFacts {
 			},
 		},
 	}
+}
+
+type installPayloadContents struct {
+	runtime    []byte
+	boot       []byte
+	kubernetes []byte
+}
+
+func writeInstallPayload(t *testing.T) (katlosimage.Payload, installPayloadContents) {
+	t.Helper()
+	root := t.TempDir()
+	contents := installPayloadContents{
+		runtime:    []byte("runtime-root-payload"),
+		boot:       []byte("runtime-uki-payload"),
+		kubernetes: []byte("kubernetes-sysext-payload"),
+	}
+	writePayloadComponent(t, root, "components/runtime/root.squashfs", contents.runtime)
+	writePayloadComponent(t, root, "components/boot/katl.efi", contents.boot)
+	writePayloadComponent(t, root, "components/sysext/kubernetes.raw", contents.kubernetes)
+	payload := katlosimage.Payload{
+		Root: root,
+		Index: katlosimage.Index{
+			Version:          "2026.06.06",
+			Architecture:     "x86_64",
+			RuntimeInterface: "katl-runtime-1",
+		},
+		Runtime: payloadComponent("runtime-root", katlosimage.ComponentRuntimeRoot, "components/runtime/root.squashfs", contents.runtime),
+		Boot:    payloadComponent("runtime-uki", katlosimage.ComponentRuntimeUKI, "components/boot/katl.efi", contents.boot),
+		Kubernetes: func() katlosimage.Component {
+			component := payloadComponent("kubernetes", katlosimage.ComponentKubernetes, "components/sysext/kubernetes.raw", contents.kubernetes)
+			component.Version = "k8s-v1.34.8"
+			component.PayloadVersion = "v1.34.8"
+			return component
+		}(),
+	}
+	return payload, contents
+}
+
+func writePayloadComponent(t *testing.T, root string, rel string, data []byte) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir payload component: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write payload component: %v", err)
+	}
+}
+
+func payloadComponent(name string, role string, path string, data []byte) katlosimage.Component {
+	sum := sha256.Sum256(data)
+	return katlosimage.Component{
+		Name:         name,
+		Role:         role,
+		Path:         path,
+		SizeBytes:    int64(len(data)),
+		SHA256:       hex.EncodeToString(sum[:]),
+		Version:      "2026.06.06",
+		Architecture: "x86_64",
+		Compatibility: katlosimage.Compatibility{
+			RuntimeInterface: "katl-runtime-1",
+		},
+	}
+}
+
+type runnerRootSlot struct {
+	data   []byte
+	synced bool
+}
+
+func newRunnerRootSlot(size int) *runnerRootSlot {
+	return &runnerRootSlot{data: make([]byte, size)}
+}
+
+func (s *runnerRootSlot) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= int64(len(s.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, s.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (s *runnerRootSlot) WriteAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= int64(len(s.data)) {
+		return 0, io.EOF
+	}
+	n := copy(s.data[off:], p)
+	if n < len(p) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
+}
+
+func (s *runnerRootSlot) Sync() error {
+	s.synced = true
+	return nil
 }
 
 type failingStep struct {

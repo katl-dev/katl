@@ -49,6 +49,10 @@ func (p Payload) RuntimeArtifact() artifact.ArtifactVerification {
 	return componentArtifact(p.Runtime, artifact.ArtifactRuntimeRoot)
 }
 
+func (p Payload) ComponentPath(component Component) string {
+	return filepath.Join(p.Root, filepath.FromSlash(component.Path))
+}
+
 func componentArtifact(component Component, kind artifact.ArtifactKind) artifact.ArtifactVerification {
 	return artifact.ArtifactVerification{
 		Name:      component.Name,
