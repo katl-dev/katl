@@ -254,10 +254,10 @@ surface for build-side artifact metadata policy.
 
 | Script | Current role | Policy action |
 | --- | --- | --- |
-| `scripts/mkosi` | Containerized mkosi adapter and build shorthand | Keep as the top-level mkosi adapter while scaffolding. Artifact metadata and package provenance are delegated to `cmd/katl-mkosi-artifacts`; move Kubernetes repository mutation and remaining build policy into Go or mkosi config as they stabilize. |
-| `scripts/vmtest-run` | Enabled nspawn/VM world entrypoint over `go test -exec` | Keep as the canonical developer entrypoint. Keep it thin; move fixture policy, leases, aggregation, and host policy into Go helpers or a future Go runner command. |
+| `scripts/mkosi` | Supported build entrypoint and containerized mkosi adapter | Keep as the top-level mkosi adapter while scaffolding. Artifact metadata and package provenance are delegated to `cmd/katl-mkosi-artifacts`; move Kubernetes repository mutation and remaining build policy into Go or mkosi config as they stabilize. |
+| `scripts/vmtest-run` | Supported enabled nspawn/VM world entrypoint over `go test -exec` | Keep as the canonical developer entrypoint. Keep it thin; move fixture policy, leases, aggregation, and host policy into Go helpers or a future Go runner command. |
 | `scripts/vmtest-exec` | `go test -exec` package-binary wrapper | Keep as an implementation detail of `scripts/vmtest-run`; do not document it as a developer entrypoint. |
-| `scripts/katl-vm` | Direct QEMU debug and compatibility wrapper | Keep temporarily for focused boot debugging. Do not add multi-node orchestration or installer policy; migrate stable QEMU behavior into `internal/vmtest`. |
+| `scripts/katl-vm` | Direct QEMU debug wrapper | Keep temporarily for focused boot debugging. Do not add multi-node orchestration or installer policy; migrate stable QEMU behavior into `internal/vmtest`. |
 | `scripts/check-mkosi-smoke` | Build-artifact boot smoke around direct QEMU | Replace with `scripts/vmtest-run` scenarios or a Go VM smoke command once the world runner covers the same proof. |
 | `scripts/mkosi-artifacts` | Compatibility wrapper for local build artifact metadata | Keep temporarily as a wrapper over `cmd/katl-mkosi-artifacts`; delete once callers use the Go command or an installed command surface directly. |
 | `scripts/build-katlos-install-image` | Packages runtime, sysext, and metadata into an install image | Keep temporarily as file-copy and `mksquashfs` glue. Structured validation, image indexes, checksums, and artifact metadata are owned by `cmd/katl-mkosi-artifacts`; move the remaining packaging flow behind `katlc` when the compiler exists. |
@@ -268,7 +268,6 @@ surface for build-side artifact metadata policy.
 | `scripts/check-kubernetes-sysext` | Validates Kubernetes sysext metadata and payload version | Absorb into `katl-publish-kubernetes-sysext` or a Go verifier. |
 | `scripts/check-mkosi-size` | Size budget checks for generated artifacts | May remain as a simple CI check while it only uses `stat`/`du`; move to Go if budgets become artifact metadata or release policy. |
 | `scripts/prepare-nspawn-userspace-fixture` | Builds nspawn userspace fixture from runtime root | Move behind `internal/vmtest`/`internal/nspawntest` world fixture helpers. Keep only as a debug validator until tests no longer call it directly. |
-| `scripts/stage-kubernetes-sysext` | Thin wrapper around `go run ./cmd/katl-publish-kubernetes-sysext` | Delete once callers invoke the Go command directly or a stable command is installed in the devshell. |
 
 ## Devshell And Host Tools
 

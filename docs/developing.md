@@ -57,15 +57,21 @@ asset publishing.
 
 ## Required For The Current Loop
 
-- `scripts/mkosi`: builds the installer OS image.
+- `scripts/mkosi`: builds installer, runtime, Kubernetes sysext, and KatlOS
+  image artifacts through the containerized mkosi builder.
+- `scripts/vmtest-run`: runs enabled nspawn, VM, first-install,
+  installed-runtime, and multinode kubeadm smokes through a runner-created
+  world.
 - `qemu-system-x86_64`: boots the image locally.
 - KVM access: the VM test runner should see `/dev/kvm`.
 - UEFI firmware for QEMU, such as edk2/OVMF firmware descriptors.
-- `bd`: tracks project tasks.
 - `git commit-wrapped`: required for agent-authored commits.
 
-Go is reserved for Katl product code, including installer/runtime code that
-runs in the built image. Early build and boot wrappers should stay thin shell.
+The supported top-level script surface is intentionally small. Use
+`scripts/mkosi` for local build artifacts and `scripts/vmtest-run` for enabled
+test worlds. Other scripts are compatibility wrappers, debug aids, or temporary
+validators for scaffolding work; do not treat the whole `scripts/` directory as
+the public developer interface.
 
 ## Nix Dev Shell
 
@@ -161,7 +167,7 @@ Build artifacts first when the local world cannot discover suitable outputs:
 ```sh
 scripts/mkosi build-runtime
 scripts/mkosi build-installer
-scripts/mkosi build-katlos-image
+scripts/mkosi build-katlos-install-image
 ```
 
 World run directories and scenario manifests are the supported inspection path
@@ -197,7 +203,6 @@ qemu-system-x86_64 --version
 virsh --version
 virt-install --version
 virt-manager --version
-bd --version
 git commit-wrapped --help
 ```
 
@@ -245,7 +250,6 @@ The local environment was checked on 2026-05-31:
 - `virt-install 5.1.0`
 - `virt-manager 5.1.0`
 - `go 1.26.3`
-- `bd 1.0.3`
 
 At that time, `qemu:///system` worked from this shell and `libvirtd` was active.
 `/dev/kvm` and `/dev/net/tun` were not visible from the Codex sandbox even
