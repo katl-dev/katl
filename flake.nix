@@ -29,9 +29,11 @@
             erofs-utils
             git
             go
+            iproute2
             jq
             mkosi
             openssl
+            OVMFFull
             protobuf
             protoc-gen-go
             qemu_kvm
@@ -42,6 +44,15 @@
             xz
             zstd
           ];
+
+          shellHook = ''
+            export KATL_OVMF_CODE="''${KATL_OVMF_CODE:-${pkgs.OVMFFull.fd}/FV/OVMF_CODE.fd}"
+            export KATL_OVMF_VARS="''${KATL_OVMF_VARS:-${pkgs.OVMFFull.fd}/FV/OVMF_VARS.fd}"
+            export KATL_VMTEST_QEMU="''${KATL_VMTEST_QEMU:-${pkgs.qemu_kvm}/bin/qemu-system-x86_64}"
+            export KATL_VMTEST_QEMU_IMG="''${KATL_VMTEST_QEMU_IMG:-${pkgs.qemu_kvm}/bin/qemu-img}"
+            export KATL_VMTEST_IP="''${KATL_VMTEST_IP:-${pkgs.iproute2}/bin/ip}"
+            export KATL_QEMU_BRIDGE_HELPER="''${KATL_QEMU_BRIDGE_HELPER:-${pkgs.qemu_kvm}/libexec/qemu-bridge-helper}"
+          '';
         };
     in
     {

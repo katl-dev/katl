@@ -90,7 +90,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, kubernetesVers
 		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),
 		Keep:      vmtest.KeepFailed,
 		KVM:       kvm,
-		Missing:   vmtest.MissingSkips,
+		Missing:   vmtest.MissingFails,
 	}
 	runner := vmtest.NewRunner(options)
 	vmScenario := vmtest.Scenario{Name: "installed-runtime-three-control-plane-stacked-etcd"}

@@ -41,11 +41,7 @@ missing_capabilities=()
 setup_failures=()
 
 if [[ -z "$host_policy" ]]; then
-    if [[ "${CI:-}" == "true" || "${CI:-}" == "1" ]]; then
-        host_policy="fail"
-    else
-        host_policy="skip"
-    fi
+    host_policy="fail"
 fi
 
 usage() {
@@ -56,7 +52,7 @@ Create a temporary Katl VM test world and run Go test binaries through
 scripts/vmtest-exec. Arguments are forwarded to go test after forcing -count=1.
 
 Environment:
-  KATL_VMTEST_HOST_POLICY=skip|fail        Host capability gap handling
+  KATL_VMTEST_HOST_POLICY=skip|fail        Host capability gap handling (default: fail)
   KATL_VMTEST_NETWORK_BACKEND=bridge       Network backend
   KATL_VMTEST_CIDR=10.77.0.0/24            World network CIDR
   KATL_VMTEST_GATEWAY=10.77.0.1            Bridge gateway address

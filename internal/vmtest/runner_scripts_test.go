@@ -226,7 +226,6 @@ func TestVMTestRunRequiredHostGapFails(t *testing.T) {
 		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
 		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
 		"KATL_VMTEST_QEMU="+filepath.Join(tmp, "missing-qemu"),
-		"KATL_VMTEST_HOST_POLICY=fail",
 		"KATL_VMTEST_RUN_ID=run-required",
 		"KATL_VMTEST_RUN_DIR="+runDir,
 		"TMPDIR="+tmp,

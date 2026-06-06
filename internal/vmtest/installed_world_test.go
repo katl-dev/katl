@@ -43,7 +43,7 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),
 		Keep:      KeepFailed,
 		KVM:       firstKVM(kvm, KVMAuto),
-		Missing:   MissingSkips,
+		Missing:   MissingFails,
 	}
 	run.Runner = NewRunner(options)
 	run.Fixture = node.Fixture

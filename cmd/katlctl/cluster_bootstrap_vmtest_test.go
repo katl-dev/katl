@@ -87,7 +87,7 @@ func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string
 		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),
 		Keep:      vmtest.KeepFailed,
 		KVM:       kvm,
-		Missing:   vmtest.MissingSkips,
+		Missing:   vmtest.MissingFails,
 	}
 	runner := vmtest.NewRunner(options)
 	vmScenario := vmtest.Scenario{Name: "installed-runtime-two-node-kubeadm-join"}
