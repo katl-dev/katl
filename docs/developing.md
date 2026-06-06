@@ -179,7 +179,9 @@ When `KATL_NSPAWN_RUN=1` is set and no explicit `KATL_NSPAWN_ROOT` or
 `KATL_NSPAWN_IMAGE` override is supplied, the nspawn smoke tests invoke the same
 preparer before assertions. Missing runtime build outputs are fixture
 preparation failures; missing `systemd-nspawn` or host privileges remain host
-capability skips recorded by the harness.
+capability skips recorded by the harness. The preparer overlays the current
+repo-built Katl runtime helper binaries into the managed fixture root and records
+their digests in `build/nspawn/nspawn-fixture.json`.
 
 To run the opt-in first-install target-disk fixture contract smoke, resolve
 the mkosi artifact index, optional node metadata, and an install manifest bound

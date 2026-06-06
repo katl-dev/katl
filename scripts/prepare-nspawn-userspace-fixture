@@ -10,6 +10,8 @@ source_root="${KATL_NSPAWN_SOURCE_ROOT:-${KATL_RUNTIME_ROOT:-}}"
 source_image="${KATL_NSPAWN_SOURCE_IMAGE:-${KATL_RUNTIME_ARTIFACT:-}}"
 force="${KATL_NSPAWN_FIXTURE_FORCE:-0}"
 check_only=0
+helper_manifest=""
+helper_dir=""
 
 usage() {
     cat <<'USAGE'
@@ -158,6 +160,58 @@ guest_executable() {
     fail "nspawn root missing executable $label under $(rel "$root")"
 }
 
+build_runtime_helper() {
+    local name="$1"
+    local package="$2"
+    local output="$helper_dir/$name"
+    mkdir -p "$helper_dir"
+    GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" \
+    CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    go -C "$repo_root" build \
+            -trimpath \
+            -buildvcs=false \
+            -o "$output" \
+            "$package"
+    printf "%s" "$output"
+}
+
+install_runtime_helpers() {
+    need go
+    helper_dir="$state_dir/helpers"
+    mkdir -p "$root/usr/lib/katl/runtime"
+    local first=1
+    helper_manifest='  "provisionedHelpers": ['
+    local helper name package output target digest
+    for helper in \
+        "katl-generation-activate ./cmd/katl-generation-activate usr/lib/katl/runtime/katl-generation-activate" \
+        "katl-runtime-status ./cmd/katl-runtime-status usr/lib/katl/runtime/katl-runtime-status"
+    do
+        read -r name package target <<<"$helper"
+        output="$(build_runtime_helper "$name" "$package")"
+        install -m 0755 "$output" "$root/$target"
+        digest="$(sha256sum "$root/$target" | awk '{print $1}')"
+        if [[ "$first" -eq 0 ]]; then
+            helper_manifest+=','
+        fi
+        helper_manifest+=$'\n'
+        helper_manifest+="    {"
+        helper_manifest+="\"name\": \"$(json "$name")\", "
+        helper_manifest+="\"path\": \"$(json "$target")\", "
+        helper_manifest+="\"source\": \"$(json "$package")\", "
+        helper_manifest+="\"sha256\": \"$(json "$digest")\""
+        helper_manifest+="}"
+        first=0
+    done
+    helper_manifest+=$'\n  ]'
+}
+
+remove_managed_root() {
+    chmod -R u+rwX "$root" 2>/dev/null || true
+    rm -rf "$root"
+}
+
 validate_root() {
     [[ -d "$root" ]] || fail "nspawn root not found: $(rel "$root")"
     guest_executable sh usr/bin/sh bin/sh
@@ -196,7 +250,7 @@ if [[ "$check_only" -eq 0 ]]; then
         fail "refusing to replace unmanaged nspawn root: $(rel "$root")"
     fi
     if [[ -e "$root" && "$force" != 1 ]]; then
-        validate_root
+        :
     else
         mkdir -p "$(dirname "$root")"
         tmp="$(mktemp -d "$root.tmp.XXXXXX")"
@@ -207,10 +261,11 @@ if [[ "$check_only" -eq 0 ]]; then
             unsquashfs -quiet -no-xattrs -dest "$tmp" "$source_path" >/dev/null
         fi
         touch "$tmp/.katl-nspawn-fixture"
-        rm -rf "$root"
+        remove_managed_root
         mv "$tmp" "$root"
         trap - EXIT
     fi
+    install_runtime_helpers
 fi
 
 validate_root
@@ -235,7 +290,7 @@ cat >"$manifest" <<EOF
     "kind": "$(json "$source_kind")",
     "path": "$(json "$source_path")"$(if [[ -n "$source_sha" ]]; then printf ',\n    "sha256": "%s"' "$(json "$source_sha")"; fi)
   },
-  "envFile": "$(json "$env_file")"
+  "envFile": "$(json "$env_file")"$(if [[ -n "$helper_manifest" ]]; then printf ',\n%s' "$helper_manifest"; fi)
 }
 EOF
 

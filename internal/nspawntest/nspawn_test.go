@@ -2,10 +2,12 @@ package nspawntest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -123,6 +125,74 @@ func TestPrepareDefaultRootRunsFixtureScript(t *testing.T) {
 	}
 }
 
+func TestPrepareFixtureSelfProvisionsRuntimeHelpers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture requires POSIX execution")
+	}
+	repo := repoRootForTest(t)
+	dir := t.TempDir()
+	sourceRoot := filepath.Join(dir, "source-root")
+	for _, path := range []string{
+		"usr/bin/sh",
+		"usr/bin/cp",
+		"usr/bin/grep",
+		"usr/bin/mktemp",
+		"usr/bin/systemd-analyze",
+	} {
+		writeGuestExecutable(t, filepath.Join(sourceRoot, path))
+	}
+	stateDir := filepath.Join(dir, "state")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "prepare-nspawn-userspace-fixture"),
+		"--source-root", sourceRoot,
+		"--state-dir", stateDir,
+		"--force",
+	)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GOCACHE=/tmp/katl-go-cache")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prepare fixture error = %v\n%s", err, output)
+	}
+
+	root := filepath.Join(stateDir, "root")
+	for _, path := range []string{
+		"usr/lib/katl/runtime/katl-generation-activate",
+		"usr/lib/katl/runtime/katl-runtime-status",
+	} {
+		info, err := os.Stat(filepath.Join(root, path))
+		if err != nil {
+			t.Fatalf("stat helper %s: %v", path, err)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Fatalf("helper %s mode = %v, want executable", path, info.Mode())
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(stateDir, "nspawn-fixture.json"))
+	if err != nil {
+		t.Fatalf("read fixture manifest: %v", err)
+	}
+	var manifest struct {
+		ProvisionedHelpers []struct {
+			Name   string `json:"name"`
+			Path   string `json:"path"`
+			Source string `json:"source"`
+			SHA256 string `json:"sha256"`
+		} `json:"provisionedHelpers"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode fixture manifest: %v", err)
+	}
+	if len(manifest.ProvisionedHelpers) != 2 {
+		t.Fatalf("provisioned helpers = %#v", manifest.ProvisionedHelpers)
+	}
+	for _, helper := range manifest.ProvisionedHelpers {
+		if helper.Name == "" || helper.Path == "" || helper.Source == "" || len(helper.SHA256) != 64 {
+			t.Fatalf("helper provenance = %#v", helper)
+		}
+	}
+}
+
 func TestPrepareDefaultRootLeavesOverridesAlone(t *testing.T) {
 	options := Options{Enabled: true, Root: "/custom/root"}
 	if err := PrepareDefaultRoot(context.Background(), &options, "/missing/repo"); err != nil {
@@ -138,6 +208,34 @@ func TestPrepareDefaultRootLeavesOverridesAlone(t *testing.T) {
 	}
 	if options.Image != "/custom/root.raw" || options.Root != "" {
 		t.Fatalf("options = %#v", options)
+	}
+}
+
+func repoRootForTest(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repo root")
+		}
+		dir = parent
+	}
+}
+
+func writeGuestExecutable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 
