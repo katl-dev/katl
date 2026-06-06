@@ -336,6 +336,12 @@ func verifyThreeControlPlaneKubeadmTranscript(node string, entries []transcriptE
 		if !transcriptHasCommandFlagValue(entries, "kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml") {
 			return errors.New("kubeadm init command missing control-plane config path")
 		}
+		if !transcriptHasCommand(entries, "kubeadm", "init", "phase", "upload-certs") {
+			return errors.New("missing kubeadm certificate upload command")
+		}
+		if !transcriptHasCommandArgAfterPrefix(entries, []string{"kubeadm", "init", "phase", "upload-certs"}, "--upload-certs") {
+			return errors.New("kubeadm certificate upload command missing --upload-certs")
+		}
 	case "cp-2", "cp-3":
 		if transcriptHasCommand(entries, "kubeadm", "init") {
 			return errors.New("unexpected kubeadm init command on joining control-plane")
@@ -349,6 +355,9 @@ func verifyThreeControlPlaneKubeadmTranscript(node string, entries []transcriptE
 		if !transcriptHasCommandArg(entries, "kubeadm", "join", "--control-plane") {
 			return errors.New("kubeadm join command missing --control-plane")
 		}
+		if !transcriptHasCommandArg(entries, "kubeadm", "join", "--certificate-key") {
+			return errors.New("kubeadm control-plane join command missing --certificate-key")
+		}
 	}
 	return nil
 }
@@ -359,6 +368,30 @@ func transcriptHasCommandArg(entries []transcriptEntry, first, second, arg strin
 			continue
 		}
 		for _, got := range entry.Argv[2:] {
+			if got == arg {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func transcriptHasCommandArgAfterPrefix(entries []transcriptEntry, prefix []string, arg string) bool {
+	for _, entry := range entries {
+		if entry.Method != "RunCommand" || len(entry.Argv) < len(prefix) {
+			continue
+		}
+		matched := true
+		for i, want := range prefix {
+			if entry.Argv[i] != want {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		for _, got := range entry.Argv[len(prefix):] {
 			if got == arg {
 				return true
 			}
@@ -633,11 +666,42 @@ func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testin
 		t.Fatalf("verifyBootstrapTranscripts() error = %v", err)
 	}
 
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-1"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+	})
+	err := verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
+	if err == nil || !strings.Contains(err.Error(), "missing kubeadm certificate upload command") {
+		t.Fatalf("verifyBootstrapTranscripts() error = %v, want certificate upload rejection", err)
+	}
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-1"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "phase", "upload-certs", "--upload-certs"}, Redaction: "output", SensitiveOutput: true},
+	})
+
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+	})
+	err = verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
+	if err == nil || !strings.Contains(err.Error(), "kubeadm control-plane join command missing --certificate-key") {
+		t.Fatalf("verifyBootstrapTranscripts() error = %v, want certificate-key rejection", err)
+	}
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--certificate-key", "[REDACTED CERTIFICATE KEY]", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+	})
+
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
 	})
-	err := verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
+	err = verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
 	if err == nil || !strings.Contains(err.Error(), "unexpected kubeadm init command on joining control-plane") {
 		t.Fatalf("verifyBootstrapTranscripts() error = %v, want cp-2 init rejection", err)
 	}
