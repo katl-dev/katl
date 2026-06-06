@@ -372,6 +372,7 @@ fi
 
 export KATL_VMTEST_RUN_DIR="$run_dir"
 export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
+export KATL_VMTEST_BRIDGE="$network_bridge"
 
 set +e
 "$go_bin" test -count=1 -exec "$repo_root/scripts/vmtest-exec" "${filtered_args[@]}" 2>&1 | tee "$go_test_log"

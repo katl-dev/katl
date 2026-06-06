@@ -93,6 +93,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if childEnv["KATL_VMTEST_WORLD_MANIFEST"] != filepath.Join(runDir, "world.json") {
 		t.Fatalf("child manifest env = %q", childEnv["KATL_VMTEST_WORLD_MANIFEST"])
 	}
+	if childEnv["KATL_VMTEST_BRIDGE"] != "katl-vmtest0" {
+		t.Fatalf("child bridge env = %q", childEnv["KATL_VMTEST_BRIDGE"])
+	}
 	if childEnv["KATL_VMTEST_RUN"] != "1" || childEnv["KATL_VMTEST_WORLD_STRICT"] != "1" {
 		t.Fatalf("child strict env = %#v", childEnv)
 	}
@@ -414,6 +417,7 @@ set -euo pipefail
 printf '%s\n' "$@" > "$KATL_FAKE_CHILD_ARGS"
 {
     printf 'KATL_VMTEST_WORLD_MANIFEST=%s\n' "${KATL_VMTEST_WORLD_MANIFEST:-}"
+    printf 'KATL_VMTEST_BRIDGE=%s\n' "${KATL_VMTEST_BRIDGE:-}"
     printf 'KATL_VMTEST_RUN=%s\n' "${KATL_VMTEST_RUN:-}"
     printf 'KATL_VMTEST_WORLD_STRICT=%s\n' "${KATL_VMTEST_WORLD_STRICT:-}"
 } > "$KATL_FAKE_CHILD_ENV"
