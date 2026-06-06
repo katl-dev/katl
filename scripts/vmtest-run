@@ -460,6 +460,7 @@ cleanup_network() {
 filter_count_args() {
     filtered_args=()
     filtered_has_package_arg=0
+    filtered_has_non_suite_package_arg=0
     filtered_has_selection_arg=0
     local expect_flag_value=0
     while [[ $# -gt 0 ]]; do
@@ -512,6 +513,9 @@ filter_count_args() {
                 ;;
             *)
                 filtered_has_package_arg=1
+                if [[ "$1" != "./..." ]]; then
+                    filtered_has_non_suite_package_arg=1
+                fi
                 filtered_args+=("$1")
                 shift
                 ;;
@@ -528,7 +532,7 @@ if [[ $# -eq 0 ]]; then
     preflight_required=1
 else
     filter_count_args "$@"
-    if [[ "$filtered_has_package_arg" == 1 || "$filtered_has_selection_arg" == 1 ]]; then
+    if [[ "$filtered_has_non_suite_package_arg" == 1 || "$filtered_has_selection_arg" == 1 ]]; then
         preflight_required=0
     else
         preflight_required=1

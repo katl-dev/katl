@@ -428,6 +428,43 @@ func TestVMTestRunNonSelectionFlagsKeepFullPreflight(t *testing.T) {
 	}
 }
 
+func TestVMTestRunExplicitSuitePackageKeepsFullPreflight(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./...", "-timeout", "2m")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_QEMU="+filepath.Join(tmp, "missing-qemu"),
+		"KATL_VMTEST_RUN_ID=run-explicit-suite-preflight",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("go test ran for setup-failed world, stat err = %v", err)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if !reflect.DeepEqual(summary.Args, []string{"./...", "-timeout", "2m"}) {
+		t.Fatalf("summary args = %#v", summary.Args)
+	}
+	if summary.Status != "setup-failed" || summary.ExitCode != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestVMTestRunKubectlGapFails(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
