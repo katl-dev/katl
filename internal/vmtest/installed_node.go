@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type InstalledRuntimeNodeConfig struct {
@@ -32,10 +33,17 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	if err != nil {
 		return RunningInstalledRuntimeNode{}, err
 	}
+	started := time.Now().UTC()
+	fail := func(err error) (RunningInstalledRuntimeNode, error) {
+		if writeErr := writeInstalledRuntimeNodeResult(result, StatusFailed, err.Error(), started); writeErr != nil {
+			return RunningInstalledRuntimeNode{}, fmt.Errorf("%w; write installed runtime node result: %v", err, writeErr)
+		}
+		return RunningInstalledRuntimeNode{}, err
+	}
 	runtime := config.Runtime
 	runtime.RequireVMTestAgent = true
 	if err := PrepareInstalledRuntime(result, runtime); err != nil {
-		return RunningInstalledRuntimeNode{}, err
+		return fail(err)
 	}
 	vm := runtime.VM
 	vm.Phase = "runtime"
@@ -51,11 +59,11 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 
 	plan, err := planVM(result, vm, runner.probe)
 	if err != nil {
-		return RunningInstalledRuntimeNode{}, err
+		return fail(err)
 	}
 	result.VSock = plan.VSock
 	if err := prepareVM(plan, vm); err != nil {
-		return RunningInstalledRuntimeNode{}, err
+		return fail(err)
 	}
 
 	runCtx := ctx
@@ -73,7 +81,7 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	file, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		stop()
-		return RunningInstalledRuntimeNode{}, err
+		return fail(err)
 	}
 	executor := runner.Executor
 	if executor == nil {
@@ -87,13 +95,20 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	qemuDone, err := waitForSerialSignal(runCtx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
 	if err != nil {
 		stop()
-		<-done
-		return RunningInstalledRuntimeNode{}, err
+		if !qemuDone {
+			<-done
+		}
+		return fail(err)
 	}
 	if qemuDone {
-		return RunningInstalledRuntimeNode{}, fmt.Errorf("qemu exited after serial signal before installed runtime node %q could be used", name)
+		return fail(fmt.Errorf("qemu exited after serial signal before installed runtime node %q could be used", name))
 	}
 	if err := runner.checkAgent(runCtx, result, vm); err != nil {
+		stop()
+		<-done
+		return fail(err)
+	}
+	if err := writeInstalledRuntimeNodeResult(result, StatusPassed, "", started); err != nil {
 		stop()
 		<-done
 		return RunningInstalledRuntimeNode{}, err
@@ -113,6 +128,28 @@ func PlannedInstalledRuntimeNodeResult(parent Result, name string) (Result, erro
 		return Result{}, errors.New("installed runtime node name is required")
 	}
 	return nodeResult(parent, name), nil
+}
+
+func writeInstalledRuntimeNodeResult(result Result, status Status, failure string, started time.Time) error {
+	finished := time.Now().UTC()
+	result.Status = status
+	result.Started = started
+	result.Finished = finished
+	if !started.IsZero() {
+		result.DurationMS = finished.Sub(started).Milliseconds()
+	}
+	result.FailureSummary = failure
+	result.addPhase("installed-runtime-node-start", status, failure, started, finished)
+	if err := os.MkdirAll(result.QEMUDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(result.DiskDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(result.ManifestDir, 0o755); err != nil {
+		return err
+	}
+	return writeJSON(result.Artifacts.Result, result)
 }
 
 func (n RunningInstalledRuntimeNode) Stop() error {
