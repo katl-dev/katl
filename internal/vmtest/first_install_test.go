@@ -158,6 +158,62 @@ func TestFirstInstallGuestHandoff(t *testing.T) {
 	}
 }
 
+func TestFirstInstallUsesInstalledESPExtractor(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	sourceESP := espFixture(t)
+	_, vmConfig := vmFixture(t)
+	var extractedDisk DiskPlan
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+		Keep:      KeepAlways,
+	}), Scenario{Name: "first-install-installed-esp"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    uki,
+			RuntimeArtifact: runtime,
+			VM:              vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			VM: vmConfig,
+		},
+		UseInstalledESP: true,
+		ESPExtractor: func(_ context.Context, disk DiskPlan, outputDir string) (string, error) {
+			extractedDisk = disk
+			if err := copyDir(sourceESP, outputDir); err != nil {
+				return "", err
+			}
+			return outputDir, nil
+		},
+		Manifest:        []byte(firstManifest()),
+		HandoffToken:    "test-token",
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		InstallerRunner: fakeVM("Katl installer ready"),
+		RuntimeRunner:   fakeVM("Katl state projection ready"),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	if extractedDisk.Kind != DiskTarget || extractedDisk.HostPath == "" {
+		t.Fatalf("extractor disk = %#v", extractedDisk)
+	}
+	if _, err := os.Stat(filepath.Join(result.Artifacts.InstalledESP, "loader", "entries")); err != nil {
+		t.Fatalf("installed ESP artifacts missing: %v", err)
+	}
+	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
+	if input.ESPArtifacts != result.Artifacts.InstalledESP {
+		t.Fatalf("runtime ESP artifacts = %q, want %q", input.ESPArtifacts, result.Artifacts.InstalledESP)
+	}
+	if !hasPhase(result, "installed-esp") {
+		t.Fatalf("installed-esp phase missing: %#v", result.Phases)
+	}
+}
+
 func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
@@ -192,6 +248,15 @@ func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "guest handoff response artifact is missing") {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
+}
+
+func hasPhase(result Result, name string) bool {
+	for _, phase := range result.Phases {
+		if phase.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 type fileDiskRunner struct{}

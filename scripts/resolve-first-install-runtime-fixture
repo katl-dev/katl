@@ -14,6 +14,7 @@ runtime_artifact="${KATL_RUNTIME_ARTIFACT:-}"
 runtime_esp="${KATL_RUNTIME_ESP_ARTIFACTS:-${KATL_INSTALLED_ESP_ARTIFACTS:-}}"
 node_metadata="${KATL_RUNTIME_NODE_METADATA:-${KATL_INSTALLED_NODE_METADATA:-}}"
 install_manifest="${KATL_INSTALL_MANIFEST:-}"
+use_installed_esp="${KATL_FIRST_INSTALL_USE_INSTALLED_ESP:-0}"
 installer_uki_sha256="${KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256:-}"
 runtime_artifact_sha256="${KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256:-}"
 install_manifest_sha256="${KATL_FIRST_INSTALL_MANIFEST_SHA256:-}"
@@ -37,6 +38,7 @@ Options:
   --installer-uki PATH       Installer UKI, or KATL_INSTALLER_UKI
   --runtime-artifact PATH    Runtime root artifact, or KATL_RUNTIME_ARTIFACT
   --runtime-esp DIR          Rendered runtime ESP tree, or KATL_RUNTIME_ESP_ARTIFACTS
+  --use-installed-esp        Extract and use the ESP written into the target disk
   --node-metadata PATH       Optional /etc/katl/node.json, or KATL_RUNTIME_NODE_METADATA
   --install-manifest PATH    Install manifest, or KATL_INSTALL_MANIFEST
   --installer-uki-sha256 H   Expected installer UKI SHA-256
@@ -101,6 +103,10 @@ while [[ $# -gt 0 ]]; do
             need_value "$1" "${2:-}"
             runtime_esp="$2"
             shift 2
+            ;;
+        --use-installed-esp)
+            use_installed_esp=1
+            shift
             ;;
         --node-metadata)
             need_value "$1" "${2:-}"
@@ -173,8 +179,21 @@ done
 [[ -f "$installer_uki" ]] || fail "installer UKI not found: $(rel "$installer_uki")"
 [[ -n "$runtime_artifact" ]] || fail "--runtime-artifact is required"
 [[ -f "$runtime_artifact" ]] || fail "runtime artifact not found: $(rel "$runtime_artifact")"
-[[ -n "$runtime_esp" ]] || fail "--runtime-esp is required"
-[[ -d "$runtime_esp" ]] || fail "runtime ESP artifacts directory not found: $(rel "$runtime_esp")"
+case "$use_installed_esp" in
+    0|false|False|FALSE)
+        use_installed_esp=0
+        ;;
+    1|true|True|TRUE)
+        use_installed_esp=1
+        ;;
+    *)
+        fail "KATL_FIRST_INSTALL_USE_INSTALLED_ESP must be 0 or 1"
+        ;;
+esac
+if [[ "$use_installed_esp" -eq 0 ]]; then
+    [[ -n "$runtime_esp" ]] || fail "--runtime-esp is required unless --use-installed-esp is set"
+    [[ -d "$runtime_esp" ]] || fail "runtime ESP artifacts directory not found: $(rel "$runtime_esp")"
+fi
 [[ -n "$install_manifest" ]] || fail "--install-manifest is required"
 [[ -f "$install_manifest" ]] || fail "install manifest not found: $(rel "$install_manifest")"
 [[ -n "$target_disk_size" ]] || fail "--target-disk-size is required"
@@ -184,7 +203,9 @@ fi
 
 installer_uki="$(real "$installer_uki")"
 runtime_artifact="$(real "$runtime_artifact")"
-runtime_esp="$(real "$runtime_esp")"
+if [[ -n "$runtime_esp" ]]; then
+    runtime_esp="$(real "$runtime_esp")"
+fi
 install_manifest="$(real "$install_manifest")"
 if [[ -n "$node_metadata" ]]; then
     node_metadata="$(real "$node_metadata")"
@@ -267,7 +288,9 @@ check_loader_entries() {
     fi
 }
 
-check_loader_entries "$runtime_esp"
+if [[ "$use_installed_esp" -eq 0 ]]; then
+    check_loader_entries "$runtime_esp"
+fi
 
 if [[ "$check_only" -eq 1 ]]; then
     echo "ok: first-install runtime fixture inputs valid"
@@ -283,8 +306,11 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'export KATL_VMTEST_STATE_ROOT=%q\n' "$vmtest_state_root"
     printf 'export KATL_INSTALLER_UKI=%q\n' "$installer_uki"
     printf 'export KATL_RUNTIME_ARTIFACT=%q\n' "$runtime_artifact"
-    printf 'export KATL_RUNTIME_ESP_ARTIFACTS=%q\n' "$runtime_esp"
+    if [[ -n "$runtime_esp" ]]; then
+        printf 'export KATL_RUNTIME_ESP_ARTIFACTS=%q\n' "$runtime_esp"
+    fi
     printf 'export KATL_INSTALL_MANIFEST=%q\n' "$install_manifest"
+    printf 'export KATL_FIRST_INSTALL_USE_INSTALLED_ESP=%q\n' "$use_installed_esp"
     printf 'export KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256=%q\n' "$installer_uki_sha256"
     printf 'export KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256=%q\n' "$runtime_artifact_sha256"
     printf 'export KATL_FIRST_INSTALL_MANIFEST_SHA256=%q\n' "$install_manifest_sha256"
@@ -302,7 +328,14 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'source %q\n' "$env_file"
     printf 'recheck_dir=%q\n' "$state_dir/recheck"
     # shellcheck disable=SC2016
-    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --runtime-artifact "$KATL_RUNTIME_ARTIFACT" --runtime-esp "$KATL_RUNTIME_ESP_ARTIFACTS" --install-manifest "$KATL_INSTALL_MANIFEST" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --runtime-artifact-sha256 "$KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256" --install-manifest-sha256 "$KATL_FIRST_INSTALL_MANIFEST_SHA256" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --runtime-artifact "$KATL_RUNTIME_ARTIFACT" --install-manifest "$KATL_INSTALL_MANIFEST" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --runtime-artifact-sha256 "$KATL_FIRST_INSTALL_RUNTIME_ARTIFACT_SHA256" --install-manifest-sha256 "$KATL_FIRST_INSTALL_MANIFEST_SHA256" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ "${KATL_FIRST_INSTALL_USE_INSTALLED_ESP:-0}" == "1" ]]; then\n'
+    printf '    recheck_args+=(--use-installed-esp)\n'
+    printf 'else\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--runtime-esp "$KATL_RUNTIME_ESP_ARTIFACTS")\n'
+    printf 'fi\n'
     # shellcheck disable=SC2016
     printf 'if [[ -n "${KATL_RUNTIME_NODE_METADATA:-}" ]]; then\n'
     # shellcheck disable=SC2016
@@ -329,6 +362,7 @@ cat >"$manifest" <<EOF
   "runtimeArtifact": "$(json "$runtime_artifact")",
   "runtimeArtifactSHA256": "$(json "$runtime_artifact_sha256")",
   "runtimeESPArtifacts": "$(json "$runtime_esp")",
+  "useInstalledESP": $(if [[ "$use_installed_esp" -eq 1 ]]; then printf true; else printf false; fi),
   "nodeMetadata": "$(json "$node_metadata")",
   "nodeMetadataSHA256": "$(json "$node_metadata_sha256")",
   "installManifest": "$(json "$install_manifest")",

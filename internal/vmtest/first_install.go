@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ import (
 type FirstInstallConfig struct {
 	Installer        InstallerBootConfig
 	Runtime          InstalledRuntimeConfig
+	UseInstalledESP  bool
+	ESPExtractor     InstalledESPExtractor
 	Manifest         []byte
 	ManifestPath     string
 	GuestHandoff     bool
@@ -32,6 +35,8 @@ type FirstInstallConfig struct {
 	InstallerRunner  VMRunner
 	RuntimeRunner    VMRunner
 }
+
+type InstalledESPExtractor func(context.Context, DiskPlan, string) (string, error)
 
 const (
 	guestHandoffSignal         = "katlos-install waiting for config at "
@@ -94,6 +99,15 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		}
 		now := runner.time()
 		result.addPhase("local-handoff", StatusPassed, "", now, now)
+	}
+	if config.UseInstalledESP {
+		esp, err := extractInstalledESP(ctx, result, config)
+		if err != nil {
+			return failFirst(runner, scenario, result, "installed-esp", err)
+		}
+		config.Runtime.ESPArtifacts = esp
+		now := runner.time()
+		result.addPhase("installed-esp", StatusPassed, "", now, now)
 	}
 
 	runtime, err := runtimeConfig(result, config.Runtime)
@@ -211,6 +225,67 @@ func writeManifest(result Result, manifest []byte) error {
 		return err
 	}
 	return os.WriteFile(result.Artifacts.InstallManifest, manifest, 0o600)
+}
+
+func extractInstalledESP(ctx context.Context, result Result, config FirstInstallConfig) (string, error) {
+	target, err := firstTargetDisk(result)
+	if err != nil {
+		return "", err
+	}
+	extractor := config.ESPExtractor
+	if extractor == nil {
+		extractor = ExtractInstalledESPArtifacts
+	}
+	return extractor(ctx, target, result.Artifacts.InstalledESP)
+}
+
+func firstTargetDisk(result Result) (DiskPlan, error) {
+	for _, disk := range result.Disks {
+		if disk.Kind == DiskTarget {
+			return disk, nil
+		}
+	}
+	return DiskPlan{}, errors.New("first install result has no target disk")
+}
+
+func ExtractInstalledESPArtifacts(ctx context.Context, disk DiskPlan, outputDir string) (string, error) {
+	if strings.TrimSpace(outputDir) == "" {
+		return "", errors.New("installed ESP output directory is required")
+	}
+	args := []string{
+		"--disk", disk.HostPath,
+		"--format", string(diskFormat(disk.Format)),
+		"--esp-dir", outputDir,
+		"--state-dir", filepath.Join(filepath.Dir(outputDir), "installed-esp-extract"),
+	}
+	script, err := findRepoScript("extract-installed-esp-artifacts")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, script, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("extract installed ESP artifacts: %w\n%s", err, output)
+	}
+	return outputDir, nil
+}
+
+func findRepoScript(name string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("find %s script: %w", name, err)
+	}
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, "scripts", name)
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return "", fmt.Errorf("scripts/%s not found from %s", name, cwd)
 }
 
 func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, hostPort int, serialText string) error {

@@ -171,15 +171,18 @@ metadata, and install manifest into a sourceable environment with:
 scripts/resolve-first-install-runtime-fixture \
   --installer-uki build/mkosi/katl-installer.efi \
   --runtime-artifact build/mkosi/katl-runtime-root.squashfs \
-  --runtime-esp build/local/cp-1-esp \
+  --use-installed-esp \
   --node-metadata build/local/cp-1-node.json \
   --install-manifest docs/internal/examples/minimal-install-manifest.json
 ```
 
 The command verifies that all referenced inputs exist, records SHA-256 bindings
 for the installer UKI, runtime artifact, install manifest, and optional node
-metadata, checks the runtime ESP loader-entry contract, and writes generated
-files under `build/first-install-runtime-fixture/`. Source the generated
+metadata, and writes generated files under
+`build/first-install-runtime-fixture/`. With `--use-installed-esp`, the smoke
+extracts the ESP from the target disk written by the installer and uses that
+tree for the packaged runtime boot. Without that option, pass `--runtime-esp`
+to preflight an existing runtime ESP loader-entry tree. Source the generated
 `vmtest.env` or run the generated wrapper to revalidate inputs and execute
 `TestFirstInstallTargetDiskFixtureContract`.
 

@@ -18,10 +18,11 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	}
 	options.Missing = MissingSkips
 	options.Keep = KeepAlways
+	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
 	installerUKI := RequireEnv(t, "KATL_INSTALLER_UKI")
 	runtimeArtifact := RequireEnv(t, "KATL_RUNTIME_ARTIFACT")
 	runtimeESP := first(os.Getenv("KATL_RUNTIME_ESP_ARTIFACTS"), os.Getenv("KATL_INSTALLED_ESP_ARTIFACTS"))
-	if runtimeESP == "" {
+	if runtimeESP == "" && !useInstalledESP {
 		t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install fixture smoke")
 	}
 	nodeMetadata := first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))
@@ -32,7 +33,11 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	}
 	manifestPath := RequireEnv(t, "KATL_INSTALL_MANIFEST")
 	repoRoot := repoRoot(t)
-	for _, tool := range []string{"jq", "sha256sum"} {
+	requiredTools := []string{"jq", "sha256sum"}
+	if useInstalledESP {
+		requiredTools = append(requiredTools, "sfdisk", "mcopy")
+	}
+	for _, tool := range requiredTools {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is required to package installed runtime fixtures: %v", tool, err)
 		}
@@ -72,9 +77,10 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 			RequireVMTestAgent: true,
 			VM:                 vm,
 		},
-		ManifestPath: manifestPath,
-		GuestHandoff: true,
-		TargetDisk:   TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
+		UseInstalledESP: useInstalledESP,
+		ManifestPath:    manifestPath,
+		GuestHandoff:    true,
+		TargetDisk:      TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
@@ -83,8 +89,15 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		t.Fatalf("first install status = %q, failure = %q, run dir = %s", firstResult.Status, firstResult.FailureSummary, firstResult.RunDir)
 	}
 	targetDisk := targetDiskPath(t, firstResult)
+	fixtureESP := runtimeESP
+	if useInstalledESP {
+		fixtureESP = firstResult.Artifacts.InstalledESP
+		if _, err := os.Stat(fixtureESP); err != nil {
+			t.Fatalf("installed ESP artifacts %s are unavailable: %v", fixtureESP, err)
+		}
+	}
 	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
-	createFixture := createInstalledRuntimeFixtureCommand(ctx, repoRoot, targetDisk, runtimeESP, string(DiskQCOW2), fixtureDir, nodeMetadata)
+	createFixture := createInstalledRuntimeFixtureCommand(ctx, repoRoot, targetDisk, fixtureESP, string(DiskQCOW2), fixtureDir, nodeMetadata)
 	output, err := createFixture.CombinedOutput()
 	if err != nil {
 		t.Fatalf("create installed runtime fixture failed: %v\n%s", err, output)

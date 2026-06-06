@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+disk="${KATL_INSTALLED_DISK:-}"
+format="${KATL_INSTALLED_DISK_FORMAT:-raw}"
+state_dir="${KATL_INSTALLED_ESP_EXTRACT_STATE_DIR:-$repo_root/build/installed-esp-extract}"
+esp_dir="${KATL_INSTALLED_ESP_ARTIFACTS:-$state_dir/esp}"
+
+usage() {
+    cat <<'USAGE'
+Usage: scripts/extract-installed-esp-artifacts [options]
+
+Extract the installer-written ESP from an installed runtime disk into a directory
+tree that vmtest can boot through QEMU's fat:rw EFI drive.
+
+Options:
+  --disk PATH       Installed runtime disk image, or KATL_INSTALLED_DISK
+  --format FORMAT   Disk image format: raw or qcow2 (default: raw)
+  --state-dir DIR   Work directory for converted disks
+  --esp-dir DIR     Output ESP artifact tree
+  -h, --help        Show this help
+USAGE
+}
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+need_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        fail "$option requires a value"
+    fi
+}
+
+rel() {
+    local path="$1"
+    printf "%s" "${path#"$repo_root"/}"
+}
+
+real() {
+    realpath -m "$1"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --disk)
+            need_value "$1" "${2:-}"
+            disk="$2"
+            shift 2
+            ;;
+        --format)
+            need_value "$1" "${2:-}"
+            format="$2"
+            shift 2
+            ;;
+        --state-dir)
+            need_value "$1" "${2:-}"
+            state_dir="$2"
+            shift 2
+            ;;
+        --esp-dir)
+            need_value "$1" "${2:-}"
+            esp_dir="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            fail "unknown argument: $1"
+            ;;
+    esac
+done
+
+[[ -n "$disk" ]] || fail "--disk is required"
+[[ -f "$disk" ]] || fail "installed runtime disk not found: $(rel "$disk")"
+case "$format" in
+    raw|qcow2)
+        ;;
+    *)
+        fail "--format must be raw or qcow2"
+        ;;
+esac
+
+need jq
+need mcopy
+need mkdir
+need realpath
+need rm
+need sfdisk
+if [[ "$format" == qcow2 ]]; then
+    need qemu-img
+fi
+
+disk="$(real "$disk")"
+state_dir="$(real "$state_dir")"
+esp_dir="$(real "$esp_dir")"
+raw_disk="$disk"
+
+mkdir -p "$state_dir"
+if [[ "$format" == qcow2 ]]; then
+    raw_disk="$state_dir/installed-runtime.raw"
+    qemu-img convert -f qcow2 -O raw "$disk" "$raw_disk"
+fi
+
+partition="$state_dir/esp-partition.json"
+sfdisk --json "$raw_disk" |
+    jq -cer '
+      .partitiontable.partitions[]
+      | select(((.name // "") == "KATL_ESP") or (((.type // "") | ascii_downcase) == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"))
+      | {start: .start, size: .size}
+    ' |
+    head -n 1 >"$partition" || fail "installed disk has no KATL_ESP partition"
+
+start="$(jq -er '.start' "$partition")"
+sector_size="$(sfdisk --json "$raw_disk" | jq -er '.partitiontable.sectorsize // 512')"
+[[ "$start" =~ ^[0-9]+$ ]] || fail "ESP partition start sector is invalid"
+[[ "$sector_size" =~ ^[0-9]+$ ]] || fail "disk sector size is invalid"
+offset=$((start * sector_size))
+
+rm -rf -- "$esp_dir"
+mkdir -p "$esp_dir"
+mcopy -s -i "$raw_disk@@$offset" "::/*" "$esp_dir/"
+
+entries_dir="$esp_dir/loader/entries"
+[[ -d "$entries_dir" ]] || fail "extracted ESP missing loader/entries"
+first_entry="$(find "$entries_dir" -maxdepth 1 -type f -name '*.conf' -print -quit)"
+[[ -n "$first_entry" ]] || fail "extracted ESP contains no loader entries"
+
+echo "installed ESP artifacts: $(rel "$esp_dir")"
