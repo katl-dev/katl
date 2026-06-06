@@ -793,7 +793,7 @@ func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
 		}},
 		Waits: []BootstrapWait{
 			{Kind: BootstrapWaitAPIReady},
-			{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"},
+			{Kind: BootstrapWaitRolloutStatus, Namespace: "kube-system", Name: "daemonset/cilium"},
 			{Kind: BootstrapWaitRolloutStatus, Namespace: "kube-system", Name: "deployment/coredns"},
 			{Kind: BootstrapWaitPodsReady, Namespace: "kube-system", Selector: "k8s-app=kube-dns"},
 			{Kind: BootstrapWaitCondition, Namespace: "kube-system", Name: "deployment/cilium-operator", Condition: "Available"},
@@ -816,11 +816,11 @@ func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
 	if got := commands.calls[1][5:]; !reflect.DeepEqual(got, []string{"get", "--raw=/readyz"}) {
 		t.Fatalf("api ready args = %#v", commands.calls[1])
 	}
-	if got := commands.calls[2][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "get", "daemonset/cilium"}) {
-		t.Fatalf("resource wait args = %#v", commands.calls[2])
+	if got := commands.calls[2][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "rollout", "status", "daemonset/cilium", "--timeout=5m"}) {
+		t.Fatalf("cilium rollout wait args = %#v", commands.calls[2])
 	}
 	if got := commands.calls[3][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=5m"}) {
-		t.Fatalf("rollout wait args = %#v", commands.calls[3])
+		t.Fatalf("coredns rollout wait args = %#v", commands.calls[3])
 	}
 	if got := commands.calls[4][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "wait", "--for=condition=Ready", "pod", "-l", "k8s-app=kube-dns", "--timeout=5m"}) {
 		t.Fatalf("pods-ready wait args = %#v", commands.calls[4])
@@ -879,6 +879,36 @@ func TestKubectlBootstrapRunnerStopsOnRolloutFailure(t *testing.T) {
 	}
 	if got := commands.calls[0][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=5m"}) {
 		t.Fatalf("rollout wait args = %#v", commands.calls[0])
+	}
+}
+
+func TestKubectlBootstrapRunnerStopsOnPodReadinessFailure(t *testing.T) {
+	commands := &fakeKubectlCommandRunner{
+		defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "timed out waiting for condition Ready on pods"},
+	}
+	_, err := (KubectlBootstrapRunner{
+		CommandRunner: commands,
+		TempDir:       t.TempDir(),
+	}).RunUserBootstrap(context.Background(), BootstrapRequest{
+		Server: "10.0.0.11:6443",
+		Credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+		Waits: []BootstrapWait{
+			{Kind: BootstrapWaitPodsReady, Namespace: "kube-system", Selector: "k8s-app=kube-dns"},
+			{Kind: BootstrapWaitNodesReady},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for condition Ready") {
+		t.Fatalf("RunUserBootstrap() error = %v, want pod readiness failure", err)
+	}
+	if len(commands.calls) != 1 {
+		t.Fatalf("kubectl calls = %#v, want one pod readiness call and no later wait", commands.calls)
+	}
+	if got := commands.calls[0][5:]; !reflect.DeepEqual(got, []string{"-n", "kube-system", "wait", "--for=condition=Ready", "pod", "-l", "k8s-app=kube-dns", "--timeout=5m"}) {
+		t.Fatalf("pods-ready wait args = %#v", commands.calls[0])
 	}
 }
 
