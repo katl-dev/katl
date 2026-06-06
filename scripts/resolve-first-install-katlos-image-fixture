@@ -10,6 +10,7 @@ run_script="$state_dir/run-first-install-katlos-image-fixture.sh"
 manifest="$state_dir/katlos-image-fixture.json"
 
 installer_uki="${KATL_INSTALLER_UKI:-}"
+installer_uki_sha256="${KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256:-}"
 katlos_image="${KATL_KATLOS_IMAGE:-}"
 katlos_image_sha256="${KATL_KATLOS_IMAGE_SHA256:-}"
 install_manifest="${KATL_INSTALL_MANIFEST:-}"
@@ -31,6 +32,7 @@ the installer.
 
 Options:
   --installer-uki PATH       Installer UKI, or KATL_INSTALLER_UKI
+  --installer-uki-sha256 H   Expected installer UKI SHA-256
   --katlos-image PATH        KatlOS install image, or KATL_KATLOS_IMAGE
   --katlos-image-sha256 H    Expected KatlOS image SHA-256
   --node-metadata PATH       Optional /etc/katl/node.json, or KATL_RUNTIME_NODE_METADATA
@@ -107,6 +109,11 @@ while [[ $# -gt 0 ]]; do
         --installer-uki)
             need_value "$1" "${2:-}"
             installer_uki="$2"
+            shift 2
+            ;;
+        --installer-uki-sha256)
+            need_value "$1" "${2:-}"
+            installer_uki_sha256="$2"
             shift 2
             ;;
         --katlos-image)
@@ -206,7 +213,14 @@ run_script="$(real "$run_script")"
 manifest="$(real "$manifest")"
 
 validate_sha256 "KatlOS image SHA-256" "$katlos_image_sha256"
+validate_sha256 "installer UKI SHA-256" "$installer_uki_sha256"
 validate_sha256 "node metadata SHA-256" "$node_metadata_sha256"
+
+actual_installer_uki_sha256="$(file_sha "$installer_uki")"
+if [[ -n "$installer_uki_sha256" && "$actual_installer_uki_sha256" != "$installer_uki_sha256" ]]; then
+    fail "installer UKI sha256 does not match $installer_uki"
+fi
+installer_uki_sha256="$actual_installer_uki_sha256"
 
 image_sha256="$(file_sha "$katlos_image")"
 if [[ -n "$katlos_image_sha256" && "$image_sha256" != "$katlos_image_sha256" ]]; then
@@ -263,6 +277,7 @@ fi
 
 resolver_args=(
     --installer-uki "$installer_uki"
+    --installer-uki-sha256 "$installer_uki_sha256"
     --runtime-artifact "$runtime_artifact"
     --runtime-artifact-sha256 "$runtime_sha256"
     --use-installed-esp
@@ -288,11 +303,14 @@ cat >"$manifest" <<EOF
 {
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "FirstInstallKatlOSImageFixtureResolution",
+  "installerUKI": "$(json "$installer_uki")",
+  "installerUKISHA256": "$(json "$installer_uki_sha256")",
   "katlosImage": "$(json "$katlos_image")",
   "katlosImageSHA256": "$(json "$image_sha256")",
   "katlosImageSizeBytes": $image_size,
   "runtimeArtifact": "$(json "$runtime_artifact")",
   "runtimeArtifactSHA256": "$(json "$runtime_sha256")",
+  "runtimeArtifactSizeBytes": $runtime_size,
   "installManifest": "$(json "$install_manifest")",
   "nodeMetadata": "$(json "$node_metadata")",
   "nodeMetadataSHA256": "$(json "$actual_node_metadata_sha256")",
@@ -308,7 +326,7 @@ EOF
     printf 'source %q\n' "$env_file"
     printf 'recheck_dir=%q\n' "$state_dir/katlos-recheck"
     # shellcheck disable=SC2016
-    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
     # shellcheck disable=SC2016
     printf 'if [[ -n "${KATL_RUNTIME_NODE_METADATA:-}" ]]; then\n'
     # shellcheck disable=SC2016
