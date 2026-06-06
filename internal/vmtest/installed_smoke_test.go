@@ -24,6 +24,12 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	if runtimeESP == "" {
 		t.Skip("set KATL_RUNTIME_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS to run first-install fixture smoke")
 	}
+	nodeMetadata := first(os.Getenv("KATL_RUNTIME_NODE_METADATA"), os.Getenv("KATL_INSTALLED_NODE_METADATA"))
+	if nodeMetadata != "" {
+		if _, err := os.Stat(nodeMetadata); err != nil {
+			t.Skipf("node metadata %s is unavailable: %v", nodeMetadata, err)
+		}
+	}
 	manifestPath := RequireEnv(t, "KATL_INSTALL_MANIFEST")
 	repoRoot := repoRoot(t)
 	for _, tool := range []string{"jq", "sha256sum"} {
@@ -78,12 +84,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	}
 	targetDisk := targetDiskPath(t, firstResult)
 	fixtureDir := filepath.Join(firstResult.ManifestDir, "installed-runtime-fixture")
-	createFixture := exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "create-installed-runtime-fixture"),
-		"--disk", targetDisk,
-		"--esp-artifacts", runtimeESP,
-		"--format", string(DiskQCOW2),
-		"--state-dir", fixtureDir,
-	)
+	createFixture := createInstalledRuntimeFixtureCommand(ctx, repoRoot, targetDisk, runtimeESP, string(DiskQCOW2), fixtureDir, nodeMetadata)
 	output, err := createFixture.CombinedOutput()
 	if err != nil {
 		t.Fatalf("create installed runtime fixture failed: %v\n%s", err, output)
@@ -92,14 +93,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
 	packagedDisk := filepath.Join(fixtureDir, "installed-runtime.qcow2")
 	packagedESP := filepath.Join(fixtureDir, "esp")
-	checkFixture := exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "resolve-installed-runtime-fixture"),
-		"--disk", packagedDisk,
-		"--esp-artifacts", packagedESP,
-		"--fixture", fixtureManifest,
-		"--format", string(DiskQCOW2),
-		"--state-dir", filepath.Join(fixtureDir, "recheck"),
-		"--check-only",
-	)
+	checkFixture := resolveInstalledRuntimeFixtureCommand(ctx, repoRoot, packagedDisk, packagedESP, fixtureManifest, string(DiskQCOW2), filepath.Join(fixtureDir, "recheck"), packagedNodeMetadata(fixtureDir, nodeMetadata))
 	output, err = checkFixture.CombinedOutput()
 	if err != nil {
 		t.Fatalf("check installed runtime fixture failed: %v\n%s", err, output)
@@ -171,6 +165,78 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	if readyResult.Status != StatusPassed {
 		t.Fatalf("packaged runtime ready status = %q, failure = %q, run dir = %s", readyResult.Status, readyResult.FailureSummary, readyResult.RunDir)
 	}
+}
+
+func createInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, esp, format, stateDir, nodeMetadata string) *exec.Cmd {
+	args := []string{
+		"--disk", disk,
+		"--esp-artifacts", esp,
+		"--format", format,
+		"--state-dir", stateDir,
+	}
+	if nodeMetadata != "" {
+		args = append(args, "--node-metadata", nodeMetadata)
+	}
+	return exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "create-installed-runtime-fixture"), args...)
+}
+
+func resolveInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, esp, fixture, format, stateDir, nodeMetadata string) *exec.Cmd {
+	args := []string{
+		"--disk", disk,
+		"--esp-artifacts", esp,
+		"--fixture", fixture,
+		"--format", format,
+		"--state-dir", stateDir,
+		"--check-only",
+	}
+	if nodeMetadata != "" {
+		args = append(args, "--node-metadata", nodeMetadata)
+	}
+	return exec.CommandContext(ctx, filepath.Join(repoRoot, "scripts", "resolve-installed-runtime-fixture"), args...)
+}
+
+func packagedNodeMetadata(fixtureDir, nodeMetadata string) string {
+	if nodeMetadata == "" {
+		return ""
+	}
+	return filepath.Join(fixtureDir, "node.json")
+}
+
+func TestFirstInstallFixtureCommandsCarryNodeMetadata(t *testing.T) {
+	create := createInstalledRuntimeFixtureCommand(context.Background(), "/repo", "target.qcow2", "esp", "qcow2", "fixture", "node.json")
+	if !hasArgPair(create.Args, "--node-metadata", "node.json") {
+		t.Fatalf("create args missing node metadata: %#v", create.Args)
+	}
+	resolve := resolveInstalledRuntimeFixtureCommand(context.Background(), "/repo", "fixture/installed-runtime.qcow2", "fixture/esp", "fixture/installed-runtime-fixture.json", "qcow2", "fixture/recheck", packagedNodeMetadata("fixture", "node.json"))
+	if !hasArgPair(resolve.Args, "--node-metadata", filepath.Join("fixture", "node.json")) {
+		t.Fatalf("resolve args missing packaged node metadata: %#v", resolve.Args)
+	}
+	createWithoutMetadata := createInstalledRuntimeFixtureCommand(context.Background(), "/repo", "target.qcow2", "esp", "qcow2", "fixture", "")
+	if hasSmokeArg(createWithoutMetadata.Args, "--node-metadata") {
+		t.Fatalf("create args unexpectedly include node metadata: %#v", createWithoutMetadata.Args)
+	}
+	resolveWithoutMetadata := resolveInstalledRuntimeFixtureCommand(context.Background(), "/repo", "disk", "esp", "fixture.json", "qcow2", "recheck", "")
+	if hasSmokeArg(resolveWithoutMetadata.Args, "--node-metadata") {
+		t.Fatalf("resolve args unexpectedly include node metadata: %#v", resolveWithoutMetadata.Args)
+	}
+}
+
+func hasArgPair(args []string, name, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == name && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSmokeArg(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {

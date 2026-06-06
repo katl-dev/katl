@@ -171,6 +171,7 @@ export KATL_VMTEST_RUN=1
 export KATL_INSTALLER_UKI=build/mkosi/katl-installer.efi
 export KATL_RUNTIME_ARTIFACT=build/mkosi/katl-runtime-root.squashfs
 export KATL_RUNTIME_ESP_ARTIFACTS=build/local/cp-1-esp
+export KATL_RUNTIME_NODE_METADATA=build/local/cp-1-node.json
 export KATL_INSTALL_MANIFEST=docs/internal/examples/minimal-install-manifest.json
 
 GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./internal/vmtest \
@@ -179,11 +180,13 @@ GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./internal/vmtest \
 ```
 
 The smoke keeps the target disk from the first-install harness, packages it with
-`scripts/create-installed-runtime-fixture`, revalidates the generated fixture
-manifest, then boots the packaged fixture with `RequireVMTestAgent=true` and
-records the vsock health transcript. The current harness still owns whether the
-target disk was actually written by the in-guest installer; this smoke fails if
-that path does not leave a bootable installed runtime disk.
+`scripts/create-installed-runtime-fixture`, includes node metadata when
+`KATL_RUNTIME_NODE_METADATA` or `KATL_INSTALLED_NODE_METADATA` is set,
+revalidates the generated fixture manifest, then boots the packaged fixture with
+`RequireVMTestAgent=true` and records the vsock health transcript. The current
+harness still owns whether the target disk was actually written by the in-guest
+installer; this smoke fails if that path does not leave a bootable installed
+runtime disk.
 
 ## Two-Node Kubeadm VM Fixtures
 
