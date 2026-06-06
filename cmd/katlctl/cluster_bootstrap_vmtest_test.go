@@ -334,6 +334,7 @@ nodes:
 type twoNodeArtifactManifest struct {
 	ControlPlaneRunDir     string                      `json:"controlPlaneRunDir"`
 	WorkerRunDir           string                      `json:"workerRunDir"`
+	NodeScenarios          map[string]string           `json:"nodeScenarios,omitempty"`
 	NodeResults            map[string]string           `json:"nodeResults,omitempty"`
 	QEMUCommands           map[string]string           `json:"qemuCommands,omitempty"`
 	InstalledRuntimeInputs map[string]string           `json:"installedRuntimeInputs,omitempty"`
@@ -359,6 +360,7 @@ func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmoke
 	return writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
 		ControlPlaneRunDir:     nodeByName["cp-1"].Result.RunDir,
 		WorkerRunDir:           nodeByName["worker-1"].Result.RunDir,
+		NodeScenarios:          nodeScenarioPaths(nodes),
 		NodeResults:            nodeResultPaths(nodes),
 		QEMUCommands:           qemuCommandPaths(nodes),
 		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
@@ -933,6 +935,12 @@ func nodeResultPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]stri
 	})
 }
 
+func nodeScenarioPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
+		return paths.Scenario
+	})
+}
+
 func qemuCommandPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
 	return nodeArtifactPaths(nodes, func(paths vmtest.ArtifactPaths) string {
 		return paths.QEMUCommand
@@ -994,6 +1002,10 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 			"cp-1":     "/tmp/cp-run/result.json",
 			"worker-1": "/tmp/worker-run/result.json",
 		},
+		NodeScenarios: map[string]string{
+			"cp-1":     "/tmp/cp-run/scenario.json",
+			"worker-1": "/tmp/worker-run/scenario.json",
+		},
 		QEMUCommands: map[string]string{
 			"cp-1":     "/tmp/cp-run/qemu/qemu-command.txt",
 			"worker-1": "/tmp/worker-run/qemu/qemu-command.txt",
@@ -1041,6 +1053,9 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.NodeResults["cp-1"] != "/tmp/cp-run/result.json" || manifest.QEMUCommands["worker-1"] != "/tmp/worker-run/qemu/qemu-command.txt" {
 		t.Fatalf("artifact manifest node artifacts = %#v %#v", manifest.NodeResults, manifest.QEMUCommands)
+	}
+	if manifest.NodeScenarios["cp-1"] != "/tmp/cp-run/scenario.json" || manifest.NodeScenarios["worker-1"] != "/tmp/worker-run/scenario.json" {
+		t.Fatalf("artifact manifest node scenarios = %#v", manifest.NodeScenarios)
 	}
 	if manifest.InstalledRuntimeInputs["cp-1"] != "/tmp/cp-run/manifests/installed-runtime.json" || manifest.VSockTranscripts["worker-1"] != "/tmp/worker-run/qemu/vsock-transcript.jsonl" {
 		t.Fatalf("artifact manifest runtime artifacts = %#v %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
@@ -1219,6 +1234,9 @@ func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
 	if manifest.SerialLogs["cp-1"] != cpResult.Artifacts.RuntimeSerial || manifest.QEMUCommands["worker-1"] != workerResult.Artifacts.QEMUCommand {
 		t.Fatalf("planned artifact indexes = serial %#v qemu %#v", manifest.SerialLogs, manifest.QEMUCommands)
 	}
+	if manifest.NodeScenarios["cp-1"] != cpResult.Artifacts.Scenario || manifest.NodeScenarios["worker-1"] != workerResult.Artifacts.Scenario {
+		t.Fatalf("planned node scenario indexes = %#v", manifest.NodeScenarios)
+	}
 	if manifest.InstalledRuntimeInputs["worker-1"] != workerResult.Artifacts.InstalledRuntime || manifest.VSockTranscripts["cp-1"] != cpResult.Artifacts.VSockTranscript {
 		t.Fatalf("planned runtime indexes = installed %#v vsock %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
 	}
@@ -1229,6 +1247,7 @@ func TestNodeArtifactPaths(t *testing.T) {
 		{
 			Name: "cp-1",
 			Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{
+				Scenario:         "/tmp/cp-1/scenario.json",
 				Result:           "/tmp/cp-1/result.json",
 				QEMUCommand:      "/tmp/cp-1/qemu/qemu-command.txt",
 				InstalledRuntime: "/tmp/cp-1/manifests/installed-runtime.json",
@@ -1239,12 +1258,14 @@ func TestNodeArtifactPaths(t *testing.T) {
 		{
 			Name: "",
 			Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{
-				Result: "/tmp/ignored/result.json",
+				Scenario: "/tmp/ignored/scenario.json",
+				Result:   "/tmp/ignored/result.json",
 			}},
 		},
 		{
 			Name: "worker-1",
 			Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{
+				Scenario:         "/tmp/worker-1/scenario.json",
 				Result:           "/tmp/worker-1/result.json",
 				QEMUCommand:      "/tmp/worker-1/qemu/qemu-command.txt",
 				InstalledRuntime: "/tmp/worker-1/manifests/installed-runtime.json",
@@ -1256,6 +1277,9 @@ func TestNodeArtifactPaths(t *testing.T) {
 
 	if got := nodeResultPaths(nodes); got["cp-1"] != "/tmp/cp-1/result.json" || got["worker-1"] != "/tmp/worker-1/result.json" || len(got) != 2 {
 		t.Fatalf("node result paths = %#v", got)
+	}
+	if got := nodeScenarioPaths(nodes); got["cp-1"] != "/tmp/cp-1/scenario.json" || got["worker-1"] != "/tmp/worker-1/scenario.json" || len(got) != 2 {
+		t.Fatalf("node scenario paths = %#v", got)
 	}
 	if got := qemuCommandPaths(nodes); got["cp-1"] != "/tmp/cp-1/qemu/qemu-command.txt" || got["worker-1"] != "/tmp/worker-1/qemu/qemu-command.txt" || len(got) != 2 {
 		t.Fatalf("qemu command paths = %#v", got)

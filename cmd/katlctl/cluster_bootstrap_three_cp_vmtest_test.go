@@ -256,6 +256,7 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 
 type threeControlPlaneArtifactManifest struct {
 	NodeRunDirs            map[string]string           `json:"nodeRunDirs"`
+	NodeScenarios          map[string]string           `json:"nodeScenarios,omitempty"`
 	NodeResults            map[string]string           `json:"nodeResults,omitempty"`
 	QEMUCommands           map[string]string           `json:"qemuCommands,omitempty"`
 	InstalledRuntimeInputs map[string]string           `json:"installedRuntimeInputs,omitempty"`
@@ -280,6 +281,7 @@ type threeControlPlaneArtifactManifest struct {
 func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs threeControlPlaneSmokeInputs, transcriptDir, etcdTranscriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
 	return writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
 		NodeRunDirs:            nodeRunDirs(nodes),
+		NodeScenarios:          nodeScenarioPaths(nodes),
 		NodeResults:            nodeResultPaths(nodes),
 		QEMUCommands:           qemuCommandPaths(nodes),
 		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
@@ -809,6 +811,9 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	if manifest.NodeRunDirs["cp-2"] != nodes[1].Result.RunDir || manifest.SerialLogs["cp-3"] != nodes[2].Result.Artifacts.RuntimeSerial {
 		t.Fatalf("planned run dirs/serials = %#v %#v", manifest.NodeRunDirs, manifest.SerialLogs)
 	}
+	if manifest.NodeScenarios["cp-1"] != nodes[0].Result.Artifacts.Scenario || manifest.NodeScenarios["cp-3"] != nodes[2].Result.Artifacts.Scenario {
+		t.Fatalf("planned node scenarios = %#v", manifest.NodeScenarios)
+	}
 	if manifest.QEMUCommands["cp-1"] != nodes[0].Result.Artifacts.QEMUCommand || manifest.InstalledRuntimeInputs["cp-3"] != nodes[2].Result.Artifacts.InstalledRuntime {
 		t.Fatalf("planned artifact indexes = qemu %#v installed %#v", manifest.QEMUCommands, manifest.InstalledRuntimeInputs)
 	}
@@ -911,6 +916,9 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 		NodeResults: map[string]string{
 			"cp-1": "/tmp/cp-1-run/result.json",
 		},
+		NodeScenarios: map[string]string{
+			"cp-1": "/tmp/cp-1-run/scenario.json",
+		},
 		QEMUCommands: map[string]string{
 			"cp-1": "/tmp/cp-1-run/qemu/qemu-command.txt",
 		},
@@ -955,6 +963,9 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.NodeResults["cp-1"] != "/tmp/cp-1-run/result.json" || manifest.QEMUCommands["cp-1"] != "/tmp/cp-1-run/qemu/qemu-command.txt" {
 		t.Fatalf("artifact manifest node artifacts = %#v %#v", manifest.NodeResults, manifest.QEMUCommands)
+	}
+	if manifest.NodeScenarios["cp-1"] != "/tmp/cp-1-run/scenario.json" {
+		t.Fatalf("artifact manifest node scenarios = %#v", manifest.NodeScenarios)
 	}
 	if manifest.InstalledRuntimeInputs["cp-1"] != "/tmp/cp-1-run/manifests/installed-runtime.json" || manifest.VSockTranscripts["cp-1"] != "/tmp/cp-1-run/qemu/vsock-transcript.jsonl" {
 		t.Fatalf("artifact manifest runtime artifacts = %#v %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
