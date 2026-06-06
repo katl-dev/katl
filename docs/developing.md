@@ -236,11 +236,12 @@ Each fixture manifest binds one installed node's artifacts:
 ## Three-Control-Plane Stacked-Etcd VM Smoke
 
 The opt-in three-control-plane stacked-etcd smoke expects three already
-installed control-plane runtime disks, rendered per-node ESP artifact trees, and
-bridge-reachable addresses. It uses the operator bootstrap path to run
-`kubeadm init` on `cp-1`, join `cp-2` and `cp-3` serially, verify the resulting
-node objects, verify stacked-etcd health and membership, and create a restricted
-etcd snapshot artifact.
+installed control-plane runtime disks, rendered per-node ESP artifact trees,
+per-node `/etc/katl/node.json` metadata files, per-node fixture manifests that
+bind those artifacts by checksum, and bridge-reachable addresses. It uses the
+operator bootstrap path to run `kubeadm init` on `cp-1`, join `cp-2` and `cp-3`
+serially, verify the resulting node objects, verify stacked-etcd health and
+membership, and create a restricted etcd snapshot artifact.
 
 Set the fixture environment in the shell that runs the test:
 
@@ -253,6 +254,12 @@ export KATL_CONTROL_PLANE_3_INSTALLED_DISK=build/local/cp-3.qcow2
 export KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS=build/local/cp-1-esp
 export KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS=build/local/cp-2-esp
 export KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS=build/local/cp-3-esp
+export KATL_CONTROL_PLANE_1_NODE_METADATA=build/local/cp-1-node.json
+export KATL_CONTROL_PLANE_2_NODE_METADATA=build/local/cp-2-node.json
+export KATL_CONTROL_PLANE_3_NODE_METADATA=build/local/cp-3-node.json
+export KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST=build/local/cp-1-fixture.json
+export KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST=build/local/cp-2-fixture.json
+export KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST=build/local/cp-3-fixture.json
 export KATL_CONTROL_PLANE_1_ADDRESS=10.88.0.11
 export KATL_CONTROL_PLANE_2_ADDRESS=10.88.0.12
 export KATL_CONTROL_PLANE_3_ADDRESS=10.88.0.13
@@ -273,6 +280,7 @@ If all three nodes share one ESP artifact tree, set
 `KATL_INSTALLED_ESP_ARTIFACTS` instead of the per-node ESP variables. The
 legacy `KATL_CONTROL_PLANE_INSTALLED_DISK`,
 `KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS`,
+`KATL_CONTROL_PLANE_NODE_METADATA`, `KATL_CONTROL_PLANE_FIXTURE_MANIFEST`,
 `KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT`, and `KATL_CONTROL_PLANE_ADDRESS`
 variables may be used for `cp-1` only.
 

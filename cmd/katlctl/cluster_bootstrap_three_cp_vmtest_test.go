@@ -33,6 +33,12 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	cp1ESP := requireNodeESP(t, firstSetEnv("KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS", "KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS"))
 	cp2ESP := requireNodeESP(t, "KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS")
 	cp3ESP := requireNodeESP(t, "KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS")
+	cp1Fixture := requireFirstEnv(t, "KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST", "KATL_CONTROL_PLANE_FIXTURE_MANIFEST")
+	cp2Fixture := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST")
+	cp3Fixture := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST")
+	cp1Metadata := requireFirstEnv(t, "KATL_CONTROL_PLANE_1_NODE_METADATA", "KATL_CONTROL_PLANE_NODE_METADATA")
+	cp2Metadata := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_2_NODE_METADATA")
+	cp3Metadata := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_3_NODE_METADATA")
 	cp1Address := requireFirstEnv(t, "KATL_CONTROL_PLANE_1_ADDRESS", "KATL_CONTROL_PLANE_ADDRESS")
 	cp2Address := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_2_ADDRESS")
 	cp3Address := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_3_ADDRESS")
@@ -59,14 +65,14 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 
-	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-1", cp1Disk, cp1ESP, diskFormatEnv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT", "KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), options.KVM, 43201), vmtest.VMRunner{})
+	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-1", cp1Disk, cp1ESP, cp1Fixture, cp1Metadata, diskFormatEnv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT", "KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), options.KVM, 43201), vmtest.VMRunner{})
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start cp-1 VM: %v", err)
 	}
 	defer stopNode(t, cp1Node)
 
-	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-2", cp2Disk, cp2ESP, diskFormatEnv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), options.KVM, 43202), vmtest.VMRunner{})
+	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-2", cp2Disk, cp2ESP, cp2Fixture, cp2Metadata, diskFormatEnv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), options.KVM, 43202), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cp1Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -74,7 +80,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	}
 	defer stopNode(t, cp2Node)
 
-	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-3", cp3Disk, cp3ESP, diskFormatEnv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), options.KVM, 43203), vmtest.VMRunner{})
+	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-3", cp3Disk, cp3ESP, cp3Fixture, cp3Metadata, diskFormatEnv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), options.KVM, 43203), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cp1Node, cp2Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -160,14 +166,16 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
 }
 
-func threeControlPlaneNodeConfig(name, disk, esp string, format vmtest.DiskFormat, kvm vmtest.KVMPolicy, cid uint32) vmtest.InstalledRuntimeNodeConfig {
+func threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, kvm vmtest.KVMPolicy, cid uint32) vmtest.InstalledRuntimeNodeConfig {
 	return vmtest.InstalledRuntimeNodeConfig{
 		Name: name,
 		Runtime: vmtest.InstalledRuntimeConfig{
-			Disk:         disk,
-			DiskFormat:   format,
-			ESPArtifacts: esp,
-			VM:           twoNodeVMConfig(kvm, cid),
+			Disk:            disk,
+			DiskFormat:      format,
+			ESPArtifacts:    esp,
+			FixtureManifest: fixtureManifest,
+			NodeMetadata:    nodeMetadata,
+			VM:              twoNodeVMConfig(kvm, cid),
 		},
 	}
 }
@@ -526,5 +534,9 @@ func TestThreeControlPlaneInventoryAndEtcdVerificationHelpers(t *testing.T) {
 	planned := plannedControlPlaneNodes(nodes)
 	if got := []inventory.BootstrapAction{planned["cp-1"].Action, planned["cp-2"].Action, planned["cp-3"].Action}; !reflect.DeepEqual(got, []inventory.BootstrapAction{inventory.ActionInit, inventory.ActionControlPlaneJoin, inventory.ActionControlPlaneJoin}) {
 		t.Fatalf("planned actions = %#v", got)
+	}
+	config := threeControlPlaneNodeConfig("cp-2", "disk.qcow2", "esp", "fixture.json", "node.json", vmtest.DiskQCOW2, vmtest.KVMOff, 43202)
+	if config.Runtime.FixtureManifest != "fixture.json" || config.Runtime.NodeMetadata != "node.json" {
+		t.Fatalf("runtime provenance = fixture %q metadata %q", config.Runtime.FixtureManifest, config.Runtime.NodeMetadata)
 	}
 }
