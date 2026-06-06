@@ -151,10 +151,10 @@ esac
 
 fixture_dir="$(dirname "$latest_fixture")"
 source_run_dir="$(real "$fixture_dir/../../..")"
-disk="$(real "$fixture_dir/installed-runtime.$disk_format")"
-esp_artifacts="$(real "$fixture_dir/esp")"
-[[ -f "$disk" ]] || fail "published fixture disk not found: $(rel "$disk")"
-[[ -d "$esp_artifacts" ]] || fail "published fixture ESP not found: $(rel "$esp_artifacts")"
+source_disk="$(real "$fixture_dir/installed-runtime.$disk_format")"
+source_esp_artifacts="$(real "$fixture_dir/esp")"
+[[ -f "$source_disk" ]] || fail "source fixture disk not found: $(rel "$source_disk")"
+[[ -d "$source_esp_artifacts" ]] || fail "source fixture ESP not found: $(rel "$source_esp_artifacts")"
 
 node_metadata=""
 if jq -e 'has("nodeMetadata")' "$latest_fixture" >/dev/null; then
@@ -167,10 +167,37 @@ if jq -e 'has("nodeMetadata")' "$latest_fixture" >/dev/null; then
     [[ -f "$node_metadata" ]] || fail "published fixture node metadata not found: $(rel "$node_metadata")"
 fi
 
+node_name="$(jq -er '.nodeName' "$latest_fixture")"
+system_role="$(jq -er '.systemRole' "$latest_fixture")"
+
+pack_args=(
+    --disk "$source_disk"
+    --esp-artifacts "$source_esp_artifacts"
+    --format "$disk_format"
+    --node-name "$node_name"
+    --system-role "$system_role"
+    --state-dir "$state_dir"
+)
+if [[ -n "$node_metadata" ]]; then
+    pack_args+=(--node-metadata "$node_metadata")
+fi
+"$repo_root/scripts/create-installed-runtime-fixture" "${pack_args[@]}" >/dev/null
+
+disk="$(real "$state_dir/installed-runtime.$disk_format")"
+esp_artifacts="$(real "$state_dir/esp")"
+fixture_manifest="$(real "$state_dir/installed-runtime-fixture.json")"
+[[ -f "$disk" ]] || fail "published fixture disk not found: $(rel "$disk")"
+[[ -d "$esp_artifacts" ]] || fail "published fixture ESP not found: $(rel "$esp_artifacts")"
+[[ -f "$fixture_manifest" ]] || fail "published fixture manifest not found: $(rel "$fixture_manifest")"
+if [[ -n "$node_metadata" ]]; then
+    node_metadata="$(real "$state_dir/node.json")"
+    [[ -f "$node_metadata" ]] || fail "published fixture node metadata not found: $(rel "$node_metadata")"
+fi
+
 resolver_args=(
     --disk "$disk"
     --esp-artifacts "$esp_artifacts"
-    --fixture "$latest_fixture"
+    --fixture "$fixture_manifest"
     --format "$disk_format"
     --state-dir "$state_dir"
     --env-file "$env_file"
@@ -186,6 +213,7 @@ cat >"$manifest" <<EOF
   "kind": "PublishedFirstInstallRuntimeFixture",
   "sourceRunDir": "$(json "$source_run_dir")",
   "sourceFixtureManifest": "$(json "$latest_fixture")",
+  "fixtureManifest": "$(json "$fixture_manifest")",
   "disk": "$(json "$disk")",
   "diskFormat": "$(json "$disk_format")",
   "espArtifacts": "$(json "$esp_artifacts")",
@@ -200,6 +228,7 @@ EOF
 echo "published fixture env: $(rel "$env_file")"
 echo "published fixture manifest: $(rel "$manifest")"
 echo "source fixture: $(rel "$latest_fixture")"
+echo "packaged fixture: $(rel "$fixture_manifest")"
 echo "next: source $(rel "$env_file")"
 echo "next: $(rel "$state_dir/run-installed-runtime-vmtest-agent.sh")"
 echo "next: $(rel "$state_dir/run-installed-runtime-kubeadm-ready.sh")"

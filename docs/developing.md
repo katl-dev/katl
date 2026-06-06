@@ -197,14 +197,13 @@ harness still owns whether the target disk was actually written by the in-guest
 installer; this smoke fails if that path does not leave a bootable installed
 runtime disk.
 
-After the generated first-install wrapper passes, it publishes the packaged
-installed runtime under `<state-dir>/published-installed-runtime/`. Source that
-directory's `vmtest.env` to run the direct installed-runtime smokes, or use its
-`published-first-install-runtime-fixture.json` manifest as an input to the
-two-node and three-control-plane fixture resolvers. The published manifest keeps
+After the generated first-install wrapper passes, it publishes a packaged copy of
+the installed runtime under `<state-dir>/published-installed-runtime/`. Source
+that directory's `vmtest.env` to run the direct installed-runtime smokes, or use
+its `published-first-install-runtime-fixture.json` manifest as an input to the
+two-node and three-control-plane fixture resolvers. The published directory keeps
 the installed disk, disk format, ESP tree, fixture manifest, and optional
-`node.json` path together so later VM smokes do not need those paths copied out
-by hand.
+`node.json` together so later VM smokes do not depend on the source run layout.
 
 ## Two-Node Kubeadm VM Fixtures
 

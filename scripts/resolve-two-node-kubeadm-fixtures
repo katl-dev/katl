@@ -260,7 +260,7 @@ load_published_fixture() {
         (.disk | type == "string") and
         (.diskFormat | type == "string") and
         (.espArtifacts | type == "string") and
-        (.sourceFixtureManifest | type == "string")
+        (((.fixtureManifest // .sourceFixtureManifest) | type) == "string")
         ' "$dir/published-first-install-runtime-fixture.json" >/dev/null ||
         fail "$label published fixture manifest is invalid"
     case "$label" in
@@ -268,7 +268,7 @@ load_published_fixture() {
             cp_disk="${cp_disk:-$(published_path "$dir" '.disk')}"
             cp_format="${cp_format:-$(jq -er '.diskFormat' "$dir/published-first-install-runtime-fixture.json")}"
             cp_esp_artifacts="${cp_esp_artifacts:-$(published_path "$dir" '.espArtifacts')}"
-            cp_fixture_manifest="${cp_fixture_manifest:-$(published_path "$dir" '.sourceFixtureManifest')}"
+            cp_fixture_manifest="${cp_fixture_manifest:-$(published_path "$dir" '.fixtureManifest // .sourceFixtureManifest')}"
             if jq -e '(.nodeMetadata // "") != ""' "$dir/published-first-install-runtime-fixture.json" >/dev/null; then
                 cp_node_metadata="${cp_node_metadata:-$(published_path "$dir" '.nodeMetadata')}"
             fi
@@ -278,7 +278,7 @@ load_published_fixture() {
             worker_disk="${worker_disk:-$(published_path "$dir" '.disk')}"
             worker_format="${worker_format:-$(jq -er '.diskFormat' "$dir/published-first-install-runtime-fixture.json")}"
             worker_esp_artifacts="${worker_esp_artifacts:-$(published_path "$dir" '.espArtifacts')}"
-            worker_fixture_manifest="${worker_fixture_manifest:-$(published_path "$dir" '.sourceFixtureManifest')}"
+            worker_fixture_manifest="${worker_fixture_manifest:-$(published_path "$dir" '.fixtureManifest // .sourceFixtureManifest')}"
             if jq -e '(.nodeMetadata // "") != ""' "$dir/published-first-install-runtime-fixture.json" >/dev/null; then
                 worker_node_metadata="${worker_node_metadata:-$(published_path "$dir" '.nodeMetadata')}"
             fi

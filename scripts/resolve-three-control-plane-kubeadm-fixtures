@@ -311,7 +311,7 @@ load_published_fixture() {
         (.disk | type == "string") and
         (.diskFormat | type == "string") and
         (.espArtifacts | type == "string") and
-        (.sourceFixtureManifest | type == "string")
+        (((.fixtureManifest // .sourceFixtureManifest) | type) == "string")
         ' "$dir/published-first-install-runtime-fixture.json" >/dev/null ||
         fail "$label published fixture manifest is invalid"
     case "$label" in
@@ -319,7 +319,7 @@ load_published_fixture() {
             cp1_disk="${cp1_disk:-$(published_path "$dir" '.disk')}"
             cp1_format="${cp1_format:-$(jq -er '.diskFormat' "$dir/published-first-install-runtime-fixture.json")}"
             cp1_esp_artifacts="${cp1_esp_artifacts:-$(published_path "$dir" '.espArtifacts')}"
-            cp1_fixture_manifest="${cp1_fixture_manifest:-$(published_path "$dir" '.sourceFixtureManifest')}"
+            cp1_fixture_manifest="${cp1_fixture_manifest:-$(published_path "$dir" '.fixtureManifest // .sourceFixtureManifest')}"
             if jq -e '(.nodeMetadata // "") != ""' "$dir/published-first-install-runtime-fixture.json" >/dev/null; then
                 cp1_node_metadata="${cp1_node_metadata:-$(published_path "$dir" '.nodeMetadata')}"
             fi
@@ -329,7 +329,7 @@ load_published_fixture() {
             cp2_disk="${cp2_disk:-$(published_path "$dir" '.disk')}"
             cp2_format="${cp2_format:-$(jq -er '.diskFormat' "$dir/published-first-install-runtime-fixture.json")}"
             cp2_esp_artifacts="${cp2_esp_artifacts:-$(published_path "$dir" '.espArtifacts')}"
-            cp2_fixture_manifest="${cp2_fixture_manifest:-$(published_path "$dir" '.sourceFixtureManifest')}"
+            cp2_fixture_manifest="${cp2_fixture_manifest:-$(published_path "$dir" '.fixtureManifest // .sourceFixtureManifest')}"
             if jq -e '(.nodeMetadata // "") != ""' "$dir/published-first-install-runtime-fixture.json" >/dev/null; then
                 cp2_node_metadata="${cp2_node_metadata:-$(published_path "$dir" '.nodeMetadata')}"
             fi
@@ -339,7 +339,7 @@ load_published_fixture() {
             cp3_disk="${cp3_disk:-$(published_path "$dir" '.disk')}"
             cp3_format="${cp3_format:-$(jq -er '.diskFormat' "$dir/published-first-install-runtime-fixture.json")}"
             cp3_esp_artifacts="${cp3_esp_artifacts:-$(published_path "$dir" '.espArtifacts')}"
-            cp3_fixture_manifest="${cp3_fixture_manifest:-$(published_path "$dir" '.sourceFixtureManifest')}"
+            cp3_fixture_manifest="${cp3_fixture_manifest:-$(published_path "$dir" '.fixtureManifest // .sourceFixtureManifest')}"
             if jq -e '(.nodeMetadata // "") != ""' "$dir/published-first-install-runtime-fixture.json" >/dev/null; then
                 cp3_node_metadata="${cp3_node_metadata:-$(published_path "$dir" '.nodeMetadata')}"
             fi
