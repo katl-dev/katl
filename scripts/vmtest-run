@@ -3,6 +3,9 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 go_bin="${KATL_VMTEST_GO:-go}"
+qemu_bin="${KATL_VMTEST_QEMU:-qemu-system-x86_64}"
+qemu_img_bin="${KATL_VMTEST_QEMU_IMG:-qemu-img}"
+ip_bin="${KATL_VMTEST_IP:-ip}"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
 run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 run_dir="${KATL_VMTEST_RUN_DIR:-$tmp_parent/$run_id}"
@@ -10,12 +13,40 @@ artifact_dir="$run_dir/artifacts"
 scenario_dir="$run_dir/scenarios"
 network_dir="$run_dir/network"
 world_manifest="$run_dir/world.json"
+host_capabilities_json="$run_dir/host-capabilities.json"
 lease_file="$network_dir/leases.json"
 go_test_json="$run_dir/go-test.json"
 summary_json="$run_dir/summary.json"
+keep_policy="${KATL_VMTEST_KEEP:-failed}"
+host_policy="${KATL_VMTEST_HOST_POLICY:-}"
+network_backend="${KATL_VMTEST_NETWORK_BACKEND:-bridge}"
 network_bridge="${KATL_VMTEST_BRIDGE:-katl-vmtest0}"
 network_cidr="${KATL_VMTEST_CIDR:-10.77.0.0/24}"
 network_gateway="${KATL_VMTEST_GATEWAY:-10.77.0.1}"
+ovmf_code="${KATL_OVMF_CODE:-}"
+ovmf_vars="${KATL_OVMF_VARS:-}"
+kvm_device="${KATL_VMTEST_KVM_DEVICE:-/dev/kvm}"
+vsock_device="${KATL_VMTEST_VSOCK_DEVICE:-/dev/vhost-vsock}"
+network_prefix=""
+bridge_created=0
+final_status="setup-failed"
+cap_qemu="disabled"
+cap_qemu_img="disabled"
+cap_ovmf="disabled"
+cap_kvm="disabled"
+cap_vsock="disabled"
+cap_bridge="disabled"
+cap_systemd_nspawn="disabled"
+missing_capabilities=()
+setup_failures=()
+
+if [[ -z "$host_policy" ]]; then
+    if [[ "${CI:-}" == "true" || "${CI:-}" == "1" ]]; then
+        host_policy="fail"
+    else
+        host_policy="skip"
+    fi
+fi
 
 usage() {
     cat <<'USAGE'
@@ -23,6 +54,14 @@ Usage: scripts/vmtest-run [go test package patterns and flags...]
 
 Create a temporary Katl VM test world and run Go test binaries through
 scripts/vmtest-exec. Arguments are forwarded to go test after forcing -count=1.
+
+Environment:
+  KATL_VMTEST_HOST_POLICY=skip|fail        Host capability gap handling
+  KATL_VMTEST_NETWORK_BACKEND=bridge       Network backend
+  KATL_VMTEST_CIDR=10.77.0.0/24            World network CIDR
+  KATL_VMTEST_GATEWAY=10.77.0.1            Bridge gateway address
+  KATL_VMTEST_BRIDGE=katl-vmtest0          Bridge name
+  KATL_VMTEST_KEEP=never|failed|always     Cleanup policy
 USAGE
 }
 
@@ -31,6 +70,160 @@ need() {
         echo "error: $1 is required" >&2
         exit 1
     }
+}
+
+status_for_missing_capabilities() {
+    if [[ "$host_policy" == "skip" ]]; then
+        printf "host-skipped"
+    else
+        printf "failed"
+    fi
+}
+
+missing_status() {
+    if [[ "$1" == "passed" ]]; then
+        printf "passed"
+    else
+        status_for_missing_capabilities
+    fi
+}
+
+have_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+probe_capabilities() {
+    if have_command "$qemu_bin"; then
+        cap_qemu="passed"
+    else
+        missing_capabilities+=("qemu")
+        cap_qemu="$(missing_status missing)"
+    fi
+    if have_command "$qemu_img_bin"; then
+        cap_qemu_img="passed"
+    else
+        missing_capabilities+=("qemu-img")
+        cap_qemu_img="$(missing_status missing)"
+    fi
+    if [[ -n "$ovmf_code" && -e "$ovmf_code" && -n "$ovmf_vars" && -e "$ovmf_vars" ]]; then
+        cap_ovmf="passed"
+    else
+        missing_capabilities+=("ovmf")
+        cap_ovmf="$(missing_status missing)"
+    fi
+    if [[ -n "$kvm_device" && -e "$kvm_device" ]]; then
+        cap_kvm="passed"
+    else
+        missing_capabilities+=("kvm")
+        cap_kvm="$(missing_status missing)"
+    fi
+    if [[ -n "$vsock_device" && -e "$vsock_device" ]]; then
+        cap_vsock="passed"
+    else
+        missing_capabilities+=("vsock")
+        cap_vsock="$(missing_status missing)"
+    fi
+}
+
+ipv4_to_int() {
+    local address="$1"
+    local a b c d extra
+    IFS=. read -r a b c d extra <<<"$address"
+    if [[ -n "${extra:-}" || -z "${a:-}" || -z "${b:-}" || -z "${c:-}" || -z "${d:-}" ]]; then
+        return 1
+    fi
+    local octet
+    for octet in "$a" "$b" "$c" "$d"; do
+        if ! [[ "$octet" =~ ^[0-9]+$ ]] || ((octet < 0 || octet > 255)); then
+            return 1
+        fi
+    done
+    printf "%u" "$(((a << 24) + (b << 16) + (c << 8) + d))"
+}
+
+validate_network() {
+    if [[ "$network_backend" != "bridge" ]]; then
+        setup_failures+=("unsupported network backend: $network_backend")
+        return
+    fi
+    if [[ ! "$network_cidr" =~ ^([^/]+)/([0-9]{1,2})$ ]]; then
+        setup_failures+=("invalid CIDR: $network_cidr")
+        return
+    fi
+    local network_address="${BASH_REMATCH[1]}"
+    network_prefix="${BASH_REMATCH[2]}"
+    if ((network_prefix < 0 || network_prefix > 32)); then
+        setup_failures+=("invalid CIDR prefix: $network_cidr")
+        return
+    fi
+    local network_int gateway_int mask
+    if ! network_int="$(ipv4_to_int "$network_address")"; then
+        setup_failures+=("invalid CIDR address: $network_cidr")
+        return
+    fi
+    if ! gateway_int="$(ipv4_to_int "$network_gateway")"; then
+        setup_failures+=("invalid gateway: $network_gateway")
+        return
+    fi
+    if ((network_prefix == 0)); then
+        mask=0
+    else
+        mask=$(((0xffffffff << (32 - network_prefix)) & 0xffffffff))
+    fi
+    if (((network_int & mask) != (gateway_int & mask))); then
+        setup_failures+=("gateway $network_gateway is outside CIDR $network_cidr")
+    fi
+}
+
+setup_network() {
+    if [[ "$network_backend" != "bridge" ]]; then
+        return
+    fi
+    if ! have_command "$ip_bin"; then
+        missing_capabilities+=("bridge")
+        cap_bridge="$(missing_status missing)"
+        return
+    fi
+    if "$ip_bin" link show "$network_bridge" >/dev/null 2>&1; then
+        cap_bridge="passed"
+        return
+    fi
+    if "$ip_bin" link add name "$network_bridge" type bridge; then
+        bridge_created=1
+        if "$ip_bin" addr add "$network_gateway/$network_prefix" dev "$network_bridge" &&
+            "$ip_bin" link set "$network_bridge" up; then
+            cap_bridge="passed"
+            return
+        fi
+    fi
+    missing_capabilities+=("bridge")
+    cap_bridge="$(missing_status missing)"
+}
+
+write_host_capabilities() {
+    jq -n \
+        --arg qemu "$cap_qemu" \
+        --arg qemuImg "$cap_qemu_img" \
+        --arg ovmf "$cap_ovmf" \
+        --arg kvm "$cap_kvm" \
+        --arg vsock "$cap_vsock" \
+        --arg bridge "$cap_bridge" \
+        --arg systemdNspawn "$cap_systemd_nspawn" \
+        --args \
+        '{
+          apiVersion: "katl.dev/v1alpha1",
+          kind: "VMTestHostCapabilities",
+          capabilities: {
+            qemu: $qemu,
+            "qemu-img": $qemuImg,
+            ovmf: $ovmf,
+            kvm: $kvm,
+            vsock: $vsock,
+            bridge: $bridge,
+            "systemd-nspawn": $systemdNspawn
+          },
+          missing: $ARGS.positional
+        }' -- "${missing_capabilities[@]}" >"$host_capabilities_json"
 }
 
 write_world() {
@@ -43,6 +236,13 @@ write_world() {
         --arg cidr "$network_cidr" \
         --arg gateway "$network_gateway" \
         --arg leaseFile "$lease_file" \
+        --arg qemu "$cap_qemu" \
+        --arg qemuImg "$cap_qemu_img" \
+        --arg ovmf "$cap_ovmf" \
+        --arg kvm "$cap_kvm" \
+        --arg vsock "$cap_vsock" \
+        --arg bridgeStatus "$cap_bridge" \
+        --arg systemdNspawn "$cap_systemd_nspawn" \
         '{
           apiVersion: "katl.dev/v1alpha1",
           kind: "VMTestWorld",
@@ -58,13 +258,13 @@ write_world() {
             leaseFile: $leaseFile
           },
           capabilities: {
-            qemu: "disabled",
-            "qemu-img": "disabled",
-            ovmf: "disabled",
-            kvm: "disabled",
-            bridge: "disabled",
-            vsock: "disabled",
-            "systemd-nspawn": "disabled"
+            qemu: $qemu,
+            "qemu-img": $qemuImg,
+            ovmf: $ovmf,
+            kvm: $kvm,
+            bridge: $bridgeStatus,
+            vsock: $vsock,
+            "systemd-nspawn": $systemdNspawn
           }
         }' >"$world_manifest"
 }
@@ -77,6 +277,7 @@ write_summary() {
         --arg runID "$run_id" \
         --arg runDir "$run_dir" \
         --arg worldManifest "$world_manifest" \
+        --arg hostCapabilities "$host_capabilities_json" \
         --arg goTestJSON "$go_test_json" \
         --arg status "$status" \
         --argjson exitCode "$exit_code" \
@@ -87,11 +288,28 @@ write_summary() {
           runID: $runID,
           runDir: $runDir,
           worldManifest: $worldManifest,
+          hostCapabilities: $hostCapabilities,
           goTestJSON: $goTestJSON,
           status: $status,
           exitCode: $exitCode,
           args: $ARGS.positional
         }' -- "$@" >"$summary_json"
+}
+
+cleanup_network() {
+    local exit_code=$?
+    if [[ "$bridge_created" == 1 ]]; then
+        case "$keep_policy:$final_status" in
+            always:*)
+                ;;
+            failed:failed|failed:setup-failed)
+                ;;
+            *)
+                "$ip_bin" link del "$network_bridge" >/dev/null 2>&1 || true
+                ;;
+        esac
+    fi
+    exit "$exit_code"
 }
 
 filter_count_args() {
@@ -129,7 +347,31 @@ fi
 need jq
 mkdir -p "$artifact_dir" "$scenario_dir" "$network_dir"
 jq -n '{}' >"$lease_file"
+write_host_capabilities
+trap cleanup_network EXIT
+validate_network
+if [[ "${#setup_failures[@]}" -gt 0 ]]; then
+    printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
+    write_summary "setup-failed" 2 "${filtered_args[@]}"
+    exit 2
+fi
+probe_capabilities
+setup_network
+write_host_capabilities
 write_world
+
+if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
+    if [[ "$host_policy" == "skip" ]]; then
+        final_status="host-skipped"
+        printf 'host-skipped: missing %s\n' "${missing_capabilities[*]}" >&2
+        write_summary "$final_status" 0 "${filtered_args[@]}"
+        exit 0
+    fi
+    final_status="setup-failed"
+    printf 'setup failed: missing required host capabilities: %s\n' "${missing_capabilities[*]}" >&2
+    write_summary "$final_status" 1 "${filtered_args[@]}"
+    exit 1
+fi
 
 export KATL_VMTEST_RUN_DIR="$run_dir"
 export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
@@ -144,6 +386,7 @@ if [[ "$exit_code" -ne 0 ]]; then
     status="failed"
     echo "vmtest run dir: $run_dir" >&2
 fi
+final_status="$status"
 write_summary "$status" "$exit_code" "${filtered_args[@]}"
 
 exit "$exit_code"
