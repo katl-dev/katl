@@ -195,11 +195,13 @@ need unsquashfs
 if [[ -n "$artifact_index" ]]; then
     artifact_index="$(real "$artifact_index")"
     [[ -f "$artifact_index" ]] || fail "artifact index not found: $(rel "$artifact_index")"
+    index_installer_uki="$("$repo_root/scripts/mkosi-artifacts" path installer-uki "$artifact_index")"
+    index_katlos_image="$("$repo_root/scripts/mkosi-artifacts" path katlos-install-image "$artifact_index")"
     if [[ -z "$installer_uki" ]]; then
-        installer_uki="$("$repo_root/scripts/mkosi-artifacts" path installer-uki "$artifact_index")"
+        installer_uki="$index_installer_uki"
     fi
     if [[ -z "$katlos_image" ]]; then
-        katlos_image="$("$repo_root/scripts/mkosi-artifacts" path katlos-install-image "$artifact_index")"
+        katlos_image="$index_katlos_image"
     fi
 fi
 
@@ -221,6 +223,14 @@ fi
 
 installer_uki="$(real "$installer_uki")"
 katlos_image="$(real "$katlos_image")"
+if [[ -n "${index_installer_uki:-}" ]]; then
+    index_installer_uki="$(real "$index_installer_uki")"
+    [[ "$installer_uki" == "$index_installer_uki" ]] || fail "artifact index installer-uki resolves to $(rel "$index_installer_uki"), not $(rel "$installer_uki")"
+fi
+if [[ -n "${index_katlos_image:-}" ]]; then
+    index_katlos_image="$(real "$index_katlos_image")"
+    [[ "$katlos_image" == "$index_katlos_image" ]] || fail "artifact index katlos-install-image resolves to $(rel "$index_katlos_image"), not $(rel "$katlos_image")"
+fi
 install_manifest="$(real "$install_manifest")"
 if [[ -n "$node_metadata" ]]; then
     node_metadata="$(real "$node_metadata")"
@@ -358,6 +368,11 @@ EOF
     printf 'recheck_dir=%q\n' "$state_dir/katlos-recheck"
     # shellcheck disable=SC2016
     printf 'recheck_args=(--installer-uki "$KATL_INSTALLER_UKI" --installer-uki-sha256 "$KATL_FIRST_INSTALL_INSTALLER_UKI_SHA256" --katlos-image "$KATL_KATLOS_IMAGE" --katlos-image-sha256 "$KATL_KATLOS_IMAGE_SHA256" --install-manifest "$KATL_INSTALL_MANIFEST" --target-disk-size "${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}" --state-dir "$recheck_dir" --check-only)\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_MKOSI_ARTIFACT_INDEX:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    recheck_args+=(--artifact-index "$KATL_MKOSI_ARTIFACT_INDEX")\n'
+    printf 'fi\n'
     # shellcheck disable=SC2016
     printf 'if [[ -n "${KATL_RUNTIME_NODE_METADATA:-}" ]]; then\n'
     # shellcheck disable=SC2016
