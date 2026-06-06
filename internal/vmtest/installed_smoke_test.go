@@ -152,14 +152,20 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		_ = RequireWorld(t)
 	}
 	runner := worldRun.Runner
+	scenario := withTarget(Scenario{Name: "first-install-serial-runtime"}, worldRun.Config.TargetDisk)
+	result, err := runner.Plan(scenario)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
 
-	runner.RequireHost(t, HostRequirements{
+	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
 		QEMU:    true,
 		QEMUImg: true,
 		OVMF:    true,
 		KVM:     runner.options().KVM,
 		MTools:  true,
 	})
+	scenario.RunID = result.RunID
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
@@ -169,7 +175,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
 	}
-	result, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-serial-runtime"}, FirstInstallConfig{
+	result, err = RunFirstInstall(ctx, runner, scenario, FirstInstallConfig{
 		Installer: InstallerBootConfig{
 			InstallerUKI:    worldRun.Config.Installer.InstallerUKI,
 			InstallerKernel: worldRun.Config.Installer.InstallerKernel,
@@ -214,13 +220,19 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 		_ = RequireWorld(t)
 	}
 	runner := worldRun.Runner
+	scenario := withTarget(Scenario{Name: "first-install-local-handoff-runtime"}, worldRun.Config.TargetDisk)
+	result, err := runner.Plan(scenario)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
 
-	runner.RequireHost(t, HostRequirements{
+	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
 		QEMU:    true,
 		QEMUImg: true,
 		OVMF:    true,
 		KVM:     runner.options().KVM,
 	})
+	scenario.RunID = result.RunID
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
@@ -230,7 +242,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
 	}
-	result, err := RunFirstInstall(ctx, runner, Scenario{Name: "first-install-local-handoff-runtime"}, FirstInstallConfig{
+	result, err = RunFirstInstall(ctx, runner, scenario, FirstInstallConfig{
 		Installer: InstallerBootConfig{
 			InstallerUKI:    worldRun.Config.Installer.InstallerUKI,
 			InstallerKernel: worldRun.Config.Installer.InstallerKernel,
@@ -274,15 +286,16 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 
 func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-vmtest-agent", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
-		worldRun.Runner.RequireHost(t, HostRequirements{
+		scenario := Scenario{Name: "installed-runtime-vmtest-agent"}
+		result, err := worldRun.Runner.Plan(scenario)
+		if err != nil {
+			t.Fatalf("Plan() error = %v", err)
+		}
+		result = requirePlannedVMHost(t, worldRun.Runner, scenario, result, HostRequirements{
 			QEMU: true,
 			OVMF: true,
 			KVM:  worldRun.Runner.options().KVM,
 		})
-		result, err := worldRun.Runner.Plan(Scenario{Name: "installed-runtime-vmtest-agent"})
-		if err != nil {
-			t.Fatalf("Plan() error = %v", err)
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		config := worldRun.Config
@@ -299,7 +312,7 @@ func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 			},
 		}
 		result = RunInstalledRuntime(ctx, result, config, VMRunner{})
-		if err := worldRun.Runner.Write(Scenario{Name: "installed-runtime-vmtest-agent"}, result); err != nil {
+		if err := worldRun.Runner.Write(scenario, result); err != nil {
 			t.Fatalf("Write() error = %v", err)
 		}
 		requireInstalledRuntimeAgentHealth(t, result)
@@ -314,15 +327,16 @@ func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
 
 func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-kubeadm-ready", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
-		worldRun.Runner.RequireHost(t, HostRequirements{
+		scenario := Scenario{Name: "installed-runtime-kubeadm-ready"}
+		result, err := worldRun.Runner.Plan(scenario)
+		if err != nil {
+			t.Fatalf("Plan() error = %v", err)
+		}
+		result = requirePlannedVMHost(t, worldRun.Runner, scenario, result, HostRequirements{
 			QEMU: true,
 			OVMF: true,
 			KVM:  worldRun.Runner.options().KVM,
 		})
-		result, err := worldRun.Runner.Plan(Scenario{Name: "installed-runtime-kubeadm-ready"})
-		if err != nil {
-			t.Fatalf("Plan() error = %v", err)
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 		defer cancel()
 		config := worldRun.Config
@@ -338,7 +352,7 @@ func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
 		result = RunInstalledKubeadmReadySmoke(ctx, result, KubeadmReadySmokeConfig{
 			Runtime: config,
 		}, VMRunner{})
-		if err := worldRun.Runner.Write(Scenario{Name: "installed-runtime-kubeadm-ready"}, result); err != nil {
+		if err := worldRun.Runner.Write(scenario, result); err != nil {
 			t.Fatalf("Write() error = %v", err)
 		}
 		requireInstalledRuntimeKubeadmReadyTranscript(t, result)
@@ -353,15 +367,16 @@ func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
 
 func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-kubeadm-api-smoke", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
-		worldRun.Runner.RequireHost(t, HostRequirements{
+		scenario := Scenario{Name: "installed-runtime-kubeadm-api-smoke"}
+		result, err := worldRun.Runner.Plan(scenario)
+		if err != nil {
+			t.Fatalf("Plan() error = %v", err)
+		}
+		result = requirePlannedVMHost(t, worldRun.Runner, scenario, result, HostRequirements{
 			QEMU: true,
 			OVMF: true,
 			KVM:  worldRun.Runner.options().KVM,
 		})
-		result, err := worldRun.Runner.Plan(Scenario{Name: "installed-runtime-kubeadm-api-smoke"})
-		if err != nil {
-			t.Fatalf("Plan() error = %v", err)
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
 		config := worldRun.Config
@@ -377,7 +392,7 @@ func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
 		result = RunInstalledKubeadmAPISmoke(ctx, result, KubeadmAPISmokeConfig{
 			Runtime: config,
 		}, VMRunner{})
-		if err := worldRun.Runner.Write(Scenario{Name: "installed-runtime-kubeadm-api-smoke"}, result); err != nil {
+		if err := worldRun.Runner.Write(scenario, result); err != nil {
 			t.Fatalf("Write() error = %v", err)
 		}
 		if result.Status != StatusPassed {

@@ -33,7 +33,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan() error = %v", err)
 	}
-	result = requireConfigApplyVMHost(t, runner, scenario, result, HostRequirements{
+	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
 		QEMU: true,
 		OVMF: true,
 		KVM:  runner.options().KVM,
@@ -88,7 +88,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	}
 }
 
-func requireConfigApplyVMHost(t testTB, runner Runner, scenario Scenario, result Result, requirements HostRequirements) Result {
+func requirePlannedVMHost(t testTB, runner Runner, scenario Scenario, result Result, requirements HostRequirements) Result {
 	t.Helper()
 	result.start(runner.time())
 	if err := runner.CheckHost(requirements); err != nil {
@@ -102,7 +102,7 @@ func requireConfigApplyVMHost(t testTB, runner Runner, scenario Scenario, result
 		}
 		result.finish(status, err.Error(), runner.time())
 		if writeErr := runner.Write(scenario, result); writeErr != nil {
-			t.Fatalf("write config-apply vmtest result for %q failed: %v\nvmtest run dir: %s", scenario.Name, writeErr, result.RunDir)
+			t.Fatalf("write vmtest result for %q failed: %v\nvmtest run dir: %s", scenario.Name, writeErr, result.RunDir)
 			return result
 		}
 		if status == StatusSkipped {
@@ -114,7 +114,7 @@ func requireConfigApplyVMHost(t testTB, runner Runner, scenario Scenario, result
 	return result
 }
 
-func TestRequireConfigApplyVMHostWritesFailedResult(t *testing.T) {
+func TestRequirePlannedVMHostWritesFailedResult(t *testing.T) {
 	tb := &fakeTB{}
 	runner := Runner{
 		Options: Options{
@@ -138,7 +138,7 @@ func TestRequireConfigApplyVMHostWritesFailedResult(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	got := requireConfigApplyVMHost(tb, runner, scenario, result, HostRequirements{QEMU: true})
+	got := requirePlannedVMHost(tb, runner, scenario, result, HostRequirements{QEMU: true})
 	if !tb.failed || tb.skipped {
 		t.Fatalf("failed=%v skipped=%v message=%q", tb.failed, tb.skipped, tb.message)
 	}
