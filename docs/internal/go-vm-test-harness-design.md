@@ -245,6 +245,18 @@ the resource manifest produced by that layer when they run under the standard
 heavy-test command, while direct developer invocations may continue to pass
 explicit fixture paths for focused debugging.
 
+The hermetic world execution model is defined in
+`docs/internal/hermetic-vmtest-worlds.md`. That document narrows the standard VM
+contract further: `scripts/vmtest-run` creates a tmpdir world and injects it
+with `go test -exec`; tests allocate their own nodes and guest addresses inside
+the world instead of receiving per-scenario fixture paths and IP addresses from
+the developer.
+
+Cluster VM scenarios should live in a VM integration package, not under
+end-user command packages such as `cmd/katlctl`. A scenario may execute the
+built `katlctl` binary as a black-box command when the CLI workflow is the
+behavior under test.
+
 ## Disk Fixtures
 
 Disk fixtures are typed scenario inputs:
