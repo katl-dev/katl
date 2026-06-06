@@ -141,7 +141,6 @@ func TestPlanNextBootAllowsKnownRejectedLiveSelectionChangesOnly(t *testing.T) {
 	allowed := []string{
 		DomainSystemRole,
 		DomainSelectedKubeadmConfig,
-		DomainSelectedKubernetesSysext,
 		DomainKubeletNodeIdentity,
 	}
 	for _, domain := range allowed {
@@ -155,6 +154,7 @@ func TestPlanNextBootAllowsKnownRejectedLiveSelectionChangesOnly(t *testing.T) {
 
 	rejected := []string{
 		DomainHostAccountPolicy,
+		DomainSelectedKubernetesSysext,
 		DomainEtcKubernetes,
 		DomainArbitraryEtc,
 		DomainRootSelection,

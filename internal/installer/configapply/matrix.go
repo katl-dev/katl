@@ -225,7 +225,6 @@ var domainPolicies = map[string]domainPolicy{
 	},
 	DomainSelectedKubernetesSysext: {
 		Classification:      ClassificationRejectedLive,
-		NextBootAllowed:     true,
 		LiveRejectionReason: "selected Kubernetes sysext changes require an explicit update action",
 	},
 	DomainKubeletNodeIdentity: {

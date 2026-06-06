@@ -55,8 +55,8 @@ type NodeOverlay struct {
 }
 
 type IdentityOverlay struct {
-	Hostname       string
-	AuthorizedKeys []string
+	Hostname       string   `json:"hostname,omitempty" yaml:"hostname,omitempty"`
+	AuthorizedKeys []string `json:"authorizedKeys,omitempty" yaml:"authorizedKeys,omitempty"`
 }
 
 type TrustedBundleResult struct {
@@ -109,8 +109,8 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 	now := request.now()
 	if err := rejectRuntimeSelectionOverrides(request); err != nil {
 		audit := request.audit(sourceID, desiredVersion, DecisionRejected, nil, nil, err, now)
-		auditPath, _ := writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Audit: audit, AuditPath: auditPath}, err
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	replay, ok, err := request.checkFreshness(sourceID, desiredVersion, now)
 	if err != nil {
@@ -122,19 +122,19 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 	merged, changes, unsafeFiles, err := mergeRuntimeConfig(request)
 	if err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", nil, nil, err, now)
-		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Audit: audit}, err
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	if err := manifest.Validate(merged); err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
-		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Manifest: merged, Audit: audit}, err
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	matrixDecision, err := Plan(request.ApplyMode, changes)
 	if err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", changes, matrixDecision.Diagnostics, err, now)
-		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Manifest: merged, Audit: audit}, err
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
 		Manifest:                 merged,
@@ -144,10 +144,17 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 	})
 	if err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
-		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Manifest: merged, Audit: audit}, err
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	files = append(files, unsafeFiles...)
+	audit := request.audit(sourceID, desiredVersion, DecisionAccepted, changes, nil, nil, now)
+	audit.CandidateGeneration = request.GenerationID
+	audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+	auditPath, err := writeAudit(request.Root, sourceID, desiredVersion, audit)
+	if err != nil {
+		return TrustedBundleResult{Manifest: merged, Files: files, Audit: audit}, err
+	}
 	tree, err := confext.RenderGenerationTree(confext.GenerationTreeRequest{
 		GenerationsRoot: filepath.Join(filepath.Clean(request.Root), strings.TrimPrefix(generation.GenerationRecordsDir, "/")),
 		GenerationID:    request.GenerationID,
@@ -161,15 +168,19 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		Chown: request.Chown,
 	})
 	if err != nil {
-		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
-		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Manifest: merged, Files: files, Audit: audit}, err
+		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		audit.CandidateGeneration = request.GenerationID
+		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	digest, err := generation.DigestDirectory(tree.ConfextDir)
 	if err != nil {
-		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
-		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit}, err
+		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		audit.CandidateGeneration = request.GenerationID
+		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	plan, err := PlanChange(request.CurrentRecord, NodeConfigurationChange{
 		APIVersion:   NodeConfigurationChangeAPIVersion,
@@ -193,9 +204,11 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		RequestedAt: now,
 	})
 	if err != nil {
-		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
-		_, _ = writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit}, err
+		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		audit.CandidateGeneration = request.GenerationID
+		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	metadataPath, err := generation.MetadataPath(request.Root, plan.GenerationRecord.GenerationID)
 	if err != nil {
@@ -227,7 +240,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 			audit := request.audit(sourceID, desiredVersion, generation.ConfigApplyActionFailed, changes, nil, err, now)
 			audit.CandidateGeneration = plan.GenerationRecord.GenerationID
 			audit.AcceptedApplyMode = plan.Decision.AcceptedMode
-			auditPath, _ := writeAudit(request.Root, sourceID, desiredVersion, audit)
+			auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 			return TrustedBundleResult{
 				Manifest:     merged,
 				Files:        files,
@@ -238,15 +251,8 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 				MetadataPath: metadataPath,
 				StatusPath:   statusPath,
 				AuditPath:    auditPath,
-			}, err
+			}, joinAuditError(err, auditErr)
 		}
-	}
-	audit := request.audit(sourceID, desiredVersion, DecisionAccepted, changes, nil, nil, now)
-	audit.CandidateGeneration = plan.GenerationRecord.GenerationID
-	audit.AcceptedApplyMode = plan.Decision.AcceptedMode
-	auditPath, err := writeAudit(request.Root, sourceID, desiredVersion, audit)
-	if err != nil {
-		return TrustedBundleResult{}, err
 	}
 	return TrustedBundleResult{
 		Manifest:     merged,
@@ -407,6 +413,16 @@ func writeAudit(root, sourceID, desiredVersion string, audit ConfigRequestAudit)
 	return path, nil
 }
 
+func joinAuditError(cause error, auditErr error) error {
+	if auditErr == nil {
+		return cause
+	}
+	if cause == nil {
+		return auditErr
+	}
+	return errors.Join(cause, auditErr)
+}
+
 func auditPath(root, sourceID, desiredVersion string) string {
 	return filepath.Join(filepath.Clean(root), "var/lib/katl/config-requests", sourceID, desiredVersion+".json")
 }
@@ -430,8 +446,8 @@ func (request TrustedBundleRequest) checkFreshness(sourceID, desiredVersion stri
 	if ok && compareVersion(desiredVersion, latest) < 0 {
 		staleErr := fmt.Errorf("desiredVersion %s for sourceID %s is older than recorded version %s", desiredVersion, sourceID, latest)
 		audit := request.audit(sourceID, desiredVersion, DecisionRejected, nil, nil, staleErr, now)
-		auditPath, _ := writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Audit: audit, AuditPath: auditPath}, false, staleErr
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Audit: audit, AuditPath: auditPath}, false, joinAuditError(staleErr, auditErr)
 	}
 	return TrustedBundleResult{}, false, nil
 }

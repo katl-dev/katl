@@ -345,6 +345,36 @@ func TestApplyTrustedBundleRejectsNoSupportedDomainsBeforeRender(t *testing.T) {
 	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
+func TestApplyTrustedBundleRejectsWhenRejectionAuditCannotPersist(t *testing.T) {
+	root := t.TempDir()
+	auditDir := filepath.Join(root, "var/lib/katl/config-requests/operator")
+	if err := os.MkdirAll(auditDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.Chmod(auditDir, 0o555); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	defer func() {
+		if err := os.Chmod(auditDir, 0o755); err != nil {
+			t.Fatalf("restore audit dir mode: %v", err)
+		}
+	}()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+	}))
+	if err == nil {
+		t.Fatalf("ApplyTrustedBundle() error = nil, result = %#v", result)
+	}
+	if !strings.Contains(err.Error(), "no supported changed domains") || !strings.Contains(err.Error(), "write config request audit") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want rejection and audit persistence failure", err)
+	}
+	if result.Audit.Decision != DecisionRejected || result.Audit.FailureReason == "" {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
 func TestApplyTrustedBundleRejectsUnsupportedApplyModeBeforeRender(t *testing.T) {
 	root := t.TempDir()
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
