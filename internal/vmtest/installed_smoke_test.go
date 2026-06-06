@@ -20,11 +20,13 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	options.Keep = KeepAlways
 	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
 	var runner Runner
+	var worldScenario *WorldScenario
 	var installerBoot InstallerBootConfig
 	var runtimeArtifact, runtimeESP, nodeMetadata, manifestPath, repo string
 	targetDiskFixture := TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G"))
 	if worldRun, ok := firstInstallWorldRunFor(t, "first-install-installed-runtime-fixture", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP); ok {
 		runner = worldRun.Runner
+		worldScenario = worldRun.Scenario
 		installerBoot = worldRun.Config.Installer
 		runtimeArtifact = worldRun.Config.Installer.RuntimeArtifact
 		runtimeESP = worldRun.Config.Runtime.ESPArtifacts
@@ -129,6 +131,11 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	output, err = checkFixture.CombinedOutput()
 	if err != nil {
 		t.Fatalf("check installed runtime fixture failed: %v\n%s", err, output)
+	}
+	if worldScenario != nil {
+		if _, err := WritePublishedFirstInstallRuntimeFixture(worldScenario.World.RunDir, "first-install-installed-runtime-fixture", fixtureManifest, DiskQCOW2); err != nil {
+			t.Fatalf("publish first-install runtime fixture: %v", err)
+		}
 	}
 
 	t.Setenv("KATL_INSTALLED_FIXTURE_MANIFEST", fixtureManifest)

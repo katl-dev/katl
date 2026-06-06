@@ -33,7 +33,10 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 		return installedRuntimeWorldRun{}, err
 	}
 	run := installedRuntimeWorldRun{Scenario: scenario}
-	node, err := AddPublishedInstalledRuntimeNode(scenario, repo, spec)
+	node, err := AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{
+		filepath.Join(world.RunDir, "build"),
+		filepath.Join(repo, "build"),
+	}, spec)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
 		return run, err

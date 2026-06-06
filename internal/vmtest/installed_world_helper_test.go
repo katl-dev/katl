@@ -70,6 +70,51 @@ func TestFindPublishedFirstInstallRuntimeFixtureSelectsNewestMatch(t *testing.T)
 	}
 }
 
+func TestPublishedFirstInstallRuntimeFixtureUsesBuildRootPriority(t *testing.T) {
+	worldRoot := t.TempDir()
+	repoRoot := t.TempDir()
+	worldFixture := writePublishedInstalledRuntimeFixture(t, worldRoot, "world-cp", "cp-1", ControlPlane, time.Unix(10, 0))
+	repoFixture := writePublishedInstalledRuntimeFixture(t, repoRoot, "repo-cp", "cp-1", ControlPlane, time.Unix(30, 0))
+
+	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{
+		filepath.Join(worldRoot, "build"),
+		filepath.Join(repoRoot, "build"),
+	}, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	if err != nil {
+		t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots() error = %v", err)
+	}
+	if published.FixtureManifest != worldFixture {
+		t.Fatalf("fixture = %q, want world fixture %q, not repo fixture %q", published.FixtureManifest, worldFixture, repoFixture)
+	}
+}
+
+func TestWritePublishedFirstInstallRuntimeFixture(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := t.TempDir()
+	disk := writeFixtureFile(t, filepath.Join(sourceDir, "installed-runtime.qcow2"), "disk")
+	esp := writeFixtureESP(t, filepath.Join(sourceDir, "esp"))
+	metadata := writeFixtureNodeMetadata(t, filepath.Join(sourceDir, "node.json"), Node{Name: "cp-1", Role: ControlPlane})
+	fixtureManifest := writeInstalledFixtureManifestWithESPHash(t, sourceDir, disk, esp, mustTreeSHA(t, esp), metadata)
+
+	publishedPath, err := WritePublishedFirstInstallRuntimeFixture(root, "fixture contract", fixtureManifest, DiskQCOW2)
+	if err != nil {
+		t.Fatalf("WritePublishedFirstInstallRuntimeFixture() error = %v", err)
+	}
+	published, err := ReadPublishedFirstInstallRuntimeFixture(publishedPath)
+	if err != nil {
+		t.Fatalf("ReadPublishedFirstInstallRuntimeFixture() error = %v", err)
+	}
+	if published.NodeName != "node-1" || published.SystemRole != string(ControlPlane) || published.DiskFormat != string(DiskQCOW2) {
+		t.Fatalf("published fixture = %#v", published)
+	}
+	if published.FixtureManifest != fixtureManifest {
+		t.Fatalf("published manifest = %q, want %q", published.FixtureManifest, fixtureManifest)
+	}
+	if !strings.HasPrefix(publishedPath, filepath.Join(root, "build", "published-first-install-runtime")) {
+		t.Fatalf("published path = %q", publishedPath)
+	}
+}
+
 func writePublishedInstalledRuntimeFixture(t *testing.T, repo, name, nodeName string, role NodeRole, modTime time.Time) string {
 	t.Helper()
 	dir := filepath.Join(repo, "build", "published", name)
