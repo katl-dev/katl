@@ -352,6 +352,9 @@ func verifyTwoNodeKubeadmTranscript(node string, entries []transcriptEntry) erro
 		if !transcriptHasCommand(entries, "kubeadm", "join") {
 			return errors.New("missing kubeadm join command")
 		}
+		if transcriptHasCommandArg(entries, "kubeadm", "join", "--control-plane") {
+			return errors.New("worker kubeadm join command must not include --control-plane")
+		}
 	}
 	return nil
 }
@@ -613,6 +616,16 @@ func TestVerifyTwoNodeBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
 	err := verifyTwoNodeBootstrapTranscripts(dir)
 	if err == nil || !strings.Contains(err.Error(), "unexpected kubeadm init command on worker node") {
 		t.Fatalf("verifyTwoNodeBootstrapTranscripts() error = %v, want worker init rejection", err)
+	}
+
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "worker-1"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane"}, Redaction: "output", SensitiveOutput: true},
+	})
+	err = verifyTwoNodeBootstrapTranscripts(dir)
+	if err == nil || !strings.Contains(err.Error(), "worker kubeadm join command must not include --control-plane") {
+		t.Fatalf("verifyTwoNodeBootstrapTranscripts() error = %v, want worker control-plane join rejection", err)
 	}
 }
 
