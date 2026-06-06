@@ -257,6 +257,15 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if err := addKubernetesPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-kubernetes.raw.json"), ""); err != nil {
 		return err
 	}
+	katlosImage, err := findKatlOSImage(*mkosiDir)
+	if err != nil {
+		return err
+	}
+	if katlosImage != "" {
+		if err := addKatlOSPackageSet(&manifest, katlosImage, ""); err != nil {
+			return err
+		}
+	}
 	lockDigest := ""
 	switch *mode {
 	case "refresh":
@@ -497,6 +506,122 @@ type kubernetesRepo struct {
 	Minor   string `json:"minor"`
 }
 
+type katlosIndex struct {
+	Version      string            `json:"version"`
+	BuildID      string            `json:"buildID"`
+	Architecture string            `json:"architecture"`
+	Components   []katlosComponent `json:"components"`
+}
+
+type katlosComponent struct {
+	Name            string            `json:"name"`
+	Role            string            `json:"role"`
+	SHA256          string            `json:"sha256"`
+	Version         string            `json:"version"`
+	PayloadVersion  string            `json:"payloadVersion"`
+	Architecture    string            `json:"architecture"`
+	SourceRepo      *kubernetesRepo   `json:"sourceRepo"`
+	PackageVersions map[string]string `json:"packageVersions"`
+}
+
+func addKatlOSPackageSet(manifest *resourcetest.Manifest, imagePath string, lockDigest string) error {
+	index, err := readKatlOSIndex(imagePath)
+	if err != nil {
+		return err
+	}
+	packages, err := katlosPackages(index)
+	if err != nil {
+		return fmt.Errorf("read KatlOS package identities from %s: %w", imagePath, err)
+	}
+	repositories := []resourcetest.PackageRepository{{ID: "katlos-components"}}
+	if repo := katlosKubernetesRepo(index); repo != nil {
+		repositories = append(repositories, resourcetest.PackageRepository{ID: repo.ID, BaseURL: repo.BaseURL})
+	}
+	manifest.PackageSets = upsertPackageSet(manifest.PackageSets, resourcetest.PackageSet{
+		Name:         "katlos-install-image",
+		Source:       "scripts/build-katlos-install-image",
+		LockDigest:   lockDigest,
+		Distribution: "katl",
+		Release:      firstNonEmpty(index.Version, index.BuildID),
+		Architecture: index.Architecture,
+		Repositories: repositories,
+		Packages:     packages,
+	})
+	return nil
+}
+
+func katlosPackages(index katlosIndex) ([]resourcetest.Package, error) {
+	if len(index.Components) == 0 {
+		return nil, fmt.Errorf("components is required")
+	}
+	components := append([]katlosComponent(nil), index.Components...)
+	slices.SortFunc(components, func(a, b katlosComponent) int {
+		return strings.Compare(a.Role+"\x00"+a.Name, b.Role+"\x00"+b.Name)
+	})
+	var packages []resourcetest.Package
+	for _, component := range components {
+		role := firstNonEmpty(component.Role, component.Name)
+		if strings.TrimSpace(role) == "" || strings.TrimSpace(component.SHA256) == "" {
+			return nil, fmt.Errorf("component role/name and sha256 are required")
+		}
+		architecture := firstNonEmpty(component.Architecture, index.Architecture)
+		nevra := role + "-" + firstNonEmpty(component.Version, component.PayloadVersion, index.Version, index.BuildID)
+		if architecture != "" {
+			nevra += "." + architecture
+		}
+		packages = append(packages, resourcetest.Package{
+			Name:     "katlos-component-" + role,
+			NEVRA:    nevra,
+			Checksum: component.SHA256,
+		})
+		if len(component.PackageVersions) > 0 {
+			names := make([]string, 0, len(component.PackageVersions))
+			for name := range component.PackageVersions {
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			for _, name := range names {
+				version := strings.TrimSpace(component.PackageVersions[name])
+				if strings.TrimSpace(name) == "" || version == "" {
+					return nil, fmt.Errorf("component %q contains an empty package name or version", role)
+				}
+				pkgNEVRA := name + "-" + version
+				if architecture != "" {
+					pkgNEVRA += "." + architecture
+				}
+				packages = append(packages, resourcetest.Package{
+					Name:  role + "-" + name,
+					NEVRA: pkgNEVRA,
+				})
+			}
+		}
+	}
+	return packages, nil
+}
+
+func katlosKubernetesRepo(index katlosIndex) *kubernetesRepo {
+	for _, component := range index.Components {
+		if component.SourceRepo != nil {
+			return component.SourceRepo
+		}
+	}
+	return nil
+}
+
+var readKatlOSIndex = readKatlOSIndexFromSquashFS
+
+func readKatlOSIndexFromSquashFS(imagePath string) (katlosIndex, error) {
+	output, err := exec.Command("unsquashfs", "-cat", imagePath, "katlos/image.json").Output()
+	if err != nil {
+		return katlosIndex{}, fmt.Errorf("read KatlOS embedded index from %s: %w", imagePath, err)
+	}
+	var index katlosIndex
+	if err := json.Unmarshal(output, &index); err != nil {
+		return katlosIndex{}, fmt.Errorf("decode KatlOS embedded index from %s: %w", imagePath, err)
+	}
+	return index, nil
+}
+
 func addKubernetesPackageSet(manifest *resourcetest.Manifest, metadataPath string, lockDigest string) error {
 	data, err := os.ReadFile(metadataPath)
 	if err != nil {
@@ -585,6 +710,15 @@ func resolveMkosiVersion(value string) (string, error) {
 		return fields[1], nil
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func profileConfigDigest(profilePath string) (string, error) {

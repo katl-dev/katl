@@ -94,6 +94,20 @@ func VerifyPackageLock(verification PackageLockVerification) error {
 	for _, set := range verification.Lock.PackageSets {
 		lockSets[set.Name] = set
 	}
+	for _, manifestSet := range verification.Manifest.PackageSets {
+		lockedSet, ok := lockSets[manifestSet.Name]
+		if !ok {
+			return fmt.Errorf("package set %q is missing from package lock", manifestSet.Name)
+		}
+		if err := verifyPackageSet(manifestSet, lockedSet, verification.LockDigest); err != nil {
+			return err
+		}
+	}
+	for _, lockedSet := range verification.Lock.PackageSets {
+		if _, ok := manifestSets[lockedSet.Name]; !ok {
+			return fmt.Errorf("package set %q is missing from resource manifest", lockedSet.Name)
+		}
+	}
 
 	for _, lockedProfile := range verification.Lock.MkosiProfiles {
 		manifestProfile, ok := manifestProfiles[lockedProfile.Name]
@@ -124,16 +138,7 @@ func VerifyPackageLock(verification PackageLockVerification) error {
 		if !ok {
 			return fmt.Errorf("package set %q is missing from resource manifest", lockedProfile.PackageSetRef)
 		}
-		if manifestSet.LockDigest != verification.LockDigest {
-			return fmt.Errorf("package set %q lock digest drift: got %q, want %q", manifestSet.Name, manifestSet.LockDigest, verification.LockDigest)
-		}
-		if lockedSet.Source != "" && manifestSet.Source != lockedSet.Source {
-			return fmt.Errorf("package set %q source drift: got %q, want %q", manifestSet.Name, manifestSet.Source, lockedSet.Source)
-		}
-		if err := compareRepositories(manifestSet.Name, manifestSet.Repositories, lockedSet.Repositories); err != nil {
-			return err
-		}
-		if err := comparePackages(manifestSet.Name, manifestSet.Packages, lockedSet.Packages); err != nil {
+		if err := verifyPackageSet(manifestSet, lockedSet, verification.LockDigest); err != nil {
 			return err
 		}
 	}
@@ -236,6 +241,22 @@ func ValidatePackageLock(lock PackageLock) error {
 		if !sets[profile.PackageSetRef] {
 			return fmt.Errorf("mkosiProfiles[%d]: packageSetRef %q is not defined", i, profile.PackageSetRef)
 		}
+	}
+	return nil
+}
+
+func verifyPackageSet(manifestSet PackageSet, lockedSet PackageLockPackageSet, lockDigest string) error {
+	if manifestSet.LockDigest != lockDigest {
+		return fmt.Errorf("package set %q lock digest drift: got %q, want %q", manifestSet.Name, manifestSet.LockDigest, lockDigest)
+	}
+	if lockedSet.Source != "" && manifestSet.Source != lockedSet.Source {
+		return fmt.Errorf("package set %q source drift: got %q, want %q", manifestSet.Name, manifestSet.Source, lockedSet.Source)
+	}
+	if err := compareRepositories(manifestSet.Name, manifestSet.Repositories, lockedSet.Repositories); err != nil {
+		return err
+	}
+	if err := comparePackages(manifestSet.Name, manifestSet.Packages, lockedSet.Packages); err != nil {
+		return err
 	}
 	return nil
 }

@@ -163,7 +163,11 @@ func TestRunAddRPMPackageSet(t *testing.T) {
 
 func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	oldQuery := queryRPMPackages
-	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	oldReadKatlOSIndex := readKatlOSIndex
+	t.Cleanup(func() {
+		queryRPMPackages = oldQuery
+		readKatlOSIndex = oldReadKatlOSIndex
+	})
 	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
 		if !strings.HasSuffix(root, "katl-runtime-root") {
 			t.Fatalf("root = %q", root)
@@ -172,6 +176,9 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 			Name:  "systemd",
 			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
 		}}, nil
+	}
+	readKatlOSIndex = func(path string) (katlosIndex, error) {
+		return katlosTestIndex(strings.Repeat("d", 64)), nil
 	}
 
 	dir := t.TempDir()
@@ -209,7 +216,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}
-	if len(manifest.Artifacts) != 4 || len(manifest.PackageSets) != 3 {
+	if len(manifest.Artifacts) != 4 || len(manifest.PackageSets) != 4 {
 		t.Fatalf("manifest artifacts=%d packageSets=%#v", len(manifest.Artifacts), manifest.PackageSets)
 	}
 	for _, set := range manifest.PackageSets {
@@ -228,6 +235,10 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	installerSet := packageSet(manifest.PackageSets, "installer-image")
 	if packageNEVRA(installerSet.Packages, "systemd") != "systemd-0:259.6-1.fc44.x86_64" {
 		t.Fatalf("installer package set = %#v", installerSet)
+	}
+	katlosSet := packageSet(manifest.PackageSets, "katlos-install-image")
+	if packageChecksum(katlosSet.Packages, "katlos-component-runtime-root") != strings.Repeat("d", 64) {
+		t.Fatalf("KatlOS package set = %#v", katlosSet)
 	}
 	kubernetesSet := packageSet(manifest.PackageSets, "kubernetes-sysext")
 	if kubernetesSet.Name != "kubernetes-sysext" || packageNEVRA(kubernetesSet.Packages, "kubeadm") != "kubeadm-0:1.36.1-150500.1.1.x86_64" {
@@ -355,6 +366,66 @@ func TestRunPrepareMkosiStrictRejectsInstallerDrift(t *testing.T) {
 	}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "NEVRA drift") {
 		t.Fatalf("prepare strict error = %v, want NEVRA drift", err)
+	}
+}
+
+func TestRunPrepareMkosiStrictRejectsKatlOSDrift(t *testing.T) {
+	oldQuery := queryRPMPackages
+	oldReadKatlOSIndex := readKatlOSIndex
+	t.Cleanup(func() {
+		queryRPMPackages = oldQuery
+		readKatlOSIndex = oldReadKatlOSIndex
+	})
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		return []resourcetest.Package{{
+			Name:  "systemd",
+			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+		}}, nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
+	readKatlOSIndex = func(path string) (katlosIndex, error) {
+		return katlosTestIndex(strings.Repeat("d", 64)), nil
+	}
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	args := []string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "refresh",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}
+	if err := run(args, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("prepare refresh error = %v", err)
+	}
+	readKatlOSIndex = func(path string) (katlosIndex, error) {
+		return katlosTestIndex(strings.Repeat("e", 64)), nil
+	}
+	err := run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "strict",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "checksum drift") {
+		t.Fatalf("prepare strict error = %v, want checksum drift", err)
 	}
 }
 
@@ -521,6 +592,15 @@ func packageSet(sets []resourcetest.PackageSet, name string) resourcetest.Packag
 	return resourcetest.PackageSet{}
 }
 
+func packageChecksum(packages []resourcetest.Package, name string) string {
+	for _, pkg := range packages {
+		if pkg.Name == name {
+			return pkg.Checksum
+		}
+	}
+	return ""
+}
+
 func packageNEVRA(packages []resourcetest.Package, name string) string {
 	for _, pkg := range packages {
 		if pkg.Name == name {
@@ -528,4 +608,34 @@ func packageNEVRA(packages []resourcetest.Package, name string) string {
 		}
 	}
 	return ""
+}
+
+func katlosTestIndex(runtimeSHA string) katlosIndex {
+	return katlosIndex{
+		Version:      "0.0.0-dev",
+		BuildID:      "test",
+		Architecture: "x86_64",
+		Components: []katlosComponent{{
+			Name:         "runtime-root",
+			Role:         "runtime-root",
+			SHA256:       runtimeSHA,
+			Version:      "test",
+			Architecture: "x86_64",
+		}, {
+			Name:           "kubernetes",
+			Role:           "kubernetes-sysext",
+			SHA256:         strings.Repeat("f", 64),
+			Version:        "test",
+			PayloadVersion: "v1.36.1",
+			Architecture:   "x86_64",
+			SourceRepo: &kubernetesRepo{
+				ID:      "kubernetes",
+				BaseURL: "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
+				Minor:   "v1.36",
+			},
+			PackageVersions: map[string]string{
+				"kubeadm": "0:1.36.1-150500.1.1",
+			},
+		}},
+	}
 }

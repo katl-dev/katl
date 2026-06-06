@@ -55,6 +55,29 @@ func TestVerifyPackageLockRejectsRepositoryDrift(t *testing.T) {
 	}
 }
 
+func TestVerifyPackageLockRejectsUnlockedPackageSet(t *testing.T) {
+	lock := validPackageLock()
+	digest := digestForLock(t, lock)
+	manifest := manifestForPackageLock(digest)
+	manifest.PackageSets = append(manifest.PackageSets, PackageSet{
+		Name:       "katlos-install-image",
+		LockDigest: digest,
+		Repositories: []PackageRepository{{
+			ID: "katlos-components",
+		}},
+		Packages: []Package{{
+			Name:     "katlos-component-runtime-root",
+			NEVRA:    "runtime-root-0.0.0.x86_64",
+			Checksum: testSHA,
+		}},
+	})
+
+	err := VerifyPackageLock(PackageLockVerification{Lock: lock, Manifest: manifest, LockDigest: digest})
+	if err == nil || !strings.Contains(err.Error(), "package set \"katlos-install-image\" is missing from package lock") {
+		t.Fatalf("VerifyPackageLock() error = %v, want unlocked package set", err)
+	}
+}
+
 func TestVerifyPackageLockRejectsToolDrift(t *testing.T) {
 	lock := validPackageLock()
 	digest := digestForLock(t, lock)

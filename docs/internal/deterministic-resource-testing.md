@@ -119,9 +119,11 @@ records and prints the lock digest. The resource-test preparation path should
 use `prepare-mkosi` for the standard build outputs. It records runtime RPMs from
 the runtime root, installer RPMs from the package-set TSV emitted during
 installer mkosi builds, and Kubernetes package identities from the sysext
-metadata when `katl-kubernetes.raw.json` is present. It also records the mkosi
-version and profile config digests for the package-producing profiles so strict
-mode catches profile or tool drift before scenario execution. The lower-level
+metadata when `katl-kubernetes.raw.json` is present. For the KatlOS install
+image, it reads the embedded image index and locks the component artifact
+checksums plus component package identities. It also records the mkosi version
+and profile config digests for the package-producing profiles so strict mode
+catches profile or tool drift before scenario execution. The lower-level
 `add-artifact` and `add-rpm-package-set` commands remain available for focused
 resource preparation and custom suites.
 
