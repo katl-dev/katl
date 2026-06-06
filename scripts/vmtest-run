@@ -459,7 +459,15 @@ cleanup_network() {
 
 filter_count_args() {
     filtered_args=()
+    local has_package_arg=0
+    local expect_flag_value=0
     while [[ $# -gt 0 ]]; do
+        if [[ "$expect_flag_value" == 1 ]]; then
+            filtered_args+=("$1")
+            expect_flag_value=0
+            shift
+            continue
+        fi
         case "$1" in
             -h|--help)
                 usage
@@ -474,12 +482,33 @@ filter_count_args() {
                     shift
                 fi
                 ;;
+            -args)
+                if [[ "$has_package_arg" == 0 ]]; then
+                    filtered_args+=("./...")
+                    has_package_arg=1
+                fi
+                filtered_args+=("$@")
+                return
+                ;;
+            -run|-timeout|-bench|-benchtime|-cpu|-list|-skip|-parallel|-shuffle|-coverprofile|-covermode|-coverpkg|-outputdir)
+                filtered_args+=("$1")
+                expect_flag_value=1
+                shift
+                ;;
+            -*)
+                filtered_args+=("$1")
+                shift
+                ;;
             *)
+                has_package_arg=1
                 filtered_args+=("$1")
                 shift
                 ;;
         esac
     done
+    if [[ "$has_package_arg" == 0 ]]; then
+        filtered_args+=("./...")
+    fi
 }
 
 filtered_args=()

@@ -343,6 +343,54 @@ func TestVMTestRunExplicitSelectionContinuesWithHostGap(t *testing.T) {
 	}
 }
 
+func TestVMTestRunFlagOnlySelectionDefaultsPackage(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "-run", "^TestDoesNotNeedQEMU$", "-timeout", "2m")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_QEMU="+filepath.Join(tmp, "missing-qemu"),
+		"KATL_VMTEST_RUN_ID=run-flag-only-selection",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+	goArgs := readLines(t, goArgsPath)
+	if !reflect.DeepEqual(goArgs, []string{
+		"test",
+		"-count=1",
+		"-exec",
+		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"-run",
+		"^TestDoesNotNeedQEMU$",
+		"-timeout",
+		"2m",
+		"./...",
+	}) {
+		t.Fatalf("go args = %#v", goArgs)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if !reflect.DeepEqual(summary.Args, []string{"-run", "^TestDoesNotNeedQEMU$", "-timeout", "2m", "./..."}) {
+		t.Fatalf("summary args = %#v", summary.Args)
+	}
+	if summary.Status != "passed" || summary.ExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestVMTestRunKubectlGapFails(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
