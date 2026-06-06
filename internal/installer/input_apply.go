@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,10 +10,23 @@ import (
 )
 
 type InputApplyRequest struct {
+	Context     context.Context
 	PreseedDirs []string
+	SeedDevices []string
+	SeedMount   string
+	Commands    CommandRunner
 	RunDir      string
 	EtcDir      string
 	Stdout      io.Writer
+}
+
+const (
+	DefaultSeedMount = "/run/katl/preseed"
+)
+
+var DefaultSeedDevices = []string{
+	"/dev/disk/by-label/KATLSEED",
+	"/dev/disk/by-id/virtio-katl-seed",
 }
 
 func DefaultPreseedDirs() []string {
@@ -24,6 +38,10 @@ func DefaultPreseedDirs() []string {
 }
 
 func ApplyInput(request InputApplyRequest) error {
+	ctx := request.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	runDir := request.RunDir
 	if runDir == "" {
 		runDir = "/run/katl"
@@ -35,6 +53,9 @@ func ApplyInput(request InputApplyRequest) error {
 	stdout := request.Stdout
 	if stdout == nil {
 		stdout = io.Discard
+	}
+	if err := mountSeedDevice(ctx, request, stdout); err != nil {
+		return err
 	}
 
 	applied := 0
@@ -48,6 +69,46 @@ func ApplyInput(request InputApplyRequest) error {
 	if applied == 0 {
 		fmt.Fprintln(stdout, "katl input: no preseed files found")
 	}
+	return nil
+}
+
+func mountSeedDevice(ctx context.Context, request InputApplyRequest, stdout io.Writer) error {
+	devices := request.SeedDevices
+	if len(devices) == 0 {
+		return nil
+	}
+	var device string
+	for _, candidate := range devices {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat seed device %s: %w", candidate, err)
+		}
+		device = candidate
+		break
+	}
+	if device == "" {
+		return nil
+	}
+	mountPoint := request.SeedMount
+	if mountPoint == "" {
+		mountPoint = DefaultSeedMount
+	}
+	commands := request.Commands
+	if commands == nil {
+		commands = NewExecCommandRunner()
+	}
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		return fmt.Errorf("create seed mount %s: %w", mountPoint, err)
+	}
+	if err := commands.Run(ctx, "mount", "-o", "ro", device, mountPoint); err != nil {
+		return fmt.Errorf("mount seed device %s: %w", device, err)
+	}
+	fmt.Fprintf(stdout, "katl input: mounted seed device %s at %s\n", device, mountPoint)
 	return nil
 }
 

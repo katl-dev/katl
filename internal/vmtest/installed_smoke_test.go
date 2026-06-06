@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -80,8 +79,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		},
 		UseInstalledESP: useInstalledESP,
 		ManifestPath:    manifestPath,
-		GuestHandoff:    true,
-		HandoffHostPort: firstInstallHandoffHostPort(t),
+		PreseedManifest: true,
 		TargetDisk:      TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
 	})
 	if err != nil {
@@ -235,8 +233,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		},
 		UseInstalledESP: useInstalledESP,
 		ManifestPath:    manifestPath,
-		GuestHandoff:    true,
-		HandoffHostPort: firstInstallHandoffHostPort(t),
+		PreseedManifest: true,
 		TargetDisk:      TargetDisk("root", string(DiskQCOW2), first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "20G")),
 	})
 	if err != nil {
@@ -253,19 +250,6 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		t.Fatalf("runtime serial did not record state projection: %s", serial)
 	}
 	_ = targetDiskPath(t, result)
-}
-
-func firstInstallHandoffHostPort(t *testing.T) int {
-	t.Helper()
-	value := strings.TrimSpace(os.Getenv("KATL_FIRST_INSTALL_HANDOFF_HOST_PORT"))
-	if value == "" {
-		return 18080
-	}
-	port, err := strconv.Atoi(value)
-	if err != nil || port <= 0 || port > 65535 {
-		t.Fatalf("KATL_FIRST_INSTALL_HANDOFF_HOST_PORT must be a TCP port, got %q", value)
-	}
-	return port
 }
 
 func createInstalledRuntimeFixtureCommand(ctx context.Context, repoRoot, disk, esp, format, stateDir, nodeMetadata string) *exec.Cmd {

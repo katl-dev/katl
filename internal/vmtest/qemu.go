@@ -26,6 +26,7 @@ type VMBoot struct {
 
 type VMConfig struct {
 	Boot         VMBoot
+	PreseedDir   string
 	QEMUPath     string
 	OVMFCode     string
 	OVMFVars     string
@@ -387,7 +388,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		"-drive", "if=pflash,format=raw,readonly=on,file=" + config.OVMFCode,
 		"-drive", "if=pflash,format=raw,file=" + filepath.Join(result.QEMUDir, "OVMF_VARS.fd"),
 	}
-	driveArgs, efiTree, err := vmDrives(result, config.Boot)
+	driveArgs, efiTree, err := vmDrives(result, config)
 	if err != nil {
 		return VMPlan{}, err
 	}
@@ -432,6 +433,15 @@ func prepareVM(plan VMPlan, config VMConfig) error {
 		bootPath := filepath.Join(plan.EFITree, "EFI", "BOOT", "BOOTX64.EFI")
 		if err := copyFile(config.Boot.UKI, bootPath, 0o644); err != nil {
 			return err
+		}
+	}
+	if config.PreseedDir != "" {
+		info, err := os.Stat(config.PreseedDir)
+		if err != nil {
+			return fmt.Errorf("stat VM preseed dir: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("VM preseed path %s is not a directory", config.PreseedDir)
 		}
 	}
 	return os.WriteFile(plan.CommandFile, []byte(commandLine(plan.QEMUPath, plan.Args)+"\n"), 0o644)
@@ -488,7 +498,8 @@ func qemuAccel(policy KVMPolicy, probe probe) (string, error) {
 	}
 }
 
-func vmDrives(result Result, boot VMBoot) ([]string, string, error) {
+func vmDrives(result Result, config VMConfig) ([]string, string, error) {
+	boot := config.Boot
 	var args []string
 	index := 0
 	add := func(spec string) {
@@ -523,6 +534,13 @@ func vmDrives(result Result, boot VMBoot) ([]string, string, error) {
 			"-device", fmt.Sprintf("virtio-blk-pci,drive=%s,serial=katl-%s", id, clean(disk.Name)),
 		)
 		index++
+	}
+	if config.PreseedDir != "" {
+		id := fmt.Sprintf("katlseed%d", index)
+		args = append(args,
+			"-drive", fmt.Sprintf("if=none,id=%s,format=raw,file=fat:rw:%s", id, config.PreseedDir),
+			"-device", fmt.Sprintf("virtio-blk-pci,drive=%s,serial=katl-seed", id),
+		)
 	}
 	return args, efiTree, nil
 }

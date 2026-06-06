@@ -3,6 +3,7 @@ package vmtest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ type FirstInstallConfig struct {
 	Manifest         []byte
 	ManifestPath     string
 	GuestHandoff     bool
+	PreseedManifest  bool
 	HandoffToken     string
 	HandoffURL       string
 	HandoffHostPort  int
@@ -41,6 +43,7 @@ type InstalledESPExtractor func(context.Context, DiskPlan, string) (string, erro
 const (
 	guestHandoffSignal         = "katlos-install waiting for config at "
 	guestHandoffAcceptedSignal = "katlos-install handoff accepted manifest="
+	installerCompletedSignal   = "katlos-install completed manifest="
 )
 
 type handoffLog struct {
@@ -70,6 +73,16 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 	if err := writeManifest(result, manifest); err != nil {
 		return failFirst(runner, scenario, result, "install-manifest", err)
 	}
+	if config.PreseedManifest {
+		preseedDir, err := writePreseedMedia(result, config, manifest)
+		if err != nil {
+			return failFirst(runner, scenario, result, "preseed", err)
+		}
+		config.Installer.VM.PreseedDir = preseedDir
+		if config.Installer.Expect == "" && config.Installer.VM.Expect == "" {
+			config.Installer.Expect = installerCompletedSignal
+		}
+	}
 	if config.GuestHandoff {
 		config, err = configureGuestHandoff(result, config, manifest)
 		if err != nil {
@@ -93,6 +106,9 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		}
 		now := runner.time()
 		result.addPhase("guest-handoff", StatusPassed, "", now, now)
+	} else if config.PreseedManifest {
+		now := runner.time()
+		result.addPhase("preseed", StatusPassed, "", now, now)
 	} else {
 		if err := deliverHandoff(ctx, result, config, manifest); err != nil {
 			return failFirst(runner, scenario, result, "local-handoff", err)
@@ -225,6 +241,78 @@ func writeManifest(result Result, manifest []byte) error {
 		return err
 	}
 	return os.WriteFile(result.Artifacts.InstallManifest, manifest, 0o600)
+}
+
+func writePreseedMedia(result Result, config FirstInstallConfig, manifest []byte) (string, error) {
+	dir := filepath.Join(result.Artifacts.ManifestsDir, "preseed")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	input := struct {
+		ManifestPath string `json:"manifestPath"`
+		InstallMode  string `json:"installMode"`
+	}{
+		ManifestPath: "/run/katl/preseed/install-manifest.json",
+		InstallMode:  "auto",
+	}
+	if err := writeJSON(filepath.Join(dir, "install-input.json"), input); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "install-manifest.json"), manifest, 0o600); err != nil {
+		return "", err
+	}
+	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func copyPreseedLocalRef(config FirstInstallConfig, result Result, manifest []byte, preseedDir string) error {
+	var input struct {
+		KatlosImage struct {
+			LocalRef string `json:"localRef"`
+		} `json:"katlosImage"`
+	}
+	if err := json.Unmarshal(manifest, &input); err != nil {
+		return fmt.Errorf("decode preseed install manifest: %w", err)
+	}
+	localRef := strings.TrimSpace(input.KatlosImage.LocalRef)
+	if localRef == "" {
+		return nil
+	}
+	if filepath.IsAbs(localRef) || filepath.Clean(localRef) != localRef || localRef == "." || strings.HasPrefix(localRef, "../") || strings.Contains(localRef, "/../") {
+		return fmt.Errorf("preseed KatlOS image localRef %q must be a clean relative path", localRef)
+	}
+	manifestRoot := filepath.Dir(result.Artifacts.InstallManifest)
+	if config.ManifestPath != "" {
+		manifestRoot = filepath.Dir(config.ManifestPath)
+	}
+	src := filepath.Join(manifestRoot, filepath.FromSlash(localRef))
+	dst := filepath.Join(preseedDir, filepath.FromSlash(localRef))
+	if err := copyRequiredFile(src, dst, 0o600); err != nil {
+		return fmt.Errorf("copy preseed KatlOS image localRef: %w", err)
+	}
+	return nil
+}
+
+func copyRequiredFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func extractInstalledESP(ctx context.Context, result Result, config FirstInstallConfig) (string, error) {

@@ -158,6 +158,95 @@ func TestFirstInstallGuestHandoff(t *testing.T) {
 	}
 }
 
+func TestFirstInstallPreseedManifest(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	_, vmConfig := vmFixture(t)
+	vmConfig.HostForwards = nil
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "first-install-preseed"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    uki,
+			RuntimeArtifact: runtime,
+			VM:              vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: espFixture(t),
+			VM:           vmConfig,
+		},
+		Manifest:        []byte(firstManifest()),
+		PreseedManifest: true,
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		InstallerRunner: fakeVM(installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n"),
+		RuntimeRunner:   fakeVM("Katl state projection ready"),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	if _, err := os.Stat(result.Artifacts.HandoffResponse); !os.IsNotExist(err) {
+		t.Fatalf("handoff response was written for preseed flow: %v", err)
+	}
+	if !hasPhase(result, "preseed") {
+		t.Fatalf("preseed phase missing: %#v", result.Phases)
+	}
+	command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand)
+	if err != nil {
+		t.Fatalf("read installer command: %v", err)
+	}
+	if !strings.Contains(string(command), "serial=katl-seed") {
+		t.Fatalf("installer command missing preseed device: %s", command)
+	}
+	if strings.Contains(string(command), "hostfwd=") {
+		t.Fatalf("installer command unexpectedly has host forward: %s", command)
+	}
+	input, err := os.ReadFile(filepath.Join(result.Artifacts.ManifestsDir, "preseed", "install-input.json"))
+	if err != nil {
+		t.Fatalf("read preseed input: %v", err)
+	}
+	if !strings.Contains(string(input), "/run/katl/preseed/install-manifest.json") {
+		t.Fatalf("preseed input = %s", input)
+	}
+}
+
+func TestFirstInstallPreseedLocalRef(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "manifest")
+	payload := filepath.Join(sourceDir, "images", "katlos.squashfs")
+	if err := os.MkdirAll(filepath.Dir(payload), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(payload, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	manifestPath := filepath.Join(sourceDir, "install-manifest.json")
+	manifest := []byte(strings.Replace(firstManifest(), `"url": "https://example.invalid/katlos-install.squashfs",`, `"localRef": "images/katlos.squashfs",`, 1))
+	if err := os.WriteFile(manifestPath, manifest, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	result, _ := vmFixture(t)
+	result.Artifacts.ManifestsDir = filepath.Join(root, "run", "manifests")
+	result.Artifacts.InstallManifest = filepath.Join(result.Artifacts.ManifestsDir, "install-manifest.json")
+
+	preseed, err := writePreseedMedia(result, FirstInstallConfig{ManifestPath: manifestPath}, manifest)
+	if err != nil {
+		t.Fatalf("writePreseedMedia() error = %v", err)
+	}
+	copied, err := os.ReadFile(filepath.Join(preseed, "images", "katlos.squashfs"))
+	if err != nil {
+		t.Fatalf("read copied localRef: %v", err)
+	}
+	if string(copied) != "image" {
+		t.Fatalf("copied localRef = %q", copied)
+	}
+}
+
 func TestFirstInstallUsesInstalledESPExtractor(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")

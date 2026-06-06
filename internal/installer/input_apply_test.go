@@ -33,6 +33,61 @@ func TestApplyInput(t *testing.T) {
 	}
 }
 
+func TestApplyInputMountsSeedDevice(t *testing.T) {
+	root := t.TempDir()
+	device := filepath.Join(root, "seed-device")
+	preseed := filepath.Join(root, "mounted-seed")
+	runDir := filepath.Join(root, "run")
+	writeTestFile(t, device, "")
+	writeTestFile(t, filepath.Join(preseed, "install-input.json"), `{"manifestPath":"/run/katl/install-manifest.json"}`)
+
+	commands := &NoopCommandRunner{}
+	var stdout bytes.Buffer
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		SeedDevices: []string{filepath.Join(root, "missing-seed-device"), device},
+		SeedMount:   preseed,
+		Commands:    commands,
+		RunDir:      runDir,
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+
+	assertFile(t, filepath.Join(runDir, "install-input.json"), `{"manifestPath":"/run/katl/install-manifest.json"}`)
+	if len(commands.Calls) != 1 || commands.Calls[0].Name != "mount" {
+		t.Fatalf("commands = %#v, want mount", commands.Calls)
+	}
+	if got := strings.Join(commands.Calls[0].Args, " "); !strings.Contains(got, device) || !strings.Contains(got, preseed) {
+		t.Fatalf("mount args = %#v", commands.Calls[0].Args)
+	}
+	if got := stdout.String(); !strings.Contains(got, "mounted seed device") || !strings.Contains(got, "copied") {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestApplyInputSkipsMissingSeedDevice(t *testing.T) {
+	root := t.TempDir()
+	preseed := filepath.Join(root, "seed")
+	runDir := filepath.Join(root, "run")
+	writeTestFile(t, filepath.Join(preseed, "install-input.json"), `{"waitForConfig":true}`)
+
+	commands := &NoopCommandRunner{}
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		SeedDevices: []string{filepath.Join(root, "missing-seed-device")},
+		SeedMount:   filepath.Join(root, "missing-mount"),
+		Commands:    commands,
+		RunDir:      runDir,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+	assertFile(t, filepath.Join(runDir, "install-input.json"), `{"waitForConfig":true}`)
+	if len(commands.Calls) != 0 {
+		t.Fatalf("commands = %#v, want no seed mount", commands.Calls)
+	}
+}
+
 func TestApplyInputNone(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := ApplyInput(InputApplyRequest{

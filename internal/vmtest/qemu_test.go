@@ -229,6 +229,38 @@ func TestVMEFITreeBoot(t *testing.T) {
 	}
 }
 
+func TestVMPreseedDrive(t *testing.T) {
+	result, config := vmFixture(t)
+	result.Disks = []DiskPlan{{
+		Name:     "root",
+		Format:   DiskQCOW2,
+		HostPath: filepath.Join(result.DiskDir, "00-root.qcow2"),
+	}}
+	preseed := filepath.Join(t.TempDir(), "preseed")
+	if err := os.MkdirAll(preseed, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	config.PreseedDir = preseed
+
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if !hasArg(plan.Args, "if=none,id=katlseed3,format=raw,file=fat:rw:"+preseed) {
+		t.Fatalf("preseed drive missing from args: %#v", plan.Args)
+	}
+	if !hasArg(plan.Args, "virtio-blk-pci,drive=katlseed3,serial=katl-seed") {
+		t.Fatalf("preseed device missing from args: %#v", plan.Args)
+	}
+	if err := prepareVM(plan, config); err != nil {
+		t.Fatalf("prepareVM() error = %v", err)
+	}
+}
+
 func TestVMVSock(t *testing.T) {
 	result, config := vmFixture(t)
 	config.VSock.Enabled = true

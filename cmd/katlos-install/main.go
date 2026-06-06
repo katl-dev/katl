@@ -34,9 +34,12 @@ func main() {
 	}
 }
 
-func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSource string) error {
+func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSource string, stdout io.Writer) error {
 	if manifestPath == "" {
 		return fmt.Errorf("--manifest is required unless --list-states, --version, --apply-input, or --boot is set")
+	}
+	if stdout == nil {
+		stdout = io.Discard
 	}
 	if strings.TrimSpace(inputSource) == "" {
 		inputSource = manifestPath
@@ -48,7 +51,11 @@ func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSo
 	}
 	runner := installer.NewRunner(installer.PreseededManifestPlan(), install)
 
-	return runner.Run(ctx)
+	if err := runner.Run(ctx); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "katlos-install completed manifest=%s\n", manifestPath)
+	return nil
 }
 
 func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string) (*installer.Context, error) {
@@ -106,7 +113,7 @@ func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.
 		if input.ManifestURL != "" && input.ManifestPath == "" {
 			return fmt.Errorf("manifest URL handoff is not implemented yet: %s", input.ManifestURL)
 		}
-		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"), installstatus.InputModePXEPreseed, input.ManifestPath)
+		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"), installstatus.InputModePXEPreseed, input.ManifestPath, stdout)
 	default:
 		return fmt.Errorf("unsupported install action %q", input.Action)
 	}
@@ -195,7 +202,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 				return fmt.Errorf("write handoff manifest: %w", err)
 			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted manifest=%s\n", manifestPath)
-			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath)
+			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath, stdout)
 		}
 		select {
 		case <-ctx.Done():
@@ -237,7 +244,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			preseedDirs = append([]string{strings.TrimSpace(*preseedDir)}, preseedDirs...)
 		}
 		return installer.ApplyInput(installer.InputApplyRequest{
+			Context:     ctx,
 			PreseedDirs: preseedDirs,
+			SeedDevices: installer.DefaultSeedDevices,
+			SeedMount:   installer.DefaultSeedMount,
+			Commands:    installer.NewExecCommandRunner(),
 			RunDir:      *runDir,
 			EtcDir:      *etcDir,
 			Stdout:      stdout,
@@ -256,5 +267,5 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	return runManifest(ctx, strings.TrimSpace(*manifestPath), *stateDir, installstatus.InputModePXEPreseed, strings.TrimSpace(*manifestPath))
+	return runManifest(ctx, strings.TrimSpace(*manifestPath), *stateDir, installstatus.InputModePXEPreseed, strings.TrimSpace(*manifestPath), stdout)
 }
