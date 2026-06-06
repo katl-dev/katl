@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestAgentClientServer(t *testing.T) {
 		t.Fatalf("health = %#v", health)
 	}
 	result, err := client.RunCommand(context.Background(), &vmtestpb.RunCommandRequest{
-		Argv:            []string{"systemctl", "is-active", "containerd.service"},
+		Argv:            []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
 		SensitiveOutput: true,
 	})
 	if err != nil {
@@ -63,11 +64,15 @@ func TestAgentClientServer(t *testing.T) {
 	if entries[1].Method != "RunCommand" || entries[1].StdoutBytes != 13 || entries[1].Redaction != "output" {
 		t.Fatalf("command transcript = %#v", entries[1])
 	}
+	wantArgv := []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--discovery-token-ca-cert-hash=[REDACTED DISCOVERY TOKEN HASH]"}
+	if !reflect.DeepEqual(entries[1].Argv, wantArgv) {
+		t.Fatalf("command argv = %#v, want %#v", entries[1].Argv, wantArgv)
+	}
 	data, err := os.ReadFile(transcript)
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
-	if strings.Contains(string(data), "secret output") {
+	if strings.Contains(string(data), "secret output") || strings.Contains(string(data), "abcdef.0123456789abcdef") || strings.Contains(string(data), "sha256:0123456789abcdef") {
 		t.Fatalf("transcript leaked sensitive output: %s", data)
 	}
 }

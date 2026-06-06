@@ -329,8 +329,50 @@ func verifyTwoNodeBootstrapTranscripts(transcriptDir string) error {
 		if !sensitiveFile {
 			return fmt.Errorf("%s transcript has no sensitive file entry", node)
 		}
+		if err := verifyTwoNodeKubeadmTranscript(node, entries); err != nil {
+			return fmt.Errorf("%s transcript: %w", node, err)
+		}
 	}
 	return nil
+}
+
+func verifyTwoNodeKubeadmTranscript(node string, entries []transcriptEntry) error {
+	switch node {
+	case "cp-1":
+		if transcriptHasCommand(entries, "kubeadm", "join") {
+			return errors.New("unexpected kubeadm join command on init node")
+		}
+		if !transcriptHasCommand(entries, "kubeadm", "init") {
+			return errors.New("missing kubeadm init command")
+		}
+	case "worker-1":
+		if transcriptHasCommand(entries, "kubeadm", "init") {
+			return errors.New("unexpected kubeadm init command on worker node")
+		}
+		if !transcriptHasCommand(entries, "kubeadm", "join") {
+			return errors.New("missing kubeadm join command")
+		}
+	}
+	return nil
+}
+
+func transcriptHasCommand(entries []transcriptEntry, prefix ...string) bool {
+	for _, entry := range entries {
+		if entry.Method != "RunCommand" || len(entry.Argv) < len(prefix) {
+			continue
+		}
+		matched := true
+		for i, want := range prefix {
+			if entry.Argv[i] != want {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func readTranscriptFile(path string) ([]transcriptEntry, error) {
@@ -544,5 +586,48 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.FixtureInputs["cp-1"].KatlOSFixtureManifest != "/tmp/cp-katlos.json" || manifest.FixtureInputs["worker-1"].KatlOSFixtureManifest != "/tmp/worker-katlos.json" {
 		t.Fatalf("artifact manifest KatlOS fixture inputs = %#v", manifest.FixtureInputs)
+	}
+}
+
+func TestVerifyTwoNodeBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
+	dir := t.TempDir()
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-1"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "token", "create", "--print-join-command"}, Redaction: "output", SensitiveOutput: true},
+	})
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "worker-1"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]"}, Redaction: "output", SensitiveOutput: true},
+	})
+	if err := verifyTwoNodeBootstrapTranscripts(dir); err != nil {
+		t.Fatalf("verifyTwoNodeBootstrapTranscripts() error = %v", err)
+	}
+
+	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "worker-1"), []transcriptEntry{
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+	})
+	err := verifyTwoNodeBootstrapTranscripts(dir)
+	if err == nil || !strings.Contains(err.Error(), "unexpected kubeadm init command on worker node") {
+		t.Fatalf("verifyTwoNodeBootstrapTranscripts() error = %v, want worker init rejection", err)
+	}
+}
+
+func writeTranscriptEntries(t *testing.T, path string, entries []transcriptEntry) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir transcript dir: %v", err)
+	}
+	var data bytes.Buffer
+	for _, entry := range entries {
+		if err := json.NewEncoder(&data).Encode(entry); err != nil {
+			t.Fatalf("encode transcript entry: %v", err)
+		}
+	}
+	if err := os.WriteFile(path, data.Bytes(), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
 	}
 }

@@ -590,10 +590,11 @@ func (f commandRunnerFunc) Run(ctx context.Context, req *vmtestpb.RunCommandRequ
 }
 
 type transcriptEntry struct {
-	Method          string `json:"method"`
-	Redaction       string `json:"redaction,omitempty"`
-	StdoutBytes     uint32 `json:"stdoutBytes,omitempty"`
-	SensitiveOutput bool   `json:"sensitiveOutput,omitempty"`
+	Method          string   `json:"method"`
+	Argv            []string `json:"argv,omitempty"`
+	Redaction       string   `json:"redaction,omitempty"`
+	StdoutBytes     uint32   `json:"stdoutBytes,omitempty"`
+	SensitiveOutput bool     `json:"sensitiveOutput,omitempty"`
 }
 
 func readTranscript(t *testing.T, path string) []transcriptEntry {

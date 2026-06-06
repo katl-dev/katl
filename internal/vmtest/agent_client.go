@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -23,22 +25,29 @@ type AgentClient struct {
 }
 
 type transcriptEntry struct {
-	RequestID       string `json:"requestId"`
-	Method          string `json:"method"`
-	Started         string `json:"started"`
-	DurationMS      int64  `json:"durationMs"`
-	Status          string `json:"status"`
-	ErrorCode       string `json:"errorCode,omitempty"`
-	Error           string `json:"error,omitempty"`
-	ExitStatus      int32  `json:"exitStatus,omitempty"`
-	StdoutBytes     uint32 `json:"stdoutBytes,omitempty"`
-	StderrBytes     uint32 `json:"stderrBytes,omitempty"`
-	FileBytes       uint32 `json:"fileBytes,omitempty"`
-	WriteBytes      uint32 `json:"writeBytes,omitempty"`
-	JournalBytes    uint32 `json:"journalBytes,omitempty"`
-	SensitiveOutput bool   `json:"sensitiveOutput,omitempty"`
-	Redaction       string `json:"redaction,omitempty"`
+	RequestID       string   `json:"requestId"`
+	Method          string   `json:"method"`
+	Started         string   `json:"started"`
+	DurationMS      int64    `json:"durationMs"`
+	Status          string   `json:"status"`
+	Argv            []string `json:"argv,omitempty"`
+	ErrorCode       string   `json:"errorCode,omitempty"`
+	Error           string   `json:"error,omitempty"`
+	ExitStatus      int32    `json:"exitStatus,omitempty"`
+	StdoutBytes     uint32   `json:"stdoutBytes,omitempty"`
+	StderrBytes     uint32   `json:"stderrBytes,omitempty"`
+	FileBytes       uint32   `json:"fileBytes,omitempty"`
+	WriteBytes      uint32   `json:"writeBytes,omitempty"`
+	JournalBytes    uint32   `json:"journalBytes,omitempty"`
+	SensitiveOutput bool     `json:"sensitiveOutput,omitempty"`
+	Redaction       string   `json:"redaction,omitempty"`
 }
+
+var (
+	transcriptBootstrapTokenPattern      = regexp.MustCompile(`(?i)\b[a-z0-9]{6}\.[a-z0-9]{16}\b`)
+	transcriptDiscoveryTokenHashPattern  = regexp.MustCompile(`(?i)\bsha256:[a-f0-9]{64}\b`)
+	transcriptCertificateKeyValuePattern = regexp.MustCompile(`(?i)^[a-f0-9]{64}$`)
+)
 
 func NewAgentClient(conn io.ReadWriteCloser, transcript string) *AgentClient {
 	return &AgentClient{
@@ -290,6 +299,7 @@ func summaryForResponse(req *vmtestpb.VmtestRequest, resp *vmtestpb.VmtestRespon
 		entry.StdoutBytes = result.Command.StdoutBytes
 		entry.StderrBytes = result.Command.StderrBytes
 		if run, ok := req.Operation.(*vmtestpb.VmtestRequest_RunCommand); ok {
+			entry.Argv = redactTranscriptArgv(run.RunCommand.Argv)
 			entry.SensitiveOutput = run.RunCommand.SensitiveOutput
 			if run.RunCommand.SensitiveOutput {
 				entry.Redaction = "output"
@@ -311,4 +321,52 @@ func summaryForResponse(req *vmtestpb.VmtestRequest, resp *vmtestpb.VmtestRespon
 		entry.JournalBytes = result.Journal.SizeBytes
 	}
 	return entry
+}
+
+func redactTranscriptArgv(argv []string) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	redacted := append([]string(nil), argv...)
+	for i, arg := range redacted {
+		if flag, _, ok := strings.Cut(arg, "="); ok && sensitiveArgvFlag(flag) {
+			redacted[i] = flag + "=" + replacementForArgvFlag(flag)
+			continue
+		}
+		if i > 0 && sensitiveArgvFlag(redacted[i-1]) {
+			redacted[i] = replacementForArgvFlag(redacted[i-1])
+			continue
+		}
+		redacted[i] = redactTranscriptTokenText(arg)
+	}
+	return redacted
+}
+
+func sensitiveArgvFlag(flag string) bool {
+	switch flag {
+	case "--token", "--discovery-token-ca-cert-hash", "--certificate-key":
+		return true
+	default:
+		return false
+	}
+}
+
+func replacementForArgvFlag(flag string) string {
+	switch flag {
+	case "--discovery-token-ca-cert-hash":
+		return "[REDACTED DISCOVERY TOKEN HASH]"
+	case "--certificate-key":
+		return "[REDACTED CERTIFICATE KEY]"
+	default:
+		return "[REDACTED BOOTSTRAP TOKEN]"
+	}
+}
+
+func redactTranscriptTokenText(value string) string {
+	value = transcriptBootstrapTokenPattern.ReplaceAllString(value, "[REDACTED BOOTSTRAP TOKEN]")
+	value = transcriptDiscoveryTokenHashPattern.ReplaceAllString(value, "[REDACTED DISCOVERY TOKEN HASH]")
+	if transcriptCertificateKeyValuePattern.MatchString(value) {
+		return "[REDACTED CERTIFICATE KEY]"
+	}
+	return value
 }
