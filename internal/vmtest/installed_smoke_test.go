@@ -143,6 +143,34 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	if !strings.Contains(string(transcript), `"method":"Health"`) || !strings.Contains(string(transcript), `"status":"ok"`) {
 		t.Fatalf("vsock transcript did not record successful health: %s", transcript)
 	}
+
+	readyResult, err := runner.Plan(Scenario{Name: "first-install-packaged-runtime-ready"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	readyResult.start(runner.time())
+	readyResult = RunInstalledKubeadmReadySmoke(ctx, readyResult, KubeadmReadySmokeConfig{
+		Runtime: InstalledRuntimeConfig{
+			Disk:         packagedDisk,
+			DiskFormat:   DiskQCOW2,
+			ESPArtifacts: packagedESP,
+			VM: VMConfig{
+				KVM:     options.KVM,
+				RAMMiB:  4096,
+				CPUs:    2,
+				Timeout: 8 * time.Minute,
+				VSock: VSockConfig{
+					Enabled: true,
+				},
+			},
+		},
+	}, VMRunner{})
+	if err := runner.Write(Scenario{Name: "first-install-packaged-runtime-ready"}, readyResult); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if readyResult.Status != StatusPassed {
+		t.Fatalf("packaged runtime ready status = %q, failure = %q, run dir = %s", readyResult.Status, readyResult.FailureSummary, readyResult.RunDir)
+	}
 }
 
 func TestInstalledRuntimeVMTestAgentSmoke(t *testing.T) {
