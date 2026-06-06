@@ -40,6 +40,7 @@ cap_vsock="disabled"
 cap_bridge="disabled"
 cap_mtools="disabled"
 cap_sfdisk="disabled"
+cap_sha256sum="disabled"
 cap_systemd_nspawn="disabled"
 missing_capabilities=()
 setup_failures=()
@@ -135,6 +136,12 @@ probe_capabilities() {
     else
         missing_capabilities+=("sfdisk")
         cap_sfdisk="$(missing_status missing)"
+    fi
+    if have_command sha256sum; then
+        cap_sha256sum="passed"
+    else
+        missing_capabilities+=("sha256sum")
+        cap_sha256sum="$(missing_status missing)"
     fi
     if have_command systemd-nspawn; then
         if [[ "${EUID:-$(id -u)}" == 0 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == 1 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == true ]]; then
@@ -297,6 +304,7 @@ write_host_capabilities() {
         --arg bridge "$cap_bridge" \
         --arg mtools "$cap_mtools" \
         --arg sfdisk "$cap_sfdisk" \
+        --arg sha256sum "$cap_sha256sum" \
         --arg systemdNspawn "$cap_systemd_nspawn" \
         --args \
         '{
@@ -311,6 +319,7 @@ write_host_capabilities() {
             bridge: $bridge,
             mtools: $mtools,
             sfdisk: $sfdisk,
+            sha256sum: $sha256sum,
             "systemd-nspawn": $systemdNspawn
           },
           missing: $ARGS.positional
@@ -335,6 +344,7 @@ write_world() {
         --arg bridgeStatus "$cap_bridge" \
         --arg mtools "$cap_mtools" \
         --arg sfdisk "$cap_sfdisk" \
+        --arg sha256sum "$cap_sha256sum" \
         --arg systemdNspawn "$cap_systemd_nspawn" \
         '{
           apiVersion: "katl.dev/v1alpha1",
@@ -358,6 +368,7 @@ write_world() {
             bridge: $bridgeStatus,
             mtools: $mtools,
             sfdisk: $sfdisk,
+            sha256sum: $sha256sum,
             vsock: $vsock,
             "systemd-nspawn": $systemdNspawn
           }
