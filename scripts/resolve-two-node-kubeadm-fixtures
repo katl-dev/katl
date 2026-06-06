@@ -34,6 +34,8 @@ vmtest_keep="${KATL_VMTEST_KEEP:-failed}"
 vmtest_state_root="${KATL_VMTEST_STATE_ROOT:-$state_dir/vm-runs}"
 env_file_set=0
 check_only=0
+bootstrap_manifests=()
+bootstrap_waits=()
 
 usage() {
     cat <<'USAGE'
@@ -64,6 +66,8 @@ Options:
   --control-plane-format F    Control-plane disk format: raw or qcow2 (default: raw)
   --worker-format F           Worker disk format: raw or qcow2 (default: raw)
   --kubernetes-version V      Kubernetes payload version for the smoke inventory (default: v1.36.1)
+  --bootstrap-manifest P      User-owned bootstrap manifest to pass to katlctl cluster bootstrap
+  --bootstrap-wait W          User-owned bootstrap wait gate to pass to katlctl cluster bootstrap
   --bridge NAME               QEMU bridge name to export as KATL_VMTEST_BRIDGE
   --bridge-helper PATH        QEMU bridge helper to export as KATL_QEMU_BRIDGE_HELPER
   --state-dir DIR             Output directory for generated env, manifest, and ESP copies
@@ -103,9 +107,61 @@ json() {
     printf "%s" "$value"
 }
 
+json_array() {
+    local value first=1
+    printf '['
+    for value in "$@"; do
+        if [[ "$first" -eq 1 ]]; then
+            first=0
+        else
+            printf ', '
+        fi
+        printf '"%s"' "$(json "$value")"
+    done
+    printf ']'
+}
+
 real() {
     realpath -m "$1"
 }
+
+add_bootstrap_manifest() {
+    local value="$1"
+    [[ -n "${value//[[:space:]]/}" ]] || return 0
+    bootstrap_manifests+=("$value")
+}
+
+add_bootstrap_wait() {
+    local value="$1"
+    [[ -n "${value//[[:space:]]/}" ]] || return 0
+    bootstrap_waits+=("$value")
+}
+
+read_bootstrap_env() {
+    local value part
+    value="${KATL_BOOTSTRAP_MANIFESTS:-}"
+    if [[ -n "${value//[[:space:]]/}" ]]; then
+        local old_ifs="$IFS"
+        local -a parts=()
+        IFS=:
+        read -r -a parts <<<"$value"
+        IFS="$old_ifs"
+        for part in "${parts[@]}"; do
+            add_bootstrap_manifest "$part"
+        done
+    fi
+    add_bootstrap_manifest "${KATL_BOOTSTRAP_MANIFEST:-}"
+
+    value="${KATL_BOOTSTRAP_WAITS:-}"
+    if [[ -n "${value//[[:space:]]/}" ]]; then
+        while IFS= read -r part; do
+            add_bootstrap_wait "$part"
+        done <<<"$value"
+    fi
+    add_bootstrap_wait "${KATL_BOOTSTRAP_WAIT:-}"
+}
+
+read_bootstrap_env
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -198,6 +254,16 @@ while [[ $# -gt 0 ]]; do
         --kubernetes-version)
             need_value "$1" "${2:-}"
             kubernetes_version="$2"
+            shift 2
+            ;;
+        --bootstrap-manifest)
+            need_value "$1" "${2:-}"
+            add_bootstrap_manifest "$2"
+            shift 2
+            ;;
+        --bootstrap-wait)
+            need_value "$1" "${2:-}"
+            add_bootstrap_wait "$2"
             shift 2
             ;;
         --bridge)
@@ -639,12 +705,29 @@ check_fixture_manifest() {
     [[ "$(file_sha "$metadata")" == "$want_metadata_sha" ]] || fail "$manifest node metadata sha256 does not match $metadata"
 }
 
+normalize_bootstrap_inputs() {
+    local i value
+    for i in "${!bootstrap_manifests[@]}"; do
+        value="$(real "${bootstrap_manifests[$i]}")"
+        [[ -f "$value" ]] || fail "bootstrap manifest not found: $(rel "$value")"
+        bootstrap_manifests[i]="$value"
+    done
+    for i in "${!bootstrap_waits[@]}"; do
+        value="${bootstrap_waits[$i]}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        [[ -n "$value" ]] || fail "bootstrap wait must not be empty"
+        bootstrap_waits[i]="$value"
+    done
+}
+
 check_bridge_address "control-plane" "$cp_address"
 check_bridge_address "worker" "$worker_address"
 check_node_metadata "$cp_node_metadata" "cp-1" "control-plane"
 check_node_metadata "$worker_node_metadata" "worker-1" "worker"
 check_fixture_manifest "$cp_fixture_manifest" "cp-1" "control-plane" "$cp_disk" "$cp_format" "$cp_esp_artifacts" "$cp_node_metadata"
 check_fixture_manifest "$worker_fixture_manifest" "worker-1" "worker" "$worker_disk" "$worker_format" "$worker_esp_artifacts" "$worker_node_metadata"
+normalize_bootstrap_inputs
 
 mkdir -p "$state_dir"
 
@@ -701,6 +784,14 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'export KATL_KUBERNETES_VERSION=%q\n' "$kubernetes_version"
     printf 'export KATL_VMTEST_BRIDGE=%q\n' "$bridge"
     printf 'export KATL_TWO_NODE_FIXTURES_BRIDGE_CHECK=%q\n' "$bridge_check"
+    if [[ "${#bootstrap_manifests[@]}" -gt 0 ]]; then
+        local_joined="$(IFS=:; printf '%s' "${bootstrap_manifests[*]}")"
+        printf 'export KATL_BOOTSTRAP_MANIFESTS=%q\n' "$local_joined"
+    fi
+    if [[ "${#bootstrap_waits[@]}" -gt 0 ]]; then
+        local_joined="$(IFS=$'\n'; printf '%s' "${bootstrap_waits[*]}")"
+        printf 'export KATL_BOOTSTRAP_WAITS=%q\n' "$local_joined"
+    fi
     if [[ -n "$bridge_helper" ]]; then
         printf 'export KATL_QEMU_BRIDGE_HELPER=%q\n' "$bridge_helper"
     fi
@@ -722,6 +813,12 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
         # shellcheck disable=SC2016
         printf 'recheck_args+=(--worker-katlos-fixture "$KATL_WORKER_KATLOS_FIXTURE_MANIFEST")\n'
     fi
+    for bootstrap_manifest in "${bootstrap_manifests[@]}"; do
+        printf 'recheck_args+=(--bootstrap-manifest %q)\n' "$bootstrap_manifest"
+    done
+    for bootstrap_wait in "${bootstrap_waits[@]}"; do
+        printf 'recheck_args+=(--bootstrap-wait %q)\n' "$bootstrap_wait"
+    done
     # shellcheck disable=SC2016
     printf 'if [[ -n "${KATL_QEMU_BRIDGE_HELPER:-}" ]]; then\n'
     # shellcheck disable=SC2016
@@ -766,6 +863,10 @@ cat >"$manifest" <<EOF
   },
   "bridge": "$(json "$bridge")",
   "kubernetesVersion": "$(json "$kubernetes_version")",
+  "bootstrap": {
+    "manifests": $(json_array "${bootstrap_manifests[@]}"),
+    "waits": $(json_array "${bootstrap_waits[@]}")
+  },
   "envFile": "$(json "$env_file")",
   "runScript": "$(json "$run_script")"
 }

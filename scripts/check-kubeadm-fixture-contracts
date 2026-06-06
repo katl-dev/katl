@@ -121,6 +121,43 @@ env KATL_TWO_NODE_FIXTURES_BRIDGE_CHECK=off \
     --state-dir "$tmpdir/two-node-valid" \
     --check-only >/dev/null
 
+bootstrap_manifest="$tmpdir/user bootstrap/01-cni.yaml"
+mkdir -p "$(dirname "$bootstrap_manifest")"
+cat >"$bootstrap_manifest" <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-bootstrap
+EOF
+
+env KATL_TWO_NODE_FIXTURES_BRIDGE_CHECK=off \
+    "$repo_root/scripts/resolve-two-node-kubeadm-fixtures" \
+    --control-plane-published-dir "$published_dir" \
+    --worker-published-dir "$worker_published_dir" \
+    --control-plane-address 10.44.0.10 \
+    --worker-address 10.44.0.11 \
+    --bridge katlbr0 \
+    --bootstrap-manifest "$bootstrap_manifest" \
+    --bootstrap-wait nodes-ready \
+    --bootstrap-wait pods-ready:kube-system:k8s-app=kube-dns \
+    --state-dir "$tmpdir/two-node-bootstrap" >/dev/null
+
+resolved_bootstrap_manifest="$(realpath -m "$bootstrap_manifest")"
+jq -e \
+    --arg manifest "$resolved_bootstrap_manifest" '
+    .bootstrap.manifests == [$manifest] and
+    .bootstrap.waits == ["nodes-ready", "pods-ready:kube-system:k8s-app=kube-dns"]
+    ' "$tmpdir/two-node-bootstrap/fixtures.json" >/dev/null ||
+    fail "two-node resolver did not record bootstrap fixture inputs"
+grep -Fq "KATL_BOOTSTRAP_MANIFESTS=" "$tmpdir/two-node-bootstrap/vmtest.env" ||
+    fail "two-node resolver env did not export bootstrap manifests"
+grep -Fq "KATL_BOOTSTRAP_WAITS=" "$tmpdir/two-node-bootstrap/vmtest.env" ||
+    fail "two-node resolver env did not export bootstrap waits"
+grep -Fq -- "--bootstrap-manifest" "$tmpdir/two-node-bootstrap/run-two-node-kubeadm-join.sh" ||
+    fail "two-node resolver wrapper did not recheck bootstrap manifests"
+grep -Fq -- "--bootstrap-wait" "$tmpdir/two-node-bootstrap/run-two-node-kubeadm-join.sh" ||
+    fail "two-node resolver wrapper did not recheck bootstrap waits"
+
 env KATL_THREE_CONTROL_PLANE_FIXTURES_BRIDGE_CHECK=off \
     "$repo_root/scripts/resolve-three-control-plane-kubeadm-fixtures" \
     --cp1-published-dir "$published_dir" \
@@ -144,6 +181,17 @@ expect_failure "control-plane published fixture manifest is invalid for cp-1 rol
     --control-plane-address 10.44.0.10 \
     --worker-address 10.44.0.11 \
     --bridge katlbr0 \
+    --check-only
+
+expect_failure "bootstrap manifest not found" \
+    env KATL_TWO_NODE_FIXTURES_BRIDGE_CHECK=off \
+    "$repo_root/scripts/resolve-two-node-kubeadm-fixtures" \
+    --control-plane-published-dir "$published_dir" \
+    --worker-published-dir "$worker_published_dir" \
+    --control-plane-address 10.44.0.10 \
+    --worker-address 10.44.0.11 \
+    --bridge katlbr0 \
+    --bootstrap-manifest "$tmpdir/missing-bootstrap.yaml" \
     --check-only
 
 wrong_three_cp="$tmpdir/wrong-three-cp"
