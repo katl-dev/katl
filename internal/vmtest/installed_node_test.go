@@ -99,8 +99,12 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		t.Fatalf("fixture metadata = %#v", input.Fixture)
 	}
 	result := readNodeResult(t, node.Result.Artifacts.Result)
-	if result.Status != StatusPassed || result.FailureSummary != "" || len(result.Phases) != 1 || result.Phases[0].Name != "installed-runtime-node-start" {
+	if result.ScenarioName != "two-node/cp-1" || result.Status != StatusPassed || result.FailureSummary != "" || len(result.Phases) != 1 || result.Phases[0].Name != "installed-runtime-node-start" {
 		t.Fatalf("node result = %#v", result)
+	}
+	record := readRecord(t, node.Result.Artifacts.Scenario)
+	if record.Scenario.Name != "two-node/cp-1" || record.Result.Status != StatusPassed || record.Result.Artifacts.Result != node.Result.Artifacts.Result {
+		t.Fatalf("node scenario record = %#v", record)
 	}
 	if err := node.Stop(); err != context.Canceled {
 		t.Fatalf("Stop() error = %v, want context.Canceled", err)
@@ -161,11 +165,15 @@ func TestStartInstalledRuntimeNodeWritesFailureResult(t *testing.T) {
 		t.Fatalf("plan worker-1: %v", planErr)
 	}
 	result := readNodeResult(t, planned.Artifacts.Result)
-	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "qemu exited before serial signal") {
+	if result.ScenarioName != "two-node/worker-1" || result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "qemu exited before serial signal") {
 		t.Fatalf("failure result = %#v", result)
 	}
 	if len(result.Phases) != 1 || result.Phases[0].Status != StatusFailed || result.Phases[0].Name != "installed-runtime-node-start" {
 		t.Fatalf("failure phases = %#v", result.Phases)
+	}
+	record := readRecord(t, planned.Artifacts.Scenario)
+	if record.Scenario.Name != "two-node/worker-1" || record.Result.Status != StatusFailed || record.Result.Artifacts.Result != planned.Artifacts.Result {
+		t.Fatalf("failure scenario record = %#v", record)
 	}
 }
 
@@ -184,6 +192,9 @@ func TestPlannedInstalledRuntimeNodeResult(t *testing.T) {
 	wantRunDir := filepath.Join(parent.RunDir, "nodes", "cp-1")
 	if result.RunID != "run-1-cp-1" || result.RunDir != wantRunDir {
 		t.Fatalf("planned node result runID=%q runDir=%q", result.RunID, result.RunDir)
+	}
+	if result.ScenarioName != "two-node/cp-1" {
+		t.Fatalf("planned scenario name = %q", result.ScenarioName)
 	}
 	if result.Artifacts.QEMUCommand != filepath.Join(wantRunDir, "qemu", "qemu-command.txt") {
 		t.Fatalf("planned qemu command = %q", result.Artifacts.QEMUCommand)

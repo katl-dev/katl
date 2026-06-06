@@ -149,6 +149,16 @@ func writeInstalledRuntimeNodeResult(result Result, status Status, failure strin
 	if err := os.MkdirAll(result.ManifestDir, 0o755); err != nil {
 		return err
 	}
+	if err := writeJSON(result.Artifacts.Scenario, scenarioRecord{
+		Scenario: Scenario{
+			Name: result.ScenarioName,
+			Keep: result.Keep,
+			KVM:  result.KVM,
+		},
+		Result: result,
+	}); err != nil {
+		return err
+	}
 	return writeJSON(result.Artifacts.Result, result)
 }
 
@@ -163,6 +173,7 @@ func (n RunningInstalledRuntimeNode) Stop() error {
 func nodeResult(parent Result, name string) Result {
 	runDir := filepath.Join(parent.RunDir, "nodes", name)
 	result := parent
+	result.ScenarioName = nodeScenarioName(parent.ScenarioName, name)
 	result.RunID = parent.RunID + "-" + name
 	result.RunDir = runDir
 	result.QEMUDir = filepath.Join(runDir, "qemu")
@@ -172,4 +183,11 @@ func nodeResult(parent Result, name string) Result {
 	result.VSock = VSockPlan{}
 	result.Phases = nil
 	return result
+}
+
+func nodeScenarioName(parent, name string) string {
+	if parent == "" {
+		return name
+	}
+	return parent + "/" + name
 }
