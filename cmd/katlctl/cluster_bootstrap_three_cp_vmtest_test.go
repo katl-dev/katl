@@ -27,52 +27,29 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run three-control-plane stacked-etcd smoke")
 	}
-	cp1Disk := requireFirstEnv(t, "KATL_CONTROL_PLANE_1_INSTALLED_DISK", "KATL_CONTROL_PLANE_INSTALLED_DISK")
-	cp2Disk := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_2_INSTALLED_DISK")
-	cp3Disk := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_3_INSTALLED_DISK")
-	cp1ESP := requireNodeESP(t, firstSetEnv("KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS", "KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS"))
-	cp2ESP := requireNodeESP(t, "KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS")
-	cp3ESP := requireNodeESP(t, "KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS")
-	cp1Fixture := requireFirstEnv(t, "KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST", "KATL_CONTROL_PLANE_FIXTURE_MANIFEST")
-	cp2Fixture := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST")
-	cp3Fixture := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST")
-	cp1Metadata := requireFirstEnv(t, "KATL_CONTROL_PLANE_1_NODE_METADATA", "KATL_CONTROL_PLANE_NODE_METADATA")
-	cp2Metadata := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_2_NODE_METADATA")
-	cp3Metadata := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_3_NODE_METADATA")
-	cp1Address := requireFirstEnv(t, "KATL_CONTROL_PLANE_1_ADDRESS", "KATL_CONTROL_PLANE_ADDRESS")
-	cp2Address := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_2_ADDRESS")
-	cp3Address := vmtest.RequireEnv(t, "KATL_CONTROL_PLANE_3_ADDRESS")
-	kubernetesVersion := firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1")
-	if _, err := exec.LookPath("kubectl"); err != nil {
-		t.Skipf("kubectl is required for host-side kubeconfig verification: %v", err)
-	}
-
 	runner := vmtest.NewRunner(options)
-	runner.RequireHost(t, vmtest.HostRequirements{
+	scenario := vmtest.Scenario{Name: "installed-runtime-three-control-plane-stacked-etcd"}
+	result := planStartedVMResult(t, runner, scenario)
+	inputs := requireThreeControlPlaneSmokeInputs(t, runner, scenario, result)
+	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{
 		QEMU:         true,
 		OVMF:         true,
 		KVM:          options.KVM,
 		SharedBridge: true,
 	})
-	scenario := vmtest.Scenario{Name: "installed-runtime-three-control-plane-stacked-etcd"}
-	result, err := runner.Plan(scenario)
-	if err != nil {
-		t.Fatalf("Plan() error = %v", err)
-	}
-	result.Started = time.Now().UTC()
 	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
 	etcdTranscriptDir := filepath.Join(result.RunDir, "etcd-transcripts")
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 
-	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-1", cp1Disk, cp1ESP, cp1Fixture, cp1Metadata, diskFormatEnv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT", "KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), options.KVM, 43201), vmtest.VMRunner{})
+	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), options.KVM, 43201), vmtest.VMRunner{})
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start cp-1 VM: %v", err)
 	}
 	defer stopNode(t, cp1Node)
 
-	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-2", cp2Disk, cp2ESP, cp2Fixture, cp2Metadata, diskFormatEnv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), options.KVM, 43202), vmtest.VMRunner{})
+	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), options.KVM, 43202), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cp1Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -80,7 +57,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	}
 	defer stopNode(t, cp2Node)
 
-	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-3", cp3Disk, cp3ESP, cp3Fixture, cp3Metadata, diskFormatEnv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), options.KVM, 43203), vmtest.VMRunner{})
+	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfig("cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), options.KVM, 43203), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics(transcriptDir, cp1Node, cp2Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -97,7 +74,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
 	etcdReportPath := filepath.Join(result.RunDir, "etcd-report.json")
 	bootstrapFixture := bootstrapFixtureInputsFromEnv()
-	if err := writeThreeControlPlaneInventory(inventoryPath, kubernetesVersion, nodes); err != nil {
+	if err := writeThreeControlPlaneInventory(inventoryPath, inputs.KubernetesVersion, nodes); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
@@ -106,7 +83,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		QEMUCommands:           qemuCommandPaths(nodes),
 		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
 		VSockTranscripts:       vsockTranscriptPaths(nodes),
-		FixtureInputs:          threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata),
+		FixtureInputs:          threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP2Disk, inputs.CP3Disk, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
 		PublishedFixtures:      threeControlPlanePublishedFixtureDirs(),
 		Inventory:              inventoryPath,
 		Kubeconfig:             kubeconfigPath,
@@ -130,10 +107,10 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
-		"--control-plane-endpoint", cp1Address + ":6443",
-		"--node-address", "cp-1=" + cp1Address,
-		"--node-address", "cp-2=" + cp2Address,
-		"--node-address", "cp-3=" + cp3Address,
+		"--control-plane-endpoint", inputs.CP1Address + ":6443",
+		"--node-address", "cp-1=" + inputs.CP1Address,
+		"--node-address", "cp-2=" + inputs.CP2Address,
+		"--node-address", "cp-3=" + inputs.CP3Address,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
 		"--vmtest-transcript-dir", transcriptDir,
@@ -183,6 +160,68 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		t.Fatalf("write etcd report: %v", err)
 	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+type threeControlPlaneSmokeInputs struct {
+	CP1Disk           string
+	CP1DiskFormat     string
+	CP1ESP            string
+	CP1Fixture        string
+	CP1Metadata       string
+	CP1Address        string
+	CP2Disk           string
+	CP2DiskFormat     string
+	CP2ESP            string
+	CP2Fixture        string
+	CP2Metadata       string
+	CP2Address        string
+	CP3Disk           string
+	CP3DiskFormat     string
+	CP3ESP            string
+	CP3Fixture        string
+	CP3Metadata       string
+	CP3Address        string
+	KubernetesVersion string
+}
+
+func requireThreeControlPlaneSmokeInputs(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, result vmtest.Result) threeControlPlaneSmokeInputs {
+	t.Helper()
+	inputs, missing := threeControlPlaneSmokeInputsFromEnv(exec.LookPath)
+	requireSmokePrereqs(t, runner, scenario, result, "three-control-plane stacked-etcd smoke prerequisites missing", missing)
+	return inputs
+}
+
+func threeControlPlaneSmokeInputsFromEnv(lookPath func(string) (string, error)) (threeControlPlaneSmokeInputs, []vmtest.MissingPrerequisite) {
+	const detail = "set the environment variable or run scripts/resolve-three-control-plane-kubeadm-fixtures"
+	var missing []vmtest.MissingPrerequisite
+	inputs := threeControlPlaneSmokeInputs{
+		CP1Disk:           requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_INSTALLED_DISK", "KATL_CONTROL_PLANE_INSTALLED_DISK"),
+		CP1DiskFormat:     firstString(os.Getenv("KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT"), os.Getenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)),
+		CP1ESP:            requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS", "KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS", "KATL_INSTALLED_ESP_ARTIFACTS"),
+		CP1Fixture:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST", "KATL_CONTROL_PLANE_FIXTURE_MANIFEST"),
+		CP1Metadata:       requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_NODE_METADATA", "KATL_CONTROL_PLANE_NODE_METADATA"),
+		CP1Address:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_1_ADDRESS", "KATL_CONTROL_PLANE_ADDRESS"),
+		CP2Disk:           requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_INSTALLED_DISK"),
+		CP2DiskFormat:     firstString(os.Getenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)),
+		CP2ESP:            requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS", "KATL_INSTALLED_ESP_ARTIFACTS"),
+		CP2Fixture:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST"),
+		CP2Metadata:       requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_NODE_METADATA"),
+		CP2Address:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_2_ADDRESS"),
+		CP3Disk:           requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_INSTALLED_DISK"),
+		CP3DiskFormat:     firstString(os.Getenv("KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT"), string(vmtest.DiskRaw)),
+		CP3ESP:            requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS", "KATL_INSTALLED_ESP_ARTIFACTS"),
+		CP3Fixture:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST"),
+		CP3Metadata:       requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_NODE_METADATA"),
+		CP3Address:        requiredEnvValue(&missing, detail, "KATL_CONTROL_PLANE_3_ADDRESS"),
+		KubernetesVersion: firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"),
+	}
+	if _, err := lookPath("kubectl"); err != nil {
+		missing = append(missing, vmtest.MissingPrerequisite{
+			Name:   "kubectl",
+			Detail: "required for host-side kubeconfig verification: " + err.Error(),
+		})
+	}
+	return inputs, missing
 }
 
 func threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, kvm vmtest.KVMPolicy, cid uint32) vmtest.InstalledRuntimeNodeConfig {
@@ -605,38 +644,6 @@ func transcriptPaths(root string, nodes []vmtest.RunningInstalledRuntimeNode) ma
 	return out
 }
 
-func requireFirstEnv(t *testing.T, names ...string) string {
-	t.Helper()
-	for _, name := range names {
-		if value := os.Getenv(name); value != "" {
-			return value
-		}
-	}
-	t.Skipf("set one of %s to run this VM scenario", strings.Join(names, ", "))
-	return ""
-}
-
-func firstSetEnv(names ...string) string {
-	for _, name := range names {
-		if os.Getenv(name) != "" {
-			return name
-		}
-	}
-	if len(names) == 0 {
-		return ""
-	}
-	return names[0]
-}
-
-func diskFormatEnv(names ...string) vmtest.DiskFormat {
-	for _, name := range names {
-		if value := os.Getenv(name); value != "" {
-			return vmtest.DiskFormat(value)
-		}
-	}
-	return vmtest.DiskRaw
-}
-
 func TestThreeControlPlaneInventoryAndEtcdVerificationHelpers(t *testing.T) {
 	nodes := []vmtest.RunningInstalledRuntimeNode{
 		{Name: "cp-1", VSock: vmtest.VSockPlan{Enabled: true, GuestCID: 1, Port: 10240}},
@@ -663,6 +670,84 @@ func TestThreeControlPlaneInventoryAndEtcdVerificationHelpers(t *testing.T) {
 	config := threeControlPlaneNodeConfig("cp-2", "disk.qcow2", "esp", "fixture.json", "node.json", vmtest.DiskQCOW2, vmtest.KVMOff, 43202)
 	if config.Runtime.FixtureManifest != "fixture.json" || config.Runtime.NodeMetadata != "node.json" {
 		t.Fatalf("runtime provenance = fixture %q metadata %q", config.Runtime.FixtureManifest, config.Runtime.NodeMetadata)
+	}
+}
+
+func TestThreeControlPlaneSmokeInputsFromEnv(t *testing.T) {
+	for _, name := range []string{
+		"KATL_CONTROL_PLANE_1_INSTALLED_DISK",
+		"KATL_CONTROL_PLANE_INSTALLED_DISK",
+		"KATL_CONTROL_PLANE_2_INSTALLED_DISK",
+		"KATL_CONTROL_PLANE_3_INSTALLED_DISK",
+		"KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS",
+		"KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS",
+		"KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS",
+		"KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS",
+		"KATL_INSTALLED_ESP_ARTIFACTS",
+		"KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST",
+		"KATL_CONTROL_PLANE_FIXTURE_MANIFEST",
+		"KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST",
+		"KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST",
+		"KATL_CONTROL_PLANE_1_NODE_METADATA",
+		"KATL_CONTROL_PLANE_NODE_METADATA",
+		"KATL_CONTROL_PLANE_2_NODE_METADATA",
+		"KATL_CONTROL_PLANE_3_NODE_METADATA",
+		"KATL_CONTROL_PLANE_1_ADDRESS",
+		"KATL_CONTROL_PLANE_ADDRESS",
+		"KATL_CONTROL_PLANE_2_ADDRESS",
+		"KATL_CONTROL_PLANE_3_ADDRESS",
+		"KATL_CONTROL_PLANE_1_INSTALLED_DISK_FORMAT",
+		"KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT",
+		"KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT",
+		"KATL_CONTROL_PLANE_3_INSTALLED_DISK_FORMAT",
+		"KATL_KUBERNETES_VERSION",
+	} {
+		t.Setenv(name, "")
+	}
+	_, missing := threeControlPlaneSmokeInputsFromEnv(func(string) (string, error) {
+		return "", errors.New("missing kubectl")
+	})
+	for _, want := range []string{
+		"KATL_CONTROL_PLANE_1_INSTALLED_DISK or KATL_CONTROL_PLANE_INSTALLED_DISK",
+		"KATL_CONTROL_PLANE_2_INSTALLED_DISK",
+		"KATL_CONTROL_PLANE_3_INSTALLED_DISK",
+		"KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS or KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS",
+		"KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS",
+		"KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS or KATL_INSTALLED_ESP_ARTIFACTS",
+		"kubectl",
+	} {
+		if !missingPrereqName(missing, want) {
+			t.Fatalf("missing prereqs = %#v, want %q", missing, want)
+		}
+	}
+
+	t.Setenv("KATL_CONTROL_PLANE_INSTALLED_DISK", "cp1.raw")
+	t.Setenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK", "cp2.raw")
+	t.Setenv("KATL_CONTROL_PLANE_3_INSTALLED_DISK", "cp3.raw")
+	t.Setenv("KATL_INSTALLED_ESP_ARTIFACTS", "esp")
+	t.Setenv("KATL_CONTROL_PLANE_FIXTURE_MANIFEST", "cp1-fixture.json")
+	t.Setenv("KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST", "cp2-fixture.json")
+	t.Setenv("KATL_CONTROL_PLANE_3_FIXTURE_MANIFEST", "cp3-fixture.json")
+	t.Setenv("KATL_CONTROL_PLANE_NODE_METADATA", "cp1-node.json")
+	t.Setenv("KATL_CONTROL_PLANE_2_NODE_METADATA", "cp2-node.json")
+	t.Setenv("KATL_CONTROL_PLANE_3_NODE_METADATA", "cp3-node.json")
+	t.Setenv("KATL_CONTROL_PLANE_ADDRESS", "192.0.2.20")
+	t.Setenv("KATL_CONTROL_PLANE_2_ADDRESS", "192.0.2.21")
+	t.Setenv("KATL_CONTROL_PLANE_3_ADDRESS", "192.0.2.22")
+	t.Setenv("KATL_CONTROL_PLANE_INSTALLED_DISK_FORMAT", "qcow2")
+	t.Setenv("KATL_CONTROL_PLANE_2_INSTALLED_DISK_FORMAT", "raw")
+	t.Setenv("KATL_KUBERNETES_VERSION", "v1.test.1")
+	inputs, missing := threeControlPlaneSmokeInputsFromEnv(func(string) (string, error) {
+		return "/usr/bin/kubectl", nil
+	})
+	if len(missing) != 0 {
+		t.Fatalf("missing prereqs = %#v", missing)
+	}
+	if inputs.CP1Disk != "cp1.raw" || inputs.CP1ESP != "esp" || inputs.CP2ESP != "esp" || inputs.CP3ESP != "esp" {
+		t.Fatalf("inputs = %#v", inputs)
+	}
+	if inputs.CP1DiskFormat != "qcow2" || inputs.CP2DiskFormat != "raw" || inputs.CP3DiskFormat != string(vmtest.DiskRaw) || inputs.KubernetesVersion != "v1.test.1" {
+		t.Fatalf("input versions and formats = %#v", inputs)
 	}
 }
 
