@@ -164,6 +164,24 @@ World run directories and scenario manifests are the supported inspection path
 for already-produced artifacts during harness development. Lower-level helper
 scripts are not the supported way to run enabled nspawn, VM, or kubeadm suites.
 
+### Capable-Host Proof
+
+Run the full enabled world suite from the Nix VM shell on a host with readable
+OVMF firmware, `/dev/kvm`, `/dev/vhost-vsock`, `/dev/net/tun`,
+`systemd-nspawn` privileges, and a QEMU bridge ACL that allows the selected
+bridge:
+
+```sh
+nix develop .#vm -c env \
+  KATL_VMTEST_RUN_ID=capable-host-$(date -u +%Y%m%dT%H%M%SZ) \
+  scripts/vmtest-run
+```
+
+A capable-host run exits zero and writes `summary.json`, `world.json`,
+`host-capabilities.json`, `go-test.log`, and per-scenario `result.json` files
+under the printed run directory. A restricted host should fail during setup with
+explicit host capability gaps rather than fixture generation errors.
+
 ## Sanity Checks
 
 Run these from the same shell/session that will build and test Katl:
