@@ -6,6 +6,7 @@ go_bin="${KATL_VMTEST_GO:-go}"
 qemu_bin="${KATL_VMTEST_QEMU:-qemu-system-x86_64}"
 qemu_img_bin="${KATL_VMTEST_QEMU_IMG:-qemu-img}"
 ip_bin="${KATL_VMTEST_IP:-ip}"
+kubectl_bin="${KATL_VMTEST_KUBECTL:-kubectl}"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
 run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 run_dir="${KATL_VMTEST_RUN_DIR:-$tmp_parent/$run_id}"
@@ -44,6 +45,7 @@ cap_sha256sum="disabled"
 cap_awk="disabled"
 cap_realpath="disabled"
 cap_systemd_nspawn="disabled"
+cap_kubectl="disabled"
 missing_capabilities=()
 setup_failures=()
 
@@ -65,6 +67,7 @@ Environment:
   KATL_VMTEST_CIDR=10.77.0.0/24            World network CIDR
   KATL_VMTEST_GATEWAY=10.77.0.1            Bridge gateway address
   KATL_VMTEST_BRIDGE=katl-vmtest0          Bridge name
+  KATL_VMTEST_KUBECTL=kubectl              kubectl used for host-side verification
   KATL_VMTEST_KEEP=never|failed|always     Cleanup policy
 USAGE
 }
@@ -156,6 +159,12 @@ probe_capabilities() {
     else
         missing_capabilities+=("realpath")
         cap_realpath="$(missing_status missing)"
+    fi
+    if have_command "$kubectl_bin"; then
+        cap_kubectl="passed"
+    else
+        missing_capabilities+=("kubectl")
+        cap_kubectl="$(missing_status missing)"
     fi
     if have_command systemd-nspawn; then
         if [[ "${EUID:-$(id -u)}" == 0 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == 1 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == true ]]; then
@@ -322,6 +331,7 @@ write_host_capabilities() {
         --arg awk "$cap_awk" \
         --arg realpath "$cap_realpath" \
         --arg systemdNspawn "$cap_systemd_nspawn" \
+        --arg kubectl "$cap_kubectl" \
         --args \
         '{
           apiVersion: "katl.dev/v1alpha1",
@@ -338,6 +348,7 @@ write_host_capabilities() {
             sha256sum: $sha256sum,
             awk: $awk,
             realpath: $realpath,
+            kubectl: $kubectl,
             "systemd-nspawn": $systemdNspawn
           },
           missing: $ARGS.positional
@@ -366,6 +377,7 @@ write_world() {
         --arg awk "$cap_awk" \
         --arg realpath "$cap_realpath" \
         --arg systemdNspawn "$cap_systemd_nspawn" \
+        --arg kubectl "$cap_kubectl" \
         '{
           apiVersion: "katl.dev/v1alpha1",
           kind: "VMTestWorld",
@@ -391,6 +403,7 @@ write_world() {
             sha256sum: $sha256sum,
             awk: $awk,
             realpath: $realpath,
+            kubectl: $kubectl,
             vsock: $vsock,
             "systemd-nspawn": $systemdNspawn
           }

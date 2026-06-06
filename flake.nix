@@ -33,6 +33,7 @@
             go
             iproute2
             jq
+            kubectl
             mkosi
             mtools
             openssl

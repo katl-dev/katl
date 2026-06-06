@@ -56,7 +56,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.Network.Backend != NetworkBridge || world.Network.LeaseFile != filepath.Join(runDir, "network", "leases.json") {
 		t.Fatalf("world network = %#v", world.Network)
 	}
-	for _, capability := range []string{"qemu", "qemu-img", "ovmf", "kvm", "vsock", "bridge", "mtools", "sfdisk", "sha256sum", "awk", "realpath", "systemd-nspawn"} {
+	for _, capability := range []string{"qemu", "qemu-img", "ovmf", "kvm", "vsock", "bridge", "mtools", "sfdisk", "sha256sum", "awk", "realpath", "kubectl", "systemd-nspawn"} {
 		if world.Capabilities[capability] != WorldStatusPassed {
 			t.Fatalf("capability %s = %q", capability, world.Capabilities[capability])
 		}
@@ -296,6 +296,54 @@ func TestVMTestRunRequiredHostGapFails(t *testing.T) {
 	}
 }
 
+func TestVMTestRunKubectlGapFails(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	if err := os.Remove(host.kubectl); err != nil {
+		t.Fatalf("Remove(%s) error = %v", host.kubectl, err)
+	}
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_VMTEST_KUBECTL="+filepath.Join(tmp, "missing-kubectl"),
+		"KATL_VMTEST_RUN_ID=run-kubectl-gap",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	if _, err := os.Stat(goArgsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("go test ran for setup-failed world, stat err = %v", err)
+	}
+	world, loadErr := LoadWorld(filepath.Join(runDir, "world.json"))
+	if loadErr != nil {
+		t.Fatalf("LoadWorld() error = %v", loadErr)
+	}
+	if world.Capabilities["kubectl"] != WorldStatusFailed {
+		t.Fatalf("kubectl capability = %q", world.Capabilities["kubectl"])
+	}
+	caps := readCapabilities(t, filepath.Join(runDir, "host-capabilities.json"))
+	if !contains(caps.Missing, "kubectl") {
+		t.Fatalf("missing capabilities = %#v", caps.Missing)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "setup-failed" || summary.ExitCode != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestVMTestRunBridgePrereqGapFails(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -486,6 +534,7 @@ type fakeHostTools struct {
 	tun          string
 	bridgeHelper string
 	bridgeConf   string
+	kubectl      string
 }
 
 func writeFakeHostTools(t *testing.T, dir string, bridgeExists bool) fakeHostTools {
@@ -502,6 +551,7 @@ func writeFakeHostTools(t *testing.T, dir string, bridgeExists bool) fakeHostToo
 		tun:          filepath.Join(dir, "tun"),
 		bridgeHelper: filepath.Join(dir, "qemu-bridge-helper"),
 		bridgeConf:   filepath.Join(dir, "bridge.conf"),
+		kubectl:      filepath.Join(dir, "kubectl"),
 	}
 	writeExecutable(t, tools.qemu, "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, tools.qemuImg, "#!/usr/bin/env bash\nexit 0\n")
@@ -513,6 +563,7 @@ func writeFakeHostTools(t *testing.T, dir string, bridgeExists bool) fakeHostToo
 	writeExecutable(t, filepath.Join(dir, "awk"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, filepath.Join(dir, "realpath"), "#!/usr/bin/env bash\nprintf '%s\\n' \"${@: -1}\"\n")
 	writeExecutable(t, filepath.Join(dir, "systemd-nspawn"), "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, tools.kubectl, "#!/usr/bin/env bash\nexit 0\n")
 	if err := os.WriteFile(tools.ovmfCode, []byte("code"), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", tools.ovmfCode, err)
 	}
@@ -575,6 +626,7 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_TUN_DEVICE="+tools.tun,
 		"KATL_QEMU_BRIDGE_HELPER="+tools.bridgeHelper,
 		"KATL_QEMU_BRIDGE_CONF="+tools.bridgeConf,
+		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_NSPAWN_ALLOW_UNPRIVILEGED=1",
 		"PATH="+filepath.Dir(tools.qemu)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
