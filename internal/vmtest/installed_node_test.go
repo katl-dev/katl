@@ -17,11 +17,11 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		t.Fatalf("write disk: %v", err)
 	}
 	esp := espFixture(t)
-	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp)
 	nodeMetadata := filepath.Join(root, "node.json")
 	if err := os.WriteFile(nodeMetadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
 		t.Fatalf("write node metadata: %v", err)
 	}
+	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp, nodeMetadata)
 	parent, err := NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",

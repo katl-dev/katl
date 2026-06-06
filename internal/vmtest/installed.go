@@ -2,9 +2,12 @@ package vmtest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -113,6 +116,18 @@ func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) e
 	if err != nil {
 		return err
 	}
+	nodeMetadata := first(config.NodeMetadata, os.Getenv("KATL_INSTALLED_NODE_METADATA"))
+	if fixture != nil && strings.TrimSpace(nodeMetadata) == "" && fixture.NodeMetadata != nil {
+		nodeMetadata, err = fixtureRelativePath(fixtureManifest, fixture.NodeMetadata.Path)
+		if err != nil {
+			return err
+		}
+	}
+	if fixture != nil {
+		if err := validateInstalledRuntimeFixture(fixtureManifest, *fixture, config, nodeMetadata); err != nil {
+			return err
+		}
+	}
 	record := installedRuntimeRecord{
 		APIVersion:         "katl.dev/v1alpha1",
 		Kind:               "InstalledRuntimeVMTestInput",
@@ -122,7 +137,7 @@ func writeInstalledRuntimeRecord(result Result, config InstalledRuntimeConfig) e
 		RequireVMTestAgent: config.RequireVMTestAgent,
 		FixtureManifest:    fixtureManifest,
 		Fixture:            fixture,
-		NodeMetadata:       first(config.NodeMetadata, os.Getenv("KATL_INSTALLED_NODE_METADATA")),
+		NodeMetadata:       nodeMetadata,
 	}
 	return writeJSON(result.Artifacts.InstalledRuntime, record)
 }
@@ -148,7 +163,148 @@ func readInstalledRuntimeFixture(path string) (*installedRuntimeFixtureRecord, e
 	if strings.TrimSpace(record.ESPArtifacts.Path) == "" || strings.TrimSpace(record.ESPArtifacts.TreeSHA256) == "" {
 		return nil, errors.New("installed runtime fixture manifest ESP binding is incomplete")
 	}
+	if record.NodeMetadata != nil && (strings.TrimSpace(record.NodeMetadata.Path) == "" || strings.TrimSpace(record.NodeMetadata.SHA256) == "") {
+		return nil, errors.New("installed runtime fixture manifest node metadata binding is incomplete")
+	}
 	return &record, nil
+}
+
+func validateInstalledRuntimeFixture(manifestPath string, fixture installedRuntimeFixtureRecord, config InstalledRuntimeConfig, nodeMetadata string) error {
+	diskPath, err := fixtureRelativePath(manifestPath, fixture.Disk.Path)
+	if err != nil {
+		return err
+	}
+	configDisk, err := cleanAbs(config.Disk)
+	if err != nil {
+		return err
+	}
+	if diskPath != configDisk {
+		return fmt.Errorf("installed runtime fixture disk path %s does not match %s", diskPath, configDisk)
+	}
+	if fixture.Disk.Format != string(diskFormat(config.DiskFormat)) {
+		return fmt.Errorf("installed runtime fixture disk format %q does not match %q", fixture.Disk.Format, diskFormat(config.DiskFormat))
+	}
+	diskSHA, err := fileSHA256(config.Disk)
+	if err != nil {
+		return fmt.Errorf("hash installed runtime disk: %w", err)
+	}
+	if diskSHA != fixture.Disk.SHA256 {
+		return fmt.Errorf("installed runtime fixture disk sha256 does not match %s", config.Disk)
+	}
+
+	espPath, err := fixtureRelativePath(manifestPath, fixture.ESPArtifacts.Path)
+	if err != nil {
+		return err
+	}
+	configESP, err := cleanAbs(config.ESPArtifacts)
+	if err != nil {
+		return err
+	}
+	if espPath != configESP {
+		return fmt.Errorf("installed runtime fixture ESP path %s does not match %s", espPath, configESP)
+	}
+	espSHA, err := espTreeSHA256(config.ESPArtifacts)
+	if err != nil {
+		return fmt.Errorf("hash installed runtime ESP artifacts: %w", err)
+	}
+	if espSHA != fixture.ESPArtifacts.TreeSHA256 {
+		return fmt.Errorf("installed runtime fixture ESP treeSHA256 does not match %s", config.ESPArtifacts)
+	}
+
+	if strings.TrimSpace(nodeMetadata) != "" {
+		if fixture.NodeMetadata == nil {
+			return errors.New("installed runtime fixture manifest node metadata binding is required")
+		}
+		metadataPath, err := fixtureRelativePath(manifestPath, fixture.NodeMetadata.Path)
+		if err != nil {
+			return err
+		}
+		configMetadata, err := cleanAbs(nodeMetadata)
+		if err != nil {
+			return err
+		}
+		if metadataPath != configMetadata {
+			return fmt.Errorf("installed runtime fixture node metadata path %s does not match %s", metadataPath, configMetadata)
+		}
+		metadataSHA, err := fileSHA256(nodeMetadata)
+		if err != nil {
+			return fmt.Errorf("hash installed runtime node metadata: %w", err)
+		}
+		if metadataSHA != fixture.NodeMetadata.SHA256 {
+			return fmt.Errorf("installed runtime fixture node metadata sha256 does not match %s", nodeMetadata)
+		}
+	}
+	return nil
+}
+
+func fixtureRelativePath(manifestPath string, value string) (string, error) {
+	if filepath.IsAbs(value) {
+		return cleanAbs(value)
+	}
+	return cleanAbs(filepath.Join(filepath.Dir(manifestPath), value))
+}
+
+func cleanAbs(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func espTreeSHA256(root string) (string, error) {
+	hash := sha256.New()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		mode := fmt.Sprintf("%o", info.Mode().Perm())
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("unsupported non-regular entry: %s", rel)
+		}
+		if entry.IsDir() {
+			_, _ = fmt.Fprintf(hash, "dir %s %s\n", mode, rel)
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("unsupported non-regular entry: %s", rel)
+		}
+		fileSHA, err := fileSHA256(path)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(hash, "file %s %s %s\n", mode, fileSHA, rel)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func runtimeESPPath(result Result) string {

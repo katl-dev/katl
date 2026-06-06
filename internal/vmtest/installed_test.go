@@ -147,7 +147,15 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	if input.FixtureManifest != fixtureManifest {
 		t.Fatalf("fixture manifest = %q, want %q", input.FixtureManifest, fixtureManifest)
 	}
-	if input.Fixture == nil || input.Fixture.Disk.SHA256 != strings.Repeat("1", 64) || input.Fixture.ESPArtifacts.TreeSHA256 != strings.Repeat("2", 64) {
+	diskSHA, err := fileSHA256(disk)
+	if err != nil {
+		t.Fatalf("hash disk: %v", err)
+	}
+	espSHA, err := espTreeSHA256(esp)
+	if err != nil {
+		t.Fatalf("hash ESP: %v", err)
+	}
+	if input.Fixture == nil || input.Fixture.Disk.SHA256 != diskSHA || input.Fixture.ESPArtifacts.TreeSHA256 != espSHA {
 		t.Fatalf("fixture binding = %#v", input.Fixture)
 	}
 	source, err := os.ReadFile(loaderEntry(t, esp))
@@ -188,6 +196,202 @@ func TestInstalledRuntimeRejectsMalformedFixtureManifest(t *testing.T) {
 	}
 }
 
+func TestInstalledRuntimeRejectsFixtureDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(t *testing.T, disk string, esp string, metadata string)
+		wantErr string
+	}{
+		{
+			name: "disk",
+			mutate: func(t *testing.T, disk string, _ string, _ string) {
+				t.Helper()
+				if err := os.WriteFile(disk, []byte("changed"), 0o644); err != nil {
+					t.Fatalf("mutate disk: %v", err)
+				}
+			},
+			wantErr: "disk sha256 does not match",
+		},
+		{
+			name: "esp",
+			mutate: func(t *testing.T, _ string, esp string, _ string) {
+				t.Helper()
+				entry := loaderEntry(t, esp)
+				data, err := os.ReadFile(entry)
+				if err != nil {
+					t.Fatalf("read entry: %v", err)
+				}
+				if err := os.WriteFile(entry, append(data, []byte("# drift\n")...), 0o644); err != nil {
+					t.Fatalf("mutate ESP: %v", err)
+				}
+			},
+			wantErr: "ESP treeSHA256 does not match",
+		},
+		{
+			name: "metadata",
+			mutate: func(t *testing.T, _ string, _ string, metadata string) {
+				t.Helper()
+				if err := os.WriteFile(metadata, []byte(`{"kind":"NodeMetadata","changed":true}`), 0o644); err != nil {
+					t.Fatalf("mutate metadata: %v", err)
+				}
+			},
+			wantErr: "node metadata sha256 does not match",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			disk := filepath.Join(root, "installed.raw")
+			if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+				t.Fatalf("write disk: %v", err)
+			}
+			esp := espFixture(t)
+			metadata := filepath.Join(root, "node.json")
+			if err := os.WriteFile(metadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
+				t.Fatalf("write node metadata: %v", err)
+			}
+			fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp, metadata)
+			tc.mutate(t, disk, esp, metadata)
+			result, err := NewRunner(Options{
+				StateRoot: root,
+				RunID:     "run-" + tc.name,
+			}).Plan(Scenario{Name: "runtime"})
+			if err != nil {
+				t.Fatalf("Plan() error = %v", err)
+			}
+			result.start(time.Now().UTC())
+			result = RunInstalledRuntime(context.Background(), result, InstalledRuntimeConfig{
+				Disk:            disk,
+				DiskFormat:      DiskRaw,
+				ESPArtifacts:    esp,
+				FixtureManifest: fixtureManifest,
+				NodeMetadata:    metadata,
+			}, VMRunner{})
+			if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, tc.wantErr) {
+				t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+			}
+		})
+	}
+}
+
+func TestInstalledRuntimeRejectsFixtureSymlinkESP(t *testing.T) {
+	root := t.TempDir()
+	disk := filepath.Join(root, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	esp := espFixture(t)
+	if err := os.Symlink(loaderEntry(t, esp), filepath.Join(esp, "loader", "entries", "linked.conf")); err != nil {
+		t.Fatalf("symlink ESP entry: %v", err)
+	}
+	fixtureManifest := writeInstalledFixtureManifestWithESPHash(t, root, disk, esp, strings.Repeat("2", 64))
+	result, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-symlink",
+	}).Plan(Scenario{Name: "runtime"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	result.start(time.Now().UTC())
+	result = RunInstalledRuntime(context.Background(), result, InstalledRuntimeConfig{
+		Disk:            disk,
+		DiskFormat:      DiskRaw,
+		ESPArtifacts:    esp,
+		FixtureManifest: fixtureManifest,
+	}, VMRunner{})
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "unsupported non-regular entry") {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+}
+
+func TestInstalledRuntimeAcceptsRelativeFixturePaths(t *testing.T) {
+	root := t.TempDir()
+	fixtureDir := filepath.Join(root, "fixture")
+	if err := os.MkdirAll(fixtureDir, 0o755); err != nil {
+		t.Fatalf("mkdir fixture: %v", err)
+	}
+	disk := filepath.Join(fixtureDir, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	esp := filepath.Join(fixtureDir, "esp")
+	if err := copyDir(espFixture(t), esp); err != nil {
+		t.Fatalf("copy ESP: %v", err)
+	}
+	metadata := filepath.Join(fixtureDir, "node.json")
+	if err := os.WriteFile(metadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
+		t.Fatalf("write node metadata: %v", err)
+	}
+	diskSHA, err := fileSHA256(disk)
+	if err != nil {
+		t.Fatalf("hash disk: %v", err)
+	}
+	espSHA, err := espTreeSHA256(esp)
+	if err != nil {
+		t.Fatalf("hash ESP: %v", err)
+	}
+	metadataSHA, err := fileSHA256(metadata)
+	if err != nil {
+		t.Fatalf("hash metadata: %v", err)
+	}
+	fixtureManifest := filepath.Join(fixtureDir, "installed-runtime-fixture.json")
+	content, err := json.MarshalIndent(installedRuntimeFixtureRecord{
+		APIVersion: "katl.dev/v1alpha1",
+		Kind:       "InstalledRuntimeVMTestFixture",
+		NodeName:   "node-1",
+		SystemRole: "control-plane",
+		Disk: installedRuntimeFixtureDisk{
+			Path:   "installed.raw",
+			Format: "raw",
+			SHA256: diskSHA,
+		},
+		ESPArtifacts: installedRuntimeFixtureESP{
+			Path:       "esp",
+			TreeSHA256: espSHA,
+		},
+		NodeMetadata: &installedRuntimeFixtureFile{
+			Path:   "node.json",
+			SHA256: metadataSHA,
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if err := os.WriteFile(fixtureManifest, content, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	result, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-relative",
+	}).Plan(Scenario{Name: "runtime"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	_, vmConfig := vmFixture(t)
+	vmConfig.Expect = "Katl state projection ready"
+	runner := VMRunner{
+		Executor: vmExec{write: "Katl state projection ready"},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	}
+	result = RunInstalledRuntime(context.Background(), result, InstalledRuntimeConfig{
+		Disk:            disk,
+		DiskFormat:      DiskRaw,
+		ESPArtifacts:    esp,
+		FixtureManifest: fixtureManifest,
+		VM:              vmConfig,
+	}, runner)
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
+	if input.NodeMetadata != metadata {
+		t.Fatalf("node metadata = %q, want %q", input.NodeMetadata, metadata)
+	}
+}
+
 func readInstalledRuntimeInput(t *testing.T, path string) installedRuntimeRecord {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -201,10 +405,23 @@ func readInstalledRuntimeInput(t *testing.T, path string) installedRuntimeRecord
 	return record
 }
 
-func writeInstalledFixtureManifest(t *testing.T, root string, disk string, esp string) string {
+func writeInstalledFixtureManifest(t *testing.T, root string, disk string, esp string, metadata ...string) string {
+	t.Helper()
+	espSHA, err := espTreeSHA256(esp)
+	if err != nil {
+		t.Fatalf("hash ESP: %v", err)
+	}
+	return writeInstalledFixtureManifestWithESPHash(t, root, disk, esp, espSHA, metadata...)
+}
+
+func writeInstalledFixtureManifestWithESPHash(t *testing.T, root string, disk string, esp string, espSHA string, metadata ...string) string {
 	t.Helper()
 	path := filepath.Join(root, "installed-runtime-fixture.json")
-	content, err := json.MarshalIndent(installedRuntimeFixtureRecord{
+	diskSHA, err := fileSHA256(disk)
+	if err != nil {
+		t.Fatalf("hash disk: %v", err)
+	}
+	record := installedRuntimeFixtureRecord{
 		APIVersion: "katl.dev/v1alpha1",
 		Kind:       "InstalledRuntimeVMTestFixture",
 		NodeName:   "node-1",
@@ -212,13 +429,24 @@ func writeInstalledFixtureManifest(t *testing.T, root string, disk string, esp s
 		Disk: installedRuntimeFixtureDisk{
 			Path:   disk,
 			Format: "raw",
-			SHA256: strings.Repeat("1", 64),
+			SHA256: diskSHA,
 		},
 		ESPArtifacts: installedRuntimeFixtureESP{
 			Path:       esp,
-			TreeSHA256: strings.Repeat("2", 64),
+			TreeSHA256: espSHA,
 		},
-	}, "", "  ")
+	}
+	if len(metadata) > 0 && metadata[0] != "" {
+		metadataSHA, err := fileSHA256(metadata[0])
+		if err != nil {
+			t.Fatalf("hash node metadata: %v", err)
+		}
+		record.NodeMetadata = &installedRuntimeFixtureFile{
+			Path:   metadata[0],
+			SHA256: metadataSHA,
+		}
+	}
+	content, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal fixture manifest: %v", err)
 	}
