@@ -13,6 +13,8 @@ cp_disk="${KATL_CONTROL_PLANE_INSTALLED_DISK:-}"
 worker_disk="${KATL_WORKER_INSTALLED_DISK:-}"
 cp_published_dir="${KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR:-}"
 worker_published_dir="${KATL_WORKER_PUBLISHED_FIXTURE_DIR:-}"
+cp_katlos_fixture_manifest="${KATL_CONTROL_PLANE_KATLOS_FIXTURE_MANIFEST:-}"
+worker_katlos_fixture_manifest="${KATL_WORKER_KATLOS_FIXTURE_MANIFEST:-}"
 shared_esp_artifacts="${KATL_INSTALLED_ESP_ARTIFACTS:-}"
 cp_esp_artifacts="${KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS:-$shared_esp_artifacts}"
 worker_esp_artifacts="${KATL_WORKER_INSTALLED_ESP_ARTIFACTS:-$shared_esp_artifacts}"
@@ -45,6 +47,8 @@ disk paths, node metadata, bridge addresses, and ESP artifact trees, then writes
 a sourceable env file plus a run wrapper under build/.
 
 Options:
+  --control-plane-katlos-fixture P   KatlOS-image fixture manifest for cp-1
+  --worker-katlos-fixture P          KatlOS-image fixture manifest for worker-1
   --control-plane-published-dir DIR  Published first-install fixture directory for cp-1
   --worker-published-dir DIR         Published first-install fixture directory for worker-1
   --control-plane-disk PATH   Installed control-plane disk, or KATL_CONTROL_PLANE_INSTALLED_DISK
@@ -110,9 +114,19 @@ while [[ $# -gt 0 ]]; do
             cp_published_dir="$2"
             shift 2
             ;;
+        --control-plane-katlos-fixture)
+            need_value "$1" "${2:-}"
+            cp_katlos_fixture_manifest="$2"
+            shift 2
+            ;;
         --worker-published-dir)
             need_value "$1" "${2:-}"
             worker_published_dir="$2"
+            shift 2
+            ;;
+        --worker-katlos-fixture)
+            need_value "$1" "${2:-}"
+            worker_katlos_fixture_manifest="$2"
             shift 2
             ;;
         --control-plane-disk)
@@ -246,6 +260,19 @@ published_path() {
     fi
 }
 
+katlos_manifest_path() {
+    local manifest="$1"
+    local query="$2"
+    local value base
+    value="$(jq -er "$query" "$manifest")"
+    base="$(dirname "$manifest")"
+    if [[ "$value" == /* ]]; then
+        real "$value"
+    else
+        real "$base/$value"
+    fi
+}
+
 check_published_digest() {
     local dir="$1"
     local label="$2"
@@ -310,6 +337,46 @@ load_published_fixture() {
     esac
 }
 
+load_katlos_fixture() {
+    local label="$1"
+    local manifest_path="$2"
+    local node="$3"
+    local role="$4"
+    local published_dir
+    [[ -z "$manifest_path" ]] && return 0
+    [[ -f "$manifest_path" ]] || fail "$label KatlOS fixture manifest not found: $(rel "$manifest_path")"
+    manifest_path="$(real "$manifest_path")"
+    jq -e \
+        --arg node "$node" \
+        --arg role "$role" '
+        .apiVersion == "katl.dev/v1alpha1" and
+        .kind == "FirstInstallKatlOSImageFixtureResolution" and
+        (.publishedInstalledRuntimeDir | type == "string" and length > 0) and
+        (.publishedNodeName == "" or .publishedNodeName == $node) and
+        (.publishedSystemRole == "" or .publishedSystemRole == $role)
+        ' "$manifest_path" >/dev/null ||
+        fail "$label KatlOS fixture manifest is invalid for $node role=$role"
+    published_dir="$(katlos_manifest_path "$manifest_path" '.publishedInstalledRuntimeDir')"
+    case "$label" in
+        control-plane)
+            if [[ -n "$cp_published_dir" && "$(real "$cp_published_dir")" != "$published_dir" ]]; then
+                fail "control-plane published fixture directory conflicts with KatlOS fixture manifest"
+            fi
+            cp_published_dir="$published_dir"
+            cp_katlos_fixture_manifest="$manifest_path"
+            ;;
+        worker)
+            if [[ -n "$worker_published_dir" && "$(real "$worker_published_dir")" != "$published_dir" ]]; then
+                fail "worker published fixture directory conflicts with KatlOS fixture manifest"
+            fi
+            worker_published_dir="$published_dir"
+            worker_katlos_fixture_manifest="$manifest_path"
+            ;;
+    esac
+}
+
+load_katlos_fixture "control-plane" "$cp_katlos_fixture_manifest" "cp-1" "control-plane"
+load_katlos_fixture "worker" "$worker_katlos_fixture_manifest" "worker-1" "worker"
 load_published_fixture "control-plane" "$cp_published_dir"
 load_published_fixture "worker" "$worker_published_dir"
 
@@ -601,6 +668,9 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'export KATL_VMTEST_RUN=%q\n' "1"
     printf 'export KATL_VMTEST_KEEP=%q\n' "$vmtest_keep"
     printf 'export KATL_VMTEST_STATE_ROOT=%q\n' "$vmtest_state_root"
+    if [[ -n "$cp_katlos_fixture_manifest" ]]; then
+        printf 'export KATL_CONTROL_PLANE_KATLOS_FIXTURE_MANIFEST=%q\n' "$cp_katlos_fixture_manifest"
+    fi
     if [[ -n "$cp_published_dir" ]]; then
         printf 'export KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR=%q\n' "$cp_published_dir"
     fi
@@ -609,6 +679,9 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'export KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS=%q\n' "$cp_esp_artifacts"
     printf 'export KATL_CONTROL_PLANE_NODE_METADATA=%q\n' "$cp_node_metadata"
     printf 'export KATL_CONTROL_PLANE_FIXTURE_MANIFEST=%q\n' "$cp_fixture_manifest"
+    if [[ -n "$worker_katlos_fixture_manifest" ]]; then
+        printf 'export KATL_WORKER_KATLOS_FIXTURE_MANIFEST=%q\n' "$worker_katlos_fixture_manifest"
+    fi
     if [[ -n "$worker_published_dir" ]]; then
         printf 'export KATL_WORKER_PUBLISHED_FIXTURE_DIR=%q\n' "$worker_published_dir"
     fi
@@ -661,6 +734,7 @@ cat >"$manifest" <<EOF
     "fixtureManifest": "$(json "$cp_fixture_manifest")",
     "address": "$(json "$cp_address")",
     "preflightRunDir": "$(json "$state_dir/control-plane-preflight")"
+    $(if [[ -n "$cp_katlos_fixture_manifest" ]]; then printf ',\n    "katlosFixtureManifest": "%s"' "$(json "$cp_katlos_fixture_manifest")"; fi)
     $(if [[ -n "$cp_published_dir" ]]; then printf ',\n    "publishedFixtureDir": "%s"' "$(json "$cp_published_dir")"; fi)
   },
   "worker": {
@@ -673,6 +747,7 @@ cat >"$manifest" <<EOF
     "fixtureManifest": "$(json "$worker_fixture_manifest")",
     "address": "$(json "$worker_address")",
     "preflightRunDir": "$(json "$state_dir/worker-preflight")"
+    $(if [[ -n "$worker_katlos_fixture_manifest" ]]; then printf ',\n    "katlosFixtureManifest": "%s"' "$(json "$worker_katlos_fixture_manifest")"; fi)
     $(if [[ -n "$worker_published_dir" ]]; then printf ',\n    "publishedFixtureDir": "%s"' "$(json "$worker_published_dir")"; fi)
   },
   "bridge": "$(json "$bridge")",
