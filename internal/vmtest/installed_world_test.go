@@ -1,10 +1,12 @@
 package vmtest
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type installedRuntimeWorldRun struct {
@@ -21,9 +23,11 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec) (inst
 	}
 	world := RequireWorld(t)
 	repo := repoRoot(t)
-	if err := ensureInstalledRuntimeWorldFixture(world, spec, func() error {
-		produceFirstInstallRuntimeFixture(t, firstInstallFixtureContractRunForWorld(t, world, repo, spec))
-		return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	if err := EnsurePublishedFirstInstallRuntimeFixtures(ctx, world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+		Input: DefaultFirstInstallWorldInputFromEnv(FirstInstallWorldPreseed, envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")),
+		KVM:   DefaultOptions().KVM,
 	}); err != nil {
 		t.Fatalf("prepare installed runtime world fixture: %v", err)
 	}
