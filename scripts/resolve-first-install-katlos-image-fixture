@@ -293,6 +293,11 @@ if [[ -n "$node_metadata" ]]; then
     fi
 fi
 "$repo_root/scripts/resolve-first-install-runtime-fixture" "${resolver_args[@]}" >/dev/null
+runtime_fixture_manifest="$(real "$state_dir/fixture.json")"
+[[ -f "$runtime_fixture_manifest" ]] || fail "first-install runtime fixture manifest not found: $(rel "$runtime_fixture_manifest")"
+published_runtime_dir="$(jq -er '.publishedInstalledRuntimeDir' "$runtime_fixture_manifest")"
+published_node_name="$(jq -er '.publishedNodeName // ""' "$runtime_fixture_manifest")"
+published_system_role="$(jq -er '.publishedSystemRole // ""' "$runtime_fixture_manifest")"
 
 {
     printf 'export KATL_KATLOS_IMAGE=%q\n' "$katlos_image"
@@ -314,6 +319,10 @@ cat >"$manifest" <<EOF
   "installManifest": "$(json "$install_manifest")",
   "nodeMetadata": "$(json "$node_metadata")",
   "nodeMetadataSHA256": "$(json "$actual_node_metadata_sha256")",
+  "firstInstallRuntimeFixtureManifest": "$(json "$runtime_fixture_manifest")",
+  "publishedInstalledRuntimeDir": "$(json "$published_runtime_dir")",
+  "publishedNodeName": "$(json "$published_node_name")",
+  "publishedSystemRole": "$(json "$published_system_role")",
   "envFile": "$(json "$env_file")",
   "runScript": "$(json "$run_script")"
 }
