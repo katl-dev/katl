@@ -174,8 +174,8 @@ func DefaultOptions() Options {
 	return Options{
 		Enabled:           *runFlag || envBool("KATL_NSPAWN_RUN"),
 		StateRoot:         first(*stateRootFlag, os.Getenv("KATL_NSPAWN_STATE_ROOT")),
-		Root:              first(*rootFlag, os.Getenv("KATL_NSPAWN_ROOT")),
-		Image:             first(*imageFlag, os.Getenv("KATL_NSPAWN_IMAGE")),
+		Root:              *rootFlag,
+		Image:             *imageFlag,
 		Keep:              KeepPolicy(first(*keepFlag, os.Getenv("KATL_NSPAWN_KEEP"))),
 		Missing:           MissingFails,
 		AllowUnprivileged: envBool("KATL_NSPAWN_ALLOW_UNPRIVILEGED"),
@@ -455,7 +455,7 @@ func checkHost(root rootRef, binds []Bind, probe probe, allowUnprivileged bool) 
 		})
 	}
 	if root.Path == "" {
-		missing = append(missing, MissingPrerequisite{Name: "nspawn root", Detail: "set KATL_NSPAWN_ROOT, KATL_NSPAWN_IMAGE, Scenario.Root, or Scenario.Image"})
+		missing = append(missing, MissingPrerequisite{Name: "nspawn root", Detail: "set -katl.nspawn.root, -katl.nspawn.image, Scenario.Root, or Scenario.Image"})
 	} else {
 		switch root.Kind {
 		case rootKindImage:
@@ -592,7 +592,7 @@ func resolveRoot(scenario Scenario, options Options) (rootRef, error) {
 		return rootRef{
 			Kind: rootKindDirectory,
 			Path: root,
-			Hint: "set KATL_NSPAWN_ROOT, -katl.nspawn.root, Scenario.Root, KATL_NSPAWN_IMAGE, or Scenario.Image",
+			Hint: "set -katl.nspawn.root, -katl.nspawn.image, Scenario.Root, or Scenario.Image",
 		}, nil
 	}
 	return rootRef{Kind: rootKindDirectory, Path: root}, nil

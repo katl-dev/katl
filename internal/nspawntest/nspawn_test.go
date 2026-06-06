@@ -36,6 +36,16 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+func TestDefaultOptionsIgnoreManualRootEnv(t *testing.T) {
+	t.Setenv("KATL_NSPAWN_ROOT", "/tmp/root")
+	t.Setenv("KATL_NSPAWN_IMAGE", "/tmp/root.raw")
+
+	options := DefaultOptions()
+	if options.Root != "" || options.Image != "" {
+		t.Fatalf("manual nspawn env leaked into options: %#v", options)
+	}
+}
+
 func TestRunDisabledSkipsWithoutHostChecks(t *testing.T) {
 	tb := &fakeTB{}
 	runner := Runner{
@@ -430,8 +440,8 @@ func TestDefaultRootDiagnosticIncludesOverrideHint(t *testing.T) {
 		},
 		euid: func() int { return 0 },
 	}, false)
-	if err == nil || !strings.Contains(err.Error(), "KATL_NSPAWN_ROOT") {
-		t.Fatalf("checkHost() error = %v, want root override hint", err)
+	if err == nil || !strings.Contains(err.Error(), "-katl.nspawn.root") {
+		t.Fatalf("checkHost() error = %v, want explicit root hint", err)
 	}
 }
 
