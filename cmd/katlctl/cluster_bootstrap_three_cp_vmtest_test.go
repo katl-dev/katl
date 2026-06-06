@@ -115,6 +115,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		EtcdReport:         etcdReportPath,
 		Transcripts:        transcriptPaths(transcriptDir, nodes),
 		EtcdTranscripts:    transcriptPaths(etcdTranscriptDir, nodes),
+		SerialLogs:         serialLogPaths(nodes),
 		Diagnostics:        diagnosticSummaryPaths(nodes),
 	}); err != nil {
 		t.Fatal(err)
@@ -235,6 +236,7 @@ type threeControlPlaneArtifactManifest struct {
 	EtcdReport         string                      `json:"etcdReport"`
 	Transcripts        map[string]string           `json:"transcripts"`
 	EtcdTranscripts    map[string]string           `json:"etcdTranscripts"`
+	SerialLogs         map[string]string           `json:"serialLogs,omitempty"`
 	Diagnostics        map[string]string           `json:"diagnostics,omitempty"`
 }
 
@@ -749,6 +751,7 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 		PublishedFixtures:  got,
 		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
 		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/ha-cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
+		SerialLogs:         map[string]string{"cp-1": "/tmp/cp-1-run/qemu/runtime-serial.log"},
 		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
 		KubectlDiagnostics: map[string]string{"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt"},
 	}); err != nil {
@@ -773,6 +776,9 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-1-guest/diagnostics-summary.json" || manifest.Diagnostics["cp-3"] != "/tmp/cp-3-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
+	}
+	if manifest.SerialLogs["cp-1"] != "/tmp/cp-1-run/qemu/runtime-serial.log" {
+		t.Fatalf("artifact manifest serial logs = %#v", manifest.SerialLogs)
 	}
 	if manifest.KubeconfigMetadata != "/tmp/run/operator-kubeconfig-metadata.json" {
 		t.Fatalf("artifact manifest kubeconfig metadata = %q", manifest.KubeconfigMetadata)

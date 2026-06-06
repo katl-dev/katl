@@ -115,6 +115,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
 		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
 		WorkerTranscript:       twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
+		SerialLogs:             serialLogPaths([]vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}),
 		Diagnostics:            diagnosticSummaryPaths([]vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}),
 	}); err != nil {
 		t.Fatal(err)
@@ -238,6 +239,7 @@ type twoNodeArtifactManifest struct {
 	KubectlDiagnostics     map[string]string           `json:"kubectlDiagnostics,omitempty"`
 	ControlPlaneTranscript string                      `json:"controlPlaneTranscript"`
 	WorkerTranscript       string                      `json:"workerTranscript"`
+	SerialLogs             map[string]string           `json:"serialLogs,omitempty"`
 	Diagnostics            map[string]string           `json:"diagnostics,omitempty"`
 }
 
@@ -776,6 +778,20 @@ func diagnosticSummaryPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[stri
 	return out
 }
 
+func serialLogPaths(nodes []vmtest.RunningInstalledRuntimeNode) map[string]string {
+	out := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		if node.Name == "" || node.Result.Artifacts.RuntimeSerial == "" {
+			continue
+		}
+		out[node.Name] = node.Result.Artifacts.RuntimeSerial
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	t.Setenv("KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR", "/tmp/cp")
 	t.Setenv("KATL_WORKER_PUBLISHED_FIXTURE_DIR", "/tmp/worker")
@@ -798,6 +814,7 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 		PublishedFixtures:  got,
 		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
 		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
+		SerialLogs:         map[string]string{"cp-1": "/tmp/cp-run/qemu/runtime-serial.log", "worker-1": "/tmp/worker-run/qemu/runtime-serial.log"},
 		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-guest/diagnostics-summary.json", "worker-1": "/tmp/worker-guest/diagnostics-summary.json"},
 		KubectlDiagnostics: map[string]string{"nodesWide": "/tmp/run/kubectl-get-nodes-wide.txt"},
 	}); err != nil {
@@ -822,6 +839,9 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-guest/diagnostics-summary.json" || manifest.Diagnostics["worker-1"] != "/tmp/worker-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
+	}
+	if manifest.SerialLogs["cp-1"] != "/tmp/cp-run/qemu/runtime-serial.log" || manifest.SerialLogs["worker-1"] != "/tmp/worker-run/qemu/runtime-serial.log" {
+		t.Fatalf("artifact manifest serial logs = %#v", manifest.SerialLogs)
 	}
 	if manifest.KubeconfigMetadata != "/tmp/run/operator-kubeconfig-metadata.json" {
 		t.Fatalf("artifact manifest kubeconfig metadata = %q", manifest.KubeconfigMetadata)
@@ -1016,6 +1036,17 @@ func TestDiagnosticSummaryPaths(t *testing.T) {
 	})
 	if got["cp-1"] != "/tmp/cp-guest/diagnostics-summary.json" || got["worker-1"] != "/tmp/worker-guest/diagnostics-summary.json" {
 		t.Fatalf("diagnostic summary paths = %#v", got)
+	}
+}
+
+func TestSerialLogPaths(t *testing.T) {
+	got := serialLogPaths([]vmtest.RunningInstalledRuntimeNode{
+		{Name: "cp-1", Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{RuntimeSerial: "/tmp/cp-run/qemu/runtime-serial.log"}}},
+		{Name: "worker-1", Result: vmtest.Result{Artifacts: vmtest.ArtifactPaths{RuntimeSerial: "/tmp/worker-run/qemu/runtime-serial.log"}}},
+		{Name: "ignored"},
+	})
+	if got["cp-1"] != "/tmp/cp-run/qemu/runtime-serial.log" || got["worker-1"] != "/tmp/worker-run/qemu/runtime-serial.log" {
+		t.Fatalf("serial log paths = %#v", got)
 	}
 }
 
