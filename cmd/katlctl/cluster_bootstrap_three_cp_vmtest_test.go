@@ -99,18 +99,19 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeThreeControlPlaneArtifactManifest(filepath.Join(result.ManifestDir, "three-control-plane-artifacts.json"), threeControlPlaneArtifactManifest{
-		NodeRunDirs:       nodeRunDirs(nodes),
-		FixtureInputs:     threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata),
-		PublishedFixtures: threeControlPlanePublishedFixtureDirs(),
-		Inventory:         inventoryPath,
-		Kubeconfig:        kubeconfigPath,
-		BootstrapStdout:   stdoutPath,
-		BootstrapStderr:   stderrPath,
-		KubectlOutput:     kubectlOut,
-		EtcdReport:        etcdReportPath,
-		Transcripts:       transcriptPaths(transcriptDir, nodes),
-		EtcdTranscripts:   transcriptPaths(etcdTranscriptDir, nodes),
-		Diagnostics:       diagnosticSummaryPaths(nodes),
+		NodeRunDirs:        nodeRunDirs(nodes),
+		FixtureInputs:      threeControlPlaneFixtureInputs(cp1Disk, cp2Disk, cp3Disk, cp1ESP, cp2ESP, cp3ESP, cp1Fixture, cp2Fixture, cp3Fixture, cp1Metadata, cp2Metadata, cp3Metadata),
+		PublishedFixtures:  threeControlPlanePublishedFixtureDirs(),
+		Inventory:          inventoryPath,
+		Kubeconfig:         kubeconfigPath,
+		BootstrapStdout:    stdoutPath,
+		BootstrapStderr:    stderrPath,
+		KubectlOutput:      kubectlOut,
+		KubectlDiagnostics: kubectlDiagnosticPaths(result.RunDir),
+		EtcdReport:         etcdReportPath,
+		Transcripts:        transcriptPaths(transcriptDir, nodes),
+		EtcdTranscripts:    transcriptPaths(etcdTranscriptDir, nodes),
+		Diagnostics:        diagnosticSummaryPaths(nodes),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -146,12 +147,14 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	_ = os.WriteFile(kubectlOut, output, 0o644)
 	if err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("kubectl get nodes failed: %v\n%s", err, output)
 	}
 	for _, want := range []string{"node/cp-1", "node/cp-2", "node/cp-3"} {
 		if !strings.Contains(string(output), want) {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics(transcriptDir, nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "kubectl output missing "+want)
 			t.Fatalf("kubectl output missing %q:\n%s", want, output)
@@ -159,6 +162,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	}
 	etcdReport, err := verifyThreeControlPlaneEtcd(ctx, etcdTranscriptDir, nodes)
 	if err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("verify stacked etcd: %v", err)
@@ -210,18 +214,19 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 }
 
 type threeControlPlaneArtifactManifest struct {
-	NodeRunDirs       map[string]string           `json:"nodeRunDirs"`
-	FixtureInputs     map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
-	PublishedFixtures map[string]string           `json:"publishedFixtures,omitempty"`
-	Inventory         string                      `json:"inventory"`
-	Kubeconfig        string                      `json:"kubeconfig"`
-	BootstrapStdout   string                      `json:"bootstrapStdout"`
-	BootstrapStderr   string                      `json:"bootstrapStderr"`
-	KubectlOutput     string                      `json:"kubectlOutput"`
-	EtcdReport        string                      `json:"etcdReport"`
-	Transcripts       map[string]string           `json:"transcripts"`
-	EtcdTranscripts   map[string]string           `json:"etcdTranscripts"`
-	Diagnostics       map[string]string           `json:"diagnostics,omitempty"`
+	NodeRunDirs        map[string]string           `json:"nodeRunDirs"`
+	FixtureInputs      map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
+	PublishedFixtures  map[string]string           `json:"publishedFixtures,omitempty"`
+	Inventory          string                      `json:"inventory"`
+	Kubeconfig         string                      `json:"kubeconfig"`
+	BootstrapStdout    string                      `json:"bootstrapStdout"`
+	BootstrapStderr    string                      `json:"bootstrapStderr"`
+	KubectlOutput      string                      `json:"kubectlOutput"`
+	KubectlDiagnostics map[string]string           `json:"kubectlDiagnostics,omitempty"`
+	EtcdReport         string                      `json:"etcdReport"`
+	Transcripts        map[string]string           `json:"transcripts"`
+	EtcdTranscripts    map[string]string           `json:"etcdTranscripts"`
+	Diagnostics        map[string]string           `json:"diagnostics,omitempty"`
 }
 
 func writeThreeControlPlaneArtifactManifest(path string, manifest threeControlPlaneArtifactManifest) error {
@@ -666,10 +671,11 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "three-control-plane-artifacts.json")
 	if err := writeThreeControlPlaneArtifactManifest(path, threeControlPlaneArtifactManifest{
-		NodeRunDirs:       map[string]string{"cp-1": "/tmp/cp-1-run"},
-		FixtureInputs:     inputs,
-		PublishedFixtures: got,
-		Diagnostics:       map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
+		NodeRunDirs:        map[string]string{"cp-1": "/tmp/cp-1-run"},
+		FixtureInputs:      inputs,
+		PublishedFixtures:  got,
+		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
+		KubectlDiagnostics: map[string]string{"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt"},
 	}); err != nil {
 		t.Fatalf("writeThreeControlPlaneArtifactManifest() error = %v", err)
 	}
@@ -692,5 +698,8 @@ func TestThreeControlPlanePublishedFixtureDirs(t *testing.T) {
 	}
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-1-guest/diagnostics-summary.json" || manifest.Diagnostics["cp-3"] != "/tmp/cp-3-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
+	}
+	if manifest.KubectlDiagnostics["kubeSystemPods"] != "/tmp/run/kubectl-get-pods-kube-system.txt" {
+		t.Fatalf("artifact manifest kubectl diagnostics = %#v", manifest.KubectlDiagnostics)
 	}
 }

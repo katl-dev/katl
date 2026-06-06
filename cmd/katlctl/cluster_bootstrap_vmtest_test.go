@@ -108,6 +108,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		BootstrapStdout:        stdoutPath,
 		BootstrapStderr:        stderrPath,
 		KubectlOutput:          kubectlOut,
+		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
 		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
 		WorkerTranscript:       twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
 		Diagnostics:            diagnosticSummaryPaths([]vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}),
@@ -144,12 +145,14 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	_ = os.WriteFile(kubectlOut, output, 0o644)
 	if err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("kubectl get nodes failed: %v\n%s", err, output)
 	}
 	for _, want := range []string{"node/cp-1", "node/worker-1"} {
 		if !strings.Contains(string(output), want) {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "kubectl output missing "+want)
 			t.Fatalf("kubectl output missing %q:\n%s", want, output)
@@ -223,6 +226,7 @@ type twoNodeArtifactManifest struct {
 	BootstrapStdout        string                      `json:"bootstrapStdout"`
 	BootstrapStderr        string                      `json:"bootstrapStderr"`
 	KubectlOutput          string                      `json:"kubectlOutput"`
+	KubectlDiagnostics     map[string]string           `json:"kubectlDiagnostics,omitempty"`
 	ControlPlaneTranscript string                      `json:"controlPlaneTranscript"`
 	WorkerTranscript       string                      `json:"workerTranscript"`
 	Diagnostics            map[string]string           `json:"diagnostics,omitempty"`
@@ -451,6 +455,56 @@ func collectTwoNodeDiagnostics(transcriptDir string, nodes ...vmtest.RunningInst
 	}
 }
 
+type kubectlDiagnosticCommand struct {
+	Name string
+	Argv []string
+}
+
+func collectKubectlDiagnostics(kubeconfigPath, runDir string) {
+	diagCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	paths := kubectlDiagnosticPaths(runDir)
+	for _, diagnostic := range kubectlDiagnosticCommands(kubeconfigPath) {
+		outputPath, ok := paths[diagnostic.Name]
+		if !ok {
+			continue
+		}
+		commandCtx, commandCancel := context.WithTimeout(diagCtx, 20*time.Second)
+		cmd := exec.CommandContext(commandCtx, diagnostic.Argv[0], diagnostic.Argv[1:]...)
+		output, err := cmd.CombinedOutput()
+		commandCancel()
+		if err != nil {
+			output = append(output, []byte("\ncommand error: "+err.Error()+"\n")...)
+		}
+		if len(output) == 0 {
+			output = []byte("\n")
+		}
+		_ = os.MkdirAll(filepath.Dir(outputPath), 0o755)
+		_ = os.WriteFile(outputPath, output, 0o644)
+	}
+}
+
+func kubectlDiagnosticPaths(runDir string) map[string]string {
+	if strings.TrimSpace(runDir) == "" {
+		return nil
+	}
+	return map[string]string{
+		"clusterInfo":    filepath.Join(runDir, "kubectl-cluster-info.txt"),
+		"events":         filepath.Join(runDir, "kubectl-get-events.txt"),
+		"kubeSystemPods": filepath.Join(runDir, "kubectl-get-pods-kube-system.txt"),
+		"nodesWide":      filepath.Join(runDir, "kubectl-get-nodes-wide.txt"),
+	}
+}
+
+func kubectlDiagnosticCommands(kubeconfigPath string) []kubectlDiagnosticCommand {
+	return []kubectlDiagnosticCommand{
+		{Name: "nodesWide", Argv: []string{"kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "wide"}},
+		{Name: "kubeSystemPods", Argv: []string{"kubectl", "--kubeconfig", kubeconfigPath, "-n", "kube-system", "get", "pods", "-o", "wide"}},
+		{Name: "events", Argv: []string{"kubectl", "--kubeconfig", kubeconfigPath, "get", "events", "-A", "--sort-by=.lastTimestamp"}},
+		{Name: "clusterInfo", Argv: []string{"kubectl", "--kubeconfig", kubeconfigPath, "cluster-info"}},
+	}
+}
+
 func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 	kubeadmRef := kubeadmRefForNode(node)
 	plan := vmtest.GuestDiagnostics{
@@ -627,6 +681,7 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 		FixtureInputs:      inputs,
 		PublishedFixtures:  got,
 		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-guest/diagnostics-summary.json", "worker-1": "/tmp/worker-guest/diagnostics-summary.json"},
+		KubectlDiagnostics: map[string]string{"nodesWide": "/tmp/run/kubectl-get-nodes-wide.txt"},
 	}); err != nil {
 		t.Fatalf("writeTwoNodeArtifactManifest() error = %v", err)
 	}
@@ -650,6 +705,69 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-guest/diagnostics-summary.json" || manifest.Diagnostics["worker-1"] != "/tmp/worker-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
 	}
+	if manifest.KubectlDiagnostics["nodesWide"] != "/tmp/run/kubectl-get-nodes-wide.txt" {
+		t.Fatalf("artifact manifest kubectl diagnostics = %#v", manifest.KubectlDiagnostics)
+	}
+}
+
+func TestKubectlDiagnosticPathsAndCommands(t *testing.T) {
+	paths := kubectlDiagnosticPaths("/tmp/run")
+	for name, want := range map[string]string{
+		"clusterInfo":    "/tmp/run/kubectl-cluster-info.txt",
+		"events":         "/tmp/run/kubectl-get-events.txt",
+		"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt",
+		"nodesWide":      "/tmp/run/kubectl-get-nodes-wide.txt",
+	} {
+		if paths[name] != want {
+			t.Fatalf("kubectl diagnostic path %s = %q, want %q in %#v", name, paths[name], want, paths)
+		}
+	}
+	if got := kubectlDiagnosticPaths(""); got != nil {
+		t.Fatalf("kubectlDiagnosticPaths(\"\") = %#v, want nil", got)
+	}
+
+	commands := kubectlDiagnosticCommands("/tmp/kubeconfig.yaml")
+	if len(commands) != 4 {
+		t.Fatalf("kubectl diagnostic command count = %d, want 4: %#v", len(commands), commands)
+	}
+	for _, command := range commands {
+		if len(command.Argv) < 3 || command.Argv[0] != "kubectl" || command.Argv[1] != "--kubeconfig" || command.Argv[2] != "/tmp/kubeconfig.yaml" {
+			t.Fatalf("kubectl diagnostic command %s argv = %#v", command.Name, command.Argv)
+		}
+	}
+	if !kubectlDiagnosticCommandHasArgs(commands, "nodesWide", "get", "nodes", "-o", "wide") {
+		t.Fatalf("nodesWide diagnostic command missing expected args: %#v", commands)
+	}
+	if !kubectlDiagnosticCommandHasArgs(commands, "kubeSystemPods", "-n", "kube-system", "get", "pods", "-o", "wide") {
+		t.Fatalf("kubeSystemPods diagnostic command missing expected args: %#v", commands)
+	}
+	if !kubectlDiagnosticCommandHasArgs(commands, "events", "get", "events", "-A", "--sort-by=.lastTimestamp") {
+		t.Fatalf("events diagnostic command missing expected args: %#v", commands)
+	}
+	if !kubectlDiagnosticCommandHasArgs(commands, "clusterInfo", "cluster-info") {
+		t.Fatalf("clusterInfo diagnostic command missing expected args: %#v", commands)
+	}
+}
+
+func kubectlDiagnosticCommandHasArgs(commands []kubectlDiagnosticCommand, name string, args ...string) bool {
+	for _, command := range commands {
+		if command.Name != name {
+			continue
+		}
+		for i := 0; i <= len(command.Argv)-len(args); i++ {
+			matched := true
+			for j, want := range args {
+				if command.Argv[i+j] != want {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestDiagnosticSummaryPaths(t *testing.T) {
