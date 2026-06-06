@@ -16,6 +16,9 @@ cp3_disk="${KATL_CONTROL_PLANE_3_INSTALLED_DISK:-}"
 cp1_published_dir="${KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR:-${KATL_CONTROL_PLANE_PUBLISHED_FIXTURE_DIR:-}}"
 cp2_published_dir="${KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR:-}"
 cp3_published_dir="${KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR:-}"
+cp1_katlos_fixture_manifest="${KATL_CONTROL_PLANE_1_KATLOS_FIXTURE_MANIFEST:-${KATL_CONTROL_PLANE_KATLOS_FIXTURE_MANIFEST:-}}"
+cp2_katlos_fixture_manifest="${KATL_CONTROL_PLANE_2_KATLOS_FIXTURE_MANIFEST:-}"
+cp3_katlos_fixture_manifest="${KATL_CONTROL_PLANE_3_KATLOS_FIXTURE_MANIFEST:-}"
 cp1_esp_artifacts="${KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS:-${KATL_CONTROL_PLANE_INSTALLED_ESP_ARTIFACTS:-$shared_esp_artifacts}}"
 cp2_esp_artifacts="${KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS:-$shared_esp_artifacts}"
 cp3_esp_artifacts="${KATL_CONTROL_PLANE_3_INSTALLED_ESP_ARTIFACTS:-$shared_esp_artifacts}"
@@ -52,6 +55,9 @@ bridge addresses, and ESP artifact trees, then writes a sourceable env file plus
 a run wrapper under build/.
 
 Options:
+  --cp1-katlos-fixture P KatlOS-image fixture manifest for cp-1
+  --cp2-katlos-fixture P KatlOS-image fixture manifest for cp-2
+  --cp3-katlos-fixture P KatlOS-image fixture manifest for cp-3
   --cp1-published-dir DIR Published first-install fixture directory for cp-1
   --cp2-published-dir DIR Published first-install fixture directory for cp-2
   --cp3-published-dir DIR Published first-install fixture directory for cp-3
@@ -125,14 +131,29 @@ while [[ $# -gt 0 ]]; do
             cp1_published_dir="$2"
             shift 2
             ;;
+        --cp1-katlos-fixture|--control-plane-1-katlos-fixture)
+            need_value "$1" "${2:-}"
+            cp1_katlos_fixture_manifest="$2"
+            shift 2
+            ;;
         --cp2-published-dir|--control-plane-2-published-dir)
             need_value "$1" "${2:-}"
             cp2_published_dir="$2"
             shift 2
             ;;
+        --cp2-katlos-fixture|--control-plane-2-katlos-fixture)
+            need_value "$1" "${2:-}"
+            cp2_katlos_fixture_manifest="$2"
+            shift 2
+            ;;
         --cp3-published-dir|--control-plane-3-published-dir)
             need_value "$1" "${2:-}"
             cp3_published_dir="$2"
+            shift 2
+            ;;
+        --cp3-katlos-fixture|--control-plane-3-katlos-fixture)
+            need_value "$1" "${2:-}"
+            cp3_katlos_fixture_manifest="$2"
             shift 2
             ;;
         --cp1-disk|--control-plane-1-disk)
@@ -297,6 +318,19 @@ published_path() {
     fi
 }
 
+katlos_manifest_path() {
+    local manifest="$1"
+    local query="$2"
+    local value base
+    value="$(jq -er "$query" "$manifest")"
+    base="$(dirname "$manifest")"
+    if [[ "$value" == /* ]]; then
+        real "$value"
+    else
+        real "$base/$value"
+    fi
+}
+
 check_published_digest() {
     local dir="$1"
     local label="$2"
@@ -371,6 +405,52 @@ load_published_fixture() {
     esac
 }
 
+load_katlos_fixture() {
+    local label="$1"
+    local manifest_path="$2"
+    local node="$3"
+    local published_dir
+    [[ -z "$manifest_path" ]] && return 0
+    [[ -f "$manifest_path" ]] || fail "$label KatlOS fixture manifest not found: $(rel "$manifest_path")"
+    manifest_path="$(real "$manifest_path")"
+    jq -e \
+        --arg node "$node" '
+        .apiVersion == "katl.dev/v1alpha1" and
+        .kind == "FirstInstallKatlOSImageFixtureResolution" and
+        (.publishedInstalledRuntimeDir | type == "string" and length > 0) and
+        (.publishedNodeName == "" or .publishedNodeName == $node) and
+        (.publishedSystemRole == "" or .publishedSystemRole == "control-plane")
+        ' "$manifest_path" >/dev/null ||
+        fail "$label KatlOS fixture manifest is invalid for $node role=control-plane"
+    published_dir="$(katlos_manifest_path "$manifest_path" '.publishedInstalledRuntimeDir')"
+    case "$label" in
+        cp-1)
+            if [[ -n "$cp1_published_dir" && "$(real "$cp1_published_dir")" != "$published_dir" ]]; then
+                fail "cp-1 published fixture directory conflicts with KatlOS fixture manifest"
+            fi
+            cp1_published_dir="$published_dir"
+            cp1_katlos_fixture_manifest="$manifest_path"
+            ;;
+        cp-2)
+            if [[ -n "$cp2_published_dir" && "$(real "$cp2_published_dir")" != "$published_dir" ]]; then
+                fail "cp-2 published fixture directory conflicts with KatlOS fixture manifest"
+            fi
+            cp2_published_dir="$published_dir"
+            cp2_katlos_fixture_manifest="$manifest_path"
+            ;;
+        cp-3)
+            if [[ -n "$cp3_published_dir" && "$(real "$cp3_published_dir")" != "$published_dir" ]]; then
+                fail "cp-3 published fixture directory conflicts with KatlOS fixture manifest"
+            fi
+            cp3_published_dir="$published_dir"
+            cp3_katlos_fixture_manifest="$manifest_path"
+            ;;
+    esac
+}
+
+load_katlos_fixture "cp-1" "$cp1_katlos_fixture_manifest" "cp-1"
+load_katlos_fixture "cp-2" "$cp2_katlos_fixture_manifest" "cp-2"
+load_katlos_fixture "cp-3" "$cp3_katlos_fixture_manifest" "cp-3"
 load_published_fixture "cp-1" "$cp1_published_dir"
 load_published_fixture "cp-2" "$cp2_published_dir"
 load_published_fixture "cp-3" "$cp3_published_dir"
@@ -695,6 +775,9 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'export KATL_VMTEST_RUN=%q\n' "1"
     printf 'export KATL_VMTEST_KEEP=%q\n' "$vmtest_keep"
     printf 'export KATL_VMTEST_STATE_ROOT=%q\n' "$vmtest_state_root"
+    if [[ -n "$cp1_katlos_fixture_manifest" ]]; then
+        printf 'export KATL_CONTROL_PLANE_1_KATLOS_FIXTURE_MANIFEST=%q\n' "$cp1_katlos_fixture_manifest"
+    fi
     if [[ -n "$cp1_published_dir" ]]; then
         printf 'export KATL_CONTROL_PLANE_1_PUBLISHED_FIXTURE_DIR=%q\n' "$cp1_published_dir"
     fi
@@ -703,6 +786,9 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'export KATL_CONTROL_PLANE_1_INSTALLED_ESP_ARTIFACTS=%q\n' "$cp1_esp_artifacts"
     printf 'export KATL_CONTROL_PLANE_1_NODE_METADATA=%q\n' "$cp1_node_metadata"
     printf 'export KATL_CONTROL_PLANE_1_FIXTURE_MANIFEST=%q\n' "$cp1_fixture_manifest"
+    if [[ -n "$cp2_katlos_fixture_manifest" ]]; then
+        printf 'export KATL_CONTROL_PLANE_2_KATLOS_FIXTURE_MANIFEST=%q\n' "$cp2_katlos_fixture_manifest"
+    fi
     if [[ -n "$cp2_published_dir" ]]; then
         printf 'export KATL_CONTROL_PLANE_2_PUBLISHED_FIXTURE_DIR=%q\n' "$cp2_published_dir"
     fi
@@ -711,6 +797,9 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     printf 'export KATL_CONTROL_PLANE_2_INSTALLED_ESP_ARTIFACTS=%q\n' "$cp2_esp_artifacts"
     printf 'export KATL_CONTROL_PLANE_2_NODE_METADATA=%q\n' "$cp2_node_metadata"
     printf 'export KATL_CONTROL_PLANE_2_FIXTURE_MANIFEST=%q\n' "$cp2_fixture_manifest"
+    if [[ -n "$cp3_katlos_fixture_manifest" ]]; then
+        printf 'export KATL_CONTROL_PLANE_3_KATLOS_FIXTURE_MANIFEST=%q\n' "$cp3_katlos_fixture_manifest"
+    fi
     if [[ -n "$cp3_published_dir" ]]; then
         printf 'export KATL_CONTROL_PLANE_3_PUBLISHED_FIXTURE_DIR=%q\n' "$cp3_published_dir"
     fi
@@ -765,6 +854,7 @@ cat >"$manifest" <<EOF
       "fixtureManifest": "$(json "$cp1_fixture_manifest")",
       "address": "$(json "$cp1_address")",
       "preflightRunDir": "$(json "$state_dir/cp-1-preflight")"
+      $(if [[ -n "$cp1_katlos_fixture_manifest" ]]; then printf ',\n      "katlosFixtureManifest": "%s"' "$(json "$cp1_katlos_fixture_manifest")"; fi)
       $(if [[ -n "$cp1_published_dir" ]]; then printf ',\n      "publishedFixtureDir": "%s"' "$(json "$cp1_published_dir")"; fi)
     },
     {
@@ -777,6 +867,7 @@ cat >"$manifest" <<EOF
       "fixtureManifest": "$(json "$cp2_fixture_manifest")",
       "address": "$(json "$cp2_address")",
       "preflightRunDir": "$(json "$state_dir/cp-2-preflight")"
+      $(if [[ -n "$cp2_katlos_fixture_manifest" ]]; then printf ',\n      "katlosFixtureManifest": "%s"' "$(json "$cp2_katlos_fixture_manifest")"; fi)
       $(if [[ -n "$cp2_published_dir" ]]; then printf ',\n      "publishedFixtureDir": "%s"' "$(json "$cp2_published_dir")"; fi)
     },
     {
@@ -789,6 +880,7 @@ cat >"$manifest" <<EOF
       "fixtureManifest": "$(json "$cp3_fixture_manifest")",
       "address": "$(json "$cp3_address")",
       "preflightRunDir": "$(json "$state_dir/cp-3-preflight")"
+      $(if [[ -n "$cp3_katlos_fixture_manifest" ]]; then printf ',\n      "katlosFixtureManifest": "%s"' "$(json "$cp3_katlos_fixture_manifest")"; fi)
       $(if [[ -n "$cp3_published_dir" ]]; then printf ',\n      "publishedFixtureDir": "%s"' "$(json "$cp3_published_dir")"; fi)
     }
   ],
