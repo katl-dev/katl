@@ -62,6 +62,9 @@ After this command succeeds:
   source <state-dir>/vmtest.env
   <state-dir>/run-first-install-target-disk-serial-smoke.sh
   <state-dir>/run-first-install-target-disk-fixture.sh
+
+Set KATL_ALLOW_STALE_INSTALLER_ARTIFACTS=1 only when intentionally running
+installer artifacts older than the local installer source tree.
 USAGE
 }
 
@@ -85,6 +88,37 @@ rel() {
 
 real() {
     realpath -m "$1"
+}
+
+stale_installer_allowed() {
+    case "${KATL_ALLOW_STALE_INSTALLER_ARTIFACTS:-0}" in
+        1|true|TRUE|yes|YES)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+check_installer_artifact_freshness() {
+    stale_installer_allowed && return 0
+    local sources=(
+        "$repo_root/cmd/katlos-install"
+        "$repo_root/internal/installer"
+        "$repo_root/mkosi.profiles/installer-image"
+    )
+    local artifacts=()
+    local artifact newer
+    [[ -n "$installer_uki" ]] && artifacts+=("$installer_uki")
+    [[ -n "$installer_kernel" ]] && artifacts+=("$installer_kernel")
+    [[ -n "$installer_initrd" ]] && artifacts+=("$installer_initrd")
+    for artifact in "${artifacts[@]}"; do
+        newer="$(find "${sources[@]}" -type f ! -path '*/build/*' ! -name '*_test.go' -newer "$artifact" -print -quit)"
+        if [[ -n "$newer" ]]; then
+            fail "installer artifact $(rel "$artifact") is older than installer source $(rel "$newer"); rebuild with scripts/mkosi build-installer or set KATL_ALLOW_STALE_INSTALLER_ARTIFACTS=1"
+        fi
+    done
 }
 
 json() {
@@ -249,6 +283,7 @@ env_file="$(real "$env_file")"
 run_script="$(real "$run_script")"
 manifest="$(real "$manifest")"
 vmtest_state_root="$(real "$vmtest_state_root")"
+check_installer_artifact_freshness
 
 validate_no_shell_list_value() {
     local label="$1"
