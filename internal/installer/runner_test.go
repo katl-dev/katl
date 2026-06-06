@@ -419,6 +419,83 @@ func TestRunnerExecutesDiskOperationSteps(t *testing.T) {
 	}
 }
 
+func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) {
+	payload, contents := writeInstallPayload(t)
+	store := &MemoryStateStore{}
+	targetRoot := t.TempDir()
+	rootTarget := newRunnerRootSlot(len(contents.runtime) + 4096)
+	commands := &recordingOutputRunner{
+		outputs: map[string][]byte{
+			"blkid -t PARTLABEL=KATL_ESP -s PARTUUID -o value":    []byte("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n"),
+			"blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value": []byte("11111111-2222-3333-4444-555555555555\n"),
+		},
+	}
+	discovery := &sequenceDiscoverySource{facts: []discovery.HardwareFacts{
+		planningFacts(),
+		appliedLayoutFacts(targetRoot),
+	}}
+	install := &Context{
+		ManifestPath:   writeManifestWithNode(t, `, "kubernetes": {"kubeadm": {"configRef": "control-plane"}}`),
+		TargetRoot:     targetRoot,
+		Commands:       commands,
+		Store:          store,
+		KatlosResolver: &recordingKatlosResolver{payload: payload},
+		Discovery:      discovery,
+		RootSlotTarget: rootTarget,
+		GenerationID:   "2026.06.06-001",
+		KubeadmConfigs: kubeadmPlans(),
+		IdentityRandom: bytes.NewReader([]byte("0123456789abcdef")),
+		Chown:          func(string, int, int) error { return nil },
+	}
+
+	if err := NewRunner(PreseededManifestPlan(), install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if discovery.calls != 2 {
+		t.Fatalf("discovery calls = %d, want planning and verification", discovery.calls)
+	}
+	if got := string(rootTarget.data[:len(contents.runtime)]); got != string(contents.runtime) {
+		t.Fatalf("root slot bytes = %q, want runtime payload", got)
+	}
+	if !rootTarget.synced {
+		t.Fatal("root slot target was not synced")
+	}
+	if install.LoaderRecord == nil {
+		t.Fatal("loader record is nil")
+	}
+	if install.LoaderRecord.GenerationID != "2026.06.06-001" || install.LoaderRecord.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("loader record = %#v", install.LoaderRecord)
+	}
+	if len(install.LoaderRecord.Sysexts) != 1 || install.LoaderRecord.Sysexts[0].PayloadVersion != "v1.34.8" {
+		t.Fatalf("sysext metadata = %#v", install.LoaderRecord.Sysexts)
+	}
+	if len(install.LoaderRecord.Confexts) != 1 || install.LoaderRecord.Confexts[0].Name != "katl-node" {
+		t.Fatalf("confext metadata = %#v", install.LoaderRecord.Confexts)
+	}
+	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-2026.06.06-001.efi"), string(contents.boot))
+	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/sysext/kubernetes.raw"), string(contents.kubernetes))
+	assertText(t, filepath.Join(targetRoot, "var/lib/katl/identity/machine-id"), "30313233343536373839616263646566\n")
+	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/confext/etc/katl/node.json"), `"configPath": "/etc/katl/kubeadm/control-plane/config.yaml"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/metadata.json"), `"generationID": "2026.06.06-001"`)
+	for _, name := range []string{"wipefs", "sfdisk", "partprobe", "udevadm", "mkfs.vfat", "mkfs.ext4", "mkdir", "mount", "bootctl"} {
+		if !strings.Contains(commandNames(commands.Calls), name) {
+			t.Fatalf("command calls missing %s: %#v", name, commands.Calls)
+		}
+	}
+	if commands.Inputs["sfdisk"] == "" || !strings.Contains(commands.Inputs["sfdisk"], `name="KATL_ROOT_A"`) {
+		t.Fatalf("sfdisk input = %q", commands.Inputs["sfdisk"])
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, PreseededManifestPlan().IDs()) {
+		t.Fatalf("completed steps = %#v, want %#v", got, PreseededManifestPlan().IDs())
+	}
+	finalStatus := store.Statuses[len(store.Statuses)-1]
+	if finalStatus.State != installstatus.StateRebootRequested || finalStatus.InstalledGeneration != "2026.06.06-001" {
+		t.Fatalf("final status = %#v", finalStatus)
+	}
+}
+
 func TestRunnerVerifiesAppliedTargetLayout(t *testing.T) {
 	store := &MemoryStateStore{}
 	payload := planningPayload()
