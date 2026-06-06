@@ -22,6 +22,8 @@ node_metadata_sha256="${KATL_FIRST_INSTALL_NODE_METADATA_SHA256:-}"
 target_disk_size="${KATL_FIRST_INSTALL_TARGET_DISK_SIZE:-20G}"
 vmtest_keep="${KATL_VMTEST_KEEP:-always}"
 vmtest_state_root="${KATL_VMTEST_STATE_ROOT:-$state_dir/vm-runs}"
+publish_node_name=""
+publish_system_role=""
 env_file_set=0
 check_only=0
 
@@ -266,10 +268,27 @@ installer_uki_sha256="$(verify_sha256 "installer UKI" "$installer_uki" "$install
 runtime_artifact_sha256="$(verify_sha256 "runtime artifact" "$runtime_artifact" "$runtime_artifact_sha256")"
 install_manifest_sha256="$(verify_sha256 "install manifest" "$install_manifest" "$install_manifest_sha256")"
 if [[ -n "$node_metadata" ]]; then
+    need jq
     node_metadata_sha256="$(verify_sha256 "node metadata" "$node_metadata" "$node_metadata_sha256")"
+    jq -e '
+        .apiVersion == "katl.dev/v1alpha1" and
+        .kind == "NodeMetadata" and
+        (.identity.hostname | type == "string" and length > 0) and
+        (.systemRole | type == "string" and length > 0)
+        ' "$node_metadata" >/dev/null ||
+        fail "$node_metadata must be Katl NodeMetadata with identity.hostname and systemRole"
+    publish_node_name="$(jq -er '.identity.hostname' "$node_metadata")"
+    publish_system_role="$(jq -er '.systemRole' "$node_metadata")"
 elif [[ -n "$node_metadata_sha256" ]]; then
     fail "--node-metadata is required when --node-metadata-sha256 is set"
 fi
+if [[ -n "$publish_node_name" ]]; then
+    [[ "$publish_node_name" =~ ^[A-Za-z0-9._-]+$ ]] || fail "node metadata identity.hostname must contain only letters, digits, dot, underscore, or dash"
+fi
+case "$publish_system_role" in
+    ""|control-plane|worker) ;;
+    *) fail "node metadata systemRole must be control-plane or worker" ;;
+esac
 
 check_loader_entries() {
     local esp="$1"
@@ -318,6 +337,8 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     if [[ -n "$node_metadata" ]]; then
         printf 'export KATL_RUNTIME_NODE_METADATA=%q\n' "$node_metadata"
         printf 'export KATL_FIRST_INSTALL_NODE_METADATA_SHA256=%q\n' "$node_metadata_sha256"
+        printf 'export KATL_FIRST_INSTALL_PUBLISHED_NODE_NAME=%q\n' "$publish_node_name"
+        printf 'export KATL_FIRST_INSTALL_PUBLISHED_SYSTEM_ROLE=%q\n' "$publish_system_role"
     fi
 } >"$env_file"
 
@@ -351,7 +372,19 @@ mkdir -p "$(dirname "$env_file")" "$(dirname "$run_script")" "$(dirname "$manife
     # shellcheck disable=SC2016
     printf 'GOCACHE="${GOCACHE:-/tmp/katl-go-cache}" go test ./internal/vmtest -run '\''^TestFirstInstallTargetDiskFixtureContract$'\'' -count=1 -timeout 35m -katl.vmtest.run\n'
     # shellcheck disable=SC2016
-    printf '%q --vmtest-state-root "$KATL_VMTEST_STATE_ROOT" --state-dir %q --format qcow2\n' "$repo_root/scripts/publish-first-install-runtime-fixture" "$state_dir/published-installed-runtime"
+    printf 'publish_args=(--vmtest-state-root "$KATL_VMTEST_STATE_ROOT" --state-dir %q --format qcow2)\n' "$state_dir/published-installed-runtime"
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_FIRST_INSTALL_PUBLISHED_NODE_NAME:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    publish_args+=(--node-name "$KATL_FIRST_INSTALL_PUBLISHED_NODE_NAME")\n'
+    printf 'fi\n'
+    # shellcheck disable=SC2016
+    printf 'if [[ -n "${KATL_FIRST_INSTALL_PUBLISHED_SYSTEM_ROLE:-}" ]]; then\n'
+    # shellcheck disable=SC2016
+    printf '    publish_args+=(--system-role "$KATL_FIRST_INSTALL_PUBLISHED_SYSTEM_ROLE")\n'
+    printf 'fi\n'
+    # shellcheck disable=SC2016
+    printf '%q "${publish_args[@]}"\n' "$repo_root/scripts/publish-first-install-runtime-fixture"
 } >"$run_script"
 chmod +x "$run_script"
 
@@ -367,6 +400,8 @@ cat >"$manifest" <<EOF
   "useInstalledESP": $(if [[ "$use_installed_esp" -eq 1 ]]; then printf true; else printf false; fi),
   "nodeMetadata": "$(json "$node_metadata")",
   "nodeMetadataSHA256": "$(json "$node_metadata_sha256")",
+  "publishedNodeName": "$(json "$publish_node_name")",
+  "publishedSystemRole": "$(json "$publish_system_role")",
   "installManifest": "$(json "$install_manifest")",
   "installManifestSHA256": "$(json "$install_manifest_sha256")",
   "targetDiskSize": "$(json "$target_disk_size")",
