@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func firstInstallWorldRunFor(t *testing.T, name string, spec NodeSpec, useInstalledESP bool) (firstInstallWorldRun, bool) {
@@ -173,6 +174,106 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 		if !hasFixtureKind(scenarioManifest.Fixtures, kind) {
 			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
 		}
+	}
+}
+
+func TestPlanFirstInstallWorldRunRejectsStaleInstallerArtifact(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	mkosiDir := filepath.Join(repo, "build", "mkosi")
+	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
+	runtime := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
+  "artifacts": [
+    {"kind":"installer-uki","path":"build/mkosi/katl-installer.efi"},
+    {"kind":"runtime-root","path":"build/mkosi/katl-runtime-root.squashfs"}
+  ]
+}`)
+	writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
+	writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs.json"), `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "KatlOSImageArtifact",
+  "imageRole": "install",
+  "version": "0.0.0-dev",
+  "architecture": "x86_64",
+  "runtimeInterface": "katl-runtime-1",
+  "sizeBytes": 11,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}`)
+	source := writeFixtureFile(t, filepath.Join(repo, "cmd", "katlos-install", "main.go"), "source")
+	oldTime := time.Unix(1700000000, 0)
+	newTime := oldTime.Add(time.Hour)
+	if err := os.Chtimes(installer, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(installer) error = %v", err)
+	}
+	if err := os.Chtimes(runtime, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(runtime) error = %v", err)
+	}
+	if err := os.Chtimes(source, newTime, newTime); err != nil {
+		t.Fatalf("Chtimes(source) error = %v", err)
+	}
+
+	run, err := planFirstInstallWorldRun(world, "stale installer world", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
+		TargetDiskSize: "20G",
+	}, KVMOff)
+	if err == nil || !strings.Contains(err.Error(), "installer artifact") || !strings.Contains(err.Error(), "rebuild installer artifacts") {
+		t.Fatalf("planFirstInstallWorldRun() error = %v, want stale installer artifact failure", err)
+	}
+	if run.Scenario == nil {
+		t.Fatal("planFirstInstallWorldRun() did not return scenario on setup failure")
+	}
+	var result scenarioResult
+	readJSONForTest(t, run.Scenario.ResultPath, &result)
+	if result.Status != WorldStatusSetupFailed || !strings.Contains(result.FailureSummary, "rebuild installer artifacts") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestPlanFirstInstallWorldRunAllowsExplicitStaleInstallerOverride(t *testing.T) {
+	t.Setenv("KATL_ALLOW_STALE_INSTALLER_ARTIFACTS", "1")
+	world := testWorld(t)
+	repo := t.TempDir()
+	mkosiDir := filepath.Join(repo, "build", "mkosi")
+	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
+	runtime := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
+	writeFixtureFile(t, image+".json", `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "KatlOSImageArtifact",
+  "imageRole": "install",
+  "version": "0.0.0-dev",
+  "architecture": "x86_64",
+  "runtimeInterface": "katl-runtime-1",
+  "sizeBytes": 11,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}`)
+	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
+  "artifacts": [
+    {"kind":"installer-uki","path":"build/mkosi/katl-installer.efi"},
+    {"kind":"runtime-root","path":"build/mkosi/katl-runtime-root.squashfs"}
+  ]
+}`)
+	source := writeFixtureFile(t, filepath.Join(repo, "cmd", "katlos-install", "main.go"), "source")
+	oldTime := time.Unix(1700000000, 0)
+	newTime := oldTime.Add(time.Hour)
+	if err := os.Chtimes(installer, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(installer) error = %v", err)
+	}
+	if err := os.Chtimes(runtime, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(runtime) error = %v", err)
+	}
+	if err := os.Chtimes(source, newTime, newTime); err != nil {
+		t.Fatalf("Chtimes(source) error = %v", err)
+	}
+
+	run, err := planFirstInstallWorldRun(world, "explicit stale installer world", repo, NodeSpec{Name: "cp-1", Role: ControlPlane}, firstInstallWorldInput{
+		TargetDiskSize: "20G",
+	}, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun() error = %v", err)
+	}
+	if run.Config.Installer.InstallerUKI == "" {
+		t.Fatalf("installer was not staged: %#v", run.Config.Installer)
 	}
 }
 
