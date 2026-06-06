@@ -19,14 +19,25 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime config apply smoke")
 	}
 	options.Missing = MissingSkips
-	disk, esp := requireInstalledRuntimeFixture(t, options, "installed-runtime-config-apply-modes")
+	runner := NewRunner(options)
+	runtime := InstalledRuntimeConfig{}
+	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-config-apply-modes", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
+		runner = worldRun.Runner
+		runtime = worldRun.Config
+	} else {
+		disk, esp := requireInstalledRuntimeFixture(t, options, "installed-runtime-config-apply-modes")
+		runtime = InstalledRuntimeConfig{
+			Disk:         disk,
+			DiskFormat:   DiskFormat(first(os.Getenv("KATL_INSTALLED_DISK_FORMAT"), string(DiskRaw))),
+			ESPArtifacts: esp,
+		}
+	}
 	helper := buildConfigApplySmokeHelper(t)
 
-	runner := NewRunner(options)
 	runner.RequireHost(t, HostRequirements{
 		QEMU: true,
 		OVMF: true,
-		KVM:  options.KVM,
+		KVM:  runner.options().KVM,
 	})
 	result, err := runner.Plan(Scenario{Name: "installed-runtime-config-apply-modes"})
 	if err != nil {
@@ -37,11 +48,13 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	node, err := StartInstalledRuntimeNode(ctx, result, InstalledRuntimeNodeConfig{
 		Name: "cp-1",
 		Runtime: InstalledRuntimeConfig{
-			Disk:         disk,
-			DiskFormat:   DiskFormat(first(os.Getenv("KATL_INSTALLED_DISK_FORMAT"), string(DiskRaw))),
-			ESPArtifacts: esp,
+			Disk:            runtime.Disk,
+			DiskFormat:      runtime.DiskFormat,
+			ESPArtifacts:    runtime.ESPArtifacts,
+			FixtureManifest: runtime.FixtureManifest,
+			NodeMetadata:    runtime.NodeMetadata,
 			VM: VMConfig{
-				KVM:     options.KVM,
+				KVM:     runner.options().KVM,
 				RAMMiB:  4096,
 				CPUs:    2,
 				Timeout: 8 * time.Minute,
