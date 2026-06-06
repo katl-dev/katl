@@ -157,6 +157,214 @@ func TestVMTestRunForwardsJSONFlag(t *testing.T) {
 	}
 }
 
+func TestVMTestRunAggregatesScenarioResults(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake scenario",
+		"KATL_VMTEST_RUN_ID=run-aggregate",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "passed" || summary.ExitCode != 0 || summary.ChildExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if !reflect.DeepEqual(summary.SelectedPackages, []string{"./internal/vmtest"}) {
+		t.Fatalf("selected packages = %#v", summary.SelectedPackages)
+	}
+	if summary.Counts["passed"] != 1 {
+		t.Fatalf("counts = %#v", summary.Counts)
+	}
+	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Name != "fake scenario" || summary.Scenarios[0].Status != "passed" {
+		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+	if summary.Scenarios[0].ManifestPath == "" || summary.Scenarios[0].ResultPath == "" {
+		t.Fatalf("scenario paths missing: %#v", summary.Scenarios[0])
+	}
+}
+
+func TestVMTestRunFailsMissingScenarioResult(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=missing result scenario",
+		"KATL_FAKE_CHILD_WORLD_RESULT=missing",
+		"KATL_VMTEST_RUN_ID=run-missing-scenario-result",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "failed" || summary.ExitCode != 1 || summary.ChildExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "setup-failed" || !strings.Contains(summary.Scenarios[0].FailureSummary, "scenario result missing") {
+		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+}
+
+func TestVMTestRunFailsFailedScenarioResult(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=failed result scenario",
+		"KATL_FAKE_CHILD_WORLD_RESULT=failed",
+		"KATL_VMTEST_RUN_ID=run-failed-scenario-result",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "failed" || summary.ExitCode != 1 || summary.ChildExitCode != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "failed" {
+		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+}
+
+func TestVMTestRunAllowsHostSkippedScenarioResult(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=host skipped scenario",
+		"KATL_FAKE_CHILD_WORLD_RESULT=skipped",
+		"KATL_FAKE_CHILD_WORLD_MISSING=systemd-nspawn",
+		"KATL_VMTEST_RUN_ID=run-host-skipped-scenario-result",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if summary.Status != "passed" || summary.ExitCode != 0 || summary.Counts["host-skipped"] != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "host-skipped" {
+		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+}
+
+func TestVMTestRunFailsMalformedScenarioResult(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=malformed result scenario",
+		"KATL_FAKE_CHILD_WORLD_RESULT=malformed",
+		"KATL_VMTEST_RUN_ID=run-malformed-scenario-result",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "setup-failed" || !strings.Contains(summary.Scenarios[0].FailureSummary, "invalid JSON") {
+		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+}
+
+func TestVMTestRunFailsStaleScenarioResult(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestFakeScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=stale result scenario",
+		"KATL_FAKE_CHILD_WORLD_RESULT_RUN_ID=previous-run",
+		"KATL_VMTEST_RUN_ID=run-stale-scenario-result",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 1 {
+		t.Fatalf("vmtest-run exit = %v, want 1\n%s", err, output)
+	}
+	summary := readSummary(t, filepath.Join(runDir, "summary.json"))
+	if len(summary.Scenarios) != 1 || summary.Scenarios[0].Status != "setup-failed" || !strings.Contains(summary.Scenarios[0].FailureSummary, "another run") {
+		t.Fatalf("scenarios = %#v", summary.Scenarios)
+	}
+}
+
 func TestVMTestRunPropagatesChildExit(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -929,6 +1137,64 @@ printf '%s\n' "$@" > "$KATL_FAKE_CHILD_ARGS"
     printf 'KATL_VMTEST_WORLD_STRICT=%s\n' "${KATL_VMTEST_WORLD_STRICT:-}"
 } > "$KATL_FAKE_CHILD_ENV"
 [[ -f "${KATL_VMTEST_WORLD_MANIFEST:-}" ]] || exit 41
+if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
+    scenario_name="$KATL_FAKE_CHILD_WORLD_SCENARIO"
+    scenario_id="${KATL_FAKE_CHILD_WORLD_SCENARIO_ID:-fake-scenario}"
+    scenario_dir="$(jq -r '.scenarioDir' "$KATL_VMTEST_WORLD_MANIFEST")/$scenario_id"
+    run_id="$(jq -r '.runID' "$KATL_VMTEST_WORLD_MANIFEST")"
+    mkdir -p "$scenario_dir"
+    result_path="$scenario_dir/result.json"
+    jq -n \
+        --arg name "$scenario_name" \
+        --arg id "$scenario_id" \
+        --arg dir "$scenario_dir" \
+        --arg runID "$run_id" \
+        --arg resultPath "$result_path" \
+        '{
+          apiVersion: "katl.dev/v1alpha1",
+          kind: "VMTestScenario",
+          worldRunID: $runID,
+          name: $name,
+          id: $id,
+          dir: $dir,
+          resultPath: $resultPath
+        }' > "$scenario_dir/scenario.json"
+    case "${KATL_FAKE_CHILD_WORLD_RESULT:-passed}" in
+        missing)
+            ;;
+        malformed)
+            printf '{' > "$result_path"
+            ;;
+        *)
+            result_run_id="${KATL_FAKE_CHILD_WORLD_RESULT_RUN_ID:-$run_id}"
+            result_name="${KATL_FAKE_CHILD_WORLD_RESULT_SCENARIO:-$scenario_name}"
+            result_status="${KATL_FAKE_CHILD_WORLD_RESULT:-passed}"
+            if [[ -n "${KATL_FAKE_CHILD_WORLD_MISSING:-}" ]]; then
+                missing_filter='| .missing = [{name: $missing, detail: "synthetic missing capability"}]'
+            else
+                missing_filter=''
+            fi
+            jq -n \
+                --arg scenarioName "$result_name" \
+                --arg status "$result_status" \
+                --arg runID "$result_run_id" \
+                --arg runDir "$scenario_dir" \
+                --arg manifestPath "$scenario_dir/scenario.json" \
+                --arg missing "${KATL_FAKE_CHILD_WORLD_MISSING:-}" \
+                --arg resultPath "$result_path" \
+                '{
+                  apiVersion: "katl.dev/v1alpha1",
+                  kind: "VMTestScenarioResult",
+                  scenarioName: $scenarioName,
+                  status: $status,
+                  runId: $runID,
+                  runDir: $runDir,
+                  manifestPath: $manifestPath,
+                  resultPath: $resultPath
+                } '"$missing_filter" > "$result_path"
+            ;;
+    esac
+fi
 exit "${KATL_FAKE_CHILD_EXIT:-0}"
 `)
 	return fakeGo, fakeChild
@@ -1095,10 +1361,22 @@ func readKeyValues(t *testing.T, path string) map[string]string {
 }
 
 type vmtestRunSummary struct {
-	Status    string   `json:"status"`
-	ExitCode  int      `json:"exitCode"`
-	GoTestLog string   `json:"goTestLog"`
-	Args      []string `json:"args"`
+	Status           string                  `json:"status"`
+	ExitCode         int                     `json:"exitCode"`
+	ChildExitCode    int                     `json:"childExitCode"`
+	GoTestLog        string                  `json:"goTestLog"`
+	Args             []string                `json:"args"`
+	SelectedPackages []string                `json:"selectedPackages"`
+	Counts           map[string]int          `json:"counts"`
+	Scenarios        []vmtestScenarioSummary `json:"scenarios"`
+}
+
+type vmtestScenarioSummary struct {
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	ManifestPath   string `json:"manifestPath"`
+	ResultPath     string `json:"resultPath"`
+	FailureSummary string `json:"failureSummary"`
 }
 
 func readSummary(t *testing.T, path string) vmtestRunSummary {

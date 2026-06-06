@@ -18,6 +18,9 @@ host_capabilities_json="$run_dir/host-capabilities.json"
 lease_file="$network_dir/leases.json"
 go_test_log="$run_dir/go-test.log"
 summary_json="$run_dir/summary.json"
+scenario_summary_json="$run_dir/scenario-summary.json"
+selected_packages_json="$run_dir/selected-packages.json"
+setup_failures_json="$run_dir/setup-failures.json"
 keep_policy="${KATL_VMTEST_KEEP:-failed}"
 host_policy="${KATL_VMTEST_HOST_POLICY:-}"
 network_backend="${KATL_VMTEST_NETWORK_BACKEND:-bridge}"
@@ -511,18 +514,209 @@ write_world() {
         }' >"$world_manifest"
 }
 
+write_selected_packages() {
+    local packages=()
+    local expect_flag_value=0
+    local after_args=0
+    while [[ $# -gt 0 ]]; do
+        if [[ "$after_args" == 1 ]]; then
+            shift
+            continue
+        fi
+        if [[ "$expect_flag_value" == 1 ]]; then
+            expect_flag_value=0
+            shift
+            continue
+        fi
+        case "$1" in
+            -args)
+                after_args=1
+                shift
+                ;;
+            -run|-bench|-list|-skip|-timeout|-benchtime|-cpu|-parallel|-shuffle|-coverprofile|-covermode|-coverpkg|-outputdir|-count)
+                expect_flag_value=1
+                shift
+                ;;
+            -*)
+                shift
+                ;;
+            *)
+                packages+=("$1")
+                shift
+                ;;
+        esac
+    done
+    jq -n --args '$ARGS.positional' -- "${packages[@]}" >"$selected_packages_json"
+}
+
+write_setup_failures() {
+    jq -n --args '$ARGS.positional' -- "${setup_failures[@]}" >"$setup_failures_json"
+}
+
+append_scenario_summary() {
+    local item_json="$1"
+    local tmp="$scenario_summary_json.tmp"
+    jq --argjson item "$item_json" '. + [$item]' "$scenario_summary_json" >"$tmp"
+    mv "$tmp" "$scenario_summary_json"
+}
+
+scenario_status_from_result() {
+    local result_path="$1"
+    jq -r '
+      (.status // "") as $status |
+      if $status == "passed" or $status == "pass" then "passed"
+      elif $status == "failed" or $status == "fail" then "failed"
+      elif $status == "setup-failed" then "setup-failed"
+      elif $status == "skipped" or $status == "skip" then
+        if ((.missing // []) | length) > 0 then "host-skipped" else "setup-failed" end
+      elif $status == "planned" or $status == "" then "setup-failed"
+      else "setup-failed"
+      end
+    ' "$result_path"
+}
+
+collect_scenario_summaries() {
+    jq -n '[]' >"$scenario_summary_json"
+    if [[ ! -d "$scenario_dir" ]]; then
+        return
+    fi
+    local scenario_manifest result_path item status failure tmp
+    while IFS= read -r -d '' scenario_manifest; do
+        if ! jq -e . "$scenario_manifest" >/dev/null 2>&1; then
+            item="$(
+                jq -n \
+                    --arg manifestPath "$scenario_manifest" \
+                    --arg status "setup-failed" \
+                    --arg failureSummary "scenario manifest is invalid JSON" \
+                    '{manifestPath: $manifestPath, status: $status, failureSummary: $failureSummary}'
+            )"
+            append_scenario_summary "$item"
+            continue
+        fi
+        result_path="$(jq -r '.resultPath // empty' "$scenario_manifest")"
+        if [[ -z "$result_path" ]]; then
+            item="$(
+                jq -n \
+                    --slurpfile scenario "$scenario_manifest" \
+                    --arg manifestPath "$scenario_manifest" \
+                    --arg status "setup-failed" \
+                    --arg failureSummary "scenario manifest is missing resultPath" \
+                    '{
+                      name: $scenario[0].name,
+                      id: $scenario[0].id,
+                      manifestPath: $manifestPath,
+                      status: $status,
+                      failureSummary: $failureSummary,
+                      nodes: ($scenario[0].nodes // []),
+                      fixtures: ($scenario[0].fixtures // [])
+                    }'
+            )"
+            append_scenario_summary "$item"
+            continue
+        fi
+        if [[ ! -f "$result_path" ]]; then
+            item="$(
+                jq -n \
+                    --slurpfile scenario "$scenario_manifest" \
+                    --arg manifestPath "$scenario_manifest" \
+                    --arg resultPath "$result_path" \
+                    --arg status "setup-failed" \
+                    --arg failureSummary "scenario result missing" \
+                    '{
+                      name: $scenario[0].name,
+                      id: $scenario[0].id,
+                      manifestPath: $manifestPath,
+                      resultPath: $resultPath,
+                      status: $status,
+                      failureSummary: $failureSummary,
+                      nodes: ($scenario[0].nodes // []),
+                      fixtures: ($scenario[0].fixtures // [])
+                    }'
+            )"
+            append_scenario_summary "$item"
+            continue
+        fi
+        if ! jq -e . "$result_path" >/dev/null 2>&1; then
+            item="$(
+                jq -n \
+                    --slurpfile scenario "$scenario_manifest" \
+                    --arg manifestPath "$scenario_manifest" \
+                    --arg resultPath "$result_path" \
+                    --arg status "setup-failed" \
+                    --arg failureSummary "scenario result is invalid JSON" \
+                    '{
+                      name: $scenario[0].name,
+                      id: $scenario[0].id,
+                      manifestPath: $manifestPath,
+                      resultPath: $resultPath,
+                      status: $status,
+                      failureSummary: $failureSummary,
+                      nodes: ($scenario[0].nodes // []),
+                      fixtures: ($scenario[0].fixtures // [])
+                    }'
+            )"
+            append_scenario_summary "$item"
+            continue
+        fi
+        status="$(scenario_status_from_result "$result_path")"
+        failure="$(jq -r '.failureSummary // empty' "$result_path")"
+        if jq -e --slurpfile scenario "$scenario_manifest" '
+            (.scenarioName // "") != "" and (.scenarioName != $scenario[0].name)
+          ' "$result_path" >/dev/null; then
+            status="setup-failed"
+            failure="scenario result is stale"
+        elif jq -e --arg runID "$run_id" '
+            (.runId // "") != "" and (.runId != $runID)
+          ' "$result_path" >/dev/null; then
+            status="setup-failed"
+            failure="scenario result is from another run"
+        elif [[ "$status" == "setup-failed" && -z "$failure" ]]; then
+            failure="scenario did not complete successfully"
+        fi
+        item="$(
+            jq -n \
+                --slurpfile scenario "$scenario_manifest" \
+                --slurpfile result "$result_path" \
+                --arg manifestPath "$scenario_manifest" \
+                --arg resultPath "$result_path" \
+                --arg status "$status" \
+                --arg failureSummary "$failure" \
+                '{
+                  name: $scenario[0].name,
+                  id: $scenario[0].id,
+                  manifestPath: $manifestPath,
+                  resultPath: $resultPath,
+                  status: $status,
+                  runDir: ($result[0].runDir // $scenario[0].dir),
+                  failureSummary: $failureSummary,
+                  nodes: ($scenario[0].nodes // $result[0].nodes // []),
+                  fixtures: ($scenario[0].fixtures // []),
+                  missing: ($result[0].missing // [])
+                } | if .failureSummary == "" then del(.failureSummary) else . end'
+        )"
+        append_scenario_summary "$item"
+    done < <(find "$scenario_dir" -type f -name scenario.json -print0 | sort -z)
+}
+
 write_summary() {
     local status="$1"
     local exit_code="$2"
     shift 2
+    write_selected_packages "$@"
+    write_setup_failures
+    collect_scenario_summaries
     jq -n \
         --arg runID "$run_id" \
         --arg runDir "$run_dir" \
         --arg worldManifest "$world_manifest" \
         --arg hostCapabilities "$host_capabilities_json" \
         --arg goTestLog "$go_test_log" \
-        --arg status "$status" \
+        --arg requestedStatus "$status" \
         --argjson exitCode "$exit_code" \
+        --slurpfile host "$host_capabilities_json" \
+        --slurpfile packages "$selected_packages_json" \
+        --slurpfile setupFailures "$setup_failures_json" \
+        --slurpfile scenarios "$scenario_summary_json" \
         --args \
         '{
           apiVersion: "katl.dev/v1alpha1",
@@ -532,9 +726,29 @@ write_summary() {
           worldManifest: $worldManifest,
           hostCapabilities: $hostCapabilities,
           goTestLog: $goTestLog,
-          status: $status,
-          exitCode: $exitCode,
-          args: $ARGS.positional
+          status: (
+            if $requestedStatus == "host-skipped" then "host-skipped"
+            elif $requestedStatus == "setup-failed" then "setup-failed"
+            elif $exitCode != 0 then "failed"
+            elif any($scenarios[0][]; .status == "failed" or .status == "setup-failed") then "failed"
+            else "passed"
+            end
+          ),
+          exitCode: (
+            if $requestedStatus == "host-skipped" then 0
+            elif $requestedStatus == "setup-failed" then $exitCode
+            elif $exitCode != 0 then $exitCode
+            elif any($scenarios[0][]; .status == "failed" or .status == "setup-failed") then 1
+            else 0
+            end
+          ),
+          childExitCode: $exitCode,
+          args: $ARGS.positional,
+          selectedPackages: $packages[0],
+          hostCapabilityGaps: ($host[0].missing // []),
+          setupFailures: $setupFailures[0],
+          counts: (reduce $scenarios[0][] as $scenario ({}; .[$scenario.status] += 1)),
+          scenarios: $scenarios[0]
         }' -- "$@" >"$summary_json"
 }
 
@@ -750,5 +964,7 @@ if [[ "$exit_code" -ne 0 ]]; then
 fi
 final_status="$status"
 write_summary "$status" "$exit_code" "${filtered_args[@]}"
+final_status="$(jq -r '.status' "$summary_json")"
+exit_code="$(jq -r '.exitCode' "$summary_json")"
 
 exit "$exit_code"
