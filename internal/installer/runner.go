@@ -63,6 +63,7 @@ type Context struct {
 	DiskLayout        *disk.DiskLayoutPlan
 	RootSlotPlan      *disk.RootSlotWritePlan
 	RootSlotTarget    disk.RootSlotDevice
+	RootSlotOpener    disk.RootSlotDeviceOpener
 	RootSlotInstaller disk.RootSlotInstaller
 	CurrentRootSlot   disk.RootSlot
 	RootPartitionUUID string
@@ -382,8 +383,23 @@ func (installRootSlotStep) Run(ctx context.Context, install *Context) error {
 	if install.RootSlotPlan == nil {
 		return fmt.Errorf("root slot plan is required")
 	}
-	if install.RootSlotTarget == nil {
+	target := install.RootSlotTarget
+	var closeTarget func() error
+	if target == nil && install.RootSlotOpener != nil {
+		opened, err := install.RootSlotOpener.OpenRootSlotDevice(ctx, install.RootSlotPlan.TargetPartition)
+		if err != nil {
+			return err
+		}
+		target = opened
+		if closer, ok := opened.(io.Closer); ok {
+			closeTarget = closer.Close
+		}
+	}
+	if target == nil {
 		return fmt.Errorf("root slot target is required")
+	}
+	if closeTarget != nil {
+		defer closeTarget()
 	}
 	source, err := os.Open(install.KatlosImage.ComponentPath(install.KatlosImage.Runtime))
 	if err != nil {
@@ -396,14 +412,14 @@ func (installRootSlotStep) Run(ctx context.Context, install *Context) error {
 			return disk.WriteRootSlot(disk.RootSlotInstallRequest{
 				Plan:     *install.RootSlotPlan,
 				Artifact: source,
-				Target:   install.RootSlotTarget,
+				Target:   target,
 			})
 		}
 	}
 	if _, err := installer(ctx, disk.RootSlotInstallRequest{
 		Plan:     *install.RootSlotPlan,
 		Artifact: source,
-		Target:   install.RootSlotTarget,
+		Target:   target,
 	}); err != nil {
 		return err
 	}

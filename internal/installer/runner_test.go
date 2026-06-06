@@ -355,6 +355,39 @@ func TestRunnerInstallsKatlosImageComponents(t *testing.T) {
 	}
 }
 
+func TestRunnerOpensRootSlotTarget(t *testing.T) {
+	payload, contents := writeInstallPayload(t)
+	store := &MemoryStateStore{}
+	rootTarget := newRunnerRootSlot(len(contents.runtime) + 4096)
+	opener := &recordingRootSlotOpener{target: rootTarget}
+	install := &Context{
+		Commands:    &NoopCommandRunner{},
+		Store:       store,
+		KatlosImage: &payload,
+		RootSlotPlan: &disk.RootSlotWritePlan{
+			Slot:              disk.RootSlotA,
+			TargetPartition:   disk.RootSlotTarget{Name: "root-a", GPTLabel: disk.GPTLabelRootA},
+			ArtifactDigest:    payload.Runtime.SHA256,
+			ExpectedSizeBytes: payload.Runtime.SizeBytes,
+		},
+		RootSlotOpener: opener,
+	}
+
+	if err := NewRunner(Plan{installRootSlotStep{}}, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if opener.targetLabel != disk.GPTLabelRootA {
+		t.Fatalf("opened label = %q, want %s", opener.targetLabel, disk.GPTLabelRootA)
+	}
+	if !rootTarget.closed {
+		t.Fatal("opened root slot target was not closed")
+	}
+	if got := string(rootTarget.data[:len(contents.runtime)]); got != string(contents.runtime) {
+		t.Fatalf("root slot bytes = %q, want runtime payload", got)
+	}
+}
+
 func TestRunnerRecordsRefusalBeforeMutationStatus(t *testing.T) {
 	store := &MemoryStateStore{}
 	manifestPath := filepath.Join(t.TempDir(), "install.json")
@@ -902,6 +935,7 @@ func payloadComponent(name string, role string, path string, data []byte) katlos
 type runnerRootSlot struct {
 	data   []byte
 	synced bool
+	closed bool
 }
 
 func newRunnerRootSlot(size int) *runnerRootSlot {
@@ -933,6 +967,21 @@ func (s *runnerRootSlot) WriteAt(p []byte, off int64) (int, error) {
 func (s *runnerRootSlot) Sync() error {
 	s.synced = true
 	return nil
+}
+
+func (s *runnerRootSlot) Close() error {
+	s.closed = true
+	return nil
+}
+
+type recordingRootSlotOpener struct {
+	target      *runnerRootSlot
+	targetLabel string
+}
+
+func (o *recordingRootSlotOpener) OpenRootSlotDevice(_ context.Context, target disk.RootSlotTarget) (disk.RootSlotDevice, error) {
+	o.targetLabel = target.GPTLabel
+	return o.target, nil
 }
 
 type failingStep struct {
