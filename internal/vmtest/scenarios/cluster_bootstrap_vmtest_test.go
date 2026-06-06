@@ -120,6 +120,7 @@ func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string
 			WorkerMetadata:         worker.Config.NodeMetadata,
 			WorkerAddress:          worker.Node.Address,
 			KubernetesVersion:      firstString(kubernetesVersion, "v1.36.1"),
+			WorldProvenance:        twoNodeWorldProvenance(world, repo),
 		},
 	}, nil
 }
@@ -302,6 +303,43 @@ type twoNodeSmokeInputs struct {
 	WorkerMetadata         string
 	WorkerAddress          string
 	KubernetesVersion      string
+	WorldProvenance        twoNodeWorldProvenancePaths
+}
+
+type twoNodeWorldProvenancePaths struct {
+	WorldManifest            string
+	HostCapabilities         string
+	MkosiArtifactIndex       string
+	FixtureProducerScenarios map[string]string
+	FixtureProducerResults   map[string]string
+}
+
+func twoNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []vmtest.NodeSpec) twoNodeWorldProvenancePaths {
+	provenance := twoNodeWorldProvenancePaths{
+		WorldManifest:      firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
+		HostCapabilities:   filepath.Join(world.RunDir, "host-capabilities.json"),
+		MkosiArtifactIndex: firstString(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"), filepath.Join(repo, "build", "mkosi", "artifacts.json")),
+	}
+	if len(specs) == 0 {
+		return provenance
+	}
+	provenance.FixtureProducerScenarios = make(map[string]string, len(specs))
+	provenance.FixtureProducerResults = make(map[string]string, len(specs))
+	for _, spec := range specs {
+		name := strings.TrimSpace(spec.Name)
+		if name == "" {
+			continue
+		}
+		scenarioID := vmtest.FirstInstallRuntimeFixtureScenarioName(spec)
+		scenarioDir := filepath.Join(world.ScenarioDir, scenarioID)
+		provenance.FixtureProducerScenarios[name] = filepath.Join(scenarioDir, "scenario.json")
+		provenance.FixtureProducerResults[name] = filepath.Join(scenarioDir, "result.json")
+	}
+	return provenance
+}
+
+func twoNodeWorldProvenance(world vmtest.World, repo string) twoNodeWorldProvenancePaths {
+	return twoNodeWorldProvenanceForSpecs(world, repo, twoNodeWorldRuntimeSpecs())
 }
 
 func planStartedVMResult(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario) vmtest.Result {
@@ -423,51 +461,61 @@ nodes:
 }
 
 type twoNodeArtifactManifest struct {
-	ControlPlaneRunDir     string                      `json:"controlPlaneRunDir"`
-	WorkerRunDir           string                      `json:"workerRunDir"`
-	NodeScenarios          map[string]string           `json:"nodeScenarios,omitempty"`
-	NodeResults            map[string]string           `json:"nodeResults,omitempty"`
-	QEMUCommands           map[string]string           `json:"qemuCommands,omitempty"`
-	InstalledRuntimeInputs map[string]string           `json:"installedRuntimeInputs,omitempty"`
-	VSockTranscripts       map[string]string           `json:"vsockTranscripts,omitempty"`
-	FixtureInputs          map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
-	Inventory              string                      `json:"inventory"`
-	Kubeconfig             string                      `json:"kubeconfig"`
-	KubeconfigMetadata     string                      `json:"kubeconfigMetadata,omitempty"`
-	BootstrapStdout        string                      `json:"bootstrapStdout"`
-	BootstrapStderr        string                      `json:"bootstrapStderr"`
-	BootstrapFixture       *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
-	KubectlOutput          string                      `json:"kubectlOutput"`
-	KubectlDiagnostics     map[string]string           `json:"kubectlDiagnostics,omitempty"`
-	ControlPlaneTranscript string                      `json:"controlPlaneTranscript"`
-	WorkerTranscript       string                      `json:"workerTranscript"`
-	SerialLogs             map[string]string           `json:"serialLogs,omitempty"`
-	Diagnostics            map[string]string           `json:"diagnostics,omitempty"`
+	WorldManifest            string                      `json:"worldManifest,omitempty"`
+	HostCapabilities         string                      `json:"hostCapabilities,omitempty"`
+	MkosiArtifactIndex       string                      `json:"mkosiArtifactIndex,omitempty"`
+	ControlPlaneRunDir       string                      `json:"controlPlaneRunDir"`
+	WorkerRunDir             string                      `json:"workerRunDir"`
+	NodeScenarios            map[string]string           `json:"nodeScenarios,omitempty"`
+	NodeResults              map[string]string           `json:"nodeResults,omitempty"`
+	QEMUCommands             map[string]string           `json:"qemuCommands,omitempty"`
+	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
+	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
+	FixtureProducerScenarios map[string]string           `json:"fixtureProducerScenarios,omitempty"`
+	FixtureProducerResults   map[string]string           `json:"fixtureProducerResults,omitempty"`
+	Inventory                string                      `json:"inventory"`
+	Kubeconfig               string                      `json:"kubeconfig"`
+	KubeconfigMetadata       string                      `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout          string                      `json:"bootstrapStdout"`
+	BootstrapStderr          string                      `json:"bootstrapStderr"`
+	BootstrapFixture         *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
+	KubectlOutput            string                      `json:"kubectlOutput"`
+	KubectlDiagnostics       map[string]string           `json:"kubectlDiagnostics,omitempty"`
+	ControlPlaneTranscript   string                      `json:"controlPlaneTranscript"`
+	WorkerTranscript         string                      `json:"workerTranscript"`
+	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
+	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
 }
 
 func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmokeInputs, transcriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
 	nodeByName := nodeMap(nodes)
 	return writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
-		ControlPlaneRunDir:     nodeByName["cp-1"].Result.RunDir,
-		WorkerRunDir:           nodeByName["worker-1"].Result.RunDir,
-		NodeScenarios:          nodeScenarioPaths(nodes),
-		NodeResults:            nodeResultPaths(nodes),
-		QEMUCommands:           qemuCommandPaths(nodes),
-		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
-		VSockTranscripts:       vsockTranscriptPaths(nodes),
-		FixtureInputs:          twoNodeFixtureInputs(inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.ControlPlaneESP, inputs.WorkerESP, inputs.ControlPlaneFixture, inputs.WorkerFixture, inputs.ControlPlaneMetadata, inputs.WorkerMetadata),
-		Inventory:              filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
-		Kubeconfig:             filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
-		KubeconfigMetadata:     filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
-		BootstrapStdout:        filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
-		BootstrapStderr:        filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
-		BootstrapFixture:       bootstrapFixture.manifestValue(),
-		KubectlOutput:          filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
-		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
-		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
-		WorkerTranscript:       twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
-		SerialLogs:             serialLogPaths(nodes),
-		Diagnostics:            diagnosticSummaryPaths(nodes),
+		WorldManifest:            inputs.WorldProvenance.WorldManifest,
+		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
+		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
+		ControlPlaneRunDir:       nodeByName["cp-1"].Result.RunDir,
+		WorkerRunDir:             nodeByName["worker-1"].Result.RunDir,
+		NodeScenarios:            nodeScenarioPaths(nodes),
+		NodeResults:              nodeResultPaths(nodes),
+		QEMUCommands:             qemuCommandPaths(nodes),
+		InstalledRuntimeInputs:   installedRuntimeInputPaths(nodes),
+		VSockTranscripts:         vsockTranscriptPaths(nodes),
+		FixtureInputs:            twoNodeFixtureInputs(inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.ControlPlaneESP, inputs.WorkerESP, inputs.ControlPlaneFixture, inputs.WorkerFixture, inputs.ControlPlaneMetadata, inputs.WorkerMetadata),
+		FixtureProducerScenarios: inputs.WorldProvenance.FixtureProducerScenarios,
+		FixtureProducerResults:   inputs.WorldProvenance.FixtureProducerResults,
+		Inventory:                filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml"),
+		Kubeconfig:               filepath.Join(result.RunDir, "operator-kubeconfig.yaml"),
+		KubeconfigMetadata:       filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json"),
+		BootstrapStdout:          filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
+		BootstrapStderr:          filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
+		BootstrapFixture:         bootstrapFixture.manifestValue(),
+		KubectlOutput:            filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
+		KubectlDiagnostics:       kubectlDiagnosticPaths(result.RunDir),
+		ControlPlaneTranscript:   twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
+		WorkerTranscript:         twoNodeBootstrapTranscriptPath(transcriptDir, "worker-1"),
+		SerialLogs:               serialLogPaths(nodes),
+		Diagnostics:              diagnosticSummaryPaths(nodes),
 	})
 }
 
@@ -1066,6 +1114,9 @@ func TestTwoNodeArtifactManifestRecordsWorldInputs(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "two-node-artifacts.json")
 	if err := writeTwoNodeArtifactManifest(path, twoNodeArtifactManifest{
+		WorldManifest:      "/tmp/world.json",
+		HostCapabilities:   "/tmp/host-capabilities.json",
+		MkosiArtifactIndex: "/tmp/mkosi-artifacts.json",
 		ControlPlaneRunDir: "/tmp/cp-run",
 		WorkerRunDir:       "/tmp/worker-run",
 		NodeResults: map[string]string{
@@ -1088,12 +1139,14 @@ func TestTwoNodeArtifactManifestRecordsWorldInputs(t *testing.T) {
 			"cp-1":     "/tmp/cp-run/qemu/vsock-transcript.jsonl",
 			"worker-1": "/tmp/worker-run/qemu/vsock-transcript.jsonl",
 		},
-		FixtureInputs:      inputs,
-		KubeconfigMetadata: "/tmp/run/operator-kubeconfig-metadata.json",
-		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
-		SerialLogs:         map[string]string{"cp-1": "/tmp/cp-run/qemu/runtime-serial.log", "worker-1": "/tmp/worker-run/qemu/runtime-serial.log"},
-		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-guest/diagnostics-summary.json", "worker-1": "/tmp/worker-guest/diagnostics-summary.json"},
-		KubectlDiagnostics: map[string]string{"nodesWide": "/tmp/run/kubectl-get-nodes-wide.txt"},
+		FixtureInputs:            inputs,
+		FixtureProducerScenarios: map[string]string{"cp-1": "/tmp/fixture-cp/scenario.json", "worker-1": "/tmp/fixture-worker/scenario.json"},
+		FixtureProducerResults:   map[string]string{"cp-1": "/tmp/fixture-cp/result.json", "worker-1": "/tmp/fixture-worker/result.json"},
+		KubeconfigMetadata:       "/tmp/run/operator-kubeconfig-metadata.json",
+		BootstrapFixture:         (&bootstrapFixtureInputs{Manifests: []string{"/tmp/cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
+		SerialLogs:               map[string]string{"cp-1": "/tmp/cp-run/qemu/runtime-serial.log", "worker-1": "/tmp/worker-run/qemu/runtime-serial.log"},
+		Diagnostics:              map[string]string{"cp-1": "/tmp/cp-guest/diagnostics-summary.json", "worker-1": "/tmp/worker-guest/diagnostics-summary.json"},
+		KubectlDiagnostics:       map[string]string{"nodesWide": "/tmp/run/kubectl-get-nodes-wide.txt"},
 	}); err != nil {
 		t.Fatalf("writeTwoNodeArtifactManifest() error = %v", err)
 	}
@@ -1107,6 +1160,12 @@ func TestTwoNodeArtifactManifestRecordsWorldInputs(t *testing.T) {
 	}
 	if manifest.FixtureInputs["cp-1"].FixtureManifest != "cp-fixture.json" || manifest.FixtureInputs["worker-1"].NodeMetadata != "worker-node.json" {
 		t.Fatalf("artifact manifest fixture inputs = %#v", manifest.FixtureInputs)
+	}
+	if manifest.WorldManifest != "/tmp/world.json" || manifest.HostCapabilities != "/tmp/host-capabilities.json" || manifest.MkosiArtifactIndex != "/tmp/mkosi-artifacts.json" {
+		t.Fatalf("artifact manifest world provenance = %q %q %q", manifest.WorldManifest, manifest.HostCapabilities, manifest.MkosiArtifactIndex)
+	}
+	if manifest.FixtureProducerScenarios["cp-1"] != "/tmp/fixture-cp/scenario.json" || manifest.FixtureProducerResults["worker-1"] != "/tmp/fixture-worker/result.json" {
+		t.Fatalf("artifact manifest fixture provenance = %#v %#v", manifest.FixtureProducerScenarios, manifest.FixtureProducerResults)
 	}
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-guest/diagnostics-summary.json" || manifest.Diagnostics["worker-1"] != "/tmp/worker-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
@@ -1175,6 +1234,12 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	assertFileContent(t, run.Inputs.WorkerDisk, "disk-world-worker")
 	if !hasPathPrefix(run.Inputs.ControlPlaneFixture, run.WorldScenario.Dir) || !hasPathPrefix(run.Inputs.WorkerFixture, run.WorldScenario.Dir) {
 		t.Fatalf("fixtures were not staged into world scenario: cp=%q worker=%q", run.Inputs.ControlPlaneFixture, run.Inputs.WorkerFixture)
+	}
+	if run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
+		t.Fatalf("world provenance = %#v", run.Inputs.WorldProvenance)
+	}
+	if run.Inputs.WorldProvenance.FixtureProducerResults["cp-1"] != filepath.Join(world.ScenarioDir, "first-install-installed-runtime-fixture-cp-1-control-plane", "result.json") {
+		t.Fatalf("fixture producer results = %#v", run.Inputs.WorldProvenance.FixtureProducerResults)
 	}
 }
 
@@ -1311,6 +1376,13 @@ func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
 		WorkerESP:            "esp",
 		WorkerFixture:        "worker-fixture.json",
 		WorkerMetadata:       "worker-node.json",
+		WorldProvenance: twoNodeWorldProvenancePaths{
+			WorldManifest:            "/tmp/world.json",
+			HostCapabilities:         "/tmp/host-capabilities.json",
+			MkosiArtifactIndex:       "/tmp/mkosi-artifacts.json",
+			FixtureProducerScenarios: map[string]string{"cp-1": "/tmp/fixture-cp/scenario.json"},
+			FixtureProducerResults:   map[string]string{"worker-1": "/tmp/fixture-worker/result.json"},
+		},
 	}, filepath.Join(result.RunDir, "agent-transcripts"), nodes, bootstrapFixtureInputs{}); err != nil {
 		t.Fatalf("writeTwoNodeSmokeArtifactManifest() error = %v", err)
 	}
@@ -1333,6 +1405,9 @@ func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
 	}
 	if manifest.InstalledRuntimeInputs["worker-1"] != workerResult.Artifacts.InstalledRuntime || manifest.VSockTranscripts["cp-1"] != cpResult.Artifacts.VSockTranscript {
 		t.Fatalf("planned runtime indexes = installed %#v vsock %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
+	}
+	if manifest.WorldManifest != "/tmp/world.json" || manifest.FixtureProducerScenarios["cp-1"] != "/tmp/fixture-cp/scenario.json" {
+		t.Fatalf("planned provenance = %#v", manifest)
 	}
 }
 
