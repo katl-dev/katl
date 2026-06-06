@@ -42,7 +42,7 @@ func TestConfigApplyNspawnSmoke(t *testing.T) {
 	}
 	options := nspawntest.DefaultOptions()
 	if !options.Enabled {
-		t.Skip("set -katl.nspawn.run or KATL_NSPAWN_RUN=1 to run nspawn config-apply smoke through scripts/vmtest-run")
+		t.Skip("run nspawn config-apply smoke through scripts/vmtest-run")
 	}
 	_ = RequireWorld(t)
 }

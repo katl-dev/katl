@@ -160,9 +160,9 @@ scripts/mkosi build-installer
 scripts/mkosi build-katlos-image
 ```
 
-The lower-level resolver and fixture scripts remain useful for inspecting or
-validating already-produced artifacts during harness development. They are not
-the supported way to run enabled VM or kubeadm suites.
+World run directories and scenario manifests are the supported inspection path
+for already-produced artifacts during harness development. Lower-level helper
+scripts are not the supported way to run enabled nspawn, VM, or kubeadm suites.
 
 ## Sanity Checks
 
