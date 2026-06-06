@@ -20,6 +20,7 @@
           packages = with pkgs; [
             bashInteractive
             cacert
+            coreutils
             cpio
             cryptsetup
             curl
@@ -27,6 +28,7 @@
             dosfstools
             e2fsprogs
             erofs-utils
+            gawk
             git
             go
             iproute2

@@ -41,6 +41,8 @@ cap_bridge="disabled"
 cap_mtools="disabled"
 cap_sfdisk="disabled"
 cap_sha256sum="disabled"
+cap_awk="disabled"
+cap_realpath="disabled"
 cap_systemd_nspawn="disabled"
 missing_capabilities=()
 setup_failures=()
@@ -142,6 +144,18 @@ probe_capabilities() {
     else
         missing_capabilities+=("sha256sum")
         cap_sha256sum="$(missing_status missing)"
+    fi
+    if have_command awk; then
+        cap_awk="passed"
+    else
+        missing_capabilities+=("awk")
+        cap_awk="$(missing_status missing)"
+    fi
+    if have_command realpath; then
+        cap_realpath="passed"
+    else
+        missing_capabilities+=("realpath")
+        cap_realpath="$(missing_status missing)"
     fi
     if have_command systemd-nspawn; then
         if [[ "${EUID:-$(id -u)}" == 0 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == 1 || "${KATL_NSPAWN_ALLOW_UNPRIVILEGED:-}" == true ]]; then
@@ -305,6 +319,8 @@ write_host_capabilities() {
         --arg mtools "$cap_mtools" \
         --arg sfdisk "$cap_sfdisk" \
         --arg sha256sum "$cap_sha256sum" \
+        --arg awk "$cap_awk" \
+        --arg realpath "$cap_realpath" \
         --arg systemdNspawn "$cap_systemd_nspawn" \
         --args \
         '{
@@ -320,6 +336,8 @@ write_host_capabilities() {
             mtools: $mtools,
             sfdisk: $sfdisk,
             sha256sum: $sha256sum,
+            awk: $awk,
+            realpath: $realpath,
             "systemd-nspawn": $systemdNspawn
           },
           missing: $ARGS.positional
@@ -345,6 +363,8 @@ write_world() {
         --arg mtools "$cap_mtools" \
         --arg sfdisk "$cap_sfdisk" \
         --arg sha256sum "$cap_sha256sum" \
+        --arg awk "$cap_awk" \
+        --arg realpath "$cap_realpath" \
         --arg systemdNspawn "$cap_systemd_nspawn" \
         '{
           apiVersion: "katl.dev/v1alpha1",
@@ -369,6 +389,8 @@ write_world() {
             mtools: $mtools,
             sfdisk: $sfdisk,
             sha256sum: $sha256sum,
+            awk: $awk,
+            realpath: $realpath,
             vsock: $vsock,
             "systemd-nspawn": $systemdNspawn
           }
