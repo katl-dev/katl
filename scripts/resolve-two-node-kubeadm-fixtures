@@ -293,14 +293,20 @@ check_published_digest() {
 load_published_fixture() {
     local label="$1"
     local dir="$2"
+    local node="$3"
+    local role="$4"
     [[ -z "$dir" ]] && return 0
     [[ -d "$dir" ]] || fail "$label published fixture directory not found: $(rel "$dir")"
     dir="$(real "$dir")"
     [[ -f "$dir/published-first-install-runtime-fixture.json" ]] ||
         fail "$label published fixture manifest not found: $(rel "$dir/published-first-install-runtime-fixture.json")"
-    jq -e '
+    jq -e \
+        --arg node "$node" \
+        --arg role "$role" '
         .apiVersion == "katl.dev/v1alpha1" and
         .kind == "PublishedFirstInstallRuntimeFixture" and
+        ((.nodeName // $node) == $node) and
+        ((.systemRole // $role) == $role) and
         (.disk | type == "string") and
         (.diskFormat | type == "string") and
         (.espArtifacts | type == "string") and
@@ -309,7 +315,7 @@ load_published_fixture() {
         ((.espArtifactsTreeSHA256 // "") | type == "string") and
         ((.nodeMetadataSHA256 // "") | type == "string")
         ' "$dir/published-first-install-runtime-fixture.json" >/dev/null ||
-        fail "$label published fixture manifest is invalid"
+        fail "$label published fixture manifest is invalid for $node role=$role"
     check_published_digest "$dir" "$label" "diskSHA256" '.disk.sha256'
     check_published_digest "$dir" "$label" "espArtifactsTreeSHA256" '.espArtifacts.treeSHA256'
     check_published_digest "$dir" "$label" "nodeMetadataSHA256" '.nodeMetadata.sha256'
@@ -377,8 +383,8 @@ load_katlos_fixture() {
 
 load_katlos_fixture "control-plane" "$cp_katlos_fixture_manifest" "cp-1" "control-plane"
 load_katlos_fixture "worker" "$worker_katlos_fixture_manifest" "worker-1" "worker"
-load_published_fixture "control-plane" "$cp_published_dir"
-load_published_fixture "worker" "$worker_published_dir"
+load_published_fixture "control-plane" "$cp_published_dir" "cp-1" "control-plane"
+load_published_fixture "worker" "$worker_published_dir" "worker-1" "worker"
 
 cp_format="${cp_format:-raw}"
 worker_format="${worker_format:-raw}"

@@ -269,6 +269,8 @@ cat >"$manifest" <<EOF
 {
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "PublishedFirstInstallRuntimeFixture",
+  "nodeName": "$(json "$node_name")",
+  "systemRole": "$(json "$system_role")",
   "sourceRunDir": "$(json "$source_run_dir")",
   "sourceFixtureManifest": "$(json "$latest_fixture")",
   "fixtureManifest": "$(json "$fixture_manifest")",
