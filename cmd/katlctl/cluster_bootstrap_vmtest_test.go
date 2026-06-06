@@ -95,6 +95,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
 	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
+	bootstrapFixture := bootstrapFixtureInputsFromEnv()
 	if err := writeTwoNodeInventory(inventoryPath, kubernetesVersion, cpNode, workerNode); err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +108,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		Kubeconfig:             kubeconfigPath,
 		BootstrapStdout:        stdoutPath,
 		BootstrapStderr:        stderrPath,
+		BootstrapFixture:       bootstrapFixture.manifestValue(),
 		KubectlOutput:          kubectlOut,
 		KubectlDiagnostics:     kubectlDiagnosticPaths(result.RunDir),
 		ControlPlaneTranscript: twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
@@ -116,7 +118,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	err = run(ctx, []string{
+	err = run(ctx, appendBootstrapFixtureArgs([]string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
@@ -126,7 +128,7 @@ func TestInstalledRuntimeTwoNodeKubeadmJoinSmoke(t *testing.T) {
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
 		"--vmtest-transcript-dir", transcriptDir,
-	}, &stdout, &stderr)
+	}, bootstrapFixture), &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	if err != nil {
@@ -225,6 +227,7 @@ type twoNodeArtifactManifest struct {
 	Kubeconfig             string                      `json:"kubeconfig"`
 	BootstrapStdout        string                      `json:"bootstrapStdout"`
 	BootstrapStderr        string                      `json:"bootstrapStderr"`
+	BootstrapFixture       *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
 	KubectlOutput          string                      `json:"kubectlOutput"`
 	KubectlDiagnostics     map[string]string           `json:"kubectlDiagnostics,omitempty"`
 	ControlPlaneTranscript string                      `json:"controlPlaneTranscript"`
@@ -240,6 +243,76 @@ type nodeFixtureInput struct {
 	NodeMetadata          string `json:"nodeMetadata"`
 	PublishedFixtureDir   string `json:"publishedFixtureDir,omitempty"`
 	KatlOSFixtureManifest string `json:"katlosFixtureManifest,omitempty"`
+}
+
+type bootstrapFixtureInputs struct {
+	Manifests []string `json:"manifests,omitempty"`
+	Waits     []string `json:"waits,omitempty"`
+}
+
+func (i bootstrapFixtureInputs) empty() bool {
+	return len(i.Manifests) == 0 && len(i.Waits) == 0
+}
+
+func (i bootstrapFixtureInputs) manifestValue() *bootstrapFixtureInputs {
+	if i.empty() {
+		return nil
+	}
+	return &i
+}
+
+func bootstrapFixtureInputsFromEnv() bootstrapFixtureInputs {
+	return bootstrapFixtureInputs{
+		Manifests: bootstrapManifestInputsFromEnv(),
+		Waits:     bootstrapWaitInputsFromEnv(),
+	}
+}
+
+func bootstrapManifestInputsFromEnv() []string {
+	return compactStrings(append(splitPathList(os.Getenv("KATL_BOOTSTRAP_MANIFESTS")), os.Getenv("KATL_BOOTSTRAP_MANIFEST")))
+}
+
+func bootstrapWaitInputsFromEnv() []string {
+	return compactStrings(append(splitLines(os.Getenv("KATL_BOOTSTRAP_WAITS")), os.Getenv("KATL_BOOTSTRAP_WAIT")))
+}
+
+func appendBootstrapFixtureArgs(args []string, inputs bootstrapFixtureInputs) []string {
+	for _, manifest := range inputs.Manifests {
+		args = append(args, "--bootstrap-manifest", manifest)
+	}
+	for _, wait := range inputs.Waits {
+		args = append(args, "--bootstrap-wait", wait)
+	}
+	return args
+}
+
+func splitPathList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return filepath.SplitList(value)
+}
+
+func splitLines(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.Split(value, "\n")
+}
+
+func compactStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func writeTwoNodeArtifactManifest(path string, manifest twoNodeArtifactManifest) error {
@@ -680,6 +753,7 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 		WorkerRunDir:       "/tmp/worker-run",
 		FixtureInputs:      inputs,
 		PublishedFixtures:  got,
+		BootstrapFixture:   (&bootstrapFixtureInputs{Manifests: []string{"/tmp/cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
 		Diagnostics:        map[string]string{"cp-1": "/tmp/cp-guest/diagnostics-summary.json", "worker-1": "/tmp/worker-guest/diagnostics-summary.json"},
 		KubectlDiagnostics: map[string]string{"nodesWide": "/tmp/run/kubectl-get-nodes-wide.txt"},
 	}); err != nil {
@@ -705,9 +779,70 @@ func TestTwoNodePublishedFixtureDirs(t *testing.T) {
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-guest/diagnostics-summary.json" || manifest.Diagnostics["worker-1"] != "/tmp/worker-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
 	}
+	if manifest.BootstrapFixture == nil || !stringSlicesEqual(manifest.BootstrapFixture.Manifests, []string{"/tmp/cni.yaml"}) || !stringSlicesEqual(manifest.BootstrapFixture.Waits, []string{"nodes-ready"}) {
+		t.Fatalf("artifact manifest bootstrap fixture = %#v", manifest.BootstrapFixture)
+	}
 	if manifest.KubectlDiagnostics["nodesWide"] != "/tmp/run/kubectl-get-nodes-wide.txt" {
 		t.Fatalf("artifact manifest kubectl diagnostics = %#v", manifest.KubectlDiagnostics)
 	}
+}
+
+func TestBootstrapFixtureInputsFromEnv(t *testing.T) {
+	t.Setenv("KATL_BOOTSTRAP_MANIFESTS", strings.Join([]string{"/tmp/01-cni.yaml", " /tmp/02-workload.yaml "}, string(os.PathListSeparator)))
+	t.Setenv("KATL_BOOTSTRAP_MANIFEST", " /tmp/03-extra.yaml ")
+	t.Setenv("KATL_BOOTSTRAP_WAITS", "\napi-ready\npods-ready:kube-system:k8s-app=kube-dns\n")
+	t.Setenv("KATL_BOOTSTRAP_WAIT", " nodes-ready ")
+
+	got := bootstrapFixtureInputsFromEnv()
+	if !stringSlicesEqual(got.Manifests, []string{"/tmp/01-cni.yaml", "/tmp/02-workload.yaml", "/tmp/03-extra.yaml"}) {
+		t.Fatalf("bootstrap manifests = %#v", got.Manifests)
+	}
+	if !stringSlicesEqual(got.Waits, []string{"api-ready", "pods-ready:kube-system:k8s-app=kube-dns", "nodes-ready"}) {
+		t.Fatalf("bootstrap waits = %#v", got.Waits)
+	}
+	if got.empty() {
+		t.Fatalf("bootstrap fixture reported empty: %#v", got)
+	}
+	if got.manifestValue() == nil {
+		t.Fatalf("bootstrap fixture manifest value is nil for non-empty fixture")
+	}
+
+	t.Setenv("KATL_BOOTSTRAP_MANIFESTS", "")
+	t.Setenv("KATL_BOOTSTRAP_MANIFEST", "")
+	t.Setenv("KATL_BOOTSTRAP_WAITS", "")
+	t.Setenv("KATL_BOOTSTRAP_WAIT", "")
+	if got := bootstrapFixtureInputsFromEnv(); !got.empty() || got.manifestValue() != nil {
+		t.Fatalf("empty bootstrap fixture = %#v", got)
+	}
+}
+
+func TestAppendBootstrapFixtureArgs(t *testing.T) {
+	got := appendBootstrapFixtureArgs([]string{"cluster", "bootstrap"}, bootstrapFixtureInputs{
+		Manifests: []string{"/tmp/01-cni.yaml", "/tmp/02-workload.yaml"},
+		Waits:     []string{"pods-ready:kube-system:k8s-app=kube-dns", "nodes-ready"},
+	})
+	want := []string{
+		"cluster", "bootstrap",
+		"--bootstrap-manifest", "/tmp/01-cni.yaml",
+		"--bootstrap-manifest", "/tmp/02-workload.yaml",
+		"--bootstrap-wait", "pods-ready:kube-system:k8s-app=kube-dns",
+		"--bootstrap-wait", "nodes-ready",
+	}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("bootstrap args = %#v, want %#v", got, want)
+	}
+}
+
+func stringSlicesEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestKubectlDiagnosticPathsAndCommands(t *testing.T) {
