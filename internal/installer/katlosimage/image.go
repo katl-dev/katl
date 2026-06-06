@@ -45,6 +45,61 @@ func (r DirectoryResolver) ResolveKatlosImage(ctx context.Context, expected mani
 	return ResolveDirectory(ctx, r.Root, expected)
 }
 
+type CommandRunner interface {
+	Run(ctx context.Context, name string, args ...string) error
+}
+
+type LocalResolver struct {
+	MediaRoot string
+	WorkDir   string
+	Commands  CommandRunner
+}
+
+func (r LocalResolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
+	if strings.TrimSpace(expected.LocalRef) == "" {
+		return Payload{}, fmt.Errorf("KatlOS image localRef is required for local resolver")
+	}
+	mediaRoot := r.MediaRoot
+	if mediaRoot == "" {
+		mediaRoot = "/"
+	}
+	imagePath, err := cleanLocalRef(mediaRoot, expected.LocalRef)
+	if err != nil {
+		return Payload{}, err
+	}
+	info, err := os.Stat(imagePath)
+	if err != nil {
+		return Payload{}, fmt.Errorf("stat KatlOS image localRef: %w", err)
+	}
+	if info.IsDir() {
+		return ResolveDirectory(ctx, imagePath, expected)
+	}
+	if !info.Mode().IsRegular() {
+		return Payload{}, fmt.Errorf("KatlOS image localRef %q is not a regular file", expected.LocalRef)
+	}
+	if expected.SizeBytes > 0 && uint64(info.Size()) != expected.SizeBytes {
+		return Payload{}, fmt.Errorf("KatlOS image size %d does not match manifest %d", info.Size(), expected.SizeBytes)
+	}
+	if err := verifyImageFile(imagePath, expected.SHA256); err != nil {
+		return Payload{}, err
+	}
+	if r.Commands == nil {
+		return Payload{}, fmt.Errorf("mount command runner is required")
+	}
+	mountRoot := r.WorkDir
+	if mountRoot == "" {
+		mountRoot = filepath.Join(os.TempDir(), "katlos-image")
+	}
+	mountPoint := filepath.Join(mountRoot, expected.SHA256)
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		return Payload{}, fmt.Errorf("create KatlOS image mountpoint: %w", err)
+	}
+	if err := r.Commands.Run(ctx, "mount", "-o", "ro,loop", imagePath, mountPoint); err != nil {
+		return Payload{}, fmt.Errorf("mount KatlOS image: %w", err)
+	}
+	return ResolveDirectory(ctx, mountPoint, expected)
+}
+
 func (p Payload) RuntimeArtifact() artifact.ArtifactVerification {
 	return componentArtifact(p.Runtime, artifact.ArtifactRuntimeRoot)
 }
@@ -125,6 +180,40 @@ func ResolveDirectory(ctx context.Context, root string, expected manifest.Katlos
 		return Payload{}, err
 	}
 	return validate(ctx, root, index, expected)
+}
+
+func cleanLocalRef(root string, ref string) (string, error) {
+	if strings.TrimSpace(ref) == "" {
+		return "", fmt.Errorf("KatlOS image localRef is required")
+	}
+	if filepath.IsAbs(ref) {
+		return "", fmt.Errorf("KatlOS image localRef %q must be relative", ref)
+	}
+	clean := path.Clean(ref)
+	if clean != ref || clean == "." || strings.HasPrefix(clean, "../") || clean == ".." {
+		return "", fmt.Errorf("KatlOS image localRef %q must be a clean relative path", ref)
+	}
+	return filepath.Join(filepath.Clean(root), filepath.FromSlash(clean)), nil
+}
+
+func verifyImageFile(imagePath string, expectedSHA256 string) error {
+	if err := validateSHA256(expectedSHA256); err != nil {
+		return fmt.Errorf("KatlOS image SHA-256 is invalid: %w", err)
+	}
+	file, err := os.Open(imagePath)
+	if err != nil {
+		return fmt.Errorf("open KatlOS image: %w", err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return fmt.Errorf("hash KatlOS image: %w", err)
+	}
+	got := hex.EncodeToString(hash.Sum(nil))
+	if got != expectedSHA256 {
+		return fmt.Errorf("KatlOS image digest %s does not match manifest %s", got, expectedSHA256)
+	}
+	return nil
 }
 
 func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.FirstInstallRequest, error) {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -128,9 +129,88 @@ func TestResolveDirectoryRejectsInvalidInstallImage(t *testing.T) {
 	}
 }
 
+func TestLocalResolverAcceptsDirectoryRef(t *testing.T) {
+	mediaRoot := t.TempDir()
+	imageRoot := filepath.Join(mediaRoot, "payloads", "katlos-install.squashfs")
+	index := writeImagePayloadAt(t, imageRoot, func(*Index) {})
+	expected := expectedImage()
+
+	payload, err := (LocalResolver{MediaRoot: mediaRoot}).ResolveKatlosImage(context.Background(), expected)
+	if err != nil {
+		t.Fatalf("ResolveKatlosImage() error = %v", err)
+	}
+	if payload.Root != imageRoot || payload.Index.BuildID != index.BuildID {
+		t.Fatalf("payload = %#v, index = %#v", payload, index)
+	}
+}
+
+func TestLocalResolverMountsFileRef(t *testing.T) {
+	mediaRoot := t.TempDir()
+	imagePath := filepath.Join(mediaRoot, "payloads", "katlos-install.squashfs")
+	imageBytes := []byte("squashfs image bytes")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("mkdir image dir: %v", err)
+	}
+	if err := os.WriteFile(imagePath, imageBytes, 0o600); err != nil {
+		t.Fatalf("write image file: %v", err)
+	}
+	sum := sha256.Sum256(imageBytes)
+	expected := expectedImage()
+	expected.SHA256 = hex.EncodeToString(sum[:])
+	expected.SizeBytes = uint64(len(imageBytes))
+	mounter := &fixtureMountRunner{populate: func(root string) {
+		writeImagePayloadAt(t, root, func(*Index) {})
+	}}
+
+	payload, err := (LocalResolver{
+		MediaRoot: mediaRoot,
+		WorkDir:   filepath.Join(t.TempDir(), "mounts"),
+		Commands:  mounter,
+	}).ResolveKatlosImage(context.Background(), expected)
+	if err != nil {
+		t.Fatalf("ResolveKatlosImage() error = %v", err)
+	}
+
+	wantCall := []string{"mount", "-o", "ro,loop", imagePath}
+	if len(mounter.calls) != 1 || !reflect.DeepEqual(mounter.calls[0][:4], wantCall) {
+		t.Fatalf("mount calls = %#v, want prefix %#v", mounter.calls, wantCall)
+	}
+	if payload.Root != mounter.calls[0][4] {
+		t.Fatalf("payload root = %q, mountpoint = %q", payload.Root, mounter.calls[0][4])
+	}
+}
+
+func TestLocalResolverRejectsBadTopLevelDigest(t *testing.T) {
+	mediaRoot := t.TempDir()
+	imagePath := filepath.Join(mediaRoot, "payloads", "katlos-install.squashfs")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("mkdir image dir: %v", err)
+	}
+	if err := os.WriteFile(imagePath, []byte("bad image"), 0o600); err != nil {
+		t.Fatalf("write image file: %v", err)
+	}
+	expected := expectedImage()
+	expected.SizeBytes = uint64(len("bad image"))
+
+	_, err := (LocalResolver{
+		MediaRoot: mediaRoot,
+		WorkDir:   t.TempDir(),
+		Commands:  &fixtureMountRunner{},
+	}).ResolveKatlosImage(context.Background(), expected)
+	if err == nil || !strings.Contains(err.Error(), "does not match manifest") {
+		t.Fatalf("ResolveKatlosImage() error = %v, want digest mismatch", err)
+	}
+}
+
 func writeImagePayload(t *testing.T, edit func(*Index)) (string, Index) {
 	t.Helper()
 	root := t.TempDir()
+	index := writeImagePayloadAt(t, root, edit)
+	return root, index
+}
+
+func writeImagePayloadAt(t *testing.T, root string, edit func(*Index)) Index {
+	t.Helper()
 	files := map[string][]byte{
 		"components/runtime/root.squashfs": []byte("runtime root"),
 		"components/boot/katl.efi":         []byte("runtime uki"),
@@ -241,7 +321,7 @@ func writeImagePayload(t *testing.T, edit func(*Index)) (string, Index) {
 	if err := os.WriteFile(filepath.Join(root, "katlos", "image.json"), data, 0o600); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
-	return root, index
+	return index
 }
 
 func expectedImage() manifest.KatlosImage {
@@ -254,4 +334,21 @@ func expectedImage() manifest.KatlosImage {
 		RuntimeInterface: "katl-runtime-1",
 		Role:             "install",
 	}
+}
+
+type fixtureMountRunner struct {
+	calls    [][]string
+	populate func(root string)
+}
+
+func (r *fixtureMountRunner) Run(_ context.Context, name string, args ...string) error {
+	call := append([]string{name}, args...)
+	r.calls = append(r.calls, call)
+	if name != "mount" || len(args) != 4 {
+		return nil
+	}
+	if r.populate != nil {
+		r.populate(args[3])
+	}
+	return nil
 }
