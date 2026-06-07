@@ -225,7 +225,6 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 func sfdiskScript(plan DiskLayoutPlan) string {
 	var builder strings.Builder
 	builder.WriteString("label: gpt\n")
-	builder.WriteString("unit: MiB\n\n")
 	for _, partition := range plan.Partitions {
 		fields := []string{"type=" + partitionTypeGUID(partition.Type), "name=\"" + partition.GPTLabel + "\""}
 		if !partition.Remaining {

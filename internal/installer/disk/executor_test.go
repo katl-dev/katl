@@ -31,6 +31,9 @@ func TestDiskExecutorDryRunOutput(t *testing.T) {
 	if createGPT.Command != "sfdisk" || !strings.Contains(createGPT.Stdin, `type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, name="KATL_ESP"`) {
 		t.Fatalf("create-gpt operation = %#v", createGPT)
 	}
+	if strings.Contains(createGPT.Stdin, "unit:") {
+		t.Fatalf("sfdisk input contains unsupported unit header: %q", createGPT.Stdin)
+	}
 	formatESP := findOp(result.Operations, "format-esp")
 	if !strings.HasSuffix(strings.Join(formatESP.Args, " "), "/dev/disk/by-partlabel/KATL_ESP") {
 		t.Fatalf("format ESP args = %#v", formatESP.Args)

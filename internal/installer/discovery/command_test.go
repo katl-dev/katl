@@ -3,7 +3,10 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +41,7 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
           "fstype": "vfat",
           "pttype": null,
           "parttype": "esp",
+          "partlabel": "KATL_ESP",
           "mountpoints": ["/boot"]
         }
       ]
@@ -71,7 +75,10 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
 		},
 	}
 
-	facts, err := NewCommandDiscoverySource(runner).Discover(context.Background())
+	facts, err := (CommandDiscoverySource{
+		Commands: runner,
+		ByIDDir:  filepath.Join(t.TempDir(), "missing-by-id"),
+	}).Discover(context.Background())
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
 	}
@@ -85,6 +92,9 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
 	}
 	if got := disk.Partitions[0].FilesystemSignature; got != "vfat" {
 		t.Fatalf("partition filesystem signature = %q, want vfat", got)
+	}
+	if got := disk.Partitions[0].GPTLabel; got != "KATL_ESP" {
+		t.Fatalf("partition GPT label = %q, want KATL_ESP", got)
 	}
 
 	wantNICs := []NICFact{
@@ -105,14 +115,54 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
 	if !reflect.DeepEqual(runner.calls, wantCommands) {
 		t.Fatalf("commands = %#v, want %#v", runner.calls, wantCommands)
 	}
+	if got := strings.Join(runner.args["lsblk"], " "); !strings.Contains(got, "PARTLABEL") {
+		t.Fatalf("lsblk args = %q, want PARTLABEL output column", got)
+	}
+}
+
+func TestCommandDiscoverySourceCollectsByIDAliases(t *testing.T) {
+	root := t.TempDir()
+	devDir := filepath.Join(root, "dev")
+	byIDDir := filepath.Join(devDir, "disk", "by-id")
+	if err := os.MkdirAll(byIDDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", "vda"), filepath.Join(byIDDir, "virtio-katl-root")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	runner := &fixtureOutputRunner{
+		outputs: map[string][]byte{
+			"lsblk": []byte(`{
+  "blockdevices": [
+    {"name":"vda","path":"` + filepath.Join(devDir, "vda") + `","type":"disk","size":68719476736,"ro":false,"mountpoints":[]}
+  ]
+}`),
+			"findmnt": []byte(`{"filesystems":[]}`),
+			"ip":      []byte(`[]`),
+		},
+	}
+
+	facts, err := (CommandDiscoverySource{
+		Commands: runner,
+		ByIDDir:  byIDDir,
+	}).Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+
+	want := filepath.Join(byIDDir, "virtio-katl-root")
+	if len(facts.BlockDevices) != 1 || !reflect.DeepEqual(facts.BlockDevices[0].ByID, []string{want}) {
+		t.Fatalf("block devices = %#v, want by-id alias %q", facts.BlockDevices, want)
+	}
 }
 
 type fixtureOutputRunner struct {
 	outputs map[string][]byte
 	calls   []string
+	args    map[string][]string
 }
 
-func (r *fixtureOutputRunner) Output(_ context.Context, name string, _ ...string) ([]byte, error) {
+func (r *fixtureOutputRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	switch name {
 	case "lsblk", "findmnt", "ip":
 	default:
@@ -120,6 +170,10 @@ func (r *fixtureOutputRunner) Output(_ context.Context, name string, _ ...string
 	}
 
 	r.calls = append(r.calls, name)
+	if r.args == nil {
+		r.args = make(map[string][]string)
+	}
+	r.args[name] = append([]string(nil), args...)
 	output, ok := r.outputs[name]
 	if !ok {
 		return nil, fmt.Errorf("missing fixture for %q", name)
