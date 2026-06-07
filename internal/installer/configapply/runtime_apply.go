@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,6 +183,14 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
+	sysexts, err := materializeSysexts(request.Root, request.GenerationID, request.CurrentRecord.Sysexts)
+	if err != nil {
+		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		audit.CandidateGeneration = request.GenerationID
+		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
 	plan, err := PlanChange(request.CurrentRecord, NodeConfigurationChange{
 		APIVersion:   NodeConfigurationChangeAPIVersion,
 		Kind:         NodeConfigurationChangeKind,
@@ -189,6 +198,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		SourceDigest: requestDigest(request),
 		Apply:        Apply{Mode: request.ApplyMode},
 		Changes:      changes,
+		Sysexts:      sysexts,
 		GeneratedConfext: generation.GeneratedConfext{
 			Name:           "katl-node",
 			Path:           filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, request.GenerationID, "confext")),
@@ -367,6 +377,77 @@ func initialPhase(mode string) string {
 		return generation.ConfigApplyPhaseNextBoot
 	}
 	return generation.ConfigApplyPhaseRendered
+}
+
+func materializeSysexts(root, generationID string, refs []generation.ExtensionRef) ([]generation.ExtensionRef, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	targetDir := filepath.Join(filepath.Clean(root), strings.TrimPrefix(generation.GenerationRecordsDir, "/"), generationID, "sysext")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create candidate sysext directory: %w", err)
+	}
+	out := make([]generation.ExtensionRef, 0, len(refs))
+	for _, ref := range refs {
+		source := filepath.Join(filepath.Clean(root), strings.TrimPrefix(ref.Path, "/"))
+		name := filepath.Base(ref.Path)
+		if name == "." || name == "/" || name == "" {
+			return nil, fmt.Errorf("sysext %q source path is invalid", ref.Name)
+		}
+		target := filepath.Join(targetDir, name)
+		if err := linkOrCopyFile(source, target); err != nil {
+			return nil, fmt.Errorf("materialize sysext %q: %w", ref.Name, err)
+		}
+		next := ref
+		next.Path = filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, generationID, "sysext", name))
+		out = append(out, next)
+	}
+	return out, nil
+}
+
+func linkOrCopyFile(source, target string) error {
+	if filepath.Clean(source) == filepath.Clean(target) {
+		return nil
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("source is not a regular file")
+	}
+	if targetInfo, err := os.Stat(target); err == nil {
+		if os.SameFile(info, targetInfo) {
+			return nil
+		}
+		if err := os.Remove(target); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Link(source, target); err == nil {
+		return nil
+	}
+	return copyFile(source, target, info.Mode().Perm())
+}
+
+func copyFile(source, target string, mode os.FileMode) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func (request TrustedBundleRequest) audit(sourceID, desiredVersion, decision string, changes []Change, diagnostics []Diagnostic, cause error, now time.Time) ConfigRequestAudit {

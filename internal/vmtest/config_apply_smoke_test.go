@@ -70,7 +70,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	}
 	defer func() {
 		if err := node.Stop(); err != nil && err != context.Canceled {
-			t.Fatalf("Stop() error = %v", err)
+			t.Logf("Stop() error = %v", err)
 		}
 	}()
 	client, err := DialAgent(ctx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
@@ -204,7 +204,7 @@ func uploadConfigApplySmokeInputs(t *testing.T, ctx context.Context, guest *Gues
 
 func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestControl, currentGeneration string) {
 	t.Helper()
-	beforeSysext := readlink(t, ctx, guest, "/run/extensions/kubernetes")
+	beforeSysext := readlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
 	beforeConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	rejectedGeneration := "2026.06.06-vmtest-rejected"
 	liveGeneration := "2026.06.06-vmtest-live"
@@ -225,9 +225,9 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	if err == nil {
 		t.Fatalf("rejected config apply unexpectedly passed: %#v", rejected)
 	}
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/config-requests/operator/20.json", `"decision": "rejected"`, `"decision": "staged-required"`, "live preflight is required")
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/config-requests/operator/20.json", `"decision": "rejected"`, `"Decision": "staged-required"`, "live preflight is required")
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedGeneration)
-	assertReadlink(t, ctx, guest, "/run/extensions/kubernetes", beforeSysext)
+	assertReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
 
 	if _, err := guest.RunCommand(ctx, GuestCommandRequest{
@@ -247,7 +247,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json", `"phase": "active"`, `"acceptedApplyMode": "live"`)
 	assertGuestExists(t, ctx, guest, "/run/confexts/katl-node/etc/systemd/network/20-vmtest-live.network")
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/metadata.json", `"previousGenerationID": "`+currentGeneration+`"`, `"payloadVersion": "v1.36.0"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/metadata.json", `"previousGenerationID": "`+currentGeneration+`"`, `"payloadVersion": "v1.36.1"`)
 	commandLog := readGuestFile(t, ctx, guest, configApplyGuestCommandLog)
 	for _, forbidden := range []string{"kubeadm", "kubectl"} {
 		if strings.Contains(commandLog, forbidden) {

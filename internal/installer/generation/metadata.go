@@ -96,6 +96,7 @@ type RuntimeConfigRequest struct {
 	GenerationID       string
 	Previous           Record
 	SourceDigest       string
+	Sysexts            []ExtensionRef
 	GeneratedConfext   GeneratedConfext
 	ChangedDomains     []string
 	RequestedApplyMode string
@@ -208,6 +209,14 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	sysexts := request.Sysexts
+	if len(sysexts) == 0 {
+		sysexts = request.Previous.Sysexts
+	}
+	sysexts, err = cleanExts(sysexts)
+	if err != nil {
+		return Record{}, err
+	}
 	confext, err := normalizeGeneratedConfext(request.GeneratedConfext)
 	if err != nil {
 		return Record{}, err
@@ -224,7 +233,7 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 		RuntimeVersion:    request.Previous.RuntimeVersion,
 		Root:              request.Previous.Root,
 		Boot:              request.Previous.Boot,
-		Sysexts:           append([]ExtensionRef(nil), request.Previous.Sysexts...),
+		Sysexts:           sysexts,
 		Confexts:          []GeneratedConfext{confext},
 		KernelCommandLine: append([]string(nil), request.Previous.KernelCommandLine...),
 		ConfigApply: &ConfigApplyRecord{

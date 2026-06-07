@@ -38,6 +38,12 @@ func TestApplyTrustedBundleRendersAndExecutesLiveNetworkd(t *testing.T) {
 	if activator.activated != "2026.06.05-002" {
 		t.Fatalf("activated generation = %q", activator.activated)
 	}
+	if got, want := result.Plan.GenerationRecord.Sysexts[0].Path, "/var/lib/katl/generations/2026.06.05-002/sysext/kubernetes.raw"; got != want {
+		t.Fatalf("candidate sysext path = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(root, "var/lib/katl/generations/2026.06.05-002/sysext/kubernetes.raw")); err != nil {
+		t.Fatalf("candidate sysext missing: %v", err)
+	}
 	networkdPath := filepath.Join(result.Tree.ConfextDir, "etc/systemd/network/20-uplink.network")
 	data, err := os.ReadFile(networkdPath)
 	if err != nil {
@@ -563,7 +569,20 @@ func trustedBundleRequest(root string, override TrustedBundleRequest) TrustedBun
 	if override.Now != nil {
 		request.Now = override.Now
 	}
+	ensureTestSysext(root, request.CurrentRecord)
 	return request
+}
+
+func ensureTestSysext(root string, record generation.Record) {
+	for _, ref := range record.Sysexts {
+		path := filepath.Join(filepath.Clean(root), strings.TrimPrefix(ref.Path, "/"))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(path, []byte("test sysext "+ref.Name+"\n"), 0o644); err != nil {
+			panic(err)
+		}
+	}
 }
 
 func baseManifest() manifest.Manifest {
