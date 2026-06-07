@@ -51,14 +51,14 @@ func TestFirstInstall(t *testing.T) {
 	if response.StatusCode != 200 || !strings.Contains(response.Body, "install-starting") {
 		t.Fatalf("handoff response = %#v", response)
 	}
-	if command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand); err != nil || !strings.Contains(string(command), "virsh -c qemu:///system define") {
+	if command, err := os.ReadFile(result.Artifacts.InstallerLaunchCommand); err != nil || !strings.Contains(string(command), "virsh -c qemu:///system define") {
 		t.Fatalf("installer command = %q, err = %v", command, err)
 	}
 	domainXML := readDomainXML(t, result)
-	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "vdb.snapshot.qcow2")+`"></source>`) {
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "vdb.snapshot.qcow2")+`"></source>`) {
 		t.Fatalf("runtime domain XML = %s", domainXML)
 	}
-	if command, err := os.ReadFile(result.Artifacts.RuntimeQEMUCommand); err != nil || !strings.Contains(string(command), "virsh -c qemu:///system define") {
+	if command, err := os.ReadFile(result.Artifacts.RuntimeLaunchCommand); err != nil || !strings.Contains(string(command), "virsh -c qemu:///system define") {
 		t.Fatalf("runtime command = %q, err = %v", command, err)
 	}
 	if _, err := os.Stat(result.Disks[0].HostPath); !os.IsNotExist(err) {
@@ -230,7 +230,7 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 	if !hasPhase(result, "preseed") {
 		t.Fatalf("preseed phase missing: %#v", result.Phases)
 	}
-	command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand)
+	command, err := os.ReadFile(result.Artifacts.InstallerLaunchCommand)
 	if err != nil {
 		t.Fatalf("read installer command: %v", err)
 	}

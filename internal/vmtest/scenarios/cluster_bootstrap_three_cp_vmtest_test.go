@@ -345,7 +345,8 @@ type threeControlPlaneArtifactManifest struct {
 	NodeRunDirs              map[string]string           `json:"nodeRunDirs"`
 	NodeScenarios            map[string]string           `json:"nodeScenarios,omitempty"`
 	NodeResults              map[string]string           `json:"nodeResults,omitempty"`
-	QEMUCommands             map[string]string           `json:"qemuCommands,omitempty"`
+	LaunchCommands           map[string]string           `json:"launchCommands,omitempty"`
+	DomainXMLs               map[string]string           `json:"domainXMLs,omitempty"`
 	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
 	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
 	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
@@ -375,7 +376,8 @@ func writeThreeControlPlaneSmokeArtifactManifest(result vmtest.Result, inputs th
 		NodeRunDirs:              nodeRunDirs(nodes),
 		NodeScenarios:            nodeScenarioPaths(nodes),
 		NodeResults:              nodeResultPaths(nodes),
-		QEMUCommands:             qemuCommandPaths(nodes),
+		LaunchCommands:           launchCommandPaths(nodes),
+		DomainXMLs:               domainXMLPaths(nodes),
 		InstalledRuntimeInputs:   installedRuntimeInputPaths(nodes),
 		VSockTranscripts:         vsockTranscriptPaths(nodes),
 		FixtureInputs:            threeControlPlaneFixtureInputs(inputs.CP1Disk, inputs.CP1DiskFormat, inputs.CP2Disk, inputs.CP2DiskFormat, inputs.CP3Disk, inputs.CP3DiskFormat, inputs.CP1ESP, inputs.CP2ESP, inputs.CP3ESP, inputs.CP1Fixture, inputs.CP2Fixture, inputs.CP3Fixture, inputs.CP1Metadata, inputs.CP2Metadata, inputs.CP3Metadata),
@@ -833,8 +835,8 @@ func TestThreeControlPlaneSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testi
 	if manifest.NodeScenarios["cp-1"] != nodes[0].Result.Artifacts.Scenario || manifest.NodeScenarios["cp-3"] != nodes[2].Result.Artifacts.Scenario {
 		t.Fatalf("planned node scenarios = %#v", manifest.NodeScenarios)
 	}
-	if manifest.QEMUCommands["cp-1"] != nodes[0].Result.Artifacts.QEMUCommand || manifest.InstalledRuntimeInputs["cp-3"] != nodes[2].Result.Artifacts.InstalledRuntime {
-		t.Fatalf("planned artifact indexes = qemu %#v installed %#v", manifest.QEMUCommands, manifest.InstalledRuntimeInputs)
+	if manifest.LaunchCommands["cp-1"] != nodes[0].Result.Artifacts.LaunchCommand || manifest.DomainXMLs["cp-2"] != nodes[1].Result.Artifacts.DomainXML || manifest.InstalledRuntimeInputs["cp-3"] != nodes[2].Result.Artifacts.InstalledRuntime {
+		t.Fatalf("planned artifact indexes = launch %#v domain %#v installed %#v", manifest.LaunchCommands, manifest.DomainXMLs, manifest.InstalledRuntimeInputs)
 	}
 	if manifest.EtcdTranscripts["cp-2"] != twoNodeBootstrapTranscriptPath(filepath.Join(result.RunDir, "etcd-transcripts"), "cp-2") {
 		t.Fatalf("etcd transcripts = %#v", manifest.EtcdTranscripts)
@@ -1024,21 +1026,24 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 		NodeScenarios: map[string]string{
 			"cp-1": "/tmp/cp-1-run/scenario.json",
 		},
-		QEMUCommands: map[string]string{
-			"cp-1": "/tmp/cp-1-run/qemu/qemu-command.txt",
+		LaunchCommands: map[string]string{
+			"cp-1": "/tmp/cp-1-run/vm/launch-command.txt",
+		},
+		DomainXMLs: map[string]string{
+			"cp-1": "/tmp/cp-1-run/vm/domain.xml",
 		},
 		InstalledRuntimeInputs: map[string]string{
 			"cp-1": "/tmp/cp-1-run/manifests/installed-runtime.json",
 		},
 		VSockTranscripts: map[string]string{
-			"cp-1": "/tmp/cp-1-run/qemu/vsock-transcript.jsonl",
+			"cp-1": "/tmp/cp-1-run/vm/vsock-transcript.jsonl",
 		},
 		FixtureInputs:            inputs,
 		FixtureProducerScenarios: map[string]string{"cp-1": "/tmp/fixture-cp-1/scenario.json", "cp-2": "/tmp/fixture-cp-2/scenario.json", "cp-3": "/tmp/fixture-cp-3/scenario.json"},
 		FixtureProducerResults:   map[string]string{"cp-1": "/tmp/fixture-cp-1/result.json", "cp-2": "/tmp/fixture-cp-2/result.json", "cp-3": "/tmp/fixture-cp-3/result.json"},
 		KubeconfigMetadata:       "/tmp/run/operator-kubeconfig-metadata.json",
 		BootstrapFixture:         (&bootstrapFixtureInputs{Manifests: []string{"/tmp/ha-cni.yaml"}, Waits: []string{"nodes-ready"}}).manifestValue(),
-		SerialLogs:               map[string]string{"cp-1": "/tmp/cp-1-run/qemu/runtime-serial.log"},
+		SerialLogs:               map[string]string{"cp-1": "/tmp/cp-1-run/vm/runtime-serial.log"},
 		Diagnostics:              map[string]string{"cp-1": "/tmp/cp-1-guest/diagnostics-summary.json", "cp-2": "/tmp/cp-2-guest/diagnostics-summary.json", "cp-3": "/tmp/cp-3-guest/diagnostics-summary.json"},
 		KubectlDiagnostics:       map[string]string{"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt"},
 	}); err != nil {
@@ -1064,16 +1069,19 @@ func TestThreeControlPlaneArtifactManifestRecordsWorldInputs(t *testing.T) {
 	if manifest.Diagnostics["cp-1"] != "/tmp/cp-1-guest/diagnostics-summary.json" || manifest.Diagnostics["cp-3"] != "/tmp/cp-3-guest/diagnostics-summary.json" {
 		t.Fatalf("artifact manifest diagnostics = %#v", manifest.Diagnostics)
 	}
-	if manifest.SerialLogs["cp-1"] != "/tmp/cp-1-run/qemu/runtime-serial.log" {
+	if manifest.SerialLogs["cp-1"] != "/tmp/cp-1-run/vm/runtime-serial.log" {
 		t.Fatalf("artifact manifest serial logs = %#v", manifest.SerialLogs)
 	}
-	if manifest.NodeResults["cp-1"] != "/tmp/cp-1-run/result.json" || manifest.QEMUCommands["cp-1"] != "/tmp/cp-1-run/qemu/qemu-command.txt" {
-		t.Fatalf("artifact manifest node artifacts = %#v %#v", manifest.NodeResults, manifest.QEMUCommands)
+	if manifest.NodeResults["cp-1"] != "/tmp/cp-1-run/result.json" || manifest.LaunchCommands["cp-1"] != "/tmp/cp-1-run/vm/launch-command.txt" {
+		t.Fatalf("artifact manifest node artifacts = %#v %#v", manifest.NodeResults, manifest.LaunchCommands)
+	}
+	if manifest.DomainXMLs["cp-1"] != "/tmp/cp-1-run/vm/domain.xml" {
+		t.Fatalf("artifact manifest domain XMLs = %#v", manifest.DomainXMLs)
 	}
 	if manifest.NodeScenarios["cp-1"] != "/tmp/cp-1-run/scenario.json" {
 		t.Fatalf("artifact manifest node scenarios = %#v", manifest.NodeScenarios)
 	}
-	if manifest.InstalledRuntimeInputs["cp-1"] != "/tmp/cp-1-run/manifests/installed-runtime.json" || manifest.VSockTranscripts["cp-1"] != "/tmp/cp-1-run/qemu/vsock-transcript.jsonl" {
+	if manifest.InstalledRuntimeInputs["cp-1"] != "/tmp/cp-1-run/manifests/installed-runtime.json" || manifest.VSockTranscripts["cp-1"] != "/tmp/cp-1-run/vm/vsock-transcript.jsonl" {
 		t.Fatalf("artifact manifest runtime artifacts = %#v %#v", manifest.InstalledRuntimeInputs, manifest.VSockTranscripts)
 	}
 	if manifest.KubeconfigMetadata != "/tmp/run/operator-kubeconfig-metadata.json" {

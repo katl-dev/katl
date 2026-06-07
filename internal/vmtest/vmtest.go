@@ -80,7 +80,7 @@ type Result struct {
 	Status         Status                `json:"status"`
 	RunID          string                `json:"runId"`
 	RunDir         string                `json:"runDir"`
-	QEMUDir        string                `json:"qemuDir"`
+	VMDir          string                `json:"vmDir"`
 	DiskDir        string                `json:"diskDir"`
 	ManifestDir    string                `json:"manifestDir"`
 	Keep           KeepPolicy            `json:"keep"`
@@ -106,22 +106,23 @@ const (
 )
 
 type ArtifactPaths struct {
-	Scenario             string `json:"scenario"`
-	Result               string `json:"result"`
-	QEMUCommand          string `json:"qemuCommand"`
-	InstallerQEMUCommand string `json:"installerQEMUCommand,omitempty"`
-	RuntimeQEMUCommand   string `json:"runtimeQEMUCommand,omitempty"`
-	InstallerSerial      string `json:"installerSerial"`
-	RuntimeSerial        string `json:"runtimeSerial"`
-	InstallManifest      string `json:"installManifest,omitempty"`
-	InstalledRuntime     string `json:"installedRuntime,omitempty"`
-	InstalledESP         string `json:"installedESP,omitempty"`
-	HandoffRequest       string `json:"handoffRequest,omitempty"`
-	HandoffResponse      string `json:"handoffResponse,omitempty"`
-	VSockTranscript      string `json:"vsockTranscript,omitempty"`
-	ManifestsDir         string `json:"manifestsDir"`
-	DisksDir             string `json:"disksDir"`
-	GuestDir             string `json:"guestDir"`
+	Scenario               string `json:"scenario"`
+	Result                 string `json:"result"`
+	LaunchCommand          string `json:"launchCommand"`
+	InstallerLaunchCommand string `json:"installerLaunchCommand,omitempty"`
+	RuntimeLaunchCommand   string `json:"runtimeLaunchCommand,omitempty"`
+	DomainXML              string `json:"domainXML"`
+	InstallerSerial        string `json:"installerSerial"`
+	RuntimeSerial          string `json:"runtimeSerial"`
+	InstallManifest        string `json:"installManifest,omitempty"`
+	InstalledRuntime       string `json:"installedRuntime,omitempty"`
+	InstalledESP           string `json:"installedESP,omitempty"`
+	HandoffRequest         string `json:"handoffRequest,omitempty"`
+	HandoffResponse        string `json:"handoffResponse,omitempty"`
+	VSockTranscript        string `json:"vsockTranscript,omitempty"`
+	ManifestsDir           string `json:"manifestsDir"`
+	DisksDir               string `json:"disksDir"`
+	GuestDir               string `json:"guestDir"`
 }
 
 type PhaseResult struct {
@@ -292,7 +293,7 @@ func (r Runner) Plan(scenario Scenario) (Result, error) {
 		Status:       StatusPlanned,
 		RunID:        runID,
 		RunDir:       runDir,
-		QEMUDir:      filepath.Join(runDir, "qemu"),
+		VMDir:        filepath.Join(runDir, "vm"),
 		DiskDir:      filepath.Join(runDir, "disks"),
 		ManifestDir:  filepath.Join(runDir, "manifests"),
 		Keep:         scenario.Keep,
@@ -303,7 +304,7 @@ func (r Runner) Plan(scenario Scenario) (Result, error) {
 }
 
 func (r Runner) Write(scenario Scenario, result Result) error {
-	if err := os.MkdirAll(result.QEMUDir, 0o755); err != nil {
+	if err := os.MkdirAll(result.VMDir, 0o755); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(result.DiskDir, 0o755); err != nil {
@@ -626,22 +627,23 @@ func clean(name string) string {
 
 func pathsFor(runDir string) ArtifactPaths {
 	return ArtifactPaths{
-		Scenario:             filepath.Join(runDir, "scenario.json"),
-		Result:               filepath.Join(runDir, "result.json"),
-		QEMUCommand:          filepath.Join(runDir, "qemu", "qemu-command.txt"),
-		InstallerQEMUCommand: filepath.Join(runDir, "qemu", "installer-qemu-command.txt"),
-		RuntimeQEMUCommand:   filepath.Join(runDir, "qemu", "runtime-qemu-command.txt"),
-		InstallerSerial:      filepath.Join(runDir, "qemu", "installer-serial.log"),
-		RuntimeSerial:        filepath.Join(runDir, "qemu", "runtime-serial.log"),
-		InstallManifest:      filepath.Join(runDir, "manifests", "install-manifest.json"),
-		InstalledRuntime:     filepath.Join(runDir, "manifests", "installed-runtime.json"),
-		InstalledESP:         filepath.Join(runDir, "installed-esp"),
-		HandoffRequest:       filepath.Join(runDir, "manifests", "handoff-request.json"),
-		HandoffResponse:      filepath.Join(runDir, "manifests", "handoff-response.json"),
-		VSockTranscript:      filepath.Join(runDir, "qemu", "vsock-transcript.jsonl"),
-		ManifestsDir:         filepath.Join(runDir, "manifests"),
-		DisksDir:             filepath.Join(runDir, "disks"),
-		GuestDir:             filepath.Join(runDir, "guest"),
+		Scenario:               filepath.Join(runDir, "scenario.json"),
+		Result:                 filepath.Join(runDir, "result.json"),
+		LaunchCommand:          filepath.Join(runDir, "vm", "launch-command.txt"),
+		InstallerLaunchCommand: filepath.Join(runDir, "vm", "installer-launch-command.txt"),
+		RuntimeLaunchCommand:   filepath.Join(runDir, "vm", "runtime-launch-command.txt"),
+		DomainXML:              filepath.Join(runDir, "vm", "domain.xml"),
+		InstallerSerial:        filepath.Join(runDir, "vm", "installer-serial.log"),
+		RuntimeSerial:          filepath.Join(runDir, "vm", "runtime-serial.log"),
+		InstallManifest:        filepath.Join(runDir, "manifests", "install-manifest.json"),
+		InstalledRuntime:       filepath.Join(runDir, "manifests", "installed-runtime.json"),
+		InstalledESP:           filepath.Join(runDir, "installed-esp"),
+		HandoffRequest:         filepath.Join(runDir, "manifests", "handoff-request.json"),
+		HandoffResponse:        filepath.Join(runDir, "manifests", "handoff-response.json"),
+		VSockTranscript:        filepath.Join(runDir, "vm", "vsock-transcript.jsonl"),
+		ManifestsDir:           filepath.Join(runDir, "manifests"),
+		DisksDir:               filepath.Join(runDir, "disks"),
+		GuestDir:               filepath.Join(runDir, "guest"),
 	}
 }
 

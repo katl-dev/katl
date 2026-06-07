@@ -25,7 +25,7 @@ func TestWorldScenarioAllocatesLeases(t *testing.T) {
 	if cp.ArtifactDir != filepath.Join(world.ScenarioDir, "two-node-kubeadm", "nodes", "cp-1") {
 		t.Fatalf("cp artifact dir = %q", cp.ArtifactDir)
 	}
-	for _, dir := range []string{cp.ManifestDir, cp.DiskDir, cp.QEMUDir, worker.ManifestDir, worker.DiskDir, worker.QEMUDir} {
+	for _, dir := range []string{cp.ManifestDir, cp.DiskDir, cp.VMDir, worker.ManifestDir, worker.DiskDir, worker.VMDir} {
 		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 			t.Fatalf("artifact dir %s missing or not dir: info=%v err=%v", dir, info, err)
 		}

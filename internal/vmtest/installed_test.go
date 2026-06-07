@@ -75,7 +75,7 @@ func TestInstalledRuntime(t *testing.T) {
 		t.Fatalf("installed runtime input = %#v", input)
 	}
 	domainXML := readDomainXML(t, result)
-	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "efi.img")+`"></source>`) {
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "efi.img")+`"></source>`) {
 		t.Fatalf("default runtime boot did not attach prepared ESP image:\n%s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
@@ -128,7 +128,7 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 	domainXML := readDomainXML(t, result)
-	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "efi.img")+`"></source>`) {
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "efi.img")+`"></source>`) {
 		t.Fatalf("runtime domain XML did not boot injected ESP image:\n%s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))

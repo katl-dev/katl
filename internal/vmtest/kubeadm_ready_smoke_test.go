@@ -93,7 +93,7 @@ func TestInstalledKubeadmReadySmokeUsesPackagedRuntime(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	domainXML := readDomainXML(t, result)
-	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "vdb.snapshot.qcow2")+`"></source>`) {
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "vdb.snapshot.qcow2")+`"></source>`) {
 		t.Fatalf("domain XML did not boot packaged disk: %s", domainXML)
 	}
 }

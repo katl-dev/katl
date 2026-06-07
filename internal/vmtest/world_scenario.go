@@ -43,7 +43,7 @@ type Node struct {
 	ArtifactDir string   `json:"artifactDir"`
 	ManifestDir string   `json:"manifestDir"`
 	DiskDir     string   `json:"diskDir"`
-	QEMUDir     string   `json:"qemuDir"`
+	VMDir       string   `json:"vmDir"`
 }
 
 type scenarioManifest struct {
@@ -152,9 +152,9 @@ func (scenario *WorldScenario) AddNode(spec NodeSpec) (Node, error) {
 		ArtifactDir: artifactDir,
 		ManifestDir: filepath.Join(artifactDir, "manifests"),
 		DiskDir:     filepath.Join(artifactDir, "disks"),
-		QEMUDir:     filepath.Join(artifactDir, "qemu"),
+		VMDir:       filepath.Join(artifactDir, "vm"),
 	}
-	for _, dir := range []string{node.ManifestDir, node.DiskDir, node.QEMUDir} {
+	for _, dir := range []string{node.ManifestDir, node.DiskDir, node.VMDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return Node{}, err
 		}

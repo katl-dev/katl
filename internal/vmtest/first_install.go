@@ -103,7 +103,7 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 
 	config.Installer.VM.SerialHooks = append(config.Installer.VM.SerialHooks, firstInstallFailureHooks()...)
 	result = BootInstaller(ctx, result, config.Installer, config.InstallerRunner)
-	if err := copyArtifact(result.Artifacts.QEMUCommand, result.Artifacts.InstallerQEMUCommand); err != nil {
+	if err := copyArtifact(result.Artifacts.LaunchCommand, result.Artifacts.InstallerLaunchCommand); err != nil {
 		return failFirst(runner, scenario, result, "installer", err)
 	}
 	if result.Status != StatusPassed {
@@ -150,7 +150,7 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 	bootResult.Disks = nil
 	result = RunInstalledRuntime(ctx, bootResult, runtime, config.RuntimeRunner)
 	result.Disks = disks
-	if err := copyArtifact(result.Artifacts.QEMUCommand, result.Artifacts.RuntimeQEMUCommand); err != nil {
+	if err := copyArtifact(result.Artifacts.LaunchCommand, result.Artifacts.RuntimeLaunchCommand); err != nil {
 		return failFirst(runner, scenario, result, "runtime", err)
 	}
 	if result.Status == StatusPassed {

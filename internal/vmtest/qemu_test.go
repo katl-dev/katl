@@ -33,7 +33,7 @@ func TestVMPlan(t *testing.T) {
 	if plan.VirshPath != "/usr/bin/virsh" || plan.DomainName != "katl-run-1" {
 		t.Fatalf("plan libvirt fields = %#v", plan)
 	}
-	wantArgs := []string{"-c", "qemu:///system", "define", filepath.Join(result.QEMUDir, "domain.xml")}
+	wantArgs := []string{"-c", "qemu:///system", "define", filepath.Join(result.VMDir, "domain.xml")}
 	if strings.Join(plan.Args, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("Args = %#v, want %#v", plan.Args, wantArgs)
 	}
@@ -42,10 +42,10 @@ func TestVMPlan(t *testing.T) {
 		`<name>katl-run-1</name>`,
 		`<memory unit="MiB">2048</memory>`,
 		`<loader readonly="yes" type="pflash">` + config.OVMFCode + `</loader>`,
-		`<nvram>` + filepath.Join(result.QEMUDir, "OVMF_VARS.fd") + `</nvram>`,
+		`<nvram>` + filepath.Join(result.VMDir, "OVMF_VARS.fd") + `</nvram>`,
 		`<source network="default"></source>`,
-		`<source file="` + filepath.Join(result.QEMUDir, "efi.img") + `"></source>`,
-		`<source file="` + filepath.Join(result.QEMUDir, "vdb.snapshot.qcow2") + `"></source>`,
+		`<source file="` + filepath.Join(result.VMDir, "efi.img") + `"></source>`,
+		`<source file="` + filepath.Join(result.VMDir, "vdb.snapshot.qcow2") + `"></source>`,
 		`<source file="` + filepath.Join(result.DiskDir, "00-root.qcow2") + `"></source>`,
 		`<serial>katl-root</serial>`,
 		`<serial type="file">`,
@@ -382,7 +382,7 @@ func TestVMEFITreeBoot(t *testing.T) {
 	if plan.EFITree != efiTree {
 		t.Fatalf("EFITree = %q, want %q", plan.EFITree, efiTree)
 	}
-	if !strings.Contains(plan.DomainXML, `<source file="`+filepath.Join(result.QEMUDir, "efi.img")+`"></source>`) {
+	if !strings.Contains(plan.DomainXML, `<source file="`+filepath.Join(result.VMDir, "efi.img")+`"></source>`) {
 		t.Fatalf("EFI image disk missing from XML:\n%s", plan.DomainXML)
 	}
 	if !strings.Contains(plan.DomainXML, `<source file="`+config.Boot.Image+`"></source>`) {
@@ -402,7 +402,7 @@ func TestVMUKIEFIImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	efiImage := filepath.Join(result.QEMUDir, "efi.img")
+	efiImage := filepath.Join(result.VMDir, "efi.img")
 	if !strings.Contains(plan.DomainXML, `<source file="`+efiImage+`"></source>`) {
 		t.Fatalf("EFI image drive missing from XML:\n%s", plan.DomainXML)
 	}
@@ -439,7 +439,7 @@ func TestVMPreseedDrive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	preseedImage := filepath.Join(result.QEMUDir, "preseed.img")
+	preseedImage := filepath.Join(result.VMDir, "preseed.img")
 	if !strings.Contains(plan.DomainXML, `<source file="`+preseedImage+`"></source>`) || !strings.Contains(plan.DomainXML, `<serial>katl-seed</serial>`) {
 		t.Fatalf("preseed disk missing from XML:\n%s", plan.DomainXML)
 	}
@@ -745,7 +745,7 @@ func hasArgPrefix(args []string, want string) bool {
 
 func readDomainXML(t *testing.T, result Result) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(result.QEMUDir, "domain.xml"))
+	data, err := os.ReadFile(result.Artifacts.DomainXML)
 	if err != nil {
 		t.Fatalf("read domain XML: %v", err)
 	}

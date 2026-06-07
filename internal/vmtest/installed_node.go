@@ -140,7 +140,7 @@ func writeInstalledRuntimeNodeResult(result Result, status Status, failure strin
 	}
 	result.FailureSummary = failure
 	result.addPhase("installed-runtime-node-start", status, failure, started, finished)
-	if err := os.MkdirAll(result.QEMUDir, 0o755); err != nil {
+	if err := os.MkdirAll(result.VMDir, 0o755); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(result.DiskDir, 0o755); err != nil {
@@ -176,7 +176,7 @@ func nodeResult(parent Result, name string) Result {
 	result.ScenarioName = nodeScenarioName(parent.ScenarioName, name)
 	result.RunID = parent.RunID + "-" + name
 	result.RunDir = runDir
-	result.QEMUDir = filepath.Join(runDir, "qemu")
+	result.VMDir = filepath.Join(runDir, "vm")
 	result.DiskDir = filepath.Join(runDir, "disks")
 	result.ManifestDir = filepath.Join(runDir, "manifests")
 	result.Artifacts = pathsFor(runDir)

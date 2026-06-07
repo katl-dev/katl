@@ -311,7 +311,7 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 
 func defaultVMExecutor(result Result, plan VMPlan) VMExecutor {
 	return LibvirtVMExecutor{
-		TempDir:       filepath.Join(result.QEMUDir, "tmp"),
+		TempDir:       filepath.Join(result.VMDir, "tmp"),
 		VirshPath:     plan.VirshPath,
 		URI:           plan.LibvirtURI,
 		DomainName:    plan.DomainName,
@@ -621,7 +621,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		RAMMiB:      config.RAMMiB,
 		CPUs:        config.CPUs,
 		OVMFCode:    firstPath(!directKernel, config.OVMFCode),
-		OVMFVars:    firstPath(!directKernel, filepath.Join(result.QEMUDir, "OVMF_VARS.fd")),
+		OVMFVars:    firstPath(!directKernel, filepath.Join(result.VMDir, "OVMF_VARS.fd")),
 		Kernel:      config.Boot.Kernel,
 		Initrd:      config.Boot.Initrd,
 		CommandLine: strings.Join(config.Boot.CommandLine, " "),
@@ -633,7 +633,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	if err != nil {
 		return VMPlan{}, fmt.Errorf("marshal libvirt domain XML: %w", err)
 	}
-	xmlFile := filepath.Join(result.QEMUDir, "domain.xml")
+	xmlFile := result.Artifacts.DomainXML
 	args := []string{"-c", libvirtURI, "define", xmlFile}
 	return VMPlan{
 		QEMUPath:       virsh,
@@ -645,8 +645,8 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		DomainXMLFile:  xmlFile,
 		LibvirtURI:     libvirtURI,
 		SerialLog:      serial,
-		CommandFile:    result.Artifacts.QEMUCommand,
-		OVMFVars:       firstPath(!directKernel, filepath.Join(result.QEMUDir, "OVMF_VARS.fd")),
+		CommandFile:    result.Artifacts.LaunchCommand,
+		OVMFVars:       firstPath(!directKernel, filepath.Join(result.VMDir, "OVMF_VARS.fd")),
 		OVMFVarsSource: firstPath(!directKernel, config.OVMFVars),
 		EFITree:        efiTree,
 		EFIImage:       efiImage,
@@ -938,7 +938,7 @@ type domainVSockCID struct {
 func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, string, string, string, error) {
 	boot := config.Boot
 	var disks []libvirtDisk
-	efiTree := filepath.Join(result.QEMUDir, "efi")
+	efiTree := filepath.Join(result.VMDir, "efi")
 	efiImage := ""
 	preseedImage := ""
 	preseedDir := ""
@@ -955,7 +955,7 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 			disk.BackingPath = path
 			disk.BackingFormat = format
 			disk.Format = DiskQCOW2
-			disk.Path = filepath.Join(result.QEMUDir, target+".snapshot.qcow2")
+			disk.Path = filepath.Join(result.VMDir, target+".snapshot.qcow2")
 		}
 		disks = append(disks, libvirtDisk{
 			Path:          disk.Path,
@@ -981,14 +981,14 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
 		}
 	} else if boot.UKI != "" {
-		efiImage = filepath.Join(result.QEMUDir, "efi.img")
+		efiImage = filepath.Join(result.VMDir, "efi.img")
 		add(efiImage, DiskRaw, "katl-efi", false)
 		if boot.Image != "" {
 			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
 		}
 	} else if boot.EFITree != "" {
 		efiTree = boot.EFITree
-		efiImage = filepath.Join(result.QEMUDir, "efi.img")
+		efiImage = filepath.Join(result.VMDir, "efi.img")
 		add(efiImage, DiskRaw, "katl-efi", false)
 		if boot.Image == "" {
 			return nil, "", "", "", "", errors.New("VM boot from EFI tree requires disk image")
@@ -1007,7 +1007,7 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 		add(config.PreseedImage, DiskRaw, "katl-seed", false)
 	} else if config.PreseedDir != "" {
 		preseedDir = config.PreseedDir
-		preseedImage = filepath.Join(result.QEMUDir, "preseed.img")
+		preseedImage = filepath.Join(result.VMDir, "preseed.img")
 		add(preseedImage, DiskRaw, "katl-seed", false)
 	}
 	return disks, efiTree, efiImage, preseedImage, preseedDir, nil
@@ -1183,7 +1183,7 @@ func phaseName(config VMConfig) string {
 	if config.Phase != "" {
 		return config.Phase
 	}
-	return "qemu"
+	return "vm"
 }
 
 func runtimeSerialPhase(phase string) bool {

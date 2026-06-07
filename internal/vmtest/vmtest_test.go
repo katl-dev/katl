@@ -383,8 +383,8 @@ func TestPlanPaths(t *testing.T) {
 	if result.RunDir != "/tmp/katl-vmtest/run-1" {
 		t.Fatalf("RunDir = %q", result.RunDir)
 	}
-	if result.QEMUDir != "/tmp/katl-vmtest/run-1/qemu" {
-		t.Fatalf("QEMUDir = %q", result.QEMUDir)
+	if result.VMDir != "/tmp/katl-vmtest/run-1/vm" {
+		t.Fatalf("VMDir = %q", result.VMDir)
 	}
 	if result.DiskDir != "/tmp/katl-vmtest/run-1/disks" {
 		t.Fatalf("DiskDir = %q", result.DiskDir)
@@ -398,8 +398,11 @@ func TestPlanPaths(t *testing.T) {
 	if result.Artifacts.Scenario != "/tmp/katl-vmtest/run-1/scenario.json" {
 		t.Fatalf("scenario artifact = %q", result.Artifacts.Scenario)
 	}
-	if result.Artifacts.QEMUCommand != "/tmp/katl-vmtest/run-1/qemu/qemu-command.txt" {
-		t.Fatalf("qemu command artifact = %q", result.Artifacts.QEMUCommand)
+	if result.Artifacts.LaunchCommand != "/tmp/katl-vmtest/run-1/vm/launch-command.txt" {
+		t.Fatalf("launch command artifact = %q", result.Artifacts.LaunchCommand)
+	}
+	if result.Artifacts.DomainXML != "/tmp/katl-vmtest/run-1/vm/domain.xml" {
+		t.Fatalf("domain XML artifact = %q", result.Artifacts.DomainXML)
 	}
 }
 
@@ -440,7 +443,7 @@ func TestPersistPass(t *testing.T) {
 	if loaded.DurationMS != 1000 {
 		t.Fatalf("DurationMS = %d", loaded.DurationMS)
 	}
-	if loaded.Artifacts.InstallerSerial != filepath.Join(root, "run-1", "qemu", "installer-serial.log") {
+	if loaded.Artifacts.InstallerSerial != filepath.Join(root, "run-1", "vm", "installer-serial.log") {
 		t.Fatalf("installer serial = %q", loaded.Artifacts.InstallerSerial)
 	}
 	if len(loaded.Phases) != 1 || loaded.Phases[0].Status != StatusPassed {

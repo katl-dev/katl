@@ -78,7 +78,7 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		t.Fatalf("runtime serial = %q, err = %v", serial, err)
 	}
 	domainXML := readDomainXML(t, node.Result)
-	if !strings.Contains(domainXML, `<cid auto="no" address="62000"></cid>`) || !strings.Contains(domainXML, `<source file="`+filepath.Join(node.Result.QEMUDir, "efi.img")+`"></source>`) {
+	if !strings.Contains(domainXML, `<cid auto="no" address="62000"></cid>`) || !strings.Contains(domainXML, `<source file="`+filepath.Join(node.Result.VMDir, "efi.img")+`"></source>`) {
 		t.Fatalf("node domain XML = %s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(node.Result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
@@ -193,10 +193,10 @@ func TestPlannedInstalledRuntimeNodeResult(t *testing.T) {
 	if result.ScenarioName != "two-node/cp-1" {
 		t.Fatalf("planned scenario name = %q", result.ScenarioName)
 	}
-	if result.Artifacts.QEMUCommand != filepath.Join(wantRunDir, "qemu", "qemu-command.txt") {
-		t.Fatalf("planned qemu command = %q", result.Artifacts.QEMUCommand)
+	if result.Artifacts.LaunchCommand != filepath.Join(wantRunDir, "vm", "launch-command.txt") {
+		t.Fatalf("planned launch command = %q", result.Artifacts.LaunchCommand)
 	}
-	if result.Artifacts.RuntimeSerial != filepath.Join(wantRunDir, "qemu", "runtime-serial.log") {
+	if result.Artifacts.RuntimeSerial != filepath.Join(wantRunDir, "vm", "runtime-serial.log") {
 		t.Fatalf("planned runtime serial = %q", result.Artifacts.RuntimeSerial)
 	}
 	if result.VSock.Enabled || result.Phases != nil {

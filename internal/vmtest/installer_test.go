@@ -40,10 +40,10 @@ func TestInstallerBoot(t *testing.T) {
 		t.Fatalf("installer serial = %q, err = %v", serial, err)
 	}
 	domainXML := readDomainXML(t, result)
-	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "efi.img")+`"></source>`) {
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "efi.img")+`"></source>`) {
 		t.Fatalf("installer domain XML missing EFI image:\n%s", domainXML)
 	}
-	if _, err := os.Stat(filepath.Join(result.QEMUDir, "efi", "EFI", "BOOT", "BOOTX64.EFI")); err != nil {
+	if _, err := os.Stat(filepath.Join(result.VMDir, "efi", "EFI", "BOOT", "BOOTX64.EFI")); err != nil {
 		t.Fatalf("installer UKI copy missing: %v", err)
 	}
 	loaded := readResult(t, result.Artifacts.Result)
