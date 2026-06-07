@@ -127,8 +127,8 @@ func TestRunnerRecordsCheckpointsWithoutCommands(t *testing.T) {
 	if targetStatus.State != installstatus.StateRebootRequested || targetStatus.InstalledGeneration != "2026.06.04-000" {
 		t.Fatalf("target status = %#v", targetStatus)
 	}
-	if len(commands.Calls) != 0 {
-		t.Fatalf("command runner was called during scaffold run: %#v", commands.Calls)
+	if got := commandNames(commands.Calls); got != "sync" {
+		t.Fatalf("command calls = %q, want sync", got)
 	}
 }
 

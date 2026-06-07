@@ -6,7 +6,8 @@ After=katl-input-apply.service systemd-networkd.service systemd-resolved.service
 Before=initrd.target
 
 [Service]
-Type=simple
+Type=oneshot
+TimeoutStartSec=30min
 ExecStart=/usr/bin/katlos-install --boot
 StandardOutput=journal+console
 StandardError=journal+console

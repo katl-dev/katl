@@ -125,7 +125,7 @@ func NewPlan(options PlanOptions) Plan {
 		installMountUnitsStep{},
 		writeInstallRecordStep{},
 		verifyTargetStep{},
-		stubStep{id: Reboot},
+		rebootStep{},
 	)
 
 	return plan
@@ -774,6 +774,26 @@ func (verifyTargetStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	return recordStep(ctx, install, VerifyTarget)
+}
+
+type rebootStep struct{}
+
+func (rebootStep) ID() StepID {
+	return Reboot
+}
+
+func (rebootStep) Run(ctx context.Context, install *Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if install.Commands != nil {
+		if err := install.Commands.Run(ctx, "sync"); err != nil {
+			return fmt.Errorf("sync target writes: %w", err)
+		}
+	}
+	return recordStep(ctx, install, Reboot)
 }
 
 type stubStep struct {
