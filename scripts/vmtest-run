@@ -164,6 +164,50 @@ has_go_test_timeout() {
     return 1
 }
 
+has_explicit_artifact_index() {
+    [[ -n "${KATL_MKOSI_ARTIFACT_INDEX:-}" ]]
+}
+
+has_explicit_installer_artifact() {
+    [[ -n "${KATL_INSTALLER_UKI:-}" || -n "${KATL_INSTALLER_KERNEL:-}" || -n "${KATL_INSTALLER_INITRD:-}" ]]
+}
+
+has_explicit_runtime_artifact() {
+    [[ -n "${KATL_RUNTIME_ARTIFACT:-}" ]]
+}
+
+has_explicit_install_manifest() {
+    [[ -n "${KATL_INSTALL_MANIFEST:-}" ]]
+}
+
+build_default_artifacts() {
+    if has_explicit_artifact_index; then
+        return 0
+    fi
+
+    local -a targets=()
+    if ! has_explicit_installer_artifact; then
+        targets+=("build-installer")
+    fi
+    if ! has_explicit_install_manifest; then
+        targets+=("build-katlos-install-image")
+    elif ! has_explicit_runtime_artifact; then
+        targets+=("build-runtime")
+    fi
+    if [[ "${#targets[@]}" -eq 0 ]]; then
+        return 0
+    fi
+
+    local target
+    for target in "${targets[@]}"; do
+        printf 'vmtest building current repo artifact: scripts/mkosi %s\n' "$target" >&2
+        if ! "$repo_root/scripts/mkosi" "$target"; then
+            setup_failures+=("build default vmtest artifact with scripts/mkosi $target failed")
+            return 1
+        fi
+    done
+}
+
 probe_vm_capabilities() {
     if have_command "$qemu_bin"; then
         cap_qemu="passed"
@@ -551,6 +595,12 @@ write_run_index "setup" "$@"
 trap cleanup_network EXIT
 validate_network
 if [[ "${#setup_failures[@]}" -gt 0 ]]; then
+    write_run_index "setup-failed" "$@"
+    printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
+    exit 2
+fi
+write_run_index "building-artifacts" "$@"
+if ! build_default_artifacts; then
     write_run_index "setup-failed" "$@"
     printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
     exit 2

@@ -119,6 +119,83 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	assertJSONEmptyObject(t, filepath.Join(runDir, "network", "leases.json"))
 }
 
+func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
+	realRepo := scriptTestRepoRoot(t)
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
+	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
+`)
+	writeExecutable(t, filepath.Join(repo, "scripts", "vmtest-exec"), `#!/usr/bin/env bash
+set -euo pipefail
+export KATL_VMTEST_RUN=1
+export KATL_VMTEST_WORLD_STRICT=1
+exec "$@"
+`)
+
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	goArgsPath := filepath.Join(tmp, "go-args.txt")
+	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
+	env := appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+goArgsPath,
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_MKOSI_ARGS="+mkosiArgsPath,
+		"KATL_VMTEST_RUN_ID=run-build-default",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	for _, name := range []string{
+		"KATL_MKOSI_ARTIFACT_INDEX",
+		"KATL_INSTALLER_UKI",
+		"KATL_INSTALLER_KERNEL",
+		"KATL_INSTALLER_INITRD",
+		"KATL_RUNTIME_ARTIFACT",
+		"KATL_INSTALL_MANIFEST",
+	} {
+		env = removeEnv(env, name)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "NeedsArtifacts")
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+
+	mkosiArgs := readLines(t, mkosiArgsPath)
+	if !reflect.DeepEqual(mkosiArgs, []string{"build-installer", "build-katlos-install-image"}) {
+		t.Fatalf("mkosi args = %#v", mkosiArgs)
+	}
+	goArgs := readLines(t, goArgsPath)
+	if !reflect.DeepEqual(goArgs, []string{
+		"test",
+		"-exec",
+		filepath.Join(repo, "scripts", "vmtest-exec"),
+		"-timeout",
+		"90m",
+		"./internal/vmtest",
+		"-run",
+		"NeedsArtifacts",
+	}) {
+		t.Fatalf("go args = %#v", goArgs)
+	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if runIndex.Status != "go-test" {
+		t.Fatalf("run index status = %q", runIndex.Status)
+	}
+}
+
 func TestVMTestRunForwardsJSONFlag(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -731,10 +808,33 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_QEMU_BRIDGE_CONF="+tools.bridgeConf,
 		"KATL_VMTEST_BRIDGE=katl-vmtest0",
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
+		"KATL_MKOSI_ARTIFACT_INDEX="+filepath.Join(filepath.Dir(tools.qemu), "prebuilt-artifacts.json"),
 		"KATL_NSPAWN_ALLOW_UNPRIVILEGED=1",
 		"PATH="+filepath.Dir(tools.qemu)+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	return append(env, extra...)
+}
+
+func removeEnv(env []string, name string) []string {
+	prefix := name + "="
+	var kept []string
+	for _, value := range env {
+		if !strings.HasPrefix(value, prefix) {
+			kept = append(kept, value)
+		}
+	}
+	return kept
+}
+
+func copyScript(t *testing.T, src string, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", src, err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", dst, err)
+	}
 }
 
 func writeExecutable(t *testing.T, path, content string) {
