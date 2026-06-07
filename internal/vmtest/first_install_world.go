@@ -88,10 +88,6 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
 	}
-	if err := checkFreshInstallerArtifacts(repo, input.Installer); err != nil {
-		_ = scenario.WriteSetupFailure(err)
-		return run, err
-	}
 	installer, err := factory.InstallerBoot(input.Installer)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
@@ -227,94 +223,6 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 	return input, nil
 }
 
-func checkFreshInstallerArtifacts(repo string, boot InstallerBootConfig) error {
-	if envBool("KATL_ALLOW_STALE_INSTALLER_ARTIFACTS") {
-		return nil
-	}
-	sources, err := installerSourceFiles(repo)
-	if err != nil {
-		return err
-	}
-	if len(sources) == 0 {
-		return nil
-	}
-	for _, artifact := range []string{boot.InstallerUKI, boot.InstallerKernel, boot.InstallerInitrd} {
-		if strings.TrimSpace(artifact) == "" {
-			continue
-		}
-		if err := checkFreshInstallerArtifact(repo, artifact, sources); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func checkFreshInstallerArtifact(repo, artifact string, sources []string) error {
-	return checkFreshArtifact(repo, "installer artifact", artifact, sources, "rebuild installer artifacts")
-}
-
-func checkFreshArtifact(repo, label, artifact string, sources []string, rebuild string) error {
-	artifact = repoAbs(repo, artifact)
-	info, err := os.Stat(artifact)
-	if err != nil {
-		return fmt.Errorf("stat %s %s: %w", label, artifact, err)
-	}
-	for _, source := range sources {
-		sourceInfo, err := os.Stat(source)
-		if err != nil {
-			return fmt.Errorf("stat source %s: %w", source, err)
-		}
-		if sourceInfo.ModTime().After(info.ModTime()) {
-			return fmt.Errorf("%s %s is older than source %s; %s or set KATL_ALLOW_STALE_INSTALLER_ARTIFACTS=1 for an explicit stale-artifact run", label, artifact, source, rebuild)
-		}
-	}
-	return nil
-}
-
-func installerSourceFiles(repo string) ([]string, error) {
-	if strings.TrimSpace(repo) == "" {
-		return nil, nil
-	}
-	candidates := []string{
-		filepath.Join(repo, "cmd", "katlos-install", "main.go"),
-		filepath.Join(repo, "internal", "installer", "input_apply.go"),
-		filepath.Join(repo, "mkosi.profiles", "installer-image", "mkosi.conf"),
-		filepath.Join(repo, "mkosi.profiles", "installer-image", "mkosi.build"),
-	}
-	extraRoot := filepath.Join(repo, "mkosi.profiles", "installer-image", "mkosi.extra")
-	if info, err := os.Stat(extraRoot); err == nil && info.IsDir() {
-		if err := filepath.WalkDir(extraRoot, func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.Type().IsRegular() {
-				candidates = append(candidates, path)
-			}
-			return nil
-		}); err != nil {
-			return nil, fmt.Errorf("walk installer image sources: %w", err)
-		}
-	} else if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("stat installer image sources: %w", err)
-	}
-	return existingRegularFiles(candidates)
-}
-
-func existingRegularFiles(candidates []string) ([]string, error) {
-	var files []string
-	for _, path := range candidates {
-		if strings.TrimSpace(path) == "" {
-			continue
-		}
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			files = append(files, path)
-		} else if err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("stat source %s: %w", path, err)
-		}
-	}
-	return files, nil
-}
-
 func defaultMkosiArtifactIndexPath(repo string) string {
 	if path := strings.TrimSpace(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX")); path != "" {
 		return path
@@ -355,9 +263,6 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 		if err != nil {
 			return "", err
 		}
-	}
-	if err := checkFreshKatlOSInstallImage(repo, image, index); err != nil {
-		return "", err
 	}
 	metadata, err := readKatlOSImageMetadata(image)
 	if err != nil {
@@ -426,57 +331,6 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 		return "", err
 	}
 	return manifestPath, nil
-}
-
-func checkFreshKatlOSInstallImage(repo string, image mkosiArtifact, index mkosiArtifactIndex) error {
-	if envBool("KATL_ALLOW_STALE_INSTALLER_ARTIFACTS") {
-		return nil
-	}
-	sources, err := katlosInstallImageSourceFiles(repo, index)
-	if err != nil {
-		return err
-	}
-	if len(sources) == 0 {
-		return nil
-	}
-	for _, artifact := range []struct {
-		label string
-		path  string
-	}{
-		{label: "KatlOS install image", path: image.Path},
-		{label: "KatlOS install image metadata", path: image.MetadataPath},
-	} {
-		if strings.TrimSpace(artifact.path) == "" {
-			continue
-		}
-		if err := checkFreshArtifact(repo, artifact.label, artifact.path, sources, "rebuild KatlOS install image"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func katlosInstallImageSourceFiles(repo string, index mkosiArtifactIndex) ([]string, error) {
-	if strings.TrimSpace(repo) == "" {
-		return nil, nil
-	}
-	candidates := []string{
-		filepath.Join(repo, "scripts", "build-katlos-install-image"),
-		filepath.Join(repo, "cmd", "katl-mkosi-artifacts", "main.go"),
-		filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.conf"),
-		filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.build"),
-		filepath.Join(repo, "mkosi.profiles", "kubernetes-sysext", "mkosi.conf"),
-		filepath.Join(repo, "mkosi.profiles", "kubernetes-sysext", "kubernetes.env"),
-		filepath.Join(repo, "mkosi.profiles", "resource-package-lock.json"),
-	}
-	for _, kind := range []string{"runtime-root", "runtime-uki", "kubernetes-sysext"} {
-		artifact, ok := index.artifact(kind)
-		if !ok {
-			continue
-		}
-		candidates = append(candidates, artifact.Path, artifact.MetadataPath)
-	}
-	return existingRegularFiles(candidates)
 }
 
 func writeFirstInstallWorldNodeMetadataSource(scenario *WorldScenario, spec NodeSpec) (string, error) {
