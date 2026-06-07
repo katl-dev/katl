@@ -7,6 +7,7 @@ qemu_bin="${KATL_VMTEST_QEMU:-qemu-system-x86_64}"
 qemu_img_bin="${KATL_VMTEST_QEMU_IMG:-qemu-img}"
 ip_bin="${KATL_VMTEST_IP:-ip}"
 kubectl_bin="${KATL_VMTEST_KUBECTL:-kubectl}"
+go_test_timeout="90m"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
 run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 run_dir="${KATL_VMTEST_RUN_DIR:-$tmp_parent/$run_id}"
@@ -141,6 +142,26 @@ print_missing_capabilities() {
         printf '  - %s: %s\n' "$capability" "$hint" >&2
     done
     printf 'vmtest run dir: %s\n' "$run_dir" >&2
+}
+
+has_go_test_timeout() {
+    local arg
+    while (($# > 0)); do
+        arg="$1"
+        case "$arg" in
+            -args)
+                return 1
+                ;;
+            -timeout | --timeout | -test.timeout | --test.timeout)
+                return 0
+                ;;
+            -timeout=* | --timeout=* | -test.timeout=* | --test.timeout=*)
+                return 0
+                ;;
+        esac
+        shift
+    done
+    return 1
 }
 
 probe_vm_capabilities() {
@@ -549,4 +570,8 @@ export KATL_VMTEST_BRIDGE="$network_bridge"
 final_status="go-test"
 write_run_index "$final_status" "$@"
 printf 'vmtest run dir: %s\n' "$run_dir" >&2
-exec "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "$@"
+go_test_args=()
+if [[ -n "$go_test_timeout" ]] && ! has_go_test_timeout "$@"; then
+    go_test_args+=("-timeout" "$go_test_timeout")
+fi
+exec "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@"

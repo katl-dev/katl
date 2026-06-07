@@ -28,26 +28,27 @@ type VMBoot struct {
 }
 
 type VMConfig struct {
-	Boot         VMBoot
-	EFIDiskImage bool
-	PreseedDir   string
-	PreseedImage string
-	MediaRunner  DiskRunner
-	QEMUPath     string
-	OVMFCode     string
-	OVMFVars     string
-	KVM          KVMPolicy
-	RAMMiB       int
-	CPUs         int
-	Phase        string
-	Expect       string
-	Timeout      time.Duration
-	PollInterval time.Duration
-	Network      VMNetworkConfig
-	HostForwards []HostForward
-	SerialHooks  []SerialHook
-	VSock        VSockConfig
-	Agent        AgentControlConfig
+	Boot              VMBoot
+	EFIDiskImage      bool
+	PreseedDir        string
+	PreseedImage      string
+	MediaRunner       DiskRunner
+	QEMUPath          string
+	OVMFCode          string
+	OVMFVars          string
+	KVM               KVMPolicy
+	RAMMiB            int
+	CPUs              int
+	Phase             string
+	Expect            string
+	Timeout           time.Duration
+	SerialIdleTimeout time.Duration
+	PollInterval      time.Duration
+	Network           VMNetworkConfig
+	HostForwards      []HostForward
+	SerialHooks       []SerialHook
+	VSock             VSockConfig
+	Agent             AgentControlConfig
 }
 
 type SerialHook struct {
@@ -98,6 +99,8 @@ type AgentControlConfig struct {
 	RequireHealth bool
 	Timeout       time.Duration
 }
+
+const defaultSerialIdleTimeout = 45 * time.Second
 
 type VMPlan struct {
 	QEMUPath       string
@@ -174,12 +177,20 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	}
 	defer file.Close()
 	executor := r.Executor
+	defaultExecutor := executor == nil
 	if executor == nil {
 		executor = defaultVMExecutor(result)
 	}
+	if defaultExecutor && config.Expect != "" && config.SerialIdleTimeout == 0 {
+		config.SerialIdleTimeout = defaultSerialIdleTimeout
+	}
+	if defaultExecutor {
+		go tailLiveSerial(ctx, plan.SerialLog, os.Stderr, 100*time.Millisecond)
+	}
+	serial := io.Writer(file)
 	done := make(chan error, 1)
 	go func() {
-		done <- executor.Run(ctx, plan.QEMUPath, plan.Args, file)
+		done <- executor.Run(ctx, plan.QEMUPath, plan.Args, serial)
 	}()
 	if config.Expect != "" {
 		return r.waitSerial(ctx, cancel, done, result, config, plan, started)
@@ -198,6 +209,43 @@ func defaultVMExecutor(result Result) VMExecutor {
 	return ExecVMExecutor{TempDir: filepath.Join(result.QEMUDir, "tmp")}
 }
 
+func tailLiveSerial(ctx context.Context, path string, out io.Writer, interval time.Duration) {
+	if interval <= 0 {
+		interval = 250 * time.Millisecond
+	}
+	var offset int64
+	if info, err := os.Stat(path); err == nil {
+		offset = info.Size()
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if err := copySerialFromOffset(path, out, &offset); err != nil && !errors.Is(err, os.ErrNotExist) {
+			_, _ = fmt.Fprintf(out, "\nvmtest live serial tail error: %v\n", err)
+		}
+		select {
+		case <-ctx.Done():
+			_ = copySerialFromOffset(path, out, &offset)
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func copySerialFromOffset(path string, out io.Writer, offset *int64) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Seek(*offset, io.SeekStart); err != nil {
+		return err
+	}
+	n, err := io.Copy(out, file)
+	*offset += n
+	return err
+}
+
 func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, done <-chan error, result Result, config VMConfig, plan VMPlan, started time.Time) Result {
 	interval := config.PollInterval
 	if interval == 0 {
@@ -206,8 +254,14 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	hooksRun := make([]bool, len(config.SerialHooks))
+	lastSerialLen := -1
+	lastSerialProgress := time.Now().UTC()
 	for {
 		serialText := readSerial(plan.SerialLog)
+		if len(serialText) != lastSerialLen {
+			lastSerialLen = len(serialText)
+			lastSerialProgress = time.Now().UTC()
+		}
 		if err := r.runSerialHooks(ctx, result, config, plan, serialText, hooksRun); err != nil {
 			cancel()
 			<-done
@@ -244,12 +298,26 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 			<-done
 			return finishVM(result, phaseName(config), StatusFailed, qemuTimeoutSummary(plan.SerialLog), started, time.Now().UTC())
 		case <-ticker.C:
+			if config.SerialIdleTimeout > 0 && time.Since(lastSerialProgress) >= config.SerialIdleTimeout {
+				cancel()
+				<-done
+				return finishVM(result, phaseName(config), StatusFailed, qemuSerialIdleSummary(plan.SerialLog, config.SerialIdleTimeout), started, time.Now().UTC())
+			}
 		}
 	}
 }
 
 func qemuTimeoutSummary(serialLog string) string {
 	const prefix = "qemu timed out"
+	tail := serialTail(serialLog, 12, 4000)
+	if tail == "" {
+		return prefix
+	}
+	return prefix + "; serial tail:\n" + tail
+}
+
+func qemuSerialIdleSummary(serialLog string, idle time.Duration) string {
+	prefix := fmt.Sprintf("qemu serial idle timed out after %s", idle)
 	tail := serialTail(serialLog, 12, 4000)
 	if tail == "" {
 		return prefix

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVMPlan(t *testing.T) {
@@ -66,7 +67,7 @@ func TestVMBridgeNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	if !hasArg(plan.Args, "bridge,id=net0,br=katlbr0") {
+	if !hasArgPrefix(plan.Args, "bridge,id=net0,br=katlbr0") {
 		t.Fatalf("bridge netdev missing from args: %#v", plan.Args)
 	}
 }
@@ -558,6 +559,29 @@ func TestVMTimeout(t *testing.T) {
 	}
 }
 
+func TestVMSerialIdleTimeout(t *testing.T) {
+	result, config := vmFixture(t)
+	config.Expect = "runtime ready"
+	config.PollInterval = time.Millisecond
+	config.SerialIdleTimeout = 5 * time.Millisecond
+	runner := VMRunner{
+		Executor: vmExec{write: "Boot0002\n", waitForCancel: true},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	}
+
+	result = runner.Run(context.Background(), result, config)
+	if result.Status != StatusFailed {
+		t.Fatalf("Status = %q", result.Status)
+	}
+	if !strings.Contains(result.FailureSummary, "qemu serial idle timed out") || !strings.Contains(result.FailureSummary, "Boot0002") {
+		t.Fatalf("FailureSummary = %q", result.FailureSummary)
+	}
+}
+
 func TestQEMUTimeoutSummaryWithoutSerial(t *testing.T) {
 	if got := qemuTimeoutSummary(filepath.Join(t.TempDir(), "missing.log")); got != "qemu timed out" {
 		t.Fatalf("qemuTimeoutSummary() = %q", got)
@@ -565,13 +589,18 @@ func TestQEMUTimeoutSummaryWithoutSerial(t *testing.T) {
 }
 
 type vmExec struct {
-	write string
-	err   error
+	write         string
+	err           error
+	waitForCancel bool
 }
 
-func (e vmExec) Run(_ context.Context, _ string, _ []string, serial io.Writer) error {
+func (e vmExec) Run(ctx context.Context, _ string, _ []string, serial io.Writer) error {
 	if e.write != "" {
 		_, _ = io.WriteString(serial, e.write)
+	}
+	if e.waitForCancel {
+		<-ctx.Done()
+		return ctx.Err()
 	}
 	return e.err
 }
@@ -579,6 +608,15 @@ func (e vmExec) Run(_ context.Context, _ string, _ []string, serial io.Writer) e
 func hasArg(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasArgPrefix(args []string, want string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, want) {
 			return true
 		}
 	}
