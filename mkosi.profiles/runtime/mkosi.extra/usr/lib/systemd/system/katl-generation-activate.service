@@ -1,0 +1,17 @@
+[Unit]
+Description=Activate selected Katl generation extensions
+Documentation=man:systemd-sysext(8) man:systemd-confext(8)
+DefaultDependencies=no
+Requires=var.mount
+After=var.mount
+Before=systemd-sysext.service systemd-confext.service
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-generation-activate
+ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/
+
+[Install]
+RequiredBy=systemd-sysext.service
+RequiredBy=systemd-confext.service

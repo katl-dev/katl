@@ -230,6 +230,33 @@ func TestWriteState(t *testing.T) {
 	assertDir(t, filepath.Join(root, "etc/kubernetes"), 0o755)
 }
 
+func TestRuntimeStaticStateUnits(t *testing.T) {
+	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	if err != nil {
+		t.Fatalf("RenderState() error = %v", err)
+	}
+	root := repoRoot(t)
+	systemdRoot := filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system")
+
+	assertRepoFile(t, filepath.Join(systemdRoot, "var.mount"), strings.ReplaceAll(assets.VarMount, "PARTUUID="+statePartUUID, "/dev/disk/by-partlabel/KATL_STATE"))
+	assertRepoFile(t, filepath.Join(systemdRoot, "etc-kubernetes.mount"), assets.EtcKubernetesMount)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-generation-activate.service"), assets.GenerationActivate)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
+	assertRepoFile(t, filepath.Join(systemdRoot, "containerd.service.d/10-katl-runtime.conf"), assets.ContainerdDropIn)
+	assertRepoFile(t, filepath.Join(systemdRoot, "kubelet.service.d/10-katl-runtime.conf"), assets.KubeletDropIn)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-state-projection-check.service"), assets.StateCheckService)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-runtime-handoff-status.service"), assets.RuntimeStatus)
+	assertRepoFile(t, filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/usr/lib/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
+
+	assertSymlink(t, filepath.Join(systemdRoot, "local-fs.target.wants/var.mount"), "../var.mount")
+	assertMissing(t, filepath.Join(systemdRoot, "local-fs.target.wants/etc-kubernetes.mount"))
+	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-kubeadm-ready.target"), "../katl-kubeadm-ready.target")
+	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-state-projection-check.service"), "../katl-state-projection-check.service")
+	assertSymlink(t, filepath.Join(systemdRoot, "systemd-sysext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
+	assertSymlink(t, filepath.Join(systemdRoot, "systemd-confext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
+	assertSymlink(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service"), "../katl-runtime-handoff-status.service")
+}
+
 func TestRenderStateRejectsUUID(t *testing.T) {
 	_, err := RenderState(StateRequest{PartitionUUID: "abc rw"})
 	if err == nil || !strings.Contains(err.Error(), "must not contain whitespace") {
@@ -357,6 +384,17 @@ func assertFile(t *testing.T, path string, want string) {
 	}
 	if string(data) != want {
 		t.Fatalf("%s:\n%s\nwant:\n%s", path, data, want)
+	}
+}
+
+func assertRepoFile(t *testing.T, path string, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if got := string(data); got != want {
+		t.Fatalf("%s:\n%s\nwant:\n%s", path, got, want)
 	}
 }
 

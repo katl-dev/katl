@@ -1,0 +1,15 @@
+[Unit]
+Description=Record Katl runtime handoff status
+Documentation=man:systemd.service(5)
+Requires=katl-state-projection-check.service
+After=katl-state-projection-check.service
+Before=katl-kubeadm-ready.target
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-runtime-status
+ExecStart=/usr/lib/katl/runtime/katl-runtime-status --root=/
+
+[Install]
+RequiredBy=katl-kubeadm-ready.target

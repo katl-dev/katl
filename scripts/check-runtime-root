@@ -89,14 +89,24 @@ for path in \
     /usr/bin/containerd \
     /usr/bin/crun \
     /usr/lib/katl/runtime/katl-runtime-status \
+    /usr/lib/katl/runtime/katl-generation-activate \
     /usr/lib/katl/vmtest/katl-vmtest-agent \
     /usr/lib/systemd/system/systemd-networkd.service \
     /usr/lib/systemd/system/systemd-resolved.service \
     /usr/lib/systemd/system/systemd-timesyncd.service \
     /usr/lib/systemd/system/sshd.service \
     /usr/lib/systemd/system/containerd.service \
+    /usr/lib/systemd/system/var.mount \
+    /usr/lib/systemd/system/etc-kubernetes.mount \
+    /usr/lib/systemd/system/katl-generation-activate.service \
+    /usr/lib/systemd/system/katl-kubeadm-ready.target \
+    /usr/lib/systemd/system/katl-state-projection-check.service \
+    /usr/lib/systemd/system/katl-runtime-handoff-status.service \
+    /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf \
+    /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf \
     /usr/lib/systemd/system/katl-runtime-boot-signal.service \
     /usr/lib/systemd/system/katl-vmtest-agent.service \
+    /usr/lib/systemd/system/local-fs.target.wants/var.mount \
     /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
 do
     has_path "$path"
@@ -107,6 +117,15 @@ file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime 
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "StandardOutput=journal+console"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "SyslogIdentifier=katl-runtime-boot"
 has_path /usr/lib/katl/runtime/katl-runtime-status
+file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STATE"
+file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
+file_has /usr/lib/systemd/system/katl-generation-activate.service "ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/"
+file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service"
+file_has /usr/lib/systemd/system/katl-state-projection-check.service "ExecStart=/usr/bin/printf 'Katl state projection ready\\n'"
+file_has /usr/lib/systemd/system/katl-runtime-handoff-status.service "ExecStart=/usr/lib/katl/runtime/katl-runtime-status --root=/"
+file_has /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/containerd"
+file_has /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/kubelet /etc/kubernetes"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ConditionKernelCommandLine=katl.vmtest_agent=1"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent"
 

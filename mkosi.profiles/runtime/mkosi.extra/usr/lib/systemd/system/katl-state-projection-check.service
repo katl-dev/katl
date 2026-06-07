@@ -1,0 +1,14 @@
+[Unit]
+Description=Check Katl writable state projections
+Requires=var.mount etc-kubernetes.mount
+After=var.mount etc-kubernetes.mount
+Before=katl-kubeadm-ready.target
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-state-projection
+ExecStart=/usr/bin/printf 'Katl state projection ready\n'
+
+[Install]
+WantedBy=multi-user.target

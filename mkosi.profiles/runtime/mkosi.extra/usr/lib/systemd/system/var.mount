@@ -1,0 +1,16 @@
+[Unit]
+Description=Katl writable state partition
+Documentation=man:systemd.mount(5)
+DefaultDependencies=no
+Before=local-fs.target
+Conflicts=umount.target
+Before=umount.target
+
+[Mount]
+What=/dev/disk/by-partlabel/KATL_STATE
+Where=/var
+Type=auto
+Options=rw
+
+[Install]
+WantedBy=local-fs.target
