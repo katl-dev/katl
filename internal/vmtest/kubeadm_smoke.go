@@ -142,8 +142,8 @@ func RunKubeadmAPISmoke(ctx context.Context, guest *GuestControl, plan KubeadmAP
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(source) != plan.ProjectedSource {
-		return fmt.Errorf("/etc/kubernetes is backed by %q, want %q", strings.TrimSpace(source), plan.ProjectedSource)
+	if !kubernetesProjectionSourceMatches(source, plan.ProjectedSource) {
+		return fmt.Errorf("/etc/kubernetes is backed by %q, want %q", source, plan.ProjectedSource)
 	}
 	for _, command := range []GuestCommandRequest{
 		{Name: "test", Argv: []string{"test", "-x", "/usr/bin/kubeadm"}},
@@ -189,6 +189,19 @@ func RunKubeadmAPISmoke(ctx context.Context, guest *GuestControl, plan KubeadmAP
 		return err
 	}
 	return nil
+}
+
+func kubernetesProjectionSourceMatches(source string, projected string) bool {
+	source = strings.TrimSpace(source)
+	projected = strings.TrimSpace(projected)
+	if source == projected {
+		return true
+	}
+	statePath, ok := strings.CutPrefix(projected, "/var")
+	if !ok || statePath == "" {
+		return false
+	}
+	return strings.HasSuffix(source, "["+statePath+"]")
 }
 
 func waitKubeadmReady(ctx context.Context, guest *GuestControl, plan KubeadmAPISmokePlan) error {

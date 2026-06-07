@@ -1,0 +1,1 @@
+Katl keeps this directory so containerd can watch CNI configuration on the immutable root.

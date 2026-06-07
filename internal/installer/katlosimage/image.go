@@ -347,11 +347,11 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 	}
 	sysextPath := request.KubernetesSysextPath
 	if sysextPath == "" {
-		sysextPath = path.Join("/var/lib/katl/generations", request.GenerationID, "sysext", "kubernetes.raw")
+		sysextPath = path.Join("/var/lib/katl/generations", request.GenerationID, "sysext", "katl-kubernetes.raw")
 	}
 	activationPath := request.KubernetesActivationPath
 	if activationPath == "" {
-		activationPath = "/run/extensions/kubernetes.raw"
+		activationPath = "/run/extensions/katl-kubernetes.raw"
 	}
 	return generation.FirstInstallRequest{
 		GenerationID:          request.GenerationID,

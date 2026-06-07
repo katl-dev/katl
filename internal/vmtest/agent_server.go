@@ -442,6 +442,7 @@ func defaultAgentCommands() map[string]bool {
 	return map[string]bool{
 		"crictl":            true,
 		"configapply-smoke": true,
+		"find":              true,
 		"findmnt":           true,
 		"journalctl":        true,
 		"kubeadm":           true,

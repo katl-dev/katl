@@ -117,8 +117,13 @@ file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime 
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "StandardOutput=journal+console"
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "SyslogIdentifier=katl-runtime-boot"
 has_path /usr/lib/katl/runtime/katl-runtime-status
+has_path /etc/katl
+has_path /etc/kubernetes
+has_path /etc/cni/net.d
+file_has /usr/lib/os-release "CONFEXT_LEVEL=1"
 file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STATE"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
+file_has /usr/lib/systemd/system/etc-kubernetes.mount "DefaultDependencies=no"
 file_has /usr/lib/systemd/system/katl-generation-activate.service "ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/"
 file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service"
 file_has /usr/lib/systemd/system/katl-state-projection-check.service "ExecStart=/usr/bin/printf 'Katl state projection ready\\n'"

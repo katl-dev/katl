@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -132,8 +131,8 @@ func RunKubeadmReadySmoke(ctx context.Context, guest *GuestControl, plan Kubeadm
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(source) != plan.ProjectedSource {
-		return fmt.Errorf("/etc/kubernetes is backed by %q, want %q", strings.TrimSpace(source), plan.ProjectedSource)
+	if !kubernetesProjectionSourceMatches(source, plan.ProjectedSource) {
+		return fmt.Errorf("/etc/kubernetes is backed by %q, want %q", source, plan.ProjectedSource)
 	}
 	for _, command := range []GuestCommandRequest{
 		{Name: "test", Argv: []string{"test", "-x", "/usr/bin/kubeadm"}},
@@ -204,6 +203,11 @@ func kubeadmReadySmokeDiagnostics(plan KubeadmReadySmokePlan) GuestDiagnostics {
 		Timeout: plan.DiagnosticTimeout,
 		Commands: []GuestCommandRequest{
 			{Name: "ready-target-status", Argv: []string{"systemctl", "status", "katl-kubeadm-ready.target"}},
+			{Name: "sysext-status", Argv: []string{"systemctl", "status", "systemd-sysext.service"}},
+			{Name: "confext-status", Argv: []string{"systemctl", "status", "systemd-confext.service"}},
+			{Name: "var-mount-status", Argv: []string{"systemctl", "status", "var.mount"}},
+			{Name: "etc-kubernetes-mount-status", Argv: []string{"systemctl", "status", "etc-kubernetes.mount"}},
+			{Name: "extension-listing", Argv: []string{"find", "/run/extensions", "/run/confexts", "-maxdepth", "2", "-type", "l", "-o", "-type", "f"}},
 			{Name: "containerd-status", Argv: []string{"systemctl", "status", "containerd.service"}},
 			{Name: "kubelet-status", Argv: []string{"systemctl", "status", "kubelet.service"}},
 			{Name: "crictl-ps", Argv: []string{"crictl", "ps", "-a"}},
@@ -214,7 +218,7 @@ func kubeadmReadySmokeDiagnostics(plan KubeadmReadySmokePlan) GuestDiagnostics {
 			{Name: "kubeadm-config", Path: plan.ConfigPath},
 		},
 		Journals: []GuestJournalRequest{
-			{Name: "runtime-handoff", Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "containerd.service", "kubelet.service"}},
+			{Name: "runtime-handoff", Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "systemd-sysext.service", "systemd-confext.service", "var.mount", "etc-kubernetes.mount", "containerd.service", "kubelet.service"}},
 		},
 	}
 }

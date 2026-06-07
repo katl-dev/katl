@@ -94,8 +94,11 @@ func RenderKubernetesProjection(request KubernetesProjectionRequest) (string, er
 		"[Unit]",
 		"Description=Project persistent Kubernetes configuration",
 		"Documentation=man:systemd.mount(5)",
+		"DefaultDependencies=no",
 		"After=var.mount systemd-confext.service",
 		"Before=kubelet.service katl-kubeadm-ready.target",
+		"Conflicts=umount.target",
+		"Before=umount.target",
 		"RequiresMountsFor=" + source,
 		"",
 		"[Mount]",
@@ -103,9 +106,6 @@ func RenderKubernetesProjection(request KubernetesProjectionRequest) (string, er
 		"Where=" + target,
 		"Type=none",
 		"Options=bind,rw",
-		"",
-		"[Install]",
-		"WantedBy=local-fs.target",
 		"",
 	}, "\n"), nil
 }

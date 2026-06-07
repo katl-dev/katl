@@ -17,7 +17,7 @@ func TestKubeadmReadySmokeChecksRuntimeHandoff(t *testing.T) {
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
 		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
-		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand(DefaultProjectedKubernetesPath + "\n")},
+		commandKey("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {stdoutCommand("/dev/vdb4[/lib/katl/kubernetes/etc-kubernetes]\n")},
 		commandKey("test", "-x", "/usr/bin/kubeadm"):                                               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/kubelet"):                                               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/kubectl"):                                               {okCommand()},

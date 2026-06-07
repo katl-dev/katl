@@ -63,8 +63,11 @@ func TestRenderKubernetesProjection(t *testing.T) {
 	want := `[Unit]
 Description=Project persistent Kubernetes configuration
 Documentation=man:systemd.mount(5)
+DefaultDependencies=no
 After=var.mount systemd-confext.service
 Before=kubelet.service katl-kubeadm-ready.target
+Conflicts=umount.target
+Before=umount.target
 RequiresMountsFor=/var/lib/katl/kubernetes/etc-kubernetes
 
 [Mount]
@@ -72,9 +75,6 @@ What=/var/lib/katl/kubernetes/etc-kubernetes
 Where=/etc/kubernetes
 Type=none
 Options=bind,rw
-
-[Install]
-WantedBy=local-fs.target
 `
 	if unit != want {
 		t.Fatalf("etc-kubernetes.mount:\n%s\nwant:\n%s", unit, want)

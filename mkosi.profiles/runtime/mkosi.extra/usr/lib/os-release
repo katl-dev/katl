@@ -20,3 +20,4 @@ SUPPORT_END=2026-05-13
 VARIANT="Container Image"
 VARIANT_ID=container
 SYSEXT_LEVEL=katl-runtime-1
+CONFEXT_LEVEL=1

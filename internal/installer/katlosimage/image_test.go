@@ -47,6 +47,12 @@ func TestResolveDirectoryAcceptsInstallImage(t *testing.T) {
 	if request.RuntimeInterface != "katl-runtime-1" || request.RuntimeArchitecture != "x86_64" {
 		t.Fatalf("generation runtime fields = %#v", request)
 	}
+	if request.Sysexts[0].Path != "/var/lib/katl/generations/2026.06.06-001/sysext/katl-kubernetes.raw" {
+		t.Fatalf("Kubernetes sysext path = %q", request.Sysexts[0].Path)
+	}
+	if request.Sysexts[0].ActivationPath != "/run/extensions/katl-kubernetes.raw" {
+		t.Fatalf("Kubernetes sysext activation path = %q", request.Sysexts[0].ActivationPath)
+	}
 	if !request.CreatedAt.Equal(createdAt) {
 		t.Fatalf("createdAt = %s, want %s", request.CreatedAt, createdAt)
 	}

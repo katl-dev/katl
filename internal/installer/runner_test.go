@@ -811,7 +811,7 @@ func TestRunnerInstallsIdentity(t *testing.T) {
 	assertText(t, filepath.Join(targetRoot, "etc/ssh/authorized_keys/katl"), sshKey+"\n")
 	assertContains(t, filepath.Join(targetRoot, "etc/ssh/sshd_config.d/10-katl.conf"), "AllowUsers katl")
 	assertContains(t, filepath.Join(bootRoot, "loader/entries/katl-2026.06.01-005.conf"), "systemd.machine_id="+machineID)
-	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katl\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
+	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
 }
 
 func TestRunnerInstallsMountUnits(t *testing.T) {
@@ -933,7 +933,7 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 	confextDir := filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.04-001/confext")
 	assertText(t, filepath.Join(confextDir, "etc/systemd/network/10-lan.network"), "[Match]\nName=enp1s0\n")
 	assertText(t, filepath.Join(confextDir, "etc/katl/kubeadm/control-plane/config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")
-	assertText(t, filepath.Join(confextDir, "etc/extension-release.d/extension-release.katl-node"), "ID=katl\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
+	assertText(t, filepath.Join(confextDir, "etc/extension-release.d/extension-release.katl-node"), "ID=fedora\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
 	assertText(t, filepath.Join(confextDir, "etc/katl/node.json"), `{
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "NodeMetadata",
@@ -975,7 +975,7 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 	if decoded.Confexts[0].ActivationPath != "/run/confexts/katl-node" || decoded.Confexts[0].SHA256 != digest {
 		t.Fatalf("confext activation/digest = %#v, digest %s", decoded.Confexts[0], digest)
 	}
-	if decoded.Confexts[0].Compatibility.ID != "katl" || decoded.Confexts[0].Compatibility.ConfextLevel != 1 {
+	if decoded.Confexts[0].Compatibility.ID != "fedora" || decoded.Confexts[0].Compatibility.ConfextLevel != 1 {
 		t.Fatalf("confext compatibility = %#v", decoded.Confexts[0].Compatibility)
 	}
 	if decoded.Confexts[0].Name != "katl-node" || decoded.Confexts[0].Compatibility.VersionID != "0.1.0" {

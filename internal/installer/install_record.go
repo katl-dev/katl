@@ -14,7 +14,7 @@ import (
 
 const (
 	generatedConfextName = "katl-node"
-	generatedConfextID   = "katl"
+	generatedConfextID   = "fedora"
 )
 
 type InstallRecordRequest struct {
