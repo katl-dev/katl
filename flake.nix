@@ -50,6 +50,7 @@
             mtools
             openssl
             OVMFFull
+            podman
             protobuf
             protoc-gen-go
             qemu_kvm
