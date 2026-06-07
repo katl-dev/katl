@@ -85,12 +85,12 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	}
 	executor := runner.Executor
 	if executor == nil {
-		executor = defaultVMExecutor(result)
+		executor = defaultVMExecutor(result, plan)
 	}
 	done := make(chan error, 1)
 	go func() {
 		defer file.Close()
-		done <- executor.Run(runCtx, plan.QEMUPath, plan.Args, file)
+		done <- executor.Run(runCtx, first(plan.VirshPath, plan.QEMUPath), plan.Args, file)
 	}()
 	qemuDone, err := waitForSerialSignal(runCtx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
 	if err != nil {
@@ -101,7 +101,7 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		return fail(err)
 	}
 	if qemuDone {
-		return fail(fmt.Errorf("qemu exited after serial signal before installed runtime node %q could be used", name))
+		return fail(fmt.Errorf("libvirt domain exited after serial signal before installed runtime node %q could be used", name))
 	}
 	if err := runner.checkAgent(runCtx, result, vm); err != nil {
 		stop()

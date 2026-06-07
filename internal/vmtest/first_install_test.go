@@ -51,10 +51,14 @@ func TestFirstInstall(t *testing.T) {
 	if response.StatusCode != 200 || !strings.Contains(response.Body, "install-starting") {
 		t.Fatalf("handoff response = %#v", response)
 	}
-	if command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand); err != nil || !strings.Contains(string(command), "fat:rw:") {
+	if command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand); err != nil || !strings.Contains(string(command), "virsh -c qemu:///system define") {
 		t.Fatalf("installer command = %q, err = %v", command, err)
 	}
-	if command, err := os.ReadFile(result.Artifacts.RuntimeQEMUCommand); err != nil || !strings.Contains(string(command), "format=raw,file="+result.Disks[0].HostPath) {
+	domainXML := readDomainXML(t, result)
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "vdb.snapshot.qcow2")+`"></source>`) {
+		t.Fatalf("runtime domain XML = %s", domainXML)
+	}
+	if command, err := os.ReadFile(result.Artifacts.RuntimeQEMUCommand); err != nil || !strings.Contains(string(command), "virsh -c qemu:///system define") {
 		t.Fatalf("runtime command = %q, err = %v", command, err)
 	}
 	if _, err := os.Stat(result.Disks[0].HostPath); !os.IsNotExist(err) {
@@ -127,7 +131,7 @@ func TestFirstInstallFailsFastOnInstallerServiceFailure(t *testing.T) {
 	}
 }
 
-func TestFirstInstallGuestHandoff(t *testing.T) {
+func TestFirstInstallGuestHandoffRequiresLibvirtMigration(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
 	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
@@ -176,26 +180,8 @@ func TestFirstInstallGuestHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
 	}
-	if result.Status != StatusPassed {
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "host forwards are not supported by libvirt VM execution") {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
-	}
-	request := readLog(t, result.Artifacts.HandoffRequest)
-	if request.URL != "http://10.0.2.15:8080/v1/install" || request.PostURL != "http://127.0.0.1:18080/v1/install" {
-		t.Fatalf("handoff request = %#v", request)
-	}
-	response := readLog(t, result.Artifacts.HandoffResponse)
-	if response.StatusCode != 200 || !strings.Contains(response.Body, "install-starting") {
-		t.Fatalf("handoff response = %#v", response)
-	}
-	if command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand); err != nil || !strings.Contains(string(command), "hostfwd=tcp:127.0.0.1:18080-:8080") {
-		t.Fatalf("installer command = %q, err = %v", command, err)
-	}
-	command, err := os.ReadFile(result.Artifacts.InstallerQEMUCommand)
-	if err != nil {
-		t.Fatalf("read installer command: %v", err)
-	}
-	if !strings.Contains(string(command), "serial=katl-seed") || !strings.Contains(string(command), "handoff-seed.img") {
-		t.Fatalf("installer command missing handoff seed: %s", command)
 	}
 	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "install-input.json")); !os.IsNotExist(err) {
 		t.Fatalf("handoff seed should not contain install input: %v", err)
@@ -248,20 +234,11 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read installer command: %v", err)
 	}
-	if !strings.Contains(string(command), "serial=katl-seed") {
-		t.Fatalf("installer command missing preseed device: %s", command)
+	if !strings.Contains(string(command), "virsh -c qemu:///system define") {
+		t.Fatalf("installer command = %s", command)
 	}
-	if !strings.Contains(string(command), "preseed.img") {
-		t.Fatalf("installer command missing preseed image: %s", command)
-	}
-	if !strings.Contains(string(command), "efi.img") {
-		t.Fatalf("installer command missing EFI image: %s", command)
-	}
-	if strings.Contains(string(command), "hostfwd=") {
-		t.Fatalf("installer command unexpectedly has host forward: %s", command)
-	}
-	if strings.Contains(string(command), "fat:rw:") {
-		t.Fatalf("installer command unexpectedly uses fat directory: %s", command)
+	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "preseed.img")); err != nil {
+		t.Fatalf("preseed image missing: %v", err)
 	}
 	input, err := os.ReadFile(filepath.Join(result.Artifacts.ManifestsDir, "preseed", "install-input.json"))
 	if err != nil {
@@ -529,7 +506,7 @@ func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
 	}
-	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "guest handoff response artifact is missing") {
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "host forwards are not supported by libvirt VM execution") {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 }
@@ -570,7 +547,7 @@ func fakeVMWithExecutor(executor VMExecutor) VMRunner {
 	return VMRunner{
 		Executor: executor,
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},

@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +20,7 @@ func TestVMPlan(t *testing.T) {
 		AttachmentOrder: 0,
 	}}
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 	})
@@ -31,62 +30,56 @@ func TestVMPlan(t *testing.T) {
 	if plan.Accel != "kvm" {
 		t.Fatalf("Accel = %q", plan.Accel)
 	}
-	want := []string{
-		"-machine", "q35,accel=kvm",
-		"-cpu", "max",
-		"-smp", "2",
-		"-m", "2048",
-		"-display", "none",
-		"-monitor", "none",
-		"-serial", "file:" + result.Artifacts.InstallerSerial,
-		"-drive", "if=pflash,format=raw,readonly=on,file=" + config.OVMFCode,
-		"-drive", "if=pflash,format=raw,file=" + filepath.Join(result.QEMUDir, "OVMF_VARS.fd"),
-		"-drive", "if=virtio,index=0,format=raw,file=fat:rw:" + filepath.Join(result.QEMUDir, "efi"),
-		"-drive", "if=virtio,index=1,format=qcow2,file=" + config.Boot.Image + ",snapshot=on",
-		"-drive", "if=none,id=katldisk2,format=qcow2,file=" + filepath.Join(result.DiskDir, "00-root.qcow2"),
-		"-device", "virtio-blk-pci,drive=katldisk2,serial=katl-root",
-		"-device", "virtio-rng-pci",
-		"-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:18080-:8080",
-		"-device", "virtio-net-pci,netdev=net0",
+	if plan.VirshPath != "/usr/bin/virsh" || plan.DomainName != "katl-run-1" {
+		t.Fatalf("plan libvirt fields = %#v", plan)
 	}
-	if !reflect.DeepEqual(plan.Args, want) {
-		t.Fatalf("Args = %#v", plan.Args)
+	wantArgs := []string{"-c", "qemu:///system", "define", filepath.Join(result.QEMUDir, "domain.xml")}
+	if strings.Join(plan.Args, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("Args = %#v, want %#v", plan.Args, wantArgs)
+	}
+	for _, want := range []string{
+		`<domain type="kvm">`,
+		`<name>katl-run-1</name>`,
+		`<memory unit="MiB">2048</memory>`,
+		`<loader readonly="yes" type="pflash">` + config.OVMFCode + `</loader>`,
+		`<nvram>` + filepath.Join(result.QEMUDir, "OVMF_VARS.fd") + `</nvram>`,
+		`<source network="default"></source>`,
+		`<source file="` + filepath.Join(result.QEMUDir, "efi.img") + `"></source>`,
+		`<source file="` + filepath.Join(result.QEMUDir, "vdb.snapshot.qcow2") + `"></source>`,
+		`<source file="` + filepath.Join(result.DiskDir, "00-root.qcow2") + `"></source>`,
+		`<serial>katl-root</serial>`,
+		`<serial type="file">`,
+	} {
+		if !strings.Contains(plan.DomainXML, want) {
+			t.Fatalf("domain XML missing %q:\n%s", want, plan.DomainXML)
+		}
 	}
 }
 
-func TestVMBridgeNetwork(t *testing.T) {
+func TestVMLibvirtNetworkFromConfigAndEnv(t *testing.T) {
 	result, config := vmFixture(t)
-	config.Network = VMNetworkConfig{Mode: VMNetworkBridge, Bridge: "katlbr0"}
-	config.HostForwards = nil
+	config.LibvirtNetwork = "katl-net"
 
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 	})
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	if !hasArgPrefix(plan.Args, "bridge,id=net0,br=katlbr0") {
-		t.Fatalf("bridge netdev missing from args: %#v", plan.Args)
+	if !strings.Contains(plan.DomainXML, `<source network="katl-net"></source>`) {
+		t.Fatalf("domain XML missing configured network:\n%s", plan.DomainXML)
 	}
-}
 
-func TestVMBridgeNetworkFromEnv(t *testing.T) {
-	result, config := vmFixture(t)
-	config.Network = VMNetworkConfig{Mode: VMNetworkBridge}
-	config.HostForwards = nil
-
-	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+	config.LibvirtNetwork = ""
+	plan, err = planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 		env: func(name string) string {
-			switch name {
-			case "KATL_VMTEST_BRIDGE":
-				return "katlbr1"
-			case "KATL_QEMU_BRIDGE_HELPER":
-				return "/usr/lib/qemu/qemu-bridge-helper"
+			if name == "KATL_VMTEST_LIBVIRT_NETWORK" {
+				return "env-net"
 			}
 			return ""
 		},
@@ -94,50 +87,28 @@ func TestVMBridgeNetworkFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	if !hasArg(plan.Args, "bridge,id=net0,br=katlbr1,helper=/usr/lib/qemu/qemu-bridge-helper") {
-		t.Fatalf("bridge netdev missing from args: %#v", plan.Args)
+	if !strings.Contains(plan.DomainXML, `<source network="env-net"></source>`) {
+		t.Fatalf("domain XML missing env network:\n%s", plan.DomainXML)
 	}
 }
 
-func TestVMBridgeNetworkRejectsHostForwardsAndMissingBridge(t *testing.T) {
+func TestVMLibvirtRejectsHostForwards(t *testing.T) {
 	result, config := vmFixture(t)
-	config.Network = VMNetworkConfig{Mode: VMNetworkBridge, Bridge: "katlbr0"}
+	config.HostForwards = []HostForward{{HostPort: 18080, GuestPort: 8080}}
 	_, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "host forwards") {
 		t.Fatalf("planVM() error = %v, want host forwards rejection", err)
 	}
-
-	config.HostForwards = nil
-	config.Network.Bridge = ""
-	_, err = planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
-		stat:     os.Stat,
-		access:   func(string) error { return nil },
-		env:      func(string) string { return "" },
-	})
-	if err == nil || !strings.Contains(err.Error(), "KATL_VMTEST_BRIDGE") {
-		t.Fatalf("planVM() error = %v, want bridge env rejection", err)
-	}
-
-	config.Network.Bridge = "../katlbr0"
-	_, err = planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
-		stat:     os.Stat,
-		access:   func(string) error { return nil },
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported character") {
-		t.Fatalf("planVM() error = %v, want invalid bridge name rejection", err)
-	}
 }
 
 func TestVMPrepare(t *testing.T) {
 	result, config := vmFixture(t)
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access: func(string) error {
 			return os.ErrNotExist
@@ -146,7 +117,7 @@ func TestVMPrepare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	if plan.Accel != "tcg" {
+	if plan.Accel != "qemu" {
 		t.Fatalf("Accel = %q", plan.Accel)
 	}
 	if err := prepareVM(plan, config); err != nil {
@@ -166,8 +137,15 @@ func TestVMPrepare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read command: %v", err)
 	}
-	if !strings.Contains(string(command), "q35,accel=tcg") {
+	if !strings.Contains(string(command), "/usr/bin/virsh -c qemu:///system define "+plan.DomainXMLFile) {
 		t.Fatalf("command = %q", command)
+	}
+	domainXML, err := os.ReadFile(plan.DomainXMLFile)
+	if err != nil {
+		t.Fatalf("read domain XML: %v", err)
+	}
+	if !strings.Contains(string(domainXML), `<domain type="qemu">`) {
+		t.Fatalf("domain XML = %s", domainXML)
 	}
 }
 
@@ -186,25 +164,167 @@ func TestExecVMExecutorSetsTMPDIR(t *testing.T) {
 	}
 }
 
+func TestLibvirtVMExecutorCleansUpOnTimeout(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "virsh.log")
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_VIRSH_LOG"
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|start|destroy|undefine)
+        exit 0
+        ;;
+    domstate)
+        printf 'running\n'
+        exit 0
+        ;;
+    *)
+        echo "unexpected virsh args: $*" >&2
+        exit 40
+        ;;
+esac
+`)
+	t.Setenv("KATL_FAKE_VIRSH_LOG", logPath)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := LibvirtVMExecutor{
+		TempDir:       filepath.Join(tmp, "run-tmp"),
+		VirshPath:     virsh,
+		URI:           "qemu:///system",
+		DomainName:    "katl-run-1",
+		DomainXMLFile: xmlPath,
+		PollInterval:  time.Millisecond,
+	}.Run(ctx, "", nil, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error = %v, want deadline", err)
+	}
+	log := readScriptFile(t, logPath)
+	for _, want := range []string{
+		"-c qemu:///system define " + xmlPath,
+		"-c qemu:///system start katl-run-1",
+		"-c qemu:///system domstate katl-run-1",
+		"-c qemu:///system destroy katl-run-1",
+		"-c qemu:///system undefine katl-run-1 --nvram",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("virsh log missing %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestLibvirtVMExecutorFailsCrashedDomain(t *testing.T) {
+	tmp := t.TempDir()
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|start|destroy|undefine)
+        exit 0
+        ;;
+    domstate)
+        printf 'crashed\n'
+        exit 0
+        ;;
+    *)
+        exit 40
+        ;;
+esac
+`)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
+
+	err := LibvirtVMExecutor{
+		VirshPath:     virsh,
+		URI:           "qemu:///system",
+		DomainName:    "katl-run-1",
+		DomainXMLFile: xmlPath,
+		PollInterval:  time.Millisecond,
+	}.Run(context.Background(), "", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "crashed") {
+		t.Fatalf("Run() error = %v, want crashed failure", err)
+	}
+}
+
+func TestLibvirtVMExecutorBoundsCleanup(t *testing.T) {
+	tmp := t.TempDir()
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|start|undefine)
+        exit 0
+        ;;
+    domstate)
+        printf 'running\n'
+        exit 0
+        ;;
+    destroy)
+        sleep 1
+        exit 0
+        ;;
+    *)
+        exit 40
+        ;;
+esac
+`)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := LibvirtVMExecutor{
+		VirshPath:      virsh,
+		URI:            "qemu:///system",
+		DomainName:     "katl-run-1",
+		DomainXMLFile:  xmlPath,
+		PollInterval:   time.Millisecond,
+		CleanupTimeout: 5 * time.Millisecond,
+	}.Run(ctx, "", nil, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error = %v, want deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("cleanup was not bounded, elapsed %s", elapsed)
+	}
+}
+
 func TestVMDiskBoot(t *testing.T) {
 	result, config := vmFixture(t)
 	config.Boot.UKI = ""
 	config.Boot.ImageSnapshot = false
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 	})
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	for _, arg := range plan.Args {
-		if strings.Contains(arg, "fat:rw:") {
-			t.Fatalf("disk boot args contain EFI tree: %#v", plan.Args)
-		}
+	if strings.Contains(plan.DomainXML, "katl-efi") {
+		t.Fatalf("disk boot XML contains EFI disk:\n%s", plan.DomainXML)
 	}
-	if !hasArg(plan.Args, "if=virtio,index=0,format=qcow2,file="+config.Boot.Image) {
-		t.Fatalf("disk boot args = %#v", plan.Args)
+	if !strings.Contains(plan.DomainXML, `<source file="`+config.Boot.Image+`"></source>`) {
+		t.Fatalf("disk boot XML = %s", plan.DomainXML)
 	}
 }
 
@@ -220,7 +340,7 @@ func TestVMDirectKernelBoot(t *testing.T) {
 	config.OVMFCode = ""
 	config.OVMFVars = ""
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 		env:      func(string) string { return "" },
@@ -228,16 +348,17 @@ func TestVMDirectKernelBoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	if !hasArg(plan.Args, "-kernel") || !hasArg(plan.Args, kernel) || !hasArg(plan.Args, "-initrd") || !hasArg(plan.Args, initrd) {
-		t.Fatalf("direct kernel args missing: %#v", plan.Args)
-	}
-	if !hasArg(plan.Args, "console=ttyS0,115200n8 katl.install.mode=auto") {
-		t.Fatalf("kernel command line missing: %#v", plan.Args)
-	}
-	for _, arg := range plan.Args {
-		if strings.Contains(arg, "pflash") || strings.Contains(arg, "OVMF") || strings.Contains(arg, "fat:rw:") {
-			t.Fatalf("direct kernel args include firmware boot media: %#v", plan.Args)
+	for _, want := range []string{
+		`<kernel>` + kernel + `</kernel>`,
+		`<initrd>` + initrd + `</initrd>`,
+		`<cmdline>console=ttyS0,115200n8 katl.install.mode=auto</cmdline>`,
+	} {
+		if !strings.Contains(plan.DomainXML, want) {
+			t.Fatalf("direct kernel XML missing %q:\n%s", want, plan.DomainXML)
 		}
+	}
+	if strings.Contains(plan.DomainXML, "pflash") || strings.Contains(plan.DomainXML, "OVMF") {
+		t.Fatalf("direct kernel XML includes firmware boot media:\n%s", plan.DomainXML)
 	}
 	if err := prepareVM(plan, config); err != nil {
 		t.Fatalf("prepareVM() error = %v", err)
@@ -251,18 +372,21 @@ func TestVMEFITreeBoot(t *testing.T) {
 	config.Boot.EFITree = efiTree
 	config.Boot.ImageSnapshot = false
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 	})
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	if !hasArg(plan.Args, "if=virtio,index=0,format=raw,file=fat:rw:"+efiTree) {
-		t.Fatalf("EFI tree drive missing from args: %#v", plan.Args)
+	if plan.EFITree != efiTree {
+		t.Fatalf("EFITree = %q, want %q", plan.EFITree, efiTree)
 	}
-	if !hasArg(plan.Args, "if=virtio,index=1,format=qcow2,file="+config.Boot.Image) {
-		t.Fatalf("disk drive missing from args: %#v", plan.Args)
+	if !strings.Contains(plan.DomainXML, `<source file="`+filepath.Join(result.QEMUDir, "efi.img")+`"></source>`) {
+		t.Fatalf("EFI image disk missing from XML:\n%s", plan.DomainXML)
+	}
+	if !strings.Contains(plan.DomainXML, `<source file="`+config.Boot.Image+`"></source>`) {
+		t.Fatalf("disk drive missing from XML:\n%s", plan.DomainXML)
 	}
 }
 
@@ -271,7 +395,7 @@ func TestVMUKIEFIImage(t *testing.T) {
 	config.EFIDiskImage = true
 	config.MediaRunner = fakePreseedRunner{}
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 	})
@@ -279,11 +403,11 @@ func TestVMUKIEFIImage(t *testing.T) {
 		t.Fatalf("planVM() error = %v", err)
 	}
 	efiImage := filepath.Join(result.QEMUDir, "efi.img")
-	if !hasArg(plan.Args, "if=virtio,index=0,format=raw,file="+efiImage) {
-		t.Fatalf("EFI image drive missing from args: %#v", plan.Args)
+	if !strings.Contains(plan.DomainXML, `<source file="`+efiImage+`"></source>`) {
+		t.Fatalf("EFI image drive missing from XML:\n%s", plan.DomainXML)
 	}
-	if hasArg(plan.Args, "if=virtio,index=0,format=raw,file=fat:rw:"+filepath.Join(result.QEMUDir, "efi")) {
-		t.Fatalf("EFI image plan still uses fat:rw: %#v", plan.Args)
+	if strings.Contains(plan.DomainXML, "fat:rw:") {
+		t.Fatalf("EFI image plan still uses fat:rw:\n%s", plan.DomainXML)
 	}
 	if err := prepareVM(plan, config); err != nil {
 		t.Fatalf("prepareVM() error = %v", err)
@@ -305,20 +429,19 @@ func TestVMPreseedDrive(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 	config.PreseedDir = preseed
+	config.MediaRunner = fakePreseedRunner{}
 
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 	})
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	if !hasArg(plan.Args, "if=none,id=katlseed3,format=raw,file=fat:rw:"+preseed) {
-		t.Fatalf("preseed drive missing from args: %#v", plan.Args)
-	}
-	if !hasArg(plan.Args, "virtio-blk-pci,drive=katlseed3,serial=katl-seed") {
-		t.Fatalf("preseed device missing from args: %#v", plan.Args)
+	preseedImage := filepath.Join(result.QEMUDir, "preseed.img")
+	if !strings.Contains(plan.DomainXML, `<source file="`+preseedImage+`"></source>`) || !strings.Contains(plan.DomainXML, `<serial>katl-seed</serial>`) {
+		t.Fatalf("preseed disk missing from XML:\n%s", plan.DomainXML)
 	}
 	if err := prepareVM(plan, config); err != nil {
 		t.Fatalf("prepareVM() error = %v", err)
@@ -339,18 +462,15 @@ func TestVMPreseedImage(t *testing.T) {
 	config.PreseedImage = image
 
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 	})
 	if err != nil {
 		t.Fatalf("planVM() error = %v", err)
 	}
-	if !hasArg(plan.Args, "if=none,id=katlseed3,format=raw,file="+image) {
-		t.Fatalf("preseed image drive missing from args: %#v", plan.Args)
-	}
-	if !hasArg(plan.Args, "virtio-blk-pci,drive=katlseed3,serial=katl-seed") {
-		t.Fatalf("preseed image device missing from args: %#v", plan.Args)
+	if !strings.Contains(plan.DomainXML, `<source file="`+image+`"></source>`) || !strings.Contains(plan.DomainXML, `<serial>katl-seed</serial>`) {
+		t.Fatalf("preseed image disk missing from XML:\n%s", plan.DomainXML)
 	}
 	if err := prepareVM(plan, config); err != nil {
 		t.Fatalf("prepareVM() error = %v", err)
@@ -362,7 +482,7 @@ func TestVMVSock(t *testing.T) {
 	config.VSock.Enabled = true
 	config.VSock.GuestCID = 2048
 	plan, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
 		output: func(string, ...string) ([]byte, error) {
@@ -375,13 +495,16 @@ func TestVMVSock(t *testing.T) {
 	if plan.VSock.GuestCID != 2048 || plan.VSock.Port != 10240 {
 		t.Fatalf("vsock = %#v", plan.VSock)
 	}
-	if !hasArg(plan.Args, "vhost-vsock-pci,id=vsock0,guest-cid=2048") {
-		t.Fatalf("vsock device missing from args: %#v", plan.Args)
+	if plan.VSock.Device != "virtio-vsock,cid=2048" {
+		t.Fatalf("vsock device = %q", plan.VSock.Device)
+	}
+	if !strings.Contains(plan.DomainXML, `<vsock model="virtio">`) || !strings.Contains(plan.DomainXML, `<cid auto="no" address="2048"></cid>`) {
+		t.Fatalf("vsock missing from XML:\n%s", plan.DomainXML)
 	}
 	runner := VMRunner{
 		Executor: vmExec{write: "serial ready"},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 			output: func(string, ...string) ([]byte, error) {
@@ -420,7 +543,7 @@ func TestVSockHostCheck(t *testing.T) {
 	result, config := vmFixture(t)
 	config.VSock.Enabled = true
 	_, err := planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access: func(path string) error {
 			if path == "/dev/vhost-vsock" {
@@ -437,15 +560,12 @@ func TestVSockHostCheck(t *testing.T) {
 	}
 
 	_, err = planVM(result, config, probe{
-		lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 		stat:     os.Stat,
 		access:   func(string) error { return nil },
-		output: func(string, ...string) ([]byte, error) {
-			return nil, errors.New("unsupported")
-		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "vhost-vsock-pci") {
-		t.Fatalf("planVM() unsupported error = %v", err)
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
 	}
 }
 
@@ -454,7 +574,7 @@ func TestVMRun(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: "serial ready"},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -478,7 +598,7 @@ func TestVMExpect(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: "runtime ready"},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -507,7 +627,7 @@ func TestVMSerialHook(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: "waiting for config\nruntime ready\n"},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -526,7 +646,7 @@ func TestVMFailure(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{err: errors.New("exit status 1")},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -545,7 +665,7 @@ func TestVMTimeout(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: "boot line 1\nboot line 2\n", err: context.DeadlineExceeded},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -554,7 +674,7 @@ func TestVMTimeout(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("Status = %q", result.Status)
 	}
-	if !strings.Contains(result.FailureSummary, "qemu timed out; serial tail:") || !strings.Contains(result.FailureSummary, "boot line 2") {
+	if !strings.Contains(result.FailureSummary, "libvirt domain timed out; serial tail:") || !strings.Contains(result.FailureSummary, "boot line 2") {
 		t.Fatalf("FailureSummary = %q", result.FailureSummary)
 	}
 }
@@ -567,7 +687,7 @@ func TestVMSerialIdleTimeout(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: "Boot0002\n", waitForCancel: true},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -577,13 +697,13 @@ func TestVMSerialIdleTimeout(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("Status = %q", result.Status)
 	}
-	if !strings.Contains(result.FailureSummary, "qemu serial idle timed out") || !strings.Contains(result.FailureSummary, "Boot0002") {
+	if !strings.Contains(result.FailureSummary, "libvirt domain serial idle timed out") || !strings.Contains(result.FailureSummary, "Boot0002") {
 		t.Fatalf("FailureSummary = %q", result.FailureSummary)
 	}
 }
 
 func TestQEMUTimeoutSummaryWithoutSerial(t *testing.T) {
-	if got := qemuTimeoutSummary(filepath.Join(t.TempDir(), "missing.log")); got != "qemu timed out" {
+	if got := qemuTimeoutSummary(filepath.Join(t.TempDir(), "missing.log")); got != "libvirt domain timed out" {
 		t.Fatalf("qemuTimeoutSummary() = %q", got)
 	}
 }
@@ -623,6 +743,15 @@ func hasArgPrefix(args []string, want string) bool {
 	return false
 }
 
+func readDomainXML(t *testing.T, result Result) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(result.QEMUDir, "domain.xml"))
+	if err != nil {
+		t.Fatalf("read domain XML: %v", err)
+	}
+	return string(data)
+}
+
 func vmFixture(t *testing.T) (Result, VMConfig) {
 	t.Helper()
 	root := t.TempDir()
@@ -630,6 +759,7 @@ func vmFixture(t *testing.T) (Result, VMConfig) {
 	vars := filepath.Join(root, "OVMF_VARS.fd")
 	uki := filepath.Join(root, "installer.efi")
 	image := filepath.Join(root, "root.raw")
+	imageTool := filepath.Join(root, "qemu-img")
 	for path, content := range map[string]string{
 		code:  "code",
 		vars:  "vars",
@@ -640,6 +770,10 @@ func vmFixture(t *testing.T) (Result, VMConfig) {
 			t.Fatalf("write %s: %v", path, err)
 		}
 	}
+	writeExecutable(t, imageTool, `#!/usr/bin/env bash
+set -euo pipefail
+touch "${@: -1}"
+`)
 	result, err := NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",
@@ -654,12 +788,9 @@ func vmFixture(t *testing.T) (Result, VMConfig) {
 			ImageFormat:   DiskQCOW2,
 			ImageSnapshot: true,
 		},
-		OVMFCode: code,
-		OVMFVars: vars,
-		KVM:      KVMAuto,
-		HostForwards: []HostForward{{
-			HostPort:  18080,
-			GuestPort: 8080,
-		}},
+		OVMFCode:  code,
+		OVMFVars:  vars,
+		ImageTool: imageTool,
+		KVM:       KVMAuto,
 	}
 }

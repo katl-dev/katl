@@ -67,7 +67,7 @@ func TestInstalledKubeadmReadySmokeUsesPackagedRuntime(t *testing.T) {
 	runner := VMRunner{
 		Executor: blockingVMExec{write: runtimeBootSignal},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 			output:   func(string, ...string) ([]byte, error) { return []byte("vhost-vsock-pci guest-cid\n"), nil },
@@ -92,11 +92,8 @@ func TestInstalledKubeadmReadySmokeUsesPackagedRuntime(t *testing.T) {
 	if result.Status != StatusPassed {
 		t.Fatalf("result = %#v", result)
 	}
-	command, err := os.ReadFile(result.Artifacts.QEMUCommand)
-	if err != nil {
-		t.Fatalf("read qemu command: %v", err)
-	}
-	if !strings.Contains(string(command), "format=raw,file="+disk+",snapshot=on") {
-		t.Fatalf("qemu command did not boot packaged disk snapshot: %s", command)
+	domainXML := readDomainXML(t, result)
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "vdb.snapshot.qcow2")+`"></source>`) {
+		t.Fatalf("domain XML did not boot packaged disk: %s", domainXML)
 	}
 }

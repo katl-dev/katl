@@ -291,7 +291,7 @@ func TestVMRunnerChecksAgentAfterSerial(t *testing.T) {
 			return fakeHealthClient{}, nil
 		},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 			output: func(string, ...string) ([]byte, error) {

@@ -25,7 +25,7 @@ func TestInstallerBoot(t *testing.T) {
 	}, VMRunner{
 		Executor: vmExec{write: "Katl installer ready"},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -39,8 +39,9 @@ func TestInstallerBoot(t *testing.T) {
 	if serial, err := os.ReadFile(result.Artifacts.InstallerSerial); err != nil || !strings.Contains(string(serial), "Katl installer ready") {
 		t.Fatalf("installer serial = %q, err = %v", serial, err)
 	}
-	if command, err := os.ReadFile(result.Artifacts.QEMUCommand); err != nil || !strings.Contains(string(command), "fat:rw:") {
-		t.Fatalf("qemu command = %q, err = %v", command, err)
+	domainXML := readDomainXML(t, result)
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "efi.img")+`"></source>`) {
+		t.Fatalf("installer domain XML missing EFI image:\n%s", domainXML)
 	}
 	if _, err := os.Stat(filepath.Join(result.QEMUDir, "efi", "EFI", "BOOT", "BOOTX64.EFI")); err != nil {
 		t.Fatalf("installer UKI copy missing: %v", err)
@@ -71,7 +72,7 @@ func TestInstallerBootDirectKernel(t *testing.T) {
 	}, VMRunner{
 		Executor: vmExec{write: "Katl installer ready"},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -82,12 +83,9 @@ func TestInstallerBootDirectKernel(t *testing.T) {
 	if result.Status != StatusPassed {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
-	command, err := os.ReadFile(result.Artifacts.QEMUCommand)
-	if err != nil {
-		t.Fatalf("read qemu command: %v", err)
-	}
-	if !strings.Contains(string(command), "-kernel") || !strings.Contains(string(command), kernel) || strings.Contains(string(command), "fat:rw:") {
-		t.Fatalf("qemu command = %q", command)
+	domainXML := readDomainXML(t, result)
+	if !strings.Contains(domainXML, `<kernel>`+kernel+`</kernel>`) || strings.Contains(domainXML, "katl-efi") {
+		t.Fatalf("installer direct kernel domain XML = %s", domainXML)
 	}
 }
 

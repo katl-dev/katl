@@ -41,7 +41,7 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 			return fakeHealthClient{}, nil
 		},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 			output: func(string, ...string) ([]byte, error) {
@@ -77,12 +77,9 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 	if err != nil || !strings.Contains(string(serial), runtimeBootSignal) {
 		t.Fatalf("runtime serial = %q, err = %v", serial, err)
 	}
-	command, err := os.ReadFile(node.Result.Artifacts.QEMUCommand)
-	if err != nil {
-		t.Fatalf("read qemu command: %v", err)
-	}
-	if !strings.Contains(string(command), "guest-cid=62000") || !strings.Contains(string(command), "fat:rw:"+filepath.Join(node.Result.RunDir, "esp")) {
-		t.Fatalf("qemu command = %s", command)
+	domainXML := readDomainXML(t, node.Result)
+	if !strings.Contains(domainXML, `<cid auto="no" address="62000"></cid>`) || !strings.Contains(domainXML, `<source file="`+filepath.Join(node.Result.QEMUDir, "efi.img")+`"></source>`) {
+		t.Fatalf("node domain XML = %s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(node.Result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
 	if err != nil {
@@ -137,7 +134,7 @@ func TestStartInstalledRuntimeNodeWritesFailureResult(t *testing.T) {
 	runner := VMRunner{
 		Executor: failingVMExec{},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 			output: func(string, ...string) ([]byte, error) {
@@ -165,7 +162,7 @@ func TestStartInstalledRuntimeNodeWritesFailureResult(t *testing.T) {
 		t.Fatalf("plan worker-1: %v", planErr)
 	}
 	result := readNodeResult(t, planned.Artifacts.Result)
-	if result.ScenarioName != "two-node/worker-1" || result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "qemu exited before serial signal") {
+	if result.ScenarioName != "two-node/worker-1" || result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "libvirt domain exited before serial signal") {
 		t.Fatalf("failure result = %#v", result)
 	}
 	if len(result.Phases) != 1 || result.Phases[0].Status != StatusFailed || result.Phases[0].Name != "installed-runtime-node-start" {

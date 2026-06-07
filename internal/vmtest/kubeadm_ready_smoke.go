@@ -74,11 +74,11 @@ func RunInstalledKubeadmReadySmoke(ctx context.Context, result Result, config Ku
 
 	executor := runner.Executor
 	if executor == nil {
-		executor = defaultVMExecutor(result)
+		executor = defaultVMExecutor(result, plan)
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- executor.Run(ctx, plan.QEMUPath, plan.Args, serial)
+		done <- executor.Run(ctx, first(plan.VirshPath, plan.QEMUPath), plan.Args, serial)
 	}()
 	qemuDone, err := waitForSerialSignal(ctx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
 	if err != nil {
@@ -89,7 +89,7 @@ func RunInstalledKubeadmReadySmoke(ctx context.Context, result Result, config Ku
 		return finishVM(result, "kubeadm-ready-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
 	}
 	if qemuDone {
-		return finishVM(result, "kubeadm-ready-smoke", StatusFailed, "qemu exited after serial signal before kubeadm-ready smoke", started, time.Now().UTC())
+		return finishVM(result, "kubeadm-ready-smoke", StatusFailed, "libvirt domain exited after serial signal before kubeadm-ready smoke", started, time.Now().UTC())
 	}
 
 	session, err := connectKubeadmReadySmokeAgent(ctx, config, config.Smoke, result.VSock, result.Artifacts.VSockTranscript)

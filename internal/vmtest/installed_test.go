@@ -50,7 +50,7 @@ func TestInstalledRuntime(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: runtimeBootSignal},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -74,12 +74,9 @@ func TestInstalledRuntime(t *testing.T) {
 	if input.Disk != disk || input.DiskFormat != string(DiskRaw) || input.ESPArtifacts != esp || input.RequireVMTestAgent {
 		t.Fatalf("installed runtime input = %#v", input)
 	}
-	command, err := os.ReadFile(result.Artifacts.QEMUCommand)
-	if err != nil {
-		t.Fatalf("read qemu command: %v", err)
-	}
-	if !strings.Contains(string(command), "fat:rw:"+filepath.Join(result.RunDir, "esp")) {
-		t.Fatalf("default runtime boot did not use prepared ESP tree: %s", command)
+	domainXML := readDomainXML(t, result)
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "efi.img")+`"></source>`) {
+		t.Fatalf("default runtime boot did not attach prepared ESP image:\n%s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
 	if err != nil {
@@ -114,7 +111,7 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: runtimeBootSignal},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},
@@ -130,12 +127,9 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	if result.Status != StatusPassed {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
-	command, err := os.ReadFile(result.Artifacts.QEMUCommand)
-	if err != nil {
-		t.Fatalf("read qemu command: %v", err)
-	}
-	if !strings.Contains(string(command), "fat:rw:"+filepath.Join(result.RunDir, "esp")) {
-		t.Fatalf("runtime command did not boot injected ESP tree: %s", command)
+	domainXML := readDomainXML(t, result)
+	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.QEMUDir, "efi.img")+`"></source>`) {
+		t.Fatalf("runtime domain XML did not boot injected ESP image:\n%s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
 	if err != nil {
@@ -382,7 +376,7 @@ func TestInstalledRuntimeAcceptsRelativeFixturePaths(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: runtimeBootSignal},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 		},

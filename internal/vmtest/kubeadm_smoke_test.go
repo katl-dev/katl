@@ -175,7 +175,7 @@ func TestInstalledKubeadmAPISmokeCollectsDiagnosticsOnFailure(t *testing.T) {
 			return nil, nil
 		},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 			output:   func(string, ...string) ([]byte, error) { return []byte("vhost-vsock-pci guest-cid\n"), nil },
@@ -214,7 +214,7 @@ func TestInstalledKubeadmAPISmokeCollectsDiagnosticsOnFailure(t *testing.T) {
 	}
 }
 
-func TestInstalledKubeadmAPISmokeFailsWhenQEMUExitsAfterReady(t *testing.T) {
+func TestInstalledKubeadmAPISmokeFailsWhenDomainExitsAfterReady(t *testing.T) {
 	root := t.TempDir()
 	disk := filepath.Join(root, "installed.raw")
 	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
@@ -230,7 +230,7 @@ func TestInstalledKubeadmAPISmokeFailsWhenQEMUExitsAfterReady(t *testing.T) {
 	runner := VMRunner{
 		Executor: vmExec{write: runtimeBootSignal},
 		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/qemu-system-x86_64", nil },
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
 			access:   func(string) error { return nil },
 			output:   func(string, ...string) ([]byte, error) { return []byte("vhost-vsock-pci guest-cid\n"), nil },
@@ -244,12 +244,12 @@ func TestInstalledKubeadmAPISmokeFailsWhenQEMUExitsAfterReady(t *testing.T) {
 			VM:           vmConfig,
 		},
 		AgentConnector: func(context.Context, VSockPlan, string) (KubeadmSmokeAgentSession, error) {
-			t.Fatal("agent connector should not be called after qemu exits")
+			t.Fatal("agent connector should not be called after libvirt domain exits")
 			return nil, nil
 		},
 	}, runner)
 
-	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "qemu exited after serial signal") {
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "libvirt domain exited after serial signal") {
 		t.Fatalf("result = %#v", result)
 	}
 	serial, err := os.ReadFile(result.Artifacts.RuntimeSerial)

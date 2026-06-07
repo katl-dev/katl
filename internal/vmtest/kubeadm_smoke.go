@@ -85,11 +85,11 @@ func RunInstalledKubeadmAPISmoke(ctx context.Context, result Result, config Kube
 
 	executor := runner.Executor
 	if executor == nil {
-		executor = defaultVMExecutor(result)
+		executor = defaultVMExecutor(result, plan)
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- executor.Run(ctx, plan.QEMUPath, plan.Args, serial)
+		done <- executor.Run(ctx, first(plan.VirshPath, plan.QEMUPath), plan.Args, serial)
 	}()
 	qemuDone, err := waitForSerialSignal(ctx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
 	if err != nil {
@@ -100,7 +100,7 @@ func RunInstalledKubeadmAPISmoke(ctx context.Context, result Result, config Kube
 		return finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
 	}
 	if qemuDone {
-		return finishVM(result, "kubeadm-api-smoke", StatusFailed, "qemu exited after serial signal before kubeadm API smoke", started, time.Now().UTC())
+		return finishVM(result, "kubeadm-api-smoke", StatusFailed, "libvirt domain exited after serial signal before kubeadm API smoke", started, time.Now().UTC())
 	}
 
 	session, err := connectKubeadmSmokeAgent(ctx, config, config.Smoke, result.VSock, result.Artifacts.VSockTranscript)
@@ -428,6 +428,11 @@ func waitForSerialSignal(ctx context.Context, done <-chan error, serialLog strin
 	defer ticker.Stop()
 	for {
 		if serialHas(serialLog, expect) {
+			select {
+			case <-done:
+				return true, nil
+			default:
+			}
 			return false, nil
 		}
 		select {
@@ -436,11 +441,11 @@ func waitForSerialSignal(ctx context.Context, done <-chan error, serialLog strin
 				return true, nil
 			}
 			if err == nil {
-				err = errors.New("qemu exited before serial signal appeared")
+				err = errors.New("libvirt domain exited before serial signal appeared")
 			}
-			return true, fmt.Errorf("qemu exited before serial signal %q appeared: %w", expect, err)
+			return true, fmt.Errorf("libvirt domain exited before serial signal %q appeared: %w", expect, err)
 		case <-ctx.Done():
-			return false, fmt.Errorf("qemu timed out waiting for serial signal %q", expect)
+			return false, fmt.Errorf("libvirt domain timed out waiting for serial signal %q", expect)
 		case <-ticker.C:
 		}
 	}
