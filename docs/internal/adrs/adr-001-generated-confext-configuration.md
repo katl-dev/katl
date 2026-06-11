@@ -20,7 +20,7 @@ Katl needs a way to configure `/etc` while preserving:
 typed installer validation
 native systemd/Linux file semantics
 generation-scoped rollback
-local QEMU install tests
+local VM install tests
 later runtime configuration updates
 ```
 
@@ -216,7 +216,7 @@ replace arbitrary etc.files handling with known configuration domain renderers
 enforce the fixed host user and SSH policy in generated confext validation
 render Katl-owned sshd policy and katl authorized keys
 wire generated confext activation into generation selection
-prove the boot ordering in QEMU
+prove the boot ordering in VM tests
 define the later runtime agent input and trust policy
 ```
 

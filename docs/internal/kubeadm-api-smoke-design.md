@@ -216,8 +216,8 @@ The implementation should grow in small gates:
 Guest-side `kubectl` is the first required assertion because it avoids host
 networking and certificate rewriting. Host-side `kubectl` can be added later by
 copying `admin.conf` as a restricted artifact, rewriting the server endpoint to
-a QEMU host-forwarded address, and ensuring the API server certificate includes
-the host-forwarded name or address.
+a host-reachable address from the libvirt VM network, and ensuring the API
+server certificate includes that name or address.
 
 ## API Readiness Assertions
 
@@ -267,7 +267,8 @@ delete or isolate the artifact with the rest of the VM work directory
 ```
 
 For host-side `kubectl`, the harness may copy `admin.conf`, rewrite the first
-cluster server endpoint to the host-forwarded address, and run:
+cluster server endpoint to a host-reachable address from the libvirt VM network,
+and run:
 
 ```text
 kubectl --kubeconfig <restricted-admin.conf> get --raw=/readyz
@@ -285,7 +286,7 @@ kubelet, static pods, or API readiness.
 Collect:
 
 ```text
-QEMU serial log
+VM serial log
 test command transcript
 systemctl status katl-kubeadm-ready.target
 systemctl status containerd.service
@@ -343,7 +344,7 @@ API readyz after livez: 5 minutes
 diagnostic collection: 1 minute best effort
 ```
 
-These values are starting points for local QEMU. They should be tuned from
+These values are starting points for local VM execution. They should be tuned from
 observed VM performance rather than treated as product API.
 
 ## Relationship To Boot Health

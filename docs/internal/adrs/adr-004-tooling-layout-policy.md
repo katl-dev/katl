@@ -20,8 +20,8 @@ user-facing Katl commands
   katl-resource-lock, and runtime helper commands.
 
 developer and CI entrypoints
-  Top-level scripts that invoke mkosi, QEMU, go test, artifact checks, and
-  resource-test setup.
+  Top-level scripts that invoke mkosi, libvirt VM tests, go test, artifact
+  checks, and resource-test setup.
 
 domain libraries
   Go packages under internal/ for installer planning, config validation,
@@ -64,8 +64,9 @@ roles:
 
 ```text
 external-tool adapter
-  Invoke mkosi, podman, QEMU, go test -exec, unsquashfs, or similar host tools
-  with repo defaults and environment normalization.
+  Invoke mkosi, podman, libvirt clients, image tooling, go test -exec,
+  unsquashfs, or similar host tools with repo defaults and environment
+  normalization.
 
 developer or CI aggregate
   Sequence already-typed commands for a still-moving workflow. The script may
@@ -181,7 +182,8 @@ internal/resourcetest
 
 internal/vmtest
   VM world manifests, host capability records, lease allocation, fixture
-  builders, scenario directories, QEMU/nspawn helpers, and guest-agent clients.
+  builders, scenario directories, libvirt/nspawn helpers, and guest-agent
+  clients.
 
 internal/installer/*
   Install manifest parsing, disk planning, generated confext rendering,
@@ -265,11 +267,11 @@ surface for build-side artifact metadata policy.
 ## Devshell And Host Tools
 
 The Nix devshell should declare host tools required by scripts and VM tests:
-`jq`, `qemu`, `mkosi`, `unsquashfs`, `ip`, OVMF, systemd tools, and similar
-external dependencies. Scripts should find those tools through `PATH` or
-explicit `KATL_*` environment overrides. Committed config must not bake in
-developer home paths, `/nix/store` paths, `/run/current-system`, or distro-local
-profile paths.
+`jq`, libvirt clients, image tooling, `mkosi`, `unsquashfs`, `ip`, OVMF,
+systemd tools, and similar external dependencies. Scripts should find those
+tools through `PATH` or explicit `KATL_*` environment overrides. Committed
+config must not bake in developer home paths, `/nix/store` paths,
+`/run/current-system`, or distro-local profile paths.
 
 When a script needs an additional external tool, add it to the devshell before
 documenting the command as agent-runnable.

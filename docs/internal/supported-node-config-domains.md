@@ -248,7 +248,7 @@ golden tests for rendered native artifacts
 duplicate-path and denied-path tests
 systemd-analyze verify for generated units where practical
 systemd-tmpfiles verification for tmpfiles rules where practical
-integration or QEMU smoke tests when apply behavior affects boot, networking,
+integration or VM smoke tests when apply behavior affects boot, networking,
   storage, kubeadm readiness, or operator access
 ```
 

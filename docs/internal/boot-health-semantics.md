@@ -89,7 +89,7 @@ return to the previous known-good generation instead of repeatedly booting the
 candidate.
 
 Later work may use systemd-boot boot counting for multiple attempts, but the
-first policy should keep rollback behavior easy to validate in QEMU.
+first policy should keep rollback behavior easy to validate in VM tests.
 Rollback selection is defined in
 `docs/internal/rollback-selection-rules.md`.
 

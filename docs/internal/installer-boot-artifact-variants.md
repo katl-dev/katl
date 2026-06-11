@@ -55,7 +55,7 @@ installer UKI
 
 split installer kernel/initrd
   Linux kernel plus initrd files suitable for PXE, iPXE, matchbox, or direct
-  QEMU -kernel/-initrd boot
+  kernel/initrd VM boot through the supported VM runner
 ```
 
 Initial output names:
@@ -190,7 +190,7 @@ or a later dedicated secret channel.
 UKI behavior:
 
 ```text
-boots directly from EFI, QEMU, or an ISO/USB wrapper
+boots directly from EFI, the supported VM runner, or an ISO/USB wrapper
 uses embedded default command line for local handoff unless overridden
 starts katlos-install in wait mode when no input URL/ref is supplied
 ```
@@ -198,7 +198,7 @@ starts katlos-install in wait mode when no input URL/ref is supplied
 Split kernel/initrd behavior:
 
 ```text
-boots through PXE, iPXE, matchbox, or direct QEMU -kernel/-initrd
+boots through PXE, iPXE, matchbox, or kernel/initrd VM boot
 receives input refs and mode flags through kernel arguments
 starts the same katlos-install units and state machine as the UKI variant
 does not require rebuilding kernel or initrd when node config changes

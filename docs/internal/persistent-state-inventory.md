@@ -86,6 +86,6 @@ projection decision is recorded in
 ## Deferred Details
 
 The exact generated unit file contents belong in the follow-up mount unit
-implementation tasks. QEMU validation must prove that `/etc/machine-id`,
+implementation tasks. VM validation must prove that `/etc/machine-id`,
 `/etc/kubernetes`, SSH host keys, native `/var` service state, and selected
 extension activation paths are present before their consumers start.

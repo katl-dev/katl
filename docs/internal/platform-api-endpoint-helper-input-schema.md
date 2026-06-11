@@ -450,8 +450,8 @@ Generated systemd/networkd artifacts should be verified with
 `systemd-analyze verify` or `networkd` syntax validation where practical.
 
 VM tests must prove pre-Cilium API reachability, local BIRD export, route
-withdrawal, and diagnostics with explicit skips when bridge, QEMU, or routing
-prerequisites are missing.
+withdrawal, and diagnostics with explicit skips when libvirt VM, network,
+storage, or routing prerequisites are missing.
 
 ## Implementation Follow-Up
 

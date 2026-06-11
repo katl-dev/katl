@@ -85,5 +85,5 @@ remains in projected `/etc/kubernetes`.
 ## Deferred Work
 
 The exact unit file and `systemd-analyze verify` gate belong to the mount unit
-implementation task. QEMU validation must prove the projection is visible before
+implementation task. VM validation must prove the projection is visible before
 kubelet and kubeadm automation start.

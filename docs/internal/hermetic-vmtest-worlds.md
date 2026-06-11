@@ -43,8 +43,8 @@ The hermetic runner should:
 create all mutable output under TMPDIR
 print the run directory and link the latest run from build/vmtest/
 probe configured host capabilities before handing off to go test
-set up host-side VM networking when the selected world backend requires it
-support explicit world backends without inferring them from Go test arguments
+verify libvirt VM networking before handing off to tests
+record the selected libvirt network without inferring it from Go test arguments
 provide a CIDR and gateway to tests, not per-scenario node addresses
 build or resolve Katl artifacts before scenario assertions start
 run Go test binaries inside the world with go test -exec
@@ -109,28 +109,36 @@ The manifest is the only required ambient input for hermetic VM tests:
   "runDir": "/tmp/katl-vmtest/20260606T120000Z-abc123",
   "artifactDir": "/tmp/katl-vmtest/20260606T120000Z-abc123/artifacts",
   "scenarioDir": "/tmp/katl-vmtest/20260606T120000Z-abc123/scenarios",
+  "libvirt": {
+    "uri": "qemu:///system",
+    "network": "default",
+    "storagePool": "default",
+    "storagePath": "/var/lib/libvirt/images",
+    "domainPrefix": "katl-20260606T120000Z-abc123"
+  },
   "network": {
-    "backend": "bridge",
-    "bridge": "katl-vmtest0",
+    "backend": "libvirt",
+    "name": "default",
     "cidr": "10.77.0.0/24",
     "gateway": "10.77.0.1",
     "leaseFile": "/tmp/katl-vmtest/20260606T120000Z-abc123/network/leases.json"
   },
   "capabilities": {
-    "qemu": "passed",
-    "qemu-img": "passed",
+    "image-tool": "passed",
+    "libvirt": "passed",
+    "libvirt-network": "passed",
+    "libvirt-storage-pool": "passed",
     "ovmf": "passed",
     "kvm": "passed",
-    "bridge": "passed",
     "vsock": "passed",
     "systemd-nspawn": "passed"
   }
 }
 ```
 
-The world may provide a CIDR and configured host-side bridge. It should not
-encode that a two-node test needs `cp-1` at one address and `worker-1` at
-another. That allocation belongs to the scenario.
+The world provides the selected libvirt network, CIDR, gateway, and DHCP lease
+artifact. It should not encode that a two-node test needs `cp-1` at one address
+and `worker-1` at another. That allocation belongs to the scenario.
 
 ## Scenario Ownership
 
@@ -176,32 +184,33 @@ decide what lives in it.
 
 ## Network Model
 
-The first network backend may be a bridge because kubeadm join needs guest to
-guest reachability. The hermetic runner should own bridge setup for the run
-where host policy allows it:
+The VM network backend is libvirt. Kubeadm join needs guest-to-guest
+reachability, so the runner verifies that the selected libvirt network exists,
+is active, and has an address configuration it can record:
 
 ```text
-choose or create a test bridge
-assign the bridge gateway address inside the selected CIDR
-enable the host-side settings required by the QEMU backend
-write the bridge, CIDR, gateway, and lease file to world.json
-tear down runner-created network state during cleanup
+connect to the configured libvirt URI
+verify the selected libvirt network is active
+discover the network CIDR and gateway
+write the network, CIDR, gateway, and lease file to world.json
+record DHCP leases for scenario inspection
 ```
 
-Developers may provide a CIDR or network backend override for local debugging,
-but normal runs should have defaults. Tests should request leases from the
-world rather than receiving addresses through environment variables.
+Developers may provide a libvirt network override for local debugging, but
+normal runs use the default libvirt network. Tests should request leases from
+the world rather than receiving addresses through environment variables.
 
-If the host cannot provide the selected backend, the world setup result is a
-host capability gap. A required CI suite should fail; an optional local suite
-may report `host-skipped`.
+If the host cannot provide the selected libvirt URI, network, or storage pool,
+the world setup result is a host capability gap. A required CI suite should
+fail; an optional local suite may report `host-skipped`.
 
 ## Nspawn Model
 
 The same world model applies to nspawn-backed checks. The difference is that an
 nspawn-only world usually needs a prepared userspace root or image, bind mount
 workspaces, cgroup and mount privileges, and result directories; it does not need
-QEMU, OVMF, KVM, vsock, or a bridge unless the selected test also starts VMs.
+libvirt, image tooling, OVMF, KVM, or vsock unless the selected test also starts
+VMs.
 
 The direct developer entrypoint remains the same thin wrapper over `go test`:
 
@@ -219,11 +228,11 @@ Missing `systemd-nspawn`, cgroup support, or required mount privileges are host
 capability gaps. Missing runtime artifacts, stale generated userspace fixtures,
 or absent bind inputs are setup failures in enabled hermetic runs.
 
-Nspawn tests are a fast userspace contract, not a replacement for QEMU. They can
+Nspawn tests are a fast userspace contract, not a replacement for VM tests. They can
 prove generated systemd/config syntax, runtime helper behavior, and selected
-filesystem projections before boot, while QEMU remains responsible for firmware,
-disk layout, boot selection, networking, kubelet startup, kubeadm, and rollback
-behavior.
+filesystem projections before boot, while VM tests remain responsible for
+firmware, disk layout, boot selection, networking, kubelet startup, kubeadm, and
+rollback behavior.
 
 ## go test -exec
 
@@ -328,8 +337,8 @@ setup-failed
   reason
 
 host-skipped
-  the host lacks a declared optional capability such as QEMU, OVMF, KVM, vsock,
-  nspawn privileges, or the selected VM network backend
+  the host lacks a declared optional capability such as libvirt, image tooling,
+  OVMF, KVM, vsock, nspawn privileges, or the selected VM network
 
 disabled
   the scenario was outside the selected suite
@@ -387,20 +396,13 @@ ask the developer to export a list of fixture paths and addresses.
 
 ## Open Questions
 
-1. Should the default network backend be a runner-created bridge or direct QEMU
-   networking?
-
-   Initial recommendation: use a bridge first if it is the shortest reliable
-   path to kubeadm join. Keep the backend behind the world schema so direct QEMU
-   or libvirt can replace it without changing scenario tests.
-
-2. Should successful tmpdir worlds be deleted automatically?
+1. Should successful tmpdir worlds be deleted automatically?
 
    Initial recommendation: keep failed worlds, delete successful worlds by
    default after writing a small summary and updating `build/vmtest/latest` only
    when the run is preserved.
 
-3. Should mkosi build output move fully under the tmpdir world?
+2. Should mkosi build output move fully under the tmpdir world?
 
    Initial recommendation: the hermetic runner should set build and state roots
    under the world for standard runs. Existing `build/mkosi` outputs can remain

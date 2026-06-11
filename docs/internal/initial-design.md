@@ -29,7 +29,7 @@ Katl config repo
 
 GitHub Actions is a useful north-star publishing environment, but it is not an
 early implementation target. The current local focus is to build an installer
-UKI, boot it in QEMU, install a Fedora-derived runtime root artifact to a target
+UKI, boot it in the VM runner, install a Fedora-derived runtime root artifact to a target
 disk, and boot that installed runtime.
 
 ## Active Product Boundary
@@ -45,7 +45,7 @@ artifact metadata and verification
 Katl-owned root disk layout
 generated confext content
 systemd boot/update/mount/health wiring
-local QEMU validation harness
+local VM validation harness
 ```
 
 User-owned surfaces:
@@ -250,7 +250,7 @@ places kubeadm input under `/etc/katl`, and writable kubeadm output is projected
 at `/etc/kubernetes`.
 
 The first proof should stay local: build or inspect the sysext artifact, install
-it with the selected generation, boot the installed runtime in QEMU, reach
+it with the selected generation, boot the installed runtime in the VM runner, reach
 `katl-kubeadm-ready.target`, and run a bounded kubeadm preflight or dry-run check
 that proves the node is prepared for `kubeadm init`. CI-built downloadable
 artifacts are a later publishing concern, not a blocker for this local loop.
@@ -415,7 +415,7 @@ The immediate step is intentionally narrow:
 split mkosi profiles for installer and runtime
 build an installer UKI
 build a prebuilt runtime SquashFS artifact
-boot installer-image in QEMU/OVMF
+boot installer-image in the VM runner with OVMF
 deliver install config without PXE
 write the runtime artifact to a target disk
 install EFI boot metadata
@@ -435,7 +435,7 @@ install and activate the sysext as part of the selected generation
 render kubeadm input under /etc/katl from known Katl config domains
 project writable /etc/kubernetes from /var
 start containerd and expose kubelet with Katl-controlled ordering
-reach katl-kubeadm-ready.target in QEMU
+reach katl-kubeadm-ready.target in the VM runner
 run a bounded kubeadm preflight or dry-run check for kubeadm init readiness
 ```
 

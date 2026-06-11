@@ -189,5 +189,5 @@ The stacked-etcd bootstrap and data ownership policy is defined in
 ## Follow-up Gates
 
 Mount units and tmpfiles snippets should be verified with `systemd-analyze
-verify` once they exist. QEMU boot tests must prove that `/var` is mounted by
+verify` once they exist. VM boot tests must prove that `/var` is mounted by
 stable partition identity and that no persistent identity is read from `/run`.

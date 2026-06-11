@@ -156,7 +156,8 @@ node systemRole and selected KubeadmConfig intent are consistent
 ```
 
 Initial access may be SSH. VM tests may use vsock or harness agents where
-available, but the command contract should not depend on a QEMU-only transport.
+available, but the command contract should not depend on a test-harness-only
+transport.
 All transports must return structured command results with stdout/stderr
 redaction. Kubernetes API access starts only after `kubeadm init` has produced a
 usable kubeconfig; the API is not a pre-bootstrap coordination channel.

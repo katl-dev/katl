@@ -6,7 +6,7 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 
 - Treat `katlc` as the user-facing compiler for configuration, install assets, and update artifacts.
 - Use Go for Katl product logic: `katlc`, installer state machines, node/update agents, config validation, disk/update planners, and reusable libraries that need unit tests.
-- Do not write Go just to wrap `mkosi`, `podman`, `qemu-system-*`, or `virsh` during early scaffolding. Start with thin scripts for build/boot orchestration and promote to Go only when the wrapper has meaningful parsing, state, or testable behavior.
+- Do not write Go just to wrap `mkosi`, `podman`, hypervisor binaries, or `virsh` during early scaffolding. Start with thin scripts for build/boot orchestration and promote to Go only when the wrapper has meaningful parsing, state, or testable behavior. The current supported VM test path is the libvirt-backed `scripts/vmtest-run` world.
 - Keep shell limited to small mkosi hooks and glue where a shell script is the clearest tool. Shell may orchestrate tools; it must not contain installer policy, disk layout decisions, or update state machines.
 - Keep mkosi as the image builder. Do not turn mkosi hooks or build scripts into the installer engine.
 - Do not turn Katl into a Kubernetes distribution. Katl prepares kubeadm-ready nodes; kubeadm and user-managed GitOps take over from there.
@@ -17,9 +17,9 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 
 - Early work should prove one small build, boot, or test loop at a time before expanding scope.
 - Build paths should use `scripts/mkosi` or an equivalent thin container wrapper around mkosi.
-- Boot paths should use a thin direct QEMU script or `mkosi vm` when adequate. Do not add a Go VM runner unless the user explicitly asks for it or the wrapper has meaningful state/parsing that needs tests.
+- Boot paths should use `scripts/vmtest-run` for automated libvirt VM tests, with `mkosi vm` left only as a manual first-look tool when useful. Do not add a separate VM runner unless the user explicitly asks for it or the wrapper has meaningful state/parsing that needs tests.
 - The first smoke check may be a simple timeout plus serial-log match for `Katl hello`.
-- Keep libvirt, multi-node orchestration, CI/end-user publishing, real disk installation, and `katlc` implementation out of first-boot scaffolding unless the user explicitly changes the scope.
+- Keep new VM orchestration beyond the supported libvirt `scripts/vmtest-run` path, multi-node orchestration, CI/end-user publishing, real disk installation, and `katlc` implementation out of first-boot scaffolding unless the user explicitly changes the scope.
 
 ## Runtime Model
 
@@ -31,11 +31,11 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 ## Testing Expectations
 
 - Design installer behavior as typed, idempotent, and testable state transitions.
-- Prefer unit tests for planning and validation logic, golden tests for generated assets, and QEMU/libvirt tests for boot/install/update flows.
+- Prefer unit tests for planning and validation logic, golden tests for generated assets, and libvirt VM tests for boot/install/update flows.
 - Generated systemd units should be verifiable with `systemd-analyze verify` where practical.
 - Changes to disk layout, boot flow, update flow, or kubeadm state handling need tests or an explicit note explaining the remaining gap.
 - `go test ./...` is the baseline unit/golden gate, not proof that enabled nspawn, VM, boot, install, update, or kubeadm flows ran.
-- Changes that affect `scripts/vmtest-run`, `scripts/vmtest-exec`, VM test worlds, nspawn checks, QEMU scenarios, fixture generation, boot/install/update behavior, or kubeadm smoke behavior must run the relevant `scripts/vmtest-run ... -count=1` gate on a capable host. If the current host cannot run it, record the exact host capability gap and the exact `scripts/vmtest-run` command that still needs to run.
+- Changes that affect `scripts/vmtest-run`, `scripts/vmtest-exec`, VM test worlds, nspawn checks, VM scenarios, fixture generation, boot/install/update behavior, or kubeadm smoke behavior must run the relevant `scripts/vmtest-run ... -count=1` gate on a capable host. If the current host cannot run it, record the exact host capability gap and the exact `scripts/vmtest-run` command that still needs to run.
 
 ## Naming
 
@@ -70,7 +70,7 @@ Katl is a systemd-native Kubernetes node OS builder. Keep changes aligned with t
 
 - Closing a Bead has a required order:
   1. Finish the scoped code/docs change.
-  2. Run the validation gates that match the change: formatting, unit tests, generated asset checks, `systemd-analyze verify`, `scripts/vmtest-run ... -count=1` for enabled nspawn/VM/world scenarios, QEMU/libvirt smoke tests, or docs review as applicable.
+  2. Run the validation gates that match the change: formatting, unit tests, generated asset checks, `systemd-analyze verify`, `scripts/vmtest-run ... -count=1` for enabled nspawn/VM/world scenarios, libvirt VM smoke tests, or docs review as applicable.
   3. Run or request review when the change is broad, risky, security-sensitive, boot/update-related, disk-layout-related, or kubeadm-state-related.
   4. Review `git status --short` and stage only the files for the completed Bead with explicit paths.
   5. Commit those files with `git commit-wrapped`.

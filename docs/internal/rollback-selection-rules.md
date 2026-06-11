@@ -108,5 +108,5 @@ activation links under /run point only to the selected generation
 failed generation is not left partially active
 ```
 
-QEMU update tests should eventually prove that a failed generation returns to
+VM update tests should eventually prove that a failed generation returns to
 the previous known-good root slot and matching sysext/confext set.

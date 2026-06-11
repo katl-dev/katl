@@ -260,7 +260,7 @@ golden tests for config-apply-status.json
 negative tests proving mixed live requests fail atomically
 negative tests proving kubeadm and /etc/kubernetes changes are never live-applied
 status serialization tests with redaction
-QEMU tests for at least one online-applicable domain and one staged-only domain
+VM tests for at least one online-applicable domain and one staged-only domain
 ```
 
 Generated paths and test fixtures must remain repo-relative or under the VM test

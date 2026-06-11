@@ -2,7 +2,7 @@
 
 Status: proposed design.
 
-Katl has unit tests, nspawn userspace checks, and QEMU VM scenarios that all need
+Katl has unit tests, nspawn userspace checks, and VM scenarios that all need
 different setup. The heavy tests should be agent-runnable without a developer
 hand-exporting fixture paths. When an enabled scenario reaches its assertions, a
 failure should point at the Katl behavior under test. Resource preparation,
@@ -49,7 +49,8 @@ host capability probe results
 ```
 
 Scenario execution should consume immutable paths from this resource manifest.
-Tests must not rebuild or rediscover artifacts after QEMU or nspawn starts.
+Tests must not rebuild or rediscover artifacts after a VM or nspawn scenario
+starts.
 
 ## Build Inputs
 
@@ -134,7 +135,7 @@ scenarios can reuse outputs safely:
 
 ```text
 toolchain
-  Go, mkosi, qemu, systemd-nspawn, systemd-analyze, qemu-img, OVMF
+  Go, mkosi, libvirt, systemd-nspawn, systemd-analyze, image tooling, OVMF
 
 mkosi artifacts
   installer UKI or kernel/initrd pair, runtime root, KatlOS install image,
@@ -181,7 +182,7 @@ setup-failed
 
 host-skipped
   the host lacks a declared optional capability such as systemd-nspawn
-  privileges, QEMU, OVMF, KVM, vhost-vsock, or required bridge networking
+  privileges, libvirt, image tooling, OVMF, KVM, or vhost-vsock
 
 disabled
   the scenario was outside the selected suite
@@ -295,7 +296,7 @@ scripts/vmtest-run ./internal/vmtest -run Nspawn -count=1
   nspawn userspace and generated systemd/config checks
 
 scripts/vmtest-run ./internal/vmtest -count=1
-  QEMU first-install and installed-runtime checks
+  libvirt first-install and installed-runtime checks
 
 scripts/vmtest-run ./internal/vmtest/scenarios -run 'TwoNode|ThreeControlPlane' -count=1
   multi-node kubeadm and stacked-etcd checks
@@ -313,11 +314,10 @@ tools already in use.
 
 Bazel would add value after the graph stabilizes if Katl needs remote caching,
 cross-repository build graph integration, or stronger sandboxing for pure
-actions. It would still need local execution escapes for mkosi, nspawn, QEMU,
-KVM, OVMF, vhost-vsock, and bridge networking. Fedora and Kubernetes package
-repository contents still need an explicit lock. Package locks, fixture
-generation, and strict skip classification are the immediate sources of
-determinism.
+actions. It would still need local execution escapes for mkosi, nspawn, libvirt,
+KVM, OVMF, and vhost-vsock. Fedora and Kubernetes package repository contents
+still need an explicit lock. Package locks, fixture generation, and strict skip
+classification are the immediate sources of determinism.
 
 Revisit Bazel when these are true:
 
@@ -339,8 +339,8 @@ privileged integration tests can be cleanly tagged as local-only actions
 5. Add package-set recording and strict lock verification around mkosi builds.
 6. Generate deterministic multi-node fixture inputs from source-controlled
    templates.
-7. Wire GitHub Actions to call the same command, with QEMU suites on runners
-   that provide the declared host capabilities.
+7. Wire GitHub Actions to call the same command, with VM suites on runners that
+   provide the declared host capabilities.
 
 ## Open Questions
 

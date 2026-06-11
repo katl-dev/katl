@@ -106,7 +106,7 @@ stable, sortable by sysupdate, and identical across all resources in the target.
 
 `InstancesMax=2` is the initial policy for root and UKI transfers. Katl starts
 with two root slots and keeps the current known-good generation plus one
-candidate. More slots can be added later, but the generation model and QEMU
+candidate. More slots can be added later, but the generation model and VM
 rollback tests should prove two slots first.
 
 Set `ProtectVersion=` to the running KatlOS image version when updating online.
@@ -118,7 +118,7 @@ overwritten while they are in use.
 For UKIs, use `TriesLeft=` and `TriesDone=` with `@l` and `@d` in the target
 match patterns so new candidate UKIs participate in systemd-boot automatic boot
 assessment. The first implementation may set one try to match Katl's current
-rollback policy, or use more tries only after QEMU tests cover repeated failed
+rollback policy, or use more tries only after VM tests cover repeated failed
 boots.
 
 Boot counting renames the booted UKI after a successful boot. Katl generation
@@ -255,7 +255,7 @@ the first implementation.
 
 The local manpage for `org.freedesktop.sysupdate1` marks the API unstable and
 subject to breaking changes. Katl should first prototype direct
-`systemd-sysupdate` CLI invocation with explicit transfer definitions and QEMU
+`systemd-sysupdate` CLI invocation with explicit transfer definitions and VM
 rollback tests. D-Bus integration can be revisited after the resource mapping,
 signing model, and boot-health flow are proven.
 
@@ -270,7 +270,7 @@ components as regular-file sources.
 The next implementation step is a small prototype that stages a root partition
 and UKI into an installed VM, creates a Katl generation record from the staged
 resources, boots the candidate, and proves both health promotion and failed boot
-rollback in QEMU. The prototype must also prove the partition-label transition
+rollback in VM tests. The prototype must also prove the partition-label transition
 from Katl's current `KATL_ROOT_A`/`KATL_ROOT_B` labels to sysupdate's
 version-bearing or `_empty` labels, and it must cover boot-counted UKI path
 recording while the candidate is still trying.

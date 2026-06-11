@@ -84,7 +84,7 @@ storage, start SSH for debugging when configured, and run `katlos-install`.
 For the current installer path, the shipped installer boot artifact should be a
 single installer UKI. That UKI should contain the installer kernel, initrd,
 embedded command line, and the installer userspace needed to run
-`katlos-install`. Local QEMU tests, PXE chains, and later ISO/USB wrappers should
+`katlos-install`. Local VM tests, PXE chains, and later ISO/USB wrappers should
 all be able to consume that same UKI artifact. Signing and additional wrapper
 artifacts can come later; the current step should prove one bootable UKI with the
 installer inside it.
@@ -195,7 +195,7 @@ POST /v1/install
 `POST /v1/install` should accept the same install manifest used by preseeded
 network installs. The API must not introduce a separate configuration model.
 
-The handoff mode should require a one-time token by default. For local QEMU
+The handoff mode should require a one-time token by default. For local VM tests
 tests, the token can be captured from the serial log. A deliberately insecure
 test-only mode may exist, but it must be explicit.
 
@@ -945,7 +945,7 @@ package or artifact tests inspect the sysext for expected binaries,
 unit or golden tests cover generated service ordering, mount units, and
   generation metadata for sysext selection
 systemd-analyze verify checks generated units where practical
-QEMU install-to-runtime tests prove sysext activation, writable /etc/kubernetes,
+VM install-to-runtime tests prove sysext activation, writable /etc/kubernetes,
   containerd readiness, katl-kubeadm-ready.target, and kubeadm preflight or
   dry-run evidence
 ```
@@ -1139,7 +1139,7 @@ a destructive reinstall. After install the backing file should be root-owned and
 write-protected. It remains stable across normal runtime boots, root slot
 switches, and updates because it lives on the writable state partition.
 
-This must be proven in QEMU. A late normal service is not sufficient because
+This must be proven in VM tests. A late normal service is not sufficient because
 systemd and D-Bus consumers read machine identity early in boot.
 
 Kubeadm-owned state under `/etc/kubernetes` must be persistent and writable,
@@ -1203,7 +1203,7 @@ for example by creating symlinks under:
 /run/confexts/
 ```
 
-or another explicit activation mechanism that is proven in QEMU. Rollback must
+or another explicit activation mechanism that is proven in VM tests. Rollback must
 switch the active root slot, active sysext set, and active confext set together.
 A small Katl generation selector unit or systemd generator should recreate these
 `/run` links each boot after persistent state is available and before
@@ -1265,7 +1265,7 @@ kubelet available
 katl-kubeadm-ready.target reached
 ```
 
-Generated mount units and service ordering must be tested in QEMU because this
+Generated mount units and service ordering must be tested in VM tests because this
 is where immutable root, confext, kubeadm, and systemd boot ordering intersect.
 The target should be treated as a local preflight boundary. It must not require
 Kubernetes API availability, add-ons, workload scheduling, or GitOps convergence.
