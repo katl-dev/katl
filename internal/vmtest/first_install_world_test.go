@@ -188,6 +188,13 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	}
 }
 
+func TestWorkerKubeadmConfigSetsNodeName(t *testing.T) {
+	config := workerKubeadmConfig("worker-1")
+	if !strings.Contains(config, "kind: JoinConfiguration") || !strings.Contains(config, "name: worker-1") {
+		t.Fatalf("worker kubeadm config = %s", config)
+	}
+}
+
 func TestPlanFirstInstallWorldRunAcceptsResolvedInstallerArtifact(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()

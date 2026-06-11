@@ -190,10 +190,13 @@ func resolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 }
 
 func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec NodeSpec, input FirstInstallWorldInput) (FirstInstallWorldInput, error) {
-	indexPath := defaultMkosiArtifactIndexPath(repo)
-	index, err := readMkosiArtifactIndex(indexPath, repo)
-	if err != nil && (strings.TrimSpace(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX")) != "" || !errors.Is(err, os.ErrNotExist)) {
-		return input, err
+	index := defaultLocalMkosiArtifacts(repo)
+	if indexPath := explicitMkosiArtifactIndexPath(); indexPath != "" {
+		var err error
+		index, err = readMkosiArtifactIndex(indexPath, repo)
+		if err != nil {
+			return input, err
+		}
 	}
 	if input.Installer.InstallerUKI == "" && input.Installer.InstallerKernel == "" && input.Installer.InstallerInitrd == "" {
 		if artifact, ok := index.artifact("installer-uki"); ok {
@@ -225,11 +228,25 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 	return input, nil
 }
 
-func defaultMkosiArtifactIndexPath(repo string) string {
-	if path := strings.TrimSpace(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX")); path != "" {
-		return path
+func explicitMkosiArtifactIndexPath() string {
+	return strings.TrimSpace(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"))
+}
+
+func defaultLocalMkosiArtifacts(repo string) mkosiArtifactIndex {
+	var index mkosiArtifactIndex
+	mkosiDir := filepath.Join(repo, "build", "mkosi")
+	for _, artifact := range []mkosiArtifact{
+		{Kind: "installer-uki", Path: filepath.Join(mkosiDir, "katl-installer.efi")},
+		{Kind: "runtime-root", Path: filepath.Join(mkosiDir, "katl-runtime-root.squashfs")},
+	} {
+		if _, err := os.Stat(artifact.Path); err == nil {
+			index.Artifacts = append(index.Artifacts, artifact)
+		}
 	}
-	return filepath.Join(repo, "build", "mkosi", "artifacts.json")
+	if artifact, err := discoverKatlOSInstallImage(repo); err == nil {
+		index.Artifacts = append(index.Artifacts, artifact)
+	}
+	return index
 }
 
 func readMkosiArtifactIndex(path, repo string) (mkosiArtifactIndex, error) {
@@ -360,7 +377,7 @@ func writeFirstInstallWorldKubeadmSource(sourceDir string, spec NodeSpec) (strin
 	case ControlPlane:
 		return writeFirstInstallWorldKubeadmPlan(sourceDir, "control-plane", controlPlaneKubeadmConfig(spec.Name))
 	case Worker:
-		return writeFirstInstallWorldKubeadmPlan(sourceDir, "worker", workerKubeadmConfig())
+		return writeFirstInstallWorldKubeadmPlan(sourceDir, "worker", workerKubeadmConfig(spec.Name))
 	default:
 		return "", nil
 	}
@@ -399,9 +416,6 @@ func controlPlaneKubeadmConfig(nodeName string) string {
 	}
 	return `apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
-localAPIEndpoint:
-  advertiseAddress: 10.0.2.15
-  bindPort: 6443
 nodeRegistration:
   name: ` + nodeName + `
   criSocket: unix:///run/containerd/containerd.sock
@@ -413,10 +427,6 @@ kubernetesVersion: v1.36.1
 networking:
   podSubnet: 10.244.0.0/16
   serviceSubnet: 10.96.0.0/12
-apiServer:
-  certSANs:
-    - 10.0.2.15
-    - 127.0.0.1
 ---
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
@@ -424,10 +434,15 @@ cgroupDriver: systemd
 `
 }
 
-func workerKubeadmConfig() string {
+func workerKubeadmConfig(nodeName string) string {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		nodeName = "worker-1"
+	}
 	return `apiVersion: kubeadm.k8s.io/v1beta4
 kind: JoinConfiguration
 nodeRegistration:
+  name: ` + nodeName + `
   criSocket: unix:///run/containerd/containerd.sock
 `
 }
