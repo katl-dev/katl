@@ -2,9 +2,9 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-installer_artifact="${KATL_INSTALLER_ARTIFACT:-$repo_root/build/mkosi/katl-installer.efi}"
-runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/build/mkosi/katl-runtime-root.squashfs}"
-runtime_root="${KATL_RUNTIME_ROOT:-$repo_root/build/mkosi/katl-runtime-root}"
+installer_artifact="${KATL_INSTALLER_ARTIFACT:-$repo_root/_build/mkosi/katl-installer.efi}"
+runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/_build/mkosi/katl-runtime-root.squashfs}"
+runtime_root="${KATL_RUNTIME_ROOT:-$repo_root/_build/mkosi/katl-runtime-root}"
 installer_max_mib="${KATL_INSTALLER_MAX_MIB:-450}"
 runtime_max_mib="${KATL_RUNTIME_MAX_MIB:-375}"
 runtime_tree_max_mib="${KATL_RUNTIME_TREE_MAX_MIB:-650}"
@@ -81,8 +81,8 @@ check_profiles() {
     local runtime_profile="$repo_root/mkosi.profiles/runtime/mkosi.conf"
     need_line "$repo_root/mkosi.conf" "WithDocs=no"
     need_line "$repo_root/mkosi.conf" "WithRecommends=no"
-    need_line "$repo_root/mkosi.conf" "CacheDirectory=build/mkosi/cache"
-    need_line "$repo_root/mkosi.conf" "PackageCacheDirectory=build/mkosi/package-cache"
+    need_line "$repo_root/mkosi.conf" "CacheDirectory=_build/mkosi/cache"
+    need_line "$repo_root/mkosi.conf" "PackageCacheDirectory=_build/mkosi/package-cache"
     deny "$installer_profile" installer mkosi dnf dnf5 gcc kubeadm kubelet kubectl containerd crun
     deny "$runtime_profile" runtime mkosi dnf dnf5 gcc curl kubeadm kubelet kubectl
     echo "mkosi profile controls: docs/recommends disabled, caches external, denied packages absent"

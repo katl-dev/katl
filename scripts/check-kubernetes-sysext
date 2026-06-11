@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-artifact="${1:-build/mkosi/katl-kubernetes.raw}"
+artifact="${1:-_build/mkosi/katl-kubernetes.raw}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
-runtime_root="${KATL_RUNTIME_ROOT:-build/mkosi/katl-runtime-root}"
+runtime_root="${KATL_RUNTIME_ROOT:-_build/mkosi/katl-runtime-root}"
 kube_manifest="${KATL_KUBERNETES_MANIFEST:-mkosi.profiles/kubernetes-sysext/kubernetes.env}"
 
 if [[ ! -f "$kube_manifest" ]]; then

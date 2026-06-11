@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-artifact="${1:-build/mkosi/katl-runtime.efi}"
+artifact="${1:-_build/mkosi/katl-runtime.efi}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
 

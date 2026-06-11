@@ -140,7 +140,7 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 
 func testBuildDir(t *testing.T, repo, prefix string) string {
 	t.Helper()
-	buildDir := filepath.Join(repo, "build", "mkosi")
+	buildDir := filepath.Join(repo, "_build", "mkosi")
 	if err := os.MkdirAll(buildDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", buildDir, err)
 	}

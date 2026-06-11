@@ -136,7 +136,7 @@ type config struct {
 }
 
 func configFromEnv(env map[string]string, repo string) config {
-	buildDir := filepath.Join(repo, "build", "mkosi")
+	buildDir := filepath.Join(repo, "_build", "mkosi")
 	version := envDefault(env, "KATL_VERSION", defaultVersion)
 	architecture := envDefaultFunc(env, "KATL_ARCHITECTURE", hostArchitecture)
 	katlosDefault := filepath.Join(buildDir, "katlos-install-"+version+"-"+architecture+".squashfs")
@@ -305,7 +305,7 @@ type katlosArtifactMetadata struct {
 func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) error {
 	flags := flag.NewFlagSet("katl-mkosi-artifacts write-runtime-root", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	artifact := flags.String("artifact", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs"), "runtime root SquashFS artifact")
+	artifact := flags.String("artifact", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs"), "runtime root SquashFS artifact")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -349,8 +349,8 @@ func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) er
 func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) error {
 	flags := flag.NewFlagSet("katl-mkosi-artifacts write-runtime-uki", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	artifact := flags.String("artifact", filepath.Join("build", "mkosi", "katl-runtime.efi"), "runtime UKI artifact")
-	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
+	artifact := flags.String("artifact", filepath.Join("_build", "mkosi", "katl-runtime.efi"), "runtime UKI artifact")
+	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
 	runtimeSHA := flags.String("runtime-sha256", "", "compatible runtime root SHA-256")
 	kernelVersion := flags.String("kernel-version", "", "runtime kernel version")
 	if err := flags.Parse(args); err != nil {
@@ -404,14 +404,14 @@ func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) err
 func runWriteKubernetesSysext(args []string, stdout, stderr io.Writer, cfg config) error {
 	flags := flag.NewFlagSet("katl-mkosi-artifacts write-kubernetes-sysext", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	artifact := flags.String("artifact", filepath.Join("build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
+	artifact := flags.String("artifact", filepath.Join("_build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
 	payloadVersion := flags.String("payload-version", "", "Kubernetes payload version")
 	kubeadmVersion := flags.String("kubeadm-version", "", "resolved kubeadm package version")
 	kubeletVersion := flags.String("kubelet-version", "", "resolved kubelet package version")
 	kubectlVersion := flags.String("kubectl-version", "", "resolved kubectl package version")
 	criToolsVersion := flags.String("cri-tools-version", "", "resolved cri-tools package version")
-	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
-	runtimeMetadata := flags.String("runtime-metadata", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs.json"), "compatible runtime root metadata")
+	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
+	runtimeMetadata := flags.String("runtime-metadata", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs.json"), "compatible runtime root metadata")
 	runtimeSHA := flags.String("runtime-sha256", "", "compatible runtime root SHA-256 override")
 	repoID := flags.String("repo-id", "", "Kubernetes package repository ID")
 	repoBaseURL := flags.String("repo-base-url", "", "Kubernetes package repository base URL")
@@ -467,10 +467,10 @@ func runWriteKubernetesSysext(args []string, stdout, stderr io.Writer, cfg confi
 func runWriteKubernetesSysextFromLog(args []string, stdout, stderr io.Writer, cfg config) error {
 	flags := flag.NewFlagSet("katl-mkosi-artifacts write-kubernetes-sysext-from-log", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	artifact := flags.String("artifact", filepath.Join("build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
+	artifact := flags.String("artifact", filepath.Join("_build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
 	logPath := flags.String("log", "", "mkosi output log containing resolved package lines")
-	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
-	runtimeMetadata := flags.String("runtime-metadata", filepath.Join("build", "mkosi", "katl-runtime-root.squashfs.json"), "compatible runtime root metadata")
+	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
+	runtimeMetadata := flags.String("runtime-metadata", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs.json"), "compatible runtime root metadata")
 	repoID := flags.String("repo-id", "", "Kubernetes package repository ID")
 	repoBaseURL := flags.String("repo-base-url", "", "Kubernetes package repository base URL")
 	repoMinor := flags.String("repo-minor", "", "Kubernetes package minor")
@@ -657,7 +657,7 @@ func payloadVersionFromPackage(version string) (string, error) {
 func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) error {
 	flags := flag.NewFlagSet("katl-mkosi-artifacts write-katlos-index", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	output := flags.String("output", filepath.Join("build", "mkosi", "katlos-install-root", "katlos", "image.json"), "embedded KatlOS image index output")
+	output := flags.String("output", filepath.Join("_build", "mkosi", "katlos-install-root", "katlos", "image.json"), "embedded KatlOS image index output")
 	imageRole := flags.String("image-role", "install", "KatlOS image role")
 	version := flags.String("version", cfg.Version, "KatlOS image version")
 	buildID := flags.String("build-id", cfg.Generation, "KatlOS image build ID")
@@ -667,8 +667,8 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	runtimeRootMetadata := flags.String("runtime-root-metadata", cfg.RuntimeMetadata, "runtime root metadata")
 	runtimeUKI := flags.String("runtime-uki", cfg.RuntimeUKI, "runtime UKI artifact")
 	runtimeUKIMetadata := flags.String("runtime-uki-metadata", cfg.RuntimeUKIMetadata, "runtime UKI metadata")
-	kubernetesSysext := flags.String("kubernetes-sysext", filepath.Join("build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
-	kubernetesSysextMetadata := flags.String("kubernetes-sysext-metadata", filepath.Join("build", "mkosi", "katl-kubernetes.raw.json"), "Kubernetes sysext metadata")
+	kubernetesSysext := flags.String("kubernetes-sysext", filepath.Join("_build", "mkosi", "katl-kubernetes.raw"), "Kubernetes sysext artifact")
+	kubernetesSysextMetadata := flags.String("kubernetes-sysext-metadata", filepath.Join("_build", "mkosi", "katl-kubernetes.raw.json"), "Kubernetes sysext metadata")
 	rootPath := flags.String("root-path", "components/runtime/root.squashfs", "embedded runtime root component path")
 	ukiPath := flags.String("uki-path", "components/boot/katl.efi", "embedded runtime UKI component path")
 	sysextPath := flags.String("sysext-path", "components/sysext/kubernetes.raw", "embedded Kubernetes sysext component path")

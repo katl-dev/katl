@@ -20,7 +20,7 @@ if [[ ! -f "$repo/go.mod" ]]; then
 fi
 
 cd "$repo"
-gomodcache="${KATL_GOMODCACHE:-$repo/build/go-mod}"
+gomodcache="${KATL_GOMODCACHE:-$repo/_build/go-mod}"
 mkdir -p "$gomodcache"
 commit="${KATL_BUILD_COMMIT:-}"
 if [[ -z "$commit" ]]; then

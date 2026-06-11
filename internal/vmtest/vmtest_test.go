@@ -14,7 +14,7 @@ import (
 
 func TestNormalize(t *testing.T) {
 	options := normalizeOptions(Options{})
-	if options.StateRoot != filepath.Join("build", "vmtest") {
+	if options.StateRoot != filepath.Join(os.TempDir(), "katl-vmtest") {
 		t.Fatalf("StateRoot = %q", options.StateRoot)
 	}
 	if options.Keep != KeepFailed {

@@ -109,7 +109,7 @@ func TestPlanFirstInstallWorldRunGuestHandoffMode(t *testing.T) {
 func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	mkosiDir := filepath.Join(repo, "build", "mkosi")
+	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
 	runtime := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
@@ -125,8 +125,8 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 }`)
 	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
   "artifacts": [
-    {"kind":"installer-uki","path":"build/mkosi/katl-installer.efi"},
-    {"kind":"runtime-root","path":"build/mkosi/katl-runtime-root.squashfs"}
+    {"kind":"installer-uki","path":"_build/mkosi/katl-installer.efi"},
+    {"kind":"runtime-root","path":"_build/mkosi/katl-runtime-root.squashfs"}
   ]
 }`)
 
@@ -198,13 +198,13 @@ func TestWorkerKubeadmConfigSetsNodeName(t *testing.T) {
 func TestPlanFirstInstallWorldRunAcceptsResolvedInstallerArtifact(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	mkosiDir := filepath.Join(repo, "build", "mkosi")
+	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
 	runtime := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
   "artifacts": [
-    {"kind":"installer-uki","path":"build/mkosi/katl-installer.efi"},
-    {"kind":"runtime-root","path":"build/mkosi/katl-runtime-root.squashfs"}
+    {"kind":"installer-uki","path":"_build/mkosi/katl-installer.efi"},
+    {"kind":"runtime-root","path":"_build/mkosi/katl-runtime-root.squashfs"}
   ]
 }`)
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
@@ -245,7 +245,7 @@ func TestPlanFirstInstallWorldRunAcceptsResolvedInstallerArtifact(t *testing.T) 
 func TestPlanFirstInstallWorldRunAcceptsResolvedKatlOSInstallImage(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
-	mkosiDir := filepath.Join(repo, "build", "mkosi")
+	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
@@ -261,9 +261,9 @@ func TestPlanFirstInstallWorldRunAcceptsResolvedKatlOSInstallImage(t *testing.T)
 }`)
 	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
   "artifacts": [
-    {"kind":"installer-uki","path":"build/mkosi/katl-installer.efi"},
-    {"kind":"runtime-root","path":"build/mkosi/katl-runtime-root.squashfs"},
-    {"kind":"katlos-install-image","path":"build/mkosi/katlos-install-0.0.0-dev-x86_64.squashfs","metadataPath":"build/mkosi/katlos-install-0.0.0-dev-x86_64.squashfs.json"}
+    {"kind":"installer-uki","path":"_build/mkosi/katl-installer.efi"},
+    {"kind":"runtime-root","path":"_build/mkosi/katl-runtime-root.squashfs"},
+    {"kind":"katlos-install-image","path":"_build/mkosi/katlos-install-0.0.0-dev-x86_64.squashfs","metadataPath":"_build/mkosi/katlos-install-0.0.0-dev-x86_64.squashfs.json"}
   ]
 }`)
 	source := writeFixtureFile(t, filepath.Join(repo, "scripts", "build-katlos-install-image"), "source")

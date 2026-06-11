@@ -61,7 +61,7 @@ func EnsurePublishedFirstInstallRuntimeFixtures(ctx context.Context, world World
 }
 
 func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World, repo string, spec NodeSpec, options FirstInstallRuntimeFixtureOptions, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) error {
-	buildRoot := filepath.Join(world.RunDir, "build")
+	buildRoot := filepath.Join(world.RunDir, "_build")
 	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec); err == nil {
 		return nil
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {

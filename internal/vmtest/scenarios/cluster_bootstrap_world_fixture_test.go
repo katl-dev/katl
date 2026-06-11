@@ -20,7 +20,7 @@ import (
 
 func publishedRuntimeBuildRoots(world vmtest.World, repo string) []string {
 	return []string{
-		filepath.Join(world.RunDir, "build"),
+		filepath.Join(world.RunDir, "_build"),
 	}
 }
 
@@ -63,7 +63,7 @@ func firstInt(values ...int) int {
 
 func writeKatlctlPublishedInstalledRuntimeFixture(t *testing.T, root, name, nodeName string, role vmtest.NodeRole) string {
 	t.Helper()
-	dir := filepath.Join(root, "build", "published", name)
+	dir := filepath.Join(root, "_build", "published", name)
 	disk := writeKatlctlFixtureFile(t, filepath.Join(dir, "installed-runtime.raw"), "disk-"+name)
 	esp := writeKatlctlFixtureESP(t, filepath.Join(dir, "esp"))
 	metadata := writeKatlctlFixtureNodeMetadata(t, filepath.Join(dir, "node.json"), nodeName, role)

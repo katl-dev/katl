@@ -75,7 +75,7 @@ katl-installer-<version>-<arch>.initrd.json
 ```
 
 Local development may continue writing stable convenience paths under
-`build/mkosi/`, but published metadata and test artifacts should use the
+`_build/mkosi/`, but published metadata and test artifacts should use the
 versioned names.
 
 ## Metadata

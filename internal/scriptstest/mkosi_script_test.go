@@ -61,13 +61,13 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 	if !strings.Contains(args[1], bin) {
 		t.Fatalf("extra search path %q does not include fake tool dir %q", args[1], bin)
 	}
-	for _, want := range []string{"--profile", "installer-image", "-f", "build", "--environment", "KATL_INSTALLER_PACKAGE_SET=build/mkosi/katl-installer.packages.tsv"} {
+	for _, want := range []string{"--profile", "installer-image", "-f", "build", "--environment", "KATL_INSTALLER_PACKAGE_SET=_build/mkosi/katl-installer.packages.tsv"} {
 		if !containsString(args, want) {
 			t.Fatalf("mkosi args missing %q: %#v", want, args)
 		}
 	}
 	env := readKeyValuesForScripts(t, mkosiEnv)
-	if env["MKOSI_DNF"] != "dnf5" || env["TMPDIR"] != tmp || env["GOMODCACHE"] != filepath.Join(repo, "build", "go-mod") {
+	if env["MKOSI_DNF"] != "dnf5" || env["TMPDIR"] != tmp || env["GOMODCACHE"] != filepath.Join(repo, "_build", "go-mod") {
 		t.Fatalf("mkosi env = %#v", env)
 	}
 	if got := readLinesForScripts(t, goArgs); !reflect.DeepEqual(got, []string{"run", "./cmd/katl-mkosi-artifacts", "write"}) {

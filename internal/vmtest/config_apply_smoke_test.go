@@ -14,9 +14,6 @@ import (
 
 func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	options := DefaultOptions()
-	if options.StateRoot == "" {
-		options.StateRoot = filepath.Join(repoRoot(t), "build", "vmtest")
-	}
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installed runtime config apply smoke")
 	}

@@ -29,7 +29,7 @@ The hermetic runner should:
 
 ```text
 create all mutable output under TMPDIR
-print the run directory and link the latest run from build/vmtest/
+print the run directory and link the latest run from _build/vmtest/
 probe configured host capabilities before handing off to go test
 verify libvirt VM networking before handing off to tests
 record the selected libvirt network without inferring it from Go test arguments
@@ -65,8 +65,8 @@ It may contain only durable pointers or small summaries produced by separate
 aggregation tooling, for example:
 
 ```text
-build/vmtest/latest -> ${TMPDIR:-/tmp}/katl-vmtest/<run-id>
-build/vmtest/latest-summary.json
+_build/vmtest/latest -> ${TMPDIR:-/tmp}/katl-vmtest/<run-id>
+_build/vmtest/latest-summary.json
 ```
 
 The runner should print the absolute run directory before handing off to
@@ -281,11 +281,11 @@ developer to export a list of fixture paths and addresses.
 1. Should successful tmpdir worlds be deleted automatically?
 
    Initial recommendation: keep failed worlds, delete successful worlds by
-   default after writing a small summary and updating `build/vmtest/latest` only
+   default after writing a small summary and updating `_build/vmtest/latest` only
    when the run is preserved.
 
 2. Should mkosi build output move fully under the tmpdir world?
 
    Initial recommendation: the hermetic runner should set build and state roots
-   under the world for standard runs. Existing `build/mkosi` outputs can remain
+   under the world for standard runs. Existing `_build/mkosi` outputs can remain
    a developer cache or debug input until the resource graph is stable.

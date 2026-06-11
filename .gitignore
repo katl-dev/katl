@@ -12,6 +12,8 @@
 # Go
 /bin/
 /build/
+/_build/
+**/_build/
 /out/
 /coverage/
 coverage.out

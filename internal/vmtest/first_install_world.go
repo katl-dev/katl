@@ -234,7 +234,7 @@ func explicitMkosiArtifactIndexPath() string {
 
 func defaultLocalMkosiArtifacts(repo string) mkosiArtifactIndex {
 	var index mkosiArtifactIndex
-	mkosiDir := filepath.Join(repo, "build", "mkosi")
+	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	for _, artifact := range []mkosiArtifact{
 		{Kind: "installer-uki", Path: filepath.Join(mkosiDir, "katl-installer.efi")},
 		{Kind: "runtime-root", Path: filepath.Join(mkosiDir, "katl-runtime-root.squashfs")},
@@ -472,7 +472,7 @@ func writeFirstInstallWorldNodeMetadataSource(scenario *WorldScenario, spec Node
 }
 
 func discoverKatlOSInstallImage(repo string) (mkosiArtifact, error) {
-	matches, err := filepath.Glob(filepath.Join(repo, "build", "mkosi", "katlos-install-*.squashfs"))
+	matches, err := filepath.Glob(filepath.Join(repo, "_build", "mkosi", "katlos-install-*.squashfs"))
 	if err != nil {
 		return mkosiArtifact{}, err
 	}

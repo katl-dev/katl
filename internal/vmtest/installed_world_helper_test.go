@@ -84,8 +84,8 @@ func TestPublishedFirstInstallRuntimeFixtureUsesBuildRootPriority(t *testing.T) 
 	repoFixture := writePublishedInstalledRuntimeFixture(t, repoRoot, "repo-cp", "cp-1", ControlPlane, time.Unix(30, 0))
 
 	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{
-		filepath.Join(worldRoot, "build"),
-		filepath.Join(repoRoot, "build"),
+		filepath.Join(worldRoot, "_build"),
+		filepath.Join(repoRoot, "_build"),
 	}, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	if err != nil {
 		t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots() error = %v", err)
@@ -152,7 +152,7 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesProducesMissingSpecs(t *testi
 		t.Fatalf("produced = %#v", produced)
 	}
 	for _, spec := range []NodeSpec{{Name: "cp-1", Role: ControlPlane}, {Name: "worker-1", Role: Worker}} {
-		if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "build")}, spec); err != nil {
+		if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "_build")}, spec); err != nil {
 			t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots(%#v) error = %v", spec, err)
 		}
 	}
@@ -249,7 +249,7 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesIsolatesSeparateWorlds(t *tes
 		if err != nil {
 			t.Fatalf("EnsurePublishedFirstInstallRuntimeFixtures(%s) error = %v", name, err)
 		}
-		published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "build")}, spec)
+		published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "_build")}, spec)
 		if err != nil {
 			t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots(%s) error = %v", name, err)
 		}
@@ -299,7 +299,7 @@ func TestPublishFirstInstallRuntimeWorldFixtureUsesWorldFactory(t *testing.T) {
 	if !strings.HasPrefix(fixture.ManifestPath, node.ManifestDir) || !strings.HasPrefix(fixture.Disk, node.DiskDir) || !strings.HasPrefix(fixture.ESPArtifacts, node.ArtifactDir) {
 		t.Fatalf("fixture was not staged under node dirs: %#v node=%#v", fixture, node)
 	}
-	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "build")}, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	published, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(world.RunDir, "_build")}, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	if err != nil {
 		t.Fatalf("FindPublishedFirstInstallRuntimeFixtureInBuildRoots() error = %v", err)
 	}
@@ -334,14 +334,14 @@ func TestWritePublishedFirstInstallRuntimeFixture(t *testing.T) {
 	if published.FixtureManifest != fixtureManifest {
 		t.Fatalf("published manifest = %q, want %q", published.FixtureManifest, fixtureManifest)
 	}
-	if !strings.HasPrefix(publishedPath, filepath.Join(root, "build", "published-first-install-runtime")) {
+	if !strings.HasPrefix(publishedPath, filepath.Join(root, "_build", "published-first-install-runtime")) {
 		t.Fatalf("published path = %q", publishedPath)
 	}
 }
 
 func writePublishedInstalledRuntimeFixture(t *testing.T, repo, name, nodeName string, role NodeRole, modTime time.Time) string {
 	t.Helper()
-	dir := filepath.Join(repo, "build", "published", name)
+	dir := filepath.Join(repo, "_build", "published", name)
 	disk := writeFixtureFile(t, filepath.Join(dir, "installed-runtime.raw"), "disk-"+name)
 	esp := writeFixtureESP(t, filepath.Join(dir, "esp"))
 	metadata := writeFixtureNodeMetadata(t, filepath.Join(dir, "node.json"), Node{Name: nodeName, Role: role})

@@ -370,7 +370,7 @@ func (r *Result) addPhase(name string, status Status, failure string, started, f
 
 func normalizeOptions(options Options) Options {
 	if options.StateRoot == "" {
-		options.StateRoot = filepath.Join("build", "vmtest")
+		options.StateRoot = filepath.Join(os.TempDir(), "katl-vmtest")
 	}
 	if options.Keep == "" {
 		options.Keep = KeepFailed

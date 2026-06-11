@@ -5,10 +5,10 @@ repo_root="$(git rev-parse --show-toplevel)"
 image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
-build_dir="$repo_root/build/mkosi"
+build_dir="$repo_root/_build/mkosi"
 stamp_dir="$build_dir/.katl-stamps"
-go_mod_cache="$repo_root/build/go-mod"
-go_build_cache="$repo_root/build/go-cache"
+go_mod_cache="$repo_root/_build/go-mod"
+go_build_cache="$repo_root/_build/go-cache"
 kube_manifest="$repo_root/mkosi.profiles/kubernetes-sysext/kubernetes.env"
 # shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
 # shellcheck disable=SC1091
@@ -53,7 +53,7 @@ list_repo_inputs() {
         git -C "$repo_root" ls-files --others --exclude-standard -z
     } | while IFS= read -r -d "" path; do
         case "$path" in
-            .beads/* | build/* | */build/*)
+            .beads/* | _build/* | */_build/* | build/* | */build/*)
                 continue
                 ;;
         esac
@@ -308,13 +308,13 @@ fi
 if [[ $# -eq 0 ]]; then
     cache_target=installer
     prepare_cached_target "$cache_target"
-    installer_package_set=build/mkosi/katl-installer.packages.tsv
+    installer_package_set=_build/mkosi/katl-installer.packages.tsv
     set -- --profile installer-image -f build
 else
     case "$1" in
         build-installer)
             shift
-            installer_package_set=build/mkosi/katl-installer.packages.tsv
+            installer_package_set=_build/mkosi/katl-installer.packages.tsv
             if [[ $# -eq 0 ]]; then
                 cache_target=installer
                 prepare_cached_target "$cache_target"
@@ -368,7 +368,7 @@ else
             profile="$1"
             shift
             if [[ "$profile" == installer-image ]]; then
-                installer_package_set=build/mkosi/katl-installer.packages.tsv
+                installer_package_set=_build/mkosi/katl-installer.packages.tsv
             fi
             if [[ $# -eq 0 ]]; then
                 set -- --profile "$profile" -f build
@@ -473,9 +473,9 @@ set +e
     set -uo pipefail
     log=$(mktemp)
     trap "rm -f \"$log\"" EXIT
-    mkdir -p /work/build/go-mod /work/build/go-cache
-    export GOCACHE=/work/build/go-cache
-    export GOMODCACHE=/work/build/go-mod
+    mkdir -p /work/_build/go-mod /work/_build/go-cache
+    export GOCACHE=/work/_build/go-cache
+    export GOMODCACHE=/work/_build/go-mod
     go mod download
     if [[ -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
         rm -f "$KATL_INSTALLER_PACKAGE_SET"
@@ -486,9 +486,9 @@ set +e
         go run ./cmd/katl-mkosi-artifacts "$@"
     }
     if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
-        root=build/mkosi/katl-runtime-root
-        artifact=build/mkosi/katl-runtime-root.squashfs
-        boot_artifact=build/mkosi/katl-runtime.efi
+        root=_build/mkosi/katl-runtime-root
+        artifact=_build/mkosi/katl-runtime-root.squashfs
+        boot_artifact=_build/mkosi/katl-runtime.efi
         if [[ ! -d "$root" ]]; then
             echo "error: runtime root directory not found: $root" >&2
             status=1
@@ -553,8 +553,8 @@ set +e
         fi
     fi
     if [[ "$status" -eq 0 && "${KATL_EMIT_KUBERNETES_SYSEXT:-0}" == 1 ]]; then
-        artifact=build/mkosi/katl-kubernetes.raw
-        runtime_meta=build/mkosi/katl-runtime-root.squashfs.json
+        artifact=_build/mkosi/katl-kubernetes.raw
+        runtime_meta=_build/mkosi/katl-runtime-root.squashfs.json
         if [[ ! -f "$artifact" ]]; then
             echo "error: Kubernetes sysext artifact not found: $artifact" >&2
             status=1
@@ -562,7 +562,7 @@ set +e
             if ! mkosi_artifacts write-kubernetes-sysext-from-log \
                 --artifact "$artifact" \
                 --log "$log" \
-                --runtime-artifact build/mkosi/katl-runtime-root.squashfs \
+                --runtime-artifact _build/mkosi/katl-runtime-root.squashfs \
                 --runtime-metadata "$runtime_meta" \
                 --repo-id "${KATL_KUBERNETES_REPO_ID:?}" \
                 --repo-base-url "${KATL_KUBERNETES_REPO_BASEURL:?}" \
@@ -576,16 +576,16 @@ set +e
             fi
         fi
     fi
-    if [[ "${KATL_CHOWN_BUILD:-1}" == 1 && -d build ]]; then
-        chown -R "$HOST_UID:$HOST_GID" build || true
-    elif [[ -d build/mkosi ]]; then
-        find build/mkosi/cache build/mkosi/builddir -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+    if [[ "${KATL_CHOWN_BUILD:-1}" == 1 && -d _build ]]; then
+        chown -R "$HOST_UID:$HOST_GID" _build || true
+    elif [[ -d _build/mkosi ]]; then
+        find _build/mkosi/cache _build/mkosi/builddir -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
         chown -h "$HOST_UID:$HOST_GID" \
-            build/mkosi/artifacts.json \
-            build/mkosi/katl-* \
-            build/mkosi/*.json \
-            build/mkosi/*.sha256 \
-            build/mkosi/*.packages.tsv \
+            _build/mkosi/artifacts.json \
+            _build/mkosi/katl-* \
+            _build/mkosi/*.json \
+            _build/mkosi/*.sha256 \
+            _build/mkosi/*.packages.tsv \
             2>/dev/null || true
     fi
     exit "$status"

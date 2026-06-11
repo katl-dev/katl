@@ -20,9 +20,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("katl-publish-kubernetes-sysext", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	metadataPath := flags.String("metadata", "build/mkosi/katl-kubernetes.raw.json", "path to Kubernetes sysext metadata")
+	metadataPath := flags.String("metadata", "_build/mkosi/katl-kubernetes.raw.json", "path to Kubernetes sysext metadata")
 	artifactPath := flags.String("artifact", "", "path to Kubernetes sysext raw artifact, default from metadata path")
-	outputDir := flags.String("output-dir", "build/publish/kubernetes-sysext", "directory for staged publish outputs")
+	outputDir := flags.String("output-dir", "_build/publish/kubernetes-sysext", "directory for staged publish outputs")
 	baseURL := flags.String("base-url", "", "optional published artifact base URL for the catalog entry")
 
 	if err := flags.Parse(args); err != nil {

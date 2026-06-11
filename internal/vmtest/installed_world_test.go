@@ -60,7 +60,7 @@ func writeInstalledRuntimeWorldFixtureSetupFailure(world World, name string, err
 }
 
 func ensureInstalledRuntimeWorldFixture(world World, spec NodeSpec, produce func() error) error {
-	buildRoot := filepath.Join(world.RunDir, "build")
+	buildRoot := filepath.Join(world.RunDir, "_build")
 	if _, err := FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{buildRoot}, spec); err == nil {
 		return nil
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
@@ -80,7 +80,7 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 	}
 	run := installedRuntimeWorldRun{Scenario: scenario}
 	node, err := AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{
-		filepath.Join(world.RunDir, "build"),
+		filepath.Join(world.RunDir, "_build"),
 	}, spec)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)

@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null || (cd "$script_dir/.." && pwd))"
-artifact_index="${KATL_MKOSI_ARTIFACT_INDEX:-$repo_root/build/mkosi/artifacts.json}"
+artifact_index="${KATL_MKOSI_ARTIFACT_INDEX:-$repo_root/_build/mkosi/artifacts.json}"
 template="${KATL_INSTALL_MANIFEST_TEMPLATE:-}"
 output="${KATL_INSTALL_MANIFEST:-}"
 local_ref="${KATL_INSTALL_MANIFEST_KATLOS_LOCAL_REF:-}"
@@ -19,7 +19,7 @@ gets a symlink matching katlosImage.localRef so local/offline installer flows
 can resolve the image relative to the manifest.
 
 Options:
-  --artifact-index PATH   mkosi artifact index (default: build/mkosi/artifacts.json)
+  --artifact-index PATH   mkosi artifact index (default: _build/mkosi/artifacts.json)
   --template PATH         input install manifest template
   --output PATH           output install manifest
   --local-ref PATH        clean relative image ref (default: indexed image basename)

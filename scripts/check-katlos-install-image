@@ -5,7 +5,7 @@ artifact="${1:-}"
 if [[ -z "$artifact" ]]; then
     version="${KATL_VERSION:-0.0.0-dev}"
     architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
-    artifact="build/mkosi/katlos-install-${version}-${architecture}.squashfs"
+    artifact="_build/mkosi/katlos-install-${version}-${architecture}.squashfs"
 fi
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"

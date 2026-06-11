@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-build_dir="$repo_root/build/mkosi"
+build_dir="$repo_root/_build/mkosi"
 version="${KATL_VERSION:-0.0.0-dev}"
 build_id="$(git -C "$repo_root" describe --always --dirty --abbrev=12 2>/dev/null || printf unknown)"
 architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
@@ -58,7 +58,7 @@ case "$image_role" in
 esac
 under_repo "KatlOS image output" "$output"
 under_repo "KatlOS image assembly root" "$work_root"
-[[ "$work_root" == "$build_dir"/* ]] || fail "KatlOS image assembly root must be under build/mkosi: $work_root"
+[[ "$work_root" == "$build_dir"/* ]] || fail "KatlOS image assembly root must be under _build/mkosi: $work_root"
 
 rm -rf -- "$work_root"
 mkdir -p \

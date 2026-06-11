@@ -22,7 +22,7 @@ summarize passed, failed, host-skipped, and setup-failed scenarios
 ```
 
 The command should emit machine-readable artifacts under
-`build/resource-tests/` and exit nonzero when an enabled scenario was skipped
+`_build/resource-tests/` and exit nonzero when an enabled scenario was skipped
 because a repo-owned resource was missing or stale.
 
 ## Determinism Boundary
@@ -132,7 +132,7 @@ Responsibilities:
 preflight host capabilities and write host-capabilities.json
 run mkosi builds through scripts/mkosi
 write and verify the mkosi artifact index
-generate node manifests and metadata under build/resource-tests/<run-id>/
+generate node manifests and metadata under _build/resource-tests/<run-id>/
 run first-install VM setup and publish installed-runtime fixtures
 exec go test with the caller's arguments and resource-test strict mode
 ```

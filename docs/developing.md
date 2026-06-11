@@ -31,7 +31,7 @@ build/boot/test loop.
 - Build tool: `mkosi 26`.
 - Base distribution: Fedora, chosen for current systemd and mkosi support.
 - Output format: a bootable `disk` image with systemd-boot/UKI support.
-- Output directory: `build/mkosi/`.
+- Output directory: `_build/mkosi/`.
 - Primary artifact name: `katl-installer.raw`.
 - Build command: `mkosi -f build`.
 - Interactive boot command: `mkosi vm --firmware uefi --console console`.

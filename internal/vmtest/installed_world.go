@@ -30,7 +30,7 @@ type publishedFixtureCandidate struct {
 }
 
 func AddPublishedInstalledRuntimeNode(scenario *WorldScenario, repo string, spec NodeSpec) (InstalledRuntimeWorldNode, error) {
-	return AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{filepath.Join(repo, "build")}, spec)
+	return AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{filepath.Join(repo, "_build")}, spec)
 }
 
 func AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario *WorldScenario, buildRoots []string, spec NodeSpec) (InstalledRuntimeWorldNode, error) {
@@ -65,7 +65,7 @@ func AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario *WorldScenario, bui
 }
 
 func FindPublishedFirstInstallRuntimeFixture(repo string, spec NodeSpec) (PublishedFirstInstallRuntimeFixture, error) {
-	return FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(repo, "build")}, spec)
+	return FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{filepath.Join(repo, "_build")}, spec)
 }
 
 func FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots []string, spec NodeSpec) (PublishedFirstInstallRuntimeFixture, error) {
@@ -156,7 +156,7 @@ func WritePublishedFirstInstallRuntimeFixture(root, name, fixtureManifest string
 	if id == "" {
 		return "", errors.New("published installed runtime fixture name is required")
 	}
-	path := filepath.Join(root, "build", "published-first-install-runtime", id, "published-first-install-runtime-fixture.json")
+	path := filepath.Join(root, "_build", "published-first-install-runtime", id, "published-first-install-runtime-fixture.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}

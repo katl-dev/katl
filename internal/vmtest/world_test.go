@@ -244,7 +244,7 @@ func TestDecodeWorldRejectsRelativePaths(t *testing.T) {
 	}{
 		{
 			name:   "run dir",
-			mutate: func(world *World) { world.RunDir = "build/vmtest/run" },
+			mutate: func(world *World) { world.RunDir = "_build/vmtest/run" },
 			want:   "runDir must be an absolute path",
 		},
 		{

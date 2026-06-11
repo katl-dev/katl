@@ -207,7 +207,7 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	manifestPath := flags.String("manifest", "", "resource-test manifest output path")
 	lockPath := flags.String("lock", defaultLockPath, "package lock path")
-	mkosiDir := flags.String("mkosi-dir", "build/mkosi", "mkosi output directory")
+	mkosiDir := flags.String("mkosi-dir", "_build/mkosi", "mkosi output directory")
 	runtimeRoot := flags.String("runtime-root", "", "runtime root directory containing an RPM database")
 	mode := flags.String("mode", "strict", "lock mode: strict or refresh")
 	runID := flags.String("run-id", "", "resource-test run id")

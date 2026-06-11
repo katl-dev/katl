@@ -100,8 +100,8 @@ func TestPathForKindRejectsDuplicate(t *testing.T) {
 	writeTestJSON(t, indexPath, artifactIndex{
 		SchemaVersion: 1,
 		Artifacts: []artifactEntry{
-			{Kind: "runtime-root", Path: "build/mkosi/root-a.squashfs"},
-			{Kind: "runtime-root", Path: "build/mkosi/root-b.squashfs"},
+			{Kind: "runtime-root", Path: "_build/mkosi/root-a.squashfs"},
+			{Kind: "runtime-root", Path: "_build/mkosi/root-b.squashfs"},
 		},
 	})
 

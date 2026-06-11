@@ -109,7 +109,7 @@ func TestRunAddRPMPackageSet(t *testing.T) {
 	oldQuery := queryRPMPackages
 	t.Cleanup(func() { queryRPMPackages = oldQuery })
 	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
-		if root != "build/mkosi/katl-runtime-root" {
+		if root != "_build/mkosi/katl-runtime-root" {
 			t.Fatalf("root = %q", root)
 		}
 		return []resourcetest.Package{{
@@ -136,7 +136,7 @@ func TestRunAddRPMPackageSet(t *testing.T) {
 		"--output", outputPath,
 		"--name", "runtime",
 		"--source", "mkosi.profiles/runtime",
-		"--root", "build/mkosi/katl-runtime-root",
+		"--root", "_build/mkosi/katl-runtime-root",
 		"--lock", lockPath,
 		"--distribution", "fedora",
 		"--release", "44",
@@ -182,7 +182,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
 	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
 	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
 		t.Fatalf("mkdir runtime root: %v", err)
@@ -277,7 +277,7 @@ func TestRunPrepareMkosiStrictRejectsKubernetesDrift(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
 	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
 	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
 		t.Fatalf("mkdir runtime root: %v", err)
@@ -328,7 +328,7 @@ func TestRunPrepareMkosiStrictRejectsInstallerDrift(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
 	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
 	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
 		t.Fatalf("mkdir runtime root: %v", err)
@@ -384,7 +384,7 @@ func TestRunPrepareMkosiStrictRejectsKatlOSDrift(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
 	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
 	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
 		t.Fatalf("mkdir runtime root: %v", err)
@@ -441,7 +441,7 @@ func TestRunPrepareMkosiStrictRejectsDrift(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	mkosiDir := filepath.Join(dir, "build", "mkosi")
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
 	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
 	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
 		t.Fatalf("mkdir runtime root: %v", err)

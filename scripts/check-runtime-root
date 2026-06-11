@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-artifact="${1:-build/mkosi/katl-runtime-root.squashfs}"
+artifact="${1:-_build/mkosi/katl-runtime-root.squashfs}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
 
