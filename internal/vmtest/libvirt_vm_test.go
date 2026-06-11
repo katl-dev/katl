@@ -273,7 +273,11 @@ esac
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run() error = %v, want deadline", err)
 	}
-	log := readScriptFile(t, logPath)
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", logPath, err)
+	}
+	log := string(logData)
 	for _, want := range []string{
 		"-c qemu:///system define " + xmlPath,
 		"-c qemu:///system start katl-run-1",

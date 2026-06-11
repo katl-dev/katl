@@ -928,15 +928,6 @@ func assertJSONEmptyObject(t *testing.T, path string) {
 	}
 }
 
-func readScriptFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile(%s) error = %v", path, err)
-	}
-	return string(data)
-}
-
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
