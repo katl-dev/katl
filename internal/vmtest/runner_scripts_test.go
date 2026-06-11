@@ -489,6 +489,36 @@ func TestVMTestRunFailsWhenNoScenarioResultIsWritten(t *testing.T) {
 	}
 }
 
+func TestVMTestRunAcceptsNestedWorldScenarioResult(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestWorldScenario$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=world-smoke",
+		"KATL_FAKE_CHILD_WORLD_RESULT_LAYOUT=nested",
+		"KATL_VMTEST_RUN_ID=run-nested-result",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "ok  \tfake/vmtest") {
+		t.Fatalf("output missing go test success:\n%s", output)
+	}
+}
+
 func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -610,9 +640,13 @@ if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
     scenario_name="$KATL_FAKE_CHILD_WORLD_SCENARIO"
     scenario_id="${KATL_FAKE_CHILD_WORLD_SCENARIO_ID:-fake-scenario}"
     scenario_dir="$(jq -r '.scenarioDir' "$KATL_VMTEST_WORLD_MANIFEST")/$scenario_id"
+    scenario_run_dir="$scenario_dir"
+    if [[ "${KATL_FAKE_CHILD_WORLD_RESULT_LAYOUT:-}" == "nested" ]]; then
+        scenario_run_dir="$scenario_dir/vm-runs/fake-run"
+    fi
     run_id="$(jq -r '.runID' "$KATL_VMTEST_WORLD_MANIFEST")"
-    mkdir -p "$scenario_dir"
-    result_path="$scenario_dir/result.json"
+    mkdir -p "$scenario_run_dir"
+    result_path="$scenario_run_dir/result.json"
     if [[ "${KATL_FAKE_CHILD_WORLD_MANIFEST:-}" == "malformed" ]]; then
         printf '{' > "$scenario_dir/scenario.json"
         exit "${KATL_FAKE_CHILD_EXIT:-0}"
@@ -620,7 +654,7 @@ if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
     jq -n \
         --arg name "$scenario_name" \
         --arg id "$scenario_id" \
-        --arg dir "$scenario_dir" \
+        --arg dir "$scenario_run_dir" \
         --arg runID "$run_id" \
         --arg resultPath "$result_path" \
         '{

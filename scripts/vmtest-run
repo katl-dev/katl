@@ -637,7 +637,7 @@ set +e
 exit_code=$?
 set -e
 if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scenario_result" == true ) ]]; then
-    if ! find "$scenario_dir" -mindepth 2 -maxdepth 2 -name result.json -print -quit | grep -q .; then
+    if ! find "$scenario_dir" -mindepth 2 -maxdepth 4 -name result.json -print -quit | grep -q .; then
         write_run_index "no-scenario-result" "$@"
         printf 'vmtest did not execute any world scenario; no result.json found under %s\n' "$scenario_dir" >&2
         printf 'vmtest run dir: %s\n' "$run_dir" >&2
