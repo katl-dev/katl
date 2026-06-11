@@ -11,13 +11,14 @@ local development loop.
 
 ## Current VM Stance
 
-Use the simplest layer that proves the OS boots:
+Use the libvirt-backed vmtest world as the supported automated VM layer:
 
-1. Build the image with `mkosi`.
-2. Boot with `mkosi vm` if it exposes enough console and log control.
-3. Fall back to a small direct `qemu-system-x86_64` wrapper when the test
-   harness needs deterministic serial capture.
-4. Add `libvirt`/`virsh` after the direct boot smoke loop works.
+1. Build current artifacts with `scripts/mkosi` or let `scripts/vmtest-run`
+   build the current repo artifacts by default.
+2. Run VM smokes with `scripts/vmtest-run` so world setup, host capability
+   recording, libvirt lifecycle, and serial capture are handled consistently.
+3. Use libvirt tools such as `virsh` for manual inspection of domains,
+   networks, storage pools, and serial consoles.
 
 `virt-manager` is useful for interactive debugging, but it is not a project
 dependency and should not be required by automated tests.
@@ -34,26 +35,23 @@ build/boot/test loop.
 - Primary artifact name: `katl-installer.raw`.
 - Build command: `mkosi -f build`.
 - Interactive boot command: `mkosi vm --firmware uefi --console console`.
-- Required smoke path: direct `qemu-system-x86_64` with EFI firmware and
-  deterministic serial capture.
-- Firmware expectation: QEMU can find OVMF/edk2 firmware descriptors, or the
-  runner is given explicit firmware paths.
+- Required smoke path: `scripts/vmtest-run` with libvirt system VM execution
+  and deterministic serial capture.
+- Firmware expectation: the runner is given readable OVMF/edk2 pflash images.
 - Serial settings: the guest kernel command line includes
-  `console=ttyS0,115200n8`; QEMU exposes that serial device to a stable log.
+  `console=ttyS0,115200n8`; libvirt exposes that serial device to the runner's
+  captured console log.
 - Stable boot signal: `Katl hello`.
 - Generated VM logs and scratch state belong under `build/`.
 
-Direct QEMU is the automation contract because it gives the smoke harness
-stable process control, serial output, timeout handling, and exit details.
-`mkosi vm` remains the preferred manual first look when it exposes enough
-console output on the developer machine. KVM should be used when available, but
-the runner must detect missing `/dev/kvm` and either explain the missing
-acceleration or use QEMU TCG for the first functional smoke test.
+The libvirt-backed vmtest path is the automation contract because it gives the
+smoke harness stable process control, serial output, timeout handling, network
+leases, storage setup, and exit details. KVM should be used when available, and
+the runner records missing `/dev/kvm` access as a host capability gap.
 
-The current local boot loop is explicitly not a real installer. It must not
-partition, format, or mutate host disks. It also excludes `katlc`, kubeadm/etcd
-persistence, A/B root updates, libvirt as a requirement, GUI tools, and end-user
-asset publishing.
+The current local boot loop is explicitly not a real host installer. It must not
+partition, format, or mutate host disks. It also excludes `katlc`, A/B root
+updates, GUI tools, and end-user asset publishing.
 
 ## Required For The Current Loop
 
@@ -62,9 +60,10 @@ asset publishing.
 - `scripts/vmtest-run`: runs enabled nspawn, VM, first-install,
   installed-runtime, and multinode kubeadm smokes through a runner-created
   world.
-- `qemu-system-x86_64`: boots the image locally.
+- `libvirt`/`virsh`: defines, starts, observes, and tears down local VM test
+  domains.
 - KVM access: the VM test runner should see `/dev/kvm`.
-- UEFI firmware for QEMU, such as edk2/OVMF firmware descriptors.
+- UEFI firmware for libvirt VM pflash boot, such as edk2/OVMF images.
 - `git commit-wrapped`: required for agent-authored commits.
 
 The supported top-level script surface is intentionally small. Use
@@ -107,23 +106,23 @@ Build the current installer image:
 nix develop --command mkosi -f build
 ```
 
-For manual VM work through `mkosi vm`, use the optional VM shell:
+For manual VM work and VM tests, use the optional VM shell:
 
 ```sh
 nix develop .#vm
 ```
 
-The VM shell adds QEMU/KVM and OVMF firmware packages. It does not configure
-host libvirt, `/dev/kvm`, `/dev/net/tun`, bridges, or polkit access; keep those
-in the NixOS host configuration.
+The VM shell adds libvirt client tools, QEMU image tooling, and OVMF firmware
+packages. It does not configure host libvirt, `/dev/kvm`, `/dev/net/tun`,
+networks, storage pools, or polkit access; keep those in the NixOS host
+configuration.
 
 ## Optional During The Current Loop
 
-- `libvirt` and `virsh`: useful for later persistent VM definitions, networks,
-  multi-node tests, and longer integration tests.
 - `virt-install`: useful for manual libvirt VM creation.
 - `virt-manager`: useful GUI for inspecting and debugging local VMs.
-- `/dev/net/tun` and `vhost_net`: useful once tests need richer VM networking.
+- `/dev/net/tun` and `vhost_net`: useful for libvirt networks and richer VM
+  networking.
 
 ## VM And Nspawn Test Worlds
 
@@ -178,8 +177,8 @@ scripts are not the supported way to run enabled nspawn, VM, or kubeadm suites.
 
 Run the full enabled world suite from the Nix VM shell on a host with readable
 OVMF firmware, `/dev/kvm`, `/dev/vhost-vsock`, `/dev/net/tun`,
-`systemd-nspawn` privileges, and a QEMU bridge ACL that allows the selected
-bridge:
+`systemd-nspawn` privileges, libvirt system access, an active libvirt network,
+and an active libvirt storage pool:
 
 ```sh
 nix develop .#vm -c env \
@@ -199,7 +198,6 @@ Run these from the same shell/session that will build and test Katl:
 
 ```sh
 mkosi --version
-qemu-system-x86_64 --version
 virsh --version
 virt-install --version
 virt-manager --version
@@ -214,16 +212,15 @@ virt-host-validate qemu
 virsh -c qemu:///system list --all
 ```
 
-Check UEFI firmware configuration for direct QEMU runs:
+Check UEFI firmware configuration for VM runs:
 
 ```sh
 test -n "${KATL_OVMF_CODE:-}" && test -r "$KATL_OVMF_CODE"
 test -n "${KATL_OVMF_VARS:-}" && test -r "$KATL_OVMF_VARS"
 ```
 
-If those variables are unset, `scripts/katl-vm` tries common distribution
-firmware locations. Set `KATL_OVMF_CODE` and `KATL_OVMF_VARS` explicitly when
-the host keeps OVMF/edk2 firmware somewhere else.
+Set `KATL_OVMF_CODE` and `KATL_OVMF_VARS` explicitly when the host keeps
+OVMF/edk2 firmware somewhere outside the devshell defaults.
 
 ## Common Issues
 
@@ -237,15 +234,14 @@ an explicit privileged manual check. Katl automation should not depend on a GUI
 polkit prompt.
 
 If `qemu:///session` fails under Codex or another sandbox, prefer
-`qemu:///system` for manual libvirt checks. The direct QEMU smoke harness should
-remain the first required path.
+`qemu:///system` for manual libvirt checks. The vmtest runner defaults to
+`qemu:///system`.
 
 ## Current Tooling Snapshot
 
 The local environment was checked on 2026-05-31:
 
 - `mkosi 26`
-- `qemu-system-x86_64 10.2.2`
 - `virsh 12.2.0`
 - `virt-install 5.1.0`
 - `virt-manager 5.1.0`
