@@ -204,13 +204,16 @@ func TestAgentCommandAllowlist(t *testing.T) {
 }
 
 func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
-	if !commandAllowed("crictl", defaultAgentCommands()) {
-		t.Fatal("crictl is not allowlisted")
+	for _, command := range []string{"chmod", "crictl", "install"} {
+		if !commandAllowed(command, defaultAgentCommands()) {
+			t.Fatalf("%s is not allowlisted", command)
+		}
 	}
 	for _, path := range []string{
 		"/etc/katl/node.json",
 		"/etc/katl/kubeadm/control-plane/config.yaml",
 		"/etc/kubernetes/admin.conf",
+		"/etc/kubernetes/kubelet.conf",
 	} {
 		if !pathAllowed(path, defaultAgentFilePaths()) {
 			t.Fatalf("%s is not allowlisted", path)

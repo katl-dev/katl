@@ -47,6 +47,7 @@ type NodeKubernetes struct {
 type CommandTransport interface {
 	RunCommand(ctx context.Context, node inventory.PlannedNode, req CommandRequest) (CommandResult, error)
 	ReadFile(ctx context.Context, node inventory.PlannedNode, req FileRequest) (FileResult, error)
+	WriteFile(ctx context.Context, node inventory.PlannedNode, req WriteFileRequest) (WriteFileResult, error)
 }
 
 type CommandRequest struct {
@@ -75,6 +76,19 @@ type FileRequest struct {
 type FileResult struct {
 	Content   []byte
 	Truncated bool
+	Redaction string
+}
+
+type WriteFileRequest struct {
+	Path      string
+	Content   []byte
+	Mode      uint32
+	Timeout   time.Duration
+	Sensitive bool
+}
+
+type WriteFileResult struct {
+	SizeBytes uint32
 	Redaction string
 }
 
@@ -237,7 +251,7 @@ func (c *checker) etcKubernetesProjected(ctx context.Context, node inventory.Pla
 		return false, nil
 	}
 	source := strings.TrimSpace(result.Stdout)
-	if source != ProjectedKubernetesSource {
+	if !projectedKubernetesSourceMatches(source, ProjectedKubernetesSource) {
 		c.diagnostics = append(c.diagnostics, inventory.Diagnostic{
 			Field:   "etc-kubernetes",
 			Message: fmt.Sprintf("/etc/kubernetes is backed by %q, want %q", inventory.Redact(source), ProjectedKubernetesSource),
@@ -245,6 +259,19 @@ func (c *checker) etcKubernetesProjected(ctx context.Context, node inventory.Pla
 		return false, nil
 	}
 	return true, nil
+}
+
+func projectedKubernetesSourceMatches(source string, projected string) bool {
+	source = strings.TrimSpace(source)
+	projected = strings.TrimSpace(projected)
+	if source == projected {
+		return true
+	}
+	statePath, ok := strings.CutPrefix(projected, "/var")
+	if !ok || statePath == "" {
+		return false
+	}
+	return strings.HasSuffix(source, "["+statePath+"]")
 }
 
 func (c *checker) nodeMetadata(ctx context.Context, node inventory.PlannedNode) NodeMetadata {

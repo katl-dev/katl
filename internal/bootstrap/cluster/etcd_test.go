@@ -159,7 +159,7 @@ func TestEtcdCheckerCreatesSnapshotAndReadsStatus(t *testing.T) {
 	snapshotPath := etcdSnapshotDirectory + "/greenfield.db"
 	transport.commands[commandKey(etcdctlArgs("etcd-container", "snapshot", "save", snapshotPath)...)] = readiness.CommandResult{ExitStatus: 0, Stderr: "snapshot saved"}
 	transport.commands[commandKey("chmod", "0600", snapshotPath)] = readiness.CommandResult{ExitStatus: 0}
-	transport.commands[commandKey(etcdctlArgs("etcd-container", "snapshot", "status", snapshotPath, "--write-out=json")...)] = readiness.CommandResult{
+	transport.commands[commandKey(etcdutlArgs("etcd-container", "--write-out=json", "snapshot", "status", snapshotPath)...)] = readiness.CommandResult{
 		ExitStatus: 0,
 		Stdout:     `[{"hash":"abcd","revision":42,"totalKey":123,"totalSize":4567}]`,
 	}
@@ -204,6 +204,11 @@ func etcdctlArgs(containerID string, argv ...string) []string {
 		"--cert=" + defaultEtcdClientCert,
 		"--key=" + defaultEtcdClientKey,
 	}
+	return append(base, argv...)
+}
+
+func etcdutlArgs(containerID string, argv ...string) []string {
+	base := []string{"crictl", "exec", containerID, "etcdutl"}
 	return append(base, argv...)
 }
 

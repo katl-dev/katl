@@ -326,7 +326,7 @@ func multiNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []v
 		VMTestRun:          firstString(world.RunIndex, filepath.Join(world.RunDir, "run.json")),
 		WorldManifest:      firstString(os.Getenv(vmtest.WorldManifestEnv), filepath.Join(world.RunDir, "world.json")),
 		HostCapabilities:   filepath.Join(world.RunDir, "host-capabilities.json"),
-		MkosiArtifactIndex: firstString(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"), filepath.Join(repo, "build", "mkosi", "artifacts.json")),
+		MkosiArtifactIndex: os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"),
 		NetworkLeaseFile:   world.Network.LeaseFile,
 	}
 	if len(specs) == 0 {
@@ -654,6 +654,7 @@ func assertBootstrapPhases(t *testing.T, output string) {
 		"katlctl cluster bootstrap init-node=cp-1",
 		"phase=kubeadm-init node=cp-1 status=passed",
 		"phase=worker-join node=worker-1 status=passed",
+		"phase=worker-ready node=worker-1 status=passed",
 		"phase=kubeconfig status=passed",
 	} {
 		if !strings.Contains(output, want) {
@@ -677,7 +678,7 @@ func verifyTwoNodeBootstrapTranscripts(transcriptDir string) error {
 		if err != nil {
 			return fmt.Errorf("%s transcript %s: %w", node, path, err)
 		}
-		var runCommand, readFile, sensitiveCommand, sensitiveFile bool
+		var runCommand, readFile, writeFile, sensitiveCommand, sensitiveFile, sensitiveWriteFile bool
 		for _, entry := range entries {
 			switch entry.Method {
 			case "RunCommand":
@@ -689,6 +690,11 @@ func verifyTwoNodeBootstrapTranscripts(transcriptDir string) error {
 				readFile = true
 				if entry.SensitiveOutput || (entry.Redaction != "" && entry.Redaction != "none") {
 					sensitiveFile = true
+				}
+			case "WriteFile":
+				writeFile = true
+				if entry.SensitiveOutput || (entry.Redaction != "" && entry.Redaction != "none") {
+					sensitiveWriteFile = true
 				}
 			}
 		}
@@ -703,6 +709,14 @@ func verifyTwoNodeBootstrapTranscripts(transcriptDir string) error {
 		}
 		if !sensitiveFile {
 			return fmt.Errorf("%s transcript has no sensitive file entry", node)
+		}
+		if node == "worker-1" {
+			if !writeFile {
+				return fmt.Errorf("%s transcript has no WriteFile entry", node)
+			}
+			if !sensitiveWriteFile {
+				return fmt.Errorf("%s transcript has no sensitive write file entry", node)
+			}
 		}
 		if err := verifyTwoNodeKubeadmTranscript(node, entries); err != nil {
 			return fmt.Errorf("%s transcript: %w", node, err)
@@ -720,8 +734,8 @@ func verifyTwoNodeKubeadmTranscript(node string, entries []transcriptEntry) erro
 		if !transcriptHasCommand(entries, "kubeadm", "init") {
 			return errors.New("missing kubeadm init command")
 		}
-		if !transcriptHasCommandFlagValue(entries, "kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml") {
-			return errors.New("kubeadm init command missing control-plane config path")
+		if !transcriptHasCommandFlagValue(entries, "kubeadm", "init", "--config", "/var/lib/katl/test-artifacts/kubeadm-init-cp-1.yaml") {
+			return errors.New("kubeadm init command missing generated control-plane config path")
 		}
 	case "worker-1":
 		if transcriptHasCommand(entries, "kubeadm", "init") {
@@ -730,8 +744,8 @@ func verifyTwoNodeKubeadmTranscript(node string, entries []transcriptEntry) erro
 		if !transcriptHasCommand(entries, "kubeadm", "join") {
 			return errors.New("missing kubeadm join command")
 		}
-		if !transcriptHasCommandFlagValue(entries, "kubeadm", "join", "--config", "/etc/katl/kubeadm/worker/config.yaml") {
-			return errors.New("worker kubeadm join command missing worker config path")
+		if !transcriptHasCommandFlagValue(entries, "kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-worker-1.yaml") {
+			return errors.New("worker kubeadm join command missing generated worker config path")
 		}
 		if transcriptHasCommandArg(entries, "kubeadm", "join", "--control-plane") {
 			return errors.New("worker kubeadm join command must not include --control-plane")
@@ -1877,13 +1891,14 @@ func TestVerifyTwoNodeBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-1"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/var/lib/katl/test-artifacts/kubeadm-init-cp-1.yaml"}, Redaction: "output", SensitiveOutput: true},
 		{Method: "RunCommand", Argv: []string{"kubeadm", "token", "create", "--print-join-command"}, Redaction: "output", SensitiveOutput: true},
 	})
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "worker-1"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--config", "/etc/katl/kubeadm/worker/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-worker-1.yaml"}, Redaction: "output", SensitiveOutput: true},
 	})
 	if err := verifyTwoNodeBootstrapTranscripts(dir); err != nil {
 		t.Fatalf("verifyTwoNodeBootstrapTranscripts() error = %v", err)
@@ -1892,6 +1907,7 @@ func TestVerifyTwoNodeBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "worker-1"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
 	})
 	err := verifyTwoNodeBootstrapTranscripts(dir)
 	if err == nil || !strings.Contains(err.Error(), "unexpected kubeadm init command on worker node") {
@@ -1901,7 +1917,8 @@ func TestVerifyTwoNodeBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "worker-1"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--config", "/etc/katl/kubeadm/worker/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-worker-1.yaml", "--control-plane"}, Redaction: "output", SensitiveOutput: true},
 	})
 	err = verifyTwoNodeBootstrapTranscripts(dir)
 	if err == nil || !strings.Contains(err.Error(), "worker kubeadm join command must not include --control-plane") {
@@ -1911,11 +1928,12 @@ func TestVerifyTwoNodeBootstrapTranscriptsChecksKubeadmRoles(t *testing.T) {
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "worker-1"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-cp-1.yaml"}, Redaction: "output", SensitiveOutput: true},
 	})
 	err = verifyTwoNodeBootstrapTranscripts(dir)
-	if err == nil || !strings.Contains(err.Error(), "worker kubeadm join command missing worker config path") {
-		t.Fatalf("verifyTwoNodeBootstrapTranscripts() error = %v, want worker config path rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "worker kubeadm join command missing generated worker config path") {
+		t.Fatalf("verifyTwoNodeBootstrapTranscripts() error = %v, want generated worker config path rejection", err)
 	}
 }
 

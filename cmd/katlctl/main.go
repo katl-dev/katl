@@ -589,6 +589,32 @@ func (t vmtestAgentTransport) ReadFile(ctx context.Context, node inventory.Plann
 	}, nil
 }
 
+func (t vmtestAgentTransport) WriteFile(ctx context.Context, node inventory.PlannedNode, req readiness.WriteFileRequest) (readiness.WriteFileResult, error) {
+	client, err := t.dialNodeAgent(ctx, node)
+	if err != nil {
+		return readiness.WriteFileResult{}, err
+	}
+	defer client.Close()
+	if req.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		defer cancel()
+	}
+	result, err := client.WriteFile(ctx, &vmtestpb.WriteFileRequest{
+		Path:      req.Path,
+		Content:   req.Content,
+		Mode:      req.Mode,
+		Sensitive: req.Sensitive,
+	})
+	if err != nil {
+		return readiness.WriteFileResult{}, err
+	}
+	return readiness.WriteFileResult{
+		SizeBytes: result.SizeBytes,
+		Redaction: result.Redaction,
+	}, nil
+}
+
 func (t vmtestAgentTransport) dialNodeAgent(ctx context.Context, node inventory.PlannedNode) (*vmtest.AgentClient, error) {
 	if node.Access.Method != "agent" {
 		return nil, fmt.Errorf("node %q access method %q is not supported by vmtest agent transport", node.Name, node.Access.Method)

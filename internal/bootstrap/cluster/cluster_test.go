@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	testCA   = "Y2EtZGF0YQ=="
-	testCert = "Y2VydC1kYXRh"
-	testKey  = "a2V5LWRhdGE="
+	testCA            = "Y2EtZGF0YQ=="
+	testCert          = "Y2VydC1kYXRh"
+	testKey           = "a2V5LWRhdGE="
+	testDiscoveryHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 
 func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
@@ -29,7 +30,7 @@ func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
 			ClientCertificateData:    testCert,
 			ClientKeyData:            testKey,
 		},
-		join: JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+		join: JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash}},
 	}
 	result, err := Run(context.Background(), Request{
 		Inventory:           validInventory(),
@@ -50,7 +51,7 @@ func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
 	if len(result.Plan.AddressOverrides) != 1 || result.Plan.AddressOverrides[0].Address != "10.0.0.22" {
 		t.Fatalf("address overrides = %#v", result.Plan.AddressOverrides)
 	}
-	wantPhases := []string{"plan", "readiness", "kubeadm-init", "api-ready", "join-material", "worker-join", "api-ready-after-join", "kubeconfig"}
+	wantPhases := []string{"plan", "readiness", "kubeadm-init", "api-ready", "join-material", "worker-join", "worker-ready", "api-ready-after-join", "kubeconfig"}
 	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, wantPhases) {
 		t.Fatalf("phases = %#v, want %#v", got, wantPhases)
 	}
@@ -59,6 +60,7 @@ func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
 		"ready:cp-1",
 		"join-material:cp-1",
 		"join-worker:worker-1",
+		"ready-worker:worker-1",
 		"ready:cp-1",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("calls = %#v, want %#v", got, want)
@@ -460,8 +462,8 @@ func TestRunJoinsAdditionalControlPlanesSeriallyBeforeWorkers(t *testing.T) {
 			ClientCertificateData:    testCert,
 			ClientKeyData:            testKey,
 		},
-		join:             JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef"}},
-		controlPlaneJoin: JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", strings.Repeat("a", 64)}},
+		join:             JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash}},
+		controlPlaneJoin: JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash, "--control-plane", "--certificate-key", strings.Repeat("a", 64)}},
 	}
 	result, err := Run(context.Background(), Request{
 		Inventory:           inv,
@@ -479,7 +481,7 @@ func TestRunJoinsAdditionalControlPlanesSeriallyBeforeWorkers(t *testing.T) {
 		"plan", "readiness", "kubeadm-init", "api-ready",
 		"control-plane-join-material", "control-plane-join", "control-plane-ready",
 		"control-plane-join", "control-plane-ready",
-		"join-material", "worker-join", "api-ready-after-join", "kubeconfig",
+		"join-material", "worker-join", "worker-ready", "api-ready-after-join", "kubeconfig",
 	}
 	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, wantPhases) {
 		t.Fatalf("phases = %#v, want %#v", got, wantPhases)
@@ -494,6 +496,7 @@ func TestRunJoinsAdditionalControlPlanesSeriallyBeforeWorkers(t *testing.T) {
 		"ready-control-plane:cp-3",
 		"join-material:cp-1",
 		"join-worker:worker-1",
+		"ready-worker:worker-1",
 		"ready:cp-1",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("calls = %#v, want %#v", got, want)
@@ -513,7 +516,7 @@ func TestRunStopsAfterControlPlaneJoinHealthFailure(t *testing.T) {
 	secret := "abcdef.0123456789abcdef"
 	nodeRunner := &fakeNodeRunner{
 		credentials:          AdminCredentials{CertificateAuthorityData: testCA, ClientCertificateData: testCert, ClientKeyData: testKey},
-		controlPlaneJoin:     JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", secret, "--control-plane", "--certificate-key", strings.Repeat("a", 64)}},
+		controlPlaneJoin:     JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", secret, "--discovery-token-ca-cert-hash", testDiscoveryHash, "--control-plane", "--certificate-key", strings.Repeat("a", 64)}},
 		controlPlaneReadyErr: errors.New("etcd unhealthy with token " + secret),
 	}
 	result, err := Run(context.Background(), Request{Inventory: inv, InitNode: "cp-1"}, Dependencies{
@@ -568,7 +571,7 @@ func TestTransportRunnerRunsKubeadmAndRedactsCommandErrors(t *testing.T) {
 	transport.commands[commandKey("kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml")] = readiness.CommandResult{ExitStatus: 0}
 	transport.files[adminKubeconfigPath] = []byte(adminKubeconfig())
 	runner := TransportRunner{Transport: transport}
-	credentials, err := runner.RunKubeadmInit(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
+	credentials, err := runner.RunKubeadmInit(context.Background(), validPlannedNode("cp-1", inventory.ActionInit), "")
 	if err != nil {
 		t.Fatalf("RunKubeadmInit() error = %v", err)
 	}
@@ -588,15 +591,20 @@ func TestTransportRunnerRunsKubeadmAndRedactsCommandErrors(t *testing.T) {
 	}
 
 	transport = newFakeTransport()
-	transport.commands[commandKey("kubeadm", "join", "api.katl.test:6443", "--token", secret, "--config", "/etc/katl/kubeadm/worker/config.yaml")] = readiness.CommandResult{
+	transport.files["/etc/katl/kubeadm/worker/config.yaml"] = []byte(testWorkerJoinConfig())
+	workerJoinConfigPath := generatedJoinConfigPath(validPlannedNode("worker-1", inventory.ActionWorkerJoin))
+	transport.commands[commandKey("kubeadm", "join", "--config", workerJoinConfigPath)] = readiness.CommandResult{
 		ExitStatus: 1,
-		Stderr:     "join failed",
+		Stderr:     "join failed with token " + secret,
 	}
 	err = (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), validPlannedNode("worker-1", inventory.ActionWorkerJoin), JoinMaterial{
-		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", secret},
+		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", secret, "--discovery-token-ca-cert-hash", testDiscoveryHash},
 	})
 	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("RunWorkerJoin() error = %v, want redacted argv failure", err)
+	}
+	if uploaded := string(transport.writes[workerJoinConfigPath]); !strings.Contains(uploaded, "apiServerEndpoint: api.katl.test:6443") || !strings.Contains(uploaded, "token: "+secret) || !strings.Contains(uploaded, "- "+testDiscoveryHash) {
+		t.Fatalf("uploaded worker join config = %q", uploaded)
 	}
 }
 
@@ -607,7 +615,7 @@ func TestTransportRunnerContinuesWhenInitAlreadyCompleted(t *testing.T) {
 		Stderr:     "this node is already initialized",
 	}
 	transport.files[adminKubeconfigPath] = []byte(adminKubeconfig())
-	credentials, err := (TransportRunner{Transport: transport}).RunKubeadmInit(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
+	credentials, err := (TransportRunner{Transport: transport}).RunKubeadmInit(context.Background(), validPlannedNode("cp-1", inventory.ActionInit), "")
 	if err != nil {
 		t.Fatalf("RunKubeadmInit() error = %v", err)
 	}
@@ -616,16 +624,44 @@ func TestTransportRunnerContinuesWhenInitAlreadyCompleted(t *testing.T) {
 	}
 }
 
+func TestTransportRunnerRunKubeadmInitWritesEndpointConfig(t *testing.T) {
+	transport := newFakeTransport()
+	node := validPlannedNode("cp-1", inventory.ActionInit)
+	initConfigPath := generatedInitConfigPath(node)
+	transport.files["/etc/katl/kubeadm/control-plane/config.yaml"] = []byte(testControlPlaneInitConfig())
+	transport.files[adminKubeconfigPath] = []byte(adminKubeconfig())
+	transport.commands[commandKey("kubeadm", "init", "--config", initConfigPath)] = readiness.CommandResult{ExitStatus: 0}
+
+	_, err := (TransportRunner{Transport: transport}).RunKubeadmInit(context.Background(), node, "192.0.2.10:6443")
+	if err != nil {
+		t.Fatalf("RunKubeadmInit() error = %v", err)
+	}
+	uploaded := string(transport.writes[initConfigPath])
+	for _, want := range []string{
+		"kind: InitConfiguration",
+		"kind: ClusterConfiguration",
+		"controlPlaneEndpoint: 192.0.2.10:6443",
+		"- 192.0.2.10",
+	} {
+		if !strings.Contains(uploaded, want) {
+			t.Fatalf("uploaded init config = %q, want %q", uploaded, want)
+		}
+	}
+}
+
 func TestTransportRunnerSkipsAlreadyJoinedWorker(t *testing.T) {
 	transport := newFakeTransport()
-	transport.commands[commandKey("kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--config", "/etc/katl/kubeadm/worker/config.yaml")] = readiness.CommandResult{
+	node := validPlannedNode("worker-1", inventory.ActionWorkerJoin)
+	joinConfigPath := generatedJoinConfigPath(node)
+	transport.files["/etc/katl/kubeadm/worker/config.yaml"] = []byte(testWorkerJoinConfig())
+	transport.commands[commandKey("kubeadm", "join", "--config", joinConfigPath)] = readiness.CommandResult{
 		ExitStatus: 1,
 		Stderr:     "node is already joined",
 	}
 	transport.commands[commandKey("test", "-f", "/etc/kubernetes/kubelet.conf")] = readiness.CommandResult{ExitStatus: 0}
 	transport.commands[commandKey("systemctl", "is-active", "--quiet", "kubelet.service")] = readiness.CommandResult{ExitStatus: 0}
-	err := (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), validPlannedNode("worker-1", inventory.ActionWorkerJoin), JoinMaterial{
-		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef"},
+	err := (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), node, JoinMaterial{
+		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash},
 	})
 	if err != nil {
 		t.Fatalf("RunWorkerJoin() error = %v", err)
@@ -634,12 +670,15 @@ func TestTransportRunnerSkipsAlreadyJoinedWorker(t *testing.T) {
 
 func TestTransportRunnerRejectsAmbiguousJoinAlreadyExists(t *testing.T) {
 	transport := newFakeTransport()
-	transport.commands[commandKey("kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--config", "/etc/katl/kubeadm/worker/config.yaml")] = readiness.CommandResult{
+	node := validPlannedNode("worker-1", inventory.ActionWorkerJoin)
+	joinConfigPath := generatedJoinConfigPath(node)
+	transport.files["/etc/katl/kubeadm/worker/config.yaml"] = []byte(testWorkerJoinConfig())
+	transport.commands[commandKey("kubeadm", "join", "--config", joinConfigPath)] = readiness.CommandResult{
 		ExitStatus: 1,
 		Stderr:     "/etc/kubernetes/kubelet.conf already exists",
 	}
-	err := (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), validPlannedNode("worker-1", inventory.ActionWorkerJoin), JoinMaterial{
-		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef"},
+	err := (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), node, JoinMaterial{
+		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash},
 	})
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("RunWorkerJoin() error = %v, want non-idempotent failure", err)
@@ -669,13 +708,13 @@ func TestTransportRunnerCreatesControlPlaneJoinMaterial(t *testing.T) {
 	}
 	transport.commands[commandKey("kubeadm", "token", "create", "--print-join-command", "--certificate-key", certificateKey, "--kubeconfig", adminKubeconfigPath)] = readiness.CommandResult{
 		ExitStatus: 0,
-		Stdout:     "kubeadm join api.katl.test:6443 --token abcdef.0123456789abcdef\n",
+		Stdout:     "kubeadm join api.katl.test:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash " + testDiscoveryHash + "\n",
 	}
 	material, err := (TransportRunner{Transport: transport}).CreateControlPlaneJoin(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
 	if err != nil {
 		t.Fatalf("CreateControlPlaneJoin() error = %v", err)
 	}
-	if !reflect.DeepEqual(material.Argv, []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", certificateKey}) {
+	if !reflect.DeepEqual(material.Argv, []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash, "--control-plane", "--certificate-key", certificateKey}) {
 		t.Fatalf("join argv = %#v", material.Argv)
 	}
 }
@@ -730,18 +769,54 @@ func TestTransportRunnerRequiresControlPlaneJoinMaterialFlags(t *testing.T) {
 func TestTransportRunnerRunControlPlaneJoinRedactsCertificateKey(t *testing.T) {
 	transport := newFakeTransport()
 	certificateKey := strings.Repeat("a", 64)
-	transport.commands[commandKey("kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", certificateKey, "--config", "/etc/katl/kubeadm/control-plane/config.yaml")] = readiness.CommandResult{
+	node := validPlannedNode("cp-2", inventory.ActionControlPlaneJoin)
+	joinConfigPath := generatedJoinConfigPath(node)
+	transport.files["/etc/katl/kubeadm/control-plane/config.yaml"] = []byte(testControlPlaneJoinConfig())
+	transport.commands[commandKey("kubeadm", "join", "--config", joinConfigPath)] = readiness.CommandResult{
 		ExitStatus: 1,
 		Stderr:     "join failed with certificate-key " + certificateKey,
 	}
-	err := (TransportRunner{Transport: transport}).RunControlPlaneJoin(context.Background(), validPlannedNode("cp-2", inventory.ActionControlPlaneJoin), JoinMaterial{
-		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", certificateKey},
+	err := (TransportRunner{Transport: transport}).RunControlPlaneJoin(context.Background(), node, JoinMaterial{
+		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash, "--control-plane", "--certificate-key", certificateKey},
 	})
 	if err == nil {
 		t.Fatal("RunControlPlaneJoin() error = nil, want join failure")
 	}
 	if strings.Contains(err.Error(), certificateKey) || !strings.Contains(err.Error(), "certificate-key[REDACTED]") {
 		t.Fatalf("RunControlPlaneJoin() error = %q, want redacted certificate key", err.Error())
+	}
+	if uploaded := string(transport.writes[joinConfigPath]); !strings.Contains(uploaded, "certificateKey: "+certificateKey) {
+		t.Fatalf("uploaded control-plane join config = %q", uploaded)
+	}
+}
+
+func TestTransportRunnerRunControlPlaneJoinSynthesizesJoinConfig(t *testing.T) {
+	transport := newFakeTransport()
+	certificateKey := strings.Repeat("a", 64)
+	node := validPlannedNode("cp-2", inventory.ActionControlPlaneJoin)
+	joinConfigPath := generatedJoinConfigPath(node)
+	transport.files["/etc/katl/kubeadm/control-plane/config.yaml"] = []byte(testControlPlaneInitConfig())
+	transport.commands[commandKey("kubeadm", "join", "--config", joinConfigPath)] = readiness.CommandResult{ExitStatus: 0}
+
+	err := (TransportRunner{Transport: transport}).RunControlPlaneJoin(context.Background(), node, JoinMaterial{
+		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash, "--control-plane", "--certificate-key", certificateKey},
+	})
+	if err != nil {
+		t.Fatalf("RunControlPlaneJoin() error = %v", err)
+	}
+	uploaded := string(transport.writes[joinConfigPath])
+	for _, want := range []string{
+		"kind: JoinConfiguration",
+		"name: cp-2",
+		"apiServerEndpoint: api.katl.test:6443",
+		"certificateKey: " + certificateKey,
+	} {
+		if !strings.Contains(uploaded, want) {
+			t.Fatalf("uploaded control-plane join config = %q, want %q", uploaded, want)
+		}
+	}
+	if strings.Contains(uploaded, "kind: InitConfiguration") || strings.Contains(uploaded, "kind: ClusterConfiguration") {
+		t.Fatalf("uploaded control-plane join config = %q, want only join config", uploaded)
 	}
 }
 
@@ -1216,9 +1291,10 @@ type fakeNodeRunner struct {
 	err                  error
 	apiErr               error
 	controlPlaneReadyErr error
+	workerReadyErr       error
 }
 
-func (r *fakeNodeRunner) RunKubeadmInit(_ context.Context, node inventory.PlannedNode) (AdminCredentials, error) {
+func (r *fakeNodeRunner) RunKubeadmInit(_ context.Context, node inventory.PlannedNode, _ string) (AdminCredentials, error) {
 	r.record("init:" + node.Name)
 	if r.err != nil {
 		return AdminCredentials{}, r.err
@@ -1257,6 +1333,14 @@ func (r *fakeNodeRunner) WaitControlPlaneJoinReady(_ context.Context, _ inventor
 
 func (r *fakeNodeRunner) RunWorkerJoin(_ context.Context, node inventory.PlannedNode, _ JoinMaterial) error {
 	r.record("join-worker:" + node.Name)
+	return r.err
+}
+
+func (r *fakeNodeRunner) WaitWorkerJoinReady(_ context.Context, _ inventory.PlannedNode, node inventory.PlannedNode) error {
+	r.record("ready-worker:" + node.Name)
+	if r.workerReadyErr != nil {
+		return r.workerReadyErr
+	}
 	return r.err
 }
 
@@ -1317,6 +1401,7 @@ type fakeTransport struct {
 	commandResults map[string][]readiness.CommandResult
 	commandCalls   map[string]int
 	files          map[string][]byte
+	writes         map[string][]byte
 }
 
 func newFakeTransport() *fakeTransport {
@@ -1325,6 +1410,7 @@ func newFakeTransport() *fakeTransport {
 		commandResults: map[string][]readiness.CommandResult{},
 		commandCalls:   map[string]int{},
 		files:          map[string][]byte{},
+		writes:         map[string][]byte{},
 	}
 }
 
@@ -1351,12 +1437,52 @@ func (t *fakeTransport) ReadFile(_ context.Context, _ inventory.PlannedNode, req
 	return readiness.FileResult{Content: data, Redaction: "sensitive"}, nil
 }
 
+func (t *fakeTransport) WriteFile(_ context.Context, _ inventory.PlannedNode, req readiness.WriteFileRequest) (readiness.WriteFileResult, error) {
+	t.writes[req.Path] = req.Content
+	t.files[req.Path] = req.Content
+	return readiness.WriteFileResult{SizeBytes: uint32(len(req.Content)), Redaction: "sensitive"}, nil
+}
+
 func (t *fakeTransport) commandCount(key string) int {
 	return t.commandCalls[key]
 }
 
 func commandKey(argv ...string) string {
 	return strings.Join(argv, "\x00")
+}
+
+func testWorkerJoinConfig() string {
+	return `apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+`
+}
+
+func testControlPlaneJoinConfig() string {
+	return `apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+controlPlane: {}
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+`
+}
+
+func testControlPlaneInitConfig() string {
+	return `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  name: cp-2
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: katl-smoke
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+`
 }
 
 func adminKubeconfig() string {

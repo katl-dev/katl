@@ -245,7 +245,7 @@ func readyTransport(node inventory.PlannedNode) *fakeTransport {
 			key("test", "-x", "/usr/bin/kubelet"):                                               {ExitStatus: 0},
 			key("systemctl", "cat", "kubelet.service"):                                          {ExitStatus: 0, Stdout: "[Service]\n"},
 			key("test", "-w", "/etc/kubernetes"):                                                {ExitStatus: 0},
-			key("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {ExitStatus: 0, Stdout: ProjectedKubernetesSource + "\n"},
+			key("findmnt", "--noheadings", "--target", "/etc/kubernetes", "--output", "SOURCE"): {ExitStatus: 0, Stdout: "/dev/vdb4[/lib/katl/kubernetes/etc-kubernetes]\n"},
 			key("test", "-f", NodeMetadataPath):                                                 {ExitStatus: 0},
 		},
 		errs: map[string]error{},
@@ -284,6 +284,11 @@ func (t *fakeTransport) ReadFile(_ context.Context, _ inventory.PlannedNode, req
 		return FileResult{}, errors.New("missing file " + req.Path)
 	}
 	return FileResult{Content: content}, nil
+}
+
+func (t *fakeTransport) WriteFile(_ context.Context, _ inventory.PlannedNode, req WriteFileRequest) (WriteFileResult, error) {
+	t.files[req.Path] = req.Content
+	return WriteFileResult{SizeBytes: uint32(len(req.Content))}, nil
 }
 
 func key(argv ...string) string {

@@ -54,12 +54,13 @@ type Dependencies struct {
 }
 
 type NodeRunner interface {
-	RunKubeadmInit(ctx context.Context, node inventory.PlannedNode) (AdminCredentials, error)
+	RunKubeadmInit(ctx context.Context, node inventory.PlannedNode, controlPlaneEndpoint string) (AdminCredentials, error)
 	CreateControlPlaneJoin(ctx context.Context, initNode inventory.PlannedNode) (JoinMaterial, error)
 	RunControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error
 	WaitControlPlaneJoinReady(ctx context.Context, initNode, node inventory.PlannedNode) error
 	CreateWorkerJoin(ctx context.Context, initNode inventory.PlannedNode) (JoinMaterial, error)
 	RunWorkerJoin(ctx context.Context, node inventory.PlannedNode, material JoinMaterial) error
+	WaitWorkerJoinReady(ctx context.Context, initNode, node inventory.PlannedNode) error
 	WaitAPIReady(ctx context.Context, initNode inventory.PlannedNode) error
 }
 
@@ -188,7 +189,7 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	if err != nil {
 		return result, err
 	}
-	credentials, err := deps.NodeRunner.RunKubeadmInit(ctx, initNode)
+	credentials, err := deps.NodeRunner.RunKubeadmInit(ctx, initNode, plan.ControlPlaneEndpoint)
 	if err != nil {
 		result.addPhase("kubeadm-init", initNode.Name, inventory.ActionInit, "failed")
 		return result, fmt.Errorf("kubeadm init on %s: %s", initNode.Name, inventory.Redact(err.Error()))
@@ -236,6 +237,11 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 				return result, fmt.Errorf("worker join on %s: %s", node.Name, inventory.Redact(err.Error()))
 			}
 			result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "passed")
+			if err := deps.NodeRunner.WaitWorkerJoinReady(ctx, initNode, node); err != nil {
+				result.addPhase("worker-ready", node.Name, "", "failed")
+				return result, fmt.Errorf("wait for worker registration on %s: %s", node.Name, inventory.Redact(err.Error()))
+			}
+			result.addPhase("worker-ready", node.Name, "", "passed")
 		}
 	}
 	if err := deps.NodeRunner.WaitAPIReady(ctx, initNode); err != nil {
@@ -903,8 +909,12 @@ type TransportRunner struct {
 	FileLimit       uint32
 }
 
-func (r TransportRunner) RunKubeadmInit(ctx context.Context, node inventory.PlannedNode) (AdminCredentials, error) {
-	result, err := r.run(ctx, node, []string{"kubeadm", "init", "--config", kubeadmConfigPath(node)}, true)
+func (r TransportRunner) RunKubeadmInit(ctx context.Context, node inventory.PlannedNode, controlPlaneEndpoint string) (AdminCredentials, error) {
+	configPath, err := r.initConfigPath(ctx, node, controlPlaneEndpoint)
+	if err != nil {
+		return AdminCredentials{}, err
+	}
+	result, err := r.run(ctx, node, []string{"kubeadm", "init", "--config", configPath}, true)
 	if err != nil {
 		if result.ExitStatus == 0 || !alreadyInitialized(result) {
 			return AdminCredentials{}, err
@@ -924,6 +934,42 @@ func (r TransportRunner) RunKubeadmInit(ctx context.Context, node inventory.Plan
 		return AdminCredentials{}, err
 	}
 	return parseAdminCredentials(file.Content)
+}
+
+func (r TransportRunner) initConfigPath(ctx context.Context, node inventory.PlannedNode, controlPlaneEndpoint string) (string, error) {
+	source := kubeadmConfigPath(node)
+	endpoint := strings.TrimSpace(controlPlaneEndpoint)
+	if endpoint == "" {
+		return source, nil
+	}
+	transport := r.transport()
+	if transport == nil {
+		return "", errors.New("bootstrap command transport is required")
+	}
+	file, err := transport.ReadFile(ctx, node, readiness.FileRequest{
+		Path:      source,
+		Timeout:   r.timeout(),
+		MaxBytes:  r.fileLimit(),
+		Sensitive: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("read kubeadm init config %s: %w", source, err)
+	}
+	content, err := renderInitConfig(file.Content, endpoint)
+	if err != nil {
+		return "", err
+	}
+	target := generatedInitConfigPath(node)
+	if _, err := transport.WriteFile(ctx, node, readiness.WriteFileRequest{
+		Path:      target,
+		Content:   content,
+		Mode:      0o600,
+		Timeout:   r.timeout(),
+		Sensitive: true,
+	}); err != nil {
+		return "", fmt.Errorf("write kubeadm init config %s: %w", target, err)
+	}
+	return target, nil
 }
 
 func (r TransportRunner) CreateWorkerJoin(ctx context.Context, initNode inventory.PlannedNode) (JoinMaterial, error) {
@@ -969,8 +1015,11 @@ func (r TransportRunner) RunControlPlaneJoin(ctx context.Context, node inventory
 	if flagValue(material.Argv, "--certificate-key") == "" {
 		return errors.New("control-plane join material must include --certificate-key")
 	}
-	argv := append([]string(nil), material.Argv...)
-	argv = append(argv, "--config", kubeadmConfigPath(node))
+	configPath, err := r.writeJoinConfig(ctx, node, material, true)
+	if err != nil {
+		return err
+	}
+	argv := []string{"kubeadm", "join", "--config", configPath}
 	result, err := r.run(ctx, node, argv, true)
 	if err != nil && (!alreadyJoined(result) || !r.controlPlaneJoinComplete(ctx, node)) {
 		return err
@@ -991,6 +1040,28 @@ func (r TransportRunner) WaitControlPlaneJoinReady(ctx context.Context, initNode
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("control-plane %s health: %w", node.Name, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+func (r TransportRunner) WaitWorkerJoinReady(ctx context.Context, initNode, node inventory.PlannedNode) error {
+	timeout := r.apiTimeout()
+	interval := r.apiPollInterval()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if err := r.workerJoinReady(ctx, initNode, node); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("worker %s registration: %w", node.Name, lastErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -1021,13 +1092,219 @@ func (r TransportRunner) RunWorkerJoin(ctx context.Context, node inventory.Plann
 	if flagValue(material.Argv, "--certificate-key") != "" {
 		return errors.New("worker join material must not include --certificate-key")
 	}
-	argv := append([]string(nil), material.Argv...)
-	argv = append(argv, "--config", kubeadmConfigPath(node))
+	configPath, err := r.writeJoinConfig(ctx, node, material, false)
+	if err != nil {
+		return err
+	}
+	argv := []string{"kubeadm", "join", "--config", configPath}
 	result, err := r.run(ctx, node, argv, true)
 	if err != nil && (!alreadyJoined(result) || !r.workerJoinComplete(ctx, node)) {
 		return err
 	}
 	return nil
+}
+
+func (r TransportRunner) writeJoinConfig(ctx context.Context, node inventory.PlannedNode, material JoinMaterial, controlPlane bool) (string, error) {
+	transport := r.transport()
+	if transport == nil {
+		return "", errors.New("bootstrap command transport is required")
+	}
+	source := kubeadmConfigPath(node)
+	file, err := transport.ReadFile(ctx, node, readiness.FileRequest{
+		Path:      source,
+		Timeout:   r.timeout(),
+		MaxBytes:  r.fileLimit(),
+		Sensitive: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("read kubeadm join config %s: %w", source, err)
+	}
+	content, err := renderJoinConfig(file.Content, material, controlPlane)
+	if err != nil {
+		return "", err
+	}
+	target := generatedJoinConfigPath(node)
+	if _, err := transport.WriteFile(ctx, node, readiness.WriteFileRequest{
+		Path:      target,
+		Content:   content,
+		Mode:      0o600,
+		Timeout:   r.timeout(),
+		Sensitive: true,
+	}); err != nil {
+		return "", fmt.Errorf("write kubeadm join config %s: %w", target, err)
+	}
+	return target, nil
+}
+
+func renderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) {
+	endpoint := strings.TrimSpace(controlPlaneEndpoint)
+	if endpoint == "" {
+		return base, nil
+	}
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil || strings.TrimSpace(host) == "" {
+		return nil, fmt.Errorf("control-plane endpoint must be host:port")
+	}
+	docs, err := decodeYAMLDocuments(base)
+	if err != nil {
+		return nil, fmt.Errorf("decode kubeadm init config: %w", err)
+	}
+	found := false
+	for _, doc := range docs {
+		if docKind(doc) != "ClusterConfiguration" {
+			continue
+		}
+		found = true
+		doc["controlPlaneEndpoint"] = endpoint
+		apiServer, _ := doc["apiServer"].(map[string]any)
+		if apiServer == nil {
+			apiServer = map[string]any{}
+		}
+		apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], host)
+		doc["apiServer"] = apiServer
+	}
+	if !found {
+		return nil, errors.New("kubeadm init config did not contain ClusterConfiguration")
+	}
+	return encodeYAMLDocuments(docs)
+}
+
+func renderJoinConfig(base []byte, material JoinMaterial, controlPlane bool) ([]byte, error) {
+	endpoint, token, hashes, err := joinDiscovery(material)
+	if err != nil {
+		return nil, err
+	}
+	docs, err := decodeYAMLDocuments(base)
+	if err != nil {
+		return nil, fmt.Errorf("decode kubeadm join config: %w", err)
+	}
+	var joinDocs []map[string]any
+	var initDoc map[string]any
+	for _, doc := range docs {
+		switch docKind(doc) {
+		case "JoinConfiguration":
+			joinDocs = append(joinDocs, doc)
+		case "InitConfiguration":
+			initDoc = doc
+		}
+	}
+	if controlPlane && len(joinDocs) == 0 && initDoc != nil {
+		joinDocs = append(joinDocs, synthesizeJoinConfig(initDoc))
+	}
+	if len(joinDocs) == 0 {
+		return nil, errors.New("kubeadm join config did not contain JoinConfiguration")
+	}
+	for _, doc := range joinDocs {
+		doc["discovery"] = map[string]any{
+			"bootstrapToken": map[string]any{
+				"apiServerEndpoint": endpoint,
+				"token":             token,
+				"caCertHashes":      hashes,
+			},
+		}
+		if controlPlane {
+			cp, _ := doc["controlPlane"].(map[string]any)
+			if cp == nil {
+				cp = map[string]any{}
+			}
+			cp["certificateKey"] = flagValue(material.Argv, "--certificate-key")
+			doc["controlPlane"] = cp
+		}
+	}
+	return encodeYAMLDocuments(joinDocs)
+}
+
+func appendUniqueString(value any, item string) []any {
+	item = strings.TrimSpace(item)
+	var items []any
+	switch typed := value.(type) {
+	case []any:
+		items = append(items, typed...)
+	case []string:
+		for _, existing := range typed {
+			items = append(items, existing)
+		}
+	}
+	for _, existing := range items {
+		if text, ok := existing.(string); ok && strings.TrimSpace(text) == item {
+			return items
+		}
+	}
+	return append(items, item)
+}
+
+func synthesizeJoinConfig(initDoc map[string]any) map[string]any {
+	doc := map[string]any{
+		"apiVersion": "kubeadm.k8s.io/v1beta4",
+		"kind":       "JoinConfiguration",
+	}
+	if nodeRegistration, ok := initDoc["nodeRegistration"].(map[string]any); ok {
+		doc["nodeRegistration"] = nodeRegistration
+	}
+	return doc
+}
+
+func joinDiscovery(material JoinMaterial) (string, string, []string, error) {
+	if len(material.Argv) < 3 || material.Argv[0] != "kubeadm" || material.Argv[1] != "join" {
+		return "", "", nil, errors.New("join material must start with kubeadm join")
+	}
+	endpoint := strings.TrimSpace(material.Argv[2])
+	token := strings.TrimSpace(flagValue(material.Argv, "--token"))
+	hash := strings.TrimSpace(flagValue(material.Argv, "--discovery-token-ca-cert-hash"))
+	if endpoint == "" {
+		return "", "", nil, errors.New("join material is missing API server endpoint")
+	}
+	if token == "" {
+		return "", "", nil, errors.New("join material is missing bootstrap token")
+	}
+	if hash == "" {
+		return "", "", nil, errors.New("join material is missing discovery token CA cert hash")
+	}
+	return endpoint, token, []string{hash}, nil
+}
+
+func decodeYAMLDocuments(data []byte) ([]map[string]any, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var docs []map[string]any
+	for {
+		doc := map[string]any{}
+		err := decoder.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(doc) == 0 {
+			continue
+		}
+		docs = append(docs, doc)
+	}
+	if len(docs) == 0 {
+		return nil, errors.New("kubeadm join config is empty")
+	}
+	return docs, nil
+}
+
+func encodeYAMLDocuments(docs []map[string]any) ([]byte, error) {
+	var out bytes.Buffer
+	encoder := yaml.NewEncoder(&out)
+	encoder.SetIndent(2)
+	for _, doc := range docs {
+		if err := encoder.Encode(doc); err != nil {
+			_ = encoder.Close()
+			return nil, err
+		}
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func docKind(doc map[string]any) string {
+	kind, _ := doc["kind"].(string)
+	return kind
 }
 
 func (r TransportRunner) WaitAPIReady(ctx context.Context, initNode inventory.PlannedNode) error {
@@ -1101,6 +1378,16 @@ func (r TransportRunner) controlPlaneJoinReady(ctx context.Context, initNode, no
 	}
 	if !etcdReport.HasMember(node.Name) {
 		return fmt.Errorf("etcd health: member %s is missing from etcd member list", node.Name)
+	}
+	return nil
+}
+
+func (r TransportRunner) workerJoinReady(ctx context.Context, initNode, node inventory.PlannedNode) error {
+	if err := r.runSensitive(ctx, initNode, []string{"kubectl", "--kubeconfig", adminKubeconfigPath, "get", "--raw=/readyz"}); err != nil {
+		return fmt.Errorf("api readyz: %w", err)
+	}
+	if err := r.runSensitive(ctx, initNode, []string{"kubectl", "--kubeconfig", adminKubeconfigPath, "get", "node", node.Name}); err != nil {
+		return fmt.Errorf("node object: %w", err)
 	}
 	return nil
 }
@@ -1283,6 +1570,42 @@ func kubeadmConfigPath(node inventory.PlannedNode) string {
 		return node.KubeadmConfig.Path
 	}
 	return "/etc/katl/kubeadm/" + node.KubeadmConfig.Ref + "/config.yaml"
+}
+
+func generatedInitConfigPath(node inventory.PlannedNode) string {
+	return generatedKubeadmConfigPath(node, "init")
+}
+
+func generatedJoinConfigPath(node inventory.PlannedNode) string {
+	return generatedKubeadmConfigPath(node, "join")
+}
+
+func generatedKubeadmConfigPath(node inventory.PlannedNode, action string) string {
+	name := strings.TrimSpace(node.Name)
+	if name == "" {
+		name = "node"
+	}
+	var clean strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			clean.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			clean.WriteRune(r)
+		case r >= '0' && r <= '9':
+			clean.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			clean.WriteRune(r)
+		default:
+			clean.WriteByte('-')
+		}
+	}
+	name = clean.String()
+	name = strings.Trim(name, "-")
+	if name == "" {
+		name = "node"
+	}
+	return "/var/lib/katl/test-artifacts/kubeadm-" + action + "-" + name + ".yaml"
 }
 
 func parseAdminCredentials(data []byte) (AdminCredentials, error) {

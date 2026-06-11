@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -473,7 +475,7 @@ func verifyBootstrapTranscripts(transcriptDir string, nodes []string) error {
 		if err != nil {
 			return fmt.Errorf("%s transcript %s: %w", node, path, err)
 		}
-		var runCommand, readFile, sensitiveCommand, sensitiveFile bool
+		var runCommand, readFile, writeFile, sensitiveCommand, sensitiveFile, sensitiveWriteFile bool
 		for _, entry := range entries {
 			switch entry.Method {
 			case "RunCommand":
@@ -485,6 +487,11 @@ func verifyBootstrapTranscripts(transcriptDir string, nodes []string) error {
 				readFile = true
 				if entry.SensitiveOutput || (entry.Redaction != "" && entry.Redaction != "none") {
 					sensitiveFile = true
+				}
+			case "WriteFile":
+				writeFile = true
+				if entry.SensitiveOutput || (entry.Redaction != "" && entry.Redaction != "none") {
+					sensitiveWriteFile = true
 				}
 			}
 		}
@@ -499,6 +506,14 @@ func verifyBootstrapTranscripts(transcriptDir string, nodes []string) error {
 		}
 		if !sensitiveFile {
 			return fmt.Errorf("%s transcript has no sensitive file entry", node)
+		}
+		if node != "cp-1" {
+			if !writeFile {
+				return fmt.Errorf("%s transcript has no WriteFile entry", node)
+			}
+			if !sensitiveWriteFile {
+				return fmt.Errorf("%s transcript has no sensitive write file entry", node)
+			}
 		}
 		if err := verifyThreeControlPlaneKubeadmTranscript(node, entries); err != nil {
 			return fmt.Errorf("%s transcript: %w", node, err)
@@ -516,8 +531,8 @@ func verifyThreeControlPlaneKubeadmTranscript(node string, entries []transcriptE
 		if !transcriptHasCommand(entries, "kubeadm", "init") {
 			return errors.New("missing kubeadm init command")
 		}
-		if !transcriptHasCommandFlagValue(entries, "kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml") {
-			return errors.New("kubeadm init command missing control-plane config path")
+		if !transcriptHasCommandFlagValue(entries, "kubeadm", "init", "--config", "/var/lib/katl/test-artifacts/kubeadm-init-cp-1.yaml") {
+			return errors.New("kubeadm init command missing generated control-plane config path")
 		}
 		if !transcriptHasCommand(entries, "kubeadm", "init", "phase", "upload-certs") {
 			return errors.New("missing kubeadm certificate upload command")
@@ -532,14 +547,14 @@ func verifyThreeControlPlaneKubeadmTranscript(node string, entries []transcriptE
 		if !transcriptHasCommand(entries, "kubeadm", "join") {
 			return errors.New("missing kubeadm control-plane join command")
 		}
-		if !transcriptHasCommandFlagValue(entries, "kubeadm", "join", "--config", "/etc/katl/kubeadm/control-plane/config.yaml") {
-			return errors.New("kubeadm control-plane join command missing control-plane config path")
+		if !transcriptHasCommandFlagValue(entries, "kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-"+node+".yaml") {
+			return errors.New("kubeadm control-plane join command missing generated control-plane config path")
 		}
-		if !transcriptHasCommandArg(entries, "kubeadm", "join", "--control-plane") {
-			return errors.New("kubeadm join command missing --control-plane")
+		if transcriptHasCommandArg(entries, "kubeadm", "join", "--control-plane") {
+			return errors.New("kubeadm control-plane join command must not include --control-plane")
 		}
-		if !transcriptHasCommandArg(entries, "kubeadm", "join", "--certificate-key") {
-			return errors.New("kubeadm control-plane join command missing --certificate-key")
+		if transcriptHasCommandArg(entries, "kubeadm", "join", "--certificate-key") {
+			return errors.New("kubeadm control-plane join command must not include --certificate-key")
 		}
 	}
 	return nil
@@ -672,23 +687,15 @@ type vmtestNodeTransport struct {
 }
 
 func (t vmtestNodeTransport) RunCommand(ctx context.Context, node inventory.PlannedNode, req readiness.CommandRequest) (readiness.CommandResult, error) {
-	client, err := t.client(ctx, node)
-	if err != nil {
-		return readiness.CommandResult{}, err
-	}
-	defer client.Close()
-	if req.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-		defer cancel()
-	}
-	result, err := client.RunCommand(ctx, &vmtestpb.RunCommandRequest{
-		Argv:             req.Argv,
-		StdoutLimit:      req.StdoutLimit,
-		StderrLimit:      req.StderrLimit,
-		SensitiveOutput:  req.SensitiveOutput,
-		WorkingDirectory: "",
-	})
+	result, err := retryAgentOp(ctx, t, node, safeRetryCommand(req.Argv), func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.CommandResult, error) {
+		return client.RunCommand(opCtx, &vmtestpb.RunCommandRequest{
+			Argv:             req.Argv,
+			StdoutLimit:      req.StdoutLimit,
+			StderrLimit:      req.StderrLimit,
+			SensitiveOutput:  req.SensitiveOutput,
+			WorkingDirectory: "",
+		})
+	}, req.Timeout)
 	if err != nil {
 		return readiness.CommandResult{}, err
 	}
@@ -702,25 +709,100 @@ func (t vmtestNodeTransport) RunCommand(ctx context.Context, node inventory.Plan
 }
 
 func (t vmtestNodeTransport) ReadFile(ctx context.Context, node inventory.PlannedNode, req readiness.FileRequest) (readiness.FileResult, error) {
-	client, err := t.client(ctx, node)
-	if err != nil {
-		return readiness.FileResult{}, err
-	}
-	defer client.Close()
-	if req.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
-		defer cancel()
-	}
-	result, err := client.ReadFile(ctx, &vmtestpb.ReadFileRequest{
-		Path:      req.Path,
-		MaxBytes:  req.MaxBytes,
-		Sensitive: req.Sensitive,
-	})
+	result, err := retryAgentOp(ctx, t, node, true, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.FileResult, error) {
+		return client.ReadFile(opCtx, &vmtestpb.ReadFileRequest{
+			Path:      req.Path,
+			MaxBytes:  req.MaxBytes,
+			Sensitive: req.Sensitive,
+		})
+	}, req.Timeout)
 	if err != nil {
 		return readiness.FileResult{}, err
 	}
 	return readiness.FileResult{Content: result.Content, Truncated: result.Truncated, Redaction: result.Redaction}, nil
+}
+
+func (t vmtestNodeTransport) WriteFile(ctx context.Context, node inventory.PlannedNode, req readiness.WriteFileRequest) (readiness.WriteFileResult, error) {
+	result, err := retryAgentOp(ctx, t, node, true, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.WriteFileResult, error) {
+		return client.WriteFile(opCtx, &vmtestpb.WriteFileRequest{
+			Path:      req.Path,
+			Content:   req.Content,
+			Mode:      req.Mode,
+			Sensitive: req.Sensitive,
+		})
+	}, req.Timeout)
+	if err != nil {
+		return readiness.WriteFileResult{}, err
+	}
+	return readiness.WriteFileResult{SizeBytes: result.SizeBytes, Redaction: result.Redaction}, nil
+}
+
+func retryAgentOp[T any](ctx context.Context, transport vmtestNodeTransport, node inventory.PlannedNode, retry bool, op func(context.Context, *vmtest.AgentClient) (T, error), timeout time.Duration) (T, error) {
+	var zero T
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	attempts := 1
+	if retry {
+		attempts = 3
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		client, err := transport.client(ctx, node)
+		if err != nil {
+			lastErr = err
+		} else {
+			result, err := op(ctx, client)
+			_ = client.Close()
+			if err == nil {
+				return result, nil
+			}
+			lastErr = err
+		}
+		if attempt == attempts-1 || !transientAgentTransportError(lastErr) {
+			return zero, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return zero, lastErr
+}
+
+func safeRetryCommand(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	switch argv[0] {
+	case "systemctl", "test", "findmnt":
+		return true
+	case "kubeadm":
+		return len(argv) >= 2 && argv[1] == "version"
+	case "crictl":
+		return len(argv) >= 2 && (argv[1] == "info" || argv[1] == "ps")
+	case "kubectl":
+		for _, arg := range argv[1:] {
+			if arg == "get" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func transientAgentTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "connection reset by peer") || strings.Contains(text, "broken pipe")
 }
 
 func (t vmtestNodeTransport) client(ctx context.Context, node inventory.PlannedNode) (*vmtest.AgentClient, error) {
@@ -980,14 +1062,15 @@ func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testin
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-1"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/var/lib/katl/test-artifacts/kubeadm-init-cp-1.yaml"}, Redaction: "output", SensitiveOutput: true},
 		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "phase", "upload-certs", "--upload-certs"}, Redaction: "output", SensitiveOutput: true},
 	})
 	for _, node := range []string{"cp-2", "cp-3"} {
 		writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, node), []transcriptEntry{
 			{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 			{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-			{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--certificate-key", "[REDACTED CERTIFICATE KEY]", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+			{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
+			{Method: "RunCommand", Argv: []string{"kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-" + node + ".yaml"}, Redaction: "output", SensitiveOutput: true},
 		})
 	}
 	if err := verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"}); err != nil {
@@ -997,7 +1080,7 @@ func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testin
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-1"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/var/lib/katl/test-artifacts/kubeadm-init-cp-1.yaml"}, Redaction: "output", SensitiveOutput: true},
 	})
 	err := verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
 	if err == nil || !strings.Contains(err.Error(), "missing kubeadm certificate upload command") {
@@ -1006,28 +1089,31 @@ func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testin
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-1"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/var/lib/katl/test-artifacts/kubeadm-init-cp-1.yaml"}, Redaction: "output", SensitiveOutput: true},
 		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "phase", "upload-certs", "--upload-certs"}, Redaction: "output", SensitiveOutput: true},
 	})
 
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-cp-2.yaml", "--certificate-key", "[REDACTED CERTIFICATE KEY]"}, Redaction: "output", SensitiveOutput: true},
 	})
 	err = verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
-	if err == nil || !strings.Contains(err.Error(), "kubeadm control-plane join command missing --certificate-key") {
-		t.Fatalf("verifyBootstrapTranscripts() error = %v, want certificate-key rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "kubeadm control-plane join command must not include --certificate-key") {
+		t.Fatalf("verifyBootstrapTranscripts() error = %v, want certificate-key leak rejection", err)
 	}
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--certificate-key", "[REDACTED CERTIFICATE KEY]", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-cp-2.yaml"}, Redaction: "output", SensitiveOutput: true},
 	})
 
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}, Redaction: "output", SensitiveOutput: true},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
+		{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
 	})
 	err = verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
 	if err == nil || !strings.Contains(err.Error(), "unexpected kubeadm init command on joining control-plane") {
@@ -1037,11 +1123,12 @@ func TestVerifyThreeControlPlaneBootstrapTranscriptsChecksKubeadmRoles(t *testin
 	writeTranscriptEntries(t, twoNodeBootstrapTranscriptPath(dir, "cp-2"), []transcriptEntry{
 		{Method: "RunCommand", Argv: []string{"systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"}},
 		{Method: "ReadFile", Redaction: "sensitive", SensitiveOutput: true},
-		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "[REDACTED BOOTSTRAP TOKEN]", "--control-plane", "--certificate-key", "[REDACTED CERTIFICATE KEY]", "--config", "/etc/katl/kubeadm/worker/config.yaml"}, Redaction: "output", SensitiveOutput: true},
+		{Method: "WriteFile", Redaction: "sensitive", SensitiveOutput: true, WriteBytes: 256},
+		{Method: "RunCommand", Argv: []string{"kubeadm", "join", "--config", "/var/lib/katl/test-artifacts/kubeadm-join-worker-1.yaml"}, Redaction: "output", SensitiveOutput: true},
 	})
 	err = verifyBootstrapTranscripts(dir, []string{"cp-1", "cp-2", "cp-3"})
-	if err == nil || !strings.Contains(err.Error(), "kubeadm control-plane join command missing control-plane config path") {
-		t.Fatalf("verifyBootstrapTranscripts() error = %v, want cp-2 config path rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "kubeadm control-plane join command missing generated control-plane config path") {
+		t.Fatalf("verifyBootstrapTranscripts() error = %v, want cp-2 generated config path rejection", err)
 	}
 }
 

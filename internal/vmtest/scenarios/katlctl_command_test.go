@@ -38,5 +38,6 @@ type transcriptEntry struct {
 	Argv            []string `json:"argv,omitempty"`
 	Redaction       string   `json:"redaction,omitempty"`
 	StdoutBytes     uint32   `json:"stdoutBytes,omitempty"`
+	WriteBytes      uint32   `json:"writeBytes,omitempty"`
 	SensitiveOutput bool     `json:"sensitiveOutput,omitempty"`
 }

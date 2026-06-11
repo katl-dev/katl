@@ -441,10 +441,12 @@ func limitOrDefault(value, fallback uint32) uint32 {
 func defaultAgentCommands() map[string]bool {
 	return map[string]bool{
 		"crictl":            true,
+		"chmod":             true,
 		"configapply-smoke": true,
 		"find":              true,
 		"findmnt":           true,
 		"getent":            true,
+		"install":           true,
 		"ip":                true,
 		"journalctl":        true,
 		"kubeadm":           true,
@@ -463,6 +465,7 @@ func defaultAgentFilePaths() []string {
 	return []string{
 		"/etc/katl/",
 		"/etc/kubernetes/admin.conf",
+		"/etc/kubernetes/kubelet.conf",
 		"/etc/os-release",
 		"/proc/cmdline",
 		"/run/katl/",

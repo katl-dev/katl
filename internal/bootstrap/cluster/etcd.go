@@ -208,7 +208,7 @@ func (c EtcdChecker) CreateSnapshot(ctx context.Context, node inventory.PlannedN
 		report.Diagnostics = append(report.Diagnostics, inventory.Diagnostic{Field: "etcd-snapshot", Message: inventory.Redact(err.Error())})
 		return report, nil
 	}
-	status, err := c.etcdctl(ctx, node, containerID, "snapshot", "status", path, "--write-out=json")
+	status, err := c.etcdutl(ctx, node, containerID, "--write-out=json", "snapshot", "status", path)
 	if err != nil {
 		report.Diagnostics = append(report.Diagnostics, inventory.Diagnostic{Field: "etcd-snapshot", Message: inventory.Redact(err.Error())})
 		return report, nil
@@ -256,6 +256,12 @@ func (c EtcdChecker) etcdctl(ctx context.Context, node inventory.PlannedNode, co
 		"--cert=" + c.clientCertPath(),
 		"--key=" + c.clientKeyPath(),
 	}
+	base = append(base, argv...)
+	return c.run(ctx, node, base, true)
+}
+
+func (c EtcdChecker) etcdutl(ctx context.Context, node inventory.PlannedNode, containerID string, argv ...string) (readiness.CommandResult, error) {
+	base := []string{"crictl", "exec", containerID, "etcdutl"}
 	base = append(base, argv...)
 	return c.run(ctx, node, base, true)
 }
