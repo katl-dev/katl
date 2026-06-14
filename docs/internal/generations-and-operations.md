@@ -80,6 +80,32 @@ manifest. It does not activate Kubernetes binaries, create `/etc/kubernetes`, ru
 kubeadm, or create cluster state. The first Kubernetes-capable generation is
 created by an explicit bootstrap or join operation.
 
+Generation 0 is a hard clean-state invariant, not just a convenient label.
+
+Required generation 0 invariants:
+
+```text
+KatlOS runtime root, boot metadata, writable state layout, machine identity, and
+  stored cluster intent exist
+selected Kubernetes sysext set is empty
+kubelet is disabled or absent from the active boot transaction
+containerd may run only as baseline host runtime plumbing, not as proof of
+  Kubernetes membership
+no Kubernetes PKI exists under the projected /etc/kubernetes backing store
+no kubeadm static pod manifests exist
+no kubeadm kubeconfigs exist
+no etcd data exists for a Katl-managed stacked-etcd member
+no kubelet join/bootstrap state exists under /var/lib/kubelet
+no kubeadm init, join, or upgrade operation has crossed its mutation boundary
+```
+
+The `/etc/kubernetes` backing directory may exist as an empty projected state
+location, but kubeadm-owned contents must not. A node may safely return to
+generation 0 only while these cluster-state invariants remain true. Once kubeadm
+has created PKI, kubelet state, static pod manifests, etcd data, or API objects,
+host rollback to generation 0 is not a clean cluster reset; cleanup requires an
+explicit reset, repair, recovery, or destructive wipe/reinstall path.
+
 ## Generation Lifecycle Terms
 
 The shared lifecycle uses these terms:
@@ -136,13 +162,14 @@ host capability set, or Kubernetes cluster state.
 Examples include:
 
 ```text
-BootstrapCluster
-JoinCluster
-UpgradeControlPlane
-UpgradeWorker
-RenewCertificates
-ResetNode
-ReplaceEtcdMember
+bootstrap-init
+bootstrap-join-control-plane
+bootstrap-join-worker
+kubeadm-upgrade
+kubeadm-reset
+recover-control-plane
+renew-certificates
+replace-etcd-member
 ```
 
 An operation answers:
@@ -157,13 +184,14 @@ package managers, or cluster repair commands.
 
 Normal `katlc apply` is the generation apply path. Creating or activating the
 first Kubernetes-capable generation during cluster bootstrap is still generation
-management, but it is part of the explicit `BootstrapCluster` or `JoinCluster`
+management, but it is part of an explicit bootstrap or join
 operation because kubeadm will mutate node or cluster state before the generation
 can be committed. Named operations are reserved for transactional workflows that
 run mutating tools such as kubeadm, coordinate external state, or repair state
 outside normal generation apply.
 
-`BootstrapCluster` and `JoinCluster` are operation types initiated by
+`bootstrap-init`, `bootstrap-join-control-plane`, and
+`bootstrap-join-worker` are durable operation kinds initiated by
 `katlctl cluster bootstrap`, but the accepted operation attempts are created by
 node-local `katlc`. For bounded multi-node workflows, `katlctl` may display an
 invocation summary that links returned node-local operation IDs, candidate
@@ -171,9 +199,12 @@ generation IDs, phase state, redacted diagnostics, and mutation boundaries. That
 summary is not an `OperationRecord`, not persistent Katl state, and not used for
 node crash recovery.
 
-`UpgradeControlPlane` and `UpgradeWorker` name operation boundaries. They do not
-make Kubernetes upgrade execution supported before the target kubeadm access
-mode and target kubelet activation gate are selected, implemented, and tested.
+`kubeadm-upgrade` names the durable operation kind for Kubernetes upgrades.
+Role-specific views such as control-plane apply, control-plane node upgrade, and
+worker upgrade are operation fields, phases, or CLI presentation, not competing
+state models. Naming the boundary does not make Kubernetes upgrade execution
+supported before the target kubeadm access mode and target kubelet activation
+gate are selected, implemented, and tested.
 
 ## Operation Records
 
@@ -455,16 +486,19 @@ promotion requires a later boot to reach `katl-boot-complete.target`.
 Cluster bootstrap and node join use the same operation model:
 
 ```text
-BootstrapCluster
+bootstrap-init
   -> katlc creates and activates the first Kubernetes-capable generation as a candidate
   -> katlc runs kubeadm init
+  -> katlc records cluster-global bootstrap-state evidence
   -> katlc verifies local control-plane health
   -> katlc commits the candidate generation
   -> katlc records bootstrap artifacts and marks operation complete
 
-JoinCluster
+bootstrap-join-control-plane or bootstrap-join-worker
   -> katlc creates and activates the first Kubernetes-capable generation as a candidate
   -> katlc runs kubeadm join
+  -> katlc records node-local join evidence and, for control-plane joins, etcd
+     membership evidence
   -> katlc verifies node-local join health
   -> katlc commits the candidate generation and marks operation complete
 ```
@@ -481,7 +515,7 @@ Generation N
 Generation N+1
   Kubernetes 1.36.1
 
-UpgradeControlPlane or UpgradeWorker
+kubeadm-upgrade
   -> katlc validates and records a plan-only or refused operation
   -> no bootable candidate is selected
   -> no target Kubernetes sysext is globally activated
@@ -632,6 +666,11 @@ requests must be refused with diagnostics rather than partially executed.
 `katlc` is the only authority that validates, plans, records, and executes node
 recovery.
 
+Cluster-global recovery and rebuild semantics, including single-control-plane
+loss, majority control-plane loss, CA loss, stale etcd data, and the rule that
+general cluster rebuild means destructive wipe/reinstall plus new bootstrap, are
+defined in `docs/internal/cluster-recovery-and-rebuild.md`.
+
 ### Recovery Operation Contract Requirements
 
 Before a recovery kind can be implemented, its contract must define:
@@ -682,15 +721,15 @@ destructive-reset
 Naming these operation types documents boundaries only; it does not make them
 supported behavior. Each row must be completed with tests before implementation:
 
-| Operation | Required contract before support |
+| Operation kind | Required contract before support |
 | --- | --- |
-| `RepairInstallState` | Scope `install-state`; preflight same request digest, target disk stable ID, GPT/filesystem/root-slot/generation 0/boot-entry probes; allow only same-request checkpoint/status/boot metadata repair; forbid request replacement, target disk switch, Kubernetes or etcd deletion, and destructive reinstall |
-| `RepairGenerationStatus` | Scope `host-generation`; preflight generation spec/status/journal/boot-entry consistency; allow commit/rollback bookkeeping repair only; forbid partial root, sysext, or confext switching |
-| `RetryOperation` | Scope matches the original operation; preflight parent record, stale class, request digest, live probes, and material validity; allow rerun only of idempotent or kind-declared retryable phases as a child operation; forbid automatic retry, stale-ambiguous replay, request changes, and implicit cleanup |
-| `RenewCertificates` | Scope `kubeadm-state`; preflight kubeadm version, certificate expiry, API/static pod state, and redacted kubeconfig access; allow explicit kubeadm certificate renewal and declared restarts; forbid upgrades, etcd membership changes, and config drift repair |
-| `ResetNode` | Scope `destructive-reset`; preflight explicit data-loss acknowledgement, node identity, system role, cluster membership, and etcd handling decision; allow only the declared reset surface; forbid etcd member replacement, snapshot restore, install input replacement, and undeclared disk wipe |
-| `ReplaceEtcdMember` | Scope `etcd-state`; preflight quorum, member identity, peer URLs, certificate compatibility, version skew, and local member mapping; allow only a named member remove/add flow; forbid snapshot restore, stale data reuse without proof, and automatic failed-join cleanup |
-| `RestoreEtcdSnapshot` | Scope `etcd-state`; preflight explicit disaster intent, snapshot path/digest/revision, Kubernetes/etcd version compatibility, topology, participant set, and current-state backup decision; allow only the declared snapshot restore procedure; forbid in-place merge, unknown snapshots, partial topology restore, and treating host rollback as etcd rollback |
+| `repair-install-state` | Scope `install-state`; preflight same request digest, target disk stable ID, GPT/filesystem/root-slot/generation 0/boot-entry probes; allow only same-request checkpoint/status/boot metadata repair; forbid request replacement, target disk switch, Kubernetes or etcd deletion, and destructive reinstall |
+| `repair-generation-status` | Scope `host-generation`; preflight generation spec/status/journal/boot-entry consistency; allow commit/rollback bookkeeping repair only; forbid partial root, sysext, or confext switching |
+| `retry-operation` | Scope matches the original operation; preflight parent record, stale class, request digest, live probes, and material validity; allow rerun only of idempotent or kind-declared retryable phases as a child operation; forbid automatic retry, stale-ambiguous replay, request changes, and implicit cleanup |
+| `renew-certificates` | Scope `kubeadm-state`; preflight kubeadm version, certificate expiry, API/static pod state, and redacted kubeconfig access; allow explicit kubeadm certificate renewal and declared restarts; forbid upgrades, etcd membership changes, and config drift repair |
+| `kubeadm-reset` | Scope `destructive-reset`; preflight explicit data-loss acknowledgement, node identity, system role, cluster membership, and etcd handling decision; allow only the declared reset surface; forbid etcd member replacement, snapshot restore, install input replacement, and undeclared disk wipe |
+| `replace-etcd-member` | Scope `etcd-state`; preflight quorum, member identity, peer URLs, certificate compatibility, version skew, and local member mapping; allow only a named member remove/add flow; forbid snapshot restore, stale data reuse without proof, and automatic failed-join cleanup |
+| `restore-etcd-snapshot` | Scope `etcd-state`; preflight explicit disaster intent, snapshot path/digest/revision, Kubernetes/etcd version compatibility, topology, participant set, and current-state backup decision; allow only the declared snapshot restore procedure; forbid in-place merge, unknown snapshots, partial topology restore, and treating host rollback as etcd rollback |
 
 ## Testing Contract
 

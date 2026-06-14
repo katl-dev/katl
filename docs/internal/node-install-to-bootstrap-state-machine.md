@@ -35,11 +35,11 @@ ValidatedInstallRequest
   install policy, including destructive install guard and target disk selector
   systemRole
   exact Kubernetes payload version, such as 1.36.1
-  kubeadm config refs, not kubeadm actions
+  bootstrap profile refs, not kubeadm actions
   one katlosImage reference with digest and expected metadata
 ```
 
-`systemRole`, the requested Kubernetes version, and kubeadm config refs are
+`systemRole`, the requested Kubernetes version, and bootstrap profile refs are
 installed as cluster intent for later bootstrap. They do not activate Kubernetes
 binaries and do not cause `kubeadm init` or `kubeadm join` during node install.
 
@@ -126,16 +126,25 @@ WaitingForClusterBootstrap
   generation, and runs the appropriate kubeadm workflow
 ```
 
+Generation 0 is valid only while its clean-state invariant holds: no active
+Kubernetes sysext, no enabled kubelet, no kubeadm-owned PKI or kubeconfigs, no
+static pod manifests, no kubelet join state, no local etcd data, and no prior
+kubeadm mutation boundary for the node. Empty backing directories for future
+state projections are allowed; kubeadm-owned contents are not. If any of that
+state exists, the node is no longer a clean generation 0 bootstrap target and
+must go through explicit reset, recovery, or destructive wipe/reinstall.
+
 Cluster bootstrap creates the first Kubernetes-capable generation and then runs
 kubeadm:
 
 ```text
 katlctl cluster bootstrap
-  submit a BootstrapCluster or JoinCluster request to node-local katlc
+  submit a bootstrap-init, bootstrap-join-control-plane, or bootstrap-join-worker
+  request to node-local katlc
   katlc validates stored cluster intent
   katlc selects the bundled Kubernetes sysext whose payload version exactly
   matches the install manifest version
-  katlc renders kubeadm config refs under /etc/katl
+  katlc resolves bootstrap profiles and renders kubeadm input under /etc/katl
   katlc projects /etc/kubernetes from writable state
   katlc ensures containerd prerequisites, kubelet service wiring, and systemRole
   metadata
@@ -145,8 +154,9 @@ KubeadmReady
   reach katl-kubeadm-ready.target after local prerequisites are active
 
 KubeadmOperation
-  katlc records a BootstrapCluster attempt for the init node or a JoinCluster
-  attempt for joining nodes based on cluster inventory and systemRole
+  katlc records a bootstrap-init attempt for the init node or a role-specific
+  bootstrap-join attempt for joining nodes based on cluster inventory and
+  systemRole
   katlc runs kubeadm init or kubeadm join under systemd supervision
   katlc runs local post-kubeadm health checks
   katlc sets generation 1 commitState committed only after kubeadm and operation
@@ -307,8 +317,8 @@ Repair tooling may later make some refuse cases recoverable, but the default
 installer must not silently reinterpret them.
 
 Repair-required cases must stop in `failed-needs-repair` or
-`runtime-failed-needs-repair` and reference a deferred `RepairInstallState`
-operation shape. `RepairInstallState` may inspect checkpoints, disk identity,
+`runtime-failed-needs-repair` and reference a deferred `repair-install-state`
+operation shape. `repair-install-state` may inspect checkpoints, disk identity,
 Katl GPT state, generation spec/status, and boot entries unless an explicit
 operator request authorizes a named mutation. It must not replace the accepted
 request, reinterpret a different target disk, delete Kubernetes state, delete

@@ -60,12 +60,21 @@ Its only persistent state is `katlctl` client configuration for communication
 profiles and known nodes. It is not a daemon, reconciler, add-on manager, CNI
 manager, Flux manager, BIRD manager, or cluster lifecycle controller.
 
+Authority rule: `katlctl` may load operator input, transport requests, sequence
+bounded multi-node workflows, wait on returned operation IDs, and summarize
+results. Node-local `katlc` must revalidate every accepted request and is the
+only writer of generation specs, generation status, boot selection, operation
+records, and durable node lifecycle state. Any `katlctl` plan, log, summary, or
+kubeconfig output is disposable client output unless `katlc` has persisted the
+corresponding state on the node.
+
 ## Operation Record Boundary
 
-`katlctl cluster bootstrap` submits explicit `BootstrapCluster` and
-`JoinCluster` operation requests to node-local `katlc`. The selected init node
-gets a `BootstrapCluster` operation; each worker or later control-plane join gets
-a `JoinCluster` operation. Each accepted attempt asks node-local `katlc` to
+`katlctl cluster bootstrap` submits explicit bootstrap operation requests to
+node-local `katlc`. The selected init node gets a `bootstrap-init` operation;
+each later control-plane join gets a `bootstrap-join-control-plane` operation;
+each worker join gets a `bootstrap-join-worker` operation. Each accepted attempt
+asks node-local `katlc` to
 validate stored intent, create the first Kubernetes-capable candidate generation,
 activate it for kubeadm readiness, run kubeadm, and write a canonical
 `OperationRecord` under `/var/lib/katl/operations/<operation-id>/`.
@@ -86,6 +95,14 @@ phase where kubeadm first mutated state, and which mutation scopes were touched.
 joins, etcd membership. Host rollback after a failed bootstrap or join does not
 clean this partial state; retry must inspect actual kubeadm and Kubernetes state.
 
+`katlc` must create and fsync the `OperationRecord` before it creates the
+candidate generation, activates kubeadm-ready state, materializes join material,
+or invokes kubeadm. Candidate generation commit must set
+`committedByOperationID` to the bootstrap or join record. A rerun or retry
+creates a new linked operation record or an explicit `retry-operation` child
+record. Terminal records and `katlctl` invocation summaries are never rewritten
+into authoritative bootstrap state.
+
 Each node-local attempt must also record:
 
 ```text
@@ -105,8 +122,25 @@ generation by setting `commitState: committed`. That accepts desired host state,
 but leaves persistent default selection and boot health pending until a later
 boot reaches `katl-boot-complete.target`.
 
+## Bootstrap State Ownership
+
+Bootstrap state is split by ownership layer:
+
+| State | Owner | Recovery role |
+| --- | --- | --- |
+| Stored install cluster intent | `katlos-install` and `katlc` | Bootstrap input and provenance only; not live desired cluster state |
+| Generation spec/status | `katlc` | Desired host state and boot/commit health only |
+| Bootstrap or join attempt state | `katlc` | Canonical `OperationRecord` under `/var/lib/katl/operations` |
+| Rendered `/etc/katl/kubeadm` input | `katlc` | Desired kubeadm input selected by the generation; not live cluster state |
+| `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`, and API objects | kubeadm, kubelet, Kubernetes, and etcd | Live node or cluster state; inspected by retry and repair operations |
+| `katlctl` invocation summary and kubeconfig output | `katlctl` client output | Operator convenience only; not authoritative recovery state |
+| CNI, DNS, GitOps, add-ons, and workloads | User-managed cluster tooling | Outside bootstrap operation ownership |
+
+The focused cluster-global artifact boundary is defined in
+`docs/internal/cluster-bootstrap-state-model.md`.
+
 Bootstrap and join records use the shared operation evidence model. Required
-`BootstrapCluster` evidence includes:
+`bootstrap-init` evidence includes:
 
 ```text
 nodeIdentity:
@@ -143,7 +177,8 @@ joinMaterialEvidence:
   certificate key present, expiry, upload-certs phase observed
 ```
 
-Required `JoinCluster` evidence includes:
+Required `bootstrap-join-control-plane` and `bootstrap-join-worker` evidence
+includes:
 
 ```text
 joinRole: worker | control-plane
@@ -180,7 +215,7 @@ name
 address
 systemRole
 access method and credentials reference, not inline secret values
-kubeadm configRef from stored intent
+cluster intent reference for the node's bootstrap profile
 requested Kubernetes payload version
 ```
 
@@ -201,15 +236,21 @@ they must be included in the submitted operation request and recorded in the
 relevant node-local operation records, with any invocation summary linking the same
 values, so diagnostics show what was actually used.
 
-`systemRole` is the only source of kubeadm bootstrap role:
+`systemRole` is the only source of desired cluster node role:
 
 ```text
 control-plane
-  eligible for kubeadm init or later control-plane join
+  intended to become a Kubernetes control-plane node
 
 worker
-  eligible only for kubeadm worker join
+  intended to become a Kubernetes worker node
 ```
+
+The submitted operation request may name the rendered kubeadm input that `katlc`
+selected from stored intent, but user-facing intent must not encode kubeadm
+verbs such as "run join --control-plane". Katl intent says what role the node
+should have; the operation implementation decides which kubeadm command and
+phase sequence satisfies that role for the current backend.
 
 Capability overlays are a day-2 design item and are not part of the first
 bootstrap inventory contract.
@@ -233,8 +274,8 @@ if no control-plane node exists
 ```
 
 The selected init node is recorded in the plan, the selected node's
-`BootstrapCluster` operation request, and any invocation summary. The command
-must never ask more than one node to run `kubeadm init` in one invocation.
+`bootstrap-init` operation request, and any invocation summary. The command must
+never ask more than one node to run `kubeadm init` in one invocation.
 
 ## Readiness And Access
 
@@ -249,7 +290,7 @@ Katl generation 0 reached installed-runtime health
 stored install manifest and cluster intent are present
 requested Kubernetes payload version matches the cluster plan
 the requested bundled Kubernetes sysext is available and verified
-stored systemRole and selected KubeadmConfig intent are consistent
+stored systemRole and selected bootstrap profile intent are consistent
 node-local katlc can accept an operation request
 ```
 
@@ -269,7 +310,8 @@ The bootstrap command runs phases in this order:
 
 These are control-client phases. Phases that run `kubeadm init` or
 `kubeadm join` are executed by node-local `katlc` and must update the
-corresponding `BootstrapCluster` or `JoinCluster` `OperationRecord`.
+corresponding `bootstrap-init`, `bootstrap-join-control-plane`, or
+`bootstrap-join-worker` `OperationRecord`.
 
 ```text
 1. load and validate inventory or compiled plan
@@ -302,7 +344,8 @@ with a clear unsupported message after init-node selection validation.
 
 The greenfield multi-control-plane target is kubeadm stacked etcd. Its data
 ownership, quorum, join ordering, and rollback limits are defined in
-`docs/internal/stacked-etcd-bootstrap-data-policy.md`.
+`docs/internal/stacked-etcd-bootstrap-data-policy.md`. Cluster-global bootstrap
+state ownership is defined in `docs/internal/cluster-bootstrap-state-model.md`.
 
 ## kubeadm Material
 
@@ -490,6 +533,8 @@ install, apply, select, or manage BIRD/VIP/load-balancer resources
 continuously reconcile nodes
 perform hidden kubeadm upgrades during config activation
 run kubeadm from install manifests or generated confext activation
+perform disaster recovery, etcd snapshot restore, CA recovery, automatic
+  control-plane replacement, or same-cluster rebuild
 ```
 
 ## Follow-Up Work

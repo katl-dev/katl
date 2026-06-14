@@ -247,9 +247,9 @@ the operation record. Applying that desired input to a live cluster is a
 separate kubeadm-aware operator action with its own planner, status, rollback
 story, and VM tests.
 
-SystemRole changes, selected kubeadm config ref/path/intent changes, stable
-node identity changes, and `/etc/kubernetes` changes are never silently applied
-to a running cluster by normal generated confext activation.
+SystemRole changes, selected bootstrap profile or rendered kubeadm input
+changes, stable node identity changes, and `/etc/kubernetes` changes are never
+silently applied to a running cluster by normal generated confext activation.
 
 ## Testing Contract
 

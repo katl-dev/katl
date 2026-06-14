@@ -14,18 +14,21 @@ generations and then coordinate kubeadm init/join.
 
 ## Decision
 
-Kubeadm configuration is a separate Katl configuration object that points to
-native kubeadm YAML files in the user's config repository.
+Kubeadm configuration is an implementation-native Katl configuration object
+that points to native kubeadm YAML files in the user's config repository.
 
-Node configuration only references a named kubeadm config:
+User-facing node intent references a Katl bootstrap profile, not a kubeadm
+command or flag shape:
 
 ```yaml
 kubernetes:
-  kubeadm:
-    configRef: control-plane
+  bootstrap:
+    profileRef: control-plane
 ```
 
-The referenced object owns file locations in the config repository:
+The bootstrap profile resolves to a native `KubeadmConfig` object for the
+current kubeadm backend. That referenced object owns file locations in the
+config repository:
 
 ```yaml
 apiVersion: config.katl.dev/v1alpha1
@@ -72,7 +75,7 @@ For the example above:
 /etc/katl/kubeadm/control-plane/patches/
 ```
 
-The rendered path is stable enough for an operator or test harness to run:
+The rendered path is stable for node-local `katlc` operation wrappers:
 
 ```text
 kubeadm init --config /etc/katl/kubeadm/control-plane/config.yaml
@@ -84,18 +87,21 @@ or:
 kubeadm join --config /etc/katl/kubeadm/worker/config.yaml
 ```
 
-Katl may later provide thin kubeadm helper operations requested through
-`katlctl` or another operator client. When Katl runs those helpers, node-local
-`katlc` records a bounded `OperationRecord`, but they remain explicit operator
-actions and are never implied by node configuration, install manifest
-processing, or the kubeadm-ready target.
+Operators and tests do not run kubeadm directly as Katl-managed bootstrap. They
+request an explicit bootstrap or join operation, and node-local `katlc` runs
+kubeadm under the accepted `OperationRecord`. Manual kubeadm remains out of
+band unless a later explicit import or repair operation records and validates
+that state. Kubeadm-aware operations remain explicit operator actions and are
+never implied by node configuration, install manifest processing, normal
+generation activation, or the kubeadm-ready target.
 
 ## API Boundary
 
 Katl owns:
 
 ```text
-KubeadmConfig object naming and references
+bootstrap profile naming and references
+KubeadmConfig object resolution for the kubeadm backend
 repository-local file resolution
 kubeadm config parsing and compatibility validation
 safe render paths under /etc/katl/kubeadm/
@@ -301,9 +307,9 @@ boundary; kubeadm proves it can bootstrap the control plane.
    node?
 
    Initial recommendation: yes, as long as node config selects one default
-   `configRef`. Installing multiple named configs is useful for test fixtures
-   and for operators who want both init and join material available, but Katl
-   should not choose the action.
+   bootstrap `profileRef`. Installing multiple named configs is useful for test
+   fixtures and for operators who want both init and join material available,
+   but Katl should not choose the action.
 
 2. Should Katl rewrite `kubernetesVersion: sysext` in native kubeadm YAML?
 

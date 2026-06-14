@@ -137,10 +137,13 @@ The runtime-root component metadata must include the runtime version,
 architecture, runtime interface, root artifact digest, minimum root slot size,
 filesystem format, and any required root filesystem feature metadata.
 
-The Kubernetes sysext component metadata uses the same compatibility vocabulary
-as generation specs: artifact version, payload version, Kubernetes minor,
-architecture, digest, size, source repo metadata, package versions when
-available, and supported runtime interfaces.
+The Kubernetes sysext component metadata uses the compatibility vocabulary
+defined in `docs/internal/installer-runtime-design.md`: artifact identity,
+systemd extension identity, runtime compatibility, Kubernetes tooling versions,
+supported kubeadm config API families, upgrade constraints, host prerequisites,
+and provenance. Day-one install selection may use only exact payload version,
+architecture, digest, and supported runtime interface, but the image index must
+not prevent later update planning from reading the richer metadata.
 
 The index may include one or more exact-version Kubernetes sysext artifacts. A
 day-one install manifest requests an exact Kubernetes version such as `1.36.1`;
@@ -170,7 +173,7 @@ component digests and compatibility metadata
 
 Node-specific configuration remains outside the image. The install manifest,
 PXE/preseed input, USB/local handoff, or VM harness supplies identity, disk
-selection, network configuration, kubeadm config references, systemRole, the
+selection, network configuration, bootstrap profile references, systemRole, the
 exact Kubernetes payload version, and other supported day-one node
 configuration. Capability overlays are a day-2 design item. Reusing the same
 install image for multiple nodes must not require rebuilding the image.

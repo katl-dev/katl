@@ -5,7 +5,7 @@ Status: working design.
 This document defines the first single-node bootstrap VM proof. The goal is to
 boot generation 0, run `katlctl cluster bootstrap`, have that operation ask
 `katlc` to create the first Kubernetes-capable candidate generation, run
-`kubeadm init` through a node-local `BootstrapCluster` operation, persist
+`kubeadm init` through a node-local `bootstrap-init` operation, persist
 kubeadm-owned output, start the kube-apiserver static pod, and prove the
 Kubernetes API server responds to `kubectl`.
 

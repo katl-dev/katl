@@ -26,6 +26,7 @@ own kubeadm output, SSH host keys, or machine identity.
 | `/var/lib/katl` | Katl installer, `katlc`, KatlOS runtime services | Mutable generation status, operation records, staged artifacts, activation records, and repair status | Native `/var`; primary Katl state root |
 | `/var/lib/katl/operations` | Katl installer, `katlc`, KatlOS runtime services | Durable node-local operation records that distinguish host repair from kubeadm or etcd repair | Native `/var`; not generation artifacts and not activated through sysext/confext |
 | `/var/lib/katl/operations/<id>/journal` | Katl installer, `katlc`, KatlOS runtime services | Append-only durable operation events used to rebuild `record.json` after interruption | Native `/var`; operation recovery source of truth |
+| `/var/lib/katl/cluster/intent.json` | `katlos-install`, `katlc` | Normalized non-secret cluster intent from install input: desired node role, selected Kubernetes payload version, selected bootstrap profile reference, and endpoint intent | Native `/var`; generation 0 input for later bootstrap, not Kubernetes cluster state |
 | `/var/lib/katl/config-requests` | `katlc`, KatlOS runtime services | Request decision index for accepted or rejected node configuration inputs | Native `/var`; links to canonical operation IDs when a request is accepted |
 | `/var/lib/katl/boot/selection.json` | Katl installer, `katlc`, KatlOS runtime services | Durable default, trial, previous known-good, and booted generation pointers | Native `/var`; boot selection state outside generation directories |
 | `/var/lib/katl/generations/<id>/spec.json` | Katl installer, `katlc`, KatlOS runtime services | Immutable generation selection fields after creation | Native `/var`; selected by boot metadata |
@@ -54,6 +55,15 @@ Katl-rendered kubeadm/kubelet input under `/etc/katl` may drift from these live
 paths after bootstrap, join, upgrade, or manual kubeadm repair. That drift is not
 a Katl confext ownership conflict. Katl may report it, but only explicit
 kubeadm-aware operations may mutate the live files or kube-system ConfigMaps.
+
+Cluster intent and cluster state are separate. `/var/lib/katl/cluster/intent.json`
+is Katl-owned desired input for a future bootstrap or join operation. Cluster
+PKI, service account keys, kubeconfigs, bootstrap tokens, uploaded certificate
+material, etcd identity, etcd data, and Kubernetes API objects are cluster state
+created by kubeadm/Kubernetes/etcd. They are not generation artifacts, not stored
+in generation 0, and not recovered from Katl operation records. Their ownership
+and backup boundary is defined in
+`docs/internal/cluster-bootstrap-state-model.md`.
 
 `katlctl` does not own `/var/lib/katl` state. It may keep local client
 configuration for connection profiles and known node details, but node lifecycle

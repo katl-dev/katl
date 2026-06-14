@@ -246,11 +246,11 @@
         }
       }
     },
-    "kubeadmReference": {
+    "bootstrapReference": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "configRef": {
+        "profileRef": {
           "$ref": "#/$defs/dnsLabel"
         }
       }
@@ -265,8 +265,8 @@
         "version": {
           "$ref": "#/$defs/kubernetesVersion"
         },
-        "kubeadm": {
-          "$ref": "#/$defs/kubeadmReference"
+        "bootstrap": {
+          "$ref": "#/$defs/bootstrapReference"
         }
       }
     },

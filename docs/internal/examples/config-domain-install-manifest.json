@@ -13,8 +13,8 @@
     "systemRole": "control-plane",
     "kubernetes": {
       "version": "1.36.1",
-      "kubeadm": {
-        "configRef": "control-plane"
+      "bootstrap": {
+        "profileRef": "control-plane"
       }
     },
     "networkd": {

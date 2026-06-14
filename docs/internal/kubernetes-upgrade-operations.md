@@ -247,7 +247,7 @@ redacted kubeadm output and diagnostic artifact paths
 ```
 
 Upgrade operation records also use operation-kind-specific evidence.
-`UpgradeControlPlane` evidence includes:
+`kubeadm-upgrade` control-plane evidence includes:
 
 ```text
 upgradeMode: apply | node
@@ -275,7 +275,7 @@ kubeletEvidence:
   node Ready/version before and after when API reachable
 ```
 
-`UpgradeWorker` evidence includes:
+`kubeadm-upgrade` worker evidence includes:
 
 ```text
 sourceKubernetesVersion
@@ -380,7 +380,7 @@ a separate kubeadm-aware operation.
 After kubeadm mutation, `recoveryRequired` may name a deferred kubeadm-aware
 operation type, but Katl must not automatically perform it. The operation status
 should record whether the next safe action is retry, operator inspection,
-kubeadm repair, etcd snapshot restore, or destructive rebuild. Host rollback may
+kubeadm repair, etcd snapshot restore, or destructive wipe/reinstall. Host rollback may
 make the node bootable; it must not report Kubernetes cluster state repaired
 unless a separate kubeadm/etcd-aware operation succeeds.
 

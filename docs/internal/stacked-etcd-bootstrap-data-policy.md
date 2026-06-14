@@ -107,13 +107,20 @@ automatic snapshot restore during greenfield install
 
 If preserving a previous cluster matters, the operator must take an explicit
 etcd snapshot before destructive work starts and restore it through a
-kubeadm/etcd-aware recovery workflow. Katl should not infer that an old etcd
-directory can be reused after a new greenfield install unless the recovery
-workflow proves member identity, certificates, peer URLs, and Kubernetes
-version compatibility.
+kubeadm/etcd-aware recovery workflow. The disaster-recovery boundary is defined
+in `docs/internal/cluster-recovery-and-rebuild.md`. Katl should not infer that
+an old etcd directory can be reused after a new greenfield install unless the
+recovery workflow proves member identity, certificates, peer URLs, and
+Kubernetes version compatibility.
 
-Etcd recovery operation shapes are deferred. `ReplaceEtcdMember` and
-`RestoreEtcdSnapshot` require explicit operator intent, member identity checks,
+General cluster rebuild is not an etcd recovery operation. Until a same-cluster
+restore workflow is explicitly designed and tested, general rebuild means
+destructive wipe/reinstall of the selected nodes, followed by normal generation
+0 boot and a new explicit cluster bootstrap. That creates a new Kubernetes
+cluster identity.
+
+Etcd recovery operation shapes are deferred. `replace-etcd-member` and
+`restore-etcd-snapshot` require explicit operator intent, member identity checks,
 certificate compatibility checks, Kubernetes version compatibility checks, and
 redacted diagnostics before any mutation. Until those operations exist and have
 gates, Katl must refuse stale or partial etcd recovery cases instead of
@@ -158,8 +165,9 @@ The bootstrap helper must never respond to a failed init by running
 `kubeadm init` on another node against the same partially initialized cluster.
 That is an explicit operator recovery decision.
 
-Each kubeadm init or join step updates a node-local `BootstrapCluster` or
-`JoinCluster` `OperationRecord`. Failed control-plane joins must stop the
+Each kubeadm init or join step updates a node-local `bootstrap-init`,
+`bootstrap-join-control-plane`, or `bootstrap-join-worker` `OperationRecord`.
+Failed control-plane joins must stop the
 control-client rollout and require explicit retry or repair; Katl must not
 automatically keep reconciling membership.
 
@@ -250,7 +258,7 @@ etcd health checks
 
 snapshot gate, when preservation is claimed
   verifies snapshot creation, snapshot status, restricted artifact handling, and
-  a documented restore path before destructive rebuild work; post-bootstrap
+  a documented restore path before destructive wipe/reinstall work; post-bootstrap
   snapshots are validation artifacts unless a restore workflow explicitly uses
   them
 

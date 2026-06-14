@@ -35,10 +35,10 @@ Katl has four durable product surfaces:
 
 ```text
 katlc
-  Runs on KatlOS as the user-facing state and configuration command. It accepts
-  user-supplied Katl YAML or configuration, validates supported domains,
-  compiles them into generation-scoped sysext/confext payloads and metadata,
-  and applies, stages, reports, or rolls back runtime state.
+  Runs on KatlOS as the node-local state authority and configuration command.
+  It accepts user-supplied Katl YAML or configuration, validates supported
+  domains, compiles them into generation-scoped sysext/confext payloads and
+  metadata, and applies, stages, reports, or rolls back runtime state.
 
 katlos-install
   Runs in the installer environment, applies a user-supplied install manifest,
@@ -134,6 +134,32 @@ by `katlc`. `katlctl` may display non-authoritative invocation summaries for
 operator convenience, but recovery remains possible from node-local state without
 `katlctl`, and Katl does not become a continuous cluster lifecycle controller.
 
+### Cluster Bootstrap Ownership
+
+Generation 0 contains cluster intent only.
+
+Cluster bootstrap is an explicit operation that creates the first
+Kubernetes-capable generation. `katlctl` submits bootstrap and join requests to
+node-local `katlc`; `katlc` validates stored intent, creates candidate
+generations, selects the requested Kubernetes sysext, renders required host
+configuration, and records the accepted node-local operations.
+
+Bootstrap artifacts such as cluster PKI, service account keys, kubeadm state,
+etcd identity, bootstrap tokens, certificate-key material, kubeconfigs, and
+control-plane endpoint material are durable Kubernetes cluster state. They are
+not part of generation 0 and are not selected or rolled back by Katl
+generations. Kubeadm, Kubernetes, and etcd own the live contents; Katl owns the
+host projections, operation records, redacted diagnostics, and recovery
+boundaries.
+
+Bootstrap operations are recorded, observable, retryable where the operation
+contract proves it safe, and recoverable through Katl operation records. Host
+rollback may return selected KatlOS artifacts to an earlier generation, but it
+must not claim to undo kubeadm output, Kubernetes API state, or etcd data. The
+cluster bootstrap state model is defined in
+`docs/internal/cluster-bootstrap-state-model.md`, and disaster recovery limits
+are defined in `docs/internal/cluster-recovery-and-rebuild.md`.
+
 Update machinery should use native systemd functions where they fit:
 systemd-boot selection and boot counting, systemd-sysext and systemd-confext
 activation, native mount ordering, tmpfiles, and health targets. Katl agents
@@ -192,7 +218,7 @@ material for user-managed GitOps.
 ## User Story
 
 A user keeps cluster node intent in Git. The repository describes node roles,
-hostnames, networkd units, SSH keys, kubeadm config references, target disk
+hostnames, networkd units, SSH keys, bootstrap profile references, target disk
 selectors for install, requested Kubernetes versions, and any supported extra
 data disk mounts.
 
@@ -212,8 +238,11 @@ create and activate the first Kubernetes-capable candidate generation, select
 the requested Kubernetes sysext, render kubeadm input, and expose the writable
 kubeadm output paths. `katlctl` then sequences the requested nodes while
 node-local `katlc` runs kubeadm init or join operations. The generation is
-committed only after kubeadm succeeds and health checks pass. Once cluster
-bootstrap completes, the user installs CNI, DNS, GitOps, policies, storage, and
+committed only after kubeadm succeeds and health checks pass. Cluster PKI, etcd
+identity, kubeconfigs, bootstrap tokens, certificate-key material, and
+Kubernetes API state created by kubeadm are durable cluster state outside
+generation 0 and outside host generation rollback. Once cluster bootstrap
+completes, the user installs CNI, DNS, GitOps, policies, storage, and
 applications with their chosen cluster tooling.
 
 Updates follow the same model. A new desired state compiles into a new

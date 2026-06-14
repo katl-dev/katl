@@ -206,7 +206,7 @@ them. The first likely additions for kubeadm-readiness are:
 node identity and hostname
 katl SSH authorized keys
 networkd units
-kubeadm config references that render native kubeadm YAML under /etc/katl
+bootstrap profile references that render native kubeadm YAML under /etc/katl
 extra data disk mounts
 ```
 
@@ -214,14 +214,15 @@ Additional domains should be added deliberately when users need them. They must
 define their render paths, validation rules, and runtime apply/restart behavior
 before becoming part of the user-facing configuration API.
 
-Kubeadm configuration is intentionally a thin reference to native kubeadm files,
-not YAML embedded as a string and not an init/join action. Node configuration
-selects a named kubeadm config. During `katlctl cluster bootstrap`, `katlc`
-validates the stored intent and renders the selected kubeadm input under
-`/etc/katl/kubeadm/` as part of the first Kubernetes-capable candidate
-generation. Later `katlc` generation apply or stage flows can update desired
-kubeadm input, but explicit kubeadm-aware operations decide when to run
-`kubeadm init`, `kubeadm join`, or later kubeadm upgrade commands.
+Kubeadm configuration is intentionally reached through a thin Katl bootstrap
+profile reference, not YAML embedded as a string, not a kubeadm command line in
+user intent, and not an init/join action. Node configuration selects a bootstrap
+profile. During `katlctl cluster bootstrap`, `katlc` validates the stored intent
+and renders the selected native kubeadm input under `/etc/katl/kubeadm/` as
+part of the first Kubernetes-capable candidate generation. Later `katlc`
+generation apply or stage flows can update desired kubeadm input, but explicit
+kubeadm-aware operations decide when to run `kubeadm init`, `kubeadm join`, or
+later kubeadm upgrade commands.
 
 ## Rejected Configuration Bootstrap
 
@@ -231,9 +232,13 @@ It was rejected because it would add a second configuration language and a
 separate first-boot phase between `katlos-install` and KatlOS runtime state
 management. Katl already needs typed validation, target disk ownership, artifact
 verification, generated confext, and later `katlc`-generated configuration
-generations. Keeping all of that in Katl avoids a three-phase
-installer/bootstrap/runtime model and keeps the source of truth in the Katl
-manifest and generation spec/status.
+generations. Keeping those responsibilities inside Katl gives one typed Katl
+input path for install and host generation planning. It does not make the
+manifest or generation status authoritative for accepted lifecycle attempts:
+once install, bootstrap, join, upgrade, or repair accepts a request, the
+node-local `OperationRecord` is authoritative for attempt state. Live Kubernetes
+state remains authoritative in kubeadm output, kubelet state, etcd, and the
+Kubernetes API.
 
 ## Runtime OS Composition
 

@@ -131,6 +131,8 @@ exist on the state partition:
 | `/var/lib/katl/operations/<id>/journal` | `root:root` | `0700` | Append-only operation event journal used for crash recovery |
 | `/var/lib/katl/operations/<id>/journal/<seq>.<event-id>.json` | `root:root` | `0600` | One durable operation event |
 | `/var/lib/katl/operations/<id>/attachments` | `root:root` | `0700` | Redacted diagnostic artifacts referenced by the operation record |
+| `/var/lib/katl/cluster` | `root:root` | `0750` | Katl-owned non-secret cluster intent namespace |
+| `/var/lib/katl/cluster/intent.json` | `root:root` | `0600` | Normalized generation 0 cluster intent used by later bootstrap/join operations; not kubeadm output or cluster secret backup |
 | `/var/lib/katl/config-requests` | `root:root` | `0750` | Request decision index for node configuration changes; accepted entries link to canonical operation IDs |
 | `/var/lib/katl/identity` | `root:root` | `0755` | Stable machine identity backing files |
 | `/var/lib/katl/identity/machine-id` | `root:root` | `0444` | Random install-generated systemd machine ID backing file |
@@ -245,6 +247,11 @@ The `/etc/kubernetes` projection from
 
 The stacked-etcd bootstrap and data ownership policy is defined in
 `docs/internal/stacked-etcd-bootstrap-data-policy.md`.
+
+Cluster-global bootstrap artifact ownership is defined in
+`docs/internal/cluster-bootstrap-state-model.md`. General cluster rebuild means
+destructive wipe/reinstall followed by a new bootstrap unless an explicit
+same-cluster restore workflow is designed and tested.
 
 ## Follow-up Gates
 

@@ -42,7 +42,7 @@ Required `GenerationSpec` fields:
 | `root.runtimeArtifactSHA256` | Digest of the runtime root artifact written into the slot |
 | `boot.ukiPath` | Canonical final installed UKI path selected with this generation |
 | `boot.loaderEntryPath` | `$BOOT`-relative loader entry path when a separate loader entry is used |
-| `sysexts[]` | Sysext name, generation-scoped path, activation path, digest, artifact version, payload version such as Kubernetes version, architecture, and compatibility metadata |
+| `sysexts[]` | Sysext name, generation-scoped path, activation path, digest, artifact version, payload version such as Kubernetes version, architecture, and compatibility metadata from the canonical sysext vocabulary |
 | `confexts[]` | Generated confext name, path, activation path, digest, and compatibility metadata |
 | `kernelCommandLine[]` | Kernel arguments selected for this generation |
 | `createdAt` | Generation creation timestamp |
@@ -106,6 +106,26 @@ from the install manifest, and provide the Katl/systemd wiring needed to accept
 later node-local operations. It is not Kubernetes-capable, does not activate
 Kubernetes binaries, and does not run `kubeadm init` or `kubeadm join`.
 
+Generation 0 validity requires a clean Kubernetes state boundary:
+
+```text
+kubelet disabled or absent from the active generation
+no selected Kubernetes sysext
+no Kubernetes PKI in /var/lib/katl/kubernetes/etc-kubernetes
+no kubeadm static pod manifests
+no kubeadm kubeconfigs
+no stacked-etcd data in /var/lib/etcd or a dedicated KATL_ETCD partition
+no kubelet join/bootstrap state in /var/lib/kubelet
+no operation record proving kubeadm crossed a mutation boundary for this node
+```
+
+The backing directories for projected state may exist so mount units and
+tmpfiles can be verified, but kubeadm-owned contents must not. If a failed
+bootstrap or join created kubeadm-owned state, selecting generation 0 as host
+state is not enough to make the node clean. `katlc` must require an explicit
+reset, repair, recovery, or destructive wipe/reinstall path before treating the
+node as a clean generation 0 bootstrap target again.
+
 Generation 0 spec must not list a Kubernetes sysext unless that sysext is
 actually selected and active for generation 0, which is not the day-one model.
 Bundled Kubernetes sysexts from the verified KatlOS image are install artifacts
@@ -120,9 +140,10 @@ For first bootstrap or join, generation 1 selects the bundled Kubernetes sysext
 whose payload version exactly matches the install manifest, for example manifest
 version `1.36.1` selecting `katl-kube-1.36.1.sysext`. The generation 1 spec
 stores the selected sysext path, activation path, digest, artifact version,
-payload version, architecture, and compatibility metadata. It remains a candidate
-until kubeadm succeeds and local post-kubeadm health checks pass. At that point
-the bootstrap or join operation may commit it as the accepted desired host state:
+payload version, architecture, and compatibility metadata defined in
+`docs/internal/installer-runtime-design.md`. It remains a candidate until
+kubeadm succeeds and local post-kubeadm health checks pass. At that point the
+bootstrap or join operation may commit it as the accepted desired host state:
 
 ```text
 commitState: committed

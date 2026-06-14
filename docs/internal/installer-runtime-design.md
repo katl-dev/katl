@@ -338,7 +338,7 @@ The v1alpha1 manifest contains these top-level sections:
 ```text
 node
   hostname and `katl` runtime SSH authorized keys
-  exact Kubernetes payload version and optional kubeadm config reference
+  exact Kubernetes payload version and optional bootstrap profile reference
 
 install
   destructive install guard, target root disk selector, and optional extra data
@@ -759,7 +759,9 @@ katlctl cluster bootstrap asks katlc to validate stored install intent
 katlc selects the bundled Kubernetes sysext whose payload version exactly matches
   node.kubernetes.version, such as katl-kube-1.36.1.sysext
 katlc renders known configuration domains into generation 1 confext
-katlc writes candidate generation spec/status and activates it for kubeadm readiness
+katlc writes the bootstrap/join OperationRecord
+katlc writes candidate generation spec/status and activates it for local
+  kubeadm-ready host prerequisites
 katlc runs kubeadm init or join under systemd supervision
 katlc commits the candidate generation only after kubeadm and operation health
   checks pass; boot health remains pending until a later boot
@@ -909,12 +911,14 @@ when `katlctl cluster bootstrap` asks `katlc` to validate stored intent and
 prepare the node for kubeadm. It is not generation 0 first boot. Kubeadm
 readiness is produced by normal generation creation and activation that selects
 the Kubernetes sysext and generated kubeadm input; it is not a separate
-Kubernetes operation.
+Kubernetes operation. During cluster bootstrap, that host-generation activation
+phase is owned by the bootstrap or join `OperationRecord`.
 
 The next runtime step after the installer UKI can install and boot from disk is
 kubeadm readiness, not a complete Kubernetes cluster. Katl should prove that an
 installed node has the host OS, writable state, generated config, and Kubernetes
-binaries required for an operator or later automation to run `kubeadm init`.
+binaries required for node-local `katlc` to run kubeadm under systemd
+supervision when an explicit bootstrap or join operation reaches that phase.
 
 For the first implementation, kubeadm readiness means:
 
@@ -961,15 +965,58 @@ same KatlOS runtime root, when the selected artifact pair is supported. A booted
 generation still activates one exact runtime root plus one exact Kubernetes
 sysext set so boot health and rollback remain atomic.
 
-The Kubernetes sysext artifact metadata should include:
+The Kubernetes sysext artifact metadata should use this compatibility
+vocabulary:
 
 ```text
-sysext name
-sysext artifact version or build id
-Kubernetes version carried by the artifact
-architecture
-digest and size
-runtime compatibility metadata
+artifact identity
+  name
+  artifactVersion or buildID
+  payloadVersion, for example 1.36.1
+  kubernetesMinor, for example 1.36
+  architecture
+  sha256
+  sizeBytes
+
+systemd extension identity
+  extension-release ID
+  extension-release VERSION_ID or image version
+  SYSEXT_LEVEL, when used
+  architecture asserted by extension-release metadata
+
+runtime compatibility
+  supportedRuntimeInterfaces[]
+  minKatlOSVersion, when needed
+  maxKatlOSVersion, when needed
+  compatible root/runtime interface constraints
+
+Kubernetes tooling
+  kubeadmVersion
+  kubeletVersion
+  kubectlVersion
+  criToolsVersion, when bundled
+  supportedKubeadmConfigAPIFamilies[]
+
+upgrade constraints
+  supportedSourceKubernetesMinors[]
+  skewPolicy
+  targetKubeadmAccessModeRequirement
+  kubeletActivationGateRequirement
+  downgradeSupported: false unless a future design proves otherwise
+
+host prerequisites
+  expectedCRISocket
+  expectedCgroupDriver
+  requiredMounts[]
+  requiredUnits[]
+  requiredKernelModules[]
+  requiredSysctls[]
+
+provenance
+  sourceRepository
+  sourceRevision
+  packageLockDigest or buildInputDigest
+  createdAt
 ```
 
 The runtime root artifact metadata should expose enough compatibility identity
@@ -978,6 +1025,11 @@ extension ABI version. The compatibility check should happen before
 `katlos-install` or the runtime update agent writes a candidate generation as
 bootable. Unsupported runtime/sysext pairs fail validation rather than relying
 on boot-time discovery.
+
+Day-one bootstrap may validate only the exact payload version, architecture,
+digest, and supported runtime interface needed to select a bundled sysext. The
+metadata schema still needs the broader fields so day-2 update planning and
+Kubernetes upgrade operations do not have to reinterpret older artifacts.
 
 Valid update shapes include:
 

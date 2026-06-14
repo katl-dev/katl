@@ -109,7 +109,7 @@ networkd
 
 Bootstrap node metadata
   Live-applicable only for non-secret descriptive fields that do not change
-  systemRole, stable node identity, selected kubeadm config, or selected
+  systemRole, stable node identity, selected bootstrap profile, or selected
   Kubernetes payload.
 ```
 
@@ -133,7 +133,7 @@ SSH and operator access
   Operator access changes are staged-only until a lockout-safe validation and
   reload path exists.
 
-KubeadmConfig input
+Bootstrap profile input
   Katl may render desired native kubeadm input for a future generation, but
   normal config apply does not run kubeadm, kubectl, or mutate live cluster
   objects.
@@ -143,7 +143,7 @@ Rejected-live changes fail before render or activation:
 
 ```text
 systemRole changes
-selected kubeadm config ref/path/intent changes
+selected bootstrap profile or rendered kubeadm input changes
 selected Kubernetes sysext payload changes requested for live apply
 kubelet node identity changes
 user ownership of host account, PAM, sudo, passwd, shadow, or sysusers files
@@ -275,8 +275,9 @@ GitOps controllers
 Changing kubeadm desired input is normal Katl configuration, but applying that
 input to a live cluster is a separate kubeadm-aware operation with its own
 planner, explicit user request, status, rollback story, and tests. A `live`
-configuration request that would change systemRole, selected kubeadm input, or
-node identity is rejected instead of silently changing cluster state.
+configuration request that would change systemRole, selected bootstrap profile,
+rendered kubeadm input, or node identity is rejected instead of silently
+changing cluster state.
 
 Katl-rendered kubeadm/kubelet input is desired state, not ownership of the live
 cluster artifacts that kubeadm creates or updates. The live owner remains kubeadm

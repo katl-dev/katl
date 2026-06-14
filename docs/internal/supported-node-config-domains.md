@@ -53,15 +53,16 @@ mount units
   persistent state projections and extra data disk mounts
   rendered as native .mount/.automount units where appropriate
 
-KubeadmConfig input
-  selected KubeadmConfig reference
-  native kubeadm and kubelet configuration YAML plus patches rendered under
-  /etc/katl/kubeadm/<name>/
+Bootstrap profile input
+  selected bootstrap profile reference
+  implementation resolves the profile to native kubeadm and kubelet
+  configuration YAML plus patches rendered under /etc/katl/kubeadm/<name>/
 
 Bootstrap node metadata
   non-secret Katl node metadata rendered to /etc/katl/node.json
   authoritative readiness-probe source for node identity, systemRole, selected
-  kubeadm config ref/path/intent, and selected Kubernetes payload version
+  bootstrap profile, rendered kubeadm input path, and selected Kubernetes
+  payload version
   selected Kubernetes sysext payload version used for validation
 
 SSH and operator access
@@ -168,10 +169,10 @@ mount units and extra disks
   reject paths under /run, /usr, /boot, /efi, and /etc/kubernetes
   verify generated units with systemd-analyze verify where practical
 
-KubeadmConfig input
+Bootstrap profile input
   parse native multi-document kubeadm YAML
   allow kubelet configuration only as native kubelet documents referenced by
-  KubeadmConfig
+  the resolved KubeadmConfig
   reject denied host paths and unsafe patch directories
   require kubernetesVersion, when present, to match the selected sysext
   golden tests cover init, join, kubelet configuration, patches, and selected
@@ -234,7 +235,7 @@ tmpfiles
 mount units
   apply through systemd unit reload/start ordering with rollback checks
 
-KubeadmConfig input
+Bootstrap profile input
   render desired kubeadm/kubelet input only
   do not mutate live /etc/kubernetes, kube-system ConfigMaps, or
     /var/lib/kubelet files

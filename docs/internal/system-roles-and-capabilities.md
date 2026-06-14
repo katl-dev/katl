@@ -31,7 +31,7 @@ GitOps.
 
 Each node has exactly one `systemRole`.
 
-`systemRole` answers the kubeadm/bootstrap question only:
+`systemRole` answers the Katl bootstrap role question only:
 
 ```text
 control-plane
@@ -45,8 +45,8 @@ worker
 ```
 
 Concrete values such as IP addresses, disk selectors, route metrics, SSH keys,
-networkd units, sysctl keys, mount requests, or kubeadm config references remain
-direct supported domain configuration. They are not hidden behind roles.
+networkd units, sysctl keys, mount requests, or bootstrap profile references
+remain direct supported domain configuration. They are not hidden behind roles.
 
 ## First Implementation
 
@@ -86,7 +86,7 @@ cluster defaults
   artifact selections, and common Kubernetes sysext selection
 
 systemRole defaults
-  kubeadm configRef defaults, control-plane storage policy, bootstrap labels or
+  bootstrap profile defaults, control-plane storage policy, bootstrap labels or
   taints that are needed by kubeadm input
 
 node overrides
@@ -120,7 +120,7 @@ node override conflicts with systemRole bootstrap invariants
 Examples:
 
 ```text
-node override changes a control-plane node to a worker kubeadm configRef
+node override changes a control-plane node to a worker bootstrap profile
   reject unless systemRole is also changed to worker
 
 node override attempts to render into an unsupported domain
@@ -137,13 +137,13 @@ systemRole is control-plane or worker for the first implementation
 all layer merges are deterministic
 all rendered domains pass their domain-specific validation
 node identity is present or can be derived deterministically
-selected KubeadmConfig matches systemRole intent
+selected bootstrap profile matches systemRole intent
 ```
 
-`control-plane` nodes should select kubeadm input containing control-plane
-configuration. `worker` nodes should select join/worker input. Katl may validate
-this by parsing the referenced native kubeadm YAML, not by relying on the config
-name alone.
+`control-plane` nodes should select a bootstrap profile that can produce
+control-plane bootstrap input. `worker` nodes should select a worker profile.
+Katl may validate this by resolving the profile to native kubeadm YAML and
+parsing it, not by relying on the profile name alone.
 
 Applying Kubernetes labels and taints to a live cluster is not hidden in confext
 activation. It remains an explicit kubeadm/kubectl-aware action or user-managed
@@ -216,7 +216,7 @@ golden tests for rendered per-node install materials
 golden tests for cluster defaults plus systemRole defaults
 negative tests for unknown systemRole
 negative tests for missing systemRole
-negative tests for systemRole and selected KubeadmConfig mismatch
+negative tests for systemRole and selected bootstrap profile mismatch
 negative tests for output outside supported domains
 ```
 

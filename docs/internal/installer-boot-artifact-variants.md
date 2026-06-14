@@ -14,7 +14,7 @@ The single KatlOS payload contract is defined in
 
 Installer boot artifacts are generic per Katl build, architecture, and installer
 version. They must not be rebuilt for each node, cluster, address, target disk,
-systemRole, kubeadm config, bootstrap token, or KatlOS image URL.
+systemRole, bootstrap profile, bootstrap token, or KatlOS image URL.
 
 They may contain:
 
@@ -127,7 +127,7 @@ katl.install.mode=auto
 
 The referenced install manifest contains node-specific configuration and one
 `katlosImage` reference. This keeps target disk policy, node identity, network
-configuration, systemRole, kubeadm config references, and KatlOS payload
+configuration, systemRole, bootstrap profile references, and KatlOS payload
 selection in one typed document. Capability overlays are deferred to day-2
 design.
 
