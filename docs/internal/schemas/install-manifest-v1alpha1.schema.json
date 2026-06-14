@@ -23,6 +23,7 @@
       "additionalProperties": false,
       "required": [
         "identity",
+        "kubernetes",
         "systemRole"
       ],
       "properties": {
@@ -257,11 +258,21 @@
     "kubernetesConfig": {
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "version"
+      ],
       "properties": {
+        "version": {
+          "$ref": "#/$defs/kubernetesVersion"
+        },
         "kubeadm": {
           "$ref": "#/$defs/kubeadmReference"
         }
       }
+    },
+    "kubernetesVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
     "nonEmptyString": {
       "type": "string",

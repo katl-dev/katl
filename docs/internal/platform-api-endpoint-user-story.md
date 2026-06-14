@@ -2,13 +2,14 @@
 
 Status: current design.
 
-Katl prepares kubeadm-ready nodes and provides a bounded `katlctl` bootstrap
-coordinator. It does not become a Kubernetes distribution or an add-on manager.
-The Kubernetes API endpoint is the main place where those boundaries meet: the
-endpoint must exist early enough for kubeadm, `katlctl`, and early user
-bootstrap resources, but the mechanism that advertises or load-balances that
-endpoint may be user infrastructure, a later Katl capability, or a post-Cilium
-cluster resource.
+Katl installs generation 0 nodes and provides a bounded `katlctl` bootstrap
+coordinator that asks `katlc` to create kubeadm-ready candidate generations. It
+does not become a Kubernetes distribution or an add-on manager. The Kubernetes
+API endpoint is the main place where those boundaries meet: the endpoint must
+exist early enough for kubeadm, `katlctl`, joining nodes, and operator kubeconfig
+output. Later user-installed cluster components may use or replace that endpoint,
+but the mechanism that advertises or load-balances it is user infrastructure, a
+later Katl capability, or a post-Cilium cluster resource.
 
 This document defines the user story for that platform API endpoint. The
 optional dynamic-routing helper is a later capability documented separately in
@@ -20,27 +21,26 @@ A Katl cluster author wants to:
 
 ```text
 1. describe installed nodes and kubeadm intent with Katl-native input
-2. boot or install nodes until they are kubeadm-ready
+2. boot or install nodes until generation 0 installed-runtime health is reached
 3. run katlctl cluster bootstrap
-4. install user-owned CNI, CoreDNS, CRDs, Flux, and workloads
+4. after katlctl exits, install user-owned CNI, CoreDNS, CRDs, Flux, and workloads
 5. keep the API endpoint usable for operators and later joins
 ```
 
 For that story to work, the author must choose how the Kubernetes API endpoint
 is reachable. Katl should make that choice explicit, validate it where it can,
-and fail before applying user bootstrap resources when the endpoint plan is
-circular.
+and report when the endpoint plan is circular.
 
 The day-one endpoint story should be simple:
 
 ```text
-use an endpoint that is independently reachable before user manifests apply
+use an endpoint that is independently reachable for kubeadm and joins
 ```
 
 That endpoint may be an external load balancer, a router-owned VIP, a directly
 routable control-plane address, DNS that resolves to one of those paths, or a
 future opt-in platform helper. It must not be created by the same Cilium, Flux,
-or other user manifests that need the API endpoint in order to start.
+or other user-installed resources that need the API endpoint in order to start.
 
 ## Endpoint Roles
 
@@ -48,8 +48,7 @@ Katl treats these as separate roles:
 
 ```text
 bootstrap API reachability
-  the path katlctl can use after kubeadm init and before user bootstrap
-  manifests apply
+  the path katlctl can use after kubeadm init and while coordinating joins
 
 stable API identity
   the kubeadm controlPlaneEndpoint used for certificate SANs, kubeconfig output,
@@ -72,8 +71,8 @@ render kubeadm controlPlaneEndpoint into native kubeadm input
 validate endpoint syntax in katlc and katlctl inputs
 record endpoint choice and CLI overrides in bootstrap run diagnostics
 wait for API readiness after kubeadm init
-optionally wait for an independently reachable stable endpoint before manifests
-optionally wait for a stable endpoint after user bootstrap handoff
+verify join-time endpoint reachability when joining nodes
+optionally verify a stable endpoint before writing kubeconfig that uses it
 write kubeconfig only after the selected endpoint path is known reachable
 redact endpoint wait diagnostics that may contain credentials
 ```
@@ -82,21 +81,21 @@ Katl should eventually model endpoint provenance explicitly:
 
 ```text
 external
-  reachable before user manifests through user infrastructure
+  reachable through user infrastructure before kubeadm and joins need it
 
 platform-host
-  reachable before user manifests through a host or Katl platform helper
+  reachable through a host or Katl platform helper before kubeadm and joins need it
 
 bootstrap-node
   reachable through the selected init node address; useful for lab or staged
   bootstrap flows
 
 post-cilium
-  reachable only after Cilium or user manifests advertise it
+  reachable only after Cilium or user-installed resources advertise it
 ```
 
-`post-cilium` may be valid for post-handoff validation, but it is invalid as the
-only pre-Cilium API path.
+`post-cilium` may be valid for later operator access, but it is invalid as the
+only API path for kubeadm bootstrap, joins, or the first kubeconfig output.
 
 ## Reachability Vantage Points
 
@@ -116,13 +115,14 @@ joining nodes
   control-plane or worker nodes that must reach the API during kubeadm join
 
 early add-ons
-  CNI, CoreDNS, Flux, or other user manifests that must talk to the API while
+  CNI, CoreDNS, Flux, or other user-installed components that must talk to the API while
   they start
 ```
 
 A successful operator-runner probe does not prove that joining nodes or early
 add-ons can reach the same endpoint. The bootstrap plan should say which waits
-are operator-only and which waits prove node or add-on reachability.
+are operator-only and which waits prove node reachability; add-on reachability is
+user-owned after bootstrap.
 
 Day-one checks may start with bounded operator-runner probes because that is
 what `katlctl` can reliably perform. Greenfield readiness should still record
@@ -157,26 +157,28 @@ External endpoint:
 ```text
 1. user provides external load balancer, router VIP, or routable DNS target
 2. Katl renders kubeadm controlPlaneEndpoint
-3. katlctl runs kubeadm init
-4. katlctl waits for the endpoint before Cilium manifests when requested
-5. user bootstrap resources install Cilium, CoreDNS, Flux, and workloads
+3. katlctl runs kubeadm init and join
+4. katlctl verifies the endpoint before writing kubeconfig that uses it
+5. after katlctl exits, the user installs Cilium, CoreDNS, Flux, and workloads
 ```
 
 Bootstrap-node endpoint:
 
 ```text
 1. katlctl uses the selected init node address for initial API access
-2. user bootstrap resources install CNI and other add-ons
-3. a stable endpoint is validated after the resources that provide it are ready
-4. kubeconfig is written or updated only after that endpoint is reachable
+2. katlctl runs kubeadm joins against the selected bootstrap endpoint
+3. katlctl writes kubeconfig for the bootstrap endpoint, or verifies a declared
+   stable endpoint before using it
+4. after katlctl exits, the user installs CNI and other add-ons
 ```
 
 Opt-in platform helper:
 
 ```text
 1. helper config and app sysext are present before bootstrap phases that need it
-2. host/platform helper advertises or serves the endpoint before Cilium
-3. katlctl validates endpoint reachability before Cilium manifests
+2. host/platform helper advertises or serves the endpoint before kubeadm or joins
+   need it
+3. katlctl validates endpoint reachability before writing kubeconfig that uses it
 4. Cilium may later peer locally or advertise service routes after it is healthy
 ```
 
@@ -189,10 +191,9 @@ without external load-balancer infrastructure.
 Katl must reject or mark action-required:
 
 ```text
-stableEndpointBeforeManifests=true but endpoint provenance is post-cilium
 Cilium k8sServiceHost points at a VIP created only by the same Cilium manifests
 Flux or Helm resources are expected to create the endpoint before they can apply
-DNS resolves only after user bootstrap resources update the fabric
+DNS resolves only after user-installed resources update the fabric
 multi-control-plane bootstrap has no explicit controlPlaneEndpoint or equivalent
 ```
 
@@ -229,7 +230,7 @@ post-Cilium
 controlPlaneEndpoint
 stableEndpoint
 stableEndpoint provenance
-whether pre-manifest endpoint reachability is required
+whether endpoint reachability is required for kubeadm, joins, or kubeconfig output
 whether endpoint provenance is compatible with that phase
 ```
 
@@ -238,12 +239,12 @@ whether endpoint provenance is compatible with that phase
 ```text
 --control-plane-endpoint
 --bootstrap-stable-endpoint
---bootstrap-stable-endpoint-before-manifests
 ```
 
 The missing follow-up is provenance modeling. Until provenance exists, the
-operator contract is explicit: before-manifests endpoint waits are only for
-endpoints that are already reachable without the manifests being applied.
+operator contract is explicit: endpoint waits during cluster bootstrap are only
+for kubeadm, join, and kubeconfig phases. User add-on installation happens after
+cluster bootstrap exits.
 
 ## Fit With Katl Scope
 
@@ -267,10 +268,10 @@ Greenfield readiness should prove:
 
 ```text
 katlctl can bootstrap with an independently reachable controlPlaneEndpoint
-katlctl can fail clearly when the pre-manifest endpoint is not reachable
-endpoint waits record whether they probe the operator runner, node, or add-on
-  vantage point
-user bootstrap manifests can be held until the endpoint gate passes
+katlctl can fail clearly when the endpoint required for kubeadm, joins, or
+  kubeconfig output is not reachable
+endpoint waits record whether they probe the operator runner or node vantage
+  point
 Cilium values can target the same stable identity without creating a loop
 kubeconfig is written only after the selected endpoint is reachable
 post-Cilium API advertisement, if used, is validated separately
@@ -285,7 +286,7 @@ Relevant follow-up work:
 
 ```text
 model bootstrap API endpoint provenance
-assess bootstrap sequencing gaps for Cilium and API endpoint handoff
+assess bootstrap endpoint reachability gaps before user-installed Cilium
 support richer bootstrap readiness waits
 maintain the opt-in platform API endpoint routing capability as later work
 ```

@@ -10,9 +10,10 @@ so future work does not reopen it by accident.
 
 ## Context
 
-Katl builds a Fedora-derived, systemd-native runtime OS for kubeadm-ready
-Kubernetes nodes. The runtime root is immutable and versioned. Durable node state
-lives under writable state partitions, primarily `/var`.
+Katl builds a Fedora-derived, systemd-native runtime OS for Kubernetes nodes that
+can become kubeadm-ready through explicit lifecycle operations. The runtime root
+is immutable and versioned. Durable node state lives under writable state
+partitions, primarily `/var`.
 
 Katl needs a way to configure `/etc` while preserving:
 

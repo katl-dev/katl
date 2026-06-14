@@ -74,6 +74,12 @@ installed runtime to accept node-local operations.
 Generation 0 is intentionally not a Kubernetes cluster member. It is the
 post-install KatlOS baseline.
 
+Generation 0 may have verified access to bundled Kubernetes sysext artifacts from
+the KatlOS image, and it records user-supplied cluster intent from the install
+manifest. It does not activate Kubernetes binaries, create `/etc/kubernetes`, run
+kubeadm, or create cluster state. The first Kubernetes-capable generation is
+created by an explicit bootstrap or join operation.
+
 ## Generation Lifecycle Terms
 
 The shared lifecycle uses these terms:
@@ -138,18 +144,20 @@ Operations are explicit. Normal configuration apply and generation activation
 must not silently run kubeadm, kubectl, CNI installers, GitOps controllers,
 package managers, or cluster repair commands.
 
-Normal `katlc apply` is the generation apply path, not a special Kubernetes
-operation merely because it creates or activates a kubeadm-ready generation. It
-may record apply status and diagnostics, but named operations are reserved for
-transactional workflows that run mutating tools such as kubeadm, coordinate
-external state, or repair state outside normal generation apply.
+Normal `katlc apply` is the generation apply path. Creating or activating the
+first Kubernetes-capable generation during cluster bootstrap is still generation
+management, but it is part of the explicit `BootstrapCluster` or `JoinCluster`
+operation because kubeadm will mutate node or cluster state before the generation
+can be committed. Named operations are reserved for transactional workflows that
+run mutating tools such as kubeadm, coordinate external state, or repair state
+outside normal generation apply.
 
-`BootstrapCluster` and `JoinCluster` are operation types even when they are
-initiated by `katlctl cluster bootstrap`. For bounded multi-node workflows, the
-durable record may be a coordinator run record rather than only a node-local
-systemd operation record. A coordinator run record must capture per-node
-operation attempts, phase state, redacted diagnostics, and whether kubeadm has
-mutated node or cluster state.
+`BootstrapCluster` and `JoinCluster` are operation types initiated by
+`katlctl cluster bootstrap`. For bounded multi-node workflows, the durable record
+may be a coordinator run record rather than only a node-local systemd operation
+record. A coordinator run record must capture per-node operation attempts,
+candidate generation IDs, phase state, redacted diagnostics, and whether kubeadm
+has mutated node or cluster state.
 
 ## Operation Records
 
@@ -177,9 +185,11 @@ candidateGenerationID, when present
 phase
 completedPhases[]
 externalMutationStarted
+mutationScopes[]
 mutatingToolRan
 diagnosticArtifacts[]
 hostRollback
+postMutationRollbackAllowed
 recoveryRequired
 retryHint
 result
@@ -234,38 +244,46 @@ The installer creates generation 0:
 ```text
 Install KatlOS
   -> create generation 0
+  -> store user-supplied cluster intent from the install manifest
   -> boot generation 0
   -> reach installed-runtime health
 ```
 
-The first post-install `katlc apply` creates the kubeadm-ready generation:
+Cluster bootstrap creates and commits the first Kubernetes-capable generation:
 
 ```text
-katlc apply <node configuration>
-  -> select Kubernetes sysext
-  -> render kubeadm-ready configuration
+katlctl cluster bootstrap
+  -> ask katlc to validate stored cluster intent
+  -> create candidate generation 1
+  -> select the requested bundled Kubernetes sysext
+  -> render kubeadm input and required host configuration
   -> project /etc/kubernetes from writable state
-  -> verify containerd, kubelet wiring, and kubeadm tools
-  -> create and activate the kubeadm-ready generation
-  -> reach katl-kubeadm-ready.target after local checks pass
+  -> activate generation 1 as a candidate
+  -> verify containerd, kubelet wiring, kubeadm tools, and local readiness
+  -> run kubeadm init or kubeadm join
+  -> run post-kubeadm health checks
+  -> commit generation 1 only after kubeadm and health checks succeed
 ```
 
-The kubeadm-ready generation is ordinary host state. It has not run
-`kubeadm init` or `kubeadm join`.
+The Kubernetes-capable generation is host state, but its first commit is gated by
+the bootstrap or join operation because kubeadm mutates persistent node or
+cluster state.
 
-Cluster bootstrap and node join are later explicit operations:
+Cluster bootstrap and node join use the same operation model:
 
 ```text
 BootstrapCluster
+  -> create and activate the first Kubernetes-capable generation as a candidate
   -> run kubeadm init
   -> verify local control-plane health
-  -> publish bootstrap artifacts
-  -> mark operation complete
+  -> commit the candidate generation
+  -> publish bootstrap artifacts and mark operation complete
 
 JoinCluster
+  -> create and activate the first Kubernetes-capable generation as a candidate
   -> run kubeadm join
   -> verify node-local join health
-  -> mark operation complete
+  -> commit the candidate generation and mark operation complete
 ```
 
 Kubernetes upgrades use the same pattern after bootstrap:
@@ -327,14 +345,14 @@ live apply
 Generations provide host rollback. Operations provide transactional status and
 repair context.
 
-Before an operation mutates external or Kubernetes cluster state, a failed
-candidate generation can usually be abandoned and the node can return to the
-previous known-good generation.
+Before an operation mutates kubeadm-owned node state or Kubernetes API state, a
+failed candidate generation can usually be abandoned and the node can return to
+the previous known-good generation.
 
-After an operation mutates Kubernetes cluster state, host rollback must not
-claim to undo that mutation. For example, rolling back from a target Kubernetes
-sysext to a previous host generation does not necessarily roll back kubeadm
-changes already written to `/etc/kubernetes`, kubelet state, etcd, or
+After an operation mutates kubeadm-owned node or cluster state, host rollback
+must not claim to undo that mutation. For example, rolling back from a target
+Kubernetes sysext to a previous host generation does not necessarily roll back
+kubeadm changes already written to `/etc/kubernetes`, kubelet state, etcd, or
 Kubernetes API objects.
 
 Operation status must therefore record:
@@ -344,6 +362,8 @@ previous generation id
 candidate generation id, when one exists
 operation phase
 whether kubeadm or another mutating tool has run
+mutation scopes such as etc-kubernetes, kubelet-state, etcd-state, or
+  cluster-objects
 diagnostic artifact paths
 whether host rollback was attempted
 whether kubeadm-aware repair or retry is required
@@ -355,9 +375,11 @@ some operations are inherently transactional.
 ## Recovery And Repair
 
 Recovery and repair are explicit operations, not automatic failure handlers. A
-terminal state such as `failed-needs-repair` means Katl stopped before unsafe
-mutation. It does not authorize hidden cleanup, kubeadm repair, etcd mutation,
-request replacement, or destructive reinstall.
+terminal state such as `failed-needs-repair` means Katl cannot safely continue
+without an explicit repair or retry decision. It does not authorize hidden
+cleanup, kubeadm repair, etcd mutation, request replacement, or destructive
+reinstall. The associated operation record must say whether mutation had already
+started and which mutation scopes were touched.
 
 Recovery operation shapes are deferred until implemented. Unsupported recovery
 requests must be refused with diagnostics rather than partially executed.
@@ -386,8 +408,8 @@ The operation model needs tests at the level where behavior becomes concrete:
 unit tests for operation planning and validation
 golden tests for generated operation records and systemd units
 systemd-analyze verify for generated units where practical
-VM tests for install, initial katlc apply, bootstrap, join, upgrade, rollback,
-  and repair workflows as they are implemented
+VM tests for install, bootstrap, join, upgrade, rollback, and repair workflows as
+  they are implemented
 ```
 
 Documentation-only changes to this model do not require VM gates. Any

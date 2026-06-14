@@ -264,6 +264,16 @@ planner, explicit user request, status, rollback story, and tests. A `live`
 configuration request that would change systemRole, selected kubeadm input, or
 node identity is rejected instead of silently changing cluster state.
 
+Katl-rendered kubeadm/kubelet input is desired state, not ownership of the live
+cluster artifacts that kubeadm creates or updates. The live owner remains kubeadm
+or kubelet for `/etc/kubernetes`, kube-system kubeadm/kubelet ConfigMaps, and
+`/var/lib/kubelet` files.
+
+A normal runtime configuration apply may detect and report desired/live drift,
+but it must not close that drift by editing those paths or Kubernetes objects.
+Closing the drift requires an explicit kubeadm-aware operation with its own
+request, status, rollback limits, and tests.
+
 ## Testing Contract
 
 Implementation follow-up work must cover:

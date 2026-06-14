@@ -33,7 +33,7 @@ networkd
   rendered under /etc/systemd/network/
 
 resolved and host DNS
-  only when needed for install or kubeadm-ready nodes
+  only when needed for generation 0 install/runtime or explicit cluster bootstrap
   resolved.conf snippets and host resolver policy
   rendered under /etc/systemd/resolved.conf.d/ or bounded Katl-owned files
 
@@ -234,7 +234,11 @@ mount units
   apply through systemd unit reload/start ordering with rollback checks
 
 KubeadmConfig input
-  render desired input only; do not mutate live kubeadm cluster state
+  render desired kubeadm/kubelet input only
+  do not mutate live /etc/kubernetes, kube-system ConfigMaps, or
+    /var/lib/kubelet files
+  if desired input differs from live state, report explicit kubeadm-aware
+    action required instead of treating normal config apply as reconciliation
 
 SSH and operator access
   reload sshd only after validation proves access will not be locked out
@@ -264,5 +268,6 @@ large policy overlays can generate Katl input outside Katl, but the committed
 Katl API remains explicit domains that compile to native artifacts.
 
 Katl will not use this API to install cluster add-ons or own Kubernetes
-lifecycle. Once kubeadm-ready nodes are available, kubeadm and user-managed
-GitOps own the cluster.
+lifecycle. Cluster bootstrap may use this API to create kubeadm-ready candidate
+generations, but kubeadm and user-managed GitOps own the cluster after bootstrap
+succeeds.

@@ -6,10 +6,11 @@ This document defines how Katl accepts kubeadm configuration without hiding
 kubeadm behind a lossy abstraction and without letting users write arbitrary
 runtime `/etc` content.
 
-Katl installs validated kubeadm input. It does not decide whether a node runs
-`kubeadm init` or `kubeadm join`, and it does not own cluster bootstrap
-lifecycle. An operator or test harness runs kubeadm against the installed input
-after the node reaches the kubeadm-ready handoff.
+Katl renders validated kubeadm input into Kubernetes-capable generations. Node
+configuration and normal `katlc apply` do not decide whether a node runs
+`kubeadm init` or `kubeadm join`. An explicit operator action, such as
+`katlctl cluster bootstrap`, may ask `katlc` to prepare kubeadm-ready candidate
+generations and then coordinate kubeadm init/join.
 
 ## Decision
 
@@ -121,7 +122,8 @@ The operator owns:
 ```text
 when to run kubeadm init or join
 when to run kubeadm upgrade or other cluster reconfiguration
-cluster add-ons, CNI, GitOps, workloads, and ongoing Kubernetes lifecycle
+cluster add-ons, CNI, GitOps, workloads, and ongoing Kubernetes lifecycle after
+bootstrap
 ```
 
 ## Validation
@@ -186,7 +188,11 @@ fail validation.
 
 `kubernetesVersion` may be omitted or set to the selected sysext version. If it
 is present and conflicts with the selected Kubernetes sysext payload version,
-validation must fail before install or runtime config activation.
+validation must fail before install or runtime config activation. For first
+install, the selected payload version comes from `node.kubernetes.version` in the
+install manifest and the exact matching bundled sysext. Katl may normalize
+manifest `1.36.1` to kubeadm's `v1.36.1` form for comparison, but it must not
+use sentinel values or a day-one catalog resolver inside native kubeadm YAML.
 
 The CRI socket should default to containerd's socket. A different CRI socket is
 deferred until Katl intentionally supports another runtime.
@@ -214,7 +220,7 @@ certificate keys, and other sensitive values should be handled through a later
 secret input design or injected at operator action time, not committed into the
 default Katl config repository format.
 
-## Runtime Updates
+## Desired Input And Live Drift
 
 A runtime configuration update can change the desired kubeadm input:
 
@@ -227,6 +233,11 @@ katlc renders a new generated confext generation
 
 That does not reconfigure a running cluster by itself.
 
+Katl owns the desired kubeadm/kubelet input it renders under `/etc/katl`.
+Kubeadm and kubelet own the live state derived from that input. Normal Katl
+generation activation must not reconcile, overwrite, or roll back live
+kubeadm/kubelet state.
+
 Live kubeadm cluster state lives in Kubernetes objects and node-local kubeadm
 outputs, including:
 
@@ -238,6 +249,8 @@ kube-system/kubelet-config ConfigMap
 /etc/kubernetes/pki
 /var/lib/kubelet/config.yaml
 /var/lib/kubelet/kubeadm-flags.env
+/var/lib/etcd
+kubeadm-managed Kubernetes API objects
 ```
 
 Applying desired kubeadm changes to a running cluster must be an explicit
@@ -245,22 +258,34 @@ kubeadm-aware operator action. Later `katlctl` commands may help plan or apply
 those operations, but they must report which kubeadm and Kubernetes objects
 will change and must not be hidden inside normal confext activation.
 
+When rendered desired input differs from live state, Katl reports drift and
+records that an explicit kubeadm-aware action is required. The drift report is
+advisory until an operator runs a bootstrap, join, upgrade, reset, or
+reconfiguration operation.
+
+Rolling back rendered `/etc/katl/kubeadm/<name>/config.yaml` restores desired
+input only. It does not restore kubeadm output, kubelet runtime config, etcd
+contents, or kubeadm-managed ConfigMaps. Applying or undoing those live changes
+requires an explicit kubeadm-aware operation.
+
 ## Test Harness Use
 
 The single-node API smoke should use a test fixture `KubeadmConfig` and then
-run kubeadm explicitly from the harness:
+drive the same explicit bootstrap path used by operators:
 
 ```text
-wait for katl-kubeadm-ready.target
+run katlctl cluster bootstrap against the installed generation 0 node
+verify the bootstrap operation asks katlc to create and activate generation 1
+wait for katl-kubeadm-ready.target before kubeadm runs
 verify /etc/katl/kubeadm/control-plane/config.yaml exists
-run kubeadm init --config /etc/katl/kubeadm/control-plane/config.yaml
+run kubeadm init through the bootstrap operation with that rendered config
 assert kubeadm output under projected /etc/kubernetes
 assert kubectl can reach /readyz
 ```
 
 This keeps the smoke test honest: Katl proves it can deliver validated kubeadm
-input and a kubeadm-ready OS; kubeadm proves it can bootstrap the control
-plane.
+input and a kubeadm-ready OS; `katlctl` proves the explicit operation boundary;
+kubeadm proves it can bootstrap the control plane.
 
 ## Open Questions
 

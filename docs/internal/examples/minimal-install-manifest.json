@@ -10,7 +10,10 @@
         ]
       }
     },
-    "systemRole": "control-plane"
+    "systemRole": "control-plane",
+    "kubernetes": {
+      "version": "1.36.1"
+    }
   },
   "install": {
     "allowDestructiveInstall": true,

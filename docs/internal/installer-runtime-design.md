@@ -28,8 +28,8 @@ katlos-install
 
 KatlOS runtime
   The installed, persistent OS composition that boots from the target disk.
-  It is a pared down, tightly configured Linux system for kubeadm/kubelet, not
-  a bespoke distribution.
+  It is a pared down, tightly configured Linux system prepared for kubeadm and
+  kubelet through the selected Kubernetes sysext, not a bespoke distribution.
 ```
 
 `installer-image` is built by mkosi. It should not normally contain mkosi. mkosi
@@ -41,7 +41,8 @@ The runtime OS is not an upstream distribution, a separate package universe, a
 Talos-style custom appliance, or a custom userspace from scratch. It is a
 Fedora-derived system image that Katl trims and configures: kernel and initramfs,
 systemd userspace, basic networking and storage tools, SSH, a container runtime,
-Katl-owned units/agents, and the components needed for kubelet and kubeadm.
+Katl-owned units/agents, and the host components needed before kubelet and
+kubeadm are provided by the selected Kubernetes sysext.
 
 KatlOS exists after Katl installs a generation. The initial implementation
 should think of the runtime root as a Fedora-derived image assembled from
@@ -65,7 +66,8 @@ katlos-install
   applies the install manifest to the target disk and writes the runtime OS
 
 KatlOS runtime
-  runs the node after install and reaches the kubeadm-ready handoff point
+  runs the node after install, reaches generation 0 installed-runtime health, and
+  later supports explicit bootstrap, upgrade, repair, and recovery operations
 ```
 
 The installer path must not become a whole-disk image clone. `katlos-install`
@@ -336,6 +338,7 @@ The v1alpha1 manifest contains these top-level sections:
 ```text
 node
   hostname and `katl` runtime SSH authorized keys
+  exact Kubernetes payload version and optional kubeadm config reference
 
 install
   destructive install guard, target root disk selector, and optional extra data
@@ -345,6 +348,11 @@ katlosImage
   one KatlOS install image reference with required digest, size, version,
   architecture, and role metadata
 ```
+
+`node.kubernetes.version` is an exact Kubernetes payload version such as
+`1.36.1`. It is not a version range, resolver expression, catalog reference, or
+compatibility policy. The first implementation resolves it only against bundled
+Kubernetes sysext components inside the verified KatlOS image.
 
 The current manifest deliberately does not expose a separate manifest name,
 metadata labels, user-chosen generation IDs, node matching selectors, SSH
@@ -400,6 +408,12 @@ katlosImage
   fail before mutation where possible and before boot metadata is installed;
   signing and external trust-root policy are deferred
 
+Kubernetes payload version
+  node.kubernetes.version must be an exact version such as 1.36.1; the verified
+  KatlOS image must contain exactly one bundled Kubernetes sysext component for
+  that payload version, such as katl-kube-1.36.1.sysext; missing, duplicate, or
+  incompatible matches fail validation
+
 SSH and identity
   at least one `katl` authorized key is required; SSH disablement and installer
   SSH overrides are deferred; machine-id is not user supplied in the current
@@ -422,7 +436,8 @@ Runtime first-boot seed material may configure:
 node identity seed
 initial hostname
 initial SSH access
-activation pointers for confext and sysext artifacts
+activation pointers for generation 0 baseline confext and sysext artifacts,
+when selected
 first-boot marker files
 ```
 
@@ -456,7 +471,8 @@ formatting writable filesystems
 writing immutable runtime artifacts into root slots
 installing systemd-boot
 installing UKIs and loader entries
-installing sysext artifacts
+installing or caching bundled sysext artifacts without activating Kubernetes for
+  generation 0
 materializing generated confext from trusted manifest input
 generating runtime mount units for /var, /etc/kubernetes, and extra disks
 writing runtime seed data
@@ -693,6 +709,9 @@ state path is Katl YAML/configuration; KatlOS validates that input and renders
 the generation-scoped extension state itself. Generated confext is built locally
 for that generation. Sysext payloads are prebuilt artifacts, but their selected
 activation set is recorded with the same generation as the rendered confext.
+Bundled Kubernetes sysexts from the install image are available payloads until a
+generation selects one; they are not active merely because the installer verified
+or cached them.
 `katlc` and KatlOS runtime services must reject unknown or unsupported
 configuration before rendering anything. Unsupported domains, fields, sysext
 selections, apply modes, or raw extension paths are validation failures, not
@@ -722,26 +741,40 @@ validate known configuration domains and their output paths
 render domain configuration into a generation-scoped confext tree or image
 write extension-release metadata
 stage the confext under /var/lib/katl/generations/<generation-id>/
-select that confext with the same generation metadata as the root slot and
-  sysext set
+select that confext with the same generation metadata as the root slot and any
+  generation 0 sysext set
 ```
 
 Generated confext must be switched with the selected generation. It must not
 drift independently from the selected root slot, UKI, boot metadata, or sysext
 set.
 
-`katlc` performs the same logical operation for later configuration changes on
-an already installed node. The command can come after the initial installer
-work, but the install-time layout must leave room for it:
+`katlc` performs the same logical generation-build operation for an already
+installed node, but the first Kubernetes sysext activation is part of explicit
+cluster bootstrap. The first Kubernetes-capable generation flow is:
 
 ```text
-receive desired Katl YAML/configuration
-validate trust and policy
-select compatible sysext activation for the target generation
-render known configuration domains into a new generated confext generation
-write immutable generation metadata and apply status
-activate, stage, or reject the generation according to the accepted apply mode
-record success, failure, diagnostics, and rollback metadata
+katlctl cluster bootstrap asks katlc to validate stored install intent
+katlc selects the bundled Kubernetes sysext whose payload version exactly matches
+  node.kubernetes.version, such as katl-kube-1.36.1.sysext
+katlc renders known configuration domains into generation 1 confext
+katlc writes candidate generation metadata and activates it for kubeadm readiness
+katlctl runs kubeadm init or join
+katlc commits the candidate generation only after kubeadm and health checks pass
+```
+
+Later host configuration changes can use normal `katlc` generation apply or
+stage flows. Later Kubernetes sysext transitions require explicit upgrade
+operations, because kubeadm must own the cluster mutation:
+
+```text
+katlc receives desired Katl YAML/configuration
+katlc validates trust and policy
+katlc renders known configuration domains into a new generated confext generation
+katlc may preserve the current Kubernetes sysext for ordinary host config changes
+katlc rejects Kubernetes sysext changes unless an explicit upgrade operation owns
+  the kubeadm handoff
+katlc records success, failure, diagnostics, and rollback metadata
 ```
 
 `katlc` and KatlOS runtime services should not become a general-purpose
@@ -755,7 +788,8 @@ expose Fedora as the product surface, but Fedora gives Katl a practical package
 source for a modern systemd-native runtime image.
 
 The runtime should contain the smallest practical set of packages and generated
-units needed to become a kubeadm-ready node:
+units needed for an explicit bootstrap operation to create a kubeadm-ready
+generation:
 
 ```text
 kernel and initramfs tooling needed for the target boot model
@@ -867,10 +901,12 @@ base root artifact.
 
 ## Kubeadm-Ready Runtime
 
-This section describes the generation created by `katlc apply` for kubeadm-ready
-host state, not generation 0 first boot. Kubeadm readiness is produced by normal
-generation creation and activation that selects the Kubernetes sysext and
-generated kubeadm input; it is not a separate Kubernetes operation.
+This section describes the first Kubernetes-capable candidate generation created
+when `katlctl cluster bootstrap` asks `katlc` to validate stored intent and
+prepare the node for kubeadm. It is not generation 0 first boot. Kubeadm
+readiness is produced by normal generation creation and activation that selects
+the Kubernetes sysext and generated kubeadm input; it is not a separate
+Kubernetes operation.
 
 The next runtime step after the installer UKI can install and boot from disk is
 kubeadm readiness, not a complete Kubernetes cluster. Katl should prove that an
@@ -905,6 +941,15 @@ The Kubernetes sysext is a Katl artifact produced by mkosi from declared package
 inputs. In early development it can be built locally. Later CI can publish the
 same artifact shape for users to download, but CI publishing is not part of the
 current local loop.
+
+For first install, the KatlOS image bundles exact-version Kubernetes sysext
+artifacts, for example `katl-kube-1.36.1.sysext`. The install manifest requests
+the exact Kubernetes payload version with `node.kubernetes.version: "1.36.1"`.
+`katlctl cluster bootstrap` asks `katlc` to select the matching bundled sysext
+for generation 1 and record its path, digest, payload version, activation path,
+and compatibility metadata in generation metadata. A day-one install does not use
+a version range, remote Kubernetes catalog, or compatibility matrix resolver.
+Those are day-2 update planning concerns.
 
 Kubernetes sysext versioning must stay decoupled from the installed KatlOS
 runtime root version. Users should be able to keep their current Kubernetes
@@ -944,10 +989,12 @@ combined update
   new runtime root, UKI, and Kubernetes sysext validated as one set
 ```
 
-The current install manifest may provide concrete sysext artifact URLs and
-digests. Later `katlc` can resolve a user-requested Kubernetes version to a
-concrete sysext artifact, but artifact publishing and catalog resolution should
-remain outside the current local boot/install loop.
+Kubernetes version upgrades have one additional local activation gate. A
+candidate generation that selects a target Kubernetes sysext must not activate
+the target kubelet until the upgrade workflow has had access to target `kubeadm`
+and has recorded the explicit handoff for kubeadm upgrade work. Katl's role in
+this gate is OS-side ordering and evidence; kubeadm remains the tool that
+performs Kubernetes upgrade actions and mutates Kubernetes node or cluster state.
 
 Tests should be layered rather than waiting for a full VM flow:
 
@@ -960,9 +1007,10 @@ systemd-analyze verify checks generated units where practical
 VM install-to-runtime tests prove generation 0 boots from disk, mounts /var,
   activates baseline extensions/config, exposes operator access, and reaches
   installed-runtime health
-VM initial katlc apply tests prove Kubernetes sysext activation, writable
-  /etc/kubernetes, containerd readiness, katl-kubeadm-ready.target, and kubeadm
-  preflight or dry-run evidence
+VM bootstrap tests prove `katlctl cluster bootstrap` asks `katlc` to create and
+  activate generation 1, selects the manifest-requested Kubernetes sysext,
+  exposes writable /etc/kubernetes, reaches katl-kubeadm-ready.target, runs
+  kubeadm, and commits only after kubeadm and health checks succeed
 ```
 
 The readiness check should avoid implying that Katl owns cluster lifecycle. Katl
@@ -1284,7 +1332,8 @@ Kubernetes sysext activated
 kubeadm config rendered under /etc/katl/kubeadm
 /etc/kubernetes bind mounted from /var/lib/katl/kubernetes/etc-kubernetes
 containerd running
-kubelet available or ordered for kubeadm use
+kubelet available and, for Kubernetes upgrade candidates, gated until target
+  kubeadm handoff is complete
 katl-kubeadm-ready.target reached
 ```
 

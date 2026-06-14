@@ -125,19 +125,25 @@ Three-control-plane stacked-etcd bootstrap is serial.
 Required order:
 
 ```text
-1. install every target node and wait for katl-kubeadm-ready.target
+1. install every target node and wait for generation 0 installed-runtime health
 2. select exactly one init control-plane node
-3. run kubeadm init on the selected node
-4. wait for API readiness and local etcd health on the init node
-5. create or upload the control-plane join material with a certificate key
-6. join the second control-plane node
-7. wait for API readiness, node visibility, static pod health, and etcd member
+3. ask `katlc` on the init node to create and activate its Kubernetes-capable
+   candidate generation, then wait for katl-kubeadm-ready.target
+4. run kubeadm init on the selected node
+5. wait for API readiness and local etcd health on the init node
+6. create or upload the control-plane join material with a certificate key
+7. ask `katlc` on the second control-plane node to create and activate its
+   Kubernetes-capable candidate generation, then wait for katl-kubeadm-ready.target
+8. join the second control-plane node
+9. wait for API readiness, node visibility, static pod health, and etcd member
    health
-8. join the third control-plane node
-9. wait for API readiness, node visibility, static pod health, etcd member
+10. ask `katlc` on the third control-plane node to create and activate its
+    Kubernetes-capable candidate generation, then wait for katl-kubeadm-ready.target
+11. join the third control-plane node
+12. wait for API readiness, node visibility, static pod health, etcd member
    health, and quorum
-10. join workers or run user bootstrap handoff after the control plane is
-    healthy enough for the selected scenario
+13. prepare and join workers, verify the cluster bootstrap result, write
+    kubeconfig/status, commit successful candidate generations, and exit
 ```
 
 Additional control-plane joins must not run in parallel. A failed join can leave
@@ -172,8 +178,8 @@ before joining a new control-plane member, verify the current members are
   healthy
 after joining a member, verify the member list and endpoint status before the
   next join
-do not proceed with worker joins or user bootstrap if etcd health is unknown
-  for a multi-control-plane scenario
+do not proceed with worker joins or declare bootstrap complete if etcd health is
+  unknown for a multi-control-plane scenario
 ```
 
 Single-node control-plane smokes may prove kubeadm and static pod readiness, but
@@ -204,6 +210,11 @@ as explicit gates. Once etcd data or Kubernetes control-plane state has moved
 forward, an automatic Katl generation rollback is not a complete cluster
 rollback. The operator may need a kubeadm-aware recovery or a snapshot restore
 instead.
+
+The central host rollback boundary is defined in
+`docs/internal/rollback-selection-rules.md`. Host rollback must not remove an
+etcd member, restore an etcd snapshot, or claim quorum repair. Etcd recovery
+remains a separate explicit operation.
 
 ## Validation Gates
 

@@ -11,6 +11,12 @@
       }
     },
     "systemRole": "control-plane",
+    "kubernetes": {
+      "version": "1.36.1",
+      "kubeadm": {
+        "configRef": "control-plane"
+      }
+    },
     "networkd": {
       "files": [
         {
@@ -18,11 +24,6 @@
           "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"
         }
       ]
-    },
-    "kubernetes": {
-      "kubeadm": {
-        "configRef": "control-plane"
-      }
     }
   },
   "install": {

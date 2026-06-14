@@ -10,20 +10,22 @@ while staying close to the native Linux, systemd, and kubeadm files and APIs
 they configure.
 
 The practical outcome is a reproducible path from generic KatlOS artifacts and
-user-supplied configuration to booted, kubeadm-ready nodes:
+user-supplied cluster intent to booted KatlOS nodes, then to an explicitly
+bootstrapped Kubernetes cluster:
 
 ```text
 KatlOS source
   -> mkosi builds generic installer, runtime, sysext, and update artifacts
   -> user-managed boot or release infrastructure publishes those artifacts
-  -> katlos-install installs KatlOS and seeds generation 0
-  -> users supply Katl YAML/configuration
-  -> katlc on KatlOS validates and compiles config into generations
-  -> katlc apply creates or stages runtime generations, including kubeadm-ready
-     host state
-  -> explicit kubeadm-aware operations bootstrap, join, or upgrade nodes
+  -> katlos-install installs KatlOS generation 0 with stored cluster intent
+  -> katlctl cluster bootstrap asks katlc to validate that intent and create the
+     first Kubernetes-capable candidate generation
+  -> katlctl coordinates kubeadm bootstrap or join and commits the generation
+     only after kubeadm and health checks succeed
+  -> later explicit kubeadm-aware operations upgrade, repair, or recover nodes
   -> KatlOS activates, stages, reports, or rolls back host generations
-  -> kubeadm and user-managed GitOps bring the cluster to its desired state
+  -> after bootstrap, the user installs and owns cluster add-ons, GitOps, and
+     workloads
 ```
 
 ## Product Shape
@@ -58,10 +60,12 @@ node-level capability.
 
 Katl treats Kubernetes as the first-class host workload.
 
-The base system should make kubeadm, kubelet, containerd, CNI prerequisites,
-host networking, persistent Kubernetes state, and cluster bootstrap predictable.
-The node is successful when it can reach a clear kubeadm-ready point and expose
-enough status for an operator or test harness to continue safely.
+The base system should make kubeadm, kubelet, containerd, host networking,
+kernel/network prerequisites needed by user-installed CNI, persistent Kubernetes
+state, and cluster bootstrap predictable. The node is successful when generation
+0 reaches installed-runtime health and an explicit bootstrap operation can reach
+a clear kubeadm-ready point with enough status for an operator or test harness to
+continue safely.
 
 Katl uses systemd-native mechanisms directly.
 
@@ -83,15 +87,17 @@ Katl configuration is applied to KatlOS nodes.
 
 Install and runtime apply paths both start from Katl YAML or configuration, not
 pre-rendered extension trees supplied by users. On first install,
-`katlos-install` bootstraps generation 0. After install, `katlc`
-receives trusted user-supplied configuration on KatlOS and locally compiles a
-new generation containing generated confext plus selected sysext activation
-metadata. Sysext payloads remain prebuilt artifacts; node-local compilation
-decides how trusted config selects and activates them. `katlc` and the KatlOS
-runtime services are the enforcement point on installed nodes: unknown domains,
-unsupported fields, unsupported apply modes, unsupported sysext selection
-requests, and raw extension activation inputs are rejected before anything is
-rendered or activated.
+`katlos-install` bootstraps generation 0 and stores user-supplied cluster intent
+without activating Kubernetes. The first Kubernetes-capable generation is
+created later when `katlctl cluster bootstrap` asks `katlc` to validate stored
+intent, select the requested bundled Kubernetes sysext, and render the generated
+confext needed for kubeadm. Later host configuration changes can use normal
+`katlc` generation apply or stage flows. Sysext payloads remain prebuilt
+artifacts; node-local compilation decides how trusted config selects and
+activates them. `katlc` and the KatlOS runtime services are the enforcement point
+on installed nodes: unknown domains, unsupported fields, unsupported apply
+modes, unsupported sysext selection requests, and raw extension activation
+inputs are rejected before anything is rendered or activated.
 
 Katl artifacts are generic and reusable.
 
@@ -130,9 +136,10 @@ Katl is GitOps-oriented at the node boundary.
 
 Katl should fit naturally into a repository-driven workflow: review config,
 compile it, build or select artifacts, publish them, install or update nodes,
-then let kubeadm and cluster GitOps reconcile the cluster layer. Katl should
-make the handoff explicit through generated metadata, status, logs, and stable
-commands rather than absorbing cluster add-on lifecycle.
+then let kubeadm and the user's chosen cluster tooling, including GitOps when
+they use it, reconcile the cluster layer. Katl should make the handoff explicit
+through generated metadata, status, logs, and stable commands rather than
+absorbing cluster add-on lifecycle.
 
 Katl grows by proving one operating loop at a time.
 
@@ -178,8 +185,8 @@ material for user-managed GitOps.
 
 A user keeps cluster node intent in Git. The repository describes node roles,
 hostnames, networkd units, SSH keys, kubeadm config references, target disk
-selectors for install, selected Kubernetes sysexts, and any supported extra data
-disk mounts.
+selectors for install, requested Kubernetes versions, and any supported extra
+data disk mounts.
 
 The user publishes generic Katl artifacts through their own infrastructure.
 PXE, matchbox, USB, virtual media, or local handoff can all provide the
@@ -187,15 +194,18 @@ installer with the same generic image plus node-specific install input.
 
 `katlos-install` applies the manifest to the selected node. It verifies
 artifacts, partitions and formats the Katl-owned root disk, writes generation 0,
-persists identity and state layout, installs boot metadata, and reboots.
+persists identity, state layout, and cluster intent, installs boot metadata, and
+reboots.
 
-The installed runtime reaches a local health target for generation 0. The user
-applies Katl YAML/configuration with `katlc apply` on KatlOS. `katlc` validates
-the input, rejects unsafe or unsupported domains, creates and activates the
-kubeadm-ready generation, and reports rollback-aware status. After the
-kubeadm-ready handoff, the user or `katlctl` can run the appropriate kubeadm
-bootstrap or join operation. Once the API server is reachable, the user's GitOps
-stack installs CNI, CoreDNS, Flux, policies, storage, and applications.
+The installed runtime reaches a local health target for generation 0 with no
+Kubernetes binaries activated and no cluster state created. The user runs
+`katlctl cluster bootstrap`, which asks `katlc` to validate the stored intent,
+create and activate the first Kubernetes-capable candidate generation, select
+the requested Kubernetes sysext, render kubeadm input, and expose the writable
+kubeadm output paths. `katlctl` then coordinates kubeadm init or join and the
+generation is committed only after kubeadm succeeds and health checks pass. Once
+cluster bootstrap completes, the user installs CNI, DNS, GitOps, policies,
+storage, and applications with their chosen cluster tooling.
 
 Updates follow the same model. A new desired state compiles into a new
 generation. Online-applicable configuration can apply immediately through a

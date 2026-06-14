@@ -2,10 +2,11 @@
 
 Status: current decision.
 
-This document defines the operator-run command that turns already installed,
-kubeadm-ready Katl nodes into a Kubernetes cluster. It does not change the Katl
-runtime boundary: Katl prepares nodes for kubeadm, then kubeadm and
-user-managed GitOps/operators own the cluster.
+This document defines the operator-run command that turns already installed
+generation 0 Katl nodes into a Kubernetes cluster. It does not change the Katl
+runtime boundary: the command asks `katlc` to create and activate the first
+Kubernetes-capable generation from stored intent, coordinates kubeadm init/join,
+and users/operators own the cluster contents after bootstrap.
 
 ## Command Shape
 
@@ -32,7 +33,7 @@ Important options:
 
 --control-plane-endpoint <host:port>
   kubeadm controlPlaneEndpoint and kubeconfig server endpoint, unless a later
-  stable endpoint handoff is declared
+  stable endpoint is declared and verified
 
 --kubeconfig-out <path>
   write the operator kubeconfig here
@@ -43,22 +44,12 @@ Important options:
 --dry-run
   validate inventory, access, readiness, and phase plan without running kubeadm
 
---bootstrap-manifest <path>
-  ordered Kubernetes manifest file or bundle to apply after API readiness;
-  repeat the flag for multiple files
-
 --bootstrap-wait <wait>
-  bounded post-bootstrap wait; supported forms are api-ready, nodes-ready,
-  resource-exists[:namespace]:kind/name, and
-  condition[:namespace]:kind/name:Condition
+  bounded kubeadm-scoped wait; supported forms are api-ready,
+  joined-nodes-observed, and control-plane-healthy
 
 --bootstrap-stable-endpoint <host:port>
-  stable API endpoint to verify after user bootstrap before writing kubeconfig
-
---bootstrap-stable-endpoint-before-manifests
-  verify the stable API endpoint before applying user bootstrap manifests; use
-  when early user resources such as Cilium must talk to an independently
-  reachable endpoint
+  stable API endpoint to verify before writing kubeconfig that uses it
 ```
 
 The command is a bounded coordinator. It runs phases, writes outputs, reports
@@ -71,7 +62,9 @@ Flux manager, BIRD manager, or cluster lifecycle controller.
 `BootstrapCluster` and `JoinCluster` operation attempts. The command writes one
 bootstrap run record for the coordinator invocation. The selected init node gets
 a `BootstrapCluster` attempt; each worker or later control-plane join gets a
-`JoinCluster` attempt.
+`JoinCluster` attempt. Each attempt asks node-local `katlc` to validate stored
+intent and create the first Kubernetes-capable candidate generation before
+kubeadm runs.
 
 The run record stores ordering, phase state, selected inputs, CLI overrides,
 redacted diagnostics, retry context, and whether kubeadm has mutated node or
@@ -79,6 +72,14 @@ cluster state. It is not desired cluster state. The source of truth after
 mutation remains kubeadm output, node-local state, and Kubernetes API state. The
 command must not remain resident, watch the cluster, or continuously reconcile
 failed or missing joins.
+
+The run record must identify the candidate generation ID, the phase where kubeadm
+first mutated state, and which mutation scopes were touched. `kubeadm init` can
+mutate `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`, and Kubernetes API
+objects. `kubeadm join` can mutate `/etc/kubernetes`, `/var/lib/kubelet`, node
+objects, and, for control-plane joins, etcd membership. Host rollback after a
+failed bootstrap or join does not clean this partial state; retry must inspect
+actual kubeadm and Kubernetes state.
 
 ## Input Model
 
@@ -90,27 +91,19 @@ name
 address
 systemRole
 access method and credentials reference, not inline secret values
-kubeadm configRef or rendered config path
-selected Kubernetes payload version
+kubeadm configRef from stored intent
+requested Kubernetes payload version
 ```
 
-The cluster input may also reference a bounded, user-owned bootstrap handoff:
+The cluster input may also reference bounded kubeadm and output policy:
 
 ```text
-bootstrap.manifests[].path
-  ordered manifest file or bundle path
-
 bootstrap.waits[]
-  bounded waits using api-ready, nodes-ready, resource-exists with kind/name,
-  or condition with kind/name plus condition
+  bounded kubeadm-scoped waits using api-ready, joined-nodes-observed, or
+  control-plane-healthy
 
 bootstrap.stableEndpoint
   optional API endpoint to verify before kubeconfig output uses it
-
-bootstrap.stableEndpointBeforeManifests
-  require the stable endpoint wait before user manifests apply instead of only
-  after user bootstrap resources run; the endpoint must already be reachable
-  without relying on the manifests being applied by this handoff
 ```
 
 Addresses may come from the cluster plan, inventory, or `--node-address`
@@ -154,20 +147,19 @@ command must never try `kubeadm init` on more than one node in one run.
 
 ## Readiness And Access
 
-Before running kubeadm phases, the command verifies every target node is
-kubeadm-ready.
+Before running kubeadm phases, the command verifies every target node is an
+installed generation 0 KatlOS node with enough stored intent to prepare a
+Kubernetes-capable generation.
 
-Minimum readiness checks:
+Minimum pre-bootstrap checks:
 
 ```text
-Katl runtime reached katl-kubeadm-ready.target
-selected Kubernetes sysext is active
-rendered kubeadm config exists under /etc/katl/kubeadm/<name>/config.yaml
-containerd is active and CRI socket responds
-kubelet is installed and can be started by kubeadm
-/etc/kubernetes is writable projected state, not generated confext
-node selected Kubernetes payload version matches the cluster plan
-node systemRole and selected KubeadmConfig intent are consistent
+Katl generation 0 reached installed-runtime health
+stored install manifest and cluster intent are present
+requested Kubernetes payload version matches the cluster plan
+the requested bundled Kubernetes sysext is available and verified
+stored systemRole and selected KubeadmConfig intent are consistent
+node-local katlc can accept an operation request
 ```
 
 Initial access may be SSH. VM tests may use vsock or harness agents where
@@ -177,7 +169,8 @@ All transports must return structured command results with stdout/stderr
 redaction. Kubernetes API access starts only after `kubeadm init` has produced a
 usable kubeconfig; the API is not a pre-bootstrap coordination channel.
 
-If any node is not ready, the command fails before running kubeadm anywhere.
+If any node cannot pass pre-bootstrap checks, the command fails before preparing
+or running kubeadm anywhere.
 
 ## Bootstrap Flow
 
@@ -191,18 +184,21 @@ in the bootstrap run record.
 1. load and validate inventory or compiled plan
 2. apply CLI overrides and record them
 3. select the init control-plane node
-4. verify access and kubeadm-ready state on every node
-5. run kubeadm init only on the selected init node
-6. collect or create join material
-7. join remaining worker nodes
-8. join additional control-plane nodes later, when that path is implemented
-9. wait for API readiness using the init or declared endpoint
-10. optionally verify the declared stable endpoint before user bootstrap
-    manifests when requested
-11. optionally run light user bootstrap handoff after API readiness
-12. write operator kubeconfig, using a declared stable endpoint only after the
-    endpoint handoff wait succeeds
-13. print next steps and exit
+4. verify access and generation 0 installed-runtime state on every node
+5. ask katlc on each target node to validate stored intent and create the first
+   Kubernetes-capable candidate generation
+6. activate the candidate generation and wait for katl-kubeadm-ready.target on
+   nodes before their kubeadm phase
+7. run kubeadm init only on the selected init node
+8. collect or create join material
+9. join remaining worker nodes
+10. join additional control-plane nodes later, when that path is implemented
+11. wait for API readiness using the init or declared endpoint
+12. run post-kubeadm health checks and commit each successful candidate generation
+13. optionally verify the declared stable endpoint for operator kubeconfig output
+14. write operator kubeconfig, using a declared stable endpoint only after the
+    endpoint wait succeeds
+15. print next steps and exit
 ```
 
 Worker joins must not start until init succeeds and join material exists.
@@ -218,12 +214,17 @@ ownership, quorum, join ordering, and rollback limits are defined in
 
 ## kubeadm Material
 
-The command runs kubeadm against rendered Katl input:
+The command runs kubeadm against rendered Katl input created in the candidate
+generation:
 
 ```text
 kubeadm init --config /etc/katl/kubeadm/<name>/config.yaml
 kubeadm join --config /etc/katl/kubeadm/<name>/config.yaml
 ```
+
+Rendering those paths is part of the bootstrap or join operation. Generation 0
+stores kubeadm intent, but it does not render the kubeadm input paths or activate
+Kubernetes binaries during normal boot.
 
 Bootstrap tokens, discovery tokens, certificate keys, and uploaded certificate
 material are generated or collected during the operator action. They are not
@@ -260,29 +261,15 @@ initial kubeadm endpoint
   multi-node bootstrap requires an explicit --control-plane-endpoint or an
   equivalent endpoint from the compiled plan
 
-stable endpoint handoff
+stable endpoint verification
   use a user-declared VIP, DNS name, routed endpoint, or load balancer as the
   stable operator-facing API endpoint
 ```
 
 Katl does not own BIRD, VIP, kube-vip, ingress, load balancer, or DNS lifecycle
-as part of this command. The command may wait for a user-declared endpoint after
-API readiness and either before or after optional user bootstrap resources run.
-There are two stable endpoint wait phases:
-
-```text
-pre-manifest stable endpoint
-  the endpoint is independently reachable before user manifests apply; use this
-  when early resources such as Cilium must contact the stable endpoint while
-  they start
-
-post-handoff stable endpoint
-  the endpoint becomes reachable only after user bootstrap resources run; use
-  this for endpoints created or advertised by those resources
-```
-
-Do not use before-manifests mode for an endpoint that is created or advertised
-by the same manifests.
+as part of this command. The command may verify a declared stable endpoint before
+writing kubeconfig that uses it. It does not apply the user resources that might
+later advertise or replace that endpoint.
 
 Do not add kubePrism as an initial requirement.
 
@@ -308,7 +295,7 @@ parent directory must already exist or be created with safe permissions
 existing file is refused unless --overwrite-kubeconfig is set or content
   exactly matches the intended output
 server endpoint is the selected bootstrap endpoint or the stable endpoint after
-  a declared handoff wait succeeds
+  a declared endpoint wait succeeds
 normal logs never print certificate or key material
 ```
 
@@ -349,6 +336,11 @@ state for diagnostics and safe retry. It is not authoritative over kubeadm or
 Kubernetes state; retry decisions must re-check the selected nodes and API
 server.
 
+Retry must not assume host generation rollback cleaned a failed kubeadm phase.
+It must inspect `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd` where
+applicable, and Kubernetes API state before deciding whether to skip, rerun, or
+require repair.
+
 ## Failure Diagnostics
 
 On failure, collect redacted diagnostics:
@@ -366,36 +358,25 @@ run record with init node, addresses, roles, phases, and artifact versions
 ```
 
 Diagnostics should identify what to retry and what must be repaired manually.
-They must not print tokens, certificate keys, kubeconfig private data, or full
-secret manifests in normal output.
+They must not print tokens, certificate keys, kubeconfig private data, or secret
+material in normal output.
 
-## Optional User Bootstrap Handoff
+## Post-Bootstrap User Ownership
 
-After API readiness, the command may apply ordered user-supplied bootstrap
-resources. This is a handoff, not lifecycle ownership.
-
-Allowed first shape:
-
-```text
-ordered manifest files or bundles
-server-side apply or create, implementation-defined
-waits for API readiness, resource existence/conditions, optional node readiness,
-  and optional stable endpoint reachability before or after manifests
-```
-
-This can install CNI, CoreDNS, CRDs, Flux, BIRD-related resources, or other
-user-owned bootstrap pieces. After the command exits, the user manages those
-resources with kubectl, GitOps, or operators.
+After cluster bootstrap exits, the user installs and owns any CNI, CoreDNS,
+kube-proxy policy, CRDs, Flux, Helm releases, storage, ingress, routing, and
+workloads with their chosen cluster tooling. `katlctl cluster bootstrap` does not
+apply Kubernetes manifests or manage add-on lifecycle.
 
 ## Non-Goals
 
 The command does not:
 
 ```text
-install or select a production CNI
-own CoreDNS or kube-proxy lifecycle
-own Flux or GitOps lifecycle
-own BIRD/VIP/load-balancer lifecycle
+install, apply, select, or manage a production CNI
+install, apply, select, or manage CoreDNS or kube-proxy lifecycle
+install, apply, select, or manage Flux, GitOps, Helm, CRDs, or workloads
+install, apply, select, or manage BIRD/VIP/load-balancer resources
 continuously reconcile nodes
 perform hidden kubeadm upgrades during config activation
 run kubeadm from install manifests or generated confext activation
@@ -408,13 +389,12 @@ Existing follow-up work covers the implementation path:
 ```text
 bootstrap node inventory and readiness checks
 
-node install-to-bootstrap state machine feeding kubeadm-ready checks
+node install-to-bootstrap state machine feeding generation 0 health and candidate
+generation readiness checks
 
 operator kubeconfig materialization
 
 cluster bootstrap CLI command
-
-light user bootstrap handoff after API readiness
 
 two-node kubeadm join VM scenario
 

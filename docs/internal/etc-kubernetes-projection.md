@@ -35,9 +35,10 @@ kubeadm init/join automation
 katl-kubeadm-ready.target
 ```
 
-The projection is part of the kubeadm-ready generation produced by `katlc apply`.
-Generation 0 may create or validate safe backing paths, but generation 0 boot
-health does not require the projection to be mounted.
+The projection is part of the Kubernetes-capable generation created when
+`katlctl cluster bootstrap` asks `katlc` to validate stored intent and prepare the
+node for kubeadm. Generation 0 may create or validate safe backing paths, but
+generation 0 boot health does not require the projection to be mounted.
 
 The mount unit should use ordering equivalent to:
 
@@ -55,7 +56,8 @@ containerd startup.
 
 ## Validation
 
-Initial `katlc apply` and kubeadm-ready boot validation must prove:
+Kubernetes-capable candidate generation activation and kubeadm-ready validation
+must prove:
 
 ```text
 /var is mounted from the installed state partition
@@ -89,6 +91,15 @@ Katl-generated kubeadm input should live under `/etc/katl/kubeadm/<name>/`, for
 example `/etc/katl/kubeadm/control-plane/config.yaml`. Operator-run bootstrap
 tools or test harnesses call kubeadm with those config paths. Kubeadm output
 remains in projected `/etc/kubernetes`.
+
+This projection does not make Katl the owner of kubeadm live state. Katl owns the
+mount wiring and the rendered desired input under `/etc/katl`; kubeadm and
+kubelet own the contents of projected `/etc/kubernetes`, the kube-system
+kubeadm/kubelet ConfigMaps, and kubelet runtime files under `/var/lib/kubelet`.
+The projected subtree persists across generation rollback. Rollback validation
+may verify that the mount exists, but it must not treat the contents as
+Katl-owned, replace them with older root/confext content, or sanitize partial
+kubeadm output.
 
 ## Deferred Work
 

@@ -68,7 +68,7 @@ Required top-level layout:
 /katlos/image.json
 /components/runtime/root.squashfs
 /components/boot/katl.efi
-/components/sysext/<name>.raw
+/components/sysext/katl-kube-<version>.sysext
 /components/metadata/
 ```
 
@@ -127,7 +127,8 @@ runtime-uki
   selected generation
 
 kubernetes-sysext
-  the Kubernetes sysext selected for the generation, including payload version,
+  a bundled Kubernetes sysext available for exact manifest selection, including
+  payload version,
   architecture, artifact version, source metadata, and supported runtime
   interfaces
 ```
@@ -137,13 +138,16 @@ architecture, runtime interface, root artifact digest, minimum root slot size,
 filesystem format, and any required root filesystem feature metadata.
 
 The Kubernetes sysext component metadata uses the same compatibility vocabulary
-as the sysext catalog and generation record: artifact version, payload version,
-Kubernetes minor, architecture, digest, size, source repo metadata, package
-versions when available, and supported runtime interfaces.
+as the generation record: artifact version, payload version, Kubernetes minor,
+architecture, digest, size, source repo metadata, package versions when
+available, and supported runtime interfaces.
 
-The index may include more than one Kubernetes sysext only when the image also
-contains explicit selection metadata. The initial implementation should build one
-selected Kubernetes sysext per install image.
+The index may include one or more exact-version Kubernetes sysext artifacts. A
+day-one install manifest requests an exact Kubernetes version such as `1.36.1`;
+Katl resolves that request only against bundled image components with matching
+payload version, for example `katl-kube-1.36.1.sysext`. Missing matches,
+duplicate matches, version ranges, and catalog references fail validation. A
+broader version catalog and compatibility matrix are day-2 update planning work.
 
 The first implementation should model images as complete generation payloads:
 install images and combined upgrade images carry all required roles. Partial
@@ -159,17 +163,24 @@ runtime generation on a node:
 ```text
 runtime root component
 runtime UKI or boot assets
-selected Kubernetes sysexts
+bundled Kubernetes sysext candidates for exact manifest-selected versions
 static metadata needed to write generation metadata and boot entries
 component digests and compatibility metadata
 ```
 
 Node-specific configuration remains outside the image. The install manifest,
 PXE/preseed input, USB/local handoff, or VM harness supplies identity, disk
-selection, network configuration, kubeadm config references, systemRole, and
-other supported day-one node configuration. Capability overlays are a day-2
-design item. Reusing the same install image for multiple nodes must not require
-rebuilding the image.
+selection, network configuration, kubeadm config references, systemRole, the
+exact Kubernetes payload version, and other supported day-one node
+configuration. Capability overlays are a day-2 design item. Reusing the same
+install image for multiple nodes must not require rebuilding the image.
+
+Generation 0 uses the runtime root, boot assets, baseline metadata, and baseline
+configuration needed to boot KatlOS. Bundled Kubernetes sysexts are available
+image components and generation 1 inputs; they are not generation 0 selected or
+active state. `katlctl cluster bootstrap` later asks `katlc` to create the first
+Kubernetes-capable generation and select the bundled Kubernetes sysext whose
+payload version exactly matches the manifest version.
 
 The installer material model therefore changes from:
 
@@ -180,8 +191,9 @@ install manifest -> runtimeRoot URL + UKI URL + sysext URLs
 to:
 
 ```text
-install manifest -> KatlOS install image URL/ref/digest
-KatlOS install image -> runtimeRoot + UKI + sysexts + component metadata
+install manifest -> KatlOS install image URL/ref/digest + Kubernetes version 1.36.1
+KatlOS install image -> generation 0 runtime payload + bundled Kubernetes sysext candidates
+katlctl cluster bootstrap -> generation 1 selects katl-kube-1.36.1.sysext
 ```
 
 ## Upgrade Image
@@ -219,6 +231,16 @@ how target kubeadm is made available before target kubelet activation. Splitting
 kubeadm into a separate tool component is an implementation option, not a
 current image contract.
 
+This is an explicit upgrade sequencing requirement, not an image-schema feature
+and not a kubeadm replacement. If the target Kubernetes sysext contains both
+`kubeadm` and `kubelet`, the upgrade path must provide a pre-kubelet gate: the
+target `kubeadm` binary must be available for the operator, test harness, or a
+future kubeadm-aware `katlctl` step before target `kubelet.service` is started or
+restarted from that same payload. The mechanism is intentionally deferred. Valid
+directions include service ordering, a held kubelet start condition, temporary
+target-kubeadm exposure, or a split kubeadm tool payload. The image contract only
+requires that the ordering be representable and testable.
+
 ## Node Configuration References
 
 PXE/preseed, USB/local handoff, and VM tests all use the same node configuration
@@ -255,9 +277,11 @@ load /katlos/image.json with unknown fields rejected
 validate apiVersion, kind, imageRole, architecture, and runtimeInterface
 verify each required component exists
 hash each component byte range from the mounted image and compare size/SHA-256
-validate runtime root, boot asset, sysext, and compatibility metadata as one set
+resolve the manifest Kubernetes version to exactly one bundled sysext component
+validate runtime root, boot asset, bundled sysext candidate, and compatibility
+  metadata as one set
 only then repartition, write root slots, install boot assets, and create the
-  generation record
+  generation 0 record
 ```
 
 Failure behavior:
@@ -269,6 +293,11 @@ missing image, unreadable image, or top-level digest mismatch
 invalid index, unknown required role, missing component, or component digest
   mismatch
   fail before mutating disks
+
+missing, duplicate, or malformed bundled sysext for the manifest Kubernetes
+  version
+  fail before generation 1 preparation; when detected during install-image
+  verification, fail before mutating disks
 
 architecture or runtime/sysext compatibility mismatch
   fail before mutating disks

@@ -23,14 +23,15 @@ KatlOS source
   -> mkosi builds generic installer/runtime/sysext artifacts
   -> artifacts are published by the user's chosen release process
   -> machines boot installer-image through user-managed boot infrastructure
-  -> katlos-install installs the runtime OS and seeds generation 0
-  -> users supply Katl YAML/configuration
-  -> katlc on KatlOS validates and compiles config into generations
-  -> katlc apply creates or stages runtime generations, including kubeadm-ready
-     host state
-  -> explicit kubeadm-aware operations bootstrap, join, or upgrade nodes
+  -> katlos-install installs KatlOS generation 0 with stored cluster intent
+  -> katlctl cluster bootstrap asks katlc to create the first
+     Kubernetes-capable generation from that intent
+  -> katlctl coordinates kubeadm bootstrap or join and commits the generation
+     after kubeadm and health checks succeed
+  -> later explicit kubeadm-aware operations upgrade, repair, or recover nodes
   -> KatlOS activates, stages, reports, or rolls back host generations
-  -> kubeadm and user-managed GitOps take over
+  -> after bootstrap, the user installs and owns cluster add-ons, GitOps, and
+     workloads
 ```
 
 GitHub Actions is a useful north-star publishing environment, but it is not an
@@ -59,7 +60,8 @@ User-owned surfaces:
 ```text
 DHCP, TFTP, PXE, iPXE, matchbox, or firmware boot order management
 end-user GitHub Actions workflows
-Kubernetes add-ons or cluster lifecycle after kubeadm handoff
+Kubernetes add-ons, GitOps, workloads, and ongoing cluster lifecycle after
+cluster bootstrap
 Kubernetes distribution packaging
 user-defined host accounts
 user-defined root disk partitioning or filesystems
@@ -98,8 +100,9 @@ katlos-install
 
 KatlOS runtime
   Installed Fedora-derived node runtime. It is a pared down Linux system for
-  systemd, SSH, container runtime, kubeadm, and kubelet. It is not a bespoke
-  distribution or a Talos-style appliance.
+  systemd, SSH, the container runtime, and Katl-owned wiring. Kubernetes tools
+  such as kubeadm and kubelet come from the selected Kubernetes sysext. It is not
+  a bespoke distribution or a Talos-style appliance.
 ```
 
 ## Installer Flow
@@ -113,7 +116,8 @@ The active installer flow is Katl-native:
 3. If no manifest is present, local handoff starts a token-protected HTTP
    endpoint and waits for exactly one install manifest.
 4. katlos-install validates the manifest before any destructive disk action.
-5. katlos-install verifies runtime artifacts and trust material.
+5. katlos-install verifies the KatlOS image, bundled Kubernetes sysext candidates,
+   and trust material.
 6. katlos-install partitions and formats the target root disk using Katl-owned
    policy.
 7. katlos-install writes the prebuilt runtime root artifact to root-a.
@@ -121,7 +125,8 @@ The active installer flow is Katl-native:
    generated confext, mount units, identity, SSH policy, and writable state.
 9. The node reboots from the installed disk.
 10. The runtime reaches a local Katl boot-complete target for generation 0 and
-    waits for runtime configuration apply or explicit post-install operations.
+    waits for an explicit `katlctl cluster bootstrap` operation or other
+    post-install host operations.
 ```
 
 The installer does not build Fedora packages on the target node. It consumes
@@ -134,12 +139,15 @@ and generated sysext/confext generations.
 
 Katl configuration is applied to nodes as Katl configuration. Users and external
 automation should not have to prebuild sysext/confext generation content for a
-node. On first install, `katlos-install` validates the manifest and bootstraps
-generation 0. After install, `katlc` receives trusted Katl
-YAML/configuration on KatlOS and locally compiles a new generation that contains
-generated confext and the selected sysext activation set. Sysext payloads are
-prebuilt artifacts; the node-local generation records which compatible sysexts
-are selected with the rendered confext.
+node. On first install, `katlos-install` validates the manifest, bootstraps
+generation 0, and stores cluster intent without activating Kubernetes. The first
+Kubernetes-capable generation is created later when `katlctl cluster bootstrap`
+asks `katlc` to validate that stored intent, select the exact bundled Kubernetes
+sysext requested by the manifest, and render the generated confext needed for
+kubeadm. Later host configuration changes can use normal `katlc` generation
+apply or stage flows. Sysext payloads are prebuilt artifacts; the node-local
+generation records which compatible sysexts are selected with the rendered
+confext.
 
 `katlc` and KatlOS runtime services must fail closed. Unknown domains,
 unsupported fields, unsupported sysext selections, unsupported apply modes, and
@@ -152,14 +160,15 @@ Users supply:
 target root disk selector
 destructive install authorization
 node identity inputs such as hostname and SSH public keys
-artifact references and digests
+KatlOS image reference and digest
+exact Kubernetes payload version, such as 1.36.1
 extra non-root data disk requests
 ```
 
 The current install manifest should stay minimal: hostname, `katl` SSH
-authorized keys, target root disk, destructive install guard, runtime artifacts,
-optional sysext artifacts, and extra non-root data disks. Extra disks remain in
-scope because they exercise real install/runtime disk handling.
+authorized keys, target root disk, destructive install guard, one KatlOS image
+reference, exact Kubernetes payload version, and extra non-root data disks. Extra
+disks remain in scope because they exercise real install/runtime disk handling.
 
 Users do not supply:
 
@@ -205,10 +214,12 @@ before becoming part of the user-facing configuration API.
 
 Kubeadm configuration is intentionally a thin reference to native kubeadm files,
 not YAML embedded as a string and not an init/join action. Node configuration
-selects a named kubeadm config, Katl validates and renders it under
-`/etc/katl/kubeadm/`. `katlc apply` creates or updates kubeadm-ready host state,
-and explicit operations decide when to run `kubeadm init`, run `kubeadm join`,
-or run later kubeadm upgrade commands.
+selects a named kubeadm config. During `katlctl cluster bootstrap`, `katlc`
+validates the stored intent and renders the selected kubeadm input under
+`/etc/katl/kubeadm/` as part of the first Kubernetes-capable candidate
+generation. Later `katlc` generation apply or stage flows can update desired
+kubeadm input, but explicit kubeadm-aware operations decide when to run
+`kubeadm init`, `kubeadm join`, or later kubeadm upgrade commands.
 
 ## Rejected Configuration Bootstrap
 
@@ -251,23 +262,26 @@ add-ons, Helm, Flux, Cilium, CoreDNS, Rook, and application workloads are outsid
 the runtime base. The Kubernetes sysext is versioned independently from the
 KatlOS runtime root. KatlOS upgrades should be able to keep the current
 Kubernetes sysext, and Kubernetes upgrades should be able to keep the current
-KatlOS root, when the selected artifacts are compatible.
+KatlOS root, when the selected artifacts are compatible. Day-one install records
+an exact manifest version such as `1.36.1` as cluster intent. Cluster bootstrap
+selects the matching bundled sysext for generation 1; broader compatibility
+matrices and remote catalog resolution are day-2 update planning concerns.
 
 After the installer UKI and installed runtime boot path works, the next local
-step is an initial `katlc apply` that creates the kubeadm-ready generation. That
-means the base runtime has containerd and the host plumbing kubeadm expects, a
-Kubernetes sysext supplies `kubeadm`, `kubelet`, `kubectl`, and tightly related
-binaries, generated config places kubeadm input under `/etc/katl`, and writable
-kubeadm output is projected at `/etc/kubernetes`.
+step is `katlctl cluster bootstrap`. That operation asks `katlc` to validate
+stored intent, create and activate the first Kubernetes-capable candidate
+generation, select the manifest-requested Kubernetes sysext, render kubeadm input
+under `/etc/katl`, project writable kubeadm output at `/etc/kubernetes`, run
+kubeadm, and commit the generation only after kubeadm and local health checks
+succeed.
 
-The first proof should stay local: build or inspect the sysext artifact, boot
-generation 0 in the VM runner, run initial `katlc apply` to activate the
-Kubernetes sysext and generated config, reach `katl-kubeadm-ready.target`, and
-run a bounded kubeadm preflight or dry-run check that proves the node is
-prepared for `kubeadm init`. CI-built downloadable artifacts are a later
-publishing concern, not a blocker for this local loop. Artifact compatibility
-metadata, not matching product versions, decides whether a runtime root and
-Kubernetes sysext can be selected together.
+The first proof should stay local: build or inspect the bundled sysext artifact,
+boot generation 0 in the VM runner, run `katlctl cluster bootstrap`, verify that
+generation 1 activates the manifest-selected Kubernetes sysext and generated
+config, and prove kubeadm can initialize the control plane. CI-built downloadable
+artifacts are a later publishing concern, not a blocker for this local loop.
+Artifact compatibility metadata, not matching product versions, decides whether
+a runtime root and Kubernetes sysext can be selected together.
 
 ## Host Users And SSH
 
@@ -442,14 +456,16 @@ boot/install loop works.
 The next step after that loop is still local and test-driven:
 
 ```text
-build a Kubernetes sysext with kubeadm, kubelet, kubectl, and related binaries
-boot generation 0 and run initial katlc apply
-activate the sysext as part of the kubeadm-ready generation
+build a bundled Kubernetes sysext such as katl-kube-1.36.1.sysext
+boot generation 0
+run katlctl cluster bootstrap
+ask katlc to create and activate generation 1 with the manifest-selected sysext
 render kubeadm input under /etc/katl from known Katl config domains
 project writable /etc/kubernetes from /var
 start containerd and expose kubelet with Katl-controlled ordering
-reach katl-kubeadm-ready.target in the VM runner
-run a bounded kubeadm preflight or dry-run check for kubeadm init readiness
+reach katl-kubeadm-ready.target before kubeadm runs
+run kubeadm init or join
+commit generation 1 only after kubeadm and health checks succeed
 ```
 
 ## Focused Design Documents

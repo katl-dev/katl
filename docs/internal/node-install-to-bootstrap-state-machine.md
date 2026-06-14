@@ -3,10 +3,10 @@
 Status: current decision.
 
 This document defines how a node moves from installer boot to the installed
-runtime handoff, then through the first post-install configuration apply that
-creates the kubeadm-ready generation. It covers both network/PXE-style install
-with input supplied up front and USB/local-handoff install where an operator
-supplies input after the installer boots.
+runtime handoff, then waits for the explicit cluster bootstrap operation that
+creates the first Kubernetes-capable generation and runs kubeadm. It covers both
+network/PXE-style install with input supplied up front and USB/local-handoff
+install where an operator supplies input after the installer boots.
 
 Both paths converge on one `ValidatedInstallRequest` before any destructive disk
 mutation. The request references one KatlOS install image payload plus
@@ -34,12 +34,14 @@ ValidatedInstallRequest
   node identity and node configuration
   install policy, including destructive install guard and target disk selector
   systemRole
+  exact Kubernetes payload version, such as 1.36.1
   kubeadm config refs, not kubeadm actions
   one katlosImage reference with digest and expected metadata
 ```
 
-`systemRole` is installed as node intent for later cluster bootstrap. It does
-not cause `kubeadm init` or `kubeadm join` during node install.
+`systemRole`, the requested Kubernetes version, and kubeadm config refs are
+installed as cluster intent for later bootstrap. They do not activate Kubernetes
+binaries and do not cause `kubeadm init` or `kubeadm join` during node install.
 
 ## Installer States
 
@@ -66,7 +68,8 @@ ValidateInput
 VerifyKatlOSImage
   fetch or locate the KatlOS image, verify top-level digest, mount read-only,
   verify embedded index and component digests, and validate architecture and
-  runtime/sysext compatibility
+  runtime/sysext compatibility; verify the manifest Kubernetes version resolves
+  to exactly one bundled sysext candidate without activating it for generation 0
 
 PlanInstall
   collect hardware facts, resolve target disk selectors, build a typed install
@@ -81,9 +84,9 @@ PrepareTarget
   filesystems, and mount the target
 
 InstallGeneration0
-  write the runtime root slot, install boot assets, stage sysexts, materialize
-  baseline generated confext, write mount units, write seed data, and create
-  generation 0 metadata
+  write the runtime root slot, install boot assets, cache verified image
+  components, materialize baseline generated confext, write mount units, write
+  seed data, persist cluster intent, and create generation 0 metadata
 
 WriteInstallRecord
   persist the request, selected image metadata, hardware facts, plan, generation
@@ -112,38 +115,45 @@ ActivateGeneration
 
 InstalledRuntimeReady
   reach local runtime health with writable state, operator access, katlc, and
-  systemd operation wiring available; this generation 0 handoff does not require
-  /etc/kubernetes projection, containerd running, kubelet availability, or
-  katl-kubeadm-ready.target
+  systemd operation wiring available; this generation 0 handoff does not activate
+  Kubernetes binaries, require /etc/kubernetes projection, containerd running,
+  kubelet availability, or katl-kubeadm-ready.target
 
-WaitingForInitialNodeConfigApply
-  terminal install handoff state for the node; katlc or an operator-driven
-  katlctl workflow may now run katlc apply with node configuration
+WaitingForClusterBootstrap
+  terminal install handoff state for the node; operator-run katlctl cluster
+  bootstrap may now ask katlc to validate stored intent, create the first
+  Kubernetes-capable candidate generation, and run the appropriate kubeadm
+  workflow
 ```
 
-The initial node configuration apply creates the kubeadm-ready generation:
+Cluster bootstrap creates the first Kubernetes-capable generation and then runs
+kubeadm:
 
 ```text
-katlc apply <node configuration>
-  select the Kubernetes sysext for the next generation
+katlctl cluster bootstrap
+  ask katlc to validate stored cluster intent
+  select the bundled Kubernetes sysext whose payload version exactly matches the
+  install manifest version
   render kubeadm config refs under /etc/katl
   project /etc/kubernetes from writable state
   ensure containerd prerequisites, kubelet service wiring, and systemRole
   metadata
-  create and activate generation 1
+  create and activate generation 1 as a candidate
 
 KubeadmReady
   reach katl-kubeadm-ready.target after local prerequisites are active
 
-WaitingForClusterBootstrap
-  terminal handoff state for the node; operator-run katlctl cluster bootstrap
-  may now record a BootstrapCluster attempt for the init node or a JoinCluster
-  attempt for joining nodes based on cluster inventory and systemRole
+KubeadmOperation
+  record a BootstrapCluster attempt for the init node or a JoinCluster attempt
+  for joining nodes based on cluster inventory and systemRole
+  run kubeadm init or kubeadm join
+  run local post-kubeadm health checks
+  commit generation 1 only after kubeadm and health checks succeed
 ```
 
-Neither the install path nor initial `katlc apply` runs kubeadm init, kubeadm
-join, CNI installation, or cluster lifecycle actions. Those are explicit
-operations after `katl-kubeadm-ready.target`.
+The install path never runs kubeadm init, kubeadm join, CNI installation, or
+cluster lifecycle actions. Cluster bootstrap is the explicit operation that both
+creates the first Kubernetes-capable generation and runs kubeadm.
 
 ## Durable Checkpoints
 
@@ -329,21 +339,21 @@ Runtime terminal states:
 
 ```text
 installed-runtime-ready
-waiting-for-initial-node-config-apply
-kubeadm-ready
 waiting-for-cluster-bootstrap
+cluster-bootstrap-complete
 runtime-booted-not-ready
 runtime-failed-needs-repair
 ```
 
-`waiting-for-initial-node-config-apply` is success for node installation. It
-means the node is installed, generation 0 reached local runtime health, and the
-node can accept an initial `katlc apply`.
+`waiting-for-cluster-bootstrap` is success for node installation. It means the
+node is installed, generation 0 reached local runtime health, stored cluster
+intent is available, and the node can accept an explicit `katlctl cluster
+bootstrap` operation. It also means Kubernetes binaries are not active and
+kubeadm has not run.
 
-`waiting-for-cluster-bootstrap` is success for the initial node configuration
-apply. It means the node has reached `katl-kubeadm-ready.target` and is ready for
-the bounded operator-run cluster bootstrap CLI. It also means neither node
-install nor initial `katlc apply` has run `kubeadm init` or `kubeadm join`.
+`cluster-bootstrap-complete` means the bootstrap or join operation created and
+committed the first Kubernetes-capable generation after kubeadm and local health
+checks succeeded.
 
 ## Tests And Follow-Up Work
 

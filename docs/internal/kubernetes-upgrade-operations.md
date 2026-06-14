@@ -215,17 +215,19 @@ artifacts. Katl must not treat them as its own rollback database.
 
 ## Failure And Rollback
 
-Katl distinguishes host rollback from Kubernetes cluster-state rollback.
+Katl distinguishes host rollback from kubeadm-mutated node or cluster-state
+rollback. The generic host rollback boundary is defined in
+`docs/internal/rollback-selection-rules.md`.
 
 Before kubeadm mutates cluster state, a failed candidate can be abandoned like
 any other failed host generation. Katl returns the node to the previous
 known-good generation and reports the rejected or failed operation.
 
-After kubeadm mutates cluster state, host rollback cannot promise to undo the
-Kubernetes upgrade. Kubeadm may roll back some control-plane changes when an
+After kubeadm mutates node or cluster state, host rollback cannot promise to undo
+the Kubernetes upgrade. Kubeadm may roll back some control-plane changes when an
 upgrade fails, and kubeadm upgrade operations are intended to be rerunnable, but
 Katl must not claim that selecting the previous sysext generation restores the
-previous Kubernetes cluster state.
+previous Kubernetes node or cluster state.
 
 Failure handling after kubeadm mutation should be:
 
@@ -238,18 +240,18 @@ report whether host generation rollback was performed
 report that Kubernetes state may require kubeadm-aware repair
 ```
 
-If kubeadm has already mutated cluster state but target kubelet has not yet been
-activated, rollback still selects a complete previous host generation. The
-operation status must report that Kubernetes state may now expect the target
+If kubeadm has already mutated node or cluster state but target kubelet has not
+yet been activated, rollback still selects a complete previous host generation.
+The operation status must report that Kubernetes state may now expect the target
 version and that target-version kubeadm repair access may still be required.
 Rollback must not preserve the target sysext as a hidden repair tool. Any
 target-version kubeadm access after rollback remains operation-scoped and must be
 visible in diagnostics.
 
 If host boot fails after staging or after kubelet restart, normal Katl rollback
-selects the previous known-good generation as defined by the generation
-metadata model. The operation status must still report whether kubeadm already
-mutated cluster state before the host rollback occurred.
+selects the previous known-good generation as defined by the generation metadata
+model. The operation status must still report whether kubeadm already mutated
+node or cluster state before the host rollback occurred.
 
 Rollback must never independently switch only the root slot, sysext, or confext.
 Host rollback selects a complete previous generation. Kubernetes state repair is

@@ -75,11 +75,33 @@ repair tooling exists.
 If the rollback target fails to boot, Katl must report rollback failure rather
 than marking the abandoned generation as repaired.
 
-## Rollback And Repair Boundary
+## Rollback And Kubeadm Mutation Boundary
 
-Rollback is host generation selection, not repair. It must not run kubeadm,
-remove etcd members, rewrite `/etc/kubernetes`, replace install input, or clean
-partial bootstrap state.
+Rollback is host generation selection, not repair. It is allowed to select a
+previous known-good generation, restore the root slot, UKI, kernel command line,
+sysext activation set, confext activation set, and regenerate `/run` activation
+links from that generation record.
+
+Rollback must not:
+
+```text
+run kubeadm or kubectl
+edit, replace, sanitize, or delete /etc/kubernetes
+edit, replace, sanitize, or delete /var/lib/kubelet
+restore, rewrite, delete, or reinterpret /var/lib/etcd
+remove or replace etcd members
+restore an etcd snapshot
+mutate Kubernetes API objects
+replace install input
+clean partial bootstrap, join, upgrade, or repair state
+```
+
+After kubeadm has mutated node or cluster state, host rollback may make the node
+bootable again, but it must not report Kubernetes state repaired. The associated
+operation record must keep `recoveryRequired` until an explicit kubeadm-aware or
+etcd-aware repair operation succeeds. Mutation scopes should be recorded with
+names such as `etc-kubernetes`, `kubelet-state`, `etcd-state`, and
+`cluster-objects`.
 
 When rollback cannot select a previous known-good generation, Katl reports
 recovery-required and records diagnostics for a deferred recovery operation. It

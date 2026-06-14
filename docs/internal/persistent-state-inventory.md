@@ -37,14 +37,31 @@ own kubeadm output, SSH host keys, or machine identity.
 | `/etc/hostname` | Katl config/confext | Generated node config | Generated confext; change through a new configuration generation |
 | `/etc/systemd/network/*.network` | Katl config/confext, systemd-networkd | Generated network config | Generated confext; change through a new configuration generation |
 | `/etc/katl/*` | Katl config/confext | Generated Katl and kubeadm input config | Generated confext; kubeadm output stays elsewhere |
-| `/etc/kubernetes` | kubeadm, kubelet, Kubernetes static pods | Mutable PKI, kubeconfigs, manifests, bootstrap output | Project from `/var/lib/katl/kubernetes/etc-kubernetes` |
-| `/var/lib/katl/kubernetes/etc-kubernetes` | kubeadm, kubelet | Persistent backing store for `/etc/kubernetes` | Native `/var`; bind-mounted to `/etc/kubernetes` before kubelet/kubeadm automation |
-| `/var/lib/kubelet` | kubelet | Mutable pod state, plugin state, checkpoints, local node state | Native `/var`; persistent across root updates |
+| `/etc/kubernetes` | kubeadm, kubelet | Mutable kubeadm output, PKI, kubeconfigs, and static pod manifests | Project from `/var/lib/katl/kubernetes/etc-kubernetes`; Katl owns the projection, not the contents |
+| `/var/lib/katl/kubernetes/etc-kubernetes` | kubeadm, kubelet | Persistent backing store for kubeadm-owned `/etc/kubernetes` | Native `/var`; bind-mounted to `/etc/kubernetes` before kubelet/kubeadm automation |
+| `/var/lib/kubelet` | kubelet, with kubeadm-written bootstrap/config files | Mutable pod state, plugin state, checkpoints, kubelet config, and `kubeadm-flags.env` | Native `/var`; persistent across root updates |
 | `/var/lib/containerd` | containerd, kubelet | Mutable image/content/snapshot/container state | Native `/var`; persistent across root updates |
 | `/var/lib/etcd` | etcd static pod, kubeadm | Mutable control-plane database | Native `/var` by default or optional dedicated partition mounted at `/var/lib/etcd` |
 | `/var/log/journal` | systemd-journald | Optional persistent logs | Native `/var`; may be absent when persistent journald is disabled |
 | `/run` | systemd, Katl runtime selector, services | Ephemeral boot state only | Never persistent; regenerate selected extension activation links each boot |
 | `/tmp` | applications | Ephemeral | Never persistent |
+
+Katl-rendered kubeadm/kubelet input under `/etc/katl` may drift from these live
+paths after bootstrap, join, upgrade, or manual kubeadm repair. That drift is not
+a Katl confext ownership conflict. Katl may report it, but only explicit
+kubeadm-aware operations may mutate the live files or kube-system ConfigMaps.
+
+## Rollback Boundary For Persistent Kubernetes State
+
+Persistent Kubernetes state is mounted or native writable state, not selected by
+generation metadata. `/etc/kubernetes`, its backing path,
+`/var/lib/kubelet`, `/var/lib/etcd`, and Kubernetes API objects survive host
+generation rollback.
+
+Generation rollback changes host artifacts around that state: root, UKI, kernel
+command line, sysext activation set, and confext activation set. It does not
+rewind kubeadm output, kubelet runtime files, etcd contents, etcd member records,
+or cluster API objects.
 
 ## Service Ordering Implications
 

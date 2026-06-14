@@ -72,16 +72,29 @@ healthState: unknown
 ```
 
 Runtime health completion later marks generation 0 good. Generation 0 must boot
-the installed runtime, mount writable state, expose operator access, and provide
-the Katl/systemd wiring needed to accept `katlc apply` requests and later
-node-local operations. It is not required to be kubeadm-ready and does not run
+the installed runtime, mount writable state, expose operator access, store the
+user-supplied cluster intent from the install manifest, and provide the
+Katl/systemd wiring needed to accept later node-local operations. It is not
+Kubernetes-capable, does not activate Kubernetes binaries, and does not run
 `kubeadm init` or `kubeadm join`.
 
-The first post-install runtime configuration apply is an initial `katlc apply`.
-It creates a later generation, commonly described as generation 1, that selects
-the Kubernetes sysext, rendered kubeadm-ready configuration, kubelet/containerd
-wiring, and `/etc/kubernetes` projection. This is normal generation creation and
-activation, not a special Kubernetes operation.
+Generation 0 metadata must not list a Kubernetes sysext unless that sysext is
+actually selected and active for generation 0, which is not the day-one model.
+Bundled Kubernetes sysexts from the verified KatlOS image are install artifacts
+or later generation inputs, not generation 0 selected host state.
+
+The explicit cluster bootstrap or join operation asks `katlc` to validate the
+stored intent and create a later generation, commonly described as generation 1.
+That candidate generation selects the Kubernetes sysext, rendered kubeadm-ready
+configuration, kubelet/containerd wiring, and `/etc/kubernetes` projection.
+
+For first bootstrap or join, generation 1 selects the bundled Kubernetes sysext
+whose payload version exactly matches the install manifest, for example manifest
+version `1.36.1` selecting `katl-kube-1.36.1.sysext`. The generation 1 record
+stores the selected sysext path, activation path, digest, artifact version,
+payload version, architecture, and compatibility metadata. It remains a candidate
+or deferred-health generation until kubeadm succeeds and local health checks
+pass; only then can it be committed.
 
 The first install path does not need inactive-slot rollback because there is no
 previous installed generation.

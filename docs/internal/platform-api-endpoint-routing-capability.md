@@ -38,8 +38,8 @@ Endpoint roles are separate:
 
 ```text
 bootstrap API reachability
-  the path used by katlctl and early manifests after kubeadm init, before
-  Cilium is installed; this path must already be reachable
+  the path used by katlctl after kubeadm init and while coordinating joins; this
+  path must already be reachable before cluster add-ons are user-installed
 
 stable API identity
   the kubeadm controlPlaneEndpoint used for certificate SANs, kubeconfig output,
@@ -143,7 +143,7 @@ Route ownership is phase-specific:
 ```text
 API VIP routes
   platform or host owned before Cilium; used to make controlPlaneEndpoint
-  reachable before user manifests apply
+  reachable before kubeadm, joins, or initial kubeconfig output need it
 
 Cilium service or workload VIP routes
   Kubernetes and Cilium owned after Cilium is healthy
@@ -257,8 +257,8 @@ Katl helper to Cilium advertisement
   post-Cilium routes after Cilium readiness
 
 Cilium-only workaround to platform helper
-  add helper first, switch pre-manifest waits to platform provenance, then keep
-  or remove post-Cilium API advertisement intentionally
+  add helper first, switch bootstrap endpoint waits to platform provenance, then
+  keep or remove post-Cilium API advertisement intentionally
 ```
 
 Katl must distinguish pre-Cilium platform API reachability from post-Cilium API

@@ -29,7 +29,8 @@ sshd started when enabled
 katlc and systemd operation wiring available
 ```
 
-Kubeadm-ready profile, after `katlc apply` creates the kubeadm-ready generation:
+Kubeadm-ready profile, after the bootstrap or join operation asks `katlc` to
+create and activate the Kubernetes-capable candidate generation:
 
 ```text
 selected Kubernetes sysext active
@@ -42,6 +43,10 @@ kubelet installed and ordered for kubeadm use
 The first implementation can keep the target conservative and local. It does
 not need to prove full Kubernetes control-plane convergence before marking the
 OS generation good.
+
+For the first Kubernetes-capable generation, local kubeadm-ready health is not
+enough to commit the generation. The bootstrap or join operation commits the
+candidate only after kubeadm succeeds and post-kubeadm health checks pass.
 
 Kubelet is only started before boot health when the selected generation
 explicitly enables that policy.

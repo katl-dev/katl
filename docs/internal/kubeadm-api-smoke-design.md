@@ -2,20 +2,24 @@
 
 Status: working design.
 
-This document defines the first post `katl-kubeadm-ready.target` VM proof. The
-goal is to run `kubeadm init` inside an installed Katl runtime, persist
-kubeadm-owned output, start the kube-apiserver static pod, and prove the
-Kubernetes API server responds to `kubectl`.
+This document defines the first single-node bootstrap VM proof. The goal is to
+boot generation 0, run `katlctl cluster bootstrap`, have that operation ask
+`katlc` to create the first Kubernetes-capable candidate generation, run
+`kubeadm init`, persist kubeadm-owned output, start the kube-apiserver static
+pod, and prove the Kubernetes API server responds to `kubectl`.
 
 This is a test and readiness proof, not a product expansion. Katl prepares
-kubeadm-ready nodes. The test harness may apply bounded fixtures to prove that
-handoff works, but Katl must not become a Kubernetes distribution or own
+kubeadm-ready candidate generations during explicit bootstrap operations. The
+test harness may apply bounded fixtures to prove that handoff works, but Katl
+must not become a Kubernetes distribution or own
 production cluster lifecycle, CNI, DNS, ingress, storage, GitOps, or workload
 add-ons.
 
 ## Proof Boundary
 
-The smoke starts after the installed runtime reaches the kubeadm-ready handoff:
+The smoke starts after the installed runtime reaches generation 0 installed
+health and the bootstrap operation has asked `katlc` to activate the
+kubeadm-ready candidate generation:
 
 ```text
 runtime OS booted from installed disk
@@ -35,6 +39,7 @@ kubeadm output persists under projected /etc/kubernetes
 control-plane static pod manifests exist
 the kube-apiserver static pod is running
 kubectl can query the API server readyz endpoint with admin.conf
+generation 1 is committed after kubeadm and health checks succeed
 ```
 
 The smoke does not require a schedulable node, CoreDNS, kube-proxy, a CNI
@@ -198,20 +203,26 @@ surface.
 
 The implementation should grow in small gates:
 
-1. Boot the installed runtime and wait for `katl-kubeadm-ready.target`.
-2. Verify `/etc/kubernetes` is a mount point backed by
+1. Boot the installed runtime and wait for generation 0 installed-runtime health.
+2. Run `katlctl cluster bootstrap` for the single-node test cluster.
+3. Verify the bootstrap operation asks `katlc` to create and activate generation
+   1 as a Kubernetes-capable candidate.
+4. Wait for `katl-kubeadm-ready.target` before kubeadm runs.
+5. Verify `/etc/kubernetes` is a mount point backed by
    `/var/lib/katl/kubernetes/etc-kubernetes`.
-3. Verify `/etc/kubernetes` starts empty except for mount placeholders.
-4. Verify `containerd.service` is active and `crictl info` can reach the CRI.
-5. Verify `kubeadm`, `kubelet`, `kubectl`, and `crictl` resolve from the
+6. Verify `/etc/kubernetes` starts empty except for mount placeholders.
+7. Verify `containerd.service` is active and `crictl info` can reach the CRI.
+8. Verify `kubeadm`, `kubelet`, `kubectl`, and `crictl` resolve from the
    selected Kubernetes sysext.
-6. Render or install `/etc/katl/kubeadm/control-plane/config.yaml` for the test
+9. Verify `/etc/katl/kubeadm/control-plane/config.yaml` was rendered for the test
    VM.
-7. Run `kubeadm init` with add-on phases skipped.
-8. Assert kubeadm output appeared under `/etc/kubernetes`.
-9. Assert the control-plane static pod manifests exist.
-10. Wait for the kube-apiserver container to be running.
-11. Run `kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz`.
+10. Run `kubeadm init` with add-on phases skipped through the bootstrap
+    operation.
+11. Assert kubeadm output appeared under `/etc/kubernetes`.
+12. Assert the control-plane static pod manifests exist.
+13. Wait for the kube-apiserver container to be running.
+14. Run `kubectl --kubeconfig /etc/kubernetes/admin.conf get --raw=/readyz`.
+15. Commit generation 1 only after kubeadm and health checks succeed.
 
 Guest-side `kubectl` is the first required assertion because it avoids host
 networking and certificate rewriting. Host-side `kubectl` can be added later by
@@ -337,7 +348,8 @@ required diagnostics cannot be collected after failure
 Timeouts should be explicit in the test output. A first reasonable budget is:
 
 ```text
-installed runtime to kubeadm-ready: existing boot smoke budget
+generation 0 boot to installed-runtime health: existing boot smoke budget
+bootstrap candidate activation to kubeadm-ready: 2 minutes
 kubeadm init command: 5 minutes
 API livez after kubeadm init: 3 minutes
 API readyz after livez: 5 minutes
