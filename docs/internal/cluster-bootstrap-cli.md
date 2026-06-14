@@ -81,6 +81,89 @@ objects, and, for control-plane joins, etcd membership. Host rollback after a
 failed bootstrap or join does not clean this partial state; retry must inspect
 actual kubeadm and Kubernetes state.
 
+Each node-local attempt must also record:
+
+```text
+candidateGenerationID
+activationMode: live
+activationState: pending | activating | active-live | failed | rolled-back
+generationCommitState: candidate | committed | abandoned
+postKubeadmHealthState: not-run | running | passed | failed
+bootHealthPending: true | false
+preExecMutationMarkers[]
+systemdInvocationID
+resourceLocks[] including kubeadm-state.lock
+```
+
+When kubeadm and post-kubeadm operation checks succeed, the operation commits
+the generation by setting `commitState: committed`, but leaves boot health
+pending until a later boot reaches `katl-boot-complete.target`.
+
+Bootstrap and join records use the shared operation evidence model. Required
+`BootstrapCluster` evidence includes:
+
+```text
+nodeIdentity:
+  inventoryNodeName
+  hostStaticHostname
+  kubeadmNodeRegistrationName
+  observedAPINodeName
+  observedAPINodeUID
+kubeadmEvidence:
+  subcommand: init
+  currentPhase
+  completedPhases[]
+  firstMutationPhase
+  rendered InitConfiguration/ClusterConfiguration digest
+mutationScopes:
+  etc-kubernetes
+  kubelet-state
+  etcd-state
+  cluster-objects
+apiEvidence:
+  before init
+  after init
+  after stable endpoint verification, when requested
+staticPodManifestEvidence:
+  kube-apiserver
+  kube-controller-manager
+  kube-scheduler
+  etcd
+etcdMemberEvidence:
+  local member ID after init
+  member list after init
+joinMaterialEvidence:
+  bootstrap token present, expiry, usage, redacted fingerprint only
+  certificate key present, expiry, upload-certs phase observed
+```
+
+Required `JoinCluster` evidence includes:
+
+```text
+joinRole: worker | control-plane
+nodeIdentity:
+  inventory node name, host name, kubeadm registration name, and API node
+  name/UID when observed
+kubeadmEvidence:
+  subcommand: join
+  currentPhase
+  completedPhases[]
+  firstMutationPhase
+apiEvidence:
+  endpoint used before join and after join
+  node object before and after join when API is reachable
+staticPodManifestEvidence:
+  control-plane joins: before and after static pod manifest state
+  worker joins: not-applicable; any manifest is a diagnostic anomaly
+etcdMemberEvidence:
+  control-plane joins: member list before and after, added member ID, and local
+  member ID
+  worker joins: not-applicable
+joinMaterialEvidence:
+  bootstrap/discovery tokens redacted
+  certificate key redacted for control-plane joins
+```
+
 ## Input Model
 
 Bootstrap input describes installed nodes, not install-time desired state. Each
@@ -341,6 +424,12 @@ It must inspect `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd` where
 applicable, and Kubernetes API state before deciding whether to skip, rerun, or
 require repair.
 
+Retry is operator-triggered through an explicit `katlctl cluster bootstrap`
+rerun or repair command. Boot-time operation reconciliation only classifies
+node-local attempts and records diagnostics. It must not automatically rerun
+`kubeadm init`, rerun `kubeadm join`, refresh expired join material, or continue
+coordinator ordering after power loss.
+
 ## Failure Diagnostics
 
 On failure, collect redacted diagnostics:
@@ -360,6 +449,13 @@ run record with init node, addresses, roles, phases, and artifact versions
 Diagnostics should identify what to retry and what must be repaired manually.
 They must not print tokens, certificate keys, kubeconfig private data, or secret
 material in normal output.
+
+Redaction applies before data enters normal operation records, including argv,
+environment, stdout/stderr, rendered temporary join configs, kubeconfigs, and
+diagnostic artifacts. Katl must never store raw bootstrap tokens, discovery
+tokens, certificate keys, kubeconfig private keys, bearer tokens, or client
+certificate/key data in normal records. Store only presence, expiry/source
+metadata, and optional HMAC fingerprints for correlation.
 
 ## Post-Bootstrap User Ownership
 

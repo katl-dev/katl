@@ -3,8 +3,8 @@
 Status: current decision.
 
 This decision defines how Katl uses `systemd-sysupdate` for KatlOS runtime
-updates while keeping Katl generation metadata authoritative for the complete
-bootable runtime state.
+updates while keeping Katl generation spec, status, and boot selection state
+authoritative for the complete bootable runtime state.
 
 Primary local references for this decision are `systemd-sysupdate(8)`,
 `sysupdate.d(5)`, `systemd-boot(7)`, `bootctl(1)`,
@@ -21,7 +21,7 @@ Katl owns:
 
 ```text
 KatlOS image verification and component compatibility checks
-generation metadata creation
+generation spec/status creation
 root, UKI, sysext, and confext selection as one generation
 boot health promotion and rollback selection
 node configuration validation and generated confext rendering
@@ -96,7 +96,7 @@ Optional verity support adds one earlier transfer:
 
 When verity is used, the UKI or loader entry must carry the selected root
 identity and verity metadata needed to boot the exact root and verity pair. The
-Katl generation record stores those fields with the root artifact digest.
+Katl generation spec stores those fields with the root artifact digest.
 
 ## Versions And Slots
 
@@ -122,9 +122,10 @@ rollback policy, or use more tries only after VM tests cover repeated failed
 boots.
 
 Boot counting renames the booted UKI after a successful boot. Katl generation
-metadata should record the canonical final UKI path and, while a generation is
-`trying`, enough trial boot path state to find the `+@l-@d` filename. The
-sysupdate filename is not the generation identity.
+spec should record the canonical final UKI path. Mutable trial boot path state,
+including boot-counted `+@l-@d` filenames, belongs in
+`/var/lib/katl/boot/selection.json` while a generation is trying. The sysupdate
+version and boot-counted filename are not the generation identity.
 
 ## Single KatlOS Image Publication
 
@@ -176,15 +177,17 @@ Sysupdate's newest installed version is not the Katl source of truth. A Katl
 candidate is complete only after Katl writes:
 
 ```text
-/var/lib/katl/generations/<generation-id>/metadata.json
+/var/lib/katl/generations/<generation-id>/spec.json
+/var/lib/katl/generations/<generation-id>/status.json
 ```
 
-The generation record stores the selected root slot, root partition identity,
+The generation spec stores the selected root slot, root partition identity,
 runtime artifact digest, UKI path, sysext set, generated confext set, kernel
-command line, previous generation, boot state, and health state. A sysupdate
-transfer result is only an input to that record.
+command line, and previous generation. Generation status stores `commitState`,
+`bootState`, and `healthState` bound to the spec by `specDigest`. A sysupdate
+transfer result is only an input to those records.
 
-Rollback selects a generation record, not a sysupdate version. Rolling back
+Rollback selects a generation spec, not a sysupdate version. Rolling back
 must restore:
 
 ```text
@@ -197,7 +200,7 @@ systemd-confext activation set
 
 Katl must not ask sysupdate to independently update Kubernetes sysexts or
 generated confexts as part of the first host runtime target. Sysexts and
-confexts may eventually get their own transport, but Katl generation metadata
+confexts may eventually get their own transport, but Katl generation spec/status
 must still select their activation with the root and UKI as one validated set.
 
 ## Boot Health And Activation
@@ -217,15 +220,18 @@ order is: transfer resources, write candidate metadata, arm bounded boot
 selection, boot candidate, reach `katl-boot-complete.target`, mark
 `good/healthy`, then make the candidate the persistent default.
 
-After health passes, Katl updates the generation record to:
+After health passes, Katl updates generation status to:
 
 ```text
 bootState: good
 healthState: healthy
 ```
 
-Only then may the candidate become the persistent default and the previous
-healthy generation be marked superseded.
+Only `status.json` is updated by health promotion. Only then may the candidate
+become the persistent default in boot selection state and the previous healthy
+generation be marked `commitState: superseded`. Making a candidate the
+persistent default is bootloader and boot-selection state, not mutation of
+generation selection fields.
 
 If boot health fails, Katl marks the candidate failed/unhealthy and selects the
 previous known-good generation. Sysupdate may later vacuum obsolete transferred
@@ -246,7 +252,7 @@ CNI readiness
 cluster workload convergence
 multi-node rollout ordering
 rollback target selection
-generation metadata mutation
+generation status mutation
 secrets, bootstrap tokens, or node identity
 ```
 
@@ -273,9 +279,10 @@ local/offline flow that mounts the verified KatlOS image and presents its
 components as regular-file sources.
 
 The next implementation step is a small prototype that stages a root partition
-and UKI into an installed VM, creates a Katl generation record from the staged
-resources, boots the candidate, and proves both health promotion and failed boot
-rollback in VM tests. The prototype must also prove the partition-label transition
+and UKI into an installed VM, creates Katl generation spec/status from the
+staged resources, boots the candidate, and proves both health promotion and
+failed boot rollback in VM tests. The prototype must also prove the
+partition-label transition
 from Katl's current `KATL_ROOT_A`/`KATL_ROOT_B` labels to sysupdate's
 version-bearing or `_empty` labels, and it must cover boot-counted UKI path
 recording while the candidate is still trying.

@@ -25,7 +25,10 @@ own kubeadm output, SSH host keys, or machine identity.
 | --- | --- | --- | --- |
 | `/var/lib/katl` | Katl installer, `katlc`, KatlOS runtime services | Mutable generation status, operation records, staged artifacts, activation records, and repair status | Native `/var`; primary Katl state root |
 | `/var/lib/katl/operations` | Katl installer, `katlc`, `katlctl`, KatlOS runtime services | Durable operation records that distinguish host repair from kubeadm or etcd repair | Native `/var`; not generation artifacts and not activated through sysext/confext |
-| `/var/lib/katl/generations/<id>/metadata.json` | Katl installer, `katlc`, KatlOS runtime services | Selection fields immutable after generation creation; bootState/healthState mutable by boot health, rollback, or repair tooling | Native `/var`; selected with boot metadata |
+| `/var/lib/katl/operations/<id>/journal` | Katl installer, `katlc`, KatlOS runtime services | Append-only durable operation events used to rebuild `record.json` after interruption | Native `/var`; operation recovery source of truth |
+| `/var/lib/katl/boot/selection.json` | Katl installer, `katlc`, KatlOS runtime services | Durable default, trial, previous known-good, and booted generation pointers | Native `/var`; boot selection state outside generation directories |
+| `/var/lib/katl/generations/<id>/spec.json` | Katl installer, `katlc`, KatlOS runtime services | Immutable generation selection fields after creation | Native `/var`; selected by boot metadata |
+| `/var/lib/katl/generations/<id>/status.json` | Katl installer, `katlc`, KatlOS runtime services | Mutable commitState, bootState, and healthState bound to spec by `specDigest` | Native `/var`; known-good eligibility after digest validation |
 | `/var/lib/katl/generations/<id>/confext` | Katl installer, `katlc`, KatlOS runtime services | Immutable generated configuration for that generation | Native `/var`; exposed at boot through selected `/run/confexts` activation path |
 | `/var/lib/katl/generations/<id>/sysext` | Katl installer, `katlc`, KatlOS runtime services | Immutable extension artifacts for that generation | Native `/var`; exposed at boot through selected `/run/extensions` activation path |
 | `/var/lib/katl/identity/machine-id` | Katl installer, systemd | Random install-generated node identity; stable across boots and updates; write-protected after install | Native `/var`; passed early with `systemd.machine_id=` or projected before PID 1 consumers need it |
@@ -43,7 +46,7 @@ own kubeadm output, SSH host keys, or machine identity.
 | `/var/lib/containerd` | containerd, kubelet | Mutable image/content/snapshot/container state | Native `/var`; persistent across root updates |
 | `/var/lib/etcd` | etcd static pod, kubeadm | Mutable control-plane database | Native `/var` by default or optional dedicated partition mounted at `/var/lib/etcd` |
 | `/var/log/journal` | systemd-journald | Optional persistent logs | Native `/var`; may be absent when persistent journald is disabled |
-| `/run` | systemd, Katl runtime selector, services | Ephemeral boot state only | Never persistent; regenerate selected extension activation links each boot |
+| `/run` | systemd, Katl runtime selector, services | Ephemeral boot state only | Never persistent; `katl-generation-activate.service` regenerates selected extension links, locks, and operation gates each boot |
 | `/tmp` | applications | Ephemeral | Never persistent |
 
 Katl-rendered kubeadm/kubelet input under `/etc/katl` may drift from these live
@@ -54,7 +57,7 @@ kubeadm-aware operations may mutate the live files or kube-system ConfigMaps.
 ## Rollback Boundary For Persistent Kubernetes State
 
 Persistent Kubernetes state is mounted or native writable state, not selected by
-generation metadata. `/etc/kubernetes`, its backing path,
+generation spec. `/etc/kubernetes`, its backing path,
 `/var/lib/kubelet`, `/var/lib/etcd`, and Kubernetes API objects survive host
 generation rollback.
 
@@ -71,9 +74,10 @@ services read it:
 ```text
 state partition mounted at /var
 machine identity available to systemd
-selected sysext/confext activation paths created under /run
+katl-generation-activate.service creates selected sysext/confext activation paths under /run
 systemd-sysext.service
 systemd-confext.service
+katl-operation-reconcile.service
 /etc/kubernetes bind mount active
 /etc/ssh host key projection active
 systemd-networkd.service
@@ -90,6 +94,11 @@ This ordering is dependency ordering for services that exist in a selected
 generation, not a generation 0 boot-health checklist. `/etc/kubernetes`,
 containerd, kubelet, and kubeadm automation become required only for
 kubeadm-ready generations.
+
+`/run` activation links are derived state. Every boot recreates them from the
+generation selected by boot metadata and `/var/lib/katl/boot/selection.json`,
+then validates the selected generation spec and status before systemd-sysext or
+systemd-confext consumes the links.
 
 The concrete first implementation rules are:
 

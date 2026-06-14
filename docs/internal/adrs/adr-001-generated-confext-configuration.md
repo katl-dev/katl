@@ -52,7 +52,7 @@ rejects attempts to write arbitrary /etc paths or Katl-owned paths
 renders a generation-scoped generated confext tree or image
 writes extension-release metadata
 stages the generated confext under /var/lib/katl/generations/<generation-id>/
-records it in generation metadata with the selected root slot and sysext set
+records it in generation spec with the selected root slot and sysext set
 ```
 
 For later runtime configuration changes, `katlc` and KatlOS runtime services can
@@ -161,7 +161,7 @@ Generated confext content is generation-scoped:
     ...
 ```
 
-Generated confext must be selected with the same generation metadata as the root
+Generated confext must be selected with the same generation spec as the root
 slot, UKI, kernel command line, and sysext set. It must not drift independently
 through a single global mutable `current` tree.
 
@@ -180,7 +180,7 @@ Katl does not use Ignition for installer or runtime configuration.
 It was rejected because it would introduce another configuration language and a
 separate first-boot phase between `katlos-install` and the runtime configuration
 agent. Katl already needs to validate install input, own destructive disk
-actions, verify artifacts, generate confext, coordinate generation metadata, and
+actions, verify artifacts, generate confext, coordinate generation spec/status, and
 support later runtime-generated configuration generations. Keeping those
 responsibilities inside Katl gives one source of truth and avoids a
 three-phase installer/bootstrap/runtime model.

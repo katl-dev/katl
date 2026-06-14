@@ -76,7 +76,7 @@ PlanInstall
   plan, and refuse unsafe or ambiguous disk state
 
 CheckExistingInstallState
-  inspect any existing Katl GPT, state partition, generation metadata, and boot
+  inspect any existing Katl GPT, state partition, generation spec/status, and boot
   entries before deciding whether to continue, repair, or refuse
 
 PrepareTarget
@@ -148,7 +148,9 @@ KubeadmOperation
   for joining nodes based on cluster inventory and systemRole
   run kubeadm init or kubeadm join
   run local post-kubeadm health checks
-  commit generation 1 only after kubeadm and health checks succeed
+  set generation 1 commitState committed only after kubeadm and operation health
+  checks succeed; boot health remains pending until a later boot reaches
+  katl-boot-complete.target
 ```
 
 The install path never runs kubeadm init, kubeadm join, CNI installation, or
@@ -186,7 +188,8 @@ After runtime boot, the same installed state is visible under:
 ```text
 /var/lib/katl/install/
 /var/lib/katl/install/status.json
-/var/lib/katl/generations/<generation-id>/metadata.json
+/var/lib/katl/generations/<generation-id>/spec.json
+/var/lib/katl/generations/<generation-id>/status.json
 ```
 
 The minimum checkpoint fields:
@@ -210,7 +213,7 @@ lastError, redacted
 
 Checkpoint state is diagnostic and resume-oriented. The source of truth for
 already-mutated disk state remains the actual GPT layout, filesystems, installed
-generation metadata, and boot entries.
+generation spec/status, and boot entries.
 
 After the target state partition exists, installer checkpoint and status files
 are the installer operation record. `state` is the current operation phase, and
@@ -220,6 +223,13 @@ install attempt. The other files under `/var/lib/katl/install/` are request,
 plan, artifact, input, or diagnostic attachments referenced by that record.
 Pre-target discovery and validation remain transient and do not need durable
 operation records.
+
+Once the target state partition exists, durable install checkpoint updates must
+follow the shared `OperationRecord` journal protocol. Destructive disk phases
+such as partitioning, formatting, and root-slot writes must durably record a
+pre-exec mutation marker before invoking the mutating tool. The actual GPT
+layout, filesystems, installed generation spec/status, and boot entries remain
+the source of truth for already-mutated disk state.
 
 ## Local Handoff Rules
 
@@ -294,7 +304,7 @@ installer must not silently reinterpret them.
 Repair-required cases must stop in `failed-needs-repair` or
 `runtime-failed-needs-repair` and reference a deferred `RepairInstallState`
 operation shape. `RepairInstallState` may inspect checkpoints, disk identity,
-Katl GPT state, generation metadata, and boot entries unless an explicit
+Katl GPT state, generation spec/status, and boot entries unless an explicit
 operator request authorizes a named mutation. It must not replace the accepted
 request, reinterpret a different target disk, delete Kubernetes state, delete
 etcd state, or perform destructive reinstall work without a separate

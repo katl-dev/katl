@@ -63,7 +63,7 @@ Unsafe cases must be rejected rather than interpreted as etcd storage:
   outside the supported allowlist, or that leave less than the minimum state
   partition size.
 - Any attempt to store etcd under `/run`, `/etc`, `/usr`, `/tmp`, kubelet state,
-  containerd state, or Katl generation metadata.
+  containerd state, or Katl generation state.
 
 ## Mount And Service Ordering Rules
 
@@ -118,13 +118,19 @@ exist on the state partition:
 | Directory | Owner | Mode | Purpose |
 | --- | --- | --- | --- |
 | `/var/lib/katl` | `root:root` | `0755` | Katl persistent state root |
+| `/var/lib/katl/boot` | `root:root` | `0755` | Durable boot-selection state |
+| `/var/lib/katl/boot/selection.json` | `root:root` | `0644` | Current default, trial, previous known-good, and booted generation pointers |
 | `/var/lib/katl/generations` | `root:root` | `0755` | Per-generation records, staged extension content, and boot status |
 | `/var/lib/katl/generations/<id>` | `root:root` | `0755` | One root/sysext/confext generation |
-| `/var/lib/katl/generations/<id>/metadata.json` | `root:root` | `0644` | Generation selection plus mutable boot/health status fields |
+| `/var/lib/katl/generations/<id>/spec.json` | `root:root` | `0644` | Immutable generation selection: root, UKI, sysext, confext, kernel command line, compatibility |
+| `/var/lib/katl/generations/<id>/status.json` | `root:root` | `0644` | Mutable commit, boot, and health status bound to spec by `specDigest` |
 | `/var/lib/katl/generations/<id>/confext` | `root:root` | `0755` | Generated confext tree or image for the generation |
 | `/var/lib/katl/generations/<id>/sysext` | `root:root` | `0755` | Sysext artifacts selected with the generation |
 | `/var/lib/katl/operations` | `root:root` | `0750` | Durable operation records, including deferred recovery and repair records |
-| `/var/lib/katl/operations/<id>/record.json` | `root:root` | `0600` | Schema-bearing request, plan, status, scope, lifecycle state, and redacted diagnostics |
+| `/var/lib/katl/operations/<id>/record.json` | `root:root` | `0600` | Recoverable snapshot of request, plan, status, scope, lifecycle state, and redacted diagnostics |
+| `/var/lib/katl/operations/<id>/journal` | `root:root` | `0700` | Append-only operation event journal used for crash recovery |
+| `/var/lib/katl/operations/<id>/journal/<seq>.<event-id>.json` | `root:root` | `0600` | One durable operation event |
+| `/var/lib/katl/operations/<id>/attachments` | `root:root` | `0700` | Redacted diagnostic artifacts referenced by the operation record |
 | `/var/lib/katl/identity` | `root:root` | `0755` | Stable machine identity backing files |
 | `/var/lib/katl/identity/machine-id` | `root:root` | `0444` | Random install-generated systemd machine ID backing file |
 | `/var/lib/katl/kubernetes` | `root:root` | `0755` | Kubernetes projected state namespace |
@@ -136,12 +142,11 @@ exist on the state partition:
 | `/var/lib/etcd` | `root:root` | created by kubeadm/etcd or mount | Etcd data when not using a dedicated etcd partition |
 | `/var/log/journal` | `root:systemd-journal` | created by systemd-journald | Persistent journal, only when enabled |
 
-Generation content is immutable after creation except through explicit repair
-tooling. In the first metadata schema, `metadata.json` also carries mutable
-`bootState` and `healthState` fields. Those status fields may be updated by boot
-health, rollback, or repair tooling; root slot, UKI, sysext, and confext
-selection fields must not be changed in place. Mutable pointers such as
-"current" should not live inside an individual generation directory.
+Generation content and `spec.json` are immutable after creation. Only
+`status.json` is mutable, and status updates must validate `specDigest` before
+changing `commitState`, `bootState`, or `healthState`. Root slot, UKI, sysext,
+and confext selection fields must not be changed in place. Mutable pointers such
+as "current" should not live inside an individual generation directory.
 
 Operation records may reference generation IDs, install checkpoints, or
 Kubernetes artifacts, but they are not generation artifacts and must not be
@@ -149,6 +154,12 @@ activated through sysext/confext selection. Existing workflow-specific records
 such as install status, config apply status, bootstrap run records, and upgrade
 records should conform to the shared `OperationRecord` model even when their
 storage paths differ during scaffolding.
+
+`record.json` is a snapshot, not the only durable truth. Once an operation
+becomes durable, journal entries under
+`/var/lib/katl/operations/<id>/journal/` are authoritative for crash recovery.
+If `record.json` is missing, older than the journal, or digest-invalid, Katl
+rebuilds it from the highest valid journal sequence.
 
 `katlos-install` creates `/var/lib/katl/identity/machine-id` with a random
 machine ID during install. It is stable across normal boots and updates because
@@ -158,23 +169,46 @@ write-protected after install.
 
 ## Activation State
 
-At boot, Katl may create these ephemeral paths from generation metadata:
+At boot, `katl-generation-activate.service` must recreate these ephemeral paths
+from the selected generation spec:
 
 ```text
 /run/extensions/<selected sysext>
 /run/confexts/<selected confext>
+/run/katl/locks/
+/run/katl/operation-gates/
 ```
 
 These are not persistent state. They must be recreated every boot after `/var`
 is mounted and before `systemd-sysext.service` or `systemd-confext.service`
-runs.
+runs. Runtime locks under `/run/katl/locks` coordinate processes only; they are
+not persistent identity or commit state. Operation gate tokens under
+`/run/katl/operation-gates` are boot-local state regenerated from durable
+operation records.
 
 `/run/extensions` and `/run/confexts` are boot-local activation state, not
 durable selection or commit state. Durable generation selection must come from
-generation metadata plus boot selection state, not from a mutable `current`
-symlink inside a generation directory. If Katl later persists a boot-selection
-helper record, it should live under `/var/lib/katl/boot/`, not inside an
-individual generation.
+generation spec plus `/var/lib/katl/boot/selection.json`, not from a mutable
+`current` symlink inside a generation directory.
+
+The default activation mechanism is a service, not a systemd generator:
+
+```text
+katl-generation-activate.service
+  Requires=var.mount
+  After=var.mount
+  Before=systemd-sysext.service systemd-confext.service
+  RequiredBy=systemd-sysext.service systemd-confext.service
+```
+
+A generator cannot be the default because selected extension state lives under
+`/var`, and a generator cannot order itself after `var.mount` or fail closed with
+service dependency semantics. `katl-generation-activate.service` clears stale
+`/run/extensions` and `/run/confexts`, recreates them as boot-local directories,
+and links only the selected generation's extensions. If validation fails, old
+generation links must not remain available; dependent sysext/confext activation
+fails, boot health fails, and rollback selects the previous known-good
+generation where available.
 
 ## Directories Left To Systemd Or Packages
 

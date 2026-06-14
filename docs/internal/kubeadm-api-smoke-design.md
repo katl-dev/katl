@@ -81,7 +81,7 @@ The Kubernetes sysext must provide the artifact set currently checked by
 The runtime root must not include Kubernetes binaries directly. The artifact
 split remains the one checked by `scripts/check-runtime-root`: containerd and
 basic runtime services live in the root, while Kubernetes components live in the
-selected sysext and are activated through generation metadata.
+selected sysext and are activated through generation spec.
 
 ## Generated Configuration Boundary
 
@@ -306,7 +306,7 @@ journalctl -b -u containerd.service -u kubelet.service
 journalctl -b -t kubeadm -t katl-runtime-boot
 findmnt /var /etc/kubernetes /var/lib/etcd
 mount output filtered to Katl and Kubernetes paths
-generation metadata for the selected generation
+generation spec and status for the selected generation
 kubeadm init stdout and stderr
 crictl info
 crictl ps -a

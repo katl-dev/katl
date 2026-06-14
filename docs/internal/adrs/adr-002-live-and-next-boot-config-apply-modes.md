@@ -52,7 +52,7 @@ rendering or activating partial state.
 
 The render step happens on the node that receives the request. A successful
 request creates local generation artifacts from trusted Katl config: generated
-confext content, sysext activation metadata, generation metadata, and apply
+confext content, sysext activation metadata, generation spec/status, and apply
 status. The request is not a transport for prebuilt confext images or arbitrary
 systemd extension activation paths.
 Unsupported config never produces partial generation artifacts.
@@ -157,7 +157,7 @@ after its live preflight, activation, rollback, and VM tests exist.
 
 ## Generated Confext And Generation Metadata
 
-Every accepted runtime change creates a new generation record. A confext-only
+Every accepted runtime change creates a new generation spec and status. A confext-only
 change reuses the current root slot, root artifact digest, UKI, kernel command
 line, and sysext set, but records a new generated confext path and digest.
 Changes that select a different compatible sysext payload are staged as a new
@@ -165,7 +165,7 @@ generation that records the selected sysext set with the generated confext.
 Raw sysext activation paths and unsupported sysext selections remain rejected
 runtime config input.
 
-The immutable generation `metadata.json` for runtime configuration changes must
+The immutable generation `spec.json` for runtime configuration changes must
 record:
 
 ```text
@@ -178,38 +178,50 @@ kubeadm explicit-action-required flag, when rendered input differs from live
   cluster state
 ```
 
-Mutable apply results live in a generation-local sibling status record:
+Mutable generation status lives in:
+
+```text
+/var/lib/katl/generations/<generation-id>/status.json
+```
+
+Mutable apply results live in a generation-local sibling operation record:
 
 ```text
 /var/lib/katl/generations/<generation-id>/config-apply-status.json
 ```
 
 That status record stores phase, live action results, diagnostics, rollback
-target, rollback result, timestamps, and redacted failure reasons. This keeps the
-current generation metadata rule intact: the generation record selects root,
-sysext, and confext together, and Katl must not mutate an existing generation's
-immutable selection fields in place.
+target, rollback result, timestamps, and redacted failure reasons. This keeps
+the current generation spec rule intact: the generation selects root, sysext,
+and confext together, and Katl must not mutate an existing generation's immutable
+selection fields in place.
 
 `config-apply-status.json` is the generation-scoped operation record for the
 configuration apply attempt. The filename may remain workflow-specific, but the
 fields should follow the shared `OperationRecord` model from
 `docs/internal/generations-and-operations.md`.
 
-For `next-boot`, Katl renders and validates the candidate, writes `pending` and
-`unknown` generation metadata, records `phase: next-boot`, and arms bounded boot
-selection. The current boot keeps the previous active generation and no live
-activation occurs.
+For `next-boot`, Katl renders and validates the candidate, writes
+`commitState: candidate`, `bootState: pending`, and `healthState: unknown`,
+records `phase: next-boot`, and arms bounded boot selection. The current boot
+keeps the previous active generation and no live activation occurs.
 
 For `live`, Katl renders and validates the candidate, writes `pending` and
-`unknown` generation metadata, exposes only that selected generated confext in
-the current boot, runs the accepted live apply action plan, and records progress
-in `config-apply-status.json`. `phase: active` means the current boot is using
-the candidate confext and accepted live actions passed. It does not mean the
-generation has passed boot health.
+`unknown` generation status with `commitState: candidate`, exposes only that
+selected generated confext in the current boot, runs the accepted live apply
+action plan, and records progress in `config-apply-status.json`.
+`operationPhase: live-active` means the current boot is using the candidate
+confext and accepted live actions passed. It does not mean the generation has
+passed boot health.
 
 After successful live apply, Katl may select the same generation as a bounded
 next-boot candidate. It becomes the persistent default only after a boot reaches
 `katl-boot-complete.target`.
+
+This ADR describes normal runtime configuration apply. Kubeadm-aware bootstrap
+and join are explicit operations that may live-activate and commit a
+Kubernetes-capable generation after kubeadm and operation health checks succeed,
+while leaving boot health pending until a later boot.
 
 ## Status And Rollback Reporting
 
@@ -230,8 +242,8 @@ rollback target, when present
 failure reason with sensitive values redacted
 ```
 
-Rollback always selects a complete prior generation record. It must not roll
-back only confext while leaving generation metadata pointed at another root or
+Rollback always selects a complete prior generation spec. It must not roll back
+only confext while leaving generation spec pointed at another root or
 sysext set. For a failed `live` change, rollback means restoring the previous
 running confext activation path and rerunning the bounded apply actions needed
 to make that prior state effective. If rollback cannot restore the live state,
@@ -280,7 +292,7 @@ Implementation follow-up work must cover:
 
 ```text
 planner unit tests for live, next-boot, staged-only, and rejected-live decisions
-golden tests for generation metadata fields and generated confext paths
+golden tests for generation spec/status fields and generated confext paths
 golden tests for config-apply-status.json
 negative tests proving mixed live requests fail atomically
 negative tests proving kubeadm and /etc/kubernetes changes are never live-applied

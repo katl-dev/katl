@@ -129,7 +129,7 @@ controller.
 Update machinery should use native systemd functions where they fit:
 systemd-boot selection and boot counting, systemd-sysext and systemd-confext
 activation, native mount ordering, tmpfiles, and health targets. Katl agents
-coordinate validation, generation records, status, and rollback around those
+coordinate validation, generation spec/status, operation records, and rollback around those
 native mechanisms.
 
 Katl is GitOps-oriented at the node boundary.
@@ -157,7 +157,7 @@ Katl owns:
 KatlOS configuration compilation and validation through katlc
 generic KatlOS installer and update artifact contracts
 target root disk layout selected by a Katl install manifest
-runtime generation metadata
+runtime generation spec/status
 systemd boot, mount, extension, and health wiring
 generated confext content for supported domains
 Kubernetes sysext selection and compatibility checks

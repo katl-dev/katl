@@ -26,12 +26,12 @@ any Kubernetes consumer starts:
 
 ```text
 var.mount
-katl generation selector creates /run extension activation links
+katl-generation-activate.service creates /run extension activation links
 systemd-sysext.service
 systemd-confext.service
 etc-kubernetes.mount
 kubelet.service
-kubeadm init/join automation
+kubeadm init/join/upgrade automation
 katl-kubeadm-ready.target
 ```
 
@@ -48,11 +48,29 @@ Before=kubelet.service katl-kubeadm-ready.target
 RequiresMountsFor=/var/lib/katl/kubernetes/etc-kubernetes
 ```
 
-If kubeadm automation is represented by separate units, those units must also
-order after `etc-kubernetes.mount` and use
+If kubeadm automation is represented by separate init, join, or upgrade units,
+those units must also order after `etc-kubernetes.mount` and use
 `RequiresMountsFor=/etc/kubernetes`. Kubelet should also order after
 `containerd.service`, but the `/etc/kubernetes` projection is independent of
 containerd startup.
+
+The activation chain is fail-closed:
+
+```text
+var.mount
+katl-generation-activate.service
+systemd-sysext.service
+systemd-confext.service
+etc-kubernetes.mount
+containerd.service
+kubelet.service
+katl-kubeadm-ready.target
+```
+
+`katl-generation-activate.service` is required because selected extension state
+lives under `/var`. A systemd generator is not the default activation mechanism.
+The bind mount occurs after confext activation so a confext overlay cannot hide
+the persistent Kubernetes subtree.
 
 ## Validation
 

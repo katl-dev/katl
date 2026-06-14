@@ -164,6 +164,14 @@ automatically keep reconciling membership.
 Certificate-key handling must be explicit and redacted in normal logs, run
 records, diagnostics, and artifacts.
 
+Control-plane init, join, and upgrade records must capture etcd member evidence
+before and after the kubeadm mutation when credentials and a local or static-pod
+endpoint are available. Evidence includes member ID, name, peer URLs, client
+URLs, learner state, local member ID, health, endpoint status, member list, and
+redacted probe errors. Failed probes are evidence for recovery decisions; they
+are not permission to clean up membership, remove members, or restore snapshots
+implicitly.
+
 ## Quorum Rules
 
 The target home-cluster control plane uses three stacked-etcd members. A healthy

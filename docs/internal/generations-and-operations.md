@@ -86,24 +86,28 @@ The shared lifecycle uses these terms:
 
 ```text
 candidate generation
-  a validated generation record whose immutable selection fields exist, but which
-  is not yet active or committed
+  a validated generation spec whose immutable selection fields exist, but whose
+  status still has commitState candidate
 
 selected generation
   the generation chosen for one execution context: next boot, current boot, live
   apply, or rollback; selection is not commit
 
 active generation
-  the generation whose selected root, UKI, sysext, and confext are currently
-  realized by the running system
+  the generation whose selected root, UKI, sysext, confext, and state projections
+  are currently realized by the running system
+
+live-active generation
+  a generation whose sysext/confext/state projections are realized in the current
+  boot by a node-local operation; live-active is not boot health
 
 committed generation
-  the generation selected as the persistent default for future boots after the
-  required health gate passes
+  a generation with commitState committed; it is the persistent desired host
+  state for future boots, but it may still have bootState pending
 
 known-good generation
-  a committed generation with healthState healthy and bootState good or
-  superseded
+  a committed or superseded generation whose status has bootState good and
+  healthState healthy
 
 activation
   realizing a selected generation through systemd-boot, /run extension links,
@@ -114,7 +118,7 @@ health promotion
   after katl-boot-complete.target
 
 rollback
-  selecting a previous known-good generation record as a complete unit
+  selecting a previous known-good generation spec as a complete unit
 ```
 
 ## Operations
@@ -174,24 +178,54 @@ node mutation.
 Common fields:
 
 ```text
+apiVersion
+kind: OperationRecord
+schemaVersion
 operationID
 operationKind
 scope: install-state | host-generation | kubeadm-state | etcd-state |
   destructive-reset | coordinator
+parentOperationID, when present
+coordinatorOperationID, when present
 actor
 requestDigest
+recordRevision
+latestJournalSeq
+phasePlan[]
 previousGenerationID, when present
 candidateGenerationID, when present
 phase
+phaseIndex
 completedPhases[]
+terminal
+resourceLocks[]
+invocations[]
+  invocationID
+  systemdInvocationID
+  unitName
+  startedAt
+  completedAt
+  result
 externalMutationStarted
+preExecMutationMarkers[]
+  markerID
+  invocationID
+  phase
+  tool
+  argvDigest
+  expectedMutationScopes[]
+  markedAt
 mutationScopes[]
 mutatingToolRan
+mutatingToolInvocations[]
 diagnosticArtifacts[]
 hostRollback
 postMutationRollbackAllowed
 recoveryRequired
 retryHint
+interruption
+resume
+nextAction
 result
 createdAt
 updatedAt
@@ -199,8 +233,82 @@ completedAt
 failureReason, redacted
 ```
 
-This shared model normalizes lifecycle vocabulary. It does not require every
-workflow to adopt one storage path before the implementation reaches that area.
+Common evidence fields:
+
+```text
+evidenceVersion
+nodeIdentity:
+  inventoryNodeName
+  hostStaticHostname
+  kubeadmNodeRegistrationName
+  observedAPINodeName
+  observedAPINodeUID
+kubeadmEvidence:
+  subcommand
+  observedVersion
+  configPath
+  configDigest
+  currentPhase
+  completedPhases[]
+  firstMutationPhase
+  exitStatus
+  redactedOutputArtifact
+apiEvidence:
+  endpoint
+  endpointSource
+  tcpReachable
+  tlsVerified
+  livez
+  readyz
+  observedServerVersion
+  lastError, redacted
+staticPodManifestEvidence:
+  before[]
+  after[]
+etcdMemberEvidence:
+  before[]
+  after[]
+  addedMemberIDs[]
+  removedMemberIDs[]
+  localMemberID
+  probeSource
+  probeError, redacted
+redactionEvidence:
+  rulesVersion
+  redactedKinds[]
+  sensitiveMaterialPresent[]
+```
+
+Evidence is diagnostic and recovery input, not the source of truth. Retry and
+repair operations must re-probe live node state, Kubernetes API state, static pod
+manifests, kubelet state, and etcd state before deciding what to skip, rerun, or
+repair.
+
+All `OperationRecord` updates are journal-first. Katl writes
+`/var/lib/katl/operations/<id>/journal/<seq>.<event-id>.json`, fsyncs the file
+and journal directory, then atomically replaces `record.json` as a recoverable
+snapshot and fsyncs the operation directory. Recovery ignores temporary files and
+rebuilds `record.json` from the highest valid journal sequence when the snapshot
+is missing, stale, or digest-invalid.
+
+Phase updates are monotonic:
+
+```text
+phaseIndex may stay the same or advance; it must not decrease
+completedPhases[] is append-only
+terminal result fields are immutable once written
+externalMutationStarted may only change false -> true
+mutationScopes[] and preExecMutationMarkers[] are append-only
+```
+
+Before invoking any tool that may mutate disk, kubeadm-owned node state, etcd,
+or Kubernetes API state, Katl must durably write and fsync a pre-exec mutation
+marker. After that marker exists, recovery must classify the operation as
+post-mutation or mutation-unknown unless later evidence proves a safer state.
+
+This shared model normalizes lifecycle vocabulary. Workflow-specific storage
+views such as install checkpoints, config apply status, bootstrap run records,
+and upgrade records must conform to this model once they become durable.
 
 ## Command And System Boundaries
 
@@ -219,6 +327,47 @@ reconciler.
 Systemd executes and supervises node-local operations. It owns unit ordering,
 dependency management, restart handling, logging, health targets, and boot
 success tracking.
+
+Node-local operations run under systemd-supervised units, usually a templated
+service such as:
+
+```text
+katl-operation@<operationID>.service
+```
+
+External commands should be launched through a `katlc` operation wrapper such as:
+
+```text
+katlc operation run-tool --operation-id <id> --phase <phase> -- <tool> <args>
+```
+
+The wrapper records systemd `INVOCATION_ID`, writes the pre-exec mutation marker
+immediately before launching the tool, captures redacted output and exit status,
+and updates the operation journal. Record locks are held only while writing
+journal or snapshot state. Resource locks such as `generation-state.lock`,
+`kubeadm-state.lock`, and install disk locks are held across the bounded
+mutating phase they protect.
+
+At boot, `katl-operation-reconcile.service` audits nonterminal operation
+records after generation activation and before boot-complete or kubeadm-ready
+targets:
+
+```text
+katl-operation-reconcile.service
+  Type=oneshot
+  ExecStart=/usr/bin/katlc operation reconcile --boot
+  RequiresMountsFor=/var/lib/katl
+  After=local-fs.target katl-generation-activate.service
+  After=systemd-sysext.service systemd-confext.service
+  Before=katl-kubeadm-ready.target katl-boot-complete.target
+  Before=katl-operation@.service
+```
+
+This service is a boot-time audit and finalizer, not a daemon and not a cluster
+reconciler. It may classify stale records, finish idempotent host bookkeeping,
+and record diagnostics. It must not run kubeadm, kubectl, mutate etcd, join
+nodes, continue coordinator rollout order, refresh expired join material, or
+clean Kubernetes state.
 
 Kubeadm remains authoritative for Kubernetes cluster mutation. It owns
 bootstrap, join workflows, control-plane upgrades, node upgrades, kubelet
@@ -262,12 +411,14 @@ katlctl cluster bootstrap
   -> verify containerd, kubelet wiring, kubeadm tools, and local readiness
   -> run kubeadm init or kubeadm join
   -> run post-kubeadm health checks
-  -> commit generation 1 only after kubeadm and health checks succeed
+  -> commit generation 1 only after kubeadm and operation health checks succeed
 ```
 
 The Kubernetes-capable generation is host state, but its first commit is gated by
 the bootstrap or join operation because kubeadm mutates persistent node or
-cluster state.
+cluster state. That commit records the accepted desired host state. It does not
+make the generation known-good until a later boot reaches
+`katl-boot-complete.target`.
 
 Cluster bootstrap and node join use the same operation model:
 
@@ -299,7 +450,7 @@ UpgradeControlPlane or UpgradeWorker
   -> run kubeadm upgrade apply or kubeadm upgrade node
   -> restart kubelet at the planned point
   -> verify local health
-  -> mark generation N+1 healthy
+  -> update generation N+1 status and commit only through the operation record
 ```
 
 During Kubernetes upgrades, target-version kubeadm availability is part of the
@@ -313,12 +464,16 @@ The common generation state transitions are:
 
 ```text
 create candidate
-  write immutable generation metadata with bootState pending and healthState
-  unknown
+  write immutable generation spec and initial status with commitState candidate,
+  bootState pending, and healthState unknown
 
 select for next boot
   arm the candidate with bounded boot selection; the current boot remains on the
   previous active generation
+
+live activation
+  activate a candidate in the current boot for an explicit operation; record
+  live-active operation status, but do not treat it as boot health
 
 boot activation
   boot with generation identity, recreate selected /run activation links, and
@@ -328,8 +483,9 @@ health promotion
   after katl-boot-complete.target, set bootState good and healthState healthy
 
 commit
-  make the promoted generation the persistent default and mark the previous
-  healthy default superseded
+  set commitState committed and make the generation the persistent desired host
+  default; if another generation was the previous committed default, mark it
+  superseded only after the new default is accepted
 
 failed boot
   set the tried candidate failed/unhealthy, then select the previous known-good
@@ -337,7 +493,7 @@ failed boot
 
 live apply
   use config-apply-status.json for live phases; live activation does not by
-  itself prove boot health
+  itself prove boot health or known-good eligibility
 ```
 
 ## Failure And Rollback
@@ -361,9 +517,12 @@ Operation status must therefore record:
 previous generation id
 candidate generation id, when one exists
 operation phase
+pre-exec mutation marker for each mutating tool invocation
 whether kubeadm or another mutating tool has run
 mutation scopes such as etc-kubernetes, kubelet-state, etcd-state, or
   cluster-objects
+operation-kind-specific evidence for kubeadm, API, static pod, kubelet, and
+  etcd state
 diagnostic artifact paths
 whether host rollback was attempted
 whether kubeadm-aware repair or retry is required
@@ -380,6 +539,45 @@ without an explicit repair or retry decision. It does not authorize hidden
 cleanup, kubeadm repair, etcd mutation, request replacement, or destructive
 reinstall. The associated operation record must say whether mutation had already
 started and which mutation scopes were touched.
+
+Boot-time operation reconciliation classifies stale records:
+
+```text
+not-stale
+  terminal record, or owned by a live systemd invocation from the current boot
+
+stale-pre-mutation
+  nonterminal record from an earlier boot where externalMutationStarted=false,
+  mutatingToolRan=false, preExecMutationMarkers[] is empty, and mutationScopes[]
+  is empty
+
+stale-host-only
+  interrupted Katl-owned host work such as generation status update, activation
+  link recreation, host rollback bookkeeping, diagnostics, or commit finalization
+
+stale-post-mutation
+  externalMutationStarted=true, mutatingToolRan=true, mutationScopes[] is
+  non-empty, a pre-exec mutation marker exists, or the phase was a
+  kubeadm/kubectl/etcd-running phase
+
+stale-ambiguous
+  missing or corrupt phase ownership, unknown mutation boundary, or a mutating
+  operation kind without enough durable state to prove pre-mutation
+```
+
+Automatic resume is allowed only for Katl-owned idempotent host phases that were
+explicitly marked resumable. Examples include finishing host rollback
+bookkeeping, rebuilding `record.json` from a valid journal, or completing a
+generation commit whose preconditions were already durably recorded. Automatic
+resume is refused for kubeadm init/join/upgrade, kubectl, etcd mutation,
+coordinator workflow continuation, expired join material refresh, and all
+stale-ambiguous records.
+
+Stale-post-mutation and stale-ambiguous records must keep `recoveryRequired`
+until an explicit retry or repair operation succeeds. A classified
+`failed-needs-repair` operation can still count as successful boot-time
+reconciliation; inability to classify, read, or write Katl state is a boot health
+failure.
 
 Recovery operation shapes are deferred until implemented. Unsupported recovery
 requests must be refused with diagnostics rather than partially executed.

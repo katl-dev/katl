@@ -192,7 +192,7 @@ the runtime root and sysext set.
 Runtime configuration apply receives Katl YAML/configuration through `katlc` and
 compiles it on the installed node into generation-scoped artifacts. The
 node-local renderer owns the generated confext tree or image, compatibility
-validation, generation metadata, and sysext activation selection. Users do not
+validation, generation spec/status, and sysext activation selection. Users do not
 hand the node arbitrary confext images or raw extension activation paths as the
 configuration API.
 

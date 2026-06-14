@@ -78,7 +78,7 @@ absolute paths, contain `..`, or depend on host-specific locations.
 
 The `components/metadata` directory may contain rendered boot entry templates,
 component metadata copied from build intermediates, catalog snippets, and other
-static inputs needed to create a generation record. It must not contain
+static inputs needed to create generation spec/status. It must not contain
 node-specific identity, network addresses, kubeadm init/join secrets, bootstrap
 tokens, SSH host keys, or generated node confext output.
 
@@ -138,7 +138,7 @@ architecture, runtime interface, root artifact digest, minimum root slot size,
 filesystem format, and any required root filesystem feature metadata.
 
 The Kubernetes sysext component metadata uses the same compatibility vocabulary
-as the generation record: artifact version, payload version, Kubernetes minor,
+as generation specs: artifact version, payload version, Kubernetes minor,
 architecture, digest, size, source repo metadata, package versions when
 available, and supported runtime interfaces.
 
@@ -164,7 +164,7 @@ runtime generation on a node:
 runtime root component
 runtime UKI or boot assets
 bundled Kubernetes sysext candidates for exact manifest-selected versions
-static metadata needed to write generation metadata and boot entries
+static metadata needed to write generation spec/status and boot entries
 component digests and compatibility metadata
 ```
 
@@ -218,8 +218,8 @@ combined
 ```
 
 Preserved components come from the currently installed generation, not from
-loose files supplied by the operator. A candidate generation records exactly
-which embedded and preserved component digests were validated together.
+loose files supplied by the operator. A candidate generation spec records
+exactly which embedded and preserved component digests were validated together.
 
 The first implementation may restrict upgrade images to the combined shape if
 that keeps implementation and tests smaller. The schema must not prevent
@@ -307,8 +307,8 @@ write or post-write verification failure
   failed phase, selected disk, component role, and digest context
 ```
 
-The installer must never derive generation metadata from unverified component
-metadata. The generation record records the validated component digests and
+The installer must never derive generation spec/status from unverified component
+metadata. The generation spec records the validated component digests and
 compatibility fields, not the original download URL as authority.
 
 ## Trust And Secrets

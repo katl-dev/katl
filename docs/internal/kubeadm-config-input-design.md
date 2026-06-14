@@ -258,6 +258,12 @@ kubeadm-aware operator action. Later `katlctl` commands may help plan or apply
 those operations, but they must report which kubeadm and Kubernetes objects
 will change and must not be hidden inside normal confext activation.
 
+The same rule applies during Kubernetes upgrades. Rendering new desired kubeadm
+or kubelet input into a candidate generation does not make that input live by
+itself. A version transition or reconfiguration becomes live only through an
+explicit kubeadm-aware operation that records kubeadm phases, mutation evidence,
+target kubeadm access, kubelet activation gates, and recovery status.
+
 When rendered desired input differs from live state, Katl reports drift and
 records that an explicit kubeadm-aware action is required. The drift report is
 advisory until an operator runs a bootstrap, join, upgrade, reset, or

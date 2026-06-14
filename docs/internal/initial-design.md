@@ -121,7 +121,7 @@ The active installer flow is Katl-native:
 6. katlos-install partitions and formats the target root disk using Katl-owned
    policy.
 7. katlos-install writes the prebuilt runtime root artifact to root-a.
-8. katlos-install installs UKIs, systemd-boot entries, generation metadata,
+8. katlos-install installs UKIs, systemd-boot entries, generation spec/status,
    generated confext, mount units, identity, SSH policy, and writable state.
 9. The node reboots from the installed disk.
 10. The runtime reaches a local Katl boot-complete target for generation 0 and
@@ -146,7 +146,7 @@ asks `katlc` to validate that stored intent, select the exact bundled Kubernetes
 sysext requested by the manifest, and render the generated confext needed for
 kubeadm. Later host configuration changes can use normal `katlc` generation
 apply or stage flows. Sysext payloads are prebuilt artifacts; the node-local
-generation records which compatible sysexts are selected with the rendered
+generation spec records which compatible sysexts are selected with the rendered
 confext.
 
 `katlc` and KatlOS runtime services must fail closed. Unknown domains,
@@ -231,7 +231,7 @@ management. Katl already needs typed validation, target disk ownership, artifact
 verification, generated confext, and later `katlc`-generated configuration
 generations. Keeping all of that in Katl avoids a three-phase
 installer/bootstrap/runtime model and keeps the source of truth in the Katl
-manifest and generation metadata.
+manifest and generation spec/status.
 
 ## Runtime OS Composition
 
@@ -426,7 +426,8 @@ replacement machinery: systemd-boot for boot selection and trial boots,
 systemd-sysext and systemd-confext for extension activation, native mount units
 for state projections, systemd-tmpfiles for Katl-owned state preparation, and
 systemd health targets for local boot completion. Katl-owned agents coordinate
-the generation record, compatibility checks, status, and rollback decisions.
+the generation spec/status, compatibility checks, operation records, and
+rollback decisions.
 
 The boot health target is local. It proves the OS generation booted, mounted
 state, activated selected extensions, established identity, and started required
@@ -465,7 +466,8 @@ project writable /etc/kubernetes from /var
 start containerd and expose kubelet with Katl-controlled ordering
 reach katl-kubeadm-ready.target before kubeadm runs
 run kubeadm init or join
-commit generation 1 only after kubeadm and health checks succeed
+commit generation 1 only after kubeadm and operation health checks succeed;
+boot health remains pending until a later boot
 ```
 
 ## Focused Design Documents

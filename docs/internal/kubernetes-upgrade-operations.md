@@ -89,7 +89,7 @@ and status primitives from `katlc apply`, but it is an explicit kubeadm-aware
 operation because it mutates an already bootstrapped or joined node:
 
 ```text
-read current generation metadata
+read current generation spec, status, and boot selection
 inspect current Kubernetes and kubelet versions
 select the target Kubernetes sysext
 validate target kubeadm API compatibility for rendered input
@@ -120,6 +120,39 @@ rather than ordinary boot activation alone. That unit runs with the candidate
 generation context, records phase transitions, and restarts kubelet only at the
 point accepted by the kubeadm flow for that node role.
 
+## Target Kubeadm Access
+
+The concrete target kubeadm access mode is an implementation decision that must
+be made before Kubernetes upgrade execution is enabled. Candidate mechanisms:
+
+```text
+operation-private-sysext
+  Run target-version kubeadm from the staged target sysext inside the upgrade
+  unit's private tool view or mount namespace. Global activation stays on the
+  source generation until the planned kubelet restart.
+
+separate-kubeadm-tool-payload
+  Publish a small target-version kubeadm tool artifact tied by digest and version
+  to the target Kubernetes sysext. This simplifies service gating but adds
+  packaging and compatibility bookkeeping.
+
+transient-global-sysext-with-kubelet-gate
+  Globally expose the target sysext before kubeadm runs, but block kubelet with a
+  hard systemd gate until kubeadm completes. This is higher risk because any
+  missed ordering can start target kubelet too early.
+
+stop-source-kubelet-before-kubeadm
+  Per-role option only, not the default. For control-plane nodes this is risky
+  because kubelet manages static pods.
+```
+
+Until one access mode and one kubelet activation gate are selected, implemented,
+and VM-tested, Kubernetes upgrade execution is unsupported by default. `katlc`
+must reject normal apply requests that change the Kubernetes sysext on an
+already bootstrapped node. `katlctl` or `katlc` may produce a plan-only
+operation record, but must not select the candidate for boot, globally activate
+the target sysext, run kubeadm, or restart kubelet.
+
 Control-plane apply node:
 
 ```text
@@ -131,7 +164,8 @@ run kubeadm upgrade apply <target-version>
 drain policy is operator-controlled or explicitly requested by the operation
 restart kubelet using the target Kubernetes payload
 run local post-upgrade health checks
-mark the candidate host generation healthy only after local checks pass
+commit the candidate host generation or leave boot health pending according to
+  the operation result
 ```
 
 Additional control-plane nodes:
@@ -142,7 +176,8 @@ make target kubeadm available to the operation
 run kubeadm upgrade node
 restart kubelet using the target Kubernetes payload
 run local post-upgrade health checks
-mark the candidate host generation healthy only after local checks pass
+commit the candidate host generation or leave boot health pending according to
+  the operation result
 ```
 
 Worker nodes:
@@ -153,7 +188,8 @@ make target kubeadm available to the operation
 run kubeadm upgrade node
 restart kubelet using the target Kubernetes payload
 run local post-upgrade health checks
-mark the candidate host generation healthy only after local checks pass
+commit the candidate host generation or leave boot health pending according to
+  the operation result
 ```
 
 Drain and uncordon are intentionally not hidden inside generation activation.
@@ -180,12 +216,74 @@ current and target Kubernetes sysext digests
 rendered kubeadm config path and digest
 requested drain and uncordon behavior
 target kubeadm access mode and observed kubeadm version
+targetKubeadmAccess.mode
+targetKubeadmAccess.artifactPath
+targetKubeadmAccess.artifactDigest
+targetKubeadmAccess.observedVersion
+sourceKubeletPolicy: keep-running | stop-before-kubeadm
 kubelet activation gate state
+kubeletActivationGate.state: locked | released | restart-running |
+  target-observed | blocked
+kubeletActivationGate.enforcementUnit
+kubeletActivationGate.bootTokenPath
+globalTargetSysextActiveBeforeKubeadmMutation
+targetKubeadmRepairAccessAfterRollback
 whether kubelet was kept running, stopped, or restarted before kubeadm mutation
 observed kubelet version before and after the planned restart
 phase
 timestamps
 redacted kubeadm output and diagnostic artifact paths
+```
+
+Upgrade operation records also use operation-kind-specific evidence.
+`UpgradeControlPlane` evidence includes:
+
+```text
+upgradeMode: apply | node
+sourceKubernetesVersion
+targetKubernetesVersion
+sourceSysextDigest
+targetSysextDigest
+kubeadmEvidence:
+  plan phase
+  apply or node phase
+  firstMutationPhase
+  selected target version
+apiEvidence:
+  before upgrade
+  after kubeadm mutation
+  after kubelet restart
+staticPodManifestEvidence:
+  before/after digests for control-plane manifests and etcd manifest
+  kubeadm backup directory paths under /etc/kubernetes/tmp
+etcdMemberEvidence:
+  member list and local member ID before and after
+  endpoint health or quorum probe result when available
+kubeletEvidence:
+  version before and after restart
+  node Ready/version before and after when API reachable
+```
+
+`UpgradeWorker` evidence includes:
+
+```text
+sourceKubernetesVersion
+targetKubernetesVersion
+kubeadmEvidence:
+  subcommand: upgrade node
+  currentPhase
+  completedPhases[]
+  firstMutationPhase
+apiEvidence:
+  endpoint before and after
+  node object UID, Ready state, and kubelet version before and after
+staticPodManifestEvidence:
+  not-applicable; any control-plane manifest on a worker is a diagnostic anomaly
+etcdMemberEvidence:
+  not-applicable
+kubeletEvidence:
+  kubelet config digest before and after
+  kubelet service state before and after planned restart
 ```
 
 Suggested phases:
@@ -212,6 +310,9 @@ Diagnostics should preserve enough information for rerun and repair while
 redacting tokens, private keys, bearer credentials, kubeconfigs, and discovery
 material. Kubeadm backup directories under `/etc/kubernetes/tmp` are diagnostic
 artifacts. Katl must not treat them as its own rollback database.
+Redaction applies to argv, environment, stdout/stderr, temporary configs,
+kubeconfigs, and diagnostic artifacts before they enter normal operation
+records.
 
 ## Failure And Rollback
 
@@ -233,6 +334,8 @@ Failure handling after kubeadm mutation should be:
 
 ```text
 stop automatic activation of further upgrade phases
+flush externalMutationStarted and a pre-exec mutation marker before invoking
+  kubeadm upgrade apply or kubeadm upgrade node
 record the kubeadm phase, exit status, and diagnostic artifacts
 leave enough target-version kubeadm access for rerun or repair
 avoid repeated automatic retries unless explicitly requested
@@ -249,9 +352,14 @@ target-version kubeadm access after rollback remains operation-scoped and must b
 visible in diagnostics.
 
 If host boot fails after staging or after kubelet restart, normal Katl rollback
-selects the previous known-good generation as defined by the generation metadata
-model. The operation status must still report whether kubeadm already mutated
-node or cluster state before the host rollback occurred.
+selects the previous known-good generation as defined by the generation
+spec/status model. The operation status must still report whether kubeadm
+already mutated node or cluster state before the host rollback occurred.
+
+Any reboot during `kubeadm-apply-running`, `kubeadm-node-running`, or unknown
+target-kubelet gate state becomes stale-post-mutation or stale-ambiguous during
+boot-time operation reconciliation. It requires explicit retry or repair; Katl
+must not automatically rerun kubeadm.
 
 Rollback must never independently switch only the root slot, sysext, or confext.
 Host rollback selects a complete previous generation. Kubernetes state repair is
@@ -322,7 +430,7 @@ Unit and golden tests should cover:
 upgrade request validation
 version-skew and minor-skip rejection
 target sysext compatibility validation
-generation metadata for an upgrade operation
+generation spec/status for an upgrade operation
 operation status phase transitions
 redaction of kubeadm diagnostics
 separation of host rollback from Kubernetes cluster-state rollback
@@ -338,29 +446,28 @@ failed kubeadm upgrade that records diagnostics and remains rerunnable
 failed host boot after sysext staging that rolls back only host generation
 ```
 
-Until those VM tests exist, Kubernetes upgrade execution should remain an
-explicit experimental operation rather than an unattended default.
+Until those VM tests exist, Kubernetes upgrade execution remains unsupported by
+default. Plan-only records are allowed; mutating execution is refused until the
+target kubeadm access mode and kubelet activation gate are selected,
+implemented, and proven.
 
 ## Open Questions
 
 Open implementation choices:
 
 ```text
-How should the upgrade unit obtain target-version kubeadm before the target
-  sysext is globally active: operation-private mount namespace, transient sysext
-  merge with kubelet gated, separate kubeadm tool payload, or another
-  systemd-native mechanism?
+Which targetKubeadmAccess.mode is supported first?
 
-Should kubelet continue running from the source payload during kubeadm upgrade
-  phases, or should the operation stop kubelet before invoking target kubeadm for
-  some node roles?
+Should source kubelet continue running until kubeadm completes for all roles, or
+  should any role stop kubelet before invoking target kubeadm?
 
-What is the concrete systemd gate for target kubelet activation: generated
-  drop-in, phase file condition, transient mask, dedicated upgrade target, or
-  another unit pattern?
+What exact systemd gate enforces target kubelet activation?
 
-Which choice can be verified without weakening the rule that a generation
-  selects one complete sysext/confext/root state?
+Are combined KatlOS root plus Kubernetes sysext upgrades unsupported until this
+  gate is proven?
+
+How is target-version kubeadm repair access exposed after host rollback without
+  preserving a hidden target sysext?
 ```
 
 ## References

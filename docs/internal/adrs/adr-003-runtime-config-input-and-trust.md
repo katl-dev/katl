@@ -49,7 +49,7 @@ handoff format for an authenticated operator action.
 The request contains desired Katl configuration, not generated extension
 artifacts. After authentication and validation, `katlc` locally renders the
 candidate generation: generated confext content, selected sysext activation
-metadata, immutable generation metadata, and apply status. User input cannot
+metadata, immutable generation spec, generation status, and apply status. User input cannot
 directly provide confext images, activation links, or generation paths. `katlc`
 rejects unknown domains, unsupported fields, unsupported sysext selection
 requests, and unsupported apply modes before render.
@@ -105,7 +105,7 @@ reach the node through Katl-supported operator access. The trust roots are:
 ```text
 installed KatlOS runtime, `katlc`, and KatlOS runtime service binaries
 existing operator SSH key or vmtest channel used to submit the request
-the installed generation metadata that records the current root, sysext, and
+the installed generation spec that records the current root, sysext, and
   confext selection
 the request digest and desiredVersion recorded by `katlc`
 ```
@@ -128,7 +128,7 @@ durable audit records for accepted and rejected requests
 
 Generated confext artifacts do not need separate signatures in the first
 implementation because they are generated locally from trusted, validated input
-and recorded in generation metadata by digest. Signing generated confext can be
+and recorded in generation spec by digest. Signing generated confext can be
 reconsidered later if Katl starts distributing generated confext artifacts
 between machines or needs an offline attestation story.
 
@@ -188,7 +188,7 @@ example:
 /var/lib/katl/config-requests/<source-id>/<desired-version>.json
 ```
 
-Accepted runtime changes also write immutable generation metadata and the
+Accepted runtime changes also write immutable generation spec/status and the
 generation-local `config-apply-status.json` described by ADR-002. That status
 file is the generation-scoped operation record for the apply attempt, using the
 shared operation model even if the filename stays workflow-specific.
@@ -240,7 +240,7 @@ GitOps controllers
 
 If rendered kubeadm desired input differs from the live cluster state or from
 the selected kubeadm metadata, the planner records
-`kubeadm.explicitActionRequired=true` in generation metadata and
+`kubeadm.explicitActionRequired=true` in generation spec/status and
 `config-apply-status.json`. Applying that desired input to a live cluster is a
 separate kubeadm-aware operator action with its own planner, status, rollback
 story, and VM tests.

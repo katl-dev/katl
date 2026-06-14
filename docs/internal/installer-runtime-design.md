@@ -154,7 +154,7 @@ install manifest
 installer input metadata
 runtime root artifact
 runtime UKI or kernel/initramfs assets
-systemd-boot entry templates or generation metadata
+systemd-boot entry templates or generation spec templates
 sysext artifacts
 Katl configuration domain inputs
 checksums and signatures for fetched artifacts
@@ -606,7 +606,7 @@ target architecture
 runtime version or build id
 root filesystem feature requirements, if any
 compatible boot artifact or UKI digest and command-line metadata
-compatible sysext artifact digests and generated confext generation metadata
+compatible sysext artifact digests and generated confext spec metadata
 minimum root slot size
 created timestamp
 ```
@@ -694,7 +694,7 @@ Should the installer zero unused trailing bytes in root slots for
   reproducibility, or leave them alone to keep writes bounded to artifact size?
 
 Should UKI compatibility be represented as a direct UKI digest, a boot metadata
-  digest, or a generation record digest once update signing is introduced?
+  digest, or a generation spec digest once update signing is introduced?
 ```
 
 ## Generated Confext Contract
@@ -741,7 +741,7 @@ validate known configuration domains and their output paths
 render domain configuration into a generation-scoped confext tree or image
 write extension-release metadata
 stage the confext under /var/lib/katl/generations/<generation-id>/
-select that confext with the same generation metadata as the root slot and any
+select that confext with the same generation spec as the root slot and any
   generation 0 sysext set
 ```
 
@@ -758,9 +758,10 @@ katlctl cluster bootstrap asks katlc to validate stored install intent
 katlc selects the bundled Kubernetes sysext whose payload version exactly matches
   node.kubernetes.version, such as katl-kube-1.36.1.sysext
 katlc renders known configuration domains into generation 1 confext
-katlc writes candidate generation metadata and activates it for kubeadm readiness
+katlc writes candidate generation spec/status and activates it for kubeadm readiness
 katlctl runs kubeadm init or join
-katlc commits the candidate generation only after kubeadm and health checks pass
+katlc commits the candidate generation only after kubeadm and operation health
+  checks pass; boot health remains pending until a later boot
 ```
 
 Later host configuration changes can use normal `katlc` generation apply or
@@ -920,7 +921,7 @@ runtime root provides systemd, networking, time sync, SSH, containerd, OCI runti
   sysctl/modules-load/tmpfiles scaffolding, and Katl-controlled units
 Kubernetes sysext provides kubeadm, kubelet, kubectl, and closely related CLI
   or helper binaries needed for preflight and node bootstrap
-selected generation metadata records the Kubernetes sysext artifact, digest,
+selected generation spec records the Kubernetes sysext artifact, digest,
   activation path, and compatibility metadata
 systemd-sysext activates only the selected generation's Kubernetes sysext
 generated confext renders selected native kubeadm input under /etc/katl/kubeadm
@@ -947,7 +948,7 @@ artifacts, for example `katl-kube-1.36.1.sysext`. The install manifest requests
 the exact Kubernetes payload version with `node.kubernetes.version: "1.36.1"`.
 `katlctl cluster bootstrap` asks `katlc` to select the matching bundled sysext
 for generation 1 and record its path, digest, payload version, activation path,
-and compatibility metadata in generation metadata. A day-one install does not use
+and compatibility metadata in generation spec. A day-one install does not use
 a version range, remote Kubernetes catalog, or compatibility matrix resolver.
 Those are day-2 update planning concerns.
 
@@ -1002,7 +1003,7 @@ Tests should be layered rather than waiting for a full VM flow:
 package or artifact tests inspect the sysext for expected binaries,
   extension-release metadata, and excluded add-ons
 unit or golden tests cover generated service ordering, mount units, and
-  generation metadata for sysext selection
+  generation spec/status for sysext selection
 systemd-analyze verify checks generated units where practical
 VM install-to-runtime tests prove generation 0 boots from disk, mounts /var,
   activates baseline extensions/config, exposes operator access, and reaches
@@ -1238,7 +1239,7 @@ Do not store persistent node identity or Kubernetes identity in `/run`.
 
 ## Boot And Update Metadata
 
-Katl should store generation metadata under:
+Katl should store generation, boot-selection, and artifact metadata under:
 
 ```text
 /var/lib/katl/generations/
@@ -1258,21 +1259,32 @@ Katl should store artifacts generation-scoped, for example:
 /var/lib/katl/generations/<generation-id>/confext/
 ```
 
-At boot, Katl should expose only the selected generation's extensions to systemd,
-for example by creating symlinks under:
+At boot, Katl should expose only the selected generation's extensions to systemd
+by creating symlinks under:
 
 ```text
 /run/extensions/
 /run/confexts/
 ```
 
-or another explicit activation mechanism that is proven in VM tests. Rollback must
-switch the active root slot, active sysext set, and active confext set together.
-A small Katl generation selector unit or systemd generator should recreate these
-`/run` links each boot after persistent state is available and before
-`systemd-sysext.service` and `systemd-confext.service` run.
+Rollback must switch the active root slot, active sysext set, and active confext
+set together. `katl-generation-activate.service` should recreate these `/run`
+links each boot after persistent state is available and before
+`systemd-sysext.service` and `systemd-confext.service` run:
 
-Each generation record should include:
+```text
+katl-generation-activate.service
+  Requires=var.mount
+  After=var.mount
+  Before=systemd-sysext.service systemd-confext.service
+  RequiredBy=systemd-sysext.service systemd-confext.service
+```
+
+A systemd generator is not the first implementation because selected extension
+state lives under `/var` and activation must fail closed through normal service
+dependency semantics.
+
+Each generation spec should include:
 
 ```text
 generation id
@@ -1281,11 +1293,19 @@ root slot
 root partition UUID
 root artifact digest
 UKI path
+loader entry path, when present
 sysext set, activation paths, and digests
 sysext artifact versions, payload versions, architecture, and compatibility metadata
 confext set, activation paths, and digests
 kernel command line
 created timestamp
+```
+
+Each generation status should include:
+
+```text
+spec digest
+commit state
 boot attempt state
 health state
 ```
@@ -1293,19 +1313,23 @@ health state
 The focused generation metadata decision is recorded in
 `docs/internal/generation-metadata-model.md`.
 
-The first install writes `root-a` and marks it pending. Runtime health
-completion marks it good. Updates later write `root-b`, set it as the next boot
-candidate with a bounded trial mechanism, and rely on Katl health state to
-decide whether to promote or roll back. The first trial mechanism should keep the
-previous known-good generation as the default boot entry and try the candidate
-with systemd-boot one-shot selection or explicit boot counting. A candidate must
-not become the permanent default until it reaches the boot-complete target.
+The first install writes `root-a`, writes generation 0 as `commitState:
+committed`, and marks boot health pending. Runtime health completion marks it
+`bootState: good` and `healthState: healthy`. Updates later write `root-b`, set
+it as the next boot candidate with a bounded trial mechanism, and rely on Katl
+health state to decide whether to promote or roll back. Boot selection state
+lives under `/var/lib/katl/boot/selection.json`; first install sets
+`defaultGenerationID` to generation 0 and leaves `trialGenerationID` empty. The
+first trial mechanism should keep the previous known-good generation as the
+default boot entry and try the candidate with systemd-boot one-shot selection or
+explicit boot counting. A candidate must not become the permanent known-good
+default until it reaches the boot-complete target.
 The focused boot health decision is recorded in
 `docs/internal/boot-health-semantics.md`.
 
 `katlos-install` must render final loader entries on the target node because the
 entries need final partition UUIDs, the install-generated machine-id value, boot
-attempt naming, and generation metadata. Build-time assets may provide templates,
+attempt naming, and generation spec/status. Build-time assets may provide templates,
 but not final installed entries.
 
 ## Runtime Mount Ordering

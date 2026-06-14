@@ -27,6 +27,7 @@ machine identity available
 network configuration loaded
 sshd started when enabled
 katlc and systemd operation wiring available
+katl-operation-reconcile.service completed successfully
 ```
 
 Kubeadm-ready profile, after the bootstrap or join operation asks `katlc` to
@@ -38,6 +39,19 @@ kubeadm input rendered under /etc/katl/kubeadm
 /etc/kubernetes projected from writable state
 containerd active and CRI socket available
 kubelet installed and ordered for kubeadm use
+katl-operation-reconcile.service completed successfully
+```
+
+Kubernetes-upgrade profile, after an explicit upgrade operation reaches the
+planned target-kubelet activation phase:
+
+```text
+target Kubernetes sysext active
+kubeadm upgrade phase complete for the node role
+kubelet activation gate released
+kubelet running from the target payload
+local role checks passed
+katl-operation-reconcile.service completed successfully
 ```
 
 The first implementation can keep the target conservative and local. It does
@@ -47,16 +61,42 @@ OS generation good.
 For the first Kubernetes-capable generation, local kubeadm-ready health is not
 enough to commit the generation. The bootstrap or join operation commits the
 candidate only after kubeadm succeeds and post-kubeadm health checks pass.
+Those post-kubeadm checks are operation health checks, not
+`katl-boot-complete.target` boot health. The generation is not known-good until a
+later boot reaches `katl-boot-complete.target`.
 
 Kubelet is only started before boot health when the selected generation
 explicitly enables that policy.
 
 ## State Storage
 
-Boot attempt state is stored in the selected generation record:
+Generation status is stored separately from immutable generation selection:
 
 ```text
-/var/lib/katl/generations/<generation-id>/metadata.json
+/var/lib/katl/generations/<generation-id>/status.json
+```
+
+`status.json` is bound to immutable
+`/var/lib/katl/generations/<generation-id>/spec.json` by `specDigest`. Boot
+health updates only `bootState` and `healthState`; it does not change generation
+selection fields.
+
+Commit values:
+
+```text
+candidate
+  validated generation spec exists, but it is not accepted as persistent desired
+  host state
+
+committed
+  accepted persistent desired host state for future boots
+
+superseded
+  previously committed generation replaced by a newer committed generation, but
+  still eligible as a rollback target if boot health remains good
+
+abandoned
+  candidate rejected or failed before it became committed
 ```
 
 State values:
@@ -74,9 +114,6 @@ good
 failed
   exhausted attempts or explicit health failure
 
-superseded
-  healthy generation no longer selected because a newer healthy generation
-  replaced it
 ```
 
 Health values:
@@ -98,7 +135,7 @@ deferred
 ## Promotion Rules
 
 `good` means the node booted with that generation selected and reached
-`katl-boot-complete.target`. `healthy` in generation metadata is set only by the
+`katl-boot-complete.target`. `healthy` in generation status is set only by the
 boot health path or explicit repair tooling that records why boot health was
 accepted.
 
@@ -129,6 +166,7 @@ First install has no previous known-good generation. The installer writes the
 initial generation as:
 
 ```text
+commitState: committed
 bootState: pending
 healthState: unknown
 ```
@@ -146,6 +184,13 @@ applies after a known-good generation exists.
 The first runtime boot of generation 0 is evaluated against the
 installed-runtime profile. It must not wait for `/etc/kubernetes`, containerd,
 kubelet, Kubernetes sysext activation, or `katl-kubeadm-ready.target`.
+
+Activation failure is boot-health failure. If `/var` is unavailable, the
+selected generation spec or status is missing or invalid, artifact digest
+validation fails, `/run` activation links cannot be created, `systemd-sysext` or
+`systemd-confext` fails, boot-time operation reconciliation fails, or
+`/etc/kubernetes` cannot be projected for a kubeadm-ready generation, the
+generation must not become `good` or `healthy`.
 
 ## Out Of Scope
 

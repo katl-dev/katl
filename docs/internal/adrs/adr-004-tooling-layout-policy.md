@@ -187,7 +187,7 @@ internal/vmtest
 
 internal/installer/*
   Install manifest parsing, disk planning, generated confext rendering,
-  generation metadata, artifact selection, and install state transitions.
+  generation spec/status, artifact selection, and install state transitions.
 
 cmd/katl-*
   Narrow command-line surfaces for reusable Go behavior that is not yet part of
