@@ -19,8 +19,8 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	executor.Async = false
 	executor.Now = server.Now
 	executor.RunTool = func(ctx context.Context, argv []string, started func(int)) ToolResult {
-		if strings.Join(argv, " ") != "/usr/bin/kubeadm init --config /etc/katl/kubeadm/init.yaml" {
-			t.Fatalf("argv = %v, want kubeadm init config", argv)
+		if strings.Join(argv, " ") != "/usr/bin/kubeadm init --config /etc/katl/kubeadm/bootstrap-init-01.yaml" {
+			t.Fatalf("argv = %v, want operation-scoped kubeadm config", argv)
 		}
 		started(123)
 		return ToolResult{

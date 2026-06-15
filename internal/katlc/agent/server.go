@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
@@ -110,15 +110,10 @@ func (s *Server) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperat
 		return nil, status.Error(codes.InvalidArgument, "requestDigest does not match normalized request")
 	}
 	req.RequestDigest = digest
-	plan, err := kubeadmPlanFromSubmit(req)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "operation request: %v", err)
-	}
-	plan.Timeout = strings.TrimSpace(req.OperationTimeout)
 	if !req.DryRun && s.Dispatcher == nil {
 		return nil, status.Error(codes.FailedPrecondition, "agent executor is not configured")
 	}
-	created, dryRun, err := s.acceptOperation(req, digest, plan)
+	created, dryRun, err := s.acceptOperation(req, digest)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +130,7 @@ func (s *Server) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperat
 	return s.acceptedFromRecord(created), nil
 }
 
-func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest string, plan toolPlan) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
+func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest string) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	if existing, ok, err := s.findClientRequest(req.ClientRequestId); err != nil {
@@ -159,12 +154,18 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 			RequestDigest: digest,
 			AcceptedAt:    formatTime(now),
 			InitialStatus: &agentapi.OperationStatus{
-				OperationKind: req.OperationKind,
-				RequestDigest: digest,
-				Phase:         "dry-run",
-				UpdatedAt:     formatTime(now),
-				ResourceLocks: locks,
-				NextAction:    "submit with dryRun=false to create an operation record",
+				OperationKind:          req.OperationKind,
+				RequestDigest:          digest,
+				CandidateGenerationId:  req.GetBootstrap().GetCandidateGenerationId(),
+				ActivationMode:         operation.ActivationModeLive,
+				ActivationState:        operation.ActivationStatePending,
+				GenerationCommitState:  operation.GenerationCommitCandidate,
+				PostKubeadmHealthState: operation.PostKubeadmHealthNotRun,
+				BootHealthPending:      true,
+				Phase:                  "dry-run",
+				UpdatedAt:              formatTime(now),
+				ResourceLocks:          locks,
+				NextAction:             "submit with dryRun=false to create an operation record",
 			},
 		}, nil
 	}
@@ -172,18 +173,38 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "generate operation id: %v", err)
 	}
+	bootstrapRequest := bootstrapRequestFromProto(req.GetBootstrap())
+	candidateID := strings.TrimSpace(bootstrapRequest.CandidateGenerationID)
+	if candidateID == "" {
+		candidateID = id + "-candidate"
+	}
+	plan, err := kubeadmPlanFromSubmit(req, id)
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operation request: %v", err)
+	}
+	plan.Timeout = strings.TrimSpace(req.OperationTimeout)
 	record := operation.OperationRecord{
-		OperationID:     id,
-		OperationKind:   req.OperationKind,
-		Scope:           operationScope(req.OperationKind),
-		ClientRequestID: req.ClientRequestId,
-		Actor:           req.Actor,
-		RequestDigest:   digest,
-		Phase:           "accepted",
-		PhasePlan:       []string{"accepted"},
-		ResourceLocks:   locks,
-		ExecutorPlan:    &plan,
-		NextAction:      "queued for katlc agent executor",
+		OperationID:                 id,
+		OperationKind:               req.OperationKind,
+		Scope:                       operationScope(req.OperationKind),
+		ClientRequestID:             req.ClientRequestId,
+		Actor:                       req.Actor,
+		ExpectedMachineID:           req.ExpectedMachineId,
+		ExpectedCurrentGenerationID: req.ExpectedCurrentGenerationId,
+		ExpectedClusterIntentDigest: req.ExpectedClusterIntentDigest,
+		RequestDigest:               digest,
+		Phase:                       "accepted",
+		PhasePlan:                   []string{"accepted", plan.Phase},
+		CandidateGenerationID:       candidateID,
+		BootstrapRequest:            &bootstrapRequest,
+		ActivationMode:              operation.ActivationModeLive,
+		ActivationState:             operation.ActivationStatePending,
+		GenerationCommitState:       operation.GenerationCommitCandidate,
+		PostKubeadmHealthState:      operation.PostKubeadmHealthNotRun,
+		BootHealthPending:           true,
+		ResourceLocks:               locks,
+		ExecutorPlan:                &plan,
+		NextAction:                  "queued for katlc agent executor",
 	}
 	created, err := s.Store.Create(record, "accepted", now)
 	if err != nil {
@@ -206,7 +227,11 @@ func (s *Server) GetOperation(ctx context.Context, req *agentapi.GetOperationReq
 	if strings.TrimSpace(req.ExpectedRequestDigest) != "" && record.RequestDigest != req.ExpectedRequestDigest {
 		return nil, status.Error(codes.FailedPrecondition, "operation requestDigest does not match expectedRequestDigest")
 	}
-	return operationStatus(record), nil
+	diagnostics, err := includeDiagnostics(req.IncludeDiagnostics)
+	if err != nil {
+		return nil, err
+	}
+	return operationStatus(record, diagnostics), nil
 }
 
 func (s *Server) WatchOperation(req *agentapi.WatchOperationRequest, stream agentapi.KatlcAgent_WatchOperationServer) error {
@@ -220,17 +245,49 @@ func (s *Server) WatchOperation(req *agentapi.WatchOperationRequest, stream agen
 	if strings.TrimSpace(req.ExpectedRequestDigest) != "" && record.RequestDigest != req.ExpectedRequestDigest {
 		return status.Error(codes.FailedPrecondition, "operation requestDigest does not match expectedRequestDigest")
 	}
-	if int(record.LatestJournalSeq) <= int(req.AfterJournalSeq) {
+	include, err := includeDiagnostics(req.IncludeDiagnostics)
+	if err != nil {
+		return err
+	}
+	if record.Terminal && int(record.LatestJournalSeq) <= int(req.AfterJournalSeq) {
 		return nil
 	}
-	return stream.Send(&agentapi.OperationEvent{
-		OperationId: record.OperationID,
-		JournalSeq:  int32(record.LatestJournalSeq),
-		EventType:   "snapshot",
-		Phase:       record.Phase,
-		Terminal:    record.Terminal,
-		Status:      operationStatus(record),
-	})
+	timeout, err := watchTimeout(req.WatchTimeout)
+	if err != nil {
+		return err
+	}
+	ctx := stream.Context()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	afterSeq := int(req.AfterJournalSeq)
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		events, err := s.Store.EventsAfter(req.OperationId, afterSeq)
+		if err != nil {
+			return status.Errorf(codes.NotFound, "read operation: %v", err)
+		}
+		for _, event := range events {
+			if err := stream.Send(operationEvent(event, include)); err != nil {
+				return err
+			}
+			afterSeq = event.Sequence
+			if event.Record.Terminal {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil
+			}
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
@@ -249,14 +306,18 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if strings.TrimSpace(req.Actor) == "" {
 		return status.Error(codes.InvalidArgument, "actor is required")
 	}
-	if req.Request == nil || len(req.Request.GetFields()) == 0 {
-		return status.Error(codes.InvalidArgument, "request body is required")
+	if err := validateBootstrapRequest(req.OperationKind, req.GetBootstrap()); err != nil {
+		return status.Errorf(codes.InvalidArgument, "bootstrap request: %v", err)
 	}
 	if strings.TrimSpace(req.ExpectedCurrentGenerationId) != "" {
-		return status.Error(codes.InvalidArgument, "expectedCurrentGenerationID validation is not implemented")
+		if err := cleanPublicID("expectedCurrentGenerationID", req.ExpectedCurrentGenerationId); err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
 	}
 	if strings.TrimSpace(req.ExpectedClusterIntentDigest) != "" {
-		return status.Error(codes.InvalidArgument, "expectedClusterIntentDigest validation is not implemented")
+		if err := validateDigestValue("expectedClusterIntentDigest", req.ExpectedClusterIntentDigest); err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
 	}
 	if strings.TrimSpace(req.OperationTimeout) != "" {
 		timeout, err := time.ParseDuration(req.OperationTimeout)
@@ -276,6 +337,16 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 			return status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
 		}
 	}
+	if strings.TrimSpace(req.ExpectedCurrentGenerationId) != "" {
+		if err := s.validateExpectedCurrentGeneration(req.ExpectedCurrentGenerationId); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(req.ExpectedClusterIntentDigest) != "" {
+		if err := s.validateExpectedClusterIntentDigest(req.ExpectedClusterIntentDigest); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -286,7 +357,7 @@ func (s *Server) acceptedFromRecord(record operation.OperationRecord) *agentapi.
 		RequestDigest: record.RequestDigest,
 		RecordPath:    filepath.ToSlash(filepath.Join(s.operationStoreRoot(), record.OperationID, "record.json")),
 		AcceptedAt:    formatTime(record.CreatedAt),
-		InitialStatus: operationStatus(record),
+		InitialStatus: operationStatus(record, false),
 	}
 }
 
@@ -427,16 +498,46 @@ func (s *Server) operationID(kind string, now time.Time) (string, error) {
 	return defaultOperationID(kind, now)
 }
 
-func operationStatus(record operation.OperationRecord) *agentapi.OperationStatus {
+func (s *Server) validateExpectedCurrentGeneration(expected string) error {
+	selection, err := generation.ReadBootSelection(s.Root)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "read boot selection for expectedCurrentGenerationID: %v", err)
+	}
+	current := strings.TrimSpace(selection.BootedGenerationID)
+	if current == "" {
+		current = strings.TrimSpace(selection.DefaultGenerationID)
+	}
+	if current == "" {
+		return status.Error(codes.FailedPrecondition, "current generation is not recorded")
+	}
+	if expected != current {
+		return status.Errorf(codes.FailedPrecondition, "expectedCurrentGenerationID %q does not match current generation %q", expected, current)
+	}
+	return nil
+}
+
+func (s *Server) validateExpectedClusterIntentDigest(expected string) error {
+	root := strings.TrimSpace(s.Root)
+	if root == "" {
+		root = "/"
+	}
+	path := filepath.Join(root, "var/lib/katl/cluster/intent.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "read cluster intent for expectedClusterIntentDigest: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	got := hex.EncodeToString(sum[:])
+	if normalizeDigest(expected) != got {
+		return status.Errorf(codes.FailedPrecondition, "expectedClusterIntentDigest does not match stored cluster intent")
+	}
+	return nil
+}
+
+func operationStatus(record operation.OperationRecord, includeDiagnostics bool) *agentapi.OperationStatus {
 	diagnostics := make([]*agentapi.DiagnosticArtifact, 0, len(record.DiagnosticArtifacts))
-	for _, artifact := range record.DiagnosticArtifacts {
-		diagnostics = append(diagnostics, &agentapi.DiagnosticArtifact{
-			ArtifactId: artifact.ArtifactID,
-			Path:       inventory.Redact(artifact.Path),
-			Sha256:     artifact.SHA256,
-			Redacted:   artifact.Redacted,
-			CreatedAt:  formatTime(artifact.CreatedAt),
-		})
+	if includeDiagnostics {
+		diagnostics = diagnosticArtifacts(record)
 	}
 	invocations := make([]*agentapi.OperationInvocation, 0, len(record.Invocations))
 	for _, invocation := range record.Invocations {
@@ -472,6 +573,11 @@ func operationStatus(record operation.OperationRecord) *agentapi.OperationStatus
 		RecoveryRequired:        record.RecoveryRequired,
 		FailureReason:           inventory.Redact(record.FailureReason),
 		Invocations:             invocations,
+		ActivationMode:          record.ActivationMode,
+		ActivationState:         record.ActivationState,
+		GenerationCommitState:   record.GenerationCommitState,
+		PostKubeadmHealthState:  record.PostKubeadmHealthState,
+		BootHealthPending:       record.BootHealthPending,
 	}
 }
 
@@ -515,22 +621,14 @@ func operationScope(kind string) string {
 	}
 }
 
-func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest) (toolPlan, error) {
-	if req == nil || req.Request == nil {
-		return toolPlan{}, fmt.Errorf("request body is required")
+func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID string) (toolPlan, error) {
+	if req == nil || req.Bootstrap == nil {
+		return toolPlan{}, fmt.Errorf("bootstrap request is required")
 	}
-	values := req.Request.AsMap()
-	if _, ok := values["toolPlan"]; ok {
-		return toolPlan{}, fmt.Errorf("toolPlan is internal executor state and is not accepted over the management API")
+	if err := cleanPublicID("operationID", operationID); err != nil {
+		return toolPlan{}, err
 	}
-	rawPath, ok := values["kubeadmConfigPath"].(string)
-	if !ok || strings.TrimSpace(rawPath) == "" {
-		return toolPlan{}, fmt.Errorf("kubeadmConfigPath is required")
-	}
-	configPath := path.Clean(rawPath)
-	if !strings.HasPrefix(configPath, "/etc/katl/kubeadm/") {
-		return toolPlan{}, fmt.Errorf("kubeadmConfigPath must be under /etc/katl/kubeadm")
-	}
+	configPath := "/etc/katl/kubeadm/" + operationID + ".yaml"
 	plan := toolPlan{
 		MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
 	}
@@ -551,6 +649,157 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest) (toolPlan, erro
 		return toolPlan{}, fmt.Errorf("operationKind %q has no executor plan", req.OperationKind)
 	}
 	return plan, nil
+}
+
+func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapOperationRequest) error {
+	if request == nil {
+		return fmt.Errorf("typed bootstrap request is required")
+	}
+	if err := cleanPublicID("inventoryNodeName", request.InventoryNodeName); err != nil {
+		return err
+	}
+	switch strings.TrimSpace(request.SystemRole) {
+	case "control-plane":
+		if operationKind == "bootstrap-join-worker" {
+			return fmt.Errorf("systemRole control-plane does not match operationKind %s", operationKind)
+		}
+	case "worker":
+		if operationKind != "bootstrap-join-worker" {
+			return fmt.Errorf("systemRole worker does not match operationKind %s", operationKind)
+		}
+	default:
+		return fmt.Errorf("systemRole must be control-plane or worker")
+	}
+	if strings.TrimSpace(request.KubernetesPayloadVersion) == "" {
+		return fmt.Errorf("kubernetesPayloadVersion is required")
+	}
+	if strings.TrimSpace(request.BootstrapProfileRef) == "" {
+		return fmt.Errorf("bootstrapProfileRef is required")
+	}
+	if strings.TrimSpace(request.CandidateGenerationId) != "" {
+		if err := cleanPublicID("candidateGenerationID", request.CandidateGenerationId); err != nil {
+			return err
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(request.ControlPlaneEndpoint), "/") || strings.Contains(request.ControlPlaneEndpoint, "\x00") {
+		return fmt.Errorf("controlPlaneEndpoint must be a network endpoint, not a path")
+	}
+	if strings.HasPrefix(strings.TrimSpace(request.StableEndpoint), "/") || strings.Contains(request.StableEndpoint, "\x00") {
+		return fmt.Errorf("stableEndpoint must be a network endpoint, not a path")
+	}
+	if strings.TrimSpace(request.KubeadmInputDigest) != "" {
+		if err := validateDigestValue("kubeadmInputDigest", request.KubeadmInputDigest); err != nil {
+			return err
+		}
+	}
+	if operationKind != "bootstrap-init" && strings.TrimSpace(request.JoinMaterialRef) == "" {
+		return fmt.Errorf("joinMaterialRef is required for join operations")
+	}
+	return nil
+}
+
+func bootstrapRequestFromProto(request *agentapi.BootstrapOperationRequest) operation.BootstrapRequest {
+	if request == nil {
+		return operation.BootstrapRequest{}
+	}
+	return operation.BootstrapRequest{
+		InventoryNodeName:        strings.TrimSpace(request.InventoryNodeName),
+		SystemRole:               strings.TrimSpace(request.SystemRole),
+		KubernetesPayloadVersion: strings.TrimSpace(request.KubernetesPayloadVersion),
+		BootstrapProfileRef:      strings.TrimSpace(request.BootstrapProfileRef),
+		ControlPlaneEndpoint:     strings.TrimSpace(request.ControlPlaneEndpoint),
+		StableEndpoint:           strings.TrimSpace(request.StableEndpoint),
+		CandidateGenerationID:    strings.TrimSpace(request.CandidateGenerationId),
+		KubeadmInputDigest:       strings.TrimSpace(request.KubeadmInputDigest),
+		JoinMaterialRef:          strings.TrimSpace(request.JoinMaterialRef),
+	}
+}
+
+func operationEvent(event operation.JournalEvent, includeDiagnostics bool) *agentapi.OperationEvent {
+	return &agentapi.OperationEvent{
+		OperationId: event.Record.OperationID,
+		JournalSeq:  int32(event.Sequence),
+		EventType:   event.EventType,
+		Phase:       event.Record.Phase,
+		Terminal:    event.Record.Terminal,
+		Status:      operationStatus(event.Record, false),
+		Diagnostics: diagnosticArtifactsIf(event.Record, includeDiagnostics),
+	}
+}
+
+func diagnosticArtifactsIf(record operation.OperationRecord, include bool) []*agentapi.DiagnosticArtifact {
+	if !include {
+		return nil
+	}
+	return diagnosticArtifacts(record)
+}
+
+func diagnosticArtifacts(record operation.OperationRecord) []*agentapi.DiagnosticArtifact {
+	diagnostics := make([]*agentapi.DiagnosticArtifact, 0, len(record.DiagnosticArtifacts))
+	for _, artifact := range record.DiagnosticArtifacts {
+		diagnostics = append(diagnostics, &agentapi.DiagnosticArtifact{
+			ArtifactId: artifact.ArtifactID,
+			Path:       inventory.Redact(artifact.Path),
+			Sha256:     artifact.SHA256,
+			Redacted:   artifact.Redacted,
+			CreatedAt:  formatTime(artifact.CreatedAt),
+		})
+	}
+	return diagnostics
+}
+
+func includeDiagnostics(value string) (bool, error) {
+	switch strings.TrimSpace(value) {
+	case "", "normal":
+		return false, nil
+	case "verbose":
+		return true, nil
+	default:
+		return false, status.Error(codes.InvalidArgument, "includeDiagnostics must be normal or verbose")
+	}
+}
+
+func watchTimeout(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 30 * time.Second, nil
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil || timeout <= 0 {
+		return 0, status.Error(codes.InvalidArgument, "watchTimeout must be a positive Go duration")
+	}
+	return timeout, nil
+}
+
+func cleanPublicID(name string, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	if strings.Contains(value, "/") || strings.Contains(value, "\\") || strings.Contains(value, "..") || strings.ContainsAny(value, " \t\r\n") {
+		return fmt.Errorf("%s must be a clean identifier", name)
+	}
+	return nil
+}
+
+func validateDigestValue(name string, value string) error {
+	value = normalizeDigest(value)
+	if value == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	if len(value) != sha256.Size*2 {
+		return fmt.Errorf("%s must be a SHA-256 digest", name)
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return fmt.Errorf("%s must be a SHA-256 digest", name)
+	}
+	return nil
+}
+
+func normalizeDigest(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "sha256:")
+	return strings.ToLower(value)
 }
 
 func defaultOperationID(kind string, now time.Time) (string, error) {

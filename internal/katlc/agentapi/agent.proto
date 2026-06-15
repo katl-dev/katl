@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package katl.agent.v1;
 
-import "google/protobuf/struct.proto";
-
 option go_package = "github.com/zariel/katl/internal/katlc/agentapi;agentapi";
 
 service KatlcAgent {
@@ -38,7 +36,19 @@ message SubmitOperationRequest {
   string request_digest = 9;
   bool dry_run = 10;
   string operation_timeout = 11;
-  google.protobuf.Struct request = 12;
+  BootstrapOperationRequest bootstrap = 12;
+}
+
+message BootstrapOperationRequest {
+  string inventory_node_name = 1;
+  string system_role = 2;
+  string kubernetes_payload_version = 3;
+  string bootstrap_profile_ref = 4;
+  string control_plane_endpoint = 5;
+  string stable_endpoint = 6;
+  string candidate_generation_id = 7;
+  string kubeadm_input_digest = 8;
+  string join_material_ref = 9;
 }
 
 message OperationAccepted {
@@ -76,6 +86,11 @@ message OperationStatus {
   bool recovery_required = 17;
   string failure_reason = 18;
   repeated OperationInvocation invocations = 19;
+  string activation_mode = 20;
+  string activation_state = 21;
+  string generation_commit_state = 22;
+  string post_kubeadm_health_state = 23;
+  bool boot_health_pending = 24;
 }
 
 message DiagnosticArtifact {
@@ -103,6 +118,7 @@ message WatchOperationRequest {
   string expected_request_digest = 2;
   int32 after_journal_seq = 3;
   string watch_timeout = 4;
+  string include_diagnostics = 5;
 }
 
 message OperationEvent {
@@ -112,4 +128,5 @@ message OperationEvent {
   string phase = 4;
   bool terminal = 5;
   OperationStatus status = 6;
+  repeated DiagnosticArtifact diagnostics = 7;
 }

@@ -28,6 +28,20 @@ const (
 	ResultFailedNeedsRepair = "failed-needs-repair"
 	ResultSucceeded         = "succeeded"
 
+	ActivationModeLive        = "live"
+	ActivationStatePending    = "pending"
+	ActivationStateActivating = "activating"
+	ActivationStateActiveLive = "active-live"
+	ActivationStateFailed     = "failed"
+	ActivationStateRolledBack = "rolled-back"
+	GenerationCommitCandidate = "candidate"
+	GenerationCommitCommitted = "committed"
+	GenerationCommitAbandoned = "abandoned"
+	PostKubeadmHealthNotRun   = "not-run"
+	PostKubeadmHealthRunning  = "running"
+	PostKubeadmHealthPassed   = "passed"
+	PostKubeadmHealthFailed   = "failed"
+
 	ResumeHostBookkeeping          = "finish-host-bookkeeping:record-operation-complete"
 	HostBookkeepingCompletionPhase = "record-operation-complete"
 	HostBookkeepingOperationKind   = "host-bookkeeping"
@@ -55,12 +69,21 @@ type OperationRecord struct {
 	ParentOperationID           string                  `json:"parentOperationID,omitempty"`
 	ClientRequestID             string                  `json:"clientRequestID,omitempty"`
 	Actor                       string                  `json:"actor,omitempty"`
+	ExpectedMachineID           string                  `json:"expectedMachineID,omitempty"`
+	ExpectedCurrentGenerationID string                  `json:"expectedCurrentGenerationID,omitempty"`
+	ExpectedClusterIntentDigest string                  `json:"expectedClusterIntentDigest,omitempty"`
 	RequestDigest               string                  `json:"requestDigest"`
 	RecordRevision              int                     `json:"recordRevision"`
 	LatestJournalSeq            int                     `json:"latestJournalSeq"`
 	PhasePlan                   []string                `json:"phasePlan,omitempty"`
 	PreviousGenerationID        string                  `json:"previousGenerationID,omitempty"`
 	CandidateGenerationID       string                  `json:"candidateGenerationID,omitempty"`
+	BootstrapRequest            *BootstrapRequest       `json:"bootstrapRequest,omitempty"`
+	ActivationMode              string                  `json:"activationMode,omitempty"`
+	ActivationState             string                  `json:"activationState,omitempty"`
+	GenerationCommitState       string                  `json:"generationCommitState,omitempty"`
+	PostKubeadmHealthState      string                  `json:"postKubeadmHealthState,omitempty"`
+	BootHealthPending           bool                    `json:"bootHealthPending,omitempty"`
 	Phase                       string                  `json:"phase,omitempty"`
 	PhaseIndex                  int                     `json:"phaseIndex"`
 	CompletedPhases             []string                `json:"completedPhases,omitempty"`
@@ -94,6 +117,18 @@ type ExecutorPlan struct {
 	Timeout        string   `json:"timeout,omitempty"`
 	MutationScopes []string `json:"mutationScopes,omitempty"`
 	Argv           []string `json:"argv"`
+}
+
+type BootstrapRequest struct {
+	InventoryNodeName        string `json:"inventoryNodeName"`
+	SystemRole               string `json:"systemRole"`
+	KubernetesPayloadVersion string `json:"kubernetesPayloadVersion"`
+	BootstrapProfileRef      string `json:"bootstrapProfileRef"`
+	ControlPlaneEndpoint     string `json:"controlPlaneEndpoint,omitempty"`
+	StableEndpoint           string `json:"stableEndpoint,omitempty"`
+	CandidateGenerationID    string `json:"candidateGenerationID,omitempty"`
+	KubeadmInputDigest       string `json:"kubeadmInputDigest,omitempty"`
+	JoinMaterialRef          string `json:"joinMaterialRef,omitempty"`
 }
 
 type InvocationRecord struct {
@@ -456,6 +491,24 @@ func (s Store) Read(operationID string) (OperationRecord, error) {
 	return record, nil
 }
 
+func (s Store) EventsAfter(operationID string, afterSeq int) ([]JournalEvent, error) {
+	dir, err := s.operationDir(operationID)
+	if err != nil {
+		return nil, err
+	}
+	events, err := readJournal(filepath.Join(dir, "journal"))
+	if err != nil {
+		return nil, err
+	}
+	var out []JournalEvent
+	for _, event := range events {
+		if event.Sequence > afterSeq {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
 func (s Store) writeEventAndSnapshot(dir string, event JournalEvent) error {
 	if err := ValidateEvent(event); err != nil {
 		return err
@@ -580,6 +633,23 @@ func ValidateRecord(record OperationRecord) error {
 	if record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() {
 		return fmt.Errorf("operation createdAt and updatedAt are required")
 	}
+	if record.BootstrapRequest != nil {
+		if err := validateBootstrapRequest(*record.BootstrapRequest); err != nil {
+			return err
+		}
+	}
+	if err := validateOptionalEnum("activationMode", record.ActivationMode, ActivationModeLive); err != nil {
+		return err
+	}
+	if err := validateOptionalEnum("activationState", record.ActivationState, ActivationStatePending, ActivationStateActivating, ActivationStateActiveLive, ActivationStateFailed, ActivationStateRolledBack); err != nil {
+		return err
+	}
+	if err := validateOptionalEnum("generationCommitState", record.GenerationCommitState, GenerationCommitCandidate, GenerationCommitCommitted, GenerationCommitAbandoned); err != nil {
+		return err
+	}
+	if err := validateOptionalEnum("postKubeadmHealthState", record.PostKubeadmHealthState, PostKubeadmHealthNotRun, PostKubeadmHealthRunning, PostKubeadmHealthPassed, PostKubeadmHealthFailed); err != nil {
+		return err
+	}
 	if record.ExecutorPlan != nil {
 		if strings.TrimSpace(record.ExecutorPlan.Phase) == "" {
 			return fmt.Errorf("operation executorPlan phase is required")
@@ -620,6 +690,15 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	if next.LatestJournalSeq != previous.LatestJournalSeq && next.LatestJournalSeq != previous.LatestJournalSeq+1 {
 		return fmt.Errorf("operation latestJournalSeq must advance by one")
 	}
+	if next.ExpectedMachineID != previous.ExpectedMachineID {
+		return fmt.Errorf("operation expectedMachineID is immutable")
+	}
+	if next.ExpectedCurrentGenerationID != previous.ExpectedCurrentGenerationID {
+		return fmt.Errorf("operation expectedCurrentGenerationID is immutable")
+	}
+	if next.ExpectedClusterIntentDigest != previous.ExpectedClusterIntentDigest {
+		return fmt.Errorf("operation expectedClusterIntentDigest is immutable")
+	}
 	if next.PhaseIndex < previous.PhaseIndex {
 		return fmt.Errorf("operation phaseIndex must not decrease")
 	}
@@ -643,6 +722,9 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	}
 	if !hasPrefixArtifacts(next.DiagnosticArtifacts, previous.DiagnosticArtifacts) {
 		return fmt.Errorf("operation diagnosticArtifacts must be append-only")
+	}
+	if !reflect.DeepEqual(next.BootstrapRequest, previous.BootstrapRequest) {
+		return fmt.Errorf("operation bootstrapRequest is immutable")
 	}
 	return nil
 }
@@ -693,6 +775,10 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	record.PhasePlan = cloneStrings(record.PhasePlan)
 	record.CompletedPhases = cloneStrings(record.CompletedPhases)
 	record.ResourceLocks = cloneStrings(record.ResourceLocks)
+	if record.BootstrapRequest != nil {
+		request := *record.BootstrapRequest
+		record.BootstrapRequest = &request
+	}
 	if record.ExecutorPlan != nil {
 		plan := *record.ExecutorPlan
 		plan.MutationScopes = cloneStrings(plan.MutationScopes)
@@ -1155,6 +1241,37 @@ func validateArtifactPath(path string) error {
 		return fmt.Errorf("diagnostic artifact path must be under attachments")
 	}
 	return nil
+}
+
+func validateBootstrapRequest(request BootstrapRequest) error {
+	if strings.TrimSpace(request.InventoryNodeName) == "" {
+		return fmt.Errorf("bootstrapRequest inventoryNodeName is required")
+	}
+	switch strings.TrimSpace(request.SystemRole) {
+	case "control-plane", "worker":
+	default:
+		return fmt.Errorf("bootstrapRequest systemRole must be control-plane or worker")
+	}
+	if strings.TrimSpace(request.KubernetesPayloadVersion) == "" {
+		return fmt.Errorf("bootstrapRequest kubernetesPayloadVersion is required")
+	}
+	if strings.TrimSpace(request.BootstrapProfileRef) == "" {
+		return fmt.Errorf("bootstrapRequest bootstrapProfileRef is required")
+	}
+	return nil
+}
+
+func validateOptionalEnum(name string, value string, allowed ...string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported operation %s %q", name, value)
 }
 
 func validateSHA256Hex(name string, value string) error {
