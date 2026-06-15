@@ -1,0 +1,10 @@
+[Unit]
+Description=Katl boot health deadline
+Documentation=man:systemd.timer(5)
+
+[Timer]
+OnBootSec=10min
+Unit=katl-boot-deadman.service
+
+[Install]
+WantedBy=timers.target

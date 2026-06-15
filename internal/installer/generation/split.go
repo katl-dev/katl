@@ -450,6 +450,7 @@ func ValidateCommitTransition(from string, to string) error {
 func ValidateBootTransition(from string, to string) error {
 	switch from + "->" + to {
 	case BootStatePending + "->" + BootStateTrying,
+		BootStatePending + "->" + BootStateGood,
 		BootStateTrying + "->" + BootStateGood,
 		BootStatePending + "->" + BootStateFailed,
 		BootStateTrying + "->" + BootStateFailed:

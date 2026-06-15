@@ -183,6 +183,11 @@ type katlosImageMetadata struct {
 	ImageRole        string `json:"imageRole"`
 	SHA256           string `json:"sha256"`
 	SizeBytes        uint64 `json:"sizeBytes"`
+	Components       []struct {
+		Name           string `json:"name"`
+		Role           string `json:"role"`
+		PayloadVersion string `json:"payloadVersion"`
+	} `json:"components"`
 }
 
 func resolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec NodeSpec, input firstInstallWorldInput) (firstInstallWorldInput, error) {
@@ -238,6 +243,7 @@ func defaultLocalMkosiArtifacts(repo string) mkosiArtifactIndex {
 	for _, artifact := range []mkosiArtifact{
 		{Kind: "installer-uki", Path: filepath.Join(mkosiDir, "katl-installer.efi")},
 		{Kind: "runtime-root", Path: filepath.Join(mkosiDir, "katl-runtime-root.squashfs")},
+		{Kind: "kubernetes-sysext", Path: filepath.Join(mkosiDir, "katl-kubernetes.raw"), MetadataPath: filepath.Join(mkosiDir, "katl-kubernetes.raw.json")},
 	} {
 		if _, err := os.Stat(artifact.Path); err == nil {
 			index.Artifacts = append(index.Artifacts, artifact)
@@ -312,7 +318,17 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 	} else if err != nil {
 		return "", err
 	}
-	kubeadmRef, err := writeFirstInstallWorldKubeadmSource(sourceDir, spec)
+	kubernetesVersion := metadata.KubernetesPayloadVersion()
+	if kubernetesVersion == "" {
+		if artifact, ok := index.artifact("kubernetes-sysext"); ok {
+			var err error
+			kubernetesVersion, err = readKubernetesSysextPayloadVersion(artifact)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	kubeadmRef, err := writeFirstInstallWorldKubeadmSource(sourceDir, spec, kubernetesVersion)
 	if err != nil {
 		return "", err
 	}
@@ -372,10 +388,37 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 	return manifestPath, nil
 }
 
-func writeFirstInstallWorldKubeadmSource(sourceDir string, spec NodeSpec) (string, error) {
+func (metadata katlosImageMetadata) KubernetesPayloadVersion() string {
+	for _, component := range metadata.Components {
+		if component.Name == "kubernetes" || component.Role == "kubernetes-sysext" {
+			return strings.TrimSpace(component.PayloadVersion)
+		}
+	}
+	return ""
+}
+
+func readKubernetesSysextPayloadVersion(artifact mkosiArtifact) (string, error) {
+	metadataPath := strings.TrimSpace(artifact.MetadataPath)
+	if metadataPath == "" {
+		metadataPath = artifact.Path + ".json"
+	}
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return "", fmt.Errorf("read Kubernetes sysext metadata: %w", err)
+	}
+	var metadata struct {
+		PayloadVersion string `json:"payloadVersion"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return "", fmt.Errorf("decode Kubernetes sysext metadata: %w", err)
+	}
+	return strings.TrimSpace(metadata.PayloadVersion), nil
+}
+
+func writeFirstInstallWorldKubeadmSource(sourceDir string, spec NodeSpec, kubernetesVersion string) (string, error) {
 	switch spec.Role {
 	case ControlPlane:
-		return writeFirstInstallWorldKubeadmPlan(sourceDir, "control-plane", controlPlaneKubeadmConfig(spec.Name))
+		return writeFirstInstallWorldKubeadmPlan(sourceDir, "control-plane", controlPlaneKubeadmConfig(spec.Name, kubernetesVersion))
 	case Worker:
 		return writeFirstInstallWorldKubeadmPlan(sourceDir, "worker", workerKubeadmConfig(spec.Name))
 	default:
@@ -409,10 +452,14 @@ spec:
 	return name, nil
 }
 
-func controlPlaneKubeadmConfig(nodeName string) string {
+func controlPlaneKubeadmConfig(nodeName string, kubernetesVersion string) string {
 	nodeName = strings.TrimSpace(nodeName)
 	if nodeName == "" {
 		nodeName = "cp-1"
+	}
+	kubernetesVersion = strings.TrimSpace(kubernetesVersion)
+	if kubernetesVersion == "" {
+		kubernetesVersion = "v1.36.1"
 	}
 	return `apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
@@ -423,7 +470,7 @@ nodeRegistration:
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
 clusterName: katl-smoke
-kubernetesVersion: v1.36.1
+kubernetesVersion: ` + kubernetesVersion + `
 networking:
   podSubnet: 10.244.0.0/16
   serviceSubnet: 10.96.0.0/12

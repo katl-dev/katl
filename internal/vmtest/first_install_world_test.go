@@ -112,6 +112,8 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
 	runtime := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw"), "kubernetes")
+	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), `{"payloadVersion":"v1.36.2"}`)
 	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
 	writeFixtureFile(t, image+".json", `{
   "apiVersion": "katl.dev/v1alpha1",
@@ -170,7 +172,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(manifestDir, "kubeadm-configs", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "configFile: kubeadm/control-plane.yaml") {
 		t.Fatalf("generated KubeadmConfig = %q, err = %v", data, err)
 	}
-	if data, err := os.ReadFile(filepath.Join(manifestDir, "kubeadm", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "kind: InitConfiguration") {
+	if data, err := os.ReadFile(filepath.Join(manifestDir, "kubeadm", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "kind: InitConfiguration") || !strings.Contains(string(data), "kubernetesVersion: v1.36.2") {
 		t.Fatalf("generated kubeadm config = %q, err = %v", data, err)
 	}
 	scenarioManifest := readScenarioManifest(t, run.Scenario.ManifestPath)

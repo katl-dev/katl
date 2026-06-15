@@ -1,0 +1,17 @@
+[Unit]
+Description=Record successful Katl boot health
+Documentation=man:systemd.service(5)
+Requires=katlc-agent.service systemd-networkd.service
+Wants=sshd.service
+After=katlc-agent.service systemd-networkd.service sshd.service
+Before=katl-boot-complete.target
+RequiresMountsFor=/var/lib/katl
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-boot-health
+ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=success --reason=katl-boot-complete.target
+
+[Install]
+RequiredBy=katl-boot-complete.target

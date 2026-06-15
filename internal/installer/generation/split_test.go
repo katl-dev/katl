@@ -239,6 +239,11 @@ func TestGenerationStatusTransitions(t *testing.T) {
 			status.BootState = BootStateTrying
 			return status
 		}},
+		{name: "pending good", mutate: func(status GenerationStatus) GenerationStatus {
+			status.BootState = BootStateGood
+			status.HealthState = HealthStateHealthy
+			return status
+		}},
 		{name: "pending failed", mutate: func(status GenerationStatus) GenerationStatus {
 			status.BootState = BootStateFailed
 			status.HealthState = HealthStateUnhealthy

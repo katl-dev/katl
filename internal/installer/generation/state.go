@@ -27,6 +27,10 @@ type StateAssets struct {
 	EtcKubernetesMount string
 	GenerationActivate string
 	KubeadmReadyTarget string
+	BootCompleteTarget string
+	BootHealthService  string
+	BootDeadmanService string
+	BootDeadmanTimer   string
 	ContainerdDropIn   string
 	KubeletDropIn      string
 	StateCheckService  string
@@ -75,6 +79,10 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		EtcKubernetesMount: kubernetesMount,
 		GenerationActivate: renderGenerationActivateService(),
 		KubeadmReadyTarget: renderKubeadmReadyTarget(),
+		BootCompleteTarget: renderBootCompleteTarget(),
+		BootHealthService:  renderBootHealthService(),
+		BootDeadmanService: renderBootDeadmanService(),
+		BootDeadmanTimer:   renderBootDeadmanTimer(),
 		ContainerdDropIn:   renderContainerdDropIn(),
 		KubeletDropIn:      renderKubeletDropIn(),
 		StateCheckService:  renderStateCheckService(),
@@ -145,6 +153,77 @@ func renderKubeadmReadyTarget() string {
 		"",
 		"[Install]",
 		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
+func renderBootCompleteTarget() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Katl boot-complete promotion point",
+		"Documentation=man:systemd.target(5)",
+		"Requires=katl-boot-health.service",
+		"After=katl-boot-health.service",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
+func renderBootHealthService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Record successful Katl boot health",
+		"Documentation=man:systemd.service(5)",
+		"Requires=katlc-agent.service systemd-networkd.service",
+		"Wants=sshd.service",
+		"After=katlc-agent.service systemd-networkd.service sshd.service",
+		"Before=katl-boot-complete.target",
+		"RequiresMountsFor=/var/lib/katl",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-boot-health",
+		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=success --reason=katl-boot-complete.target",
+		"",
+		"[Install]",
+		"RequiredBy=katl-boot-complete.target",
+		"",
+	}, "\n")
+}
+
+func renderBootDeadmanService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Fail Katl boot health after deadline",
+		"Documentation=man:systemd.service(5)",
+		"Requires=var.mount",
+		"After=var.mount",
+		"RequiresMountsFor=/var/lib/katl",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-boot-deadman",
+		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --request-reboot",
+		"",
+	}, "\n")
+}
+
+func renderBootDeadmanTimer() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Katl boot health deadline",
+		"Documentation=man:systemd.timer(5)",
+		"",
+		"[Timer]",
+		"OnBootSec=10min",
+		"Unit=katl-boot-deadman.service",
+		"",
+		"[Install]",
+		"WantedBy=timers.target",
 		"",
 	}, "\n")
 }
@@ -261,6 +340,27 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeSymlink(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target", "../katl-kubeadm-ready.target"); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-boot-complete.target", assets.BootCompleteTarget, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-boot-health.service", assets.BootHealthService, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-boot-deadman.service", assets.BootDeadmanService, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-boot-deadman.timer", assets.BootDeadmanTimer, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/multi-user.target.wants/katl-boot-complete.target", "../katl-boot-complete.target"); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/katl-boot-complete.target.requires/katl-boot-health.service", "../katl-boot-health.service"); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/timers.target.wants/katl-boot-deadman.timer", "../katl-boot-deadman.timer"); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf", assets.ContainerdDropIn, 0o644); err != nil {

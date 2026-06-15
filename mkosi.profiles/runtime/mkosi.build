@@ -78,3 +78,14 @@ go build \
     -buildvcs=false \
     -o "$DESTDIR/usr/lib/katl/runtime/katl-generation-activate" \
     ./cmd/katl-generation-activate
+
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="$gomodcache" \
+go build \
+    -trimpath \
+    -buildvcs=false \
+    -o "$DESTDIR/usr/lib/katl/runtime/katl-boot-health" \
+    ./cmd/katl-boot-health
