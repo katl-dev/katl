@@ -31,6 +31,8 @@ type StateAssets struct {
 	KubeletDropIn      string
 	StateCheckService  string
 	RuntimeStatus      string
+	OperationService   string
+	OperationReconcile string
 	Tmpfiles           string
 	Dirs               []StateDir
 	MountPoints        []StateDir
@@ -78,6 +80,8 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		KubeletDropIn:      renderKubeletDropIn(),
 		StateCheckService:  renderStateCheckService(),
 		RuntimeStatus:      renderRuntimeStatusService(),
+		OperationService:   renderOperationService(),
+		OperationReconcile: renderOperationReconcileService(),
 		Tmpfiles:           renderTmpfiles(dirs),
 		Dirs:               dirs,
 		MountPoints:        []StateDir{{Path: KubernetesTarget, Mode: 0o755}},
@@ -138,8 +142,8 @@ func renderKubeadmReadyTarget() string {
 		"[Unit]",
 		"Description=Katl kubeadm-ready handoff point",
 		"Documentation=man:systemd.target(5)",
-		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service",
-		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service",
+		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service",
+		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service",
 		"",
 		"[Install]",
 		"WantedBy=multi-user.target",
@@ -210,6 +214,51 @@ func renderRuntimeStatusService() string {
 	}, "\n")
 }
 
+func renderOperationService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Run Katl operation %i",
+		"Documentation=man:systemd.service(5)",
+		"RequiresMountsFor=/var/lib/katl/operations",
+		"After=katl-operation-reconcile.service",
+		"Before=katl-kubeadm-ready.target",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"StandardError=journal+console",
+		"SyslogIdentifier=katl-operation",
+		"Environment=KATL_OPERATION_ID=%i",
+		"Environment=KATL_OPERATION_UNIT=katl-operation@%i.service",
+		"ExecStart=/usr/bin/katlc operation execute --operation-id %i --root=/",
+		"TimeoutStartSec=30min",
+		"",
+	}, "\n")
+}
+
+func renderOperationReconcileService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Reconcile Katl operation records",
+		"Documentation=man:systemd.service(5)",
+		"Requires=var.mount katl-generation-activate.service",
+		"RequiresMountsFor=/var/lib/katl/operations",
+		"After=local-fs.target var.mount katl-generation-activate.service systemd-sysext.service systemd-confext.service",
+		"Before=katl-kubeadm-ready.target katl-boot-complete.target katl-operation@.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"StandardError=journal+console",
+		"SyslogIdentifier=katl-operation-reconcile",
+		"ExecStart=/usr/bin/katlc operation reconcile --boot --root=/",
+		"",
+		"[Install]",
+		"RequiredBy=katl-kubeadm-ready.target",
+		"",
+	}, "\n")
+}
+
 func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if strings.TrimSpace(root) == "" {
 		return StateAssets{}, fmt.Errorf("target root is required")
@@ -254,6 +303,15 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeSymlink(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service", "../katl-runtime-handoff-status.service"); err != nil {
 		return StateAssets{}, err
 	}
+	if err := writeFile(root, "etc/systemd/system/katl-operation@.service", assets.OperationService, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-operation-reconcile.service", assets.OperationReconcile, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service", "../katl-operation-reconcile.service"); err != nil {
+		return StateAssets{}, err
+	}
 	if err := writeFile(root, "etc/tmpfiles.d/katl-state.conf", assets.Tmpfiles, 0o644); err != nil {
 		return StateAssets{}, err
 	}
@@ -272,10 +330,14 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 func stateDirs() []StateDir {
 	return []StateDir{
 		{Path: "/var/lib/katl", Mode: 0o755},
+		{Path: "/var/lib/katl/boot", Mode: 0o755},
 		{Path: "/var/lib/katl/generations", Mode: 0o755},
 		{Path: "/var/lib/katl/install", Mode: 0o755},
 		{Path: "/var/lib/katl/install/logs", Mode: 0o755},
 		{Path: "/var/lib/katl/identity", Mode: 0o755},
+		{Path: "/var/lib/katl/operations", Mode: 0o750},
+		{Path: "/var/lib/katl/cluster", Mode: 0o750},
+		{Path: "/var/lib/katl/config-requests", Mode: 0o750},
 		{Path: "/var/lib/katl/kubernetes", Mode: 0o755},
 		{Path: KubernetesSource, Mode: 0o755},
 		{Path: "/var/lib/katl/ssh", Mode: 0o755},

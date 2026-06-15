@@ -7,6 +7,7 @@ version="${KATL_VERSION:-0.0.0-dev}"
 
 mkdir -p "$DESTDIR/usr/lib/katl/vmtest"
 mkdir -p "$DESTDIR/usr/lib/katl/runtime"
+mkdir -p "$DESTDIR/usr/bin"
 mkdir -p "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants"
 ln -sf ../systemd-networkd.service "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/systemd-networkd.service"
 
@@ -31,6 +32,18 @@ if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
 else
     date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
+
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="$gomodcache" \
+go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-X main.version=$version -X main.commit=$commit -X main.date=$date" \
+    -o "$DESTDIR/usr/bin/katlc" \
+    ./cmd/katlc
 
 CGO_ENABLED=0 \
 GOOS=linux \

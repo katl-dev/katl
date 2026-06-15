@@ -90,6 +90,7 @@ for path in \
     /usr/bin/ssh-keygen \
     /usr/bin/containerd \
     /usr/bin/crun \
+    /usr/bin/katlc \
     /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
     /usr/lib/katl/vmtest/katl-vmtest-agent \
@@ -106,6 +107,8 @@ for path in \
     /usr/lib/systemd/system/katl-kubeadm-ready.target \
     /usr/lib/systemd/system/katl-state-projection-check.service \
     /usr/lib/systemd/system/katl-runtime-handoff-status.service \
+    /usr/lib/systemd/system/katl-operation@.service \
+    /usr/lib/systemd/system/katl-operation-reconcile.service \
     /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf \
     /usr/lib/systemd/system/systemd-networkd.service.d/10-katl-confext.conf \
     /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf \
@@ -132,14 +135,23 @@ file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STA
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "DefaultDependencies=no"
 file_has /usr/lib/systemd/system/katl-generation-activate.service "ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/"
-file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service"
+file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service"
 file_has /usr/lib/systemd/system/systemd-networkd.service.d/10-katl-confext.conf "After=systemd-confext.service"
 file_has /usr/lib/systemd/system/katl-state-projection-check.service "ExecStart=/usr/bin/printf 'Katl state projection ready\\n'"
 file_has /usr/lib/systemd/system/katl-runtime-handoff-status.service "ExecStart=/usr/lib/katl/runtime/katl-runtime-status --root=/"
+file_has /usr/lib/systemd/system/katl-operation@.service "ExecStart=/usr/bin/katlc operation execute --operation-id %i --root=/"
+file_has /usr/lib/systemd/system/katl-operation@.service "Environment=KATL_OPERATION_UNIT=katl-operation@%i.service"
+file_has /usr/lib/systemd/system/katl-operation@.service "TimeoutStartSec=30min"
+file_has /usr/lib/systemd/system/katl-operation-reconcile.service "ExecStart=/usr/bin/katlc operation reconcile --boot --root=/"
+file_has /usr/lib/systemd/system/katl-operation-reconcile.service "Before=katl-kubeadm-ready.target katl-boot-complete.target katl-operation@.service"
+has_path /usr/lib/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service
 file_has /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/containerd"
 file_has /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/kubelet /etc/kubernetes"
 file_has /usr/lib/sysctl.d/50-katl-kubernetes.conf "net.ipv4.ip_forward=1"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/etcd 0755 root root -"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/operations 0750 root root -"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/cluster 0750 root root -"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/config-requests 0750 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ConditionKernelCommandLine=katl.vmtest_agent=1"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent"

@@ -2,9 +2,11 @@ package operation
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -30,6 +32,8 @@ func TestStoreCreatesAndUpdatesJournalFirstRecord(t *testing.T) {
 	assertExists(t, filepath.Join(dir, "journal", "00000000000000000001.accepted.json"))
 	assertExists(t, filepath.Join(dir, "journal", "00000000000000000002.phase-prepare.json"))
 	assertExists(t, filepath.Join(dir, "record.json"))
+	assertDirMode(t, dir, 0o700)
+	assertDirMode(t, filepath.Join(dir, "journal"), 0o700)
 
 	read, err := store.Read(created.OperationID)
 	if err != nil {
@@ -325,6 +329,7 @@ func TestStoreAddsRedactedDiagnosticArtifact(t *testing.T) {
 		t.Fatalf("diagnostic artifacts = %#v", updated.DiagnosticArtifacts)
 	}
 	assertExists(t, filepath.Join(store.Root, created.OperationID, "attachments", "kubeadm-output.log"))
+	assertDirMode(t, filepath.Join(store.Root, created.OperationID, "attachments"), 0o700)
 }
 
 func TestStoreRejectsDiagnosticArtifactRewriteAndInvalidMetadata(t *testing.T) {
@@ -462,6 +467,276 @@ func TestClassifyStaleRecords(t *testing.T) {
 	}
 }
 
+func TestReconcileBootClassifiesAndPreservesRecovery(t *testing.T) {
+	store := testStore(t)
+	post := mustCreate(t, store, "op-post-mutation")
+	if _, err := store.AddPreExecMutationMarker(post.OperationID, PreExecMutationMarker{
+		MarkerID:               "marker-1",
+		Phase:                  "kubeadm-init",
+		Tool:                   "kubeadm",
+		ArgvDigest:             "sha256:" + strings.Repeat("a", 64),
+		ExpectedMutationScopes: []string{"etc-kubernetes"},
+		MarkedAt:               time.Date(2026, 6, 15, 12, 50, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("AddPreExecMutationMarker() error = %v", err)
+	}
+	terminal := mustCreate(t, store, "op-terminal")
+	completedAt := time.Date(2026, 6, 15, 12, 55, 0, 0, time.UTC)
+	if _, err := store.Update(terminal.OperationID, "complete", "terminal", func(record OperationRecord) (OperationRecord, error) {
+		record.Terminal = true
+		record.Result = ResultSucceeded
+		record.CompletedAt = &completedAt
+		return record, nil
+	}); err != nil {
+		t.Fatalf("terminal update error = %v", err)
+	}
+
+	report, err := store.ReconcileBoot(time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC), "boot-1", nil)
+	if err != nil {
+		t.Fatalf("ReconcileBoot() error = %v", err)
+	}
+	if len(report.Operations) != 2 {
+		t.Fatalf("operations = %#v", report.Operations)
+	}
+	got := map[string]ReconciledOperation{}
+	for _, op := range report.Operations {
+		got[op.OperationID] = op
+	}
+	if got[post.OperationID].StaleClass != StalePostMutation || !got[post.OperationID].RecoveryRequired || got[post.OperationID].Result != ResultFailedNeedsRepair {
+		t.Fatalf("post-mutation reconcile = %#v", got[post.OperationID])
+	}
+	if got[terminal.OperationID].StaleClass != StaleNotStale || got[terminal.OperationID].RecoveryRequired {
+		t.Fatalf("terminal reconcile = %#v", got[terminal.OperationID])
+	}
+	read, err := store.Read(post.OperationID)
+	if err != nil {
+		t.Fatalf("Read(post) error = %v", err)
+	}
+	if !read.RecoveryRequired || read.Interruption != StalePostMutation || read.Result != ResultFailedNeedsRepair {
+		t.Fatalf("post record = %#v", read)
+	}
+}
+
+func TestReconcileBootLeavesCurrentBootInvocationNotStale(t *testing.T) {
+	store := testStore(t)
+	created := mustCreate(t, store, "op-live")
+	if _, err := store.Update(created.OperationID, "start", "tool-start", func(record OperationRecord) (OperationRecord, error) {
+		record.Invocations = append(record.Invocations, InvocationRecord{
+			InvocationID:        "marker-1",
+			SystemdInvocationID: "systemd-live",
+			BootID:              "boot-current",
+			StartedAt:           time.Date(2026, 6, 15, 12, 45, 0, 0, time.UTC),
+			Result:              "started",
+		})
+		return record, nil
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	report, err := store.ReconcileBoot(time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC), "boot-current", func(invocation InvocationRecord) bool {
+		return invocation.SystemdInvocationID == "systemd-live"
+	})
+	if err != nil {
+		t.Fatalf("ReconcileBoot() error = %v", err)
+	}
+	if len(report.Operations) != 1 || report.Operations[0].StaleClass != StaleNotStale {
+		t.Fatalf("report = %#v", report)
+	}
+	read, err := store.Read(created.OperationID)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.RecoveryRequired || read.Interruption != "" {
+		t.Fatalf("live record was mutated as stale: %#v", read)
+	}
+}
+
+func TestReconcileBootRequiresProvenLiveCurrentBootInvocation(t *testing.T) {
+	store := testStore(t)
+	created := mustCreate(t, store, "op-not-live")
+	if _, err := store.Update(created.OperationID, "start", "tool-start", func(record OperationRecord) (OperationRecord, error) {
+		record.Invocations = append(record.Invocations, InvocationRecord{
+			InvocationID:        "marker-1",
+			SystemdInvocationID: "systemd-dead",
+			BootID:              "boot-current",
+			StartedAt:           time.Date(2026, 6, 15, 12, 45, 0, 0, time.UTC),
+			Result:              "started",
+		})
+		return record, nil
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	report, err := store.ReconcileBoot(time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC), "boot-current", func(InvocationRecord) bool {
+		return false
+	})
+	if err != nil {
+		t.Fatalf("ReconcileBoot() error = %v", err)
+	}
+	if len(report.Operations) != 1 || report.Operations[0].StaleClass == StaleNotStale {
+		t.Fatalf("report = %#v", report)
+	}
+	read, err := store.Read(created.OperationID)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.Interruption == "" {
+		t.Fatalf("dead invocation was not reconciled: %#v", read)
+	}
+}
+
+func TestReconcileBootFinishesResumableHostBookkeeping(t *testing.T) {
+	store := testStore(t)
+	created := mustCreate(t, store, "op-host-bookkeeping")
+	if _, err := store.Update(created.OperationID, "host-bookkeeping", "host-bookkeeping", func(record OperationRecord) (OperationRecord, error) {
+		record.OperationKind = HostBookkeepingOperationKind
+		record.Scope = HostBookkeepingGenerationScope
+		record.Phase = HostBookkeepingCompletionPhase
+		record.PhaseIndex = 1
+		record.CompletedPhases = []string{"accepted"}
+		record.Resume = ResumeHostBookkeeping
+		return record, nil
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	report, err := store.ReconcileBoot(time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC), "boot-1", nil)
+	if err != nil {
+		t.Fatalf("ReconcileBoot() error = %v", err)
+	}
+	if len(report.Operations) != 1 || report.Operations[0].StaleClass != StaleHostOnly || report.Operations[0].Result != ResultSucceeded {
+		t.Fatalf("report = %#v", report)
+	}
+	read, err := store.Read(created.OperationID)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if !read.Terminal || read.CompletedAt == nil || read.Result != ResultSucceeded || read.RecoveryRequired {
+		t.Fatalf("host bookkeeping record = %#v", read)
+	}
+}
+
+func TestReconcileBootDoesNotFinishGenericHostBookkeeping(t *testing.T) {
+	store := testStore(t)
+	created := mustCreate(t, store, "op-generic-host-bookkeeping")
+	if _, err := store.Update(created.OperationID, "host-bookkeeping", "host-bookkeeping", func(record OperationRecord) (OperationRecord, error) {
+		record.OperationKind = HostBookkeepingOperationKind
+		record.Scope = HostBookkeepingGenerationScope
+		record.Phase = "write-status"
+		record.PhaseIndex = 1
+		record.CompletedPhases = []string{"accepted"}
+		record.Resume = ResumeHostBookkeeping
+		return record, nil
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	report, err := store.ReconcileBoot(time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC), "boot-1", nil)
+	if err != nil {
+		t.Fatalf("ReconcileBoot() error = %v", err)
+	}
+	if len(report.Operations) != 1 || report.Operations[0].StaleClass != StaleHostOnly || report.Operations[0].Result == ResultSucceeded {
+		t.Fatalf("report = %#v", report)
+	}
+	read, err := store.Read(created.OperationID)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.Terminal || read.Result == ResultSucceeded || read.NextAction != "classified host-only; no automatic resume marker present" {
+		t.Fatalf("generic host bookkeeping record = %#v", read)
+	}
+}
+
+func TestReconcileBootDoesNotFinishHostBookkeepingWithToolState(t *testing.T) {
+	store := testStore(t)
+	created := mustCreate(t, store, "op-host-bookkeeping-tool-state")
+	if _, err := store.Update(created.OperationID, "host-bookkeeping", "host-bookkeeping", func(record OperationRecord) (OperationRecord, error) {
+		record.OperationKind = HostBookkeepingOperationKind
+		record.Scope = HostBookkeepingGenerationScope
+		record.Phase = HostBookkeepingCompletionPhase
+		record.PhaseIndex = 1
+		record.CompletedPhases = []string{"accepted"}
+		record.Resume = ResumeHostBookkeeping
+		record.MutatingToolInvocations = []string{"kubeadm init"}
+		return record, nil
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	report, err := store.ReconcileBoot(time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC), "boot-1", nil)
+	if err != nil {
+		t.Fatalf("ReconcileBoot() error = %v", err)
+	}
+	if len(report.Operations) != 1 || report.Operations[0].StaleClass != StaleHostOnly || report.Operations[0].Result == ResultSucceeded {
+		t.Fatalf("report = %#v", report)
+	}
+	read, err := store.Read(created.OperationID)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.Terminal || read.Result == ResultSucceeded {
+		t.Fatalf("host bookkeeping with tool state completed: %#v", read)
+	}
+}
+
+func TestOperationIDsRejectsInvalidDirectory(t *testing.T) {
+	store := testStore(t)
+	if err := os.MkdirAll(filepath.Join(store.Root, "bad..id"), 0o700); err != nil {
+		t.Fatalf("mkdir invalid operation: %v", err)
+	}
+	_, err := store.OperationIDs()
+	if err == nil || !strings.Contains(err.Error(), "invalid operation directory") {
+		t.Fatalf("OperationIDs() error = %v, want invalid directory", err)
+	}
+}
+
+func TestUpdateMissingOperationDoesNotCreateDirectory(t *testing.T) {
+	store := testStore(t)
+	_, err := store.Update("missing-operation", "event", "event", func(record OperationRecord) (OperationRecord, error) {
+		return record, nil
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil, want missing operation")
+	}
+	if _, statErr := os.Stat(filepath.Join(store.Root, "missing-operation")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("missing operation dir stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestStoreSerializesConcurrentUpdates(t *testing.T) {
+	store := testStore(t)
+	created := mustCreate(t, store, "op-concurrent")
+	const updates = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, updates)
+	for i := 0; i < updates; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := store.Update(created.OperationID, "event-"+string(rune('a'+i)), "phase", func(record OperationRecord) (OperationRecord, error) {
+				record.MutatingToolInvocations = append(record.MutatingToolInvocations, string(rune('a'+i)))
+				return record, nil
+			})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Update() error = %v", err)
+		}
+	}
+	read, err := store.Read(created.OperationID)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.LatestJournalSeq != updates+1 || len(read.MutatingToolInvocations) != updates {
+		t.Fatalf("concurrent record = %#v", read)
+	}
+}
+
 func TestStoreRejectsIncompleteOperationRecord(t *testing.T) {
 	store := testStore(t)
 	record := baseRecord("op-bad")
@@ -509,6 +784,20 @@ func assertExists(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("stat %s: %v", path, err)
+	}
+}
+
+func assertDirMode(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", path)
+	}
+	if got := info.Mode().Perm(); got != mode {
+		t.Fatalf("%s mode = %04o, want %04o", path, got, mode)
 	}
 }
 

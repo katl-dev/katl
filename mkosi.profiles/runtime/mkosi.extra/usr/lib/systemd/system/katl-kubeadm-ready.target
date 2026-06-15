@@ -1,8 +1,8 @@
 [Unit]
 Description=Katl kubeadm-ready handoff point
 Documentation=man:systemd.target(5)
-Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service
-After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service
+Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service
+After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katl-operation-reconcile.service
 
 [Install]
 WantedBy=multi-user.target

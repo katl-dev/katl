@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -27,11 +28,17 @@ const (
 	ResultFailedNeedsRepair = "failed-needs-repair"
 	ResultSucceeded         = "succeeded"
 
+	ResumeHostBookkeeping          = "finish-host-bookkeeping:record-operation-complete"
+	HostBookkeepingCompletionPhase = "record-operation-complete"
+	HostBookkeepingOperationKind   = "host-bookkeeping"
+	HostBookkeepingGenerationScope = "host-generation"
+
 	StaleTerminal     = "terminal"
 	StalePreMutation  = "stale-pre-mutation"
 	StaleHostOnly     = "stale-host-only"
 	StalePostMutation = "stale-post-mutation"
 	StaleAmbiguous    = "stale-ambiguous"
+	StaleNotStale     = "not-stale"
 )
 
 type Store struct {
@@ -84,6 +91,7 @@ type InvocationRecord struct {
 	InvocationID        string     `json:"invocationID"`
 	SystemdInvocationID string     `json:"systemdInvocationID,omitempty"`
 	UnitName            string     `json:"unitName,omitempty"`
+	BootID              string     `json:"bootID,omitempty"`
 	StartedAt           time.Time  `json:"startedAt"`
 	CompletedAt         *time.Time `json:"completedAt,omitempty"`
 	Result              string     `json:"result,omitempty"`
@@ -127,6 +135,26 @@ type Snapshot struct {
 	UpdatedAt     time.Time       `json:"updatedAt"`
 }
 
+type ReconcileReport struct {
+	APIVersion string                `json:"apiVersion"`
+	Kind       string                `json:"kind"`
+	Boot       bool                  `json:"boot"`
+	Operations []ReconciledOperation `json:"operations,omitempty"`
+	UpdatedAt  time.Time             `json:"updatedAt"`
+}
+
+type ReconciledOperation struct {
+	OperationID      string `json:"operationID"`
+	OperationKind    string `json:"operationKind"`
+	Scope            string `json:"scope"`
+	StaleClass       string `json:"staleClass"`
+	RecoveryRequired bool   `json:"recoveryRequired"`
+	NextAction       string `json:"nextAction,omitempty"`
+	Result           string `json:"result,omitempty"`
+}
+
+type LiveInvocationFunc func(InvocationRecord) bool
+
 func NewStore(root string) (Store, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -149,67 +177,166 @@ func (s Store) Create(record OperationRecord, eventID string, now time.Time) (Op
 	if err != nil {
 		return OperationRecord{}, err
 	}
-	if hasExistingJournal(filepath.Join(dir, "journal")) {
-		return OperationRecord{}, fmt.Errorf("operation %q already has a journal", record.OperationID)
+	return withOperationLock(dir, true, func() (OperationRecord, error) {
+		if hasExistingJournal(filepath.Join(dir, "journal")) {
+			return OperationRecord{}, fmt.Errorf("operation %q already has a journal", record.OperationID)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "record.json")); err == nil {
+			return OperationRecord{}, fmt.Errorf("operation %q already exists", record.OperationID)
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return OperationRecord{}, err
+		}
+		event := JournalEvent{
+			APIVersion: APIVersion,
+			Kind:       EventKind,
+			Sequence:   1,
+			EventID:    cleanEventID(eventID, "accepted"),
+			EventType:  "accepted",
+			Record:     record,
+			CreatedAt:  now.UTC(),
+		}
+		if err := s.writeEventAndSnapshot(dir, event); err != nil {
+			return OperationRecord{}, err
+		}
+		return record, nil
+	})
+}
+
+func (s Store) OperationIDs() ([]string, error) {
+	entries, err := os.ReadDir(filepath.Clean(s.Root))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read operation store: %w", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "record.json")); err == nil {
-		return OperationRecord{}, fmt.Errorf("operation %q already exists", record.OperationID)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return OperationRecord{}, err
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		id, err := cleanSegment("operation id", entry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("invalid operation directory %q: %w", entry.Name(), err)
+		}
+		ids = append(ids, id)
 	}
-	event := JournalEvent{
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func (s Store) ReconcileBoot(now time.Time, bootID string, live LiveInvocationFunc) (ReconcileReport, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	bootID = strings.TrimSpace(bootID)
+	ids, err := s.OperationIDs()
+	if err != nil {
+		return ReconcileReport{}, err
+	}
+	report := ReconcileReport{
 		APIVersion: APIVersion,
-		Kind:       EventKind,
-		Sequence:   1,
-		EventID:    cleanEventID(eventID, "accepted"),
-		EventType:  "accepted",
-		Record:     record,
-		CreatedAt:  now.UTC(),
+		Kind:       "OperationReconcileReport",
+		Boot:       true,
+		UpdatedAt:  now.UTC(),
 	}
-	if err := s.writeEventAndSnapshot(dir, event); err != nil {
-		return OperationRecord{}, err
+	for _, id := range ids {
+		record, err := s.Read(id)
+		if err != nil {
+			return ReconcileReport{}, fmt.Errorf("reconcile operation %s: %w", id, err)
+		}
+		class := ClassifyStale(record)
+		if class == StaleTerminal || hasLiveInvocation(record, bootID, live) {
+			class = StaleNotStale
+		} else {
+			record, err = s.reconcileStaleRecord(record, class, now)
+			if err != nil {
+				return ReconcileReport{}, fmt.Errorf("reconcile operation %s: %w", id, err)
+			}
+		}
+		report.Operations = append(report.Operations, ReconciledOperation{
+			OperationID:      record.OperationID,
+			OperationKind:    record.OperationKind,
+			Scope:            record.Scope,
+			StaleClass:       class,
+			RecoveryRequired: record.RecoveryRequired,
+			NextAction:       record.NextAction,
+			Result:           record.Result,
+		})
 	}
-	return record, nil
+	return report, nil
+}
+
+func (s Store) reconcileStaleRecord(record OperationRecord, class string, now time.Time) (OperationRecord, error) {
+	return s.Update(record.OperationID, "boot-reconcile-"+class, "boot-reconcile", func(next OperationRecord) (OperationRecord, error) {
+		next.Interruption = class
+		next.UpdatedAt = now.UTC()
+		switch class {
+		case StalePostMutation, StaleAmbiguous:
+			next.RecoveryRequired = true
+			next.Result = ResultFailedNeedsRepair
+			next.NextAction = "explicit repair or retry required"
+		case StaleHostOnly:
+			if canCompleteHostBookkeeping(next) {
+				completedAt := now.UTC()
+				next.Terminal = true
+				next.CompletedAt = &completedAt
+				next.Result = ResultSucceeded
+				next.NextAction = "idempotent host bookkeeping finalizer completed"
+			} else {
+				next.NextAction = "classified host-only; no automatic resume marker present"
+			}
+		case StalePreMutation:
+			next.NextAction = "resubmit operation request"
+		default:
+			next.RecoveryRequired = true
+			next.Result = ResultFailedNeedsRepair
+			next.NextAction = "manual inspection required"
+		}
+		return next, nil
+	})
 }
 
 func (s Store) Update(operationID string, eventID string, eventType string, mutate func(OperationRecord) (OperationRecord, error)) (OperationRecord, error) {
-	current, err := s.Read(operationID)
-	if err != nil {
-		return OperationRecord{}, err
-	}
-	previous := cloneRecord(current)
-	next, err := mutate(cloneRecord(current))
-	if err != nil {
-		return OperationRecord{}, err
-	}
-	if err := ValidateTransition(previous, next); err != nil {
-		return OperationRecord{}, err
-	}
-	next.RecordRevision = previous.RecordRevision + 1
-	next.LatestJournalSeq = previous.LatestJournalSeq + 1
-	if next.UpdatedAt.IsZero() || !next.UpdatedAt.After(previous.UpdatedAt) {
-		next.UpdatedAt = time.Now().UTC()
-	}
-	if err := ValidateRecord(next); err != nil {
-		return OperationRecord{}, err
-	}
-	event := JournalEvent{
-		APIVersion: APIVersion,
-		Kind:       EventKind,
-		Sequence:   next.LatestJournalSeq,
-		EventID:    cleanEventID(eventID, eventType),
-		EventType:  strings.TrimSpace(eventType),
-		Record:     next,
-		CreatedAt:  next.UpdatedAt.UTC(),
-	}
 	dir, err := s.operationDir(operationID)
 	if err != nil {
 		return OperationRecord{}, err
 	}
-	if err := s.writeEventAndSnapshot(dir, event); err != nil {
-		return OperationRecord{}, err
-	}
-	return next, nil
+	return withOperationLock(dir, false, func() (OperationRecord, error) {
+		current, err := s.Read(operationID)
+		if err != nil {
+			return OperationRecord{}, err
+		}
+		previous := cloneRecord(current)
+		next, err := mutate(cloneRecord(current))
+		if err != nil {
+			return OperationRecord{}, err
+		}
+		if err := ValidateTransition(previous, next); err != nil {
+			return OperationRecord{}, err
+		}
+		next.RecordRevision = previous.RecordRevision + 1
+		next.LatestJournalSeq = previous.LatestJournalSeq + 1
+		if next.UpdatedAt.IsZero() || !next.UpdatedAt.After(previous.UpdatedAt) {
+			next.UpdatedAt = time.Now().UTC()
+		}
+		if err := ValidateRecord(next); err != nil {
+			return OperationRecord{}, err
+		}
+		event := JournalEvent{
+			APIVersion: APIVersion,
+			Kind:       EventKind,
+			Sequence:   next.LatestJournalSeq,
+			EventID:    cleanEventID(eventID, eventType),
+			EventType:  strings.TrimSpace(eventType),
+			Record:     next,
+			CreatedAt:  next.UpdatedAt.UTC(),
+		}
+		if err := s.writeEventAndSnapshot(dir, event); err != nil {
+			return OperationRecord{}, err
+		}
+		return next, nil
+	})
 }
 
 func (s Store) AddPreExecMutationMarker(operationID string, marker PreExecMutationMarker) (OperationRecord, error) {
@@ -265,7 +392,7 @@ func (s Store) AddDiagnosticArtifact(operationID string, artifactID string, cont
 		return OperationRecord{}, err
 	}
 	attachmentPath := filepath.Join(dir, "attachments", artifactID+".log")
-	if err := writeFileNoReplace(attachmentPath, content, 0o600); err != nil {
+	if err := writeFileNoReplace(attachmentPath, content, 0o600, 0o700); err != nil {
 		return OperationRecord{}, fmt.Errorf("write diagnostic artifact: %w", err)
 	}
 	sum := sha256.Sum256(content)
@@ -278,6 +405,11 @@ func (s Store) AddDiagnosticArtifact(operationID string, artifactID string, cont
 		CreatedAt:  now.UTC(),
 	}
 	updated, err := s.Update(operationID, artifactID, "diagnostic-artifact", func(record OperationRecord) (OperationRecord, error) {
+		for _, existing := range record.DiagnosticArtifacts {
+			if existing.ArtifactID == artifactID {
+				return OperationRecord{}, fmt.Errorf("diagnostic artifact %q already exists", artifactID)
+			}
+		}
 		record.DiagnosticArtifacts = append(record.DiagnosticArtifacts, artifact)
 		return record, nil
 	})
@@ -320,7 +452,7 @@ func (s Store) writeEventAndSnapshot(dir string, event JournalEvent) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileNoReplace(filepath.Join(journalDir, name), data, 0o600); err != nil {
+	if err := writeFileNoReplace(filepath.Join(journalDir, name), data, 0o600, 0o700); err != nil {
 		return fmt.Errorf("write operation journal event: %w", err)
 	}
 	events, err := readJournal(journalDir)
@@ -574,6 +706,30 @@ func cloneStrings(values []string) []string {
 	return append([]string(nil), values...)
 }
 
+func hasLiveInvocation(record OperationRecord, bootID string, live LiveInvocationFunc) bool {
+	if strings.TrimSpace(bootID) == "" || live == nil {
+		return false
+	}
+	for _, invocation := range record.Invocations {
+		if invocation.CompletedAt == nil && strings.TrimSpace(invocation.SystemdInvocationID) != "" && invocation.BootID == bootID && live(invocation) {
+			return true
+		}
+	}
+	return false
+}
+
+func canCompleteHostBookkeeping(record OperationRecord) bool {
+	return record.Resume == ResumeHostBookkeeping &&
+		record.OperationKind == HostBookkeepingOperationKind &&
+		record.Scope == HostBookkeepingGenerationScope &&
+		record.Phase == HostBookkeepingCompletionPhase &&
+		!record.ExternalMutationStarted &&
+		!record.MutatingToolRan &&
+		len(record.MutatingToolInvocations) == 0 &&
+		len(record.PreExecMutationMarkers) == 0 &&
+		len(record.MutationScopes) == 0
+}
+
 func readSnapshot(path string, events []JournalEvent) (Snapshot, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -694,7 +850,7 @@ func marshalJSON(value any) ([]byte, error) {
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := ensureDir(dir); err != nil {
+	if err := ensureDirMode(dir, 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
@@ -735,9 +891,9 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return dirHandle.Sync()
 }
 
-func writeFileNoReplace(path string, data []byte, mode os.FileMode) error {
+func writeFileNoReplace(path string, data []byte, mode os.FileMode, dirMode os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := ensureDir(dir); err != nil {
+	if err := ensureDirMode(dir, dirMode); err != nil {
 		return err
 	}
 	if _, err := os.Stat(path); err == nil {
@@ -783,6 +939,10 @@ func writeFileNoReplace(path string, data []byte, mode os.FileMode) error {
 }
 
 func ensureDir(dir string) error {
+	return ensureDirMode(dir, 0o755)
+}
+
+func ensureDirMode(dir string, mode os.FileMode) error {
 	dir = filepath.Clean(dir)
 	existing := dir
 	for {
@@ -802,7 +962,10 @@ func ensureDir(dir string) error {
 		}
 		existing = parent
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, mode); err != nil {
 		return err
 	}
 	for current := dir; ; current = filepath.Dir(current) {
@@ -814,6 +977,39 @@ func ensureDir(dir string) error {
 		}
 	}
 	return nil
+}
+
+func withOperationLock(dir string, create bool, fn func() (OperationRecord, error)) (OperationRecord, error) {
+	if create {
+		if err := ensureDirMode(filepath.Dir(dir), 0o750); err != nil {
+			return OperationRecord{}, err
+		}
+		if err := ensureDirMode(dir, 0o700); err != nil {
+			return OperationRecord{}, err
+		}
+	} else {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return OperationRecord{}, err
+		}
+		if !info.IsDir() {
+			return OperationRecord{}, fmt.Errorf("%s exists and is not a directory", dir)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return OperationRecord{}, err
+		}
+	}
+	lockPath := filepath.Join(dir, ".lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return OperationRecord{}, fmt.Errorf("open operation lock: %w", err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return OperationRecord{}, fmt.Errorf("lock operation: %w", err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	return fn()
 }
 
 func fsyncDir(dir string) error {

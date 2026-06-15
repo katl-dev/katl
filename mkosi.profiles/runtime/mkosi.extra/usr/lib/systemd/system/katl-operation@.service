@@ -1,0 +1,16 @@
+[Unit]
+Description=Run Katl operation %i
+Documentation=man:systemd.service(5)
+RequiresMountsFor=/var/lib/katl/operations
+After=katl-operation-reconcile.service
+Before=katl-kubeadm-ready.target
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=katl-operation
+Environment=KATL_OPERATION_ID=%i
+Environment=KATL_OPERATION_UNIT=katl-operation@%i.service
+ExecStart=/usr/bin/katlc operation execute --operation-id %i --root=/
+TimeoutStartSec=30min

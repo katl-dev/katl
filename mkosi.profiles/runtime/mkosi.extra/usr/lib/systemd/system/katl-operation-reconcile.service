@@ -1,0 +1,17 @@
+[Unit]
+Description=Reconcile Katl operation records
+Documentation=man:systemd.service(5)
+Requires=var.mount katl-generation-activate.service
+RequiresMountsFor=/var/lib/katl/operations
+After=local-fs.target var.mount katl-generation-activate.service systemd-sysext.service systemd-confext.service
+Before=katl-kubeadm-ready.target katl-boot-complete.target katl-operation@.service
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=katl-operation-reconcile
+ExecStart=/usr/bin/katlc operation reconcile --boot --root=/
+
+[Install]
+RequiredBy=katl-kubeadm-ready.target
