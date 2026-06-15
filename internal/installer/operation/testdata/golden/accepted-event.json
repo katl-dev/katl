@@ -1,0 +1,40 @@
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "OperationJournalEvent",
+  "sequence": 1,
+  "eventID": "accepted",
+  "eventType": "accepted",
+  "record": {
+    "apiVersion": "katl.dev/v1alpha1",
+    "kind": "OperationRecord",
+    "schemaVersion": 1,
+    "operationID": "op-golden",
+    "operationKind": "bootstrap-init",
+    "scope": "kubeadm-state",
+    "actor": "test",
+    "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "recordRevision": 1,
+    "latestJournalSeq": 1,
+    "phasePlan": [
+      "accepted",
+      "prepare",
+      "run"
+    ],
+    "previousGenerationID": "0",
+    "candidateGenerationID": "1",
+    "phase": "accepted",
+    "phaseIndex": 0,
+    "terminal": false,
+    "resourceLocks": [
+      "generation-state.lock",
+      "kubeadm-state.lock"
+    ],
+    "externalMutationStarted": false,
+    "mutatingToolRan": false,
+    "postMutationRollbackAllowed": false,
+    "recoveryRequired": false,
+    "createdAt": "2026-06-15T12:00:00Z",
+    "updatedAt": "2026-06-15T12:00:00Z"
+  },
+  "createdAt": "2026-06-15T12:00:00Z"
+}
