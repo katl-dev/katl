@@ -48,10 +48,44 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 2 && args[0] == "cluster" && args[1] == "bootstrap" {
 		return runClusterBootstrap(ctx, args[2:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "config" && args[1] == "path" {
+		return runConfigPath(args[2:], stdout, stderr)
+	}
 	if len(args) >= 3 && args[0] == "config" && args[1] == "apply" && args[2] == "status" {
 		return runConfigApplyStatus(args[3:], stdout, stderr)
 	}
 	return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
+}
+
+func runConfigPath(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlctl config path", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	path, err := workstationConfigPath()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, path)
+	return nil
+}
+
+func workstationConfigPath() (string, error) {
+	if path := strings.TrimSpace(os.Getenv("KATLCTL_CONFIG")); path != "" {
+		return filepath.Clean(path), nil
+	}
+	if dir := strings.TrimSpace(os.Getenv("KATLCTL_CONFIG_DIR")); dir != "" {
+		return filepath.Join(filepath.Clean(dir), "katlctl.yaml"), nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("locate katlctl config directory: %w", err)
+	}
+	return filepath.Join(dir, "katl", "katlctl.yaml"), nil
 }
 
 func runConfigApplyStatus(args []string, stdout, stderr io.Writer) error {

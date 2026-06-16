@@ -62,6 +62,9 @@ client configuration for communication profiles and known nodes. It is not a
 daemon, reconciler, add-on manager, CNI manager, Flux manager, BIRD manager, or
 cluster lifecycle controller.
 
+The local workstation config path and environment overrides are defined in
+`docs/internal/katlctl-workstation-config.md`.
+
 Authority rule: `katlctl` may load operator input, transport requests, sequence
 bounded multi-node workflows, wait on returned operation IDs, and summarize
 results. Node-local `katlc` must revalidate every accepted request and is the

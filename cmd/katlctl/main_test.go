@@ -40,6 +40,65 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestConfigPathUsesXDGDefault(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("KATLCTL_CONFIG", "")
+	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	path, err := workstationConfigPath()
+	if err != nil {
+		t.Fatalf("workstationConfigPath() error = %v", err)
+	}
+	if want := filepath.Join(configHome, "katl", "katlctl.yaml"); path != want {
+		t.Fatalf("workstationConfigPath() = %q, want %q", path, want)
+	}
+}
+
+func TestConfigPathEnvOverrides(t *testing.T) {
+	configHome := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "katlctl-config")
+	configFile := filepath.Join(t.TempDir(), "custom.yaml")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("KATLCTL_CONFIG_DIR", configDir)
+	t.Setenv("KATLCTL_CONFIG", "")
+
+	path, err := workstationConfigPath()
+	if err != nil {
+		t.Fatalf("workstationConfigPath() error = %v", err)
+	}
+	if want := filepath.Join(configDir, "katlctl.yaml"); path != want {
+		t.Fatalf("workstationConfigPath() = %q, want %q", path, want)
+	}
+
+	t.Setenv("KATLCTL_CONFIG", configFile)
+	path, err = workstationConfigPath()
+	if err != nil {
+		t.Fatalf("workstationConfigPath() with file override error = %v", err)
+	}
+	if path != configFile {
+		t.Fatalf("workstationConfigPath() = %q, want %q", path, configFile)
+	}
+}
+
+func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("KATLCTL_CONFIG", "")
+	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"config", "path"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if got, want := strings.TrimSpace(stdout.String()), filepath.Join(configHome, "katl", "katlctl.yaml"); got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	var got cluster.Request
