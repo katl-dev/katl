@@ -1,6 +1,6 @@
 # Agent Guidelines
 
-Katl produces and maintains KatlOS: an installable, upgradeable, systemd-native Kubernetes node OS. Keep changes aligned with that boundary.
+Katl is a greenfield project that produces and maintains KatlOS: an installable, upgradeable, systemd-native Kubernetes node OS. Keep changes aligned with that boundary, and do not preserve premature compatibility with designs that have not shipped.
 
 ## Project Direction
 
