@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/operation"
 	installstatus "github.com/zariel/katl/internal/installer/status"
 )
 
@@ -73,7 +74,161 @@ func TestRuntimeStatusRefusesDirtyGenerationZero(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusRefusesDirtyGenerationZeroCases(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(t *testing.T, root string)
+		want   string
+	}{
+		{
+			name: "selected Kubernetes sysext",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				if err := os.RemoveAll(filepath.Join(root, "var/lib/katl/generations/0")); err != nil {
+					t.Fatal(err)
+				}
+				writeGenerationZero(t, root, []generation.ExtensionRef{{
+					Name:            "katl-kubernetes",
+					ArtifactVersion: "2026.06.04",
+					PayloadVersion:  "v1.36.2",
+					Architecture:    "x86_64",
+					SHA256:          strings.Repeat("d", 64),
+					ActivationPath:  "/run/extensions/katl-kubernetes.raw",
+					Compatibility: generation.ExtensionCompatibility{
+						RuntimeInterfaces: []string{"katl-runtime-1"},
+					},
+				}})
+			},
+			want: "selected Kubernetes sysexts are forbidden",
+		},
+		{
+			name: "kubeadm PKI",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				writeFile(t, root, "var/lib/katl/kubernetes/etc-kubernetes/pki/ca.crt", "certificate")
+			},
+			want: "kubeadm PKI exists",
+		},
+		{
+			name: "static pod manifest",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				writeFile(t, root, "var/lib/katl/kubernetes/etc-kubernetes/manifests/kube-apiserver.yaml", "pod")
+			},
+			want: "static pod manifests exist",
+		},
+		{
+			name: "kubelet bootstrap state",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				writeFile(t, root, "var/lib/kubelet/bootstrap-kubeconfig", "kubeconfig")
+			},
+			want: "kubelet bootstrap kubeconfig exists",
+		},
+		{
+			name: "kubelet join state",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				writeFile(t, root, "var/lib/kubelet/config.yaml", "kind: KubeletConfiguration\n")
+			},
+			want: "kubelet config exists",
+		},
+		{
+			name: "stacked etcd data",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				writeFile(t, root, "var/lib/etcd/member/snap/db", "etcd")
+			},
+			want: "stacked etcd data exists",
+		},
+		{
+			name: "kubelet enabled",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				writeFile(t, root, "etc/systemd/system/multi-user.target.wants/kubelet.service", "[Service]\n")
+			},
+			want: "kubelet is enabled",
+		},
+		{
+			name: "active Kubernetes sysext",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				writeFile(t, root, "var/lib/katl/artifacts/katl-kubernetes.raw", "sysext")
+				writeSymlink(t, root, "run/extensions/katl-kubernetes.raw", "/var/lib/katl/artifacts/katl-kubernetes.raw")
+			},
+			want: "active Kubernetes sysext links exist",
+		},
+		{
+			name: "wrong kubernetes projection",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				writeFile(t, root, "etc/systemd/system/etc-kubernetes.mount", "[Mount]\nWhat=/var/lib/katl/wrong/etc-kubernetes\nWhere=/etc/kubernetes\n")
+			},
+			want: "/etc/kubernetes projection points",
+		},
+		{
+			name: "operation mutation boundary",
+			mutate: func(t *testing.T, root string) {
+				t.Helper()
+				store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+				if err != nil {
+					t.Fatalf("NewStore() error = %v", err)
+				}
+				_, err = store.Create(operation.OperationRecord{
+					OperationID:           "bootstrap-001",
+					OperationKind:         "bootstrap-init",
+					Scope:                 "kubeadm-state",
+					RequestDigest:         "sha256:" + strings.Repeat("1", 64),
+					PreviousGenerationID:  "0",
+					CandidateGenerationID: "1",
+					PreExecMutationMarkers: []operation.PreExecMutationMarker{{
+						MarkerID:               "marker-001",
+						Phase:                  "kubeadm-init",
+						Tool:                   "kubeadm",
+						ArgvDigest:             "sha256:" + strings.Repeat("2", 64),
+						ExpectedMutationScopes: []string{"kubeadm-state"},
+						MarkedAt:               time.Date(2026, 6, 15, 12, 1, 0, 0, time.UTC),
+					}},
+				}, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+				if err != nil {
+					t.Fatalf("Create() error = %v", err)
+				}
+			},
+			want: "operation bootstrap-001 has mutation evidence",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			record := installStatusRecord("0")
+			if err := installstatus.WriteFile(filepath.Join(root, "var/lib/katl/install/status.json"), record); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			writeCleanGenerationZero(t, root)
+			tt.mutate(t, root)
+
+			err := run(t.Context(), []string{"--root", root}, nil)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("run() error = %v, want %q", err, tt.want)
+			}
+			decoded, readErr := installstatus.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
+			if readErr != nil {
+				t.Fatalf("read status: %v", readErr)
+			}
+			if decoded.State != installstatus.StateRuntimeFailedNeedsRepair || !strings.Contains(decoded.RefusalReason, tt.want) {
+				t.Fatalf("repair status = %#v, want refusal %q", decoded, tt.want)
+			}
+		})
+	}
+}
+
 func writeCleanGenerationZero(t *testing.T, root string) {
+	t.Helper()
+	writeGenerationZero(t, root, nil)
+}
+
+func writeGenerationZero(t *testing.T, root string, sysexts []generation.ExtensionRef) {
 	t.Helper()
 	spec := generation.GenerationSpec{
 		APIVersion:     generation.APIVersion,
@@ -91,7 +246,7 @@ func writeCleanGenerationZero(t *testing.T, root string) {
 		Boot: generation.BootSelection{
 			UKIPath: "/efi/EFI/Linux/katl-0.efi",
 		},
-		Sysexts:   []generation.ExtensionRef{},
+		Sysexts:   sysexts,
 		CreatedAt: time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
 	}
 	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStatePending, generation.HealthStateUnknown, time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC))
@@ -100,6 +255,28 @@ func writeCleanGenerationZero(t *testing.T, root string) {
 	}
 	if err := generation.WriteGeneration(root, spec, status); err != nil {
 		t.Fatalf("WriteGeneration() error = %v", err)
+	}
+}
+
+func writeFile(t *testing.T, root string, path string, data string) {
+	t.Helper()
+	full := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSymlink(t *testing.T, root string, path string, target string) {
+	t.Helper()
+	full := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, full); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -257,6 +257,9 @@ func ValidateCleanGenerationZero(root string, generationID string) error {
 	if len(spec.Sysexts) > 0 {
 		return fmt.Errorf("generation 0 is not clean: selected Kubernetes sysexts are forbidden")
 	}
+	if err := validateKubernetesProjectionUnit(root); err != nil {
+		return err
+	}
 	checks := []struct {
 		path     string
 		nonEmpty bool
@@ -299,6 +302,29 @@ func ValidateCleanGenerationZero(root string, generationID string) error {
 	}
 	if err := validateNoDirtyGenerationZeroOperations(root); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateKubernetesProjectionUnit(root string) error {
+	path := filepath.Join(filepath.Clean(root), "etc/systemd/system/etc-kubernetes.mount")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read /etc/systemd/system/etc-kubernetes.mount: %w", err)
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		values[key] = value
+	}
+	if values["What"] != generation.KubernetesSource || values["Where"] != generation.KubernetesTarget {
+		return fmt.Errorf("generation 0 is not clean: /etc/kubernetes projection points at %q -> %q, want %q -> %q", values["What"], values["Where"], generation.KubernetesSource, generation.KubernetesTarget)
 	}
 	return nil
 }
