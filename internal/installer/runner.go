@@ -748,6 +748,9 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	install.LoaderRecord = &result.Record
+	if err := writeInitialBootSelection(install.TargetRoot, result.Record); err != nil {
+		return err
+	}
 	if _, err := WriteClusterIntent(ClusterIntentRequest{
 		TargetRoot:         install.TargetRoot,
 		Manifest:           install.Manifest,
@@ -762,6 +765,27 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	return recordStep(ctx, install, WriteInstallRecord)
+}
+
+func writeInitialBootSelection(targetRoot string, record generation.Record) error {
+	entry := strings.TrimSpace(record.Boot.LoaderEntryPath)
+	if entry == "" {
+		return fmt.Errorf("loader entry path is required for boot selection")
+	}
+	now := timeNow()
+	if !record.CreatedAt.IsZero() {
+		now = record.CreatedAt
+	}
+	return generation.WriteBootSelection(targetRoot, generation.BootSelectionRecord{
+		APIVersion:            generation.APIVersion,
+		Kind:                  generation.BootSelectionKind,
+		DefaultGenerationID:   record.GenerationID,
+		BootedGenerationID:    record.GenerationID,
+		Generation0FallbackID: record.GenerationID,
+		DefaultBootEntry:      entry,
+		BootedBootEntry:       entry,
+		UpdatedAt:             now,
+	})
 }
 
 type verifyTargetStep struct{}

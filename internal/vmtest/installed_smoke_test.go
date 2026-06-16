@@ -175,6 +175,8 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		CPUs:    2,
 		Timeout: 12 * time.Minute,
 	}
+	const cleanHandoffSignal = "katl-runtime-status state=waiting-for-cluster-bootstrap"
+	const bootHealthSuccessSignal = "katl-boot-health generation=0 result=success"
 	result, err = RunFirstInstall(ctx, runner, scenario, FirstInstallConfig{
 		Installer: InstallerBootConfig{
 			InstallerUKI:    worldRun.Config.Installer.InstallerUKI,
@@ -186,6 +188,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 		},
 		Runtime: InstalledRuntimeConfig{
 			ESPArtifacts: worldRun.Config.Runtime.ESPArtifacts,
+			Expect:       bootHealthSuccessSignal,
 			VM:           vm,
 		},
 		UseInstalledESP: worldRun.Config.UseInstalledESP,
@@ -205,6 +208,23 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	}
 	if !strings.Contains(string(serial), runtimeBootSignal) {
 		t.Fatalf("runtime serial did not record runtime boot signal: %s", serial)
+	}
+	if !strings.Contains(string(serial), cleanHandoffSignal) {
+		t.Fatalf("runtime serial did not record clean generation 0 handoff: %s", serial)
+	}
+	if !strings.Contains(string(serial), bootHealthSuccessSignal) {
+		t.Fatalf("runtime serial did not record boot-complete health promotion: %s", serial)
+	}
+	for _, refused := range []string{
+		"generation 0 is not clean",
+		"katl-boot-health:",
+		"katl-boot-health.service: Failed",
+		"katl-runtime-handoff-status.service: Failed",
+		"katl-boot-complete.target/start failed",
+	} {
+		if strings.Contains(string(serial), refused) {
+			t.Fatalf("runtime serial recorded failed generation 0 handoff %q: %s", refused, serial)
+		}
 	}
 	_ = targetDiskPath(t, result)
 }

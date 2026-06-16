@@ -117,10 +117,10 @@ func TestRuntimeStatusService(t *testing.T) {
 	want := `[Unit]
 Description=Record Katl runtime handoff status
 Documentation=man:systemd.service(5)
-Requires=katlc-agent.service
-After=katlc-agent.service
+Requires=katlc-agent.service etc-kubernetes.mount
+After=katlc-agent.service etc-kubernetes.mount
 Before=katl-boot-complete.target
-RequiresMountsFor=/var/lib/katl
+RequiresMountsFor=/var/lib/katl /etc/kubernetes
 
 [Service]
 Type=oneshot
