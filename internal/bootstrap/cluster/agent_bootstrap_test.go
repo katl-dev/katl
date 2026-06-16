@@ -198,6 +198,69 @@ func TestRunAgentBootstrapRunsUserBootstrapWithReturnedKubeconfig(t *testing.T) 
 	}
 }
 
+func TestRunAgentBootstrapSubmitsWorkerJoinAfterInit(t *testing.T) {
+	cpClient := &fakeAgentClient{
+		status: readyAgentStatus("machine-cp-1"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-init-1",
+			RequestDigest: "digest-init",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-1"},
+		},
+		events: []*agentapi.OperationEvent{{
+			OperationId: "bootstrap-init-1",
+			JournalSeq:  1,
+			Terminal:    true,
+			Status:      &agentapi.OperationStatus{OperationId: "bootstrap-init-1", Terminal: true, Result: "succeeded"},
+		}},
+		getStatus: &agentapi.OperationStatus{
+			OperationId:     "bootstrap-init-1",
+			Terminal:        true,
+			Result:          "succeeded",
+			AdminKubeconfig: adminKubeconfig(),
+		},
+	}
+	workerClient := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-worker-1", "bootstrap-join-worker"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-join-worker-1",
+			RequestDigest: "digest-worker",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-join-worker-1"},
+		},
+		events: []*agentapi.OperationEvent{{
+			OperationId: "bootstrap-join-worker-1",
+			JournalSeq:  1,
+			Terminal:    true,
+			Status:      &agentapi.OperationStatus{OperationId: "bootstrap-join-worker-1", Terminal: true, Result: "succeeded"},
+		}},
+	}
+	connector := newFakeAgentConnector(map[string]*fakeAgentClient{
+		"cp-1":     cpClient,
+		"worker-1": workerClient,
+	})
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	result, err := RunAgentBootstrap(context.Background(), Request{
+		Inventory:           validInventory(),
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+	}, AgentBootstrapDependencies{Connector: connector})
+	if err != nil {
+		t.Fatalf("RunAgentBootstrap() error = %v", err)
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "worker-join", "kubeconfig"}) {
+		t.Fatalf("phases = %#v", got)
+	}
+	if len(workerClient.submitRequests) != 1 {
+		t.Fatalf("worker submit requests = %d, want 1", len(workerClient.submitRequests))
+	}
+	req := workerClient.submitRequests[0]
+	if req.OperationKind != "bootstrap-join-worker" || req.ExpectedMachineId != "machine-worker-1" || req.ExpectedCurrentGenerationId != "0" {
+		t.Fatalf("worker submit request = %#v", req)
+	}
+	if req.Bootstrap.InventoryNodeName != "worker-1" || req.Bootstrap.SystemRole != "worker" || req.Bootstrap.BootstrapProfileRef != "worker" || req.Bootstrap.JoinMaterialRef != "bootstrap-init-1" {
+		t.Fatalf("worker bootstrap request = %#v", req.Bootstrap)
+	}
+}
+
 func TestRunAgentBootstrapRedactsSubmitFailure(t *testing.T) {
 	secret := "abcdef.0123456789abcdef"
 	connector := newFakeAgentConnector(map[string]*fakeAgentClient{
@@ -300,9 +363,13 @@ func (w *fakeAgentWatch) Recv() (*agentapi.OperationEvent, error) {
 }
 
 func readyAgentStatus(machineID string) *agentapi.NodeStatus {
+	return readyAgentStatusWithKinds(machineID, "bootstrap-init")
+}
+
+func readyAgentStatusWithKinds(machineID string, kinds ...string) *agentapi.NodeStatus {
 	return &agentapi.NodeStatus{
 		ApiVersion:              agentAPIVersion,
 		MachineId:               machineID,
-		SupportedOperationKinds: []string{"bootstrap-init"},
+		SupportedOperationKinds: kinds,
 	}
 }

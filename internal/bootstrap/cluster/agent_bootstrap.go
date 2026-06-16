@@ -162,18 +162,25 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		return result, err
 	}
 	status := statuses[initNode.Name]
-	credentials, err := submitAndWaitBootstrapInit(ctx, initNode, plan, status, deps)
+	initResult, err := submitAndWaitBootstrapInit(ctx, initNode, plan, status, deps)
 	if err != nil {
 		result.addPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "failed")
 		return result, fmt.Errorf("bootstrap-init operation on %s: %s", initNode.Name, inventory.Redact(err.Error()))
 	}
 	result.addPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed")
+	for _, node := range workerNodes(plan) {
+		if err := submitAndWaitWorkerJoin(ctx, node, plan, statuses[node.Name], initResult.OperationID, deps); err != nil {
+			result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "failed")
+			return result, fmt.Errorf("worker join operation on %s: %s", node.Name, inventory.Redact(err.Error()))
+		}
+		result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "passed")
+	}
 	stableEndpointReady := false
 	if bootstrap.enabled() {
 		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
 			Server:         bootstrapServer(initNode, plan),
 			StableEndpoint: bootstrap.StableEndpoint,
-			Credentials:    credentials,
+			Credentials:    initResult.Credentials,
 			PreWaits:       bootstrap.preWaits(),
 			Manifests:      bootstrap.Manifests,
 			Waits:          bootstrap.waitsWithEndpoint(),
@@ -198,9 +205,9 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		ClusterName:              valueOrDefault(request.ClusterName, "katl"),
 		ContextName:              valueOrDefault(request.ContextName, "katl"),
 		UserName:                 valueOrDefault(request.UserName, "katl-admin"),
-		CertificateAuthorityData: credentials.CertificateAuthorityData,
-		ClientCertificateData:    credentials.ClientCertificateData,
-		ClientKeyData:            credentials.ClientKeyData,
+		CertificateAuthorityData: initResult.Credentials.CertificateAuthorityData,
+		ClientCertificateData:    initResult.Credentials.ClientCertificateData,
+		ClientKeyData:            initResult.Credentials.ClientKeyData,
 	})
 	if err != nil {
 		result.addPhase("kubeconfig", "", "", "failed")
@@ -222,7 +229,6 @@ func validateAgentPlan(plan inventory.Plan) error {
 		case inventory.ActionControlPlaneJoin:
 			return fmt.Errorf("node %q requires %s, which is not supported until katlc exposes join material over the agent API", node.Name, node.Action)
 		case inventory.ActionWorkerJoin:
-			return fmt.Errorf("node %q requires %s, which is not supported until katlc exposes join material over the agent API", node.Name, node.Action)
 		default:
 			return fmt.Errorf("node %q has unsupported bootstrap action %q", node.Name, node.Action)
 		}
@@ -261,8 +267,9 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 			if status.GetApiVersion() != agentAPIVersion {
 				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: fmt.Sprintf("node reports API version %q", status.GetApiVersion())})
 			}
-			if !contains(status.GetSupportedOperationKinds(), agentBootstrapInitKind) {
-				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: "bootstrap-init operation is not supported"})
+			required := requiredAgentOperationKind(node.Action)
+			if required != "" && !contains(status.GetSupportedOperationKinds(), required) {
+				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: fmt.Sprintf("%s operation is not supported", required)})
 			}
 			if status.GetOperationLockHeld() {
 				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: fmt.Sprintf("operation lock is held by %s", strings.Join(status.GetActiveOperationIds(), ","))})
@@ -280,26 +287,31 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 	return report
 }
 
-func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) (AdminCredentials, error) {
+type bootstrapInitResult struct {
+	OperationID string
+	Credentials AdminCredentials
+}
+
+func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) (bootstrapInitResult, error) {
 	conn, err := deps.Connector.Connect(ctx, node)
 	if err != nil {
-		return AdminCredentials{}, fmt.Errorf("connect to katlc agent: %w", err)
+		return bootstrapInitResult{}, fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
 	req := bootstrapInitRequest(node, plan, status, deps)
 	accepted, err := conn.Client.SubmitOperation(ctx, req)
 	if err != nil {
-		return AdminCredentials{}, fmt.Errorf("submit operation: %w", err)
+		return bootstrapInitResult{}, fmt.Errorf("submit operation: %w", err)
 	}
 	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
 	if err != nil {
-		return AdminCredentials{}, err
+		return bootstrapInitResult{}, err
 	}
 	if !final.GetTerminal() {
-		return AdminCredentials{}, fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
+		return bootstrapInitResult{}, fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
 	}
 	if final.GetResult() != "" && final.GetResult() != operation.ResultSucceeded {
-		return AdminCredentials{}, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
+		return bootstrapInitResult{}, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
 	}
 	output, err := conn.Client.GetOperation(ctx, &agentapi.GetOperationRequest{
 		OperationId:           accepted.GetOperationId(),
@@ -307,17 +319,50 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 		IncludeDiagnostics:    "bootstrap-output",
 	})
 	if err != nil {
-		return AdminCredentials{}, fmt.Errorf("get bootstrap output for operation %s: %w", accepted.GetOperationId(), err)
+		return bootstrapInitResult{}, fmt.Errorf("get bootstrap output for operation %s: %w", accepted.GetOperationId(), err)
 	}
-	return parseAdminCredentials([]byte(output.GetAdminKubeconfig()))
+	credentials, err := parseAdminCredentials([]byte(output.GetAdminKubeconfig()))
+	if err != nil {
+		return bootstrapInitResult{}, err
+	}
+	return bootstrapInitResult{OperationID: accepted.GetOperationId(), Credentials: credentials}, nil
+}
+
+func submitAndWaitWorkerJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, joinMaterialRef string, deps AgentBootstrapDependencies) error {
+	conn, err := deps.Connector.Connect(ctx, node)
+	if err != nil {
+		return fmt.Errorf("connect to katlc agent: %w", err)
+	}
+	defer closeAgent(conn)
+	req := bootstrapOperationRequest(node, plan, status, deps, "bootstrap-join-worker")
+	req.Bootstrap.JoinMaterialRef = strings.TrimSpace(joinMaterialRef)
+	accepted, err := conn.Client.SubmitOperation(ctx, req)
+	if err != nil {
+		return fmt.Errorf("submit operation: %w", err)
+	}
+	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
+	if err != nil {
+		return err
+	}
+	if !final.GetTerminal() {
+		return fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
+	}
+	if final.GetResult() != "" && final.GetResult() != operation.ResultSucceeded {
+		return fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
+	}
+	return nil
 }
 
 func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) *agentapi.SubmitOperationRequest {
+	return bootstrapOperationRequest(node, plan, status, deps, agentBootstrapInitKind)
+}
+
+func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies, kind string) *agentapi.SubmitOperationRequest {
 	return &agentapi.SubmitOperationRequest{
 		ApiVersion:                  agentAPIVersion,
 		Kind:                        agentSubmitOperationKind,
 		ClientRequestId:             clientRequestID(node, deps.now()),
-		OperationKind:               agentBootstrapInitKind,
+		OperationKind:               kind,
 		Actor:                       valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
 		ExpectedMachineId:           strings.TrimSpace(status.GetMachineId()),
 		ExpectedCurrentGenerationId: agentExpectedGeneration0ID,
@@ -329,6 +374,19 @@ func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, statu
 			BootstrapProfileRef:      bootstrapProfileRef(node),
 			ControlPlaneEndpoint:     plan.ControlPlaneEndpoint,
 		},
+	}
+}
+
+func requiredAgentOperationKind(action inventory.BootstrapAction) string {
+	switch action {
+	case inventory.ActionInit:
+		return "bootstrap-init"
+	case inventory.ActionWorkerJoin:
+		return "bootstrap-join-worker"
+	case inventory.ActionControlPlaneJoin:
+		return "bootstrap-join-control-plane"
+	default:
+		return ""
 	}
 }
 
