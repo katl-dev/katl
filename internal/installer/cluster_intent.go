@@ -105,6 +105,9 @@ func WriteClusterIntent(request ClusterIntentRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := writeClusterKubeadmInput(request.TargetRoot, intent, request.KubeadmConfigs); err != nil {
+		return "", err
+	}
 	data, err := json.MarshalIndent(intent, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal cluster intent: %w", err)
@@ -141,6 +144,18 @@ func ReadClusterIntent(root string) (ClusterIntent, string, error) {
 		return ClusterIntent{}, "", fmt.Errorf("cluster intent kind must be %q", ClusterIntentKind)
 	}
 	return intent, digestBytes(data), nil
+}
+
+func StoredKubeadmInputDir(root string, ref string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", fmt.Errorf("runtime root is required")
+	}
+	ref, err := cleanIntentSegment("kubeadm config ref", ref)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Clean(root), "var/lib/katl/cluster/kubeadm", ref), nil
 }
 
 func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
@@ -224,6 +239,71 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 	return intent, nil
 }
 
+func writeClusterKubeadmInput(root string, intent ClusterIntent, configs map[string]kubeadmconfig.Plan) error {
+	if intent.Kubeadm == nil {
+		return nil
+	}
+	ref := strings.TrimSpace(intent.Kubeadm.ConfigRef)
+	if ref == "" {
+		return fmt.Errorf("cluster intent kubeadm configRef is required")
+	}
+	plan, ok := configs[ref]
+	if !ok {
+		return fmt.Errorf("cluster intent kubeadm configRef %q was not resolved", ref)
+	}
+	dir, err := StoredKubeadmInputDir(root, ref)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("replace stored kubeadm input directory: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create stored kubeadm input directory: %w", err)
+	}
+	if err := writeStoredKubeadmFile(dir, ref, plan.Config); err != nil {
+		return err
+	}
+	for _, patch := range plan.Patches {
+		if err := writeStoredKubeadmFile(dir, ref, patch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeStoredKubeadmFile(dir string, ref string, file kubeadmconfig.File) error {
+	rel, err := storedKubeadmRelativePath(ref, file.RenderPath)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		return fmt.Errorf("create stored kubeadm input parent: %w", err)
+	}
+	mode := file.Mode.Perm()
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := os.WriteFile(target, file.Content, mode); err != nil {
+		return fmt.Errorf("write stored kubeadm input %s: %w", rel, err)
+	}
+	return nil
+}
+
+func storedKubeadmRelativePath(ref string, renderPath string) (string, error) {
+	base := filepath.ToSlash(filepath.Join("/etc/katl/kubeadm", ref))
+	renderPath = filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(strings.TrimSpace(renderPath), "/")))
+	if renderPath == base || !strings.HasPrefix(renderPath, base+"/") {
+		return "", fmt.Errorf("kubeadm input path %q must be under %s", renderPath, base)
+	}
+	rel := strings.TrimPrefix(renderPath, base+"/")
+	if rel == "" || rel == "." || strings.HasPrefix(rel, "../") || strings.Contains(rel, "/../") {
+		return "", fmt.Errorf("kubeadm input path %q escapes stored input directory", renderPath)
+	}
+	return filepath.FromSlash(rel), nil
+}
+
 func digestKubeadmPlan(plan kubeadmconfig.Plan) string {
 	hash := sha256.New()
 	writeDigestFile(hash, "config", plan.Config)
@@ -273,4 +353,15 @@ func copyBootstrapLabels(labels map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func cleanIntentSegment(name string, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	if strings.ContainsAny(value, `/\`) || value == "." || value == ".." || filepath.Clean(value) != value {
+		return "", fmt.Errorf("%s %q must be a single path segment", name, value)
+	}
+	return value, nil
 }

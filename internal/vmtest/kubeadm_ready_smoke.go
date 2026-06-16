@@ -156,7 +156,9 @@ func waitKubeadmReadySmoke(ctx context.Context, guest *GuestControl, plan Kubead
 	deadline := time.Now().Add(plan.ReadyTimeout)
 	var lastErr error
 	for {
-		if _, err := guest.Systemctl(ctx, "is-active", "--quiet", "katl-kubeadm-ready.target"); err == nil {
+		if _, err := guest.Systemctl(ctx, "start", "katl-kubeadm-ready.target"); err != nil {
+			lastErr = err
+		} else if _, err := guest.Systemctl(ctx, "is-active", "--quiet", "katl-kubeadm-ready.target"); err == nil {
 			return nil
 		} else {
 			lastErr = err

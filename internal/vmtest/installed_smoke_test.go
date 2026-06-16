@@ -371,11 +371,15 @@ func TestInstalledRuntimeKubeadmReadySmoke(t *testing.T) {
 		}
 		result = RunInstalledKubeadmReadySmoke(ctx, result, KubeadmReadySmokeConfig{
 			Runtime: config,
+			Smoke: KubeadmReadySmokePlan{
+				ReadyTimeout:      20 * time.Second,
+				ReadyPollInterval: time.Second,
+			},
 		}, VMRunner{})
 		if err := worldRun.Runner.Write(scenario, result); err != nil {
 			t.Fatalf("Write() error = %v", err)
 		}
-		requireInstalledRuntimeKubeadmReadyTranscript(t, result)
+		requireInstalledRuntimeKubeadmReadyNotTerminal(t, result)
 		return
 	}
 	options := DefaultOptions()
@@ -451,6 +455,20 @@ func requireInstalledRuntimeKubeadmReadyTranscript(t *testing.T, result Result) 
 		t.Fatalf("read vsock transcript: %v", err)
 	}
 	if !strings.Contains(string(transcript), `"method":"RunCommand"`) || !strings.Contains(string(transcript), "katl-kubeadm-ready.target") || !strings.Contains(string(transcript), "/usr/bin/katlc") {
+		t.Fatalf("vsock transcript did not record kubeadm-ready checks: %s", transcript)
+	}
+}
+
+func requireInstalledRuntimeKubeadmReadyNotTerminal(t *testing.T, result Result) {
+	t.Helper()
+	if result.Status != StatusFailed || (!strings.Contains(result.FailureSummary, "katl-kubeadm-ready.target") && !strings.Contains(result.FailureSummary, "kubeadm-config")) {
+		t.Fatalf("Status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
+	}
+	transcript, err := os.ReadFile(result.Artifacts.VSockTranscript)
+	if err != nil {
+		t.Fatalf("read vsock transcript: %v", err)
+	}
+	if !strings.Contains(string(transcript), `"method":"RunCommand"`) || !strings.Contains(string(transcript), "katl-kubeadm-ready.target") {
 		t.Fatalf("vsock transcript did not record kubeadm-ready checks: %s", transcript)
 	}
 }

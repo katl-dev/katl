@@ -178,6 +178,7 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	if candidateID == "" {
 		candidateID = id + "-candidate"
 	}
+	bootstrapRequest.CandidateGenerationID = candidateID
 	plan, err := kubeadmPlanFromSubmit(req, id)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operation request: %v", err)
@@ -194,7 +195,7 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		ExpectedClusterIntentDigest: req.ExpectedClusterIntentDigest,
 		RequestDigest:               digest,
 		Phase:                       "accepted",
-		PhasePlan:                   []string{"accepted", plan.Phase},
+		PhasePlan:                   []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", plan.Phase},
 		CandidateGenerationID:       candidateID,
 		BootstrapRequest:            &bootstrapRequest,
 		ActivationMode:              operation.ActivationModeLive,
@@ -628,7 +629,11 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 	if err := cleanPublicID("operationID", operationID); err != nil {
 		return toolPlan{}, err
 	}
-	configPath := "/etc/katl/kubeadm/" + operationID + ".yaml"
+	ref := strings.TrimSpace(req.Bootstrap.BootstrapProfileRef)
+	if err := cleanPublicID("bootstrapProfileRef", ref); err != nil {
+		return toolPlan{}, err
+	}
+	configPath := "/etc/katl/kubeadm/" + ref + "/config.yaml"
 	plan := toolPlan{
 		MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
 	}

@@ -517,7 +517,6 @@ func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 			KubernetesPayloadVersion: "v1.35.0",
 			BootstrapProfileRef:      "default",
 			ControlPlaneEndpoint:     "node-a.example.test:6443",
-			KubeadmInputDigest:       "sha256:" + strings.Repeat("1", 64),
 		},
 	}
 }

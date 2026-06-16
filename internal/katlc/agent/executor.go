@@ -17,12 +17,15 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/installer/bootstrapplan"
+	"github.com/zariel/katl/internal/installer/bootstrapruntime"
 	"github.com/zariel/katl/internal/installer/operation"
 )
 
 const (
 	defaultToolTimeout = 25 * time.Minute
 	maxToolTimeout     = 25 * time.Minute
+	readinessTimeout   = 2 * time.Minute
 )
 
 type ToolResult struct {
@@ -41,6 +44,7 @@ type Executor struct {
 	AgentStartID string
 	Now          func() time.Time
 	RunTool      ToolRunner
+	RunReadiness ToolRunner
 	Async        bool
 }
 
@@ -53,6 +57,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		AgentStartID: strings.TrimSpace(agentStartID),
 		Now:          func() time.Time { return time.Now().UTC() },
 		RunTool:      runChildProcess,
+		RunReadiness: runReadinessCommand,
 		Async:        true,
 	}
 }
@@ -105,6 +110,16 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		_, markErr := e.failRecord(record.OperationID, "executor-timeout-too-large", "executor-plan-invalid", "agent executor rejected operation timeout", fmt.Errorf("timeout must not exceed %s", maxToolTimeout))
 		return markErr
 	}
+	prepared, err := e.prepareBootstrapRuntime(ctx, record)
+	if err != nil {
+		return err
+	}
+	record = prepared
+	ready, err := e.gateBootstrapReadiness(ctx, record)
+	if err != nil {
+		return err
+	}
+	record = ready
 	markerID := strings.TrimSpace(plan.MarkerID)
 	if markerID == "" {
 		markerID = generatedMarkerID(plan.Phase, plan.Argv)
@@ -242,10 +257,60 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	return nil
 }
 
+func (e *Executor) prepareBootstrapRuntime(ctx context.Context, record operation.OperationRecord) (operation.OperationRecord, error) {
+	if ctx.Err() != nil {
+		return operation.OperationRecord{}, ctx.Err()
+	}
+	if !requiresBootstrapRuntime(record) {
+		return record, nil
+	}
+	plan, err := bootstrapplan.FromOperation(e.Root, record)
+	if err != nil {
+		updated, markErr := e.failRecordPhase(record.OperationID, "bootstrap-runtime-plan-refused", "prepare-bootstrap-runtime", "prepare-bootstrap-runtime", "bootstrap runtime planning failed before kubeadm mutation", err)
+		return updated, errors.Join(err, markErr)
+	}
+	startedAt := e.clock()
+	if _, err := e.Store.Update(record.OperationID, "prepare-bootstrap-runtime-start", "prepare-bootstrap-runtime", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Phase = "prepare-bootstrap-runtime"
+		record.NextAction = "prepare operation-scoped Kubernetes runtime before kubeadm"
+		record.UpdatedAt = startedAt
+		return record, nil
+	}); err != nil {
+		return operation.OperationRecord{}, err
+	}
+	result, err := bootstrapruntime.Prepare(e.Root, plan, startedAt)
+	if err != nil {
+		failedAt := e.clock()
+		_, artifactErr := e.Store.AddDiagnosticArtifact(record.OperationID, "prepare-bootstrap-runtime-error", []byte(inventory.Redact(err.Error())), failedAt)
+		updated, markErr := e.failRecordPhase(record.OperationID, "prepare-bootstrap-runtime-failed", "prepare-bootstrap-runtime", "prepare-bootstrap-runtime", "bootstrap runtime preparation failed before kubeadm mutation", errors.Join(err, artifactErr))
+		return updated, errors.Join(err, artifactErr, markErr)
+	}
+	updatedAt := e.clock()
+	updated, err := e.Store.Update(record.OperationID, "prepare-bootstrap-runtime-complete", "prepare-bootstrap-runtime", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Phase = "prepare-bootstrap-runtime"
+		record.CompletedPhases = appendMissing(record.CompletedPhases, "accepted", "prepare-bootstrap-runtime")
+		record.PhaseIndex = len(record.CompletedPhases)
+		record.ActivationState = operation.ActivationStateActiveLive
+		record.GenerationCommitState = operation.GenerationCommitCandidate
+		record.CandidateGenerationID = result.Record.GenerationID
+		record.NextAction = "wait for katl-kubeadm-ready.target before kubeadm"
+		record.UpdatedAt = updatedAt
+		return record, nil
+	})
+	if err != nil {
+		return operation.OperationRecord{}, err
+	}
+	return updated, nil
+}
+
 func (e *Executor) failRecord(operationID string, eventID string, eventType string, nextAction string, cause error) (operation.OperationRecord, error) {
+	return e.failRecordPhase(operationID, eventID, eventType, "dispatch-failed", nextAction, cause)
+}
+
+func (e *Executor) failRecordPhase(operationID string, eventID string, eventType string, phase string, nextAction string, cause error) (operation.OperationRecord, error) {
 	now := e.clock()
 	return e.Store.Update(operationID, eventID, eventType, func(record operation.OperationRecord) (operation.OperationRecord, error) {
-		record.Phase = "dispatch-failed"
+		record.Phase = phase
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true
 		record.NextAction = nextAction
@@ -255,6 +320,60 @@ func (e *Executor) failRecord(operationID string, eventID string, eventType stri
 		record.CompletedAt = &now
 		return record, nil
 	})
+}
+
+func (e *Executor) gateBootstrapReadiness(ctx context.Context, record operation.OperationRecord) (operation.OperationRecord, error) {
+	if ctx.Err() != nil {
+		return operation.OperationRecord{}, ctx.Err()
+	}
+	if !requiresBootstrapRuntime(record) {
+		return record, nil
+	}
+	startedAt := e.clock()
+	if _, err := e.Store.Update(record.OperationID, "bootstrap-runtime-ready-start", "bootstrap-runtime-ready", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Phase = "bootstrap-runtime-ready"
+		record.NextAction = "start katl-kubeadm-ready.target before kubeadm"
+		record.UpdatedAt = startedAt
+		return record, nil
+	}); err != nil {
+		return operation.OperationRecord{}, err
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, readinessTimeout)
+	defer cancel()
+	result := e.readinessRunner()(readyCtx, nil, func(int) {})
+	if errors.Is(readyCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
+		result.Err = readyCtx.Err()
+		result.ExitStatus = -1
+	}
+	completedAt := e.clock()
+	if result.Err != nil || result.ExitStatus != 0 {
+		var artifactErr error
+		if len(result.Stdout) > 0 {
+			if _, err := e.Store.AddDiagnosticArtifact(record.OperationID, "bootstrap-runtime-ready-stdout", []byte(inventory.Redact(string(result.Stdout))), completedAt); err != nil {
+				artifactErr = errors.Join(artifactErr, err)
+			}
+		}
+		if len(result.Stderr) > 0 {
+			if _, err := e.Store.AddDiagnosticArtifact(record.OperationID, "bootstrap-runtime-ready-stderr", []byte(inventory.Redact(string(result.Stderr))), completedAt); err != nil {
+				artifactErr = errors.Join(artifactErr, err)
+			}
+		}
+		cause := fmt.Errorf("katl-kubeadm-ready.target gate failed: %s", toolFailure(result))
+		updated, markErr := e.failRecordPhase(record.OperationID, "bootstrap-runtime-ready-failed", "bootstrap-runtime-ready", "bootstrap-runtime-ready", "bootstrap runtime readiness failed before kubeadm mutation", errors.Join(cause, artifactErr))
+		return updated, errors.Join(cause, artifactErr, markErr)
+	}
+	updated, err := e.Store.Update(record.OperationID, "bootstrap-runtime-ready-complete", "bootstrap-runtime-ready", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Phase = "bootstrap-runtime-ready"
+		record.CompletedPhases = appendMissing(record.CompletedPhases, "bootstrap-runtime-ready")
+		record.PhaseIndex = len(record.CompletedPhases)
+		record.NextAction = "run kubeadm through katlc agent executor"
+		record.UpdatedAt = completedAt
+		return record, nil
+	})
+	if err != nil {
+		return operation.OperationRecord{}, err
+	}
+	return updated, nil
 }
 
 func (e *Executor) operationStoreRoot() string {
@@ -280,6 +399,47 @@ func (e *Executor) toolRunner() ToolRunner {
 		return e.RunTool
 	}
 	return runChildProcess
+}
+
+func (e *Executor) readinessRunner() ToolRunner {
+	if e.RunReadiness != nil {
+		return e.RunReadiness
+	}
+	return runReadinessCommand
+}
+
+func requiresBootstrapRuntime(record operation.OperationRecord) bool {
+	if record.BootstrapRequest == nil {
+		return false
+	}
+	switch record.OperationKind {
+	case bootstrapplan.OperationKindInit, bootstrapplan.OperationKindJoinWorker:
+		return true
+	default:
+		return false
+	}
+}
+
+func runReadinessCommand(ctx context.Context, _ []string, started func(int)) ToolResult {
+	commands := [][]string{
+		{"/usr/bin/systemctl", "daemon-reload"},
+		{"/usr/bin/systemctl", "restart", "systemd-sysext.service"},
+		{"/usr/bin/systemctl", "restart", "systemd-confext.service"},
+		{"/usr/bin/systemctl", "start", "katl-kubeadm-ready.target"},
+		{"/usr/bin/systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"},
+	}
+	var stdout, stderr bytes.Buffer
+	for _, argv := range commands {
+		result := runChildProcess(ctx, argv, started)
+		stdout.Write(result.Stdout)
+		stderr.Write(result.Stderr)
+		if result.Err != nil || result.ExitStatus != 0 {
+			result.Stdout = stdout.Bytes()
+			result.Stderr = stderr.Bytes()
+			return result
+		}
+	}
+	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
 }
 
 func runChildProcess(ctx context.Context, argv []string, started func(int)) ToolResult {

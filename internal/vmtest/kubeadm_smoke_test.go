@@ -17,6 +17,7 @@ func TestKubeadmAPISmokeRunsInitAndReadyz(t *testing.T) {
 	result := guestResult(t)
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
+		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                              {okCommand()},
 		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
 		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
@@ -69,14 +70,15 @@ func TestKubeadmAPISmokeRunsInitAndReadyz(t *testing.T) {
 	}
 }
 
-func TestKubeadmAPISmokeWaitsForReadyTarget(t *testing.T) {
+func TestKubeadmAPISmokeRetriesReadyTargetStart(t *testing.T) {
 	result := guestResult(t)
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
-		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"): {
+		commandKey("systemctl", "start", "katl-kubeadm-ready.target"): {
 			failedCommand("inactive\n"),
 			okCommand(),
 		},
+		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
 		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
 		commandKey("test", "-f", DefaultKubeadmConfigPath):                                         {okCommand()},
@@ -108,8 +110,8 @@ func TestKubeadmAPISmokeWaitsForReadyTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunKubeadmAPISmoke() error = %v", err)
 	}
-	if got := client.commandCount(commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target")); got != 2 {
-		t.Fatalf("ready target checks = %d, want 2", got)
+	if got := client.commandCount(commandKey("systemctl", "start", "katl-kubeadm-ready.target")); got != 2 {
+		t.Fatalf("ready target starts = %d, want 2", got)
 	}
 }
 
@@ -117,6 +119,7 @@ func TestKubeadmAPISmokeRejectsUnprojectedEtcKubernetes(t *testing.T) {
 	result := guestResult(t)
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
+		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                              {okCommand()},
 		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
 		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
@@ -146,6 +149,7 @@ func TestInstalledKubeadmAPISmokeCollectsDiagnosticsOnFailure(t *testing.T) {
 	vmConfig.VSock.Enabled = true
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
+		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                              {okCommand()},
 		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
 		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},

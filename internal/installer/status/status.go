@@ -247,6 +247,14 @@ func ValidateRuntimeHandoff(record Record) error {
 }
 
 func ValidateCleanGenerationZero(root string, generationID string) error {
+	return validateCleanGenerationZero(root, generationID, "")
+}
+
+func ValidateCleanGenerationZeroForOperation(root string, generationID string, operationID string) error {
+	return validateCleanGenerationZero(root, generationID, operationID)
+}
+
+func validateCleanGenerationZero(root string, generationID string, allowedOperationID string) error {
 	if strings.TrimSpace(generationID) != "0" {
 		return nil
 	}
@@ -300,7 +308,7 @@ func ValidateCleanGenerationZero(root string, generationID string) error {
 	if len(links) > 0 {
 		return fmt.Errorf("generation 0 is not clean: active Kubernetes sysext links exist")
 	}
-	if err := validateNoDirtyGenerationZeroOperations(root); err != nil {
+	if err := validateNoDirtyGenerationZeroOperations(root, allowedOperationID); err != nil {
 		return err
 	}
 	return nil
@@ -329,7 +337,7 @@ func validateKubernetesProjectionUnit(root string) error {
 	return nil
 }
 
-func validateNoDirtyGenerationZeroOperations(root string) error {
+func validateNoDirtyGenerationZeroOperations(root string, allowedOperationID string) error {
 	store, err := operation.NewStore(filepath.Join(filepath.Clean(root), "var/lib/katl/operations"))
 	if err != nil {
 		return err
@@ -345,6 +353,9 @@ func validateNoDirtyGenerationZeroOperations(root string) error {
 		}
 		if record.ExternalMutationStarted || record.MutatingToolRan || len(record.PreExecMutationMarkers) > 0 || len(record.MutationScopes) > 0 {
 			return fmt.Errorf("generation 0 is not clean: operation %s has mutation evidence", id)
+		}
+		if record.OperationID == allowedOperationID && record.Phase == "accepted" && record.PhaseIndex == 0 && len(record.CompletedPhases) == 0 {
+			continue
 		}
 		class := operation.ClassifyStale(record)
 		if class == operation.StalePostMutation || class == operation.StaleAmbiguous {

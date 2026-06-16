@@ -164,6 +164,57 @@ func Create(request Request) (Plan, error) {
 	}, nil
 }
 
+func FromOperation(root string, record operation.OperationRecord) (Plan, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return Plan{}, fmt.Errorf("runtime root is required")
+	}
+	if err := installstatus.ValidateCleanGenerationZeroForOperation(root, defaultGenerationID, record.OperationID); err != nil {
+		return Plan{}, err
+	}
+	if record.OperationKind == OperationKindJoinControlPlane {
+		return Plan{}, fmt.Errorf("%s is not supported in day-one bootstrap planning", OperationKindJoinControlPlane)
+	}
+	if record.OperationKind != OperationKindInit && record.OperationKind != OperationKindJoinWorker {
+		return Plan{}, fmt.Errorf("unsupported bootstrap operation kind %q", record.OperationKind)
+	}
+	intent, intentDigest, err := installer.ReadClusterIntent(root)
+	if err != nil {
+		return Plan{}, err
+	}
+	if strings.TrimSpace(record.ExpectedClusterIntentDigest) != "" && record.ExpectedClusterIntentDigest != intentDigest {
+		return Plan{}, fmt.Errorf("operation expectedClusterIntentDigest does not match stored cluster intent")
+	}
+	if err := validateIntent(intent); err != nil {
+		return Plan{}, err
+	}
+	if record.BootstrapRequest == nil {
+		return Plan{}, fmt.Errorf("operation bootstrapRequest is required")
+	}
+	bootstrap := *cloneBootstrapRequest(*record.BootstrapRequest)
+	if err := validateRequest(record.OperationKind, intent, bootstrap); err != nil {
+		return Plan{}, err
+	}
+	previous, previousState, err := generation.ReadGeneration(root, defaultGenerationID)
+	if err != nil {
+		return Plan{}, fmt.Errorf("read generation 0 records: %w", err)
+	}
+	inputs, err := runtimeInputs(root, previous, intent, bootstrap)
+	if err != nil {
+		return Plan{}, err
+	}
+	record.BootstrapRequest = &bootstrap
+	if strings.TrimSpace(record.CandidateGenerationID) == "" {
+		record.CandidateGenerationID = bootstrap.CandidateGenerationID
+	}
+	return Plan{
+		Operation:     record,
+		Previous:      previous,
+		PreviousState: previousState,
+		RuntimeInputs: inputs,
+	}, nil
+}
+
 func validateIntent(intent installer.ClusterIntent) error {
 	if strings.TrimSpace(intent.GenerationID) != defaultGenerationID {
 		return fmt.Errorf("cluster intent generationID must be %q", defaultGenerationID)

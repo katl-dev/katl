@@ -148,6 +148,8 @@ func renderKubeadmReadyTarget() string {
 		"[Unit]",
 		"Description=Katl kubeadm-ready handoff point",
 		"Documentation=man:systemd.target(5)",
+		"ConditionPathIsExecutable=/usr/bin/kubeadm",
+		"ConditionPathIsExecutable=/usr/bin/crictl",
 		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
 		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
 		"",

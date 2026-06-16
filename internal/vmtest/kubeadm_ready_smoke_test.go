@@ -15,6 +15,7 @@ func TestKubeadmReadySmokeChecksRuntimeHandoff(t *testing.T) {
 	result := guestResult(t)
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
+		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                              {okCommand()},
 		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
 		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},
@@ -56,6 +57,7 @@ func TestInstalledKubeadmReadySmokeUsesPackagedRuntime(t *testing.T) {
 	vmConfig.VSock.Enabled = true
 	client := newScriptedGuestClient()
 	client.commandResults = map[string][]*vmtestpb.CommandResult{
+		commandKey("systemctl", "start", "katl-kubeadm-ready.target"):                              {okCommand()},
 		commandKey("systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"):               {okCommand()},
 		commandKey("test", "-x", "/usr/bin/katlc"):                                                 {okCommand()},
 		commandKey("/usr/bin/katlc", "--help"):                                                     {stdoutCommand("Usage: katlc <command> [args]\nagent serve\n")},

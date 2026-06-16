@@ -95,6 +95,42 @@ func TestValidateCleanGenerationZeroRejectsOperationMutationEvidence(t *testing.
 	}
 }
 
+func TestValidateCleanGenerationZeroAllowsCurrentAcceptedOperation(t *testing.T) {
+	root := t.TempDir()
+	writeCleanGenerationZero(t, root)
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	_, err = store.Create(operation.OperationRecord{
+		OperationID:           "bootstrap-accepted",
+		OperationKind:         "bootstrap-init",
+		Scope:                 "kubeadm-state",
+		RequestDigest:         strings.Repeat("1", 64),
+		PreviousGenerationID:  "0",
+		CandidateGenerationID: "1",
+		Phase:                 "accepted",
+	}, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := ValidateCleanGenerationZero(root, "0"); err == nil || !strings.Contains(err.Error(), "stale mutation evidence") {
+		t.Fatalf("ValidateCleanGenerationZero() error = %v, want generic refusal", err)
+	}
+	if err := ValidateCleanGenerationZeroForOperation(root, "0", "bootstrap-accepted"); err != nil {
+		t.Fatalf("ValidateCleanGenerationZeroForOperation() error = %v", err)
+	}
+	if _, err := store.Update("bootstrap-accepted", "marker-start", "pre-exec-mutation", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.ExternalMutationStarted = true
+		return record, nil
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if err := ValidateCleanGenerationZeroForOperation(root, "0", "bootstrap-accepted"); err == nil || !strings.Contains(err.Error(), "mutation evidence") {
+		t.Fatalf("ValidateCleanGenerationZeroForOperation() error = %v, want mutation refusal", err)
+	}
+}
+
 func TestValidateCleanGenerationZeroRejectsRenderedKubeadmInput(t *testing.T) {
 	root := t.TempDir()
 	writeCleanGenerationZero(t, root)
