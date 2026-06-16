@@ -79,6 +79,93 @@ func TestPreseededManifestPlanSkipsLocalConfigWait(t *testing.T) {
 	}
 }
 
+func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
+	installedAt := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	manifestDoc := manifest.Manifest{
+		APIVersion: manifest.APIVersion,
+		Kind:       manifest.Kind,
+		Node: manifest.NodeConfig{
+			Identity: manifest.NodeIdentity{
+				Hostname: "cp-1-host",
+				SSH:      manifest.SSHIdentity{AuthorizedKeys: []string{sshKey}},
+			},
+			SystemRole: "control-plane",
+			Kubernetes: manifest.KubernetesConfig{
+				Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"},
+			},
+			Bootstrap: &manifest.BootstrapIntent{
+				ClusterName:          "lab",
+				InventoryNodeName:    "cp-1",
+				NodeAddress:          "10.0.0.11",
+				ControlPlaneEndpoint: "api.katl.test:6443",
+				BootstrapProfileRef:  "control-plane",
+				ProfileResolvedID:    "kubeadm:control-plane",
+				KubernetesCatalogRef: "default",
+				Access: manifest.BootstrapAccess{
+					Method:        "agent",
+					CredentialRef: "vsock:1234:10240",
+				},
+				Labels: map[string]string{"katl.dev/zone": "rack-a"},
+				Taints: []manifest.NodeTaint{{Key: "node-role.kubernetes.io/control-plane", Effect: "NoSchedule"}},
+			},
+		},
+		Install: manifest.InstallConfig{
+			AllowDestructiveInstall: true,
+			TargetDisk:              manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-root", MinSizeMiB: 32768},
+		},
+		KatlosImage: manifest.KatlosImage{
+			URL:              "https://example.invalid/katlos-install.squashfs",
+			SHA256:           strings.Repeat("a", 64),
+			SizeBytes:        1073741824,
+			Version:          "2026.06.04",
+			Architecture:     "x86_64",
+			RuntimeInterface: "katl-runtime-1",
+			Role:             "install",
+		},
+	}
+	intent, err := BuildClusterIntent(ClusterIntentRequest{
+		Manifest:          manifestDoc,
+		KubeadmConfigs:    kubeadmPlans(),
+		KubernetesVersion: "v1.36.1",
+		KubernetesSysext: &ClusterIntentKubernetesSysext{
+			Path:      "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",
+			SHA256:    strings.Repeat("c", 64),
+			SizeBytes: 123,
+		},
+		GenerationID:       "0",
+		RequestDigest:      strings.Repeat("d", 64),
+		InstalledAt:        installedAt,
+		TargetDiskStableID: "/dev/disk/by-id/ata-root",
+	})
+	if err != nil {
+		t.Fatalf("BuildClusterIntent() error = %v", err)
+	}
+	if intent.Inventory.ClusterName != "lab" || intent.Inventory.NodeName != "cp-1" || intent.Inventory.ControlPlaneEndpoint != "api.katl.test:6443" {
+		t.Fatalf("inventory intent = %#v", intent.Inventory)
+	}
+	if intent.Inventory.Access.Method != "agent" || intent.Inventory.Access.CredentialRef != "vsock:1234:10240" {
+		t.Fatalf("inventory access = %#v", intent.Inventory.Access)
+	}
+	if intent.Inventory.Labels["katl.dev/zone"] != "rack-a" || len(intent.Inventory.Taints) != 1 {
+		t.Fatalf("labels/taints = %#v %#v", intent.Inventory.Labels, intent.Inventory.Taints)
+	}
+	if intent.Kubernetes.PayloadVersion != "v1.36.1" || intent.Kubernetes.CatalogRef != "default" || intent.Kubernetes.SysextSHA256 != strings.Repeat("c", 64) {
+		t.Fatalf("kubernetes intent = %#v", intent.Kubernetes)
+	}
+	if intent.Kubeadm == nil || intent.Kubeadm.ConfigRef != "control-plane" || intent.Kubeadm.ConfigPath != "/etc/katl/kubeadm/control-plane/config.yaml" {
+		t.Fatalf("kubeadm intent = %#v", intent.Kubeadm)
+	}
+	if intent.BootstrapProfile == nil || intent.BootstrapProfile.Ref != "control-plane" || intent.BootstrapProfile.ResolvedID != "kubeadm:control-plane" {
+		t.Fatalf("bootstrap profile = %#v", intent.BootstrapProfile)
+	}
+	if intent.BootstrapProfile.KubeadmInputDigest == "" || intent.BootstrapProfile.KubeadmInputDigest != intent.Kubeadm.InputDigest {
+		t.Fatalf("profile/input digest = profile %#v kubeadm %#v", intent.BootstrapProfile, intent.Kubeadm)
+	}
+	if intent.Source.RequestDigest != strings.Repeat("d", 64) || intent.Source.KatlosImageSHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("source intent = %#v", intent.Source)
+	}
+}
+
 func TestRunnerRecordsCheckpointsWithoutCommands(t *testing.T) {
 	store := &MemoryStateStore{}
 	commands := &NoopCommandRunner{}

@@ -37,6 +37,15 @@ func TestCompileClusterPlan(t *testing.T) {
 	if cp.InstallManifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" || cp.KubeadmConfig.Path != "/etc/katl/kubeadm/control-plane/config.yaml" {
 		t.Fatalf("kubeadm config = manifest %#v material %#v", cp.InstallManifest.Node.Kubernetes.Kubeadm, cp.KubeadmConfig)
 	}
+	if cp.InstallManifest.Node.Bootstrap == nil || cp.InstallManifest.Node.Bootstrap.InventoryNodeName != "cp-1" || cp.InstallManifest.Node.Bootstrap.ControlPlaneEndpoint != "api.katl.test:6443" {
+		t.Fatalf("bootstrap intent = %#v", cp.InstallManifest.Node.Bootstrap)
+	}
+	if cp.NodeLabels["katl.dev/zone"] != "rack-a" || cp.InstallManifest.Node.Bootstrap.Labels["katl.dev/zone"] != "rack-a" {
+		t.Fatalf("node labels = material %#v manifest %#v", cp.NodeLabels, cp.InstallManifest.Node.Bootstrap.Labels)
+	}
+	if len(cp.NodeTaints) != 1 || cp.NodeTaints[0].Effect != "NoSchedule" {
+		t.Fatalf("node taints = %#v", cp.NodeTaints)
+	}
 	if len(cp.InstallManifest.Node.Networkd.Files) != 2 {
 		t.Fatalf("networkd files = %#v", cp.InstallManifest.Node.Networkd.Files)
 	}
@@ -93,6 +102,9 @@ func TestCompileAllowsMissingAddressAndAppliesOverride(t *testing.T) {
 	}
 	if got := plan.Nodes[1].BootstrapAddress; got != "10.0.0.99" {
 		t.Fatalf("worker bootstrap address = %q", got)
+	}
+	if got := plan.Nodes[1].InstallManifest.Node.Bootstrap.NodeAddress; got != "10.0.0.99" {
+		t.Fatalf("worker install manifest bootstrap address = %q", got)
 	}
 	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Node != "worker-1" || plan.AddressOverrides[0].Address != "10.0.0.99" {
 		t.Fatalf("address overrides = %#v", plan.AddressOverrides)
@@ -266,6 +278,27 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "extra disk",
 		},
 		{
+			name: "conflicting node label",
+			mut: func(config *Config) {
+				config.Spec.Nodes[0].Overrides.Kubernetes.NodeLabels = map[string]string{"node-role.kubernetes.io/control-plane": "different"}
+			},
+			want: "node label",
+		},
+		{
+			name: "invalid node label",
+			mut: func(config *Config) {
+				config.Spec.Nodes[0].Overrides.Kubernetes.NodeLabels = map[string]string{"bad key": "value"}
+			},
+			want: "node.bootstrap.labels key",
+		},
+		{
+			name: "invalid node taint",
+			mut: func(config *Config) {
+				config.Spec.Nodes[0].Overrides.Kubernetes.NodeTaints = []manifest.NodeTaint{{Key: "katl.dev/bad", Effect: "Sometimes"}}
+			},
+			want: "node.bootstrap.taints",
+		},
+		{
 			name: "host specific path",
 			mut: func(config *Config) {
 				config.Spec.Nodes[0].Overrides.Networkd.Files = append(config.Spec.Nodes[0].Overrides.Networkd.Files, manifest.NetworkdFile{
@@ -369,8 +402,15 @@ func validConfig() Config {
 				Bootstrap: BootstrapLayer{Access: inventory.Access{Method: "agent", CredentialRef: "vsock:1234:10240"}},
 			},
 			SystemRoleDefaults: map[inventory.SystemRole]NodeLayer{
-				inventory.RoleControlPlane: {Kubernetes: KubernetesLayer{KubeadmConfigRef: "control-plane"}},
-				inventory.RoleWorker:       {Kubernetes: KubernetesLayer{KubeadmConfigRef: "worker"}},
+				inventory.RoleControlPlane: {Kubernetes: KubernetesLayer{
+					KubeadmConfigRef: "control-plane",
+					NodeLabels:       map[string]string{"node-role.kubernetes.io/control-plane": ""},
+					NodeTaints:       []manifest.NodeTaint{{Key: "node-role.kubernetes.io/control-plane", Effect: "NoSchedule"}},
+				}},
+				inventory.RoleWorker: {Kubernetes: KubernetesLayer{
+					KubeadmConfigRef: "worker",
+					NodeLabels:       map[string]string{"katl.dev/pool": "workers"},
+				}},
 			},
 			Nodes: []Node{
 				{
@@ -383,6 +423,9 @@ func validConfig() Config {
 							Name:    "20-cp.network",
 							Content: "[Match]\nName=enp2s0\n",
 						}}},
+						Kubernetes: KubernetesLayer{
+							NodeLabels: map[string]string{"katl.dev/zone": "rack-a"},
+						},
 						Install:   InstallLayer{TargetDisk: &targetCP},
 						Bootstrap: BootstrapLayer{Address: "10.0.0.11"},
 					},

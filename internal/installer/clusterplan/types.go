@@ -61,7 +61,9 @@ type InstallLayer struct {
 }
 
 type KubernetesLayer struct {
-	KubeadmConfigRef string `yaml:"kubeadmConfigRef,omitempty" json:"kubeadmConfigRef,omitempty"`
+	KubeadmConfigRef string               `yaml:"kubeadmConfigRef,omitempty" json:"kubeadmConfigRef,omitempty"`
+	NodeLabels       map[string]string    `yaml:"nodeLabels,omitempty" json:"nodeLabels,omitempty"`
+	NodeTaints       []manifest.NodeTaint `yaml:"nodeTaints,omitempty" json:"nodeTaints,omitempty"`
 }
 
 type BootstrapLayer struct {
@@ -96,6 +98,8 @@ type NodeMaterial struct {
 	InstallManifest      manifest.Manifest        `json:"installManifest"`
 	NativeEtcFiles       []confext.NativeEtcFile  `json:"nativeEtcFiles,omitempty"`
 	KubeadmConfig        inventory.KubeadmConfig  `json:"kubeadmConfig,omitempty"`
+	NodeLabels           map[string]string        `json:"nodeLabels,omitempty"`
+	NodeTaints           []manifest.NodeTaint     `json:"nodeTaints,omitempty"`
 	KubernetesVersion    string                   `json:"kubernetesVersion,omitempty"`
 	KubernetesCatalogRef string                   `json:"kubernetesCatalogRef,omitempty"`
 	KubernetesSysext     *generation.ExtensionRef `json:"kubernetesSysext,omitempty"`

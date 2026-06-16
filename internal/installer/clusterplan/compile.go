@@ -93,6 +93,9 @@ func Compile(request CompileRequest) (Plan, error) {
 			})
 			invNode.Address = override
 			material.BootstrapAddress = override
+			if material.InstallManifest.Node.Bootstrap != nil {
+				material.InstallManifest.Node.Bootstrap.NodeAddress = override
+			}
 		}
 		materials = append(materials, material)
 		inventoryNodes = append(inventoryNodes, invNode)
@@ -136,6 +139,11 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	if layer.Install.TargetDisk == nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q install.targetDisk is required", name)
 	}
+	kubeadmRef := strings.TrimSpace(layer.Kubernetes.KubeadmConfigRef)
+	bootstrapProfileResolvedID := ""
+	if kubeadmRef != "" {
+		bootstrapProfileResolvedID = "kubeadm:" + kubeadmRef
+	}
 	installManifest := manifest.Manifest{
 		APIVersion: manifest.APIVersion,
 		Kind:       manifest.Kind,
@@ -149,6 +157,18 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			Kubernetes: manifest.KubernetesConfig{
 				Kubeadm: manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
 			},
+			Bootstrap: &manifest.BootstrapIntent{
+				ClusterName:          strings.TrimSpace(config.Metadata.Name),
+				InventoryNodeName:    name,
+				NodeAddress:          strings.TrimSpace(layer.Bootstrap.Address),
+				ControlPlaneEndpoint: strings.TrimSpace(config.Spec.ControlPlaneEndpoint),
+				BootstrapProfileRef:  kubeadmRef,
+				ProfileResolvedID:    bootstrapProfileResolvedID,
+				KubernetesCatalogRef: kubernetes.catalogRef,
+				Access:               manifestAccess(layer.Bootstrap.Access),
+				Labels:               copyLabels(layer.Kubernetes.NodeLabels),
+				Taints:               append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
+			},
 		},
 		Install: manifest.InstallConfig{
 			AllowDestructiveInstall: config.Spec.AllowDestructiveInstall,
@@ -160,7 +180,6 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	if err := manifest.Validate(installManifest); err != nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q manifest: %w", name, err)
 	}
-	kubeadmRef := strings.TrimSpace(layer.Kubernetes.KubeadmConfigRef)
 	kubeadmConfig := inventory.KubeadmConfig{}
 	var kubeadmPlan *kubeadmconfig.Plan
 	if kubeadmRef != "" {
@@ -206,10 +225,31 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		InstallManifest:      installManifest,
 		NativeEtcFiles:       nativeEtcFiles,
 		KubeadmConfig:        kubeadmConfig,
+		NodeLabels:           copyLabels(layer.Kubernetes.NodeLabels),
+		NodeTaints:           append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
 		KubernetesVersion:    kubernetes.version,
 		KubernetesCatalogRef: kubernetes.catalogRef,
 		KubernetesSysext:     kubernetes.sysext,
 	}, invNode, nil
+}
+
+func manifestAccess(access inventory.Access) manifest.BootstrapAccess {
+	return manifest.BootstrapAccess{
+		Method:        strings.TrimSpace(access.Method),
+		User:          strings.TrimSpace(access.User),
+		CredentialRef: strings.TrimSpace(access.CredentialRef),
+	}
+}
+
+func copyLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(labels))
+	for key, value := range labels {
+		out[key] = value
+	}
+	return out
 }
 
 func validateSystemRoleDefaults(defaults map[inventory.SystemRole]NodeLayer) error {

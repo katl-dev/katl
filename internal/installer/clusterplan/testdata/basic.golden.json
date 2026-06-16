@@ -44,6 +44,28 @@
             "kubeadm": {
               "configRef": "control-plane"
             }
+          },
+          "bootstrap": {
+            "clusterName": "lab",
+            "inventoryNodeName": "cp-1",
+            "nodeAddress": "10.0.0.11",
+            "controlPlaneEndpoint": "api.katl.test:6443",
+            "bootstrapProfileRef": "control-plane",
+            "profileResolvedID": "kubeadm:control-plane",
+            "access": {
+              "method": "agent",
+              "credentialRef": "vsock:1234:10240"
+            },
+            "labels": {
+              "katl.dev/zone": "rack-a",
+              "node-role.kubernetes.io/control-plane": ""
+            },
+            "taints": [
+              {
+                "key": "node-role.kubernetes.io/control-plane",
+                "effect": "NoSchedule"
+              }
+            ]
           }
         },
         "install": {
@@ -97,6 +119,16 @@
         "path": "/etc/katl/kubeadm/control-plane/config.yaml",
         "intent": "control-plane"
       },
+      "nodeLabels": {
+        "katl.dev/zone": "rack-a",
+        "node-role.kubernetes.io/control-plane": ""
+      },
+      "nodeTaints": [
+        {
+          "key": "node-role.kubernetes.io/control-plane",
+          "effect": "NoSchedule"
+        }
+      ],
       "kubernetesVersion": "v1.36.1"
     },
     {
@@ -127,6 +159,21 @@
           "kubernetes": {
             "kubeadm": {
               "configRef": "worker"
+            }
+          },
+          "bootstrap": {
+            "clusterName": "lab",
+            "inventoryNodeName": "worker-1",
+            "nodeAddress": "10.0.0.21",
+            "controlPlaneEndpoint": "api.katl.test:6443",
+            "bootstrapProfileRef": "worker",
+            "profileResolvedID": "kubeadm:worker",
+            "access": {
+              "method": "agent",
+              "credentialRef": "vsock:1235:10240"
+            },
+            "labels": {
+              "katl.dev/pool": "workers"
             }
           }
         },
@@ -175,6 +222,9 @@
         "ref": "worker",
         "path": "/etc/katl/kubeadm/worker/config.yaml",
         "intent": "worker"
+      },
+      "nodeLabels": {
+        "katl.dev/pool": "workers"
       },
       "kubernetesVersion": "v1.36.1"
     }

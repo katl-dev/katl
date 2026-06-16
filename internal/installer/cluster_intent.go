@@ -1,10 +1,13 @@
 package installer
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,9 +27,12 @@ type ClusterIntent struct {
 	GenerationID       string                  `json:"generationID"`
 	SystemRole         string                  `json:"systemRole"`
 	Identity           ClusterIntentIdentity   `json:"identity"`
+	Inventory          ClusterIntentInventory  `json:"inventory"`
+	BootstrapProfile   *ClusterIntentProfile   `json:"bootstrapProfile,omitempty"`
 	Kubernetes         ClusterIntentKubernetes `json:"kubernetes"`
 	Kubeadm            *ClusterIntentKubeadm   `json:"kubeadm,omitempty"`
 	KatlosImage        manifest.KatlosImage    `json:"katlosImage"`
+	Source             ClusterIntentSource     `json:"source"`
 	RequestDigest      string                  `json:"requestDigest,omitempty"`
 	InstalledAt        time.Time               `json:"installedAt"`
 	TargetDiskStableID string                  `json:"targetDiskStableID,omitempty"`
@@ -36,16 +42,41 @@ type ClusterIntentIdentity struct {
 	Hostname string `json:"hostname"`
 }
 
+type ClusterIntentInventory struct {
+	ClusterName          string                   `json:"clusterName,omitempty"`
+	NodeName             string                   `json:"nodeName"`
+	NodeAddress          string                   `json:"nodeAddress,omitempty"`
+	ControlPlaneEndpoint string                   `json:"controlPlaneEndpoint,omitempty"`
+	Access               manifest.BootstrapAccess `json:"access,omitempty"`
+	Labels               map[string]string        `json:"labels,omitempty"`
+	Taints               []manifest.NodeTaint     `json:"taints,omitempty"`
+}
+
 type ClusterIntentKubernetes struct {
 	PayloadVersion string `json:"payloadVersion,omitempty"`
+	CatalogRef     string `json:"catalogRef,omitempty"`
 	SysextPath     string `json:"sysextPath,omitempty"`
 	SysextSHA256   string `json:"sysextSHA256,omitempty"`
 	SysextSize     uint64 `json:"sysextSizeBytes,omitempty"`
 }
 
+type ClusterIntentProfile struct {
+	Ref                string `json:"ref"`
+	ResolvedID         string `json:"resolvedID,omitempty"`
+	KubeadmConfigRef   string `json:"kubeadmConfigRef,omitempty"`
+	KubeadmInputDigest string `json:"kubeadmInputDigest,omitempty"`
+}
+
 type ClusterIntentKubeadm struct {
-	ConfigRef string `json:"configRef,omitempty"`
-	Intent    string `json:"intent,omitempty"`
+	ConfigRef   string `json:"configRef,omitempty"`
+	ConfigPath  string `json:"configPath,omitempty"`
+	Intent      string `json:"intent,omitempty"`
+	InputDigest string `json:"inputDigest,omitempty"`
+}
+
+type ClusterIntentSource struct {
+	RequestDigest     string `json:"requestDigest,omitempty"`
+	KatlosImageSHA256 string `json:"katlosImageSHA256,omitempty"`
 }
 
 type ClusterIntentRequest struct {
@@ -105,13 +136,27 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 		Identity: ClusterIntentIdentity{
 			Hostname: request.Manifest.Node.Identity.Hostname,
 		},
+		Inventory: ClusterIntentInventory{
+			NodeName: inventoryNodeName(request.Manifest),
+		},
 		Kubernetes: ClusterIntentKubernetes{
 			PayloadVersion: strings.TrimSpace(request.KubernetesVersion),
 		},
 		KatlosImage:        request.Manifest.KatlosImage,
+		Source:             ClusterIntentSource{RequestDigest: strings.TrimSpace(request.RequestDigest), KatlosImageSHA256: strings.TrimSpace(request.Manifest.KatlosImage.SHA256)},
 		RequestDigest:      strings.TrimSpace(request.RequestDigest),
 		InstalledAt:        installedAt.UTC(),
 		TargetDiskStableID: strings.TrimSpace(request.TargetDiskStableID),
+	}
+	bootstrap := request.Manifest.Node.Bootstrap
+	if bootstrap != nil {
+		intent.Inventory.ClusterName = strings.TrimSpace(bootstrap.ClusterName)
+		intent.Inventory.NodeAddress = strings.TrimSpace(bootstrap.NodeAddress)
+		intent.Inventory.ControlPlaneEndpoint = strings.TrimSpace(bootstrap.ControlPlaneEndpoint)
+		intent.Inventory.Access = trimBootstrapAccess(bootstrap.Access)
+		intent.Inventory.Labels = copyBootstrapLabels(bootstrap.Labels)
+		intent.Inventory.Taints = append([]manifest.NodeTaint(nil), bootstrap.Taints...)
+		intent.Kubernetes.CatalogRef = strings.TrimSpace(bootstrap.KubernetesCatalogRef)
 	}
 	if request.KubernetesSysext != nil {
 		intent.Kubernetes.SysextPath = strings.TrimSpace(request.KubernetesSysext.Path)
@@ -130,9 +175,74 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 	if err != nil {
 		return ClusterIntent{}, err
 	}
+	inputDigest := digestKubeadmPlan(config)
+	profileRef := ref
+	resolvedID := "kubeadm:" + ref
+	if bootstrap != nil {
+		if candidate := strings.TrimSpace(bootstrap.BootstrapProfileRef); candidate != "" {
+			profileRef = candidate
+		}
+		if candidate := strings.TrimSpace(bootstrap.ProfileResolvedID); candidate != "" {
+			resolvedID = candidate
+		}
+	}
+	intent.BootstrapProfile = &ClusterIntentProfile{
+		Ref:                profileRef,
+		ResolvedID:         resolvedID,
+		KubeadmConfigRef:   ref,
+		KubeadmInputDigest: inputDigest,
+	}
 	intent.Kubeadm = &ClusterIntentKubeadm{
-		ConfigRef: ref,
-		Intent:    intentValue,
+		ConfigRef:   ref,
+		ConfigPath:  config.Config.RenderPath,
+		Intent:      intentValue,
+		InputDigest: inputDigest,
 	}
 	return intent, nil
+}
+
+func digestKubeadmPlan(plan kubeadmconfig.Plan) string {
+	hash := sha256.New()
+	writeDigestFile(hash, "config", plan.Config)
+	patches := append([]kubeadmconfig.File(nil), plan.Patches...)
+	sort.Slice(patches, func(i, j int) bool { return patches[i].RenderPath < patches[j].RenderPath })
+	for _, patch := range patches {
+		writeDigestFile(hash, "patch", patch)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func writeDigestFile(hash interface{ Write([]byte) (int, error) }, kind string, file kubeadmconfig.File) {
+	fmt.Fprintf(hash, "%s\x00%s\x00%#o\x00", kind, file.RenderPath, file.Mode)
+	hash.Write(file.Content)
+	hash.Write([]byte{0})
+}
+
+func inventoryNodeName(m manifest.Manifest) string {
+	if m.Node.Bootstrap != nil {
+		name := strings.TrimSpace(m.Node.Bootstrap.InventoryNodeName)
+		if name != "" {
+			return name
+		}
+	}
+	return strings.TrimSpace(m.Node.Identity.Hostname)
+}
+
+func trimBootstrapAccess(access manifest.BootstrapAccess) manifest.BootstrapAccess {
+	return manifest.BootstrapAccess{
+		Method:        strings.TrimSpace(access.Method),
+		User:          strings.TrimSpace(access.User),
+		CredentialRef: strings.TrimSpace(access.CredentialRef),
+	}
+}
+
+func copyBootstrapLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(labels))
+	for key, value := range labels {
+		out[key] = value
+	}
+	return out
 }

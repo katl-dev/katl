@@ -305,6 +305,76 @@ func TestDecodeRejectsUnsafeKubeadmConfigRef(t *testing.T) {
 	}
 }
 
+func TestDecodeAcceptsBootstrapIntent(t *testing.T) {
+	manifest, err := Decode(strings.NewReader(manifestWithNode(`,
+			"bootstrap": {
+				"clusterName": "lab",
+				"inventoryNodeName": "cp-1",
+				"nodeAddress": "10.0.0.11",
+				"controlPlaneEndpoint": "api.katl.test:6443",
+				"bootstrapProfileRef": "control-plane",
+				"profileResolvedID": "kubeadm:control-plane",
+				"kubernetesCatalogRef": "v1.36",
+				"access": {"method": "agent", "credentialRef": "vsock:1234:10240"},
+				"labels": {"katl.dev/zone": "rack-a", "node-role.kubernetes.io/control-plane": ""},
+				"taints": [{"key": "node-role.kubernetes.io/control-plane", "effect": "NoSchedule"}]
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if manifest.Node.Bootstrap == nil || manifest.Node.Bootstrap.BootstrapProfileRef != "control-plane" {
+		t.Fatalf("bootstrap intent = %#v", manifest.Node.Bootstrap)
+	}
+}
+
+func TestDecodeRejectsUnsafeBootstrapIntent(t *testing.T) {
+	tests := []struct {
+		name      string
+		bootstrap string
+		want      string
+	}{
+		{
+			name:      "unsupported access method",
+			bootstrap: `"access": {"method": "token", "credentialRef": "secret-ref"}`,
+			want:      "access.method",
+		},
+		{
+			name:      "inline access token",
+			bootstrap: `"access": {"method": "agent", "credentialRef": "abcdef.0123456789abcdef"}`,
+			want:      "inline secret material",
+		},
+		{
+			name:      "bad label key",
+			bootstrap: `"labels": {"bad key": "value"}`,
+			want:      "labels key",
+		},
+		{
+			name:      "bad label value",
+			bootstrap: `"labels": {"katl.dev/zone": "bad value"}`,
+			want:      "labels",
+		},
+		{
+			name:      "bad taint key",
+			bootstrap: `"taints": [{"key": "bad key", "effect": "NoSchedule"}]`,
+			want:      "taints",
+		},
+		{
+			name:      "bad taint effect",
+			bootstrap: `"taints": [{"key": "katl.dev/dedicated", "effect": "Sometimes"}]`,
+			want:      "effect",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(manifestWithNode(`,
+			"bootstrap": {` + tt.bootstrap + `}`)))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Decode() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestDecodeRejectsMissingOrUnsupportedSystemRole(t *testing.T) {
 	tests := []struct {
 		name     string

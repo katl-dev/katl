@@ -20,6 +20,11 @@ const (
 )
 
 var localRefRE = regexp.MustCompile(`^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$`)
+var (
+	labelDNSPattern       = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	labelNamePattern      = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
+	bootstrapTokenPattern = regexp.MustCompile(`\b[a-z0-9]{6}\.[a-z0-9]{16}\b`)
+)
 
 type Manifest struct {
 	APIVersion  string        `json:"apiVersion" yaml:"apiVersion"`
@@ -34,6 +39,7 @@ type NodeConfig struct {
 	SystemRole string           `json:"systemRole" yaml:"systemRole"`
 	Networkd   NetworkdConfig   `json:"networkd,omitempty" yaml:"networkd,omitempty"`
 	Kubernetes KubernetesConfig `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
+	Bootstrap  *BootstrapIntent `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
 }
 
 type NodeIdentity struct {
@@ -60,6 +66,31 @@ type KubernetesConfig struct {
 
 type KubeadmReference struct {
 	ConfigRef string `json:"configRef,omitempty" yaml:"configRef,omitempty"`
+}
+
+type BootstrapIntent struct {
+	ClusterName          string            `json:"clusterName,omitempty" yaml:"clusterName,omitempty"`
+	InventoryNodeName    string            `json:"inventoryNodeName,omitempty" yaml:"inventoryNodeName,omitempty"`
+	NodeAddress          string            `json:"nodeAddress,omitempty" yaml:"nodeAddress,omitempty"`
+	ControlPlaneEndpoint string            `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
+	BootstrapProfileRef  string            `json:"bootstrapProfileRef,omitempty" yaml:"bootstrapProfileRef,omitempty"`
+	ProfileResolvedID    string            `json:"profileResolvedID,omitempty" yaml:"profileResolvedID,omitempty"`
+	KubernetesCatalogRef string            `json:"kubernetesCatalogRef,omitempty" yaml:"kubernetesCatalogRef,omitempty"`
+	Access               BootstrapAccess   `json:"access,omitempty" yaml:"access,omitempty"`
+	Labels               map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Taints               []NodeTaint       `json:"taints,omitempty" yaml:"taints,omitempty"`
+}
+
+type BootstrapAccess struct {
+	Method        string `json:"method,omitempty" yaml:"method,omitempty"`
+	User          string `json:"user,omitempty" yaml:"user,omitempty"`
+	CredentialRef string `json:"credentialRef,omitempty" yaml:"credentialRef,omitempty"`
+}
+
+type NodeTaint struct {
+	Key    string `json:"key" yaml:"key"`
+	Value  string `json:"value,omitempty" yaml:"value,omitempty"`
+	Effect string `json:"effect" yaml:"effect"`
 }
 
 type InstallConfig struct {
@@ -149,6 +180,11 @@ func Validate(manifest Manifest) error {
 	if err := validateNameRef("node.kubernetes.kubeadm.configRef", manifest.Node.Kubernetes.Kubeadm.ConfigRef); err != nil {
 		return err
 	}
+	if manifest.Node.Bootstrap != nil {
+		if err := validateBootstrapIntent(*manifest.Node.Bootstrap); err != nil {
+			return err
+		}
+	}
 	if err := validateDiskSelector("install.targetDisk", manifest.Install.TargetDisk); err != nil {
 		return err
 	}
@@ -170,6 +206,133 @@ func Validate(manifest Manifest) error {
 		}
 	}
 	return nil
+}
+
+func validateBootstrapIntent(intent BootstrapIntent) error {
+	for field, value := range map[string]string{
+		"node.bootstrap.clusterName":          intent.ClusterName,
+		"node.bootstrap.inventoryNodeName":    intent.InventoryNodeName,
+		"node.bootstrap.nodeAddress":          intent.NodeAddress,
+		"node.bootstrap.controlPlaneEndpoint": intent.ControlPlaneEndpoint,
+		"node.bootstrap.bootstrapProfileRef":  intent.BootstrapProfileRef,
+		"node.bootstrap.profileResolvedID":    intent.ProfileResolvedID,
+		"node.bootstrap.kubernetesCatalogRef": intent.KubernetesCatalogRef,
+		"node.bootstrap.access.method":        intent.Access.Method,
+		"node.bootstrap.access.user":          intent.Access.User,
+		"node.bootstrap.access.credentialRef": intent.Access.CredentialRef,
+	} {
+		if strings.TrimSpace(value) != value {
+			return fmt.Errorf("%s %q must not contain leading or trailing whitespace", field, value)
+		}
+	}
+	if err := validateBootstrapAccess(intent.Access); err != nil {
+		return err
+	}
+	for key, value := range intent.Labels {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("node.bootstrap.labels contains an empty key")
+		}
+		if strings.TrimSpace(key) != key {
+			return fmt.Errorf("node.bootstrap.labels key %q must not contain leading or trailing whitespace", key)
+		}
+		if !validLabelKey(key) {
+			return fmt.Errorf("node.bootstrap.labels key %q is invalid", key)
+		}
+		if strings.TrimSpace(value) != value {
+			return fmt.Errorf("node.bootstrap.labels[%q] value must not contain leading or trailing whitespace", key)
+		}
+		if value != "" && !validLabelName(value) {
+			return fmt.Errorf("node.bootstrap.labels[%q] value %q is invalid", key, value)
+		}
+	}
+	for i, taint := range intent.Taints {
+		field := fmt.Sprintf("node.bootstrap.taints[%d]", i)
+		if strings.TrimSpace(taint.Key) == "" {
+			return fmt.Errorf("%s.key is required", field)
+		}
+		if strings.TrimSpace(taint.Key) != taint.Key {
+			return fmt.Errorf("%s.key %q must not contain leading or trailing whitespace", field, taint.Key)
+		}
+		if !validLabelKey(taint.Key) {
+			return fmt.Errorf("%s.key %q is invalid", field, taint.Key)
+		}
+		if strings.TrimSpace(taint.Value) != taint.Value {
+			return fmt.Errorf("%s.value must not contain leading or trailing whitespace", field)
+		}
+		if taint.Value != "" && !validLabelName(taint.Value) {
+			return fmt.Errorf("%s.value %q is invalid", field, taint.Value)
+		}
+		switch taint.Effect {
+		case "NoSchedule", "PreferNoSchedule", "NoExecute":
+		default:
+			return fmt.Errorf("%s.effect %q is unsupported", field, taint.Effect)
+		}
+	}
+	return nil
+}
+
+func validateBootstrapAccess(access BootstrapAccess) error {
+	if access.Method == "" && access.User == "" && access.CredentialRef == "" {
+		return nil
+	}
+	switch access.Method {
+	case "ssh", "vsock", "agent":
+	case "":
+		return fmt.Errorf("node.bootstrap.access.method is required")
+	default:
+		return fmt.Errorf("node.bootstrap.access.method %q is unsupported", access.Method)
+	}
+	if access.CredentialRef == "" {
+		return fmt.Errorf("node.bootstrap.access.credentialRef is required")
+	}
+	if strings.ContainsAny(access.CredentialRef, "\n\r") {
+		return fmt.Errorf("node.bootstrap.access.credentialRef must be a single line")
+	}
+	if strings.Contains(access.CredentialRef, "-----BEGIN ") || bootstrapTokenPattern.MatchString(access.CredentialRef) {
+		return fmt.Errorf("node.bootstrap.access.credentialRef must reference credentials, not inline secret material")
+	}
+	return nil
+}
+
+func validLabelKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	prefix, name, hasPrefix := strings.Cut(key, "/")
+	if hasPrefix {
+		if !validDNSSubdomain(prefix) {
+			return false
+		}
+		key = name
+	}
+	return validLabelName(key)
+}
+
+func validDNSSubdomain(value string) bool {
+	if value == "" || len(value) > 253 {
+		return false
+	}
+	for _, part := range strings.Split(value, ".") {
+		if !validDNSLabel(part) {
+			return false
+		}
+	}
+	return true
+}
+
+func validDNSLabel(value string) bool {
+	if value == "" || len(value) > 63 {
+		return false
+	}
+	return labelDNSPattern.MatchString(value)
+}
+
+func validLabelName(value string) bool {
+	if value == "" || len(value) > 63 {
+		return false
+	}
+	return labelNamePattern.MatchString(value)
 }
 
 func validateSystemRole(value string) error {

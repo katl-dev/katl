@@ -46,11 +46,74 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 	if strings.TrimSpace(next.Kubernetes.KubeadmConfigRef) != "" {
 		out.Kubernetes.KubeadmConfigRef = strings.TrimSpace(next.Kubernetes.KubeadmConfigRef)
 	}
+	labels, err := mergeLabels(out.Kubernetes.NodeLabels, next.Kubernetes.NodeLabels)
+	if err != nil {
+		return NodeLayer{}, err
+	}
+	out.Kubernetes.NodeLabels = labels
+	taints, err := mergeTaints(out.Kubernetes.NodeTaints, next.Kubernetes.NodeTaints)
+	if err != nil {
+		return NodeLayer{}, err
+	}
+	out.Kubernetes.NodeTaints = taints
 	if strings.TrimSpace(next.Bootstrap.Address) != "" {
 		out.Bootstrap.Address = strings.TrimSpace(next.Bootstrap.Address)
 	}
 	out.Bootstrap.Access = mergeAccess(out.Bootstrap.Access, next.Bootstrap.Access)
 	return out, nil
+}
+
+func mergeLabels(base, next map[string]string) (map[string]string, error) {
+	if len(base) == 0 && len(next) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(base)+len(next))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range next {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			continue
+		}
+		if previous, ok := out[key]; ok && previous != value {
+			return nil, fmt.Errorf("node label %q has conflicting values", key)
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+func mergeTaints(base, next []manifest.NodeTaint) ([]manifest.NodeTaint, error) {
+	taints := append([]manifest.NodeTaint(nil), base...)
+	index := make(map[string]int, len(taints))
+	for i, taint := range taints {
+		index[taintKey(taint)] = i
+	}
+	for _, taint := range next {
+		taint.Key = strings.TrimSpace(taint.Key)
+		taint.Value = strings.TrimSpace(taint.Value)
+		taint.Effect = strings.TrimSpace(taint.Effect)
+		if taint.Key == "" && taint.Effect == "" {
+			continue
+		}
+		key := taintKey(taint)
+		if i, ok := index[key]; ok {
+			if taints[i].Value != taint.Value {
+				return nil, fmt.Errorf("node taint %q has conflicting values", key)
+			}
+			continue
+		}
+		index[key] = len(taints)
+		taints = append(taints, taint)
+	}
+	sortTaints(taints)
+	return taints, nil
+}
+
+func taintKey(taint manifest.NodeTaint) string {
+	return taint.Key + "\x00" + taint.Effect
 }
 
 func mergeNetworkd(base, next manifest.NetworkdConfig) (manifest.NetworkdConfig, error) {
@@ -134,4 +197,16 @@ func sortNetworkd(files []manifest.NetworkdFile) {
 
 func sortExtraDisks(disks []manifest.ExtraDisk) {
 	sort.Slice(disks, func(i, j int) bool { return disks[i].Name < disks[j].Name })
+}
+
+func sortTaints(taints []manifest.NodeTaint) {
+	sort.Slice(taints, func(i, j int) bool {
+		if taints[i].Key != taints[j].Key {
+			return taints[i].Key < taints[j].Key
+		}
+		if taints[i].Effect != taints[j].Effect {
+			return taints[i].Effect < taints[j].Effect
+		}
+		return taints[i].Value < taints[j].Value
+	})
 }
