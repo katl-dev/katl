@@ -1,0 +1,27 @@
+{
+  "selectedKubernetesSysext": {
+    "path": "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",
+    "sha256": "62a593c2b073c433c173b8b17c708a8d2fca31ff2288ff6a07a2da80bfa744af",
+    "sizeBytes": 25,
+    "payloadVersion": "v1.36.1",
+    "activationPath": "/run/extensions/kubernetes.raw",
+    "architecture": "x86_64",
+    "runtimeInterface": "katl-runtime-1"
+  },
+  "hostConfig": {
+    "nodeName": "cp-1",
+    "systemRole": "control-plane",
+    "controlPlaneEndpoint": "api.katl.test:6443",
+    "nodeMetadataPath": "/etc/katl/node.json"
+  },
+  "kubeadmInput": {
+    "configRef": "control-plane",
+    "intent": "control-plane",
+    "path": "/etc/katl/kubeadm/control-plane/config.yaml",
+    "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "kubernetesProjection": {
+    "what": "/var/lib/katl/kubernetes/etc-kubernetes",
+    "where": "/etc/kubernetes"
+  }
+}

@@ -120,6 +120,29 @@ func WriteClusterIntent(request ClusterIntentRequest) (string, error) {
 	return path, nil
 }
 
+func ReadClusterIntent(root string) (ClusterIntent, string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ClusterIntent{}, "", fmt.Errorf("runtime root is required")
+	}
+	path := filepath.Join(filepath.Clean(root), "var/lib/katl/cluster/intent.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ClusterIntent{}, "", fmt.Errorf("read cluster intent: %w", err)
+	}
+	var intent ClusterIntent
+	if err := json.Unmarshal(data, &intent); err != nil {
+		return ClusterIntent{}, "", fmt.Errorf("decode cluster intent: %w", err)
+	}
+	if intent.APIVersion != ClusterIntentAPIVersion {
+		return ClusterIntent{}, "", fmt.Errorf("cluster intent apiVersion must be %q", ClusterIntentAPIVersion)
+	}
+	if intent.Kind != ClusterIntentKind {
+		return ClusterIntent{}, "", fmt.Errorf("cluster intent kind must be %q", ClusterIntentKind)
+	}
+	return intent, digestBytes(data), nil
+}
+
 func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 	if strings.TrimSpace(request.GenerationID) == "" {
 		return ClusterIntent{}, fmt.Errorf("generation id is required")
@@ -210,6 +233,11 @@ func digestKubeadmPlan(plan kubeadmconfig.Plan) string {
 		writeDigestFile(hash, "patch", patch)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func digestBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func writeDigestFile(hash interface{ Write([]byte) (int, error) }, kind string, file kubeadmconfig.File) {
