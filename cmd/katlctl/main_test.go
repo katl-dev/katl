@@ -148,6 +148,63 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	}
 }
 
+func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	tokenPath := filepath.Join(t.TempDir(), "agent.token")
+	if err := os.WriteFile(tokenPath, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got cluster.Request
+	var gotDeps cluster.AgentBootstrapDependencies
+	old := runAgentBootstrap
+	runAgentBootstrap = func(_ context.Context, request cluster.Request, deps cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+		got = request
+		gotDeps = deps
+		return cluster.Result{
+			Plan: inventory.Plan{
+				InitNode: "cp-1",
+				Nodes:    []inventory.PlannedNode{{Name: "cp-1"}},
+			},
+			Phases:   []cluster.Phase{{Name: "plan", Status: "passed"}},
+			NextStep: "katlc agent accepted bootstrap-init",
+		}, nil
+	}
+	t.Cleanup(func() { runAgentBootstrap = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "bootstrap",
+		"--inventory", inventoryPath,
+		"--init-node", "cp-1",
+		"--agent-token-file", tokenPath,
+		"--node-address", "cp-1=cp-1.override.test",
+		"--control-plane-endpoint", "api.override.test:6443",
+		"--dry-run",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if got.InitNode != "cp-1" || got.ControlPlaneEndpoint != "api.override.test:6443" || !got.DryRun {
+		t.Fatalf("request = %#v", got)
+	}
+	if got.AddressOverrides["cp-1"] != "cp-1.override.test" {
+		t.Fatalf("address overrides = %#v", got.AddressOverrides)
+	}
+	connector, ok := gotDeps.Connector.(cluster.TCPAgentConnector)
+	if !ok {
+		t.Fatalf("Connector = %T", gotDeps.Connector)
+	}
+	if connector.AuthToken != "test-token" {
+		t.Fatalf("AuthToken = %q", connector.AuthToken)
+	}
+	if gotDeps.Actor != "katlctl cluster bootstrap" {
+		t.Fatalf("Actor = %q", gotDeps.Actor)
+	}
+	if !strings.Contains(stdout.String(), "next: katlc agent accepted bootstrap-init") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
 func TestClusterBootstrapRequiresInventory(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"cluster", "bootstrap"}, &stdout, &stderr)
@@ -158,12 +215,12 @@ func TestClusterBootstrapRequiresInventory(t *testing.T) {
 
 func TestClusterBootstrapRejectsInvalidBootstrapWait(t *testing.T) {
 	inventoryPath := writeInventory(t)
-	old := runBootstrap
-	runBootstrap = func(context.Context, cluster.Request, cluster.Dependencies) (cluster.Result, error) {
-		t.Fatal("runBootstrap should not be called for invalid bootstrap wait")
+	old := runAgentBootstrap
+	runAgentBootstrap = func(context.Context, cluster.Request, cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+		t.Fatal("runAgentBootstrap should not be called for invalid bootstrap wait")
 		return cluster.Result{}, nil
 	}
-	t.Cleanup(func() { runBootstrap = old })
+	t.Cleanup(func() { runAgentBootstrap = old })
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
@@ -217,12 +274,12 @@ nodes:
 		t.Fatal(err)
 	}
 	var got cluster.Request
-	old := runBootstrap
-	runBootstrap = func(_ context.Context, request cluster.Request, _ cluster.Dependencies) (cluster.Result, error) {
+	old := runAgentBootstrap
+	runAgentBootstrap = func(_ context.Context, request cluster.Request, _ cluster.AgentBootstrapDependencies) (cluster.Result, error) {
 		got = request
 		return cluster.Result{}, nil
 	}
-	t.Cleanup(func() { runBootstrap = old })
+	t.Cleanup(func() { runAgentBootstrap = old })
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{

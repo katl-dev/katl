@@ -27,6 +27,7 @@ var (
 )
 
 var runBootstrap = cluster.Run
+var runAgentBootstrap = cluster.RunAgentBootstrap
 var dialVMTestAgent = vmtest.DialAgent
 
 func main() {
@@ -228,6 +229,7 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	overwriteKubeconfig := flags.Bool("overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	dryRun := flags.Bool("dry-run", false, "validate and print the bootstrap plan without running kubeadm")
 	vmtestTranscriptDir := flags.String("vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
+	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
 	var bootstrapManifestPaths stringList
 	var bootstrapWaitValues stringList
 	flags.Var(&addresses, "node-address", "node address override in node=address form")
@@ -253,7 +255,7 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	if err != nil {
 		return err
 	}
-	result, err := runBootstrap(ctx, cluster.Request{
+	request := cluster.Request{
 		Inventory:            inv,
 		InitNode:             *initNode,
 		AddressOverrides:     addresses.values,
@@ -262,7 +264,17 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 		OverwriteKubeconfig:  *overwriteKubeconfig,
 		DryRun:               *dryRun,
 		Bootstrap:            bootstrap,
-	}, bootstrapDependencies(*vmtestTranscriptDir))
+	}
+	var result cluster.Result
+	if strings.TrimSpace(*vmtestTranscriptDir) != "" {
+		result, err = runBootstrap(ctx, request, bootstrapDependencies(*vmtestTranscriptDir))
+	} else {
+		token, err := readAgentToken(*agentTokenFile)
+		if err != nil {
+			return err
+		}
+		result, err = runAgentBootstrap(ctx, request, agentBootstrapDependencies(token))
+	}
 	printBootstrapResult(stdout, result)
 	return err
 }
@@ -274,6 +286,29 @@ func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
 		NodeRunner:       cluster.TransportRunner{Transport: transport},
 		BootstrapRunner:  cluster.KubectlBootstrapRunner{},
 	}
+}
+
+func agentBootstrapDependencies(token string) cluster.AgentBootstrapDependencies {
+	return cluster.AgentBootstrapDependencies{
+		Connector: cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token)},
+		Actor:     "katlctl cluster bootstrap",
+	}
+}
+
+func readAgentToken(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read agent token file: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("agent token file is empty: %s", path)
+	}
+	return token, nil
 }
 
 func printBootstrapResult(stdout io.Writer, result cluster.Result) {
