@@ -19,10 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	KatlcAgent_GetNodeStatus_FullMethodName   = "/katl.agent.v1.KatlcAgent/GetNodeStatus"
-	KatlcAgent_SubmitOperation_FullMethodName = "/katl.agent.v1.KatlcAgent/SubmitOperation"
-	KatlcAgent_GetOperation_FullMethodName    = "/katl.agent.v1.KatlcAgent/GetOperation"
-	KatlcAgent_WatchOperation_FullMethodName  = "/katl.agent.v1.KatlcAgent/WatchOperation"
+	KatlcAgent_GetNodeStatus_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetNodeStatus"
+	KatlcAgent_SubmitOperation_FullMethodName          = "/katl.agent.v1.KatlcAgent/SubmitOperation"
+	KatlcAgent_CreateWorkerJoinMaterial_FullMethodName = "/katl.agent.v1.KatlcAgent/CreateWorkerJoinMaterial"
+	KatlcAgent_GetOperation_FullMethodName             = "/katl.agent.v1.KatlcAgent/GetOperation"
+	KatlcAgent_WatchOperation_FullMethodName           = "/katl.agent.v1.KatlcAgent/WatchOperation"
 )
 
 // KatlcAgentClient is the client API for KatlcAgent service.
@@ -31,6 +32,7 @@ const (
 type KatlcAgentClient interface {
 	GetNodeStatus(ctx context.Context, in *GetNodeStatusRequest, opts ...grpc.CallOption) (*NodeStatus, error)
 	SubmitOperation(ctx context.Context, in *SubmitOperationRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
+	CreateWorkerJoinMaterial(ctx context.Context, in *CreateWorkerJoinMaterialRequest, opts ...grpc.CallOption) (*CreateWorkerJoinMaterialResponse, error)
 	GetOperation(ctx context.Context, in *GetOperationRequest, opts ...grpc.CallOption) (*OperationStatus, error)
 	WatchOperation(ctx context.Context, in *WatchOperationRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperationEvent], error)
 }
@@ -57,6 +59,16 @@ func (c *katlcAgentClient) SubmitOperation(ctx context.Context, in *SubmitOperat
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(OperationAccepted)
 	err := c.cc.Invoke(ctx, KatlcAgent_SubmitOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) CreateWorkerJoinMaterial(ctx context.Context, in *CreateWorkerJoinMaterialRequest, opts ...grpc.CallOption) (*CreateWorkerJoinMaterialResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateWorkerJoinMaterialResponse)
+	err := c.cc.Invoke(ctx, KatlcAgent_CreateWorkerJoinMaterial_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +110,7 @@ type KatlcAgent_WatchOperationClient = grpc.ServerStreamingClient[OperationEvent
 type KatlcAgentServer interface {
 	GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error)
 	SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error)
+	CreateWorkerJoinMaterial(context.Context, *CreateWorkerJoinMaterialRequest) (*CreateWorkerJoinMaterialResponse, error)
 	GetOperation(context.Context, *GetOperationRequest) (*OperationStatus, error)
 	WatchOperation(*WatchOperationRequest, grpc.ServerStreamingServer[OperationEvent]) error
 	mustEmbedUnimplementedKatlcAgentServer()
@@ -115,6 +128,9 @@ func (UnimplementedKatlcAgentServer) GetNodeStatus(context.Context, *GetNodeStat
 }
 func (UnimplementedKatlcAgentServer) SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitOperation not implemented")
+}
+func (UnimplementedKatlcAgentServer) CreateWorkerJoinMaterial(context.Context, *CreateWorkerJoinMaterialRequest) (*CreateWorkerJoinMaterialResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateWorkerJoinMaterial not implemented")
 }
 func (UnimplementedKatlcAgentServer) GetOperation(context.Context, *GetOperationRequest) (*OperationStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetOperation not implemented")
@@ -179,6 +195,24 @@ func _KatlcAgent_SubmitOperation_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KatlcAgent_CreateWorkerJoinMaterial_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateWorkerJoinMaterialRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).CreateWorkerJoinMaterial(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_CreateWorkerJoinMaterial_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).CreateWorkerJoinMaterial(ctx, req.(*CreateWorkerJoinMaterialRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _KatlcAgent_GetOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetOperationRequest)
 	if err := dec(in); err != nil {
@@ -222,6 +256,10 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitOperation",
 			Handler:    _KatlcAgent_SubmitOperation_Handler,
+		},
+		{
+			MethodName: "CreateWorkerJoinMaterial",
+			Handler:    _KatlcAgent_CreateWorkerJoinMaterial_Handler,
 		},
 		{
 			MethodName: "GetOperation",

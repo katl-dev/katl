@@ -29,9 +29,14 @@ import (
 const (
 	APIVersion = operation.APIVersion
 
-	RequestKind = "SubmitOperationRequest"
+	RequestKind                   = "SubmitOperationRequest"
+	WorkerJoinMaterialRequestKind = "CreateWorkerJoinMaterialRequest"
 
 	DefaultListen = "tcp://0.0.0.0:9443"
+
+	defaultWorkerJoinMaterialTTL     = 30 * time.Minute
+	maxWorkerJoinMaterialTTL         = 24 * time.Hour
+	workerJoinMaterialCommandTimeout = 30 * time.Second
 )
 
 var bootstrapOperationKinds = []string{
@@ -54,6 +59,7 @@ type Server struct {
 	StartedAt               time.Time
 	SupportedOperationKinds []string
 	Dispatcher              Dispatcher
+	RunJoinMaterial         ToolRunner
 	Now                     func() time.Time
 	OperationID             func(string, time.Time) (string, error)
 	submitMu                sync.Mutex
@@ -68,6 +74,7 @@ func NewServer(root string, store operation.Store) *Server {
 		AgentStartID:            startID,
 		StartedAt:               now,
 		SupportedOperationKinds: append([]string(nil), bootstrapOperationKinds...),
+		RunJoinMaterial:         runChildProcess,
 		Now:                     func() time.Time { return time.Now().UTC() },
 		OperationID:             defaultOperationID,
 	}
@@ -133,6 +140,75 @@ func (s *Server) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperat
 		created = updated
 	}
 	return s.acceptedFromRecord(created), nil
+}
+
+func (s *Server) CreateWorkerJoinMaterial(ctx context.Context, req *agentapi.CreateWorkerJoinMaterialRequest) (*agentapi.CreateWorkerJoinMaterialResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if req.ApiVersion != APIVersion {
+		return nil, status.Errorf(codes.InvalidArgument, "apiVersion must be %q", APIVersion)
+	}
+	if req.Kind != WorkerJoinMaterialRequestKind {
+		return nil, status.Errorf(codes.InvalidArgument, "kind must be %q", WorkerJoinMaterialRequestKind)
+	}
+	if strings.TrimSpace(req.Actor) == "" {
+		return nil, status.Error(codes.InvalidArgument, "actor is required")
+	}
+	if strings.TrimSpace(req.RequestRef) != "" && inventory.Redact(req.RequestRef) != req.RequestRef {
+		return nil, status.Error(codes.InvalidArgument, "requestRef must be an opaque reference, not raw join material")
+	}
+	if strings.TrimSpace(req.ExpectedMachineId) != "" {
+		machineID, err := s.machineID()
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
+		}
+		if req.ExpectedMachineId != machineID {
+			return nil, status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
+		}
+	}
+	ttl, err := workerJoinTTL(req.Ttl)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "ttl: %v", err)
+	}
+	if s.RunJoinMaterial == nil {
+		return nil, status.Error(codes.FailedPrecondition, "worker join material runner is not configured")
+	}
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
+	active, err := s.activeOperationIDs()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read operation locks: %v", err)
+	}
+	if len(active) > 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "operation locks conflict with active operation %s", strings.Join(active, ","))
+	}
+	startedAt := s.clock()
+	argv := []string{"/usr/bin/kubeadm", "token", "create", "--print-join-command", "--ttl", ttl.String(), "--kubeconfig", "/etc/kubernetes/admin.conf"}
+	runCtx, cancel := context.WithTimeout(ctx, workerJoinMaterialCommandTimeout)
+	defer cancel()
+	result := s.RunJoinMaterial(runCtx, argv, func(int) {})
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
+		result.Err = runCtx.Err()
+		result.ExitStatus = -1
+	}
+	if result.Err != nil || result.ExitStatus != 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "create worker join material: %s", inventory.Redact(toolFailure(result)))
+	}
+	material, err := cluster.ParseJoinMaterial(string(result.Stdout))
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "parse worker join material: %v", err)
+	}
+	expiresAt := startedAt.Add(ttl).UTC()
+	response := &agentapi.CreateWorkerJoinMaterialResponse{
+		MaterialRef: workerJoinMaterialRef(req.RequestRef, material, expiresAt),
+		WorkerJoinMaterial: &agentapi.WorkerJoinMaterial{
+			JoinArgv:  append([]string(nil), material.Argv...),
+			ExpiresAt: expiresAt.Format(time.RFC3339),
+		},
+		CreatedAt: formatTime(startedAt),
+	}
+	return response, nil
 }
 
 func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest string) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
@@ -909,6 +985,21 @@ func parseJoinMaterialExpiry(value string) (time.Time, error) {
 	return expiresAt.UTC(), nil
 }
 
+func workerJoinTTL(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultWorkerJoinMaterialTTL, nil
+	}
+	ttl, err := time.ParseDuration(value)
+	if err != nil || ttl <= 0 {
+		return 0, fmt.Errorf("must be a positive Go duration")
+	}
+	if ttl > maxWorkerJoinMaterialTTL {
+		return 0, fmt.Errorf("must not exceed %s", maxWorkerJoinMaterialTTL)
+	}
+	return ttl, nil
+}
+
 func workerJoinMaterialDigest(material *agentapi.WorkerJoinMaterial) string {
 	payload := struct {
 		JoinArgv  []string `json:"joinArgv"`
@@ -920,6 +1011,18 @@ func workerJoinMaterialDigest(material *agentapi.WorkerJoinMaterial) string {
 	data, _ := json.Marshal(payload)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func workerJoinMaterialRef(requestRef string, material cluster.JoinMaterial, expiresAt time.Time) string {
+	requestRef = strings.TrimSpace(requestRef)
+	if requestRef != "" {
+		return requestRef
+	}
+	payload := agentapi.WorkerJoinMaterial{
+		JoinArgv:  append([]string(nil), material.Argv...),
+		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+	}
+	return "worker-join:" + workerJoinMaterialDigest(&payload)[:12]
 }
 
 func operationEvent(event operation.JournalEvent, includeDiagnostics bool) *agentapi.OperationEvent {

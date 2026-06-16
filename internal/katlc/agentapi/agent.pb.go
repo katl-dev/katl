@@ -457,6 +457,150 @@ func (x *WorkerJoinMaterial) GetExpiresAt() string {
 	return ""
 }
 
+type CreateWorkerJoinMaterialRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion        string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind              string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Actor             string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	ExpectedMachineId string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
+	RequestRef        string                 `protobuf:"bytes,5,opt,name=request_ref,json=requestRef,proto3" json:"request_ref,omitempty"`
+	Ttl               string                 `protobuf:"bytes,6,opt,name=ttl,proto3" json:"ttl,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *CreateWorkerJoinMaterialRequest) Reset() {
+	*x = CreateWorkerJoinMaterialRequest{}
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateWorkerJoinMaterialRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateWorkerJoinMaterialRequest) ProtoMessage() {}
+
+func (x *CreateWorkerJoinMaterialRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateWorkerJoinMaterialRequest.ProtoReflect.Descriptor instead.
+func (*CreateWorkerJoinMaterialRequest) Descriptor() ([]byte, []int) {
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetApiVersion() string {
+	if x != nil {
+		return x.ApiVersion
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetExpectedMachineId() string {
+	if x != nil {
+		return x.ExpectedMachineId
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetRequestRef() string {
+	if x != nil {
+		return x.RequestRef
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetTtl() string {
+	if x != nil {
+		return x.Ttl
+	}
+	return ""
+}
+
+type CreateWorkerJoinMaterialResponse struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	MaterialRef        string                 `protobuf:"bytes,1,opt,name=material_ref,json=materialRef,proto3" json:"material_ref,omitempty"`
+	WorkerJoinMaterial *WorkerJoinMaterial    `protobuf:"bytes,2,opt,name=worker_join_material,json=workerJoinMaterial,proto3" json:"worker_join_material,omitempty"`
+	CreatedAt          string                 `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *CreateWorkerJoinMaterialResponse) Reset() {
+	*x = CreateWorkerJoinMaterialResponse{}
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateWorkerJoinMaterialResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateWorkerJoinMaterialResponse) ProtoMessage() {}
+
+func (x *CreateWorkerJoinMaterialResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateWorkerJoinMaterialResponse.ProtoReflect.Descriptor instead.
+func (*CreateWorkerJoinMaterialResponse) Descriptor() ([]byte, []int) {
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CreateWorkerJoinMaterialResponse) GetMaterialRef() string {
+	if x != nil {
+		return x.MaterialRef
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialResponse) GetWorkerJoinMaterial() *WorkerJoinMaterial {
+	if x != nil {
+		return x.WorkerJoinMaterial
+	}
+	return nil
+}
+
+func (x *CreateWorkerJoinMaterialResponse) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
 type OperationAccepted struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OperationId   string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
@@ -471,7 +615,7 @@ type OperationAccepted struct {
 
 func (x *OperationAccepted) Reset() {
 	*x = OperationAccepted{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[5]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -483,7 +627,7 @@ func (x *OperationAccepted) String() string {
 func (*OperationAccepted) ProtoMessage() {}
 
 func (x *OperationAccepted) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[5]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -496,7 +640,7 @@ func (x *OperationAccepted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationAccepted.ProtoReflect.Descriptor instead.
 func (*OperationAccepted) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{5}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *OperationAccepted) GetOperationId() string {
@@ -552,7 +696,7 @@ type GetOperationRequest struct {
 
 func (x *GetOperationRequest) Reset() {
 	*x = GetOperationRequest{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[6]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -564,7 +708,7 @@ func (x *GetOperationRequest) String() string {
 func (*GetOperationRequest) ProtoMessage() {}
 
 func (x *GetOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[6]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -577,7 +721,7 @@ func (x *GetOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOperationRequest.ProtoReflect.Descriptor instead.
 func (*GetOperationRequest) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{6}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetOperationRequest) GetOperationId() string {
@@ -634,7 +778,7 @@ type OperationStatus struct {
 
 func (x *OperationStatus) Reset() {
 	*x = OperationStatus{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[7]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -646,7 +790,7 @@ func (x *OperationStatus) String() string {
 func (*OperationStatus) ProtoMessage() {}
 
 func (x *OperationStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[7]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -659,7 +803,7 @@ func (x *OperationStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationStatus.ProtoReflect.Descriptor instead.
 func (*OperationStatus) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{7}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *OperationStatus) GetOperationId() string {
@@ -850,7 +994,7 @@ type DiagnosticArtifact struct {
 
 func (x *DiagnosticArtifact) Reset() {
 	*x = DiagnosticArtifact{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[8]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -862,7 +1006,7 @@ func (x *DiagnosticArtifact) String() string {
 func (*DiagnosticArtifact) ProtoMessage() {}
 
 func (x *DiagnosticArtifact) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[8]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -875,7 +1019,7 @@ func (x *DiagnosticArtifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticArtifact.ProtoReflect.Descriptor instead.
 func (*DiagnosticArtifact) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{8}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DiagnosticArtifact) GetArtifactId() string {
@@ -930,7 +1074,7 @@ type OperationInvocation struct {
 
 func (x *OperationInvocation) Reset() {
 	*x = OperationInvocation{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[9]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -942,7 +1086,7 @@ func (x *OperationInvocation) String() string {
 func (*OperationInvocation) ProtoMessage() {}
 
 func (x *OperationInvocation) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[9]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -955,7 +1099,7 @@ func (x *OperationInvocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationInvocation.ProtoReflect.Descriptor instead.
 func (*OperationInvocation) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{9}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *OperationInvocation) GetInvocationId() string {
@@ -1034,7 +1178,7 @@ type WatchOperationRequest struct {
 
 func (x *WatchOperationRequest) Reset() {
 	*x = WatchOperationRequest{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[10]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1046,7 +1190,7 @@ func (x *WatchOperationRequest) String() string {
 func (*WatchOperationRequest) ProtoMessage() {}
 
 func (x *WatchOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[10]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1059,7 +1203,7 @@ func (x *WatchOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchOperationRequest.ProtoReflect.Descriptor instead.
 func (*WatchOperationRequest) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{10}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *WatchOperationRequest) GetOperationId() string {
@@ -1112,7 +1256,7 @@ type OperationEvent struct {
 
 func (x *OperationEvent) Reset() {
 	*x = OperationEvent{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[11]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1124,7 +1268,7 @@ func (x *OperationEvent) String() string {
 func (*OperationEvent) ProtoMessage() {}
 
 func (x *OperationEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[11]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1137,7 +1281,7 @@ func (x *OperationEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationEvent.ProtoReflect.Descriptor instead.
 func (*OperationEvent) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{11}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *OperationEvent) GetOperationId() string {
@@ -1238,7 +1382,21 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x12WorkerJoinMaterial\x12\x1b\n" +
 	"\tjoin_argv\x18\x01 \x03(\tR\bjoinArgv\x12\x1d\n" +
 	"\n" +
-	"expires_at\x18\x02 \x01(\tR\texpiresAt\"\x8d\x02\n" +
+	"expires_at\x18\x02 \x01(\tR\texpiresAt\"\xcf\x01\n" +
+	"\x1fCreateWorkerJoinMaterialRequest\x12\x1f\n" +
+	"\vapi_version\x18\x01 \x01(\tR\n" +
+	"apiVersion\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +
+	"\x05actor\x18\x03 \x01(\tR\x05actor\x12.\n" +
+	"\x13expected_machine_id\x18\x04 \x01(\tR\x11expectedMachineId\x12\x1f\n" +
+	"\vrequest_ref\x18\x05 \x01(\tR\n" +
+	"requestRef\x12\x10\n" +
+	"\x03ttl\x18\x06 \x01(\tR\x03ttl\"\xb9\x01\n" +
+	" CreateWorkerJoinMaterialResponse\x12!\n" +
+	"\fmaterial_ref\x18\x01 \x01(\tR\vmaterialRef\x12S\n" +
+	"\x14worker_join_material\x18\x02 \x01(\v2!.katl.agent.v1.WorkerJoinMaterialR\x12workerJoinMaterial\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x03 \x01(\tR\tcreatedAt\"\x8d\x02\n" +
 	"\x11OperationAccepted\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
 	"\x0eoperation_kind\x18\x02 \x01(\tR\roperationKind\x12%\n" +
@@ -1317,11 +1475,12 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x05phase\x18\x04 \x01(\tR\x05phase\x12\x1a\n" +
 	"\bterminal\x18\x05 \x01(\bR\bterminal\x126\n" +
 	"\x06status\x18\x06 \x01(\v2\x1e.katl.agent.v1.OperationStatusR\x06status\x12C\n" +
-	"\vdiagnostics\x18\a \x03(\v2!.katl.agent.v1.DiagnosticArtifactR\vdiagnostics2\xe6\x02\n" +
+	"\vdiagnostics\x18\a \x03(\v2!.katl.agent.v1.DiagnosticArtifactR\vdiagnostics2\xe3\x03\n" +
 	"\n" +
 	"KatlcAgent\x12O\n" +
 	"\rGetNodeStatus\x12#.katl.agent.v1.GetNodeStatusRequest\x1a\x19.katl.agent.v1.NodeStatus\x12Z\n" +
-	"\x0fSubmitOperation\x12%.katl.agent.v1.SubmitOperationRequest\x1a .katl.agent.v1.OperationAccepted\x12R\n" +
+	"\x0fSubmitOperation\x12%.katl.agent.v1.SubmitOperationRequest\x1a .katl.agent.v1.OperationAccepted\x12{\n" +
+	"\x18CreateWorkerJoinMaterial\x12..katl.agent.v1.CreateWorkerJoinMaterialRequest\x1a/.katl.agent.v1.CreateWorkerJoinMaterialResponse\x12R\n" +
 	"\fGetOperation\x12\".katl.agent.v1.GetOperationRequest\x1a\x1e.katl.agent.v1.OperationStatus\x12W\n" +
 	"\x0eWatchOperation\x12$.katl.agent.v1.WatchOperationRequest\x1a\x1d.katl.agent.v1.OperationEvent0\x01B9Z7github.com/zariel/katl/internal/katlc/agentapi;agentapib\x06proto3"
 
@@ -1337,42 +1496,47 @@ func file_internal_katlc_agentapi_agent_proto_rawDescGZIP() []byte {
 	return file_internal_katlc_agentapi_agent_proto_rawDescData
 }
 
-var file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_internal_katlc_agentapi_agent_proto_goTypes = []any{
-	(*GetNodeStatusRequest)(nil),      // 0: katl.agent.v1.GetNodeStatusRequest
-	(*NodeStatus)(nil),                // 1: katl.agent.v1.NodeStatus
-	(*SubmitOperationRequest)(nil),    // 2: katl.agent.v1.SubmitOperationRequest
-	(*BootstrapOperationRequest)(nil), // 3: katl.agent.v1.BootstrapOperationRequest
-	(*WorkerJoinMaterial)(nil),        // 4: katl.agent.v1.WorkerJoinMaterial
-	(*OperationAccepted)(nil),         // 5: katl.agent.v1.OperationAccepted
-	(*GetOperationRequest)(nil),       // 6: katl.agent.v1.GetOperationRequest
-	(*OperationStatus)(nil),           // 7: katl.agent.v1.OperationStatus
-	(*DiagnosticArtifact)(nil),        // 8: katl.agent.v1.DiagnosticArtifact
-	(*OperationInvocation)(nil),       // 9: katl.agent.v1.OperationInvocation
-	(*WatchOperationRequest)(nil),     // 10: katl.agent.v1.WatchOperationRequest
-	(*OperationEvent)(nil),            // 11: katl.agent.v1.OperationEvent
+	(*GetNodeStatusRequest)(nil),             // 0: katl.agent.v1.GetNodeStatusRequest
+	(*NodeStatus)(nil),                       // 1: katl.agent.v1.NodeStatus
+	(*SubmitOperationRequest)(nil),           // 2: katl.agent.v1.SubmitOperationRequest
+	(*BootstrapOperationRequest)(nil),        // 3: katl.agent.v1.BootstrapOperationRequest
+	(*WorkerJoinMaterial)(nil),               // 4: katl.agent.v1.WorkerJoinMaterial
+	(*CreateWorkerJoinMaterialRequest)(nil),  // 5: katl.agent.v1.CreateWorkerJoinMaterialRequest
+	(*CreateWorkerJoinMaterialResponse)(nil), // 6: katl.agent.v1.CreateWorkerJoinMaterialResponse
+	(*OperationAccepted)(nil),                // 7: katl.agent.v1.OperationAccepted
+	(*GetOperationRequest)(nil),              // 8: katl.agent.v1.GetOperationRequest
+	(*OperationStatus)(nil),                  // 9: katl.agent.v1.OperationStatus
+	(*DiagnosticArtifact)(nil),               // 10: katl.agent.v1.DiagnosticArtifact
+	(*OperationInvocation)(nil),              // 11: katl.agent.v1.OperationInvocation
+	(*WatchOperationRequest)(nil),            // 12: katl.agent.v1.WatchOperationRequest
+	(*OperationEvent)(nil),                   // 13: katl.agent.v1.OperationEvent
 }
 var file_internal_katlc_agentapi_agent_proto_depIdxs = []int32{
 	3,  // 0: katl.agent.v1.SubmitOperationRequest.bootstrap:type_name -> katl.agent.v1.BootstrapOperationRequest
 	4,  // 1: katl.agent.v1.BootstrapOperationRequest.worker_join_material:type_name -> katl.agent.v1.WorkerJoinMaterial
-	7,  // 2: katl.agent.v1.OperationAccepted.initial_status:type_name -> katl.agent.v1.OperationStatus
-	8,  // 3: katl.agent.v1.OperationStatus.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
-	9,  // 4: katl.agent.v1.OperationStatus.invocations:type_name -> katl.agent.v1.OperationInvocation
-	7,  // 5: katl.agent.v1.OperationEvent.status:type_name -> katl.agent.v1.OperationStatus
-	8,  // 6: katl.agent.v1.OperationEvent.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
-	0,  // 7: katl.agent.v1.KatlcAgent.GetNodeStatus:input_type -> katl.agent.v1.GetNodeStatusRequest
-	2,  // 8: katl.agent.v1.KatlcAgent.SubmitOperation:input_type -> katl.agent.v1.SubmitOperationRequest
-	6,  // 9: katl.agent.v1.KatlcAgent.GetOperation:input_type -> katl.agent.v1.GetOperationRequest
-	10, // 10: katl.agent.v1.KatlcAgent.WatchOperation:input_type -> katl.agent.v1.WatchOperationRequest
-	1,  // 11: katl.agent.v1.KatlcAgent.GetNodeStatus:output_type -> katl.agent.v1.NodeStatus
-	5,  // 12: katl.agent.v1.KatlcAgent.SubmitOperation:output_type -> katl.agent.v1.OperationAccepted
-	7,  // 13: katl.agent.v1.KatlcAgent.GetOperation:output_type -> katl.agent.v1.OperationStatus
-	11, // 14: katl.agent.v1.KatlcAgent.WatchOperation:output_type -> katl.agent.v1.OperationEvent
-	11, // [11:15] is the sub-list for method output_type
-	7,  // [7:11] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	4,  // 2: katl.agent.v1.CreateWorkerJoinMaterialResponse.worker_join_material:type_name -> katl.agent.v1.WorkerJoinMaterial
+	9,  // 3: katl.agent.v1.OperationAccepted.initial_status:type_name -> katl.agent.v1.OperationStatus
+	10, // 4: katl.agent.v1.OperationStatus.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
+	11, // 5: katl.agent.v1.OperationStatus.invocations:type_name -> katl.agent.v1.OperationInvocation
+	9,  // 6: katl.agent.v1.OperationEvent.status:type_name -> katl.agent.v1.OperationStatus
+	10, // 7: katl.agent.v1.OperationEvent.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
+	0,  // 8: katl.agent.v1.KatlcAgent.GetNodeStatus:input_type -> katl.agent.v1.GetNodeStatusRequest
+	2,  // 9: katl.agent.v1.KatlcAgent.SubmitOperation:input_type -> katl.agent.v1.SubmitOperationRequest
+	5,  // 10: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:input_type -> katl.agent.v1.CreateWorkerJoinMaterialRequest
+	8,  // 11: katl.agent.v1.KatlcAgent.GetOperation:input_type -> katl.agent.v1.GetOperationRequest
+	12, // 12: katl.agent.v1.KatlcAgent.WatchOperation:input_type -> katl.agent.v1.WatchOperationRequest
+	1,  // 13: katl.agent.v1.KatlcAgent.GetNodeStatus:output_type -> katl.agent.v1.NodeStatus
+	7,  // 14: katl.agent.v1.KatlcAgent.SubmitOperation:output_type -> katl.agent.v1.OperationAccepted
+	6,  // 15: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:output_type -> katl.agent.v1.CreateWorkerJoinMaterialResponse
+	9,  // 16: katl.agent.v1.KatlcAgent.GetOperation:output_type -> katl.agent.v1.OperationStatus
+	13, // 17: katl.agent.v1.KatlcAgent.WatchOperation:output_type -> katl.agent.v1.OperationEvent
+	13, // [13:18] is the sub-list for method output_type
+	8,  // [8:13] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_internal_katlc_agentapi_agent_proto_init() }
@@ -1386,7 +1550,7 @@ func file_internal_katlc_agentapi_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_katlc_agentapi_agent_proto_rawDesc), len(file_internal_katlc_agentapi_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

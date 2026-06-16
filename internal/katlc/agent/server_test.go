@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -154,6 +155,42 @@ func TestSubmitOperationRecordsWorkerJoinMaterializationFailureBeforeDispatch(t 
 	}
 }
 
+func TestSubmitOperationDoesNotPersistRawWorkerJoinMaterial(t *testing.T) {
+	server := newTestServer(t)
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		return nil
+	})
+	req := submitRequest("req-worker-material-no-persist")
+	req.OperationKind = "bootstrap-join-worker"
+	req.Bootstrap.SystemRole = "worker"
+	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationDir := filepath.Join(server.Store.Root, accepted.OperationId)
+	err = filepath.WalkDir(operationDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), "abcdef.0123456789abcdef") {
+			return fmt.Errorf("%s contains raw bootstrap token", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSubmitOperationSerializesConcurrentConflicts(t *testing.T) {
 	server := newTestServer(t)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
@@ -285,6 +322,132 @@ func validWorkerJoinMaterial() *agentapi.WorkerJoinMaterial {
 			"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		},
 		ExpiresAt: "2026-06-15T13:00:00Z",
+	}
+}
+
+func TestCreateWorkerJoinMaterialRunsKubeadmTokenCreate(t *testing.T) {
+	server := newTestServer(t)
+	var calls [][]string
+	server.RunJoinMaterial = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		calls = append(calls, append([]string(nil), argv...))
+		return ToolResult{
+			Stdout: []byte("kubeadm join api.katl.test:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"),
+		}
+	}
+
+	response, err := server.CreateWorkerJoinMaterial(context.Background(), createWorkerJoinMaterialRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgv := []string{"/usr/bin/kubeadm", "token", "create", "--print-join-command", "--ttl", "30m0s", "--kubeconfig", "/etc/kubernetes/admin.conf"}
+	if !reflect.DeepEqual(calls, [][]string{wantArgv}) {
+		t.Fatalf("RunJoinMaterial calls = %#v, want %#v", calls, [][]string{wantArgv})
+	}
+	if response.MaterialRef != "operation:bootstrap-init-1/worker:worker-1" || response.CreatedAt != "2026-06-15T12:00:00Z" {
+		t.Fatalf("response metadata = %+v", response)
+	}
+	material := response.GetWorkerJoinMaterial()
+	if material.GetExpiresAt() != "2026-06-15T12:30:00Z" {
+		t.Fatalf("expiresAt = %q, want default ttl expiry", material.GetExpiresAt())
+	}
+	if !reflect.DeepEqual(material.GetJoinArgv(), []string{
+		"kubeadm",
+		"join",
+		"api.katl.test:6443",
+		"--token",
+		"abcdef.0123456789abcdef",
+		"--discovery-token-ca-cert-hash",
+		"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}) {
+		t.Fatalf("join argv = %#v", material.GetJoinArgv())
+	}
+}
+
+func TestCreateWorkerJoinMaterialRejectsActiveOperationLock(t *testing.T) {
+	server := newTestServer(t)
+	createAgentOperation(t, server.Store, "bootstrap-init-active")
+	server.RunJoinMaterial = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		t.Fatal("RunJoinMaterial called despite active operation lock")
+		return ToolResult{}
+	}
+
+	_, err := server.CreateWorkerJoinMaterial(context.Background(), createWorkerJoinMaterialRequest())
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "active operation bootstrap-init-active") {
+		t.Fatalf("CreateWorkerJoinMaterial error = %v, want active lock failed precondition", err)
+	}
+}
+
+func TestCreateWorkerJoinMaterialSerializesWithSubmitOperation(t *testing.T) {
+	server := newTestServer(t)
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		return nil
+	})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server.RunJoinMaterial = func(ctx context.Context, argv []string, startedPID func(int)) ToolResult {
+		close(started)
+		<-release
+		return ToolResult{
+			Stdout: []byte("kubeadm join api.katl.test:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"),
+		}
+	}
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := server.CreateWorkerJoinMaterial(context.Background(), createWorkerJoinMaterialRequest())
+		createDone <- err
+	}()
+	select {
+	case <-started:
+	case err := <-createDone:
+		t.Fatalf("CreateWorkerJoinMaterial returned before runner started: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("CreateWorkerJoinMaterial did not start runner")
+	}
+
+	submitDone := make(chan error, 1)
+	go func() {
+		_, err := server.SubmitOperation(context.Background(), submitRequest("req-submit-during-material"))
+		submitDone <- err
+	}()
+	select {
+	case err := <-submitDone:
+		t.Fatalf("SubmitOperation completed while worker join material was minting: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-createDone; err != nil {
+		t.Fatalf("CreateWorkerJoinMaterial error = %v", err)
+	}
+	if err := <-submitDone; err != nil {
+		t.Fatalf("SubmitOperation error after material minting finished = %v", err)
+	}
+}
+
+func TestCreateWorkerJoinMaterialRedactsKubeadmFailure(t *testing.T) {
+	server := newTestServer(t)
+	secret := "abcdef.0123456789abcdef"
+	server.RunJoinMaterial = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		return ToolResult{
+			Stderr:     []byte("failed to create token " + secret),
+			ExitStatus: 1,
+		}
+	}
+
+	_, err := server.CreateWorkerJoinMaterial(context.Background(), createWorkerJoinMaterialRequest())
+	if status.Code(err) != codes.FailedPrecondition || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("CreateWorkerJoinMaterial error = %v, want redacted failed precondition", err)
+	}
+}
+
+func createWorkerJoinMaterialRequest() *agentapi.CreateWorkerJoinMaterialRequest {
+	return &agentapi.CreateWorkerJoinMaterialRequest{
+		ApiVersion:        APIVersion,
+		Kind:              WorkerJoinMaterialRequestKind,
+		Actor:             "test-actor",
+		ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+		RequestRef:        "operation:bootstrap-init-1/worker:worker-1",
 	}
 }
 

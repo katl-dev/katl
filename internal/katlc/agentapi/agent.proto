@@ -7,6 +7,7 @@ option go_package = "github.com/zariel/katl/internal/katlc/agentapi;agentapi";
 service KatlcAgent {
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
   rpc SubmitOperation(SubmitOperationRequest) returns (OperationAccepted);
+  rpc CreateWorkerJoinMaterial(CreateWorkerJoinMaterialRequest) returns (CreateWorkerJoinMaterialResponse);
   rpc GetOperation(GetOperationRequest) returns (OperationStatus);
   rpc WatchOperation(WatchOperationRequest) returns (stream OperationEvent);
 }
@@ -55,6 +56,21 @@ message BootstrapOperationRequest {
 message WorkerJoinMaterial {
   repeated string join_argv = 1;
   string expires_at = 2;
+}
+
+message CreateWorkerJoinMaterialRequest {
+  string api_version = 1;
+  string kind = 2;
+  string actor = 3;
+  string expected_machine_id = 4;
+  string request_ref = 5;
+  string ttl = 6;
+}
+
+message CreateWorkerJoinMaterialResponse {
+  string material_ref = 1;
+  WorkerJoinMaterial worker_join_material = 2;
+  string created_at = 3;
 }
 
 message OperationAccepted {

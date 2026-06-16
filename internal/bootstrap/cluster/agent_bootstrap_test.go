@@ -198,15 +198,110 @@ func TestRunAgentBootstrapRunsUserBootstrapWithReturnedKubeconfig(t *testing.T) 
 	}
 }
 
-func TestRunAgentBootstrapRejectsWorkerUntilJoinMaterialCanBeMinted(t *testing.T) {
-	result, err := RunAgentBootstrap(context.Background(), Request{
-		Inventory: validInventory(),
-	}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(nil)})
-	if err == nil || !strings.Contains(err.Error(), "mint worker join material") {
-		t.Fatalf("RunAgentBootstrap() error = %v, want worker join material refusal", err)
+func TestRunAgentBootstrapMintsWorkerJoinMaterialAndSubmitsWorkerJoin(t *testing.T) {
+	cpClient := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-cp-1", "bootstrap-init"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-init-1",
+			RequestDigest: "digest-init",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-1"},
+		},
+		events: []*agentapi.OperationEvent{{
+			OperationId: "bootstrap-init-1",
+			JournalSeq:  1,
+			Terminal:    true,
+			Status:      &agentapi.OperationStatus{OperationId: "bootstrap-init-1", Terminal: true, Result: "succeeded"},
+		}},
+		getStatus: &agentapi.OperationStatus{
+			OperationId:     "bootstrap-init-1",
+			Terminal:        true,
+			Result:          "succeeded",
+			AdminKubeconfig: adminKubeconfig(),
+		},
+		createMaterial: &agentapi.CreateWorkerJoinMaterialResponse{
+			MaterialRef: "operation:bootstrap-init-1/worker:worker-1",
+			WorkerJoinMaterial: &agentapi.WorkerJoinMaterial{
+				JoinArgv: []string{
+					"kubeadm",
+					"join",
+					"api.katl.test:6443",
+					"--token",
+					"abcdef.0123456789abcdef",
+					"--discovery-token-ca-cert-hash",
+					"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				},
+				ExpiresAt: "2026-06-16T13:00:00Z",
+			},
+		},
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan"}) {
+	workerClient := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-worker-1", "bootstrap-join-worker"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-join-worker-1",
+			RequestDigest: "digest-worker",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-join-worker-1", Terminal: true, Result: "succeeded"},
+		},
+	}
+	connector := newFakeAgentConnector(map[string]*fakeAgentClient{
+		"cp-1":     cpClient,
+		"worker-1": workerClient,
+	})
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	result, err := RunAgentBootstrap(context.Background(), Request{
+		Inventory:           validInventory(),
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+	}, AgentBootstrapDependencies{
+		Connector: connector,
+		Actor:     "test-actor",
+	})
+	if err != nil {
+		t.Fatalf("RunAgentBootstrap() error = %v", err)
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "worker-join", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
+	}
+	if len(cpClient.createMaterialRequests) != 1 {
+		t.Fatalf("CreateWorkerJoinMaterial requests = %d, want 1", len(cpClient.createMaterialRequests))
+	}
+	materialReq := cpClient.createMaterialRequests[0]
+	if materialReq.Kind != agentJoinMaterialKind || materialReq.Actor != "test-actor" || materialReq.ExpectedMachineId != "machine-cp-1" || materialReq.RequestRef != "operation:bootstrap-init-1/worker:worker-1" {
+		t.Fatalf("join material request = %#v", materialReq)
+	}
+	if len(workerClient.submitRequests) != 1 {
+		t.Fatalf("worker SubmitOperation requests = %d, want 1", len(workerClient.submitRequests))
+	}
+	workerReq := workerClient.submitRequests[0]
+	if workerReq.OperationKind != "bootstrap-join-worker" || workerReq.ExpectedMachineId != "machine-worker-1" {
+		t.Fatalf("worker submit request = %#v", workerReq)
+	}
+	if workerReq.Bootstrap.JoinMaterialRef != "operation:bootstrap-init-1/worker:worker-1" {
+		t.Fatalf("join material ref = %q", workerReq.Bootstrap.JoinMaterialRef)
+	}
+	if workerReq.Bootstrap.WorkerJoinMaterial == nil || workerReq.Bootstrap.WorkerJoinMaterial.ExpiresAt != "2026-06-16T13:00:00Z" {
+		t.Fatalf("worker join material = %#v", workerReq.Bootstrap.WorkerJoinMaterial)
+	}
+}
+
+func TestRunAgentBootstrapRedactsWorkerJoinMaterialFailure(t *testing.T) {
+	secret := "abcdef.0123456789abcdef"
+	cpClient := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-cp-1", "bootstrap-init"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-init-1",
+			RequestDigest: "digest-init",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-1", Terminal: true, Result: "succeeded"},
+		},
+		getStatus:         &agentapi.OperationStatus{OperationId: "bootstrap-init-1", Terminal: true, Result: "succeeded", AdminKubeconfig: adminKubeconfig()},
+		createMaterialErr: errors.New("kubeadm token " + secret),
+	}
+	connector := newFakeAgentConnector(map[string]*fakeAgentClient{
+		"cp-1":     cpClient,
+		"worker-1": {status: readyAgentStatusWithKinds("machine-worker-1", "bootstrap-join-worker")},
+	})
+	_, err := RunAgentBootstrap(context.Background(), Request{Inventory: validInventory()}, AgentBootstrapDependencies{Connector: connector})
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
+		t.Fatalf("RunAgentBootstrap() error = %v, want redacted join material failure", err)
 	}
 }
 
@@ -247,15 +342,18 @@ func (c *fakeAgentConnector) Connect(_ context.Context, node inventory.PlannedNo
 }
 
 type fakeAgentClient struct {
-	status         *agentapi.NodeStatus
-	statusErr      error
-	submitRequests []*agentapi.SubmitOperationRequest
-	submitErr      error
-	accepted       *agentapi.OperationAccepted
-	events         []*agentapi.OperationEvent
-	getStatus      *agentapi.OperationStatus
-	getErr         error
-	watchErr       error
+	status                 *agentapi.NodeStatus
+	statusErr              error
+	submitRequests         []*agentapi.SubmitOperationRequest
+	submitErr              error
+	accepted               *agentapi.OperationAccepted
+	createMaterialRequests []*agentapi.CreateWorkerJoinMaterialRequest
+	createMaterial         *agentapi.CreateWorkerJoinMaterialResponse
+	createMaterialErr      error
+	events                 []*agentapi.OperationEvent
+	getStatus              *agentapi.OperationStatus
+	getErr                 error
+	watchErr               error
 }
 
 func (c *fakeAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error) {
@@ -277,6 +375,31 @@ func (c *fakeAgentClient) SubmitOperation(_ context.Context, req *agentapi.Submi
 		OperationId:   "operation-1",
 		RequestDigest: "digest-1",
 		InitialStatus: &agentapi.OperationStatus{OperationId: "operation-1", Terminal: true, Result: "succeeded"},
+	}, nil
+}
+
+func (c *fakeAgentClient) CreateWorkerJoinMaterial(_ context.Context, req *agentapi.CreateWorkerJoinMaterialRequest, _ ...grpc.CallOption) (*agentapi.CreateWorkerJoinMaterialResponse, error) {
+	c.createMaterialRequests = append(c.createMaterialRequests, req)
+	if c.createMaterialErr != nil {
+		return nil, c.createMaterialErr
+	}
+	if c.createMaterial != nil {
+		return c.createMaterial, nil
+	}
+	return &agentapi.CreateWorkerJoinMaterialResponse{
+		MaterialRef: req.GetRequestRef(),
+		WorkerJoinMaterial: &agentapi.WorkerJoinMaterial{
+			JoinArgv: []string{
+				"kubeadm",
+				"join",
+				"api.katl.test:6443",
+				"--token",
+				"abcdef.0123456789abcdef",
+				"--discovery-token-ca-cert-hash",
+				"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+			ExpiresAt: "2026-06-16T13:00:00Z",
+		},
 	}, nil
 }
 
