@@ -162,11 +162,13 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	}
 	kubeadmRef := strings.TrimSpace(layer.Kubernetes.KubeadmConfigRef)
 	kubeadmConfig := inventory.KubeadmConfig{}
+	var kubeadmPlan *kubeadmconfig.Plan
 	if kubeadmRef != "" {
 		configPlan, ok := kubeadmConfigs[kubeadmRef]
 		if !ok {
 			return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q kubeadm config ref %q was not resolved", name, kubeadmRef)
 		}
+		kubeadmPlan = &configPlan
 		kubeadmConfig = inventory.KubeadmConfig{
 			Ref:    kubeadmRef,
 			Path:   configPlan.Config.RenderPath,
@@ -178,11 +180,15 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		KubeadmConfigs:           kubeadmConfigs,
 		KubernetesVersion:        kubernetes.version,
 		KubernetesActivationPath: kubernetes.activationPath,
+		DeferKubeadmInputs:       true,
 	})
 	if err != nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q config domains: %w", name, err)
 	}
 	if err := rejectHostSpecificMaterials(installManifest, nativeEtcFiles, kubeadmConfig, kubernetes.sysext); err != nil {
+		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q: %w", name, err)
+	}
+	if err := rejectHostSpecificKubeadmPlan(kubeadmPlan); err != nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q: %w", name, err)
 	}
 	invNode := inventory.Node{
@@ -302,6 +308,25 @@ func rejectHostSpecificMaterials(values ...any) error {
 		return err
 	}
 	text := string(data)
+	return rejectHostSpecificText(text)
+}
+
+func rejectHostSpecificKubeadmPlan(plan *kubeadmconfig.Plan) error {
+	if plan == nil {
+		return nil
+	}
+	if err := rejectHostSpecificText(string(plan.Config.Content)); err != nil {
+		return err
+	}
+	for _, patch := range plan.Patches {
+		if err := rejectHostSpecificText(string(patch.Content)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rejectHostSpecificText(text string) error {
 	for _, denied := range []string{"/run/current-system", "/nix/store", "/etc/profiles", "/home/"} {
 		if strings.Contains(text, denied) {
 			return fmt.Errorf("generated materials contain host-specific path %s", denied)

@@ -40,7 +40,7 @@ func TestCompileClusterPlan(t *testing.T) {
 	if len(cp.InstallManifest.Node.Networkd.Files) != 2 {
 		t.Fatalf("networkd files = %#v", cp.InstallManifest.Node.Networkd.Files)
 	}
-	if len(cp.NativeEtcFiles) != 4 {
+	if len(cp.NativeEtcFiles) != 3 {
 		t.Fatalf("native /etc files = %#v", cp.NativeEtcFiles)
 	}
 	if len(cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys) != 1 {

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/operation"
 )
 
 func TestRedactSourceRemovesCredentialsAndQuery(t *testing.T) {
@@ -28,6 +31,7 @@ func TestRedactErrorRemovesEmbeddedURLSecrets(t *testing.T) {
 
 func TestWriteRuntimeHandoff(t *testing.T) {
 	root := t.TempDir()
+	writeCleanGenerationZero(t, root)
 	record := New(StateKubeadmReady, time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC))
 	record.InputMode = InputModePXEPreseed
 	record.InputSource = "https://example.invalid/install.json"
@@ -42,7 +46,7 @@ func TestWriteRuntimeHandoff(t *testing.T) {
 	}
 	record.TargetDiskStableID = "/dev/disk/by-id/ata-root"
 	record.SelectedRootSlot = "root-a"
-	record.InstalledGeneration = "2026.06.04-001"
+	record.InstalledGeneration = "0"
 
 	if err := WriteRuntimeHandoff(root, record); err != nil {
 		t.Fatalf("WriteRuntimeHandoff() error = %v", err)
@@ -59,7 +63,81 @@ func TestWriteRuntimeHandoff(t *testing.T) {
 	if decoded.State != StateWaitingForClusterBootstrap || decoded.FinalHandoff != StateWaitingForClusterBootstrap {
 		t.Fatalf("handoff state = %#v", decoded)
 	}
-	if decoded.RequestDigest != strings.Repeat("a", 64) || decoded.InstalledGeneration != "2026.06.04-001" {
+	if decoded.RequestDigest != strings.Repeat("a", 64) || decoded.InstalledGeneration != "0" {
 		t.Fatalf("status did not preserve identity fields: %#v", decoded)
+	}
+}
+
+func TestValidateCleanGenerationZeroRejectsOperationMutationEvidence(t *testing.T) {
+	root := t.TempDir()
+	writeCleanGenerationZero(t, root)
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	_, err = store.Create(operation.OperationRecord{
+		OperationID:             "bootstrap-001",
+		OperationKind:           "bootstrap-init",
+		Scope:                   "kubeadm-state",
+		RequestDigest:           "sha256:" + strings.Repeat("1", 64),
+		PreviousGenerationID:    "0",
+		CandidateGenerationID:   "1",
+		MutatingToolRan:         true,
+		MutatingToolInvocations: []string{"kubeadm init"},
+	}, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	err = ValidateCleanGenerationZero(root, "0")
+	if err == nil || !strings.Contains(err.Error(), "operation bootstrap-001 has mutation evidence") {
+		t.Fatalf("ValidateCleanGenerationZero() error = %v, want operation mutation refusal", err)
+	}
+}
+
+func TestValidateCleanGenerationZeroRejectsRenderedKubeadmInput(t *testing.T) {
+	root := t.TempDir()
+	writeCleanGenerationZero(t, root)
+	path := filepath.Join(root, "var/lib/katl/generations/0/confext/etc/katl/kubeadm/control-plane/config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("apiVersion: kubeadm.k8s.io/v1beta4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ValidateCleanGenerationZero(root, "0")
+	if err == nil || !strings.Contains(err.Error(), "generation 0 rendered kubeadm input exists") {
+		t.Fatalf("ValidateCleanGenerationZero() error = %v, want kubeadm input refusal", err)
+	}
+}
+
+func writeCleanGenerationZero(t *testing.T, root string) {
+	t.Helper()
+	record := generation.Record{
+		APIVersion:     generation.APIVersion,
+		Kind:           generation.Kind,
+		GenerationID:   "0",
+		RuntimeVersion: "0.1.0",
+		Root: generation.RootSelection{
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			RuntimeArtifactSHA256: strings.Repeat("b", 64),
+		},
+		Boot: generation.BootSelection{
+			UKIPath: "/efi/EFI/Linux/katl-0.efi",
+		},
+		CreatedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+	}
+	spec := generation.SpecFromRecord(record)
+	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStatePending, generation.HealthStateUnknown, record.CreatedAt)
+	if err != nil {
+		t.Fatalf("NewGenerationStatus() error = %v", err)
+	}
+	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatalf("WriteGeneration() error = %v", err)
 	}
 }

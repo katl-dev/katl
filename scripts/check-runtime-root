@@ -125,6 +125,7 @@ for path in \
     /usr/lib/systemd/system/multi-user.target.wants/katl-boot-complete.target \
     /usr/lib/systemd/system/timers.target.wants/katl-boot-deadman.timer \
     /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-boot-health.service \
+    /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/multi-user.target.wants/katlc-agent.service \
     /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
 do
@@ -144,8 +145,8 @@ file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STA
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "DefaultDependencies=no"
 file_has /usr/lib/systemd/system/katl-generation-activate.service "ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/"
-file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katlc-agent.service"
-file_has /usr/lib/systemd/system/katl-boot-health.service "Requires=katlc-agent.service systemd-networkd.service"
+file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service"
+file_has /usr/lib/systemd/system/katl-boot-health.service "Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service"
 file_has /usr/lib/systemd/system/katl-boot-health.service "ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=success --reason=katl-boot-complete.target"
 file_has /usr/lib/systemd/system/katl-boot-deadman.service "ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --request-reboot"
 file_has /usr/lib/systemd/system/katl-boot-deadman.timer "OnBootSec=10min"
@@ -158,10 +159,15 @@ file_has /usr/lib/systemd/system/katlc-agent.service "SyslogIdentifier=katlc-age
 misses_path /usr/lib/systemd/system/katl-operation@.service
 misses_path /usr/lib/systemd/system/katl-operation-reconcile.service
 misses_path /usr/lib/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service
+misses_path /usr/lib/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target
+misses_path /usr/lib/systemd/system/multi-user.target.wants/katl-state-projection-check.service
+misses_path /usr/lib/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service
 file_has /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/containerd"
 file_has /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/kubelet /etc/kubernetes"
 file_has /usr/lib/sysctl.d/50-katl-kubernetes.conf "net.ipv4.ip_forward=1"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/etcd 0755 root root -"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/artifacts 0750 root root -"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/artifacts/katlos-image 0750 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/operations 0750 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/agent 0700 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/cluster 0750 root root -"

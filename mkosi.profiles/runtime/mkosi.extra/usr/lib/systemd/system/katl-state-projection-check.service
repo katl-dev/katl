@@ -11,4 +11,3 @@ SyslogIdentifier=katl-state-projection
 ExecStart=/usr/bin/printf 'Katl state projection ready\n'
 
 [Install]
-WantedBy=multi-user.target

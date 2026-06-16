@@ -18,11 +18,12 @@ const (
 )
 
 type InstallRecordRequest struct {
-	TargetRoot     string
-	Manifest       manifest.Manifest
-	KubeadmConfigs map[string]kubeadmconfig.Plan
-	Record         generation.Record
-	Chown          func(path string, uid int, gid int) error
+	TargetRoot        string
+	Manifest          manifest.Manifest
+	KubeadmConfigs    map[string]kubeadmconfig.Plan
+	KubernetesVersion string
+	Record            generation.Record
+	Chown             func(path string, uid int, gid int) error
 }
 
 type InstallRecordResult struct {
@@ -41,10 +42,10 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 	}
 
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
-		Manifest:                 request.Manifest,
-		KubeadmConfigs:           request.KubeadmConfigs,
-		KubernetesVersion:        selectedKubernetesPayloadVersion(request.Record),
-		KubernetesActivationPath: selectedKubernetesActivationPath(request.Record),
+		Manifest:           request.Manifest,
+		KubeadmConfigs:     request.KubeadmConfigs,
+		KubernetesVersion:  firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.Record)),
+		DeferKubeadmInputs: true,
 	})
 	if err != nil {
 		return InstallRecordResult{}, err
@@ -84,6 +85,14 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 		},
 	}}
 	if err := generation.ValidateRecord(record); err != nil {
+		return InstallRecordResult{}, err
+	}
+	spec := generation.SpecFromRecord(record)
+	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStatePending, generation.HealthStateUnknown, record.CreatedAt)
+	if err != nil {
+		return InstallRecordResult{}, err
+	}
+	if err := generation.WriteGeneration(request.TargetRoot, spec, status); err != nil {
 		return InstallRecordResult{}, err
 	}
 	metadataPath := filepath.Join(generationsRoot, generationID, "metadata.json")
@@ -141,6 +150,15 @@ func selectedKubernetesActivationPath(record generation.Record) string {
 	for _, sysext := range record.Sysexts {
 		if sysext.Name == "kubernetes" {
 			return sysext.ActivationPath
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
 		}
 	}
 	return ""

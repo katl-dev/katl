@@ -312,10 +312,7 @@ func planInstall(install *Context) error {
 }
 
 func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.RootSlotWritePlan, install *Context) (generation.Record, error) {
-	generationID := strings.TrimSpace(install.GenerationID)
-	if generationID == "" {
-		generationID = payload.Index.Version
-	}
+	generationID := "0"
 	request, err := payload.FirstInstallRequest(katlosimage.FirstInstallRequest{
 		GenerationID:      generationID,
 		RootSlot:          string(rootPlan.Slot),
@@ -589,7 +586,7 @@ func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
 		}
 	}
 	if target == "" {
-		return fmt.Errorf("Kubernetes sysext record is required")
+		target = cachedKubernetesSysextPath()
 	}
 	path, err := targetPathForAbsolute(install.TargetRoot, target)
 	if err != nil {
@@ -681,14 +678,20 @@ func (installSeedStep) Run(ctx context.Context, install *Context) error {
 		if bootRoot == "" {
 			bootRoot = filepath.Join(install.TargetRoot, "efi")
 		}
-		if _, err := generation.WriteInstallIdentity(generation.InstallIdentityRequest{
+		identity, err := generation.WriteInstallIdentity(generation.InstallIdentityRequest{
 			TargetRoot: install.TargetRoot,
 			BootRoot:   bootRoot,
 			Identity:   request,
 			Loader:     generation.LoaderRequest{Record: *install.LoaderRecord},
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		entryPath, err := bootRelativePath(bootRoot, identity.EntryPath)
+		if err != nil {
+			return err
+		}
+		install.LoaderRecord.Boot.LoaderEntryPath = entryPath
 	} else if _, err := generation.WriteIdentity(install.TargetRoot, request); err != nil {
 		return err
 	}
@@ -734,16 +737,30 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		return fmt.Errorf("loader generation record is required to materialize generated confext")
 	}
 	result, err := MaterializeInstallRecord(InstallRecordRequest{
-		TargetRoot:     install.TargetRoot,
-		Manifest:       install.Manifest,
-		KubeadmConfigs: install.KubeadmConfigs,
-		Record:         *install.LoaderRecord,
-		Chown:          install.Chown,
+		TargetRoot:        install.TargetRoot,
+		Manifest:          install.Manifest,
+		KubeadmConfigs:    install.KubeadmConfigs,
+		KubernetesVersion: installedKubernetesPayloadVersion(install),
+		Record:            *install.LoaderRecord,
+		Chown:             install.Chown,
 	})
 	if err != nil {
 		return err
 	}
 	install.LoaderRecord = &result.Record
+	if _, err := WriteClusterIntent(ClusterIntentRequest{
+		TargetRoot:         install.TargetRoot,
+		Manifest:           install.Manifest,
+		KubeadmConfigs:     install.KubeadmConfigs,
+		KubernetesVersion:  installedKubernetesPayloadVersion(install),
+		KubernetesSysext:   installedKubernetesSysext(install),
+		GenerationID:       result.Record.GenerationID,
+		RequestDigest:      install.RequestDigest,
+		InstalledAt:        result.Record.CreatedAt,
+		TargetDiskStableID: targetDiskStableID(install.Manifest.Install.TargetDisk),
+	}); err != nil {
+		return err
+	}
 	return recordStep(ctx, install, WriteInstallRecord)
 }
 
@@ -975,4 +992,41 @@ func targetDiskStableID(selector manifest.DiskSelector) string {
 
 func timeNow() time.Time {
 	return time.Now().UTC()
+}
+
+func installedKubernetesPayloadVersion(install *Context) string {
+	if install != nil && install.KatlosImage != nil {
+		return strings.TrimSpace(install.KatlosImage.Kubernetes.PayloadVersion)
+	}
+	return ""
+}
+
+func installedKubernetesSysext(install *Context) *ClusterIntentKubernetesSysext {
+	if install == nil || install.KatlosImage == nil {
+		return nil
+	}
+	component := install.KatlosImage.Kubernetes
+	return &ClusterIntentKubernetesSysext{
+		Path:      cachedKubernetesSysextPath(),
+		SHA256:    component.SHA256,
+		SizeBytes: uint64(component.SizeBytes),
+	}
+}
+
+func cachedKubernetesSysextPath() string {
+	return "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"
+}
+
+func bootRelativePath(bootRoot string, path string) (string, error) {
+	bootRoot = filepath.Clean(bootRoot)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(bootRoot, path)
+	if err != nil {
+		return "", fmt.Errorf("resolve loader entry path: %w", err)
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "/") {
+		return "", fmt.Errorf("loader entry path %s is not under boot root %s", path, bootRoot)
+	}
+	return rel, nil
 }

@@ -81,9 +81,9 @@ func SpecFromRecord(record Record) GenerationSpec {
 		PreviousGenerationID: previous,
 		Root:                 record.Root,
 		Boot:                 record.Boot,
-		Sysexts:              append([]ExtensionRef(nil), record.Sysexts...),
-		Confexts:             append([]GeneratedConfext(nil), record.Confexts...),
-		KernelCommandLine:    append([]string(nil), record.KernelCommandLine...),
+		Sysexts:              append([]ExtensionRef{}, record.Sysexts...),
+		Confexts:             append([]GeneratedConfext{}, record.Confexts...),
+		KernelCommandLine:    append([]string{}, record.KernelCommandLine...),
 		CreatedAt:            record.CreatedAt.UTC(),
 	}
 }

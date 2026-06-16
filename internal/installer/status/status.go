@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/manifest"
+	"github.com/zariel/katl/internal/installer/operation"
 )
 
 const (
@@ -188,6 +190,9 @@ func WriteRuntimeHandoff(root string, record Record) error {
 	if err := ValidateRuntimeHandoff(record); err != nil {
 		return err
 	}
+	if err := ValidateCleanGenerationZero(root, record.InstalledGeneration); err != nil {
+		return err
+	}
 	record.APIVersion = APIVersion
 	record.Kind = Kind
 	record.State = StateWaitingForClusterBootstrap
@@ -207,7 +212,7 @@ func WriteRuntimeFailure(root string, record Record, cause error) error {
 	record.FinalHandoff = ""
 	record.LastError = RedactError(cause)
 	record.RefusalReason = record.LastError
-	record.RetryHint = "repair install status before declaring kubeadm-ready"
+	record.RetryHint = "repair install status before declaring boot-complete"
 	record.UpdatedAt = time.Now().UTC()
 	return WriteFile(path, record)
 }
@@ -239,4 +244,108 @@ func ValidateRuntimeHandoff(record Record) error {
 		return fmt.Errorf("runtime handoff status missing %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func ValidateCleanGenerationZero(root string, generationID string) error {
+	if strings.TrimSpace(generationID) != "0" {
+		return nil
+	}
+	spec, _, err := generation.ReadGeneration(root, generationID)
+	if err != nil {
+		return fmt.Errorf("read generation 0 records: %w", err)
+	}
+	if len(spec.Sysexts) > 0 {
+		return fmt.Errorf("generation 0 is not clean: selected Kubernetes sysexts are forbidden")
+	}
+	checks := []struct {
+		path     string
+		nonEmpty bool
+		message  string
+	}{
+		{path: "/var/lib/katl/kubernetes/etc-kubernetes/pki", nonEmpty: true, message: "kubeadm PKI exists"},
+		{path: "/var/lib/katl/kubernetes/etc-kubernetes/manifests", nonEmpty: true, message: "static pod manifests exist"},
+		{path: "/var/lib/kubelet/pki", nonEmpty: true, message: "kubelet PKI exists"},
+		{path: "/var/lib/etcd", nonEmpty: true, message: "stacked etcd data exists"},
+		{path: "/etc/kubernetes", nonEmpty: true, message: "/etc/kubernetes is non-empty"},
+		{path: "/var/lib/kubelet/bootstrap-kubeconfig", message: "kubelet bootstrap kubeconfig exists"},
+		{path: "/var/lib/kubelet/kubeconfig", message: "kubelet kubeconfig exists"},
+		{path: "/var/lib/kubelet/config.yaml", message: "kubelet config exists"},
+		{path: "/etc/katl/kubeadm", nonEmpty: true, message: "rendered kubeadm input exists"},
+		{path: "/var/lib/katl/generations/0/confext/etc/katl/kubeadm", nonEmpty: true, message: "generation 0 rendered kubeadm input exists"},
+		{path: "/etc/systemd/system/multi-user.target.wants/kubelet.service", message: "kubelet is enabled"},
+	}
+	for _, check := range checks {
+		dirty, err := dirtyPath(root, check.path, check.nonEmpty)
+		if err != nil {
+			return err
+		}
+		if dirty {
+			return fmt.Errorf("generation 0 is not clean: %s at %s", check.message, check.path)
+		}
+	}
+	kubeconfigs, err := filepath.Glob(filepath.Join(filepath.Clean(root), "var/lib/katl/kubernetes/etc-kubernetes", "*.conf"))
+	if err != nil {
+		return fmt.Errorf("scan kubeadm kubeconfigs: %w", err)
+	}
+	if len(kubeconfigs) > 0 {
+		return fmt.Errorf("generation 0 is not clean: kubeadm kubeconfigs exist under /var/lib/katl/kubernetes/etc-kubernetes")
+	}
+	links, err := filepath.Glob(filepath.Join(filepath.Clean(root), "run/extensions", "*kubernetes*"))
+	if err != nil {
+		return fmt.Errorf("scan active Kubernetes sysext links: %w", err)
+	}
+	if len(links) > 0 {
+		return fmt.Errorf("generation 0 is not clean: active Kubernetes sysext links exist")
+	}
+	if err := validateNoDirtyGenerationZeroOperations(root); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateNoDirtyGenerationZeroOperations(root string) error {
+	store, err := operation.NewStore(filepath.Join(filepath.Clean(root), "var/lib/katl/operations"))
+	if err != nil {
+		return err
+	}
+	ids, err := store.OperationIDs()
+	if err != nil {
+		return fmt.Errorf("scan operation records: %w", err)
+	}
+	for _, id := range ids {
+		record, err := store.Read(id)
+		if err != nil {
+			return fmt.Errorf("read operation %s: %w", id, err)
+		}
+		if record.ExternalMutationStarted || record.MutatingToolRan || len(record.PreExecMutationMarkers) > 0 || len(record.MutationScopes) > 0 {
+			return fmt.Errorf("generation 0 is not clean: operation %s has mutation evidence", id)
+		}
+		class := operation.ClassifyStale(record)
+		if class == operation.StalePostMutation || class == operation.StaleAmbiguous {
+			return fmt.Errorf("generation 0 is not clean: operation %s has stale mutation evidence (%s)", id, class)
+		}
+	}
+	return nil
+}
+
+func dirtyPath(root string, absolutePath string, nonEmpty bool) (bool, error) {
+	path := filepath.Join(filepath.Clean(root), strings.TrimPrefix(filepath.Clean(absolutePath), string(filepath.Separator)))
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect %s: %w", absolutePath, err)
+	}
+	if !nonEmpty {
+		return true, nil
+	}
+	if !info.IsDir() {
+		return true, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", absolutePath, err)
+	}
+	return len(entries) > 0, nil
 }

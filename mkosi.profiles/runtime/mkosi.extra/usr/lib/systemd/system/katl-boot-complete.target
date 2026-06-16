@@ -1,8 +1,8 @@
 [Unit]
 Description=Katl boot-complete promotion point
 Documentation=man:systemd.target(5)
-Requires=katl-boot-health.service
-After=katl-boot-health.service
+Requires=katl-runtime-handoff-status.service katl-boot-health.service
+After=katl-runtime-handoff-status.service katl-boot-health.service
 
 [Install]
 WantedBy=multi-user.target

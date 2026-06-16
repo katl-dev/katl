@@ -148,11 +148,10 @@ func renderKubeadmReadyTarget() string {
 		"[Unit]",
 		"Description=Katl kubeadm-ready handoff point",
 		"Documentation=man:systemd.target(5)",
-		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katlc-agent.service",
-		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katl-runtime-handoff-status.service katlc-agent.service",
+		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
+		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
 		"",
 		"[Install]",
-		"WantedBy=multi-user.target",
 		"",
 	}, "\n")
 }
@@ -162,8 +161,8 @@ func renderBootCompleteTarget() string {
 		"[Unit]",
 		"Description=Katl boot-complete promotion point",
 		"Documentation=man:systemd.target(5)",
-		"Requires=katl-boot-health.service",
-		"After=katl-boot-health.service",
+		"Requires=katl-runtime-handoff-status.service katl-boot-health.service",
+		"After=katl-runtime-handoff-status.service katl-boot-health.service",
 		"",
 		"[Install]",
 		"WantedBy=multi-user.target",
@@ -176,9 +175,9 @@ func renderBootHealthService() string {
 		"[Unit]",
 		"Description=Record successful Katl boot health",
 		"Documentation=man:systemd.service(5)",
-		"Requires=katlc-agent.service systemd-networkd.service",
+		"Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service",
 		"Wants=sshd.service",
-		"After=katlc-agent.service systemd-networkd.service sshd.service",
+		"After=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service",
 		"Before=katl-boot-complete.target",
 		"RequiresMountsFor=/var/lib/katl",
 		"",
@@ -265,7 +264,6 @@ func renderStateCheckService() string {
 		"ExecStart=/usr/bin/printf 'Katl state projection ready\\n'",
 		"",
 		"[Install]",
-		"WantedBy=multi-user.target",
 		"",
 	}, "\n")
 }
@@ -275,9 +273,10 @@ func renderRuntimeStatusService() string {
 		"[Unit]",
 		"Description=Record Katl runtime handoff status",
 		"Documentation=man:systemd.service(5)",
-		"Requires=katl-state-projection-check.service",
-		"After=katl-state-projection-check.service",
-		"Before=katl-kubeadm-ready.target",
+		"Requires=katlc-agent.service",
+		"After=katlc-agent.service",
+		"Before=katl-boot-complete.target",
+		"RequiresMountsFor=/var/lib/katl",
 		"",
 		"[Service]",
 		"Type=oneshot",
@@ -286,7 +285,7 @@ func renderRuntimeStatusService() string {
 		"ExecStart=/usr/lib/katl/runtime/katl-runtime-status --root=/",
 		"",
 		"[Install]",
-		"RequiredBy=katl-kubeadm-ready.target",
+		"RequiredBy=katl-boot-complete.target",
 		"",
 	}, "\n")
 }
@@ -339,9 +338,6 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeFile(root, "etc/systemd/system/katl-kubeadm-ready.target", assets.KubeadmReadyTarget, 0o644); err != nil {
 		return StateAssets{}, err
 	}
-	if err := writeSymlink(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target", "../katl-kubeadm-ready.target"); err != nil {
-		return StateAssets{}, err
-	}
 	if err := writeFile(root, "etc/systemd/system/katl-boot-complete.target", assets.BootCompleteTarget, 0o644); err != nil {
 		return StateAssets{}, err
 	}
@@ -381,7 +377,7 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeFile(root, "etc/systemd/system/katl-runtime-handoff-status.service", assets.RuntimeStatus, 0o644); err != nil {
 		return StateAssets{}, err
 	}
-	if err := writeSymlink(root, "etc/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service", "../katl-runtime-handoff-status.service"); err != nil {
+	if err := writeSymlink(root, "etc/systemd/system/katl-boot-complete.target.requires/katl-runtime-handoff-status.service", "../katl-runtime-handoff-status.service"); err != nil {
 		return StateAssets{}, err
 	}
 	for _, rel := range legacyOperationUnitPaths() {
@@ -415,6 +411,9 @@ func legacyOperationUnitPaths() []string {
 		"etc/systemd/system/katl-operation@.service",
 		"etc/systemd/system/katl-operation-reconcile.service",
 		"etc/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service",
+		"etc/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service",
+		"etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target",
+		"etc/systemd/system/multi-user.target.wants/katl-state-projection-check.service",
 	}
 }
 
@@ -425,6 +424,8 @@ func stateDirs() []StateDir {
 		{Path: "/var/lib/katl/generations", Mode: 0o755},
 		{Path: "/var/lib/katl/install", Mode: 0o755},
 		{Path: "/var/lib/katl/install/logs", Mode: 0o755},
+		{Path: "/var/lib/katl/artifacts", Mode: 0o750},
+		{Path: "/var/lib/katl/artifacts/katlos-image", Mode: 0o750},
 		{Path: "/var/lib/katl/identity", Mode: 0o755},
 		{Path: "/var/lib/katl/operations", Mode: 0o750},
 		{Path: "/var/lib/katl/agent", Mode: 0o700},

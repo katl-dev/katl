@@ -345,14 +345,6 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 	if strings.TrimSpace(request.UKIPath) == "" {
 		return generation.FirstInstallRequest{}, fmt.Errorf("UKI path is required")
 	}
-	sysextPath := request.KubernetesSysextPath
-	if sysextPath == "" {
-		sysextPath = path.Join("/var/lib/katl/generations", request.GenerationID, "sysext", "katl-kubernetes.raw")
-	}
-	activationPath := request.KubernetesActivationPath
-	if activationPath == "" {
-		activationPath = "/run/extensions/katl-kubernetes.raw"
-	}
 	return generation.FirstInstallRequest{
 		GenerationID:          request.GenerationID,
 		RuntimeVersion:        first(p.Runtime.Version, p.Index.Version),
@@ -362,31 +354,17 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 		RootPartitionUUID:     request.RootPartitionUUID,
 		RuntimeArtifactSHA256: p.Runtime.SHA256,
 		UKIPath:               request.UKIPath,
-		Sysexts: []generation.ExtensionRef{{
-			Name:            "kubernetes",
-			Path:            sysextPath,
-			ActivationPath:  activationPath,
-			SHA256:          p.Kubernetes.SHA256,
-			ArtifactVersion: p.Kubernetes.Version,
-			PayloadVersion:  p.Kubernetes.PayloadVersion,
-			Architecture:    p.Kubernetes.Architecture,
-			Compatibility: generation.ExtensionCompatibility{
-				RuntimeInterfaces: []string{p.Index.RuntimeInterface},
-			},
-		}},
-		KernelCommandLine: append([]string(nil), p.Boot.Compatibility.KernelCommandLine...),
-		CreatedAt:         request.CreatedAt,
+		KernelCommandLine:     append([]string(nil), p.Boot.Compatibility.KernelCommandLine...),
+		CreatedAt:             request.CreatedAt,
 	}, nil
 }
 
 type FirstInstallRequest struct {
-	GenerationID             string
-	RootSlot                 string
-	RootPartitionUUID        string
-	UKIPath                  string
-	KubernetesSysextPath     string
-	KubernetesActivationPath string
-	CreatedAt                time.Time
+	GenerationID      string
+	RootSlot          string
+	RootPartitionUUID string
+	UKIPath           string
+	CreatedAt         time.Time
 }
 
 func readIndex(path string) (Index, error) {

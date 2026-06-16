@@ -289,14 +289,17 @@ func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
 		t.Fatal("loader record is nil")
 	}
 	record := install.LoaderRecord
-	if record.GenerationID != "2026.06.06-001" || record.Root.RuntimeArtifactSHA256 != payload.Runtime.SHA256 {
+	if record.GenerationID != "0" || record.Root.RuntimeArtifactSHA256 != payload.Runtime.SHA256 {
 		t.Fatalf("record root fields = %#v", record.Root)
 	}
-	if record.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" || record.Boot.UKIPath != "/efi/EFI/Linux/katl-2026.06.06-001.efi" {
+	if record.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" || record.Boot.UKIPath != "/efi/EFI/Linux/katl-0.efi" {
 		t.Fatalf("record boot/root target = %#v %#v", record.Root, record.Boot)
 	}
-	if len(record.Sysexts) != 1 || record.Sysexts[0].SHA256 != payload.Kubernetes.SHA256 || record.Sysexts[0].PayloadVersion != "v1.34.8" {
-		t.Fatalf("record sysexts = %#v", record.Sysexts)
+	if record.GenerationID != "0" {
+		t.Fatalf("generation id = %q", record.GenerationID)
+	}
+	if len(record.Sysexts) != 0 {
+		t.Fatalf("generation 0 selected sysexts = %#v", record.Sysexts)
 	}
 	if record.Confexts != nil {
 		t.Fatalf("planned record should not include node confext before WriteInstallRecord: %#v", record.Confexts)
@@ -464,21 +467,31 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	if install.LoaderRecord == nil {
 		t.Fatal("loader record is nil")
 	}
-	if install.LoaderRecord.GenerationID != "2026.06.06-001" || install.LoaderRecord.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" {
+	if install.LoaderRecord.GenerationID != "0" || install.LoaderRecord.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" {
 		t.Fatalf("loader record = %#v", install.LoaderRecord)
 	}
-	if len(install.LoaderRecord.Sysexts) != 1 || install.LoaderRecord.Sysexts[0].PayloadVersion != "v1.34.8" {
-		t.Fatalf("sysext metadata = %#v", install.LoaderRecord.Sysexts)
+	if len(install.LoaderRecord.Sysexts) != 0 {
+		t.Fatalf("generation 0 selected sysexts = %#v", install.LoaderRecord.Sysexts)
 	}
 	if len(install.LoaderRecord.Confexts) != 1 || install.LoaderRecord.Confexts[0].Name != "katl-node" {
 		t.Fatalf("confext metadata = %#v", install.LoaderRecord.Confexts)
 	}
-	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-2026.06.06-001.efi"), string(contents.boot))
-	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/sysext/katl-kubernetes.raw"), string(contents.kubernetes))
+	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-0.efi"), string(contents.boot))
+	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/sysext/katl-kubernetes.raw"))
+	assertText(t, filepath.Join(targetRoot, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), string(contents.kubernetes))
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/identity/machine-id"), "30313233343536373839616263646566\n")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/confext/etc/katl/node.json"), `"configPath": "/etc/katl/kubeadm/control-plane/config.yaml"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/metadata.json"), `"generationID": "2026.06.06-001"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/confext/etc/katl/node.json"), `"configRef": "control-plane"`)
+	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/confext/etc/katl/kubeadm/control-plane/config.yaml"))
+	assertDirEmpty(t, filepath.Join(targetRoot, "etc/kubernetes"))
+	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/kubelet.service"))
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/metadata.json"), `"generationID": "0"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/metadata.json"), `"loaderEntryPath": "loader/entries/katl-0.conf"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/spec.json"), `"sysexts": []`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/spec.json"), `"loaderEntryPath": "loader/entries/katl-0.conf"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"payloadVersion": "v1.34.8"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"sysextPath": "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"sysextSHA256": "`+payload.Kubernetes.SHA256+`"`)
 	for _, name := range []string{"wipefs", "sfdisk", "partprobe", "udevadm", "mkfs.vfat", "mkfs.ext4", "mkdir", "mount", "bootctl"} {
 		if !strings.Contains(commandNames(commands.Calls), name) {
 			t.Fatalf("command calls missing %s: %#v", name, commands.Calls)
@@ -491,7 +504,7 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 		t.Fatalf("completed steps = %#v, want %#v", got, PreseededManifestPlan().IDs())
 	}
 	finalStatus := store.Statuses[len(store.Statuses)-1]
-	if finalStatus.State != installstatus.StateRebootRequested || finalStatus.InstalledGeneration != "2026.06.06-001" {
+	if finalStatus.State != installstatus.StateRebootRequested || finalStatus.InstalledGeneration != "0" {
 		t.Fatalf("final status = %#v", finalStatus)
 	}
 }
@@ -779,17 +792,8 @@ func TestRunnerInstallsIdentity(t *testing.T) {
 	store := &MemoryStateStore{}
 	targetRoot := t.TempDir()
 	bootRoot := t.TempDir()
-	record := generation.Record{
-		GenerationID:   "2026.06.01-005",
-		RuntimeVersion: "0.1.0",
-		Root: generation.RootSelection{
-			Slot:          "root-a",
-			PartitionUUID: "11111111-2222-3333-4444-555555555555",
-		},
-		Boot: generation.BootSelection{
-			UKIPath: "/efi/EFI/Linux/katl.efi",
-		},
-	}
+	record := *minimalRecord("2026.06.01-005")
+	record.Boot.UKIPath = "/efi/EFI/Linux/katl.efi"
 	install := &Context{
 		ManifestPath:   writeManifest(t),
 		StateDir:       t.TempDir(),
@@ -841,7 +845,7 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/etc-kubernetes.mount"), "Where=/etc/kubernetes")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount")
-	assertSymlink(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"), "../katl-kubeadm-ready.target")
+	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"))
 	assertContains(t, filepath.Join(targetRoot, "etc/tmpfiles.d/katl-state.conf"), "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -")
 	assertContains(t, filepath.Join(targetRoot, "etc/tmpfiles.d/katl-state.conf"), "d /var/lib/etcd 0755 root root -")
 	assertDir(t, filepath.Join(targetRoot, "etc/kubernetes"), 0o755)
@@ -881,20 +885,6 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 		Boot: generation.BootSelection{
 			UKIPath: "/efi/EFI/Linux/katl-2026.06.04-001.efi",
 		},
-		Sysexts: []generation.ExtensionRef{
-			{
-				Name:            "kubernetes",
-				Path:            "/var/lib/katl/generations/2026.06.04-001/sysext/katl-kubernetes.raw",
-				ActivationPath:  "/run/extensions/katl-kubernetes.raw",
-				SHA256:          strings.Repeat("b", 64),
-				ArtifactVersion: "k8s-v1.34.8",
-				PayloadVersion:  "v1.34.8",
-				Architecture:    "x86_64",
-				Compatibility: generation.ExtensionCompatibility{
-					RuntimeInterfaces: []string{"katl-runtime-1"},
-				},
-			},
-		},
 		Confexts: []generation.GeneratedConfext{
 			{
 				Name: "stale-node",
@@ -905,6 +895,7 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 				},
 			},
 		},
+		CreatedAt: time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
 	}
 	install := &Context{
 		ManifestPath: writeManifestWithNode(t, `,
@@ -933,7 +924,7 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 
 	confextDir := filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.04-001/confext")
 	assertText(t, filepath.Join(confextDir, "etc/systemd/network/10-lan.network"), "[Match]\nName=enp1s0\n")
-	assertText(t, filepath.Join(confextDir, "etc/katl/kubeadm/control-plane/config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")
+	assertMissing(t, filepath.Join(confextDir, "etc/katl/kubeadm/control-plane/config.yaml"))
 	assertText(t, filepath.Join(confextDir, "etc/extension-release.d/extension-release.katl-node"), "ID=fedora\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
 	assertText(t, filepath.Join(confextDir, "etc/katl/node.json"), `{
   "apiVersion": "katl.dev/v1alpha1",
@@ -947,10 +938,7 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
     "configPath": "/etc/katl/kubeadm/control-plane/config.yaml",
     "intent": "control-plane"
   },
-  "kubernetes": {
-    "payloadVersion": "v1.34.8",
-    "activationPath": "/run/extensions/katl-kubernetes.raw"
-  }
+  "kubernetes": {}
 }
 `)
 
@@ -967,9 +955,12 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("decode metadata: %v", err)
 	}
-	if decoded.Root.Slot != "root-a" || len(decoded.Sysexts) != 1 || decoded.Sysexts[0].Name != "kubernetes" {
-		t.Fatalf("metadata did not preserve root/sysext selection: %#v", decoded)
+	if decoded.Root.Slot != "root-a" || len(decoded.Sysexts) != 0 {
+		t.Fatalf("metadata did not preserve clean generation 0 selection: %#v", decoded)
 	}
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.04-001/spec.json"), `"sysexts": []`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.04-001/status.json"), `"commitState": "committed"`)
+	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"configRef": "control-plane"`)
 	if len(decoded.Confexts) != 1 || decoded.Confexts[0].Path != "/var/lib/katl/generations/2026.06.04-001/confext" {
 		t.Fatalf("confext metadata = %#v", decoded.Confexts)
 	}
@@ -1080,12 +1071,17 @@ func minimalRecord(id string) *generation.Record {
 		GenerationID:   id,
 		RuntimeVersion: "0.1.0",
 		Root: generation.RootSelection{
-			Slot:          "root-a",
-			PartitionUUID: "11111111-2222-3333-4444-555555555555",
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
 		},
 		Boot: generation.BootSelection{
 			UKIPath: "/efi/EFI/Linux/katl-" + strings.TrimSpace(id) + ".efi",
 		},
+		CreatedAt: time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -1439,6 +1435,26 @@ func assertSymlink(t *testing.T, path string, want string) {
 	}
 	if got != want {
 		t.Fatalf("%s link = %q, want %q", path, got, want)
+	}
+}
+
+func assertMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err == nil {
+		t.Fatalf("%s exists, want missing", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+}
+
+func assertDirEmpty(t *testing.T, path string) {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatalf("read dir %s: %v", path, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%s entries = %#v, want empty", path, entries)
 	}
 }
 

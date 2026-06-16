@@ -15,6 +15,7 @@ type RenderRequest struct {
 	KubeadmConfigs           map[string]kubeadmconfig.Plan
 	KubernetesVersion        string
 	KubernetesActivationPath string
+	DeferKubeadmInputs       bool
 }
 
 func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
@@ -32,17 +33,23 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 		if err := validateKubeadmIntent(request.Manifest.Node.SystemRole, config); err != nil {
 			return nil, err
 		}
-		if request.KubernetesVersion == "" {
+		if request.KubernetesVersion == "" && !request.DeferKubeadmInputs {
 			return nil, fmt.Errorf("node.kubernetes.kubeadm.configRef %q requires selected Kubernetes payload version", ref)
 		}
-		if request.KubernetesActivationPath == "" {
+		if request.KubernetesActivationPath == "" && !request.DeferKubeadmInputs {
 			return nil, fmt.Errorf("node.kubernetes.kubeadm.configRef %q requires selected Kubernetes activation path", ref)
 		}
 		if err := validateKubeadmVersion(request.KubernetesVersion, config); err != nil {
 			return nil, err
 		}
 		kubeadm = &config
-		files = append(files, config.NativeEtcFiles()...)
+		kubeadmFiles := config.NativeEtcFiles()
+		if _, err := confext.ValidateNativeEtcBundle("", kubeadmFiles); err != nil {
+			return nil, err
+		}
+		if !request.DeferKubeadmInputs {
+			files = append(files, kubeadmFiles...)
+		}
 	}
 	nodeMetadata, err := nodeMetadataFile(request.Manifest, kubeadm, request.KubernetesVersion, request.KubernetesActivationPath)
 	if err != nil {
@@ -153,6 +160,10 @@ func validateKubeadmVersion(kubernetesVersion string, config kubeadmconfig.Plan)
 		}
 	}
 	return nil
+}
+
+func KubeadmIntent(config kubeadmconfig.Plan) (string, error) {
+	return kubeadmIntent(config)
 }
 
 func kubeadmIntent(config kubeadmconfig.Plan) (string, error) {
