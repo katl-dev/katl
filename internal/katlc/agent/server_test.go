@@ -68,6 +68,50 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 	}
 }
 
+func TestNodeStatusDoesNotAdvertiseControlPlaneJoin(t *testing.T) {
+	server := newTestServer(t)
+	server.SupportedOperationKinds = []string{"bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker"}
+
+	status, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(status.SupportedOperationKinds, "bootstrap-join-control-plane") {
+		t.Fatalf("supported operation kinds = %#v, must not advertise control-plane join", status.SupportedOperationKinds)
+	}
+	if !contains(status.SupportedOperationKinds, "bootstrap-init") || !contains(status.SupportedOperationKinds, "bootstrap-join-worker") {
+		t.Fatalf("supported operation kinds = %#v, want init and worker join", status.SupportedOperationKinds)
+	}
+}
+
+func TestSubmitOperationRejectsControlPlaneJoinBeforeRecord(t *testing.T) {
+	server := newTestServer(t)
+	server.SupportedOperationKinds = []string{"bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker"}
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+	req := submitRequest("req-control-plane-join")
+	req.OperationKind = "bootstrap-join-control-plane"
+	req.Bootstrap.JoinMaterialRef = "opaque-control-plane-join-ref"
+
+	_, err := server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("SubmitOperation error = %v, want unsupported InvalidArgument", err)
+	}
+	if dispatched.Load() != 0 {
+		t.Fatalf("dispatcher calls = %d, want none", dispatched.Load())
+	}
+	entries, err := os.ReadDir(server.Store.Root)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("operation store entries = %d, want no record for unsupported control-plane join", len(entries))
+	}
+}
+
 func TestSubmitOperationRejectsDigestMismatch(t *testing.T) {
 	server := newTestServer(t)
 	req := submitRequest("req-digest")

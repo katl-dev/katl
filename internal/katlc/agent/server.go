@@ -41,7 +41,6 @@ const (
 
 var bootstrapOperationKinds = []string{
 	"bootstrap-init",
-	"bootstrap-join-control-plane",
 	"bootstrap-join-worker",
 }
 
@@ -422,6 +421,9 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if strings.TrimSpace(req.ClientRequestId) == "" {
 		return status.Error(codes.InvalidArgument, "clientRequestID is required")
 	}
+	if req.OperationKind == "bootstrap-join-control-plane" {
+		return status.Error(codes.InvalidArgument, "operationKind \"bootstrap-join-control-plane\" is unsupported until control-plane join design is implemented")
+	}
 	if !contains(s.supportedOperationKinds(), req.OperationKind) {
 		return status.Errorf(codes.InvalidArgument, "operationKind %q is unsupported", req.OperationKind)
 	}
@@ -651,10 +653,18 @@ func (s *Server) operationStoreRoot() string {
 }
 
 func (s *Server) supportedOperationKinds() []string {
+	kinds := bootstrapOperationKinds
 	if len(s.SupportedOperationKinds) > 0 {
-		return append([]string(nil), s.SupportedOperationKinds...)
+		kinds = s.SupportedOperationKinds
 	}
-	return append([]string(nil), bootstrapOperationKinds...)
+	out := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		if kind == "bootstrap-join-control-plane" {
+			continue
+		}
+		out = append(out, kind)
+	}
+	return out
 }
 
 func (s *Server) clock() time.Time {
@@ -799,7 +809,7 @@ func RequestDigest(req *agentapi.SubmitOperationRequest) (string, error) {
 
 func resourceLocks(kind string) []string {
 	switch kind {
-	case "bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker":
+	case "bootstrap-init", "bootstrap-join-worker":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
 	default:
 		return nil
@@ -808,7 +818,7 @@ func resourceLocks(kind string) []string {
 
 func operationScope(kind string) string {
 	switch kind {
-	case "bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker":
+	case "bootstrap-init", "bootstrap-join-worker":
 		return "kubeadm-state"
 	default:
 		return "host-generation"
@@ -835,10 +845,6 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 		plan.Phase = "kubeadm-init"
 		plan.MarkerID = "kubeadm-init"
 		plan.Argv = []string{"/usr/bin/kubeadm", "init", "--config", configPath}
-	case "bootstrap-join-control-plane":
-		plan.Phase = "kubeadm-join-control-plane"
-		plan.MarkerID = "kubeadm-join-control-plane"
-		plan.Argv = []string{"/usr/bin/kubeadm", "join", "--config", configPath}
 	case "bootstrap-join-worker":
 		configPath = strings.TrimSpace(temporaryJoinConfigPath)
 		if configPath == "" {
@@ -893,9 +899,6 @@ func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapO
 		if err := validateDigestValue("kubeadmInputDigest", request.KubeadmInputDigest); err != nil {
 			return err
 		}
-	}
-	if operationKind == "bootstrap-join-control-plane" && strings.TrimSpace(request.JoinMaterialRef) == "" {
-		return fmt.Errorf("joinMaterialRef is required for join operations")
 	}
 	if strings.TrimSpace(request.JoinMaterialRef) != "" && inventory.Redact(request.JoinMaterialRef) != request.JoinMaterialRef {
 		return fmt.Errorf("joinMaterialRef must be an opaque reference, not raw join material")

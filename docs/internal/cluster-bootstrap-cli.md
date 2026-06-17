@@ -77,8 +77,9 @@ corresponding state on the node.
 
 `katlctl cluster bootstrap` submits explicit bootstrap operation requests to
 node-local `katlc`. The selected init node gets a `bootstrap-init` operation;
-each later control-plane join gets a `bootstrap-join-control-plane` operation;
-each worker join gets a `bootstrap-join-worker` operation. Each accepted attempt
+each worker join gets a `bootstrap-join-worker` operation. Additional
+control-plane joins are a later operation-backed path and are rejected as
+unsupported until their design and VM proof exist. Each accepted day-one attempt
 asks node-local `katlc` to
 validate stored intent, create the first Kubernetes-capable candidate generation,
 activate it for kubeadm readiness, run kubeadm, and write a canonical
@@ -185,11 +186,10 @@ joinMaterialEvidence:
   certificate key present, expiry, upload-certs phase observed
 ```
 
-Required `bootstrap-join-control-plane` and `bootstrap-join-worker` evidence
-includes:
+Required `bootstrap-join-worker` evidence includes:
 
 ```text
-joinRole: worker | control-plane
+joinRole: worker
 nodeIdentity:
   inventory node name, host name, kubeadm registration name, and API node
   name/UID when observed
@@ -202,15 +202,11 @@ apiEvidence:
   endpoint used before join and after join
   node object before and after join when API is reachable
 staticPodManifestEvidence:
-  control-plane joins: before and after static pod manifest state
-  worker joins: not-applicable; any manifest is a diagnostic anomaly
+  not-applicable; any manifest is a diagnostic anomaly
 etcdMemberEvidence:
-  control-plane joins: member list before and after, added member ID, and local
-  member ID
-  worker joins: not-applicable
+  not-applicable
 joinMaterialEvidence:
   bootstrap/discovery tokens redacted
-  certificate key redacted for control-plane joins
 ```
 
 ## Input Model
@@ -318,8 +314,8 @@ The bootstrap command runs phases in this order:
 
 These are control-client phases. Phases that run `kubeadm init` or
 `kubeadm join` are executed by node-local `katlc` and must update the
-corresponding `bootstrap-init`, `bootstrap-join-control-plane`, or
-`bootstrap-join-worker` `OperationRecord`.
+corresponding `bootstrap-init` or `bootstrap-join-worker` `OperationRecord`.
+Additional control-plane joins are not part of the day-one operation set.
 
 ```text
 1. load and validate inventory or compiled plan

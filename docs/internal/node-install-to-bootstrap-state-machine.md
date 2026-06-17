@@ -261,8 +261,8 @@ katlc is installed in the runtime
 a katlc TCP gRPC management endpoint is reachable from the operator workstation
   as defined by inventory or client configuration
 local katlc endpoint details are inspectable on the node for debugging only
-katlctl can submit an explicit bootstrap-init, bootstrap-join-control-plane, or
-  bootstrap-join-worker request to that endpoint
+katlctl can submit an explicit bootstrap-init or bootstrap-join-worker request
+  to that endpoint
 accepted operations create node-local OperationRecords under
   /var/lib/katl/operations/<operation-id>/
 katlc-agent.service can classify nonterminal operation records at startup
@@ -314,8 +314,7 @@ kubeadm:
 
 ```text
 katlctl cluster bootstrap
-  submit a bootstrap-init, bootstrap-join-control-plane, or bootstrap-join-worker
-  request to node-local katlc
+  submit a bootstrap-init or bootstrap-join-worker request to node-local katlc
   katlc validates stored cluster intent
   katlc selects the bundled Kubernetes sysext whose payload version exactly
   matches the install manifest version

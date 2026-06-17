@@ -163,8 +163,8 @@ Examples include:
 
 ```text
 bootstrap-init
-bootstrap-join-control-plane
 bootstrap-join-worker
+bootstrap-join-control-plane (future additional control-plane join path)
 kubeadm-upgrade
 kubeadm-reset
 recover-control-plane
@@ -190,10 +190,12 @@ can be committed. Named operations are reserved for transactional workflows that
 run mutating tools such as kubeadm, coordinate external state, or repair state
 outside normal generation apply.
 
-`bootstrap-init`, `bootstrap-join-control-plane`, and
-`bootstrap-join-worker` are durable operation kinds initiated by
-`katlctl cluster bootstrap`, but the accepted operation attempts are created by
-node-local `katlc`. For bounded multi-node workflows, `katlctl` may display an
+`bootstrap-init` and `bootstrap-join-worker` are the day-one durable operation
+kinds initiated by `katlctl cluster bootstrap`, but the accepted operation
+attempts are created by node-local `katlc`. `bootstrap-join-control-plane` is a
+future additional-control-plane operation kind and is unsupported until its
+certificate-key handling, etcd membership evidence, rollback limits, and VM
+proof exist. For bounded multi-node workflows, `katlctl` may display an
 invocation summary that links returned node-local operation IDs, candidate
 generation IDs, phase state, redacted diagnostics, and mutation boundaries. That
 summary is not an `OperationRecord`, not persistent Katl state, and not used for
@@ -449,8 +451,7 @@ from `katlctl` summaries.
 apiVersion: katl.dev/v1alpha1
 kind: SubmitOperationRequest
 clientRequestID
-operationKind: bootstrap-init | bootstrap-join-control-plane |
-  bootstrap-join-worker
+operationKind: bootstrap-init | bootstrap-join-worker
 actor
 expectedMachineID
 expectedCurrentGenerationID
@@ -761,13 +762,17 @@ bootstrap-init
   -> katlc commits the candidate generation
   -> katlc records bootstrap artifacts and marks operation complete
 
-bootstrap-join-control-plane or bootstrap-join-worker
+bootstrap-join-worker
   -> katlc creates and activates the first Kubernetes-capable generation as a candidate
   -> katlc runs kubeadm join
-  -> katlc records node-local join evidence and, for control-plane joins, etcd
-     membership evidence
+  -> katlc records node-local join evidence
   -> katlc verifies node-local join health
   -> katlc commits the candidate generation and marks operation complete
+
+bootstrap-join-control-plane
+  -> future operation kind for additional control-plane joins
+  -> unsupported until certificate-key handling, etcd membership evidence,
+     rollback limits, and VM proof are designed and implemented
 ```
 
 Kubernetes upgrades will use the same operation pattern after the upgrade
