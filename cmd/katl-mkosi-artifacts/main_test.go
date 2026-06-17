@@ -263,6 +263,31 @@ func TestMetadataWriters(t *testing.T) {
 	}
 	assertFileContains(t, filepath.Join(workDir, "katlos-root", "components", "metadata", "runtime-root.sha256"), runtimeSHA+"  ../runtime/root.squashfs\n")
 
+	upgradeIndexPath := filepath.Join(workDir, "katlos-upgrade-root", "katlos", "image.json")
+	stdout.Reset()
+	if err := run([]string{
+		"write-katlos-index",
+		"--output", upgradeIndexPath,
+		"--image-role", "upgrade",
+		"--version", "0.1.0",
+		"--build-id", "test-build",
+		"--architecture", "x86_64",
+		"--runtime-interface", "katl-runtime-1",
+		"--runtime-root", runtimeRoot,
+		"--runtime-root-metadata", runtimeRoot + ".json",
+		"--runtime-uki", runtimeUKI,
+		"--runtime-uki-metadata", runtimeUKI + ".json",
+		"--kubernetes-sysext", sysext,
+		"--kubernetes-sysext-metadata", sysext + ".json",
+	}, &stdout, &bytes.Buffer{}, env); err != nil {
+		t.Fatalf("write-katlos-index upgrade error = %v", err)
+	}
+	var upgradeIndex katlosIndex
+	readTestJSON(t, upgradeIndexPath, &upgradeIndex)
+	if upgradeIndex.ImageRole != "upgrade" || len(upgradeIndex.Components) != 3 {
+		t.Fatalf("KatlOS upgrade index = %#v", upgradeIndex)
+	}
+
 	image := writeTestFile(t, workDir, "katlos-install.squashfs", "katlos image")
 	stdout.Reset()
 	if err := run([]string{
@@ -282,6 +307,18 @@ func TestMetadataWriters(t *testing.T) {
 		t.Fatalf("KatlOS artifact metadata = %#v, stdout %q", artifact, stdout.String())
 	}
 	assertFileContains(t, image+".sha256", artifact.SHA256+"  "+filepath.Base(image)+"\n")
+
+	if err := run([]string{
+		"write-katlos-artifact",
+		"--artifact", image,
+		"--image-role", "node-local",
+		"--version", "0.1.0",
+		"--build-id", "test-build",
+		"--architecture", "x86_64",
+		"--runtime-interface", "katl-runtime-1",
+	}, &stdout, &bytes.Buffer{}, env); err == nil {
+		t.Fatalf("write-katlos-artifact accepted unsupported image role")
+	}
 }
 
 func testRepoRoot(t *testing.T) string {

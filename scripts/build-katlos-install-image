@@ -50,7 +50,7 @@ need mksquashfs
 need rm
 
 case "$image_role" in
-    install)
+    install|upgrade)
         ;;
     *)
         fail "unsupported KatlOS image role: $image_role"

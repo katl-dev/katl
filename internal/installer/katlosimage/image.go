@@ -24,6 +24,7 @@ const (
 	Kind       = "KatlOSImage"
 
 	RoleInstall          = "install"
+	RoleUpgrade          = "upgrade"
 	FormatSquashFS       = "squashfs"
 	ComponentRuntimeRoot = "runtime-root"
 	ComponentRuntimeUKI  = "runtime-uki"
@@ -441,8 +442,15 @@ func validateIndex(index Index, expected manifest.KatlosImage) error {
 	if index.Kind != Kind {
 		return fmt.Errorf("KatlOS image kind must be %s", Kind)
 	}
-	if index.ImageRole != RoleInstall {
-		return fmt.Errorf("KatlOS image role must be %s", RoleInstall)
+	expectedRole := strings.TrimSpace(expected.Role)
+	if expectedRole == "" {
+		expectedRole = RoleInstall
+	}
+	if expectedRole != RoleInstall && expectedRole != RoleUpgrade {
+		return fmt.Errorf("KatlOS image expected role %q is unsupported", expectedRole)
+	}
+	if index.ImageRole != expectedRole {
+		return fmt.Errorf("KatlOS image role must be %s", expectedRole)
 	}
 	if index.Format != FormatSquashFS {
 		return fmt.Errorf("KatlOS image format must be %s", FormatSquashFS)

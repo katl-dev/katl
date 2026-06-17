@@ -678,7 +678,7 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
-	if *imageRole != "install" {
+	if *imageRole != "install" && *imageRole != "upgrade" {
 		return fmt.Errorf("unsupported KatlOS image role: %s", *imageRole)
 	}
 	if strings.TrimSpace(*runtimeInterface) == "" {
@@ -808,6 +808,9 @@ func runWriteKatlOSArtifact(args []string, stdout, stderr io.Writer, cfg config)
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *imageRole != "install" && *imageRole != "upgrade" {
+		return fmt.Errorf("unsupported KatlOS image role: %s", *imageRole)
 	}
 	artifactPath := absPath(cfg.RepoRoot, *artifact)
 	size, digest, err := fileInfo(artifactPath)
