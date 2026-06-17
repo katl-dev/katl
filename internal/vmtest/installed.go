@@ -35,6 +35,7 @@ var runtimeConsoleOptions = []string{
 var runtimeVMTestOptions = append([]string{"katl.vmtest_agent=1"}, runtimeConsoleOptions...)
 
 const runtimeBootSignal = "Katl runtime reached systemd userspace"
+const runtimeDebugShellOption = "katl.vmtest_debug_shell=1"
 
 type installedRuntimeRecord struct {
 	APIVersion         string                         `json:"apiVersion"`
@@ -112,6 +113,11 @@ func PrepareInstalledRuntime(result Result, config InstalledRuntimeConfig) error
 	}
 	if config.RequireVMTestAgent {
 		if err := InjectESPOptions(esp, "katl.vmtest_agent=1"); err != nil {
+			return err
+		}
+	}
+	if vmtestDebugOnFailure() {
+		if err := InjectESPOptions(esp, runtimeDebugShellOption); err != nil {
 			return err
 		}
 	}

@@ -1,0 +1,19 @@
+[Unit]
+Description=Katl vmtest debug serial shell
+Documentation=man:agetty(8) man:systemd.service(5)
+After=systemd-user-sessions.service
+ConditionKernelCommandLine=katl.vmtest_debug_shell=1
+
+[Service]
+Type=idle
+ExecStart=-/usr/sbin/agetty --autologin root --noclear ttyS0 115200
+Restart=always
+RestartSec=1s
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/ttyS0
+TTYReset=yes
+TTYVHangup=yes
+
+[Install]
+WantedBy=multi-user.target

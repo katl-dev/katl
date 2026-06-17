@@ -106,6 +106,40 @@ func TestDirectRuntimeRequiresRuntimeRoot(t *testing.T) {
 	}
 }
 
+func TestDirectRuntimeAddsDebugShellOptionWhenEnabled(t *testing.T) {
+	t.Setenv("KATL_VMTEST_DEBUG_ON_FAILURE", "1")
+	root := t.TempDir()
+	runtimeRoot := writeDirectRuntimeFixture(t, root)
+	result, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-debug-shell",
+	}).Plan(Scenario{Name: "direct-runtime"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	result = RunDirectRuntime(context.Background(), result, DirectRuntimeConfig{
+		RuntimeRoot: runtimeRoot,
+		VM: VMConfig{
+			KVM:       KVMOff,
+			ImageTool: filepath.Join(root, "unused-qemu-img"),
+		},
+	}, VMRunner{
+		Executor: vmExec{write: runtimeBootSignal},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	})
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	record := readDirectRuntimeRecord(t, result.Artifacts.DirectRuntime)
+	if !contains(record.KernelCommandLine, runtimeDebugShellOption) {
+		t.Fatalf("direct runtime command line missing debug shell option: %#v", record.KernelCommandLine)
+	}
+}
+
 func writeDirectRuntimeFixture(t *testing.T, root string) string {
 	t.Helper()
 	runtimeRoot := filepath.Join(root, "katl-runtime-root.squashfs")

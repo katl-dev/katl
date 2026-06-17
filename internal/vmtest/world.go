@@ -29,6 +29,8 @@ type World struct {
 	GoTestLog    string                 `json:"goTestLog,omitempty"`
 	AutoRebuild  bool                   `json:"autoRebuild,omitempty"`
 	ArtifactSet  string                 `json:"artifactSet,omitempty"`
+	DebugOnFailure bool                 `json:"debugOnFailure,omitempty"`
+	DebugShell     bool                 `json:"debugShell,omitempty"`
 	Libvirt      WorldLibvirt           `json:"libvirt"`
 	Network      WorldNetwork           `json:"network"`
 	Capabilities map[string]WorldStatus `json:"capabilities"`

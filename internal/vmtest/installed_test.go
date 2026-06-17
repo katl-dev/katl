@@ -201,6 +201,37 @@ func TestInstalledRuntimeRejectsMalformedFixtureManifest(t *testing.T) {
 	}
 }
 
+func TestInstalledRuntimeInjectsDebugShellOptionWhenEnabled(t *testing.T) {
+	t.Setenv("KATL_VMTEST_DEBUG_ON_FAILURE", "1")
+	root := t.TempDir()
+	disk := filepath.Join(root, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	result, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-debug-shell",
+	}).Plan(Scenario{Name: "runtime"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	esp := espFixture(t)
+	if err := PrepareInstalledRuntime(result, InstalledRuntimeConfig{
+		Disk:         disk,
+		DiskFormat:   DiskRaw,
+		ESPArtifacts: esp,
+	}); err != nil {
+		t.Fatalf("PrepareInstalledRuntime() error = %v", err)
+	}
+	entry, err := os.ReadFile(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
+	if err != nil {
+		t.Fatalf("read copied loader entry: %v", err)
+	}
+	if !strings.Contains(string(entry), runtimeDebugShellOption) {
+		t.Fatalf("debug shell option missing from copied loader entry: %s", entry)
+	}
+}
+
 func TestInstalledRuntimeRejectsFixtureDrift(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

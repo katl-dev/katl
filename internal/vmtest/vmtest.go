@@ -59,12 +59,13 @@ type HostRequirements struct {
 }
 
 type Options struct {
-	Enabled   bool
-	StateRoot string
-	Keep      KeepPolicy
-	KVM       KVMPolicy
-	Missing   MissingPolicy
-	RunID     string
+	Enabled        bool
+	StateRoot      string
+	Keep           KeepPolicy
+	KVM            KVMPolicy
+	Missing        MissingPolicy
+	RunID          string
+	DebugOnFailure bool
 }
 
 type Runner struct {
@@ -93,8 +94,27 @@ type Result struct {
 	MACAddress     string                `json:"macAddress,omitempty"`
 	IPAddress      string                `json:"ipAddress,omitempty"`
 	VSock          VSockPlan             `json:"vsock,omitempty"`
+	Debug          *DebugMetadata        `json:"debug,omitempty"`
 	Phases         []PhaseResult         `json:"phases,omitempty"`
 	Missing        []MissingPrerequisite `json:"missing,omitempty"`
+}
+
+type DebugMetadata struct {
+	OnFailure bool          `json:"onFailure"`
+	Shell     bool          `json:"shell"`
+	Targets   []DebugTarget `json:"targets,omitempty"`
+}
+
+type DebugTarget struct {
+	Preserved      bool      `json:"preserved"`
+	Reason         string    `json:"reason,omitempty"`
+	DomainName     string    `json:"domainName"`
+	LibvirtURI     string    `json:"libvirtURI"`
+	SerialLog      string    `json:"serialLog"`
+	ConsoleCommand string    `json:"consoleCommand"`
+	CleanupCommand string    `json:"cleanupCommand"`
+	ShellMode      string    `json:"shellMode,omitempty"`
+	VSock          VSockPlan `json:"vsock,omitempty"`
 }
 
 type Status string
@@ -177,11 +197,12 @@ var (
 
 func DefaultOptions() Options {
 	return Options{
-		Enabled:   *runFlag || envBool("KATL_VMTEST_RUN"),
-		StateRoot: first(*stateRootFlag, os.Getenv("KATL_VMTEST_STATE_ROOT")),
-		Keep:      KeepPolicy(first(*keepFlag, os.Getenv("KATL_VMTEST_KEEP"))),
-		KVM:       KVMPolicy(first(*kvmFlag, os.Getenv("KATL_VMTEST_KVM"))),
-		Missing:   MissingFails,
+		Enabled:        *runFlag || envBool("KATL_VMTEST_RUN"),
+		StateRoot:      first(*stateRootFlag, os.Getenv("KATL_VMTEST_STATE_ROOT")),
+		Keep:           KeepPolicy(first(*keepFlag, os.Getenv("KATL_VMTEST_KEEP"))),
+		KVM:            KVMPolicy(first(*kvmFlag, os.Getenv("KATL_VMTEST_KVM"))),
+		Missing:        MissingFails,
+		DebugOnFailure: envBool("KATL_VMTEST_DEBUG_ON_FAILURE"),
 	}
 }
 
@@ -304,6 +325,7 @@ func (r Runner) Plan(scenario Scenario) (Result, error) {
 		KVM:          scenario.KVM,
 		Artifacts:    paths,
 		Disks:        disks,
+		Debug:        debugMetadata(options.DebugOnFailure),
 	}, nil
 }
 
@@ -385,6 +407,9 @@ func normalizeOptions(options Options) Options {
 	}
 	if envBool("KATL_VMTEST_WORLD_STRICT") {
 		options.Missing = MissingFails
+	}
+	if envBool("KATL_VMTEST_DEBUG_ON_FAILURE") {
+		options.DebugOnFailure = true
 	}
 	return options
 }

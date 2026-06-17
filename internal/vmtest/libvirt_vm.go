@@ -156,17 +156,29 @@ func (e ExecVMExecutor) Run(ctx context.Context, name string, args []string, ser
 }
 
 type LibvirtVMExecutor struct {
-	TempDir        string
-	VirshPath      string
-	ScriptPath     string
-	URI            string
-	DomainName     string
-	DomainXMLFile  string
-	PollInterval   time.Duration
-	CleanupTimeout time.Duration
+	TempDir           string
+	VirshPath         string
+	ScriptPath        string
+	URI               string
+	DomainName        string
+	DomainXMLFile     string
+	PollInterval      time.Duration
+	CleanupTimeout    time.Duration
+	PreserveOnFailure bool
+	Preservation      *DomainPreservation
 }
 
-func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial io.Writer) error {
+type DomainPreservation struct {
+	Preserved bool
+	Reason    string
+}
+
+var (
+	errVMRunComplete = errors.New("vmtest VM run complete")
+	errVMRunFailed   = errors.New("vmtest VM run failed")
+)
+
+func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial io.Writer) (runErr error) {
 	if e.TempDir != "" {
 		if err := os.MkdirAll(e.TempDir, 0o755); err != nil {
 			return err
@@ -176,16 +188,20 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 		return fmt.Errorf("define libvirt domain %q: %w", e.DomainName, err)
 	}
 	defined := true
+	started := false
 	defer func() {
-		if defined {
+		if defined && !e.preserveDomain(ctx, runErr, started) {
 			_ = e.cleanupVirsh("undefine", e.DomainName, "--nvram")
 		}
 	}()
 	if err := e.virsh(ctx, "start", e.DomainName); err != nil {
 		return fmt.Errorf("start libvirt domain %q: %w", e.DomainName, err)
 	}
+	started = true
 	defer func() {
-		_ = e.cleanupVirsh("destroy", e.DomainName)
+		if started && !e.preserveDomain(ctx, runErr, started) {
+			_ = e.cleanupVirsh("destroy", e.DomainName)
+		}
 	}()
 	consoleCtx, stopConsole := context.WithCancel(ctx)
 	consoleDone, err := e.startConsoleCapture(consoleCtx, serial)
@@ -235,6 +251,42 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 			consoleDone = nil
 		case <-ticker.C:
 		}
+	}
+}
+
+func (e LibvirtVMExecutor) preserveDomain(ctx context.Context, runErr error, started bool) bool {
+	if !e.PreserveOnFailure || runErr == nil || !started {
+		e.recordPreservation(false, "")
+		return false
+	}
+	if errors.Is(context.Cause(ctx), errVMRunComplete) {
+		e.recordPreservation(false, "")
+		return false
+	}
+	stateCtx, cancel := context.WithTimeout(context.Background(), e.cleanupTimeout())
+	defer cancel()
+	state, err := e.virshOutput(stateCtx, "domstate", e.DomainName)
+	if err != nil {
+		e.recordPreservation(false, "libvirt domain state could not be confirmed: "+err.Error())
+		return false
+	}
+	switch strings.TrimSpace(state) {
+	case "running", "paused", "idle", "in shutdown", "pmsuspended":
+		e.recordPreservation(true, "debug-on-failure preserved live libvirt domain")
+		return true
+	default:
+		e.recordPreservation(false, "libvirt domain is not live: "+strings.TrimSpace(state))
+		return false
+	}
+}
+
+func (e LibvirtVMExecutor) recordPreservation(preserved bool, reason string) {
+	if e.Preservation == nil {
+		return
+	}
+	if preserved || e.Preservation.Reason == "" {
+		e.Preservation.Preserved = preserved
+		e.Preservation.Reason = reason
 	}
 }
 
@@ -358,12 +410,12 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
 	}
 	if config.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, config.Timeout)
-		defer cancel()
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, config.Timeout)
+		defer timeoutCancel()
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(errVMRunFailed)
 	file, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
@@ -371,8 +423,9 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	defer file.Close()
 	executor := r.Executor
 	defaultExecutor := executor == nil
+	var preservation *DomainPreservation
 	if executor == nil {
-		executor = defaultVMExecutor(result, plan)
+		executor, preservation = defaultVMExecutor(result, plan)
 	}
 	if defaultExecutor && config.Expect != "" && config.SerialIdleTimeout == 0 {
 		config.SerialIdleTimeout = defaultSerialIdleTimeout
@@ -386,27 +439,34 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 		done <- executor.Run(ctx, first(plan.VirshPath, plan.CommandPath), plan.Args, serial)
 	}()
 	if config.Expect != "" {
-		return r.waitSerial(ctx, cancel, done, result, config, plan, started)
+		return r.withDebugTarget(r.waitSerial(ctx, cancel, done, result, config, plan, started), plan, preservation)
 	}
 	if err := <-done; err != nil {
 		summary := fmt.Sprintf("libvirt domain exited: %v", err)
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 			summary = libvirtTimeoutSummary(plan.SerialLog)
 		}
-		return finishVM(result, phaseName(config), StatusFailed, summary, started, time.Now().UTC())
+		return r.withDebugTarget(finishVM(result, phaseName(config), StatusFailed, summary, started, time.Now().UTC()), plan, preservation)
 	}
-	return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
+	return r.withDebugTarget(finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC()), plan, preservation)
 }
 
-func defaultVMExecutor(result Result, plan VMPlan) VMExecutor {
-	return LibvirtVMExecutor{
-		TempDir:       filepath.Join(result.VMDir, "tmp"),
-		VirshPath:     plan.VirshPath,
-		ScriptPath:    plan.ScriptPath,
-		URI:           plan.LibvirtURI,
-		DomainName:    plan.DomainName,
-		DomainXMLFile: plan.DomainXMLFile,
+func defaultVMExecutor(result Result, plan VMPlan) (VMExecutor, *DomainPreservation) {
+	var preservation *DomainPreservation
+	preserve := result.Debug != nil && result.Debug.OnFailure
+	if preserve {
+		preservation = &DomainPreservation{}
 	}
+	return LibvirtVMExecutor{
+		TempDir:           filepath.Join(result.VMDir, "tmp"),
+		VirshPath:         plan.VirshPath,
+		ScriptPath:        plan.ScriptPath,
+		URI:               plan.LibvirtURI,
+		DomainName:        plan.DomainName,
+		DomainXMLFile:     plan.DomainXMLFile,
+		PreserveOnFailure: preserve,
+		Preservation:      preservation,
+	}, preservation
 }
 
 func tailLiveSerial(ctx context.Context, path string, out io.Writer, interval time.Duration) {
@@ -446,7 +506,7 @@ func copySerialFromOffset(path string, out io.Writer, offset *int64) error {
 	return err
 }
 
-func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, done <-chan error, result Result, config VMConfig, plan VMPlan, started time.Time) Result {
+func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelCauseFunc, done <-chan error, result Result, config VMConfig, plan VMPlan, started time.Time) Result {
 	interval := config.PollInterval
 	if interval == 0 {
 		interval = 250 * time.Millisecond
@@ -463,17 +523,17 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 			lastSerialProgress = time.Now().UTC()
 		}
 		if err := r.runSerialHooks(ctx, result, config, plan, serialText, hooksRun); err != nil {
-			cancel()
+			cancel(errVMRunFailed)
 			<-done
 			return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
 		}
 		if strings.Contains(serialText, config.Expect) {
 			if err := r.checkAgent(ctx, result, config); err != nil {
-				cancel()
+				cancel(errVMRunFailed)
 				<-done
 				return finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC())
 			}
-			cancel()
+			cancel(errVMRunComplete)
 			<-done
 			return finishVM(result, phaseName(config), StatusPassed, "", started, time.Now().UTC())
 		}
@@ -494,12 +554,12 @@ func (r VMRunner) waitSerial(ctx context.Context, cancel context.CancelFunc, don
 			}
 			return finishVM(result, phaseName(config), StatusFailed, fmt.Sprintf("libvirt domain exited before serial signal %q appeared: %v", config.Expect, err), started, time.Now().UTC())
 		case <-ctx.Done():
-			cancel()
+			cancel(errVMRunFailed)
 			<-done
 			return finishVM(result, phaseName(config), StatusFailed, libvirtTimeoutSummary(plan.SerialLog), started, time.Now().UTC())
 		case <-ticker.C:
 			if config.SerialIdleTimeout > 0 && time.Since(lastSerialProgress) >= config.SerialIdleTimeout {
-				cancel()
+				cancel(errVMRunFailed)
 				<-done
 				return finishVM(result, phaseName(config), StatusFailed, libvirtSerialIdleSummary(plan.SerialLog, config.SerialIdleTimeout), started, time.Now().UTC())
 			}
@@ -523,6 +583,63 @@ func libvirtSerialIdleSummary(serialLog string, idle time.Duration) string {
 		return prefix
 	}
 	return prefix + "; serial tail:\n" + tail
+}
+
+func (r VMRunner) withDebugTarget(result Result, plan VMPlan, preservation *DomainPreservation) Result {
+	if result.Debug == nil || !result.Debug.OnFailure || result.Status == StatusPassed || plan.DomainName == "" {
+		return result
+	}
+	target := DebugTarget{
+		DomainName:     plan.DomainName,
+		LibvirtURI:     plan.LibvirtURI,
+		SerialLog:      plan.SerialLog,
+		ConsoleCommand: consoleCommandLine(plan.LibvirtURI, plan.DomainName),
+		CleanupCommand: cleanupCommandLine(result.Artifacts.Result),
+		ShellMode:      "serial-root",
+		VSock:          plan.VSock,
+	}
+	if preservation != nil {
+		target.Preserved = preservation.Preserved
+		target.Reason = preservation.Reason
+	}
+	if target.Reason == "" {
+		target.Reason = "debug-on-failure requested after VM failure"
+	}
+	result.Debug.Targets = append(result.Debug.Targets, target)
+	return result
+}
+
+func debugFailedResult(result Result) Result {
+	result.Status = StatusFailed
+	return result
+}
+
+func debugMetadata(enabled bool) *DebugMetadata {
+	if !enabled {
+		return nil
+	}
+	return &DebugMetadata{OnFailure: true, Shell: true}
+}
+
+func consoleCommandLine(uri, domain string) string {
+	args := []string{"virsh"}
+	if strings.TrimSpace(uri) != "" {
+		args = append(args, "-c", uri)
+	}
+	args = append(args, "console", domain, "--force")
+	return shellCommand(args...)
+}
+
+func cleanupCommandLine(resultPath string) string {
+	return shellCommand("scripts/vmtest-clean", resultPath)
+}
+
+func shellCommand(args ...string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
 }
 
 func serialTail(path string, maxLines int, maxBytes int) string {

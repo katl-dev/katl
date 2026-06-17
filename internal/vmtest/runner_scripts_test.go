@@ -115,6 +115,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if childEnv["KATL_VMTEST_RUN"] != "1" || childEnv["KATL_VMTEST_WORLD_STRICT"] != "1" {
 		t.Fatalf("child strict env = %#v", childEnv)
 	}
+	if childEnv["KATL_VMTEST_DEBUG_ON_FAILURE"] != "1" || !world.DebugOnFailure || !world.DebugShell {
+		t.Fatalf("child debug env/world = %#v %#v", childEnv, world)
+	}
 
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
 	if runIndex.Kind != "VMTestRun" || runIndex.Status != "passed" {
@@ -132,6 +135,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if !reflect.DeepEqual(runIndex.GoTestArgs, []string{"./internal/vmtest/scenarios", "-run", "^TestTwoNode$", "-count=99", "-timeout", "2m"}) {
 		t.Fatalf("run index go test args = %#v", runIndex.GoTestArgs)
 	}
+	if !runIndex.DebugOnFailure || !runIndex.DebugShell {
+		t.Fatalf("run index debug policy = %#v", runIndex)
+	}
 
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
@@ -141,6 +147,76 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		t.Fatalf("go-test.log missing go test output:\n%s", goLog)
 	}
 	assertJSONEmptyObject(t, filepath.Join(runDir, "network", "leases.json"))
+}
+
+func TestVMTestRunDebugOnFailurePolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		env       []string
+		want      string
+		wantExit  int
+		wantError string
+	}{
+		{name: "CI default disables", env: []string{"CI=true"}, want: "0"},
+		{name: "env enables in CI", env: []string{"CI=true", "KATL_VMTEST_DEBUG_ON_FAILURE=1"}, want: "1"},
+		{name: "env disables local", env: []string{"KATL_VMTEST_DEBUG_ON_FAILURE=0"}, want: "0"},
+		{name: "flag enables", args: []string{"--debug-on-failure"}, env: []string{"CI=true"}, want: "1"},
+		{name: "flag disables", args: []string{"--no-debug-on-failure"}, want: "0"},
+		{name: "invalid env", env: []string{"KATL_VMTEST_DEBUG_ON_FAILURE=maybe"}, wantExit: 2, wantError: "invalid vmtest debug-on-failure policy"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := scriptTestRepoRoot(t)
+			tmp := t.TempDir()
+			fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+			host := writeFakeHostTools(t, tmp, true)
+			runDir := filepath.Join(tmp, "run")
+			childEnvPath := filepath.Join(tmp, "child-env.txt")
+
+			args := append([]string{}, tt.args...)
+			args = append(args, "./internal/vmtest")
+			cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), args...)
+			cmd.Dir = repo
+			env := appendHostEnv(os.Environ(), host,
+				"KATL_VMTEST_GO="+fakeGo,
+				"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+				"KATL_FAKE_CHILD="+fakeChild,
+				"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+				"KATL_FAKE_CHILD_ENV="+childEnvPath,
+				"KATL_VMTEST_RUN_ID=run-debug-policy-"+strings.ReplaceAll(tt.name, " ", "-"),
+				"KATL_VMTEST_RUN_DIR="+runDir,
+				"TMPDIR="+tmp,
+			)
+			env = append(env, tt.env...)
+			cmd.Env = env
+			output, err := cmd.CombinedOutput()
+			if tt.wantExit != 0 {
+				if exitCode(err) != tt.wantExit {
+					t.Fatalf("vmtest-run exit = %v, want %d\n%s", err, tt.wantExit, output)
+				}
+				if !strings.Contains(string(output), tt.wantError) {
+					t.Fatalf("output missing %q:\n%s", tt.wantError, output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+			}
+			childEnv := readKeyValues(t, childEnvPath)
+			if childEnv["KATL_VMTEST_DEBUG_ON_FAILURE"] != tt.want {
+				t.Fatalf("debug env = %q, want %q; output:\n%s", childEnv["KATL_VMTEST_DEBUG_ON_FAILURE"], tt.want, output)
+			}
+			world, err := LoadWorld(filepath.Join(runDir, "world.json"))
+			if err != nil {
+				t.Fatalf("LoadWorld() error = %v", err)
+			}
+			if world.DebugOnFailure != (tt.want == "1") || world.DebugShell != (tt.want == "1") {
+				t.Fatalf("world debug policy = %#v, want %s", world, tt.want)
+			}
+		})
+	}
 }
 
 func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
@@ -760,6 +836,123 @@ func TestVMTestRunKeepsFailedRunDirByDefault(t *testing.T) {
 	}
 }
 
+func TestVMTestRunPrintsPreservedDebugTargets(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run-debug-output")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_EXIT=7",
+		"KATL_FAKE_CHILD_WORLD_RESULT=failed",
+		"KATL_FAKE_CHILD_WORLD_DEBUG_PRESERVED=1",
+		"KATL_VMTEST_RUN_ID=run-debug-output",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 7 {
+		t.Fatalf("vmtest-run exit = %v, want 7\n%s", err, output)
+	}
+	for _, want := range []string{
+		"preserved VM debug targets",
+		"domain: katl-debug-run",
+		"console: 'virsh' '-c' 'qemu:///system' 'console' 'katl-debug-run' '--force'",
+		"serial log: /tmp/katl-debug/serial.log",
+		"vsock: cid=2048 port=10240",
+		"cleanup: 'scripts/vmtest-clean' '/tmp/katl-debug/result.json'",
+		"Run the cleanup command when you are done debugging.",
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	artifact := readFile(t, filepath.Join(runDir, "preserved-vm-debug.txt"))
+	if !strings.Contains(artifact, "katl-debug-run") || !strings.Contains(artifact, "vmtest-clean") {
+		t.Fatalf("debug artifact missing target info:\n%s", artifact)
+	}
+}
+
+func TestVMTestCleanDestroysRecordedDomains(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	result := filepath.Join(tmp, "run", "result.json")
+	if err := os.MkdirAll(filepath.Dir(result), 0o755); err != nil {
+		t.Fatalf("MkdirAll(result dir) error = %v", err)
+	}
+	if err := os.WriteFile(result, []byte(`{
+  "debug": {
+    "targets": [{
+      "preserved": true,
+      "domainName": "katl-clean-me",
+      "libvirtURI": "qemu:///system"
+    }]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(result) error = %v", err)
+	}
+	virshLog := filepath.Join(tmp, "virsh.log")
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_VIRSH_LOG"
+exit 0
+`)
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), filepath.Dir(result))
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "KATL_VMTEST_VIRSH="+virsh, "KATL_FAKE_VIRSH_LOG="+virshLog)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-clean failed: %v\n%s", err, output)
+	}
+	log := readFile(t, virshLog)
+	for _, want := range []string{
+		"-c qemu:///system destroy katl-clean-me",
+		"-c qemu:///system undefine katl-clean-me --nvram",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("virsh log missing %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestVMTestCleanRefusesUnsafeDomain(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	result := filepath.Join(tmp, "result.json")
+	if err := os.WriteFile(result, []byte(`{
+  "debug": {
+    "targets": [{
+      "preserved": true,
+      "domainName": "../bad",
+      "libvirtURI": "qemu:///system"
+    }]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(result) error = %v", err)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), result)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "KATL_VMTEST_VIRSH=/tmp/should-not-run")
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) != 2 {
+		t.Fatalf("vmtest-clean exit = %v, want 2\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "refusing unsafe domain name") {
+		t.Fatalf("output missing unsafe-domain diagnostic:\n%s", output)
+	}
+}
+
 func TestVMTestRunAcceptsNestedWorldScenarioResult(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
@@ -910,6 +1103,7 @@ printf '%s\n' "$@" > "$KATL_FAKE_CHILD_ARGS"
     printf 'KATL_VMTEST_LIBVIRT_STORAGE_POOL=%s\n' "${KATL_VMTEST_LIBVIRT_STORAGE_POOL:-}"
     printf 'KATL_VMTEST_RUN=%s\n' "${KATL_VMTEST_RUN:-}"
     printf 'KATL_VMTEST_WORLD_STRICT=%s\n' "${KATL_VMTEST_WORLD_STRICT:-}"
+    printf 'KATL_VMTEST_DEBUG_ON_FAILURE=%s\n' "${KATL_VMTEST_DEBUG_ON_FAILURE:-}"
 } > "$KATL_FAKE_CHILD_ENV"
 [[ -f "${KATL_VMTEST_WORLD_MANIFEST:-}" ]] || exit 41
 if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
@@ -957,6 +1151,24 @@ if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
             else
                 missing_filter=''
             fi
+            if [[ "${KATL_FAKE_CHILD_WORLD_DEBUG_PRESERVED:-0}" == "1" ]]; then
+                debug_filter='| .debug = {
+                    onFailure: true,
+                    shell: true,
+                    targets: [{
+                        preserved: true,
+                        domainName: "katl-debug-run",
+                        libvirtURI: "qemu:///system",
+                        serialLog: "/tmp/katl-debug/serial.log",
+                        consoleCommand: "'\''virsh'\'' '\''-c'\'' '\''qemu:///system'\'' '\''console'\'' '\''katl-debug-run'\'' '\''--force'\''",
+                        cleanupCommand: "'\''scripts/vmtest-clean'\'' '\''/tmp/katl-debug/result.json'\''",
+                        shellMode: "serial-root",
+                        vsock: {enabled: true, guestCid: 2048, port: 10240}
+                    }]
+                }'
+            else
+                debug_filter=''
+            fi
             jq -n \
                 --arg scenarioName "$result_name" \
                 --arg status "$result_status" \
@@ -974,7 +1186,7 @@ if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
                   runDir: $runDir,
                   manifestPath: $manifestPath,
                   resultPath: $resultPath
-                } '"$missing_filter" > "$result_path"
+                } '"$missing_filter"' '"$debug_filter" > "$result_path"
             ;;
     esac
 fi
@@ -1160,6 +1372,8 @@ type vmtestRunIndex struct {
 	GoTestLog           string   `json:"goTestLog"`
 	AutoRebuild         bool     `json:"autoRebuild"`
 	ArtifactSet         string   `json:"artifactSet"`
+	DebugOnFailure      bool     `json:"debugOnFailure"`
+	DebugShell          bool     `json:"debugShell"`
 	Status              string   `json:"status"`
 	MissingCapabilities []string `json:"missingCapabilities"`
 	GoTestArgs          []string `json:"goTestArgs"`

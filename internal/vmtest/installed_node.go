@@ -76,21 +76,28 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	if vm.Timeout > 0 {
 		runCtx, timeoutCancel = context.WithTimeout(ctx, vm.Timeout)
 	}
-	runCtx, cancel := context.WithCancel(runCtx)
+	runCtx, cancel := context.WithCancelCause(runCtx)
 	stop := func() {
-		cancel()
+		cancel(errVMRunComplete)
+		if timeoutCancel != nil {
+			timeoutCancel()
+		}
+	}
+	failStop := func() {
+		cancel(errVMRunFailed)
 		if timeoutCancel != nil {
 			timeoutCancel()
 		}
 	}
 	file, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		stop()
+		failStop()
 		return fail(err)
 	}
 	executor := runner.Executor
+	var preservation *DomainPreservation
 	if executor == nil {
-		executor = defaultVMExecutor(result, plan)
+		executor, preservation = defaultVMExecutor(result, plan)
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -99,31 +106,36 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 	}()
 	domainDone, err := waitForSerialSignal(runCtx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
 	if err != nil {
-		stop()
+		failStop()
 		if !domainDone {
 			<-done
 		}
+		result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
 		return fail(err)
 	}
 	if domainDone {
+		result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
 		return fail(fmt.Errorf("libvirt domain exited after serial signal before installed runtime node %q could be used", name))
 	}
 	if err := runner.checkAgent(runCtx, result, vm); err != nil {
-		stop()
+		failStop()
 		<-done
+		result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
 		return fail(err)
 	}
 	if plan.MACAddress != "" {
 		lease, err := WaitLibvirtLease(runCtx, plan.VirshPath, plan.LibvirtURI, plan.LibvirtNetwork, plan.MACAddress, 30*time.Second)
 		if err != nil {
-			stop()
+			failStop()
 			<-done
+			result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
 			return fail(err)
 		}
 		result.IPAddress = lease.IPAddress
 		if err := writeJSON(result.Artifacts.LibvirtLease, lease); err != nil {
-			stop()
+			failStop()
 			<-done
+			result = runner.withDebugTarget(debugFailedResult(result), plan, preservation)
 			return fail(fmt.Errorf("write libvirt lease artifact: %w", err))
 		}
 	}
@@ -208,6 +220,11 @@ func nodeResult(parent Result, name string) Result {
 	result.Artifacts = pathsFor(runDir)
 	result.VSock = VSockPlan{}
 	result.Phases = nil
+	if parent.Debug != nil {
+		debug := *parent.Debug
+		debug.Targets = nil
+		result.Debug = &debug
+	}
 	return result
 }
 

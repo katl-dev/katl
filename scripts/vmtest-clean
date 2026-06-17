@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"
+
+usage() {
+    printf 'usage: scripts/vmtest-clean <run-dir|result.json>\n' >&2
+}
+
+if [[ "$#" -ne 1 ]]; then
+    usage
+    exit 2
+fi
+
+target="$1"
+if [[ -d "$target" ]]; then
+    mapfile -t result_files < <(find "$target" -name result.json -print | sort)
+elif [[ -f "$target" ]]; then
+    result_files=("$target")
+else
+    printf 'vmtest-clean: target not found: %s\n' "$target" >&2
+    exit 2
+fi
+
+if [[ "${#result_files[@]}" -eq 0 ]]; then
+    printf 'vmtest-clean: no result.json files found under %s\n' "$target" >&2
+    exit 2
+fi
+
+cleaned=0
+for result in "${result_files[@]}"; do
+    while IFS=$'\t' read -r domain uri; do
+        if [[ -z "$domain" ]]; then
+            printf 'vmtest-clean: refusing empty domain name in %s\n' "$result" >&2
+            exit 2
+        fi
+        if [[ ! "$domain" =~ ^[A-Za-z0-9_.:-]+$ || "$domain" != katl-* ]]; then
+            printf 'vmtest-clean: refusing unsafe domain name %q in %s\n' "$domain" "$result" >&2
+            exit 2
+        fi
+        if [[ -z "$uri" ]]; then
+            printf 'vmtest-clean: refusing empty libvirt URI for %s in %s\n' "$domain" "$result" >&2
+            exit 2
+        fi
+        printf 'vmtest-clean: destroying %s on %s\n' "$domain" "$uri" >&2
+        "$virsh_bin" -c "$uri" destroy "$domain" >/dev/null 2>&1 || true
+        printf 'vmtest-clean: undefining %s on %s\n' "$domain" "$uri" >&2
+        "$virsh_bin" -c "$uri" undefine "$domain" --nvram >/dev/null
+        cleaned=$((cleaned + 1))
+    done < <(
+        jq -r '
+          (.debug.targets // [])
+          | map(select(.preserved == true))
+          | .[]
+          | [.domainName, .libvirtURI]
+          | @tsv
+        ' "$result"
+    )
+done
+
+if [[ "$cleaned" -eq 0 ]]; then
+    printf 'vmtest-clean: no preserved vmtest domains recorded in %s\n' "$target" >&2
+    exit 1
+fi
+
+printf 'vmtest-clean: cleaned %d preserved domain(s)\n' "$cleaned" >&2

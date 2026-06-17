@@ -23,6 +23,7 @@ world_manifest="$run_dir/world.json"
 host_capabilities_json="$run_dir/host-capabilities.json"
 run_index="$run_dir/run.json"
 go_test_log="$run_dir/go-test.log"
+debug_targets_artifact="$run_dir/preserved-vm-debug.txt"
 lease_file="$network_dir/leases.json"
 libvirt_uri="${KATL_VMTEST_LIBVIRT_URI:-qemu:///system}"
 libvirt_network="${KATL_VMTEST_LIBVIRT_NETWORK:-default}"
@@ -54,6 +55,8 @@ require_scenario_result="${KATL_VMTEST_REQUIRE_SCENARIO_RESULT:-1}"
 auto_rebuild="${KATL_VMTEST_AUTO_REBUILD:-1}"
 artifact_set="${KATL_VMTEST_ARTIFACT_SET:-default}"
 keep_policy="${KATL_VMTEST_KEEP:-failed}"
+debug_on_failure_policy="${KATL_VMTEST_DEBUG_ON_FAILURE:-auto}"
+debug_on_failure_effective=""
 go_test_input_args=()
 missing_capabilities=()
 setup_failures=()
@@ -196,6 +199,15 @@ parse_runner_args() {
                 ;;
             --runtime-artifacts)
                 artifact_set="runtime"
+                ;;
+            --debug-on-failure)
+                debug_on_failure_policy="1"
+                ;;
+            --no-debug-on-failure)
+                debug_on_failure_policy="0"
+                ;;
+            --debug-on-failure=*)
+                debug_on_failure_policy="${arg#*=}"
                 ;;
             --)
                 shift
@@ -547,6 +559,7 @@ write_world() {
         --arg goTestLog "$go_test_log" \
         --arg autoRebuild "$auto_rebuild" \
         --arg artifactSet "$artifact_set" \
+        --arg debugOnFailure "$debug_on_failure_effective" \
         --arg libvirtURI "$libvirt_uri" \
         --arg libvirtNetwork "$libvirt_network" \
         --arg libvirtStoragePool "$libvirt_storage_pool" \
@@ -580,6 +593,8 @@ write_world() {
           goTestLog: $goTestLog,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
           artifactSet: $artifactSet,
+          debugOnFailure: ($debugOnFailure == "1"),
+          debugShell: ($debugOnFailure == "1"),
           libvirt: {
             uri: $libvirtURI,
             network: $libvirtNetwork,
@@ -632,6 +647,7 @@ write_run_index() {
         --arg goTestLog "$go_test_log" \
         --arg autoRebuild "$auto_rebuild" \
         --arg artifactSet "$artifact_set" \
+        --arg debugOnFailure "$debug_on_failure_effective" \
         --arg leaseFile "$lease_file" \
         --arg status "$status" \
         --arg setupFailures "$setup_failure_text" \
@@ -650,6 +666,8 @@ write_run_index() {
           goTestLog: $goTestLog,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
           artifactSet: $artifactSet,
+          debugOnFailure: ($debugOnFailure == "1"),
+          debugShell: ($debugOnFailure == "1"),
           networkLeaseFile: $leaseFile,
           status: $status,
           missingCapabilities: $missingCapabilities,
@@ -664,6 +682,30 @@ validate_keep_policy() {
             ;;
         *)
             setup_failures+=("invalid vmtest keep policy: $keep_policy")
+            ;;
+    esac
+}
+
+validate_debug_on_failure_policy() {
+    local value
+    value="$(printf '%s' "$debug_on_failure_policy" | tr '[:upper:]' '[:lower:]')"
+    case "$value" in
+        auto)
+            if [[ "${CI:-}" == "true" || "${CI:-}" == "1" ]]; then
+                debug_on_failure_effective=0
+            else
+                debug_on_failure_effective=1
+            fi
+            ;;
+        1 | true | yes | on)
+            debug_on_failure_effective=1
+            ;;
+        0 | false | no | off)
+            debug_on_failure_effective=0
+            ;;
+        *)
+            setup_failures+=("invalid vmtest debug-on-failure policy: $debug_on_failure_policy")
+            debug_on_failure_effective=0
             ;;
     esac
 }
@@ -706,6 +748,60 @@ cleanup_run_dir() {
     printf 'vmtest run dir removed: %s\n' "$run_dir" >&2
 }
 
+print_preserved_debug_targets() {
+    local tmp result line printed=0
+    tmp="$(mktemp "$run_dir/preserved-vm-debug.XXXXXX")"
+    {
+        find "$scenario_dir" -mindepth 2 -maxdepth 5 -name result.json -print 2>/dev/null || true
+    } | while IFS= read -r result; do
+        jq -r --arg result "$result" '
+          (.debug.targets // [])
+          | map(select(.preserved == true))
+          | .[]
+          | [
+              $result,
+              .domainName,
+              .libvirtURI,
+              .serialLog,
+              .consoleCommand,
+              (.vsock.guestCid // ""),
+              (.vsock.port // ""),
+              .shellMode,
+              .cleanupCommand
+            ]
+          | @tsv
+        ' "$result" 2>/dev/null || true
+    done >"$tmp"
+    if [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        return 0
+    fi
+    {
+        printf 'preserved VM debug targets\n'
+        printf 'These libvirt domains were preserved by vmtest debug-on-failure. They will not be cleaned up automatically.\n'
+        while IFS=$'\t' read -r result domain uri serial console cid port shell cleanup; do
+            printed=1
+            printf '\n'
+            printf -- '- result: %s\n' "$result"
+            printf '  domain: %s\n' "$domain"
+            printf '  libvirt URI: %s\n' "$uri"
+            printf '  console: %s\n' "$console"
+            printf '  serial log: %s\n' "$serial"
+            if [[ -n "$cid" && -n "$port" ]]; then
+                printf '  vsock: cid=%s port=%s\n' "$cid" "$port"
+            fi
+            if [[ -n "$shell" ]]; then
+                printf '  shell: %s\n' "$shell"
+            fi
+            printf '  cleanup: %s\n' "$cleanup"
+        done <"$tmp"
+        if [[ "$printed" == 1 ]]; then
+            printf '\nRun the cleanup command when you are done debugging.\n'
+        fi
+    } | tee "$debug_targets_artifact" >&2
+    rm -f "$tmp"
+}
+
 need jq
 mkdir -p "$cache_dir" "$artifact_dir" "$scenario_dir" "$network_dir"
 if [[ "$run_dir_preexisting" == 0 ]]; then
@@ -714,6 +810,7 @@ fi
 : >"$go_test_log"
 parse_runner_args "$@"
 set -- "${go_test_input_args[@]}"
+validate_debug_on_failure_policy
 jq -n '{}' >"$lease_file"
 write_host_capabilities
 write_run_index "setup" "$@"
@@ -751,6 +848,7 @@ export KATL_VMTEST_LIBVIRT_NETWORK="$libvirt_network"
 export KATL_VMTEST_LIBVIRT_STORAGE_POOL="$libvirt_storage_pool"
 export KATL_VMTEST_LIBVIRT_STORAGE_PATH="$libvirt_storage_path"
 export KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX="$libvirt_domain_prefix"
+export KATL_VMTEST_DEBUG_ON_FAILURE="$debug_on_failure_effective"
 
 final_status="go-test"
 write_run_index "$final_status" "$@"
@@ -771,6 +869,7 @@ set -e
 if [[ "$exit_code" -ne 0 ]]; then
     write_run_index "failed" "$@"
     printf 'vmtest failed: go test exited %d\n' "$exit_code" >&2
+    print_preserved_debug_targets
     if ! cleanup_run_dir "failed"; then
         printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
     fi
@@ -782,6 +881,7 @@ if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scena
         printf 'vmtest did not execute any world scenario; no result.json found under %s\n' "$scenario_dir" >&2
         printf 'vmtest run dir: %s\n' "$run_dir" >&2
         printf 'vmtest go test log: %s\n' "$go_test_log" >&2
+        print_preserved_debug_targets
         if ! cleanup_run_dir "no-scenario-result"; then
             printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
         fi

@@ -118,6 +118,7 @@ for path in \
     /usr/lib/systemd/system/katl-state-projection-check.service \
     /usr/lib/systemd/system/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/katlc-agent.service \
+    /usr/lib/systemd/system/katl-vmtest-debug-shell.service \
     /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf \
     /usr/lib/systemd/system/systemd-networkd.service.d/10-katl-confext.conf \
     /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf \
@@ -131,7 +132,8 @@ for path in \
     /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-boot-health.service \
     /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/multi-user.target.wants/katlc-agent.service \
-    /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
+    /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service \
+    /usr/lib/systemd/system/multi-user.target.wants/katl-vmtest-debug-shell.service
 do
     has_path "$path"
 done
@@ -183,6 +185,8 @@ file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/etc-kub
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ConditionKernelCommandLine=katl.vmtest_agent=1"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent"
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ReadWritePaths=/run /efi /etc/kubernetes /var/lib/containerd /var/lib/etcd /var/lib/katl /var/lib/kubelet /var/log/journal"
+file_has /usr/lib/systemd/system/katl-vmtest-debug-shell.service "ConditionKernelCommandLine=katl.vmtest_debug_shell=1"
+file_has /usr/lib/systemd/system/katl-vmtest-debug-shell.service "ExecStart=-/usr/sbin/agetty --autologin root --noclear ttyS0 115200"
 
 for path in \
     /usr/bin/mkosi \

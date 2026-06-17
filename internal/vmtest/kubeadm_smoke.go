@@ -70,12 +70,12 @@ func RunInstalledKubeadmAPISmoke(ctx context.Context, result Result, config Kube
 		return finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
 	}
 	if vm.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, vm.Timeout)
-		defer cancel()
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, vm.Timeout)
+		defer timeoutCancel()
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(errVMRunFailed)
 
 	serial, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -84,8 +84,9 @@ func RunInstalledKubeadmAPISmoke(ctx context.Context, result Result, config Kube
 	defer serial.Close()
 
 	executor := runner.Executor
+	var preservation *DomainPreservation
 	if executor == nil {
-		executor = defaultVMExecutor(result, plan)
+		executor, preservation = defaultVMExecutor(result, plan)
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -94,31 +95,31 @@ func RunInstalledKubeadmAPISmoke(ctx context.Context, result Result, config Kube
 	domainDone, err := waitForSerialSignal(ctx, done, plan.SerialLog, vm.Expect, vm.PollInterval)
 	if err != nil {
 		if !domainDone {
-			cancel()
+			cancel(errVMRunFailed)
 			<-done
 		}
-		return finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
+		return runner.withDebugTarget(finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
 	}
 	if domainDone {
-		return finishVM(result, "kubeadm-api-smoke", StatusFailed, "libvirt domain exited after serial signal before kubeadm API smoke", started, time.Now().UTC())
+		return runner.withDebugTarget(finishVM(result, "kubeadm-api-smoke", StatusFailed, "libvirt domain exited after serial signal before kubeadm API smoke", started, time.Now().UTC()), plan, preservation)
 	}
 
 	session, err := connectKubeadmSmokeAgent(ctx, config, config.Smoke, result.VSock, result.Artifacts.VSockTranscript)
 	if err != nil {
-		cancel()
+		cancel(errVMRunFailed)
 		<-done
-		return finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
+		return runner.withDebugTarget(finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
 	}
 	defer session.Close()
 
 	guest := NewGuestControl(result, session)
 	if err := RunKubeadmAPISmoke(ctx, guest, config.Smoke); err != nil {
 		collectKubeadmSmokeDiagnostics(ctx, result, config, session)
-		cancel()
+		cancel(errVMRunFailed)
 		<-done
-		return finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC())
+		return runner.withDebugTarget(finishVM(result, "kubeadm-api-smoke", StatusFailed, err.Error(), started, time.Now().UTC()), plan, preservation)
 	}
-	cancel()
+	cancel(errVMRunComplete)
 	<-done
 	return finishVM(result, "kubeadm-api-smoke", StatusPassed, "", started, time.Now().UTC())
 }

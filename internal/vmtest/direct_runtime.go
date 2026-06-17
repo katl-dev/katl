@@ -160,8 +160,15 @@ func directRuntimeCommandLine(config DirectRuntimeConfig) []string {
 	if config.RequireVMTestAgent {
 		options = append(options, "katl.vmtest_agent=1")
 	}
+	if vmtestDebugOnFailure() {
+		options = append(options, runtimeDebugShellOption)
+	}
 	options = append(options, config.KernelCommandLine...)
 	return options
+}
+
+func vmtestDebugOnFailure() bool {
+	return envBool("KATL_VMTEST_DEBUG_ON_FAILURE")
 }
 
 func requireRegularFile(name, path string) error {

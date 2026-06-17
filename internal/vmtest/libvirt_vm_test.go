@@ -291,6 +291,120 @@ esac
 	}
 }
 
+func TestLibvirtVMExecutorPreservesLiveDomainOnDebugFailure(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "virsh.log")
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_VIRSH_LOG"
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|start)
+        exit 0
+        ;;
+    domstate)
+        printf 'running\n'
+        exit 0
+        ;;
+    destroy|undefine)
+        exit 0
+        ;;
+    *)
+        echo "unexpected virsh args: $*" >&2
+        exit 40
+        ;;
+esac
+`)
+	t.Setenv("KATL_FAKE_VIRSH_LOG", logPath)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
+
+	preservation := &DomainPreservation{}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := LibvirtVMExecutor{
+		VirshPath:         virsh,
+		URI:               "qemu:///system",
+		DomainName:        "katl-run-1",
+		DomainXMLFile:     xmlPath,
+		PollInterval:      time.Millisecond,
+		PreserveOnFailure: true,
+		Preservation:      preservation,
+	}.Run(ctx, "", nil, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error = %v, want deadline", err)
+	}
+	if !preservation.Preserved || !strings.Contains(preservation.Reason, "preserved live") {
+		t.Fatalf("preservation = %#v", preservation)
+	}
+	log := readFile(t, logPath)
+	if strings.Contains(log, "destroy katl-run-1") || strings.Contains(log, "undefine katl-run-1") {
+		t.Fatalf("preserved domain was cleaned up:\n%s", log)
+	}
+}
+
+func TestLibvirtVMExecutorCleansUpSuccessfulRunWithDebugEnabled(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "virsh.log")
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_VIRSH_LOG"
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|start|destroy|undefine)
+        exit 0
+        ;;
+    domstate)
+        printf 'shut off\n'
+        exit 0
+        ;;
+    *)
+        echo "unexpected virsh args: $*" >&2
+        exit 40
+        ;;
+esac
+`)
+	t.Setenv("KATL_FAKE_VIRSH_LOG", logPath)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
+
+	preservation := &DomainPreservation{}
+	err := LibvirtVMExecutor{
+		VirshPath:         virsh,
+		URI:               "qemu:///system",
+		DomainName:        "katl-run-1",
+		DomainXMLFile:     xmlPath,
+		PollInterval:      time.Millisecond,
+		PreserveOnFailure: true,
+		Preservation:      preservation,
+	}.Run(context.Background(), "", nil, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if preservation.Preserved {
+		t.Fatalf("preservation = %#v, want not preserved", preservation)
+	}
+	log := readFile(t, logPath)
+	for _, want := range []string{
+		"-c qemu:///system destroy katl-run-1",
+		"-c qemu:///system undefine katl-run-1 --nvram",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("virsh log missing %q:\n%s", want, log)
+		}
+	}
+}
+
 func TestLibvirtVMExecutorFailsCrashedDomain(t *testing.T) {
 	tmp := t.TempDir()
 	virsh := filepath.Join(tmp, "virsh")
