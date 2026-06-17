@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zariel/katl/internal/installer/configapply"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
@@ -65,6 +66,272 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 	}
 	if len(record.ResourceLocks) != 2 {
 		t.Fatalf("resource locks = %v, want bootstrap locks", record.ResourceLocks)
+	}
+}
+
+func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	server.Dispatcher = executor
+
+	accepted, err := server.StageGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       "req-stage-generation",
+		Actor:                 "test-actor",
+		ExpectedMachineId:     "0123456789abcdef0123456789abcdef",
+		CandidateGenerationId: "generation-1",
+		ConfigYaml:            configApplyYAML("next-boot"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.OperationKind != OperationKindGenerationStage || accepted.OperationId == "" {
+		t.Fatalf("accepted = %+v", accepted)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded || record.ConfigApplyPhase != generation.ConfigApplyPhaseNextBoot {
+		t.Fatalf("record = %+v, want successful staged config apply", record)
+	}
+	if record.ConfigApplyRequest == nil || record.ConfigApplyRequest.ApplyMode != generation.ApplyModeNextBoot {
+		t.Fatalf("config apply request = %+v", record.ConfigApplyRequest)
+	}
+	gen, err := server.GetGeneration(context.Background(), &agentapi.GetGenerationRequest{
+		GenerationId:       "generation-1",
+		IncludeConfigApply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen.GenerationId != "generation-1" || gen.PreviousGenerationId != "generation-0" || gen.ConfigApply == nil || gen.ConfigApply.Phase != generation.ConfigApplyPhaseNextBoot {
+		t.Fatalf("generation read model = %+v", gen)
+	}
+	list, err := server.ListGenerations(context.Background(), &agentapi.ListGenerationsRequest{IncludeConfigApply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Generations) != 2 || list.Generations[1].GenerationId != "generation-1" {
+		t.Fatalf("generation list = %+v", list.Generations)
+	}
+}
+
+func TestValidateConfigRejectsInvalidDocumentWithoutRecord(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+
+	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "ValidateConfigRequest",
+		ClientRequestId:       "req-invalid-config",
+		Actor:                 "test-actor",
+		ExpectedMachineId:     "0123456789abcdef0123456789abcdef",
+		ApplyMode:             generation.ApplyModeNextBoot,
+		CandidateGenerationId: "generation-1",
+		ConfigYaml:            "apiVersion: katl.dev/v1alpha1\nkind: Wrong\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted || !strings.Contains(result.FailureReason, "kind must be NodeConfigurationChange") {
+		t.Fatalf("validation result = %+v, want rejected wrong kind", result)
+	}
+	if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("operation store entries = %d, want no record for validation", len(entries))
+	}
+}
+
+func TestValidateConfigPlansAndDigestStagesGeneration(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	server.Dispatcher = executor
+
+	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "ValidateConfigRequest",
+		ClientRequestId:       "req-plan-stage",
+		Actor:                 "test-actor",
+		ExpectedMachineId:     "0123456789abcdef0123456789abcdef",
+		ApplyMode:             generation.ApplyModeNextBoot,
+		CandidateGenerationId: "generation-2",
+		ConfigYaml:            configApplyYAML(generation.ApplyModeNextBoot),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted || result.RequestDigest == "" || result.AcceptedApplyMode != generation.ApplyModeNextBoot || !contains(result.ChangedDomains, "networkd") {
+		t.Fatalf("validation result = %+v, want accepted staged plan with networkd domain", result)
+	}
+
+	accepted, err := server.StageGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       "req-plan-stage",
+		Actor:                 "test-actor",
+		ExpectedMachineId:     "0123456789abcdef0123456789abcdef",
+		RequestDigest:         result.RequestDigest,
+		CandidateGenerationId: "generation-2",
+		ConfigYaml:            configApplyYAML(generation.ApplyModeNextBoot),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.RequestDigest != result.RequestDigest {
+		t.Fatalf("accepted digest = %q, want validation digest %q", accepted.RequestDigest, result.RequestDigest)
+	}
+}
+
+func TestValidateConfigRejectsPlanPolicyWithoutRecord(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+
+	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "ValidateConfigRequest",
+		ClientRequestId:       "req-live-networkd",
+		Actor:                 "test-actor",
+		ExpectedMachineId:     "0123456789abcdef0123456789abcdef",
+		ApplyMode:             generation.ApplyModeLive,
+		CandidateGenerationId: "generation-live",
+		ConfigYaml:            configApplyYAML(generation.ApplyModeLive),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted || !strings.Contains(result.FailureReason, "rejected") || len(result.Diagnostics) == 0 {
+		t.Fatalf("validation result = %+v, want rejected live policy plan", result)
+	}
+	if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("operation store entries = %d, want no record for validation", len(entries))
+	}
+}
+
+func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	runner := &fakeConfigApplyRunner{}
+	activator := &fakeConfigApplyActivator{}
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	executor.ConfigApplyRunner = runner
+	executor.ConfigApplyActivator = activator
+	server.Dispatcher = executor
+
+	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       "req-live-generation",
+		Actor:                 "test-actor",
+		CandidateGenerationId: "generation-live",
+		ConfigYaml:            configApplyLiveYAML(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded || !record.ExternalMutationStarted {
+		t.Fatalf("record = %+v, want terminal success with mutation started", record)
+	}
+	if record.ActivationState != operation.ActivationStateActiveLive || record.ConfigApplyPhase != generation.ConfigApplyPhaseActive {
+		t.Fatalf("activation/config phase = %q/%q, want active-live/active", record.ActivationState, record.ConfigApplyPhase)
+	}
+	if !contains(record.MutationScopes, "confext-activation") || !contains(record.MutationScopes, "config-domain:networkd") {
+		t.Fatalf("mutation scopes = %v, want confext activation and networkd domain", record.MutationScopes)
+	}
+	if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != operation.ResultSucceeded {
+		t.Fatalf("invocations = %+v, want completed live config apply invocation", record.Invocations)
+	}
+	if activator.activated == "" || runner.calls == 0 {
+		t.Fatalf("live dependencies activated=%q runner calls=%d, want both used", activator.activated, runner.calls)
+	}
+}
+
+func TestApplyGenerationLiveFailureRecordsRollbackState(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	var acceptedRecord operation.OperationRecord
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		acceptedRecord = record
+		return nil
+	})
+	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       "req-live-generation-fail",
+		Actor:                 "test-actor",
+		CandidateGenerationId: "generation-live-fail",
+		ConfigYaml:            configApplyLiveYAML(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeConfigApplyRunner{exitStatus: 1, stderr: "network reload failed"}
+	activator := &fakeConfigApplyActivator{}
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	executor.ConfigApplyRunner = runner
+	executor.ConfigApplyActivator = activator
+	if err := executor.Execute(context.Background(), acceptedRecord); err == nil {
+		t.Fatal("Execute() error = nil, want live action failure")
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultFailedNeedsRepair || !record.ExternalMutationStarted {
+		t.Fatalf("record = %+v, want terminal failed with mutation started", record)
+	}
+	if record.ActivationState != operation.ActivationStateRolledBack || record.ConfigApplyPhase != generation.ConfigApplyPhaseRolledBack {
+		t.Fatalf("activation/config phase = %q/%q, want rolled-back/rolled-back", record.ActivationState, record.ConfigApplyPhase)
+	}
+	if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != operation.ResultFailedNeedsRepair {
+		t.Fatalf("invocations = %+v, want completed failed live config apply invocation", record.Invocations)
+	}
+	if activator.rollbackTarget != "generation-0" {
+		t.Fatalf("rollback target = %q, want generation-0", activator.rollbackTarget)
+	}
+}
+
+func TestStageGenerationRejectsExistingCandidateBeforeRecord(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+
+	_, err := server.StageGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       "req-duplicate-generation",
+		Actor:                 "test-actor",
+		CandidateGenerationId: "generation-0",
+		ConfigYaml:            configApplyYAML(generation.ApplyModeNextBoot),
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("StageGeneration error = %v, want existing candidate FailedPrecondition", err)
+	}
+	if dispatched.Load() != 0 {
+		t.Fatalf("dispatcher calls = %d, want none", dispatched.Load())
+	}
+	if entries, err := os.ReadDir(server.Store.Root); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("operation store entries = %d, want no record for duplicate candidate", len(entries))
 	}
 }
 
@@ -858,6 +1125,176 @@ func writeBootSelection(t *testing.T, root string, generationID string) {
 		t.Fatal(err)
 	}
 }
+
+func writeConfigApplyBaseState(t *testing.T, root string) {
+	t.Helper()
+	sysext := []byte("current kubernetes sysext\n")
+	sysextPath := filepath.Join(root, "var/lib/katl/generations/generation-0/sysext/kubernetes.raw")
+	if err := os.MkdirAll(filepath.Dir(sysextPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sysextPath, sysext, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
+		GenerationID:          "generation-0",
+		RuntimeVersion:        "0.1.0",
+		RuntimeInterface:      "katl-runtime-1",
+		RuntimeArchitecture:   "x86_64",
+		RootSlot:              "root-a",
+		RootPartitionUUID:     "11111111-1111-1111-1111-111111111111",
+		RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		UKIPath:               "/efi/EFI/Linux/katl-generation-0.efi",
+		Sysexts: []generation.ExtensionRef{{
+			Name:            "kubernetes",
+			Path:            "/var/lib/katl/generations/generation-0/sysext/kubernetes.raw",
+			ActivationPath:  "/run/extensions/kubernetes.raw",
+			SHA256:          digestBytesForAgentTest(sysext),
+			ArtifactVersion: "0.1.0",
+			PayloadVersion:  "v1.35.0",
+			Architecture:    "x86_64",
+			Compatibility:   generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}},
+		}},
+		GeneratedConfext: generation.GeneratedConfext{
+			Name:           "katl-node",
+			Path:           "/var/lib/katl/generations/generation-0/confext",
+			ActivationPath: "/run/confexts/katl-node",
+			SHA256:         strings.Repeat("b", 64),
+			Compatibility:  generation.ConfextCompatibility{ID: "katl", VersionID: "0.1.0", ConfextLevel: 1},
+		},
+		CreatedAt: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := generation.SpecFromRecord(record)
+	digest, err := generation.CanonicalSpecDigest(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(root, spec, generation.StatusFromRecord(record, digest)); err != nil {
+		t.Fatal(err)
+	}
+	writeBootSelection(t, root, "generation-0")
+	manifestPath := filepath.Join(root, "var/lib/katl/install/manifest.json")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, []byte(configApplyInstallManifestJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func configApplyYAML(mode string) string {
+	return strings.Join([]string{
+		"apiVersion: katl.dev/v1alpha1",
+		"kind: NodeConfigurationChange",
+		"metadata:",
+		"  sourceID: operator",
+		"  desiredVersion: \"2\"",
+		"apply:",
+		"  mode: " + mode,
+		"spec:",
+		"  clusterDefaults:",
+		"    networkd:",
+		"      files:",
+		"        - name: 20-uplink.network",
+		"          content: |",
+		"            [Match]",
+		"            Name=ens3",
+		"            [Network]",
+		"            DHCP=yes",
+		"",
+	}, "\n")
+}
+
+func configApplyLiveYAML() string {
+	return strings.Join([]string{
+		"apiVersion: katl.dev/v1alpha1",
+		"kind: NodeConfigurationChange",
+		"metadata:",
+		"  sourceID: operator",
+		"  desiredVersion: \"3\"",
+		"apply:",
+		"  mode: live",
+		"spec:",
+		"  clusterDefaults:",
+		"    livePreflight:",
+		"      networkd: true",
+		"    networkd:",
+		"      files:",
+		"        - name: 20-uplink.network",
+		"          content: |",
+		"            [Match]",
+		"            Name=ens3",
+		"            [Network]",
+		"            DHCP=yes",
+		"",
+	}, "\n")
+}
+
+type fakeConfigApplyRunner struct {
+	calls      int
+	exitStatus int
+	stdout     string
+	stderr     string
+	err        error
+}
+
+func (r *fakeConfigApplyRunner) Run(ctx context.Context, command configapply.Command) (configapply.CommandResult, error) {
+	r.calls++
+	if r.exitStatus == 0 && r.err == nil && r.stderr == "" {
+		return configapply.CommandResult{ExitStatus: 0, Stdout: r.stdout}, nil
+	}
+	return configapply.CommandResult{ExitStatus: r.exitStatus, Stdout: r.stdout, Stderr: r.stderr}, r.err
+}
+
+type fakeConfigApplyActivator struct {
+	activated      string
+	rollbackTarget string
+}
+
+func (a *fakeConfigApplyActivator) Activate(ctx context.Context, record generation.Record) error {
+	a.activated = record.GenerationID
+	return nil
+}
+
+func (a *fakeConfigApplyActivator) Rollback(ctx context.Context, targetGenerationID string) error {
+	a.rollbackTarget = targetGenerationID
+	return nil
+}
+
+func digestBytesForAgentTest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+const configApplyInstallManifestJSON = `{
+  "apiVersion": "install.katl.dev/v1alpha1",
+  "kind": "InstallManifest",
+  "node": {
+    "identity": {
+      "hostname": "node-a",
+      "ssh": {
+        "authorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestBaseKey katl"]
+      }
+    },
+    "systemRole": "control-plane"
+  },
+  "install": {
+    "allowDestructiveInstall": true,
+    "targetDisk": {"byID": "disk/by-id/test"}
+  },
+  "katlosImage": {
+    "localRef": "images/katlos.raw",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sizeBytes": 1024,
+    "version": "0.1.0",
+    "architecture": "x86_64",
+    "runtimeInterface": "katl-runtime-1",
+    "role": "install"
+  }
+}`
 
 func writeClusterIntent(t *testing.T, root string, content []byte) string {
 	t.Helper()

@@ -29,6 +29,7 @@ const (
 	ResultSucceeded         = "succeeded"
 
 	ActivationModeLive        = "live"
+	ActivationModeNextBoot    = "next-boot"
 	ActivationStatePending    = "pending"
 	ActivationStateActivating = "activating"
 	ActivationStateActiveLive = "active-live"
@@ -78,7 +79,10 @@ type OperationRecord struct {
 	PhasePlan                   []string                `json:"phasePlan,omitempty"`
 	PreviousGenerationID        string                  `json:"previousGenerationID,omitempty"`
 	CandidateGenerationID       string                  `json:"candidateGenerationID,omitempty"`
+	ConfigApplyPhase            string                  `json:"configApplyPhase,omitempty"`
+	ChangedDomains              []string                `json:"changedDomains,omitempty"`
 	BootstrapRequest            *BootstrapRequest       `json:"bootstrapRequest,omitempty"`
+	ConfigApplyRequest          *ConfigApplyRequest     `json:"configApplyRequest,omitempty"`
 	ActivationMode              string                  `json:"activationMode,omitempty"`
 	ActivationState             string                  `json:"activationState,omitempty"`
 	GenerationCommitState       string                  `json:"generationCommitState,omitempty"`
@@ -132,6 +136,13 @@ type BootstrapRequest struct {
 	JoinMaterialDigest       string `json:"joinMaterialDigest,omitempty"`
 	JoinMaterialExpiresAt    string `json:"joinMaterialExpiresAt,omitempty"`
 	TemporaryJoinConfigPath  string `json:"temporaryJoinConfigPath,omitempty"`
+}
+
+type ConfigApplyRequest struct {
+	ApplyMode             string `json:"applyMode"`
+	NodeName              string `json:"nodeName,omitempty"`
+	CandidateGenerationID string `json:"candidateGenerationID,omitempty"`
+	ConfigYAML            string `json:"configYAML"`
 }
 
 type InvocationRecord struct {
@@ -646,7 +657,12 @@ func ValidateRecord(record OperationRecord) error {
 			}
 		}
 	}
-	if err := validateOptionalEnum("activationMode", record.ActivationMode, ActivationModeLive); err != nil {
+	if record.ConfigApplyRequest != nil {
+		if err := validateConfigApplyRequest(*record.ConfigApplyRequest); err != nil {
+			return err
+		}
+	}
+	if err := validateOptionalEnum("activationMode", record.ActivationMode, ActivationModeLive, ActivationModeNextBoot); err != nil {
 		return err
 	}
 	if err := validateOptionalEnum("activationState", record.ActivationState, ActivationStatePending, ActivationStateActivating, ActivationStateActiveLive, ActivationStateFailed, ActivationStateRolledBack); err != nil {
@@ -734,6 +750,9 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	if !reflect.DeepEqual(next.BootstrapRequest, previous.BootstrapRequest) {
 		return fmt.Errorf("operation bootstrapRequest is immutable")
 	}
+	if !reflect.DeepEqual(next.ConfigApplyRequest, previous.ConfigApplyRequest) {
+		return fmt.Errorf("operation configApplyRequest is immutable")
+	}
 	return nil
 }
 
@@ -786,6 +805,10 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	if record.BootstrapRequest != nil {
 		request := *record.BootstrapRequest
 		record.BootstrapRequest = &request
+	}
+	if record.ConfigApplyRequest != nil {
+		request := *record.ConfigApplyRequest
+		record.ConfigApplyRequest = &request
 	}
 	if record.ExecutorPlan != nil {
 		plan := *record.ExecutorPlan
@@ -1265,6 +1288,23 @@ func validateBootstrapRequest(request BootstrapRequest) error {
 	}
 	if strings.TrimSpace(request.BootstrapProfileRef) == "" {
 		return fmt.Errorf("bootstrapRequest bootstrapProfileRef is required")
+	}
+	return nil
+}
+
+func validateConfigApplyRequest(request ConfigApplyRequest) error {
+	switch strings.TrimSpace(request.ApplyMode) {
+	case "live", "next-boot":
+	default:
+		return fmt.Errorf("configApplyRequest applyMode must be live or next-boot")
+	}
+	if strings.TrimSpace(request.CandidateGenerationID) != "" {
+		if _, err := cleanSegment("configApplyRequest candidateGenerationID", request.CandidateGenerationID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(request.ConfigYAML) == "" {
+		return fmt.Errorf("configApplyRequest configYAML is required")
 	}
 	return nil
 }

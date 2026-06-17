@@ -277,6 +277,79 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 	}, nil
 }
 
+func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error) {
+	if strings.TrimSpace(request.Root) == "" {
+		return TrustedBundleResult{}, fmt.Errorf("runtime root is required")
+	}
+	sourceID, err := cleanAuditSegment("sourceID", request.SourceID)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	desiredVersion, err := cleanDesiredVersion(request.DesiredVersion)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	request.SourceID = sourceID
+	request.DesiredVersion = desiredVersion
+	if strings.TrimSpace(request.GenerationID) == "" {
+		return TrustedBundleResult{}, fmt.Errorf("generation id is required")
+	}
+	now := request.now()
+	if err := rejectRuntimeSelectionOverrides(request); err != nil {
+		return TrustedBundleResult{}, err
+	}
+	merged, changes, unsafeFiles, err := mergeRuntimeConfig(request)
+	if err != nil {
+		return TrustedBundleResult{Manifest: merged}, err
+	}
+	if err := manifest.Validate(merged); err != nil {
+		return TrustedBundleResult{Manifest: merged}, err
+	}
+	matrixDecision, err := Plan(request.ApplyMode, changes)
+	if err != nil {
+		return TrustedBundleResult{
+			Manifest: merged,
+			Plan:     Result{Decision: matrixDecision},
+		}, err
+	}
+	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
+		Manifest:                 merged,
+		KubeadmConfigs:           request.KubeadmConfigs,
+		KubernetesVersion:        firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.CurrentRecord)),
+		KubernetesActivationPath: firstNonEmpty(request.KubernetesActivationPath, selectedKubernetesActivationPath(request.CurrentRecord)),
+	})
+	if err != nil {
+		return TrustedBundleResult{Manifest: merged}, err
+	}
+	files = append(files, unsafeFiles...)
+	status, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{
+		GenerationID:       request.GenerationID,
+		PreviousGeneration: request.CurrentRecord.GenerationID,
+		RequestedApplyMode: matrixDecision.RequestedMode,
+		AcceptedApplyMode:  matrixDecision.AcceptedMode,
+		ChangedDomains:     matrixDecision.ChangedDomains,
+		HealthState:        request.CurrentRecord.HealthState,
+		Kubeadm:            kubeadmActionRequired(changes),
+		UpdatedAt:          now,
+	})
+	if err != nil {
+		return TrustedBundleResult{Manifest: merged, Files: files}, err
+	}
+	status.DomainActions = domainActions(matrixDecision.AcceptedMode, matrixDecision.ChangedDomains)
+	if err := generation.ValidateConfigApplyStatus(status); err != nil {
+		return TrustedBundleResult{Manifest: merged, Files: files}, err
+	}
+	return TrustedBundleResult{
+		Manifest: merged,
+		Files:    files,
+		Plan: Result{
+			Decision: matrixDecision,
+			Status:   status,
+		},
+		Status: status,
+	}, nil
+}
+
 func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Change, []confext.NativeEtcFile, error) {
 	merged := request.CurrentManifest
 	domains := domainAccumulator{}

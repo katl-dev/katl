@@ -6,10 +6,15 @@ option go_package = "github.com/zariel/katl/internal/katlc/agentapi;agentapi";
 
 service KatlcAgent {
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+  rpc ValidateConfig(ValidateConfigRequest) returns (ConfigValidationResult);
+  rpc ApplyGeneration(GenerationApplyRequest) returns (OperationAccepted);
+  rpc StageGeneration(GenerationApplyRequest) returns (OperationAccepted);
   rpc SubmitOperation(SubmitOperationRequest) returns (OperationAccepted);
   rpc CreateWorkerJoinMaterial(CreateWorkerJoinMaterialRequest) returns (CreateWorkerJoinMaterialResponse);
   rpc GetOperation(GetOperationRequest) returns (OperationStatus);
   rpc WatchOperation(WatchOperationRequest) returns (stream OperationEvent);
+  rpc ListGenerations(ListGenerationsRequest) returns (ListGenerationsResponse);
+  rpc GetGeneration(GetGenerationRequest) returns (Generation);
 }
 
 message GetNodeStatusRequest {}
@@ -38,6 +43,7 @@ message SubmitOperationRequest {
   bool dry_run = 10;
   string operation_timeout = 11;
   BootstrapOperationRequest bootstrap = 12;
+  ConfigApplyOperationRequest config_apply = 13;
 }
 
 message BootstrapOperationRequest {
@@ -56,6 +62,54 @@ message BootstrapOperationRequest {
 message WorkerJoinMaterial {
   repeated string join_argv = 1;
   string expires_at = 2;
+}
+
+message ValidateConfigRequest {
+  string api_version = 1;
+  string kind = 2;
+  string actor = 3;
+  string expected_machine_id = 4;
+  string expected_current_generation_id = 5;
+  string apply_mode = 6;
+  string candidate_generation_id = 7;
+  string node_name = 8;
+  string config_yaml = 9;
+  string client_request_id = 10;
+  string operation_timeout = 11;
+}
+
+message ConfigValidationResult {
+  string api_version = 1;
+  string kind = 2;
+  bool accepted = 3;
+  string request_digest = 4;
+  string requested_apply_mode = 5;
+  string accepted_apply_mode = 6;
+  string candidate_generation_id = 7;
+  repeated string changed_domains = 8;
+  repeated string diagnostics = 9;
+  string failure_reason = 10;
+}
+
+message GenerationApplyRequest {
+  string api_version = 1;
+  string kind = 2;
+  string client_request_id = 3;
+  string actor = 4;
+  string expected_machine_id = 5;
+  string expected_current_generation_id = 6;
+  string request_digest = 7;
+  string operation_timeout = 8;
+  string candidate_generation_id = 9;
+  string node_name = 10;
+  string config_yaml = 11;
+}
+
+message ConfigApplyOperationRequest {
+  string candidate_generation_id = 1;
+  string apply_mode = 2;
+  string node_name = 3;
+  string config_yaml = 4;
 }
 
 message CreateWorkerJoinMaterialRequest {
@@ -114,6 +168,9 @@ message OperationStatus {
   string post_kubeadm_health_state = 23;
   bool boot_health_pending = 24;
   string admin_kubeconfig = 25;
+  string previous_generation_id = 26;
+  string config_apply_phase = 27;
+  repeated string changed_domains = 28;
 }
 
 message DiagnosticArtifact {
@@ -152,4 +209,57 @@ message OperationEvent {
   bool terminal = 5;
   OperationStatus status = 6;
   repeated DiagnosticArtifact diagnostics = 7;
+}
+
+message ListGenerationsRequest {
+  bool include_config_apply = 1;
+}
+
+message ListGenerationsResponse {
+  repeated Generation generations = 1;
+}
+
+message GetGenerationRequest {
+  string generation_id = 1;
+  bool include_config_apply = 2;
+}
+
+message Generation {
+  string generation_id = 1;
+  string runtime_version = 2;
+  string previous_generation_id = 3;
+  string commit_state = 4;
+  string boot_state = 5;
+  string health_state = 6;
+  string spec_digest = 7;
+  string created_at = 8;
+  string updated_at = 9;
+  repeated ExtensionRef sysexts = 10;
+  repeated GeneratedConfext confexts = 11;
+  ConfigApplyStatus config_apply = 12;
+}
+
+message ExtensionRef {
+  string name = 1;
+  string path = 2;
+  string activation_path = 3;
+  string sha256 = 4;
+  string artifact_version = 5;
+  string payload_version = 6;
+  string architecture = 7;
+}
+
+message GeneratedConfext {
+  string name = 1;
+  string path = 2;
+  string activation_path = 3;
+  string sha256 = 4;
+}
+
+message ConfigApplyStatus {
+  string phase = 1;
+  string requested_apply_mode = 2;
+  string accepted_apply_mode = 3;
+  repeated string changed_domains = 4;
+  string failure_reason = 5;
 }

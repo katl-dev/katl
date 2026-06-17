@@ -20,10 +20,15 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	KatlcAgent_GetNodeStatus_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetNodeStatus"
+	KatlcAgent_ValidateConfig_FullMethodName           = "/katl.agent.v1.KatlcAgent/ValidateConfig"
+	KatlcAgent_ApplyGeneration_FullMethodName          = "/katl.agent.v1.KatlcAgent/ApplyGeneration"
+	KatlcAgent_StageGeneration_FullMethodName          = "/katl.agent.v1.KatlcAgent/StageGeneration"
 	KatlcAgent_SubmitOperation_FullMethodName          = "/katl.agent.v1.KatlcAgent/SubmitOperation"
 	KatlcAgent_CreateWorkerJoinMaterial_FullMethodName = "/katl.agent.v1.KatlcAgent/CreateWorkerJoinMaterial"
 	KatlcAgent_GetOperation_FullMethodName             = "/katl.agent.v1.KatlcAgent/GetOperation"
 	KatlcAgent_WatchOperation_FullMethodName           = "/katl.agent.v1.KatlcAgent/WatchOperation"
+	KatlcAgent_ListGenerations_FullMethodName          = "/katl.agent.v1.KatlcAgent/ListGenerations"
+	KatlcAgent_GetGeneration_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetGeneration"
 )
 
 // KatlcAgentClient is the client API for KatlcAgent service.
@@ -31,10 +36,15 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type KatlcAgentClient interface {
 	GetNodeStatus(ctx context.Context, in *GetNodeStatusRequest, opts ...grpc.CallOption) (*NodeStatus, error)
+	ValidateConfig(ctx context.Context, in *ValidateConfigRequest, opts ...grpc.CallOption) (*ConfigValidationResult, error)
+	ApplyGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
+	StageGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
 	SubmitOperation(ctx context.Context, in *SubmitOperationRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
 	CreateWorkerJoinMaterial(ctx context.Context, in *CreateWorkerJoinMaterialRequest, opts ...grpc.CallOption) (*CreateWorkerJoinMaterialResponse, error)
 	GetOperation(ctx context.Context, in *GetOperationRequest, opts ...grpc.CallOption) (*OperationStatus, error)
 	WatchOperation(ctx context.Context, in *WatchOperationRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperationEvent], error)
+	ListGenerations(ctx context.Context, in *ListGenerationsRequest, opts ...grpc.CallOption) (*ListGenerationsResponse, error)
+	GetGeneration(ctx context.Context, in *GetGenerationRequest, opts ...grpc.CallOption) (*Generation, error)
 }
 
 type katlcAgentClient struct {
@@ -49,6 +59,36 @@ func (c *katlcAgentClient) GetNodeStatus(ctx context.Context, in *GetNodeStatusR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NodeStatus)
 	err := c.cc.Invoke(ctx, KatlcAgent_GetNodeStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) ValidateConfig(ctx context.Context, in *ValidateConfigRequest, opts ...grpc.CallOption) (*ConfigValidationResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfigValidationResult)
+	err := c.cc.Invoke(ctx, KatlcAgent_ValidateConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) ApplyGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OperationAccepted)
+	err := c.cc.Invoke(ctx, KatlcAgent_ApplyGeneration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) StageGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OperationAccepted)
+	err := c.cc.Invoke(ctx, KatlcAgent_StageGeneration_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -104,15 +144,40 @@ func (c *katlcAgentClient) WatchOperation(ctx context.Context, in *WatchOperatio
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type KatlcAgent_WatchOperationClient = grpc.ServerStreamingClient[OperationEvent]
 
+func (c *katlcAgentClient) ListGenerations(ctx context.Context, in *ListGenerationsRequest, opts ...grpc.CallOption) (*ListGenerationsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListGenerationsResponse)
+	err := c.cc.Invoke(ctx, KatlcAgent_ListGenerations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) GetGeneration(ctx context.Context, in *GetGenerationRequest, opts ...grpc.CallOption) (*Generation, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Generation)
+	err := c.cc.Invoke(ctx, KatlcAgent_GetGeneration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // KatlcAgentServer is the server API for KatlcAgent service.
 // All implementations must embed UnimplementedKatlcAgentServer
 // for forward compatibility.
 type KatlcAgentServer interface {
 	GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error)
+	ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error)
+	ApplyGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error)
+	StageGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error)
 	SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error)
 	CreateWorkerJoinMaterial(context.Context, *CreateWorkerJoinMaterialRequest) (*CreateWorkerJoinMaterialResponse, error)
 	GetOperation(context.Context, *GetOperationRequest) (*OperationStatus, error)
 	WatchOperation(*WatchOperationRequest, grpc.ServerStreamingServer[OperationEvent]) error
+	ListGenerations(context.Context, *ListGenerationsRequest) (*ListGenerationsResponse, error)
+	GetGeneration(context.Context, *GetGenerationRequest) (*Generation, error)
 	mustEmbedUnimplementedKatlcAgentServer()
 }
 
@@ -126,6 +191,15 @@ type UnimplementedKatlcAgentServer struct{}
 func (UnimplementedKatlcAgentServer) GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetNodeStatus not implemented")
 }
+func (UnimplementedKatlcAgentServer) ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method ValidateConfig not implemented")
+}
+func (UnimplementedKatlcAgentServer) ApplyGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyGeneration not implemented")
+}
+func (UnimplementedKatlcAgentServer) StageGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error) {
+	return nil, status.Error(codes.Unimplemented, "method StageGeneration not implemented")
+}
 func (UnimplementedKatlcAgentServer) SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitOperation not implemented")
 }
@@ -137,6 +211,12 @@ func (UnimplementedKatlcAgentServer) GetOperation(context.Context, *GetOperation
 }
 func (UnimplementedKatlcAgentServer) WatchOperation(*WatchOperationRequest, grpc.ServerStreamingServer[OperationEvent]) error {
 	return status.Error(codes.Unimplemented, "method WatchOperation not implemented")
+}
+func (UnimplementedKatlcAgentServer) ListGenerations(context.Context, *ListGenerationsRequest) (*ListGenerationsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListGenerations not implemented")
+}
+func (UnimplementedKatlcAgentServer) GetGeneration(context.Context, *GetGenerationRequest) (*Generation, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetGeneration not implemented")
 }
 func (UnimplementedKatlcAgentServer) mustEmbedUnimplementedKatlcAgentServer() {}
 func (UnimplementedKatlcAgentServer) testEmbeddedByValue()                    {}
@@ -173,6 +253,60 @@ func _KatlcAgent_GetNodeStatus_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(KatlcAgentServer).GetNodeStatus(ctx, req.(*GetNodeStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KatlcAgent_ValidateConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).ValidateConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_ValidateConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).ValidateConfig(ctx, req.(*ValidateConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KatlcAgent_ApplyGeneration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerationApplyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).ApplyGeneration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_ApplyGeneration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).ApplyGeneration(ctx, req.(*GenerationApplyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KatlcAgent_StageGeneration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerationApplyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).StageGeneration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_StageGeneration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).StageGeneration(ctx, req.(*GenerationApplyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -242,6 +376,42 @@ func _KatlcAgent_WatchOperation_Handler(srv interface{}, stream grpc.ServerStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type KatlcAgent_WatchOperationServer = grpc.ServerStreamingServer[OperationEvent]
 
+func _KatlcAgent_ListGenerations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListGenerationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).ListGenerations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_ListGenerations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).ListGenerations(ctx, req.(*ListGenerationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KatlcAgent_GetGeneration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetGenerationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).GetGeneration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_GetGeneration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).GetGeneration(ctx, req.(*GetGenerationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // KatlcAgent_ServiceDesc is the grpc.ServiceDesc for KatlcAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -254,6 +424,18 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _KatlcAgent_GetNodeStatus_Handler,
 		},
 		{
+			MethodName: "ValidateConfig",
+			Handler:    _KatlcAgent_ValidateConfig_Handler,
+		},
+		{
+			MethodName: "ApplyGeneration",
+			Handler:    _KatlcAgent_ApplyGeneration_Handler,
+		},
+		{
+			MethodName: "StageGeneration",
+			Handler:    _KatlcAgent_StageGeneration_Handler,
+		},
+		{
 			MethodName: "SubmitOperation",
 			Handler:    _KatlcAgent_SubmitOperation_Handler,
 		},
@@ -264,6 +446,14 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetOperation",
 			Handler:    _KatlcAgent_GetOperation_Handler,
+		},
+		{
+			MethodName: "ListGenerations",
+			Handler:    _KatlcAgent_ListGenerations_Handler,
+		},
+		{
+			MethodName: "GetGeneration",
+			Handler:    _KatlcAgent_GetGeneration_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

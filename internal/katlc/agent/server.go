@@ -42,6 +42,8 @@ const (
 var bootstrapOperationKinds = []string{
 	"bootstrap-init",
 	"bootstrap-join-worker",
+	"generation-apply",
+	"generation-stage",
 }
 
 type Dispatcher interface {
@@ -229,6 +231,7 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	}
 	now := s.clock()
 	if req.DryRun {
+		candidateID := requestCandidateGenerationID(req)
 		return operation.OperationRecord{}, &agentapi.OperationAccepted{
 			OperationKind: req.OperationKind,
 			RequestDigest: digest,
@@ -236,8 +239,8 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 			InitialStatus: &agentapi.OperationStatus{
 				OperationKind:          req.OperationKind,
 				RequestDigest:          digest,
-				CandidateGenerationId:  req.GetBootstrap().GetCandidateGenerationId(),
-				ActivationMode:         operation.ActivationModeLive,
+				CandidateGenerationId:  candidateID,
+				ActivationMode:         requestActivationMode(req),
 				ActivationState:        operation.ActivationStatePending,
 				GenerationCommitState:  operation.GenerationCommitCandidate,
 				PostKubeadmHealthState: operation.PostKubeadmHealthNotRun,
@@ -251,6 +254,9 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	id, err := s.operationID(req.OperationKind, now)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "generate operation id: %v", err)
+	}
+	if req.GetConfigApply() != nil {
+		return s.acceptConfigApplyOperation(req, digest, id, locks, now)
 	}
 	bootstrapRequest := bootstrapRequestFromProto(req.GetBootstrap())
 	candidateID := strings.TrimSpace(bootstrapRequest.CandidateGenerationID)
@@ -430,11 +436,27 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if strings.TrimSpace(req.Actor) == "" {
 		return status.Error(codes.InvalidArgument, "actor is required")
 	}
-	if err := validateBootstrapRequest(req.OperationKind, req.GetBootstrap()); err != nil {
-		return status.Errorf(codes.InvalidArgument, "bootstrap request: %v", err)
+	bodyCount := 0
+	if req.GetBootstrap() != nil {
+		bodyCount++
 	}
-	if err := s.validateJoinMaterial(req.OperationKind, req.GetBootstrap()); err != nil {
-		return err
+	if req.GetConfigApply() != nil {
+		bodyCount++
+	}
+	if bodyCount != 1 {
+		return status.Error(codes.InvalidArgument, "exactly one operation request body is required")
+	}
+	if req.GetConfigApply() != nil {
+		if err := validateConfigApplyRequest(req.OperationKind, req.GetConfigApply()); err != nil {
+			return status.Errorf(codes.InvalidArgument, "config apply request: %v", err)
+		}
+	} else {
+		if err := validateBootstrapRequest(req.OperationKind, req.GetBootstrap()); err != nil {
+			return status.Errorf(codes.InvalidArgument, "bootstrap request: %v", err)
+		}
+		if err := s.validateJoinMaterial(req.OperationKind, req.GetBootstrap()); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(req.ExpectedCurrentGenerationId) != "" {
 		if err := cleanPublicID("expectedCurrentGenerationID", req.ExpectedCurrentGenerationId); err != nil {
@@ -766,6 +788,7 @@ func operationStatus(record operation.OperationRecord, includeDiagnostics bool) 
 		CompletedPhases:         append([]string(nil), record.CompletedPhases...),
 		Terminal:                record.Terminal,
 		Result:                  record.Result,
+		PreviousGenerationId:    record.PreviousGenerationID,
 		CandidateGenerationId:   record.CandidateGenerationID,
 		ExternalMutationStarted: record.ExternalMutationStarted,
 		MutationScopes:          append([]string(nil), record.MutationScopes...),
@@ -782,6 +805,8 @@ func operationStatus(record operation.OperationRecord, includeDiagnostics bool) 
 		GenerationCommitState:   record.GenerationCommitState,
 		PostKubeadmHealthState:  record.PostKubeadmHealthState,
 		BootHealthPending:       record.BootHealthPending,
+		ConfigApplyPhase:        record.ConfigApplyPhase,
+		ChangedDomains:          append([]string(nil), record.ChangedDomains...),
 	}
 }
 
@@ -811,6 +836,8 @@ func resourceLocks(kind string) []string {
 	switch kind {
 	case "bootstrap-init", "bootstrap-join-worker":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
+	case "generation-apply", "generation-stage":
+		return []string{"generation-state.lock", "config-apply.lock"}
 	default:
 		return nil
 	}
@@ -820,6 +847,8 @@ func operationScope(kind string) string {
 	switch kind {
 	case "bootstrap-init", "bootstrap-join-worker":
 		return "kubeadm-state"
+	case "generation-apply", "generation-stage":
+		return "host-generation"
 	default:
 		return "host-generation"
 	}

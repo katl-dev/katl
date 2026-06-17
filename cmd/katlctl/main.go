@@ -15,8 +15,14 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/operation"
+	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -29,6 +35,7 @@ var (
 var runBootstrap = cluster.Run
 var runAgentBootstrap = cluster.RunAgentBootstrap
 var dialVMTestAgent = vmtest.DialAgent
+var dialKatlcAgent = dialKatlcAgentTCP
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -51,8 +58,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 2 && args[0] == "config" && args[1] == "path" {
 		return runConfigPath(args[2:], stdout, stderr)
 	}
+	if len(args) >= 3 && args[0] == "config" && args[1] == "apply" && args[2] == "validate" {
+		return runConfigApplyValidate(ctx, args[3:], stdout, stderr)
+	}
+	if len(args) >= 2 && args[0] == "config" && args[1] == "apply" && (len(args) == 2 || args[2] != "status") {
+		return runConfigApply(ctx, args[2:], stdout, stderr)
+	}
 	if len(args) >= 3 && args[0] == "config" && args[1] == "apply" && args[2] == "status" {
-		return runConfigApplyStatus(args[3:], stdout, stderr)
+		return runConfigApplyStatus(ctx, args[3:], stdout, stderr)
 	}
 	return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
 }
@@ -88,11 +101,114 @@ func workstationConfigPath() (string, error) {
 	return filepath.Join(dir, "katl", "katlctl.yaml"), nil
 }
 
-func runConfigApplyStatus(args []string, stdout, stderr io.Writer) error {
+func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlctl config apply", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	endpoint := flags.String("endpoint", "", "katlc agent TCP endpoint host:port")
+	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
+	configPath := flags.String("file", "", "Katl node configuration YAML")
+	mode := flags.String("mode", generation.ApplyModeNextBoot, "apply mode: live or next-boot")
+	candidateGeneration := flags.String("candidate-generation", "", "candidate generation id")
+	clientRequestID := flags.String("client-request-id", "", "idempotency key for this apply request")
+	actor := flags.String("actor", "katlctl config apply", "operation actor")
+	plan := flags.Bool("plan", false, "validate and plan without accepting an operation")
+	output := flags.String("output", "json", "output format: json")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *output != "json" {
+		return fmt.Errorf("--output = %q, want json", *output)
+	}
+	if strings.TrimSpace(*endpoint) == "" {
+		return fmt.Errorf("--endpoint is required")
+	}
+	if strings.TrimSpace(*configPath) == "" {
+		return fmt.Errorf("--file is required")
+	}
+	if strings.TrimSpace(*clientRequestID) == "" {
+		return fmt.Errorf("--client-request-id is required")
+	}
+	configYAML, err := os.ReadFile(*configPath)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+	token, err := readAgentToken(*agentTokenFile)
+	if err != nil {
+		return err
+	}
+	conn, err := dialKatlcAgent(ctx, *endpoint, token)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if *plan {
+		if strings.TrimSpace(*candidateGeneration) == "" {
+			return fmt.Errorf("--candidate-generation is required with --plan")
+		}
+		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
+			ApiVersion:            operation.APIVersion,
+			Kind:                  "ValidateConfigRequest",
+			ClientRequestId:       *clientRequestID,
+			Actor:                 *actor,
+			ApplyMode:             *mode,
+			CandidateGenerationId: *candidateGeneration,
+			ConfigYaml:            string(configYAML),
+		})
+		if err != nil {
+			return err
+		}
+		data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("marshal validation result: %w", err)
+		}
+		_, err = stdout.Write(append(data, '\n'))
+		return err
+	}
+	req := &agentapi.GenerationApplyRequest{
+		ApiVersion:            operation.APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       *clientRequestID,
+		Actor:                 *actor,
+		CandidateGenerationId: *candidateGeneration,
+		ConfigYaml:            string(configYAML),
+	}
+	var accepted *agentapi.OperationAccepted
+	switch strings.TrimSpace(*mode) {
+	case generation.ApplyModeLive:
+		accepted, err = conn.Client.ApplyGeneration(ctx, req)
+	case generation.ApplyModeNextBoot:
+		accepted, err = conn.Client.StageGeneration(ctx, req)
+	default:
+		return fmt.Errorf("--mode must be %q or %q", generation.ApplyModeLive, generation.ApplyModeNextBoot)
+	}
+	if err != nil {
+		return err
+	}
+	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(accepted)
+	if err != nil {
+		return fmt.Errorf("marshal operation accepted: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+func runConfigApplyValidate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	planArgs := append([]string{"--plan"}, args...)
+	return runConfigApply(ctx, planArgs, stdout, stderr)
+}
+
+func runConfigApplyStatus(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("katlctl config apply status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
 	root := flags.String("root", "/", "runtime root to inspect")
+	endpoint := flags.String("endpoint", "", "katlc agent TCP endpoint host:port")
+	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
+	generationID := flags.String("generation", "", "generation id to query from katlc agent")
 	activeGeneration := flags.String("active-generation", "", "active generation id")
 	nextBootGeneration := flags.String("next-boot-generation", "", "next boot generation id")
 	output := flags.String("output", "json", "output format: json")
@@ -104,6 +220,33 @@ func runConfigApplyStatus(args []string, stdout, stderr io.Writer) error {
 	}
 	if *output != "json" {
 		return fmt.Errorf("--output = %q, want json", *output)
+	}
+	if strings.TrimSpace(*endpoint) != "" {
+		if strings.TrimSpace(*generationID) == "" {
+			return fmt.Errorf("--generation is required with --endpoint")
+		}
+		token, err := readAgentToken(*agentTokenFile)
+		if err != nil {
+			return err
+		}
+		conn, err := dialKatlcAgent(ctx, *endpoint, token)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		generation, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{
+			GenerationId:       *generationID,
+			IncludeConfigApply: true,
+		})
+		if err != nil {
+			return err
+		}
+		data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(generation)
+		if err != nil {
+			return fmt.Errorf("marshal generation status: %w", err)
+		}
+		_, err = stdout.Write(append(data, '\n'))
+		return err
 	}
 	report, err := loadConfigApplyReport(*root, *activeGeneration, *nextBootGeneration)
 	if err != nil {
@@ -356,6 +499,34 @@ func readAgentToken(path string) (string, error) {
 		return "", fmt.Errorf("agent token file is empty: %s", path)
 	}
 	return token, nil
+}
+
+type katlcAgentConnection struct {
+	Client agentapi.KatlcAgentClient
+	Close  func() error
+}
+
+func dialKatlcAgentTCP(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return katlcAgentConnection{}, fmt.Errorf("katlc agent endpoint is required")
+	}
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+	if strings.TrimSpace(token) != "" {
+		opts = append(opts, grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			return invoker(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+strings.TrimSpace(token)), method, req, reply, cc, opts...)
+		}))
+	}
+	conn, err := grpc.DialContext(ctx, endpoint, opts...)
+	if err != nil {
+		return katlcAgentConnection{}, err
+	}
+	return katlcAgentConnection{
+		Client: agentapi.NewKatlcAgentClient(conn),
+		Close:  conn.Close,
+	}, nil
 }
 
 func printBootstrapResult(stdout io.Writer, result cluster.Result) {

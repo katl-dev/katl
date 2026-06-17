@@ -17,8 +17,10 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
 	"github.com/zariel/katl/internal/installer/generation"
+	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
+	"google.golang.org/grpc"
 )
 
 func TestVersion(t *testing.T) {
@@ -420,6 +422,130 @@ func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 	}
 }
 
+func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeKatlcAgentClient{
+		stageAccepted: &agentapi.OperationAccepted{
+			OperationId:   "generation-stage-01",
+			OperationKind: "generation-stage",
+			RequestDigest: strings.Repeat("a", 64),
+		},
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" || token != "" {
+			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+		}
+		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "apply",
+		"--endpoint", "node-a.example.test:9443",
+		"--file", configPath,
+		"--mode", generation.ApplyModeNextBoot,
+		"--candidate-generation", "generation-1",
+		"--client-request-id", "req-stage",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if fake.stageRequest == nil || fake.stageRequest.CandidateGenerationId != "generation-1" || fake.stageRequest.ClientRequestId != "req-stage" {
+		t.Fatalf("stage request = %+v", fake.stageRequest)
+	}
+	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-stage-01"`) {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeKatlcAgentClient{
+		validateResult: &agentapi.ConfigValidationResult{
+			Accepted:              true,
+			RequestDigest:         strings.Repeat("c", 64),
+			CandidateGenerationId: "generation-plan",
+			ChangedDomains:        []string{"networkd"},
+		},
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
+		}
+		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "apply", "validate",
+		"--endpoint", "node-a.example.test:9443",
+		"--file", configPath,
+		"--mode", generation.ApplyModeNextBoot,
+		"--candidate-generation", "generation-plan",
+		"--client-request-id", "req-plan",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if fake.validateRequest == nil || fake.validateRequest.CandidateGenerationId != "generation-plan" || fake.validateRequest.ClientRequestId != "req-plan" || fake.validateRequest.ApplyMode != generation.ApplyModeNextBoot {
+		t.Fatalf("validate request = %+v", fake.validateRequest)
+	}
+	if fake.stageRequest != nil || fake.applyRequest != nil {
+		t.Fatalf("mutation request was sent: stage=%+v apply=%+v", fake.stageRequest, fake.applyRequest)
+	}
+	if !strings.Contains(stdout.String(), `"accepted": true`) || !strings.Contains(stdout.String(), `"networkd"`) {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+func TestConfigApplyStatusQueriesGenerationFromAgent(t *testing.T) {
+	fake := &fakeKatlcAgentClient{
+		generation: &agentapi.Generation{
+			GenerationId: "generation-1",
+			ConfigApply: &agentapi.ConfigApplyStatus{
+				Phase:              generation.ConfigApplyPhaseNextBoot,
+				AcceptedApplyMode:  generation.ApplyModeNextBoot,
+				ChangedDomains:     []string{"networkd"},
+				RequestedApplyMode: generation.ApplyModeNextBoot,
+			},
+		},
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(ctx context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" {
+			t.Fatalf("dial endpoint=%q", endpoint)
+		}
+		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "apply", "status",
+		"--endpoint", "node-a.example.test:9443",
+		"--generation", "generation-1",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if fake.generationRequest == nil || fake.generationRequest.GenerationId != "generation-1" || !fake.generationRequest.IncludeConfigApply {
+		t.Fatalf("generation request = %+v", fake.generationRequest)
+	}
+	if !strings.Contains(stdout.String(), `"generationId"`) || !strings.Contains(stdout.String(), `"generation-1"`) || !strings.Contains(stdout.String(), `"phase"`) || !strings.Contains(stdout.String(), `"next-boot"`) {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
 func TestConfigApplyStatusReportsFailureRollbackAndKubeadmRedacted(t *testing.T) {
 	root := t.TempDir()
 	secret := "abcdef.0123456789abcdef"
@@ -497,6 +623,60 @@ type configApplyFixture struct {
 	FailureReason      string
 	RollbackTarget     string
 	Kubeadm            generation.KubeadmActionRequired
+}
+
+type fakeKatlcAgentClient struct {
+	stageAccepted     *agentapi.OperationAccepted
+	stageRequest      *agentapi.GenerationApplyRequest
+	applyRequest      *agentapi.GenerationApplyRequest
+	validateResult    *agentapi.ConfigValidationResult
+	validateRequest   *agentapi.ValidateConfigRequest
+	generation        *agentapi.Generation
+	generationRequest *agentapi.GetGenerationRequest
+}
+
+func (c *fakeKatlcAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error) {
+	return nil, nil
+}
+
+func (c *fakeKatlcAgentClient) ValidateConfig(_ context.Context, req *agentapi.ValidateConfigRequest, _ ...grpc.CallOption) (*agentapi.ConfigValidationResult, error) {
+	c.validateRequest = req
+	return c.validateResult, nil
+}
+
+func (c *fakeKatlcAgentClient) ApplyGeneration(_ context.Context, req *agentapi.GenerationApplyRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
+	c.applyRequest = req
+	return c.stageAccepted, nil
+}
+
+func (c *fakeKatlcAgentClient) StageGeneration(_ context.Context, req *agentapi.GenerationApplyRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
+	c.stageRequest = req
+	return c.stageAccepted, nil
+}
+
+func (c *fakeKatlcAgentClient) SubmitOperation(context.Context, *agentapi.SubmitOperationRequest, ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
+	return nil, nil
+}
+
+func (c *fakeKatlcAgentClient) CreateWorkerJoinMaterial(context.Context, *agentapi.CreateWorkerJoinMaterialRequest, ...grpc.CallOption) (*agentapi.CreateWorkerJoinMaterialResponse, error) {
+	return nil, nil
+}
+
+func (c *fakeKatlcAgentClient) GetOperation(context.Context, *agentapi.GetOperationRequest, ...grpc.CallOption) (*agentapi.OperationStatus, error) {
+	return nil, nil
+}
+
+func (c *fakeKatlcAgentClient) WatchOperation(context.Context, *agentapi.WatchOperationRequest, ...grpc.CallOption) (agentapi.KatlcAgent_WatchOperationClient, error) {
+	return nil, nil
+}
+
+func (c *fakeKatlcAgentClient) ListGenerations(context.Context, *agentapi.ListGenerationsRequest, ...grpc.CallOption) (*agentapi.ListGenerationsResponse, error) {
+	return nil, nil
+}
+
+func (c *fakeKatlcAgentClient) GetGeneration(_ context.Context, req *agentapi.GetGenerationRequest, _ ...grpc.CallOption) (*agentapi.Generation, error) {
+	c.generationRequest = req
+	return c.generation, nil
 }
 
 func writeConfigApplyFixture(t *testing.T, root string, fixture configApplyFixture) {

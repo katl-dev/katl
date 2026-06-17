@@ -19,6 +19,7 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/installer/bootstrapplan"
 	"github.com/zariel/katl/internal/installer/bootstrapruntime"
+	"github.com/zariel/katl/internal/installer/configapply"
 	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
@@ -45,15 +46,17 @@ type ToolRunner func(context.Context, []string, func(int)) ToolResult
 type BootRootMounter func(context.Context, string) error
 
 type Executor struct {
-	Root          string
-	Store         operation.Store
-	AgentStartID  string
-	Now           func() time.Time
-	RunTool       ToolRunner
-	RunReadiness  ToolRunner
-	RunPostHealth ToolRunner
-	MountBootRoot BootRootMounter
-	Async         bool
+	Root                 string
+	Store                operation.Store
+	AgentStartID         string
+	Now                  func() time.Time
+	RunTool              ToolRunner
+	RunReadiness         ToolRunner
+	RunPostHealth        ToolRunner
+	MountBootRoot        BootRootMounter
+	ConfigApplyRunner    configapply.CommandRunner
+	ConfigApplyActivator configapply.ConfextActivator
+	Async                bool
 }
 
 type toolPlan = operation.ExecutorPlan
@@ -98,6 +101,9 @@ func (e *Executor) Dispatch(ctx context.Context, record operation.OperationRecor
 }
 
 func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord) error {
+	if record.ConfigApplyRequest != nil {
+		return e.executeConfigApply(ctx, record)
+	}
 	plan, err := executorPlan(record)
 	if err != nil {
 		_, markErr := e.failRecord(record.OperationID, "executor-plan-refused", "executor-plan-refused", "agent executor could not read operation tool plan", err)
