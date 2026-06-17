@@ -1,14 +1,21 @@
 package vmtest
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/zariel/katl/internal/installer"
+	installmanifest "github.com/zariel/katl/internal/installer/manifest"
+	"gopkg.in/yaml.v3"
 )
 
 type FirstInstallWorldRun struct {
@@ -150,6 +157,10 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		ManifestPath:    installManifest.Path,
 		TargetDisk:      target,
 	}
+	if err := verifyGenericInstallerArtifactsOmitExternalConfig(run.Config.Installer, run.Config.ManifestPath, run.Config.Runtime.NodeMetadata); err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
 	switch mode {
 	case FirstInstallWorldPreseed:
 		run.Config.PreseedManifest = true
@@ -161,6 +172,593 @@ func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 		return run, err
 	}
 	return run, nil
+}
+
+func verifyGenericInstallerArtifactsOmitExternalConfig(installer InstallerBootConfig, manifestPath, nodeMetadataPath string) error {
+	values, err := externalConfigLiterals(manifestPath, nodeMetadataPath)
+	if err != nil {
+		return err
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	for _, path := range genericInstallerArtifactPaths(installer, manifestPath) {
+		if err := scanGenericInstallerArtifact(path, values); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func scanGenericInstallerArtifact(path string, values []string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("scan generic installer artifact %s: %w", path, err)
+	}
+	value, ok, err := scanReaderForExternalConfig(file, values)
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("scan generic installer artifact %s: %w", path, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("scan generic installer artifact %s: %w", path, closeErr)
+	}
+	if ok {
+		return fmt.Errorf("generic installer artifact %s embeds external node config value %q", path, value)
+	}
+	magic, err := fileMagic(path)
+	if err != nil {
+		return err
+	}
+	if err := scanDecodedPayloads("generic installer artifact "+path, path, magic, values); err != nil {
+		return err
+	}
+	if isSquashFS(magic) {
+		if err := scanSquashFSForExternalConfig(path, values); err != nil {
+			return err
+		}
+	}
+	if isPECOFF(magic) {
+		if err := scanPECOFFSectionsForExternalConfig(path, values); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func fileMagic(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	magic := make([]byte, 6)
+	n, err := io.ReadFull(file, magic)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return magic[:n], nil
+}
+
+func scanReaderForExternalConfig(reader io.Reader, values []string) (string, bool, error) {
+	overlap := maxExternalConfigLiteralLen(values) - 1
+	if overlap < 0 {
+		overlap = 0
+	}
+	tail := []byte{}
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			chunk := append(append([]byte{}, tail...), buf[:n]...)
+			if value, ok := scanBytesForExternalConfig(chunk, values); ok {
+				return value, true, nil
+			}
+			if overlap > 0 && len(chunk) > overlap {
+				tail = append(tail[:0], chunk[len(chunk)-overlap:]...)
+			} else {
+				tail = append(tail[:0], chunk...)
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+	}
+}
+
+func maxExternalConfigLiteralLen(values []string) int {
+	maxLen := 0
+	for _, value := range values {
+		if len(value) > maxLen {
+			maxLen = len(value)
+		}
+	}
+	return maxLen
+}
+
+func scanBytesForExternalConfig(data []byte, values []string) (string, bool) {
+	for _, value := range values {
+		if bytes.Contains(data, []byte(value)) {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func isGzip(data []byte) bool {
+	return len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b
+}
+
+func isXZ(data []byte) bool {
+	return len(data) >= 6 && bytes.Equal(data[:6], []byte{0xfd, '7', 'z', 'X', 'Z', 0x00})
+}
+
+func isZstd(data []byte) bool {
+	return len(data) >= 4 && bytes.Equal(data[:4], []byte{0x28, 0xb5, 0x2f, 0xfd})
+}
+
+func scanDecodedPayloads(label, path string, magic []byte, values []string) error {
+	switch {
+	case isGzip(magic):
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		reader, err := gzip.NewReader(file)
+		if err != nil {
+			_ = file.Close()
+			return fmt.Errorf("decompress %s: %w", label, err)
+		}
+		value, ok, scanErr := scanReaderForExternalConfig(reader, values)
+		closeErr := reader.Close()
+		fileErr := file.Close()
+		if scanErr != nil {
+			return fmt.Errorf("decompress %s: %w", label, scanErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("decompress %s: %w", label, closeErr)
+		}
+		if fileErr != nil {
+			return fmt.Errorf("decompress %s: %w", label, fileErr)
+		}
+		if ok {
+			return fmt.Errorf("%s embeds external node config value %q", label, value)
+		}
+	case isXZ(magic):
+		return scanCommandForExternalConfig(exec.Command("xz", "-dc", path), label, values)
+	case isZstd(magic):
+		return scanCommandForExternalConfig(exec.Command("zstd", "-dc", path), label, values)
+	default:
+		return nil
+	}
+	return nil
+}
+
+func isSquashFS(data []byte) bool {
+	return len(data) >= 4 && string(data[:4]) == "hsqs"
+}
+
+func isPECOFF(data []byte) bool {
+	return len(data) >= 2 && string(data[:2]) == "MZ"
+}
+
+func scanPECOFFSectionsForExternalConfig(path string, values []string) error {
+	sections, err := peSectionNames(path)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "katl-uki-sections-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	for _, section := range sections {
+		if !scanPESection(section) {
+			continue
+		}
+		out := filepath.Join(tmp, strings.TrimPrefix(section, "."))
+		if err := exec.Command("objcopy", "--dump-section", section+"="+out, path, os.DevNull).Run(); err != nil {
+			return fmt.Errorf("dump generic installer artifact %s section %s: %w", path, section, err)
+		}
+		if err := scanGenericInstallerArtifact(out, values); err != nil {
+			return fmt.Errorf("scan generic installer artifact %s section %s: %w", path, section, err)
+		}
+	}
+	return nil
+}
+
+func peSectionNames(path string) ([]string, error) {
+	output, err := exec.Command("objdump", "-h", path).Output()
+	if err != nil {
+		return nil, fmt.Errorf("list generic installer artifact %s sections: %w", path, err)
+	}
+	var sections []string
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if _, err := fmt.Sscanf(fields[0], "%d", new(int)); err != nil {
+			continue
+		}
+		sections = append(sections, fields[1])
+	}
+	return sections, nil
+}
+
+func scanPESection(section string) bool {
+	switch section {
+	case ".cmdline", ".initrd", ".linux", ".osrel", ".uname", ".sbat":
+		return true
+	default:
+		return false
+	}
+}
+
+func scanSquashFSForExternalConfig(path string, values []string) error {
+	files, err := squashFSFiles(path)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if err := scanCommandForExternalConfig(exec.Command("unsquashfs", "-cat", path, file), fmt.Sprintf("generic installer artifact %s member %s", path, file), values); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func scanCommandForExternalConfig(cmd *exec.Cmd, label string, values []string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	value, ok, scanErr := scanReaderForExternalConfig(stdout, values)
+	if ok {
+		cancel()
+		_ = cmd.Wait()
+		return fmt.Errorf("%s embeds external node config value %q", label, value)
+	}
+	if scanErr != nil {
+		cancel()
+		_ = cmd.Wait()
+		return scanErr
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("scan %s: %w", label, err)
+	}
+	return nil
+}
+
+func squashFSFiles(path string) ([]string, error) {
+	output, err := exec.Command("unsquashfs", "-llc", path).Output()
+	if err != nil {
+		return nil, fmt.Errorf("list generic installer artifact %s: %w", path, err)
+	}
+	var files []string
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], "-") {
+			continue
+		}
+		name := fields[len(fields)-1]
+		name = strings.TrimPrefix(name, "squashfs-root/")
+		if name != "" && name != "squashfs-root" {
+			files = append(files, name)
+		}
+	}
+	return files, nil
+}
+
+func genericInstallerArtifactPaths(installer InstallerBootConfig, manifestPath string) []string {
+	var paths []string
+	for _, path := range []string{installer.InstallerUKI, installer.InstallerKernel, installer.InstallerInitrd} {
+		if strings.TrimSpace(path) != "" {
+			paths = append(paths, path)
+		}
+	}
+	if imagePath, ok := stagedKatlOSImagePath(manifestPath); ok {
+		paths = append(paths, imagePath)
+	}
+	return paths
+}
+
+func stagedKatlOSImagePath(manifestPath string) (string, bool) {
+	file, err := os.Open(manifestPath)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	manifest, err := installmanifest.Decode(file)
+	if err != nil {
+		return "", false
+	}
+	localRef := strings.TrimSpace(manifest.KatlosImage.LocalRef)
+	if localRef == "" {
+		return "", false
+	}
+	return filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(localRef)), true
+}
+
+func externalConfigLiterals(manifestPath, nodeMetadataPath string) ([]string, error) {
+	values := make(map[string]bool)
+	file, err := os.Open(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("open install manifest for generic artifact scan: %w", err)
+	}
+	manifest, err := installmanifest.Decode(file)
+	closeErr := file.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+
+	addHostnameLiterals(values, manifest.Node.Identity.Hostname)
+	addSystemRoleLiterals(values, manifest.Node.SystemRole)
+	for _, key := range manifest.Node.Identity.SSH.AuthorizedKeys {
+		addExternalConfigLiteral(values, key)
+		fields := strings.Fields(key)
+		if len(fields) > 1 {
+			addExternalConfigLiteral(values, fields[1])
+		}
+	}
+	for _, file := range manifest.Node.Networkd.Files {
+		addExternalConfigLiteral(values, file.Name)
+		addExternalConfigContentLiterals(values, file.Content)
+	}
+	addExternalConfigLiteral(values, manifest.Install.TargetDisk.ByID)
+	addExternalConfigLiteral(values, manifest.Install.TargetDisk.WWN)
+	addExternalConfigLiteral(values, manifest.Install.TargetDisk.Serial)
+	for _, disk := range manifest.Install.ExtraDisks {
+		addExternalConfigLiteral(values, disk.Name)
+		addExternalConfigLiteral(values, disk.Selector.ByID)
+		addExternalConfigLiteral(values, disk.Selector.WWN)
+		addExternalConfigLiteral(values, disk.Selector.Serial)
+		addExternalConfigLiteral(values, disk.Mount.Path)
+	}
+	if manifest.Node.Bootstrap != nil {
+		bootstrap := manifest.Node.Bootstrap
+		for _, value := range []string{
+			bootstrap.ClusterName,
+			bootstrap.InventoryNodeName,
+			bootstrap.NodeAddress,
+			bootstrap.ControlPlaneEndpoint,
+			bootstrap.BootstrapProfileRef,
+			bootstrap.ProfileResolvedID,
+			bootstrap.KubernetesCatalogRef,
+			bootstrap.Access.User,
+			bootstrap.Access.CredentialRef,
+		} {
+			addExternalConfigLiteral(values, value)
+		}
+		for key, value := range bootstrap.Labels {
+			addExternalConfigLiteral(values, key)
+			addExternalConfigLiteral(values, value)
+		}
+		for _, taint := range bootstrap.Taints {
+			addExternalConfigLiteral(values, taint.Key)
+			addExternalConfigLiteral(values, taint.Value)
+		}
+	}
+	if err := addKubeadmConfigLiterals(values, filepath.Dir(manifestPath)); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(nodeMetadataPath) != "" {
+		if err := addNodeMetadataLiterals(values, nodeMetadataPath); err != nil {
+			return nil, err
+		}
+	}
+
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	return out, nil
+}
+
+func addKubeadmConfigLiterals(values map[string]bool, manifestDir string) error {
+	root := filepath.Join(manifestDir, installer.KubeadmConfigFilesDir)
+	info, err := os.Stat(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := addKubeadmYAMLLiterals(values, data); err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			key, value, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			key = strings.TrimSpace(key)
+			switch key {
+			case "name", "clusterName", "podSubnet", "serviceSubnet", "controlPlaneEndpoint", "apiServerEndpoint", "token", "certificateKey":
+				addExternalConfigLiteral(values, value)
+			}
+			if strings.Contains(strings.ToLower(key), "token") ||
+				strings.Contains(strings.ToLower(key), "secret") ||
+				strings.Contains(strings.ToLower(key), "hash") ||
+				strings.Contains(strings.ToLower(key), "sha256") ||
+				strings.Contains(strings.ToLower(key), "key") {
+				cleanKey := strings.TrimPrefix(strings.TrimSpace(key), "- ")
+				value = strings.TrimSpace(value)
+				addExternalConfigLiteral(values, value)
+				if cleanKey == "sha256" && value != "" {
+					addExternalConfigLiteral(values, cleanKey+":"+value)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func addKubeadmYAMLLiterals(values map[string]bool, data []byte) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var node yaml.Node
+		err := decoder.Decode(&node)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		addKubeadmYAMLLiteral(values, &node, false)
+	}
+}
+
+func addKubeadmYAMLLiteral(values map[string]bool, node *yaml.Node, collect bool) {
+	if node == nil {
+		return
+	}
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if collect && node.Tag == "!!str" {
+			addExternalConfigLiteral(values, node.Value)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := ""
+			if node.Content[i] != nil {
+				key = node.Content[i].Value
+			}
+			keyCollect := kubeadmLiteralKey(key)
+			addYAMLKeyContextLiterals(values, key, node.Content[i+1])
+			addKubeadmYAMLLiteral(values, node.Content[i+1], collect || keyCollect)
+		}
+	default:
+		for _, child := range node.Content {
+			addKubeadmYAMLLiteral(values, child, collect)
+		}
+	}
+}
+
+func addYAMLKeyContextLiterals(values map[string]bool, key string, node *yaml.Node) {
+	if !kubeadmLiteralKey(key) || node == nil || node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return
+	}
+	key = strings.TrimSpace(key)
+	value := strings.TrimSpace(node.Value)
+	if key == "" || value == "" {
+		return
+	}
+	addExternalConfigLiteral(values, key+": "+value)
+	addExternalConfigLiteral(values, key+`: "`+value+`"`)
+}
+
+func kubeadmLiteralKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	switch key {
+	case "name", "clustername", "podsubnet", "servicesubnet", "controlplaneendpoint", "apiserverendpoint", "token", "certificatekey", "cacerthashes", "cacertificateshashes":
+		return true
+	}
+	return strings.Contains(key, "token") ||
+		strings.Contains(key, "secret") ||
+		strings.Contains(key, "hash") ||
+		strings.Contains(key, "sha256") ||
+		strings.Contains(key, "key")
+}
+
+func addNodeMetadataLiterals(values map[string]bool, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var metadata struct {
+		Identity struct {
+			Hostname string `json:"hostname"`
+		} `json:"identity"`
+		SystemRole string `json:"systemRole"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return err
+	}
+	addHostnameLiterals(values, metadata.Identity.Hostname)
+	addSystemRoleLiterals(values, metadata.SystemRole)
+	return nil
+}
+
+func addHostnameLiterals(values map[string]bool, hostname string) {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return
+	}
+	for _, value := range []string{
+		`"hostname":"` + hostname + `"`,
+		`"hostname": "` + hostname + `"`,
+		`hostname: ` + hostname,
+		`hostname: "` + hostname + `"`,
+	} {
+		addExternalConfigLiteral(values, value)
+	}
+	addExternalConfigLiteral(values, hostname)
+}
+
+func addSystemRoleLiterals(values map[string]bool, role string) {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return
+	}
+	for _, value := range []string{
+		`"systemRole":"` + role + `"`,
+		`"systemRole": "` + role + `"`,
+		`systemRole: ` + role,
+		`systemRole: "` + role + `"`,
+	} {
+		addExternalConfigLiteral(values, value)
+	}
+}
+
+func addExternalConfigContentLiterals(values map[string]bool, content string) {
+	for _, field := range strings.FieldsFunc(content, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '\t' || r == ' ' || r == ',' || r == '[' || r == ']'
+	}) {
+		_, value, hasValue := strings.Cut(field, "=")
+		if !hasValue {
+			continue
+		}
+		addExternalConfigLiteral(values, value)
+	}
+}
+
+func addExternalConfigLiteral(values map[string]bool, value string) {
+	value = strings.TrimSpace(value)
+	if len(value) < 3 {
+		return
+	}
+	switch value {
+	case "yes", "true", "false", "systemd", "control-plane", "worker", "NoSchedule", "PreferNoSchedule", "NoExecute":
+		return
+	}
+	values[value] = true
 }
 
 type mkosiArtifactIndex struct {

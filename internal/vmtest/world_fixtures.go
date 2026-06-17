@@ -160,7 +160,44 @@ func (factory NodeFixtureFactory) InstallManifest(source string) (FixtureRecord,
 	if err := factory.stageInstallManifestKubeadmDirs(source, record.Path); err != nil {
 		return FixtureRecord{}, err
 	}
+	if props, err := installManifestSidecarProperties(record.Path); err != nil {
+		return FixtureRecord{}, err
+	} else if len(props) > 0 {
+		record.Properties = props
+		if err := factory.replaceRecord(FixtureInstallManifest, record); err != nil {
+			return FixtureRecord{}, err
+		}
+	}
 	return record, nil
+}
+
+func installManifestSidecarProperties(stagedManifest string) (map[string]string, error) {
+	properties := make(map[string]string)
+	for _, input := range []struct {
+		dir string
+		key string
+	}{
+		{installer.KubeadmConfigObjectsDir, "kubeadmConfigObjectsTreeSHA256"},
+		{installer.KubeadmConfigFilesDir, "kubeadmConfigFilesTreeSHA256"},
+	} {
+		path := filepath.Join(filepath.Dir(stagedManifest), input.dir)
+		info, err := os.Stat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		if !info.IsDir() {
+			continue
+		}
+		sha, err := espTreeSHA256(path)
+		if err != nil {
+			return nil, err
+		}
+		properties[input.key] = sha
+	}
+	return properties, nil
 }
 
 func (factory NodeFixtureFactory) stageInstallManifestLocalRef(sourceManifest, stagedManifest string) error {

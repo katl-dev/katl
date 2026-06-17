@@ -1,11 +1,16 @@
 package vmtest
 
 import (
+	"bytes"
+	"compress/gzip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zariel/katl/internal/installer"
 )
 
 func firstInstallWorldRunFor(t *testing.T, name string, spec NodeSpec, useInstalledESP bool) (firstInstallWorldRun, bool) {
@@ -106,6 +111,238 @@ func TestPlanFirstInstallWorldRunGuestHandoffMode(t *testing.T) {
 	}
 }
 
+func TestPlanFirstInstallWorldRunKeepsInstallerArtifactsGeneric(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	sourceDir := t.TempDir()
+	kernel := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.vmlinuz"), "generic split installer kernel")
+	initrd := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.initrd"), "generic split installer initrd")
+	uki := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "generic local handoff installer uki")
+	runtime := writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime")
+	writeFixtureKatlOSInstallImage(t, repo)
+
+	splitInput := firstInstallWorldInput{
+		Installer:       InstallerBootConfig{InstallerKernel: kernel, InstallerInitrd: initrd},
+		RuntimeArtifact: runtime,
+		UseInstalledESP: true,
+		TargetDiskSize:  "20G",
+	}
+	cpSplit, err := planFirstInstallWorldRun(world, "split preseed cp", repo, NodeSpec{Name: "cp-generic-1", Role: ControlPlane}, splitInput, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun(cp split) error = %v", err)
+	}
+	workerSplit, err := planFirstInstallWorldRun(world, "split preseed worker", repo, NodeSpec{Name: "worker-generic-1", Role: Worker}, splitInput, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun(worker split) error = %v", err)
+	}
+	assertSameSHA256(t, cpSplit.Config.Installer.InstallerKernel, kernel)
+	assertSameSHA256(t, workerSplit.Config.Installer.InstallerKernel, kernel)
+	assertSameSHA256(t, cpSplit.Config.Installer.InstallerInitrd, initrd)
+	assertSameSHA256(t, workerSplit.Config.Installer.InstallerInitrd, initrd)
+	assertSameFixtureSHA256(t, cpSplit, workerSplit, FixtureInstallerKernel)
+	assertSameFixtureSHA256(t, cpSplit, workerSplit, FixtureInstallerInitrd)
+	if !cpSplit.Config.PreseedManifest || !workerSplit.Config.PreseedManifest {
+		t.Fatalf("split runs did not use preseed manifests: cp=%#v worker=%#v", cpSplit.Config, workerSplit.Config)
+	}
+	assertFileContains(t, cpSplit.Config.ManifestPath, `"hostname": "cp-generic-1"`)
+	assertFileContains(t, workerSplit.Config.ManifestPath, `"hostname": "worker-generic-1"`)
+	assertFileContains(t, workerSplit.Config.ManifestPath, `"systemRole": "worker"`)
+	assertDifferentSHA256(t, cpSplit.Config.ManifestPath, workerSplit.Config.ManifestPath)
+	assertDifferentFixtureSHA256(t, cpSplit, workerSplit, FixtureInstallManifest)
+	assertDifferentFixtureSHA256(t, cpSplit, workerSplit, FixtureNodeMetadata)
+	assertDifferentFixtureProperty(t, cpSplit, workerSplit, FixtureInstallManifest, "kubeadmConfigFilesTreeSHA256")
+	assertDifferentExternalTreeSHA256(t, cpSplit.Config.ManifestPath, workerSplit.Config.ManifestPath, installer.KubeadmConfigFilesDir)
+	assertSameFixtureSHA256(t, cpSplit, workerSplit, FixtureKatlOSInstallImage)
+
+	handoffInput := firstInstallWorldInput{
+		Installer:       InstallerBootConfig{InstallerUKI: uki},
+		RuntimeArtifact: runtime,
+		Mode:            firstInstallWorldGuestHandoff,
+		UseInstalledESP: true,
+		TargetDiskSize:  "20G",
+	}
+	cpHandoff, err := planFirstInstallWorldRun(world, "local handoff cp", repo, NodeSpec{Name: "cp-local-1", Role: ControlPlane}, handoffInput, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun(cp handoff) error = %v", err)
+	}
+	workerHandoff, err := planFirstInstallWorldRun(world, "local handoff worker", repo, NodeSpec{Name: "worker-local-1", Role: Worker}, handoffInput, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun(worker handoff) error = %v", err)
+	}
+	assertSameSHA256(t, cpHandoff.Config.Installer.InstallerUKI, uki)
+	assertSameSHA256(t, workerHandoff.Config.Installer.InstallerUKI, uki)
+	assertSameFixtureSHA256(t, cpHandoff, workerHandoff, FixtureInstallerUKI)
+	if !cpHandoff.Config.GuestHandoff || cpHandoff.Config.PreseedManifest ||
+		!workerHandoff.Config.GuestHandoff || workerHandoff.Config.PreseedManifest {
+		t.Fatalf("local handoff runs did not use handoff mode: cp=%#v worker=%#v", cpHandoff.Config, workerHandoff.Config)
+	}
+	assertDifferentSHA256(t, cpHandoff.Config.ManifestPath, workerHandoff.Config.ManifestPath)
+	assertDifferentFixtureSHA256(t, cpHandoff, workerHandoff, FixtureInstallManifest)
+	assertDifferentFixtureSHA256(t, cpHandoff, workerHandoff, FixtureNodeMetadata)
+	assertDifferentFixtureProperty(t, cpHandoff, workerHandoff, FixtureInstallManifest, "kubeadmConfigFilesTreeSHA256")
+	assertDifferentExternalTreeSHA256(t, cpHandoff.Config.ManifestPath, workerHandoff.Config.ManifestPath, installer.KubeadmConfigFilesDir)
+	assertSameFixtureSHA256(t, cpHandoff, workerHandoff, FixtureKatlOSInstallImage)
+	assertGenericArtifactOmitValues(t, []string{kernel, initrd, uki}, []string{
+		"cp-generic-1",
+		"worker-generic-1",
+		"cp-local-1",
+		"worker-local-1",
+		"control-plane",
+		"katl-smoke",
+		"/dev/disk/by-id/virtio-katl-root",
+		"10.244.0.0/16",
+		"10.96.0.0/12",
+	})
+
+	leakyKernel := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer-leaky.vmlinuz"), "installer image leaked cp-leaked-1")
+	_, err = planFirstInstallWorldRun(world, "split leaky cp", repo, NodeSpec{Name: "cp-leaked-1", Role: ControlPlane}, firstInstallWorldInput{
+		Installer:       InstallerBootConfig{InstallerKernel: leakyKernel, InstallerInitrd: initrd},
+		RuntimeArtifact: runtime,
+		UseInstalledESP: true,
+		TargetDiskSize:  "20G",
+	}, KVMOff)
+	if err == nil || !strings.Contains(err.Error(), "embeds external node config value") {
+		t.Fatalf("planFirstInstallWorldRun(leaky installer) error = %v, want generic artifact scan failure", err)
+	}
+
+	leakyRoleKernel := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer-role-leaky.vmlinuz"), `installer image leaked "systemRole": "control-plane"`)
+	_, err = planFirstInstallWorldRun(world, "split role leaky cp", repo, NodeSpec{Name: "cp-role-1", Role: ControlPlane}, firstInstallWorldInput{
+		Installer:       InstallerBootConfig{InstallerKernel: leakyRoleKernel, InstallerInitrd: initrd},
+		RuntimeArtifact: runtime,
+		UseInstalledESP: true,
+		TargetDiskSize:  "20G",
+	}, KVMOff)
+	if err == nil || !strings.Contains(err.Error(), `systemRole`) {
+		t.Fatalf("planFirstInstallWorldRun(role leak) error = %v, want role scan failure", err)
+	}
+}
+
+func TestExternalConfigLiteralsIncludeRolesNetworkdAndKubeadmSecrets(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := writeFixtureFile(t, filepath.Join(root, "install-manifest.json"), `{
+  "apiVersion": "install.katl.dev/v1alpha1",
+  "kind": "InstallManifest",
+  "node": {
+    "identity": {
+      "hostname": "n1",
+      "ssh": {
+        "authorizedKeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
+        ]
+      }
+    },
+  "systemRole": "control-plane",
+    "networkd": {
+      "files": [
+        {"name": "80-static.network", "content": "[Network]\nAddress=192.0.2.10/24\nGateway=192.0.2.1\nDNS=192.0.2.53\n"}
+      ]
+    }
+  },
+  "install": {
+    "allowDestructiveInstall": true,
+    "targetDisk": {"byID": "/dev/disk/by-id/virtio-static-root", "minSizeMiB": 32}
+  },
+  "katlosImage": {
+    "localRef": "katlos-install.squashfs",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sizeBytes": 11,
+    "version": "2026.06.04",
+    "architecture": "x86_64",
+    "runtimeInterface": "katl-runtime-1",
+    "role": "install"
+  }
+}`)
+	kubeadmDir := filepath.Join(root, "kubeadm")
+	writeFixtureFile(t, filepath.Join(kubeadmDir, "join.yaml"), `apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+nodeRegistration:
+  name: n1
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: 192.0.2.60:6443
+    token: abcdef.0123456789abcdef
+    caCertHashes:
+    - sha256:111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000
+controlPlane:
+  certificateKey: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+`)
+	nodeMetadata := writeFixtureFile(t, filepath.Join(root, "node.json"), `{"identity":{"hostname":"n1"},"systemRole":"control-plane"}`)
+
+	values, err := externalConfigLiterals(manifestPath, nodeMetadata)
+	if err != nil {
+		t.Fatalf("externalConfigLiterals() error = %v", err)
+	}
+	for _, want := range []string{
+		`"hostname": "n1"`,
+		"name: n1",
+		`"systemRole": "control-plane"`,
+		"192.0.2.10/24",
+		"192.0.2.1",
+		"192.0.2.53",
+		"192.0.2.60:6443",
+		"/dev/disk/by-id/virtio-static-root",
+		"abcdef.0123456789abcdef",
+		"sha256:111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	} {
+		if !stringSliceContains(values, want) {
+			t.Fatalf("external config literals missing %q from %#v", want, values)
+		}
+	}
+}
+
+func TestScanGenericInstallerArtifactChecksGzipPayload(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write([]byte("installer payload leaked cp-gzip-1")); err != nil {
+		t.Fatalf("gzip write error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("gzip close error = %v", err)
+	}
+	path := writeFixtureFile(t, filepath.Join(t.TempDir(), "initrd.img"), compressed.String())
+	err := scanGenericInstallerArtifact(path, []string{"cp-gzip-1"})
+	if err == nil || !strings.Contains(err.Error(), "cp-gzip-1") {
+		t.Fatalf("scanGenericInstallerArtifact() error = %v, want gzip payload leak", err)
+	}
+}
+
+func TestScanGenericInstallerArtifactChecksZstdPayload(t *testing.T) {
+	if _, err := exec.LookPath("zstd"); err != nil {
+		t.Skip("zstd not available")
+	}
+	cmd := exec.Command("zstd", "-q", "-c")
+	cmd.Stdin = strings.NewReader("installer payload leaked cp-zstd-1")
+	compressed, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("zstd compress error = %v", err)
+	}
+	path := writeFixtureFile(t, filepath.Join(t.TempDir(), "initrd.zst"), string(compressed))
+	err = scanGenericInstallerArtifact(path, []string{"cp-zstd-1"})
+	if err == nil || !strings.Contains(err.Error(), "cp-zstd-1") {
+		t.Fatalf("scanGenericInstallerArtifact() error = %v, want zstd payload leak", err)
+	}
+}
+
+func TestScanGenericInstallerArtifactChecksSquashFSPayload(t *testing.T) {
+	if _, err := exec.LookPath("mksquashfs"); err != nil {
+		t.Skip("mksquashfs not available")
+	}
+	if _, err := exec.LookPath("unsquashfs"); err != nil {
+		t.Skip("unsquashfs not available")
+	}
+	root := t.TempDir()
+	writeFixtureFile(t, filepath.Join(root, "etc", "katl", "leak.txt"), "installer payload leaked cp-squash-1")
+	image := filepath.Join(t.TempDir(), "katlos-install.squashfs")
+	if output, err := exec.Command("mksquashfs", root, image, "-noappend", "-quiet").CombinedOutput(); err != nil {
+		t.Fatalf("mksquashfs error = %v\n%s", err, output)
+	}
+	err := scanGenericInstallerArtifact(image, []string{"cp-squash-1"})
+	if err == nil || !strings.Contains(err.Error(), "cp-squash-1") {
+		t.Fatalf("scanGenericInstallerArtifact() error = %v, want squashfs payload leak", err)
+	}
+}
+
 func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()
@@ -188,6 +425,149 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
 		}
 	}
+}
+
+func writeFixtureKatlOSInstallImage(t *testing.T, repo string) string {
+	t.Helper()
+	mkosiDir := filepath.Join(repo, "_build", "mkosi")
+	image := writeFixtureFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos-image")
+	writeFixtureFile(t, image+".json", `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "KatlOSImageArtifact",
+  "imageRole": "install",
+  "version": "0.0.0-dev",
+  "architecture": "x86_64",
+  "runtimeInterface": "katl-runtime-1",
+  "sizeBytes": 11,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}`)
+	return image
+}
+
+func assertSameSHA256(t *testing.T, gotPath, wantPath string) {
+	t.Helper()
+	got, err := fileSHA256(gotPath)
+	if err != nil {
+		t.Fatalf("fileSHA256(%s) error = %v", gotPath, err)
+	}
+	want, err := fileSHA256(wantPath)
+	if err != nil {
+		t.Fatalf("fileSHA256(%s) error = %v", wantPath, err)
+	}
+	if got != want {
+		t.Fatalf("%s sha256 = %s, want %s from %s", gotPath, got, want, wantPath)
+	}
+}
+
+func assertGenericArtifactOmitValues(t *testing.T, paths []string, forbidden []string) {
+	t.Helper()
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", path, err)
+		}
+		for _, value := range forbidden {
+			if strings.Contains(string(data), value) {
+				t.Fatalf("%s embeds node-specific value %q", path, value)
+			}
+		}
+	}
+}
+
+func assertDifferentSHA256(t *testing.T, firstPath, secondPath string) {
+	t.Helper()
+	first, err := fileSHA256(firstPath)
+	if err != nil {
+		t.Fatalf("fileSHA256(%s) error = %v", firstPath, err)
+	}
+	second, err := fileSHA256(secondPath)
+	if err != nil {
+		t.Fatalf("fileSHA256(%s) error = %v", secondPath, err)
+	}
+	if first == second {
+		t.Fatalf("%s and %s both have sha256 %s, want different external config digests", firstPath, secondPath, first)
+	}
+}
+
+func assertSameFixtureSHA256(t *testing.T, first, second firstInstallWorldRun, kind string) {
+	t.Helper()
+	firstSHA := fixtureSHA256(t, first.Scenario.ManifestPath, first.Node.Name, kind)
+	secondSHA := fixtureSHA256(t, second.Scenario.ManifestPath, second.Node.Name, kind)
+	if firstSHA != secondSHA {
+		t.Fatalf("%s fixture sha256 changed across node configs: %s=%s %s=%s", kind, first.Node.Name, firstSHA, second.Node.Name, secondSHA)
+	}
+}
+
+func assertDifferentFixtureSHA256(t *testing.T, first, second firstInstallWorldRun, kind string) {
+	t.Helper()
+	firstSHA := fixtureSHA256(t, first.Scenario.ManifestPath, first.Node.Name, kind)
+	secondSHA := fixtureSHA256(t, second.Scenario.ManifestPath, second.Node.Name, kind)
+	if firstSHA == secondSHA {
+		t.Fatalf("%s fixture sha256 did not change across node configs: %s=%s %s=%s", kind, first.Node.Name, firstSHA, second.Node.Name, secondSHA)
+	}
+}
+
+func assertDifferentFixtureProperty(t *testing.T, first, second firstInstallWorldRun, kind, key string) {
+	t.Helper()
+	firstValue := fixtureProperty(t, first.Scenario.ManifestPath, first.Node.Name, kind, key)
+	secondValue := fixtureProperty(t, second.Scenario.ManifestPath, second.Node.Name, kind, key)
+	if firstValue == secondValue {
+		t.Fatalf("%s fixture property %s did not change across node configs: %s", kind, key, firstValue)
+	}
+}
+
+func fixtureProperty(t *testing.T, manifestPath, nodeName, kind, key string) string {
+	t.Helper()
+	manifest := readScenarioManifest(t, manifestPath)
+	for _, record := range manifest.Fixtures {
+		if record.Node == nodeName && record.Kind == kind {
+			if record.Properties == nil || record.Properties[key] == "" {
+				t.Fatalf("%s fixture for %s missing property %s: %#v", kind, nodeName, key, record)
+			}
+			return record.Properties[key]
+		}
+	}
+	t.Fatalf("%s fixture for node %s not found in %#v", kind, nodeName, manifest.Fixtures)
+	return ""
+}
+
+func assertDifferentExternalTreeSHA256(t *testing.T, firstManifest, secondManifest, rel string) {
+	t.Helper()
+	firstSHA, err := espTreeSHA256(filepath.Join(filepath.Dir(firstManifest), rel))
+	if err != nil {
+		t.Fatalf("espTreeSHA256(%s) error = %v", filepath.Join(filepath.Dir(firstManifest), rel), err)
+	}
+	secondSHA, err := espTreeSHA256(filepath.Join(filepath.Dir(secondManifest), rel))
+	if err != nil {
+		t.Fatalf("espTreeSHA256(%s) error = %v", filepath.Join(filepath.Dir(secondManifest), rel), err)
+	}
+	if firstSHA == secondSHA {
+		t.Fatalf("%s tree sha256 did not change across external configs: %s", rel, firstSHA)
+	}
+}
+
+func fixtureSHA256(t *testing.T, manifestPath, nodeName, kind string) string {
+	t.Helper()
+	manifest := readScenarioManifest(t, manifestPath)
+	for _, record := range manifest.Fixtures {
+		if record.Node == nodeName && record.Kind == kind {
+			if record.SHA256 == "" {
+				t.Fatalf("%s fixture for %s has empty sha256: %#v", kind, nodeName, record)
+			}
+			return record.SHA256
+		}
+	}
+	t.Fatalf("%s fixture for node %s not found in %#v", kind, nodeName, manifest.Fixtures)
+	return ""
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWorkerKubeadmConfigSetsNodeName(t *testing.T) {
