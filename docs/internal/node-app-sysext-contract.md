@@ -321,8 +321,8 @@ This contract does not make BIRD, API VIP advertisement, CNI installation,
 storage add-ons, GPU enablement, ingress, or arbitrary routing behavior part of
 the KatlOS base runtime.
 
-This contract does not define the reusable node extension bundle OCI manifest.
-That is tracked separately by the node extension bundle format decision.
+The reusable node extension bundle OCI/static manifest is defined in
+`docs/internal/node-extension-bundle-format.md`.
 
 This contract does not define the BIRD app, the BGP API VIP app, their typed
 input schemas, or their operation records. Those remain app-specific follow-up

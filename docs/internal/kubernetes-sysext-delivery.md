@@ -161,7 +161,10 @@ The manifest is canonical JSON for digest purposes: UTF-8, no insignificant
 transport wrapper, object keys emitted in deterministic order by Katl tooling,
 lowercase `sha256:<hex>` digests, integer byte sizes, RFC 3339 timestamps, and
 no mutable fields such as download URL freshness, latest aliases, or mirror
-preference. The digest is over those exact manifest bytes.
+preference. The digest is over those exact manifest bytes. The manifest does
+not contain its own digest or OCI distribution digest; those values are computed
+over the manifest bytes and recorded in refs, OCI descriptors, indexes,
+catalogs, cache paths, and generation metadata.
 
 The manifest schema is:
 
@@ -174,8 +177,6 @@ artifactVersion
 payloadVersion
 kubernetesMinor
 architecture
-bundleManifestDigest
-ociManifestDigest, when hosted in an OCI registry
 payloads[]
   role: systemd-sysext
   mediaType
