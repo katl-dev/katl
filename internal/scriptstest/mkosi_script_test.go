@@ -144,6 +144,14 @@ func TestMkosiCacheInputsExcludeResourcePackageLock(t *testing.T) {
 	}
 }
 
+func TestMkosiCacheInputsIncludeBuildCommit(t *testing.T) {
+	repo := repoRoot(t)
+	data := mustReadFile(t, filepath.Join(repo, "scripts", "mkosi"))
+	if !strings.Contains(string(data), "KATL_BUILD_COMMIT=%s") || !strings.Contains(string(data), "$build_commit") {
+		t.Fatalf("scripts/mkosi cache inputs do not include embedded build commit")
+	}
+}
+
 func writeFakeExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)

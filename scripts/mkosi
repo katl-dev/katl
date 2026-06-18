@@ -147,6 +147,7 @@ cache_fingerprint() {
         {
             printf 'target=%s\n' "$target"
             printf 'builder-image=%s\n' "$image"
+            printf 'KATL_BUILD_COMMIT=%s\n' "$build_commit"
             printf 'KATL_VERSION=%s\n' "${KATL_VERSION:-}"
             printf 'KATL_ARCHITECTURE=%s\n' "${KATL_ARCHITECTURE:-$(uname -m)}"
             printf 'KATL_KATLOS_IMAGE_ROLE=%s\n' "${KATL_KATLOS_IMAGE_ROLE:-install}"
