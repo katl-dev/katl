@@ -181,9 +181,9 @@ install manifest -> runtimeRoot URL + UKI URL + sysext URLs
 to:
 
 ```text
-install manifest -> KatlOS install image URL/ref/digest + Kubernetes version 1.36.1
+install manifest -> KatlOS install image URL/ref/digest + Kubernetes bundle source/ref
 KatlOS install image -> generation 0 runtime payload only
-katlctl cluster bootstrap -> katlc fetches HTTPS payload bundle and selects staged katl-kube-1.36.1.sysext
+katlctl cluster bootstrap -> katlc fetches HTTPS payload bundle and selects staged katl-kubernetes-v1.36.2-x86_64.sysext.raw
 ```
 
 ## Upgrade Image

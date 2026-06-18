@@ -163,7 +163,8 @@ target root disk selector
 destructive install authorization
 node identity inputs such as hostname and SSH public keys
 KatlOS image reference and digest
-exact Kubernetes payload version, such as 1.36.1
+exact Kubernetes payload bundle source/ref, such as a source URL plus
+  `v1.36.2@sha256:<bundle-manifest-digest>`
 extra non-root data disk requests
 ```
 
@@ -270,11 +271,12 @@ the runtime base. The Kubernetes sysext is versioned independently from the
 KatlOS runtime root. KatlOS upgrades should be able to keep the current
 Kubernetes sysext, and Kubernetes upgrades should be able to keep the current
 KatlOS root, when the selected artifacts are compatible. Day-one install records
-an exact manifest version such as `1.36.1` as cluster intent. Cluster bootstrap
-asks `katlc` to fetch the matching Kubernetes payload bundle from a user-supplied
-HTTPS source, verify its Katl custom manifest, stage the sysext locally, and
-select it for generation 1. The publication and catalog direction for producing
-exact-version Kubernetes sysext payloads is defined in
+an exact Kubernetes bundle source/ref such as
+`v1.36.2@sha256:<bundle-manifest-digest>` as cluster intent. Cluster bootstrap
+asks `katlc` to fetch the matching Kubernetes payload bundle from the
+user-supplied HTTPS source, verify its Katl custom manifest, stage the sysext
+locally, and select it for generation 1. The publication and catalog direction
+for producing exact-version Kubernetes sysext payloads is defined in
 `docs/internal/kubernetes-sysext-delivery.md`; already-bootstrapped Kubernetes
 upgrades remain separate day-2 implementation work.
 
@@ -471,7 +473,7 @@ boot/install loop works.
 The next step after that loop is still local and test-driven:
 
 ```text
-build a Kubernetes payload bundle that contains katl-kube-1.36.1.sysext
+build a Kubernetes payload bundle that contains katl-kubernetes-v1.36.2-x86_64.sysext.raw
 boot generation 0
 run katlctl cluster bootstrap
 ask katlc to fetch, verify, and stage the manifest-selected sysext, then create

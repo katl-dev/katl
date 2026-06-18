@@ -197,7 +197,7 @@ is present and conflicts with the selected Kubernetes sysext payload version,
 validation must fail before install or runtime config activation. For first
 install, the selected payload version comes from Katl bootstrap intent and the
 exact matching Kubernetes payload bundle fetched and verified by `katlc`. Katl
-may normalize manifest `1.36.1` to kubeadm's `v1.36.1` form for comparison, but
+may normalize manifest `1.36.2` to kubeadm's `v1.36.2` form for comparison, but
 it must not use sentinel values or a day-one catalog resolver inside native
 kubeadm YAML.
 

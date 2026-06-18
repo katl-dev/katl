@@ -140,8 +140,8 @@ configuration, kubelet/containerd wiring, and `/etc/kubernetes` projection.
 
 For first bootstrap or join, generation 1 selects the locally staged Kubernetes
 sysext whose payload version exactly matches the install intent, for example
-manifest version `1.36.1` selecting a sysext fetched from a verified
-`v1.36.1` payload bundle. The generation 1 spec stores the selected sysext path,
+manifest version `v1.36.2` selecting a sysext fetched from a verified
+`v1.36.2` payload bundle. The generation 1 spec stores the selected sysext path,
 activation path, digest, artifact version, payload version, architecture, and
 compatibility metadata defined in `docs/internal/installer-runtime-design.md`.
 It remains a candidate until kubeadm succeeds and local post-kubeadm health

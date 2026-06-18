@@ -956,13 +956,13 @@ defined in `docs/internal/kubernetes-sysext-delivery.md`.
 
 For first install, the KatlOS image does not bundle exact-version Kubernetes
 sysext artifacts. The install manifest records bootstrap intent with
-`node.bootstrap.kubernetesCatalogRef` and optional
-`node.kubernetes.kubeadm.configRef`. `katlctl cluster bootstrap` asks `katlc` to
-fetch the matching payload bundle from a user-supplied HTTPS source, verify the
-bundle manifest and sysext digest, stage the sysext locally, select it for
-generation 1, and record its path, digest, payload version, activation path, and
-compatibility metadata in generation spec. The exact user-facing source/ref
-syntax is decided with the bundle format.
+`node.bootstrap.kubernetesBundleSource`, `node.bootstrap.kubernetesBundleRef`,
+and optional `node.kubernetes.kubeadm.configRef`. `katlctl cluster bootstrap`
+asks `katlc` to fetch the matching payload bundle from the user-supplied HTTPS
+source, verify the bundle manifest and sysext digest, stage the sysext locally,
+select it for generation 1, and record its path, digest, payload version,
+activation path, and compatibility metadata in generation spec. The normalized
+source/ref syntax is defined in `docs/internal/kubernetes-sysext-delivery.md`.
 
 Kubernetes sysext versioning must stay decoupled from the installed KatlOS
 runtime root version. Users should be able to keep their current Kubernetes
@@ -978,8 +978,8 @@ vocabulary:
 artifact identity
   name
   artifactVersion or buildID
-  payloadVersion, for example 1.36.1
-  kubernetesMinor, for example 1.36
+  payloadVersion, for example v1.36.2
+  kubernetesMinor, for example v1.36
   architecture
   sha256
   sizeBytes

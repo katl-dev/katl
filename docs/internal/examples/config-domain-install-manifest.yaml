@@ -15,7 +15,8 @@ node:
     inventoryNodeName: control-plane-01
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: control-plane
-    kubernetesCatalogRef: v1.36.2
+    kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
+    kubernetesBundleRef: v1.36.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   networkd:
     files:
       - name: 10-lan.network

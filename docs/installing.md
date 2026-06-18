@@ -96,7 +96,8 @@ node:
     nodeAddress: 192.0.2.11
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: control-plane
-    kubernetesCatalogRef: v1.36.2
+    kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
+    kubernetesBundleRef: v1.36.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 install:
   allowDestructiveInstall: true
   targetDisk:
@@ -136,7 +137,8 @@ node:
     nodeAddress: 192.0.2.21
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: worker
-    kubernetesCatalogRef: v1.36.2
+    kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
+    kubernetesBundleRef: v1.36.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ```
 
 The destructive install guard is intentionally duplicated: the manifest must set
@@ -334,15 +336,15 @@ Installation does not run `kubeadm`, fetch Kubernetes payloads, or bundle a
 Kubernetes sysext. It stores the node role and bootstrap intent needed for a
 later explicit operator action.
 
-The Kubernetes version reference is exact. For example,
-`node.bootstrap.kubernetesCatalogRef: v1.36.2` means bootstrap must select a
-compatible Kubernetes payload bundle for `v1.36.2`. During the explicit
-bootstrap operation, `katlc` fetches that bundle from a user-supplied HTTPS
-source such as GHCR or a GitHub Releases-hosted OCI layout/catalog, verifies the
-Katl bundle metadata and payload digests, stages the sysext locally, and selects
-it for generation 1. To bootstrap a fresh cluster on `v1.36.3`, keep the KatlOS
-install image when runtime compatibility permits it and supply an HTTPS
-source/ref that resolves to the `v1.36.3` bundle.
+The Kubernetes bundle reference is exact. For example,
+`node.bootstrap.kubernetesBundleRef: v1.36.2@sha256:<digest>` means bootstrap
+must select the compatible Kubernetes payload bundle whose manifest digest
+matches that pin. During the explicit bootstrap operation, `katlc` fetches that
+bundle from `node.bootstrap.kubernetesBundleSource`, verifies the Katl bundle
+metadata and payload digests, stages the sysext locally, and selects it for
+generation 1. To bootstrap a fresh cluster on `v1.36.3`, keep the KatlOS install
+image when runtime compatibility permits it and supply a source/ref pair that
+resolves to the `v1.36.3` bundle.
 
 After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, run bootstrap from an operator workstation:
