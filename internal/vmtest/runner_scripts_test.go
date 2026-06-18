@@ -68,6 +68,21 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.GoTestLog != filepath.Join(runDir, "go-test.log") || world.ResourceManifest != filepath.Join(runDir, "resource-test-manifest.json") || world.ResourceDigest != strings.Repeat("a", 64) || world.PackageLock != filepath.Join(repo, "mkosi.profiles", "resource-package-lock.json") || world.PackageLockDigest != strings.Repeat("a", 64) || world.AutoRebuild || world.ArtifactSet != "default" {
 		t.Fatalf("world log/rebuild fields = %#v", world)
 	}
+	if len(world.Artifacts) != 1 {
+		t.Fatalf("world artifacts = %#v", world.Artifacts)
+	}
+	if artifact := world.Artifacts[0]; artifact.Name != "installer-uki" || artifact.Path != "/tmp/katl-installer.efi" || artifact.RepoPath != "/tmp/katl-installer.efi" || artifact.Digest != strings.Repeat("c", 64) || artifact.Source != "resource-test-manifest" || artifact.Action != "validated" {
+		t.Fatalf("world artifact = %#v", artifact)
+	}
+	if world.ArtifactInputs == nil {
+		t.Fatal("world artifact inputs missing")
+	}
+	if len(world.ArtifactInputs.MkosiProfiles) != 1 || world.ArtifactInputs.MkosiProfiles[0].Name != "installer-image" || world.ArtifactInputs.MkosiProfiles[0].ConfigSHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("world artifact input profiles = %#v", world.ArtifactInputs.MkosiProfiles)
+	}
+	if len(world.ArtifactInputs.PackageSets) != 1 || world.ArtifactInputs.PackageSets[0].Name != "installer-image" || world.ArtifactInputs.PackageSets[0].LockSHA256 != strings.Repeat("b", 64) || world.ArtifactInputs.PackageSets[0].PackageCount != 1 {
+		t.Fatalf("world artifact input package sets = %#v", world.ArtifactInputs.PackageSets)
+	}
 	if world.Libvirt.URI != "qemu:///system" || world.Libvirt.Network != "default" || world.Libvirt.StoragePool != "default" {
 		t.Fatalf("world libvirt = %#v", world.Libvirt)
 	}
@@ -134,6 +149,12 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	}
 	if runIndex.GoTestLog != filepath.Join(runDir, "go-test.log") || runIndex.ResourceManifest != filepath.Join(runDir, "resource-test-manifest.json") || runIndex.ResourceDigest != strings.Repeat("a", 64) || runIndex.PackageLock != filepath.Join(repo, "mkosi.profiles", "resource-package-lock.json") || runIndex.PackageLockDigest != strings.Repeat("a", 64) || runIndex.AutoRebuild || runIndex.ArtifactSet != "default" {
 		t.Fatalf("run index log/rebuild fields = %#v", runIndex)
+	}
+	if len(runIndex.Artifacts) != 1 || runIndex.Artifacts[0].Name != "installer-uki" || runIndex.Artifacts[0].Action != "validated" {
+		t.Fatalf("run index artifacts = %#v", runIndex.Artifacts)
+	}
+	if runIndex.ArtifactInputs == nil || len(runIndex.ArtifactInputs.PackageSets) != 1 || runIndex.ArtifactInputs.PackageSets[0].PackageCount != 1 {
+		t.Fatalf("run index artifact inputs = %#v", runIndex.ArtifactInputs)
 	}
 	if _, err := os.Stat(runIndex.ResourceManifest); err != nil {
 		t.Fatalf("resource manifest missing: %v", err)
@@ -387,6 +408,84 @@ exec "$@"
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
 	if runIndex.Status != "passed" {
 		t.Fatalf("run index status = %q", runIndex.Status)
+	}
+	if len(runIndex.Artifacts) != 1 || runIndex.Artifacts[0].Name != "installer-uki" || runIndex.Artifacts[0].Action != "built" {
+		t.Fatalf("run index artifacts = %#v", runIndex.Artifacts)
+	}
+}
+
+func TestVMTestRunRecordsCacheResolvedArtifacts(t *testing.T) {
+	realRepo := scriptTestRepoRoot(t)
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
+	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
+case "$*" in
+  build-installer)
+    printf 'mkosi cache hit: installer artifacts match the current repo\n'
+    ;;
+  build-katlos-install-image)
+    printf 'mkosi cache hit: katlos-install-image artifacts match the current repo\n'
+    ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(repo, "scripts", "vmtest-exec"), `#!/usr/bin/env bash
+set -euo pipefail
+export KATL_VMTEST_RUN=1
+export KATL_VMTEST_WORLD_STRICT=1
+exec "$@"
+`)
+
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
+	env := appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_MKOSI_ARGS="+mkosiArgsPath,
+		"KATL_VMTEST_RUN_ID=run-cache-resolved",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	for _, name := range []string{
+		"KATL_MKOSI_ARTIFACT_INDEX",
+		"KATL_INSTALLER_UKI",
+		"KATL_INSTALLER_KERNEL",
+		"KATL_INSTALLER_INITRD",
+		"KATL_RUNTIME_ARTIFACT",
+		"KATL_INSTALL_MANIFEST",
+		"KATL_VMTEST_AUTO_REBUILD",
+	} {
+		env = removeEnv(env, name)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "NeedsArtifacts")
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if len(runIndex.Artifacts) != 1 || runIndex.Artifacts[0].Name != "installer-uki" || runIndex.Artifacts[0].Action != "cache-resolved" {
+		t.Fatalf("run index artifacts = %#v", runIndex.Artifacts)
+	}
+	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
+	if err != nil {
+		t.Fatalf("LoadWorld() error = %v", err)
+	}
+	if len(world.Artifacts) != 1 || world.Artifacts[0].Action != "cache-resolved" {
+		t.Fatalf("world artifacts = %#v", world.Artifacts)
 	}
 }
 
@@ -1708,24 +1807,26 @@ type vmtestHostCapabilities struct {
 }
 
 type vmtestRunIndex struct {
-	Kind                string   `json:"kind"`
-	RunID               string   `json:"runID"`
-	CacheDir            string   `json:"cacheDir"`
-	WorldManifest       string   `json:"worldManifest"`
-	HostCapabilities    string   `json:"hostCapabilities"`
-	GoTestLog           string   `json:"goTestLog"`
-	ResourceManifest    string   `json:"resourceManifest"`
-	ResourceDigest      string   `json:"resourceManifestSHA256"`
-	PackageLock         string   `json:"packageLock"`
-	PackageLockDigest   string   `json:"packageLockSHA256"`
-	AutoRebuild         bool     `json:"autoRebuild"`
-	ArtifactSet         string   `json:"artifactSet"`
-	DebugOnFailure      bool     `json:"debugOnFailure"`
-	DebugShell          bool     `json:"debugShell"`
-	Status              string   `json:"status"`
-	MissingCapabilities []string `json:"missingCapabilities"`
-	GoTestArgs          []string `json:"goTestArgs"`
-	SetupFailures       []string `json:"setupFailures"`
+	Kind                string               `json:"kind"`
+	RunID               string               `json:"runID"`
+	CacheDir            string               `json:"cacheDir"`
+	WorldManifest       string               `json:"worldManifest"`
+	HostCapabilities    string               `json:"hostCapabilities"`
+	GoTestLog           string               `json:"goTestLog"`
+	ResourceManifest    string               `json:"resourceManifest"`
+	ResourceDigest      string               `json:"resourceManifestSHA256"`
+	PackageLock         string               `json:"packageLock"`
+	PackageLockDigest   string               `json:"packageLockSHA256"`
+	AutoRebuild         bool                 `json:"autoRebuild"`
+	ArtifactSet         string               `json:"artifactSet"`
+	DebugOnFailure      bool                 `json:"debugOnFailure"`
+	DebugShell          bool                 `json:"debugShell"`
+	Status              string               `json:"status"`
+	MissingCapabilities []string             `json:"missingCapabilities"`
+	GoTestArgs          []string             `json:"goTestArgs"`
+	SetupFailures       []string             `json:"setupFailures"`
+	Artifacts           []WorldArtifact      `json:"vmtestArtifacts"`
+	ArtifactInputs      *WorldArtifactInputs `json:"vmtestArtifactInputs"`
 }
 
 func readRunIndex(t *testing.T, path string) vmtestRunIndex {

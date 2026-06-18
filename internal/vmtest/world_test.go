@@ -359,6 +359,83 @@ func TestDecodeWorldRunIndex(t *testing.T) {
 	}
 }
 
+func TestDecodeWorldArtifactProvenance(t *testing.T) {
+	world := validWorld()
+	world.Artifacts = []WorldArtifact{{
+		Name:      "installer-uki",
+		Kind:      "uki",
+		Path:      "/repo/_build/mkosi/katl-installer.efi",
+		RepoPath:  "_build/mkosi/katl-installer.efi",
+		Digest:    strings.Repeat("a", 64),
+		SizeBytes: 1,
+		Source:    "resource-test-manifest",
+		Action:    "cache-resolved",
+	}}
+	world.ArtifactInputs = &WorldArtifactInputs{
+		MkosiProfiles: []WorldMkosiProfile{{
+			Name:         "installer-image",
+			Path:         "mkosi.profiles/installer-image",
+			ConfigSHA256: strings.Repeat("b", 64),
+		}},
+		PackageSets: []WorldPackageSetInput{{
+			Name:         "installer-image",
+			LockSHA256:   strings.Repeat("c", 64),
+			PackageCount: 139,
+		}},
+	}
+	if err := decodeWorldValue(world); err != nil {
+		t.Fatalf("DecodeWorld() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*World)
+		want   string
+	}{
+		{
+			name:   "relative artifact path",
+			mutate: func(world *World) { world.Artifacts[0].Path = "_build/mkosi/katl-installer.efi" },
+			want:   "vmtestArtifacts[0].path must be an absolute path",
+		},
+		{
+			name:   "artifact digest",
+			mutate: func(world *World) { world.Artifacts[0].Digest = strings.Repeat("A", 64) },
+			want:   "vmtestArtifacts[0].sha256 must be lowercase SHA-256",
+		},
+		{
+			name:   "artifact action",
+			mutate: func(world *World) { world.Artifacts[0].Action = "maybe" },
+			want:   "vmtestArtifacts[0].action must be built, cache-resolved, or validated",
+		},
+		{
+			name:   "profile digest",
+			mutate: func(world *World) { world.ArtifactInputs.MkosiProfiles[0].ConfigSHA256 = "bad" },
+			want:   "vmtestArtifactInputs.mkosiProfiles[0].configSHA256 must be lowercase SHA-256",
+		},
+		{
+			name:   "package lock digest",
+			mutate: func(world *World) { world.ArtifactInputs.PackageSets[0].LockSHA256 = "bad" },
+			want:   "vmtestArtifactInputs.packageSets[0].lockSHA256 must be lowercase SHA-256",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := world
+			mutated.Artifacts = append([]WorldArtifact(nil), world.Artifacts...)
+			inputs := *world.ArtifactInputs
+			inputs.MkosiProfiles = append([]WorldMkosiProfile(nil), world.ArtifactInputs.MkosiProfiles...)
+			inputs.PackageSets = append([]WorldPackageSetInput(nil), world.ArtifactInputs.PackageSets...)
+			mutated.ArtifactInputs = &inputs
+			tt.mutate(&mutated)
+			err := decodeWorldValue(mutated)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("DecodeWorld() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestDecodeWorldRejectsUnknownFieldsAndExtraDocuments(t *testing.T) {
 	_, err := DecodeWorld(strings.NewReader(`{"apiVersion":"katl.dev/v1alpha1","kind":"VMTestWorld","extra":true}`))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {

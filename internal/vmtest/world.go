@@ -31,6 +31,8 @@ type World struct {
 	ResourceDigest    string                 `json:"resourceManifestSHA256,omitempty"`
 	PackageLock       string                 `json:"packageLock,omitempty"`
 	PackageLockDigest string                 `json:"packageLockSHA256,omitempty"`
+	Artifacts         []WorldArtifact        `json:"vmtestArtifacts,omitempty"`
+	ArtifactInputs    *WorldArtifactInputs   `json:"vmtestArtifactInputs,omitempty"`
 	AutoRebuild       bool                   `json:"autoRebuild,omitempty"`
 	ArtifactSet       string                 `json:"artifactSet,omitempty"`
 	DebugOnFailure    bool                   `json:"debugOnFailure,omitempty"`
@@ -38,6 +40,46 @@ type World struct {
 	Libvirt           WorldLibvirt           `json:"libvirt"`
 	Network           WorldNetwork           `json:"network"`
 	Capabilities      map[string]WorldStatus `json:"capabilities"`
+}
+
+type WorldArtifact struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Path      string `json:"path"`
+	RepoPath  string `json:"repoPath,omitempty"`
+	Digest    string `json:"sha256"`
+	SizeBytes int64  `json:"sizeBytes"`
+	Source    string `json:"source"`
+	Action    string `json:"action"`
+}
+
+type WorldArtifactInputs struct {
+	ResourceManifestGitRevision string                 `json:"resourceManifestGitRevision,omitempty"`
+	Tools                       []WorldToolInput       `json:"tools,omitempty"`
+	MkosiProfiles               []WorldMkosiProfile    `json:"mkosiProfiles,omitempty"`
+	PackageSets                 []WorldPackageSetInput `json:"packageSets,omitempty"`
+}
+
+type WorldToolInput struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+	Path    string `json:"path,omitempty"`
+	SHA256  string `json:"sha256,omitempty"`
+}
+
+type WorldMkosiProfile struct {
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	ConfigSHA256  string `json:"configSHA256,omitempty"`
+	PackageSetRef string `json:"packageSetRef,omitempty"`
+}
+
+type WorldPackageSetInput struct {
+	Name         string `json:"name"`
+	Source       string `json:"source,omitempty"`
+	Profile      string `json:"profile,omitempty"`
+	LockSHA256   string `json:"lockSHA256,omitempty"`
+	PackageCount int    `json:"packageCount"`
 }
 
 type WorldLibvirt struct {
@@ -164,6 +206,32 @@ func ValidateWorld(world World) error {
 	if strings.TrimSpace(world.PackageLockDigest) != "" && !validWorldSHA256(world.PackageLockDigest) {
 		return fmt.Errorf("packageLockSHA256 must be lowercase SHA-256")
 	}
+	for i, artifact := range world.Artifacts {
+		if err := validateWorldArtifact(i, artifact); err != nil {
+			return err
+		}
+	}
+	if world.ArtifactInputs != nil {
+		for i, profile := range world.ArtifactInputs.MkosiProfiles {
+			if strings.TrimSpace(profile.Name) == "" {
+				return fmt.Errorf("vmtestArtifactInputs.mkosiProfiles[%d].name is required", i)
+			}
+			if strings.TrimSpace(profile.Path) == "" {
+				return fmt.Errorf("vmtestArtifactInputs.mkosiProfiles[%d].path is required", i)
+			}
+			if strings.TrimSpace(profile.ConfigSHA256) != "" && !validWorldSHA256(profile.ConfigSHA256) {
+				return fmt.Errorf("vmtestArtifactInputs.mkosiProfiles[%d].configSHA256 must be lowercase SHA-256", i)
+			}
+		}
+		for i, set := range world.ArtifactInputs.PackageSets {
+			if strings.TrimSpace(set.Name) == "" {
+				return fmt.Errorf("vmtestArtifactInputs.packageSets[%d].name is required", i)
+			}
+			if strings.TrimSpace(set.LockSHA256) != "" && !validWorldSHA256(set.LockSHA256) {
+				return fmt.Errorf("vmtestArtifactInputs.packageSets[%d].lockSHA256 must be lowercase SHA-256", i)
+			}
+		}
+	}
 	if err := validateWorldLibvirt(world.Libvirt); err != nil {
 		return err
 	}
@@ -180,6 +248,37 @@ func ValidateWorld(world World) error {
 		if !validWorldStatus(status) {
 			return fmt.Errorf("unsupported capability status %q for %q", status, name)
 		}
+	}
+	return nil
+}
+
+func validateWorldArtifact(index int, artifact WorldArtifact) error {
+	prefix := fmt.Sprintf("vmtestArtifacts[%d]", index)
+	if strings.TrimSpace(artifact.Name) == "" {
+		return fmt.Errorf("%s.name is required", prefix)
+	}
+	if strings.TrimSpace(artifact.Kind) == "" {
+		return fmt.Errorf("%s.kind is required", prefix)
+	}
+	if strings.TrimSpace(artifact.Path) == "" {
+		return fmt.Errorf("%s.path is required", prefix)
+	}
+	if !filepath.IsAbs(artifact.Path) {
+		return fmt.Errorf("%s.path must be an absolute path: %s", prefix, artifact.Path)
+	}
+	if !validWorldSHA256(artifact.Digest) {
+		return fmt.Errorf("%s.sha256 must be lowercase SHA-256", prefix)
+	}
+	if artifact.SizeBytes <= 0 {
+		return fmt.Errorf("%s.sizeBytes must be positive", prefix)
+	}
+	switch artifact.Action {
+	case "built", "cache-resolved", "validated":
+	default:
+		return fmt.Errorf("%s.action must be built, cache-resolved, or validated", prefix)
+	}
+	if strings.TrimSpace(artifact.Source) == "" {
+		return fmt.Errorf("%s.source is required", prefix)
 	}
 	return nil
 }

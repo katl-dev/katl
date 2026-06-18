@@ -59,32 +59,41 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		t.Fatalf("vsock transcript did not record successful health: %s", transcript)
 	}
 
-	readyResult, err := runner.Plan(Scenario{Name: "first-install-packaged-runtime-ready"})
+	handoffResult, err := runner.Plan(Scenario{Name: "first-install-packaged-runtime-waiting-for-bootstrap"})
 	if err != nil {
 		t.Fatalf("Plan() error = %v", err)
 	}
-	readyResult.start(runner.time())
-	readyResult = RunInstalledKubeadmReadySmoke(ctx, readyResult, KubeadmReadySmokeConfig{
-		Runtime: InstalledRuntimeConfig{
-			Disk:         fixture.Disk,
-			DiskFormat:   DiskQCOW2,
-			ESPArtifacts: fixture.ESPArtifacts,
-			VM: VMConfig{
-				KVM:     runner.options().KVM,
-				RAMMiB:  4096,
-				CPUs:    2,
-				Timeout: 8 * time.Minute,
-				VSock: VSockConfig{
-					Enabled: true,
-				},
+	handoffResult.start(runner.time())
+	const waitingForBootstrapSignal = "katl-runtime-status state=waiting-for-cluster-bootstrap"
+	handoffResult = RunInstalledRuntime(ctx, handoffResult, InstalledRuntimeConfig{
+		Disk:               fixture.Disk,
+		DiskFormat:         DiskQCOW2,
+		ESPArtifacts:       fixture.ESPArtifacts,
+		FixtureManifest:    fixture.ManifestPath,
+		RequireVMTestAgent: true,
+		Expect:             waitingForBootstrapSignal,
+		VM: VMConfig{
+			KVM:     runner.options().KVM,
+			RAMMiB:  4096,
+			CPUs:    2,
+			Timeout: 8 * time.Minute,
+			VSock: VSockConfig{
+				Enabled: true,
 			},
 		},
 	}, VMRunner{})
-	if err := runner.Write(Scenario{Name: "first-install-packaged-runtime-ready"}, readyResult); err != nil {
+	if err := runner.Write(Scenario{Name: "first-install-packaged-runtime-waiting-for-bootstrap"}, handoffResult); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	if readyResult.Status != StatusPassed {
-		t.Fatalf("packaged runtime ready status = %q, failure = %q, run dir = %s", readyResult.Status, readyResult.FailureSummary, readyResult.RunDir)
+	if handoffResult.Status != StatusPassed {
+		t.Fatalf("packaged runtime handoff status = %q, failure = %q, run dir = %s", handoffResult.Status, handoffResult.FailureSummary, handoffResult.RunDir)
+	}
+	serial, err := os.ReadFile(handoffResult.Artifacts.RuntimeSerial)
+	if err != nil {
+		t.Fatalf("read runtime serial: %v", err)
+	}
+	if !strings.Contains(string(serial), waitingForBootstrapSignal) {
+		t.Fatalf("runtime serial did not record waiting-for-bootstrap handoff: %s", serial)
 	}
 }
 

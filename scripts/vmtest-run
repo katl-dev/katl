@@ -29,6 +29,8 @@ resource_manifest="$run_dir/resource-test-manifest.json"
 package_lock="$repo_root/mkosi.profiles/resource-package-lock.json"
 resource_manifest_sha256=""
 package_lock_sha256=""
+vmtest_artifacts_json="[]"
+vmtest_artifact_inputs_json="{}"
 debug_targets_artifact="$run_dir/preserved-vm-debug.txt"
 lease_file="$network_dir/leases.json"
 libvirt_uri="${KATL_VMTEST_LIBVIRT_URI:-qemu:///system}"
@@ -67,6 +69,7 @@ go_test_input_args=()
 missing_capabilities=()
 setup_failures=()
 help_requested=0
+declare -A artifact_build_actions=()
 
 usage() {
     cat <<'EOF'
@@ -339,14 +342,54 @@ build_default_artifacts() {
         return 0
     fi
 
-    local target
-    for target in "${targets[@]}"; do
-        printf 'vmtest building current repo artifact: scripts/mkosi %s\n' "$target" >&2
-        if ! "$repo_root/scripts/mkosi" "$target"; then
-            setup_failures+=("build default vmtest artifact with scripts/mkosi $target failed")
-            return 1
+	local target
+	for target in "${targets[@]}"; do
+        local log
+        local cache_label
+        log="$(mktemp)"
+        cache_label="$(mkosi_cache_label_for_target "$target")"
+		printf 'vmtest building current repo artifact: scripts/mkosi %s\n' "$target" >&2
+		if ! "$repo_root/scripts/mkosi" "$target" > >(tee "$log" >&2) 2>&1; then
+			setup_failures+=("build default vmtest artifact with scripts/mkosi $target failed")
+            rm -f "$log"
+			return 1
+		fi
+        if grep -q "^mkosi cache hit: ${cache_label} artifacts match the current repo$" "$log"; then
+            artifact_build_actions["$target"]="cache-resolved"
+        else
+            artifact_build_actions["$target"]="built"
         fi
-    done
+        rm -f "$log"
+	done
+}
+
+mkosi_cache_label_for_target() {
+    case "$1" in
+        build-installer)
+            printf 'installer\n'
+            ;;
+        build-runtime)
+            printf 'runtime\n'
+            ;;
+        build-katlos-install-image)
+            printf 'katlos-install-image\n'
+            ;;
+        *)
+            printf '%s\n' "$1"
+            ;;
+    esac
+}
+
+artifact_build_actions_json() {
+    jq -nc \
+        --arg buildInstaller "${artifact_build_actions[build-installer]:-}" \
+        --arg buildRuntime "${artifact_build_actions[build-runtime]:-}" \
+        --arg buildInstallImage "${artifact_build_actions[build-katlos-install-image]:-}" \
+        '{
+          "build-installer": $buildInstaller,
+          "build-runtime": $buildRuntime,
+          "build-katlos-install-image": $buildInstallImage
+        } | with_entries(select(.value != ""))'
 }
 
 run_resource_lock() {
@@ -385,8 +428,46 @@ prepare_resource_manifest() {
         setup_failures+=("strict vmtest resource manifest validation failed")
         return 1
     fi
-    resource_manifest_sha256="$(file_sha256 "$resource_manifest")"
-    package_lock_sha256="$(file_sha256 "$package_lock")"
+	resource_manifest_sha256="$(file_sha256 "$resource_manifest")"
+	package_lock_sha256="$(file_sha256 "$package_lock")"
+	vmtest_artifacts_json="$(
+		jq -c '
+          def abs_path($repo):
+            if (.path | startswith("/")) then .path else ($repo + "/" + .path) end;
+          def action_for($actions):
+            if (.name | startswith("installer-")) then ($actions["build-installer"] // "validated")
+            elif (.name == "runtime-uki" or .name == "runtime-root" or .name == "kubernetes-sysext" or .name == "katlos-install-image") then ($actions["build-katlos-install-image"] // $actions["build-runtime"] // "validated")
+            else "validated"
+            end;
+          .artifacts
+          | map({
+              name,
+              kind,
+              path: abs_path($repoRoot),
+              repoPath: .path,
+              sha256,
+              sizeBytes,
+              source: "resource-test-manifest",
+              action: action_for($actions)
+            })
+        ' --arg repoRoot "$repo_root" --argjson actions "$(artifact_build_actions_json)" "$resource_manifest"
+	)"
+	vmtest_artifact_inputs_json="$(
+		jq -c '
+          {
+            resourceManifestGitRevision: (.git.revision // .gitRevision // null),
+            tools: (.tools // []),
+            mkosiProfiles: (.mkosiProfiles // []),
+            packageSets: ((.packageSets // []) | map({
+              name,
+              source,
+              profile,
+              lockSHA256,
+              packageCount: ((.packages // []) | length)
+            }))
+          }
+        ' "$resource_manifest"
+	)"
 }
 
 probe_vm_capabilities() {
@@ -663,6 +744,8 @@ write_world() {
         --arg resourceManifestSHA256 "$resource_manifest_sha256" \
         --arg packageLock "$package_lock" \
         --arg packageLockSHA256 "$package_lock_sha256" \
+        --argjson vmtestArtifacts "$vmtest_artifacts_json" \
+        --argjson vmtestArtifactInputs "$vmtest_artifact_inputs_json" \
         --arg autoRebuild "$auto_rebuild" \
         --arg artifactSet "$artifact_set" \
         --arg debugOnFailure "$debug_on_failure_effective" \
@@ -701,6 +784,8 @@ write_world() {
           resourceManifestSHA256: $resourceManifestSHA256,
           packageLock: $packageLock,
           packageLockSHA256: $packageLockSHA256,
+          vmtestArtifacts: $vmtestArtifacts,
+          vmtestArtifactInputs: $vmtestArtifactInputs,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
           artifactSet: $artifactSet,
           debugOnFailure: ($debugOnFailure == "1"),
@@ -759,6 +844,8 @@ write_run_index() {
         --arg resourceManifestSHA256 "$resource_manifest_sha256" \
         --arg packageLock "$package_lock" \
         --arg packageLockSHA256 "$package_lock_sha256" \
+        --argjson vmtestArtifacts "$vmtest_artifacts_json" \
+        --argjson vmtestArtifactInputs "$vmtest_artifact_inputs_json" \
         --arg autoRebuild "$auto_rebuild" \
         --arg artifactSet "$artifact_set" \
         --arg debugOnFailure "$debug_on_failure_effective" \
@@ -782,6 +869,8 @@ write_run_index() {
           resourceManifestSHA256: $resourceManifestSHA256,
           packageLock: $packageLock,
           packageLockSHA256: $packageLockSHA256,
+          vmtestArtifacts: $vmtestArtifacts,
+          vmtestArtifactInputs: $vmtestArtifactInputs,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
           artifactSet: $artifactSet,
           debugOnFailure: ($debugOnFailure == "1"),
