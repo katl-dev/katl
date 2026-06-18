@@ -26,6 +26,7 @@ own kubeadm output, SSH host keys, or machine identity.
 | `/var/lib/katl` | Katl installer, `katlc`, KatlOS runtime services | Mutable generation status, operation records, staged artifacts, activation records, and repair status | Native `/var`; primary Katl state root |
 | `/var/lib/katl/operations` | Katl installer, `katlc`, KatlOS runtime services | Durable node-local operation records that distinguish host repair from kubeadm or etcd repair | Native `/var`; not generation artifacts and not activated through sysext/confext |
 | `/var/lib/katl/operations/<id>/journal` | Katl installer, `katlc`, KatlOS runtime services | Append-only durable operation events used to rebuild `record.json` after interruption | Native `/var`; operation recovery source of truth |
+| `/var/lib/katl/operations/<id>/apps/<appID>/status.json` | `katlc`, KatlOS runtime services | Redacted snapshot of selected node app sysext runtime status when an operation needs durable evidence | Native `/var`; copied from bounded live app status and owned by the operation record |
 | `/var/lib/katl/cluster/intent.json` | `katlos-install`, `katlc` | Normalized non-secret cluster intent from install input: desired node role, selected Kubernetes payload version, selected bootstrap profile reference, and endpoint intent | Native `/var`; generation 0 input for later bootstrap, not Kubernetes cluster state |
 | `/var/lib/katl/config-requests` | `katlc`, KatlOS runtime services | Request decision index for accepted or rejected node configuration inputs | Native `/var`; links to canonical operation IDs when a request is accepted |
 | `/var/lib/katl/boot/selection.json` | Katl installer, `katlc`, KatlOS runtime services | Durable default, trial, previous known-good, and booted generation pointers | Native `/var`; boot selection state outside generation directories |
@@ -48,7 +49,7 @@ own kubeadm output, SSH host keys, or machine identity.
 | `/var/lib/containerd` | containerd, kubelet | Mutable image/content/snapshot/container state | Native `/var`; persistent across root updates |
 | `/var/lib/etcd` | etcd static pod, kubeadm | Mutable control-plane database | Native `/var` by default or optional dedicated partition mounted at `/var/lib/etcd` |
 | `/var/log/journal` | systemd-journald | Optional persistent logs | Native `/var`; may be absent when persistent journald is disabled |
-| `/run` | systemd, Katl runtime selector, services | Ephemeral boot state only | Never persistent; `katl-generation-activate.service` regenerates selected extension links, locks, and operation gates each boot |
+| `/run` | systemd, Katl runtime selector, services | Ephemeral boot state only | Never persistent; `katl-generation-activate.service` regenerates selected extension links, app live status roots, locks, and operation gates each boot |
 | `/tmp` | applications | Ephemeral | Never persistent |
 
 Katl-rendered kubeadm/kubelet input under `/etc/katl` may drift from these live

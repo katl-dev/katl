@@ -712,9 +712,9 @@ state path is Katl YAML/configuration; KatlOS validates that input and renders
 the generation-scoped extension state itself. Generated confext is built locally
 for that generation. Sysext payloads are prebuilt artifacts, but their selected
 activation set is recorded with the same generation as the rendered confext.
-Bundled Kubernetes sysexts from the install image are available payloads until a
-generation selects one; they are not active merely because the installer verified
-or cached them.
+Exact-version Kubernetes sysexts are fetched and staged from user-supplied
+payload bundles before a Kubernetes-capable generation selects one; they are not
+bundled as install-image payload candidates.
 `katlc` and KatlOS runtime services must reject unknown or unsupported
 configuration before rendering anything. Unsupported domains, fields, sysext
 selections, apply modes, or raw extension paths are validation failures, not

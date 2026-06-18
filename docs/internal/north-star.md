@@ -336,6 +336,7 @@ docs/internal/kubernetes-upgrade-operations.md
 Optional platform endpoint work:
 
 ```text
+docs/internal/node-app-sysext-contract.md
 docs/internal/platform-api-endpoint-user-story.md
 docs/internal/platform-api-endpoint-routing-capability.md
 docs/internal/platform-api-endpoint-helper-input-schema.md

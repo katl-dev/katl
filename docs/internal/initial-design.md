@@ -541,6 +541,10 @@ docs/internal/kubernetes-sysext-delivery.md
   Kubernetes sysext artifact publication, catalog, and patch-version bump
   direction.
 
+docs/internal/node-app-sysext-contract.md
+  Generic contract for optional node applications delivered as generation-
+  selected app sysexts.
+
 docs/internal/adrs/adr-001-generated-confext-configuration.md
   Accepted decision for Katl-native configuration and generated confext. The file
   includes the rejected bootstrap option note.

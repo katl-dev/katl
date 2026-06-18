@@ -1,8 +1,9 @@
 # Platform API Endpoint Routing Capability
 
 Status: deferred proposal. This is not a supported Katl capability until the
-optional app sysext contract, helper status path, operation/apply/rollback
-behavior, and ownership rules are defined and tested.
+helper-specific app bundle, status schema, operation/apply/rollback behavior,
+and ownership rules are defined and tested against the node app sysext
+contract.
 
 Katl needs a way to support greenfield clusters where Cilium must reach the
 Kubernetes API before Cilium can advertise any service or API VIP. The
@@ -14,6 +15,7 @@ This decision builds on:
 
 ```text
 docs/internal/cluster-bootstrap-cli.md
+docs/internal/node-app-sysext-contract.md
 docs/internal/platform-api-endpoint-user-story.md
 docs/internal/platform-api-endpoint-helper-input-schema.md
 docs/internal/system-roles-and-capabilities.md
@@ -32,9 +34,9 @@ platform API endpoint helper input, and `katlctl` must not expose helper
 enablement, until follow-up docs define:
 
 ```text
-optional app sysext metadata, compatibility, unit, config, health, and status
-  contract
-exact helper status path, schema, durability, redaction, and owner
+helper app bundle metadata, compatibility, unit, config, health, and status
+  schema using the node app sysext contract
+exact helper appID, status schema, durability, redaction, and owner
 node-local operation records for enable, disable, live apply, withdrawal,
   rollback, and repair
 ownership boundaries between Katl, the app sysext, Cilium, GitOps, and user
@@ -84,8 +86,8 @@ Deferred extension path:
 
 ```text
 user-provided app sysext
-  possible only after the same app sysext contract exists; until then Katl must
-  not accept arbitrary user sysexts as managed endpoint helpers
+  possible only through the same node extension bundle and app sysext contract;
+  Katl must not accept arbitrary user sysexts as managed endpoint helpers
 ```
 
 Bounded native config:
@@ -225,12 +227,12 @@ cluster mutations in generated confext activation.
 
 ## Status
 
-The exact status path is not defined here. The app sysext contract must define
-whether current helper state is runtime-only, durable, or copied into operation
-records; the concrete path must be added to the persistent state inventory
-before implementation. `katlc` owns node-local status collection and reporting.
-`katlctl` may display helper status only by querying node-local Katl state; it
-must not become the owner of helper state.
+The node app sysext contract defines the live status path pattern and
+operation snapshot path. This helper still needs an app-specific status schema,
+durability rules, and redaction policy before implementation. `katlc` owns
+node-local status collection and reporting. `katlctl` may display helper status
+only by querying node-local Katl state; it must not become the owner of helper
+state.
 
 Status must be readable without inspecting raw daemon internals. It should
 eventually report:
@@ -323,13 +325,11 @@ package installation.
 Implementation must be split into focused follow-up work:
 
 ```text
-accept the app sysext contract for optional node applications
-
-finalize the platform API endpoint helper input schema and candidate generated
-artifacts after the app sysext contract exists
+finalize the platform API endpoint helper app-specific bundle contract, input
+schema, status schema, and candidate generated artifacts
 
 package BIRD or equivalent helper as a Katl or fixture app sysext only after the
-contract defines metadata, unit, status, and compatibility requirements
+helper contract defines metadata, unit, status, and compatibility requirements
 
 implement the advertisement health gate and status record
 

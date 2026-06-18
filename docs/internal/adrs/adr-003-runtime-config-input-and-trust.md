@@ -249,8 +249,8 @@ GitOps controllers
 
 If rendered kubeadm desired input differs from the live cluster state or from
 the selected kubeadm metadata, the planner records
-`kubeadm.explicitActionRequired=true` in generation spec/status and
-the operation record. Applying that desired input to a live cluster is a
+`kubeadm.explicitActionRequired=true` in generation spec and the operation
+record or status view. Applying that desired input to a live cluster is a
 separate kubeadm-aware operator action with its own planner, status, rollback
 story, and VM tests.
 

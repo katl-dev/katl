@@ -1,14 +1,16 @@
 # Platform API Endpoint Helper Input Schema
 
 Status: deferred schema sketch. Field names and rendered paths are not
-user-facing API until the optional app sysext contract, status path, operation
-behavior, rollback behavior, and ownership rules are accepted.
+user-facing API until the selected helper app sysext advertises the capability
+and the helper-specific status schema, operation behavior, rollback behavior,
+and ownership rules are accepted and tested.
 
 This document defines the typed input shape for the platform API endpoint
 routing capability described in
 `docs/internal/platform-api-endpoint-routing-capability.md`. The schema is for a
 day-2 opt-in node application capability, not the initial kubeadm-ready node
-configuration API.
+configuration API. It relies on the generic node app sysext contract in
+`docs/internal/node-app-sysext-contract.md`.
 
 The first concrete helper target is a host-owned API VIP on a dummy or loopback
 interface, advertised through BIRD or an equivalent routing process, with a
@@ -119,9 +121,9 @@ spec:
       caRef: kube-apiserver-ca
 ```
 
-The final location of this block depends on the app sysext contract design.
-These field names are proposal labels only; `katlc` must reject this input until
-the selected app sysext contract advertises the capability and Katl has a
+The final location of this block depends on the app-specific platform endpoint
+contract. These field names are proposal labels only; `katlc` must reject this
+input until the selected app sysext advertises the capability and Katl has a
 matching validator, renderer, status reader, and operation implementation.
 
 ## Endpoint Fields
@@ -351,9 +353,9 @@ for whether the node may advertise its local API path.
 ## Candidate Rendered Artifacts
 
 These paths are examples, not an implementation contract. No renderer should
-create them until the app sysext contract defines which files are generated
-confext, which files are app-sysext-owned, which status path is authoritative,
-and how operations consume or update them.
+create them until the helper-specific app contract defines which files are
+generated confext, which files are app-sysext-owned, which status schema is
+authoritative, and how operations consume or update status.
 
 For `hostAdvertised`, a future renderer would produce generation-scoped
 generated confext content and app-sysext configuration inputs like:
@@ -365,13 +367,13 @@ generated confext content and app-sysext configuration inputs like:
 /etc/systemd/network/20-katl-api0.network
   address assignment for hostInterface.addresses
 
-/etc/katl/platform-api-endpoint/config.yaml
+/etc/katl/apps/platform-api-endpoint/config.yaml
   normalized helper input consumed by the app sysext
 
-/etc/katl/platform-api-endpoint/routing/bird.conf
+/etc/katl/apps/platform-api-endpoint/routing/bird.conf
   generated BIRD configuration from bounded schema fields
 
-/etc/systemd/system/katl-platform-api-endpoint.service.d/10-config.conf
+/etc/systemd/system/katl-app-platform-api-endpoint.service.d/10-config.conf
   bounded drop-in pointing the app sysext helper at the selected config path
 ```
 
@@ -379,15 +381,16 @@ The app sysext, not generated confext, owns helper executables and base units.
 Generated confext supplies selected node-specific configuration only.
 
 For `external`, the renderer may write non-secret metadata under
-`/etc/katl/platform-api-endpoint/external.json` so status and diagnostics can
-explain why no host advertiser is running.
+`/etc/katl/apps/platform-api-endpoint/external.json` so status and diagnostics
+can explain why no host advertiser is running.
 
 For `disabled`, no helper artifacts are rendered.
 
-Status path ownership is finalized by the app sysext contract. Until that
-contract exists, there is no authoritative helper status path. The eventual
-status content must include configured endpoint, host interface, routing daemon,
-health, advertisement, peer state, last transition, and failure reason.
+The generic app sysext contract defines the live status path pattern:
+`/run/katl/apps/<appID>/status.json`. The helper-specific contract still needs
+to select the appID and status schema. The eventual status content must include
+configured endpoint, host interface, routing daemon, health, advertisement, peer
+state, last transition, and failure reason.
 
 All rendered paths are examples of the accepted ownership model. Final file
 names may change during implementation, but the boundaries must not: networkd
@@ -465,9 +468,9 @@ storage, or routing prerequisites are missing.
 
 ## Implementation Follow-Up
 
-After the app sysext contract is accepted, follow-up implementation should cover
-Go types, normalization, validation, renderer output, golden tests, negative
-tests, and syntax verification hooks for this schema.
+Follow-up implementation should cover Go types, normalization, validation,
+renderer output, golden tests, negative tests, and syntax verification hooks for
+this schema after the helper-specific app contract is accepted.
 
 Another follow-up should define where `authRef`, `health.caRef`, and future
 `health.clientCredentialRef` values come from, how they are materialized for app
