@@ -414,6 +414,56 @@ func TestRunPrepareMkosiStrictRejectsInstallerDrift(t *testing.T) {
 	}
 }
 
+func TestRunPrepareMkosiStrictRejectsMissingInstallerLock(t *testing.T) {
+	oldQuery := queryRPMPackages
+	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		return []resourcetest.Package{{
+			Name:  "systemd",
+			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+		}}, nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	args := []string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "refresh",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}
+	if err := run(args, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("prepare refresh error = %v", err)
+	}
+	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-installer.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
+	err := run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "strict",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), `package set "installer-image" is missing from package lock`) {
+		t.Fatalf("prepare strict error = %v, want missing installer-image package set", err)
+	}
+}
+
 func TestRunPrepareMkosiStrictRejectsKatlOSDrift(t *testing.T) {
 	oldQuery := queryRPMPackages
 	oldReadKatlOSIndex := readKatlOSIndex

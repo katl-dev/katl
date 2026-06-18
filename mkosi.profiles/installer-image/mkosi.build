@@ -44,7 +44,7 @@ go build \
 if [[ -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
     mkdir -p "$(dirname "$KATL_INSTALLER_PACKAGE_SET")"
     rpm \
-        --root "$DESTDIR" \
+        --root "$BUILDROOT" \
         --dbpath /usr/lib/sysimage/rpm \
         -qa \
         --queryformat "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n" \
