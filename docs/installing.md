@@ -96,7 +96,7 @@ node:
     nodeAddress: 192.0.2.11
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: control-plane
-    kubernetesCatalogRef: v1.36.1
+    kubernetesCatalogRef: v1.36.2
 install:
   allowDestructiveInstall: true
   targetDisk:
@@ -136,7 +136,7 @@ node:
     nodeAddress: 192.0.2.21
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: worker
-    kubernetesCatalogRef: v1.36.1
+    kubernetesCatalogRef: v1.36.2
 ```
 
 The destructive install guard is intentionally duplicated: the manifest must set
@@ -335,14 +335,14 @@ Kubernetes sysext. It stores the node role and bootstrap intent needed for a
 later explicit operator action.
 
 The Kubernetes version reference is exact. For example,
-`node.bootstrap.kubernetesCatalogRef: v1.36.1` means bootstrap must select a
-compatible Kubernetes payload bundle for `v1.36.1`. During the explicit
+`node.bootstrap.kubernetesCatalogRef: v1.36.2` means bootstrap must select a
+compatible Kubernetes payload bundle for `v1.36.2`. During the explicit
 bootstrap operation, `katlc` fetches that bundle from a user-supplied HTTPS
 source such as GHCR or a GitHub Releases-hosted OCI layout/catalog, verifies the
 Katl bundle metadata and payload digests, stages the sysext locally, and selects
-it for generation 1. To bootstrap a fresh cluster on `v1.36.2`, keep the KatlOS
+it for generation 1. To bootstrap a fresh cluster on `v1.36.3`, keep the KatlOS
 install image when runtime compatibility permits it and supply an HTTPS
-source/ref that resolves to the `v1.36.2` bundle.
+source/ref that resolves to the `v1.36.3` bundle.
 
 After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, run bootstrap from an operator workstation:
@@ -378,8 +378,8 @@ Kubernetes version upgrades remain separate from day-one install. They require a
 kubeadm-aware operation that can make the target `kubeadm` available before the
 target kubelet starts. Until that path is implemented and tested, treat
 Kubernetes upgrades as unsupported operational work. Producing and publishing a
-new sysext such as `v1.36.2` is useful immediately for fresh installs and
-future upgrade planning, but it does not by itself make `v1.36.1` to `v1.36.2`
+new sysext such as `v1.36.3` is useful immediately for fresh installs and
+future upgrade planning, but it does not by itself make `v1.36.2` to `v1.36.3`
 mutation safe on an existing cluster.
 
 ## Troubleshooting

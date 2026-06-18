@@ -21,7 +21,7 @@
       "inventoryNodeName": "control-plane-01",
       "controlPlaneEndpoint": "api.katl.test:6443",
       "bootstrapProfileRef": "control-plane",
-      "kubernetesCatalogRef": "v1.36.1"
+      "kubernetesCatalogRef": "v1.36.2"
     },
     "networkd": {
       "files": [

@@ -51,21 +51,21 @@ Publishing prebuilt user-specific confext is outside the default path.
 image creates generation 0, installs the KatlOS runtime, and records bootstrap
 intent such as the requested Kubernetes version or catalog reference.
 
-A user who wants Kubernetes `v1.36.1` installs a compatible KatlOS image and
+A user who wants Kubernetes `v1.36.2` installs a compatible KatlOS image and
 supplies `katlc` with an HTTPS source for the Kubernetes payload bundle, such as
 a GHCR OCI reference endpoint or a GitHub Releases-hosted OCI layout/catalog,
-together with an exact selection such as `v1.36.1`. The explicit bootstrap
+together with an exact selection such as `v1.36.2`. The explicit bootstrap
 operation later asks `katlc` to fetch the bundle, verify the Katl custom
 manifest and payload digests, stage the sysext under Katl-owned storage, create
 generation 1, select the staged sysext, render node-specific generated confext,
 run kubeadm, and commit only after operation health checks pass.
 
-A user who wants a fresh cluster on Kubernetes `v1.36.2` can use the same
+A user who wants a fresh cluster on Kubernetes `v1.36.3` can use the same
 KatlOS install image when runtime compatibility permits it, but supplies an
-HTTPS source/ref that resolves to the `v1.36.2` bundle. `v1.36.1` and
-`v1.36.2` remain separately addressable by exact payload version and digest.
+HTTPS source/ref that resolves to the `v1.36.3` bundle. `v1.36.2` and
+`v1.36.3` remain separately addressable by exact payload version and digest.
 
-Upgrading an already bootstrapped node from `v1.36.1` to `v1.36.2` is a
+Upgrading an already bootstrapped node from `v1.36.2` to `v1.36.3` is a
 different workflow. The target sysext can be produced and cataloged now, but
 node mutation remains unsupported until the kubeadm-aware upgrade operation and
 kubelet activation gate are implemented and VM-tested.
@@ -114,7 +114,7 @@ Kubernetes patch updates should be ordinary reviewed dependency updates.
 Renovate should update the declared target payload and package expectations in
 `mkosi.profiles/kubernetes-sysext/kubernetes.env` or its successor. That change
 triggers the producer workflow, which builds a new immutable sysext artifact and
-catalog entry. A successful `v1.36.2` publication does not replace `v1.36.1`;
+catalog entry. A successful `v1.36.3` publication does not replace `v1.36.2`;
 both remain addressable by exact payload version and digest until retention
 policy removes or deprecates them.
 
@@ -122,6 +122,58 @@ Minor updates, such as `v1.36` to `v1.37`, require the same artifact production
 mechanics plus Kubernetes version-skew policy review. Katl should continue to
 reject unsupported minor transitions on already bootstrapped nodes until the
 kubeadm upgrade gate allows them.
+
+## v0.1 Release Version Policy
+
+v0.1 targets Kubernetes minor `v1.36`. The release is cut against an exact base
+`v1.36.x` payload bundle for install and an exact next patch bundle for the
+Kubernetes upgrade proof, not against a floating minor or whatever the node can
+resolve at bootstrap time. Development fixtures follow the package lock and
+currently resolve the base bundle to `v1.36.2`; the paired upgrade bundle is the
+next available `v1.36` patch, expected to be `v1.36.3` when it is published by
+the upstream package repository. If a newer patch is selected for the final
+release candidate, both base and next payload versions must move through a
+reviewed package-lock update, bundle rebuild, and VM gate. After that cut,
+user-facing install examples, fixture metadata, catalog entries, kubeadm YAML,
+and generation records must name the exact `vMAJOR.MINOR.PATCH` payload version
+and sysext activation digest.
+
+The release policy intentionally separates three versions:
+
+```text
+kubernetes payloadVersion
+  Exact Kubernetes patch carried by the sysext, for example v1.36.2.
+
+bundle artifactVersion
+  Immutable Katl build/revision identity for the bundle that carries that
+  payload, for example v1.36.2-katl.1 or a release-candidate build ID.
+
+katlos runtimeInterface
+  Compatibility contract consumed before selection, currently katl-runtime-1.
+```
+
+`payloadVersion` is the cluster intent and kubeadm `kubernetesVersion` match.
+`artifactVersion` distinguishes rebuilt or release-candidate bundles for the
+same payload when provenance, package locks, or manifest format changes.
+`runtimeInterface` decides whether the staged payload may be selected with the
+installed KatlOS runtime. Matching KatlOS product versions is not sufficient.
+
+Generic node extension bundles use the same split. The v0.1 BIRD extension
+payload is named by the upstream daemon version plus a Katl extension revision,
+for example `bird-v2.17.1-katl.1`. The BGP API VIP extension is Katl-owned and
+uses a Katl semantic payload version, for example `bgp-api-vip-v0.1.0`. Each
+extension bundle still has its own immutable `artifactVersion`, declared
+capabilities, supported runtime interfaces, architecture, config handoff paths,
+status paths, and health semantics. The detailed reusable extension manifest is
+defined with the node extension bundle decision, but raw arbitrary sysext
+activation is not a supported user-facing version policy.
+
+Before artifact signing lands, local and CI fixtures may be checksum-only if
+they use the same bundle manifest, descriptors, payload digests, package lock or
+build input digest, and runtime compatibility fields as the signed path will
+use. The absence of signatures must be explicit fixture metadata, not an
+implicit trust downgrade. Published v0.1 release artifacts need the signing
+policy decision before they become a stable distribution channel.
 
 ## Deferred
 
