@@ -956,7 +956,7 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 			"files": []map[string]any{
 				{
 					"name":    "80-katl-vmtest-dhcp.network",
-					"content": "[Match]\nName=*\n\n[Network]\nDHCP=yes\n",
+					"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
 				},
 			},
 		},

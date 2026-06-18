@@ -1,0 +1,35 @@
+{
+  "cniVersion": "1.0.0",
+  "name": "katl-vmtest-bridge",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "katl0",
+      "isGateway": true,
+      "ipMasq": false,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "host-local",
+        "ranges": [
+          [
+            {
+              "subnet": "__POD_SUBNET__",
+              "gateway": "__POD_GATEWAY__"
+            }
+          ]
+        ],
+        "routes": [
+          {
+            "dst": "0.0.0.0/0"
+          }
+        ]
+      }
+    },
+    {
+      "type": "portmap",
+      "capabilities": {
+        "portMappings": true
+      }
+    }
+  ]
+}

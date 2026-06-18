@@ -780,7 +780,7 @@ print_preserved_debug_targets() {
     local tmp result line printed=0
     tmp="$(mktemp "$run_dir/preserved-vm-debug.XXXXXX")"
     {
-        find "$scenario_dir" -mindepth 2 -maxdepth 5 -name result.json -print 2>/dev/null || true
+        find "$scenario_dir" -mindepth 2 -maxdepth 8 -name result.json -print 2>/dev/null || true
     } | while IFS= read -r result; do
         jq -r --arg result "$result" '
           (.debug.targets // [])
@@ -891,6 +891,7 @@ printf 'vmtest world: %s\n' "$world_manifest" >&2
 printf 'vmtest host capabilities: %s\n' "$host_capabilities_json" >&2
 printf 'vmtest scenarios: %s\n' "$scenario_dir" >&2
 printf 'vmtest go test log: %s\n' "$go_test_log" >&2
+printf 'vmtest debug helper: scripts/vmtest-debug %q\n' "$run_dir" >&2
 go_test_args=()
 if [[ -n "$go_test_timeout" ]] && ! has_go_test_timeout "$@"; then
     go_test_args+=("-timeout" "$go_test_timeout")

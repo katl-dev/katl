@@ -431,9 +431,11 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	vmtestTranscriptDir := flags.String("vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
 	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
 	var bootstrapManifestPaths stringList
+	var bootstrapPreWaitValues stringList
 	var bootstrapWaitValues stringList
 	flags.Var(&addresses, "node-address", "node address override in node=address form")
 	flags.Var(&bootstrapManifestPaths, "bootstrap-manifest", "ordered Kubernetes manifest file or bundle to apply after API readiness")
+	flags.Var(&bootstrapPreWaitValues, "bootstrap-pre-wait", "pre-manifest wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
 	flags.Var(&bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
 	bootstrapStableEndpoint := flags.String("bootstrap-stable-endpoint", "", "stable API endpoint host:port to wait for before writing kubeconfig")
 	bootstrapStableEndpointBeforeManifests := flags.Bool("bootstrap-stable-endpoint-before-manifests", false, "wait for stable API endpoint before applying bootstrap manifests")
@@ -451,7 +453,7 @@ func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.W
 	if err != nil {
 		return err
 	}
-	bootstrap, err := parseUserBootstrap(bootstrapManifestPaths.values, bootstrapWaitValues.values, *bootstrapStableEndpoint, *bootstrapStableEndpointBeforeManifests)
+	bootstrap, err := parseUserBootstrap(bootstrapManifestPaths.values, bootstrapPreWaitValues.values, bootstrapWaitValues.values, *bootstrapStableEndpoint, *bootstrapStableEndpointBeforeManifests)
 	if err != nil {
 		return err
 	}
@@ -682,7 +684,7 @@ func (l *stringList) Set(value string) error {
 	return nil
 }
 
-func parseUserBootstrap(manifestPaths, waitValues []string, stableEndpoint string, stableEndpointBeforeManifests bool) (cluster.UserBootstrap, error) {
+func parseUserBootstrap(manifestPaths, preWaitValues, waitValues []string, stableEndpoint string, stableEndpointBeforeManifests bool) (cluster.UserBootstrap, error) {
 	bootstrap := cluster.UserBootstrap{
 		StableEndpoint:                strings.TrimSpace(stableEndpoint),
 		StableEndpointBeforeManifests: stableEndpointBeforeManifests,
@@ -693,6 +695,13 @@ func parseUserBootstrap(manifestPaths, waitValues []string, stableEndpoint strin
 			return cluster.UserBootstrap{}, fmt.Errorf("bootstrap manifest path is required")
 		}
 		bootstrap.Manifests = append(bootstrap.Manifests, cluster.BootstrapManifest{Path: path})
+	}
+	for _, value := range preWaitValues {
+		wait, err := parseBootstrapWait(value)
+		if err != nil {
+			return cluster.UserBootstrap{}, err
+		}
+		bootstrap.PreWaits = append(bootstrap.PreWaits, wait)
 	}
 	for _, value := range waitValues {
 		wait, err := parseBootstrapWait(value)

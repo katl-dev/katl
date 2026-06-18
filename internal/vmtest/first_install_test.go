@@ -203,7 +203,7 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read handoff seed networkd file: %v", err)
 	}
-	if !strings.Contains(string(network), "DHCP=yes") {
+	if !strings.Contains(string(network), "Name=en*") || !strings.Contains(string(network), "DHCP=yes") {
 		t.Fatalf("handoff seed networkd file = %q", network)
 	}
 }

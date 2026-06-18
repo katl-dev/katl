@@ -477,6 +477,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 		!strings.Contains(string(manifestData), `"localRef": "katlos-install-0.0.0-dev-x86_64.squashfs"`) ||
 		!strings.Contains(string(manifestData), `"configRef": "control-plane"`) ||
 		!strings.Contains(string(manifestData), `"name": "80-katl-vmtest-dhcp.network"`) ||
+		!strings.Contains(string(manifestData), `Name=en*`) ||
 		!strings.Contains(string(manifestData), `DHCP=yes`) {
 		t.Fatalf("generated manifest = %s", manifestData)
 	}

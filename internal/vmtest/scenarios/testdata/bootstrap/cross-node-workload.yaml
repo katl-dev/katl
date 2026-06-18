@@ -1,0 +1,81 @@
+# VM test fixture only. The server is pinned to worker-1 and the client job is
+# pinned to cp-1, so job completion proves pod traffic crosses nodes.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: katl-vmtest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: net-server
+  namespace: katl-vmtest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: net-server
+  template:
+    metadata:
+      labels:
+        app: net-server
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: worker-1
+      containers:
+      - name: agnhost
+        image: localhost/katl-vmtest/net-server:latest
+        imagePullPolicy: Never
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /hostname
+            port: http
+          periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: net-server
+  namespace: katl-vmtest
+spec:
+  selector:
+    app: net-server
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: net-client
+  namespace: katl-vmtest
+spec:
+  activeDeadlineSeconds: 150
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: net-client
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: cp-1
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: client
+        image: localhost/katl-vmtest/net-client:latest
+        imagePullPolicy: Never
+        env:
+        - name: KATL_VMTEST_DEADLINE
+          value: 90s

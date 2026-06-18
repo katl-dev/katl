@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -195,6 +196,54 @@ func TestRunAgentBootstrapRunsUserBootstrapWithReturnedKubeconfig(t *testing.T) 
 	}
 	if result.Kubeconfig.Server != "https://api.stable.test:6443" {
 		t.Fatalf("kubeconfig server = %q, want stable endpoint", result.Kubeconfig.Server)
+	}
+}
+
+func TestRunAgentBootstrapStopsAfterUserBootstrapFailure(t *testing.T) {
+	client := &fakeAgentClient{
+		status: readyAgentStatus("machine-cp-1"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-init-1",
+			RequestDigest: "digest-1",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-1"},
+		},
+		events: []*agentapi.OperationEvent{{
+			OperationId: "bootstrap-init-1",
+			JournalSeq:  1,
+			Terminal:    true,
+			Status:      &agentapi.OperationStatus{OperationId: "bootstrap-init-1", Terminal: true, Result: "succeeded"},
+		}},
+		getStatus: &agentapi.OperationStatus{
+			OperationId:     "bootstrap-init-1",
+			Terminal:        true,
+			Result:          "succeeded",
+			AdminKubeconfig: adminKubeconfig(),
+		},
+	}
+	connector := newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})
+	out := filepath.Join(t.TempDir(), "operator.conf")
+	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("rollout timed out")}
+	result, err := RunAgentBootstrap(context.Background(), Request{
+		Inventory:           validSingleNodeInventory(),
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+		Bootstrap: UserBootstrap{Waits: []BootstrapWait{{
+			Kind:      BootstrapWaitRolloutStatus,
+			Namespace: "katl-vmtest",
+			Name:      "deployment/net-server",
+		}}},
+	}, AgentBootstrapDependencies{Connector: connector, BootstrapRunner: bootstrapRunner})
+	if err == nil || !strings.Contains(err.Error(), "rollout timed out") {
+		t.Fatalf("RunAgentBootstrap() error = %v, want user bootstrap failure", err)
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "user-bootstrap"}) {
+		t.Fatalf("phases = %#v", got)
+	}
+	if result.Phases[len(result.Phases)-1].Status != "failed" {
+		t.Fatalf("user-bootstrap phase = %#v, want failed", result.Phases[len(result.Phases)-1])
+	}
+	if _, statErr := os.Stat(out); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("kubeconfig output stat error = %v, want not exist", statErr)
 	}
 }
 

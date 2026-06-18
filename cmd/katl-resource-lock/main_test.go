@@ -317,6 +317,51 @@ func TestRunPrepareMkosiStrictRejectsKubernetesDrift(t *testing.T) {
 	}
 }
 
+func TestRunPrepareMkosiRefreshIgnoresEmptyInstallerPackageFile(t *testing.T) {
+	oldQuery := queryRPMPackages
+	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		return []resourcetest.Package{{
+			Name:  "systemd",
+			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+		}}, nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.1-150500.1.1")
+	writeFile(t, filepath.Join(mkosiDir, "katl-installer.packages.tsv"), "")
+
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	err := run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "refresh",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("prepare refresh error = %v", err)
+	}
+	manifest, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if packageSet(manifest.PackageSets, "installer-image").Name != "" {
+		t.Fatalf("package sets = %#v, want no installer-image set", manifest.PackageSets)
+	}
+}
+
 func TestRunPrepareMkosiStrictRejectsInstallerDrift(t *testing.T) {
 	oldQuery := queryRPMPackages
 	t.Cleanup(func() { queryRPMPackages = oldQuery })

@@ -159,6 +159,25 @@ func (n RunningInstalledRuntimeNode) Stop() error {
 	return n.handle.Wait()
 }
 
+func (n RunningInstalledRuntimeNode) StopFailure(failure string) error {
+	if n.handle == nil {
+		return nil
+	}
+	n.handle.StopFailure()
+	err := n.handle.Wait()
+	result := n.handle.DebugFailedResult()
+	if strings.TrimSpace(failure) == "" {
+		failure = "parent scenario failed"
+	}
+	if writeErr := writeInstalledRuntimeNodeResult(result, StatusFailed, failure, n.handle.Started); writeErr != nil {
+		if err != nil {
+			return fmt.Errorf("%w; write installed runtime node result: %v", err, writeErr)
+		}
+		return writeErr
+	}
+	return err
+}
+
 func nodeResult(parent Result, name string) Result {
 	runDir := filepath.Join(parent.RunDir, "nodes", name)
 	result := parent

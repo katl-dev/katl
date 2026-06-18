@@ -882,6 +882,7 @@ func TestVMTestRunPrintsPreservedDebugTargets(t *testing.T) {
 		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
 		"KATL_FAKE_CHILD_EXIT=7",
 		"KATL_FAKE_CHILD_WORLD_RESULT=failed",
+		"KATL_FAKE_CHILD_WORLD_RESULT_LAYOUT=node",
 		"KATL_FAKE_CHILD_WORLD_DEBUG_PRESERVED=1",
 		"KATL_VMTEST_RUN_ID=run-debug-output",
 		"KATL_VMTEST_RUN_DIR="+runDir,
@@ -905,8 +906,58 @@ func TestVMTestRunPrintsPreservedDebugTargets(t *testing.T) {
 		}
 	}
 	artifact := readFile(t, filepath.Join(runDir, "preserved-vm-debug.txt"))
-	if !strings.Contains(artifact, "katl-debug-run") || !strings.Contains(artifact, "vmtest-clean") {
+	if !strings.Contains(artifact, "katl-debug-run") || !strings.Contains(artifact, "vmtest-clean") || !strings.Contains(artifact, "nodes/cp-1/result.json") {
 		t.Fatalf("debug artifact missing target info:\n%s", artifact)
+	}
+}
+
+func TestVMTestDebugPrintsLiveTargets(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	result := filepath.Join(tmp, "run", "result.json")
+	serial := filepath.Join(tmp, "run", "vm", "runtime-serial.log")
+	if err := os.MkdirAll(filepath.Dir(serial), 0o755); err != nil {
+		t.Fatalf("MkdirAll(serial dir) error = %v", err)
+	}
+	jq := exec.Command("jq", "-n",
+		"--arg", "serial", serial,
+		`{
+		  status: "passed",
+		  domainName: "katl-live-debug",
+		  artifacts: {runtimeSerial: $serial},
+		  vsock: {enabled: true, guestCid: 2048, port: 10240},
+		  debug: {onFailure: true, shell: true}
+		}`,
+	)
+	data, err := jq.Output()
+	if err != nil {
+		t.Fatalf("jq result fixture: %v", err)
+	}
+	if err := os.WriteFile(result, data, 0o644); err != nil {
+		t.Fatalf("WriteFile(result) error = %v", err)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-debug"), filepath.Dir(result))
+	cmd.Dir = repo
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-debug failed: %v\n%s", err, output)
+	}
+	for _, want := range []string{
+		"vmtest debug targets",
+		"domain: katl-live-debug",
+		"reason: vmtest domain recorded in result; it may no longer be running",
+		"source: result",
+		"serial tail: 'tail' '-f' '" + serial + "'",
+		"domstate: 'virsh' '-c' 'qemu:///system' 'domstate' 'katl-live-debug'",
+		"console (invasive): 'virsh' '-c' 'qemu:///system' 'console' 'katl-live-debug' '--force'",
+		"vsock: cid=2048 port=10240",
+		"shell: serial-root",
+		"cleanup after preservation: 'scripts/vmtest-clean' '" + result + "'",
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
 	}
 }
 
@@ -951,6 +1002,107 @@ exit 0
 		if !strings.Contains(log, want) {
 			t.Fatalf("virsh log missing %q:\n%s", want, log)
 		}
+	}
+}
+
+func TestVMTestCleanKillsOrphanQEMUProcess(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	result := filepath.Join(tmp, "result.json")
+	if err := os.WriteFile(result, []byte(`{
+  "debug": {
+    "targets": [{
+      "preserved": true,
+      "domainName": "katl-orphaned-domain",
+      "libvirtURI": "qemu:///system"
+    }]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(result) error = %v", err)
+	}
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+exit 1
+`)
+	ps := filepath.Join(tmp, "ps")
+	writeExecutable(t, ps, `#!/usr/bin/env bash
+printf '123 /run/libvirt/nix-emulators/qemu-system-x86_64 -name guest=katl-orphaned-domain,debug-threads=on\n'
+printf '456 /run/libvirt/nix-emulators/qemu-system-x86_64 -name guest=katl-other-domain,debug-threads=on\n'
+`)
+	killLog := filepath.Join(tmp, "kill.log")
+	kill := filepath.Join(tmp, "kill")
+	writeExecutable(t, kill, `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$KATL_FAKE_KILL_LOG"
+exit 0
+`)
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), result)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"KATL_VMTEST_VIRSH="+virsh,
+		"KATL_VMTEST_PS="+ps,
+		"KATL_VMTEST_KILL="+kill,
+		"KATL_FAKE_KILL_LOG="+killLog,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-clean failed: %v\n%s", err, output)
+	}
+	log := readFile(t, killLog)
+	if strings.TrimSpace(log) != "123" {
+		t.Fatalf("kill log = %q, want only orphan pid 123", log)
+	}
+	if !strings.Contains(string(output), "checking for orphan qemu process") {
+		t.Fatalf("output missing orphan fallback diagnostic:\n%s", output)
+	}
+}
+
+func TestVMTestCleanFailsWhenOrphanQEMUKillFails(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	result := filepath.Join(tmp, "result.json")
+	if err := os.WriteFile(result, []byte(`{
+  "debug": {
+    "targets": [{
+      "preserved": true,
+      "domainName": "katl-stuck-domain",
+      "libvirtURI": "qemu:///system"
+    }]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(result) error = %v", err)
+	}
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+exit 1
+`)
+	ps := filepath.Join(tmp, "ps")
+	writeExecutable(t, ps, `#!/usr/bin/env bash
+printf '123 /run/libvirt/nix-emulators/qemu-system-x86_64 -name guest=katl-stuck-domain,debug-threads=on\n'
+`)
+	kill := filepath.Join(tmp, "kill")
+	writeExecutable(t, kill, `#!/usr/bin/env bash
+exit 1
+`)
+	sudo := filepath.Join(tmp, "sudo")
+	writeExecutable(t, sudo, `#!/usr/bin/env bash
+exit 1
+`)
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), result)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"KATL_VMTEST_VIRSH="+virsh,
+		"KATL_VMTEST_PS="+ps,
+		"KATL_VMTEST_KILL="+kill,
+		"KATL_VMTEST_SUDO="+sudo,
+	)
+	output, err := cmd.CombinedOutput()
+	if exitCode(err) == 0 {
+		t.Fatalf("vmtest-clean unexpectedly succeeded:\n%s", output)
+	}
+	if !strings.Contains(string(output), "failed to kill orphan qemu pid 123") {
+		t.Fatalf("output missing kill failure diagnostic:\n%s", output)
 	}
 }
 
@@ -1142,6 +1294,8 @@ if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then
     scenario_run_dir="$scenario_dir"
     if [[ "${KATL_FAKE_CHILD_WORLD_RESULT_LAYOUT:-}" == "nested" ]]; then
         scenario_run_dir="$scenario_dir/vm-runs/fake-run"
+    elif [[ "${KATL_FAKE_CHILD_WORLD_RESULT_LAYOUT:-}" == "node" ]]; then
+        scenario_run_dir="$scenario_dir/vm-runs/fake-run/nodes/cp-1"
     fi
     run_id="$(jq -r '.runID' "$KATL_VMTEST_WORLD_MANIFEST")"
     mkdir -p "$scenario_run_dir"

@@ -925,6 +925,9 @@ func readRPMPackageFile(path string) ([]resourcetest.Package, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("parse rpm package set %s: %w", path, err)
 	}
+	if len(packages) == 0 {
+		return nil, false, nil
+	}
 	return packages, true, nil
 }
 

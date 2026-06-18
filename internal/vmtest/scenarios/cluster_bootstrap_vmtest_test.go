@@ -1,8 +1,10 @@
 package scenarios
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -203,6 +205,10 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
 	evidenceDir := filepath.Join(result.RunDir, "operation-evidence")
 	artifactManifestPath := filepath.Join(result.ManifestDir, "operation-backed-bootstrap-artifacts.json")
+	bootstrapFixture, err := stageBootstrapFixtureInputs(result.ManifestDir, bootstrapFixtureInputsForRun(katlRepoRoot(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	cpResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "cp-1")
 	if err != nil {
 		t.Fatal(err)
@@ -222,6 +228,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		BootstrapStdout:    stdoutPath,
 		BootstrapStderr:    stderrPath,
 		KubectlOutput:      kubectlOut,
+		BootstrapFixture:   bootstrapFixture,
 		EvidenceDir:        evidenceDir,
 	}); err != nil {
 		t.Fatal(err)
@@ -237,7 +244,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			ESPArtifacts:    inputs.ControlPlaneESP,
 			FixtureManifest: inputs.ControlPlaneFixture,
 			NodeMetadata:    inputs.ControlPlaneMetadata,
-			VM:              operationBackedVMConfigForRun(smoke, inputs.ControlPlaneMAC, 43301),
+			VM:              operationBackedVMConfigForRun(smoke, inputs.ControlPlaneMAC, 0),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -254,7 +261,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			ESPArtifacts:    inputs.WorkerESP,
 			FixtureManifest: inputs.WorkerFixture,
 			NodeMetadata:    inputs.WorkerMetadata,
-			VM:              operationBackedVMConfigForRun(smoke, inputs.WorkerMAC, 43302),
+			VM:              operationBackedVMConfigForRun(smoke, inputs.WorkerMAC, 0),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -267,6 +274,18 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	nodes := []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}
 	cpAddress := firstString(cpNode.Result.IPAddress, inputs.ControlPlaneAddress)
 	workerAddress := firstString(workerNode.Result.IPAddress, inputs.WorkerAddress)
+	cniFixtures, err := stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, cpAddress, workerAddress)
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage test CNI fixtures: %v", err)
+	}
+	imageFixtures, err := stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage test workload images: %v", err)
+	}
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -312,6 +331,8 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		BootstrapStderr:      stderrPath,
 		KubectlOutput:        kubectlOut,
 		EvidenceDir:          evidenceDir,
+		CNIFixtures:          cniFixtures,
+		ImageFixtures:        imageFixtures,
 		BootSelectionsBefore: bootSelectionsBefore,
 	}); err != nil {
 		t.Fatal(err)
@@ -327,15 +348,17 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		"--node-address", "worker-1=" + workerAddress,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
-	}, bootstrapFixtureInputsFromEnv()), &stdout, &stderr)
+	}, bootstrapFixture), &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
+	err = bootstrapCommandError(err, stdout.String())
 	if err != nil {
+		_ = os.WriteFile(filepath.Join(result.RunDir, "katlctl-bootstrap-error.txt"), []byte(err.Error()+"\n"), 0o644)
 		collectOperationBackedFailureEvidence(ctx, cpNode, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init")
 		collectOperationBackedFailureEvidence(ctx, workerNode, filepath.Join(evidenceDir, "worker-1"), "bootstrap-join-worker")
 		nodeStatus := collectNodeLocalStatusFailureEvidence(ctx, evidenceDir, nodes...)
-		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
+		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics("", nodes...)
 		_ = writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, nodes, operationBackedArtifacts{
 			Inventory:            inventoryPath,
@@ -344,7 +367,10 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			BootstrapStdout:      stdoutPath,
 			BootstrapStderr:      stderrPath,
 			KubectlOutput:        kubectlOut,
+			BootstrapFixture:     bootstrapFixture,
 			EvidenceDir:          evidenceDir,
+			CNIFixtures:          cniFixtures,
+			ImageFixtures:        imageFixtures,
 			BootSelectionsBefore: bootSelectionsBefore,
 			NodeStatus:           nodeStatus,
 		})
@@ -355,14 +381,14 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	workerEvidenceDir := filepath.Join(evidenceDir, "worker-1")
 	cpRecordPath, cpRecord, err := collectOperationEvidence(ctx, cpNode, cpEvidenceDir, "bootstrap-init")
 	if err != nil {
-		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
+		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect control-plane operation evidence: %v", err)
 	}
 	workerRecordPath, workerRecord, err := collectOperationEvidence(ctx, workerNode, workerEvidenceDir, "bootstrap-join-worker")
 	if err != nil {
-		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
+		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect worker operation evidence: %v", err)
@@ -417,7 +443,10 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		BootstrapStdout:      stdoutPath,
 		BootstrapStderr:      stderrPath,
 		KubectlOutput:        kubectlOut,
+		BootstrapFixture:     bootstrapFixture,
 		EvidenceDir:          evidenceDir,
+		CNIFixtures:          cniFixtures,
+		ImageFixtures:        imageFixtures,
 		BootSelectionsBefore: bootSelectionsBefore,
 		BootSelectionsAfter:  map[string]string{"cp-1": cpSelectionPath, "worker-1": workerSelectionPath},
 		OperationRecords:     map[string]string{"cp-1": cpRecordPath, "worker-1": workerRecordPath},
@@ -596,7 +625,10 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
 	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
-	bootstrapFixture := bootstrapFixtureInputsFromEnv()
+	bootstrapFixture, err := stageBootstrapFixtureInputs(result.ManifestDir, bootstrapFixtureInputsForRun(katlRepoRoot(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	cpResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "cp-1")
 	if err != nil {
 		t.Fatal(err)
@@ -609,7 +641,7 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 		{Name: "cp-1", Result: cpResult},
 		{Name: "worker-1", Result: workerResult},
 	}
-	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, plannedNodes, bootstrapFixture); err != nil {
+	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, plannedNodes, bootstrapFixture, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -623,7 +655,7 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 			ESPArtifacts:    inputs.ControlPlaneESP,
 			FixtureManifest: inputs.ControlPlaneFixture,
 			NodeMetadata:    inputs.ControlPlaneMetadata,
-			VM:              twoNodeVMConfigForRun(smoke, inputs.ControlPlaneMAC, 43101),
+			VM:              twoNodeVMConfigForRun(smoke, inputs.ControlPlaneMAC, 0),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -640,7 +672,7 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 			ESPArtifacts:    inputs.WorkerESP,
 			FixtureManifest: inputs.WorkerFixture,
 			NodeMetadata:    inputs.WorkerMetadata,
-			VM:              twoNodeVMConfigForRun(smoke, inputs.WorkerMAC, 43102),
+			VM:              twoNodeVMConfigForRun(smoke, inputs.WorkerMAC, 0),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -651,14 +683,26 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 	defer stopNode(t, workerNode)
 
 	nodes := []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}
+	controlPlaneAddress := firstString(cpNode.Result.IPAddress, inputs.ControlPlaneAddress)
+	workerAddress := firstString(workerNode.Result.IPAddress, inputs.WorkerAddress)
+	cniFixtures, err := stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, controlPlaneAddress, workerAddress)
+	if err != nil {
+		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage test CNI fixtures: %v", err)
+	}
+	imageFixtures, err := stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
+	if err != nil {
+		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage test workload images: %v", err)
+	}
 	if err := writeTwoNodeInventory(inventoryPath, inputs.KubernetesVersion, cpNode, workerNode); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, nodes, bootstrapFixture); err != nil {
+	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, nodes, bootstrapFixture, cniFixtures, imageFixtures); err != nil {
 		t.Fatal(err)
 	}
-	controlPlaneAddress := firstString(cpNode.Result.IPAddress, inputs.ControlPlaneAddress)
-	workerAddress := firstString(workerNode.Result.IPAddress, inputs.WorkerAddress)
 	var stdout, stderr bytes.Buffer
 	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
 		"cluster", "bootstrap",
@@ -674,8 +718,9 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
+	err = bootstrapCommandError(err, stdout.String())
 	if err != nil {
-		collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, result.RunDir)
+		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("katlctl cluster bootstrap failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
@@ -687,14 +732,12 @@ func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
 		t.Fatalf("bootstrap transcripts: %v", err)
 	}
 
-	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
-	output, err := cmd.CombinedOutput()
-	_ = os.WriteFile(kubectlOut, output, 0o644)
+	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 3*time.Minute, "node/cp-1", "node/worker-1")
 	if err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("kubectl get nodes failed: %v\n%s", err, output)
+		t.Fatalf("kubectl nodes did not converge: %v\n%s", err, output)
 	}
 	for _, want := range []string{"node/cp-1", "node/worker-1"} {
 		if !strings.Contains(string(output), want) {
@@ -940,12 +983,15 @@ nodes:
 }
 
 type operationBackedArtifacts struct {
-	Inventory            string            `json:"inventory"`
-	Kubeconfig           string            `json:"kubeconfig"`
-	KubeconfigMetadata   string            `json:"kubeconfigMetadata,omitempty"`
-	BootstrapStdout      string            `json:"bootstrapStdout"`
-	BootstrapStderr      string            `json:"bootstrapStderr"`
-	KubectlOutput        string            `json:"kubectlOutput"`
+	Inventory            string `json:"inventory"`
+	Kubeconfig           string `json:"kubeconfig"`
+	KubeconfigMetadata   string `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout      string `json:"bootstrapStdout"`
+	BootstrapStderr      string `json:"bootstrapStderr"`
+	KubectlOutput        string `json:"kubectlOutput"`
+	BootstrapFixture     bootstrapFixtureInputs
+	CNIFixtures          map[string]nodeCNIFixture
+	ImageFixtures        map[string][]nodeImageFixture
 	EvidenceDir          string            `json:"evidenceDir"`
 	BootSelectionsBefore map[string]string `json:"bootSelectionsBefore,omitempty"`
 	BootSelectionsAfter  map[string]string `json:"bootSelectionsAfter,omitempty"`
@@ -956,42 +1002,45 @@ type operationBackedArtifacts struct {
 }
 
 type operationBackedArtifactManifest struct {
-	VMTestRun                string                      `json:"vmtestRun,omitempty"`
-	WorldManifest            string                      `json:"worldManifest,omitempty"`
-	HostCapabilities         string                      `json:"hostCapabilities,omitempty"`
-	MkosiArtifactIndex       string                      `json:"mkosiArtifactIndex,omitempty"`
-	ControlPlaneRunDir       string                      `json:"controlPlaneRunDir"`
-	WorkerRunDir             string                      `json:"workerRunDir,omitempty"`
-	NodeScenarios            map[string]string           `json:"nodeScenarios,omitempty"`
-	NodeResults              map[string]string           `json:"nodeResults,omitempty"`
-	LaunchCommands           map[string]string           `json:"launchCommands,omitempty"`
-	DomainXMLs               map[string]string           `json:"domainXMLs,omitempty"`
-	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
-	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
-	LibvirtLeases            map[string]string           `json:"libvirtLeases,omitempty"`
-	NodeDomains              map[string]string           `json:"nodeDomains,omitempty"`
-	NodeMACs                 map[string]string           `json:"nodeMACs,omitempty"`
-	NodeIPs                  map[string]string           `json:"nodeIPs,omitempty"`
-	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
-	FixtureProducerScenarios map[string]string           `json:"fixtureProducerScenarios,omitempty"`
-	FixtureProducerResults   map[string]string           `json:"fixtureProducerResults,omitempty"`
-	Inventory                string                      `json:"inventory"`
-	Kubeconfig               string                      `json:"kubeconfig"`
-	KubeconfigMetadata       string                      `json:"kubeconfigMetadata,omitempty"`
-	BootstrapStdout          string                      `json:"bootstrapStdout"`
-	BootstrapStderr          string                      `json:"bootstrapStderr"`
-	KubectlOutput            string                      `json:"kubectlOutput"`
-	EvidenceDir              string                      `json:"evidenceDir"`
-	BootSelectionsBefore     map[string]string           `json:"bootSelectionsBefore,omitempty"`
-	BootSelectionsAfter      map[string]string           `json:"bootSelectionsAfter,omitempty"`
-	OperationRecords         map[string]string           `json:"operationRecords,omitempty"`
-	OperationJournals        map[string]string           `json:"operationJournals,omitempty"`
-	GenerationMetadata       map[string]string           `json:"generationMetadata,omitempty"`
-	NodeStatus               map[string]string           `json:"nodeStatus,omitempty"`
-	KubectlDiagnostics       map[string]string           `json:"kubectlDiagnostics,omitempty"`
-	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
-	NetworkLeases            string                      `json:"networkLeases,omitempty"`
-	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
+	VMTestRun                string                        `json:"vmtestRun,omitempty"`
+	WorldManifest            string                        `json:"worldManifest,omitempty"`
+	HostCapabilities         string                        `json:"hostCapabilities,omitempty"`
+	MkosiArtifactIndex       string                        `json:"mkosiArtifactIndex,omitempty"`
+	ControlPlaneRunDir       string                        `json:"controlPlaneRunDir"`
+	WorkerRunDir             string                        `json:"workerRunDir,omitempty"`
+	NodeScenarios            map[string]string             `json:"nodeScenarios,omitempty"`
+	NodeResults              map[string]string             `json:"nodeResults,omitempty"`
+	LaunchCommands           map[string]string             `json:"launchCommands,omitempty"`
+	DomainXMLs               map[string]string             `json:"domainXMLs,omitempty"`
+	InstalledRuntimeInputs   map[string]string             `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts         map[string]string             `json:"vsockTranscripts,omitempty"`
+	LibvirtLeases            map[string]string             `json:"libvirtLeases,omitempty"`
+	NodeDomains              map[string]string             `json:"nodeDomains,omitempty"`
+	NodeMACs                 map[string]string             `json:"nodeMACs,omitempty"`
+	NodeIPs                  map[string]string             `json:"nodeIPs,omitempty"`
+	FixtureInputs            map[string]nodeFixtureInput   `json:"fixtureInputs,omitempty"`
+	FixtureProducerScenarios map[string]string             `json:"fixtureProducerScenarios,omitempty"`
+	FixtureProducerResults   map[string]string             `json:"fixtureProducerResults,omitempty"`
+	Inventory                string                        `json:"inventory"`
+	Kubeconfig               string                        `json:"kubeconfig"`
+	KubeconfigMetadata       string                        `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout          string                        `json:"bootstrapStdout"`
+	BootstrapStderr          string                        `json:"bootstrapStderr"`
+	KubectlOutput            string                        `json:"kubectlOutput"`
+	BootstrapFixture         *bootstrapFixtureInputs       `json:"bootstrapFixture,omitempty"`
+	CNIFixtures              map[string]nodeCNIFixture     `json:"cniFixtures,omitempty"`
+	ImageFixtures            map[string][]nodeImageFixture `json:"imageFixtures,omitempty"`
+	EvidenceDir              string                        `json:"evidenceDir"`
+	BootSelectionsBefore     map[string]string             `json:"bootSelectionsBefore,omitempty"`
+	BootSelectionsAfter      map[string]string             `json:"bootSelectionsAfter,omitempty"`
+	OperationRecords         map[string]string             `json:"operationRecords,omitempty"`
+	OperationJournals        map[string]string             `json:"operationJournals,omitempty"`
+	GenerationMetadata       map[string]string             `json:"generationMetadata,omitempty"`
+	NodeStatus               map[string]string             `json:"nodeStatus,omitempty"`
+	KubectlDiagnostics       map[string]string             `json:"kubectlDiagnostics,omitempty"`
+	SerialLogs               map[string]string             `json:"serialLogs,omitempty"`
+	NetworkLeases            string                        `json:"networkLeases,omitempty"`
+	Diagnostics              map[string]string             `json:"diagnostics,omitempty"`
 }
 
 func operationBackedFixtureInputs(inputs operationBackedSmokeInputs) map[string]nodeFixtureInput {
@@ -1037,6 +1086,9 @@ func writeOperationBackedArtifactManifest(path string, result vmtest.Result, inp
 		BootstrapStdout:          artifacts.BootstrapStdout,
 		BootstrapStderr:          artifacts.BootstrapStderr,
 		KubectlOutput:            artifacts.KubectlOutput,
+		BootstrapFixture:         artifacts.BootstrapFixture.manifestValue(),
+		CNIFixtures:              artifacts.CNIFixtures,
+		ImageFixtures:            artifacts.ImageFixtures,
 		EvidenceDir:              artifacts.EvidenceDir,
 		BootSelectionsBefore:     artifacts.BootSelectionsBefore,
 		BootSelectionsAfter:      artifacts.BootSelectionsAfter,
@@ -1052,41 +1104,43 @@ func writeOperationBackedArtifactManifest(path string, result vmtest.Result, inp
 }
 
 type twoNodeArtifactManifest struct {
-	VMTestRun                string                      `json:"vmtestRun,omitempty"`
-	WorldManifest            string                      `json:"worldManifest,omitempty"`
-	HostCapabilities         string                      `json:"hostCapabilities,omitempty"`
-	MkosiArtifactIndex       string                      `json:"mkosiArtifactIndex,omitempty"`
-	ControlPlaneRunDir       string                      `json:"controlPlaneRunDir"`
-	WorkerRunDir             string                      `json:"workerRunDir"`
-	NodeScenarios            map[string]string           `json:"nodeScenarios,omitempty"`
-	NodeResults              map[string]string           `json:"nodeResults,omitempty"`
-	LaunchCommands           map[string]string           `json:"launchCommands,omitempty"`
-	DomainXMLs               map[string]string           `json:"domainXMLs,omitempty"`
-	InstalledRuntimeInputs   map[string]string           `json:"installedRuntimeInputs,omitempty"`
-	VSockTranscripts         map[string]string           `json:"vsockTranscripts,omitempty"`
-	LibvirtLeases            map[string]string           `json:"libvirtLeases,omitempty"`
-	NodeDomains              map[string]string           `json:"nodeDomains,omitempty"`
-	NodeMACs                 map[string]string           `json:"nodeMACs,omitempty"`
-	NodeIPs                  map[string]string           `json:"nodeIPs,omitempty"`
-	FixtureInputs            map[string]nodeFixtureInput `json:"fixtureInputs,omitempty"`
-	FixtureProducerScenarios map[string]string           `json:"fixtureProducerScenarios,omitempty"`
-	FixtureProducerResults   map[string]string           `json:"fixtureProducerResults,omitempty"`
-	Inventory                string                      `json:"inventory"`
-	Kubeconfig               string                      `json:"kubeconfig"`
-	KubeconfigMetadata       string                      `json:"kubeconfigMetadata,omitempty"`
-	BootstrapStdout          string                      `json:"bootstrapStdout"`
-	BootstrapStderr          string                      `json:"bootstrapStderr"`
-	BootstrapFixture         *bootstrapFixtureInputs     `json:"bootstrapFixture,omitempty"`
-	KubectlOutput            string                      `json:"kubectlOutput"`
-	KubectlDiagnostics       map[string]string           `json:"kubectlDiagnostics,omitempty"`
-	ControlPlaneTranscript   string                      `json:"controlPlaneTranscript"`
-	WorkerTranscript         string                      `json:"workerTranscript"`
-	SerialLogs               map[string]string           `json:"serialLogs,omitempty"`
-	NetworkLeases            string                      `json:"networkLeases,omitempty"`
-	Diagnostics              map[string]string           `json:"diagnostics,omitempty"`
+	VMTestRun                string                        `json:"vmtestRun,omitempty"`
+	WorldManifest            string                        `json:"worldManifest,omitempty"`
+	HostCapabilities         string                        `json:"hostCapabilities,omitempty"`
+	MkosiArtifactIndex       string                        `json:"mkosiArtifactIndex,omitempty"`
+	ControlPlaneRunDir       string                        `json:"controlPlaneRunDir"`
+	WorkerRunDir             string                        `json:"workerRunDir"`
+	NodeScenarios            map[string]string             `json:"nodeScenarios,omitempty"`
+	NodeResults              map[string]string             `json:"nodeResults,omitempty"`
+	LaunchCommands           map[string]string             `json:"launchCommands,omitempty"`
+	DomainXMLs               map[string]string             `json:"domainXMLs,omitempty"`
+	InstalledRuntimeInputs   map[string]string             `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts         map[string]string             `json:"vsockTranscripts,omitempty"`
+	LibvirtLeases            map[string]string             `json:"libvirtLeases,omitempty"`
+	NodeDomains              map[string]string             `json:"nodeDomains,omitempty"`
+	NodeMACs                 map[string]string             `json:"nodeMACs,omitempty"`
+	NodeIPs                  map[string]string             `json:"nodeIPs,omitempty"`
+	FixtureInputs            map[string]nodeFixtureInput   `json:"fixtureInputs,omitempty"`
+	FixtureProducerScenarios map[string]string             `json:"fixtureProducerScenarios,omitempty"`
+	FixtureProducerResults   map[string]string             `json:"fixtureProducerResults,omitempty"`
+	Inventory                string                        `json:"inventory"`
+	Kubeconfig               string                        `json:"kubeconfig"`
+	KubeconfigMetadata       string                        `json:"kubeconfigMetadata,omitempty"`
+	BootstrapStdout          string                        `json:"bootstrapStdout"`
+	BootstrapStderr          string                        `json:"bootstrapStderr"`
+	BootstrapFixture         *bootstrapFixtureInputs       `json:"bootstrapFixture,omitempty"`
+	CNIFixtures              map[string]nodeCNIFixture     `json:"cniFixtures,omitempty"`
+	ImageFixtures            map[string][]nodeImageFixture `json:"imageFixtures,omitempty"`
+	KubectlOutput            string                        `json:"kubectlOutput"`
+	KubectlDiagnostics       map[string]string             `json:"kubectlDiagnostics,omitempty"`
+	ControlPlaneTranscript   string                        `json:"controlPlaneTranscript"`
+	WorkerTranscript         string                        `json:"workerTranscript"`
+	SerialLogs               map[string]string             `json:"serialLogs,omitempty"`
+	NetworkLeases            string                        `json:"networkLeases,omitempty"`
+	Diagnostics              map[string]string             `json:"diagnostics,omitempty"`
 }
 
-func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmokeInputs, transcriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs) error {
+func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmokeInputs, transcriptDir string, nodes []vmtest.RunningInstalledRuntimeNode, bootstrapFixture bootstrapFixtureInputs, cniFixtures map[string]nodeCNIFixture, imageFixtures map[string][]nodeImageFixture) error {
 	nodeByName := nodeMap(nodes)
 	return writeTwoNodeArtifactManifest(filepath.Join(result.ManifestDir, "two-node-artifacts.json"), twoNodeArtifactManifest{
 		VMTestRun:                inputs.WorldProvenance.VMTestRun,
@@ -1114,6 +1168,8 @@ func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmoke
 		BootstrapStdout:          filepath.Join(result.RunDir, "katlctl-bootstrap.stdout"),
 		BootstrapStderr:          filepath.Join(result.RunDir, "katlctl-bootstrap.stderr"),
 		BootstrapFixture:         bootstrapFixture.manifestValue(),
+		CNIFixtures:              cniFixtures,
+		ImageFixtures:            imageFixtures,
 		KubectlOutput:            filepath.Join(result.RunDir, "kubectl-get-nodes.txt"),
 		KubectlDiagnostics:       kubectlDiagnosticPaths(result.RunDir),
 		ControlPlaneTranscript:   twoNodeBootstrapTranscriptPath(transcriptDir, "cp-1"),
@@ -1134,11 +1190,32 @@ type nodeFixtureInput struct {
 
 type bootstrapFixtureInputs struct {
 	Manifests []string `json:"manifests,omitempty"`
+	PreWaits  []string `json:"preWaits,omitempty"`
 	Waits     []string `json:"waits,omitempty"`
 }
 
+type nodeCNIFixture struct {
+	Source           string `json:"source"`
+	GuestSource      string `json:"guestSource"`
+	GuestTarget      string `json:"guestTarget"`
+	PodSubnet        string `json:"podSubnet"`
+	PodGateway       string `json:"podGateway"`
+	PeerSubnet       string `json:"peerSubnet"`
+	PeerAddress      string `json:"peerAddress"`
+	PluginSource     string `json:"pluginSource"`
+	PluginTarget     string `json:"pluginTarget"`
+	ContainerdConfig string `json:"containerdConfig"`
+	ContainerdDropIn string `json:"containerdDropIn"`
+}
+
+type nodeImageFixture struct {
+	Image     string `json:"image"`
+	Source    string `json:"source"`
+	GuestPath string `json:"guestPath"`
+}
+
 func (i bootstrapFixtureInputs) empty() bool {
-	return len(i.Manifests) == 0 && len(i.Waits) == 0
+	return len(i.Manifests) == 0 && len(i.PreWaits) == 0 && len(i.Waits) == 0
 }
 
 func (i bootstrapFixtureInputs) manifestValue() *bootstrapFixtureInputs {
@@ -1155,6 +1232,319 @@ func bootstrapFixtureInputsFromEnv() bootstrapFixtureInputs {
 	}
 }
 
+func bootstrapFixtureInputsForRun(repo string) bootstrapFixtureInputs {
+	inputs := usableClusterBootstrapFixtureInputs(repo)
+	env := bootstrapFixtureInputsFromEnv()
+	inputs.Manifests = append(inputs.Manifests, env.Manifests...)
+	inputs.Waits = append(inputs.Waits, env.Waits...)
+	return inputs
+}
+
+func usableClusterBootstrapFixtureInputs(repo string) bootstrapFixtureInputs {
+	root := filepath.Join(repo, "internal", "vmtest", "scenarios", "testdata", "bootstrap")
+	return bootstrapFixtureInputs{
+		Manifests: []string{
+			filepath.Join(root, "cross-node-workload.yaml"),
+		},
+		PreWaits: []string{
+			"nodes-ready",
+		},
+		Waits: []string{
+			"rollout-status:katl-vmtest:deployment/net-server",
+			"condition:katl-vmtest:job/net-client:Complete",
+		},
+	}
+}
+
+func stageTwoNodeCNIFixtures(ctx context.Context, repo string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress string) (map[string]nodeCNIFixture, error) {
+	source := filepath.Join(repo, "internal", "vmtest", "scenarios", "testdata", "bootstrap", "bridge-cni.conflist")
+	fixtures := map[string]nodeCNIFixture{}
+	cp, err := stageNodeCNIFixture(ctx, cpNode, source, "10.244.0.0/24", "10.244.0.1", "10.244.1.0/24", workerAddress)
+	if err != nil {
+		return nil, fmt.Errorf("stage cp-1 CNI: %w", err)
+	}
+	worker, err := stageNodeCNIFixture(ctx, workerNode, source, "10.244.1.0/24", "10.244.1.1", "10.244.0.0/24", cpAddress)
+	if err != nil {
+		return nil, fmt.Errorf("stage worker-1 CNI: %w", err)
+	}
+	fixtures["cp-1"] = cp
+	fixtures["worker-1"] = worker
+	return fixtures, nil
+}
+
+func stageNodeCNIFixture(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, source, podSubnet, podGateway, peerSubnet, peerAddress string) (nodeCNIFixture, error) {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return nodeCNIFixture{}, err
+	}
+	text := strings.ReplaceAll(string(data), "__POD_SUBNET__", podSubnet)
+	text = strings.ReplaceAll(text, "__POD_GATEWAY__", podGateway)
+	data = []byte(text)
+	fixture := nodeCNIFixture{
+		Source:           source,
+		GuestSource:      "/var/lib/katl/test-artifacts/bootstrap-cni/source/10-katl-vmtest-bridge.conflist",
+		GuestTarget:      "/var/lib/katl/test-artifacts/bootstrap-cni/net.d/10-katl-vmtest-bridge.conflist",
+		PodSubnet:        podSubnet,
+		PodGateway:       podGateway,
+		PeerSubnet:       peerSubnet,
+		PeerAddress:      peerAddress,
+		PluginSource:     "/usr/libexec/cni",
+		PluginTarget:     "/var/lib/katl/test-artifacts/bootstrap-cni/bin",
+		ContainerdConfig: "/var/lib/katl/test-artifacts/bootstrap-cni/containerd-config.toml",
+		ContainerdDropIn: "/run/systemd/system/containerd.service.d/10-katl-vmtest-cni.conf",
+	}
+	if err := writeNodeFile(ctx, node, fixture.GuestSource, data, 0o644, false); err != nil {
+		return nodeCNIFixture{}, err
+	}
+	for _, plugin := range []string{"bridge", "host-local", "portmap", "loopback"} {
+		argv := []string{"install", "-D", "-m", "0755", filepath.Join(fixture.PluginSource, plugin), filepath.Join(fixture.PluginTarget, plugin)}
+		if result, err := runNodeCommand(ctx, node, argv, 32<<10); err != nil {
+			return nodeCNIFixture{}, fmt.Errorf("install CNI plugin %s: %w", plugin, err)
+		} else if result.ExitStatus != 0 {
+			return nodeCNIFixture{}, fmt.Errorf("%s exited %d: %s", strings.Join(argv, " "), result.ExitStatus, strings.TrimSpace(string(result.Stderr)))
+		}
+	}
+	if result, err := runNodeCommand(ctx, node, []string{"install", "-D", "-m", "0644", fixture.GuestSource, fixture.GuestTarget}, 32<<10); err != nil {
+		return nodeCNIFixture{}, err
+	} else if result.ExitStatus != 0 {
+		return nodeCNIFixture{}, fmt.Errorf("install CNI config exited %d: %s", result.ExitStatus, strings.TrimSpace(string(result.Stderr)))
+	}
+	if err := configureNodeContainerdCNI(ctx, node, fixture); err != nil {
+		return nodeCNIFixture{}, err
+	}
+	for _, argv := range [][]string{
+		{"sysctl", "-w", "net.ipv4.ip_forward=1"},
+		{"ip", "route", "replace", peerSubnet, "via", peerAddress},
+	} {
+		if result, err := runNodeCommand(ctx, node, argv, 32<<10); err != nil {
+			return nodeCNIFixture{}, err
+		} else if result.ExitStatus != 0 {
+			return nodeCNIFixture{}, fmt.Errorf("%s exited %d: %s", strings.Join(argv, " "), result.ExitStatus, strings.TrimSpace(string(result.Stderr)))
+		}
+	}
+	return fixture, nil
+}
+
+func configureNodeContainerdCNI(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fixture nodeCNIFixture) error {
+	config := fmt.Sprintf(`version = 2
+
+[plugins."io.containerd.cri.v1.runtime".cni]
+  bin_dirs = [%q]
+  conf_dir = %q
+`, fixture.PluginTarget, filepath.Dir(fixture.GuestTarget))
+	if err := writeNodeFile(ctx, node, fixture.ContainerdConfig, []byte(config), 0o644, false); err != nil {
+		return fmt.Errorf("write containerd CNI config: %w", err)
+	}
+	dropInSource := "/var/lib/katl/test-artifacts/bootstrap-cni/containerd-service-dropin.conf"
+	dropIn := fmt.Sprintf(`[Service]
+ExecStart=
+ExecStart=/usr/bin/containerd --config %s
+`, fixture.ContainerdConfig)
+	if err := writeNodeFile(ctx, node, dropInSource, []byte(dropIn), 0o644, false); err != nil {
+		return fmt.Errorf("write containerd drop-in source: %w", err)
+	}
+	for _, command := range []struct {
+		name string
+		argv []string
+	}{
+		{name: "install containerd drop-in", argv: []string{"install", "-D", "-m", "0644", dropInSource, fixture.ContainerdDropIn}},
+		{name: "reload systemd", argv: []string{"systemctl", "daemon-reload"}},
+		{name: "restart containerd", argv: []string{"systemctl", "restart", "containerd.service"}},
+		{name: "check containerd", argv: []string{"systemctl", "is-active", "--quiet", "containerd.service"}},
+	} {
+		if result, err := runNodeCommand(ctx, node, command.argv, 32<<10); err != nil {
+			return fmt.Errorf("%s: %w", command.name, err)
+		} else if result.ExitStatus != 0 {
+			return fmt.Errorf("%s: %w", command.name, commandErrorDetail(result))
+		}
+	}
+	return nil
+}
+
+func stageTwoNodeImageFixtures(ctx context.Context, repo, workDir string, nodes ...vmtest.RunningInstalledRuntimeNode) (map[string][]nodeImageFixture, error) {
+	fixtures, err := buildBootstrapImageFixtures(ctx, repo, filepath.Join(workDir, "bootstrap-images"))
+	if err != nil {
+		return nil, err
+	}
+	staged := map[string][]nodeImageFixture{}
+	for _, node := range nodes {
+		for _, fixture := range fixtures {
+			data, err := os.ReadFile(fixture.Source)
+			if err != nil {
+				return nil, fmt.Errorf("read image fixture %s: %w", fixture.Source, err)
+			}
+			nodeFixture := fixture
+			nodeFixture.GuestPath = filepath.Join("/var/lib/katl/test-artifacts/bootstrap-images", filepath.Base(fixture.Source))
+			if err := writeNodeFileChunked(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
+				return nil, fmt.Errorf("stage %s image fixture on %s: %w", fixture.Image, node.Name, err)
+			}
+			if result, err := runNodeCommand(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 64<<10); err != nil {
+				return nil, fmt.Errorf("import %s image fixture on %s: %w", fixture.Image, node.Name, err)
+			} else if result.ExitStatus != 0 {
+				return nil, fmt.Errorf("import %s image fixture on %s: %w", fixture.Image, node.Name, commandErrorDetail(result))
+			}
+			staged[node.Name] = append(staged[node.Name], nodeFixture)
+		}
+	}
+	return staged, nil
+}
+
+func buildBootstrapImageFixtures(ctx context.Context, repo, workDir string) ([]nodeImageFixture, error) {
+	specs := []struct {
+		image      string
+		pkg        string
+		binaryName string
+		entrypoint string
+		archive    string
+	}{
+		{
+			image:      "localhost/katl-vmtest/net-server:latest",
+			pkg:        "./internal/vmtest/testcmd/net-server",
+			binaryName: "net-server",
+			entrypoint: "/net-server",
+			archive:    "net-server.tar",
+		},
+		{
+			image:      "localhost/katl-vmtest/net-client:latest",
+			pkg:        "./internal/vmtest/testcmd/net-client",
+			binaryName: "net-client",
+			entrypoint: "/net-client",
+			archive:    "net-client.tar",
+		},
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return nil, err
+	}
+	fixtures := make([]nodeImageFixture, 0, len(specs))
+	for _, spec := range specs {
+		binaryPath := filepath.Join(workDir, spec.binaryName)
+		cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", binaryPath, spec.pkg)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("build %s fixture binary: %w\n%s", spec.binaryName, err, output)
+		}
+		archivePath := filepath.Join(workDir, spec.archive)
+		if err := writeDockerArchive(archivePath, spec.image, binaryPath, spec.entrypoint); err != nil {
+			return nil, fmt.Errorf("write %s image archive: %w", spec.image, err)
+		}
+		fixtures = append(fixtures, nodeImageFixture{
+			Image:  spec.image,
+			Source: archivePath,
+		})
+	}
+	return fixtures, nil
+}
+
+func writeDockerArchive(path, image, binaryPath, entrypoint string) error {
+	binary, err := os.ReadFile(binaryPath)
+	if err != nil {
+		return err
+	}
+	var layer bytes.Buffer
+	layerWriter := tar.NewWriter(&layer)
+	if err := layerWriter.WriteHeader(&tar.Header{
+		Name:    strings.TrimPrefix(entrypoint, "/"),
+		Mode:    0o755,
+		Size:    int64(len(binary)),
+		ModTime: time.Unix(0, 0),
+	}); err != nil {
+		return err
+	}
+	if _, err := layerWriter.Write(binary); err != nil {
+		return err
+	}
+	if err := layerWriter.Close(); err != nil {
+		return err
+	}
+	diffID := sha256.Sum256(layer.Bytes())
+	config := map[string]any{
+		"architecture": "amd64",
+		"created":      "1970-01-01T00:00:00Z",
+		"os":           "linux",
+		"config": map[string]any{
+			"Entrypoint": []string{entrypoint},
+		},
+		"rootfs": map[string]any{
+			"type":     "layers",
+			"diff_ids": []string{"sha256:" + fmt.Sprintf("%x", diffID[:])},
+		},
+	}
+	configData, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+	manifestData, err := json.Marshal([]map[string]any{{
+		"Config":   "config.json",
+		"RepoTags": []string{image},
+		"Layers":   []string{"layer.tar"},
+	}})
+	if err != nil {
+		return err
+	}
+	var archive bytes.Buffer
+	archiveWriter := tar.NewWriter(&archive)
+	for _, entry := range []struct {
+		name string
+		data []byte
+		mode int64
+	}{
+		{name: "config.json", data: configData, mode: 0o644},
+		{name: "manifest.json", data: manifestData, mode: 0o644},
+		{name: "layer.tar", data: layer.Bytes(), mode: 0o644},
+	} {
+		if err := archiveWriter.WriteHeader(&tar.Header{
+			Name:    entry.name,
+			Mode:    entry.mode,
+			Size:    int64(len(entry.data)),
+			ModTime: time.Unix(0, 0),
+		}); err != nil {
+			return err
+		}
+		if _, err := archiveWriter.Write(entry.data); err != nil {
+			return err
+		}
+	}
+	if err := archiveWriter.Close(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, archive.Bytes(), 0o644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func stageBootstrapFixtureInputs(manifestDir string, inputs bootstrapFixtureInputs) (bootstrapFixtureInputs, error) {
+	if inputs.empty() {
+		return inputs, nil
+	}
+	dir := filepath.Join(manifestDir, "bootstrap-fixtures")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return bootstrapFixtureInputs{}, err
+	}
+	staged := bootstrapFixtureInputs{
+		PreWaits: append([]string(nil), inputs.PreWaits...),
+		Waits:    append([]string(nil), inputs.Waits...),
+	}
+	for index, source := range inputs.Manifests {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			continue
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			return bootstrapFixtureInputs{}, fmt.Errorf("read bootstrap fixture %s: %w", source, err)
+		}
+		target := filepath.Join(dir, fmt.Sprintf("%02d-%s", index+1, filepath.Base(source)))
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return bootstrapFixtureInputs{}, fmt.Errorf("stage bootstrap fixture %s: %w", source, err)
+		}
+		staged.Manifests = append(staged.Manifests, target)
+	}
+	return staged, nil
+}
+
 func bootstrapManifestInputsFromEnv() []string {
 	return compactStrings(append(splitPathList(os.Getenv("KATL_BOOTSTRAP_MANIFESTS")), os.Getenv("KATL_BOOTSTRAP_MANIFEST")))
 }
@@ -1166,6 +1556,9 @@ func bootstrapWaitInputsFromEnv() []string {
 func appendBootstrapFixtureArgs(args []string, inputs bootstrapFixtureInputs) []string {
 	for _, manifest := range inputs.Manifests {
 		args = append(args, "--bootstrap-manifest", manifest)
+	}
+	for _, wait := range inputs.PreWaits {
+		args = append(args, "--bootstrap-pre-wait", wait)
 	}
 	for _, wait := range inputs.Waits {
 		args = append(args, "--bootstrap-wait", wait)
@@ -1237,6 +1630,7 @@ func assertBootstrapPhases(t *testing.T, output string) {
 		"phase=kubeadm-init node=cp-1 status=passed",
 		"phase=worker-join node=worker-1 status=passed",
 		"phase=worker-ready node=worker-1 status=passed",
+		"phase=user-bootstrap status=passed",
 		"phase=kubeconfig status=passed",
 	} {
 		if !strings.Contains(output, want) {
@@ -1259,6 +1653,7 @@ func assertOperationBackedBootstrapPhases(t *testing.T, output string) {
 		"katlctl cluster bootstrap init-node=cp-1",
 		"phase=bootstrap-init node=cp-1 status=passed",
 		"phase=worker-join node=worker-1 status=passed",
+		"phase=user-bootstrap status=passed",
 		"phase=kubeconfig status=passed",
 	} {
 		if !strings.Contains(output, want) {
@@ -1275,6 +1670,18 @@ func assertOperationBackedBootstrapPhases(t *testing.T, output string) {
 			t.Fatalf("katlctl output contains forbidden operation-backed bootstrap text %q:\n%s", forbidden, output)
 		}
 	}
+}
+
+func bootstrapCommandError(err error, output string) error {
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "phase=") && strings.Contains(line, " status=failed") {
+			return fmt.Errorf("katlctl reported failed bootstrap phase: %s", line)
+		}
+	}
+	return nil
 }
 
 func readNodeFileWithRetry(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, maxBytes uint32, timeout time.Duration) ([]byte, error) {
@@ -1318,8 +1725,61 @@ func readNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, 
 	return result.Content, nil
 }
 
+func writeNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, content []byte, mode uint32, sensitive bool) error {
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	_, err = client.WriteFile(opCtx, &vmtestpb.WriteFileRequest{
+		Path:      path,
+		Content:   content,
+		Mode:      mode,
+		Sensitive: sensitive,
+	})
+	return err
+}
+
+func writeNodeFileChunked(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, content []byte, mode uint32) error {
+	const chunkSize = 512 << 10
+	if result, err := runNodeCommand(ctx, node, []string{"install", "-d", "-m", "0755", filepath.Dir(path)}, 16<<10); err != nil {
+		return fmt.Errorf("create parent: %w", err)
+	} else if result.ExitStatus != 0 {
+		return fmt.Errorf("create parent: %w", commandErrorDetail(result))
+	}
+	if result, err := runNodeCommand(ctx, node, []string{"dd", "if=/dev/null", "of=" + path, "bs=1", "count=0"}, 16<<10); err != nil {
+		return fmt.Errorf("create target: %w", err)
+	} else if result.ExitStatus != 0 {
+		return fmt.Errorf("create target: %w", commandErrorDetail(result))
+	}
+	for offset := 0; offset < len(content); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(content) {
+			end = len(content)
+		}
+		part := fmt.Sprintf("%s.part-%06d", path, offset/chunkSize)
+		if err := writeNodeFile(ctx, node, part, content[offset:end], 0o644, true); err != nil {
+			return fmt.Errorf("write part %d: %w", offset/chunkSize, err)
+		}
+		argv := []string{"dd", "if=" + part, "of=" + path, fmt.Sprintf("bs=%d", chunkSize), "seek=" + strconv.Itoa(offset/chunkSize), "conv=notrunc"}
+		if result, err := runNodeCommand(ctx, node, argv, 16<<10); err != nil {
+			return fmt.Errorf("append part %d: %w", offset/chunkSize, err)
+		} else if result.ExitStatus != 0 {
+			return fmt.Errorf("append part %d: %w", offset/chunkSize, commandErrorDetail(result))
+		}
+	}
+	if result, err := runNodeCommand(ctx, node, []string{"chmod", fmt.Sprintf("%04o", mode), path}, 16<<10); err != nil {
+		return fmt.Errorf("chmod target: %w", err)
+	} else if result.ExitStatus != 0 {
+		return fmt.Errorf("chmod target: %w", commandErrorDetail(result))
+	}
+	return nil
+}
+
 func runNodeCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
-	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
 	if err != nil {
@@ -1331,6 +1791,13 @@ func runNodeCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode
 		StdoutLimit: stdoutLimit,
 		StderrLimit: 32 << 10,
 	})
+}
+
+func commandErrorDetail(result *vmtestpb.CommandResult) error {
+	if result == nil {
+		return errors.New("command failed without a result")
+	}
+	return fmt.Errorf("exit=%d stdout=%q stderr=%q", result.GetExitStatus(), result.GetStdout(), result.GetStderr())
 }
 
 func assertGeneration0Selection(t *testing.T, data []byte) {
@@ -2125,22 +2592,48 @@ func collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, runDir string) 
 	return true
 }
 
+func collectKubectlDiagnosticsForFailure(ctx context.Context, initNode vmtest.RunningInstalledRuntimeNode, kubeconfigPath, runDir string) bool {
+	if collectKubectlDiagnosticsIfKubeconfigExists(kubeconfigPath, runDir) {
+		return true
+	}
+	if strings.TrimSpace(kubeconfigPath) == "" {
+		return false
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 35*time.Second)
+	defer cancel()
+	data, err := readNodeFileWithRetry(readCtx, initNode, "/etc/kubernetes/admin.conf", 2<<20, 30*time.Second)
+	if err != nil {
+		_ = os.WriteFile(filepath.Join(runDir, "kubectl-diagnostics-error.txt"), []byte("read admin kubeconfig: "+err.Error()+"\n"), 0o644)
+		return false
+	}
+	if err := os.WriteFile(kubeconfigPath, data, 0o600); err != nil {
+		_ = os.WriteFile(filepath.Join(runDir, "kubectl-diagnostics-error.txt"), []byte("write diagnostic kubeconfig: "+err.Error()+"\n"), 0o644)
+		return false
+	}
+	collectKubectlDiagnostics(kubeconfigPath, runDir)
+	return true
+}
+
 func waitForKubectlNodes(ctx context.Context, kubeconfigPath, outputPath string, timeout time.Duration, wants ...string) ([]byte, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var last []byte
 	var lastErr error
 	for {
+		readyCmd := exec.CommandContext(waitCtx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=10s")
+		readyOutput, readyErr := readyCmd.CombinedOutput()
 		cmd := exec.CommandContext(waitCtx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "name")
 		output, err := cmd.CombinedOutput()
 		if len(output) > 0 {
 			last = output
 			_ = os.WriteFile(outputPath, output, 0o644)
 		}
-		if err == nil && containsAllText(string(output), wants...) {
+		if err == nil && readyErr == nil && containsAllText(string(output), wants...) {
 			return output, nil
 		}
-		if err != nil {
+		if readyErr != nil {
+			lastErr = fmt.Errorf("nodes are not Ready: %s: %w", strings.TrimSpace(string(readyOutput)), readyErr)
+		} else if err != nil {
 			lastErr = err
 		} else {
 			lastErr = fmt.Errorf("missing nodes: %s", strings.Join(missingText(string(output), wants...), ", "))
@@ -2180,6 +2673,9 @@ func kubectlDiagnosticPaths(runDir string) map[string]string {
 		"events":         filepath.Join(runDir, "kubectl-get-events.txt"),
 		"kubeSystemPods": filepath.Join(runDir, "kubectl-get-pods-kube-system.txt"),
 		"nodesWide":      filepath.Join(runDir, "kubectl-get-nodes-wide.txt"),
+		"workloadJob":    filepath.Join(runDir, "kubectl-get-job-net-client.txt"),
+		"workloadLogs":   filepath.Join(runDir, "kubectl-logs-net-client.txt"),
+		"workloadPods":   filepath.Join(runDir, "kubectl-get-pods-katl-vmtest.txt"),
 	}
 }
 
@@ -2188,6 +2684,9 @@ func kubectlDiagnosticCommands(kubeconfigPath string) []kubectlDiagnosticCommand
 	return []kubectlDiagnosticCommand{
 		{Name: "nodesWide", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "wide"}},
 		{Name: "kubeSystemPods", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "-n", "kube-system", "get", "pods", "-o", "wide"}},
+		{Name: "workloadPods", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "-n", "katl-vmtest", "get", "pods", "-o", "wide"}},
+		{Name: "workloadJob", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "-n", "katl-vmtest", "get", "job/net-client", "-o", "wide"}},
+		{Name: "workloadLogs", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "-n", "katl-vmtest", "logs", "-l", "app=net-client", "--all-containers=true", "--prefix"}},
 		{Name: "events", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "get", "events", "-A", "--sort-by=.lastTimestamp"}},
 		{Name: "clusterInfo", Argv: []string{kubectl, "--kubeconfig", kubeconfigPath, "cluster-info"}},
 	}
@@ -2202,12 +2701,25 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 			{Name: "containerd", Argv: []string{"systemctl", "status", "containerd.service"}},
 			{Name: "kubelet", Argv: []string{"systemctl", "status", "kubelet.service"}},
 			{Name: "crictl-ps", Argv: []string{"crictl", "ps", "-a"}},
+			{Name: "crictl-pods", Argv: []string{"crictl", "pods"}},
 			{Name: "etc-kubernetes-mount", Argv: []string{"findmnt", "--target", "/etc/kubernetes", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS"}},
+			{Name: "network-addresses", Argv: []string{"ip", "addr"}},
+			{Name: "network-routes", Argv: []string{"ip", "route"}},
+			{Name: "ip-forward", Argv: []string{"sysctl", "net.ipv4.ip_forward"}, AllowFailure: true},
+			{Name: "kube-proxy-helper-conntrack", Argv: []string{"test", "-x", "/usr/bin/conntrack"}, AllowFailure: true},
+			{Name: "kube-proxy-helper-iptables-nft", Argv: []string{"test", "-x", "/usr/bin/iptables-nft"}, AllowFailure: true},
+			{Name: "kube-proxy-helper-ipvsadm", Argv: []string{"test", "-x", "/usr/bin/ipvsadm"}, AllowFailure: true},
+			{Name: "kube-proxy-helper-ipset", Argv: []string{"test", "-x", "/usr/bin/ipset"}, AllowFailure: true},
+			{Name: "kube-proxy-modules-loaded", Argv: []string{"lsmod"}, AllowFailure: true, StdoutLimit: 512 << 10},
+			{Name: "kube-proxy-ipvs-module", Argv: []string{"modprobe", "-n", "-v", "ip_vs"}, AllowFailure: true},
+			{Name: "kube-proxy-br-netfilter-module", Argv: []string{"modprobe", "-n", "-v", "br_netfilter"}, AllowFailure: true},
+			{Name: "cni-fixture-config", Argv: []string{"find", "/var/lib/katl/test-artifacts/bootstrap-cni", "-maxdepth", "4", "-type", "f", "-printf", "%M %u %g %s %p\n"}, AllowFailure: true},
 			{Name: "kubeadm-version", Argv: []string{"kubeadm", "version", "-o", "short"}},
 			{Name: "kubeadm-journal", Argv: []string{"journalctl", "--no-pager", "--output=short-monotonic", "-b", "_COMM=kubeadm"}},
 			{Name: "kubeadm-pki", Argv: []string{"find", "/etc/kubernetes/pki", "-maxdepth", "2", "-type", "f", "-printf", "%M %u %g %s %p\n"}},
 			{Name: "kubelet-state", Argv: []string{"find", "/var/lib/kubelet", "-maxdepth", "2", "-printf", "%M %u %g %s %p\n"}},
-			{Name: "kubernetes-logs", Argv: []string{"find", "/var/log/containers", "/var/log/pods", "-maxdepth", "2", "-printf", "%M %u %g %s %p\n"}},
+			{Name: "kubernetes-logs", Argv: []string{"find", "/var/log/containers", "/var/log/pods", "-maxdepth", "2", "-printf", "%M %u %g %s %p\n"}, AllowFailure: true},
+			{Name: "kubernetes-log-tail", Argv: []string{"find", "/var/log/pods", "-maxdepth", "4", "-type", "f", "-name", "*.log", "-print", "-exec", "tail", "-n", "120", "{}", ";"}, StdoutLimit: 1 << 20, AllowFailure: true},
 		},
 		Files: []vmtest.GuestFileRequest{
 			{Name: "node-metadata", Path: "/etc/katl/node.json"},
@@ -2215,8 +2727,17 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 			{Name: "kubelet-kubeconfig", Path: "/etc/kubernetes/kubelet.conf"},
 		},
 		Journals: []vmtest.GuestJournalRequest{{
-			Name:  "runtime-handoff",
-			Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "containerd.service", "kubelet.service"},
+			Name:     "runtime-handoff",
+			Units:    []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "containerd.service", "kubelet.service"},
+			MaxBytes: 1 << 20,
+		}, {
+			Name:     "container-runtime",
+			Units:    []string{"containerd.service", "kubelet.service"},
+			MaxBytes: 1 << 20,
+		}, {
+			Name:     "katlc-agent",
+			Units:    []string{"katlc-agent.service"},
+			MaxBytes: 1 << 20,
 		}},
 	}
 	if kubeadmRef == "control-plane" {
@@ -2339,6 +2860,12 @@ func finishTwoNodeResult(t *testing.T, runner vmtest.Runner, scenario vmtest.Sce
 
 func stopNode(t *testing.T, node vmtest.RunningInstalledRuntimeNode) {
 	t.Helper()
+	if t.Failed() {
+		if err := node.StopFailure("parent scenario failed"); err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("preserve failed %s: %v", node.Name, err)
+		}
+		return
+	}
 	if err := node.Stop(); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("stop %s: %v", node.Name, err)
 	}
@@ -2802,7 +3329,7 @@ func TestTwoNodeSmokeArtifactManifestUsesPlannedNodeArtifacts(t *testing.T) {
 			FixtureProducerScenarios: map[string]string{"cp-1": "/tmp/fixture-cp/scenario.json"},
 			FixtureProducerResults:   map[string]string{"worker-1": "/tmp/fixture-worker/result.json"},
 		},
-	}, filepath.Join(result.RunDir, "agent-transcripts"), nodes, bootstrapFixtureInputs{}); err != nil {
+	}, filepath.Join(result.RunDir, "agent-transcripts"), nodes, bootstrapFixtureInputs{}, nil, nil); err != nil {
 		t.Fatalf("writeTwoNodeSmokeArtifactManifest() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(result.ManifestDir, "two-node-artifacts.json"))
@@ -2972,15 +3499,107 @@ func TestBootstrapFixtureInputsFromEnv(t *testing.T) {
 	}
 }
 
+func TestUsableClusterBootstrapFixtureInputs(t *testing.T) {
+	repo := katlRepoRoot(t)
+	got := usableClusterBootstrapFixtureInputs(repo)
+	if !stringSlicesEqual(got.Manifests, []string{
+		filepath.Join(repo, "internal", "vmtest", "scenarios", "testdata", "bootstrap", "cross-node-workload.yaml"),
+	}) {
+		t.Fatalf("usable fixture manifests = %#v", got.Manifests)
+	}
+	if !stringSlicesEqual(got.PreWaits, []string{
+		"nodes-ready",
+	}) {
+		t.Fatalf("usable fixture pre-waits = %#v", got.PreWaits)
+	}
+	if !stringSlicesEqual(got.Waits, []string{
+		"rollout-status:katl-vmtest:deployment/net-server",
+		"condition:katl-vmtest:job/net-client:Complete",
+	}) {
+		t.Fatalf("usable fixture waits = %#v", got.Waits)
+	}
+	for _, path := range got.Manifests {
+		if info, err := os.Stat(path); err != nil || info.IsDir() {
+			t.Fatalf("usable fixture manifest %s stat = %v, info = %#v", path, err, info)
+		}
+	}
+	cniConfig, err := os.ReadFile(filepath.Join(repo, "internal", "vmtest", "scenarios", "testdata", "bootstrap", "bridge-cni.conflist"))
+	if err != nil {
+		t.Fatalf("read test CNI fixture: %v", err)
+	}
+	if !strings.Contains(string(cniConfig), `"type": "bridge"`) || !strings.Contains(string(cniConfig), `"gateway": "__POD_GATEWAY__"`) {
+		t.Fatalf("test CNI fixture must make the per-node pod gateway explicit:\n%s", cniConfig)
+	}
+}
+
+func TestBootstrapFixtureInputsForRunStartsWithRepoFixtureAndAppendsEnv(t *testing.T) {
+	repo := katlRepoRoot(t)
+	t.Setenv("KATL_BOOTSTRAP_MANIFEST", "/tmp/extra.yaml")
+	t.Setenv("KATL_BOOTSTRAP_WAIT", "resource-exists:katl-vmtest:job/net-client")
+
+	got := bootstrapFixtureInputsForRun(repo)
+	if len(got.Manifests) != 2 || got.Manifests[1] != "/tmp/extra.yaml" {
+		t.Fatalf("fixture manifests = %#v", got.Manifests)
+	}
+	if !stringSlicesEqual(got.PreWaits, []string{"nodes-ready"}) {
+		t.Fatalf("fixture pre-waits = %#v", got.PreWaits)
+	}
+	if len(got.Waits) != 3 || got.Waits[2] != "resource-exists:katl-vmtest:job/net-client" {
+		t.Fatalf("fixture waits = %#v", got.Waits)
+	}
+	if !strings.Contains(got.Manifests[0], "testdata/bootstrap/cross-node-workload.yaml") {
+		t.Fatalf("fixture does not start with repo workload manifest: %#v", got.Manifests)
+	}
+}
+
+func TestStageBootstrapFixtureInputs(t *testing.T) {
+	sourceDir := t.TempDir()
+	manifestOne := filepath.Join(sourceDir, "01-cni.yaml")
+	manifestTwo := filepath.Join(sourceDir, "02-workload.yaml")
+	if err := os.WriteFile(manifestOne, []byte("kind: ConfigMap\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestTwo, []byte("kind: Job\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := stageBootstrapFixtureInputs(t.TempDir(), bootstrapFixtureInputs{
+		Manifests: []string{manifestOne, manifestTwo},
+		PreWaits:  []string{"nodes-ready"},
+		Waits:     []string{"condition:default:job/smoke:Complete"},
+	})
+	if err != nil {
+		t.Fatalf("stageBootstrapFixtureInputs() error = %v", err)
+	}
+	if len(got.Manifests) != 2 || filepath.Base(got.Manifests[0]) != "01-01-cni.yaml" || filepath.Base(got.Manifests[1]) != "02-02-workload.yaml" {
+		t.Fatalf("staged manifests = %#v", got.Manifests)
+	}
+	if !stringSlicesEqual(got.PreWaits, []string{"nodes-ready"}) {
+		t.Fatalf("staged pre-waits = %#v", got.PreWaits)
+	}
+	if !stringSlicesEqual(got.Waits, []string{"condition:default:job/smoke:Complete"}) {
+		t.Fatalf("staged waits = %#v", got.Waits)
+	}
+	data, err := os.ReadFile(got.Manifests[1])
+	if err != nil {
+		t.Fatalf("read staged fixture: %v", err)
+	}
+	if string(data) != "kind: Job\n" {
+		t.Fatalf("staged fixture content = %q", data)
+	}
+}
+
 func TestAppendBootstrapFixtureArgs(t *testing.T) {
 	got := appendBootstrapFixtureArgs([]string{"cluster", "bootstrap"}, bootstrapFixtureInputs{
 		Manifests: []string{"/tmp/01-cni.yaml", "/tmp/02-workload.yaml"},
+		PreWaits:  []string{"nodes-ready"},
 		Waits:     []string{"pods-ready:kube-system:k8s-app=kube-dns", "nodes-ready"},
 	})
 	want := []string{
 		"cluster", "bootstrap",
 		"--bootstrap-manifest", "/tmp/01-cni.yaml",
 		"--bootstrap-manifest", "/tmp/02-workload.yaml",
+		"--bootstrap-pre-wait", "nodes-ready",
 		"--bootstrap-wait", "pods-ready:kube-system:k8s-app=kube-dns",
 		"--bootstrap-wait", "nodes-ready",
 	}
@@ -3008,6 +3627,9 @@ func TestKubectlDiagnosticPathsAndCommands(t *testing.T) {
 		"events":         "/tmp/run/kubectl-get-events.txt",
 		"kubeSystemPods": "/tmp/run/kubectl-get-pods-kube-system.txt",
 		"nodesWide":      "/tmp/run/kubectl-get-nodes-wide.txt",
+		"workloadJob":    "/tmp/run/kubectl-get-job-net-client.txt",
+		"workloadLogs":   "/tmp/run/kubectl-logs-net-client.txt",
+		"workloadPods":   "/tmp/run/kubectl-get-pods-katl-vmtest.txt",
 	} {
 		if paths[name] != want {
 			t.Fatalf("kubectl diagnostic path %s = %q, want %q in %#v", name, paths[name], want, paths)
@@ -3018,8 +3640,8 @@ func TestKubectlDiagnosticPathsAndCommands(t *testing.T) {
 	}
 
 	commands := kubectlDiagnosticCommands("/tmp/kubeconfig.yaml")
-	if len(commands) != 4 {
-		t.Fatalf("kubectl diagnostic command count = %d, want 4: %#v", len(commands), commands)
+	if len(commands) != 7 {
+		t.Fatalf("kubectl diagnostic command count = %d, want 7: %#v", len(commands), commands)
 	}
 	for _, command := range commands {
 		if len(command.Argv) < 3 || command.Argv[0] != "kubectl" || command.Argv[1] != "--kubeconfig" || command.Argv[2] != "/tmp/kubeconfig.yaml" {
@@ -3031,6 +3653,15 @@ func TestKubectlDiagnosticPathsAndCommands(t *testing.T) {
 	}
 	if !kubectlDiagnosticCommandHasArgs(commands, "kubeSystemPods", "-n", "kube-system", "get", "pods", "-o", "wide") {
 		t.Fatalf("kubeSystemPods diagnostic command missing expected args: %#v", commands)
+	}
+	if !kubectlDiagnosticCommandHasArgs(commands, "workloadPods", "-n", "katl-vmtest", "get", "pods", "-o", "wide") {
+		t.Fatalf("workloadPods diagnostic command missing expected args: %#v", commands)
+	}
+	if !kubectlDiagnosticCommandHasArgs(commands, "workloadJob", "-n", "katl-vmtest", "get", "job/net-client", "-o", "wide") {
+		t.Fatalf("workloadJob diagnostic command missing expected args: %#v", commands)
+	}
+	if !kubectlDiagnosticCommandHasArgs(commands, "workloadLogs", "-n", "katl-vmtest", "logs", "-l", "app=net-client", "--all-containers=true", "--prefix") {
+		t.Fatalf("workloadLogs diagnostic command missing expected args: %#v", commands)
 	}
 	if !kubectlDiagnosticCommandHasArgs(commands, "events", "get", "events", "-A", "--sort-by=.lastTimestamp") {
 		t.Fatalf("events diagnostic command missing expected args: %#v", commands)
@@ -3108,7 +3739,7 @@ func TestBootstrapDiagnosticsAreNodeAware(t *testing.T) {
 	if !diagnosticCommand(cp, "etc-kubernetes-mount") || !diagnosticCommand(cp, "kubeadm-version") {
 		t.Fatalf("control-plane diagnostics commands = %#v", cp.Commands)
 	}
-	for _, want := range []string{"kubeadm-journal", "kubeadm-pki", "kubelet-state", "kubernetes-logs"} {
+	for _, want := range []string{"crictl-pods", "network-addresses", "network-routes", "kube-proxy-helper-conntrack", "kube-proxy-helper-iptables-nft", "kube-proxy-helper-ipvsadm", "kube-proxy-helper-ipset", "kube-proxy-modules-loaded", "kube-proxy-ipvs-module", "kube-proxy-br-netfilter-module", "cni-fixture-config", "kubeadm-journal", "kubeadm-pki", "kubelet-state", "kubernetes-logs", "kubernetes-log-tail"} {
 		if !diagnosticCommand(cp, want) {
 			t.Fatalf("control-plane diagnostics commands = %#v, want %s", cp.Commands, want)
 		}
@@ -3119,7 +3750,7 @@ func TestBootstrapDiagnosticsAreNodeAware(t *testing.T) {
 	if !diagnosticFile(cp, "kube-apiserver-manifest", "/etc/kubernetes/manifests/kube-apiserver.yaml") || !diagnosticFile(cp, "etcd-manifest", "/etc/kubernetes/manifests/etcd.yaml") {
 		t.Fatalf("control-plane diagnostics files = %#v, want static pod manifests", cp.Files)
 	}
-	if len(cp.Journals) != 1 || cp.Journals[0].Name != "runtime-handoff" || !diagnosticJournalUnit(cp, "runtime-handoff", "katl-runtime-handoff-status.service") {
+	if !diagnosticJournalUnit(cp, "runtime-handoff", "katl-runtime-handoff-status.service") || !diagnosticJournalUnit(cp, "container-runtime", "containerd.service") || !diagnosticJournalUnit(cp, "katlc-agent", "katlc-agent.service") {
 		t.Fatalf("control-plane diagnostics journals = %#v", cp.Journals)
 	}
 
@@ -3135,7 +3766,7 @@ func TestBootstrapDiagnosticsAreNodeAware(t *testing.T) {
 	if !diagnosticFile(worker, "kubeadm-config", "/etc/katl/kubeadm/worker/config.yaml") {
 		t.Fatalf("worker diagnostics files = %#v, want worker kubeadm config", worker.Files)
 	}
-	for _, want := range []string{"kubeadm-journal", "kubeadm-pki", "kubelet-state", "kubernetes-logs"} {
+	for _, want := range []string{"crictl-pods", "network-addresses", "network-routes", "kube-proxy-helper-conntrack", "kube-proxy-helper-iptables-nft", "kube-proxy-helper-ipvsadm", "kube-proxy-helper-ipset", "kube-proxy-modules-loaded", "kube-proxy-ipvs-module", "kube-proxy-br-netfilter-module", "cni-fixture-config", "kubeadm-journal", "kubeadm-pki", "kubelet-state", "kubernetes-logs", "kubernetes-log-tail"} {
 		if !diagnosticCommand(worker, want) {
 			t.Fatalf("worker diagnostics commands = %#v, want %s", worker.Commands, want)
 		}

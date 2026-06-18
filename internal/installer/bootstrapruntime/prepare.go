@@ -131,6 +131,9 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	if err := generation.WriteRecord(metadataPath, next); err != nil {
 		return Result{}, err
 	}
+	if err := writeLiveActivationOverride(root, candidate); err != nil {
+		return Result{}, err
+	}
 	activation, err := generation.ApplyActivation(root, next)
 	if err != nil {
 		return Result{}, fmt.Errorf("activate bootstrap runtime generation: %w", err)
@@ -142,6 +145,26 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 		ActivationPlan: activation,
 		KubeadmPath:    plan.RuntimeInputs.KubeadmInput.Path,
 	}, nil
+}
+
+func writeLiveActivationOverride(root string, candidate string) error {
+	if _, err := generation.MetadataPath(root, candidate); err != nil {
+		return err
+	}
+	path := filepath.Join(filepath.Clean(root), "run/systemd/system/katl-generation-activate.service.d/10-katl-live-generation.conf")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create live generation activation override: %w", err)
+	}
+	content := strings.Join([]string{
+		"[Service]",
+		"ExecStart=",
+		"ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/ --generation " + candidate,
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write live generation activation override: %w", err)
+	}
+	return nil
 }
 
 func confextRelease(previous generation.GenerationSpec) (confext.ExtensionRelease, error) {

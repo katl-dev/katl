@@ -190,6 +190,7 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 		"--vmtest-transcript-dir", "artifacts/transcripts",
 		"--bootstrap-manifest", "01-cni.yaml",
 		"--bootstrap-manifest", "02-flux.yaml",
+		"--bootstrap-pre-wait", "nodes-ready",
 		"--bootstrap-wait", "api-ready",
 		"--bootstrap-wait", "resource-exists:kube-system:daemonset/cilium",
 		"--bootstrap-wait", "rollout-status:kube-system:daemonset/cilium",
@@ -219,6 +220,12 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	}
 	if len(got.Bootstrap.Manifests) != 2 || got.Bootstrap.Manifests[0].Path != "01-cni.yaml" || got.Bootstrap.Manifests[1].Path != "02-flux.yaml" {
 		t.Fatalf("bootstrap manifests = %#v", got.Bootstrap.Manifests)
+	}
+	wantPreWaits := []cluster.BootstrapWait{
+		{Kind: cluster.BootstrapWaitNodesReady},
+	}
+	if !reflect.DeepEqual(got.Bootstrap.PreWaits, wantPreWaits) {
+		t.Fatalf("bootstrap pre-waits = %#v, want %#v", got.Bootstrap.PreWaits, wantPreWaits)
 	}
 	wantWaits := []cluster.BootstrapWait{
 		{Kind: cluster.BootstrapWaitAPIReady},

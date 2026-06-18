@@ -46,9 +46,14 @@ Important options:
 --dry-run
   validate inventory, access, readiness, and phase plan without running kubeadm
 
+--bootstrap-pre-wait <wait>
+  kubectl wait to run after kubeadm joins finish and before bootstrap manifests
+  are applied
+
 --bootstrap-wait <wait>
-  bounded kubeadm-scoped wait; supported forms are api-ready,
-  joined-nodes-observed, and control-plane-healthy
+  kubectl wait to run after bootstrap manifests are applied; supported forms
+  include api-ready, nodes-ready, resource-exists, condition, rollout-status,
+  pods-ready, and stable-endpoint
 
 --bootstrap-stable-endpoint <host:port>
   stable API endpoint to verify before exporting kubeconfig output that uses it
@@ -610,10 +615,11 @@ metadata, and optional HMAC fingerprints for correlation.
 
 ## Post-Bootstrap User Ownership
 
-After cluster bootstrap exits, the user installs and owns any CNI, CoreDNS,
-kube-proxy policy, CRDs, Flux, Helm releases, storage, ingress, routing, and
-workloads with their chosen cluster tooling. `katlctl cluster bootstrap` does not
-apply Kubernetes manifests or manage add-on lifecycle.
+After cluster bootstrap exits, the user owns any CNI, CoreDNS, kube-proxy
+policy, CRDs, Flux, Helm releases, storage, ingress, routing, and workloads with
+their chosen cluster tooling. `katlctl cluster bootstrap` may apply explicitly
+provided `--bootstrap-manifest` inputs as a bounded handoff step, but it does not
+select a production distribution or manage add-on lifecycle.
 
 ## Non-Goals
 

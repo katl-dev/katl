@@ -25,6 +25,7 @@ import (
 const (
 	adminKubeconfigPath = "/etc/kubernetes/admin.conf"
 	defaultAPIPort      = "6443"
+	kubectlWaitTimeout  = "2m"
 )
 
 var (
@@ -70,6 +71,7 @@ type BootstrapRunner interface {
 
 type UserBootstrap struct {
 	Manifests                     []BootstrapManifest
+	PreWaits                      []BootstrapWait
 	Waits                         []BootstrapWait
 	StableEndpoint                string
 	StableEndpointBeforeManifests bool
@@ -315,6 +317,14 @@ func prepareBootstrap(bootstrap UserBootstrap) (UserBootstrap, error) {
 		}
 		manifests = append(manifests, loaded)
 	}
+	preWaits := make([]BootstrapWait, 0, len(bootstrap.PreWaits))
+	for _, wait := range bootstrap.PreWaits {
+		normalized, err := normalizeBootstrapWait(wait)
+		if err != nil {
+			return UserBootstrap{}, err
+		}
+		preWaits = append(preWaits, normalized)
+	}
 	waits := make([]BootstrapWait, 0, len(bootstrap.Waits))
 	for _, wait := range bootstrap.Waits {
 		normalized, err := normalizeBootstrapWait(wait)
@@ -324,6 +334,7 @@ func prepareBootstrap(bootstrap UserBootstrap) (UserBootstrap, error) {
 		waits = append(waits, normalized)
 	}
 	bootstrap.Manifests = manifests
+	bootstrap.PreWaits = preWaits
 	bootstrap.Waits = waits
 	return bootstrap, nil
 }
@@ -354,6 +365,7 @@ func planBootstrap(bootstrap *inventory.Bootstrap) UserBootstrap {
 func mergeBootstrap(plan, request UserBootstrap) UserBootstrap {
 	result := UserBootstrap{
 		Manifests:                     append([]BootstrapManifest(nil), plan.Manifests...),
+		PreWaits:                      append([]BootstrapWait(nil), plan.PreWaits...),
 		Waits:                         append([]BootstrapWait(nil), plan.Waits...),
 		StableEndpointBeforeManifests: plan.StableEndpointBeforeManifests || request.StableEndpointBeforeManifests,
 	}
@@ -363,6 +375,7 @@ func mergeBootstrap(plan, request UserBootstrap) UserBootstrap {
 		result.StableEndpoint = plan.StableEndpoint
 	}
 	result.Manifests = append(result.Manifests, request.Manifests...)
+	result.PreWaits = append(result.PreWaits, request.PreWaits...)
 	result.Waits = append(result.Waits, request.Waits...)
 	return result
 }
@@ -411,14 +424,15 @@ func validateBootstrapYAML(data []byte) error {
 }
 
 func (b UserBootstrap) enabled() bool {
-	return len(b.Manifests) > 0 || len(b.Waits) > 0 || strings.TrimSpace(b.StableEndpoint) != ""
+	return len(b.Manifests) > 0 || len(b.PreWaits) > 0 || len(b.Waits) > 0 || strings.TrimSpace(b.StableEndpoint) != ""
 }
 
 func (b UserBootstrap) preWaits() []BootstrapWait {
+	waits := append([]BootstrapWait(nil), b.PreWaits...)
 	if !b.StableEndpointBeforeManifests || strings.TrimSpace(b.StableEndpoint) == "" {
-		return nil
+		return waits
 	}
-	return []BootstrapWait{b.stableEndpointWait()}
+	return append(waits, b.stableEndpointWait())
 }
 
 func (b UserBootstrap) waitsWithEndpoint() []BootstrapWait {
@@ -888,13 +902,13 @@ func waitKubectlArgs(kubeconfigPath string, wait BootstrapWait) ([]string, error
 	case BootstrapWaitResourceExists:
 		return append(base, "get", wait.Name), nil
 	case BootstrapWaitCondition:
-		return append(base, "wait", "--for=condition="+wait.Condition, wait.Name, "--timeout=5m"), nil
+		return append(base, "wait", "--for=condition="+wait.Condition, wait.Name, "--timeout="+kubectlWaitTimeout), nil
 	case BootstrapWaitNodesReady:
-		return append(base, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m"), nil
+		return append(base, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout="+kubectlWaitTimeout), nil
 	case BootstrapWaitRolloutStatus:
-		return append(base, "rollout", "status", wait.Name, "--timeout=5m"), nil
+		return append(base, "rollout", "status", wait.Name, "--timeout="+kubectlWaitTimeout), nil
 	case BootstrapWaitPodsReady:
-		return append(base, "wait", "--for=condition=Ready", "pod", "-l", wait.Selector, "--timeout=5m"), nil
+		return append(base, "wait", "--for=condition=Ready", "pod", "-l", wait.Selector, "--timeout="+kubectlWaitTimeout), nil
 	default:
 		return nil, fmt.Errorf("bootstrap wait kind %q is unsupported", wait.Kind)
 	}

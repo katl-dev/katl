@@ -108,6 +108,74 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 	}
 }
 
+func TestInstalledRuntimeNodeStopFailureRewritesDebugResult(t *testing.T) {
+	root := t.TempDir()
+	disk := filepath.Join(root, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	esp := espFixture(t)
+	nodeMetadata := filepath.Join(root, "node.json")
+	if err := os.WriteFile(nodeMetadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
+		t.Fatalf("write node metadata: %v", err)
+	}
+	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp, nodeMetadata)
+	parent, err := NewRunner(Options{
+		StateRoot:      root,
+		RunID:          "run-1",
+		DebugOnFailure: true,
+	}).Plan(Scenario{Name: "two-node"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	_, vmConfig := vmFixture(t)
+	vmConfig.Expect = runtimeBootSignal
+	vmConfig.Timeout = time.Minute
+	vmConfig.VSock = VSockConfig{Enabled: true, GuestCID: 62002}
+	runner := VMRunner{
+		Executor: longRunningVMExec{ready: runtimeBootSignal},
+		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
+			return fakeHealthClient{}, nil
+		},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			output: func(string, ...string) ([]byte, error) {
+				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+			},
+		},
+	}
+
+	node, err := StartInstalledRuntimeNode(context.Background(), parent, InstalledRuntimeNodeConfig{
+		Name: "cp-1",
+		Runtime: InstalledRuntimeConfig{
+			Disk:            disk,
+			DiskFormat:      DiskRaw,
+			ESPArtifacts:    esp,
+			FixtureManifest: fixtureManifest,
+			NodeMetadata:    nodeMetadata,
+			VM:              vmConfig,
+		},
+	}, runner)
+	if err != nil {
+		t.Fatalf("StartInstalledRuntimeNode() error = %v", err)
+	}
+	if err := node.StopFailure("bootstrap failed"); err != context.Canceled {
+		t.Fatalf("StopFailure() error = %v, want context.Canceled", err)
+	}
+	result := readNodeResult(t, node.Result.Artifacts.Result)
+	if result.Status != StatusFailed || result.FailureSummary != "bootstrap failed" {
+		t.Fatalf("failure result = %#v", result)
+	}
+	if result.Debug == nil || !result.Debug.OnFailure || len(result.Debug.Targets) != 1 {
+		t.Fatalf("debug metadata = %#v", result.Debug)
+	}
+	if result.Debug.Targets[0].DomainName != node.Result.DomainName || result.Debug.Targets[0].CleanupCommand == "" {
+		t.Fatalf("debug target = %#v", result.Debug.Targets[0])
+	}
+}
+
 func TestStartInstalledRuntimeNodeWritesFailureResult(t *testing.T) {
 	root := t.TempDir()
 	disk := filepath.Join(root, "installed.raw")

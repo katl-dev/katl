@@ -874,6 +874,7 @@ func assertBootstrapRuntimePreparedForRole(t *testing.T, root string, candidate 
 	}
 	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/kubeadm/default/config.yaml"), kind)
 	assertFileContains(t, filepath.Join(root, "var/lib/katl/generations", candidate, "confext/etc/katl/bootstrap-runtime.json"), `"systemRole": "`+role+`"`)
+	assertFileContains(t, filepath.Join(root, "run/systemd/system/katl-generation-activate.service.d/10-katl-live-generation.conf"), "--generation "+candidate)
 	assertSymlinkTarget(t, filepath.Join(root, "run/extensions/katl-kubernetes.raw"), "/var/lib/katl/generations/"+candidate+"/sysext/katl-kubernetes.raw")
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {

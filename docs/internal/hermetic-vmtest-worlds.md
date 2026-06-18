@@ -196,6 +196,14 @@ VM suites should use `-count=1`; callers or higher-level check commands should
 pass that flag explicitly because `scripts/vmtest-run` forwards ordinary Go test
 controls with Go's usual meaning.
 
+The two-node kubeadm smoke stages source-controlled test-owned bootstrap
+fixtures from `internal/vmtest/scenarios/testdata/bootstrap`. The harness
+installs a test-owned CNI, imports scratch workload images built from local
+test binaries, waits for nodes to become Ready before applying workloads, and
+then proves cross-node Service traffic with a small client/server workload. This
+is VM test scaffolding only; it does not make Katl select a production CNI, DNS,
+GitOps, or workload distribution.
+
 The wrapper also accepts a small set of runner controls before Go test
 arguments:
 

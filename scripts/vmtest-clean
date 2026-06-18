@@ -2,6 +2,9 @@
 set -euo pipefail
 
 virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"
+ps_bin="${KATL_VMTEST_PS:-ps}"
+kill_bin="${KATL_VMTEST_KILL:-kill}"
+sudo_bin="${KATL_VMTEST_SUDO:-sudo}"
 
 usage() {
     printf 'usage: scripts/vmtest-clean <run-dir|result.json>\n' >&2
@@ -28,6 +31,43 @@ if [[ "${#result_files[@]}" -eq 0 ]]; then
 fi
 
 cleaned=0
+kill_qemu_pid() {
+    local pid="$1"
+    local domain="$2"
+
+    if "$kill_bin" "$pid" >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v "$sudo_bin" >/dev/null 2>&1 && "$sudo_bin" -n "$kill_bin" "$pid" >/dev/null 2>&1; then
+        return 0
+    fi
+    printf 'vmtest-clean: failed to kill orphan qemu pid %s for %s\n' "$pid" "$domain" >&2
+    return 1
+}
+
+cleanup_orphan_qemu() {
+    local domain="$1"
+    local killed=0
+    local failed=0
+    local pid args
+
+    while read -r pid args; do
+        if [[ -z "$pid" || -z "${args:-}" ]]; then
+            continue
+        fi
+        if [[ "$args" == *qemu-system* && ( "$args" == *"guest=${domain},"* || "$args" == *"guest=${domain} "* ) ]]; then
+            printf 'vmtest-clean: killing orphan qemu pid %s for %s\n' "$pid" "$domain" >&2
+            kill_qemu_pid "$pid" "$domain" || failed=1
+            killed=$((killed + 1))
+        fi
+    done < <("$ps_bin" -eo pid=,args=)
+
+    if [[ "$failed" -ne 0 ]]; then
+        return 1
+    fi
+    return 0
+}
+
 for result in "${result_files[@]}"; do
     while IFS=$'\t' read -r domain uri; do
         if [[ -z "$domain" ]]; then
@@ -45,7 +85,10 @@ for result in "${result_files[@]}"; do
         printf 'vmtest-clean: destroying %s on %s\n' "$domain" "$uri" >&2
         "$virsh_bin" -c "$uri" destroy "$domain" >/dev/null 2>&1 || true
         printf 'vmtest-clean: undefining %s on %s\n' "$domain" "$uri" >&2
-        "$virsh_bin" -c "$uri" undefine "$domain" --nvram >/dev/null
+        "$virsh_bin" -c "$uri" undefine "$domain" --nvram >/dev/null 2>&1 || {
+            printf 'vmtest-clean: virsh undefine failed for %s; checking for orphan qemu process\n' "$domain" >&2
+        }
+        cleanup_orphan_qemu "$domain"
         cleaned=$((cleaned + 1))
     done < <(
         jq -r '
