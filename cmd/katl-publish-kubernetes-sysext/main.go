@@ -43,5 +43,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "checksum: %s\n", staged.ChecksumPath)
 	fmt.Fprintf(stdout, "metadata: %s\n", staged.MetadataPath)
 	fmt.Fprintf(stdout, "catalog: %s\n", staged.CatalogPath)
+	fmt.Fprintf(stdout, "bundle: %s\n", staged.BundlePath)
+	fmt.Fprintf(stdout, "bundle-manifest-digest: %s\n", staged.BundleManifestDigest)
+	fmt.Fprintf(stdout, "bundle-index: %s\n", staged.IndexPath)
+	fmt.Fprintf(stdout, "bundle-catalog: %s\n", staged.BundleCatalogPath)
 	return nil
 }
