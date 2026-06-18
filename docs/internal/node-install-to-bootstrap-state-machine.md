@@ -68,8 +68,8 @@ ValidateInput
 VerifyKatlOSImage
   fetch or locate the KatlOS image, verify top-level digest, mount read-only,
   verify embedded index and component digests, and validate architecture and
-  runtime/sysext compatibility; verify the manifest Kubernetes version resolves
-  to exactly one bundled sysext candidate without activating it for generation 0
+  runtime compatibility; do not resolve, bundle, or activate a Kubernetes sysext
+  for generation 0
 
 PlanInstall
   collect hardware facts, resolve target disk selectors, build a typed install
@@ -316,8 +316,10 @@ kubeadm:
 katlctl cluster bootstrap
   submit a bootstrap-init or bootstrap-join-worker request to node-local katlc
   katlc validates stored cluster intent
-  katlc selects the bundled Kubernetes sysext whose payload version exactly
-  matches the install manifest version
+  katlc fetches the user-supplied HTTPS Kubernetes payload bundle whose payload
+  version exactly matches the stored install intent
+  katlc verifies the bundle manifest and stages the sysext under Katl-owned
+  storage
   katlc resolves bootstrap profiles and renders kubeadm input under /etc/katl
   katlc projects /etc/kubernetes from writable state
   katlc ensures containerd prerequisites, kubelet service wiring, and systemRole

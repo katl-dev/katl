@@ -407,16 +407,15 @@ state partition
 
 katlosImage
   the manifest references one KatlOS install image rather than loose runtime
-  root, UKI, or sysext artifacts; the image reference must have a URL or local
-  ref, SHA-256 digest, size, version, architecture, and role; digest mismatches
-  fail before mutation where possible and before boot metadata is installed;
-  signing and external trust-root policy are deferred
+  root or UKI artifacts; the image reference must have a URL or local ref,
+  SHA-256 digest, size, version, architecture, and role; digest mismatches fail
+  before mutation where possible and before boot metadata is installed; signing
+  and external trust-root policy are deferred
 
 Kubernetes payload metadata
-  the verified KatlOS image must contain exactly one bundled Kubernetes sysext
-  component for the selected payload version, such as
-  katl-kube-1.36.1.sysext; missing, duplicate, or incompatible matches fail
-  validation before bootstrap-ready generation activation
+  not bundled in the KatlOS image; bootstrap records only the requested payload
+  version or catalog reference, and `katlc` later fetches a matching payload
+  bundle from a user-supplied HTTPS source before generation 1 activation
 
 SSH and identity
   at least one `katl` authorized key is required; SSH disablement and installer
@@ -476,8 +475,7 @@ formatting writable filesystems
 writing immutable runtime artifacts into root slots
 installing systemd-boot
 installing UKIs and loader entries
-installing or caching bundled sysext artifacts without activating Kubernetes for
-  generation 0
+not installing or caching Kubernetes sysext artifacts for generation 0
 materializing generated confext from trusted manifest input
 generating runtime mount units for /var, /etc/kubernetes, and extra disks
 writing runtime seed data
@@ -760,8 +758,10 @@ cluster bootstrap. The first Kubernetes-capable generation flow is:
 
 ```text
 katlctl cluster bootstrap asks katlc to validate stored install intent
-katlc selects the bundled Kubernetes sysext whose payload version exactly matches
-  the selected bootstrap catalog entry, such as katl-kube-1.36.1.sysext
+katlc fetches the user-supplied HTTPS Kubernetes payload bundle whose payload
+  version exactly matches the selected bootstrap catalog entry
+katlc verifies the bundle manifest and stages the sysext under Katl-owned
+  storage
 katlc renders known configuration domains into generation 1 confext
 katlc writes the bootstrap/join OperationRecord
 katlc writes candidate generation spec/status and activates it for local
@@ -949,22 +949,20 @@ init/join action embedded in node configuration. The focused decision is
 recorded in `docs/internal/kubeadm-config-input-design.md`.
 
 The Kubernetes sysext is a Katl artifact produced by mkosi from declared package
-inputs. In early development it can be built locally and bundled into the KatlOS
-install image. The publication direction for golden exact-version sysext
-artifacts, catalog metadata, release assets, OCI follow-up, and Renovate-driven
-patch bumps is defined in `docs/internal/kubernetes-sysext-delivery.md`.
+inputs, then wrapped in a Katl Kubernetes payload bundle for distribution. The
+publication direction for golden exact-version bundles, custom OCI manifest
+metadata, GHCR or GitHub Releases hosting, and Renovate-driven patch bumps is
+defined in `docs/internal/kubernetes-sysext-delivery.md`.
 
-For first install, the KatlOS image bundles exact-version Kubernetes sysext
-artifacts, for example `katl-kube-1.36.1.sysext`. The install manifest records
-bootstrap intent with `node.bootstrap.kubernetesCatalogRef` and optional
+For first install, the KatlOS image does not bundle exact-version Kubernetes
+sysext artifacts. The install manifest records bootstrap intent with
+`node.bootstrap.kubernetesCatalogRef` and optional
 `node.kubernetes.kubeadm.configRef`. `katlctl cluster bootstrap` asks `katlc` to
-select the matching bundled sysext for generation 1 and record its path, digest,
-payload version, activation path, and compatibility metadata in generation spec.
-A day-one install does not use a version range, remote Kubernetes catalog, or
-compatibility matrix resolver. Those are day-2 update planning concerns. A
-published remote sysext for the same exact payload version may exist before the
-node fetch path is implemented; fresh install still consumes the bundled copy
-from the verified KatlOS image.
+fetch the matching payload bundle from a user-supplied HTTPS source, verify the
+bundle manifest and sysext digest, stage the sysext locally, select it for
+generation 1, and record its path, digest, payload version, activation path, and
+compatibility metadata in generation spec. The exact user-facing source/ref
+syntax is decided with the bundle format.
 
 Kubernetes sysext versioning must stay decoupled from the installed KatlOS
 runtime root version. Users should be able to keep their current Kubernetes
@@ -1035,7 +1033,7 @@ bootable. Unsupported runtime/sysext pairs fail validation rather than relying
 on boot-time discovery.
 
 Day-one bootstrap may validate only the exact payload version, architecture,
-digest, and supported runtime interface needed to select a bundled sysext. The
+digest, and supported runtime interface needed to select a staged sysext. The
 metadata schema still needs the broader fields so day-2 update planning and
 Kubernetes upgrade operations do not have to reinterpret older artifacts.
 

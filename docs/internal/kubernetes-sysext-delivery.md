@@ -10,16 +10,27 @@ against the selected KatlOS runtime before creating or committing a generation.
 
 ## Decision
 
-The durable artifact is a Kubernetes sysext plus metadata and catalog records.
-It is not a Kubernetes distribution and it is not a user-specific node image.
+The durable user-facing artifact is a Kubernetes payload bundle. It is not a
+Kubernetes distribution, not a user-specific node image, and not a naked raw
+sysext blob.
 
-Each published payload contains:
+The preferred bundle format is an OCI artifact with a Katl custom manifest. The
+manifest should describe the Kubernetes payload version, architecture, Katl
+runtime compatibility, package provenance, digest and size information,
+signature hooks, and one or more payload layers. The systemd-sysext image remains
+the activation payload that `katlc` stages locally, but the raw sysext file is a
+layer inside the bundle rather than the primary object users are expected to
+reference.
+
+Each published bundle contains, either as OCI descriptors/layers or as an
+equivalent static layout while the format is being finalized:
 
 ```text
-katl-kubernetes-v<major>.<minor>.<patch>-<arch>.sysext.raw
-katl-kubernetes-v<major>.<minor>.<patch>-<arch>.sysext.raw.sha256
-katl-kubernetes-v<major>.<minor>.<patch>-<arch>.sysext.raw.json
-kubernetes-sysext-catalog.json or an appendable catalog fragment
+Katl custom bundle manifest
+Kubernetes sysext payload layer
+Kubernetes sysext metadata
+catalog entry or catalog fragment
+checksums and signature material when enabled
 ```
 
 The sysext contains versioned Kubernetes host tools such as `kubeadm`,
@@ -36,21 +47,23 @@ Publishing prebuilt user-specific confext is outside the default path.
 
 ## Today's Install Story
 
-Today, install and bootstrap use exact payload selection from the verified
-KatlOS install image. The image bundles one or more Kubernetes sysext candidates
-and their metadata. A user who wants Kubernetes `v1.36.1` installs a KatlOS
-image that contains a `v1.36.1` Kubernetes sysext and sets
-`node.bootstrap.kubernetesCatalogRef` to `v1.36.1`. Generation 0 stores that
-intent but does not activate Kubernetes. The explicit bootstrap operation later
-asks `katlc` to create generation 1, select the matching bundled sysext, render
-node-specific generated confext, run kubeadm, and commit only after operation
-health checks pass.
+`katlos-install` does not bundle or activate a Kubernetes sysext. The install
+image creates generation 0, installs the KatlOS runtime, and records bootstrap
+intent such as the requested Kubernetes version or catalog reference.
 
-A user who wants a fresh cluster on Kubernetes `v1.36.2` uses a KatlOS install
-image that bundles the `v1.36.2` sysext and sets
-`node.bootstrap.kubernetesCatalogRef` to `v1.36.2`. That is a day-one fresh
-install/bootstrap path once the artifact has been built and included in the
-image.
+A user who wants Kubernetes `v1.36.1` installs a compatible KatlOS image and
+supplies `katlc` with an HTTPS source for the Kubernetes payload bundle, such as
+a GHCR OCI reference endpoint or a GitHub Releases-hosted OCI layout/catalog,
+together with an exact selection such as `v1.36.1`. The explicit bootstrap
+operation later asks `katlc` to fetch the bundle, verify the Katl custom
+manifest and payload digests, stage the sysext under Katl-owned storage, create
+generation 1, select the staged sysext, render node-specific generated confext,
+run kubeadm, and commit only after operation health checks pass.
+
+A user who wants a fresh cluster on Kubernetes `v1.36.2` can use the same
+KatlOS install image when runtime compatibility permits it, but supplies an
+HTTPS source/ref that resolves to the `v1.36.2` bundle. `v1.36.1` and
+`v1.36.2` remain separately addressable by exact payload version and digest.
 
 Upgrading an already bootstrapped node from `v1.36.1` to `v1.36.2` is a
 different workflow. The target sysext can be produced and cataloged now, but
@@ -68,8 +81,8 @@ Renovate updates mkosi.profiles/kubernetes-sysext/kubernetes.env
   -> GitHub Actions builds the runtime base needed for compatibility metadata
   -> GitHub Actions builds the Kubernetes sysext for the exact target version
   -> checks verify sysext contents, metadata, package locks, and checksums
-  -> katl-publish-kubernetes-sysext stages release-ready names and catalog data
-  -> release assets or OCI artifacts are published immutably
+  -> katl-publish-kubernetes-sysext stages the OCI bundle manifest, layers, and catalog data
+  -> GHCR or GitHub Releases-hosted OCI artifacts are published immutably
 ```
 
 Moving this producer to a separate repository is desirable once the artifact
@@ -81,15 +94,15 @@ must not weaken Katl runtime compatibility checks.
 
 ## Publication Target
 
-GitHub release assets are the simplest first publishing target. They make the
-artifact set inspectable, support immutable version tags when project policy
-enforces no replacement, and match the current staged file names.
+OCI is the preferred publication shape for forward compatibility. GHCR is the
+natural registry target. GitHub Releases may still host the same bundle as a
+static OCI layout, index, or mirrored artifact set for simple HTTPS retrieval
+and inspection. In both cases, the object users reference is the bundle/catalog
+endpoint, not a raw sysext blob.
 
-OCI distribution through GHCR is a strong follow-up when Katl needs registry
-mirroring, retention policies, or digest-native fetch semantics. If OCI is used,
-the OCI manifest digest becomes an additional distribution digest; the sysext
-file SHA-256 remains the activation digest recorded in catalog and generation
-metadata.
+The OCI manifest digest is the distribution digest. The sysext payload digest is
+still recorded as the activation digest in bundle metadata, catalog data, and
+generation records after `katlc` stages the payload locally.
 
 The catalog is authoritative for discovery, not for trust by itself. Consumers
 must still verify the referenced sysext digest and, once signing is enabled,
@@ -115,12 +128,12 @@ kubeadm upgrade gate allows them.
 The following remain separate backlog items:
 
 ```text
-remote catalog fetch and node-local retention
+custom OCI manifest media types and bundle schema
+user-facing HTTPS source/ref syntax for `katlc` and `katlctl`
+remote bundle/catalog fetch and node-local retention
 artifact and catalog signing policy
 release channel and deprecation policy
-OCI/GHCR publication
 separate producer repository split
 kubeadm-aware Kubernetes upgrade execution
 published generic confext supplements, if any are needed
 ```
-

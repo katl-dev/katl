@@ -74,11 +74,12 @@ installed runtime to accept node-local operations.
 Generation 0 is intentionally not a Kubernetes cluster member. It is the
 post-install KatlOS baseline.
 
-Generation 0 may have verified access to bundled Kubernetes sysext artifacts from
-the KatlOS image, and it records user-supplied cluster intent from the install
-manifest. It does not activate Kubernetes binaries, create `/etc/kubernetes`, run
-kubeadm, or create cluster state. The first Kubernetes-capable generation is
-created by an explicit bootstrap or join operation.
+Generation 0 records user-supplied cluster intent from the install manifest, but
+the KatlOS image does not bundle Kubernetes sysext artifacts. It does not fetch
+or activate Kubernetes binaries, create `/etc/kubernetes`, run kubeadm, or create
+cluster state. The first Kubernetes-capable generation is created by an explicit
+bootstrap or join operation after `katlc` fetches and verifies the requested
+payload bundle from a user-supplied HTTPS source.
 
 Generation 0 is a hard clean-state invariant, not just a convenient label.
 
@@ -735,7 +736,8 @@ Cluster bootstrap creates and commits the first Kubernetes-capable generation:
 katlctl cluster bootstrap
   -> ask katlc to validate stored cluster intent
   -> katlc creates candidate generation 1
-  -> katlc selects the requested bundled Kubernetes sysext
+  -> katlc fetches and stages the requested Kubernetes payload bundle
+  -> katlc selects the staged Kubernetes sysext
   -> katlc renders kubeadm input and required host configuration
   -> katlc projects /etc/kubernetes from writable state
   -> katlc activates generation 1 as a candidate

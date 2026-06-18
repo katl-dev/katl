@@ -98,7 +98,8 @@ pre-rendered extension trees supplied by users. On first install,
 `katlos-install` bootstraps generation 0 and stores user-supplied cluster intent
 without activating Kubernetes. The first Kubernetes-capable generation is
 created later when `katlctl cluster bootstrap` asks `katlc` to validate stored
-intent, select the requested bundled Kubernetes sysext, and render the generated
+intent, fetch and verify the requested Kubernetes payload bundle from a
+user-supplied HTTPS source, stage the sysext locally, and render the generated
 confext needed for kubeadm. Later host configuration changes can use normal
 `katlc` generation apply or stage flows. Sysext payloads remain prebuilt
 artifacts; node-local compilation decides how trusted config selects and

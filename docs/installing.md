@@ -296,9 +296,8 @@ destructive install guard
 target disk selector and size
 KatlOS image SHA-256 and size
 embedded /katlos/image.json
-required runtime root, runtime UKI, and Kubernetes sysext components
+required runtime root and runtime UKI components
 component digests from the mounted KatlOS image
-embedded Kubernetes sysext payload metadata
 architecture and runtime interface compatibility
 ```
 
@@ -314,7 +313,7 @@ start systemd-networkd and sshd when configured
 start the node-local katlc agent
 record runtime handoff status
 reach katl-boot-complete.target
-reach katl-kubeadm-ready.target when bootstrap prerequisites are present
+not activate Kubernetes or require katl-kubeadm-ready.target
 remain ready for explicit Kubernetes bootstrap but not bootstrapped
 ```
 
@@ -331,17 +330,19 @@ journalctl -b -u katlos-install.service -u katl-runtime-handoff-status.service -
 
 ## Bootstrap Handoff
 
-Installation does not run `kubeadm`. It stores the node role, validated
-Kubernetes payload metadata, and bootstrap intent needed for a later explicit
-operator action.
+Installation does not run `kubeadm`, fetch Kubernetes payloads, or bundle a
+Kubernetes sysext. It stores the node role and bootstrap intent needed for a
+later explicit operator action.
 
 The Kubernetes version reference is exact. For example,
-`node.bootstrap.kubernetesCatalogRef: v1.36.1` means the verified KatlOS image
-must contain a compatible Kubernetes sysext for payload `v1.36.1`. To bootstrap
-a fresh cluster on `v1.36.2`, use a KatlOS image that bundles the `v1.36.2`
-sysext and set the manifest reference to `v1.36.2`. Published sysext catalog
-artifacts may be produced independently, but day-one install validation uses the
-bundled sysext metadata from the KatlOS image.
+`node.bootstrap.kubernetesCatalogRef: v1.36.1` means bootstrap must select a
+compatible Kubernetes payload bundle for `v1.36.1`. During the explicit
+bootstrap operation, `katlc` fetches that bundle from a user-supplied HTTPS
+source such as GHCR or a GitHub Releases-hosted OCI layout/catalog, verifies the
+Katl bundle metadata and payload digests, stages the sysext locally, and selects
+it for generation 1. To bootstrap a fresh cluster on `v1.36.2`, keep the KatlOS
+install image when runtime compatibility permits it and supply an HTTPS
+source/ref that resolves to the `v1.36.2` bundle.
 
 After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, run bootstrap from an operator workstation:
@@ -369,7 +370,7 @@ distribution or add-on manager.
 ## Upgrades
 
 KatlOS upgrades also consume one KatlOS image artifact. The image records
-runtime root, boot assets, sysext components, versions, architecture, runtime
+runtime root, boot assets, versions, architecture, runtime
 interface, and digests. An upgrade operation creates a candidate generation from
 that image and validates component compatibility before selection.
 

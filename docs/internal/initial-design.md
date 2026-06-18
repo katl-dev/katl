@@ -118,8 +118,8 @@ The active installer flow is Katl-native:
 3. If no manifest is present, local handoff starts a token-protected HTTP
    endpoint and waits for exactly one install manifest.
 4. katlos-install validates the manifest before any destructive disk action.
-5. katlos-install verifies the KatlOS image, bundled Kubernetes sysext candidates,
-   and trust material.
+5. katlos-install verifies the KatlOS image and trust material. It does not
+   bundle or fetch a Kubernetes sysext.
 6. katlos-install partitions and formats the target root disk using Katl-owned
    policy.
 7. katlos-install writes the prebuilt runtime root artifact to root-a.
@@ -144,12 +144,12 @@ automation should not have to prebuild sysext/confext generation content for a
 node. On first install, `katlos-install` validates the manifest, bootstraps
 generation 0, and stores cluster intent without activating Kubernetes. The first
 Kubernetes-capable generation is created later when `katlctl cluster bootstrap`
-asks `katlc` to validate that stored intent, select the exact bundled Kubernetes
-sysext requested by the manifest, and render the generated confext needed for
-kubeadm. Later host configuration changes can use normal `katlc` generation
+asks `katlc` to validate that stored intent, fetch the exact Kubernetes payload
+from a user-supplied HTTPS bundle source, and render the generated confext needed
+for kubeadm. Later host configuration changes can use normal `katlc` generation
 apply or stage flows. Sysext payloads are prebuilt artifacts; the node-local
 generation spec records which compatible sysexts are selected with the rendered
-confext.
+confext after `katlc` has fetched and verified them.
 
 `katlc` and KatlOS runtime services must fail closed. Unknown domains,
 unsupported fields, unsupported sysext selections, unsupported apply modes, and
@@ -271,11 +271,12 @@ KatlOS runtime root. KatlOS upgrades should be able to keep the current
 Kubernetes sysext, and Kubernetes upgrades should be able to keep the current
 KatlOS root, when the selected artifacts are compatible. Day-one install records
 an exact manifest version such as `1.36.1` as cluster intent. Cluster bootstrap
-selects the matching bundled sysext for generation 1. The publication and
-catalog direction for producing exact-version Kubernetes sysext payloads is
-defined in `docs/internal/kubernetes-sysext-delivery.md`; remote catalog
-fetching and already-bootstrapped Kubernetes upgrades remain separate day-2
-implementation work.
+asks `katlc` to fetch the matching Kubernetes payload bundle from a user-supplied
+HTTPS source, verify its Katl custom manifest, stage the sysext locally, and
+select it for generation 1. The publication and catalog direction for producing
+exact-version Kubernetes sysext payloads is defined in
+`docs/internal/kubernetes-sysext-delivery.md`; already-bootstrapped Kubernetes
+upgrades remain separate day-2 implementation work.
 
 After the installer UKI and installed runtime boot path works, the next local
 step is `katlctl cluster bootstrap`. That operation asks `katlc` to validate
@@ -285,11 +286,13 @@ under `/etc/katl`, project writable kubeadm output at `/etc/kubernetes`, run
 kubeadm through a node-local operation, and commit the generation only after
 kubeadm and local health checks succeed.
 
-The first proof should stay local: build or inspect the bundled sysext artifact,
-boot generation 0 in the VM runner, run `katlctl cluster bootstrap`, verify that
-generation 1 activates the manifest-selected Kubernetes sysext and generated
-config, and prove kubeadm can initialize the control plane. CI-built downloadable
-artifacts are a later publishing concern, not a blocker for this local loop.
+The first proof should stay local: build or inspect a Kubernetes payload bundle,
+serve it from a controlled HTTPS endpoint or equivalent test fixture, boot
+generation 0 in the VM runner, run `katlctl cluster bootstrap`, verify that
+`katlc` fetches and stages the manifest-selected Kubernetes sysext and generated
+config, and prove kubeadm can initialize the control plane. CI-built
+downloadable artifacts are a later publishing concern, not a blocker for this
+local loop.
 Artifact compatibility metadata, not matching product versions, decides whether
 a runtime root and Kubernetes sysext can be selected together.
 
@@ -468,10 +471,11 @@ boot/install loop works.
 The next step after that loop is still local and test-driven:
 
 ```text
-build a bundled Kubernetes sysext such as katl-kube-1.36.1.sysext
+build a Kubernetes payload bundle that contains katl-kube-1.36.1.sysext
 boot generation 0
 run katlctl cluster bootstrap
-ask katlc to create and activate generation 1 with the manifest-selected sysext
+ask katlc to fetch, verify, and stage the manifest-selected sysext, then create
+and activate generation 1
 render kubeadm input under /etc/katl from known Katl config domains
 project writable /etc/kubernetes from /var
 start containerd and expose kubelet with Katl-controlled ordering

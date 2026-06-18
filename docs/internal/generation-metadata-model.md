@@ -128,21 +128,24 @@ node as a clean generation 0 bootstrap target again.
 
 Generation 0 spec must not list a Kubernetes sysext unless that sysext is
 actually selected and active for generation 0, which is not the day-one model.
-Bundled Kubernetes sysexts from the verified KatlOS image are install artifacts
-or later generation inputs, not generation 0 selected host state.
+The KatlOS install image does not bundle Kubernetes sysext candidates.
+Generation 0 records bootstrap intent; a later `katlc` operation fetches and
+stages the requested Kubernetes payload bundle from a user-supplied HTTPS source
+before a Kubernetes-capable generation can select it.
 
 The explicit cluster bootstrap or join operation asks `katlc` to validate the
 stored intent and create a later generation, commonly described as generation 1.
 That candidate generation selects the Kubernetes sysext, rendered kubeadm-ready
 configuration, kubelet/containerd wiring, and `/etc/kubernetes` projection.
 
-For first bootstrap or join, generation 1 selects the bundled Kubernetes sysext
-whose payload version exactly matches the install manifest, for example manifest
-version `1.36.1` selecting `katl-kube-1.36.1.sysext`. The generation 1 spec
-stores the selected sysext path, activation path, digest, artifact version,
-payload version, architecture, and compatibility metadata defined in
-`docs/internal/installer-runtime-design.md`. It remains a candidate until
-kubeadm succeeds and local post-kubeadm health checks pass. At that point the
+For first bootstrap or join, generation 1 selects the locally staged Kubernetes
+sysext whose payload version exactly matches the install intent, for example
+manifest version `1.36.1` selecting a sysext fetched from a verified
+`v1.36.1` payload bundle. The generation 1 spec stores the selected sysext path,
+activation path, digest, artifact version, payload version, architecture, and
+compatibility metadata defined in `docs/internal/installer-runtime-design.md`.
+It remains a candidate until kubeadm succeeds and local post-kubeadm health
+checks pass. At that point the
 bootstrap or join operation may commit it as the accepted desired host state:
 
 ```text

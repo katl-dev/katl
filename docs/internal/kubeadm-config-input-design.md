@@ -195,10 +195,11 @@ fail validation.
 `kubernetesVersion` may be omitted or set to the selected sysext version. If it
 is present and conflicts with the selected Kubernetes sysext payload version,
 validation must fail before install or runtime config activation. For first
-install, the selected payload version comes from `node.kubernetes.version` in the
-install manifest and the exact matching bundled sysext. Katl may normalize
-manifest `1.36.1` to kubeadm's `v1.36.1` form for comparison, but it must not
-use sentinel values or a day-one catalog resolver inside native kubeadm YAML.
+install, the selected payload version comes from Katl bootstrap intent and the
+exact matching Kubernetes payload bundle fetched and verified by `katlc`. Katl
+may normalize manifest `1.36.1` to kubeadm's `v1.36.1` form for comparison, but
+it must not use sentinel values or a day-one catalog resolver inside native
+kubeadm YAML.
 
 The CRI socket should default to containerd's socket. A different CRI socket is
 deferred until Katl intentionally supports another runtime.

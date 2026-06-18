@@ -298,7 +298,9 @@ Minimum pre-bootstrap checks:
 Katl generation 0 reached installed-runtime health
 stored install manifest and cluster intent are present
 requested Kubernetes payload version matches the cluster plan
-the requested bundled Kubernetes sysext is available and verified
+the requested Kubernetes payload bundle source/ref is supplied over HTTPS
+katlc can fetch, verify, and stage the requested Kubernetes sysext before
+  generation 1 activation
 stored systemRole and selected bootstrap profile intent are consistent
 node-local katlc can accept an operation request
 ```
