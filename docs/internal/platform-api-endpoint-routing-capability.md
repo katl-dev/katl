@@ -15,6 +15,7 @@ This decision builds on:
 
 ```text
 docs/internal/cluster-bootstrap-cli.md
+docs/internal/generic-bird-extension-contract.md
 docs/internal/node-app-sysext-contract.md
 docs/internal/platform-api-endpoint-user-story.md
 docs/internal/platform-api-endpoint-helper-input-schema.md
@@ -328,8 +329,8 @@ Implementation must be split into focused follow-up work:
 finalize the platform API endpoint helper app-specific bundle contract, input
 schema, status schema, and candidate generated artifacts
 
-package BIRD or equivalent helper as a Katl or fixture app sysext only after the
-helper contract defines metadata, unit, status, and compatibility requirements
+package or select the generic BIRD extension after the BIRD contract defines
+metadata, unit, status, and compatibility requirements
 
 implement the advertisement health gate and status record
 
