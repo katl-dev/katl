@@ -15,6 +15,7 @@ This decision builds on:
 
 ```text
 docs/internal/cluster-bootstrap-cli.md
+docs/internal/bgp-api-vip-extension-contract.md
 docs/internal/generic-bird-extension-contract.md
 docs/internal/node-app-sysext-contract.md
 docs/internal/platform-api-endpoint-user-story.md
@@ -30,14 +31,16 @@ reachable platform API endpoint.
 
 ## Deferral Gate
 
-This document must not be used as implementation approval. `katlc` must reject
-platform API endpoint helper input, and `katlctl` must not expose helper
-enablement, until follow-up docs define:
+This document must not be used as implementation approval by itself. The
+app-specific BGP API VIP contract is now accepted in
+`docs/internal/bgp-api-vip-extension-contract.md`, but `katlc` must still
+reject platform API endpoint helper input, and `katlctl` must not expose helper
+enablement, until follow-up implementation work provides:
 
 ```text
 helper app bundle metadata, compatibility, unit, config, health, and status
-  schema using the node app sysext contract
-exact helper appID, status schema, durability, redaction, and owner
+  implementation using the node app sysext contract
+the bgp-api-vip bundle, generic BIRD bundle, validation, renderer, and tests
 node-local operation records for enable, disable, live apply, withdrawal,
   rollback, and repair
 ownership boundaries between Katl, the app sysext, Cilium, GitOps, and user
@@ -129,8 +132,9 @@ status output path and retention policy
 ```
 
 The field-level schema proposal is sketched in
-`docs/internal/platform-api-endpoint-helper-input-schema.md`; it is not an
-accepted implementation contract.
+`docs/internal/platform-api-endpoint-helper-input-schema.md`. The accepted
+product contract for the first host-advertised implementation is
+`docs/internal/bgp-api-vip-extension-contract.md`.
 
 Static and no-dynamic-routing fabrics are allowed as user-owned environments,
 but they are not first-class for this helper.
@@ -326,11 +330,12 @@ package installation.
 Implementation must be split into focused follow-up work:
 
 ```text
-finalize the platform API endpoint helper app-specific bundle contract, input
-schema, status schema, and candidate generated artifacts
+implement the BGP API VIP app-specific bundle contract, input schema, status
+schema, and generated artifacts from
+`docs/internal/bgp-api-vip-extension-contract.md`
 
-package or select the generic BIRD extension after the BIRD contract defines
-metadata, unit, status, and compatibility requirements
+package or select the generic BIRD extension according to
+`docs/internal/generic-bird-extension-contract.md`
 
 implement the advertisement health gate and status record
 

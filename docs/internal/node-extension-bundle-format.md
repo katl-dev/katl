@@ -411,9 +411,11 @@ node-specific app config is rendered by app-specific Katl config domains, not
 ```
 
 The generic BIRD app-specific contract is defined in
-`docs/internal/generic-bird-extension-contract.md`. The BGP API VIP Beads must
-define their own input, status, operation, and VM-test contracts on top of that
-BIRD capability and this reusable bundle format.
+`docs/internal/generic-bird-extension-contract.md`. The BGP API VIP
+app-specific contract is defined in
+`docs/internal/bgp-api-vip-extension-contract.md`; it owns endpoint, VIP,
+health, advertisement, status, and operation semantics on top of that BIRD
+capability and this reusable bundle format.
 
 ## Non-Goals
 

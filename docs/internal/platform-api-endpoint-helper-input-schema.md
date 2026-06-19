@@ -1,9 +1,10 @@
 # Platform API Endpoint Helper Input Schema
 
-Status: deferred schema sketch. Field names and rendered paths are not
-user-facing API until the selected helper app sysext advertises the capability
-and the helper-specific status schema, operation behavior, rollback behavior,
-and ownership rules are accepted and tested.
+Status: deferred schema sketch. The accepted app-specific contract for the
+first host-advertised implementation is
+`docs/internal/bgp-api-vip-extension-contract.md`. This document remains a
+background sketch for the broader platform endpoint helper shape and is not
+the user-facing API.
 
 This document defines the typed input shape for the platform API endpoint
 routing capability described in
@@ -122,7 +123,9 @@ spec:
 ```
 
 The final location of this block depends on the app-specific platform endpoint
-contract. These field names are proposal labels only; `katlc` must reject this
+contract. For BIRD-backed API VIP advertisement, the accepted field ownership
+and status rules are in
+`docs/internal/bgp-api-vip-extension-contract.md`. `katlc` must reject this
 input until the selected app sysext advertises the capability and Katl has a
 matching validator, renderer, status reader, and operation implementation.
 

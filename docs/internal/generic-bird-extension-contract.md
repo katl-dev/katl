@@ -10,8 +10,9 @@ provides a routing daemon capability to higher-level Katl apps. It builds on
 
 Generic BIRD is not part of the KatlOS base runtime. Selecting it does not by
 itself configure or advertise a Kubernetes API VIP. The productized BGP API VIP
-extension composes with this capability and owns VIP schema, health-gated
-advertisement, kubeadm endpoint integration, and VM route proof.
+extension contract in `docs/internal/bgp-api-vip-extension-contract.md`
+composes with this capability and owns VIP schema, health-gated advertisement,
+kubeadm endpoint integration, and VM route proof.
 
 ## Decision
 
