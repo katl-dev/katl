@@ -38,6 +38,83 @@ file_has() {
     grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
 }
 
+check_kernel_support() {
+    local module_index versions version builtin module_count firmware_index firmware_count
+    module_index="$(unsquashfs -ll "$artifact" usr/lib/modules)" || fail "inspect /usr/lib/modules failed"
+    versions="$(
+        sed -n 's#.*squashfs-root/usr/lib/modules/\([^/[:space:]]*\).*#\1#p' <<<"$module_index" |
+            sort -u
+    )"
+    [[ -n "$versions" ]] || fail "runtime kernel module tree is missing"
+    [[ "$(wc -l <<<"$versions" | awk '{print $1}')" == 1 ]] ||
+        fail "runtime kernel module tree has multiple versions: $(tr '\n' ' ' <<<"$versions")"
+    version="$versions"
+    builtin="$(unsquashfs -cat "$artifact" "usr/lib/modules/$version/modules.builtin")" ||
+        fail "read /usr/lib/modules/$version/modules.builtin failed"
+    module_count="$(
+        grep -Eo 'squashfs-root/usr/lib/modules/[^[:space:]]+\.ko(\.[[:alnum:]]+)?' <<<"$module_index" |
+            wc -l |
+            awk '{print $1}'
+    )"
+
+    module_present() {
+        local name="$1"
+        grep -Eq "/${name}[.]ko([.][[:alnum:]]+)?([[:space:]]|$|:)" <<<"$module_index" ||
+            grep -Fq "/${name}.ko" <<<"$builtin"
+    }
+
+    require_module() {
+        local name="$1"
+        module_present "$name" || fail "runtime kernel module support missing: $name"
+    }
+
+    deny_module_path() {
+        local pattern="$1"
+        local label="$2"
+        if grep -Eq "$pattern" <<<"$module_index"; then
+            fail "runtime kernel module add-on must not be in-box: $label"
+        fi
+    }
+
+    for name in \
+        br_netfilter \
+        nf_conntrack \
+        overlay \
+        ip_vs \
+        ip_vs_rr \
+        ip_vs_wrr \
+        ip_vs_sh \
+        nvme \
+        ahci \
+        virtio_net \
+        virtio_blk \
+        virtio_scsi \
+        amdgpu \
+        i915 \
+        xe
+    do
+        require_module "$name"
+    done
+
+    deny_module_path '/(nvidia|nvidia-drm|nvidia-modeset|nvidia-uvm)[.]ko' 'proprietary NVIDIA stack'
+    deny_module_path '/wl[.]ko' 'Broadcom wl'
+    deny_module_path '/zfs[.]ko' 'ZFS'
+
+    firmware_index="$(unsquashfs -ll "$artifact" usr/lib/firmware 2>/dev/null || true)"
+    firmware_count="$(
+        grep -Ec 'squashfs-root/usr/lib/firmware/.+' <<<"$firmware_index" 2>/dev/null || true
+    )"
+    printf "runtime kernel modules: version=%s module_files=%s required=%s\n" \
+        "$version" "$module_count" \
+        "br_netfilter,nf_conntrack,overlay,ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,nvme,ahci,virtio_net,virtio_blk,virtio_scsi,amdgpu,i915,xe"
+    if [[ "${firmware_count:-0}" -eq 0 ]]; then
+        echo "runtime firmware inventory: none; this artifact does not claim firmware-backed hardware support"
+    else
+        printf "runtime firmware inventory: files=%s\n" "$firmware_count"
+    fi
+    echo "runtime kernel add-on exclusions: proprietary-nvidia,broadcom-wl,zfs absent"
+}
+
 root_locked() {
     local output password
     output="$(unsquashfs -cat "$artifact" etc/shadow)" || fail "read /etc/shadow failed"
@@ -199,6 +276,7 @@ file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/k
 file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ReadWritePaths=/run /efi /etc/kubernetes /var/lib/containerd /var/lib/etcd /var/lib/katl /var/lib/kubelet /var/log/journal"
 file_has /usr/lib/systemd/system/katl-vmtest-debug-shell.service "ConditionKernelCommandLine=katl.vmtest_debug_shell=1"
 file_has /usr/lib/systemd/system/katl-vmtest-debug-shell.service "ExecStart=-/usr/sbin/agetty --autologin root --noclear ttyS0 115200"
+check_kernel_support
 
 for path in \
     /usr/bin/mkosi \

@@ -78,6 +78,18 @@ deny() {
     done
 }
 
+require_packages() {
+    local profile="$1"
+    local label="$2"
+    shift 2
+    local package
+    for package in "$@"; do
+        if ! pkgs "$profile" | grep -Fxq "$package"; then
+            fail "$label profile must include $package"
+        fi
+    done
+}
+
 check_profiles() {
     local installer_profile="$repo_root/mkosi.profiles/installer-image/mkosi.conf"
     local runtime_profile="$repo_root/mkosi.profiles/runtime/mkosi.conf"
@@ -85,6 +97,8 @@ check_profiles() {
     need_line "$repo_root/mkosi.conf" "WithRecommends=no"
     need_line "$repo_root/mkosi.conf" "CacheDirectory=_build/mkosi/cache"
     need_line "$repo_root/mkosi.conf" "PackageCacheDirectory=_build/mkosi/package-cache"
+    require_packages "$installer_profile" installer kernel-core kernel-modules
+    require_packages "$runtime_profile" runtime kernel-core kernel-modules kmod conntrack-tools iptables-nft ipset ipvsadm containernetworking-plugins
     deny "$installer_profile" installer mkosi dnf dnf5 gcc kubeadm kubelet kubectl containerd crun
     deny "$runtime_profile" runtime mkosi dnf dnf5 rpm yum gcc go make cc curl wget kubeadm kubelet kubectl crictl helm flux cilium rook coredns
     echo "mkosi profile controls: docs/recommends disabled, caches external, denied packages absent"
