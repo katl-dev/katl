@@ -564,35 +564,39 @@ func collectGeneration0LayoutProbe(ctx context.Context, node vmtest.RunningInsta
 		probe.WriteByte('\n')
 	}
 
-	findmnt, err := guest.RunCommand(opCtx, vmtest.GuestCommandRequest{
-		Name: "generation-0-findmnt",
-		Argv: []string{
-			"findmnt",
-			"-n",
-			"-o",
-			"TARGET,SOURCE,FSTYPE,OPTIONS",
-			"/",
-			"/var",
-			"/var/lib",
-			"/var/lib/katl",
-			"/etc/machine-id",
-		},
-		StdoutLimit:  64 << 10,
-		StderrLimit:  32 << 10,
-		AllowFailure: true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("%s generation 0 mount probe failed: %w", node.Name, err)
-	}
 	probe.WriteString("\n[findmnt]\n")
-	for _, path := range []string{findmnt.Stdout, findmnt.Stderr} {
-		data, err := os.ReadFile(path)
+	for _, target := range []string{
+		"/",
+		"/var",
+		"/var/lib",
+		"/var/lib/katl",
+		"/etc/machine-id",
+	} {
+		findmnt, err := guest.RunCommand(opCtx, vmtest.GuestCommandRequest{
+			Name: "generation-0-findmnt-" + strings.Trim(strings.ReplaceAll(target, "/", "-"), "-"),
+			Argv: []string{
+				"findmnt",
+				"--target",
+				target,
+				"-n",
+				"-o",
+				"TARGET,SOURCE,FSTYPE,OPTIONS",
+			},
+			StdoutLimit: 64 << 10,
+			StderrLimit: 32 << 10,
+		})
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%s generation 0 mount probe for %s failed: %w", node.Name, target, err)
 		}
-		probe.Write(data)
-		if len(data) > 0 && data[len(data)-1] != '\n' {
-			probe.WriteByte('\n')
+		for _, path := range []string{findmnt.Stdout, findmnt.Stderr} {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return "", err
+			}
+			probe.Write(data)
+			if len(data) > 0 && data[len(data)-1] != '\n' {
+				probe.WriteByte('\n')
+			}
 		}
 	}
 
