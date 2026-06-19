@@ -205,6 +205,39 @@ It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
 publishing. Those host-specific gates belong to the capable-host vmtest workflow
 and release gates.
 
+## GitHub VM Tests
+
+The heavy pull-request workflow is `.github/workflows/vmtest.yml`. It runs for
+same-repository, non-draft pull requests and manual dispatches on self-hosted
+runners labeled `katl-vmtest`, `libvirt`, `kvm`, `ovmf`, and `vsock`. The
+runner must provide the same capable-host tools and environment as the local VM
+shell, including `nix develop .#vm`, readable `KATL_OVMF_CODE`, and readable
+`KATL_OVMF_VARS`.
+
+The workflow runs a serialized matrix so fail-fast behavior does not leave many
+VMs active at once:
+
+```sh
+scripts/vmtest-run --artifact-set=runtime ./internal/vmtest \
+  -run '^TestDirectRuntimeVMTestAgentSmoke$' \
+  -count=1 -failfast -timeout 20m
+scripts/vmtest-run --artifact-set=default ./internal/vmtest \
+  -run '^TestFirstInstallTargetDiskSerialSmoke$' \
+  -count=1 -failfast -timeout 35m
+scripts/vmtest-run --artifact-set=default ./internal/vmtest \
+  -run '^(TestInstalledRuntimeKubeadmReadySmoke|TestInstalledRuntimeConfigApplyModesSmoke)$' \
+  -count=1 -failfast -timeout 45m
+scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
+  -run '^TestInstalledRuntimeTwoNodeKubeadmJoinSmoke$' \
+  -count=1 -failfast -timeout 60m
+```
+
+CI sets `KATL_VMTEST_KEEP=always` only long enough to upload the run directory
+as a workflow artifact, excluding large VM disk images, then removes the local
+run directory. Live-domain debug preservation is disabled in CI; local debugging
+should use `--debug-on-failure` with a single narrow scenario and clean retained
+domains with `scripts/vmtest-clean` when inspection is done.
+
 ### Capable-Host Proof
 
 Run the full enabled world suite from the Nix VM shell on a host with readable
