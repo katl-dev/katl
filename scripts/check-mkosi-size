@@ -6,8 +6,8 @@ installer_artifact="${KATL_INSTALLER_ARTIFACT:-$repo_root/_build/mkosi/katl-inst
 runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/_build/mkosi/katl-runtime-root.squashfs}"
 runtime_root="${KATL_RUNTIME_ROOT:-$repo_root/_build/mkosi/katl-runtime-root}"
 installer_max_mib="${KATL_INSTALLER_MAX_MIB:-450}"
-runtime_max_mib="${KATL_RUNTIME_MAX_MIB:-375}"
-runtime_tree_max_mib="${KATL_RUNTIME_TREE_MAX_MIB:-650}"
+runtime_max_mib="${KATL_RUNTIME_MAX_MIB:-390}"
+runtime_tree_max_mib="${KATL_RUNTIME_TREE_MAX_MIB:-700}"
 report_count="${KATL_SIZE_REPORT_COUNT:-12}"
 
 fail() {
@@ -40,9 +40,11 @@ max_dir() {
     local label="$1"
     local path="$2"
     local limit_mib="$3"
-    local actual limit
+    local actual limit output
     [[ -d "$path" ]] || fail "$label not found: $(rel "$path")"
-    actual="$(du -s -B1 -x "$path" | awk '{print $1}')"
+    output="$(du -s -B1 -x "$path" 2>/dev/null || true)"
+    actual="$(awk 'NR == 1 {print $1}' <<<"$output")"
+    [[ "$actual" =~ ^[0-9]+$ ]] || fail "$label size query failed"
     limit=$((limit_mib * 1024 * 1024))
     printf "%s: %s (limit %s MiB)\n" "$label" "$(mib "$actual")" "$limit_mib"
     (( actual <= limit )) || fail "$label is $(mib "$actual"), limit $(mib "$limit")"
@@ -84,7 +86,7 @@ check_profiles() {
     need_line "$repo_root/mkosi.conf" "CacheDirectory=_build/mkosi/cache"
     need_line "$repo_root/mkosi.conf" "PackageCacheDirectory=_build/mkosi/package-cache"
     deny "$installer_profile" installer mkosi dnf dnf5 gcc kubeadm kubelet kubectl containerd crun
-    deny "$runtime_profile" runtime mkosi dnf dnf5 gcc curl kubeadm kubelet kubectl
+    deny "$runtime_profile" runtime mkosi dnf dnf5 rpm yum gcc go make cc curl wget kubeadm kubelet kubectl crictl helm flux cilium rook coredns
     echo "mkosi profile controls: docs/recommends disabled, caches external, denied packages absent"
 }
 

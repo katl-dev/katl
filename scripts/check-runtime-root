@@ -204,16 +204,40 @@ for path in \
     /usr/bin/mkosi \
     /usr/bin/dnf \
     /usr/bin/dnf5 \
+    /usr/bin/rpm \
+    /usr/bin/yum \
+    /etc/yum.repos.d \
     /usr/bin/gcc \
     /usr/bin/go \
     /usr/bin/make \
     /usr/bin/cc \
     /usr/bin/curl \
+    /usr/bin/wget \
+    /usr/bin/pkgconf \
+    /usr/bin/pkg-config \
     /usr/bin/kubeadm \
     /usr/bin/kubelet \
     /usr/bin/kubectl \
     /usr/bin/crictl \
+    /usr/bin/helm \
+    /usr/bin/flux \
+    /usr/bin/cilium \
+    /usr/bin/rook \
+    /usr/bin/coredns \
+    /usr/bin/systemd-nspawn \
+    /usr/bin/machinectl \
     /usr/bin/katlos-install \
+    /usr/lib/systemd/system/dbus-org.freedesktop.machine1.service \
+    /usr/lib/systemd/system/machine.slice \
+    /usr/lib/systemd/system/machines.target \
+    /usr/lib/systemd/system/machines.target.wants \
+    /usr/lib/systemd/system/nftables.service \
+    /usr/lib/systemd/system/remote-fs.target.wants/var-lib-machines.mount \
+    /usr/lib/systemd/system/sockets.target.wants/systemd-machined.socket \
+    /usr/lib/systemd/system/systemd-machined.service \
+    /usr/lib/systemd/system/systemd-machined.socket \
+    /usr/lib/systemd/system/systemd-nspawn@.service \
+    /usr/lib/systemd/system/var-lib-machines.mount \
     /usr/lib/systemd/system/katlos-install.service \
     /usr/lib/systemd/system/katl-input-apply.service \
     /usr/lib/systemd/system/katl-installer-smoke.service \
