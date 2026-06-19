@@ -77,11 +77,11 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 	}
 
 	if err := e.Activator.Activate(ctx, plan.GenerationRecord); err != nil {
-		return e.failAndRollback(ctx, status, plan, fmt.Errorf("activate selected confext: %w", err))
+		return e.failAndRollback(ctx, status, plan, fmt.Errorf("activate selected confext: %w", err), false)
 	}
 
 	if err := e.runActions(ctx, &status); err != nil {
-		return e.failAndRollback(ctx, status, plan, err)
+		return e.failAndRollback(ctx, status, plan, err, true)
 	}
 
 	status, err = generation.MarkConfigApplyPhase(status, generation.ConfigApplyPhaseActive, e.now())
@@ -169,7 +169,7 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	return withDefaults(commands, e.timeout()), nil
 }
 
-func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigApplyStatus, plan Result, cause error) (generation.ConfigApplyStatus, error) {
+func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigApplyStatus, plan Result, cause error, replayActions bool) (generation.ConfigApplyStatus, error) {
 	status, err := generation.MarkConfigApplyFailed(status, cause, e.now())
 	if err != nil {
 		return status, err
@@ -184,17 +184,12 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 		return status, writeErr
 	}
 	if rollbackErr := e.Activator.Rollback(ctx, target); rollbackErr != nil {
-		status.Phase = generation.ConfigApplyPhaseFailed
-		status.Rollback = &generation.ConfigApplyRollback{
-			TargetGenerationID: target,
-			Result:             generation.ConfigApplyActionFailed,
-			Reason:             generation.RedactConfigApplyMessage(rollbackErr.Error()),
+		return e.markRollbackFailed(status, target, cause, rollbackErr)
+	}
+	if replayActions {
+		if replayErr := e.replayRollbackActions(ctx, status.DomainActions); replayErr != nil {
+			return e.markRollbackFailed(status, target, cause, replayErr)
 		}
-		status.UpdatedAt = e.now().UTC()
-		if writeErr := e.writeStatus(status); writeErr != nil {
-			return status, writeErr
-		}
-		return status, fmt.Errorf("%w; rollback failed: %w", cause, rollbackErr)
 	}
 	status, err = generation.MarkConfigApplyRollback(status, target, generation.ConfigApplyActionPassed, cause.Error(), e.now())
 	if err != nil {
@@ -204,6 +199,39 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 		return status, writeErr
 	}
 	return status, cause
+}
+
+func (e Executor) replayRollbackActions(ctx context.Context, actions []generation.ConfigApplyDomainAction) error {
+	for _, action := range actions {
+		commands, err := e.commandsForDomain(action.Domain)
+		if err != nil {
+			return err
+		}
+		for _, command := range commands {
+			result, err := e.Runner.Run(ctx, command)
+			if err != nil {
+				return fmt.Errorf("rollback %s: %w", command.Name, err)
+			}
+			if result.ExitStatus != 0 {
+				return fmt.Errorf("rollback %w", commandFailure(command, result))
+			}
+		}
+	}
+	return nil
+}
+
+func (e Executor) markRollbackFailed(status generation.ConfigApplyStatus, target string, cause error, rollbackErr error) (generation.ConfigApplyStatus, error) {
+	status.Phase = generation.ConfigApplyPhaseFailed
+	status.Rollback = &generation.ConfigApplyRollback{
+		TargetGenerationID: target,
+		Result:             generation.ConfigApplyActionFailed,
+		Reason:             generation.RedactConfigApplyMessage(rollbackErr.Error()),
+	}
+	status.UpdatedAt = e.now().UTC()
+	if writeErr := e.writeStatus(status); writeErr != nil {
+		return status, writeErr
+	}
+	return status, fmt.Errorf("%w; rollback failed: %w", cause, rollbackErr)
 }
 
 func (e Executor) writeStatus(status generation.ConfigApplyStatus) error {

@@ -15,10 +15,9 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 		Kind:         NodeConfigurationChangeKind,
 		GenerationID: "2026.06.05-002",
 		SourceDigest: strings.Repeat("d", 64),
-		Apply:        Apply{Mode: generation.ApplyModeLive},
+		Apply:        Apply{},
 		Changes: []Change{
-			{Domain: DomainNetworkd, LivePreflightOK: true},
-			{Domain: DomainTmpfiles},
+			{Domain: DomainSysctl},
 		},
 		GeneratedConfext: candidateConfext("2026.06.05-002"),
 		RequestedAt:      time.Date(2026, 6, 5, 16, 0, 0, 0, time.UTC),
@@ -26,7 +25,7 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanChange() error = %v, diagnostics = %#v", err, result.Decision.Diagnostics)
 	}
-	if result.Decision.AcceptedMode != generation.ApplyModeLive || len(result.Decision.Diagnostics) != 0 {
+	if result.Decision.RequestedMode != generation.ApplyModeAuto || result.Decision.AcceptedMode != generation.ApplyModeLive || len(result.Decision.Diagnostics) != 0 {
 		t.Fatalf("decision = %#v", result.Decision)
 	}
 	if result.GenerationRecord.ConfigApply == nil {
@@ -36,7 +35,10 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 	if metadata.SourceDigest != strings.Repeat("d", 64) || metadata.PreviousGeneration != current.GenerationID {
 		t.Fatalf("config apply metadata = %#v", metadata)
 	}
-	if got, want := strings.Join(metadata.ChangedDomains, ","), "networkd,tmpfiles"; got != want {
+	if metadata.RequestedApplyMode != generation.ApplyModeAuto || metadata.AcceptedApplyMode != generation.ApplyModeLive {
+		t.Fatalf("config apply modes = %#v", metadata)
+	}
+	if got, want := strings.Join(metadata.ChangedDomains, ","), "sysctl"; got != want {
 		t.Fatalf("metadata changed domains = %q, want %q", got, want)
 	}
 	if result.GenerationRecord.Root != current.Root || result.GenerationRecord.Boot != current.Boot || result.GenerationRecord.Sysexts[0].Path != current.Sysexts[0].Path {
@@ -45,7 +47,7 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 	if result.Status.GenerationID != "2026.06.05-002" || result.Status.Phase != generation.ConfigApplyPhasePlanned {
 		t.Fatalf("status = %#v", result.Status)
 	}
-	if len(result.Status.DomainActions) != 2 || result.Status.DomainActions[0].Action != "networkctl-reload" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionPlanned {
+	if len(result.Status.DomainActions) != 1 || result.Status.DomainActions[0].Action != "systemd-sysctl" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionPlanned {
 		t.Fatalf("domain actions = %#v", result.Status.DomainActions)
 	}
 }
@@ -92,7 +94,7 @@ func TestPlanChangeRejectsUnsupportedLiveChangeBeforeCandidateRecord(t *testing.
 	if err == nil {
 		t.Fatalf("PlanChange() error = nil, result = %#v", result)
 	}
-	if result.Decision.AcceptedMode != "" || len(result.Decision.Diagnostics) != 2 {
+	if result.Decision.AcceptedMode != "" || len(result.Decision.Diagnostics) != 3 {
 		t.Fatalf("decision = %#v", result.Decision)
 	}
 	if result.GenerationRecord.Kind != "" || result.Status.Kind != "" {
@@ -116,7 +118,7 @@ func TestPlanChangeRefusesKubeadmSideEffects(t *testing.T) {
 	if err == nil {
 		t.Fatalf("PlanChange(live kubeadm) error = nil, result = %#v", live)
 	}
-	if len(live.Decision.Diagnostics) != 1 || live.Decision.Diagnostics[0].Decision != DecisionStagedRequired {
+	if len(live.Decision.Diagnostics) != 1 || live.Decision.Diagnostics[0].Decision != DecisionRejected || live.Decision.Diagnostics[0].RequiredOperation != "kubeadm-aware operation" {
 		t.Fatalf("live kubeadm diagnostics = %#v", live.Decision.Diagnostics)
 	}
 
@@ -133,14 +135,14 @@ func TestPlanChangeRefusesKubeadmSideEffects(t *testing.T) {
 			Reason:   "desired kubeadm input changed; join token abcdef.0123456789abcdef requires explicit action",
 		},
 	})
-	if err != nil {
-		t.Fatalf("PlanChange(next kubeadm) error = %v, diagnostics = %#v", err, next.Decision.Diagnostics)
+	if err == nil {
+		t.Fatalf("PlanChange(next kubeadm) error = nil, result = %#v", next)
 	}
-	if !next.GenerationRecord.ConfigApply.Kubeadm.Required || !next.Status.Kubeadm.Required {
-		t.Fatalf("kubeadm explicit action flag missing: %#v %#v", next.GenerationRecord.ConfigApply.Kubeadm, next.Status.Kubeadm)
+	if next.GenerationRecord.Kind != "" || next.Status.Kind != "" {
+		t.Fatalf("operation-only kubeadm built candidate metadata or status: %#v %#v", next.GenerationRecord, next.Status)
 	}
-	if strings.Contains(next.Status.Kubeadm.Reason, "abcdef.0123456789abcdef") || !strings.Contains(next.Status.Kubeadm.Reason, "[REDACTED BOOTSTRAP TOKEN]") {
-		t.Fatalf("status kubeadm reason was not redacted: %q", next.Status.Kubeadm.Reason)
+	if len(next.Decision.Diagnostics) != 1 || next.Decision.Diagnostics[0].RequiredOperation != "kubeadm-aware operation" {
+		t.Fatalf("next kubeadm diagnostics = %#v", next.Decision.Diagnostics)
 	}
 }
 
@@ -195,7 +197,7 @@ func TestPlanChangeRejectsKubernetesSysextChangeBeforeCandidateRecord(t *testing
 		t.Fatalf("diagnostics = %#v, want one selected-kubernetes-sysext diagnostic", result.Decision.Diagnostics)
 	}
 	diagnostic := result.Decision.Diagnostics[0]
-	if diagnostic.Domain != DomainSelectedKubernetesSysext || diagnostic.Decision != DecisionRejected {
+	if diagnostic.Domain != DomainSelectedKubernetesSysext || diagnostic.Decision != DecisionRejected || diagnostic.Classification != ClassificationOperationOnly || diagnostic.RequiredOperation != "kubernetes-upgrade" {
 		t.Fatalf("diagnostic = %#v", diagnostic)
 	}
 	if !strings.Contains(diagnostic.Message, "target kubeadm access") || !strings.Contains(diagnostic.Message, "kubelet activation gate") {

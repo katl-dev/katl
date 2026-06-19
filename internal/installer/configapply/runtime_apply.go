@@ -51,6 +51,7 @@ type NodeOverlay struct {
 	Identity       *IdentityOverlay
 	SystemRole     string
 	Networkd       *manifest.NetworkdConfig
+	Sysctl         *manifest.SysctlConfig
 	Kubernetes     *manifest.KubernetesConfig
 	UnsafeEtcFiles []confext.NativeEtcFile
 	KubeadmChanged bool
@@ -110,6 +111,13 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		return TrustedBundleResult{}, fmt.Errorf("generation id is required")
 	}
 	now := request.now()
+	applyMode, err := normalizeRequestedMode(request.ApplyMode)
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, DecisionRejected, nil, nil, err, now)
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
+	request.ApplyMode = applyMode
 	if err := rejectRuntimeSelectionOverrides(request); err != nil {
 		audit := request.audit(sourceID, desiredVersion, DecisionRejected, nil, nil, err, now)
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
@@ -297,6 +305,11 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 		return TrustedBundleResult{}, fmt.Errorf("generation id is required")
 	}
 	now := request.now()
+	applyMode, err := normalizeRequestedMode(request.ApplyMode)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	request.ApplyMode = applyMode
 	if err := rejectRuntimeSelectionOverrides(request); err != nil {
 		return TrustedBundleResult{}, err
 	}
@@ -356,16 +369,33 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 	merged := request.CurrentManifest
 	domains := domainAccumulator{}
 	var unsafeFiles []confext.NativeEtcFile
+	if err := validateOverlay("clusterDefaults", request.ClusterDefaults); err != nil {
+		return manifest.Manifest{}, nil, nil, err
+	}
 	applyOverlay(&merged.Node, request.ClusterDefaults, &domains, &unsafeFiles)
 	roleOverlay := request.SystemRoleOverrides[merged.Node.SystemRole]
+	if err := validateOverlay("systemRoleOverrides."+merged.Node.SystemRole, roleOverlay); err != nil {
+		return manifest.Manifest{}, nil, nil, err
+	}
 	applyOverlay(&merged.Node, roleOverlay, &domains, &unsafeFiles)
+	nodeOverlay := request.NodeOverrides[request.NodeName]
 	if request.NodeName != "" {
-		applyOverlay(&merged.Node, request.NodeOverrides[request.NodeName], &domains, &unsafeFiles)
+		if err := validateOverlay("nodeOverrides."+request.NodeName, nodeOverlay); err != nil {
+			return manifest.Manifest{}, nil, nil, err
+		}
+		applyOverlay(&merged.Node, nodeOverlay, &domains, &unsafeFiles)
 	}
 	if len(domains.domains) == 0 {
 		return manifest.Manifest{}, nil, nil, fmt.Errorf("runtime configuration change has no supported changed domains")
 	}
-	return merged, domains.changes(request.ClusterDefaults, roleOverlay, request.NodeOverrides[request.NodeName]), unsafeFiles, nil
+	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), unsafeFiles, nil
+}
+
+func validateOverlay(path string, overlay NodeOverlay) error {
+	if overlay.Sysctl != nil && len(overlay.Sysctl.Settings) == 0 {
+		return fmt.Errorf("%s.sysctl.settings must contain at least one setting", path)
+	}
+	return nil
 }
 
 func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
@@ -388,6 +418,10 @@ func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, domains *domai
 	if overlay.Networkd != nil {
 		node.Networkd = *overlay.Networkd
 		domains.add(DomainNetworkd)
+	}
+	if overlay.Sysctl != nil {
+		node.Sysctl = *overlay.Sysctl
+		domains.add(DomainSysctl)
 	}
 	if overlay.Kubernetes != nil {
 		node.Kubernetes = *overlay.Kubernetes

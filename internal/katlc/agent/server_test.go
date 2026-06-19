@@ -450,8 +450,8 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 	}
 	wantDiagnostics := []string{
 		"node-identity: staged-required: domain is staged-only for normal runtime configuration apply",
-		"bootstrap-node-metadata: staged-required: live preflight is required before this domain can apply online",
-		"networkd: staged-required: live preflight is required before this domain can apply online",
+		"bootstrap-node-metadata: staged-required: domain is staged-only for normal runtime configuration apply",
+		"networkd: staged-required: domain is staged-only for normal runtime configuration apply",
 	}
 	if first.Accepted || second.Accepted {
 		t.Fatalf("accepted = %v/%v, want rejected", first.Accepted, second.Accepted)
@@ -689,8 +689,8 @@ func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
 	if !record.Terminal || record.Result != operation.ResultFailedNeedsRepair || record.ExternalMutationStarted {
 		t.Fatalf("record = %+v, want terminal failed before external mutation", record)
 	}
-	if !strings.Contains(record.FailureReason, "live preflight is required") {
-		t.Fatalf("failure reason = %q, want live preflight diagnostic", record.FailureReason)
+	if !strings.Contains(record.FailureReason, "staged-only") {
+		t.Fatalf("failure reason = %q, want staged-only diagnostic", record.FailureReason)
 	}
 	if len(record.DiagnosticArtifacts) != 1 || record.DiagnosticArtifacts[0].ArtifactID != "config-apply-plan-diagnostics" {
 		t.Fatalf("diagnostic artifacts = %+v", record.DiagnosticArtifacts)
@@ -699,8 +699,8 @@ func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read diagnostic attachment: %v", err)
 	}
-	if !strings.Contains(string(attachment), "live preflight is required") {
-		t.Fatalf("diagnostic attachment = %q, want live preflight diagnostic", attachment)
+	if !strings.Contains(string(attachment), "staged-only") {
+		t.Fatalf("diagnostic attachment = %q, want staged-only diagnostic", attachment)
 	}
 	status, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{
 		OperationId:        accepted.OperationId,
@@ -746,8 +746,8 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if record.ActivationState != operation.ActivationStateActiveLive || record.ConfigApplyPhase != generation.ConfigApplyPhaseActive {
 		t.Fatalf("activation/config phase = %q/%q, want active-live/active", record.ActivationState, record.ConfigApplyPhase)
 	}
-	if !contains(record.MutationScopes, "confext-activation") || !contains(record.MutationScopes, "config-domain:networkd") {
-		t.Fatalf("mutation scopes = %v, want confext activation and networkd domain", record.MutationScopes)
+	if !contains(record.MutationScopes, "confext-activation") || !contains(record.MutationScopes, "config-domain:sysctl") {
+		t.Fatalf("mutation scopes = %v, want confext activation and sysctl domain", record.MutationScopes)
 	}
 	if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != operation.ResultSucceeded {
 		t.Fatalf("invocations = %+v, want completed live config apply invocation", record.Invocations)
@@ -820,7 +820,7 @@ func TestApplyGenerationLiveFailureRecordsRollbackState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &fakeConfigApplyRunner{exitStatus: 1, stderr: "network reload failed"}
+	runner := &fakeConfigApplyRunner{exitStatus: 1, stderr: "sysctl apply failed"}
 	activator := &fakeConfigApplyActivator{}
 	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
@@ -1997,16 +1997,9 @@ func configApplyLiveYAML() string {
 		"  mode: live",
 		"spec:",
 		"  clusterDefaults:",
-		"    livePreflight:",
-		"      networkd: true",
-		"    networkd:",
-		"      files:",
-		"        - name: 20-uplink.network",
-		"          content: |",
-		"            [Match]",
-		"            Name=ens3",
-		"            [Network]",
-		"            DHCP=yes",
+		"    sysctl:",
+		"      settings:",
+		"        net.ipv4.ip_forward: \"1\"",
 		"",
 	}, "\n")
 }
@@ -2024,7 +2017,12 @@ func (r *fakeConfigApplyRunner) Run(ctx context.Context, command configapply.Com
 	if r.exitStatus == 0 && r.err == nil && r.stderr == "" {
 		return configapply.CommandResult{ExitStatus: 0, Stdout: r.stdout}, nil
 	}
-	return configapply.CommandResult{ExitStatus: r.exitStatus, Stdout: r.stdout, Stderr: r.stderr}, r.err
+	result := configapply.CommandResult{ExitStatus: r.exitStatus, Stdout: r.stdout, Stderr: r.stderr}
+	err := r.err
+	r.exitStatus = 0
+	r.stderr = ""
+	r.err = nil
+	return result, err
 }
 
 type fakeConfigApplyActivator struct {

@@ -264,8 +264,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	)
 	var rejected agentapi.ConfigValidationResult
 	mustUnmarshalProtoJSON(t, rejectedOutput, &rejected)
-	if rejected.Accepted || !strings.Contains(strings.Join(rejected.Diagnostics, "\n"), "live preflight is required") {
-		t.Fatalf("rejected validation = %+v, want fail closed live preflight diagnostic", rejected)
+	if rejected.Accepted || !strings.Contains(strings.Join(rejected.Diagnostics, "\n"), "staged-only") {
+		t.Fatalf("rejected validation = %+v, want fail closed staged-only diagnostic", rejected)
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedGeneration)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
@@ -283,9 +283,9 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedApplyGeneration)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
-	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "live preflight is required")
+	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "staged-only")
 
-	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-live", "live", liveGeneration, "vmtest-config-apply-live", configApplyFixture(t, "live-networkd.yaml"))
+	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, tokenFile, "config-apply-live", "live", liveGeneration, "vmtest-config-apply-live", configApplyFixture(t, "live-sysctl.yaml"))
 	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, token, liveAccepted.OperationId)
 	if liveStatus.Result != operation.ResultSucceeded || liveStatus.ConfigApplyPhase != "active" {
 		t.Fatalf("live operation status = %+v, want succeeded active config apply", liveStatus)
@@ -300,7 +300,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, guest *GuestCont
 	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/status.json", `"commitState": "candidate"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json", `"phase": "active"`, `"acceptedApplyMode": "live"`)
-	assertGuestExists(t, ctx, guest, "/run/confexts/katl-node/etc/systemd/network/20-vmtest-live.network")
+	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf", "net.ipv4.ip_forward = 1")
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"configApplyPhase": "active"`)
 
 	liveConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")

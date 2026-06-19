@@ -32,6 +32,7 @@ type nodeConfigurationOverlay struct {
 	Identity      *IdentityOverlay           `json:"identity,omitempty" yaml:"identity,omitempty"`
 	SystemRole    string                     `json:"systemRole,omitempty" yaml:"systemRole,omitempty"`
 	Networkd      *manifest.NetworkdConfig   `json:"networkd,omitempty" yaml:"networkd,omitempty"`
+	Sysctl        *manifest.SysctlConfig     `json:"sysctl,omitempty" yaml:"sysctl,omitempty"`
 	Kubernetes    *manifest.KubernetesConfig `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	LivePreflight map[string]bool            `json:"livePreflight,omitempty" yaml:"livePreflight,omitempty"`
 }
@@ -88,6 +89,7 @@ func (overlay nodeConfigurationOverlay) nodeOverlay() NodeOverlay {
 		Identity:      overlay.Identity,
 		SystemRole:    overlay.SystemRole,
 		Networkd:      overlay.Networkd,
+		Sysctl:        overlay.Sysctl,
 		Kubernetes:    overlay.Kubernetes,
 		LivePreflight: overlay.LivePreflight,
 	}

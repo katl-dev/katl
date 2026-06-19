@@ -198,13 +198,13 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	if err := validateSHA256("configuration source", request.SourceDigest); err != nil {
 		return Record{}, err
 	}
-	if err := validateApplyMode("requested apply mode", request.RequestedApplyMode); err != nil {
+	if err := validateRequestedApplyMode("requested apply mode", request.RequestedApplyMode); err != nil {
 		return Record{}, err
 	}
 	if strings.TrimSpace(request.AcceptedApplyMode) == "" {
 		request.AcceptedApplyMode = request.RequestedApplyMode
 	}
-	if err := validateApplyMode("accepted apply mode", request.AcceptedApplyMode); err != nil {
+	if err := validateAcceptedApplyMode("accepted apply mode", request.AcceptedApplyMode); err != nil {
 		return Record{}, err
 	}
 	domains, err := cleanChangedDomains(request.ChangedDomains)
@@ -396,10 +396,10 @@ func validateConfigApplyRecord(config ConfigApplyRecord) error {
 	if _, err := cleanChangedDomains(config.ChangedDomains); err != nil {
 		return fmt.Errorf("config apply metadata: %w", err)
 	}
-	if err := validateApplyMode("requested apply mode", config.RequestedApplyMode); err != nil {
+	if err := validateRequestedApplyMode("requested apply mode", config.RequestedApplyMode); err != nil {
 		return err
 	}
-	if err := validateApplyMode("accepted apply mode", config.AcceptedApplyMode); err != nil {
+	if err := validateAcceptedApplyMode("accepted apply mode", config.AcceptedApplyMode); err != nil {
 		return err
 	}
 	if strings.TrimSpace(config.PreviousGeneration) == "" {

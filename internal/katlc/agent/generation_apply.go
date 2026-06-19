@@ -50,7 +50,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	}
 	applyMode := strings.TrimSpace(req.ApplyMode)
 	if applyMode == "" {
-		applyMode = generation.ApplyModeNextBoot
+		applyMode = generation.ApplyModeAuto
 	}
 	if err := validateApplyMode(applyMode); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -85,8 +85,10 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		NodeName:                    req.NodeName,
 		ConfigYaml:                  req.ConfigYaml,
 	}, operationKind, applyMode)
-	if err := s.validateSubmit(submit); err != nil {
-		return nil, err
+	if applyMode != generation.ApplyModeAuto {
+		if err := s.validateSubmit(submit); err != nil {
+			return nil, err
+		}
 	}
 	requestDigest, err := RequestDigest(submit)
 	if err != nil {
@@ -790,10 +792,10 @@ func (a generationActivator) Rollback(ctx context.Context, targetGenerationID st
 
 func validateApplyMode(mode string) error {
 	switch strings.TrimSpace(mode) {
-	case generation.ApplyModeLive, generation.ApplyModeNextBoot:
+	case generation.ApplyModeAuto, generation.ApplyModeLive, generation.ApplyModeNextBoot:
 		return nil
 	default:
-		return fmt.Errorf("applyMode must be %q or %q", generation.ApplyModeLive, generation.ApplyModeNextBoot)
+		return fmt.Errorf("applyMode must be %q, %q, or %q", generation.ApplyModeAuto, generation.ApplyModeLive, generation.ApplyModeNextBoot)
 	}
 }
 

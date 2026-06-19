@@ -33,7 +33,8 @@ const (
 const (
 	ClassificationOnlineApplicable = "online-applicable"
 	ClassificationStagedOnly       = "staged-only"
-	ClassificationRejectedLive     = "rejected-live"
+	ClassificationOperationOnly    = "operation-only"
+	ClassificationRejected         = "rejected"
 )
 
 const (
@@ -55,10 +56,11 @@ type Decision struct {
 }
 
 type Diagnostic struct {
-	Domain         string
-	Classification string
-	Decision       string
-	Message        string
+	Domain            string
+	Classification    string
+	Decision          string
+	RequiredOperation string
+	Message           string
 }
 
 type domainPolicy struct {
@@ -66,17 +68,20 @@ type domainPolicy struct {
 	LivePreflight       bool
 	NextBootAllowed     bool
 	LiveRejectionReason string
+	RequiredOperation   string
 }
 
 func Plan(requestedMode string, changes []Change) (Decision, error) {
-	if err := validateMode(requestedMode); err != nil {
+	requestedMode, err := normalizeRequestedMode(requestedMode)
+	if err != nil {
 		return Decision{}, err
 	}
 	if len(changes) == 0 {
 		return Decision{}, fmt.Errorf("config apply changes are required")
 	}
-	decision := Decision{RequestedMode: requestedMode, AcceptedMode: requestedMode}
+	decision := Decision{RequestedMode: requestedMode}
 	seen := make(map[string]struct{}, len(changes))
+	needsNextBoot := false
 	for _, change := range changes {
 		domain := strings.TrimSpace(change.Domain)
 		if domain == "" {
@@ -90,14 +95,21 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 		if !ok {
 			decision.Diagnostics = append(decision.Diagnostics, Diagnostic{
 				Domain:         domain,
-				Classification: ClassificationRejectedLive,
+				Classification: ClassificationRejected,
 				Decision:       DecisionRejected,
 				Message:        "unknown configuration domain is not supported",
 			})
 			continue
 		}
 		diagnostic := diagnosticForChange(requestedMode, change, policy)
-		if diagnostic.Decision != DecisionAccepted {
+		switch diagnostic.Decision {
+		case DecisionAccepted:
+		case DecisionStagedRequired:
+			needsNextBoot = true
+			if requestedMode != generation.ApplyModeAuto {
+				decision.Diagnostics = append(decision.Diagnostics, diagnostic)
+			}
+		default:
 			decision.Diagnostics = append(decision.Diagnostics, diagnostic)
 		}
 	}
@@ -105,13 +117,18 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 		decision.AcceptedMode = ""
 		return decision, fmt.Errorf("config apply %s request rejected for %d domain(s)", requestedMode, len(decision.Diagnostics))
 	}
+	if requestedMode == generation.ApplyModeNextBoot || needsNextBoot {
+		decision.AcceptedMode = generation.ApplyModeNextBoot
+	} else {
+		decision.AcceptedMode = generation.ApplyModeLive
+	}
 	return decision, nil
 }
 
 func DomainClassification(domain string) string {
 	policy, ok := domainPolicies[strings.TrimSpace(domain)]
 	if !ok {
-		return ClassificationRejectedLive
+		return ClassificationRejected
 	}
 	return policy.Classification
 }
@@ -119,6 +136,15 @@ func DomainClassification(domain string) string {
 func diagnosticForChange(requestedMode string, change Change, policy domainPolicy) Diagnostic {
 	domain := strings.TrimSpace(change.Domain)
 	if requestedMode == generation.ApplyModeNextBoot {
+		if policy.Classification == ClassificationOperationOnly {
+			return Diagnostic{
+				Domain:            domain,
+				Classification:    policy.Classification,
+				Decision:          DecisionRejected,
+				RequiredOperation: policy.RequiredOperation,
+				Message:           requiredOperationMessage(policy),
+			}
+		}
 		if policy.NextBootAllowed {
 			return Diagnostic{Domain: domain, Classification: policy.Classification, Decision: DecisionAccepted}
 		}
@@ -147,6 +173,14 @@ func diagnosticForChange(requestedMode string, change Change, policy domainPolic
 			Decision:       DecisionStagedRequired,
 			Message:        "domain is staged-only for normal runtime configuration apply",
 		}
+	case ClassificationOperationOnly:
+		return Diagnostic{
+			Domain:            domain,
+			Classification:    policy.Classification,
+			Decision:          DecisionRejected,
+			RequiredOperation: policy.RequiredOperation,
+			Message:           requiredOperationMessage(policy),
+		}
 	default:
 		return Diagnostic{
 			Domain:         domain,
@@ -157,18 +191,29 @@ func diagnosticForChange(requestedMode string, change Change, policy domainPolic
 	}
 }
 
-func validateMode(mode string) error {
-	switch strings.TrimSpace(mode) {
-	case generation.ApplyModeLive, generation.ApplyModeNextBoot:
-		return nil
-	default:
-		return fmt.Errorf("apply mode = %q, want %q or %q", mode, generation.ApplyModeLive, generation.ApplyModeNextBoot)
+func normalizeRequestedMode(mode string) (string, error) {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return generation.ApplyModeAuto, nil
 	}
+	switch strings.TrimSpace(mode) {
+	case generation.ApplyModeAuto, generation.ApplyModeLive, generation.ApplyModeNextBoot:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("apply mode = %q, want %q, %q, or %q", mode, generation.ApplyModeAuto, generation.ApplyModeLive, generation.ApplyModeNextBoot)
+	}
+}
+
+func requiredOperationMessage(policy domainPolicy) string {
+	if strings.TrimSpace(policy.RequiredOperation) != "" {
+		return "domain requires " + policy.RequiredOperation
+	}
+	return policy.LiveRejectionReason
 }
 
 var domainPolicies = map[string]domainPolicy{
 	DomainResolved: {
-		Classification:  ClassificationOnlineApplicable,
+		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},
 	DomainSysctl: {
@@ -176,17 +221,15 @@ var domainPolicies = map[string]domainPolicy{
 		NextBootAllowed: true,
 	},
 	DomainTmpfiles: {
-		Classification:  ClassificationOnlineApplicable,
+		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},
 	DomainNetworkd: {
-		Classification:  ClassificationOnlineApplicable,
-		LivePreflight:   true,
+		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},
 	DomainBootstrapNodeMetadata: {
-		Classification:  ClassificationOnlineApplicable,
-		LivePreflight:   true,
+		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},
 	DomainNodeIdentity: {
@@ -210,46 +253,50 @@ var domainPolicies = map[string]domainPolicy{
 		NextBootAllowed: true,
 	},
 	DomainKubeadmConfig: {
-		Classification:  ClassificationStagedOnly,
-		NextBootAllowed: true,
+		Classification:      ClassificationOperationOnly,
+		LiveRejectionReason: "kubeadm desired state changes require an explicit kubeadm-aware operation",
+		RequiredOperation:   "kubeadm-aware operation",
 	},
 	DomainSystemRole: {
-		Classification:      ClassificationRejectedLive,
-		NextBootAllowed:     true,
-		LiveRejectionReason: "systemRole changes are not live-applicable",
+		Classification:      ClassificationOperationOnly,
+		LiveRejectionReason: "systemRole changes require wipe-reinstall or an explicit lifecycle operation",
+		RequiredOperation:   "wipe-reinstall",
 	},
 	DomainSelectedKubeadmConfig: {
-		Classification:      ClassificationRejectedLive,
-		NextBootAllowed:     true,
+		Classification:      ClassificationOperationOnly,
 		LiveRejectionReason: "selected kubeadm config changes require an explicit kubeadm-aware action",
+		RequiredOperation:   "kubeadm-aware operation",
 	},
 	DomainSelectedKubernetesSysext: {
-		Classification:      ClassificationRejectedLive,
+		Classification:      ClassificationOperationOnly,
 		LiveRejectionReason: "selected Kubernetes sysext changes require an explicit update action",
+		RequiredOperation:   "kubernetes-upgrade",
 	},
 	DomainKubeletNodeIdentity: {
-		Classification:      ClassificationRejectedLive,
-		NextBootAllowed:     true,
+		Classification:      ClassificationOperationOnly,
 		LiveRejectionReason: "kubelet node identity changes are not live-applicable",
+		RequiredOperation:   "kubeadm-aware operation",
 	},
 	DomainHostAccountPolicy: {
-		Classification:      ClassificationRejectedLive,
+		Classification:      ClassificationRejected,
 		LiveRejectionReason: "host account policy is not user-owned configuration",
 	},
 	DomainEtcKubernetes: {
-		Classification:      ClassificationRejectedLive,
+		Classification:      ClassificationRejected,
 		LiveRejectionReason: "/etc/kubernetes is kubeadm-owned mutable state",
 	},
 	DomainArbitraryEtc: {
-		Classification:      ClassificationRejectedLive,
+		Classification:      ClassificationRejected,
 		LiveRejectionReason: "arbitrary /etc paths are not supported configuration domains",
 	},
 	DomainRootSelection: {
-		Classification:      ClassificationRejectedLive,
+		Classification:      ClassificationOperationOnly,
 		LiveRejectionReason: "root selection changes require an explicit update action",
+		RequiredOperation:   "host-upgrade",
 	},
 	DomainSysextSelection: {
-		Classification:      ClassificationRejectedLive,
+		Classification:      ClassificationOperationOnly,
 		LiveRejectionReason: "sysext selection changes require an explicit update action",
+		RequiredOperation:   "host-upgrade",
 	},
 }

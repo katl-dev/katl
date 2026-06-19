@@ -16,6 +16,7 @@ const (
 )
 
 const (
+	ApplyModeAuto     = "auto"
 	ApplyModeLive     = "live"
 	ApplyModeNextBoot = "next-boot"
 )
@@ -98,13 +99,13 @@ func NewConfigApplyStatus(request ConfigApplyStatusRequest) (ConfigApplyStatus, 
 	if strings.TrimSpace(request.PreviousGeneration) == "" {
 		return ConfigApplyStatus{}, fmt.Errorf("previous generation id is required")
 	}
-	if err := validateApplyMode("requested apply mode", request.RequestedApplyMode); err != nil {
+	if err := validateRequestedApplyMode("requested apply mode", request.RequestedApplyMode); err != nil {
 		return ConfigApplyStatus{}, err
 	}
 	if strings.TrimSpace(request.AcceptedApplyMode) == "" {
 		request.AcceptedApplyMode = request.RequestedApplyMode
 	}
-	if err := validateApplyMode("accepted apply mode", request.AcceptedApplyMode); err != nil {
+	if err := validateAcceptedApplyMode("accepted apply mode", request.AcceptedApplyMode); err != nil {
 		return ConfigApplyStatus{}, err
 	}
 	domains, err := cleanChangedDomains(request.ChangedDomains)
@@ -237,10 +238,10 @@ func ValidateConfigApplyStatus(status ConfigApplyStatus) error {
 	if strings.TrimSpace(status.PreviousGeneration) == "" {
 		return fmt.Errorf("config apply status previous generation id is required")
 	}
-	if err := validateApplyMode("requested apply mode", status.RequestedApplyMode); err != nil {
+	if err := validateRequestedApplyMode("requested apply mode", status.RequestedApplyMode); err != nil {
 		return err
 	}
-	if err := validateApplyMode("accepted apply mode", status.AcceptedApplyMode); err != nil {
+	if err := validateAcceptedApplyMode("accepted apply mode", status.AcceptedApplyMode); err != nil {
 		return err
 	}
 	if len(status.ChangedDomains) == 0 {
@@ -322,7 +323,16 @@ func redactKubeadmActionRequired(action KubeadmActionRequired) KubeadmActionRequ
 	return action
 }
 
-func validateApplyMode(name, value string) error {
+func validateRequestedApplyMode(name, value string) error {
+	switch strings.TrimSpace(value) {
+	case ApplyModeAuto, ApplyModeLive, ApplyModeNextBoot:
+		return nil
+	default:
+		return fmt.Errorf("%s = %q, want %q, %q, or %q", name, value, ApplyModeAuto, ApplyModeLive, ApplyModeNextBoot)
+	}
+}
+
+func validateAcceptedApplyMode(name, value string) error {
 	switch strings.TrimSpace(value) {
 	case ApplyModeLive, ApplyModeNextBoot:
 		return nil

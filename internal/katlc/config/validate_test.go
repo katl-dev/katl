@@ -104,3 +104,35 @@ spec:
 		t.Fatalf("diagnostics = %#v, want accepted", result.Strings())
 	}
 }
+
+func TestValidateNodeConfigurationChangeRejectsInvalidSysctlValues(t *testing.T) {
+	input := `
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "2"
+apply:
+  mode: live
+spec:
+  clusterDefaults:
+    sysctl:
+      settings:
+        net.ipv4.ip_forward: "true"
+        kernel.hostname: node-1
+        vm.max_map_count: "0"
+`
+	result := ValidateNodeConfigurationChange(input, Options{})
+	got := result.Strings()
+	want := []string{
+		`invalid-sysctl-value: spec.clusterDefaults.sysctl.settings.net.ipv4.ip_forward: expected 0 or 1`,
+		`invalid-sysctl-value: spec.clusterDefaults.sysctl.settings.vm.max_map_count: expected a positive base-10 integer`,
+		`unsupported-sysctl-key: spec.clusterDefaults.sysctl.settings.kernel.hostname: sysctl key is not supported`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("diagnostics = %#v, want %#v", got, want)
+	}
+	if result.Accepted() {
+		t.Fatal("Accepted() = true, want false")
+	}
+}

@@ -13,7 +13,7 @@ import (
 )
 
 func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainNetworkd, LivePreflightOK: true}, {Domain: DomainTmpfiles}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
 	statusPath := filepath.Join(t.TempDir(), "config-apply-status.json")
 	activator := &fakeActivator{}
 	runner := &fakeCommandRunner{}
@@ -38,7 +38,7 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 			t.Fatalf("action = %#v, want passed", action)
 		}
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,networkctl-reload,systemd-daemon-reload,systemd-tmpfiles"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(statusPath)
@@ -51,13 +51,13 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 }
 
 func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainNetworkd, LivePreflightOK: true}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
 	statusPath := filepath.Join(t.TempDir(), "config-apply-status.json")
 	activator := &fakeActivator{}
 	secret := "abcdef.0123456789abcdef"
 	runner := &fakeCommandRunner{
 		results: map[string]CommandResult{
-			"networkctl-reload": {ExitStatus: 1, Stderr: "failed with token " + secret},
+			"systemd-sysctl": {ExitStatus: 1, Stderr: "failed with token " + secret},
 		},
 	}
 
@@ -82,6 +82,9 @@ func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
 	if !strings.Contains(status.FailureReason, "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("failure reason = %q, want redacted token marker", status.FailureReason)
 	}
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl,systemd-daemon-reload,systemd-sysctl"; got != want {
+		t.Fatalf("commands = %q, want failed apply followed by rollback replay %q", got, want)
+	}
 	data, err := os.ReadFile(statusPath)
 	if err != nil {
 		t.Fatalf("read status: %v", err)
@@ -92,11 +95,11 @@ func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
 }
 
 func TestExecutorRecordsRollbackFailure(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainTmpfiles}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
 	activator := &fakeActivator{rollbackErr: errors.New("rollback failed with Bearer secret-token")}
 	runner := &fakeCommandRunner{
 		results: map[string]CommandResult{
-			"systemd-tmpfiles": {ExitStatus: 1, Stderr: "tmpfiles failed"},
+			"systemd-sysctl": {ExitStatus: 1, Stderr: "sysctl failed"},
 		},
 	}
 
@@ -116,6 +119,36 @@ func TestExecutorRecordsRollbackFailure(t *testing.T) {
 	}
 }
 
+func TestExecutorRecordsRollbackReplayFailure(t *testing.T) {
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
+	runner := &fakeCommandRunner{
+		results: map[string]CommandResult{
+			"systemd-sysctl": {ExitStatus: 1, Stderr: "sysctl failed"},
+		},
+		errs: map[string]error{
+			"systemd-daemon-reload": errors.New("daemon reload failed with Bearer secret-token"),
+		},
+	}
+
+	status, err := Executor{
+		Runner:    runner,
+		Activator: &fakeActivator{},
+		Now:       fixedNow,
+	}.ExecuteLive(context.Background(), plan)
+	if err == nil {
+		t.Fatalf("ExecuteLive() error = nil, status = %#v", status)
+	}
+	if status.Phase != generation.ConfigApplyPhaseFailed || status.Rollback == nil || status.Rollback.Result != generation.ConfigApplyActionFailed {
+		t.Fatalf("rollback replay failure status = %#v", status)
+	}
+	if strings.Contains(status.Rollback.Reason, "secret-token") || !strings.Contains(status.Rollback.Reason, "Bearer [REDACTED]") {
+		t.Fatalf("rollback reason was not redacted: %q", status.Rollback.Reason)
+	}
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-daemon-reload"; got != want {
+		t.Fatalf("commands = %q, want failed apply followed by rollback replay %q", got, want)
+	}
+}
+
 func TestExecutorRefusesForbiddenLiveActionsBeforeActivation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -131,14 +164,14 @@ func TestExecutorRefusesForbiddenLiveActionsBeforeActivation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan := liveExecutorPlan(t, []Change{{Domain: DomainResolved}})
+			plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
 			activator := &fakeActivator{}
 			runner := &fakeCommandRunner{}
 			status, err := Executor{
 				Runner:    runner,
 				Activator: activator,
 				ActionCommands: map[string][]Command{
-					DomainResolved: {{Name: tt.name, Argv: tt.argv}},
+					DomainSysctl: {{Name: tt.name, Argv: tt.argv}},
 				},
 				Now: fixedNow,
 			}.ExecuteLive(context.Background(), plan)
@@ -231,6 +264,7 @@ func (r *fakeCommandRunner) Run(_ context.Context, command Command) (CommandResu
 		return CommandResult{}, err
 	}
 	if result, ok := r.results[command.Name]; ok {
+		delete(r.results, command.Name)
 		return result, nil
 	}
 	return CommandResult{ExitStatus: 0}, nil

@@ -1,0 +1,12 @@
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "21"
+apply:
+  mode: live
+spec:
+  clusterDefaults:
+    sysctl:
+      settings:
+        net.ipv4.ip_forward: "1"

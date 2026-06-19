@@ -51,7 +51,8 @@ func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {
 	if len(rejected.Audit.Diagnostics) != 1 ||
 		rejected.Audit.Diagnostics[0].Domain != configapply.DomainNetworkd ||
 		rejected.Audit.Diagnostics[0].Decision != configapply.DecisionStagedRequired ||
-		!strings.Contains(rejected.Audit.Diagnostics[0].Message, "live preflight is required") {
+		rejected.Audit.Diagnostics[0].Classification != configapply.ClassificationStagedOnly ||
+		!strings.Contains(rejected.Audit.Diagnostics[0].Message, "staged-only") {
 		t.Fatalf("rejected diagnostics = %#v", rejected.Audit.Diagnostics)
 	}
 	if !strings.Contains(rejected.Audit.FailureReason, "config apply live request rejected for 1 domain") {

@@ -48,6 +48,11 @@ func PlanChange(current generation.Record, request NodeConfigurationChange) (Res
 	if strings.TrimSpace(request.SourceDigest) == "" {
 		return Result{}, fmt.Errorf("configuration source digest is required")
 	}
+	requestedMode, err := normalizeRequestedMode(request.Apply.Mode)
+	if err != nil {
+		return Result{}, err
+	}
+	request.Apply.Mode = requestedMode
 	if diagnostic, changed := selectedKubernetesSysextChange(current.Sysexts, request.Sysexts); changed {
 		decision := Decision{
 			RequestedMode:  request.Apply.Mode,
@@ -115,10 +120,11 @@ func selectedKubernetesSysextChange(current []generation.ExtensionRef, candidate
 		return Diagnostic{}, false
 	}
 	return Diagnostic{
-		Domain:         DomainSelectedKubernetesSysext,
-		Classification: ClassificationRejectedLive,
-		Decision:       DecisionRejected,
-		Message:        "selected Kubernetes sysext changes require target kubeadm access mode and kubelet activation gate",
+		Domain:            DomainSelectedKubernetesSysext,
+		Classification:    ClassificationOperationOnly,
+		Decision:          DecisionRejected,
+		RequiredOperation: "kubernetes-upgrade",
+		Message:           "selected Kubernetes sysext changes require target kubeadm access mode and kubelet activation gate",
 	}, true
 }
 

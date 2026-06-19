@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/zariel/katl/internal/installer/disk"
@@ -40,6 +41,7 @@ type NodeConfig struct {
 	Identity   NodeIdentity     `json:"identity" yaml:"identity"`
 	SystemRole string           `json:"systemRole" yaml:"systemRole"`
 	Networkd   NetworkdConfig   `json:"networkd,omitempty" yaml:"networkd,omitempty"`
+	Sysctl     SysctlConfig     `json:"sysctl,omitempty,omitzero" yaml:"sysctl,omitempty"`
 	Kubernetes KubernetesConfig `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	Bootstrap  *BootstrapIntent `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
 }
@@ -60,6 +62,14 @@ type NetworkdConfig struct {
 type NetworkdFile struct {
 	Name    string `json:"name" yaml:"name"`
 	Content string `json:"content" yaml:"content"`
+}
+
+type SysctlConfig struct {
+	Settings map[string]string `json:"settings,omitempty" yaml:"settings,omitempty"`
+}
+
+func (config SysctlConfig) IsZero() bool {
+	return len(config.Settings) == 0
 }
 
 type KubernetesConfig struct {
@@ -200,6 +210,9 @@ func Validate(manifest Manifest) error {
 		}
 	}
 	if err := validateNetworkd(manifest.Node.Networkd); err != nil {
+		return err
+	}
+	if err := validateSysctl(manifest.Node.Sysctl); err != nil {
 		return err
 	}
 	if err := validateNameRef("node.kubernetes.kubeadm.configRef", manifest.Node.Kubernetes.Kubeadm.ConfigRef); err != nil {
@@ -456,6 +469,75 @@ func validateNetworkd(config NetworkdConfig) error {
 		}
 	}
 	return nil
+}
+
+func validateSysctl(config SysctlConfig) error {
+	for key, value := range config.Settings {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("node.sysctl.settings contains an empty key")
+		}
+		if key != strings.TrimSpace(key) {
+			return fmt.Errorf("node.sysctl.settings[%q] key must not contain leading or trailing whitespace", key)
+		}
+		if !ValidSysctlKey(key) {
+			return fmt.Errorf("node.sysctl.settings[%q] is not supported", key)
+		}
+		if value != strings.TrimSpace(value) || strings.ContainsAny(value, "\x00\n\r") {
+			return fmt.Errorf("node.sysctl.settings[%q] value is unsafe", key)
+		}
+		if !ValidSysctlValue(key, value) {
+			return fmt.Errorf("node.sysctl.settings[%q] value %q is invalid; %s", key, value, SysctlValueHint(key))
+		}
+	}
+	return nil
+}
+
+func ValidSysctlKey(key string) bool {
+	switch key {
+	case "net.ipv4.ip_forward",
+		"net.bridge.bridge-nf-call-iptables",
+		"net.bridge.bridge-nf-call-ip6tables",
+		"vm.max_map_count",
+		"kernel.panic",
+		"kernel.panic_on_oops":
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidSysctlValue(key string, value string) bool {
+	switch key {
+	case "net.ipv4.ip_forward",
+		"net.bridge.bridge-nf-call-iptables",
+		"net.bridge.bridge-nf-call-ip6tables",
+		"kernel.panic_on_oops":
+		return value == "0" || value == "1"
+	case "vm.max_map_count":
+		parsed, err := strconv.ParseUint(value, 10, 63)
+		return err == nil && parsed > 0
+	case "kernel.panic":
+		_, err := strconv.ParseUint(value, 10, 63)
+		return err == nil
+	default:
+		return false
+	}
+}
+
+func SysctlValueHint(key string) string {
+	switch key {
+	case "net.ipv4.ip_forward",
+		"net.bridge.bridge-nf-call-iptables",
+		"net.bridge.bridge-nf-call-ip6tables",
+		"kernel.panic_on_oops":
+		return "expected 0 or 1"
+	case "vm.max_map_count":
+		return "expected a positive base-10 integer"
+	case "kernel.panic":
+		return "expected a non-negative base-10 integer"
+	default:
+		return "unsupported sysctl key"
+	}
 }
 
 func validateNameRef(field string, value string) error {

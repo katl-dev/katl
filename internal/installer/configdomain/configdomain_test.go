@@ -16,6 +16,11 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"}
 				]
 			},
+			"sysctl": {
+				"settings": {
+					"net.ipv4.ip_forward": "1"
+				}
+			},
 			"kubernetes": {
 				"kubeadm": {"configRef": "control-plane"}
 			}`)))
@@ -36,6 +41,7 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	want := []string{
 		"/etc/katl/kubeadm/control-plane/config.yaml",
 		"/etc/katl/node.json",
+		"/etc/sysctl.d/90-katl.conf",
 		"/etc/systemd/network/10-lan.network",
 	}
 	if len(files) != len(want) {
@@ -63,6 +69,9 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	kubernetes := metadata["kubernetes"].(map[string]any)
 	if kubernetes["payloadVersion"] != "v1.36.1" || kubernetes["activationPath"] != "/run/extensions/katl-kubernetes.raw" {
 		t.Fatalf("metadata kubernetes = %#v", kubernetes)
+	}
+	if !strings.Contains(files[2].Content, "net.ipv4.ip_forward = 1") {
+		t.Fatalf("sysctl content = %q", files[2].Content)
 	}
 }
 

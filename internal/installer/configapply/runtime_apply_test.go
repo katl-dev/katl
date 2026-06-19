@@ -13,10 +13,8 @@ import (
 	"github.com/zariel/katl/internal/installer/manifest"
 )
 
-func TestApplyTrustedBundleRendersAndExecutesLiveNetworkd(t *testing.T) {
+func TestApplyTrustedBundleRejectsLiveNetworkdBeforeRender(t *testing.T) {
 	root := t.TempDir()
-	activator := &fakeActivator{}
-	runner := &fakeCommandRunner{}
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeLive,
 		GenerationID: "2026.06.05-002",
@@ -26,6 +24,28 @@ func TestApplyTrustedBundleRendersAndExecutesLiveNetworkd(t *testing.T) {
 				Content: "[Match]\nName=ens3\n[Network]\nDHCP=yes\n",
 			}}},
 			LivePreflight: map[string]bool{DomainNetworkd: true},
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "live request rejected") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want live networkd rejection; result = %#v", err, result)
+	}
+	if result.Audit.SourceID != "operator" || result.Audit.DesiredVersion != "2" || result.Audit.Decision != DecisionRejected {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
+	root := t.TempDir()
+	activator := &fakeActivator{}
+	runner := &fakeCommandRunner{}
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeLive,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
+				"net.ipv4.ip_forward": "1",
+			}},
 		},
 		Executor: &Executor{Runner: runner, Activator: activator, Now: fixedNow},
 	}))
@@ -38,29 +58,118 @@ func TestApplyTrustedBundleRendersAndExecutesLiveNetworkd(t *testing.T) {
 	if activator.activated != "2026.06.05-002" {
 		t.Fatalf("activated generation = %q", activator.activated)
 	}
-	if got, want := result.Plan.GenerationRecord.Sysexts[0].Path, "/var/lib/katl/generations/2026.06.05-002/sysext/kubernetes.raw"; got != want {
-		t.Fatalf("candidate sysext path = %q, want %q", got, want)
-	}
-	if _, err := os.Stat(filepath.Join(root, "var/lib/katl/generations/2026.06.05-002/sysext/kubernetes.raw")); err != nil {
-		t.Fatalf("candidate sysext missing: %v", err)
-	}
-	networkdPath := filepath.Join(result.Tree.ConfextDir, "etc/systemd/network/20-uplink.network")
-	data, err := os.ReadFile(networkdPath)
+	sysctlPath := filepath.Join(result.Tree.ConfextDir, "etc/sysctl.d/90-katl.conf")
+	data, err := os.ReadFile(sysctlPath)
 	if err != nil {
-		t.Fatalf("read networkd file: %v", err)
+		t.Fatalf("read sysctl file: %v", err)
 	}
-	if !strings.Contains(string(data), "DHCP=yes") {
-		t.Fatalf("networkd content = %q", data)
+	if !strings.Contains(string(data), "net.ipv4.ip_forward = 1") {
+		t.Fatalf("sysctl content = %q", data)
+	}
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl"; got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
 	if err != nil {
 		t.Fatalf("ReadConfigApplyStatus() error = %v", err)
 	}
-	if persisted.Phase != generation.ConfigApplyPhaseActive {
-		t.Fatalf("persisted phase = %q", persisted.Phase)
+	if persisted.RequestedApplyMode != generation.ApplyModeLive || persisted.AcceptedApplyMode != generation.ApplyModeLive || persisted.Phase != generation.ConfigApplyPhaseActive {
+		t.Fatalf("persisted status = %#v", persisted)
 	}
 	if result.Audit.SourceID != "operator" || result.Audit.DesiredVersion != "2" || result.Audit.Decision != DecisionAccepted {
 		t.Fatalf("audit = %#v", result.Audit)
+	}
+}
+
+func TestApplyTrustedBundleDefaultsAutoToLiveForSysctl(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeCommandRunner{}
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
+				"net.ipv4.ip_forward": "1",
+			}},
+		},
+		Executor: &Executor{Runner: runner, Activator: &fakeActivator{}, Now: fixedNow},
+	})
+	request.ApplyMode = ""
+	result, err := ApplyTrustedBundle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.RequestedMode != generation.ApplyModeAuto || result.Plan.Decision.AcceptedMode != generation.ApplyModeLive {
+		t.Fatalf("decision = %#v", result.Plan.Decision)
+	}
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,systemd-sysctl"; got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
+	if err != nil {
+		t.Fatalf("ReadConfigApplyStatus() error = %v", err)
+	}
+	if persisted.RequestedApplyMode != generation.ApplyModeAuto || persisted.AcceptedApplyMode != generation.ApplyModeLive {
+		t.Fatalf("persisted status = %#v", persisted)
+	}
+}
+
+func TestApplyTrustedBundleStagesStrictNextBootSysctl(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeNextBoot,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
+				"net.ipv4.ip_forward": "1",
+			}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeNextBoot || result.Status.Phase != generation.ConfigApplyPhaseNextBoot {
+		t.Fatalf("plan/status = %#v %#v", result.Plan.Decision, result.Status)
+	}
+	if len(result.Status.DomainActions) != 1 || result.Status.DomainActions[0].Action != "stage-next-boot" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionSkipped {
+		t.Fatalf("domain actions = %#v", result.Status.DomainActions)
+	}
+	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/sysctl.d/90-katl.conf")); err != nil {
+		t.Fatalf("stat sysctl file: %v", err)
+	}
+}
+
+func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkd(t *testing.T) {
+	root := t.TempDir()
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "10-common.network",
+				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
+			}}},
+		},
+	})
+	request.ApplyMode = ""
+	result, err := ApplyTrustedBundle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.RequestedMode != generation.ApplyModeAuto || result.Plan.Decision.AcceptedMode != generation.ApplyModeNextBoot {
+		t.Fatalf("decision = %#v", result.Plan.Decision)
+	}
+	record, err := generation.ReadRecord(result.MetadataPath)
+	if err != nil {
+		t.Fatalf("ReadRecord() error = %v", err)
+	}
+	if record.ConfigApply == nil || record.ConfigApply.RequestedApplyMode != generation.ApplyModeAuto || record.ConfigApply.AcceptedApplyMode != generation.ApplyModeNextBoot {
+		t.Fatalf("config apply metadata = %#v", record.ConfigApply)
+	}
+	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
+	if err != nil {
+		t.Fatalf("ReadConfigApplyStatus() error = %v", err)
+	}
+	if persisted.RequestedApplyMode != generation.ApplyModeAuto || persisted.AcceptedApplyMode != generation.ApplyModeNextBoot || persisted.Phase != generation.ConfigApplyPhaseNextBoot {
+		t.Fatalf("persisted status = %#v", persisted)
 	}
 }
 
@@ -82,18 +191,17 @@ func TestApplyTrustedBundleResolvesRoleAndNodeOverlaysForNextBoot(t *testing.T) 
 		},
 		NodeOverrides: map[string]NodeOverlay{
 			"cp-1": {
-				SystemRole: "worker",
-				Identity:   &IdentityOverlay{Hostname: "worker-1"},
+				Identity: &IdentityOverlay{Hostname: "worker-1"},
 			},
 		},
 	}))
 	if err != nil {
 		t.Fatalf("ApplyTrustedBundle() error = %v", err)
 	}
-	if result.Manifest.Node.SystemRole != "worker" || result.Manifest.Node.Identity.Hostname != "worker-1" {
+	if result.Manifest.Node.SystemRole != "control-plane" || result.Manifest.Node.Identity.Hostname != "worker-1" {
 		t.Fatalf("merged node = %#v", result.Manifest.Node)
 	}
-	for _, domain := range []string{DomainNetworkd, DomainSSHOperatorAccess, DomainSystemRole, DomainNodeIdentity} {
+	for _, domain := range []string{DomainNetworkd, DomainSSHOperatorAccess, DomainNodeIdentity, DomainBootstrapNodeMetadata} {
 		if !containsDomain(result.Plan.Decision.ChangedDomains, domain) {
 			t.Fatalf("changed domains = %#v, missing %s", result.Plan.Decision.ChangedDomains, domain)
 		}
@@ -103,7 +211,7 @@ func TestApplyTrustedBundleResolvesRoleAndNodeOverlaysForNextBoot(t *testing.T) 
 	}
 }
 
-func TestApplyTrustedBundleStagesKubeadmDesiredInputWithoutClusterMutation(t *testing.T) {
+func TestApplyTrustedBundleRejectsKubeadmDesiredInputBeforeRender(t *testing.T) {
 	root := t.TempDir()
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeNextBoot,
@@ -116,23 +224,13 @@ func TestApplyTrustedBundleStagesKubeadmDesiredInputWithoutClusterMutation(t *te
 			"control-plane": kubeadmPlan("control-plane"),
 		},
 	}))
-	if err != nil {
-		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "request rejected") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want kubeadm operation-only rejection; result = %#v", err, result)
 	}
-	kubeadmPath := filepath.Join(result.Tree.ConfextDir, "etc/katl/kubeadm/control-plane/config.yaml")
-	data, err := os.ReadFile(kubeadmPath)
-	if err != nil {
-		t.Fatalf("read kubeadm desired input: %v", err)
+	if result.Audit.Decision != DecisionRejected || len(result.Audit.Diagnostics) != 1 || result.Audit.Diagnostics[0].RequiredOperation != "kubeadm-aware operation" {
+		t.Fatalf("audit = %#v", result.Audit)
 	}
-	if !strings.Contains(string(data), "InitConfiguration") {
-		t.Fatalf("kubeadm content = %q", data)
-	}
-	if !result.Plan.GenerationRecord.ConfigApply.Kubeadm.Required || !result.Status.Kubeadm.Required {
-		t.Fatalf("kubeadm action required missing: %#v %#v", result.Plan.GenerationRecord.ConfigApply.Kubeadm, result.Status.Kubeadm)
-	}
-	if result.Plan.Decision.AcceptedMode != generation.ApplyModeNextBoot {
-		t.Fatalf("decision = %#v", result.Plan.Decision)
-	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
 func TestApplyTrustedBundleReplaysSameRequestWithoutRenderingAgain(t *testing.T) {
@@ -423,6 +521,46 @@ func TestApplyTrustedBundleRejectsUnsupportedKnownDomainFieldsBeforeRender(t *te
 	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
+func TestApplyTrustedBundleRejectsUnsafeSysctlBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeLive,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
+				"net.ipv4.conf.all.forwarding": "1",
+			}},
+		},
+		Executor: &Executor{Runner: &fakeCommandRunner{}, Activator: &fakeActivator{}, Now: fixedNow},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "is not supported") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want unsupported sysctl key; result = %#v", err, result)
+	}
+	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainSysctl) {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestApplyTrustedBundleRejectsEmptySysctlOverlayBeforeRender(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:    generation.ApplyModeLive,
+		GenerationID: "2026.06.05-002",
+		ClusterDefaults: NodeOverlay{
+			Sysctl: &manifest.SysctlConfig{},
+		},
+		Executor: &Executor{Runner: &fakeCommandRunner{}, Activator: &fakeActivator{}, Now: fixedNow},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "sysctl.settings must contain at least one setting") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want empty sysctl rejection; result = %#v", err, result)
+	}
+	if result.Audit.Decision != DecisionRejected || len(result.Audit.ChangedDomains) != 0 {
+		t.Fatalf("audit = %#v", result.Audit)
+	}
+	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
 func TestApplyTrustedBundleRejectsRawEtcInputBeforeRender(t *testing.T) {
 	root := t.TempDir()
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
@@ -456,8 +594,8 @@ func TestApplyTrustedBundleRejectsUnsafeKubeadmRenderPathBeforeRender(t *testing
 			"control-plane": plan,
 		},
 	}))
-	if err == nil || !strings.Contains(err.Error(), "/etc/kubernetes") {
-		t.Fatalf("ApplyTrustedBundle() error = %v, want unsafe kubeadm render path rejection; result = %#v", err, result)
+	if err == nil || !strings.Contains(err.Error(), "request rejected") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want kubeadm operation-only rejection before render; result = %#v", err, result)
 	}
 	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainKubeadmConfig) {
 		t.Fatalf("audit = %#v", result.Audit)
@@ -496,11 +634,9 @@ func TestApplyTrustedBundleRecordsRollbackStatusOnActivationFailure(t *testing.T
 		ApplyMode:    generation.ApplyModeLive,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "20-uplink.network",
-				Content: "[Match]\nName=ens3\n[Network]\nDHCP=yes\n",
-			}}},
-			LivePreflight: map[string]bool{DomainNetworkd: true},
+			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
+				"net.ipv4.ip_forward": "1",
+			}},
 		},
 		Executor: &Executor{Runner: &fakeCommandRunner{}, Activator: activator, Now: fixedNow},
 	}))
