@@ -258,6 +258,59 @@ The old `scripts/mkosi-artifacts` entrypoint is gone. Use
 `katl-mkosi-artifacts` directly, or `go run ./cmd/katl-mkosi-artifacts` when a
 developer checkout has not installed the command.
 
+## VM Test Helper Disposition
+
+The supported automated VM surface is still `scripts/vmtest-run`. It remains a
+top-level entrypoint because developers and CI need one stable command for
+libvirt-backed enabled VM tests. Its current shell body still owns runner setup
+policy: artifact-set selection, explicit stale `KATL_*` input rejection, mkosi
+build target selection, resource manifest preparation, host capability probing,
+network CIDR discovery, and `world.json`/`run.json` emission. That runner setup
+policy should move behind `internal/vmtest` or a narrow `cmd/katl-vmtest-run`
+command when the runner is next expanded.
+
+The current helper disposition is:
+
+```text
+scripts/vmtest-run
+  Keep as the primary compatibility entrypoint. Migrate setup and world/run
+  manifest policy to Go before adding more runner behavior.
+
+scripts/vmtest-exec
+  Keep as a thin go test -exec adapter. It only checks the world manifest,
+  exports strict test environment, runs the compiled test binary, and reports
+  the run directory on failure.
+
+scripts/vmtest-debug
+  Keep as a thin compatibility wrapper. Debug target discovery and rendering
+  live in cmd/katl-vmtest-debug and internal/vmtest so retained-domain
+  inspection does not depend on jq snippets in shell.
+
+scripts/vmtest-clean
+  Keep as a debug helper for now. It still owns preserved-domain cleanup and
+  orphan qemu fallback policy; migrate or relocate it when cleanup semantics
+  become a durable interface rather than a local debugging aid.
+
+internal/vmtest/world.go, world_scenario.go, world_fixtures.go,
+first_install_world.go, first_install_runtime_fixture.go, installed_world.go
+  Keep as the Go owners for world schema validation, scenario directories,
+  node allocation, fixture staging, first-install fixture production, and
+  installed-runtime fixture discovery.
+
+internal/vmtest/scenarios
+  Keep two-node and three-control-plane topology and bootstrap scenario policy
+  in Go tests. These paths consume world-published fixtures and should not grow
+  generated wrapper scripts or hand-maintained fixture environment files.
+```
+
+First-install, installed-runtime, two-node, and three-control-plane closure
+gates should be run through `scripts/vmtest-run` with the runner-created world.
+They should not require generated wrapper scripts or manually exported
+`KATL_INSTALLER_*`, `KATL_INSTALL_MANIFEST`, `KATL_RUNTIME_ARTIFACT`, or
+`KATL_MKOSI_ARTIFACT_INDEX` fixture inputs. Runtime-only smoke paths may still
+accept explicit runtime artifacts while they are outside the primary install
+world path.
+
 ## Current Script Migration Table
 
 | Script | Current role | Policy action |
@@ -265,6 +318,8 @@ developer checkout has not installed the command.
 | `scripts/mkosi` | Supported build entrypoint and containerized mkosi adapter | Keep as the top-level mkosi adapter while scaffolding. Artifact metadata and package provenance are delegated to `cmd/katl-mkosi-artifacts`; move Kubernetes repository mutation and remaining build policy into Go or mkosi config as they stabilize. |
 | `scripts/vmtest-run` | Supported enabled VM world entrypoint over `go test -exec` | Keep as the canonical developer entrypoint. Keep it thin; move fixture policy, leases, aggregation, and host policy into Go helpers or a future Go runner command. |
 | `scripts/vmtest-exec` | `go test -exec` package-binary wrapper | Keep as an implementation detail of `scripts/vmtest-run`; do not document it as a developer entrypoint. |
+| `scripts/vmtest-debug` | Compatibility wrapper for retained-domain debug target rendering | Keep as a thin wrapper around `cmd/katl-vmtest-debug`; debug target discovery and rendering policy live in Go. |
+| `scripts/vmtest-clean` | Debug helper for preserved libvirt domains | Keep as a local debug helper while cleanup semantics are still scaffolding; migrate or relocate if it becomes a durable interface. |
 | `scripts/check-mkosi-smoke` | Operator-friendly build and boot smoke wrapper | Keep as a thin compatibility wrapper around `scripts/vmtest-run` so smoke execution uses the libvirt-backed VM test path. |
 | `scripts/build-katlos-install-image` | Packages runtime, sysext, and metadata into an install image | Keep temporarily as file-copy and `mksquashfs` glue. Structured validation, image indexes, checksums, and artifact metadata are owned by `cmd/katl-mkosi-artifacts`; keep generic artifact packaging separate from `katlc` runtime generation apply. |
 | `scripts/bind-install-manifest-image` | Compatibility wrapper for install manifest image binding | Structured artifact lookup, digest checks, manifest mutation, `localRef` validation, and target disk override live in `cmd/katl-mkosi-artifacts bind-install-manifest-image`; keep the script as a thin environment-default wrapper while callers still use the historical entrypoint. |

@@ -1,95 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() {
-    printf 'usage: scripts/vmtest-debug <run-dir|result.json>\n' >&2
-}
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+go_bin="${KATL_VMTEST_GO:-go}"
+debug_bin="${KATL_VMTEST_DEBUG:-}"
 
-if [[ "$#" -ne 1 ]]; then
-    usage
-    exit 2
+if [[ -n "$debug_bin" ]]; then
+    exec "$debug_bin" "$@"
 fi
-
-target="$1"
-if [[ -d "$target" ]]; then
-    mapfile -t result_files < <(find "$target" -name result.json -print | sort)
-elif [[ -f "$target" ]]; then
-    result_files=("$target")
-else
-    printf 'vmtest-debug: target not found: %s\n' "$target" >&2
-    exit 2
+if command -v katl-vmtest-debug >/dev/null 2>&1; then
+    exec katl-vmtest-debug "$@"
 fi
-
-if [[ "${#result_files[@]}" -eq 0 ]]; then
-    printf 'vmtest-debug: no result.json files found under %s\n' "$target" >&2
-    exit 2
-fi
-
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
-
-for result in "${result_files[@]}"; do
-    jq -r --arg result "$result" '
-      def top_target:
-        select((.domainName // "") != "")
-        | {
-            preserved: false,
-            reason: "vmtest domain recorded in result; it may no longer be running",
-            domainName: .domainName,
-            libvirtURI: (.libvirtURI // "qemu:///system"),
-            serialLog: (.artifacts.runtimeSerial // .artifacts.serial // ""),
-            consoleCommand: "",
-            cleanupCommand: "",
-            shellMode: (if (.debug.shell // false) then "serial-root" else "" end),
-            vsock: (.vsock // {})
-          };
-      def render:
-        .domainName as $domain
-        | (.libvirtURI // "qemu:///system") as $uri
-        | (.consoleCommand // "") as $console
-        | (.cleanupCommand // "") as $cleanup
-        | {
-            resultPath: $result,
-            source: (.source // ""),
-            preserved: (.preserved // false | tostring),
-            reason: (.reason // ""),
-            domainName: $domain,
-            libvirtURI: $uri,
-            serialLog: (.serialLog // ""),
-            consoleCommand: (if $console == "" then (["virsh", "-c", $uri, "console", $domain, "--force"] | @sh) else $console end),
-            cleanupCommand: (if $cleanup == "" then (["scripts/vmtest-clean", $result] | @sh) else $cleanup end),
-            shellMode: (.shellMode // ""),
-            cid: (.vsock.guestCid // "" | tostring),
-            port: (.vsock.port // "" | tostring)
-          }
-        | [
-            "",
-            "- result: \(.resultPath)",
-            "  domain: \(.domainName)",
-            "  libvirt URI: \(.libvirtURI)",
-            (if .reason != "" then "  reason: \(.reason)" else empty end),
-            "  source: \(.source)",
-            "  preserved: \(.preserved)",
-            (if .serialLog != "" then "  serial tail: \(["tail", "-f", .serialLog] | @sh)" else empty end),
-            "  domstate: \(["virsh", "-c", .libvirtURI, "domstate", .domainName] | @sh)",
-            "  console (invasive): \(.consoleCommand)",
-            (if .cid != "" and .port != "" then "  vsock: cid=\(.cid) port=\(.port)" else empty end),
-            (if .shellMode != "" then "  shell: \(.shellMode)" else empty end),
-            "  cleanup after preservation: \(.cleanupCommand)"
-          ]
-        | .[];
-      ((.debug.targets // []) | map(. + {source: "debug-target"}) | .[]),
-      (select(((.debug.targets // []) | length) == 0) | top_target + {source: "result"})
-      | select((.domainName // "") != "")
-      | render
-    ' "$result" 2>/dev/null || true
-done >"$tmp"
-
-if [[ ! -s "$tmp" ]]; then
-    printf 'vmtest-debug: no vmtest domains recorded in %s\n' "$target" >&2
-    exit 1
-fi
-
-printf 'vmtest debug targets\n'
-printf 'Serial tail is safe during a hung run. Console attaches to ttyS0 and can disrupt active harness serial capture.\n'
-cat "$tmp"
+cd "$repo_root"
+exec "$go_bin" run ./cmd/katl-vmtest-debug "$@"
