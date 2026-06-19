@@ -3,224 +3,27 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null || (cd "$script_dir/.." && pwd))"
-artifact_index="${KATL_MKOSI_ARTIFACT_INDEX:-$repo_root/_build/mkosi/artifacts.json}"
-template="${KATL_INSTALL_MANIFEST_TEMPLATE:-}"
-output="${KATL_INSTALL_MANIFEST:-}"
-local_ref="${KATL_INSTALL_MANIFEST_KATLOS_LOCAL_REF:-}"
-target_disk_by_id="${KATL_INSTALL_TARGET_DISK_BY_ID:-}"
 
-usage() {
-    cat <<'USAGE'
-Usage: scripts/bind-install-manifest-image [options]
-
-Write an install manifest from a template with katlosImage rebound to the
-KatlOS install image recorded in a mkosi artifact index. The output directory
-gets a symlink matching katlosImage.localRef so local/offline installer flows
-can resolve the image relative to the manifest.
-
-Options:
-  --artifact-index PATH   mkosi artifact index (default: _build/mkosi/artifacts.json)
-  --template PATH         input install manifest template
-  --output PATH           output install manifest
-  --local-ref PATH        clean relative image ref (default: indexed image basename)
-  --target-disk-by-id ID  optional install.targetDisk.byID override
-  -h, --help              Show this help
-USAGE
-}
-
-fail() {
-    echo "error: $*" >&2
-    exit 1
-}
-
-need() {
-    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
-}
-
-need_value() {
-    local option="$1"
-    local value="${2:-}"
-    if [[ -z "$value" || "$value" == --* ]]; then
-        fail "$option requires a value"
-    fi
-}
-
-rel() {
-    local path="$1"
-    printf "%s" "${path#"$repo_root"/}"
-}
-
-real() {
-    realpath -m "$1"
-}
-
-repo_abs() {
-    local path="$1"
-    if [[ "$path" == /* ]]; then
-        printf "%s" "$path"
-    else
-        printf "%s/%s" "$repo_root" "$path"
-    fi
-}
-
-artifact_path() {
-    local kind="$1"
-    local path
-    require_artifact "$kind"
-    path="$(artifact_field "$kind" path)"
-    repo_abs "$path"
-}
-
-require_artifact() {
-    local kind="$1"
-    local count
-    count="$(jq -er --arg kind "$kind" '
-        [.artifacts[] | select(.kind == $kind)] | length
-    ' "$artifact_index")"
-    [[ "$count" == "1" ]] || fail "expected exactly one $kind artifact in $(rel "$artifact_index"), found $count"
-}
-
-artifact_field() {
-    local kind="$1"
-    local field="$2"
-    jq -er --arg kind "$kind" --arg field "$field" '
-        .artifacts[] | select(.kind == $kind) | .[$field]
-    ' "$artifact_index"
-}
-
-validate_local_ref() {
-    local value="$1"
-    [[ -n "$value" ]] || fail "localRef is required"
-    [[ "$value" != /* ]] || fail "localRef must be relative"
-    [[ "$value" != "." ]] || fail "localRef must not be current directory"
-    [[ "$value" != *".."* ]] || fail "localRef must not contain dot segments"
-    [[ "$value" != *"//"* ]] || fail "localRef must be clean"
-}
-
-file_sha() {
-    sha256sum "$1" | awk '{print $1}'
-}
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --artifact-index)
-            need_value "$1" "${2:-}"
-            artifact_index="$2"
-            shift 2
-            ;;
-        --template)
-            need_value "$1" "${2:-}"
-            template="$2"
-            shift 2
-            ;;
-        --output)
-            need_value "$1" "${2:-}"
-            output="$2"
-            shift 2
-            ;;
-        --local-ref)
-            need_value "$1" "${2:-}"
-            local_ref="$2"
-            shift 2
-            ;;
-        --target-disk-by-id)
-            need_value "$1" "${2:-}"
-            target_disk_by_id="$2"
-            shift 2
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        *)
-            usage >&2
-            fail "unknown argument: $1"
-            ;;
-    esac
-done
-
-need jq
-need ln
-need mkdir
-need realpath
-need sha256sum
-need stat
-
-artifact_index="$(real "$artifact_index")"
-[[ -f "$artifact_index" ]] || fail "artifact index not found: $(rel "$artifact_index")"
-[[ -n "$template" ]] || fail "--template is required"
-[[ -f "$template" ]] || fail "template manifest not found: $(rel "$template")"
-[[ -n "$output" ]] || fail "--output is required"
-
-template="$(real "$template")"
-output="$(real "$output")"
-[[ "$template" != "$output" ]] || fail "output must not replace template in place"
-if [[ -n "$target_disk_by_id" ]]; then
-    [[ "$target_disk_by_id" == /dev/disk/by-id/* ]] || fail "--target-disk-by-id must be a /dev/disk/by-id path"
+args=(
+    bind-install-manifest-image
+    --artifact-index "${KATL_MKOSI_ARTIFACT_INDEX:-$repo_root/_build/mkosi/artifacts.json}"
+)
+if [[ -n "${KATL_INSTALL_MANIFEST_TEMPLATE:-}" ]]; then
+    args+=(--template "$KATL_INSTALL_MANIFEST_TEMPLATE")
 fi
-
-image="$(artifact_path katlos-install-image)"
-image="$(real "$image")"
-[[ -f "$image" ]] || fail "KatlOS install image not found: $(rel "$image")"
-metadata_path="$(artifact_field katlos-install-image metadataPath)"
-metadata_path="$(repo_abs "$metadata_path")"
-metadata_path="$(real "$metadata_path")"
-[[ -f "$metadata_path" ]] || fail "KatlOS install image metadata not found: $(rel "$metadata_path")"
-
-image_sha="$(file_sha "$image")"
-image_size="$(stat -c %s "$image")"
-index_sha="$(artifact_field katlos-install-image sha256)"
-index_size="$(artifact_field katlos-install-image sizeBytes)"
-[[ "$image_sha" == "$index_sha" ]] || fail "KatlOS image sha256 does not match artifact index"
-[[ "$image_size" == "$index_size" ]] || fail "KatlOS image size does not match artifact index"
-
-meta_sha="$(jq -er '.sha256' "$metadata_path")"
-meta_size="$(jq -er '.sizeBytes' "$metadata_path")"
-[[ "$image_sha" == "$meta_sha" ]] || fail "KatlOS image sha256 does not match metadata"
-[[ "$image_size" == "$meta_size" ]] || fail "KatlOS image size does not match metadata"
-
-version="$(jq -er '.version' "$metadata_path")"
-architecture="$(jq -er '.architecture' "$metadata_path")"
-runtime_interface="$(jq -er '.runtimeInterface' "$metadata_path")"
-role="$(jq -er '.imageRole' "$metadata_path")"
-[[ "$role" == "install" ]] || fail "KatlOS image role must be install"
-
-if [[ -z "$local_ref" ]]; then
-    local_ref="$(basename "$image")"
+if [[ -n "${KATL_INSTALL_MANIFEST:-}" ]]; then
+    args+=(--output "$KATL_INSTALL_MANIFEST")
 fi
-validate_local_ref "$local_ref"
+if [[ -n "${KATL_INSTALL_MANIFEST_KATLOS_LOCAL_REF:-}" ]]; then
+    args+=(--local-ref "$KATL_INSTALL_MANIFEST_KATLOS_LOCAL_REF")
+fi
+if [[ -n "${KATL_INSTALL_TARGET_DISK_BY_ID:-}" ]]; then
+    args+=(--target-disk-by-id "$KATL_INSTALL_TARGET_DISK_BY_ID")
+fi
+args+=("$@")
 
-mkdir -p "$(dirname "$output")" "$(dirname "$output")/$(dirname "$local_ref")"
-image_link="$(real "$(dirname "$output")/$local_ref")"
-ln -sfn "$image" "$image_link"
-resolved_link="$(realpath "$image_link")"
-[[ "$resolved_link" == "$image" ]] || fail "localRef $(rel "$image_link") does not resolve to indexed image"
-
-tmp="$output.tmp.$$"
-jq \
-    --arg localRef "$local_ref" \
-    --arg sha256 "$image_sha" \
-    --argjson sizeBytes "$image_size" \
-    --arg version "$version" \
-    --arg architecture "$architecture" \
-    --arg runtimeInterface "$runtime_interface" \
-    --arg role "$role" \
-    --arg targetDiskByID "$target_disk_by_id" \
-    '.katlosImage = {
-        localRef: $localRef,
-        sha256: $sha256,
-        sizeBytes: $sizeBytes,
-        version: $version,
-        architecture: $architecture,
-        runtimeInterface: $runtimeInterface,
-        role: $role
-    } |
-    if $targetDiskByID == "" then
-        .
-    else
-        .install.targetDisk.byID = $targetDiskByID
-    end' "$template" >"$tmp"
-mv "$tmp" "$output"
-
-echo "install manifest: $(rel "$output")"
-echo "katlos image ref: $(rel "$image_link")"
+if command -v katl-mkosi-artifacts >/dev/null 2>&1; then
+    exec katl-mkosi-artifacts "${args[@]}"
+fi
+cd "$repo_root"
+exec go run ./cmd/katl-mkosi-artifacts "${args[@]}"

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zariel/katl/internal/installer/manifest"
 )
 
 func TestWriteAndPath(t *testing.T) {
@@ -318,6 +320,143 @@ func TestMetadataWriters(t *testing.T) {
 		"--runtime-interface", "katl-runtime-1",
 	}, &stdout, &bytes.Buffer{}, env); err == nil {
 		t.Fatalf("write-katlos-artifact accepted unsupported image role")
+	}
+}
+
+func TestBindInstallManifestImage(t *testing.T) {
+	repo := testRepoRoot(t)
+	workDir := testWorkDir(t, repo)
+	image := writeTestFile(t, workDir, "katlos-install.squashfs", "katlos image")
+	imageSHA := testFileSHA256(t, image)
+	imageInfo, err := os.Stat(image)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", image, err)
+	}
+	writeTestJSON(t, image+".json", katlosArtifactMetadata{
+		APIVersion:       "katl.dev/v1alpha1",
+		Kind:             "KatlOSImageArtifact",
+		ImageRole:        "install",
+		Format:           "squashfs",
+		Version:          "0.1.0",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Path:             filepath.Base(image),
+		SizeBytes:        imageInfo.Size(),
+		SHA256:           imageSHA,
+	})
+	indexPath := filepath.Join(workDir, "artifacts.json")
+	writeTestJSON(t, indexPath, artifactIndex{
+		SchemaVersion: 1,
+		Artifacts: []artifactEntry{{
+			Kind:         "katlos-install-image",
+			Path:         relPath(repo, image),
+			Format:       "squashfs",
+			SizeBytes:    imageInfo.Size(),
+			SHA256:       imageSHA,
+			MetadataPath: relPath(repo, image+".json"),
+		}},
+	})
+	template := filepath.Join(workDir, "template.yaml")
+	if err := os.WriteFile(template, []byte(`apiVersion: install.katl.dev/v1alpha1
+kind: InstallManifest
+node:
+  identity:
+    hostname: cp-1
+    ssh:
+      authorizedKeys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+  systemRole: control-plane
+install:
+  allowDestructiveInstall: true
+  targetDisk:
+    serial: old-target
+katlosImage:
+  localRef: old.squashfs
+  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sizeBytes: 1
+  version: old
+  architecture: x86_64
+  runtimeInterface: old-runtime
+  role: install
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", template, err)
+	}
+	output := filepath.Join(workDir, "out", "install.yaml")
+	var stdout bytes.Buffer
+	err = run([]string{
+		"bind-install-manifest-image",
+		"--artifact-index", indexPath,
+		"--template", template,
+		"--output", output,
+		"--local-ref", "images/katlos.squashfs",
+		"--target-disk-by-id", "/dev/disk/by-id/ata-target",
+	}, &stdout, &bytes.Buffer{}, []string{})
+	if err != nil {
+		t.Fatalf("bind-install-manifest-image error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "install manifest: ") || !strings.Contains(stdout.String(), "katlos image ref: ") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	file, err := os.Open(output)
+	if err != nil {
+		t.Fatalf("Open(%s) error = %v", output, err)
+	}
+	defer file.Close()
+	bound, err := manifest.Decode(file)
+	if err != nil {
+		t.Fatalf("Decode(%s) error = %v", output, err)
+	}
+	if bound.KatlosImage.LocalRef != "images/katlos.squashfs" || bound.KatlosImage.SHA256 != imageSHA || bound.KatlosImage.SizeBytes != uint64(imageInfo.Size()) {
+		t.Fatalf("bound image = %#v", bound.KatlosImage)
+	}
+	if bound.KatlosImage.Version != "0.1.0" || bound.KatlosImage.RuntimeInterface != "katl-runtime-1" || bound.KatlosImage.Role != "install" {
+		t.Fatalf("bound image metadata = %#v", bound.KatlosImage)
+	}
+	if bound.Install.TargetDisk.ByID != "/dev/disk/by-id/ata-target" || bound.Install.TargetDisk.Serial != "" {
+		t.Fatalf("target disk = %#v", bound.Install.TargetDisk)
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Join(filepath.Dir(output), "images", "katlos.squashfs"))
+	if err != nil {
+		t.Fatalf("EvalSymlinks() error = %v", err)
+	}
+	if resolved != image {
+		t.Fatalf("localRef resolved to %s, want %s", resolved, image)
+	}
+}
+
+func TestBindInstallManifestImageRejectsMismatchedIndex(t *testing.T) {
+	repo := testRepoRoot(t)
+	workDir := testWorkDir(t, repo)
+	image := writeTestFile(t, workDir, "katlos-install.squashfs", "katlos image")
+	imageSHA := testFileSHA256(t, image)
+	writeTestJSON(t, image+".json", katlosArtifactMetadata{
+		Kind:             "KatlOSImageArtifact",
+		ImageRole:        "install",
+		Version:          "0.1.0",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		SizeBytes:        int64(len("katlos image")),
+		SHA256:           imageSHA,
+	})
+	indexPath := filepath.Join(workDir, "artifacts.json")
+	writeTestJSON(t, indexPath, artifactIndex{
+		SchemaVersion: 1,
+		Artifacts: []artifactEntry{{
+			Kind:         "katlos-install-image",
+			Path:         relPath(repo, image),
+			SizeBytes:    int64(len("katlos image")),
+			SHA256:       strings.Repeat("b", 64),
+			MetadataPath: relPath(repo, image+".json"),
+		}},
+	})
+	err := run([]string{
+		"bind-install-manifest-image",
+		"--artifact-index", indexPath,
+		"--template", filepath.Join(workDir, "missing.yaml"),
+		"--output", filepath.Join(workDir, "out.yaml"),
+	}, &bytes.Buffer{}, &bytes.Buffer{}, []string{})
+	if err == nil || !strings.Contains(err.Error(), "sha256 does not match artifact index") {
+		t.Fatalf("bind-install-manifest-image error = %v, want index mismatch", err)
 	}
 }
 

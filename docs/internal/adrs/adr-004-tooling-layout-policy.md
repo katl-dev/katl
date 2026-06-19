@@ -254,6 +254,10 @@ artifact packaging remains a build-side implementation detail. Until then,
 `cmd/katl-mkosi-artifacts` is the narrow Go surface for build-side artifact
 metadata policy.
 
+The old `scripts/mkosi-artifacts` entrypoint is gone. Use
+`katl-mkosi-artifacts` directly, or `go run ./cmd/katl-mkosi-artifacts` when a
+developer checkout has not installed the command.
+
 ## Current Script Migration Table
 
 | Script | Current role | Policy action |
@@ -263,7 +267,7 @@ metadata policy.
 | `scripts/vmtest-exec` | `go test -exec` package-binary wrapper | Keep as an implementation detail of `scripts/vmtest-run`; do not document it as a developer entrypoint. |
 | `scripts/check-mkosi-smoke` | Operator-friendly build and boot smoke wrapper | Keep as a thin compatibility wrapper around `scripts/vmtest-run` so smoke execution uses the libvirt-backed VM test path. |
 | `scripts/build-katlos-install-image` | Packages runtime, sysext, and metadata into an install image | Keep temporarily as file-copy and `mksquashfs` glue. Structured validation, image indexes, checksums, and artifact metadata are owned by `cmd/katl-mkosi-artifacts`; keep generic artifact packaging separate from `katlc` runtime generation apply. |
-| `scripts/bind-install-manifest-image` | Mutates install manifest image references | Replace with typed Go manifest/image binding logic because it performs structured manifest mutation. |
+| `scripts/bind-install-manifest-image` | Compatibility wrapper for install manifest image binding | Structured artifact lookup, digest checks, manifest mutation, `localRef` validation, and target disk override live in `cmd/katl-mkosi-artifacts bind-install-manifest-image`; keep the script as a thin environment-default wrapper while callers still use the historical entrypoint. |
 | `scripts/check-katlos-install-image` | Validates install-image metadata and host-path hygiene | Move to a Go verifier shared with artifact metadata tooling and resource tests. |
 | `scripts/check-runtime-root` | Inspects SquashFS runtime root content | Move policy checks to Go; Go may still call `unsquashfs` as the external inspector. |
 | `scripts/check-runtime-boot-asset` | Validates runtime UKI metadata and command line | Move metadata and compatibility checks to Go. |

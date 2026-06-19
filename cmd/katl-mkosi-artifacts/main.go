@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/zariel/katl/internal/installer/manifest"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -85,6 +89,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		return runWriteKatlOSIndex(args, stdout, stderr, cfg)
 	case "write-katlos-artifact":
 		return runWriteKatlOSArtifact(args, stdout, stderr, cfg)
+	case "bind-install-manifest-image":
+		return runBindInstallManifestImage(args, stdout, stderr, cfg)
 	case "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil
@@ -101,6 +107,7 @@ const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts write-kubernetes-sysext-from-log --artifact PATH --log PATH --repo-id ID --repo-base-url URL --repo-minor MINOR
        katl-mkosi-artifacts write-katlos-index --output PATH --runtime-root PATH --runtime-root-metadata PATH --runtime-uki PATH --runtime-uki-metadata PATH --kubernetes-sysext PATH --kubernetes-sysext-metadata PATH
        katl-mkosi-artifacts write-katlos-artifact --artifact PATH
+       katl-mkosi-artifacts bind-install-manifest-image --template PATH --output PATH
 
 Write or query the local mkosi artifact index.
 
@@ -843,6 +850,107 @@ func runWriteKatlOSArtifact(args []string, stdout, stderr io.Writer, cfg config)
 	return nil
 }
 
+func runBindInstallManifestImage(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts bind-install-manifest-image", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	artifactIndex := flags.String("artifact-index", cfg.DefaultIndex, "mkosi artifact index")
+	template := flags.String("template", "", "input install manifest template")
+	output := flags.String("output", "", "output install manifest")
+	localRef := flags.String("local-ref", "", "clean relative image ref")
+	targetDiskByID := flags.String("target-disk-by-id", "", "optional install.targetDisk.byID override")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*template) == "" {
+		return fmt.Errorf("--template is required")
+	}
+	if strings.TrimSpace(*output) == "" {
+		return fmt.Errorf("--output is required")
+	}
+	if strings.TrimSpace(*targetDiskByID) != "" && !strings.HasPrefix(*targetDiskByID, "/dev/disk/by-id/") {
+		return fmt.Errorf("--target-disk-by-id must be a /dev/disk/by-id path")
+	}
+
+	indexPath := absPath(cfg.RepoRoot, *artifactIndex)
+	templatePath := absPath(cfg.RepoRoot, *template)
+	outputPath := absPath(cfg.RepoRoot, *output)
+	if filepath.Clean(templatePath) == filepath.Clean(outputPath) {
+		return fmt.Errorf("output must not replace template in place")
+	}
+	image, metadata, err := katlosImageFromIndex(indexPath, cfg.RepoRoot)
+	if err != nil {
+		return err
+	}
+	ref := strings.TrimSpace(*localRef)
+	if ref == "" {
+		ref = filepath.Base(image)
+	}
+	if err := validateLocalRef(ref); err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(templatePath)
+	if err != nil {
+		return fmt.Errorf("read template manifest %s: %w", relPath(cfg.RepoRoot, templatePath), err)
+	}
+	install, err := decodeInstallManifestTemplate(data)
+	if err != nil {
+		return fmt.Errorf("decode template manifest %s: %w", relPath(cfg.RepoRoot, templatePath), err)
+	}
+	install.KatlosImage = manifest.KatlosImage{
+		LocalRef:         ref,
+		SHA256:           metadata.SHA256,
+		SizeBytes:        uint64(metadata.SizeBytes),
+		Version:          metadata.Version,
+		Architecture:     metadata.Architecture,
+		RuntimeInterface: metadata.RuntimeInterface,
+		Role:             metadata.ImageRole,
+	}
+	if strings.TrimSpace(*targetDiskByID) != "" {
+		install.Install.TargetDisk.ByID = strings.TrimSpace(*targetDiskByID)
+		install.Install.TargetDisk.WWN = ""
+		install.Install.TargetDisk.Serial = ""
+	}
+	if err := manifest.Validate(install); err != nil {
+		return fmt.Errorf("bound install manifest is invalid: %w", err)
+	}
+	out, err := yaml.Marshal(install)
+	if err != nil {
+		return fmt.Errorf("marshal bound install manifest: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("create output manifest directory: %w", err)
+	}
+	if err := os.WriteFile(outputPath, out, 0o644); err != nil {
+		return fmt.Errorf("write output manifest %s: %w", relPath(cfg.RepoRoot, outputPath), err)
+	}
+
+	link := filepath.Join(filepath.Dir(outputPath), filepath.FromSlash(ref))
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		return fmt.Errorf("create localRef directory: %w", err)
+	}
+	if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("replace localRef %s: %w", relPath(cfg.RepoRoot, link), err)
+	}
+	if err := os.Symlink(image, link); err != nil {
+		return fmt.Errorf("create localRef %s: %w", relPath(cfg.RepoRoot, link), err)
+	}
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		return fmt.Errorf("resolve localRef %s: %w", relPath(cfg.RepoRoot, link), err)
+	}
+	if filepath.Clean(resolved) != filepath.Clean(image) {
+		return fmt.Errorf("localRef %s does not resolve to indexed image", relPath(cfg.RepoRoot, link))
+	}
+
+	fmt.Fprintf(stdout, "install manifest: %s\n", relPath(cfg.RepoRoot, outputPath))
+	fmt.Fprintf(stdout, "katlos image ref: %s\n", relPath(cfg.RepoRoot, link))
+	return nil
+}
+
 func writeIndex(indexPath string, cfg config) error {
 	for _, input := range []struct {
 		label string
@@ -1038,6 +1146,107 @@ func readAndValidateLocalMetadata(label, metadataPath, artifactPath string) (loc
 		return localMetadata{}, fmt.Errorf("%s metadata sha256 %s does not match artifact %s", label, metadata.SHA256, digest)
 	}
 	return metadata, nil
+}
+
+func katlosImageFromIndex(indexPath, repoRoot string) (string, katlosArtifactMetadata, error) {
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("read artifact index %s: %w", relPath(repoRoot, indexPath), err)
+	}
+	var index artifactIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("decode artifact index %s: %w", relPath(repoRoot, indexPath), err)
+	}
+	var matches []artifactEntry
+	for _, entry := range index.Artifacts {
+		if entry.Kind == "katlos-install-image" {
+			matches = append(matches, entry)
+		}
+	}
+	if len(matches) != 1 {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("expected exactly one katlos-install-image artifact in %s, found %d", relPath(repoRoot, indexPath), len(matches))
+	}
+	entry := matches[0]
+	if strings.TrimSpace(entry.MetadataPath) == "" {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("katlos-install-image artifact is missing metadataPath")
+	}
+	imagePath := absPath(repoRoot, entry.Path)
+	size, digest, err := fileInfo(imagePath)
+	if err != nil {
+		return "", katlosArtifactMetadata{}, err
+	}
+	if entry.SizeBytes != size {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("KatlOS image size does not match artifact index")
+	}
+	if entry.SHA256 != digest {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("KatlOS image sha256 does not match artifact index")
+	}
+	metadataPath := absPath(repoRoot, entry.MetadataPath)
+	data, err = os.ReadFile(metadataPath)
+	if err != nil {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("read KatlOS image metadata %s: %w", relPath(repoRoot, metadataPath), err)
+	}
+	var metadata katlosArtifactMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("decode KatlOS image metadata %s: %w", relPath(repoRoot, metadataPath), err)
+	}
+	if metadata.Kind != "KatlOSImageArtifact" {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("KatlOS image metadata kind must be KatlOSImageArtifact")
+	}
+	if metadata.ImageRole != "install" {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("KatlOS image role must be install")
+	}
+	if metadata.SizeBytes < 0 {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("KatlOS image sizeBytes must not be negative")
+	}
+	if metadata.SizeBytes != size {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("KatlOS image size does not match metadata")
+	}
+	if metadata.SHA256 != digest {
+		return "", katlosArtifactMetadata{}, fmt.Errorf("KatlOS image sha256 does not match metadata")
+	}
+	return imagePath, metadata, nil
+}
+
+func decodeInstallManifestTemplate(data []byte) (manifest.Manifest, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	var install manifest.Manifest
+	if err := decoder.Decode(&install); err != nil {
+		return manifest.Manifest{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return manifest.Manifest{}, fmt.Errorf("multiple YAML documents")
+		}
+		return manifest.Manifest{}, err
+	}
+	if install.APIVersion != manifest.APIVersion {
+		return manifest.Manifest{}, fmt.Errorf("apiVersion must be %s", manifest.APIVersion)
+	}
+	if install.Kind != manifest.Kind {
+		return manifest.Manifest{}, fmt.Errorf("kind must be %s", manifest.Kind)
+	}
+	return install, nil
+}
+
+func validateLocalRef(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("localRef is required")
+	}
+	if filepath.IsAbs(value) {
+		return fmt.Errorf("localRef must be relative")
+	}
+	if filepath.ToSlash(filepath.Clean(value)) != value || strings.Contains(value, "//") {
+		return fmt.Errorf("localRef must be clean")
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("localRef must not contain dot segments")
+		}
+	}
+	return nil
 }
 
 func validateKatlOSComponents(root, uki, sysext localMetadata, architecture, runtimeInterface string) error {
