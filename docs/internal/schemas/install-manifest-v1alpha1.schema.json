@@ -78,12 +78,17 @@
       "additionalProperties": false,
       "required": [
         "allowDestructiveInstall",
+        "destructiveInstallAcknowledgement",
         "targetDisk"
       ],
       "properties": {
         "allowDestructiveInstall": {
           "description": "Must be explicitly true before katlos-install may wipe or repartition the target root disk.",
           "const": true
+        },
+        "destructiveInstallAcknowledgement": {
+          "description": "Required exact data-loss acknowledgement for destructive KatlOS install or wipe/reinstall.",
+          "const": "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity."
         },
         "targetDisk": {
           "$ref": "#/$defs/diskSelector"

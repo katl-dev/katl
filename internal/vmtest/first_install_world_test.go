@@ -261,6 +261,7 @@ func TestExternalConfigLiteralsIncludeRolesNetworkdAndKubeadmSecrets(t *testing.
   },
   "install": {
     "allowDestructiveInstall": true,
+    "destructiveInstallAcknowledgement": "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.",
     "targetDisk": {"byID": "/dev/disk/by-id/virtio-static-root", "minSizeMiB": 32}
   },
   "katlosImage": {

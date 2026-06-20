@@ -160,7 +160,7 @@ Users supply:
 
 ```text
 target root disk selector
-destructive install authorization
+destructive install authorization and exact data-loss acknowledgement
 node identity inputs such as hostname and SSH public keys
 KatlOS image reference and digest
 exact Kubernetes payload bundle source/ref, such as a source URL plus

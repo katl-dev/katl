@@ -179,6 +179,9 @@ func (r *inputResolver) setStringWithRank(field string, source InputSource, rank
 	if value == "" || rank < r.rank[field] {
 		return
 	}
+	if field == "manifestPath" && rank == r.rank[field] {
+		return
+	}
 
 	switch field {
 	case "manifestPath":

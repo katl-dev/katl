@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,32 @@ func TestApplyInputCopiesManifestLocalRef(t *testing.T) {
 	assertFile(t, filepath.Join(runDir, "payloads/katlos-install.squashfs"), "katlos payload")
 	if got := stdout.String(); !strings.Contains(got, "payloads/katlos-install.squashfs") {
 		t.Fatalf("stdout = %q, want localRef copy log", got)
+	}
+}
+
+func TestApplyInputKeepsLocalRefOnSelectedSeedManifest(t *testing.T) {
+	root := t.TempDir()
+	preseed := filepath.Join(root, "seed")
+	runDir := filepath.Join(root, "run")
+	manifestPath := filepath.Join(preseed, "install-manifest.json")
+	writeTestFile(t, filepath.Join(preseed, "install-input.json"), `{"manifestPath":`+quoteJSON(manifestPath)+`}`)
+	writeTestFile(t, manifestPath, `{"katlosImage":{"localRef":"payloads/katlos-install.squashfs"}}`)
+	writeTestFile(t, filepath.Join(preseed, "payloads/katlos-install.squashfs"), "katlos payload")
+
+	var stdout bytes.Buffer
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs: []string{preseed},
+		RunDir:      runDir,
+		Stdout:      &stdout,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+
+	assertFile(t, filepath.Join(runDir, "install-input.json"), `{"manifestPath":`+quoteJSON(manifestPath)+`}`)
+	assertFile(t, filepath.Join(runDir, "install-manifest.json"), `{"katlosImage":{"localRef":"payloads/katlos-install.squashfs"}}`)
+	assertNoFile(t, filepath.Join(runDir, "payloads/katlos-install.squashfs"))
+	if got := stdout.String(); strings.Contains(got, "payloads/katlos-install.squashfs") {
+		t.Fatalf("stdout = %q, did not expect localRef copy log", got)
 	}
 }
 
@@ -290,6 +317,10 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 }
 
+func quoteJSON(value string) string {
+	return strconv.Quote(value)
+}
+
 func assertFile(t *testing.T, path, want string) {
 	t.Helper()
 	got, err := os.ReadFile(path)
@@ -298,5 +329,14 @@ func assertFile(t *testing.T, path, want string) {
 	}
 	if string(got) != want {
 		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
+func assertNoFile(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("%s exists, want missing", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("Stat(%s) error = %v", path, err)
 	}
 }

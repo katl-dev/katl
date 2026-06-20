@@ -142,8 +142,10 @@ and generation state on the selected nodes and bootstrap a new cluster identity.
 ```
 
 Short flags such as `--force`, `--yes`, or a repeated failed bootstrap attempt
-are not enough. The operation record must persist that destructive intent was
-accepted, but diagnostics must not record secrets from the discarded cluster.
+are not enough. The installer manifest requires this exact text in
+`install.destructiveInstallAcknowledgement`, and install status records
+`destructiveAcknowledgementAccepted` after validation. Diagnostics must not
+record secrets from the discarded cluster.
 
 For v0.1, wipe/reinstall owns only selected KatlOS target disks and Katl-owned
 state on those disks:

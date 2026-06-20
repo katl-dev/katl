@@ -2322,6 +2322,7 @@ const configApplyInstallManifestJSON = `{
   },
   "install": {
     "allowDestructiveInstall": true,
+    "destructiveInstallAcknowledgement": "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.",
     "targetDisk": {"byID": "disk/by-id/test"}
   },
   "katlosImage": {

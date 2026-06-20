@@ -45,25 +45,26 @@ const (
 var errorURLPattern = regexp.MustCompile(`https?://[^\s]+`)
 
 type Record struct {
-	APIVersion          string    `json:"apiVersion"`
-	Kind                string    `json:"kind"`
-	State               string    `json:"state"`
-	CurrentStep         string    `json:"currentStep,omitempty"`
-	CompletedSteps      []string  `json:"completedStates,omitempty"`
-	InputMode           string    `json:"inputMode,omitempty"`
-	InputSource         string    `json:"inputSource,omitempty"`
-	RequestDigest       string    `json:"requestDigest,omitempty"`
-	KatlosImage         Image     `json:"katlosImage,omitempty"`
-	TargetDiskStableID  string    `json:"targetDiskStableID,omitempty"`
-	SelectedRootSlot    string    `json:"selectedRootSlot,omitempty"`
-	InstalledGeneration string    `json:"installedGeneration,omitempty"`
-	BootArtifactVersion string    `json:"bootArtifactVersion,omitempty"`
-	RefusalReason       string    `json:"refusalReason,omitempty"`
-	RetryHint           string    `json:"retryHint,omitempty"`
-	LastError           string    `json:"lastError,omitempty"`
-	FinalHandoff        string    `json:"finalHandoff,omitempty"`
-	DestructiveMutation bool      `json:"destructiveMutationStarted,omitempty"`
-	UpdatedAt           time.Time `json:"updatedAt"`
+	APIVersion                 string    `json:"apiVersion"`
+	Kind                       string    `json:"kind"`
+	State                      string    `json:"state"`
+	CurrentStep                string    `json:"currentStep,omitempty"`
+	CompletedSteps             []string  `json:"completedStates,omitempty"`
+	InputMode                  string    `json:"inputMode,omitempty"`
+	InputSource                string    `json:"inputSource,omitempty"`
+	RequestDigest              string    `json:"requestDigest,omitempty"`
+	KatlosImage                Image     `json:"katlosImage,omitempty"`
+	TargetDiskStableID         string    `json:"targetDiskStableID,omitempty"`
+	SelectedRootSlot           string    `json:"selectedRootSlot,omitempty"`
+	InstalledGeneration        string    `json:"installedGeneration,omitempty"`
+	BootArtifactVersion        string    `json:"bootArtifactVersion,omitempty"`
+	RefusalReason              string    `json:"refusalReason,omitempty"`
+	RetryHint                  string    `json:"retryHint,omitempty"`
+	LastError                  string    `json:"lastError,omitempty"`
+	FinalHandoff               string    `json:"finalHandoff,omitempty"`
+	DestructiveAcknowledgement bool      `json:"destructiveAcknowledgementAccepted,omitempty"`
+	DestructiveMutation        bool      `json:"destructiveMutationStarted,omitempty"`
+	UpdatedAt                  time.Time `json:"updatedAt"`
 }
 
 type Image struct {

@@ -113,6 +113,24 @@ func TestDiscoverBootInputRunOverridesEtcAndManifest(t *testing.T) {
 	}
 }
 
+func TestDiscoverBootInputKeepsExplicitManifestPathAtSameSource(t *testing.T) {
+	input, err := DiscoverBootInput(BootInputRequest{
+		Files: []BootInputFile{
+			inputFile(InputSourceRunKatl, `{"manifestPath":"/run/katl/preseed/install-manifest.json","installMode":"auto"}`),
+			inputFile(InputSourceRunKatl, `{"manifestPath":"/run/katl/install-manifest.json"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("DiscoverBootInput() error = %v", err)
+	}
+	if input.ManifestPath != "/run/katl/preseed/install-manifest.json" {
+		t.Fatalf("manifest path = %q", input.ManifestPath)
+	}
+	if input.InstallMode != "auto" || input.Action != InstallActionRun {
+		t.Fatalf("install mode/action = %q/%q", input.InstallMode, input.Action)
+	}
+}
+
 func TestDiscoverBootInputMissingManifestWaitsForConfig(t *testing.T) {
 	input, err := DiscoverBootInput(BootInputRequest{
 		KernelCmdline: "katl.node=lab-node-01",

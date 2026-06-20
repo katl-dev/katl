@@ -20,6 +20,8 @@ import (
 const (
 	APIVersion = "install.katl.dev/v1alpha1"
 	Kind       = "InstallManifest"
+
+	DestructiveInstallAcknowledgement = "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity."
 )
 
 var localRefRE = regexp.MustCompile(`^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$`)
@@ -108,9 +110,10 @@ type NodeTaint struct {
 }
 
 type InstallConfig struct {
-	AllowDestructiveInstall bool         `json:"allowDestructiveInstall" yaml:"allowDestructiveInstall"`
-	TargetDisk              DiskSelector `json:"targetDisk" yaml:"targetDisk"`
-	ExtraDisks              []ExtraDisk  `json:"extraDisks,omitempty" yaml:"extraDisks,omitempty"`
+	AllowDestructiveInstall           bool         `json:"allowDestructiveInstall" yaml:"allowDestructiveInstall"`
+	DestructiveInstallAcknowledgement string       `json:"destructiveInstallAcknowledgement" yaml:"destructiveInstallAcknowledgement"`
+	TargetDisk                        DiskSelector `json:"targetDisk" yaml:"targetDisk"`
+	ExtraDisks                        []ExtraDisk  `json:"extraDisks,omitempty" yaml:"extraDisks,omitempty"`
 }
 
 type DiskSelector struct {
@@ -191,6 +194,9 @@ func normalizeDecodeError(err error) error {
 func Validate(manifest Manifest) error {
 	if !manifest.Install.AllowDestructiveInstall {
 		return fmt.Errorf("install.allowDestructiveInstall must be true")
+	}
+	if manifest.Install.DestructiveInstallAcknowledgement != DestructiveInstallAcknowledgement {
+		return fmt.Errorf("install.destructiveInstallAcknowledgement must exactly match %q", DestructiveInstallAcknowledgement)
 	}
 	if strings.TrimSpace(manifest.Node.Identity.Hostname) == "" {
 		return fmt.Errorf("node.identity.hostname is required")

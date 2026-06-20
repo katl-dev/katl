@@ -220,6 +220,9 @@ func applyDir(dir, runDir, etcDir, networkDir string, stdout io.Writer) (int, er
 			applied++
 			fmt.Fprintf(stdout, "katl input: copied %s to %s\n", item.src, item.dst)
 			if item.manifest {
+				if manifestPayloadsSelectedInPlace(dir, item.src) {
+					continue
+				}
 				copiedPayloads, err := CopyManifestPayloads(item.src, filepath.Dir(item.src), filepath.Dir(item.dst))
 				if err != nil {
 					return applied, err
@@ -240,6 +243,22 @@ func applyDir(dir, runDir, etcDir, networkDir string, stdout io.Writer) (int, er
 		fmt.Fprintf(stdout, "katl input: copied %s to %s\n", filepath.Join(dir, "etc/systemd/network"), networkDir)
 	}
 	return applied, nil
+}
+
+func manifestPayloadsSelectedInPlace(dir, manifestPath string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "install-input.json"))
+	if err != nil {
+		return false
+	}
+	var values bootInputValues
+	if err := json.Unmarshal(data, &values); err != nil {
+		return false
+	}
+	selected := strings.TrimSpace(values.ManifestPath)
+	if selected == "" {
+		return false
+	}
+	return filepath.Clean(selected) == filepath.Clean(manifestPath)
 }
 
 type preseedItem struct {

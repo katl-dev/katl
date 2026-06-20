@@ -373,6 +373,7 @@ node:
   systemRole: control-plane
 install:
   allowDestructiveInstall: true
+  destructiveInstallAcknowledgement: I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.
   targetDisk:
     serial: old-target
 katlosImage:

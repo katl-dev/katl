@@ -204,6 +204,9 @@ func TestRunnerRecordsCheckpointsWithoutCommands(t *testing.T) {
 	if finalStatus.RequestDigest == "" || finalStatus.KatlosImage.SHA256 != strings.Repeat("a", 64) {
 		t.Fatalf("status missing request/image metadata: %#v", finalStatus)
 	}
+	if !finalStatus.DestructiveAcknowledgement {
+		t.Fatalf("status missing destructive acknowledgement evidence: %#v", finalStatus)
+	}
 	if finalStatus.TargetDiskStableID != "/dev/disk/by-id/ata-root" || finalStatus.SelectedRootSlot != "root-a" {
 		t.Fatalf("status target/generation fields = %#v", finalStatus)
 	}
@@ -211,7 +214,7 @@ func TestRunnerRecordsCheckpointsWithoutCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read target status: %v", err)
 	}
-	if targetStatus.State != installstatus.StateRebootRequested || targetStatus.InstalledGeneration != "2026.06.04-000" {
+	if targetStatus.State != installstatus.StateRebootRequested || targetStatus.InstalledGeneration != "2026.06.04-000" || !targetStatus.DestructiveAcknowledgement {
 		t.Fatalf("target status = %#v", targetStatus)
 	}
 	if got := commandNames(commands.Calls); got != "sync" {
@@ -246,6 +249,9 @@ func TestRunnerRecordsFailureStatus(t *testing.T) {
 	}
 	if !finalStatus.DestructiveMutation {
 		t.Fatalf("failure after install states should mark destructive mutation possible: %#v", finalStatus)
+	}
+	if !finalStatus.DestructiveAcknowledgement {
+		t.Fatalf("failure status missing destructive acknowledgement evidence: %#v", finalStatus)
 	}
 }
 
@@ -1140,6 +1146,7 @@ func writeManifestWithNode(t *testing.T, nodeExtra string) string {
 		},
 		"install": {
 			"allowDestructiveInstall": true,
+			"destructiveInstallAcknowledgement": "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.",
 			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
 		},
 		"katlosImage": {
@@ -1161,7 +1168,7 @@ func writeManifestWithNode(t *testing.T, nodeExtra string) string {
 func writeCompactManifest(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "install.json")
-	data := `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest","node":{"identity":{"hostname":"lab-node-01","ssh":{"authorizedKeys":["` + sshKey + `"]}},"systemRole":"control-plane"},"install":{"allowDestructiveInstall":true,"targetDisk":{"byID":"/dev/disk/by-id/ata-root","minSizeMiB":32768}},"katlosImage":{"url":"https://example.invalid/katlos-install.squashfs","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sizeBytes":1073741824,"version":"2026.06.04","architecture":"x86_64","runtimeInterface":"katl-runtime-1","role":"install"}}`
+	data := `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest","node":{"identity":{"hostname":"lab-node-01","ssh":{"authorizedKeys":["` + sshKey + `"]}},"systemRole":"control-plane"},"install":{"allowDestructiveInstall":true,"destructiveInstallAcknowledgement":"I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.","targetDisk":{"byID":"/dev/disk/by-id/ata-root","minSizeMiB":32768}},"katlosImage":{"url":"https://example.invalid/katlos-install.squashfs","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sizeBytes":1073741824,"version":"2026.06.04","architecture":"x86_64","runtimeInterface":"katl-runtime-1","role":"install"}}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}

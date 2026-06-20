@@ -267,7 +267,7 @@ func requirePreseedInstallerEvidence(result Result) error {
 	for _, signal := range []string{
 		"katl input: mounted seed device",
 		"katl input: copied",
-		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/install-manifest.json",
+		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json",
 		"inputMode=offline-media",
 	} {
 		if !strings.Contains(text, signal) {

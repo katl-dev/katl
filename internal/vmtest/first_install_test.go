@@ -628,7 +628,7 @@ func preseedInstallerEvidence() string {
 	return strings.Join([]string{
 		"katl input: mounted seed device /dev/disk/by-label/KATLSEED at /run/katl/preseed",
 		"katl input: copied /run/katl/preseed/install-input.json to /run/katl/install-input.json",
-		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/install-manifest.json manifestURL= inputMode=offline-media",
+		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json manifestURL= inputMode=offline-media",
 		"",
 	}, "\n")
 }
@@ -715,6 +715,7 @@ func firstManifest() string {
 		},
 		"install": {
 			"allowDestructiveInstall": true,
+			"destructiveInstallAcknowledgement": "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.",
 			"targetDisk": {"byID": "/dev/disk/by-id/virtio-katl-root", "minSizeMiB": 32}
 		},
 		"katlosImage": {

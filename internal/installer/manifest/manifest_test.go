@@ -58,6 +58,7 @@ node:
     kubernetesCatalogRef: v1.36.1
 install:
   allowDestructiveInstall: true
+  destructiveInstallAcknowledgement: I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.
   targetDisk:
     byID: /dev/disk/by-id/ata-root
     minSizeMiB: 32768
@@ -84,6 +85,35 @@ katlosImage:
 	}
 	if manifest.Node.Bootstrap == nil || manifest.Node.Bootstrap.KubernetesCatalogRef != "v1.36.1" {
 		t.Fatalf("bootstrap = %#v", manifest.Node.Bootstrap)
+	}
+}
+
+func TestDecodeRejectsInvalidDestructiveAcknowledgement(t *testing.T) {
+	ackField := fmt.Sprintf("\n\t\t\t%q: %q,", "destructiveInstallAcknowledgement", DestructiveInstallAcknowledgement)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing",
+			body: strings.Replace(validManifest(), ackField, "", 1),
+		},
+		{
+			name: "wrong",
+			body: strings.Replace(validManifest(), DestructiveInstallAcknowledgement, "I understand this install is destructive.", 1),
+		},
+		{
+			name: "padded",
+			body: strings.Replace(validManifest(), DestructiveInstallAcknowledgement, " "+DestructiveInstallAcknowledgement+" ", 1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(tt.body))
+			if err == nil || !strings.Contains(err.Error(), "install.destructiveInstallAcknowledgement") {
+				t.Fatalf("Decode() error = %v, want destructive acknowledgement rejection", err)
+			}
+		})
 	}
 }
 
@@ -679,6 +709,7 @@ func manifestWithTop(extra string) string {
 		},
 		"install": {
 			"allowDestructiveInstall": true,
+			"destructiveInstallAcknowledgement": %q,
 			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
 		},
 		"katlosImage": {
@@ -690,7 +721,7 @@ func manifestWithTop(extra string) string {
 			"runtimeInterface": "katl-runtime-1",
 			"role": "install"
 		}%s
-	}`, extra)
+	}`, DestructiveInstallAcknowledgement, extra)
 }
 
 func manifestWithNode(extra string) string {
@@ -726,10 +757,11 @@ func manifestWithImageObject(imageObject string) string {
 		},
 		"install": {
 			"allowDestructiveInstall": true,
+			"destructiveInstallAcknowledgement": %q,
 			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
 		},
 		"katlosImage": %s
-	}`, imageObject)
+	}`, DestructiveInstallAcknowledgement, imageObject)
 }
 
 func objectField(extra string) string {

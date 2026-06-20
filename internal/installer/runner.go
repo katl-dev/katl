@@ -888,6 +888,7 @@ func statusFromContext(install *Context, state string, current StepID, err error
 	record.RequestDigest = install.RequestDigest
 	record.KatlosImage = installstatus.ImageFromManifest(install.Manifest)
 	record.TargetDiskStableID = targetDiskStableID(install.Manifest.Install.TargetDisk)
+	record.DestructiveAcknowledgement = install.Manifest.Install.DestructiveInstallAcknowledgement == manifest.DestructiveInstallAcknowledgement
 	if install.LoaderRecord != nil {
 		record.SelectedRootSlot = install.LoaderRecord.Root.Slot
 		record.InstalledGeneration = install.LoaderRecord.GenerationID

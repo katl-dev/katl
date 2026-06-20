@@ -40,6 +40,9 @@ func Compile(request CompileRequest) (Plan, error) {
 	if strings.TrimSpace(config.Metadata.Name) == "" {
 		return Plan{}, fmt.Errorf("metadata.name is required")
 	}
+	if err := validateDestructiveInstallAcknowledgement(config.Spec); err != nil {
+		return Plan{}, err
+	}
 	if err := validateClusterImage(config.Spec.KatlosImage); err != nil {
 		return Plan{}, err
 	}
@@ -188,9 +191,10 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			},
 		},
 		Install: manifest.InstallConfig{
-			AllowDestructiveInstall: config.Spec.AllowDestructiveInstall,
-			TargetDisk:              *layer.Install.TargetDisk,
-			ExtraDisks:              append([]manifest.ExtraDisk(nil), layer.Install.ExtraDisks...),
+			AllowDestructiveInstall:           config.Spec.AllowDestructiveInstall,
+			DestructiveInstallAcknowledgement: config.Spec.DestructiveInstallAcknowledgement,
+			TargetDisk:                        *layer.Install.TargetDisk,
+			ExtraDisks:                        append([]manifest.ExtraDisk(nil), layer.Install.ExtraDisks...),
 		},
 		KatlosImage: config.Spec.KatlosImage,
 	}
@@ -390,13 +394,24 @@ func validateClusterImage(image manifest.KatlosImage) error {
 			SystemRole: string(inventory.RoleControlPlane),
 		},
 		Install: manifest.InstallConfig{
-			AllowDestructiveInstall: true,
-			TargetDisk:              manifest.DiskSelector{ByID: "/dev/disk/by-id/katl-image-validation"},
+			AllowDestructiveInstall:           true,
+			DestructiveInstallAcknowledgement: manifest.DestructiveInstallAcknowledgement,
+			TargetDisk:                        manifest.DiskSelector{ByID: "/dev/disk/by-id/katl-image-validation"},
 		},
 		KatlosImage: image,
 	}
 	if err := manifest.Validate(testManifest); err != nil {
 		return fmt.Errorf("spec.katlosImage: %w", err)
+	}
+	return nil
+}
+
+func validateDestructiveInstallAcknowledgement(spec Spec) error {
+	if !spec.AllowDestructiveInstall {
+		return fmt.Errorf("spec.allowDestructiveInstall must be true")
+	}
+	if spec.DestructiveInstallAcknowledgement != manifest.DestructiveInstallAcknowledgement {
+		return fmt.Errorf("spec.destructiveInstallAcknowledgement must exactly match %q", manifest.DestructiveInstallAcknowledgement)
 	}
 	return nil
 }

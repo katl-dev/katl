@@ -261,6 +261,7 @@ spec:
     runtimeInterface: katl-runtime-1
     role: install
   allowDestructiveInstall: true
+  destructiveInstallAcknowledgement: I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.
   defaults:
     ssh:
       authorizedKeys:
@@ -333,6 +334,27 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 				config.Spec.KatlosImage = manifest.KatlosImage{}
 			},
 			want: "katlosImage",
+		},
+		{
+			name: "missing destructive acknowledgement",
+			mut: func(config *Config) {
+				config.Spec.DestructiveInstallAcknowledgement = ""
+			},
+			want: "spec.destructiveInstallAcknowledgement",
+		},
+		{
+			name: "wrong destructive acknowledgement",
+			mut: func(config *Config) {
+				config.Spec.DestructiveInstallAcknowledgement = "I understand this install is destructive."
+			},
+			want: "spec.destructiveInstallAcknowledgement",
+		},
+		{
+			name: "padded destructive acknowledgement",
+			mut: func(config *Config) {
+				config.Spec.DestructiveInstallAcknowledgement = " " + manifest.DestructiveInstallAcknowledgement + " "
+			},
+			want: "spec.destructiveInstallAcknowledgement",
 		},
 		{
 			name: "missing endpoint",
@@ -563,10 +585,11 @@ func validConfig() Config {
 		Kind:       Kind,
 		Metadata:   Metadata{Name: "lab"},
 		Spec: Spec{
-			ControlPlaneEndpoint:    "api.katl.test:6443",
-			Kubernetes:              KubernetesSelection{PayloadVersion: "v1.36.1"},
-			KatlosImage:             validImage(),
-			AllowDestructiveInstall: true,
+			ControlPlaneEndpoint:              "api.katl.test:6443",
+			Kubernetes:                        KubernetesSelection{PayloadVersion: "v1.36.1"},
+			KatlosImage:                       validImage(),
+			AllowDestructiveInstall:           true,
+			DestructiveInstallAcknowledgement: manifest.DestructiveInstallAcknowledgement,
 			Defaults: NodeLayer{
 				SSH: manifest.SSHIdentity{AuthorizedKeys: []string{sshKey}},
 				Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
