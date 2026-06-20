@@ -57,8 +57,7 @@ node:
     bootstrapProfileRef: control-plane
     kubernetesCatalogRef: v1.36.1
 install:
-  allowDestructiveInstall: true
-  destructiveInstallAcknowledgement: I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.
+  wipeTarget: true
   targetDisk:
     byID: /dev/disk/by-id/ata-root
     minSizeMiB: 32768
@@ -88,30 +87,32 @@ katlosImage:
 	}
 }
 
-func TestDecodeRejectsInvalidDestructiveAcknowledgement(t *testing.T) {
-	ackField := fmt.Sprintf("\n\t\t\t%q: %q,", "destructiveInstallAcknowledgement", DestructiveInstallAcknowledgement)
+func TestDecodeRejectsMissingWipeTarget(t *testing.T) {
+	_, err := Decode(strings.NewReader(strings.Replace(validManifest(), "\n\t\t\t\"wipeTarget\": true,", "", 1)))
+	if err == nil || !strings.Contains(err.Error(), "install.wipeTarget") {
+		t.Fatalf("Decode() error = %v, want wipeTarget rejection", err)
+	}
+}
+
+func TestDecodeRejectsLegacyDestructiveAcknowledgementFields(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
 	}{
 		{
-			name: "missing",
-			body: strings.Replace(validManifest(), ackField, "", 1),
+			name: "allow destructive install",
+			body: strings.Replace(validManifest(), `"wipeTarget": true,`, `"allowDestructiveInstall": true,`, 1),
 		},
 		{
-			name: "wrong",
-			body: strings.Replace(validManifest(), DestructiveInstallAcknowledgement, "I understand this install is destructive.", 1),
-		},
-		{
-			name: "padded",
-			body: strings.Replace(validManifest(), DestructiveInstallAcknowledgement, " "+DestructiveInstallAcknowledgement+" ", 1),
+			name: "destructive acknowledgement",
+			body: strings.Replace(validManifest(), `"wipeTarget": true,`, `"destructiveInstallAcknowledgement": "I understand this install is destructive.",`, 1),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Decode(strings.NewReader(tt.body))
-			if err == nil || !strings.Contains(err.Error(), "install.destructiveInstallAcknowledgement") {
-				t.Fatalf("Decode() error = %v, want destructive acknowledgement rejection", err)
+			if err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("Decode() error = %v, want legacy field rejection", err)
 			}
 		})
 	}
@@ -708,8 +709,7 @@ func manifestWithTop(extra string) string {
 			"systemRole": "control-plane"
 		},
 		"install": {
-			"allowDestructiveInstall": true,
-			"destructiveInstallAcknowledgement": %q,
+			"wipeTarget": true,
 			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
 		},
 		"katlosImage": {
@@ -721,7 +721,7 @@ func manifestWithTop(extra string) string {
 			"runtimeInterface": "katl-runtime-1",
 			"role": "install"
 		}%s
-	}`, DestructiveInstallAcknowledgement, extra)
+	}`, extra)
 }
 
 func manifestWithNode(extra string) string {
@@ -756,12 +756,11 @@ func manifestWithImageObject(imageObject string) string {
 			"systemRole": "control-plane"
 		},
 		"install": {
-			"allowDestructiveInstall": true,
-			"destructiveInstallAcknowledgement": %q,
+			"wipeTarget": true,
 			"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}
 		},
 		"katlosImage": %s
-	}`, DestructiveInstallAcknowledgement, imageObject)
+	}`, imageObject)
 }
 
 func objectField(extra string) string {

@@ -372,8 +372,7 @@ node:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
   systemRole: control-plane
 install:
-  allowDestructiveInstall: true
-  destructiveInstallAcknowledgement: I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.
+  wipeTarget: true
   targetDisk:
     serial: old-target
 katlosImage:

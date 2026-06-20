@@ -465,7 +465,7 @@ func executeDiskGroupResult(ctx context.Context, install *Context, group disk.Di
 func diskExecutionRequest(install *Context) disk.DiskExecutionRequest {
 	return disk.DiskExecutionRequest{
 		Plan:              *install.DiskLayout,
-		AllowDestructive:  install.Manifest.Install.AllowDestructiveInstall,
+		AllowDestructive:  install.Manifest.Install.WipeTarget,
 		TargetMountPrefix: install.TargetRoot,
 	}
 }
@@ -888,7 +888,7 @@ func statusFromContext(install *Context, state string, current StepID, err error
 	record.RequestDigest = install.RequestDigest
 	record.KatlosImage = installstatus.ImageFromManifest(install.Manifest)
 	record.TargetDiskStableID = targetDiskStableID(install.Manifest.Install.TargetDisk)
-	record.DestructiveAcknowledgement = install.Manifest.Install.DestructiveInstallAcknowledgement == manifest.DestructiveInstallAcknowledgement
+	record.WipeTargetAccepted = install.Manifest.Install.WipeTarget
 	if install.LoaderRecord != nil {
 		record.SelectedRootSlot = install.LoaderRecord.Root.Slot
 		record.InstalledGeneration = install.LoaderRecord.GenerationID

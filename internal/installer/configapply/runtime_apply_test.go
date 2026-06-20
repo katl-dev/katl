@@ -745,9 +745,8 @@ func baseManifest() manifest.Manifest {
 			SystemRole: "control-plane",
 		},
 		Install: manifest.InstallConfig{
-			AllowDestructiveInstall:           true,
-			DestructiveInstallAcknowledgement: manifest.DestructiveInstallAcknowledgement,
-			TargetDisk:                        manifest.DiskSelector{ByID: "disk/by-id/test"},
+			WipeTarget: true,
+			TargetDisk: manifest.DiskSelector{ByID: "disk/by-id/test"},
 		},
 		KatlosImage: manifest.KatlosImage{
 			LocalRef:     "images/katlos.raw",

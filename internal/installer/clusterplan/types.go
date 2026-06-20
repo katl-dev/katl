@@ -27,15 +27,14 @@ type Metadata struct {
 }
 
 type Spec struct {
-	ControlPlaneEndpoint              string                             `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
-	PlatformAPIEndpoint               *platformendpoint.Config           `yaml:"platformAPIEndpoint,omitempty" json:"platformAPIEndpoint,omitempty"`
-	Kubernetes                        KubernetesSelection                `yaml:"kubernetes" json:"kubernetes"`
-	KatlosImage                       manifest.KatlosImage               `yaml:"katlosImage" json:"katlosImage"`
-	AllowDestructiveInstall           bool                               `yaml:"allowDestructiveInstall" json:"allowDestructiveInstall"`
-	DestructiveInstallAcknowledgement string                             `yaml:"destructiveInstallAcknowledgement" json:"destructiveInstallAcknowledgement"`
-	Defaults                          NodeLayer                          `yaml:"defaults,omitempty" json:"defaults,omitempty"`
-	SystemRoleDefaults                map[inventory.SystemRole]NodeLayer `yaml:"systemRoleDefaults,omitempty" json:"systemRoleDefaults,omitempty"`
-	Nodes                             []Node                             `yaml:"nodes" json:"nodes"`
+	ControlPlaneEndpoint string                             `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
+	PlatformAPIEndpoint  *platformendpoint.Config           `yaml:"platformAPIEndpoint,omitempty" json:"platformAPIEndpoint,omitempty"`
+	Kubernetes           KubernetesSelection                `yaml:"kubernetes" json:"kubernetes"`
+	KatlosImage          manifest.KatlosImage               `yaml:"katlosImage" json:"katlosImage"`
+	WipeTarget           bool                               `yaml:"wipeTarget" json:"wipeTarget"`
+	Defaults             NodeLayer                          `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	SystemRoleDefaults   map[inventory.SystemRole]NodeLayer `yaml:"systemRoleDefaults,omitempty" json:"systemRoleDefaults,omitempty"`
+	Nodes                []Node                             `yaml:"nodes" json:"nodes"`
 }
 
 type KubernetesSelection struct {

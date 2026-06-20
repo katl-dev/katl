@@ -370,17 +370,13 @@ implementation need.
 The manifest is intentionally explicit about destructive installation:
 
 ```text
-install.allowDestructiveInstall: true
-install.destructiveInstallAcknowledgement:
-  I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI,
-  operation, and generation state on the selected nodes and bootstrap a new
-  cluster identity.
+install.wipeTarget: true
 ```
 
-Missing, false, null, or non-exact acknowledgement values must fail validation
-before disk mutation. This guard is separate from any `katl.install.mode=auto`
-boot hint; autoinstall may start the state machine, but the manifest must still
-authorize destructive disk changes.
+Missing, false, or null values must fail validation before disk mutation. This
+guard is separate from any `katl.install.mode=auto` boot hint; autoinstall may
+start the state machine, but the manifest must still authorize destructive
+changes to selected target disks.
 
 Target disk selectors must prefer stable hardware identity such as
 `/dev/disk/by-id`, WWN, or serial number. Short kernel device names such as
@@ -398,11 +394,9 @@ target disk
   must satisfy install.targetDisk.minSizeMiB when set
 
 destructive guard
-  install.allowDestructiveInstall must be true before wipefs, repartitioning,
-  formatting, or root slot writes, and
-  install.destructiveInstallAcknowledgement must exactly match the v0.1
-  data-loss acknowledgement. Install status records
-  destructiveAcknowledgementAccepted without storing the long text.
+  install.wipeTarget must be true before wipefs, repartitioning, formatting,
+  root slot writes, or selected extra-disk destructive operations. Install
+  status records wipeTargetAccepted after validation.
 
 root slots
   Katl's selected root-a and root-b sizes must both fit the runtime root

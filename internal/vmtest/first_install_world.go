@@ -979,8 +979,7 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 		"kind":       "InstallManifest",
 		"node":       node,
 		"install": map[string]any{
-			"allowDestructiveInstall":           true,
-			"destructiveInstallAcknowledgement": "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.",
+			"wipeTarget": true,
 			"targetDisk": map[string]any{
 				"byID":       "/dev/disk/by-id/virtio-katl-root",
 				"minSizeMiB": 32,

@@ -99,7 +99,7 @@ node:
     kubernetesBundleSource: https://ghcr.io/v2/katl/kubernetes-payloads
     kubernetesBundleRef: v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 install:
-  allowDestructiveInstall: true
+  wipeTarget: true
   targetDisk:
     byID: /dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK
     minSizeMiB: 32768
@@ -142,8 +142,8 @@ node:
 ```
 
 The destructive install guard is intentionally duplicated: the manifest must set
-`install.allowDestructiveInstall` to `true`, and the boot path must select an
-install mode that allows mutation. Prefer stable disk selectors such as
+`install.wipeTarget` to `true`, and the boot path must select an install mode
+that allows mutation. Prefer stable disk selectors such as
 `/dev/disk/by-id/...`, WWN, or serial. Do not use short kernel-assigned device
 names in manifests.
 
@@ -408,7 +408,7 @@ manifest rejected
   katlosImage fields.
 
 destructive install refused
-  Confirm install.allowDestructiveInstall is true and boot input selected
+  Confirm install.wipeTarget is true and boot input selected
   katl.install.mode=auto. For URL manifests, confirm katl.manifest.sha256 is
   present and matches the published manifest bytes.
 

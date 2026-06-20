@@ -260,8 +260,7 @@ spec:
     architecture: x86_64
     runtimeInterface: katl-runtime-1
     role: install
-  allowDestructiveInstall: true
-  destructiveInstallAcknowledgement: I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.
+  wipeTarget: true
   defaults:
     ssh:
       authorizedKeys:
@@ -336,25 +335,11 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "katlosImage",
 		},
 		{
-			name: "missing destructive acknowledgement",
+			name: "missing wipe target",
 			mut: func(config *Config) {
-				config.Spec.DestructiveInstallAcknowledgement = ""
+				config.Spec.WipeTarget = false
 			},
-			want: "spec.destructiveInstallAcknowledgement",
-		},
-		{
-			name: "wrong destructive acknowledgement",
-			mut: func(config *Config) {
-				config.Spec.DestructiveInstallAcknowledgement = "I understand this install is destructive."
-			},
-			want: "spec.destructiveInstallAcknowledgement",
-		},
-		{
-			name: "padded destructive acknowledgement",
-			mut: func(config *Config) {
-				config.Spec.DestructiveInstallAcknowledgement = " " + manifest.DestructiveInstallAcknowledgement + " "
-			},
-			want: "spec.destructiveInstallAcknowledgement",
+			want: "spec.wipeTarget",
 		},
 		{
 			name: "missing endpoint",
@@ -585,11 +570,10 @@ func validConfig() Config {
 		Kind:       Kind,
 		Metadata:   Metadata{Name: "lab"},
 		Spec: Spec{
-			ControlPlaneEndpoint:              "api.katl.test:6443",
-			Kubernetes:                        KubernetesSelection{PayloadVersion: "v1.36.1"},
-			KatlosImage:                       validImage(),
-			AllowDestructiveInstall:           true,
-			DestructiveInstallAcknowledgement: manifest.DestructiveInstallAcknowledgement,
+			ControlPlaneEndpoint: "api.katl.test:6443",
+			Kubernetes:           KubernetesSelection{PayloadVersion: "v1.36.1"},
+			KatlosImage:          validImage(),
+			WipeTarget:           true,
 			Defaults: NodeLayer{
 				SSH: manifest.SSHIdentity{AuthorizedKeys: []string{sshKey}},
 				Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{

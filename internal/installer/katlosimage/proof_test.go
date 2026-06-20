@@ -195,8 +195,7 @@ func validInstallManifest() string {
     "systemRole": "control-plane"
   },
   "install": {
-    "allowDestructiveInstall": true,
-    "destructiveInstallAcknowledgement": "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.",
+    "wipeTarget": true,
     "targetDisk": {"byID": "/dev/disk/by-id/virtio-katl-root"}
   },
   "katlosImage": {
