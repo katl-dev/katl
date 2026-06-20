@@ -608,6 +608,229 @@ before activation. Rendering them in the producer would either bake one node's
 state into a shared artifact or force the producer to accept secret and
 inventory inputs that belong on the node.
 
+## v0.1 Payload Ownership Contract
+
+The v0.1 product boundary is:
+
+```text
+KatlOS base runtime
+  immutable OS substrate, boot health, generation activation, persistent-state
+  projection, node-local operation agent, runtime prerequisites, and broad
+  kernel/hardware support
+
+payload bundles
+  immutable application or Kubernetes userland plus metadata, provenance,
+  capability declarations, systemd unit declarations, compatibility data, and
+  digest-addressed payload descriptors
+
+generated confext
+  node-specific desired configuration rendered by katlc from supported typed
+  input and selected in the same generation as the payloads it configures
+
+operation records
+  mutation intent, preflight evidence, external mutation boundaries, runtime
+  diagnostics, and recovery state for actions that cannot be represented by
+  immutable files alone
+```
+
+Generation metadata remains the authority that binds these pieces together.
+The base runtime, selected sysext payloads, generated confexts, kernel command
+line, and boot-selection state are switched as one generation. A payload bundle
+may provide executable units and static defaults, but it does not become active
+until `katlc` stages it under Katl-owned storage, verifies compatibility, writes
+a generation spec, and `katl-generation-activate.service` exposes that
+generation under `/run/extensions` and `/run/confexts`.
+
+### Base Runtime Responsibilities
+
+The KatlOS runtime rootfs owns the OS services and host capabilities that must
+exist before any optional payload is selected. This is the installed node
+runtime contract; the live installer image remains smaller and does not inherit
+the runtime root's Kubernetes or container-host prerequisites.
+
+```text
+systemd boot-complete and deadman health units
+katl-generation-activate and runtime handoff units
+katlc and katlc-agent
+/var and /etc/kubernetes persistent-state projection
+systemd-networkd, systemd-resolved, dbus-broker, timesync, SSH recovery access
+containerd, crun, and the v0.1 CNI plugin set
+kernel modules and sysctls required by Kubernetes and normal installs
+host networking prerequisites such as nftables, conntrack, iptables-nft, ipset,
+  and ipvsadm when they are needed by kube-proxy, CNI, diagnostics, or
+  pre-payload host validation
+Katl-owned unit ordering and drop-ins that make payload units safe to run
+```
+
+The base runtime declares its capability surface through runtime metadata,
+`/usr/lib/os-release` extension compatibility fields, artifact metadata, and
+artifact verification gates such as `scripts/check-runtime-root`. The base does
+not carry Kubernetes binaries, BIRD binaries, BGP API VIP helpers, Helm, Flux,
+Cilium CLI, or arbitrary app daemons as supported runtime userland.
+
+The v0.1 container-runtime boundary is intentionally conservative:
+`containerd`, `crun`, required CNI plugins, and the corresponding systemd
+wiring remain in the base runtime. They are OS prerequisites for kubeadm and
+kubelet activation, not a user-managed container platform. Moving them into a
+payload bundle requires a follow-up decision and proof that kubeadm operations,
+boot health, rollback, repair, and image-surface checks still work without a
+preinstalled runtime. Until that proof lands, Kubernetes payload bundles may
+assume the base runtime provides the container runtime contract.
+
+### Kubernetes Payload Responsibilities
+
+A Kubernetes payload bundle owns immutable Kubernetes userland for one exact
+payload version and architecture:
+
+```text
+kubeadm
+kubelet
+kubectl
+crictl
+version-coupled helper binaries that are required by kubeadm/kubelet packaging
+Kubernetes sysext extension-release metadata
+package provenance, payload metadata, catalog fragments, and bundle signatures
+runtime compatibility and Kubernetes skew declarations
+```
+
+The bundle does not own node identity, kubeadm InitConfiguration or
+JoinConfiguration, PKI, bootstrap tokens, kubeconfigs, etcd data, CNI policy,
+API VIP selection, BGP peer configuration, or generated systemd enablement.
+Those are node-local operation outputs rendered by `katlc` into generated
+confext or persisted under state partitions.
+
+Some helper tools can appear in both the base runtime and Kubernetes payload
+because Fedora package dependencies and bootstrap diagnostics are not perfectly
+separable. Ownership is still explicit:
+
+```text
+base runtime copy
+  prerequisite used for host validation, kube-proxy/CNI support, break-glass
+  diagnostics, and operations that must run before the Kubernetes sysext is
+  selected
+
+payload copy
+  version-coupled or package-pulled helper used by kubeadm, kubelet, or
+  Kubernetes-specific diagnostics after the Kubernetes sysext is active
+```
+
+`scripts/check-kubernetes-sysext` must not silently move host prerequisites
+into the sysext. If a tool is required before payload activation, the check must
+assert that the runtime root provides it. If a tool is required only by the
+Kubernetes payload after activation, the sysext check may assert it inside the
+payload.
+
+### Node Extension Payload Responsibilities
+
+Generic node extension bundles use the same source/ref, manifest digest,
+descriptor digest, staged sysext, compatibility, and generation-selection model
+as Kubernetes payload bundles. The format is defined in
+`docs/internal/node-extension-bundle-format.md`; app behavior is defined by
+app-specific contracts such as:
+
+```text
+docs/internal/generic-bird-extension-contract.md
+docs/internal/bgp-api-vip-extension-contract.md
+```
+
+A node extension bundle owns immutable app userland, base app units, helper
+binaries, status-helper binaries, declared capabilities, compatibility
+requirements, and package provenance. It must not own Kubernetes binaries,
+kubeadm configuration, package-manager state, arbitrary operator shell hooks, or
+undeclared systemd units.
+
+BIRD and BGP API VIP are separate payloads with a capability relationship.
+Generic BIRD owns the BIRD daemon capability and its base service contract. The
+BGP API VIP app owns the Kubernetes API VIP schema, VIP networkd config, BIRD
+configuration rendered for that app, health-gated route advertisement, and
+kubeadm `controlPlaneEndpoint` integration. BGP API VIP may require the BIRD
+capability, but it must not make BIRD part of the KatlOS base runtime.
+
+### Generated Confext And Unit Ownership
+
+Generated confext is Katl's node-specific configuration vehicle. It may write
+only paths owned by the active typed domain and declared payload contract. For
+v0.1 those paths include:
+
+```text
+/etc/katl/node.json
+/etc/katl/kubeadm/<ref>/config.yaml and declared kubeadm patches
+/etc/systemd/network/*.network or *.netdev for supported network domains
+/etc/katl/apps/<appID>/config.yaml
+/etc/systemd/system/katl-app-<appID>*.d/*.conf
+/etc/systemd/system/*.wants or *.requires symlinks only for declared units
+```
+
+Payload sysexts may ship base units and static defaults. Generated confext may
+add bounded drop-ins, config files, and enablement for declared units. Neither
+payloads nor confext may override Katl core boot-health, generation-activation,
+runtime-handoff, package-manager, or arbitrary non-Katl units unless a future
+decision names that ownership and adds validation.
+
+Systemd ownership is validated before selection:
+
+```text
+bundle manifest lists every provided unit and entrypoint unit
+generated confext writes only declared drop-in or enablement paths
+systemd-analyze verify is used where practical for generated units/drop-ins
+required units and mounts from the bundle are present in the base runtime or in
+  the same selected payload set
+activation phase is compatible with the operation, for example pre-kubeadm for
+  BGP API VIP and Kubernetes bootstrap
+```
+
+### Capability Validation
+
+Capabilities are declared on both sides of the boundary:
+
+```text
+base runtime declares provided OS capabilities
+  runtimeInterface, architecture, extension compatibility level, kernel module
+  support, required mounts, required services, and host prerequisite commands
+
+payload bundles declare required and provided capabilities
+  supportedRuntimeInterfaces, requiredKernelModules, requiredUnits,
+  requiredMounts, requiredCapabilities, provided app capabilities, supported
+  config schema IDs, operation kinds, and activation phases
+```
+
+Selection succeeds only when `katlc` can prove the payload requirements are met
+by the installed runtime and by the other payloads selected in the same
+generation. Validation must fail closed before writing a generation when a
+bundle requires a missing kernel module, missing unit, unsupported runtime
+interface, unsupported config schema, or unsupported operation phase.
+
+The same validation model applies to Kubernetes and node extensions. Kubernetes
+is a first-class payload type because kubeadm operations and skew policy need
+Kubernetes-specific checks, but its acquisition, digest verification,
+compatibility validation, staging, generation selection, and activation are the
+same pattern used by generic node extension bundles.
+
+### Deliberate v0.1 Non-Generalization
+
+v0.1 deliberately does not generalize these surfaces:
+
+```text
+arbitrary raw sysext or confext activation as user input
+arbitrary systemd unit injection
+package-manager requests in install, runtime, or payload input
+user-provided raw BIRD configuration
+generic app marketplace behavior beyond the accepted node extension bundle
+  contract and the BIRD/BGP API VIP implementations
+container-runtime-as-extension
+credentialed private bundle sources, client certificates, bearer tokens, or
+  mutable latest selectors
+inline secrets in payload manifests or generated confext
+Kubernetes add-on lifecycle such as Helm, Flux, Cilium, Rook, CoreDNS, or
+  Envoy Gateway management
+normal runtime config apply that changes Kubernetes sysext selection on an
+  already bootstrapped node
+```
+
+Those behaviors require follow-up contracts, operation records, validation
+gates, redaction rules, and VM proofs before they can become supported product
+surface.
+
 Moving the Kubernetes producer to a separate repository is allowed only after
 all of the following are true:
 
