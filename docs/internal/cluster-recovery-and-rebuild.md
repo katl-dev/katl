@@ -132,6 +132,9 @@ preserve or reattach the previous Kubernetes cluster, stacked-etcd cluster,
 cluster CA, service account keys, bootstrap tokens, kubeconfigs, node object
 identity, CNI state, or Katl operation history from the selected nodes.
 
+The user-facing command contract is defined in
+`docs/internal/katlctl-wipe-contract.md`.
+
 The user-facing acknowledgement must be explicit and specific. A request is not
 accepted unless the operator supplies an affirmative destructive flag and a
 human-readable acknowledgement equivalent to:
