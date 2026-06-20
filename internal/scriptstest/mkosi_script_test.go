@@ -165,6 +165,142 @@ func TestMkosiDefaultBuildIdentityIsStable(t *testing.T) {
 	}
 }
 
+func TestMkosiRuntimeCacheUsesIncludedBinaryIdentity(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	buildDir := filepath.Join(tmp, "mkosi-build")
+	bin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
+	}
+	podmanArgs := filepath.Join(tmp, "podman-args.txt")
+	writeFakeExecutable(t, bin, "podman", `if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  printf 'fake-builder-image-id\n'
+  exit 0
+fi
+printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
+`)
+	seedRuntimeCacheOutputs(t, buildDir)
+	env := append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"KATL_CONTAINER_RUNTIME=podman",
+		"KATL_MKOSI_BUILD_DIR="+buildDir,
+		"KATL_FAKE_PODMAN_ARGS="+podmanArgs,
+		"KATL_BUILD_COMMIT=cache-test",
+		"KATL_VERSION=0.0.0-cache-test",
+		"TMPDIR="+tmp,
+	)
+
+	first := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+	first.Dir = repo
+	first.Env = env
+	output, err := first.CombinedOutput()
+	if err != nil {
+		t.Fatalf("initial scripts/mkosi build-runtime failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "mkosi cache hit: runtime") {
+		t.Fatalf("initial build unexpectedly hit cache:\n%s", output)
+	}
+	if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
+		t.Fatalf("initial build did not invoke fake podman")
+	}
+
+	unrelatedSource := filepath.Join(repo, "internal", "vmtest", "testcmd", "net-client", "cache_identity_probe.go")
+	writeTemporaryFile(t, unrelatedSource, "package main\n\nconst cacheIdentityProbe = \"unrelated\"\n")
+	if err := os.Remove(podmanArgs); err != nil {
+		t.Fatalf("remove podman args: %v", err)
+	}
+	second := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+	second.Dir = repo
+	second.Env = env
+	output, err = second.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cached scripts/mkosi build-runtime failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "mkosi cache hit: runtime artifacts match the current repo") {
+		t.Fatalf("unrelated Go source edit did not hit cache:\n%s", output)
+	}
+	if _, err := os.Stat(podmanArgs); !os.IsNotExist(err) {
+		t.Fatalf("fake podman ran for unrelated Go source edit: %v", err)
+	}
+
+	includedSource := filepath.Join(repo, "cmd", "katl-runtime-status", "cache_identity_probe.go")
+	writeTemporaryFile(t, includedSource, "package main\n\nvar cacheIdentityProbeRuntimeStatus = \"changed\"\n")
+	third := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+	third.Dir = repo
+	third.Env = env
+	output, err = third.CombinedOutput()
+	if err != nil {
+		t.Fatalf("changed-binary scripts/mkosi build-runtime failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "mkosi cache hit: runtime") {
+		t.Fatalf("included binary edit unexpectedly hit cache:\n%s", output)
+	}
+	if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
+		t.Fatalf("changed included binary did not invoke fake podman")
+	}
+}
+
+func TestMkosiRuntimeCacheMissesWhenBinaryIdentityUnavailable(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	buildDir := filepath.Join(tmp, "mkosi-build")
+	bin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(filepath.Join(buildDir, ".katl-stamps"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(stamps) error = %v", err)
+	}
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
+	}
+	podmanArgs := filepath.Join(tmp, "podman-args.txt")
+	writeFakeExecutable(t, bin, "podman", `if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  printf 'fake-builder-image-id\n'
+  exit 0
+fi
+printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
+`)
+	writeFakeExecutable(t, bin, "go", `exit 42
+`)
+	seedRuntimeCacheOutputs(t, buildDir)
+	stamp := filepath.Join(buildDir, ".katl-stamps", "runtime.sha256")
+	if err := os.WriteFile(stamp, []byte(strings.Repeat("a", 64)+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", stamp, err)
+	}
+	env := append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"KATL_CONTAINER_RUNTIME=podman",
+		"KATL_MKOSI_BUILD_DIR="+buildDir,
+		"KATL_FAKE_PODMAN_ARGS="+podmanArgs,
+		"KATL_BUILD_COMMIT=cache-test",
+		"KATL_VERSION=0.0.0-cache-test",
+		"TMPDIR="+tmp,
+	)
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scripts/mkosi build-runtime with failing identity probe failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "mkosi cache hit: runtime") {
+		t.Fatalf("binary identity failure still hit cache:\n%s", output)
+	}
+	if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
+		t.Fatalf("binary identity failure did not invoke fake podman")
+	}
+	stampData := strings.TrimSpace(string(mustReadFile(t, stamp)))
+	if stampData != strings.Repeat("a", 64) {
+		t.Fatalf("binary identity failure overwrote cache stamp with %q", stampData)
+	}
+}
+
 func writeFakeExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -247,4 +383,50 @@ func assertDirsExist(t *testing.T, root string, paths ...string) {
 			t.Fatalf("%s is not a directory", full)
 		}
 	}
+}
+
+func seedRuntimeCacheOutputs(t *testing.T, buildDir string) {
+	t.Helper()
+	paths := []string{
+		filepath.Join(buildDir, "artifacts.json"),
+		filepath.Join(buildDir, "katl-runtime-root"),
+		filepath.Join(buildDir, "katl-runtime-root.squashfs"),
+		filepath.Join(buildDir, "katl-runtime-root.squashfs.json"),
+		filepath.Join(buildDir, "katl-runtime-root.squashfs.sha256"),
+		filepath.Join(buildDir, "katl-runtime-root.vmlinuz"),
+		filepath.Join(buildDir, "katl-runtime.efi"),
+		filepath.Join(buildDir, "katl-runtime.efi.json"),
+		filepath.Join(buildDir, "katl-runtime.efi.sha256"),
+	}
+	for _, path := range paths {
+		if strings.HasSuffix(path, "katl-runtime-root") {
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				t.Fatalf("MkdirAll(%s) error = %v", path, err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte("seed"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", path, err)
+		}
+	}
+}
+
+func writeTemporaryFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("temporary test file already exists: %s", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat temporary test file %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove temporary test file %s: %v", path, err)
+		}
+	})
 }

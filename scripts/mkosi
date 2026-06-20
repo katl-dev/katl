@@ -5,7 +5,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
-build_dir="$repo_root/_build/mkosi"
+build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 stamp_dir="$build_dir/.katl-stamps"
 go_mod_cache="$repo_root/_build/go-mod"
 go_build_cache="$repo_root/_build/go-cache"
@@ -84,6 +84,9 @@ list_repo_inputs() {
 cache_input_matches_target() {
     local target="$1"
     local path="$2"
+    # Go source changes are represented by target_go_binaries below. The raw
+    # file scanner intentionally tracks only non-binary artifact inputs: mkosi
+    # profile content, wrapper scripts, module metadata, and builder policy.
     case "$path" in
         *_test.go | docs/*)
             return 1
@@ -91,21 +94,21 @@ cache_input_matches_target() {
         Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi)
             return 0
             ;;
-        cmd/katl-mkosi-artifacts/*)
-            return 0
+        *.go)
+            return 1
             ;;
     esac
     case "$target" in
         installer)
             case "$path" in
-                cmd/katlos-install/* | internal/installer/* | mkosi.profiles/installer-image/*)
+                mkosi.profiles/installer-image/*)
                     return 0
                     ;;
             esac
             ;;
         runtime)
             case "$path" in
-                cmd/katl-generation-activate/* | cmd/katl-runtime-status/* | cmd/katl-vmtest-agent/* | internal/installer/* | internal/katlc/* | internal/vmtest/* | mkosi.profiles/runtime/*)
+                mkosi.profiles/runtime/*)
                     return 0
                     ;;
             esac
@@ -119,13 +122,91 @@ cache_input_matches_target() {
             ;;
         katlos-install-image)
             case "$path" in
-                scripts/build-katlos-install-image | cmd/katlos-install/* | cmd/katl-generation-activate/* | cmd/katl-runtime-status/* | cmd/katl-vmtest-agent/* | internal/installer/* | internal/katlc/* | internal/vmtest/* | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/*)
+                scripts/build-katlos-install-image | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/*)
                     return 0
                     ;;
             esac
             ;;
     esac
     return 1
+}
+
+target_go_binaries() {
+    case "$1" in
+        installer)
+            printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlos-install" "./cmd/katlos-install" "versioned"
+            printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
+            ;;
+        runtime)
+            printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlc" "./cmd/katlc" "versioned"
+            printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/vmtest/katl-vmtest-agent" "./cmd/katl-vmtest-agent" "versioned"
+            printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-runtime-status" "./cmd/katl-runtime-status" "plain"
+            printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-generation-activate" "./cmd/katl-generation-activate" "plain"
+            printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-boot-health" "./cmd/katl-boot-health" "plain"
+            printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
+            ;;
+        kubernetes-sysext)
+            printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
+            ;;
+        katlos-install-image)
+            target_go_binaries runtime
+            printf '%s\t%s\t%s\n' "metadata-tool:build-katlos-install-image" "./cmd/katl-mkosi-artifacts" "plain"
+            ;;
+    esac
+}
+
+go_binary_identity() {
+    local package="$1"
+    local ldflags_kind="$2"
+    local tmp out digest
+    mkdir -p "$go_mod_cache" "$go_build_cache"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/katl-cache-binary.XXXXXX")"
+    out="$tmp/binary"
+    local -a ldflags=()
+    if [[ "$ldflags_kind" == versioned ]]; then
+        ldflags=(-ldflags="-X main.version=${KATL_VERSION:-0.0.0-dev} -X main.commit=$build_commit -X main.date=1970-01-01T00:00:00Z")
+    fi
+    if ! (
+        cd "$repo_root" &&
+            CGO_ENABLED=0 \
+                GOOS=linux \
+                GOARCH=amd64 \
+                GOAMD64=v1 \
+                GOEXPERIMENT= \
+                GOFLAGS= \
+                GOTOOLCHAIN=local \
+                GOCACHE="$go_build_cache" \
+                GOMODCACHE="$go_mod_cache" \
+                go build \
+                -trimpath \
+                -buildvcs=false \
+                "${ldflags[@]}" \
+                -o "$out" \
+                "$package"
+    ); then
+        rm -rf "$tmp"
+        return 1
+    fi
+    read -r digest _ < <(sha256sum "$out")
+    rm -rf "$tmp"
+    printf '%s\n' "$digest"
+}
+
+builder_image_identity() {
+    case "$runtime" in
+        docker)
+            docker image inspect --format '{{.Id}}' "$image" 2>/dev/null || printf '%s\n' "$image"
+            ;;
+        podman)
+            podman image inspect --format '{{.Id}}' "$image" 2>/dev/null || printf '%s\n' "$image"
+            ;;
+        direct)
+            printf 'direct\n'
+            ;;
+        *)
+            printf '%s\n' "$image"
+            ;;
+    esac
 }
 
 list_cache_inputs() {
@@ -144,10 +225,11 @@ cache_fingerprint() {
         return 1
     fi
     local path digest
-    digest="$(
+    if ! digest="$(
         {
             printf 'target=%s\n' "$target"
             printf 'builder-image=%s\n' "$image"
+            printf 'builder-image-identity=%s\n' "$(builder_image_identity)"
             printf 'KATL_BUILD_COMMIT=%s\n' "$build_commit"
             printf 'KATL_VERSION=%s\n' "${KATL_VERSION:-}"
             printf 'KATL_ARCHITECTURE=%s\n' "${KATL_ARCHITECTURE:-$(uname -m)}"
@@ -169,6 +251,15 @@ cache_fingerprint() {
                     printf 'missing %s\n' "$path"
                 fi
             done < <(list_cache_inputs "$target")
+            local label package ldflags_kind binary_digest
+            while IFS=$'\t' read -r label package ldflags_kind; do
+                [[ -n "$label" ]] || continue
+                if binary_digest="$(go_binary_identity "$package" "$ldflags_kind")"; then
+                    printf 'go-binary %s %s %s\n' "$label" "$package" "$binary_digest"
+                else
+                    exit 1
+                fi
+            done < <(target_go_binaries "$target")
             case "$target" in
                 kubernetes-sysext)
                     path="$build_dir/katl-runtime-root.squashfs.json"
@@ -181,7 +272,9 @@ cache_fingerprint() {
                     ;;
             esac
         } | sha256sum
-    )"
+    )"; then
+        return 1
+    fi
     printf '%s\n' "${digest%% *}"
 }
 
