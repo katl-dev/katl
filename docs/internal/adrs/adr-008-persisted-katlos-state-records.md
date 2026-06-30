@@ -1,8 +1,8 @@
 # ADR-008: Persisted KatlOS state uses self-describing record envelopes
 
-Status: proposed.
+Status: accepted.
 
-Date: 2026-06-21.
+Date: 2026-06-21. Accepted: 2026-06-30.
 
 ## Context
 
@@ -205,19 +205,25 @@ prove old/new behavior with fixtures and VM tests when rollback is affected
 
 ## Record Inventory
 
-The first persisted record types should cover the existing durable files:
+The initial persisted record inventory is:
 
 ```text
-katl.generation.spec
-katl.generation.status
-katl.generation.config-apply-status
-katl.boot.selection
-katl.install.status
-katl.operation.record
-katl.operation.journal-event
-katl.cluster.intent
-katl.config-request.decision
+recordType                            path pattern
+katl.generation.spec                  /var/lib/katl/generations/<id>/spec.json
+katl.generation.status                /var/lib/katl/generations/<id>/status.json
+katl.generation.config-apply-status   /var/lib/katl/generations/<id>/config-apply-status.json
+katl.boot.selection                   /var/lib/katl/boot/selection.json
+katl.install.status                   /var/lib/katl/install/status.json
+katl.operation.record                 /var/lib/katl/operations/<id>/record.json
+katl.operation.journal-event          /var/lib/katl/operations/<id>/journal/<seq>.<event>.json
+katl.cluster.intent                   /var/lib/katl/cluster/intent.json
+katl.config-request.decision          /var/lib/katl/config-requests/<source>/<version>.json
 ```
+
+All initial record types use `recordVersion: 1`. The strings above are the
+accepted record type names for these disk contracts. New persisted files under
+`/var/lib/katl` need an ADR update or follow-up decision that adds them to the
+inventory before they become a release-stable contract.
 
 The record inventory is the authoritative list of installed-system disk
 contracts. User-authored source config, Katl config bundles, compiled per-node
@@ -241,12 +247,12 @@ validate. Rollback-sensitive changes need VM coverage that proves a failed
 trial upgrade can still reach a usable previous known-good generation or a
 clear repair path.
 
-## Open Questions
+## Deferred Details
 
-The following details need follow-up design or implementation decisions:
+The accepted envelope leaves these details for follow-up design or
+implementation decisions:
 
 ```text
-exact recordType strings for all existing persisted files
 whether writtenBy is required before v0.1 or remains diagnostic-only
 whether canonical digests cover the whole envelope or only selected payload
   bytes for each record type
