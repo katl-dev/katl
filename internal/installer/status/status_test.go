@@ -131,54 +131,6 @@ func TestValidateCleanGenerationZeroAllowsCurrentAcceptedOperation(t *testing.T)
 	}
 }
 
-func TestValidateCleanGenerationZeroAllowsCurrentDestructiveReset(t *testing.T) {
-	root := t.TempDir()
-	writeCleanGenerationZero(t, root)
-	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	_, err = store.Create(operation.OperationRecord{
-		OperationID:             "wipe-cluster-001",
-		OperationKind:           "destructive-reset",
-		Scope:                   "destructive-reset",
-		RequestDigest:           strings.Repeat("1", 64),
-		Phase:                   "destructive-reset",
-		ExternalMutationStarted: true,
-		MutationScopes:          []string{"kubernetes", "kubelet-state", "etcd-state"},
-		DestructiveResetRequest: &operation.DestructiveReset{
-			InventoryNodeName:      "cp-1",
-			ResetScope:             "cluster",
-			TargetGenerationID:     "0",
-			DiscardClusterIdentity: true,
-		},
-	}, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if err := ValidateCleanGenerationZero(root, "0"); err == nil || !strings.Contains(err.Error(), "operation wipe-cluster-001 has mutation evidence") {
-		t.Fatalf("ValidateCleanGenerationZero() error = %v, want generic mutation refusal", err)
-	}
-	if err := ValidateCleanGenerationZeroForOperation(root, "0", "wipe-cluster-001"); err != nil {
-		t.Fatalf("ValidateCleanGenerationZeroForOperation() error = %v", err)
-	}
-	_, err = store.Update("wipe-cluster-001", "complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
-		record.Phase = operation.HostBookkeepingCompletionPhase
-		record.Terminal = true
-		record.Result = operation.ResultSucceeded
-		completedAt := time.Date(2026, 6, 15, 12, 1, 0, 0, time.UTC)
-		record.CompletedAt = &completedAt
-		record.UpdatedAt = completedAt
-		return record, nil
-	})
-	if err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-	if err := ValidateCleanGenerationZero(root, "0"); err != nil {
-		t.Fatalf("ValidateCleanGenerationZero() after terminal reset error = %v", err)
-	}
-}
-
 func TestValidateCleanGenerationZeroAllowsRenderedKubeadmInput(t *testing.T) {
 	root := t.TempDir()
 	writeCleanGenerationZero(t, root)

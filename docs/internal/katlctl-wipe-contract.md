@@ -13,7 +13,7 @@ retry, rollback, or reconciliation flows.
 Required destructive acknowledgement text:
 
 ```text
-I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity.
+I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.
 ```
 
 Required common flags:
@@ -66,27 +66,26 @@ Plan and status output:
 - Executing commands print JSON with one entry per selected node, including the
   accepted node-local operation ID, current phase, terminal status when known,
   and the evidence paths or redacted diagnostics available to the client.
-- Aggregate success means every selected node reached installer-ready or clean
-  generation 0 state. Partial success exits non-zero and reports each node's
-  terminal or last observed status.
+- Aggregate success means every selected node has had its Katl-owned disk boot
+  path disabled so a reboot must use installer media or PXE. Partial success
+  exits non-zero and reports each node's terminal or last observed status.
 
 State wiped on selected nodes:
 
-- Katl target disk partitions selected by the reinstall plan, including
-  ESP/XBOOTLDR, root slots, writable state, selected Katl-owned extra data disks
-  that explicitly opt into destructive wipe, generated confext output, selected
-  sysext/confext links, payload caches, install and operation records, and boot
-  entries.
-- Kubernetes and kubelet local state on the selected target, including
-  `/etc/kubernetes` backing state, `/var/lib/kubelet`, `/var/lib/etcd`,
-  container runtime state, CNI state, bootstrap tokens, kubeconfigs, node object
-  identity, machine ID, and SSH host keys.
+- Katl-owned disk boot artifacts on the ESP, including loader entries, Katl UKIs,
+  and Katl-installed systemd-boot fallback binaries.
+- The reinstall performed by installer media or PXE later owns the destructive
+  disk reclaim of root slots, writable state, Kubernetes, kubelet, etcd, CNI,
+  container runtime state, install records, operation records, node identity,
+  and cluster identity.
 
 State preserved:
 
+- Existing on-disk Kubernetes, kubelet, etcd, CNI, container runtime, generation,
+  operation, and node identity state until installer media or PXE reclaims the
+  disk.
 - Off-node artifact repositories, operator workstations, external backups,
-  external load balancer configuration, and non-target disks unless selected by a
-  Katl extra-disk wipe plan.
+  external load balancer configuration, and non-target disks.
 - Kubernetes resources for workloads may remain in an external backup or GitOps
   source, but `katlctl wipe` does not preserve them from the discarded cluster.
 
@@ -145,11 +144,12 @@ Node-local wipe trigger:
 - After graceful cleanup either succeeds or reaches a declared best-effort
   terminal result, `katlctl` submits a destructive-reset operation to the target
   node-local `katlc`.
-- The node-local operation wipes selected target state and returns the machine to
-  installer-ready media handoff or a clean generation 0 boot.
-- The command waits for clean generation 0 evidence by default: generation 0
-  selected and booted, no Kubernetes sysext selected, no kubeadm output, empty or
-  absent kubelet/etcd state, and only new install/wipe operation history.
+- The node-local operation removes Katl disk boot artifacts and returns the
+  machine to installer-media handoff. It does not select generation 0 or clean
+  Kubernetes state in place.
+- The command waits for node-local evidence that Katl disk boot artifacts were
+  removed. A later reinstall from installer media or PXE is responsible for
+  disk partitioning and state cleanup.
 
 Result:
 
@@ -193,9 +193,9 @@ Node-local wipe trigger:
 - Ordering is best-effort parallel for worker nodes and conservative for control
   planes: requests may be submitted to all selected control planes without etcd
   quorum checks because the cluster identity is being discarded.
-- The command waits until every reachable selected node reports installer-ready
-  or clean generation 0. Unreachable accepted nodes are reported as unknown and
-  make the aggregate command fail.
+- The command waits until every reachable selected node reports installer-media
+  handoff. Unreachable accepted nodes are reported as unknown and make the
+  aggregate command fail.
 
 Result:
 
@@ -213,9 +213,9 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios -run TestI
 
 The gate must start from a bootstrapped Kubernetes cluster with real Kubernetes
 and etcd state, run `katlctl wipe node` against one node, prove Kubernetes Node
-cleanup and etcd member cleanup when applicable, prove node-local stale state is
-gone, then reinstall/bootstrap the node and prove remote kubectl/workload
-health.
+cleanup and etcd member cleanup when applicable, prove the node reaches
+installer-media handoff, then reinstall/bootstrap the node and prove remote
+kubectl/workload health.
 
 Implementation of `katlctl wipe cluster` must add and pass:
 
@@ -224,6 +224,6 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios -run TestI
 ```
 
 The gate must start from a bootstrapped Kubernetes cluster, run
-`katlctl wipe cluster`, prove selected nodes return to installer-ready or clean
-generation 0 without depending on graceful Kubernetes or etcd coordination, then
-bootstrap a new usable cluster identity and prove remote kubectl/workload health.
+`katlctl wipe cluster`, prove selected nodes return to installer-media handoff
+without depending on graceful Kubernetes or etcd coordination, then bootstrap a
+new usable cluster identity and prove remote kubectl/workload health.

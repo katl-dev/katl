@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,6 @@ import (
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/operation"
-	installstatus "github.com/zariel/katl/internal/installer/status"
 	"github.com/zariel/katl/internal/installer/sysextcatalog"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 )
@@ -136,6 +136,14 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	server := newTestServer(t)
 	writeResetGenerationZero(t, server.Root)
 	writeBootSelection(t, server.Root, "1")
+	writeTestFile(t, filepath.Join(server.Root, "efi/loader/entries/katl-0.conf"), "title Katl 0")
+	writeTestFile(t, filepath.Join(server.Root, "efi/loader/entries/katl-1.conf"), "title Katl 1")
+	writeTestFile(t, filepath.Join(server.Root, "efi/loader/entries/rescue.conf"), "title Rescue")
+	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/Linux/katl-0.efi"), "uki 0")
+	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/Linux/katl-1.EFI"), "uki 1")
+	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/Linux/rescue.efi"), "rescue")
+	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/BOOT/BOOTX64.EFI"), "katl fallback")
+	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/systemd/systemd-bootx64.efi"), "systemd-boot")
 	writeTestFile(t, filepath.Join(server.Root, "var/lib/katl/generations/1/sysext/kubernetes.raw"), "kubernetes")
 	writeTestFile(t, filepath.Join(server.Root, "var/lib/katl/kubernetes/etc-kubernetes/admin.conf"), "cluster-admin")
 	writeTestFile(t, filepath.Join(server.Root, "etc/kubernetes/manifests/kube-apiserver.yaml"), "pod")
@@ -179,48 +187,54 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	if !record.Terminal || record.Result != operation.ResultSucceeded || record.Phase != operation.HostBookkeepingCompletionPhase {
 		t.Fatalf("record = %+v, want terminal successful reset", record)
 	}
-	for _, scope := range destructiveResetMutationScopes {
-		if !contains(record.MutationScopes, scope) {
-			t.Fatalf("mutation scopes = %v, missing %s", record.MutationScopes, scope)
-		}
+	if !reflect.DeepEqual(record.MutationScopes, destructiveResetMutationScopes) {
+		t.Fatalf("mutation scopes = %v, want %v", record.MutationScopes, destructiveResetMutationScopes)
 	}
 	if !record.ExternalMutationStarted || !record.MutatingToolRan {
 		t.Fatalf("mutation state = started %v ran %v", record.ExternalMutationStarted, record.MutatingToolRan)
 	}
-	if err := installstatus.ValidateCleanGenerationZeroForOperation(server.Root, "0", accepted.OperationId); err != nil {
-		t.Fatalf("ValidateCleanGenerationZeroForOperation() error = %v", err)
-	}
-	if err := installstatus.ValidateCleanGenerationZero(server.Root, "0"); err != nil {
-		t.Fatalf("ValidateCleanGenerationZero() error = %v", err)
-	}
-	selection, err := generation.ReadBootSelection(server.Root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selection.DefaultGenerationID != "0" || selection.BootedGenerationID != "0" || selection.PendingHealthValidation {
-		t.Fatalf("boot selection = %#v, want clean generation 0 selected", selection)
-	}
 	for _, path := range []string{
-		"var/lib/katl/generations/1",
-		"var/lib/katl/kubernetes/etc-kubernetes/admin.conf",
-		"etc/kubernetes/manifests/kube-apiserver.yaml",
-		"var/lib/kubelet",
-		"var/lib/etcd",
-		"var/lib/cni",
-		"var/lib/containerd",
-		"var/lib/katl/operations/old-bootstrap",
-		"run/extensions/katl-kubernetes.raw",
+		"efi/loader/entries/katl-0.conf",
+		"efi/loader/entries/katl-1.conf",
+		"efi/EFI/Linux/katl-0.efi",
+		"efi/EFI/Linux/katl-1.EFI",
+		"efi/EFI/BOOT/BOOTX64.EFI",
+		"efi/EFI/systemd/systemd-bootx64.efi",
 	} {
 		if _, err := os.Lstat(filepath.Join(server.Root, path)); !os.IsNotExist(err) {
 			t.Fatalf("%s exists after destructive reset: %v", path, err)
 		}
 	}
+	for _, path := range []string{
+		"efi/loader/entries/rescue.conf",
+		"efi/EFI/Linux/rescue.efi",
+		"var/lib/katl/generations/1",
+		"var/lib/katl/kubernetes/etc-kubernetes/admin.conf",
+		"etc/kubernetes/manifests/kube-apiserver.yaml",
+		"var/lib/kubelet/config.yaml",
+		"var/lib/etcd/member/snap/db",
+		"var/lib/cni/networks/pod/last_reserved_ip",
+		"var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db",
+		"var/lib/katl/operations/old-bootstrap/record.json",
+		"run/extensions/katl-kubernetes.raw",
+	} {
+		if _, err := os.Lstat(filepath.Join(server.Root, path)); err != nil {
+			t.Fatalf("%s missing after destructive reset: %v", path, err)
+		}
+	}
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "1" || selection.BootedGenerationID != "1" {
+		t.Fatalf("boot selection = %#v, want existing generation selection preserved", selection)
+	}
 	machineID, err := os.ReadFile(filepath.Join(server.Root, "var/lib/katl/identity/machine-id"))
 	if err != nil {
-		t.Fatalf("read regenerated machine id: %v", err)
+		t.Fatalf("read machine id: %v", err)
 	}
-	if got := strings.TrimSpace(string(machineID)); got == "" || got == "0123456789abcdef0123456789abcdef" {
-		t.Fatalf("regenerated machine id = %q", got)
+	if got := strings.TrimSpace(string(machineID)); got != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("machine id = %q, want preserved install identity", got)
 	}
 	if _, err := os.Stat(filepath.Join(server.Root, "var/lib/katl/operations", accepted.OperationId, "record.json")); err != nil {
 		t.Fatalf("current reset operation record missing: %v", err)

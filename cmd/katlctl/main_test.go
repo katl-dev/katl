@@ -634,8 +634,11 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 			t.Fatalf("%s submit request = %+v", name, req)
 		}
 		reset := req.GetDestructiveReset()
-		if reset == nil || reset.InventoryNodeName != name || reset.ResetScope != "cluster" || reset.TargetGenerationId != "0" || !reset.DiscardClusterIdentity {
+		if reset == nil || reset.InventoryNodeName != name || reset.ResetScope != "cluster" || reset.TargetGenerationId != "" || !reset.DiscardClusterIdentity {
 			t.Fatalf("%s destructive reset = %+v", name, reset)
+		}
+		if !reflect.DeepEqual(reset.WipeSurfaces, []string{"katlos-boot-artifacts", "disk-boot-path"}) {
+			t.Fatalf("%s wipe surfaces = %#v", name, reset.WipeSurfaces)
 		}
 	}
 	for _, node := range report.Nodes {

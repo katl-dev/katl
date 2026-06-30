@@ -353,9 +353,6 @@ func validateNoDirtyGenerationZeroOperations(root string, allowedOperationID str
 		if err != nil {
 			return fmt.Errorf("read operation %s: %w", id, err)
 		}
-		if allowedDestructiveResetOperation(record, allowedOperationID) {
-			continue
-		}
 		if record.ExternalMutationStarted || record.MutatingToolRan || len(record.PreExecMutationMarkers) > 0 || len(record.MutationScopes) > 0 {
 			return fmt.Errorf("generation 0 is not clean: operation %s has mutation evidence", id)
 		}
@@ -368,24 +365,6 @@ func validateNoDirtyGenerationZeroOperations(root string, allowedOperationID str
 		}
 	}
 	return nil
-}
-
-func allowedDestructiveResetOperation(record operation.OperationRecord, allowedOperationID string) bool {
-	if record.OperationKind != "destructive-reset" || record.DestructiveResetRequest == nil {
-		return false
-	}
-	if record.Terminal {
-		return record.Phase == operation.HostBookkeepingCompletionPhase && record.Result == operation.ResultSucceeded
-	}
-	if strings.TrimSpace(allowedOperationID) == "" || record.OperationID != allowedOperationID {
-		return false
-	}
-	switch record.Phase {
-	case "destructive-reset":
-	default:
-		return false
-	}
-	return true
 }
 
 func dirtyPath(root string, absolutePath string, nonEmpty bool) (bool, error) {

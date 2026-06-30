@@ -96,7 +96,7 @@ func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
 	if record.DestructiveResetRequest == nil {
 		t.Fatalf("destructive reset request = nil")
 	}
-	if record.DestructiveResetRequest.InventoryNodeName != "node-a" || record.DestructiveResetRequest.ResetScope != "cluster" || record.DestructiveResetRequest.TargetGenerationID != "0" || !record.DestructiveResetRequest.DiscardClusterIdentity {
+	if record.DestructiveResetRequest.InventoryNodeName != "node-a" || record.DestructiveResetRequest.ResetScope != "cluster" || record.DestructiveResetRequest.TargetGenerationID != "" || !record.DestructiveResetRequest.DiscardClusterIdentity {
 		t.Fatalf("destructive reset request = %+v", record.DestructiveResetRequest)
 	}
 	if !reflect.DeepEqual(record.ResourceLocks, []string{"generation-state.lock", "kubeadm-state.lock", "destructive-reset.lock"}) {
@@ -1974,9 +1974,8 @@ func destructiveResetRequest(clientRequestID string) *agentapi.SubmitOperationRe
 		DestructiveReset: &agentapi.DestructiveResetOperationRequest{
 			InventoryNodeName:      "node-a",
 			ResetScope:             "cluster",
-			TargetGenerationId:     "0",
 			DiscardClusterIdentity: true,
-			WipeSurfaces:           []string{"kubernetes", "kubelet", "etcd"},
+			WipeSurfaces:           []string{"katlos-boot-artifacts", "disk-boot-path"},
 		},
 	}
 }

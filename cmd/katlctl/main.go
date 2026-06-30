@@ -43,7 +43,7 @@ var newWipeClusterConnector = func(token string) cluster.AgentConnector {
 
 const (
 	wipeClusterOperationKind = "destructive-reset"
-	wipeAcknowledgementText  = "I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation, and generation state on the selected nodes and bootstrap a new cluster identity."
+	wipeAcknowledgementText  = "I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity."
 )
 
 func main() {
@@ -198,7 +198,7 @@ type wipeClusterNodeLocalOperation struct {
 	Node                   string   `json:"node"`
 	OperationKind          string   `json:"operationKind"`
 	ResetScope             string   `json:"resetScope"`
-	TargetGenerationID     string   `json:"targetGenerationID"`
+	TargetGenerationID     string   `json:"targetGenerationID,omitempty"`
 	DiscardClusterIdentity bool     `json:"discardClusterIdentity"`
 	WipeSurfaces           []string `json:"wipeSurfaces"`
 }
@@ -226,16 +226,13 @@ func newWipeClusterReport(planOnly bool, partial bool, nodes []inventory.Planned
 		AcknowledgementAccepted: true,
 		KubernetesCleanup:       "not-attempted",
 		WipedState: []string{
-			"katlos-target-partitions",
-			"kubernetes",
-			"kubelet",
-			"etcd",
-			"cni",
-			"operation-history",
-			"generation-state",
-			"node-identity",
+			"katlos-boot-artifacts",
+			"disk-boot-path",
 		},
 		PreservedState: []string{
+			"existing-kubernetes-state-until-installer-reinstall",
+			"existing-kubelet-etcd-cni-and-container-runtime-state-until-installer-reinstall",
+			"existing-generation-operation-and-node-identity-state-until-installer-reinstall",
 			"off-node-artifacts",
 			"operator-workstations",
 			"external-backups",
@@ -364,17 +361,10 @@ func wipeClusterOperation(node inventory.PlannedNode) wipeClusterNodeLocalOperat
 		Node:                   node.Name,
 		OperationKind:          wipeClusterOperationKind,
 		ResetScope:             "cluster",
-		TargetGenerationID:     "0",
 		DiscardClusterIdentity: true,
 		WipeSurfaces: []string{
-			"katlos-target-partitions",
-			"kubernetes",
-			"kubelet",
-			"etcd",
-			"cni",
-			"operation-history",
-			"generation-state",
-			"node-identity",
+			"katlos-boot-artifacts",
+			"disk-boot-path",
 		},
 	}
 }
