@@ -585,6 +585,51 @@ probe_capabilities() {
     probe_fixture_tool_capabilities
 }
 
+cleanup_existing_vmtest_domains() {
+    if [[ "$cap_libvirt" != "passed" ]]; then
+        return 0
+    fi
+
+    local -a domains=()
+    local domain state
+    while IFS= read -r domain; do
+        domain="${domain//$'\r'/}"
+        if [[ -z "$domain" ]]; then
+            continue
+        fi
+        if [[ "$domain" == katl-* ]]; then
+            domains+=("$domain")
+        fi
+    done < <("$virsh_bin" -c "$libvirt_uri" list --all --name 2>/dev/null || true)
+
+    if [[ "${#domains[@]}" -eq 0 ]]; then
+        return 0
+    fi
+
+    printf 'vmtest cleanup: removing %d existing Katl libvirt domain(s) before starting a new run\n' "${#domains[@]}" >&2
+    for domain in "${domains[@]}"; do
+        if [[ ! "$domain" =~ ^katl-[A-Za-z0-9_.:-]+$ ]]; then
+            setup_failures+=("refusing unsafe existing vmtest domain name: $domain")
+            return 1
+        fi
+        state="$("$virsh_bin" -c "$libvirt_uri" domstate "$domain" 2>/dev/null || true)"
+        case "$state" in
+            *"shut off"*|*"no state"*|*"not found"*|"")
+                ;;
+            *)
+                if ! "$virsh_bin" -c "$libvirt_uri" destroy "$domain" >/dev/null 2>&1; then
+                    setup_failures+=("destroy existing vmtest domain $domain failed")
+                    return 1
+                fi
+                ;;
+        esac
+        if ! "$virsh_bin" -c "$libvirt_uri" undefine "$domain" --nvram >/dev/null 2>&1; then
+            setup_failures+=("undefine existing vmtest domain $domain failed")
+            return 1
+        fi
+    done
+}
+
 ipv4_to_int() {
     local address="$1"
     local a b c d extra
@@ -1067,6 +1112,14 @@ write_host_capabilities
 write_world
 if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
     print_missing_capabilities "vmtest world has missing host capabilities"
+fi
+if ! cleanup_existing_vmtest_domains; then
+    write_run_index "setup-failed" "$@"
+    printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
+    if ! cleanup_run_dir "setup-failed"; then
+        printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
+    fi
+    exit 2
 fi
 
 export KATL_VMTEST_RUN_DIR="$run_dir"
