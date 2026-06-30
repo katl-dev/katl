@@ -112,6 +112,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if record.ConfigApplyRequest != nil {
 		return e.executeConfigApply(ctx, record)
 	}
+	if record.DestructiveResetRequest != nil {
+		return e.executeDestructiveReset(ctx, record)
+	}
 	plan, err := executorPlan(record)
 	if err != nil {
 		_, markErr := e.failRecord(record.OperationID, "executor-plan-refused", "executor-plan-refused", "agent executor could not read operation tool plan", err)

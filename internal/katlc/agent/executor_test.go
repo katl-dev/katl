@@ -20,6 +20,7 @@ import (
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	"github.com/zariel/katl/internal/installer/manifest"
 	"github.com/zariel/katl/internal/installer/operation"
+	installstatus "github.com/zariel/katl/internal/installer/status"
 	"github.com/zariel/katl/internal/installer/sysextcatalog"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 )
@@ -128,6 +129,95 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	}
 	if len(status.Invocations) != 1 || status.Invocations[0].AgentStartId != "agent-test" || status.Invocations[0].ExitStatus != 0 {
 		t.Fatalf("status invocations = %+v", status.Invocations)
+	}
+}
+
+func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
+	server := newTestServer(t)
+	writeResetGenerationZero(t, server.Root)
+	writeBootSelection(t, server.Root, "1")
+	writeTestFile(t, filepath.Join(server.Root, "var/lib/katl/generations/1/sysext/kubernetes.raw"), "kubernetes")
+	writeTestFile(t, filepath.Join(server.Root, "var/lib/katl/kubernetes/etc-kubernetes/admin.conf"), "cluster-admin")
+	writeTestFile(t, filepath.Join(server.Root, "etc/kubernetes/manifests/kube-apiserver.yaml"), "pod")
+	writeTestFile(t, filepath.Join(server.Root, "var/lib/kubelet/config.yaml"), "kubelet")
+	writeTestFile(t, filepath.Join(server.Root, "var/lib/etcd/member/snap/db"), "etcd")
+	writeTestFile(t, filepath.Join(server.Root, "var/lib/cni/networks/pod/last_reserved_ip"), "pod-ip")
+	writeTestFile(t, filepath.Join(server.Root, "var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db"), "containerd")
+	if err := os.MkdirAll(filepath.Join(server.Root, "run/extensions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/var/lib/katl/generations/1/sysext/kubernetes.raw", filepath.Join(server.Root, "run/extensions/katl-kubernetes.raw")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := server.Store.Create(operation.OperationRecord{
+		OperationID:             "old-bootstrap",
+		OperationKind:           "bootstrap-init",
+		Scope:                   "kubeadm-state",
+		RequestDigest:           strings.Repeat("1", 64),
+		Phase:                   "kubeadm-init",
+		ExternalMutationStarted: true,
+		MutatingToolRan:         true,
+		MutationScopes:          []string{"etc-kubernetes", "kubelet-state", "etcd-state"},
+	}, "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	server.Dispatcher = executor
+
+	accepted, err := server.SubmitOperation(context.Background(), destructiveResetRequest("req-reset-execute"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded || record.Phase != operation.HostBookkeepingCompletionPhase {
+		t.Fatalf("record = %+v, want terminal successful reset", record)
+	}
+	for _, scope := range destructiveResetMutationScopes {
+		if !contains(record.MutationScopes, scope) {
+			t.Fatalf("mutation scopes = %v, missing %s", record.MutationScopes, scope)
+		}
+	}
+	if !record.ExternalMutationStarted || !record.MutatingToolRan {
+		t.Fatalf("mutation state = started %v ran %v", record.ExternalMutationStarted, record.MutatingToolRan)
+	}
+	if err := installstatus.ValidateCleanGenerationZeroForOperation(server.Root, "0", accepted.OperationId); err != nil {
+		t.Fatalf("ValidateCleanGenerationZeroForOperation() error = %v", err)
+	}
+	if err := installstatus.ValidateCleanGenerationZero(server.Root, "0"); err != nil {
+		t.Fatalf("ValidateCleanGenerationZero() error = %v", err)
+	}
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "0" || selection.BootedGenerationID != "0" || selection.PendingHealthValidation {
+		t.Fatalf("boot selection = %#v, want clean generation 0 selected", selection)
+	}
+	for _, path := range []string{
+		"var/lib/katl/generations/1",
+		"var/lib/katl/kubernetes/etc-kubernetes/admin.conf",
+		"etc/kubernetes/manifests/kube-apiserver.yaml",
+		"var/lib/kubelet",
+		"var/lib/etcd",
+		"var/lib/cni",
+		"var/lib/containerd",
+		"var/lib/katl/identity",
+		"var/lib/katl/operations/old-bootstrap",
+		"run/extensions/katl-kubernetes.raw",
+	} {
+		if _, err := os.Lstat(filepath.Join(server.Root, path)); !os.IsNotExist(err) {
+			t.Fatalf("%s exists after destructive reset: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(server.Root, "var/lib/katl/operations", accepted.OperationId, "record.json")); err != nil {
+		t.Fatalf("current reset operation record missing: %v", err)
 	}
 }
 
@@ -849,6 +939,37 @@ func waitForOperation(t *testing.T, store operation.Store, operationID string, d
 func seedBootstrapRuntimeRoot(t *testing.T, root string) {
 	t.Helper()
 	seedBootstrapRuntimeRootForRole(t, root, "control-plane")
+}
+
+func writeResetGenerationZero(t *testing.T, root string) {
+	t.Helper()
+	spec := generation.GenerationSpec{
+		APIVersion:     generation.APIVersion,
+		Kind:           "GenerationSpec",
+		GenerationID:   "0",
+		RuntimeVersion: "0.1.0",
+		Root: generation.RootSelection{
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		Boot: generation.BootSelection{
+			UKIPath:         "/efi/EFI/Linux/katl-0.efi",
+			LoaderEntryPath: "loader/entries/katl-0.conf",
+		},
+		KernelCommandLine: []string{"katl.generation=0"},
+		CreatedAt:         time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC),
+	}
+	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, spec.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
