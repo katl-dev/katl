@@ -3,6 +3,7 @@ package scenarios
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"os"
@@ -12,8 +13,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zariel/katl/internal/installer/operation"
 	"github.com/zariel/katl/internal/vmtest"
 )
+
+func TestInstalledRuntimeTwoNodeWipeClusterBootstrapSmoke(t *testing.T) {
+	if run, ok := wipeClusterWorldSmokeRun(t); ok {
+		runWipeReinstallBootstrapSmoke(t, run)
+		return
+	}
+
+	options := vmtest.DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run two-node wipe cluster bootstrap smoke")
+	}
+	_ = vmtest.RequireWorld(t)
+}
 
 func TestInstalledRuntimeTwoNodeWipeReinstallBootstrapSmoke(t *testing.T) {
 	if run, ok := wipeReinstallWorldSmokeRun(t); ok {
@@ -28,7 +43,17 @@ func TestInstalledRuntimeTwoNodeWipeReinstallBootstrapSmoke(t *testing.T) {
 	_ = vmtest.RequireWorld(t)
 }
 
+func wipeClusterWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
+	t.Helper()
+	return wipeReinstallWorldSmokeRunNamed(t, "installed-runtime-two-node-wipe-cluster-bootstrap")
+}
+
 func wipeReinstallWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
+	t.Helper()
+	return wipeReinstallWorldSmokeRunNamed(t, "installed-runtime-two-node-wipe-reinstall-bootstrap")
+}
+
+func wipeReinstallWorldSmokeRunNamed(t *testing.T, scenarioName string) (operationBackedSmokeRun, bool) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv(vmtest.WorldManifestEnv)) == "" {
 		return operationBackedSmokeRun{}, false
@@ -39,14 +64,14 @@ func wipeReinstallWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
 	kvm := vmtest.DefaultOptions().KVM
 	specs := twoNodeWorldRuntimeSpecs()
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
-		failWorldFixtureSetup(t, world, "installed-runtime-two-node-wipe-reinstall-bootstrap", err)
+		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
-	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo), kvm, "installed-runtime-two-node-wipe-reinstall-bootstrap")
+	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo), kvm, scenarioName)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
-	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node wipe/reinstall bootstrap smoke prerequisites missing", missing)
+	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node wipe cluster bootstrap smoke prerequisites missing", missing)
 	return run, true
 }
 
@@ -61,6 +86,7 @@ type wipeReinstallArtifactManifest struct {
 	MkosiArtifactIndex      string                                      `json:"mkosiArtifactIndex,omitempty"`
 	KubernetesPayloadBundle *threeControlPlaneKubernetesPayloadBundle   `json:"kubernetesPayloadBundle,omitempty"`
 	InitialBootstrap        wipeReinstallBootstrapEvidence              `json:"initialBootstrap"`
+	WipeCluster             wipeClusterEvidence                         `json:"wipeCluster"`
 	ReinstallResults        map[string]string                           `json:"reinstallResults,omitempty"`
 	ReinstallDisks          map[string]string                           `json:"reinstallDisks,omitempty"`
 	ReinstallESPs           map[string]string                           `json:"reinstallESPs,omitempty"`
@@ -97,6 +123,23 @@ type wipeReinstallBootstrapEvidence struct {
 	Diagnostics             map[string]string                         `json:"diagnostics,omitempty"`
 }
 
+type wipeClusterEvidence struct {
+	Stdout                 string            `json:"stdout,omitempty"`
+	Stderr                 string            `json:"stderr,omitempty"`
+	Report                 string            `json:"report,omitempty"`
+	OperationRecords       map[string]string `json:"operationRecords,omitempty"`
+	OperationJournals      map[string]string `json:"operationJournals,omitempty"`
+	NodeStatus             map[string]string `json:"nodeStatus,omitempty"`
+	BootArtifacts          map[string]string `json:"bootArtifacts,omitempty"`
+	PreservedState         map[string]string `json:"preservedState,omitempty"`
+	BootSelectionsAfter    map[string]string `json:"bootSelectionsAfter,omitempty"`
+	InstalledRuntimeInputs map[string]string `json:"installedRuntimeInputs,omitempty"`
+	VSockTranscripts       map[string]string `json:"vsockTranscripts,omitempty"`
+	Diagnostics            map[string]string `json:"diagnostics,omitempty"`
+}
+
+const wipeClusterAcknowledgement = "I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity."
+
 func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 	t.Helper()
 	runner := run.Runner
@@ -132,6 +175,12 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 	}
 	liveNodes = initialNodes
 	initialEvidence, err := runWipeReinstallBootstrapRound(t, ctx, run, result, "initial", kubernetesBundle, initialNodes)
+	if err != nil {
+		collectTwoNodeDiagnostics("", initialNodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	wipeEvidence, err := runWipeClusterHandoff(t, ctx, run, result, initialEvidence.Inventory, initialNodes)
 	if err != nil {
 		collectTwoNodeDiagnostics("", initialNodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -183,11 +232,235 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
 	}
-	if err := writeWipeReinstallArtifactManifest(artifactManifest, inputs, initialEvidence, reinstallResults, reinstallDisks, reinstallESPs, cleanEvidence, postEvidence); err != nil {
+	if err := writeWipeReinstallArtifactManifest(artifactManifest, inputs, initialEvidence, wipeEvidence, reinstallResults, reinstallDisks, reinstallESPs, cleanEvidence, postEvidence); err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
 	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, inventoryPath string, nodes []vmtest.RunningInstalledRuntimeNode) (wipeClusterEvidence, error) {
+	t.Helper()
+	wipeDir := filepath.Join(result.RunDir, "wipe-cluster")
+	evidenceDir := filepath.Join(wipeDir, "evidence")
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		return wipeClusterEvidence{}, err
+	}
+	stdoutPath := filepath.Join(wipeDir, "katlctl-wipe-cluster.stdout")
+	stderrPath := filepath.Join(wipeDir, "katlctl-wipe-cluster.stderr")
+	reportPath := filepath.Join(result.ManifestDir, "wipe-cluster-report.json")
+	var stdout, stderr bytes.Buffer
+	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{
+		"wipe", "cluster",
+		"--inventory", inventoryPath,
+		"--all",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeClusterAcknowledgement,
+		"--client-request-id", "vmtest-wipe-cluster",
+		"--timeout", "10m",
+	}, &stdout, &stderr)
+	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
+	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
+	_ = os.WriteFile(reportPath, stdout.Bytes(), 0o644)
+	if err != nil {
+		_ = collectNodeLocalStatusFailureEvidence(ctx, evidenceDir, nodes...)
+		return wipeClusterEvidence{}, fmt.Errorf("katlctl wipe cluster failed: %w\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	if err := assertWipeClusterReport(stdout.Bytes()); err != nil {
+		return wipeClusterEvidence{}, err
+	}
+	records := map[string]string{}
+	journals := map[string]string{}
+	nodeStatus := map[string]string{}
+	bootArtifacts := map[string]string{}
+	preserved := map[string]string{}
+	selections := map[string]string{}
+	for _, node := range nodes {
+		nodeEvidenceDir := filepath.Join(evidenceDir, node.Name)
+		recordPath, record, err := waitForDestructiveResetEvidence(ctx, node, nodeEvidenceDir)
+		if err != nil {
+			return wipeClusterEvidence{}, err
+		}
+		assertDestructiveResetRecord(t, record)
+		records[node.Name] = recordPath
+		journals[node.Name] = filepath.Join(nodeEvidenceDir, "operation-journal-files.txt")
+		statusPath, err := collectNodeLocalStatusEvidence(ctx, node, nodeEvidenceDir)
+		if err != nil {
+			return wipeClusterEvidence{}, err
+		}
+		nodeStatus[node.Name] = statusPath
+		artifactPath, err := collectWipeClusterBootArtifactEvidence(ctx, node, nodeEvidenceDir)
+		if err != nil {
+			return wipeClusterEvidence{}, err
+		}
+		bootArtifacts[node.Name] = artifactPath
+		preservedPath, err := collectWipeClusterPreservedStateEvidence(ctx, node, nodeEvidenceDir)
+		if err != nil {
+			return wipeClusterEvidence{}, err
+		}
+		preserved[node.Name] = preservedPath
+		selectionPath, _, err := collectBootSelectionEvidence(ctx, node, nodeEvidenceDir)
+		if err != nil {
+			return wipeClusterEvidence{}, err
+		}
+		selections[node.Name] = selectionPath
+	}
+	return wipeClusterEvidence{
+		Stdout:                 stdoutPath,
+		Stderr:                 stderrPath,
+		Report:                 reportPath,
+		OperationRecords:       records,
+		OperationJournals:      journals,
+		NodeStatus:             nodeStatus,
+		BootArtifacts:          bootArtifacts,
+		PreservedState:         preserved,
+		BootSelectionsAfter:    selections,
+		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
+		VSockTranscripts:       vsockTranscriptPaths(nodes),
+		Diagnostics:            diagnosticSummaryPaths(nodes),
+	}, nil
+}
+
+func assertWipeClusterReport(data []byte) error {
+	var report struct {
+		Kind      string   `json:"kind"`
+		Wiped     []string `json:"wipedState"`
+		Preserved []string `json:"preservedState"`
+		Nodes     []struct {
+			Node          string `json:"node"`
+			Accepted      bool   `json:"accepted"`
+			OperationKind string `json:"operationKind"`
+			OperationID   string `json:"operationID"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		return fmt.Errorf("decode wipe cluster report: %w", err)
+	}
+	if report.Kind != "WipeClusterReport" {
+		return fmt.Errorf("wipe cluster report kind = %q", report.Kind)
+	}
+	if !containsAllStrings(report.Wiped, "katlos-boot-artifacts", "disk-boot-path") {
+		return fmt.Errorf("wipe cluster report wipedState = %#v", report.Wiped)
+	}
+	if !containsAllStrings(report.Preserved, "existing-kubernetes-state-until-installer-reinstall", "existing-generation-operation-and-node-identity-state-until-installer-reinstall") {
+		return fmt.Errorf("wipe cluster report preservedState = %#v", report.Preserved)
+	}
+	if len(report.Nodes) != 2 {
+		return fmt.Errorf("wipe cluster report nodes = %#v", report.Nodes)
+	}
+	for _, node := range report.Nodes {
+		if !node.Accepted || node.OperationKind != "destructive-reset" || strings.TrimSpace(node.OperationID) == "" {
+			return fmt.Errorf("wipe cluster report node = %#v", node)
+		}
+	}
+	return nil
+}
+
+func waitForDestructiveResetEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, operation.OperationRecord, error) {
+	deadline := time.Now().Add(2 * time.Minute)
+	var lastErr error
+	for {
+		path, record, err := collectOperationEvidence(ctx, node, evidenceDir, "destructive-reset")
+		if err == nil && record.Terminal {
+			return path, record, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("%s destructive reset not terminal: phase=%s result=%s", node.Name, record.Phase, record.Result)
+		}
+		if ctx.Err() != nil {
+			return "", operation.OperationRecord{}, ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return "", operation.OperationRecord{}, lastErr
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func assertDestructiveResetRecord(t *testing.T, record operation.OperationRecord) {
+	t.Helper()
+	if record.OperationKind != "destructive-reset" || !record.Terminal || record.Result != operation.ResultSucceeded {
+		t.Fatalf("destructive reset record = %+v", record)
+	}
+	if record.DestructiveResetRequest == nil || record.DestructiveResetRequest.TargetGenerationID != "" || !record.DestructiveResetRequest.DiscardClusterIdentity {
+		t.Fatalf("destructive reset request = %+v", record.DestructiveResetRequest)
+	}
+	if !containsAllStrings(record.MutationScopes, "katlos-boot-artifacts", "disk-boot-path") {
+		t.Fatalf("destructive reset mutation scopes = %#v", record.MutationScopes)
+	}
+	for _, forbidden := range []string{"kubernetes", "kubelet-state", "etcd-state", "cni-state", "generation-state", "operation-history", "node-identity"} {
+		if containsAllStrings(record.MutationScopes, forbidden) {
+			t.Fatalf("destructive reset mutation scopes = %#v, unexpectedly include %s", record.MutationScopes, forbidden)
+		}
+	}
+}
+
+func collectWipeClusterBootArtifactEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, error) {
+	result, err := runNodeCommand(ctx, node, []string{"find", "/efi", "-maxdepth", "4", "-type", "f", "-print"}, 256<<10)
+	if err != nil {
+		return "", err
+	}
+	evidence := struct {
+		Node       string   `json:"node"`
+		Argv       []string `json:"argv"`
+		ExitStatus int32    `json:"exitStatus"`
+		Stdout     string   `json:"stdout,omitempty"`
+		Stderr     string   `json:"stderr,omitempty"`
+	}{
+		Node:       node.Name,
+		Argv:       []string{"find", "/efi", "-maxdepth", "4", "-type", "f", "-print"},
+		ExitStatus: result.ExitStatus,
+		Stdout:     string(result.Stdout),
+		Stderr:     string(result.Stderr),
+	}
+	if result.ExitStatus != 0 {
+		return "", fmt.Errorf("%s ESP artifact scan failed: %s", node.Name, strings.TrimSpace(string(result.Stderr)))
+	}
+	for _, forbidden := range []string{
+		"/efi/loader/entries/katl-",
+		"/efi/EFI/Linux/katl",
+		"/efi/EFI/BOOT/BOOTX64.",
+		"/efi/EFI/systemd/systemd-bootx64.",
+	} {
+		if strings.Contains(evidence.Stdout, forbidden) {
+			return "", fmt.Errorf("%s ESP artifacts still include %s:\n%s", node.Name, forbidden, evidence.Stdout)
+		}
+	}
+	hostPath := filepath.Join(evidenceDir, "wipe-boot-artifacts.json")
+	return hostPath, writeTwoNodeDiagnosticJSON(hostPath, evidence)
+}
+
+func collectWipeClusterPreservedStateEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, error) {
+	checks := map[string][]string{
+		"kubelet-config":     {"test", "-s", "/var/lib/kubelet/config.yaml"},
+		"machine-id":         {"test", "-s", "/var/lib/katl/identity/machine-id"},
+		"kubernetes-state":   {"test", "-d", "/var/lib/katl/kubernetes/etc-kubernetes"},
+		"operation-records":  {"test", "-d", "/var/lib/katl/operations"},
+		"generation-records": {"test", "-d", "/var/lib/katl/generations"},
+	}
+	evidence := nodeLocalStatusEvidence{
+		Node:    node.Name,
+		Results: make(map[string]nodeCommandEvidence, len(checks)),
+	}
+	for name, argv := range checks {
+		result, err := runNodeCommand(ctx, node, argv, 16<<10)
+		if err != nil {
+			return "", fmt.Errorf("%s preserved state check %s: %w", node.Name, name, err)
+		}
+		evidence.Results[name] = nodeCommandEvidence{
+			Argv:       argv,
+			ExitStatus: result.ExitStatus,
+			Stdout:     string(result.Stdout),
+			Stderr:     string(result.Stderr),
+		}
+		if result.ExitStatus != 0 {
+			return "", fmt.Errorf("%s preserved state check %s failed: %s", node.Name, name, strings.TrimSpace(string(result.Stderr)))
+		}
+	}
+	hostPath := filepath.Join(evidenceDir, "wipe-preserved-state.json")
+	return hostPath, writeTwoNodeDiagnosticJSON(hostPath, evidence)
 }
 
 func startOperationBackedNodes(ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, cpDisk, cpFormat, cpESP, cpFixture, cpMetadata, cpMAC, workerDisk, workerFormat, workerESP, workerFixture, workerMetadata, workerMAC string) ([]vmtest.RunningInstalledRuntimeNode, error) {
@@ -546,7 +819,7 @@ func collectWipeReinstallGeneration0Evidence(ctx context.Context, result vmtest.
 	return evidence, nil
 }
 
-func writeWipeReinstallArtifactManifest(path string, inputs operationBackedSmokeInputs, initial wipeReinstallBootstrapEvidence, reinstallResults, reinstallDisks, reinstallESPs map[string]string, clean map[string]threeNodeGeneration0NodeEvidence, post wipeReinstallBootstrapEvidence) error {
+func writeWipeReinstallArtifactManifest(path string, inputs operationBackedSmokeInputs, initial wipeReinstallBootstrapEvidence, wipe wipeClusterEvidence, reinstallResults, reinstallDisks, reinstallESPs map[string]string, clean map[string]threeNodeGeneration0NodeEvidence, post wipeReinstallBootstrapEvidence) error {
 	return writeTwoNodeDiagnosticJSON(path, wipeReinstallArtifactManifest{
 		VMTestRun:               inputs.WorldProvenance.VMTestRun,
 		WorldManifest:           inputs.WorldProvenance.WorldManifest,
@@ -558,6 +831,7 @@ func writeWipeReinstallArtifactManifest(path string, inputs operationBackedSmoke
 		MkosiArtifactIndex:      inputs.WorldProvenance.MkosiArtifactIndex,
 		KubernetesPayloadBundle: initial.KubernetesPayloadBundle,
 		InitialBootstrap:        initial,
+		WipeCluster:             wipe,
 		ReinstallResults:        reinstallResults,
 		ReinstallDisks:          reinstallDisks,
 		ReinstallESPs:           reinstallESPs,
