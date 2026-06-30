@@ -19,7 +19,155 @@ The initial on-disk `/var` layout is recorded in
 Generated confext owns steady-state configuration under `/etc`, but it must not
 own kubeadm output, SSH host keys, or machine identity.
 
-## Inventory
+Katl-owned durable JSON records under `/var/lib/katl` use the self-describing
+record envelope accepted in
+`docs/internal/adrs/adr-008-persisted-katlos-state-records.md`:
+
+```text
+recordType
+recordVersion
+payload
+writtenBy.katlVersion, optional diagnostic metadata
+writtenBy.runtimeInterface, optional diagnostic metadata
+writtenAt, optional diagnostic metadata
+```
+
+`recordType` is the Katl-owned discriminator. `recordVersion` is local to that
+record type. `payload` is decoded only after the envelope has been decoded and
+dispatched by type and version. The envelope is Katl-native node state, not a
+Kubernetes-style API object; it does not imply `metadata`, universal
+`spec`/`status`, namespaces, resource versions, managed fields, admission, or
+watches.
+
+The v0.1 persisted state format is JSON. Recovery-critical records must remain
+inspectable with standard rescue tools. Binary protobuf may be used for a
+future non-recovery-critical store only after a separate decision defines an
+inspection tool and compatibility policy.
+
+For the initial `recordVersion: 1` records, writer metadata is diagnostic. New
+writers should populate `writtenBy.katlVersion`, `writtenBy.runtimeInterface`,
+and `writtenAt` when that data is available, but readers must not require those
+fields until a later record version explicitly makes them required.
+
+## Record Contract Inventory
+
+The following table is the release-stable inventory for Katl-owned persisted
+record families. The payload owner names the Go package expected to own the
+versioned payload decoder and semantic validation.
+
+| Path pattern | recordType | recordVersion | Payload owner | Mutability | Digest rule | Migration policy | Rollback sensitivity | Test fixture path |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `/var/lib/katl/generations/<id>/spec.json` | `katl.generation.spec` | 1 | `internal/installer/generation` | Immutable after creation | `katl.generation.status.payload.specDigest` is computed from canonical generation spec payload bytes for this version | New selection semantics require a new generation record version and explicit old/new fixture coverage | High: rollback selection depends on this record | `internal/installer/persistedrecord/testdata/v1/katl.generation.spec.json` |
+| `/var/lib/katl/generations/<id>/status.json` | `katl.generation.status` | 1 | `internal/installer/generation` | Mutable health and commit state only | Must carry the canonical digest of the matching generation spec payload | New commit, boot, health, or digest semantics require a new record version and rollback fixture | High: known-good and rollback eligibility depend on this record | `internal/installer/persistedrecord/testdata/v1/katl.generation.status.json` |
+| `/var/lib/katl/generations/<id>/config-apply-status.json` | `katl.generation.config-apply-status` | 1 | `internal/installer/generation` | Mutable operation-facing status for one config apply generation | No standalone content digest; validates generation IDs, phase, and referenced diagnostic artifacts | New phase semantics, rollback result shape, or kubeadm action semantics require a new record version | Medium: config apply repair and live/next-boot reconciliation depend on it, but generation rollback authority remains spec/status/boot selection | `internal/installer/persistedrecord/testdata/v1/katl.generation.config-apply-status.json` |
+| `/var/lib/katl/boot/selection.json` | `katl.boot.selection` | 1 | `internal/installer/generation` | Mutable boot transaction state | No standalone content digest; path, boot entry, and generation references must validate against generation records | New promotion, trial, boot-count, or recovery semantics require a new record version and VM rollback coverage | High: boot default, trial, previous known-good, and repair state depend on it | `internal/installer/persistedrecord/testdata/v1/katl.boot.selection.json` |
+| `/var/lib/katl/install/status.json` | `katl.install.status` | 1 | `internal/installer/status` | Mutable installer and runtime handoff summary | Contains request and image digests; no separate record digest | New state machine meanings or handoff semantics require a new record version | Medium: first-install repair and handoff diagnostics depend on it; normal generation rollback does not | `internal/installer/persistedrecord/testdata/v1/katl.install.status.json` |
+| `/var/lib/katl/operations/<id>/record.json` | `katl.operation.record` | 1 | `internal/installer/operation` | Mutable operation snapshot rebuilt from journal | Must agree with latest valid journal event, latest sequence, and journal digest | New operation recovery, mutation marker, or repair semantics require a new record version and journal fixture | High: interruption recovery and repair classification depend on it | `internal/installer/persistedrecord/testdata/v1/katl.operation.record.json` |
+| `/var/lib/katl/operations/<id>/journal/<seq>.<event>.json` | `katl.operation.journal-event` | 1 | `internal/installer/operation` | Append-only | Ordered canonical event bytes feed the operation journal digest recorded in `record.json` | New event shape or replay semantics require a new record version; old event fixtures must keep replaying | High: operation recovery source of truth | `internal/installer/persistedrecord/testdata/v1/katl.operation.journal-event.json` |
+| `/var/lib/katl/cluster/intent.json` | `katl.cluster.intent` | 1 | `internal/installer` | Immutable install-normalized cluster bootstrap intent until an explicit future reintent operation exists | Source request and KatlOS image digests tie the payload to install input; no separate record digest | New bootstrap intent semantics require a new record version and bootstrap compatibility fixture | Medium: bootstrap depends on it; host rollback must not mutate it | `internal/installer/persistedrecord/testdata/v1/katl.cluster.intent.json` |
+| `/var/lib/katl/config-requests/<source>/<version>.json` | `katl.config-request.decision` | 1 | `internal/installer/configapply` | Immutable decision for one source/version request | `payload.requestDigest` binds the decision to the submitted config | New decision, freshness, or apply-mode semantics require a new record version | Medium: idempotent config apply and repair diagnostics depend on it | `internal/installer/persistedrecord/testdata/v1/katl.config-request.decision.json` |
+
+The fixture paths above are the canonical locations for released compatibility
+fixtures. The common persisted-record package owns envelope fixtures and
+negative envelope tests. Payload owners own valid payload fixtures and
+record-specific semantic failures.
+
+Installer files under `/var/lib/katl/install/` other than `status.json` are
+operation attachments, input copies, plans, or diagnostics until a future
+decision promotes them into release-stable record contracts. Node app snapshots
+under `/var/lib/katl/operations/<id>/apps/<appID>/status.json` are app-owned
+operation evidence identified by each app bundle's status schema ID; they are
+not Katl core record envelopes unless a later node app contract says so.
+
+## Decoding And Unknown Fields
+
+Readers must process Katl record files in this order:
+
+```text
+decode the envelope as JSON
+reject missing recordType, missing recordVersion, missing payload, unsupported
+  recordType, or unsupported recordVersion with a recovery-safe diagnostic
+reject unknown top-level envelope fields unless a future envelope version
+  explicitly defines an extension field
+dispatch by recordType and recordVersion
+decode payload with the selected versioned decoder
+reject unknown payload fields unless that record version explicitly documents an
+  extension or annotations map
+validate path context, payload identity, digests, transitions, and semantic
+  constraints
+```
+
+Readers must not silently rewrite records just because they were read. Writers
+must write canonical JSON and use atomic replace for mutable records. Immutable
+records use create-without-replace semantics after path validation.
+
+## Migration Policy
+
+Changing a persisted record contract requires a concrete migration decision. A
+record version changes when a payload field is added, removed, renamed, changes
+meaning, changes type, or gains a new enum value whose reader behavior was not
+already defined.
+
+Every migration must:
+
+```text
+name the affected recordType and old/new recordVersion values
+state whether old records remain readable and for how long
+state whether rollback to the previous known-good runtime remains compatible
+add valid fixtures for old and new record versions
+add negative fixtures for unsupported versions and malformed payloads
+define canonical digest bytes for each affected version
+write records atomically and preserve unknown records it does not own
+record migration outcome as an operation when node state is mutated
+run the relevant VM gate when boot selection, rollback, operation recovery,
+  install handoff, kubeadm state, or destructive reset behavior is affected
+```
+
+Rollback-sensitive migrations must prove that a failed trial runtime can still
+select the previous known-good generation or reach a clear repair state. A
+trial runtime must not write a record version that the previous known-good
+runtime cannot read well enough to roll back or report repair unless the
+operation explicitly declares rollback compatibility broken and has a tested
+repair path.
+
+## Schema Change Checklist
+
+Before adding or changing a Katl persisted record:
+
+```text
+update ADR-008 or this inventory with the recordType, path, owner, and version
+add or update the versioned payload decoder
+add valid fixtures under internal/installer/persistedrecord/testdata/v1/
+add negative fixtures for missing payload, unsupported version, unknown fields,
+  malformed timestamps, and path/type mismatch where applicable
+define canonical digest bytes and update any status or journal digest checks
+define migration behavior from every released earlier version
+run go test for the payload owner and the common persisted-record package
+run VM gates when rollback-sensitive, boot-sensitive, disk-layout-sensitive,
+  destructive-reset-sensitive, or kubeadm-state-sensitive behavior changes
+```
+
+## Separate Contracts
+
+These are not Katl persisted record-envelope contracts:
+
+```text
+user-authored Katl source config
+Katl config bundle archives
+compiled per-node install material
+KatlOS image artifact metadata
+Kubernetes and node extension bundle manifests
+node app durable snapshots identified by app status schema IDs
+the katlc protobuf agent API
+kubeadm-owned PKI, kubeconfigs, static pod manifests, kubelet state, etcd data,
+  and Kubernetes API objects
+```
+
+Each has its own compatibility policy. Persisted Katl node state may reference
+those contracts by digest, path, schema ID, or bundle identity, but it does not
+inherit their versioning rules.
+
+## State Layout Inventory
 
 | Path | Owner | Mutability | Placement |
 | --- | --- | --- | --- |
