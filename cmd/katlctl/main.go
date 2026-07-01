@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -37,6 +39,7 @@ var runBootstrap = cluster.Run
 var runAgentBootstrap = cluster.RunAgentBootstrap
 var dialVMTestAgent = vmtest.DialAgent
 var dialKatlcAgent = dialKatlcAgentTCP
+var wipeNodeKubectlRunner cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
 var newWipeClusterConnector = func(token string) cluster.AgentConnector {
 	return cluster.TCPAgentConnector{AuthToken: strings.TrimSpace(token), AuthTokenForNode: agentTokenForNode}
 }
@@ -66,6 +69,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	if len(args) >= 2 && args[0] == "wipe" && args[1] == "cluster" {
 		return runWipeCluster(ctx, args[2:], stdout, stderr)
+	}
+	if len(args) >= 2 && args[0] == "wipe" && args[1] == "node" {
+		return runWipeNode(ctx, args[2:], stdout, stderr)
 	}
 	if len(args) >= 2 && args[0] == "config" && args[1] == "path" {
 		return runConfigPath(args[2:], stdout, stderr)
@@ -172,6 +178,111 @@ func runWipeCluster(ctx context.Context, args []string, stdout, stderr io.Writer
 	return submitErr
 }
 
+func runWipeNode(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlctl wipe node", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	var selectedNodes stringList
+	inventoryPath := flags.String("inventory", "", "path to cluster inventory")
+	kubeconfigPath := flags.String("kubeconfig", "", "path to operator kubeconfig")
+	confirm := flags.Bool("confirm-destructive-wipe", false, "confirm destructive wipe")
+	acknowledgement := flags.String("acknowledge", "", "required destructive acknowledgement text")
+	clientRequestID := flags.String("client-request-id", "", "idempotency key")
+	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
+	planOnly := flags.Bool("plan", false, "print the destructive wipe plan without accepting node-local operation")
+	timeout := flags.String("timeout", "", "operation timeout duration")
+	output := flags.String("output", "json", "output format: json")
+	flags.Var(&selectedNodes, "node", "inventory node name to wipe")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *output != "json" {
+		return fmt.Errorf("--output = %q, want json", *output)
+	}
+	if strings.TrimSpace(*inventoryPath) == "" {
+		return fmt.Errorf("--inventory is required")
+	}
+	if len(selectedNodes.values) != 1 {
+		return fmt.Errorf("exactly one --node is required")
+	}
+	if !*planOnly && strings.TrimSpace(*kubeconfigPath) == "" {
+		return fmt.Errorf("--kubeconfig is required")
+	}
+	if !*confirm {
+		return fmt.Errorf("--confirm-destructive-wipe is required")
+	}
+	if *acknowledgement != wipeAcknowledgementText {
+		return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
+	}
+	if strings.TrimSpace(*clientRequestID) == "" {
+		return fmt.Errorf("--client-request-id is required")
+	}
+
+	inv, err := loadInventory(*inventoryPath)
+	if err != nil {
+		return err
+	}
+	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
+	if err != nil {
+		return err
+	}
+	targets, partial, err := wipeClusterTargets(plan, false, selectedNodes.values)
+	if err != nil {
+		return err
+	}
+	target := targets[0]
+	report := newWipeNodeReport(*planOnly, partial, target)
+	if target.SystemRole == inventory.RoleControlPlane {
+		report.KubernetesCleanup = "refused"
+		report.Refusals = append(report.Refusals, "single control-plane wipe requires etcd membership coordination before node-local reset")
+		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+			return printErr
+		}
+		return fmt.Errorf("single control-plane wipe requires etcd membership coordination")
+	}
+
+	token, err := readAgentToken(*agentTokenFile)
+	if err != nil {
+		return err
+	}
+	connector := newWipeClusterConnector(token)
+	if connector == nil {
+		return fmt.Errorf("katlc agent connector is required")
+	}
+	if err := preflightWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}); err != nil {
+		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+			return printErr
+		}
+		return err
+	}
+	if *planOnly {
+		if strings.TrimSpace(*kubeconfigPath) == "" {
+			report.KubernetesCleanup = "unknown"
+		}
+		report.NodeLocalOperations = []wipeClusterNodeLocalOperation{wipeNodeOperation(target)}
+		return printWipeNodeReport(stdout, report)
+	}
+
+	cleanup := cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(*kubeconfigPath), target, strings.TrimSpace(*timeout))
+	report.KubernetesCleanup = cleanup.Status
+	report.KubernetesDiagnostics = cleanup.Diagnostics
+	if cleanup.Status == "recovery-required" {
+		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+			return printErr
+		}
+		return fmt.Errorf("Kubernetes cleanup failed before node-local wipe")
+	}
+
+	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, strings.TrimSpace(*clientRequestID), strings.TrimSpace(*timeout))
+	if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+		return printErr
+	}
+	return submitErr
+}
+
 type wipeClusterReport struct {
 	APIVersion              string                          `json:"apiVersion"`
 	Kind                    string                          `json:"kind"`
@@ -186,6 +297,11 @@ type wipeClusterReport struct {
 	PreservedState          []string                        `json:"preservedState"`
 	Refusals                []string                        `json:"refusals,omitempty"`
 	Nodes                   []wipeClusterNodeResult         `json:"nodes,omitempty"`
+}
+
+type wipeNodeReport struct {
+	wipeClusterReport
+	KubernetesDiagnostics []string `json:"kubernetesDiagnostics,omitempty"`
 }
 
 type wipeClusterTarget struct {
@@ -246,6 +362,16 @@ func newWipeClusterReport(planOnly bool, partial bool, nodes []inventory.Planned
 			Address:    node.Address,
 			SystemRole: string(node.SystemRole),
 		})
+	}
+	return report
+}
+
+func newWipeNodeReport(planOnly bool, partial bool, node inventory.PlannedNode) wipeNodeReport {
+	report := wipeNodeReport{wipeClusterReport: newWipeClusterReport(planOnly, partial, []inventory.PlannedNode{node})}
+	report.Kind = "WipeNodeReport"
+	report.Command = "katlctl wipe node"
+	if planOnly && strings.TrimSpace(report.KubernetesCleanup) == "not-attempted" {
+		report.KubernetesCleanup = "planned"
 	}
 	return report
 }
@@ -369,6 +495,12 @@ func wipeClusterOperation(node inventory.PlannedNode) wipeClusterNodeLocalOperat
 	}
 }
 
+func wipeNodeOperation(node inventory.PlannedNode) wipeClusterNodeLocalOperation {
+	operation := wipeClusterOperation(node)
+	operation.ResetScope = "node"
+	return operation
+}
+
 func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode, clientRequestID string, timeout string) error {
 	var failures []string
 	for _, node := range targets {
@@ -382,6 +514,9 @@ func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, re
 		}
 		result.Endpoint = conn.Endpoint
 		operationSpec := wipeClusterOperation(node)
+		if report.Command == "katlctl wipe node" {
+			operationSpec = wipeNodeOperation(node)
+		}
 		accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion:       operation.APIVersion,
 			Kind:             "SubmitOperationRequest",
@@ -444,6 +579,81 @@ func printWipeClusterReport(stdout io.Writer, report wipeClusterReport) error {
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err
+}
+
+func printWipeNodeReport(stdout io.Writer, report wipeNodeReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal wipe node report: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+type wipeNodeCleanupResult struct {
+	Status      string
+	Diagnostics []string
+}
+
+func cleanupWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node inventory.PlannedNode, timeout string) wipeNodeCleanupResult {
+	result := wipeNodeCleanupResult{Status: "succeeded"}
+	diagnostic := func(format string, args ...any) {
+		result.Diagnostics = append(result.Diagnostics, inventory.Redact(fmt.Sprintf(format, args...)))
+	}
+	run := func(name string, args ...string) bool {
+		argv := append([]string{"kubectl", "--kubeconfig", kubeconfigPath}, args...)
+		output, err := wipeNodeKubectlRunner.Run(ctx, argv)
+		if err != nil {
+			diagnostic("%s failed: %v", name, err)
+			return false
+		}
+		if output.ExitStatus != 0 {
+			diagnostic("%s failed: %s", name, strings.TrimSpace(output.Stderr))
+			return false
+		}
+		return true
+	}
+
+	_ = run("cordon node", "cordon", node.Name)
+	drainTimeout := strings.TrimSpace(timeout)
+	if drainTimeout == "" {
+		drainTimeout = "10m"
+	}
+	_ = run("drain node", "drain", node.Name, "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--timeout="+drainTimeout)
+	if !run("delete node", "delete", "node", node.Name, "--ignore-not-found=true") {
+		result.Status = "recovery-required"
+		return result
+	}
+	if len(result.Diagnostics) > 0 {
+		result.Status = "best-effort"
+	}
+	return result
+}
+
+type execWipeNodeKubectlRunner struct{}
+
+func (execWipeNodeKubectlRunner) Run(ctx context.Context, argv []string) (readiness.CommandResult, error) {
+	if len(argv) == 0 {
+		return readiness.CommandResult{}, fmt.Errorf("argv is required")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exitStatus := int32(0)
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitStatus = int32(exitErr.ExitCode())
+		} else {
+			return readiness.CommandResult{}, err
+		}
+	}
+	return readiness.CommandResult{
+		ExitStatus: exitStatus,
+		Stdout:     stdout.String(),
+		Stderr:     stderr.String(),
+	}, nil
 }
 
 func containsString(values []string, want string) bool {

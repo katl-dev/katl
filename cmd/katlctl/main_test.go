@@ -648,6 +648,227 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 	}
 }
 
+func TestWipeNodeRequiresExactlyOneTarget(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "node",
+		"--inventory", inventoryPath,
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "wipe-node-req",
+		"--kubeconfig", "admin.conf",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "exactly one --node is required") {
+		t.Fatalf("run() error = %v, want exact node target validation", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %s, want empty", stdout.String())
+	}
+}
+
+func TestWipeNodePlanPrintsUnknownKubernetesCleanupWithoutKubeconfig(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+		return connector
+	}
+	oldKubectl := wipeNodeKubectlRunner
+	kubectl := &fakeKubectlRunner{}
+	wipeNodeKubectlRunner = kubectl
+	t.Cleanup(func() {
+		newWipeClusterConnector = oldConnector
+		wipeNodeKubectlRunner = oldKubectl
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "node",
+		"--inventory", inventoryPath,
+		"--node", "worker-1",
+		"--plan",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "wipe-node-req",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeNodeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if !report.Plan || report.Kind != "WipeNodeReport" || report.Command != "katlctl wipe node" {
+		t.Fatalf("report identity = %#v", report)
+	}
+	if report.KubernetesCleanup != "unknown" {
+		t.Fatalf("kubernetes cleanup = %q, want unknown", report.KubernetesCleanup)
+	}
+	if len(report.NodeLocalOperations) != 1 || report.NodeLocalOperations[0].ResetScope != "node" {
+		t.Fatalf("node local operations = %#v", report.NodeLocalOperations)
+	}
+	if len(kubectl.calls) != 0 {
+		t.Fatalf("kubectl calls = %#v, want none for plan without kubeconfig", kubectl.calls)
+	}
+}
+
+func TestWipeNodeSubmitsAfterKubernetesCleanup(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+		return connector
+	}
+	oldKubectl := wipeNodeKubectlRunner
+	kubectl := &fakeKubectlRunner{}
+	wipeNodeKubectlRunner = kubectl
+	t.Cleanup(func() {
+		newWipeClusterConnector = oldConnector
+		wipeNodeKubectlRunner = oldKubectl
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "node",
+		"--inventory", inventoryPath,
+		"--node", "worker-1",
+		"--kubeconfig", "admin.conf",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "wipe-node-req",
+		"--timeout", "7m",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeNodeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.KubernetesCleanup != "succeeded" || len(report.KubernetesDiagnostics) != 0 {
+		t.Fatalf("kubernetes cleanup = %q diagnostics %#v", report.KubernetesCleanup, report.KubernetesDiagnostics)
+	}
+	wantCalls := [][]string{
+		{"kubectl", "--kubeconfig", "admin.conf", "cordon", "worker-1"},
+		{"kubectl", "--kubeconfig", "admin.conf", "drain", "worker-1", "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--timeout=7m"},
+		{"kubectl", "--kubeconfig", "admin.conf", "delete", "node", "worker-1", "--ignore-not-found=true"},
+	}
+	if !reflect.DeepEqual(kubectl.calls, wantCalls) {
+		t.Fatalf("kubectl calls = %#v, want %#v", kubectl.calls, wantCalls)
+	}
+	req := connector.clients["worker-1"].submitRequest
+	if req == nil {
+		t.Fatal("submit request = nil")
+	}
+	reset := req.GetDestructiveReset()
+	if reset == nil || reset.ResetScope != "node" || reset.InventoryNodeName != "worker-1" || !reset.DiscardClusterIdentity {
+		t.Fatalf("destructive reset = %+v", reset)
+	}
+	if req.OperationKind != wipeClusterOperationKind || req.ClientRequestId != "wipe-node-req" || req.OperationTimeout != "7m" {
+		t.Fatalf("submit request = %+v", req)
+	}
+}
+
+func TestWipeNodeReportsRecoveryRequiredBeforeLocalReset(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+		return connector
+	}
+	oldKubectl := wipeNodeKubectlRunner
+	kubectl := &fakeKubectlRunner{results: []readiness.CommandResult{
+		{ExitStatus: 0},
+		{ExitStatus: 1, Stderr: "drain timed out with token abcdef.abcdefghijklmnop"},
+		{ExitStatus: 1, Stderr: "delete failed with Bearer secret-token"},
+	}}
+	wipeNodeKubectlRunner = kubectl
+	t.Cleanup(func() {
+		newWipeClusterConnector = oldConnector
+		wipeNodeKubectlRunner = oldKubectl
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "node",
+		"--inventory", inventoryPath,
+		"--node", "worker-1",
+		"--kubeconfig", "admin.conf",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "wipe-node-req",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "Kubernetes cleanup failed") {
+		t.Fatalf("run() error = %v, want Kubernetes cleanup failure", err)
+	}
+	var report wipeNodeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.KubernetesCleanup != "recovery-required" {
+		t.Fatalf("kubernetes cleanup = %q, want recovery-required", report.KubernetesCleanup)
+	}
+	diagnostics := strings.Join(report.KubernetesDiagnostics, "\n")
+	if !strings.Contains(diagnostics, "[REDACTED BOOTSTRAP TOKEN]") || !strings.Contains(diagnostics, "Bearer [REDACTED]") {
+		t.Fatalf("diagnostics were not redacted: %#v", report.KubernetesDiagnostics)
+	}
+	if connector.clients["worker-1"].submitRequest != nil {
+		t.Fatalf("submit request = %+v, want nil", connector.clients["worker-1"].submitRequest)
+	}
+}
+
+func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"cp-1": readyWipeClusterClient("cp-machine"),
+	})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+		return connector
+	}
+	oldKubectl := wipeNodeKubectlRunner
+	kubectl := &fakeKubectlRunner{}
+	wipeNodeKubectlRunner = kubectl
+	t.Cleanup(func() {
+		newWipeClusterConnector = oldConnector
+		wipeNodeKubectlRunner = oldKubectl
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"wipe", "node",
+		"--inventory", inventoryPath,
+		"--node", "cp-1",
+		"--kubeconfig", "admin.conf",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "wipe-node-req",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "etcd membership coordination") {
+		t.Fatalf("run() error = %v, want etcd coordinator refusal", err)
+	}
+	var report wipeNodeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.KubernetesCleanup != "refused" || len(report.Refusals) != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	if len(kubectl.calls) != 0 {
+		t.Fatalf("kubectl calls = %#v, want none before control-plane refusal", kubectl.calls)
+	}
+	if connector.clients["cp-1"].submitRequest != nil {
+		t.Fatalf("submit request = %+v, want nil", connector.clients["cp-1"].submitRequest)
+	}
+}
+
 func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 	root := t.TempDir()
 	writeConfigApplyFixture(t, root, configApplyFixture{
@@ -968,6 +1189,27 @@ type fakeKatlcAgentClient struct {
 
 type fakeWipeClusterConnector struct {
 	clients map[string]*fakeKatlcAgentClient
+}
+
+type fakeKubectlRunner struct {
+	calls   [][]string
+	results []readiness.CommandResult
+	errs    []error
+}
+
+func (r *fakeKubectlRunner) Run(_ context.Context, argv []string) (readiness.CommandResult, error) {
+	r.calls = append(r.calls, append([]string(nil), argv...))
+	var result readiness.CommandResult
+	if len(r.results) > 0 {
+		result = r.results[0]
+		r.results = r.results[1:]
+	}
+	var err error
+	if len(r.errs) > 0 {
+		err = r.errs[0]
+		r.errs = r.errs[1:]
+	}
+	return result, err
 }
 
 func newFakeWipeClusterConnector(clients map[string]*fakeKatlcAgentClient) *fakeWipeClusterConnector {

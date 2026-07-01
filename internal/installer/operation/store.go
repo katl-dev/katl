@@ -1521,9 +1521,9 @@ func ValidateDestructiveReset(request DestructiveReset) error {
 		return fmt.Errorf("destructiveResetRequest inventoryNodeName is required")
 	}
 	switch strings.TrimSpace(request.ResetScope) {
-	case "cluster":
+	case "cluster", "node":
 	default:
-		return fmt.Errorf("destructiveResetRequest resetScope must be cluster")
+		return fmt.Errorf("destructiveResetRequest resetScope must be cluster or node")
 	}
 	if strings.TrimSpace(request.TargetGenerationID) != "" {
 		if _, err := cleanSegment("destructiveResetRequest targetGenerationID", request.TargetGenerationID); err != nil {
