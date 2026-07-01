@@ -9,6 +9,7 @@ Day one uses:
 
 ```text
 cluster defaults
+node classes
 systemRole defaults
 per-node overrides
 explicit supported node configuration domains
@@ -72,8 +73,9 @@ Per-node materials are rendered from these layers, in order:
 
 ```text
 1. cluster defaults
-2. systemRole defaults
-3. node overrides
+2. node class
+3. systemRole defaults
+4. node overrides
 ```
 
 Later layers override earlier scalar settings only when the domain explicitly
@@ -86,6 +88,10 @@ Recommended defaults:
 cluster defaults
   shared DNS, time, SSH/operator keys, common sysctl/modules/tmpfiles policy,
   artifact selections, and common Kubernetes sysext selection
+
+node class
+  user-declared hardware or model defaults, such as NIC names, safe
+  non-identifying target disk constraints, and hardware labels
 
 systemRole defaults
   bootstrap profile defaults, control-plane storage policy, bootstrap labels or
@@ -112,6 +118,9 @@ same output path produced by two layers
 same scalar set to different values by systemRole defaults and node override
   reject unless the domain explicitly allows override semantics
 
+same scalar set to different values by node class and systemRole defaults
+  reject unless the domain explicitly allows override semantics
+
 same list item repeated
   normalize and de-duplicate only when the domain defines item identity
 
@@ -136,10 +145,12 @@ Cluster plan validation must require:
 ```text
 every node has exactly one systemRole
 systemRole is control-plane or worker for the first implementation
+nodeClass references, when present, resolve to exactly one declared class
 all layer merges are deterministic
 all rendered domains pass their domain-specific validation
 node identity is present or can be derived deterministically
 selected bootstrap profile matches systemRole intent
+target disk identity is explicit per node before destructive install
 ```
 
 `control-plane` nodes should select a bootstrap profile that can produce
@@ -174,8 +185,8 @@ Before capabilities become user-facing, Katl needs a separate design for:
 ```text
 whether capabilities are built-in, user-defined, or both
 input schema and naming rules
-merge order relative to cluster defaults, systemRole defaults, and node
-  overrides
+merge order relative to cluster defaults, node classes, systemRole defaults,
+  and node overrides
 conflict handling when multiple capabilities touch the same domain
 interaction with sysexts and user-managed GitOps
 validation and golden-test expectations
@@ -206,7 +217,8 @@ GitOps.
 
 User-side templating remains allowed outside Katl. Users may generate Katl input
 with their own tooling, but the Katl API that reaches `katlc` remains explicit
-system roles, node overrides, and supported domains for the first
+defaults, node classes, system roles, node overrides, and supported domains for
+the first
 implementation.
 
 ## Testing Contract
@@ -215,9 +227,13 @@ The compiler and planner need deterministic tests:
 
 ```text
 golden tests for rendered per-node install materials
-golden tests for cluster defaults plus systemRole defaults
+golden tests for cluster defaults plus node class plus systemRole defaults
+golden tests for an all-same-hardware manifest using spec.defaults
+golden tests for a mixed-hardware manifest using nodeClasses
 negative tests for unknown systemRole
 negative tests for missing systemRole
+negative tests for unknown nodeClass
+negative tests for unsafe targetDisk identity in node classes
 negative tests for systemRole and selected bootstrap profile mismatch
 negative tests for output outside supported domains
 ```

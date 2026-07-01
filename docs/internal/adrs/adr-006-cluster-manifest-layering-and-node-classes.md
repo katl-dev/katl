@@ -34,6 +34,9 @@ explicit, deterministic, and easy to validate before destructive work.
 
 Cluster manifests support named node classes.
 
+The concrete v0.1 source manifest field contract is documented in
+`docs/internal/cluster-manifest-contract.md`.
+
 The user-facing cluster plan layer order is:
 
 ```text
