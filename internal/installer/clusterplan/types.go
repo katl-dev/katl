@@ -33,6 +33,7 @@ type Spec struct {
 	KatlosImage          manifest.KatlosImage               `yaml:"katlosImage" json:"katlosImage"`
 	WipeTarget           bool                               `yaml:"wipeTarget" json:"wipeTarget"`
 	Defaults             NodeLayer                          `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	NodeClasses          map[string]NodeLayer               `yaml:"nodeClasses,omitempty" json:"nodeClasses,omitempty"`
 	SystemRoleDefaults   map[inventory.SystemRole]NodeLayer `yaml:"systemRoleDefaults,omitempty" json:"systemRoleDefaults,omitempty"`
 	Nodes                []Node                             `yaml:"nodes" json:"nodes"`
 }
@@ -47,6 +48,7 @@ type KubernetesSelection struct {
 type Node struct {
 	Name       string               `yaml:"name" json:"name"`
 	SystemRole inventory.SystemRole `yaml:"systemRole" json:"systemRole"`
+	NodeClass  string               `yaml:"nodeClass,omitempty" json:"nodeClass,omitempty"`
 	Overrides  NodeLayer            `yaml:"overrides,omitempty" json:"overrides,omitempty"`
 }
 
@@ -60,8 +62,9 @@ type NodeLayer struct {
 }
 
 type InstallLayer struct {
-	TargetDisk *manifest.DiskSelector `yaml:"targetDisk,omitempty" json:"targetDisk,omitempty"`
-	ExtraDisks []manifest.ExtraDisk   `yaml:"extraDisks,omitempty" json:"extraDisks,omitempty"`
+	TargetDisk         *manifest.DiskSelector `yaml:"targetDisk,omitempty" json:"targetDisk,omitempty"`
+	TargetDiskDefaults *manifest.DiskSelector `yaml:"targetDiskDefaults,omitempty" json:"targetDiskDefaults,omitempty"`
+	ExtraDisks         []manifest.ExtraDisk   `yaml:"extraDisks,omitempty" json:"extraDisks,omitempty"`
 }
 
 type KubernetesLayer struct {

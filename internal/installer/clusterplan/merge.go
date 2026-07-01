@@ -38,6 +38,11 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 		disk := *next.Install.TargetDisk
 		out.Install.TargetDisk = &disk
 	}
+	defaults, err := mergeTargetDiskDefaults(out.Install.TargetDiskDefaults, next.Install.TargetDiskDefaults)
+	if err != nil {
+		return NodeLayer{}, err
+	}
+	out.Install.TargetDiskDefaults = defaults
 	extra, err := mergeExtraDisks(out.Install.ExtraDisks, next.Install.ExtraDisks)
 	if err != nil {
 		return NodeLayer{}, err
@@ -61,6 +66,43 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 	}
 	out.Bootstrap.Access = mergeAccess(out.Bootstrap.Access, next.Bootstrap.Access)
 	return out, nil
+}
+
+func mergeTargetDiskDefaults(base, next *manifest.DiskSelector) (*manifest.DiskSelector, error) {
+	if base == nil && next == nil {
+		return nil, nil
+	}
+	out := manifest.DiskSelector{}
+	if base != nil {
+		if err := validateTargetDiskDefaults(*base); err != nil {
+			return nil, err
+		}
+		out = *base
+	}
+	if next != nil {
+		if err := validateTargetDiskDefaults(*next); err != nil {
+			return nil, err
+		}
+		if next.MinSizeMiB != 0 {
+			out.MinSizeMiB = next.MinSizeMiB
+		}
+	}
+	if out == (manifest.DiskSelector{}) {
+		return nil, nil
+	}
+	return &out, nil
+}
+
+func applyTargetDiskDefaults(layer NodeLayer) NodeLayer {
+	if layer.Install.TargetDisk == nil || layer.Install.TargetDiskDefaults == nil {
+		return layer
+	}
+	target := *layer.Install.TargetDisk
+	if target.MinSizeMiB == 0 {
+		target.MinSizeMiB = layer.Install.TargetDiskDefaults.MinSizeMiB
+	}
+	layer.Install.TargetDisk = &target
+	return layer
 }
 
 func mergeLabels(base, next map[string]string) (map[string]string, error) {

@@ -113,6 +113,71 @@ func TestCompileAllowsMissingAddressAndAppliesOverride(t *testing.T) {
 	}
 }
 
+func TestCompileMergesNodeClassLayer(t *testing.T) {
+	config := validConfig()
+	targetCP := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-cp-root"}
+	config.Spec.Nodes[0].Overrides.Install.TargetDisk = &targetCP
+	config.Spec.Nodes[0].NodeClass = "ms01"
+	config.Spec.NodeClasses = map[string]NodeLayer{
+		"ms01": {
+			Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
+				Name:    "15-ms01.network",
+				Content: "[Match]\nName=enp3s0\n",
+			}}},
+			Install: InstallLayer{
+				TargetDiskDefaults: &manifest.DiskSelector{MinSizeMiB: 65536},
+			},
+			Kubernetes: KubernetesLayer{
+				NodeLabels: map[string]string{"katl.dev/hardware-class": "ms01"},
+			},
+			Bootstrap: BootstrapLayer{
+				Access: inventory.Access{User: "class-user"},
+			},
+		},
+	}
+	controlPlaneDefaults := config.Spec.SystemRoleDefaults[inventory.RoleControlPlane]
+	controlPlaneDefaults.Bootstrap.Access.User = "role-user"
+	config.Spec.SystemRoleDefaults[inventory.RoleControlPlane] = controlPlaneDefaults
+
+	plan, err := Compile(CompileRequest{
+		Config:         config,
+		KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	cp := plan.Nodes[0]
+	targetDisk := cp.InstallManifest.Install.TargetDisk
+	if targetDisk.ByID != "/dev/disk/by-id/ata-cp-root" || targetDisk.MinSizeMiB != 65536 {
+		t.Fatalf("control-plane target disk = %#v", targetDisk)
+	}
+	if cp.NodeLabels["katl.dev/hardware-class"] != "ms01" || cp.InstallManifest.Node.Bootstrap.Labels["katl.dev/hardware-class"] != "ms01" {
+		t.Fatalf("node class labels = material %#v manifest %#v", cp.NodeLabels, cp.InstallManifest.Node.Bootstrap.Labels)
+	}
+	if cp.InstallManifest.Node.Bootstrap.Access.User != "role-user" {
+		t.Fatalf("bootstrap access user = %q", cp.InstallManifest.Node.Bootstrap.Access.User)
+	}
+	foundClassNetworkd := false
+	for _, file := range cp.InstallManifest.Node.Networkd.Files {
+		if file.Name == "15-ms01.network" {
+			foundClassNetworkd = true
+			break
+		}
+	}
+	if !foundClassNetworkd {
+		t.Fatalf("control-plane networkd files = %#v", cp.InstallManifest.Node.Networkd.Files)
+	}
+
+	worker := plan.Nodes[1]
+	if worker.InstallManifest.Install.TargetDisk.MinSizeMiB != 32768 {
+		t.Fatalf("worker target disk = %#v", worker.InstallManifest.Install.TargetDisk)
+	}
+	if _, ok := worker.NodeLabels["katl.dev/hardware-class"]; ok {
+		t.Fatalf("worker labels unexpectedly include node class label: %#v", worker.NodeLabels)
+	}
+}
+
 func TestCompileSelectsCatalogRef(t *testing.T) {
 	config := validConfig()
 	config.Spec.Kubernetes = KubernetesSelection{CatalogRef: "default"}
@@ -465,6 +530,38 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 				config.Spec.SystemRoleDefaults["controlplane"] = NodeLayer{}
 			},
 			want: "systemRoleDefaults key",
+		},
+		{
+			name: "unknown node class",
+			mut: func(config *Config) {
+				config.Spec.Nodes[0].NodeClass = "missing"
+			},
+			want: `nodeClass "missing" is not defined`,
+		},
+		{
+			name: "node class target disk identity",
+			mut: func(config *Config) {
+				config.Spec.NodeClasses = map[string]NodeLayer{
+					"ms01": {Install: InstallLayer{TargetDisk: &manifest.DiskSelector{ByID: "/dev/disk/by-id/shared-root"}}},
+				}
+			},
+			want: "spec.nodeClasses.ms01.install.targetDisk is not allowed",
+		},
+		{
+			name: "target disk defaults identity",
+			mut: func(config *Config) {
+				config.Spec.NodeClasses = map[string]NodeLayer{
+					"ms01": {Install: InstallLayer{TargetDiskDefaults: &manifest.DiskSelector{Serial: "shared-root"}}},
+				}
+			},
+			want: "targetDiskDefaults must not set byID, wwn, or serial",
+		},
+		{
+			name: "defaults target disk identity",
+			mut: func(config *Config) {
+				config.Spec.Defaults.Install.TargetDisk = &manifest.DiskSelector{Serial: "shared-root"}
+			},
+			want: "spec.defaults.install.targetDisk is not allowed",
 		},
 	}
 	for _, tt := range tests {

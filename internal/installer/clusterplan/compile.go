@@ -46,6 +46,12 @@ func Compile(request CompileRequest) (Plan, error) {
 	if err := validateClusterImage(config.Spec.KatlosImage); err != nil {
 		return Plan{}, err
 	}
+	if err := validateSharedLayer("spec.defaults", config.Spec.Defaults); err != nil {
+		return Plan{}, err
+	}
+	if err := validateNodeClasses(config.Spec.NodeClasses); err != nil {
+		return Plan{}, err
+	}
 	if err := validateSystemRoleDefaults(config.Spec.SystemRoleDefaults); err != nil {
 		return Plan{}, err
 	}
@@ -84,10 +90,20 @@ func Compile(request CompileRequest) (Plan, error) {
 		if role != inventory.RoleControlPlane && role != inventory.RoleWorker {
 			return Plan{}, fmt.Errorf("node %q systemRole %q is unsupported", name, node.SystemRole)
 		}
-		layer, err := mergedLayer(config.Spec.Defaults, config.Spec.SystemRoleDefaults[role], node.Overrides)
+		classLayer := NodeLayer{}
+		nodeClass := strings.TrimSpace(node.NodeClass)
+		if nodeClass != "" {
+			var ok bool
+			classLayer, ok = config.Spec.NodeClasses[nodeClass]
+			if !ok {
+				return Plan{}, fmt.Errorf("node %q nodeClass %q is not defined", name, nodeClass)
+			}
+		}
+		layer, err := mergedLayer(config.Spec.Defaults, classLayer, config.Spec.SystemRoleDefaults[role], node.Overrides)
 		if err != nil {
 			return Plan{}, fmt.Errorf("node %q: %w", name, err)
 		}
+		layer = applyTargetDiskDefaults(layer)
 		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, controlPlaneEndpoint, endpointPlan)
 		if err != nil {
 			return Plan{}, err
@@ -306,11 +322,51 @@ func copyLabels(labels map[string]string) map[string]string {
 }
 
 func validateSystemRoleDefaults(defaults map[inventory.SystemRole]NodeLayer) error {
-	for role := range defaults {
+	for role, layer := range defaults {
 		switch role {
 		case inventory.RoleControlPlane, inventory.RoleWorker:
 		default:
 			return fmt.Errorf("systemRoleDefaults key %q is unsupported", role)
+		}
+		if err := validateSharedLayer("spec.systemRoleDefaults."+string(role), layer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNodeClasses(classes map[string]NodeLayer) error {
+	for name, layer := range classes {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return fmt.Errorf("spec.nodeClasses key is required")
+		}
+		if trimmed != name || strings.ContainsAny(name, `/\`) {
+			return fmt.Errorf("spec.nodeClasses key %q must be a safe name", name)
+		}
+		if err := validateSharedLayer("spec.nodeClasses."+name, layer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSharedLayer(path string, layer NodeLayer) error {
+	if layer.Install.TargetDisk != nil {
+		return fmt.Errorf("%s.install.targetDisk is not allowed; target disk identity must be set per node", path)
+	}
+	if layer.Install.TargetDiskDefaults != nil {
+		if err := validateTargetDiskDefaults(*layer.Install.TargetDiskDefaults); err != nil {
+			return fmt.Errorf("%s.install.%w", path, err)
+		}
+	}
+	return nil
+}
+
+func validateTargetDiskDefaults(selector manifest.DiskSelector) error {
+	for _, value := range []string{selector.ByID, selector.WWN, selector.Serial} {
+		if strings.TrimSpace(value) != "" {
+			return fmt.Errorf("targetDiskDefaults must not set byID, wwn, or serial")
 		}
 	}
 	return nil
