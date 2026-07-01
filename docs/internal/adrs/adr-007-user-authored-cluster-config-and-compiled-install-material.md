@@ -1,6 +1,6 @@
 # ADR-007: User config compiles to a Katl config bundle
 
-Status: proposed.
+Status: accepted.
 
 Date: 2026-06-20.
 
@@ -81,10 +81,9 @@ and future controllers. The source config may be one file or a small source tree
 but the bundle must be self-contained. Installers and node agents must reject
 unresolved external file references.
 
-The bundle format should use a standard content-addressable container artifact
-shape, preferably OCI image layout or an OCI artifact media type, without
-presenting it as a runnable container image. Katl owns the media types and
-schema versions.
+The v0.1 bundle format is an OCI image-layout archive with a Katl custom
+manifest. It is not a runnable container image. Katl owns the artifact type,
+media types, schema versions, and canonical JSON used for digest identity.
 
 A v0.1 bundle should carry at least:
 
@@ -105,6 +104,302 @@ The bundle does not normally carry the KatlOS runtime rootfs payload. The normal
 install path uses the runtime payload bundled with the installer media. Any
 future external runtime payload override must be an advanced feature with a
 separate ADR, compatibility checks, provenance, and a concrete user story.
+
+## v0.1 Bundle Artifact Format
+
+`katlctl config bundle` writes a single `.katlcfg` file. The file is a tar
+archive containing an OCI Image Layout v1 directory. Implementations may also
+use the unpacked directory form internally for tests and caches, but the
+portable user artifact is the archive.
+
+```text
+homelab.katlcfg
+  oci-layout
+  index.json
+  blobs/sha256/<bundle-manifest-digest>
+  blobs/sha256/<member-digests>
+```
+
+The OCI artifact identity is:
+
+```text
+artifactType: application/vnd.katl.config.bundle.v1
+config.mediaType: application/vnd.katl.config.bundle.v1+json
+config.digest: sha256:<bundle-manifest-digest>
+```
+
+The custom bundle manifest is canonical JSON for digest purposes: UTF-8,
+deterministic object key order from Katl tooling, lowercase `sha256:<hex>`
+digests, integer byte sizes, RFC 3339 timestamps, and no mutable freshness,
+`latest`, or URL-derived identity fields. The manifest does not contain its own
+digest. The digest is computed over the manifest bytes and recorded in OCI
+descriptors, catalogs, delivery metadata, install records, generation metadata,
+and operator-visible status.
+
+The custom manifest media type is:
+
+```text
+application/vnd.katl.config.bundle.v1+json
+```
+
+The manifest schema contains:
+
+```text
+apiVersion: config.katl.dev/v1alpha1
+kind: KatlConfigBundle
+artifactKind: katl.config.bundle.v1
+artifactVersion
+bundleSchemaVersion: 1
+clusterName
+createdAt
+
+compatibility
+  supportedArchitectures[]
+  supportedKatlOSRuntimeInterfaces[]
+  minKatlVersion, when needed
+  maxKatlVersion, when needed
+  requiredInstallerFeatures[]
+  requiredKatlcFeatures[]
+  configDomainSchemas[]
+  installMaterialSchemaVersion
+  clusterPlanSchemaVersion
+  kubeadmAPIVersions[]
+
+source
+  normalizedConfig
+  originalInputs[]
+  sourceDigest
+  sourceTreeDigest, when the source was a directory
+
+cluster
+  resolvedPlan
+  bootstrapIntent
+  kubernetesPayloads
+  platformEndpointPlan, when used
+
+nodes[]
+  name
+  systemRole
+  nodeClass, when set
+  architecture
+  nodeMaterial
+  installMaterial
+  nativeConfig
+  kubeadmInputs[]
+  resolvedDigests
+
+descriptors[]
+  role
+  node, when node-scoped
+  mediaType
+  digest
+  sizeBytes
+  fileName
+  annotations
+
+provenance
+  katlctlVersion
+  katlctlCommit
+  compilerSchemaVersion
+  sourceDigest
+  renderedDigest
+  createdBy
+```
+
+`artifactVersion` identifies one immutable compiler output. Re-running the
+compiler with different source bytes, catalog selections, tool versions, or
+rendered member bytes produces a new bundle manifest digest. Mutable aliases may
+exist only for discovery outside the bundle; before install or apply, consumers
+must normalize to `sha256:<bundle-manifest-digest>`.
+
+## Required Members
+
+Every v0.1 bundle contains descriptors for these cluster-scoped members:
+
+```text
+normalized source config
+  role: source-normalized
+  mediaType: application/vnd.katl.cluster-config.v1+yaml
+  fileName: source/cluster.normalized.yaml
+
+source provenance
+  role: source-provenance
+  mediaType: application/vnd.katl.source-provenance.v1+json
+  fileName: source/provenance.json
+
+compiled cluster plan
+  role: cluster-plan
+  mediaType: application/vnd.katl.cluster-plan.v1+json
+  fileName: cluster/plan.json
+
+Kubernetes payload resolution records
+  role: kubernetes-payloads
+  mediaType: application/vnd.katl.kubernetes.payload.resolution.v1+json
+  fileName: cluster/kubernetes-payloads.json
+
+bundle provenance
+  role: bundle-provenance
+  mediaType: application/vnd.katl.bundle-provenance.v1+json
+  fileName: bundle/provenance.json
+```
+
+The Kubernetes payload resolution record stores, for each selected payload:
+
+```text
+requestedVersion
+resolvedPayloadVersion
+source
+ref
+bundleManifestDigest
+sysextPayloadDigest
+artifactVersion
+architecture
+supportedRuntimeInterfaces[]
+catalogDigest, when selected through a catalog
+resolverVersion
+```
+
+The bundle may reference externally published Kubernetes payload bundles by
+source/ref/digest. It does not embed the Kubernetes sysext payload unless a
+future offline-material ADR explicitly adds that mode.
+
+## Node Material Layout
+
+Every node listed in the resolved cluster plan has a node-scoped descriptor set
+under `nodes/<node-name>/`. Node names are safe path segments after validation;
+path separators, traversal, absolute paths, empty names, and names that differ
+only by case are rejected.
+
+Required node-scoped members are:
+
+```text
+compiled install material
+  role: node-install-material
+  mediaType: application/vnd.katl.node-install-material.v1+json
+  fileName: nodes/<node-name>/install/material.json
+
+compiled cluster intent
+  role: node-cluster-intent
+  mediaType: application/vnd.katl.node-cluster-intent.v1+json
+  fileName: nodes/<node-name>/cluster/intent.json
+
+compiled native config plan
+  role: node-native-config
+  mediaType: application/vnd.katl.node-native-config.v1+json
+  fileName: nodes/<node-name>/config/native.json
+
+node digest index
+  role: node-digests
+  mediaType: application/vnd.katl.node-digests.v1+json
+  fileName: nodes/<node-name>/digests.json
+```
+
+The compiled install material is the installer-facing node contract. It carries
+the selected node name, role, target disk identity requirements, wipeTarget
+guard, network/install inputs, resolved cluster intent reference, and provenance
+needed for `katlos-install` to write generation 0. It must not require the
+installer to evaluate source-level defaults, node classes, templates, local
+file paths, catalogs, or version policies.
+
+Node native config material contains only Katl-owned generated runtime
+configuration domains. It is suitable for confext generation or later runtime
+config apply, but each operation still decides which domains it may mutate.
+
+## Kubeadm Input Storage
+
+Kubeadm input is stored as rendered native kubeadm YAML, not as hidden strings
+or unresolved source references. Each rendered kubeadm input has a node-scoped
+descriptor:
+
+```text
+role: kubeadm-input
+mediaType: application/vnd.katl.kubeadm.input.v1+yaml
+fileName: nodes/<node-name>/kubernetes/kubeadm/<resolved-id>.yaml
+annotations:
+  dev.katl.kubeadm.resolved-id: <resolved-id>
+  dev.katl.kubeadm.intent: init | control-plane | worker
+  dev.katl.kubeadm.api-versions: <comma-separated versions>
+```
+
+The bundle manifest records the digest of every kubeadm input and the node
+material references those digests by resolved ID. The installer and bootstrap
+planner must reject node material that references a kubeadm input digest or
+resolved ID not present in the same bundle.
+
+## Reference Resolution Rules
+
+The source config may use local authoring conveniences accepted by the source
+schema, such as relative kubeadm config files. `katlctl config bundle` resolves
+those references before writing the bundle. Bundle consumers never receive
+authoring references as work to perform.
+
+The compiler rejects a bundle when any emitted member still contains:
+
+```text
+relative or absolute host file paths from source config
+environment variable substitutions
+template expressions, ranges, or generators
+latest, stable, or other mutable version aliases
+unresolved Kubernetes payload catalog selectors
+unresolved kubeadm config refs
+unresolved node class or defaults references
+raw sysext or rootfs paths where a Katl bundle source/ref is required
+```
+
+The only allowed external references in a v0.1 config bundle are explicit
+source/ref/digest triples for separately published Katl artifacts, such as
+Kubernetes payload bundles. Those references are resolved enough to include the
+exact manifest digest and compatibility metadata in this bundle.
+
+## Trust And Delivery
+
+v0.1 config bundle trust is digest-only. Consumers verify:
+
+```text
+the archive unpacks as one OCI image layout
+the OCI config descriptor media type is application/vnd.katl.config.bundle.v1+json
+the custom manifest digest matches the expected bundle digest
+every descriptor digest and size matches the fetched member bytes
+compatibility metadata matches the installer/runtime interface and architecture
+the selected node material exists and matches the selected node
+```
+
+Signing, trust roots, revocation, transparency logs, and encrypted secret
+material are explicit follow-up work. The v0.1 format reserves optional
+signature descriptors, but normal consumers must not treat missing signatures as
+a downgrade because signatures are not part of the accepted v0.1 trust model.
+
+Delivery paths identify and verify the same bundle this way:
+
+```text
+USB/offline media
+  media carries homelab.katlcfg plus expected sha256 digest metadata; the
+  installer receives or derives the selected node name and verifies the digest
+  before selecting nodes/<node>/install/material.json.
+
+PXE/matchbox
+  boot input provides a bundle URL, expected bundle digest, and selected node.
+  The installer fetches the archive, verifies the digest, and rejects mutable
+  URL-only input.
+
+local handoff
+  the operator posts the bundle archive, selected node, and expected digest to
+  the waiting installer. The installer verifies the posted bytes before
+  mutation.
+
+VM tests
+  the harness builds one bundle, records its digest in the run manifest, and
+  supplies each VM with the same archive plus selected node.
+
+runtime apply
+  katlctl submits bundle bytes or a bundle source plus expected digest to
+  katlc. katlc stages the bundle, verifies descriptors, and then applies only
+  the operation-allowed runtime domains.
+
+future controllers
+  controllers store desired bundle source/ref/digest and reconcile only after
+  resolving to the same custom bundle manifest digest and compatibility data.
+```
 
 ## Source Cluster Config
 
@@ -191,8 +486,9 @@ VM tests
 ```
 
 The installer verifies the bundle digest and compatibility metadata, selects one
-node's compiled material, validates target disk policy, installs the bundled
-KatlOS runtime payload, records provenance, writes generation 0, and reboots.
+node's compiled material, validates target disk policy, installs the KatlOS
+runtime payload carried by the installer media, records provenance, writes
+generation 0, and reboots.
 
 The compiled per-node install material may include resolved and provenance
 fields that users should not write by hand:
@@ -311,20 +607,15 @@ version.
 
 ## Open Questions
 
-The following details still need refinement before this ADR can be accepted:
+The following details remain follow-up work after the v0.1 bundle format
+decision:
 
 ```text
 exact source config kind and field names
-exact config bundle media type and on-disk layout
-whether v0.1 supports source config file refs or requires all native config
-  inline
-how USB media selects a node when one bundle contains multiple nodes
-how PXE and handoff represent the selected node and bundle digest
-whether compiled node material is a public stable schema or an internal bundle
-  member schema
 how future in-cluster desired state is named, installed, authorized, and kept in
   sync with node-local katlc state
 whether a post-day-one controller should own only Kubernetes upgrades or also
   KatlOS upgrades
-how config bundle signing and trust roots are introduced after digest-only v0.1
+production config bundle signing, trust roots, revocation, and encrypted secret
+  material after digest-only v0.1
 ```
