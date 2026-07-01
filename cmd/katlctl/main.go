@@ -16,6 +16,7 @@ import (
 	"github.com/zariel/katl/internal/bootstrap/cluster"
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
+	"github.com/zariel/katl/internal/installer/configbundle"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
 	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
@@ -99,6 +100,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	configCmd := &cobra.Command{Use: "config", Short: "Katl configuration operations"}
 	configCmd.AddCommand(newConfigPathCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigTopologyCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigBundleCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigApplyCommand(ctx, stdout, stderr))
 	cmd.AddCommand(configCmd)
 
@@ -792,6 +794,68 @@ func runConfigTopology(opts configTopologyOptions, stdout, stderr io.Writer) err
 	data, err := json.MarshalIndent(resolved, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal topology: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+type configBundleOptions struct {
+	sourcePath string
+	outputPath string
+}
+
+type configBundleReport struct {
+	APIVersion   string `json:"apiVersion"`
+	Kind         string `json:"kind"`
+	Output       string `json:"output"`
+	BundleDigest string `json:"bundleDigest"`
+	ArchiveSize  int64  `json:"archiveSizeBytes"`
+}
+
+func newConfigBundleCommand(stdout, stderr io.Writer) *cobra.Command {
+	opts := configBundleOptions{}
+	cmd := &cobra.Command{
+		Use:   "bundle SOURCE --output PATH",
+		Short: "Compile a cluster config into a Katl config bundle",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("exactly one source config path is required")
+			}
+			opts.sourcePath = args[0]
+			return nil
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runConfigBundle(opts, stdout, stderr)
+		},
+	}
+	cmd.Flags().StringVar(&opts.outputPath, "output", "", "bundle output path")
+	return cmd
+}
+
+func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
+	_ = stderr
+	if strings.TrimSpace(opts.outputPath) == "" {
+		return fmt.Errorf("--output is required")
+	}
+	result, err := configbundle.WriteArchive(opts.outputPath, configbundle.BuildRequest{
+		SourcePath:     opts.sourcePath,
+		KatlctlVersion: version,
+		KatlctlCommit:  commit,
+		CreatedBy:      "katlctl config bundle",
+	})
+	if err != nil {
+		return err
+	}
+	report := configBundleReport{
+		APIVersion:   configbundle.APIVersion,
+		Kind:         "ConfigBundleReport",
+		Output:       opts.outputPath,
+		BundleDigest: result.Digest,
+		ArchiveSize:  result.ArchiveSize,
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config bundle report: %w", err)
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err

@@ -162,6 +162,41 @@ func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
 	}
 }
 
+func TestConfigBundleCommandWritesBundle(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	outputPath := filepath.Join(dir, "homelab.katlcfg")
+	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"config", "bundle", sourcePath, "--output", outputPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		t.Fatalf("stat output: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("output bundle is empty")
+	}
+	var report struct {
+		Kind         string `json:"kind"`
+		Output       string `json:"output"`
+		BundleDigest string `json:"bundleDigest"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if report.Kind != "ConfigBundleReport" || report.Output != outputPath || !strings.HasPrefix(report.BundleDigest, "sha256:") {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
 func TestLoadInventoryPreservesKubernetesBundleSelection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "inventory.yaml")
 	bundleRef := "v1.36.1@sha256:" + strings.Repeat("a", 64)
@@ -1735,4 +1770,65 @@ func writeKatlctlConfig(t *testing.T, data string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func configBundleSource() string {
+	return `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: lab
+spec:
+  controlPlaneEndpoint: api.katl.test:6443
+  kubernetes:
+    version: v1.36.1
+    bundle:
+      source: https://artifacts.example.test/kubernetes
+      ref: v1.36.1@sha256:` + strings.Repeat("b", 64) + `
+  katlosImage:
+    url: https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs
+    sha256: ` + strings.Repeat("a", 64) + `
+    sizeBytes: 1073741824
+    version: 2026.06.04
+    architecture: x86_64
+    runtimeInterface: katl-runtime-1
+    role: install
+  defaults:
+    install:
+      wipeTarget: true
+      targetDiskDefaults:
+        minSizeMiB: 32768
+    identity:
+      ssh:
+        authorizedKeys:
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+    bootstrap:
+      access:
+        method: agent
+        credentialRef: vsock:1234:10240
+  systemRoleDefaults:
+    control-plane:
+      kubernetes:
+        kubeadm:
+          configRef: control-plane
+  kubeadmConfigs:
+    control-plane:
+      config: |
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: InitConfiguration
+        nodeRegistration:
+          criSocket: unix:///run/containerd/containerd.sock
+        ---
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: ClusterConfiguration
+        kubernetesVersion: v1.36.1
+  nodes:
+    - name: cp-1
+      systemRole: control-plane
+      overrides:
+        bootstrap:
+          address: 10.0.0.11
+        install:
+          targetDisk:
+            byID: /dev/disk/by-id/ata-cp-root
+`
 }
