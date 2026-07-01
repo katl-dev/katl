@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/zariel/katl/internal/bootstrap/cluster"
 	"github.com/zariel/katl/internal/bootstrap/inventory"
 	"github.com/zariel/katl/internal/bootstrap/readiness"
@@ -57,82 +57,127 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("command is required")
-	}
-	if args[0] == "--version" || args[0] == "version" {
-		fmt.Fprintf(stdout, "katlctl version=%s commit=%s date=%s\n", version, commit, date)
-		return nil
-	}
-	if len(args) >= 2 && args[0] == "cluster" && args[1] == "bootstrap" {
-		return runClusterBootstrap(ctx, args[2:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "wipe" && args[1] == "cluster" {
-		return runWipeCluster(ctx, args[2:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "wipe" && args[1] == "node" {
-		return runWipeNode(ctx, args[2:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "config" && args[1] == "path" {
-		return runConfigPath(args[2:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "config" && args[1] == "topology" {
-		return runConfigTopology(args[2:], stdout, stderr)
-	}
-	if len(args) >= 3 && args[0] == "config" && args[1] == "apply" && args[2] == "validate" {
-		return runConfigApplyValidate(ctx, args[3:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "config" && args[1] == "apply" && (len(args) == 2 || args[2] != "status") {
-		return runConfigApply(ctx, args[2:], stdout, stderr)
-	}
-	if len(args) >= 3 && args[0] == "config" && args[1] == "apply" && args[2] == "status" {
-		return runConfigApplyStatus(ctx, args[3:], stdout, stderr)
-	}
-	return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
+	cmd := newKatlctlCommand(ctx, stdout, stderr)
+	cmd.SetArgs(args)
+	return cmd.Execute()
 }
 
-func runWipeCluster(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("katlctl wipe cluster", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "katlctl",
+		Short:         "KatlOS operator client",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return fmt.Errorf("command is required")
+		},
+	}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.Version = fmt.Sprintf("version=%s commit=%s date=%s", version, commit, date)
+	cmd.SetVersionTemplate("katlctl {{.Version}}\n")
+	cmd.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Print katlctl version",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			fmt.Fprintf(stdout, "katlctl version=%s commit=%s date=%s\n", version, commit, date)
+			return nil
+		},
+	})
 
-	var selectedNodes stringList
-	inventoryPath := flags.String("inventory", "", "path to cluster inventory")
-	all := flags.Bool("all", false, "select every node in the inventory")
-	allowPartial := flags.Bool("allow-partial-cluster", false, "allow a partial cluster target set")
-	confirm := flags.Bool("confirm-destructive-wipe", false, "confirm destructive wipe")
-	acknowledgement := flags.String("acknowledge", "", "required destructive acknowledgement text")
-	clientRequestID := flags.String("client-request-id", "", "idempotency key")
-	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
-	planOnly := flags.Bool("plan", false, "print the destructive wipe plan without accepting node-local operations")
-	timeout := flags.String("timeout", "", "operation timeout duration")
-	output := flags.String("output", "json", "output format: json")
-	flags.Var(&selectedNodes, "node", "inventory node name to wipe; may be repeated")
-	if err := flags.Parse(args); err != nil {
-		return err
+	clusterCmd := &cobra.Command{Use: "cluster", Short: "Cluster lifecycle operations"}
+	clusterCmd.AddCommand(newClusterBootstrapCommand(ctx, stdout, stderr))
+	clusterWipeCmd := newWipeClusterCommand(ctx, stdout, stderr, "katlctl cluster wipe")
+	clusterWipeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl cluster wipe node"))
+	clusterCmd.AddCommand(clusterWipeCmd)
+	cmd.AddCommand(clusterCmd)
+
+	configCmd := &cobra.Command{Use: "config", Short: "Katl configuration operations"}
+	configCmd.AddCommand(newConfigPathCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigTopologyCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigApplyCommand(ctx, stdout, stderr))
+	cmd.AddCommand(configCmd)
+
+	wipeCmd := &cobra.Command{
+		Use:   "wipe",
+		Short: "Compatibility aliases for destructive wipe commands",
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	wipeCmd.AddCommand(newWipeClusterCommand(ctx, stdout, stderr, "katlctl wipe cluster"))
+	wipeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl wipe node"))
+	cmd.AddCommand(wipeCmd)
+
+	return cmd
+}
+
+type wipeClusterOptions struct {
+	command         string
+	selectedNodes   stringList
+	inventoryPath   string
+	all             bool
+	allowPartial    bool
+	confirm         bool
+	acknowledgement string
+	clientRequestID string
+	agentTokenFile  string
+	planOnly        bool
+	timeout         string
+	output          string
+}
+
+func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
+	opts := wipeClusterOptions{command: commandName, output: "json"}
+	cmd := &cobra.Command{
+		Use:   "wipe",
+		Short: "Destructively reset cluster nodes for installer-media reinstall",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runWipeClusterOptions(ctx, opts, stdout, stderr)
+		},
 	}
-	if *output != "json" {
-		return fmt.Errorf("--output = %q, want json", *output)
+	if strings.HasSuffix(commandName, "wipe cluster") {
+		cmd.Use = "cluster"
+		cmd.Short = "Deprecated alias for katlctl cluster wipe"
 	}
-	if strings.TrimSpace(*inventoryPath) == "" {
+	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster inventory")
+	cmd.Flags().BoolVar(&opts.all, "all", false, "select every node in the inventory")
+	cmd.Flags().BoolVar(&opts.allowPartial, "allow-partial-cluster", false, "allow a partial cluster target set")
+	cmd.Flags().BoolVar(&opts.confirm, "confirm-destructive-wipe", false, "confirm destructive wipe")
+	cmd.Flags().StringVar(&opts.acknowledgement, "acknowledge", "", "required destructive acknowledgement text")
+	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key")
+	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operations")
+	cmd.Flags().StringVar(&opts.timeout, "timeout", "", "operation timeout duration")
+	cmd.Flags().StringVar(&opts.output, "output", "json", "output format: json")
+	cmd.Flags().Var(&opts.selectedNodes, "node", "inventory node name to wipe; may be repeated")
+	return cmd
+}
+
+func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout, stderr io.Writer) error {
+	_ = stderr
+	if opts.output != "json" {
+		return fmt.Errorf("--output = %q, want json", opts.output)
+	}
+	if strings.TrimSpace(opts.inventoryPath) == "" {
 		return fmt.Errorf("--inventory is required")
 	}
-	if !*confirm {
+	if !opts.confirm {
 		return fmt.Errorf("--confirm-destructive-wipe is required")
 	}
-	if *acknowledgement != wipeAcknowledgementText {
+	if opts.acknowledgement != wipeAcknowledgementText {
 		return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
 	}
-	if strings.TrimSpace(*clientRequestID) == "" {
+	if strings.TrimSpace(opts.clientRequestID) == "" {
 		return fmt.Errorf("--client-request-id is required")
 	}
-	if *all && len(selectedNodes.values) > 0 {
+	if opts.all && len(opts.selectedNodes.values) > 0 {
 		return fmt.Errorf("--all and --node cannot be combined")
 	}
 
-	inv, err := loadInventory(*inventoryPath)
+	inv, err := loadInventory(opts.inventoryPath)
 	if err != nil {
 		return err
 	}
@@ -140,12 +185,13 @@ func runWipeCluster(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return err
 	}
-	targets, partial, err := wipeClusterTargets(plan, *all, selectedNodes.values)
+	targets, partial, err := wipeClusterTargets(plan, opts.all, opts.selectedNodes.values)
 	if err != nil {
 		return err
 	}
-	report := newWipeClusterReport(*planOnly, partial, targets)
-	if partial && !*allowPartial {
+	report := newWipeClusterReport(opts.planOnly, partial, targets)
+	report.Command = opts.command
+	if partial && !opts.allowPartial {
 		report.Refusals = append(report.Refusals, "partial cluster wipe requires --allow-partial-cluster")
 		if printErr := printWipeClusterReport(stdout, report); printErr != nil {
 			return printErr
@@ -153,7 +199,7 @@ func runWipeCluster(ctx context.Context, args []string, stdout, stderr io.Writer
 		return fmt.Errorf("partial cluster wipe requires --allow-partial-cluster")
 	}
 
-	token, err := readAgentToken(*agentTokenFile)
+	token, err := readAgentToken(opts.agentTokenFile)
 	if err != nil {
 		return err
 	}
@@ -167,61 +213,79 @@ func runWipeCluster(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		return err
 	}
-	if *planOnly {
+	if opts.planOnly {
 		report.NodeLocalOperations = plannedWipeClusterOperations(targets)
 		return printWipeClusterReport(stdout, report)
 	}
-	submitErr := submitWipeCluster(ctx, connector, &report, targets, strings.TrimSpace(*clientRequestID), strings.TrimSpace(*timeout))
+	submitErr := submitWipeCluster(ctx, connector, &report, targets, strings.TrimSpace(opts.clientRequestID), strings.TrimSpace(opts.timeout))
 	if printErr := printWipeClusterReport(stdout, report); printErr != nil {
 		return printErr
 	}
 	return submitErr
 }
 
-func runWipeNode(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("katlctl wipe node", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+type wipeNodeOptions struct {
+	command         string
+	selectedNodes   stringList
+	inventoryPath   string
+	kubeconfigPath  string
+	confirm         bool
+	acknowledgement string
+	clientRequestID string
+	agentTokenFile  string
+	planOnly        bool
+	timeout         string
+	output          string
+}
 
-	var selectedNodes stringList
-	inventoryPath := flags.String("inventory", "", "path to cluster inventory")
-	kubeconfigPath := flags.String("kubeconfig", "", "path to operator kubeconfig")
-	confirm := flags.Bool("confirm-destructive-wipe", false, "confirm destructive wipe")
-	acknowledgement := flags.String("acknowledge", "", "required destructive acknowledgement text")
-	clientRequestID := flags.String("client-request-id", "", "idempotency key")
-	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
-	planOnly := flags.Bool("plan", false, "print the destructive wipe plan without accepting node-local operation")
-	timeout := flags.String("timeout", "", "operation timeout duration")
-	output := flags.String("output", "json", "output format: json")
-	flags.Var(&selectedNodes, "node", "inventory node name to wipe")
-	if err := flags.Parse(args); err != nil {
-		return err
+func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
+	opts := wipeNodeOptions{command: commandName, output: "json"}
+	cmd := &cobra.Command{
+		Use:   "node",
+		Short: "Destructively reset one node for installer-media reinstall",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runWipeNodeOptions(ctx, opts, stdout, stderr)
+		},
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster inventory")
+	cmd.Flags().StringVar(&opts.kubeconfigPath, "kubeconfig", "", "path to operator kubeconfig")
+	cmd.Flags().BoolVar(&opts.confirm, "confirm-destructive-wipe", false, "confirm destructive wipe")
+	cmd.Flags().StringVar(&opts.acknowledgement, "acknowledge", "", "required destructive acknowledgement text")
+	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key")
+	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operation")
+	cmd.Flags().StringVar(&opts.timeout, "timeout", "", "operation timeout duration")
+	cmd.Flags().StringVar(&opts.output, "output", "json", "output format: json")
+	cmd.Flags().Var(&opts.selectedNodes, "node", "inventory node name to wipe")
+	return cmd
+}
+
+func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stderr io.Writer) error {
+	_ = stderr
+	if opts.output != "json" {
+		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if *output != "json" {
-		return fmt.Errorf("--output = %q, want json", *output)
-	}
-	if strings.TrimSpace(*inventoryPath) == "" {
+	if strings.TrimSpace(opts.inventoryPath) == "" {
 		return fmt.Errorf("--inventory is required")
 	}
-	if len(selectedNodes.values) != 1 {
+	if len(opts.selectedNodes.values) != 1 {
 		return fmt.Errorf("exactly one --node is required")
 	}
-	if !*planOnly && strings.TrimSpace(*kubeconfigPath) == "" {
+	if !opts.planOnly && strings.TrimSpace(opts.kubeconfigPath) == "" {
 		return fmt.Errorf("--kubeconfig is required")
 	}
-	if !*confirm {
+	if !opts.confirm {
 		return fmt.Errorf("--confirm-destructive-wipe is required")
 	}
-	if *acknowledgement != wipeAcknowledgementText {
+	if opts.acknowledgement != wipeAcknowledgementText {
 		return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
 	}
-	if strings.TrimSpace(*clientRequestID) == "" {
+	if strings.TrimSpace(opts.clientRequestID) == "" {
 		return fmt.Errorf("--client-request-id is required")
 	}
 
-	inv, err := loadInventory(*inventoryPath)
+	inv, err := loadInventory(opts.inventoryPath)
 	if err != nil {
 		return err
 	}
@@ -229,12 +293,13 @@ func runWipeNode(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	if err != nil {
 		return err
 	}
-	targets, partial, err := wipeClusterTargets(plan, false, selectedNodes.values)
+	targets, partial, err := wipeClusterTargets(plan, false, opts.selectedNodes.values)
 	if err != nil {
 		return err
 	}
 	target := targets[0]
-	report := newWipeNodeReport(*planOnly, partial, target)
+	report := newWipeNodeReport(opts.planOnly, partial, target)
+	report.Command = opts.command
 	if target.SystemRole == inventory.RoleControlPlane {
 		report.KubernetesCleanup = "refused"
 		report.Refusals = append(report.Refusals, "single control-plane wipe requires etcd membership coordination before node-local reset")
@@ -244,7 +309,7 @@ func runWipeNode(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		return fmt.Errorf("single control-plane wipe requires etcd membership coordination")
 	}
 
-	token, err := readAgentToken(*agentTokenFile)
+	token, err := readAgentToken(opts.agentTokenFile)
 	if err != nil {
 		return err
 	}
@@ -258,15 +323,15 @@ func runWipeNode(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		}
 		return err
 	}
-	if *planOnly {
-		if strings.TrimSpace(*kubeconfigPath) == "" {
+	if opts.planOnly {
+		if strings.TrimSpace(opts.kubeconfigPath) == "" {
 			report.KubernetesCleanup = "unknown"
 		}
 		report.NodeLocalOperations = []wipeClusterNodeLocalOperation{wipeNodeOperation(target)}
 		return printWipeNodeReport(stdout, report)
 	}
 
-	cleanup := cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(*kubeconfigPath), target, strings.TrimSpace(*timeout))
+	cleanup := cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
 	report.KubernetesCleanup = cleanup.Status
 	report.KubernetesDiagnostics = cleanup.Diagnostics
 	if cleanup.Status == "recovery-required" {
@@ -276,7 +341,7 @@ func runWipeNode(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		return fmt.Errorf("Kubernetes cleanup failed before node-local wipe")
 	}
 
-	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, strings.TrimSpace(*clientRequestID), strings.TrimSpace(*timeout))
+	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, strings.TrimSpace(opts.clientRequestID), strings.TrimSpace(opts.timeout))
 	if printErr := printWipeNodeReport(stdout, report); printErr != nil {
 		return printErr
 	}
@@ -514,15 +579,19 @@ func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, re
 		}
 		result.Endpoint = conn.Endpoint
 		operationSpec := wipeClusterOperation(node)
-		if report.Command == "katlctl wipe node" {
+		if strings.HasSuffix(report.Command, "wipe node") {
 			operationSpec = wipeNodeOperation(node)
+		}
+		actor := strings.TrimSpace(report.Command)
+		if actor == "" {
+			actor = "katlctl cluster wipe"
 		}
 		accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion:       operation.APIVersion,
 			Kind:             "SubmitOperationRequest",
 			ClientRequestId:  clientRequestID,
 			OperationKind:    operationSpec.OperationKind,
-			Actor:            "katlctl wipe cluster",
+			Actor:            actor,
 			OperationTimeout: timeout,
 			DestructiveReset: &agentapi.DestructiveResetOperationRequest{
 				InventoryNodeName:      operationSpec.Node,
@@ -665,15 +734,19 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func runConfigPath(args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("katlctl config path", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	if err := flags.Parse(args); err != nil {
-		return err
+func newConfigPathCommand(stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "path",
+		Short: "Print the resolved katlctl config path",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runConfigPath(stdout, stderr)
+		},
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
-	}
+}
+
+func runConfigPath(stdout, stderr io.Writer) error {
+	_ = stderr
 	path, err := workstationConfigPath()
 	if err != nil {
 		return err
@@ -686,23 +759,33 @@ func workstationConfigPath() (string, error) {
 	return workstation.ConfigPath()
 }
 
-func runConfigTopology(args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("katlctl config topology", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+type configTopologyOptions struct {
+	contextName string
+	output      string
+}
 
-	contextName := flags.String("context", "", "katlctl config context name")
-	output := flags.String("output", "json", "output format: json")
-	if err := flags.Parse(args); err != nil {
-		return err
+func newConfigTopologyCommand(stdout, stderr io.Writer) *cobra.Command {
+	opts := configTopologyOptions{output: "json"}
+	cmd := &cobra.Command{
+		Use:   "topology",
+		Short: "Print the resolved workstation topology",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runConfigTopology(opts, stdout, stderr)
+		},
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
-	}
-	if *output != "json" {
-		return fmt.Errorf("--output = %q, want json", *output)
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl config context name")
+	cmd.Flags().StringVar(&opts.output, "output", "json", "output format: json")
+	return cmd
+}
+
+func runConfigTopology(opts configTopologyOptions, stdout, stderr io.Writer) error {
+	_ = stderr
+	if opts.output != "json" {
+		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
 	resolved, err := workstation.ResolveTopology(workstation.ResolveRequest{
-		ContextName: *contextName,
+		ContextName: opts.contextName,
 	})
 	if err != nil {
 		return err
@@ -715,61 +798,98 @@ func runConfigTopology(args []string, stdout, stderr io.Writer) error {
 	return err
 }
 
-func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("katlctl config apply", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+type configApplyOptions struct {
+	endpoint            string
+	agentTokenFile      string
+	configPath          string
+	mode                string
+	candidateGeneration string
+	clientRequestID     string
+	actor               string
+	plan                bool
+	output              string
+}
 
-	endpoint := flags.String("endpoint", "", "katlc agent TCP endpoint host:port")
-	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
-	configPath := flags.String("file", "", "Katl node configuration YAML")
-	mode := flags.String("mode", generation.ApplyModeAuto, "apply mode: auto, live, or next-boot")
-	candidateGeneration := flags.String("candidate-generation", "", "candidate generation id")
-	clientRequestID := flags.String("client-request-id", "", "idempotency key for this apply request")
-	actor := flags.String("actor", "katlctl config apply", "operation actor")
-	plan := flags.Bool("plan", false, "validate and plan without accepting an operation")
-	output := flags.String("output", "json", "output format: json")
-	if err := flags.Parse(args); err != nil {
-		return err
+func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	opts := configApplyOptions{mode: generation.ApplyModeAuto, actor: "katlctl config apply", output: "json"}
+	cmd := &cobra.Command{
+		Use:   "apply",
+		Short: "Validate or apply node configuration",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runConfigApply(ctx, opts, stdout, stderr)
+		},
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	addConfigApplyFlags(cmd, &opts)
+
+	validateOpts := configApplyOptions{mode: generation.ApplyModeAuto, actor: "katlctl config apply validate", plan: true, output: "json"}
+	validateCmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate node configuration without accepting an operation",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runConfigApply(ctx, validateOpts, stdout, stderr)
+		},
 	}
-	if *output != "json" {
-		return fmt.Errorf("--output = %q, want json", *output)
+	addConfigApplyFlags(validateCmd, &validateOpts)
+	if flag := validateCmd.Flags().Lookup("plan"); flag != nil {
+		flag.Hidden = true
 	}
-	if strings.TrimSpace(*endpoint) == "" {
+	cmd.AddCommand(validateCmd)
+	cmd.AddCommand(newConfigApplyStatusCommand(ctx, stdout, stderr))
+	return cmd
+}
+
+func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
+	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().StringVar(&opts.configPath, "file", "", "Katl node configuration YAML")
+	cmd.Flags().StringVar(&opts.mode, "mode", opts.mode, "apply mode: auto, live, or next-boot")
+	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
+	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key for this apply request")
+	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
+	cmd.Flags().BoolVar(&opts.plan, "plan", opts.plan, "validate and plan without accepting an operation")
+	cmd.Flags().StringVar(&opts.output, "output", "json", "output format: json")
+}
+
+func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr io.Writer) error {
+	_ = stderr
+	if opts.output != "json" {
+		return fmt.Errorf("--output = %q, want json", opts.output)
+	}
+	if strings.TrimSpace(opts.endpoint) == "" {
 		return fmt.Errorf("--endpoint is required")
 	}
-	if strings.TrimSpace(*configPath) == "" {
+	if strings.TrimSpace(opts.configPath) == "" {
 		return fmt.Errorf("--file is required")
 	}
-	if strings.TrimSpace(*clientRequestID) == "" {
+	if strings.TrimSpace(opts.clientRequestID) == "" {
 		return fmt.Errorf("--client-request-id is required")
 	}
-	configYAML, err := os.ReadFile(*configPath)
+	configYAML, err := os.ReadFile(opts.configPath)
 	if err != nil {
 		return fmt.Errorf("read config file: %w", err)
 	}
-	token, err := readAgentToken(*agentTokenFile)
+	token, err := readAgentToken(opts.agentTokenFile)
 	if err != nil {
 		return err
 	}
-	conn, err := dialKatlcAgent(ctx, *endpoint, token)
+	conn, err := dialKatlcAgent(ctx, opts.endpoint, token)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if *plan {
-		if strings.TrimSpace(*candidateGeneration) == "" {
+	if opts.plan {
+		if strings.TrimSpace(opts.candidateGeneration) == "" {
 			return fmt.Errorf("--candidate-generation is required with --plan")
 		}
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion:            operation.APIVersion,
 			Kind:                  "ValidateConfigRequest",
-			ClientRequestId:       *clientRequestID,
-			Actor:                 *actor,
-			ApplyMode:             *mode,
-			CandidateGenerationId: *candidateGeneration,
+			ClientRequestId:       opts.clientRequestID,
+			Actor:                 opts.actor,
+			ApplyMode:             opts.mode,
+			CandidateGenerationId: opts.candidateGeneration,
 			ConfigYaml:            string(configYAML),
 		})
 		if err != nil {
@@ -782,13 +902,13 @@ func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer
 		_, err = stdout.Write(append(data, '\n'))
 		return err
 	}
-	requestedMode := strings.TrimSpace(*mode)
+	requestedMode := strings.TrimSpace(opts.mode)
 	req := &agentapi.GenerationApplyRequest{
 		ApiVersion:            operation.APIVersion,
 		Kind:                  "GenerationApplyRequest",
-		ClientRequestId:       *clientRequestID,
-		Actor:                 *actor,
-		CandidateGenerationId: *candidateGeneration,
+		ClientRequestId:       opts.clientRequestID,
+		Actor:                 opts.actor,
+		CandidateGenerationId: opts.candidateGeneration,
 		ConfigYaml:            string(configYAML),
 	}
 	var accepted *agentapi.OperationAccepted
@@ -798,16 +918,16 @@ func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer
 	case generation.ApplyModeNextBoot:
 		accepted, err = conn.Client.StageGeneration(ctx, req)
 	case generation.ApplyModeAuto:
-		if strings.TrimSpace(*candidateGeneration) == "" {
+		if strings.TrimSpace(opts.candidateGeneration) == "" {
 			return fmt.Errorf("--candidate-generation is required with --mode auto")
 		}
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion:            operation.APIVersion,
 			Kind:                  "ValidateConfigRequest",
-			ClientRequestId:       *clientRequestID,
-			Actor:                 *actor,
+			ClientRequestId:       opts.clientRequestID,
+			Actor:                 opts.actor,
 			ApplyMode:             requestedMode,
-			CandidateGenerationId: *candidateGeneration,
+			CandidateGenerationId: opts.candidateGeneration,
 			ConfigYaml:            string(configYAML),
 		})
 		if err != nil {
@@ -826,11 +946,11 @@ func runConfigApply(ctx context.Context, args []string, stdout, stderr io.Writer
 		accepted, err = conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion:      operation.APIVersion,
 			Kind:            "SubmitOperationRequest",
-			ClientRequestId: *clientRequestID,
+			ClientRequestId: opts.clientRequestID,
 			OperationKind:   operationKind,
-			Actor:           *actor,
+			Actor:           opts.actor,
 			ConfigApply: &agentapi.ConfigApplyOperationRequest{
-				CandidateGenerationId: *candidateGeneration,
+				CandidateGenerationId: opts.candidateGeneration,
 				ApplyMode:             requestedMode,
 				ConfigYaml:            string(configYAML),
 			},
@@ -860,46 +980,56 @@ func configApplyOperationKind(acceptedMode string) (string, error) {
 	}
 }
 
-func runConfigApplyValidate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	planArgs := append([]string{"--plan"}, args...)
-	return runConfigApply(ctx, planArgs, stdout, stderr)
+type configApplyStatusOptions struct {
+	root               string
+	endpoint           string
+	agentTokenFile     string
+	generationID       string
+	activeGeneration   string
+	nextBootGeneration string
+	output             string
 }
 
-func runConfigApplyStatus(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("katlctl config apply status", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+func newConfigApplyStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	opts := configApplyStatusOptions{root: "/", output: "json"}
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Report config apply state",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runConfigApplyStatus(ctx, opts, stdout, stderr)
+		},
+	}
+	cmd.Flags().StringVar(&opts.root, "root", "/", "runtime root to inspect")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
+	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().StringVar(&opts.generationID, "generation", "", "generation id to query from katlc agent")
+	cmd.Flags().StringVar(&opts.activeGeneration, "active-generation", "", "active generation id")
+	cmd.Flags().StringVar(&opts.nextBootGeneration, "next-boot-generation", "", "next boot generation id")
+	cmd.Flags().StringVar(&opts.output, "output", "json", "output format: json")
+	return cmd
+}
 
-	root := flags.String("root", "/", "runtime root to inspect")
-	endpoint := flags.String("endpoint", "", "katlc agent TCP endpoint host:port")
-	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
-	generationID := flags.String("generation", "", "generation id to query from katlc agent")
-	activeGeneration := flags.String("active-generation", "", "active generation id")
-	nextBootGeneration := flags.String("next-boot-generation", "", "next boot generation id")
-	output := flags.String("output", "json", "output format: json")
-	if err := flags.Parse(args); err != nil {
-		return err
+func runConfigApplyStatus(ctx context.Context, opts configApplyStatusOptions, stdout, stderr io.Writer) error {
+	_ = stderr
+	if opts.output != "json" {
+		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
-	}
-	if *output != "json" {
-		return fmt.Errorf("--output = %q, want json", *output)
-	}
-	if strings.TrimSpace(*endpoint) != "" {
-		if strings.TrimSpace(*generationID) == "" {
+	if strings.TrimSpace(opts.endpoint) != "" {
+		if strings.TrimSpace(opts.generationID) == "" {
 			return fmt.Errorf("--generation is required with --endpoint")
 		}
-		token, err := readAgentToken(*agentTokenFile)
+		token, err := readAgentToken(opts.agentTokenFile)
 		if err != nil {
 			return err
 		}
-		conn, err := dialKatlcAgent(ctx, *endpoint, token)
+		conn, err := dialKatlcAgent(ctx, opts.endpoint, token)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
 		generation, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{
-			GenerationId:       *generationID,
+			GenerationId:       opts.generationID,
 			IncludeConfigApply: true,
 		})
 		if err != nil {
@@ -912,7 +1042,7 @@ func runConfigApplyStatus(ctx context.Context, args []string, stdout, stderr io.
 		_, err = stdout.Write(append(data, '\n'))
 		return err
 	}
-	report, err := loadConfigApplyReport(*root, *activeGeneration, *nextBootGeneration)
+	report, err := loadConfigApplyReport(opts.root, opts.activeGeneration, opts.nextBootGeneration)
 	if err != nil {
 		return err
 	}
@@ -1058,70 +1188,89 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func runClusterBootstrap(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("katlctl cluster bootstrap", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+type clusterBootstrapOptions struct {
+	addresses                              addressOverrides
+	inventoryPath                          string
+	initNode                               string
+	controlPlaneEndpoint                   string
+	kubernetesBundleSource                 string
+	kubernetesBundleRef                    string
+	kubeconfigOut                          string
+	overwriteKubeconfig                    bool
+	dryRun                                 bool
+	vmtestTranscriptDir                    string
+	agentTokenFile                         string
+	bootstrapManifestPaths                 stringList
+	bootstrapPreWaitValues                 stringList
+	bootstrapWaitValues                    stringList
+	bootstrapStableEndpoint                string
+	bootstrapStableEndpointBeforeManifests bool
+}
 
-	var addresses addressOverrides
-	inventoryPath := flags.String("inventory", "", "path to cluster bootstrap inventory")
-	initNode := flags.String("init-node", "", "first control-plane node for kubeadm init")
-	controlPlaneEndpoint := flags.String("control-plane-endpoint", "", "control-plane endpoint host:port")
-	kubernetesBundleSource := flags.String("kubernetes-bundle-source", "", "HTTPS Kubernetes payload bundle source")
-	kubernetesBundleRef := flags.String("kubernetes-bundle-ref", "", "exact Kubernetes payload bundle ref vMAJOR.MINOR.PATCH@sha256:<digest>")
-	kubeconfigOut := flags.String("kubeconfig-out", "", "operator kubeconfig output path")
-	overwriteKubeconfig := flags.Bool("overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
-	dryRun := flags.Bool("dry-run", false, "validate and print the bootstrap plan without running kubeadm")
-	vmtestTranscriptDir := flags.String("vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
-	agentTokenFile := flags.String("agent-token-file", "", "katlc agent bearer token file")
-	var bootstrapManifestPaths stringList
-	var bootstrapPreWaitValues stringList
-	var bootstrapWaitValues stringList
-	flags.Var(&addresses, "node-address", "node address override in node=address form")
-	flags.Var(&bootstrapManifestPaths, "bootstrap-manifest", "ordered Kubernetes manifest file or bundle to apply after API readiness")
-	flags.Var(&bootstrapPreWaitValues, "bootstrap-pre-wait", "pre-manifest wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
-	flags.Var(&bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
-	bootstrapStableEndpoint := flags.String("bootstrap-stable-endpoint", "", "stable API endpoint host:port to wait for before writing kubeconfig")
-	bootstrapStableEndpointBeforeManifests := flags.Bool("bootstrap-stable-endpoint-before-manifests", false, "wait for stable API endpoint before applying bootstrap manifests")
+func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	opts := clusterBootstrapOptions{}
+	cmd := &cobra.Command{
+		Use:   "bootstrap",
+		Short: "Bootstrap a Kubernetes cluster from KatlOS node inventory",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runClusterBootstrap(ctx, opts, stdout, stderr)
+		},
+	}
+	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster bootstrap inventory")
+	cmd.Flags().StringVar(&opts.initNode, "init-node", "", "first control-plane node for kubeadm init")
+	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
+	cmd.Flags().StringVar(&opts.kubernetesBundleSource, "kubernetes-bundle-source", "", "HTTPS Kubernetes payload bundle source")
+	cmd.Flags().StringVar(&opts.kubernetesBundleRef, "kubernetes-bundle-ref", "", "exact Kubernetes payload bundle ref vMAJOR.MINOR.PATCH@sha256:<digest>")
+	cmd.Flags().StringVar(&opts.kubeconfigOut, "kubeconfig-out", "", "operator kubeconfig output path")
+	cmd.Flags().BoolVar(&opts.overwriteKubeconfig, "overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "validate and print the bootstrap plan without running kubeadm")
+	cmd.Flags().StringVar(&opts.vmtestTranscriptDir, "vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
+	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().Var(&opts.addresses, "node-address", "node address override in node=address form")
+	cmd.Flags().Var(&opts.bootstrapManifestPaths, "bootstrap-manifest", "ordered Kubernetes manifest file or bundle to apply after API readiness")
+	cmd.Flags().Var(&opts.bootstrapPreWaitValues, "bootstrap-pre-wait", "pre-manifest wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
+	cmd.Flags().Var(&opts.bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
+	cmd.Flags().StringVar(&opts.bootstrapStableEndpoint, "bootstrap-stable-endpoint", "", "stable API endpoint host:port to wait for before writing kubeconfig")
+	cmd.Flags().BoolVar(&opts.bootstrapStableEndpointBeforeManifests, "bootstrap-stable-endpoint-before-manifests", false, "wait for stable API endpoint before applying bootstrap manifests")
+	return cmd
+}
 
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
-	}
-	if strings.TrimSpace(*inventoryPath) == "" {
+func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdout, stderr io.Writer) error {
+	_ = stderr
+	if strings.TrimSpace(opts.inventoryPath) == "" {
 		return fmt.Errorf("--inventory is required")
 	}
-	inv, err := loadInventory(*inventoryPath)
+	inv, err := loadInventory(opts.inventoryPath)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(*kubernetesBundleSource) != "" {
-		inv.KubernetesBundleSource = strings.TrimSpace(*kubernetesBundleSource)
+	if strings.TrimSpace(opts.kubernetesBundleSource) != "" {
+		inv.KubernetesBundleSource = strings.TrimSpace(opts.kubernetesBundleSource)
 	}
-	if strings.TrimSpace(*kubernetesBundleRef) != "" {
-		inv.KubernetesBundleRef = strings.TrimSpace(*kubernetesBundleRef)
+	if strings.TrimSpace(opts.kubernetesBundleRef) != "" {
+		inv.KubernetesBundleRef = strings.TrimSpace(opts.kubernetesBundleRef)
 	}
-	bootstrap, err := parseUserBootstrap(bootstrapManifestPaths.values, bootstrapPreWaitValues.values, bootstrapWaitValues.values, *bootstrapStableEndpoint, *bootstrapStableEndpointBeforeManifests)
+	bootstrap, err := parseUserBootstrap(opts.bootstrapManifestPaths.values, opts.bootstrapPreWaitValues.values, opts.bootstrapWaitValues.values, opts.bootstrapStableEndpoint, opts.bootstrapStableEndpointBeforeManifests)
 	if err != nil {
 		return err
 	}
 	request := cluster.Request{
 		Inventory:            inv,
-		InitNode:             *initNode,
-		AddressOverrides:     addresses.values,
-		ControlPlaneEndpoint: *controlPlaneEndpoint,
-		KubeconfigOut:        *kubeconfigOut,
-		OverwriteKubeconfig:  *overwriteKubeconfig,
-		DryRun:               *dryRun,
+		InitNode:             opts.initNode,
+		AddressOverrides:     opts.addresses.values,
+		ControlPlaneEndpoint: opts.controlPlaneEndpoint,
+		KubeconfigOut:        opts.kubeconfigOut,
+		OverwriteKubeconfig:  opts.overwriteKubeconfig,
+		DryRun:               opts.dryRun,
 		Bootstrap:            bootstrap,
 	}
 	var result cluster.Result
-	if strings.TrimSpace(*vmtestTranscriptDir) != "" {
-		result, err = runBootstrap(ctx, request, bootstrapDependencies(*vmtestTranscriptDir))
+	if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
+		result, err = runBootstrap(ctx, request, bootstrapDependencies(opts.vmtestTranscriptDir))
 	} else {
 		var token string
-		token, err = readAgentToken(*agentTokenFile)
+		token, err = readAgentToken(opts.agentTokenFile)
 		if err != nil {
 			return err
 		}
@@ -1318,6 +1467,10 @@ func (o *addressOverrides) Set(value string) error {
 	return nil
 }
 
+func (o *addressOverrides) Type() string {
+	return "node=address"
+}
+
 type stringList struct {
 	values []string
 }
@@ -1336,6 +1489,10 @@ func (l *stringList) Set(value string) error {
 	}
 	l.values = append(l.values, value)
 	return nil
+}
+
+func (l *stringList) Type() string {
+	return "string"
 }
 
 func parseUserBootstrap(manifestPaths, preWaitValues, waitValues []string, stableEndpoint string, stableEndpointBeforeManifests bool) (cluster.UserBootstrap, error) {

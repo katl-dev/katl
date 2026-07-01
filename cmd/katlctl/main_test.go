@@ -43,6 +43,64 @@ func TestVersion(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(context.Background(), []string{"version"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(version) error = %v", err)
+	}
+	if got, want := stdout.String(), "katlctl version=dev commit=abc123 date=2026-06-05T00:00:00Z\n"; got != want {
+		t.Fatalf("version stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("version stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRootHelpShowsCommandGroups(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"--help"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"KatlOS operator client",
+		"cluster     Cluster lifecycle operations",
+		"config      Katl configuration operations",
+		"wipe        Compatibility aliases for destructive wipe commands",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout = %q, missing %q", out, want)
+		}
+	}
+	if strings.Contains(out, "completion") {
+		t.Fatalf("stdout = %q, want no implicit completion command", out)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRootRequiresCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), nil, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "command is required") {
+		t.Fatalf("run() error = %v, want command required", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("stdout = %q stderr = %q, want empty", stdout.String(), stderr.String())
+	}
+}
+
+func TestOutputFormatValidation(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"config", "topology", "--output", "yaml"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), `--output = "yaml", want json`) {
+		t.Fatalf("run() error = %v, want output validation", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
 }
 
 func TestConfigPathUsesXDGDefault(t *testing.T) {
@@ -648,6 +706,49 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 	}
 }
 
+func TestClusterWipeSubmitsWithClusterActor(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"cp-1":     readyWipeClusterClient("cp-machine"),
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	old := newWipeClusterConnector
+	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+		return connector
+	}
+	t.Cleanup(func() { newWipeClusterConnector = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "wipe",
+		"--inventory", inventoryPath,
+		"--all",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "cluster-wipe-req",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	for name, client := range connector.clients {
+		req := client.submitRequest
+		if req == nil {
+			t.Fatalf("%s submit request = nil", name)
+		}
+		reset := req.GetDestructiveReset()
+		if req.Actor != "katlctl cluster wipe" || reset == nil || reset.ResetScope != "cluster" {
+			t.Fatalf("%s submit request = %+v reset=%+v", name, req, reset)
+		}
+	}
+	var report wipeClusterReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.Command != "katlctl cluster wipe" {
+		t.Fatalf("report command = %q", report.Command)
+	}
+}
+
 func TestWipeNodeRequiresExactlyOneTarget(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	var stdout, stderr bytes.Buffer
@@ -664,6 +765,53 @@ func TestWipeNodeRequiresExactlyOneTarget(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %s, want empty", stdout.String())
+	}
+}
+
+func TestClusterWipeNodeSubmitsWithNodeActor(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func(token string) cluster.AgentConnector {
+		return connector
+	}
+	oldKubectl := wipeNodeKubectlRunner
+	kubectl := &fakeKubectlRunner{}
+	wipeNodeKubectlRunner = kubectl
+	t.Cleanup(func() {
+		newWipeClusterConnector = oldConnector
+		wipeNodeKubectlRunner = oldKubectl
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "wipe", "node",
+		"--inventory", inventoryPath,
+		"--node", "worker-1",
+		"--kubeconfig", "admin.conf",
+		"--confirm-destructive-wipe",
+		"--acknowledge", wipeAcknowledgementText,
+		"--client-request-id", "cluster-wipe-node-req",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	req := connector.clients["worker-1"].submitRequest
+	if req == nil {
+		t.Fatal("submit request = nil")
+	}
+	reset := req.GetDestructiveReset()
+	if req.Actor != "katlctl cluster wipe node" || reset == nil || reset.ResetScope != "node" {
+		t.Fatalf("submit request = %+v reset=%+v", req, reset)
+	}
+	var report wipeNodeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.Command != "katlctl cluster wipe node" {
+		t.Fatalf("report command = %q", report.Command)
 	}
 }
 
@@ -945,7 +1093,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if fake.stageRequest == nil || fake.stageRequest.CandidateGenerationId != "generation-1" || fake.stageRequest.ClientRequestId != "req-stage" {
+	if fake.stageRequest == nil || fake.stageRequest.CandidateGenerationId != "generation-1" || fake.stageRequest.ClientRequestId != "req-stage" || fake.stageRequest.Actor != "katlctl config apply" {
 		t.Fatalf("stage request = %+v", fake.stageRequest)
 	}
 	if !strings.Contains(stdout.String(), `"operationId"`) || !strings.Contains(stdout.String(), `"generation-stage-01"`) {
@@ -993,10 +1141,10 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" {
+	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" || fake.validateRequest.Actor != "katlctl config apply" {
 		t.Fatalf("validate request = %+v", fake.validateRequest)
 	}
-	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto {
+	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.Actor != "katlctl config apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto {
 		t.Fatalf("submit request = %+v", fake.submitRequest)
 	}
 	if fake.stageRequest != nil || fake.applyRequest != nil {
@@ -1041,7 +1189,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if fake.validateRequest == nil || fake.validateRequest.CandidateGenerationId != "generation-plan" || fake.validateRequest.ClientRequestId != "req-plan" || fake.validateRequest.ApplyMode != generation.ApplyModeNextBoot {
+	if fake.validateRequest == nil || fake.validateRequest.CandidateGenerationId != "generation-plan" || fake.validateRequest.ClientRequestId != "req-plan" || fake.validateRequest.Actor != "katlctl config apply validate" || fake.validateRequest.ApplyMode != generation.ApplyModeNextBoot {
 		t.Fatalf("validate request = %+v", fake.validateRequest)
 	}
 	if fake.stageRequest != nil || fake.applyRequest != nil {
