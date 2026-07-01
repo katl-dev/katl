@@ -106,7 +106,10 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 		Use:   "wipe",
 		Short: "Compatibility aliases for destructive wipe commands",
 	}
-	wipeCmd.AddCommand(newWipeClusterCommand(ctx, stdout, stderr, "katlctl wipe cluster"))
+	legacyClusterWipeCmd := newWipeClusterCommand(ctx, stdout, stderr, "katlctl cluster wipe")
+	legacyClusterWipeCmd.Use = "cluster"
+	legacyClusterWipeCmd.Short = "Compatibility alias for katlctl cluster wipe"
+	wipeCmd.AddCommand(legacyClusterWipeCmd)
 	wipeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl wipe node"))
 	cmd.AddCommand(wipeCmd)
 
@@ -137,10 +140,6 @@ func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, comman
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runWipeClusterOptions(ctx, opts, stdout, stderr)
 		},
-	}
-	if strings.HasSuffix(commandName, "wipe cluster") {
-		cmd.Use = "cluster"
-		cmd.Short = "Deprecated alias for katlctl cluster wipe"
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster inventory")
 	cmd.Flags().BoolVar(&opts.all, "all", false, "select every node in the inventory")
@@ -401,7 +400,7 @@ func newWipeClusterReport(planOnly bool, partial bool, nodes []inventory.Planned
 	report := wipeClusterReport{
 		APIVersion:              operation.APIVersion,
 		Kind:                    "WipeClusterReport",
-		Command:                 "katlctl wipe cluster",
+		Command:                 "katlctl cluster wipe",
 		Plan:                    planOnly,
 		PartialCluster:          partial,
 		AcknowledgementAccepted: true,
@@ -644,7 +643,7 @@ func closeAgentConnection(conn cluster.AgentConnection) error {
 func printWipeClusterReport(stdout io.Writer, report wipeClusterReport) error {
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal wipe cluster report: %w", err)
+		return fmt.Errorf("marshal cluster wipe report: %w", err)
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err

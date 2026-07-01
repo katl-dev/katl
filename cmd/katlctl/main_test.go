@@ -562,7 +562,7 @@ func TestWipeClusterRequiresExactAcknowledgement(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "cluster",
+		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--all",
 		"--confirm-destructive-wipe",
@@ -581,7 +581,7 @@ func TestWipeClusterRefusesPartialTargetWithoutOverride(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "cluster",
+		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--node", "cp-1",
 		"--confirm-destructive-wipe",
@@ -620,7 +620,7 @@ func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "cluster",
+		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--all",
 		"--plan",
@@ -665,7 +665,7 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "cluster",
+		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--all",
 		"--confirm-destructive-wipe",
@@ -688,7 +688,7 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 			t.Fatalf("%s submit request = nil", name)
 		}
 		req := client.submitRequest
-		if req.OperationKind != wipeClusterOperationKind || req.ClientRequestId != "wipe-req" || req.OperationTimeout != "10m" {
+		if req.OperationKind != wipeClusterOperationKind || req.ClientRequestId != "wipe-req" || req.Actor != "katlctl cluster wipe" || req.OperationTimeout != "10m" {
 			t.Fatalf("%s submit request = %+v", name, req)
 		}
 		reset := req.GetDestructiveReset()
@@ -706,7 +706,7 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 	}
 }
 
-func TestClusterWipeSubmitsWithClusterActor(t *testing.T) {
+func TestWipeClusterCompatibilityAliasUsesPrimaryCommand(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
 		"cp-1":     readyWipeClusterClient("cp-machine"),
@@ -720,7 +720,7 @@ func TestClusterWipeSubmitsWithClusterActor(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"cluster", "wipe",
+		"wipe", "cluster",
 		"--inventory", inventoryPath,
 		"--all",
 		"--confirm-destructive-wipe",

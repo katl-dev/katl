@@ -2,7 +2,7 @@
 
 This document defines the v0.1 user-facing contract for destructive wipe flows.
 It is implementation guidance for `katlctl wipe node` and
-`katlctl wipe cluster`; it does not make either command supported until the
+`katlctl cluster wipe`; it does not make either command supported until the
 implementation and VM gates named here exist.
 
 ## Shared Contract
@@ -137,7 +137,7 @@ Graceful Kubernetes cleanup:
 - For a control-plane node, it removes the matching stacked-etcd member when the
   remaining control plane has quorum. If quorum cannot be proven, the command is
   refused before node-local wipe unless the target set is the whole cluster,
-  which belongs to `katlctl wipe cluster`.
+  which belongs to `katlctl cluster wipe`.
 
 Node-local wipe trigger:
 
@@ -159,14 +159,18 @@ Result:
 - The command does not automatically bootstrap the wiped node back into the
   cluster. Rejoin is a later explicit install/bootstrap action.
 
-## `katlctl wipe cluster`
+## `katlctl cluster wipe`
 
 Command:
 
 ```text
-katlctl wipe cluster --inventory PATH --all \
+katlctl cluster wipe --inventory PATH --all \
   --confirm-destructive-wipe --acknowledge TEXT --client-request-id ID
 ```
+
+The old `katlctl wipe cluster` spelling is a temporary compatibility alias. It
+must emit the same report `command` and node-local operation `actor` strings as
+`katlctl cluster wipe`.
 
 Target selection:
 
@@ -217,13 +221,13 @@ cleanup and etcd member cleanup when applicable, prove the node reaches
 installer-media handoff, then reinstall/bootstrap the node and prove remote
 kubectl/workload health.
 
-Implementation of `katlctl wipe cluster` must add and pass:
+Implementation of `katlctl cluster wipe` must add and pass:
 
 ```text
 scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios -run TestInstalledRuntimeTwoNodeWipeClusterBootstrapSmoke -count=1
 ```
 
 The gate must start from a bootstrapped Kubernetes cluster, run
-`katlctl wipe cluster`, prove selected nodes return to installer-media handoff
+`katlctl cluster wipe`, prove selected nodes return to installer-media handoff
 without depending on graceful Kubernetes or etcd coordination, then bootstrap a
 new usable cluster identity and prove remote kubectl/workload health.

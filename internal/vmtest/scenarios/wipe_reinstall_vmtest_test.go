@@ -25,7 +25,7 @@ func TestInstalledRuntimeTwoNodeWipeClusterBootstrapSmoke(t *testing.T) {
 
 	options := vmtest.DefaultOptions()
 	if !options.Enabled {
-		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run two-node wipe cluster bootstrap smoke")
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run two-node cluster wipe bootstrap smoke")
 	}
 	_ = vmtest.RequireWorld(t)
 }
@@ -71,7 +71,7 @@ func wipeReinstallWorldSmokeRunNamed(t *testing.T, scenarioName string) (operati
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
-	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node wipe cluster bootstrap smoke prerequisites missing", missing)
+	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node cluster wipe bootstrap smoke prerequisites missing", missing)
 	return run, true
 }
 
@@ -251,7 +251,7 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 	reportPath := filepath.Join(result.ManifestDir, "wipe-cluster-report.json")
 	var stdout, stderr bytes.Buffer
 	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{
-		"wipe", "cluster",
+		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--all",
 		"--confirm-destructive-wipe",
@@ -264,7 +264,7 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 	_ = os.WriteFile(reportPath, stdout.Bytes(), 0o644)
 	if err != nil {
 		_ = collectNodeLocalStatusFailureEvidence(ctx, evidenceDir, nodes...)
-		return wipeClusterEvidence{}, fmt.Errorf("katlctl wipe cluster failed: %w\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		return wipeClusterEvidence{}, fmt.Errorf("katlctl cluster wipe failed: %w\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 	if err := assertWipeClusterReport(stdout.Bytes()); err != nil {
 		return wipeClusterEvidence{}, err
@@ -334,23 +334,23 @@ func assertWipeClusterReport(data []byte) error {
 		} `json:"nodes"`
 	}
 	if err := json.Unmarshal(data, &report); err != nil {
-		return fmt.Errorf("decode wipe cluster report: %w", err)
+		return fmt.Errorf("decode cluster wipe report: %w", err)
 	}
 	if report.Kind != "WipeClusterReport" {
-		return fmt.Errorf("wipe cluster report kind = %q", report.Kind)
+		return fmt.Errorf("cluster wipe report kind = %q", report.Kind)
 	}
 	if !containsAllStrings(report.Wiped, "katlos-boot-artifacts", "disk-boot-path") {
-		return fmt.Errorf("wipe cluster report wipedState = %#v", report.Wiped)
+		return fmt.Errorf("cluster wipe report wipedState = %#v", report.Wiped)
 	}
 	if !containsAllStrings(report.Preserved, "existing-kubernetes-state-until-installer-reinstall", "existing-generation-operation-and-node-identity-state-until-installer-reinstall") {
-		return fmt.Errorf("wipe cluster report preservedState = %#v", report.Preserved)
+		return fmt.Errorf("cluster wipe report preservedState = %#v", report.Preserved)
 	}
 	if len(report.Nodes) != 2 {
-		return fmt.Errorf("wipe cluster report nodes = %#v", report.Nodes)
+		return fmt.Errorf("cluster wipe report nodes = %#v", report.Nodes)
 	}
 	for _, node := range report.Nodes {
 		if !node.Accepted || node.OperationKind != "destructive-reset" || strings.TrimSpace(node.OperationID) == "" {
-			return fmt.Errorf("wipe cluster report node = %#v", node)
+			return fmt.Errorf("cluster wipe report node = %#v", node)
 		}
 	}
 	return nil
