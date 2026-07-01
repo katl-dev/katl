@@ -597,19 +597,17 @@ cleanup_existing_vmtest_domains() {
         if [[ -z "$domain" ]]; then
             continue
         fi
-        if [[ "$domain" == katl-* ]]; then
-            domains+=("$domain")
-        fi
+        domains+=("$domain")
     done < <("$virsh_bin" -c "$libvirt_uri" list --all --name 2>/dev/null || true)
 
     if [[ "${#domains[@]}" -eq 0 ]]; then
         return 0
     fi
 
-    printf 'vmtest cleanup: removing %d existing Katl libvirt domain(s) before starting a new run\n' "${#domains[@]}" >&2
+    printf 'vmtest cleanup: removing %d existing libvirt domain(s) before starting a new run\n' "${#domains[@]}" >&2
     for domain in "${domains[@]}"; do
-        if [[ ! "$domain" =~ ^katl-[A-Za-z0-9_.:-]+$ ]]; then
-            setup_failures+=("refusing unsafe existing vmtest domain name: $domain")
+        if [[ ! "$domain" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+            setup_failures+=("refusing unsafe existing libvirt domain name: $domain")
             return 1
         fi
         state="$("$virsh_bin" -c "$libvirt_uri" domstate "$domain" 2>/dev/null || true)"

@@ -92,6 +92,8 @@ esac
 		"virsh -c qemu:///system list --all --name",
 		"virsh -c qemu:///system destroy katl-old",
 		"virsh -c qemu:///system undefine katl-old --nvram",
+		"virsh -c qemu:///system destroy other-domain",
+		"virsh -c qemu:///system undefine other-domain --nvram",
 		"virsh -c qemu:///system destroy katl-current",
 		"virsh -c qemu:///system undefine katl-current --nvram",
 		"go test -exec ",
@@ -99,9 +101,6 @@ esac
 		if !strings.Contains(log, want) {
 			t.Fatalf("command log missing %q:\n%s", want, log)
 		}
-	}
-	if strings.Contains(log, "destroy other-domain") || strings.Contains(log, "undefine other-domain") {
-		t.Fatalf("command log removed non-Katl domain:\n%s", log)
 	}
 	if strings.Index(log, "virsh -c qemu:///system undefine katl-current --nvram") > strings.Index(log, "go test -exec ") {
 		t.Fatalf("go test started before vm cleanup completed:\n%s", log)
