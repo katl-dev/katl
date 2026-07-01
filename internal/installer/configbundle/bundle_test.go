@@ -7,9 +7,26 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
+
+type bundleGolden struct {
+	ClusterName          string             `json:"clusterName"`
+	SourceDigest         string             `json:"sourceDigest"`
+	KubernetesPayloadRef string             `json:"kubernetesPayloadRef,omitempty"`
+	Nodes                []bundleGoldenNode `json:"nodes"`
+}
+
+type bundleGoldenNode struct {
+	Name             string   `json:"name"`
+	SystemRole       string   `json:"systemRole"`
+	NodeClass        string   `json:"nodeClass,omitempty"`
+	TargetDiskByID   string   `json:"targetDiskByID"`
+	NetworkdFiles    []string `json:"networkdFiles,omitempty"`
+	KubeadmInputRefs []string `json:"kubeadmInputRefs,omitempty"`
+}
 
 func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 	dir := t.TempDir()
@@ -67,10 +84,142 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 	}
 }
 
+func TestBuildArchiveNodeClassGoldenScenarios(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bundleGolden
+	}{
+		{
+			name: "all same hardware",
+			raw:  allSameHardwareSourceConfig(),
+			want: bundleGolden{
+				ClusterName:          "lab",
+				SourceDigest:         "non-empty",
+				KubernetesPayloadRef: "v1.36.1@sha256:" + strings.Repeat("b", 64),
+				Nodes: []bundleGoldenNode{
+					{
+						Name:             "cp-1",
+						SystemRole:       "control-plane",
+						NodeClass:        "ms01",
+						TargetDiskByID:   "/dev/disk/by-id/ata-cp-root",
+						NetworkdFiles:    []string{"10-common.network", "15-ms01.network"},
+						KubeadmInputRefs: []string{"control-plane"},
+					},
+					{
+						Name:             "worker-1",
+						SystemRole:       "worker",
+						NodeClass:        "ms01",
+						TargetDiskByID:   "/dev/disk/by-id/ata-worker-root",
+						NetworkdFiles:    []string{"10-common.network", "15-ms01.network"},
+						KubeadmInputRefs: []string{"worker"},
+					},
+				},
+			},
+		},
+		{
+			name: "mixed ms01 msa2",
+			raw:  mixedMS01MSA2SourceConfig(),
+			want: bundleGolden{
+				ClusterName:          "lab",
+				SourceDigest:         "non-empty",
+				KubernetesPayloadRef: "v1.36.1@sha256:" + strings.Repeat("b", 64),
+				Nodes: []bundleGoldenNode{
+					{
+						Name:             "cp-1",
+						SystemRole:       "control-plane",
+						NodeClass:        "ms01",
+						TargetDiskByID:   "/dev/disk/by-id/ata-cp-root",
+						NetworkdFiles:    []string{"10-common.network", "15-ms01.network"},
+						KubeadmInputRefs: []string{"control-plane"},
+					},
+					{
+						Name:             "worker-1",
+						SystemRole:       "worker",
+						NodeClass:        "msa2",
+						TargetDiskByID:   "/dev/disk/by-id/ata-worker-root",
+						NetworkdFiles:    []string{"10-common.network", "16-msa2.network"},
+						KubeadmInputRefs: []string{"worker"},
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			archive, result, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, tt.raw)})
+			if err != nil {
+				t.Fatalf("BuildArchive() error = %v", err)
+			}
+			got := bundleGoldenFromArchive(t, archive, result.Manifest)
+			if got.SourceDigest == "" {
+				t.Fatalf("source digest is empty")
+			}
+			got.SourceDigest = "non-empty"
+			assertJSONEqual(t, got, tt.want)
+		})
+	}
+}
+
 func TestBuildArchiveRejectsUnsafeDiskDefaults(t *testing.T) {
 	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, strings.Replace(validSourceConfig(), "minSizeMiB: 65536", "serial: shared-root", 1))})
 	if err == nil || !strings.Contains(err.Error(), "targetDiskDefaults must not set byID, wwn, or serial") {
 		t.Fatalf("BuildArchive() error = %v, want unsafe disk defaults", err)
+	}
+}
+
+func TestBuildArchiveRejectsInvalidSourceRefsAndLayering(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "unresolved catalog ref",
+			raw: strings.Replace(validSourceConfig(), `version: v1.36.1
+    bundle:
+      source: https://artifacts.example.test/kubernetes
+      ref: v1.36.1@sha256:`+strings.Repeat("b", 64), "catalogRef: missing-catalog", 1),
+			want: "invalid Kubernetes sysext catalog",
+		},
+		{
+			name: "unknown node class",
+			raw:  strings.Replace(validSourceConfig(), "nodeClass: ms01", "nodeClass: missing", 1),
+			want: `nodeClass "missing" is not defined`,
+		},
+		{
+			name: "conflicting networkd output",
+			raw: strings.Replace(validSourceConfig(), `overrides:
+        bootstrap:`, `overrides:
+        networkd:
+          files:
+            - name: 10-common.network
+              content: |
+                [Match]
+                Name=enp9s0
+        bootstrap:`, 1),
+			want: "networkd file",
+		},
+		{
+			name: "unsupported node range",
+			raw: `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: lab
+spec:
+  nodeRange:
+    prefix: worker
+`,
+			want: "field nodeRange not found",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, tt.raw)})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("BuildArchive() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -167,6 +316,57 @@ func TestReadSelectedNodeRejectsBundleDigestMismatch(t *testing.T) {
 	}
 }
 
+func TestReadSelectedNodeRejectsAmbiguousSelection(t *testing.T) {
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, validSourceConfig())})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	mutated := mutateBundleManifest(t, archive, func(bundle *BundleManifest) {
+		bundle.Nodes = append(bundle.Nodes, bundle.Nodes[0])
+	})
+
+	_, err = ReadSelectedNode(bytes.NewReader(mutated), ReadOptions{NodeName: "cp-1"})
+	if err == nil || !strings.Contains(err.Error(), "duplicate selected node") {
+		t.Fatalf("ReadSelectedNode() error = %v, want duplicate selected node", err)
+	}
+}
+
+func TestReadSelectedNodeRejectsIncompatibleBundleMetadata(t *testing.T) {
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, validSourceConfig())})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*BundleManifest)
+		want   string
+	}{
+		{
+			name: "schema",
+			mutate: func(bundle *BundleManifest) {
+				bundle.BundleSchemaVersion = 2
+			},
+			want: "unsupported config bundle schema version",
+		},
+		{
+			name: "runtime interface",
+			mutate: func(bundle *BundleManifest) {
+				bundle.Compatibility.SupportedKatlOSRuntimeInterfaces = []string{"katl-runtime-2"}
+			},
+			want: "runtime interface",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := mutateBundleManifest(t, archive, tt.mutate)
+			_, err = ReadSelectedNode(bytes.NewReader(mutated), ReadOptions{NodeName: "cp-1"})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ReadSelectedNode() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func readTarFiles(t *testing.T, data []byte) map[string][]byte {
 	t.Helper()
 	files := map[string][]byte{}
@@ -186,6 +386,149 @@ func readTarFiles(t *testing.T, data []byte) map[string][]byte {
 		files[header.Name] = buf.Bytes()
 	}
 	return files
+}
+
+func mutateBundleManifest(t *testing.T, archive []byte, mutate func(*BundleManifest)) []byte {
+	t.Helper()
+	files := readTarFiles(t, archive)
+	var index struct {
+		Manifests []struct {
+			Digest string `json:"digest"`
+		} `json:"manifests"`
+	}
+	if err := json.Unmarshal(files["index.json"], &index); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	if len(index.Manifests) != 1 {
+		t.Fatalf("index manifests = %#v", index.Manifests)
+	}
+	oldDigest := index.Manifests[0].Digest
+	oldPath := "blobs/sha256/" + strings.TrimPrefix(oldDigest, "sha256:")
+	var bundle BundleManifest
+	if err := json.Unmarshal(files[oldPath], &bundle); err != nil {
+		t.Fatalf("decode bundle manifest: %v", err)
+	}
+	mutate(&bundle)
+	data, err := marshalCanonical(bundle)
+	if err != nil {
+		t.Fatalf("marshal mutated bundle manifest: %v", err)
+	}
+	newDigest := digestBytes(data)
+	members := []member{{
+		descriptor: Descriptor{Digest: newDigest},
+		data:       data,
+	}}
+	for name, data := range files {
+		if !strings.HasPrefix(name, "blobs/sha256/") || name == oldPath {
+			continue
+		}
+		digest := "sha256:" + strings.TrimPrefix(name, "blobs/sha256/")
+		members = append(members, member{
+			descriptor: Descriptor{Digest: digest},
+			data:       data,
+		})
+	}
+	out, err := writeOCIArchive(newDigest, members)
+	if err != nil {
+		t.Fatalf("write mutated archive: %v", err)
+	}
+	return out
+}
+
+func bundleGoldenFromArchive(t *testing.T, archive []byte, manifest BundleManifest) bundleGolden {
+	t.Helper()
+	oci, err := readOCIArchive(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	out := bundleGolden{
+		ClusterName:          manifest.ClusterName,
+		SourceDigest:         manifest.Source.SourceDigest,
+		KubernetesPayloadRef: manifest.Cluster.KubernetesPayloads[0].Ref,
+	}
+	for _, node := range manifest.Nodes {
+		out.Nodes = append(out.Nodes, bundleGoldenNode{
+			Name:             node.Name,
+			SystemRole:       node.SystemRole,
+			NodeClass:        node.NodeClass,
+			TargetDiskByID:   targetDiskByIDFromDescriptor(t, oci, node.InstallMaterial),
+			NetworkdFiles:    networkdNamesFromDescriptor(t, oci, node.NativeConfig),
+			KubeadmInputRefs: kubeadmInputRefs(node.KubeadmInputs),
+		})
+	}
+	return out
+}
+
+func targetDiskByIDFromDescriptor(t *testing.T, archive ociArchive, desc Descriptor) string {
+	t.Helper()
+	var install struct {
+		Install struct {
+			TargetDisk struct {
+				ByID string `json:"byID"`
+			} `json:"targetDisk"`
+		} `json:"install"`
+	}
+	data, err := archive.descriptorData(desc)
+	if err != nil {
+		t.Fatalf("read install descriptor %s: %v", desc.FileName, err)
+	}
+	if err := json.Unmarshal(data, &install); err != nil {
+		t.Fatalf("decode install descriptor %s: %v", desc.FileName, err)
+	}
+	return install.Install.TargetDisk.ByID
+}
+
+func networkdNamesFromDescriptor(t *testing.T, archive ociArchive, desc Descriptor) []string {
+	t.Helper()
+	var files []struct {
+		Path string `json:"path"`
+	}
+	data, err := archive.descriptorData(desc)
+	if err != nil {
+		t.Fatalf("read native config descriptor %s: %v", desc.FileName, err)
+	}
+	if err := json.Unmarshal(data, &files); err != nil {
+		t.Fatalf("decode native config descriptor %s: %v", desc.FileName, err)
+	}
+	var names []string
+	for _, file := range files {
+		if strings.HasPrefix(file.Path, "/etc/systemd/network/") && strings.HasSuffix(file.Path, ".network") {
+			names = append(names, filepath.Base(file.Path))
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func kubeadmInputRefs(descriptors []Descriptor) []string {
+	seen := map[string]struct{}{}
+	for _, desc := range descriptors {
+		ref := desc.Annotations["dev.katl.kubeadm.resolved-id"]
+		if ref != "" {
+			seen[ref] = struct{}{}
+		}
+	}
+	refs := make([]string, 0, len(seen))
+	for ref := range seen {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+func assertJSONEqual(t *testing.T, got, want any) {
+	t.Helper()
+	gotJSON, err := json.MarshalIndent(got, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal got: %v", err)
+	}
+	wantJSON, err := json.MarshalIndent(want, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal want: %v", err)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("golden mismatch\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
+	}
 }
 
 func hasDescriptor(descriptors []Descriptor, role, fileName string) bool {
@@ -312,6 +655,55 @@ spec:
           targetDisk:
             byID: /dev/disk/by-id/ata-worker-root
 `
+}
+
+func allSameHardwareSourceConfig() string {
+	return strings.Replace(validSourceConfig(), `    - name: worker-1
+      systemRole: worker`, `    - name: worker-1
+      systemRole: worker
+      nodeClass: ms01`, 1)
+}
+
+func mixedMS01MSA2SourceConfig() string {
+	withClass := strings.Replace(validSourceConfig(), `    ms01:
+      install:
+        targetDiskDefaults:
+          minSizeMiB: 65536
+      networkd:
+        files:
+          - name: 15-ms01.network
+            content: |
+              [Match]
+              Name=enp3s0
+      kubernetes:
+        labels:
+          katl.dev/hardware-class: ms01`, `    ms01:
+      install:
+        targetDiskDefaults:
+          minSizeMiB: 65536
+      networkd:
+        files:
+          - name: 15-ms01.network
+            content: |
+              [Match]
+              Name=enp3s0
+      kubernetes:
+        labels:
+          katl.dev/hardware-class: ms01
+    msa2:
+      install:
+        targetDiskDefaults:
+          minSizeMiB: 32768
+      networkd:
+        files:
+          - name: 16-msa2.network
+            content: |
+              [Match]
+              Name=enp4s0`, 1)
+	return strings.Replace(withClass, `    - name: worker-1
+      systemRole: worker`, `    - name: worker-1
+      systemRole: worker
+      nodeClass: msa2`, 1)
 }
 
 const testSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"

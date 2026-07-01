@@ -231,6 +231,70 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 	}
 }
 
+func TestFirstInstallGuestHandoffPostsConfigBundle(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	bundle := writeFixture(t, root, "config.katlcfg", "bundle")
+	_, vmConfig := vmFixture(t)
+	vmConfig.HostForwards = nil
+	posted := make(chan struct{})
+	installerSerial := stagedVMExec{
+		first: guestHandoffSignal + "http://10.0.2.15:8080 token=guest-token\n",
+		wait:  posted,
+		then:  guestHandoffAcceptedSignal + "/run/katl/config.katlcfg\n" + bundleCompletedSignal + "/run/katl/config.katlcfg\n",
+	}
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "first-install-guest-handoff-bundle"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    uki,
+			RuntimeArtifact: runtime,
+			VM:              vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: espFixture(t),
+			VM:           vmConfig,
+		},
+		Manifest:     []byte(firstManifest()),
+		ConfigBundle: bundle,
+		SelectedNode: "cp-1",
+		GuestHandoff: true,
+		HandoffPoster: func(_ context.Context, url, token string, payload []byte) (int, string, error) {
+			if url != "http://10.0.2.15:8080/config-bundle?node=cp-1" {
+				t.Fatalf("handoff post URL = %q", url)
+			}
+			if token != "guest-token" {
+				t.Fatalf("handoff token = %q", token)
+			}
+			if string(payload) != "bundle" {
+				t.Fatalf("handoff payload = %q", payload)
+			}
+			close(posted)
+			return 200, `{"installStatus":{"state":"install-starting"}}`, nil
+		},
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		PreseedRunner:   fakePreseedRunner{},
+		InstallerRunner: fakeVMWithExecutor(installerSerial),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	request := readLog(t, result.Artifacts.HandoffRequest)
+	if request.PostURL != "http://10.0.2.15:8080/config-bundle?node=cp-1" || request.GuestAddress != "10.0.2.15" {
+		t.Fatalf("handoff request = %#v", request)
+	}
+	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "install-input.json")); !os.IsNotExist(err) {
+		t.Fatalf("handoff seed should not contain install input: %v", err)
+	}
+}
+
 func TestFirstInstallGuestHandoffFailureIncludesDebugContext(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
@@ -337,6 +401,66 @@ func TestFirstInstallPreseedManifest(t *testing.T) {
 	}
 	if !strings.Contains(string(input), "/run/katl/preseed/install-manifest.json") {
 		t.Fatalf("preseed input = %s", input)
+	}
+}
+
+func TestFirstInstallPreseedConfigBundle(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	bundle := writeFixture(t, root, "config.katlcfg", "bundle")
+	_, vmConfig := vmFixture(t)
+	vmConfig.HostForwards = nil
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "first-install-preseed-bundle"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    uki,
+			RuntimeArtifact: runtime,
+			VM:              vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: espFixture(t),
+			VM:           vmConfig,
+		},
+		Manifest:        []byte(firstManifest()),
+		ConfigBundle:    bundle,
+		SelectedNode:    "cp-1",
+		PreseedManifest: true,
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		PreseedRunner:   fakePreseedRunner{},
+		InstallerRunner: fakeVM(preseedConfigBundleEvidence() + bundleCompletedSignal + "/run/katl/preseed/config.katlcfg\n"),
+		RuntimeRunner:   fakeVM(runtimeBootSignal),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	if !hasPhase(result, "preseed") {
+		t.Fatalf("preseed phase missing: %#v", result.Phases)
+	}
+	input, err := os.ReadFile(filepath.Join(result.Artifacts.ManifestsDir, "preseed", "install-input.json"))
+	if err != nil {
+		t.Fatalf("read preseed input: %v", err)
+	}
+	if !strings.Contains(string(input), `"/run/katl/preseed/config.katlcfg"`) ||
+		!strings.Contains(string(input), `"nodeName": "cp-1"`) ||
+		strings.Contains(string(input), "install-manifest.json") {
+		t.Fatalf("preseed input = %s", input)
+	}
+	copied, err := os.ReadFile(filepath.Join(result.Artifacts.ManifestsDir, "preseed", "config.katlcfg"))
+	if err != nil {
+		t.Fatalf("read copied config bundle: %v", err)
+	}
+	if string(copied) != "bundle" {
+		t.Fatalf("copied config bundle = %q", copied)
+	}
+	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "preseed", "install-manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("preseed bundle media should not contain install manifest: %v", err)
 	}
 }
 
@@ -629,6 +753,15 @@ func preseedInstallerEvidence() string {
 		"katl input: mounted seed device /dev/disk/by-label/KATLSEED at /run/katl/preseed",
 		"katl input: copied /run/katl/preseed/install-input.json to /run/katl/install-input.json",
 		"katlos-install mode: action=run installMode=auto manifestPath=/run/katl/preseed/install-manifest.json manifestURL= inputMode=offline-media",
+		"",
+	}, "\n")
+}
+
+func preseedConfigBundleEvidence() string {
+	return strings.Join([]string{
+		"katl input: mounted seed device /dev/disk/by-label/KATLSEED at /run/katl/preseed",
+		"katl input: copied /run/katl/preseed/install-input.json to /run/katl/install-input.json",
+		"katlos-install mode: action=run installMode=auto bundlePath=/run/katl/preseed/config.katlcfg nodeName=cp-1 inputMode=offline-media",
 		"",
 	}, "\n")
 }

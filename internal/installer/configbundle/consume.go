@@ -84,6 +84,9 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 	if err != nil {
 		return SelectedNodeMaterial{}, fmt.Errorf("decode selected install material %q: %w", node.Name, err)
 	}
+	if err := validateSelectedCompatibility(bundle, installManifest); err != nil {
+		return SelectedNodeMaterial{}, err
+	}
 
 	kubeadmConfigs, err := selectedKubeadmConfigs(archive, node)
 	if err != nil {
@@ -248,6 +251,27 @@ func validateBundleManifest(bundle BundleManifest) error {
 		return fmt.Errorf("config bundle provenance source digest %s does not match source digest %s", bundle.Provenance.SourceDigest, bundle.Source.SourceDigest)
 	}
 	return nil
+}
+
+func validateSelectedCompatibility(bundle BundleManifest, installManifest manifest.Manifest) error {
+	image := installManifest.KatlosImage
+	if len(bundle.Compatibility.SupportedArchitectures) > 0 && !containsString(bundle.Compatibility.SupportedArchitectures, image.Architecture) {
+		return fmt.Errorf("config bundle does not support selected install architecture %q", image.Architecture)
+	}
+	if len(bundle.Compatibility.SupportedKatlOSRuntimeInterfaces) > 0 && !containsString(bundle.Compatibility.SupportedKatlOSRuntimeInterfaces, image.RuntimeInterface) {
+		return fmt.Errorf("config bundle does not support selected install runtime interface %q", image.RuntimeInterface)
+	}
+	return nil
+}
+
+func containsString(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, value := range values {
+		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func selectNode(nodes []NodeRecord, nodeName string) (NodeRecord, error) {

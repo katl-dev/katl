@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zariel/katl/internal/installer"
+	"github.com/zariel/katl/internal/installer/configbundle"
 	"gopkg.in/yaml.v3"
 )
 
@@ -506,6 +507,46 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	}
 }
 
+func TestPlanFirstInstallWorldRunSelectsNodesFromSharedConfigBundle(t *testing.T) {
+	world := testWorld(t)
+	repo := t.TempDir()
+	sourceDir := t.TempDir()
+	installerUKI := writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")
+	bundle := writeSharedFirstInstallConfigBundle(t, sourceDir)
+	input := firstInstallWorldInput{
+		Installer:      InstallerBootConfig{InstallerUKI: installerUKI},
+		ConfigBundle:   bundle,
+		TargetDiskSize: "20G",
+	}
+
+	cpRun, err := planFirstInstallWorldRun(world, "shared bundle cp", repo, NodeSpec{Name: "cp-shared-1", Role: ControlPlane}, input, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun(cp) error = %v", err)
+	}
+	workerRun, err := planFirstInstallWorldRun(world, "shared bundle worker", repo, NodeSpec{Name: "worker-shared-1", Role: Worker}, input, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun(worker) error = %v", err)
+	}
+	if cpRun.Config.SelectedNode != "cp-shared-1" || workerRun.Config.SelectedNode != "worker-shared-1" {
+		t.Fatalf("selected nodes = %q / %q", cpRun.Config.SelectedNode, workerRun.Config.SelectedNode)
+	}
+	assertSameSHA256(t, cpRun.Config.ConfigBundle, bundle)
+	assertSameSHA256(t, workerRun.Config.ConfigBundle, bundle)
+	assertSameFixtureSHA256(t, cpRun, workerRun, FixtureConfigBundle)
+	assertDifferentSHA256(t, cpRun.Config.ManifestPath, workerRun.Config.ManifestPath)
+	assertDifferentFixtureSHA256(t, cpRun, workerRun, FixtureInstallManifest)
+	assertDifferentFixtureProperty(t, cpRun, workerRun, FixtureInstallManifest, "kubeadmConfigFilesTreeSHA256")
+	assertDifferentExternalTreeSHA256(t, cpRun.Config.ManifestPath, workerRun.Config.ManifestPath, installer.KubeadmConfigFilesDir)
+	assertFileContains(t, cpRun.Config.ManifestPath, `"hostname": "cp-shared-1"`)
+	assertFileContains(t, cpRun.Config.ManifestPath, `"systemRole": "control-plane"`)
+	assertFileContains(t, cpRun.Config.ManifestPath, `"byID": "/dev/disk/by-id/virtio-katl-control-plane-root"`)
+	assertFileContains(t, workerRun.Config.ManifestPath, `"hostname": "worker-shared-1"`)
+	assertFileContains(t, workerRun.Config.ManifestPath, `"systemRole": "worker"`)
+	assertFileContains(t, workerRun.Config.ManifestPath, `"byID": "/dev/disk/by-id/virtio-katl-worker-root"`)
+	assertFileContains(t, filepath.Join(filepath.Dir(cpRun.Config.ManifestPath), installer.KubeadmConfigFilesDir, "control-plane.yaml"), "name: cp-shared-1")
+	assertFileContains(t, filepath.Join(filepath.Dir(workerRun.Config.ManifestPath), installer.KubeadmConfigFilesDir, "worker.yaml"), "name: worker-shared-1")
+}
+
 func writeFixtureKatlOSInstallImage(t *testing.T, repo string) string {
 	t.Helper()
 	mkosiDir := filepath.Join(repo, "_build", "mkosi")
@@ -522,6 +563,86 @@ func writeFixtureKatlOSInstallImage(t *testing.T, repo string) string {
 }`)
 	writeFixtureKatlOSInstallImageRoot(t, mkosiDir, "0.0.0-dev")
 	return image
+}
+
+func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
+	t.Helper()
+	image := writeFixtureFile(t, filepath.Join(dir, "katlos-install-2026.06.04-x86_64.squashfs"), "katlos-image")
+	writeFixtureKatlOSInstallImageRoot(t, dir, "2026.06.04")
+	source := map[string]any{
+		"apiVersion": configbundle.APIVersion,
+		"kind":       configbundle.Kind,
+		"metadata": map[string]any{
+			"name": "katl-shared",
+		},
+		"spec": map[string]any{
+			"controlPlaneEndpoint": "api.katl.test:6443",
+			"kubernetes": map[string]any{
+				"version": "v1.36.1",
+			},
+			"katlosImage": map[string]any{
+				"localRef":         filepath.Base(image),
+				"sha256":           strings.Repeat("a", 64),
+				"sizeBytes":        11,
+				"version":          "2026.06.04",
+				"architecture":     "x86_64",
+				"runtimeInterface": "katl-runtime-1",
+				"role":             "install",
+			},
+			"defaults": map[string]any{
+				"install": map[string]any{
+					"wipeTarget": true,
+				},
+				"identity": map[string]any{
+					"ssh": map[string]any{
+						"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
+					},
+				},
+				"networkd": map[string]any{
+					"files": []map[string]any{{
+						"name":    "80-katl-vmtest-dhcp.network",
+						"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
+					}},
+				},
+				"bootstrap": map[string]any{
+					"access": map[string]any{
+						"method":        "agent",
+						"credentialRef": "vsock:1234:10240",
+					},
+				},
+			},
+			"systemRoleDefaults": map[string]any{
+				string(ControlPlane): map[string]any{
+					"kubernetes": map[string]any{
+						"kubeadm": map[string]any{"configRef": "control-plane"},
+					},
+				},
+				string(Worker): map[string]any{
+					"kubernetes": map[string]any{
+						"kubeadm": map[string]any{"configRef": "worker"},
+					},
+				},
+			},
+			"kubeadmConfigs": map[string]any{
+				"control-plane": map[string]any{"config": controlPlaneKubeadmConfig("cp-shared-1", "v1.36.1")},
+				"worker":        map[string]any{"config": workerKubeadmConfig("worker-shared-1")},
+			},
+			"nodes": []map[string]any{
+				firstInstallWorldSourceNode("cp-shared-1", ControlPlane, "/dev/disk/by-id/virtio-katl-control-plane-root"),
+				firstInstallWorldSourceNode("worker-shared-1", Worker, "/dev/disk/by-id/virtio-katl-worker-root"),
+			},
+		},
+	}
+	sourceData, err := yaml.Marshal(source)
+	if err != nil {
+		t.Fatalf("marshal shared config bundle source: %v", err)
+	}
+	sourcePath := writeFixtureFile(t, filepath.Join(dir, "cluster.yaml"), string(sourceData))
+	bundlePath := filepath.Join(dir, "config.katlcfg")
+	if _, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{SourcePath: sourcePath, CreatedBy: "vmtest shared bundle"}); err != nil {
+		t.Fatalf("WriteArchive() error = %v", err)
+	}
+	return bundlePath
 }
 
 func writeFixtureLocalInstallManifest(t *testing.T, dir string) string {

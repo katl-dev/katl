@@ -878,7 +878,11 @@ func handoffPostURL(raw string, config FirstInstallConfig) string {
 	if err != nil {
 		return raw
 	}
-	parsed.Path = strings.TrimRight(filepath.ToSlash(filepath.Dir(parsed.Path)), "/") + "/config-bundle"
+	base := strings.TrimRight(filepath.ToSlash(filepath.Dir(parsed.Path)), "/")
+	if parsed.Path == "" || parsed.Path == "/" || base == "." {
+		base = ""
+	}
+	parsed.Path = base + "/config-bundle"
 	query := parsed.Query()
 	if node := strings.TrimSpace(config.SelectedNode); node != "" {
 		query.Set("node", node)
