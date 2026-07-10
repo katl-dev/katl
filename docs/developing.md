@@ -208,11 +208,12 @@ and release gates.
 ## GitHub VM Tests
 
 The heavy pull-request workflow is `.github/workflows/vmtest.yml`. It runs for
-same-repository, non-draft pull requests and manual dispatches on self-hosted
-runners labeled `katl-vmtest`, `libvirt`, `kvm`, `ovmf`, and `vsock`. The
-runner must provide the same capable-host tools and environment as the local VM
-shell, including `nix develop .#vm`, readable `KATL_OVMF_CODE`, and readable
-`KATL_OVMF_VARS`.
+manual dispatches and, when the repository variable
+`KATL_VMTEST_PR_ENABLED=1` is set, same-repository non-draft pull requests. It
+uses self-hosted runners labeled `katl-vmtest`, `libvirt`, `kvm`, `ovmf`, and
+`vsock`. The runner must provide the same capable-host tools and environment as
+the local VM shell, including `nix develop .#vm`, readable `KATL_OVMF_CODE`, and
+readable `KATL_OVMF_VARS`.
 
 The workflow runs a serialized matrix so fail-fast behavior does not leave many
 VMs active at once:

@@ -17,7 +17,8 @@ jobs:
     name: ${{ matrix.gate.name }}
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
+      (vars.KATL_VMTEST_PR_ENABLED == '1' &&
+       !github.event.pull_request.draft &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       - self-hosted
@@ -71,7 +72,6 @@ jobs:
       KATL_VMTEST_DEBUG_ON_FAILURE: "0"
       KATL_VMTEST_REQUIRE_SCENARIO_RESULT: "1"
       KATL_VMTEST_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.gate.id }}
-      KATL_VMTEST_RUN_DIR: ${{ runner.temp }}/katl-vmtest/${{ matrix.gate.id }}
 
     steps:
       - name: Check out repository
@@ -84,6 +84,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Set vmtest run directory
+        shell: bash
+        run: echo "KATL_VMTEST_RUN_DIR=$RUNNER_TEMP/katl-vmtest/${{ matrix.gate.id }}" >> "$GITHUB_ENV"
 
       - name: Declare runner capabilities
         shell: bash

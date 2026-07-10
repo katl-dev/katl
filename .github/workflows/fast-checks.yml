@@ -35,6 +35,11 @@ jobs:
       - name: Show Go version
         run: go version
 
+      - name: Install test image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes mtools
+
       - name: Check Go formatting
         shell: bash
         run: |
