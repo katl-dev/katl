@@ -239,6 +239,13 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 		if err == nil {
 			switch strings.TrimSpace(state) {
 			case "shut off":
+				if consoleDone != nil {
+					select {
+					case <-consoleDone:
+						consoleDone = nil
+					case <-time.After(e.cleanupTimeout()):
+					}
+				}
 				return nil
 			case "crashed":
 				return errors.New("libvirt domain crashed")
