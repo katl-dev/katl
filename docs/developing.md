@@ -219,7 +219,7 @@ the July 2026 line are `2026.7.0-dev.0` and `2026.7.0-rc.0`; the stable identity
 is `2026.7.0`. Use tags such as `v2026.7.0-rc.0` and release branches such as
 `release/2026.7.0-rc.0`. The workflow strips an optional `v` before embedding
 the version and rejects noncanonical versions. See
-`docs/internal/katlos-release-versioning.md` for the policy.
+`docs/internal/adrs/adr-009-katlos-calendar-versioning.md` for the policy.
 
 The published set contains the KatlOS install SquashFS and the installer UKI,
 kernel, and initrd variants, each with adjacent JSON metadata and SHA-256 files.
