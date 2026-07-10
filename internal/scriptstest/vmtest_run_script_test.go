@@ -55,7 +55,7 @@ case "$1" in
   metadata)
     case "$2" in
       katl-old|katl-current)
-        printf '<vmtest>katl/vmtest</vmtest>\n'
+        printf '<vmtest xmlns:vmtest="https://katlos.io/xmlns/vmtest/1">katl/vmtest</vmtest>\n'
         ;;
       *)
         printf '\n'

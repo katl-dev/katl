@@ -39,6 +39,8 @@ libvirt_storage_pool="${KATL_VMTEST_LIBVIRT_STORAGE_POOL:-default}"
 libvirt_storage_path="${KATL_VMTEST_LIBVIRT_STORAGE_PATH:-/var/lib/libvirt/images}"
 libvirt_domain_prefix="${KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX:-katl-${run_id}}"
 libvirt_vmtest_metadata_uri="https://katlos.io/xmlns/vmtest/1"
+# virsh may preserve the default namespace or render it with a generated prefix.
+libvirt_vmtest_metadata_pattern='^<vmtest([[:space:]]+xmlns(:[A-Za-z_][A-Za-z0-9_.-]*)?="https://katlos.io/xmlns/vmtest/1")?>katl/vmtest</vmtest>$'
 network_cidr="${KATL_VMTEST_CIDR:-10.77.0.0/24}"
 network_gateway="${KATL_VMTEST_GATEWAY:-10.77.0.1}"
 ovmf_code="${KATL_OVMF_CODE:-}"
@@ -600,7 +602,7 @@ cleanup_existing_vmtest_domains() {
         fi
         metadata="$("$virsh_bin" -c "$libvirt_uri" metadata "$domain" --uri "$libvirt_vmtest_metadata_uri" 2>/dev/null || true)"
         metadata="${metadata//$'\r'/}"
-        if [[ "$metadata" == "<vmtest>katl/vmtest</vmtest>" ]]; then
+        if [[ "$metadata" =~ $libvirt_vmtest_metadata_pattern ]]; then
             domains+=("$domain")
         fi
     done < <("$virsh_bin" -c "$libvirt_uri" list --all --name 2>/dev/null || true)
