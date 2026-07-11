@@ -56,13 +56,28 @@ jobs:
           restore-keys: |
             katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
 
+      - name: Resolve mkosi cache identity
+        id: mkosi-cache
+        shell: bash
+        run: |
+          digest="$({
+            sha256sum \
+              Containerfile.mkosi \
+              mkosi.conf \
+              mkosi.profiles/installer-image/mkosi.conf \
+              mkosi.profiles/kubernetes-sysext/kubernetes.env \
+              mkosi.profiles/kubernetes-sysext/mkosi.conf \
+              mkosi.profiles/runtime/mkosi.conf
+          } | sha256sum | cut -d ' ' -f 1)"
+          echo "key=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Restore mkosi package caches
         uses: actions/cache@v6
         with:
           path: |
             _build/mkosi/cache
             _build/mkosi/package-cache
-          key: katl-mkosi-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ hashFiles('Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/*.conf', 'mkosi.profiles/**/*.env') }}
+          key: katl-mkosi-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}
           restore-keys: |
             katl-mkosi-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
 
