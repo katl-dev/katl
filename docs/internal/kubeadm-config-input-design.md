@@ -277,6 +277,10 @@ records that an explicit kubeadm-aware action is required. The drift report is
 advisory until an operator runs a bootstrap, join, upgrade, reset, or
 reconfiguration operation.
 
+The supported v0.1 live control-plane reconfiguration surface, serial rollout,
+and rollback boundary are defined by
+`docs/internal/adrs/adr-010-kubeadm-control-plane-config-operation.md`.
+
 Rolling back rendered `/etc/katl/kubeadm/<name>/config.yaml` restores desired
 input only. It does not restore kubeadm output, kubelet runtime config, etcd
 contents, or kubeadm-managed ConfigMaps. Applying or undoing those live changes
