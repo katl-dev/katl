@@ -19,6 +19,7 @@ if [[ -n "${KATL_VERSION:-}" ]]; then
 fi
 emit_runtime_artifact=0
 emit_kubernetes_sysext=0
+emit_installer_iso=0
 installer_package_set=""
 cache_target=""
 kubernetes_repo_file=""
@@ -132,9 +133,9 @@ cache_input_matches_target() {
             ;;
     esac
     case "$target" in
-        installer)
+        installer | installer-iso)
             case "$path" in
-                mkosi.profiles/installer-image/*)
+                mkosi.profiles/installer-image/* | scripts/build-installer-iso)
                     return 0
                     ;;
             esac
@@ -166,7 +167,7 @@ cache_input_matches_target() {
 
 target_go_binaries() {
     case "$1" in
-        installer)
+        installer | installer-iso)
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlos-install" "./cmd/katlos-install" "versioned"
             printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
             ;;
@@ -335,6 +336,13 @@ target_outputs() {
                 "$build_dir/katl-installer.vmlinuz.json" \
                 "$build_dir/katl-installer.vmlinuz.sha256"
             ;;
+        installer-iso)
+            target_outputs installer
+            printf '%s\n' \
+                "$build_dir/katl-installer.iso" \
+                "$build_dir/katl-installer.iso.json" \
+                "$build_dir/katl-installer.iso.sha256"
+            ;;
         runtime)
             printf '%s\n' \
                 "$build_dir/artifacts.json" \
@@ -422,6 +430,13 @@ prepare_cached_target() {
     fi
 }
 
+clear_installer_iso() {
+    rm -f \
+        "$build_dir/katl-installer.iso" \
+        "$build_dir/katl-installer.iso.json" \
+        "$build_dir/katl-installer.iso.sha256"
+}
+
 write_installer_package_set() {
     local output="$repo_root/_build/mkosi/katl-installer.packages.tsv"
     local cache_root="$repo_root/_build/mkosi/cache/fedora~44~x86-64~main.cache"
@@ -489,6 +504,7 @@ fi
 if [[ $# -eq 0 ]]; then
     cache_target=installer
     prepare_cached_target "$cache_target"
+    clear_installer_iso
     installer_package_set=_build/mkosi/katl-installer.packages.tsv
     set -- --profile installer-image -f build
 else
@@ -499,10 +515,23 @@ else
             if [[ $# -eq 0 ]]; then
                 cache_target=installer
                 prepare_cached_target "$cache_target"
+                clear_installer_iso
                 set -- --profile installer-image -f build
             else
                 set -- --profile installer-image -f build "$@"
             fi
+            ;;
+        build-installer-iso)
+            shift
+            if [[ $# -ne 0 ]]; then
+                echo "error: build-installer-iso does not accept mkosi arguments" >&2
+                exit 2
+            fi
+            emit_installer_iso=1
+            installer_package_set=_build/mkosi/katl-installer.packages.tsv
+            cache_target=installer-iso
+            prepare_cached_target "$cache_target"
+            set -- --profile installer-image -f build
             ;;
         build-runtime)
             shift
@@ -597,6 +626,7 @@ run_flags=(
     --env "KATL_VERSION=${KATL_VERSION:-0.0.0-dev}"
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
     --env "KATL_EMIT_KUBERNETES_SYSEXT=$emit_kubernetes_sysext"
+    --env "KATL_EMIT_INSTALLER_ISO=$emit_installer_iso"
     --env "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR"
     --env "KATL_KUBERNETES_REPO_ID=$KATL_KUBERNETES_REPO_ID"
     --env "KATL_KUBERNETES_REPO_BASEURL=$KATL_KUBERNETES_REPO_BASEURL"
@@ -635,7 +665,7 @@ if [[ "$runtime" == direct ]]; then
         mkosi_installer_package_set="$repo_root/$installer_package_set"
         mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
     fi
-    if [[ "$emit_runtime_artifact" == 1 || "$emit_kubernetes_sysext" == 1 ]]; then
+    if [[ "$emit_runtime_artifact" == 1 || "$emit_kubernetes_sysext" == 1 || "$emit_installer_iso" == 1 ]]; then
         echo "error: KATL_CONTAINER_RUNTIME=direct currently supports installer-image builds only" >&2
         exit 1
     fi
@@ -818,6 +848,15 @@ set +e
                 --expected-socat-version "${KATL_KUBERNETES_SOCAT_VERSION:-}" >/dev/null; then
                 status=1
             fi
+        fi
+    fi
+    if [[ "$status" -eq 0 && "${KATL_EMIT_INSTALLER_ISO:-0}" == 1 ]]; then
+        iso=_build/mkosi/katl-installer.iso
+        rm -f "$iso" "$iso.sha256" "$iso.json"
+        if ! KATL_REPO_ROOT=/work KATL_INSTALLER_ISO="$iso" scripts/build-installer-iso >/dev/null; then
+            status=1
+        else
+            export KATL_INSTALLER_ISO="$iso"
         fi
     fi
     if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then

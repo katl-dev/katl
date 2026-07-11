@@ -20,6 +20,7 @@ func TestWriteAndPath(t *testing.T) {
 	installerUKI := writeTestFile(t, workDir, "installer.efi", "installer uki")
 	installerKernel := writeTestFile(t, workDir, "vmlinuz", "kernel")
 	installerInitrd := writeTestFile(t, workDir, "initrd", "initrd")
+	installerISO := writeTestFile(t, workDir, "installer.iso", "installer iso")
 	runtimeUKI := writeTestFile(t, workDir, "runtime.efi", "runtime uki")
 	runtimeRoot := writeTestFile(t, workDir, "runtime-root.squashfs", "runtime root")
 	katlosImage := writeTestFile(t, workDir, "katlos image.squashfs", "katlos image")
@@ -38,6 +39,7 @@ func TestWriteAndPath(t *testing.T) {
 		"KATL_INSTALLER_UKI=" + installerUKI,
 		"KATL_INSTALLER_KERNEL=" + installerKernel,
 		"KATL_INSTALLER_INITRD=" + installerInitrd,
+		"KATL_INSTALLER_ISO=" + installerISO,
 		"KATL_RUNTIME_UKI=" + runtimeUKI,
 		"KATL_RUNTIME_UKI_METADATA=" + runtimeUKI + ".json",
 		"KATL_RUNTIME_UKI_CHECKSUM=" + runtimeUKI + ".sha256",
@@ -60,8 +62,8 @@ func TestWriteAndPath(t *testing.T) {
 	if index.SchemaVersion != 1 || index.Generation != "test-build" {
 		t.Fatalf("index header = %#v", index)
 	}
-	if len(index.Artifacts) != 6 {
-		t.Fatalf("artifact count = %d, want 6: %#v", len(index.Artifacts), index.Artifacts)
+	if len(index.Artifacts) != 7 {
+		t.Fatalf("artifact count = %d, want 7: %#v", len(index.Artifacts), index.Artifacts)
 	}
 	byKind := map[string]artifactEntry{}
 	for _, artifact := range index.Artifacts {
@@ -72,6 +74,9 @@ func TestWriteAndPath(t *testing.T) {
 	}
 	if byKind["katlos-install-image"].Path != relPath(repo, katlosImage) {
 		t.Fatalf("katlos path = %q, want %q", byKind["katlos-install-image"].Path, relPath(repo, katlosImage))
+	}
+	if byKind["installer-iso"].Path != relPath(repo, installerISO) || byKind["installer-iso"].Format != "iso" {
+		t.Fatalf("installer ISO entry = %#v", byKind["installer-iso"])
 	}
 
 	var metadata bootMetadata
@@ -85,6 +90,10 @@ func TestWriteAndPath(t *testing.T) {
 	if metadata.InstallerInterface != "katl-installer-test" {
 		t.Fatalf("installer interface = %q", metadata.InstallerInterface)
 	}
+	readTestJSON(t, installerISO+".json", &metadata)
+	if metadata.ArtifactRole != "installer-iso" || metadata.Format != "iso" || metadata.BuildID != "test-build" {
+		t.Fatalf("installer ISO metadata = %#v", metadata)
+	}
 
 	stdout.Reset()
 	err = run([]string{"path", "runtime-root", indexPath}, &stdout, &bytes.Buffer{}, []string{})
@@ -94,6 +103,53 @@ func TestWriteAndPath(t *testing.T) {
 	if stdout.String() != runtimeRoot {
 		t.Fatalf("runtime-root path = %q, want %q", stdout.String(), runtimeRoot)
 	}
+}
+
+func TestWriteIncludesExistingInstallerISO(t *testing.T) {
+	repo := testRepoRoot(t)
+	workDir := testWorkDir(t, repo)
+	installerUKI := writeTestFile(t, workDir, "installer.efi", "installer uki")
+	installerKernel := writeTestFile(t, workDir, "vmlinuz", "kernel")
+	installerInitrd := writeTestFile(t, workDir, "initrd", "initrd")
+	installerISO := writeTestFile(t, workDir, "installer.iso", "installer iso")
+	runtimeUKI := writeTestFile(t, workDir, "runtime.efi", "runtime uki")
+	runtimeRoot := writeTestFile(t, workDir, "runtime-root.squashfs", "runtime root")
+	for _, path := range []string{runtimeUKI, runtimeRoot} {
+		writeTestChecksum(t, path)
+		writeTestJSON(t, path+".json", map[string]any{"path": filepath.Base(path)})
+	}
+
+	indexPath := filepath.Join(workDir, "artifacts.json")
+	cfg := config{
+		RepoRoot:             repo,
+		InstallerUKI:         installerUKI,
+		InstallerKernel:      installerKernel,
+		InstallerInitrd:      installerInitrd,
+		InstallerISO:         installerISO,
+		InstallerISOExplicit: false,
+		RuntimeUKI:           runtimeUKI,
+		RuntimeUKIMetadata:   runtimeUKI + ".json",
+		RuntimeUKIChecksum:   runtimeUKI + ".sha256",
+		RuntimeRoot:          runtimeRoot,
+		RuntimeMetadata:      runtimeRoot + ".json",
+		RuntimeChecksum:      runtimeRoot + ".sha256",
+		Generation:           "test-build",
+		Version:              "2026.7.0-dev.1",
+		Architecture:         "x86_64",
+		InstallerInterface:   "katl-installer-test",
+	}
+	if err := writeIndex(indexPath, cfg); err != nil {
+		t.Fatalf("writeIndex error = %v", err)
+	}
+
+	var index artifactIndex
+	readTestJSON(t, indexPath, &index)
+	for _, artifact := range index.Artifacts {
+		if artifact.Kind == "installer-iso" {
+			return
+		}
+	}
+	t.Fatalf("existing installer ISO omitted from index: %#v", index.Artifacts)
 }
 
 func TestPathForKindRejectsDuplicate(t *testing.T) {

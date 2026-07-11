@@ -88,6 +88,7 @@ stage_artifacts() {
         "katl-installer.efi"
         "katl-installer.vmlinuz"
         "katl-installer.initrd"
+        "katl-installer.iso"
         "katlos-install-${version}-${architecture}.squashfs"
         "katlos-upgrade-${version}-${architecture}.squashfs"
     )

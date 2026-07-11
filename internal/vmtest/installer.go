@@ -9,6 +9,7 @@ import (
 
 type InstallerBootConfig struct {
 	InstallerUKI    string
+	InstallerISO    string
 	InstallerKernel string
 	InstallerInitrd string
 	CommandLine     []string
@@ -42,6 +43,8 @@ func BootInstaller(ctx context.Context, result Result, config InstallerBootConfi
 			Initrd:      config.InstallerInitrd,
 			CommandLine: config.CommandLine,
 		}
+	} else if config.InstallerISO != "" {
+		vm.Boot = VMBoot{ISO: config.InstallerISO}
 	} else {
 		vm.Boot = VMBoot{UKI: config.InstallerUKI}
 	}
@@ -49,6 +52,19 @@ func BootInstaller(ctx context.Context, result Result, config InstallerBootConfi
 }
 
 func checkInstallerBoot(config InstallerBootConfig) error {
+	modes := 0
+	if config.InstallerUKI != "" {
+		modes++
+	}
+	if config.InstallerISO != "" {
+		modes++
+	}
+	if config.InstallerKernel != "" || config.InstallerInitrd != "" {
+		modes++
+	}
+	if modes > 1 {
+		return errors.New("installer boot requires exactly one of ISO, UKI, or kernel/initrd")
+	}
 	if config.InstallerKernel != "" || config.InstallerInitrd != "" {
 		if config.InstallerKernel == "" {
 			return errors.New("installer kernel is required when installer initrd is set")
@@ -62,8 +78,12 @@ func checkInstallerBoot(config InstallerBootConfig) error {
 		if _, err := os.Stat(config.InstallerInitrd); err != nil {
 			return fmt.Errorf("installer initrd not found: %w", err)
 		}
+	} else if config.InstallerISO != "" {
+		if _, err := os.Stat(config.InstallerISO); err != nil {
+			return fmt.Errorf("installer ISO not found: %w", err)
+		}
 	} else if config.InstallerUKI == "" {
-		return errors.New("installer UKI or kernel/initrd is required")
+		return errors.New("installer ISO, UKI, or kernel/initrd is required")
 	} else if _, err := os.Stat(config.InstallerUKI); err != nil {
 		return fmt.Errorf("installer UKI not found: %w", err)
 	}

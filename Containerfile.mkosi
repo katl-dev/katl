@@ -25,6 +25,7 @@ RUN dnf5 -y install \
         tar \
         util-linux \
         xfsprogs \
+        xorriso \
         zstd \
     && dnf5 clean all
 

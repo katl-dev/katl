@@ -70,6 +70,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		"katl-installer.efi",
 		"katl-installer.vmlinuz",
 		"katl-installer.initrd",
+		"katl-installer.iso",
 		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
 		"katlos-upgrade-2026.7.0-rc.0-x86_64.squashfs",
 	}
@@ -124,6 +125,7 @@ func TestKatlReleaseArtifactStageRejectsDigestMismatch(t *testing.T) {
 		"katl-installer.efi",
 		"katl-installer.vmlinuz",
 		"katl-installer.initrd",
+		"katl-installer.iso",
 		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
 		"katlos-upgrade-2026.7.0-rc.0-x86_64.squashfs",
 	} {
@@ -152,6 +154,7 @@ func TestKatlReleaseArtifactStageRejectsMetadataMismatch(t *testing.T) {
 		"katl-installer.efi",
 		"katl-installer.vmlinuz",
 		"katl-installer.initrd",
+		"katl-installer.iso",
 		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
 		"katlos-upgrade-2026.7.0-rc.0-x86_64.squashfs",
 	} {
@@ -190,6 +193,7 @@ func TestKatlReleaseArtifactStageRejectsVersionMismatch(t *testing.T) {
 		"katl-installer.efi",
 		"katl-installer.vmlinuz",
 		"katl-installer.initrd",
+		"katl-installer.iso",
 		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
 		"katlos-upgrade-2026.7.0-rc.0-x86_64.squashfs",
 	} {

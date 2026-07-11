@@ -222,8 +222,10 @@ the version and rejects noncanonical versions. See
 `docs/internal/adrs/adr-009-katlos-calendar-versioning.md` for the policy.
 
 The published set contains the KatlOS install and upgrade SquashFS images and
-the installer UKI, kernel, and initrd variants, each with adjacent JSON metadata
-and SHA-256 files.
+the installer UKI, kernel, initrd, and UEFI-bootable ISO variants, each with
+adjacent JSON metadata and SHA-256 files. The ISO is a generic wrapper around
+the installer UKI and uses the same manifest and KatlOS image input contract;
+it does not embed node-specific configuration or a KatlOS payload image.
 Loose runtime root/UKI intermediates and Kubernetes payload bundles are not
 published through this workflow. Kubernetes bundles have a separate producer
 contract. Katl release artifacts are currently unsigned, and each publication

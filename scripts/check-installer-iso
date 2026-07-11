@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${KATL_REPO_ROOT:-$(git rev-parse --show-toplevel)}"
+artifact="${1:-$repo_root/_build/mkosi/katl-installer.iso}"
+metadata="${artifact}.json"
+checksum="${artifact}.sha256"
+installer="${KATL_INSTALLER_UKI:-$repo_root/_build/mkosi/katl-installer.efi}"
+version="${KATL_VERSION:-0.0.0-dev}"
+architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+for tool in cmp jq mcopy xorriso; do
+    command -v "$tool" >/dev/null 2>&1 || fail "$tool is required to verify the installer ISO"
+done
+[[ -f "$artifact" ]] || fail "installer ISO not found: $artifact"
+[[ -f "$metadata" ]] || fail "installer ISO metadata not found: $metadata"
+[[ -f "$checksum" ]] || fail "installer ISO checksum not found: $checksum"
+[[ -f "$installer" ]] || fail "installer UKI not found: $installer"
+
+(cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
+digest="$(sha256sum "$artifact" | awk '{print $1}')"
+size="$(stat -c %s "$artifact")"
+jq -e \
+    --arg digest "$digest" \
+    --argjson size "$size" \
+    --arg version "$version" \
+    --arg architecture "$architecture" \
+    '.kind == "InstallerBootArtifact" and
+     .artifactRole == "installer-iso" and
+     .format == "iso" and
+     .sha256 == $digest and .sizeBytes == $size and
+     .version == $version and .architecture == $architecture' \
+    "$metadata" >/dev/null || fail "installer ISO metadata does not match artifact or release identity"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/katl-installer-iso-check.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+report="$work/el-torito.txt"
+xorriso -indev "$artifact" -report_el_torito plain >"$report" 2>&1 ||
+    fail "inspect installer ISO El Torito catalog failed"
+grep -Eq 'El Torito boot img.*(UEFI|EFI)' "$report" ||
+    fail "installer ISO has no EFI El Torito boot image"
+xorriso -osirrox on -indev "$artifact" -extract /efiboot.img "$work/efiboot.img" >/dev/null 2>&1 ||
+    fail "extract installer ISO EFI boot image failed"
+mcopy -i "$work/efiboot.img" ::/EFI/BOOT/BOOTX64.EFI "$work/BOOTX64.EFI" ||
+    fail "extract fallback EFI executable from boot image failed"
+cmp -- "$installer" "$work/BOOTX64.EFI" || fail "installer ISO does not contain the built installer UKI"
+
+echo "ok: $artifact"

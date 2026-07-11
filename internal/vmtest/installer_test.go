@@ -89,6 +89,43 @@ func TestInstallerBootDirectKernel(t *testing.T) {
 	}
 }
 
+func TestInstallerBootISO(t *testing.T) {
+	root := t.TempDir()
+	iso := writeFixture(t, root, "katl-installer.iso", "iso")
+	_, vmConfig := vmFixture(t)
+	vmConfig.Expect = "Katl installer ready"
+	runner := NewRunner(Options{StateRoot: root, RunID: "run-1"})
+	result, err := RunInstallerBoot(context.Background(), runner, Scenario{Name: "installer-iso-boot"}, InstallerBootConfig{
+		InstallerISO: iso,
+		VM:           vmConfig,
+	}, VMRunner{
+		Executor: vmExec{write: "Katl installer ready"},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunInstallerBoot() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	domainXML := readDomainXML(t, result)
+	for _, want := range []string{
+		`<disk type="file" device="cdrom">`,
+		`<source file="` + iso + `"></source>`,
+		`<target dev="sda" bus="sata"></target>`,
+		`<readonly></readonly>`,
+		`<boot order="1"></boot>`,
+	} {
+		if !strings.Contains(domainXML, want) {
+			t.Fatalf("installer ISO domain XML missing %q:\n%s", want, domainXML)
+		}
+	}
+}
+
 func TestInstallerBootFailure(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(Options{
@@ -102,7 +139,7 @@ func TestInstallerBootFailure(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("Status = %q", result.Status)
 	}
-	if !strings.Contains(result.FailureSummary, "installer UKI or kernel/initrd") {
+	if !strings.Contains(result.FailureSummary, "installer ISO, UKI, or kernel/initrd") {
 		t.Fatalf("FailureSummary = %q", result.FailureSummary)
 	}
 	loaded := readResult(t, result.Artifacts.Result)

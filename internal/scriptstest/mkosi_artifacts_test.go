@@ -29,6 +29,7 @@ func TestMkosiArtifactsWriteProducesValidJSON(t *testing.T) {
 	installerUKI := writeArtifact(t, workDir, "installer.efi", "installer uki")
 	installerKernel := writeArtifact(t, workDir, "vmlinuz", "kernel")
 	installerInitrd := writeArtifact(t, workDir, "initrd", "initrd")
+	installerISO := writeArtifact(t, workDir, "installer.iso", "installer iso")
 	runtimeUKI := writeArtifact(t, workDir, "runtime.efi", "runtime uki")
 	runtimeRoot := writeArtifact(t, workDir, "runtime-root.squashfs", "runtime root")
 	katlosImage := writeArtifact(t, workDir, "katlos image.squashfs", "katlos image")
@@ -49,6 +50,7 @@ func TestMkosiArtifactsWriteProducesValidJSON(t *testing.T) {
 		"KATL_INSTALLER_UKI="+installerUKI,
 		"KATL_INSTALLER_KERNEL="+installerKernel,
 		"KATL_INSTALLER_INITRD="+installerInitrd,
+		"KATL_INSTALLER_ISO="+installerISO,
 		"KATL_RUNTIME_UKI="+runtimeUKI,
 		"KATL_RUNTIME_UKI_METADATA="+runtimeUKI+".json",
 		"KATL_RUNTIME_UKI_CHECKSUM="+runtimeUKI+".sha256",
@@ -78,8 +80,8 @@ func TestMkosiArtifactsWriteProducesValidJSON(t *testing.T) {
 	if artifactIndex.SchemaVersion != 1 {
 		t.Fatalf("schemaVersion = %d, want 1", artifactIndex.SchemaVersion)
 	}
-	if len(artifactIndex.Artifacts) != 6 {
-		t.Fatalf("artifact count = %d, want 6: %#v", len(artifactIndex.Artifacts), artifactIndex.Artifacts)
+	if len(artifactIndex.Artifacts) != 7 {
+		t.Fatalf("artifact count = %d, want 7: %#v", len(artifactIndex.Artifacts), artifactIndex.Artifacts)
 	}
 	kinds := make(map[string]bool)
 	for _, artifact := range artifactIndex.Artifacts {
@@ -94,7 +96,7 @@ func TestMkosiArtifactsWriteProducesValidJSON(t *testing.T) {
 			t.Fatalf("artifact missing checksum path: %#v", artifact)
 		}
 	}
-	for _, kind := range []string{"installer-uki", "installer-kernel", "installer-initrd", "runtime-uki", "runtime-root", "katlos-install-image"} {
+	for _, kind := range []string{"installer-uki", "installer-kernel", "installer-initrd", "installer-iso", "runtime-uki", "runtime-root", "katlos-install-image"} {
 		if !kinds[kind] {
 			t.Fatalf("artifact kind %q missing from %#v", kind, artifactIndex.Artifacts)
 		}

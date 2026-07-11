@@ -19,6 +19,7 @@ import (
 
 type VMBoot struct {
 	UKI           string
+	ISO           string
 	Kernel        string
 	Initrd        string
 	CommandLine   []string
@@ -951,6 +952,11 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		if _, err := probe.stat(config.OVMFVars); err != nil {
 			return VMPlan{}, fmt.Errorf("OVMF vars not readable: %w", err)
 		}
+		if config.Boot.ISO != "" {
+			if _, err := probe.stat(config.Boot.ISO); err != nil {
+				return VMPlan{}, fmt.Errorf("VM ISO not readable: %w", err)
+			}
+		}
 	}
 	accel, err := libvirtAccel(config.KVM, probe)
 	if err != nil {
@@ -1164,6 +1170,10 @@ type libvirtDisk struct {
 	Serial        string
 	BackingPath   string
 	BackingFormat DiskFormat
+	Device        string
+	Bus           string
+	ReadOnly      bool
+	BootOrder     int
 }
 
 type libvirtDomain struct {
@@ -1273,12 +1283,18 @@ type domainInterfaceModel struct {
 }
 
 type domainDisk struct {
-	Type   string           `xml:"type,attr"`
-	Device string           `xml:"device,attr"`
-	Driver domainDiskDriver `xml:"driver"`
-	Source domainDiskSource `xml:"source"`
-	Target domainDiskTarget `xml:"target"`
-	Serial string           `xml:"serial,omitempty"`
+	Type     string           `xml:"type,attr"`
+	Device   string           `xml:"device,attr"`
+	Driver   domainDiskDriver `xml:"driver"`
+	Source   domainDiskSource `xml:"source"`
+	Target   domainDiskTarget `xml:"target"`
+	Serial   string           `xml:"serial,omitempty"`
+	ReadOnly *struct{}        `xml:"readonly,omitempty"`
+	Boot     *domainBoot      `xml:"boot,omitempty"`
+}
+
+type domainBoot struct {
+	Order int `xml:"order,attr"`
 }
 
 type domainDiskDriver struct {
@@ -1373,15 +1389,28 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 		nextTarget++
 	}
 	bootModes := 0
-	for _, value := range []string{boot.UKI, boot.EFITree, boot.EFIImage, boot.Kernel} {
+	for _, value := range []string{boot.UKI, boot.ISO, boot.EFITree, boot.EFIImage, boot.Kernel} {
 		if value != "" {
 			bootModes++
 		}
 	}
 	if bootModes > 1 {
-		return nil, "", "", "", "", errors.New("VM boot requires at most one of UKI, EFI tree, EFI image, or kernel")
+		return nil, "", "", "", "", errors.New("VM boot requires at most one of ISO, UKI, EFI tree, EFI image, or kernel")
 	}
 	if boot.Kernel != "" {
+		if boot.Image != "" {
+			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
+		}
+	} else if boot.ISO != "" {
+		disks = append(disks, libvirtDisk{
+			Path:      boot.ISO,
+			Format:    DiskRaw,
+			Target:    "sda",
+			Device:    "cdrom",
+			Bus:       "sata",
+			ReadOnly:  true,
+			BootOrder: 1,
+		})
 		if boot.Image != "" {
 			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
 		}
@@ -1471,16 +1500,30 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 		doc.Devices.Interface.MAC = &domainInterfaceMAC{Address: strings.TrimSpace(domain.MACAddress)}
 	}
 	for _, disk := range domain.Disks {
+		device := disk.Device
+		if device == "" {
+			device = "disk"
+		}
+		bus := disk.Bus
+		if bus == "" {
+			bus = "virtio"
+		}
 		xmlDisk := domainDisk{
 			Type:   "file",
-			Device: "disk",
+			Device: device,
 			Driver: domainDiskDriver{
 				Name: "qemu",
 				Type: string(disk.Format),
 			},
 			Source: domainDiskSource{File: disk.Path},
-			Target: domainDiskTarget{Dev: disk.Target, Bus: "virtio"},
+			Target: domainDiskTarget{Dev: disk.Target, Bus: bus},
 			Serial: disk.Serial,
+		}
+		if disk.ReadOnly {
+			xmlDisk.ReadOnly = &struct{}{}
+		}
+		if disk.BootOrder > 0 {
+			xmlDisk.Boot = &domainBoot{Order: disk.BootOrder}
 		}
 		doc.Devices.Disks = append(doc.Devices.Disks, xmlDisk)
 	}

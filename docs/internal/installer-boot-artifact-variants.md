@@ -45,7 +45,7 @@ for offline use, but the boot artifact itself remains a wrapper.
 
 ## Output Variants
 
-Katl emits two first-class installer boot variants from the same installer
+Katl emits three first-class installer boot variants from the same installer
 content:
 
 ```text
@@ -56,6 +56,10 @@ installer UKI
 split installer kernel/initrd
   Linux kernel plus initrd files suitable for PXE, iPXE, matchbox, or direct
   kernel/initrd VM boot through the supported VM runner
+
+installer ISO
+  UEFI El Torito wrapper around the installer UKI for optical media and
+  ISO-backed virtual machines
 ```
 
 Initial output names:
@@ -72,6 +76,10 @@ katl-installer-<version>-<arch>.vmlinuz.json
 katl-installer-<version>-<arch>.initrd
 katl-installer-<version>-<arch>.initrd.sha256
 katl-installer-<version>-<arch>.initrd.json
+
+katl-installer-<version>-<arch>.iso
+katl-installer-<version>-<arch>.iso.sha256
+katl-installer-<version>-<arch>.iso.json
 ```
 
 Local development may continue writing stable convenience paths under
@@ -105,6 +113,7 @@ The artifact index used by build scripts and VM tests must include these roles:
 installer-uki
 installer-kernel
 installer-initrd
+installer-iso
 ```
 
 Checksums cover the exact artifact bytes. Metadata must not contain host-local
@@ -189,7 +198,15 @@ starts the same katlos-install units and state machine as the UKI variant
 does not require rebuilding kernel or initrd when node config changes
 ```
 
-Both variants must report the selected input mode, input source, boot artifact
+ISO behavior:
+
+```text
+boots the same generic installer UKI through a UEFI El Torito boot image
+uses the same manifest and KatlOS image input contract as the UKI
+does not embed node-specific configuration or a KatlOS payload image
+```
+
+All variants must report the selected input mode, input source, boot artifact
 versions, and redacted command line in diagnostics.
 
 ## Matchbox And PXE Boundary

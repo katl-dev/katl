@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           scripts/mkosi build-runtime
-          scripts/mkosi build-installer
+          scripts/mkosi build-installer-iso
           scripts/mkosi build-katlos-install-image
           KATL_KATLOS_IMAGE_ROLE=upgrade scripts/mkosi build-katlos-install-image
 
@@ -82,6 +82,7 @@ jobs:
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work \
+            --env KATL_REPO_ROOT=/work \
             --env KATL_VERSION \
             --env KATL_ARCHITECTURE \
             "$KATL_MKOSI_IMAGE" \
@@ -89,6 +90,7 @@ jobs:
               scripts/check-runtime-root
               scripts/check-runtime-boot-asset
               scripts/check-installer-image
+              scripts/check-installer-iso
               scripts/check-katlos-install-image
               KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
             '

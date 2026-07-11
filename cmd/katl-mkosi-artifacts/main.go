@@ -115,31 +115,34 @@ Kinds:
   installer-uki
   installer-kernel
   installer-initrd
+  installer-iso
   runtime-uki
   runtime-root
   katlos-install-image
 `
 
 type config struct {
-	RepoRoot           string
-	DefaultIndex       string
-	InstallerUKI       string
-	InstallerKernel    string
-	InstallerInitrd    string
-	RuntimeUKI         string
-	RuntimeUKIMetadata string
-	RuntimeUKIChecksum string
-	RuntimeRoot        string
-	RuntimeMetadata    string
-	RuntimeChecksum    string
-	KatlOSImage        string
-	KatlOSMetadata     string
-	KatlOSChecksum     string
-	KatlOSExplicit     bool
-	Generation         string
-	Version            string
-	Architecture       string
-	InstallerInterface string
+	RepoRoot             string
+	DefaultIndex         string
+	InstallerUKI         string
+	InstallerKernel      string
+	InstallerInitrd      string
+	InstallerISO         string
+	InstallerISOExplicit bool
+	RuntimeUKI           string
+	RuntimeUKIMetadata   string
+	RuntimeUKIChecksum   string
+	RuntimeRoot          string
+	RuntimeMetadata      string
+	RuntimeChecksum      string
+	KatlOSImage          string
+	KatlOSMetadata       string
+	KatlOSChecksum       string
+	KatlOSExplicit       bool
+	Generation           string
+	Version              string
+	Architecture         string
+	InstallerInterface   string
 }
 
 func configFromEnv(env map[string]string, repo string) config {
@@ -147,30 +150,33 @@ func configFromEnv(env map[string]string, repo string) config {
 	version := envDefault(env, "KATL_VERSION", defaultVersion)
 	architecture := envDefaultFunc(env, "KATL_ARCHITECTURE", hostArchitecture)
 	katlosDefault := filepath.Join(buildDir, "katlos-install-"+version+"-"+architecture+".squashfs")
+	installerISO, installerISOExplicit := envPathExplicit(env, repo, "KATL_INSTALLER_ISO", filepath.Join(buildDir, "katl-installer.iso"))
 	runtimeUKI := envPath(env, repo, "KATL_RUNTIME_UKI", filepath.Join(buildDir, "katl-runtime.efi"))
 	runtimeRoot := envPath(env, repo, "KATL_RUNTIME_ARTIFACT", filepath.Join(buildDir, "katl-runtime-root.squashfs"))
 	katlosImage, katlosExplicit := envPathExplicit(env, repo, "KATL_KATLOS_IMAGE", katlosDefault)
 
 	return config{
-		RepoRoot:           repo,
-		DefaultIndex:       filepath.Join(buildDir, "artifacts.json"),
-		InstallerUKI:       envPath(env, repo, "KATL_INSTALLER_UKI", filepath.Join(buildDir, "katl-installer.efi")),
-		InstallerKernel:    envPath(env, repo, "KATL_INSTALLER_KERNEL", filepath.Join(buildDir, "katl-installer.vmlinuz")),
-		InstallerInitrd:    envPath(env, repo, "KATL_INSTALLER_INITRD", filepath.Join(buildDir, "katl-installer.initrd")),
-		RuntimeUKI:         runtimeUKI,
-		RuntimeUKIMetadata: envPath(env, repo, "KATL_RUNTIME_UKI_METADATA", runtimeUKI+".json"),
-		RuntimeUKIChecksum: envPath(env, repo, "KATL_RUNTIME_UKI_CHECKSUM", runtimeUKI+".sha256"),
-		RuntimeRoot:        runtimeRoot,
-		RuntimeMetadata:    envPath(env, repo, "KATL_RUNTIME_METADATA", runtimeRoot+".json"),
-		RuntimeChecksum:    envPath(env, repo, "KATL_RUNTIME_CHECKSUM", runtimeRoot+".sha256"),
-		KatlOSImage:        katlosImage,
-		KatlOSMetadata:     envPath(env, repo, "KATL_KATLOS_IMAGE_METADATA", katlosImage+".json"),
-		KatlOSChecksum:     envPath(env, repo, "KATL_KATLOS_IMAGE_CHECKSUM", katlosImage+".sha256"),
-		KatlOSExplicit:     katlosExplicit,
-		Generation:         envDefaultFunc(env, "KATL_BUILD_COMMIT", func() string { return gitDescribe(repo) }),
-		Version:            version,
-		Architecture:       architecture,
-		InstallerInterface: envDefault(env, "KATL_INSTALLER_INTERFACE", defaultInstallerInterface),
+		RepoRoot:             repo,
+		DefaultIndex:         filepath.Join(buildDir, "artifacts.json"),
+		InstallerUKI:         envPath(env, repo, "KATL_INSTALLER_UKI", filepath.Join(buildDir, "katl-installer.efi")),
+		InstallerKernel:      envPath(env, repo, "KATL_INSTALLER_KERNEL", filepath.Join(buildDir, "katl-installer.vmlinuz")),
+		InstallerInitrd:      envPath(env, repo, "KATL_INSTALLER_INITRD", filepath.Join(buildDir, "katl-installer.initrd")),
+		InstallerISO:         installerISO,
+		InstallerISOExplicit: installerISOExplicit,
+		RuntimeUKI:           runtimeUKI,
+		RuntimeUKIMetadata:   envPath(env, repo, "KATL_RUNTIME_UKI_METADATA", runtimeUKI+".json"),
+		RuntimeUKIChecksum:   envPath(env, repo, "KATL_RUNTIME_UKI_CHECKSUM", runtimeUKI+".sha256"),
+		RuntimeRoot:          runtimeRoot,
+		RuntimeMetadata:      envPath(env, repo, "KATL_RUNTIME_METADATA", runtimeRoot+".json"),
+		RuntimeChecksum:      envPath(env, repo, "KATL_RUNTIME_CHECKSUM", runtimeRoot+".sha256"),
+		KatlOSImage:          katlosImage,
+		KatlOSMetadata:       envPath(env, repo, "KATL_KATLOS_IMAGE_METADATA", katlosImage+".json"),
+		KatlOSChecksum:       envPath(env, repo, "KATL_KATLOS_IMAGE_CHECKSUM", katlosImage+".sha256"),
+		KatlOSExplicit:       katlosExplicit,
+		Generation:           envDefaultFunc(env, "KATL_BUILD_COMMIT", func() string { return gitDescribe(repo) }),
+		Version:              version,
+		Architecture:         architecture,
+		InstallerInterface:   envDefault(env, "KATL_INSTALLER_INTERFACE", defaultInstallerInterface),
 	}
 }
 
@@ -975,9 +981,15 @@ func writeIndex(indexPath string, cfg config) error {
 			}
 		}
 	}
+	includeInstallerISO := cfg.InstallerISOExplicit || fileExists(cfg.InstallerISO)
+	if includeInstallerISO {
+		if err := requireFile("installer ISO", cfg.InstallerISO, cfg.RepoRoot); err != nil {
+			return err
+		}
+	}
 
 	created := time.Now().UTC().Format(time.RFC3339)
-	for _, artifact := range []struct {
+	bootArtifacts := []struct {
 		role   string
 		format string
 		path   string
@@ -985,7 +997,15 @@ func writeIndex(indexPath string, cfg config) error {
 		{"installer-uki", "uki", cfg.InstallerUKI},
 		{"installer-kernel", "linux-kernel", cfg.InstallerKernel},
 		{"installer-initrd", "initrd", cfg.InstallerInitrd},
-	} {
+	}
+	if includeInstallerISO {
+		bootArtifacts = append(bootArtifacts, struct {
+			role   string
+			format string
+			path   string
+		}{"installer-iso", "iso", cfg.InstallerISO})
+	}
+	for _, artifact := range bootArtifacts {
 		if err := writeChecksum(artifact.path); err != nil {
 			return err
 		}
@@ -995,7 +1015,7 @@ func writeIndex(indexPath string, cfg config) error {
 	}
 
 	entries := []artifactEntry{}
-	for _, artifact := range []struct {
+	indexedArtifacts := []struct {
 		kind     string
 		format   string
 		path     string
@@ -1007,7 +1027,17 @@ func writeIndex(indexPath string, cfg config) error {
 		{"installer-initrd", "initrd", cfg.InstallerInitrd, metadataPath(cfg.InstallerInitrd), checksumPath(cfg.InstallerInitrd)},
 		{"runtime-uki", "uki", cfg.RuntimeUKI, cfg.RuntimeUKIMetadata, cfg.RuntimeUKIChecksum},
 		{"runtime-root", "squashfs", cfg.RuntimeRoot, cfg.RuntimeMetadata, cfg.RuntimeChecksum},
-	} {
+	}
+	if includeInstallerISO {
+		indexedArtifacts = append(indexedArtifacts, struct {
+			kind     string
+			format   string
+			path     string
+			metadata string
+			checksum string
+		}{"installer-iso", "iso", cfg.InstallerISO, metadataPath(cfg.InstallerISO), checksumPath(cfg.InstallerISO)})
+	}
+	for _, artifact := range indexedArtifacts {
 		entry, err := newEntry(artifact.kind, artifact.format, artifact.path, artifact.metadata, artifact.checksum, cfg.RepoRoot)
 		if err != nil {
 			return err
