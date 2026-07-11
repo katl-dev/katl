@@ -36,6 +36,42 @@ type SelectedNodeMaterial struct {
 	KatlosImageFromMedia  bool
 }
 
+type Bundle struct {
+	Manifest BundleManifest
+	Digest   string
+}
+
+func ReadBundleFile(path, expectedDigest string) (Bundle, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("open config bundle: %w", err)
+	}
+	defer file.Close()
+	return ReadBundle(file, expectedDigest)
+}
+
+func ReadBundle(reader io.Reader, expectedDigest string) (Bundle, error) {
+	archive, err := readOCIArchive(reader)
+	if err != nil {
+		return Bundle{}, err
+	}
+	bundleDigest, manifestData, err := archive.bundleManifest()
+	if err != nil {
+		return Bundle{}, err
+	}
+	if expected := normalizeDigest(expectedDigest); expected != "" && expected != bundleDigest {
+		return Bundle{}, fmt.Errorf("config bundle digest mismatch: got %s want %s", bundleDigest, expected)
+	}
+	var bundle BundleManifest
+	if err := json.Unmarshal(manifestData, &bundle); err != nil {
+		return Bundle{}, fmt.Errorf("decode config bundle manifest: %w", err)
+	}
+	if err := validateBundleManifest(bundle); err != nil {
+		return Bundle{}, err
+	}
+	return Bundle{Manifest: bundle, Digest: bundleDigest}, nil
+}
+
 func ReadSelectedNodeFile(path string, options ReadOptions) (SelectedNodeMaterial, error) {
 	file, err := os.Open(path)
 	if err != nil {

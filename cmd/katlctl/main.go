@@ -1434,6 +1434,8 @@ func firstNonEmpty(values ...string) string {
 type clusterBootstrapOptions struct {
 	addresses                              addressOverrides
 	inventoryPath                          string
+	configBundlePath                       string
+	configBundleDigest                     string
 	initNode                               string
 	joinWorker                             string
 	controlPlaneEndpoint                   string
@@ -1454,13 +1456,15 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	opts := clusterBootstrapOptions{}
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
-		Short: "Bootstrap a Kubernetes cluster from KatlOS node inventory",
+		Short: "Bootstrap Kubernetes from a Katl config bundle or node inventory",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runClusterBootstrap(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster bootstrap inventory")
+	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to verified Katl config bundle")
+	cmd.Flags().StringVar(&opts.configBundleDigest, "config-bundle-digest", "", "expected internal config bundle manifest digest")
 	cmd.Flags().StringVar(&opts.initNode, "init-node", "", "first control-plane node for kubeadm init")
 	cmd.Flags().StringVar(&opts.joinWorker, "join-worker", "", "join one fresh worker to an already initialized cluster without rerunning kubeadm init")
 	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
@@ -1481,10 +1485,7 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 
 func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdout, stderr io.Writer) error {
 	_ = stderr
-	if strings.TrimSpace(opts.inventoryPath) == "" {
-		return fmt.Errorf("--inventory is required")
-	}
-	inv, err := loadInventory(opts.inventoryPath)
+	inv, err := bootstrapInventory(opts)
 	if err != nil {
 		return err
 	}
@@ -1536,6 +1537,34 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 	}
 	printBootstrapResult(stdout, result)
 	return err
+}
+
+func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, error) {
+	inventoryPath := strings.TrimSpace(opts.inventoryPath)
+	bundlePath := strings.TrimSpace(opts.configBundlePath)
+	if inventoryPath == "" && bundlePath == "" {
+		return inventory.Inventory{}, fmt.Errorf("exactly one of --config-bundle or --inventory is required")
+	}
+	if inventoryPath != "" && bundlePath != "" {
+		return inventory.Inventory{}, fmt.Errorf("--config-bundle and --inventory are mutually exclusive")
+	}
+	if bundlePath == "" {
+		if strings.TrimSpace(opts.configBundleDigest) != "" {
+			return inventory.Inventory{}, fmt.Errorf("--config-bundle-digest requires --config-bundle")
+		}
+		return loadInventory(inventoryPath)
+	}
+	if strings.TrimSpace(opts.kubernetesBundle) != "" {
+		return inventory.Inventory{}, fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in --config-bundle")
+	}
+	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
+		return inventory.Inventory{}, fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in --config-bundle")
+	}
+	bundle, err := configbundle.ReadBundleFile(bundlePath, opts.configBundleDigest)
+	if err != nil {
+		return inventory.Inventory{}, err
+	}
+	return bundle.Manifest.Cluster.BootstrapInventory, nil
 }
 
 func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {

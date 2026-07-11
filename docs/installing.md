@@ -404,51 +404,30 @@ patch updates. An unpinned tag is resolved once for the operation record; a
 digest pin prevents the tag from selecting different content before that point.
 
 After all nodes are installed and reachable through their node-local `katlc`
-management endpoints, create the current bootstrap inventory. The alpha CLI
-still requires this small duplicate view even though the config bundle already
-contains the same resolved inventory; direct bundle bootstrap is the next
-operator-flow change.
-
-```yaml
-controlPlaneEndpoint: api.katl.test:6443
-kubernetesVersion: v1.36.1
-kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:<OCI-manifest-digest>
-nodes:
-  - name: cp-1
-    address: 192.0.2.11
-    systemRole: control-plane
-    access:
-      method: agent
-      credentialRef: agent/default
-    kubeadmConfig:
-      ref: control-plane
-      path: /etc/katl/kubeadm/control-plane/config.yaml
-      intent: control-plane
-    kubernetesVersion: v1.36.1
-  - name: worker-1
-    address: 192.0.2.21
-    systemRole: worker
-    access:
-      method: agent
-      credentialRef: agent/default
-    kubeadmConfig:
-      ref: worker
-      path: /etc/katl/kubeadm/worker/config.yaml
-      intent: worker
-    kubernetesVersion: v1.36.1
-```
-
-Save it as `cluster.inventory.yaml`, then run bootstrap from the operator
-workstation:
+management endpoints, bootstrap directly from the same verified bundle. Use the
+`bundleDigest` printed by `katlctl config bundle`, not the archive SHA-256:
 
 ```text
 katlctl cluster bootstrap \
-  --inventory cluster.inventory.yaml \
+  --config-bundle katl-lab.katlcfg \
+  --config-bundle-digest <bundleDigest> \
   --init-node cp-1 \
   --agent-token-file ./katlc-agent.token \
   --kubeconfig-out kubeconfig \
   --overwrite-kubeconfig
 ```
+
+The bundle supplies the control-plane endpoint, node topology, roles, kubeadm
+references, Kubernetes version, and OCI bundle selection. Do not combine
+`--config-bundle` with `--inventory`, `--control-plane-endpoint`, or
+`--kubernetes-bundle`. `--node-address node=address` remains available for an
+operator-observed address that differs from the compiled source.
+
+`--agent-token-file` is the common fallback token. A node whose embedded
+`credentialRef` is `file:/path/to/token` reads that per-node file instead and
+overrides the common token. Other reference names such as `agent/default` do not
+embed secret material and use the common token until a credential provider is
+configured.
 
 `katlctl` is a bounded client. Node-local `katlc` validates and records the
 authoritative bootstrap operations, creates generation 1, runs `kubeadm`, and
