@@ -23,6 +23,8 @@ installer_package_set=""
 cache_target=""
 kubernetes_repo_file=""
 kubernetes_repo_backup=""
+kubernetes_profile_file=""
+kubernetes_profile_backup=""
 mkosi_installer_package_set=""
 container_mkosi_storage_args=(
     --output-directory /mkosi-build
@@ -65,7 +67,38 @@ restore_kubernetes_repo_file() {
     fi
 }
 
-trap restore_kubernetes_repo_file EXIT
+prepare_kubernetes_package_profile() {
+	local path="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.conf"
+	local package variable version
+	kubernetes_profile_file="$path"
+	kubernetes_profile_backup="$(mktemp)"
+	cp "$path" "$kubernetes_profile_backup"
+	for package in kubeadm kubelet kubectl cri-tools; do
+		case "$package" in
+			kubeadm) variable="${KATL_KUBERNETES_KUBEADM_VERSION:-}" ;;
+			kubelet) variable="${KATL_KUBERNETES_KUBELET_VERSION:-}" ;;
+			kubectl) variable="${KATL_KUBERNETES_KUBECTL_VERSION:-}" ;;
+			cri-tools) variable="${KATL_KUBERNETES_CRITOOLS_VERSION:-}" ;;
+		esac
+		[[ -n "$variable" ]] || continue
+		version="${variable%.x86_64}.x86_64"
+		sed -i -E "s#^([[:space:]]*)${package}-[^[:space:]]+#\\1${package}-${version}#" "$path"
+	done
+}
+
+restore_kubernetes_profile_file() {
+	if [[ -n "$kubernetes_profile_file" && -n "$kubernetes_profile_backup" && -f "$kubernetes_profile_backup" ]]; then
+		cp "$kubernetes_profile_backup" "$kubernetes_profile_file"
+		rm -f "$kubernetes_profile_backup"
+	fi
+}
+
+restore_kubernetes_build_files() {
+	restore_kubernetes_repo_file
+	restore_kubernetes_profile_file
+}
+
+trap restore_kubernetes_build_files EXIT
 
 list_repo_inputs() {
     {
@@ -489,6 +522,7 @@ else
             kubernetes_repo_backup="$(mktemp)"
             cp "$kubernetes_repo_file" "$kubernetes_repo_backup"
             write_kubernetes_repo_file "$kubernetes_repo_file"
+            prepare_kubernetes_package_profile
             if [[ $# -eq 0 ]]; then
                 cache_target=kubernetes-sysext
                 prepare_cached_target "$cache_target"
@@ -497,6 +531,22 @@ else
                 set -- --profile kubernetes-sysext -f build "$@"
             fi
             ;;
+		build-kubernetes-upgrade-sysext)
+			shift
+			if [[ $# -ne 0 ]]; then
+				echo "error: build-kubernetes-upgrade-sysext does not accept mkosi arguments" >&2
+				exit 2
+			fi
+			KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}" \
+				KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_KUBEADM_VERSION:-0:1.36.1-150500.1.1}" \
+				KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_KUBELET_VERSION:-0:1.36.1-150500.1.1}" \
+				KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_KUBECTL_VERSION:-0:1.36.1-150500.1.1}" \
+				"$repo_root/scripts/mkosi" build-kubernetes-sysext
+			for suffix in raw raw.json raw.sha256; do
+				cp "$build_dir/katl-kubernetes.$suffix" "$build_dir/katl-kubernetes-upgrade.$suffix"
+			done
+			exit 0
+			;;
         build-katlos-install-image)
             shift
             if [[ $# -eq 0 ]] && target_cache_hit katlos-install-image; then
@@ -590,7 +640,7 @@ if [[ "$runtime" == direct ]]; then
         exit 1
     fi
     log="$(mktemp)"
-    trap 'restore_kubernetes_repo_file; rm -f "$log"' EXIT
+    trap 'restore_kubernetes_build_files; rm -f "$log"' EXIT
     prepare_build_dirs
     direct_workspace="${KATL_MKOSI_WORKSPACE_DIR:-${TMPDIR:-/tmp}/katl-mkosi-workspace}"
     mkdir -p "$direct_workspace"

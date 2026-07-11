@@ -38,6 +38,15 @@ file_has() {
     grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
 }
 
+symlink_points_to() {
+    local path="${1#/}"
+    local target="$2"
+    local output
+    output="$(unsquashfs -ll "$artifact" "$path")" || fail "inspect /$path failed"
+    grep -Fq -- "squashfs-root/$path -> $target" <<<"$output" ||
+        fail "/$path does not point to $target"
+}
+
 check_kernel_support() {
     local module_index versions version builtin module_count firmware_index firmware_count
     module_index="$(unsquashfs -ll "$artifact" usr/lib/modules)" || fail "inspect /usr/lib/modules failed"
@@ -173,6 +182,7 @@ for path in \
     /usr/bin/ipvsadm \
     /usr/bin/containerd \
     /usr/bin/crun \
+    /etc/containerd/config.toml \
     /usr/libexec/cni/bridge \
     /usr/libexec/cni/host-local \
     /usr/libexec/cni/loopback \
@@ -197,6 +207,7 @@ for path in \
     /usr/lib/systemd/system/etc-kubernetes.mount \
     /usr/lib/systemd/system/katl-generation-activate.service \
     /usr/lib/systemd/system/katl-kubeadm-ready.target \
+    /usr/lib/systemd/system/katl-kubeadm-activate.service \
     /usr/lib/systemd/system/katl-boot-complete.target \
     /usr/lib/systemd/system/katl-boot-health.service \
     /usr/lib/systemd/system/katl-boot-deadman.service \
@@ -238,7 +249,12 @@ file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STA
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "DefaultDependencies=no"
 file_has /usr/lib/systemd/system/katl-generation-activate.service "ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/"
-file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service"
+file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "ConditionFileIsExecutable=/usr/bin/kubeadm"
+file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "ConditionFileIsExecutable=/usr/bin/crictl"
+file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service"
+file_has /usr/lib/systemd/system/katl-kubeadm-activate.service "ExecStart=/usr/bin/systemctl daemon-reload"
+file_has /usr/lib/systemd/system/katl-kubeadm-activate.service "ExecStart=/usr/bin/systemctl start katl-kubeadm-ready.target"
+symlink_points_to /usr/lib/systemd/system/multi-user.target.wants/katl-kubeadm-activate.service ../katl-kubeadm-activate.service
 file_has /usr/lib/systemd/system/katl-boot-health.service "Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service"
 file_has /usr/lib/systemd/system/katl-boot-health.service "ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=success --reason=katl-boot-complete.target"
 file_has /usr/lib/systemd/system/katl-boot-deadman.service "ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --request-reboot"
@@ -258,6 +274,9 @@ misses_path /usr/lib/systemd/system/multi-user.target.wants/katl-kubeadm-ready.t
 misses_path /usr/lib/systemd/system/multi-user.target.wants/katl-state-projection-check.service
 misses_path /usr/lib/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service
 file_has /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/containerd"
+file_has /etc/containerd/config.toml 'default_runtime_name = "crun"'
+file_has /etc/containerd/config.toml 'BinaryName = "/usr/bin/crun"'
+file_has /etc/containerd/config.toml "SystemdCgroup = true"
 file_has /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/kubelet /etc/kubernetes"
 file_has /usr/lib/modules-load.d/50-katl-kubernetes.conf "nf_conntrack"
 file_has /usr/lib/modules-load.d/50-katl-kubernetes.conf "br_netfilter"

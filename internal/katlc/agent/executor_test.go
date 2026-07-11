@@ -1027,6 +1027,8 @@ func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
 	if err := generation.WriteGeneration(root, spec, generation.StatusFromRecord(record, digest)); err != nil {
 		t.Fatal(err)
 	}
+	writeTestFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/systemd/network/80-test-dhcp.network"), "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n")
+	writeTestFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora\n")
 	writeTestFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), "0123456789abcdef0123456789abcdef\n")
 	writeBootSelection(t, root, "0")
 	if _, err := installer.WriteClusterIntent(installer.ClusterIntentRequest{

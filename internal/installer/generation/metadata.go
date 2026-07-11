@@ -31,9 +31,16 @@ type Record struct {
 	Confexts             []GeneratedConfext `json:"confexts"`
 	KernelCommandLine    []string           `json:"kernelCommandLine"`
 	ConfigApply          *ConfigApplyRecord `json:"configApply,omitempty"`
+	KubernetesUpgrade    *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
 	CreatedAt            time.Time          `json:"createdAt"`
 	BootState            string             `json:"bootState"`
 	HealthState          string             `json:"healthState"`
+}
+
+type KubernetesUpgrade struct {
+	OperationID             string `json:"operationID"`
+	TargetKubeadmAccessMode string `json:"targetKubeadmAccessMode"`
+	KubeletActivationGate   string `json:"kubeletActivationGate"`
 }
 
 type RootSelection struct {

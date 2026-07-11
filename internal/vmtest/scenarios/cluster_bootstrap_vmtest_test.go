@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,21 +18,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zariel/katl/internal/bootstrap/cluster"
+	"github.com/zariel/katl/internal/bootstrap/inventory"
+	"github.com/zariel/katl/internal/installer/artifact"
 	"github.com/zariel/katl/internal/installer/generation"
 	"github.com/zariel/katl/internal/installer/operation"
+	"github.com/zariel/katl/internal/installer/persistedrecord"
+	agentapi "github.com/zariel/katl/internal/katlc/agentapi"
 	"github.com/zariel/katl/internal/vmtest"
 	vmtestpb "github.com/zariel/katl/internal/vmtest/proto"
 )
 
 func TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke(t *testing.T) {
 	if run, ok := operationBackedWorldSmokeRun(t); ok {
-		runOperationBackedBootstrapSmoke(t, run)
+		runOperationBackedBootstrapSmoke(t, run, false)
 		return
 	}
 
 	options := vmtest.DefaultOptions()
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run two-node operation-backed bootstrap smoke")
+	}
+	_ = vmtest.RequireWorld(t)
+}
+
+func TestKubeadmUpgradeOperationSmoke(t *testing.T) {
+	if run, ok := operationBackedWorldSmokeRun(t); ok {
+		runOperationBackedBootstrapSmoke(t, run, true)
+		return
+	}
+	options := vmtest.DefaultOptions()
+	if !options.Enabled {
+		t.Skip("run through scripts/vmtest-run to prove Kubernetes upgrade operations")
 	}
 	_ = vmtest.RequireWorld(t)
 }
@@ -224,7 +242,7 @@ func firstInstallProvenanceFromPublished(published vmtest.PublishedFirstInstallR
 	}
 }
 
-func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRun) {
+func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRun, proveUpgrade bool) {
 	t.Helper()
 	options := smoke.Options
 	runner := smoke.Runner
@@ -551,11 +569,255 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatalf("kubectl nodes did not converge: %v\n%s", err, output)
 	}
 	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":6443")
+	if proveUpgrade {
+		if err := runTwoNodeKubeadmUpgradeProof(t, ctx, smoke, cpNode, workerNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath, cpRecord, workerRecord, cniFixtures, kubeconfigPath, evidenceDir); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("Kubernetes upgrade proof failed: %v", err)
+		}
+	}
 	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, nodes, evidenceArtifacts); err != nil {
 		t.Fatal(err)
 	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath string, cpBootstrap, workerBootstrap operation.OperationRecord, cniFixtures map[string]nodeCNIFixture, kubeconfigPath, evidenceDir string) error {
+	t.Helper()
+	const targetVersion = "v1.36.1"
+	if smoke.Inputs.KubernetesVersion != "v1.36.0" {
+		return fmt.Errorf("upgrade proof requires base v1.36.0, got %s", smoke.Inputs.KubernetesVersion)
+	}
+	for _, node := range []struct {
+		running    vmtest.RunningInstalledRuntimeNode
+		generation string
+	}{{cpNode, cpBootstrap.CandidateGenerationID}, {workerNode, workerBootstrap.CandidateGenerationID}} {
+		if err := rebootIntoGeneration(ctx, node.running, node.generation); err != nil {
+			return fmt.Errorf("reboot %s into bootstrap generation: %w", node.running.Name, err)
+		}
+		if err := activateNodeCNIFixture(ctx, node.running, cniFixtures[node.running.Name]); err != nil {
+			return fmt.Errorf("reactivate %s CNI fixture after bootstrap reboot: %w", node.running.Name, err)
+		}
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-before-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+		return fmt.Errorf("wait for cluster readiness after bootstrap generation reboot: %w", err)
+	}
+	targetHost := filepath.Join(katlRepoRoot(t), "_build/mkosi/katl-kubernetes-upgrade.raw")
+	metadataHost := targetHost + ".json"
+	target, err := os.ReadFile(targetHost)
+	if err != nil {
+		return fmt.Errorf("read target Kubernetes sysext: %w", err)
+	}
+	metadata, err := artifact.ReadLocal(metadataHost)
+	if err != nil {
+		return fmt.Errorf("read target Kubernetes sysext metadata: %w", err)
+	}
+	if metadata.PayloadVersion != targetVersion {
+		return fmt.Errorf("target Kubernetes sysext payload is %s, want %s", metadata.PayloadVersion, targetVersion)
+	}
+	targetDigest := sha256.Sum256(target)
+	targetSHA := hex.EncodeToString(targetDigest[:])
+	if targetSHA != metadata.SHA256 {
+		return fmt.Errorf("target Kubernetes sysext digest %s does not match metadata %s", targetSHA, metadata.SHA256)
+	}
+	guestTarget := "/var/lib/katl/artifacts/kubernetes-upgrade-v1.36.1.raw"
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode} {
+		if err := writeNodeFileChunked(ctx, node, guestTarget, target, 0o600); err != nil {
+			return fmt.Errorf("upload target sysext to %s: %w", node.Name, err)
+		}
+	}
+	snapshot, err := createUpgradeSnapshotEvidence(ctx, cpNode)
+	if err != nil {
+		return err
+	}
+	cpToken, err := os.ReadFile(cpTokenPath)
+	if err != nil {
+		return err
+	}
+	workerToken, err := os.ReadFile(workerTokenPath)
+	if err != nil {
+		return err
+	}
+	cpStatus, err := submitKubeadmUpgrade(ctx, cpAddress, strings.TrimSpace(string(cpToken)), agentapi.KubernetesSysextUpdateOperationRequest{
+		TargetPayloadVersion: targetVersion, TargetSysextPath: guestTarget, TargetSysextSha256: targetSHA, TargetSysextSizeBytes: uint64(len(target)), CandidateGenerationId: "upgrade-v1361-cp", UpgradeRole: "apply", SourcePayloadVersion: "v1.36.0",
+		SnapshotRef: snapshot.Ref, SnapshotDigest: snapshot.Digest, SnapshotRevision: snapshot.Revision, SnapshotCreatedAt: snapshot.CreatedAt, CapturedMemberListDigest: snapshot.MemberListDigest, SourceEtcdVersion: snapshot.EtcdVersion, SnapshotStorageLocation: snapshot.Location, SnapshotOperatorIdentity: "vmtest:kubeadm-upgrade",
+	})
+	if err != nil {
+		return fmt.Errorf("control-plane upgrade: %w", err)
+	}
+	if err := assertSuccessfulUpgradeStatus(cpStatus, "upgrade-v1361-cp"); err != nil {
+		return err
+	}
+	if err := rebootIntoGeneration(ctx, cpNode, cpStatus.CandidateGenerationId); err != nil {
+		return fmt.Errorf("reboot upgraded control plane: %w", err)
+	}
+	if err := activateNodeCNIFixture(ctx, cpNode, cniFixtures[cpNode.Name]); err != nil {
+		return fmt.Errorf("reactivate control-plane CNI fixture after upgrade reboot: %w", err)
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-control-plane-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+		return err
+	}
+	workerStatus, err := submitKubeadmUpgrade(ctx, workerAddress, strings.TrimSpace(string(workerToken)), agentapi.KubernetesSysextUpdateOperationRequest{
+		TargetPayloadVersion: targetVersion, TargetSysextPath: guestTarget, TargetSysextSha256: targetSHA, TargetSysextSizeBytes: uint64(len(target)), CandidateGenerationId: "upgrade-v1361-worker", UpgradeRole: "worker", SourcePayloadVersion: "v1.36.0", SnapshotRef: snapshot.Ref, SnapshotDigest: snapshot.Digest,
+	})
+	if err != nil {
+		return fmt.Errorf("worker upgrade: %w", err)
+	}
+	if err := assertSuccessfulUpgradeStatus(workerStatus, "upgrade-v1361-worker"); err != nil {
+		return err
+	}
+	if err := rebootIntoGeneration(ctx, workerNode, workerStatus.CandidateGenerationId); err != nil {
+		return fmt.Errorf("reboot upgraded worker: %w", err)
+	}
+	if err := activateNodeCNIFixture(ctx, workerNode, cniFixtures[workerNode.Name]); err != nil {
+		return fmt.Errorf("reactivate worker CNI fixture after upgrade reboot: %w", err)
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-worker-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		node vmtest.RunningInstalledRuntimeNode
+		kind string
+	}{{cpNode, "kubeadm-upgrade"}, {workerNode, "kubeadm-upgrade"}} {
+		dir := filepath.Join(evidenceDir, item.node.Name, "upgrade")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		_, record, err := collectOperationEvidence(ctx, item.node, dir, item.kind)
+		if err != nil {
+			return err
+		}
+		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.TargetPayloadVersion != targetVersion || record.KubeadmUpgradeEvidence == nil || record.KubeadmUpgradeEvidence.TargetKubeadmObservedVersion != targetVersion || record.KubeadmUpgradeEvidence.KubeletGateState != "target-observed" {
+			return fmt.Errorf("%s upgrade evidence incomplete: %+v", item.node.Name, record)
+		}
+		_, generationRecord, err := collectGenerationEvidence(ctx, item.node, dir, record.CandidateGenerationID)
+		if err != nil {
+			return err
+		}
+		if generationRecord.Status.CommitState != generation.CommitStateCommitted {
+			return fmt.Errorf("%s upgrade candidate is %s", item.node.Name, generationRecord.Status.CommitState)
+		}
+	}
+	return nil
+}
+
+type upgradeSnapshotEvidence struct{ Ref, Digest, Revision, CreatedAt, MemberListDigest, EtcdVersion, Location string }
+
+func createUpgradeSnapshotEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) (upgradeSnapshotEvidence, error) {
+	deadline := time.Now().Add(2 * time.Minute)
+	var container *vmtestpb.CommandResult
+	var lastErr error
+	var id []string
+	for {
+		container, lastErr = runNodeCommandWithRetry(ctx, node, []string{"crictl", "ps", "--state", "Running", "--name", "etcd", "-q"}, 16<<10)
+		if lastErr == nil && container.ExitStatus == 0 {
+			id = strings.Fields(string(container.Stdout))
+			if len(id) == 1 {
+				break
+			}
+			lastErr = fmt.Errorf("expected one running etcd container, got %q", container.Stdout)
+		} else {
+			lastErr = errors.Join(lastErr, commandErrorDetail(container))
+		}
+		if time.Now().After(deadline) {
+			return upgradeSnapshotEvidence{}, fmt.Errorf("locate etcd container: %w", lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return upgradeSnapshotEvidence{}, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	location := "/var/lib/etcd/katl-upgrade-v1361.db"
+	etcdArgs := []string{"crictl", "exec", id[0], "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/etc/kubernetes/pki/etcd/ca.crt", "--cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt", "--key=/etc/kubernetes/pki/etcd/healthcheck-client.key"}
+	saved, err := runNodeCommandWithRetry(ctx, node, append(append([]string(nil), etcdArgs...), "snapshot", "save", location), 64<<10)
+	if err != nil || saved.ExitStatus != 0 {
+		return upgradeSnapshotEvidence{}, fmt.Errorf("save etcd snapshot: %w", errors.Join(err, commandErrorDetail(saved)))
+	}
+	hashResult, err := runNodeCommandWithRetry(ctx, node, []string{"sha256sum", location}, 4<<10)
+	if err != nil || hashResult.ExitStatus != 0 {
+		return upgradeSnapshotEvidence{}, fmt.Errorf("hash etcd snapshot: %w", errors.Join(err, commandErrorDetail(hashResult)))
+	}
+	digest := strings.Fields(string(hashResult.Stdout))
+	if len(digest) == 0 {
+		return upgradeSnapshotEvidence{}, fmt.Errorf("empty etcd snapshot digest")
+	}
+	members, err := runNodeCommandWithRetry(ctx, node, append(append([]string(nil), etcdArgs...), "member", "list"), 64<<10)
+	if err != nil || members.ExitStatus != 0 {
+		return upgradeSnapshotEvidence{}, fmt.Errorf("list etcd members: %w", errors.Join(err, commandErrorDetail(members)))
+	}
+	memberDigest := sha256.Sum256(members.Stdout)
+	return upgradeSnapshotEvidence{Ref: "vmtest-cp1-v1360-before-v1361", Digest: digest[0], CreatedAt: time.Now().UTC().Format(time.RFC3339), MemberListDigest: hex.EncodeToString(memberDigest[:]), Location: location}, nil
+}
+
+func submitKubeadmUpgrade(ctx context.Context, address, token string, request agentapi.KubernetesSysextUpdateOperationRequest) (*agentapi.OperationStatus, error) {
+	connector := cluster.TCPAgentConnector{AuthToken: token, DialTimeout: 10 * time.Second}
+	conn, err := connector.Connect(ctx, inventory.PlannedNode{Name: address, Address: address, Access: inventory.Access{Method: "agent"}})
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	nodeStatus, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		return nil, err
+	}
+	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: "vmtest-" + request.CandidateGenerationId, OperationKind: "kubeadm-upgrade", Actor: "vmtest:kubeadm-upgrade", ExpectedMachineId: nodeStatus.MachineId, KubernetesSysextUpdate: &request})
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(20 * time.Minute)
+	for {
+		status, err := conn.Client.GetOperation(ctx, &agentapi.GetOperationRequest{OperationId: accepted.OperationId, ExpectedRequestDigest: accepted.RequestDigest, IncludeDiagnostics: "normal"})
+		if err != nil {
+			return nil, err
+		}
+		if status.Terminal {
+			return status, nil
+		}
+		if time.Now().After(deadline) {
+			return status, fmt.Errorf("operation %s did not finish before deadline", accepted.OperationId)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func assertSuccessfulUpgradeStatus(status *agentapi.OperationStatus, candidate string) error {
+	if status == nil || !status.Terminal || status.Result != operation.ResultSucceeded || status.RecoveryRequired || status.CandidateGenerationId != candidate || status.GenerationCommitState != operation.GenerationCommitCommitted || status.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || !status.BootHealthPending {
+		return fmt.Errorf("upgrade operation did not commit healthy candidate %s: %+v", candidate, status)
+	}
+	return nil
+}
+
+func rebootIntoGeneration(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, generationID string) error {
+	result, err := runNodeCommand(ctx, node, []string{
+		"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-reboot-into-generation", "--on-active=1s",
+		"/usr/bin/systemctl", "reboot", "--no-block",
+	}, 4<<10)
+	if err != nil {
+		return fmt.Errorf("schedule reboot: %w", err)
+	}
+	if result.ExitStatus != 0 {
+		return fmt.Errorf("schedule reboot: %w", commandErrorDetail(result))
+	}
+	deadline := time.Now().Add(5 * time.Minute)
+	for time.Now().Before(deadline) {
+		data, err := readNodeFile(ctx, node, "/proc/cmdline", 64<<10)
+		if err == nil && strings.Contains(string(data), "katl.generation="+generationID) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return fmt.Errorf("node %s did not boot generation %s", node.Name, generationID)
 }
 
 func operationBackedVMConfigForRun(run operationBackedSmokeRun, mac string, cid uint32) vmtest.VMConfig {
@@ -1451,26 +1713,67 @@ func stageNodeCNIFixture(ctx context.Context, node vmtest.RunningInstalledRuntim
 	} else if result.ExitStatus != 0 {
 		return nodeCNIFixture{}, fmt.Errorf("install CNI config exited %d: %s", result.ExitStatus, strings.TrimSpace(string(result.Stderr)))
 	}
-	if err := configureNodeContainerdCNI(ctx, node, fixture); err != nil {
+	if err := activateNodeCNIFixture(ctx, node, fixture); err != nil {
 		return nodeCNIFixture{}, err
-	}
-	for _, argv := range [][]string{
-		{"sysctl", "-w", "net.ipv4.ip_forward=1"},
-		{"ip", "route", "replace", peerSubnet, "via", peerAddress},
-	} {
-		if result, err := runNodeCommand(ctx, node, argv, 32<<10); err != nil {
-			return nodeCNIFixture{}, err
-		} else if result.ExitStatus != 0 {
-			return nodeCNIFixture{}, fmt.Errorf("%s exited %d: %s", strings.Join(argv, " "), result.ExitStatus, strings.TrimSpace(string(result.Stderr)))
-		}
 	}
 	return fixture, nil
 }
 
-func configureNodeContainerdCNI(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fixture nodeCNIFixture) error {
-	config := fmt.Sprintf(`version = 2
+func activateNodeCNIFixture(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fixture nodeCNIFixture) error {
+	if err := configureNodeContainerdCNI(ctx, node, fixture); err != nil {
+		return err
+	}
+	if result, err := runNodeCommand(ctx, node, []string{"sysctl", "-w", "net.ipv4.ip_forward=1"}, 32<<10); err != nil {
+		return err
+	} else if result.ExitStatus != 0 {
+		return fmt.Errorf("enable IPv4 forwarding: %s", commandErrorDetail(result))
+	}
+	route := []string{"ip", "route", "replace", fixture.PeerSubnet, "via", fixture.PeerAddress}
+	deadline := time.Now().Add(time.Minute)
+	for {
+		result, err := runNodeCommand(ctx, node, route, 32<<10)
+		if err == nil && result.ExitStatus == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("%s: %s", strings.Join(route, " "), commandErrorDetail(result))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return nil
+}
 
-[plugins."io.containerd.cri.v1.runtime".cni]
+func configureNodeContainerdCNI(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fixture nodeCNIFixture) error {
+	const (
+		containerdLog = "/var/lib/katl/test-artifacts/bootstrap-cni/containerd.log"
+		kubeletLog    = "/var/lib/katl/test-artifacts/bootstrap-cni/kubelet.log"
+	)
+	config := fmt.Sprintf(`version = 4
+
+[plugins.'io.containerd.cri.v1.images']
+  use_local_image_pull = true
+
+[plugins.'io.containerd.cri.v1.images'.pinned_images]
+  sandbox = "registry.k8s.io/pause:3.10.2"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd]
+  default_runtime_name = "crun"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.crun]
+  runtime_type = "io.containerd.runc.v2"
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.crun.options]
+  BinaryName = "/usr/bin/crun"
+  SystemdCgroup = true
+
+[plugins.'io.containerd.cri.v1.runtime'.cni]
   bin_dirs = [%q]
   conf_dir = %q
 `, fixture.PluginTarget, filepath.Dir(fixture.GuestTarget))
@@ -1481,15 +1784,26 @@ func configureNodeContainerdCNI(ctx context.Context, node vmtest.RunningInstalle
 	dropIn := fmt.Sprintf(`[Service]
 ExecStart=
 ExecStart=/usr/bin/containerd --config %s
-`, fixture.ContainerdConfig)
+StandardOutput=append:%s
+StandardError=append:%s
+`, fixture.ContainerdConfig, containerdLog, containerdLog)
 	if err := writeNodeFile(ctx, node, dropInSource, []byte(dropIn), 0o644, false); err != nil {
 		return fmt.Errorf("write containerd drop-in source: %w", err)
+	}
+	kubeletDropInSource := "/var/lib/katl/test-artifacts/bootstrap-cni/kubelet-service-dropin.conf"
+	kubeletDropIn := fmt.Sprintf(`[Service]
+StandardOutput=append:%s
+StandardError=append:%s
+`, kubeletLog, kubeletLog)
+	if err := writeNodeFile(ctx, node, kubeletDropInSource, []byte(kubeletDropIn), 0o644, false); err != nil {
+		return fmt.Errorf("write kubelet drop-in source: %w", err)
 	}
 	for _, command := range []struct {
 		name string
 		argv []string
 	}{
 		{name: "install containerd drop-in", argv: []string{"install", "-D", "-m", "0644", dropInSource, fixture.ContainerdDropIn}},
+		{name: "install kubelet drop-in", argv: []string{"install", "-D", "-m", "0644", kubeletDropInSource, "/run/systemd/system/kubelet.service.d/10-katl-vmtest-log.conf"}},
 		{name: "reload systemd", argv: []string{"systemctl", "daemon-reload"}},
 		{name: "restart containerd", argv: []string{"systemctl", "restart", "containerd.service"}},
 		{name: "check containerd", argv: []string{"systemctl", "is-active", "--quiet", "containerd.service"}},
@@ -2045,8 +2359,8 @@ func commandErrorDetail(result *vmtestpb.CommandResult) error {
 
 func assertGeneration0Selection(t *testing.T, data []byte) {
 	t.Helper()
-	var selection generation.BootSelectionRecord
-	if err := json.Unmarshal(data, &selection); err != nil {
+	selection, err := decodeBootSelection(data)
+	if err != nil {
 		t.Fatalf("decode initial boot selection: %v", err)
 	}
 	if selection.DefaultGenerationID != "0" ||
@@ -2134,6 +2448,13 @@ func collectOperationBackedFailureEvidence(ctx context.Context, node vmtest.Runn
 }
 
 func decodeOperationRecord(data []byte) (operation.OperationRecord, error) {
+	if envelope, err := persistedrecord.DecodeEnvelope(data); err == nil {
+		snapshot, err := persistedrecord.DecodePayload[operation.Snapshot](envelope)
+		if err != nil {
+			return operation.OperationRecord{}, err
+		}
+		return snapshot.Record, nil
+	}
 	var record operation.OperationRecord
 	if err := json.Unmarshal(data, &record); err != nil {
 		return operation.OperationRecord{}, err
@@ -2398,10 +2719,12 @@ func collectGenerationEvidence(ctx context.Context, node vmtest.RunningInstalled
 		return "", operationBackedGenerationRecord{}, err
 	}
 	var record operationBackedGenerationRecord
-	if err := json.Unmarshal(specData, &record.Spec); err != nil {
+	record.Spec, err = decodePersistedOrLegacy[generation.GenerationSpec](specData)
+	if err != nil {
 		return "", operationBackedGenerationRecord{}, fmt.Errorf("decode generation spec: %w", err)
 	}
-	if err := json.Unmarshal(statusData, &record.Status); err != nil {
+	record.Status, err = decodePersistedOrLegacy[generation.GenerationStatus](statusData)
+	if err != nil {
 		return "", operationBackedGenerationRecord{}, fmt.Errorf("decode generation status: %w", err)
 	}
 	hostPath := filepath.Join(evidenceDir, "generation-"+generationID+".json")
@@ -2413,6 +2736,19 @@ func collectGenerationEvidence(ctx context.Context, node vmtest.RunningInstalled
 		return "", operationBackedGenerationRecord{}, err
 	}
 	return hostPath, record, nil
+}
+
+func decodePersistedOrLegacy[T any](data []byte) (T, error) {
+	var zero T
+	envelope, err := persistedrecord.DecodeEnvelope(data)
+	if err == nil {
+		return persistedrecord.DecodePayload[T](envelope)
+	}
+	var record T
+	if legacyErr := json.Unmarshal(data, &record); legacyErr != nil {
+		return zero, errors.Join(err, legacyErr)
+	}
+	return record, nil
 }
 
 func assertCommittedGeneration(t *testing.T, record operationBackedGenerationRecord, generationID string) {
@@ -2443,8 +2779,8 @@ func collectBootSelectionEvidence(ctx context.Context, node vmtest.RunningInstal
 	if err != nil {
 		return "", generation.BootSelectionRecord{}, err
 	}
-	var selection generation.BootSelectionRecord
-	if err := json.Unmarshal(data, &selection); err != nil {
+	selection, err := decodeBootSelection(data)
+	if err != nil {
 		return "", generation.BootSelectionRecord{}, fmt.Errorf("decode boot selection: %w", err)
 	}
 	hostPath := filepath.Join(evidenceDir, "boot-selection-after.json")
@@ -2452,6 +2788,18 @@ func collectBootSelectionEvidence(ctx context.Context, node vmtest.RunningInstal
 		return "", generation.BootSelectionRecord{}, err
 	}
 	return hostPath, selection, nil
+}
+
+func decodeBootSelection(data []byte) (generation.BootSelectionRecord, error) {
+	envelope, err := persistedrecord.DecodeEnvelope(data)
+	if err == nil {
+		return persistedrecord.DecodePayload[generation.BootSelectionRecord](envelope)
+	}
+	var selection generation.BootSelectionRecord
+	if legacyErr := json.Unmarshal(data, &selection); legacyErr != nil {
+		return generation.BootSelectionRecord{}, errors.Join(err, legacyErr)
+	}
+	return selection, nil
 }
 
 type nodeLocalStatusEvidence struct {
@@ -2968,6 +3316,8 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 			{Name: "node-metadata", Path: "/etc/katl/node.json"},
 			{Name: "kubeadm-config", Path: "/etc/katl/kubeadm/" + kubeadmRef + "/config.yaml"},
 			{Name: "kubelet-kubeconfig", Path: "/etc/kubernetes/kubelet.conf"},
+			{Name: "containerd-log", Path: "/var/lib/katl/test-artifacts/bootstrap-cni/containerd.log", MaxBytes: 4 << 20, StoreContent: true},
+			{Name: "kubelet-log", Path: "/var/lib/katl/test-artifacts/bootstrap-cni/kubelet.log", MaxBytes: 4 << 20, StoreContent: true},
 		},
 		Journals: []vmtest.GuestJournalRequest{{
 			Name:     "runtime-handoff",

@@ -116,6 +116,9 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
+	if data, readErr := os.ReadFile(filepath.Join(filepath.Clean(root), "proc/cmdline")); readErr == nil {
+		next.KernelCommandLine = generation.MergeKernelCommandLine(next.KernelCommandLine, strings.Fields(string(data)))
+	}
 	next.Boot.LoaderEntryPath = "loader/entries/katl-" + next.GenerationID + ".conf"
 	spec := generation.SpecFromRecord(next)
 	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, now)
@@ -220,6 +223,10 @@ func materializeSysext(root string, candidate string, selected bootstrapplan.Sel
 }
 
 func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile, error) {
+	files, err := inheritedConfextFiles(root, plan.Previous)
+	if err != nil {
+		return nil, err
+	}
 	inputs, digest, err := readStoredKubeadmInput(root, plan.RuntimeInputs.KubeadmInput)
 	if err != nil {
 		return nil, err
@@ -227,7 +234,6 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 	if expected := strings.TrimSpace(plan.RuntimeInputs.KubeadmInput.Digest); expected != "" && digest != expected {
 		return nil, fmt.Errorf("stored kubeadm input digest %s does not match intent %s", digest, expected)
 	}
-	var files []confext.NativeEtcFile
 	for _, input := range inputs {
 		content := input.Content
 		if plan.Operation.OperationKind == bootstrapplan.OperationKindInit && input.RenderPath == plan.RuntimeInputs.KubeadmInput.Path {
@@ -237,7 +243,7 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 			}
 			content = rendered
 		}
-		files = append(files, confext.NativeEtcFile{
+		files = replaceNativeEtcFile(files, confext.NativeEtcFile{
 			Path:    input.RenderPath,
 			Content: string(content),
 			Mode:    input.Mode,
@@ -247,8 +253,68 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 	if err != nil {
 		return nil, err
 	}
-	files = append(files, metadata)
+	files = replaceNativeEtcFile(files, metadata)
 	return files, nil
+}
+
+func inheritedConfextFiles(root string, previous generation.GenerationSpec) ([]confext.NativeEtcFile, error) {
+	if len(previous.Confexts) != 1 {
+		return nil, fmt.Errorf("previous generation %s must have exactly one confext", previous.GenerationID)
+	}
+	expected := filepath.ToSlash(filepath.Join("/var/lib/katl/generations", previous.GenerationID, "confext"))
+	declared := filepath.ToSlash(filepath.Clean(previous.Confexts[0].Path))
+	if declared != expected {
+		return nil, fmt.Errorf("previous generation confext path %s does not match %s", declared, expected)
+	}
+	confextRoot := filepath.Join(filepath.Clean(root), filepath.FromSlash(strings.TrimPrefix(declared, "/")))
+	etcRoot := filepath.Join(confextRoot, "etc")
+	var files []confext.NativeEtcFile
+	if err := filepath.WalkDir(etcRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(etcRoot, path)
+		if err != nil {
+			return err
+		}
+		if rel == "extension-release.d" || strings.HasPrefix(filepath.ToSlash(rel), "extension-release.d/") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("previous confext entry %s is not a regular file", path)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files = append(files, confext.NativeEtcFile{
+			Path:    "/etc/" + filepath.ToSlash(rel),
+			Content: string(content),
+			Mode:    info.Mode().Perm(),
+		})
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read previous generation confext: %w", err)
+	}
+	return files, nil
+}
+
+func replaceNativeEtcFile(files []confext.NativeEtcFile, replacement confext.NativeEtcFile) []confext.NativeEtcFile {
+	path := filepath.Clean(replacement.Path)
+	for i := range files {
+		if filepath.Clean(files[i].Path) == path {
+			files[i] = replacement
+			return files
+		}
+	}
+	return append(files, replacement)
 }
 
 func readStoredKubeadmInput(root string, input bootstrapplan.KubeadmInput) ([]storedInputFile, string, error) {

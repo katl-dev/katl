@@ -74,6 +74,16 @@ setup_failures=()
 help_requested=0
 declare -A artifact_build_actions=()
 
+vmtest_requests_kubernetes_upgrade() {
+    local arg
+    for arg in "${go_test_input_args[@]}"; do
+        if [[ "$arg" == *TestKubeadmUpgradeOperationSmoke* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 usage() {
     cat <<'EOF'
 usage: scripts/vmtest-run [vmtest-run options] [go test args]
@@ -325,7 +335,10 @@ build_default_artifacts() {
             fi
             if ! has_explicit_install_manifest; then
                 targets+=("build-katlos-install-image")
-				targets+=("build-katlos-upgrade-image")
+			targets+=("build-katlos-upgrade-image")
+				if vmtest_requests_kubernetes_upgrade; then
+					targets+=("build-kubernetes-upgrade-sysext")
+				fi
                 targets+=("build-kubernetes-sysext")
             elif ! has_explicit_runtime_artifact; then
                 targets+=("build-runtime")
@@ -385,6 +398,9 @@ mkosi_cache_label_for_target() {
         build-kubernetes-sysext)
             printf 'kubernetes-sysext\n'
             ;;
+		build-kubernetes-upgrade-sysext)
+			printf 'kubernetes-sysext\n'
+			;;
         *)
             printf '%s\n' "$1"
             ;;
@@ -397,11 +413,13 @@ artifact_build_actions_json() {
         --arg buildRuntime "${artifact_build_actions[build-runtime]:-}" \
         --arg buildInstallImage "${artifact_build_actions[build-katlos-install-image]:-}" \
         --arg buildKubernetesSysext "${artifact_build_actions[build-kubernetes-sysext]:-}" \
+		--arg buildKubernetesUpgradeSysext "${artifact_build_actions[build-kubernetes-upgrade-sysext]:-}" \
         '{
           "build-installer": $buildInstaller,
           "build-runtime": $buildRuntime,
           "build-katlos-install-image": $buildInstallImage,
-          "build-kubernetes-sysext": $buildKubernetesSysext
+          "build-kubernetes-sysext": $buildKubernetesSysext,
+		  "build-kubernetes-upgrade-sysext": $buildKubernetesUpgradeSysext
         } | with_entries(select(.value != ""))'
 }
 

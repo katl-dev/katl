@@ -58,11 +58,17 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateTrying || spec.Sysexts[0].PayloadVersion != "v1.36.2" {
 		t.Fatalf("candidate = spec %+v status %+v", spec, status)
 	}
+	if len(spec.Confexts) != 1 || spec.Confexts[0].Path != "/var/lib/katl/generations/gen1/confext" {
+		t.Fatalf("candidate confext refs = %+v", spec.Confexts)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "var/lib/katl/generations/gen1/confext/etc/systemd/network/20-node.network")); err != nil || !strings.Contains(string(data), "DHCP=yes") {
+		t.Fatalf("candidate inherited confext = %q, %v", data, err)
+	}
 	gate := filepath.Join(root, "run/katl/operation-gates/kubeadm-upgrade-1/target-kubelet-released")
 	if data, err := os.ReadFile(gate); err != nil || strings.TrimSpace(string(data)) != record.OperationID {
 		t.Fatalf("gate = %q, %v", data, err)
 	}
-	dropIn := filepath.Join(root, "etc/systemd/system/kubelet.service.d/20-katl-upgrade-gate.conf")
+	dropIn := filepath.Join(root, "run/systemd/system/kubelet.service.d/20-katl-upgrade-gate.conf")
 	if _, err := os.Stat(dropIn); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("completed kubelet gate drop-in still exists: %v", err)
 	}
@@ -76,7 +82,7 @@ func TestInstallKubeletGate(t *testing.T) {
 	if err := executor.installKubeletGate(gate, unit); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "etc/systemd/system", unit))
+	data, err := os.ReadFile(filepath.Join(root, "run/systemd/system", unit))
 	if err != nil || string(data) != "[Unit]\nConditionPathExists="+gate+"\n" {
 		t.Fatalf("kubelet gate drop-in = %q, %v", data, err)
 	}
@@ -216,6 +222,17 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	snapshot := []byte("verified stacked etcd snapshot")
 	snapshotDigest := sha256.Sum256(snapshot)
 	snapshotSHA := hex.EncodeToString(snapshotDigest[:])
+	confextPath := filepath.Join(root, "var/lib/katl/generations/gen0/confext")
+	if err := os.MkdirAll(filepath.Join(confextPath, "etc/systemd/network"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confextPath, "etc/systemd/network/20-node.network"), []byte("[Network]\nDHCP=yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	confextSHA, err := generation.DigestDirectory(confextPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	artifact := filepath.Join(root, "var/lib/katl/artifacts/kubernetes.raw")
 	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
 		t.Fatal(err)
@@ -232,9 +249,10 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	}
 	previous := generation.GenerationSpec{
 		APIVersion: generation.APIVersion, Kind: generation.SpecKind, GenerationID: "gen0", RuntimeVersion: "2026.7.0-dev.0", CreatedAt: now.Add(-time.Hour),
-		Root:    generation.RootSelection{Slot: "root-a", PartitionUUID: "aaaaaaaa-1111-2222-3333-444444444444", RuntimeVersion: "2026.7.0-dev.0", RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", RuntimeArtifactSHA256: strings.Repeat("d", 64)},
-		Boot:    generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl.efi", LoaderEntryPath: "loader/entries/katl-gen0.conf"},
-		Sysexts: []generation.ExtensionRef{{Name: "kubernetes", Path: "/var/lib/katl/generations/gen0/sysext/kubernetes.raw", ActivationPath: "/run/extensions/katl-kubernetes.raw", SHA256: strings.Repeat("e", 64), ArtifactVersion: "v1.36.1", PayloadVersion: "v1.36.1", Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}}},
+		Root:     generation.RootSelection{Slot: "root-a", PartitionUUID: "aaaaaaaa-1111-2222-3333-444444444444", RuntimeVersion: "2026.7.0-dev.0", RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", RuntimeArtifactSHA256: strings.Repeat("d", 64)},
+		Boot:     generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl.efi", LoaderEntryPath: "loader/entries/katl-gen0.conf"},
+		Sysexts:  []generation.ExtensionRef{{Name: "kubernetes", Path: "/var/lib/katl/generations/gen0/sysext/kubernetes.raw", ActivationPath: "/run/extensions/katl-kubernetes.raw", SHA256: strings.Repeat("e", 64), ArtifactVersion: "v1.36.1", PayloadVersion: "v1.36.1", Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}}},
+		Confexts: []generation.GeneratedConfext{{Name: "katl-node", Path: "/var/lib/katl/generations/gen0/confext", ActivationPath: "/run/confexts/katl-node", SHA256: confextSHA, Compatibility: generation.ConfextCompatibility{ID: "katl", VersionID: "1", ConfextLevel: 1}}},
 	}
 	status, err := generation.NewGenerationStatus(previous, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, previous.CreatedAt)
 	if err != nil {

@@ -101,6 +101,21 @@ func TestApplyActivationRejectsRawKubernetesSysextChangeFromSplitLineage(t *test
 	assertMissing(t, filepath.Join(root, "run/extensions/kubernetes.raw"))
 }
 
+func TestKubernetesUpgradeActivationRecognizesSelectedGate(t *testing.T) {
+	record := Record{
+		GenerationID: "upgrade-v1361-cp",
+		KubernetesUpgrade: &KubernetesUpgrade{
+			OperationID:             "kubeadm-upgrade-1",
+			TargetKubeadmAccessMode: "operation-private-sysext",
+			KubeletActivationGate:   "operation-released-target-kubelet",
+		},
+	}
+	err := authorizeKubernetesUpgradeActivation(t.TempDir(), record, ExtensionRef{PayloadVersion: "v1.36.1", SHA256: strings.Repeat("a", 64)})
+	if err == nil || !strings.Contains(err.Error(), "read Kubernetes upgrade operation kubeadm-upgrade-1") {
+		t.Fatalf("authorization error = %v, want operation evidence lookup", err)
+	}
+}
+
 func TestPlanActivationRejectsPathsOutsideSelectedGeneration(t *testing.T) {
 	root := t.TempDir()
 	record := activationRecord(t, root, "2026.06.05-001", "selected sysext\n")

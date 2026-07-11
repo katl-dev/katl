@@ -30,6 +30,7 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	}
 	sysextPayload := []byte("kubernetes-sysext-payload")
 	writeFile(t, filepath.Join(root, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"), string(sysextPayload))
+	writeFile(t, filepath.Join(root, "proc/cmdline"), "root=PARTUUID=old rootfstype=squashfs ro systemd.machine_id=old katl.generation=0 katl.root-slot=root-a console=ttyS0,115200n8 katl.vmtest_agent=1\n")
 	inputDir, err := installer.StoredKubeadmInputDir(root, "control-plane")
 	if err != nil {
 		t.Fatal(err)
@@ -97,12 +98,17 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	if result.Spec.Boot.LoaderEntryPath != "loader/entries/katl-1.conf" {
 		t.Fatalf("candidate loader entry path = %q", result.Spec.Boot.LoaderEntryPath)
 	}
+	commandLine := strings.Join(result.Spec.KernelCommandLine, " ")
+	if !strings.Contains(commandLine, "console=ttyS0,115200n8") || !strings.Contains(commandLine, "katl.vmtest_agent=1") || strings.Contains(commandLine, "root=PARTUUID=old") || strings.Contains(commandLine, "katl.generation=0") {
+		t.Fatalf("candidate kernel command line = %q", commandLine)
+	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "InitConfiguration")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "controlPlaneEndpoint: api.katl.test:6443")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora")
+	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/systemd/network/80-katl-vmtest-dhcp.network"), "DHCP=yes")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), "What=/var/lib/katl/kubernetes/etc-kubernetes")
-	assertContains(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount")
+	assertContains(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf"), "RequiresMountsFor=/var/lib/containerd")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf"), "Requires=containerd.service etc-kubernetes.mount")
 	assertContains(t, filepath.Join(root, "run/systemd/system/katl-generation-activate.service.d/10-katl-live-generation.conf"), "--generation 1")
@@ -115,7 +121,7 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 		t.Fatalf("boot selection changed = %#v", selection)
 	}
 	if _, err := os.Lstat(filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target")); !os.IsNotExist(err) {
-		t.Fatalf("katl-kubeadm-ready.target was enabled: %v", err)
+		t.Fatalf("baseline katl-kubeadm-ready.target was enabled: %v", err)
 	}
 }
 
@@ -261,6 +267,8 @@ func writeGenerationZero(t *testing.T, root string) (generation.GenerationSpec, 
 	if err := generation.WriteGeneration(root, spec, status); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/systemd/network/80-katl-vmtest-dhcp.network"), "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n")
+	writeFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora\n")
 	return spec, status
 }
 

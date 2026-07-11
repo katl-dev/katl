@@ -42,6 +42,7 @@ type GenerationSpec struct {
 	Sysexts              []ExtensionRef     `json:"sysexts"`
 	Confexts             []GeneratedConfext `json:"confexts"`
 	KernelCommandLine    []string           `json:"kernelCommandLine"`
+	KubernetesUpgrade    *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
 	CreatedAt            time.Time          `json:"createdAt"`
 }
 
@@ -87,6 +88,7 @@ func SpecFromRecord(record Record) GenerationSpec {
 		Sysexts:              append([]ExtensionRef{}, record.Sysexts...),
 		Confexts:             append([]GeneratedConfext{}, record.Confexts...),
 		KernelCommandLine:    append([]string{}, record.KernelCommandLine...),
+		KubernetesUpgrade:    record.KubernetesUpgrade,
 		CreatedAt:            record.CreatedAt.UTC(),
 	}
 }
@@ -132,6 +134,7 @@ func RecordFromSplit(spec GenerationSpec, status GenerationStatus) Record {
 		Sysexts:              append([]ExtensionRef(nil), spec.Sysexts...),
 		Confexts:             append([]GeneratedConfext(nil), spec.Confexts...),
 		KernelCommandLine:    append([]string(nil), spec.KernelCommandLine...),
+		KubernetesUpgrade:    spec.KubernetesUpgrade,
 		CreatedAt:            spec.CreatedAt,
 		BootState:            status.BootState,
 		HealthState:          status.HealthState,
@@ -421,6 +424,14 @@ func ValidateGenerationSpec(spec GenerationSpec) error {
 	for _, confext := range spec.Confexts {
 		if _, err := normalizeGeneratedConfext(confext); err != nil {
 			return err
+		}
+	}
+	if spec.KubernetesUpgrade != nil {
+		if _, err := cleanSegment("Kubernetes upgrade operation id", spec.KubernetesUpgrade.OperationID); err != nil {
+			return err
+		}
+		if strings.TrimSpace(spec.KubernetesUpgrade.TargetKubeadmAccessMode) == "" || strings.TrimSpace(spec.KubernetesUpgrade.KubeletActivationGate) == "" {
+			return fmt.Errorf("Kubernetes upgrade access mode and kubelet activation gate are required")
 		}
 	}
 	if spec.CreatedAt.IsZero() {

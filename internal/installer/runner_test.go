@@ -1053,7 +1053,7 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/etc-kubernetes.mount"), "Where=/etc/kubernetes")
-	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount")
+	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount")
 	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"))
 	assertContains(t, filepath.Join(targetRoot, "etc/tmpfiles.d/katl-state.conf"), "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -")
 	assertContains(t, filepath.Join(targetRoot, "etc/tmpfiles.d/katl-state.conf"), "d /var/lib/etcd 0755 root root -")

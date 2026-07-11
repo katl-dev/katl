@@ -184,13 +184,15 @@ stop-source-kubelet-before-kubeadm
   because kubelet manages static pods.
 ```
 
-This decision selects the first access mode and gate, but mutating Kubernetes
-upgrade execution remains unsupported until they are implemented and VM-tested.
-`katlc` must reject normal apply requests that change the Kubernetes sysext on an
-already bootstrapped node. `katlc` may produce a rejected or plan-only
-node-local operation record, but must not select the candidate for boot, globally
-activate the target sysext, run kubeadm, or restart kubelet. `katlctl` may only
-request and display that result.
+This decision selects the first access mode and gate. Mutating Kubernetes
+upgrade execution is supported only through the kubeadm-upgrade operation
+executor. `katlc` continues to reject normal apply requests that change the
+Kubernetes sysext on an already bootstrapped node. An upgrade candidate records
+the authorizing operation ID, `operation-private-sysext` target kubeadm access,
+and the `operation-released-target-kubelet` activation gate. Boot activation
+accepts the changed sysext only when the referenced operation succeeded,
+committed that exact candidate and payload digest, and observed the target
+kubelet after releasing the gate.
 
 Repair access after host rollback uses the same operation-private sysext mode.
 Katl reopens the failed operation, verifies the target sysext digest from the
@@ -595,20 +597,19 @@ redaction of kubeadm diagnostics
 separation of host rollback from Kubernetes cluster-state rollback
 ```
 
-VM tests should eventually cover:
+VM release gates cover:
 
 ```text
-single-node control-plane minor upgrade
-multi-control-plane rolling upgrade with one apply node and one node upgrade
+single-control-plane patch upgrade through kubeadm apply
 worker upgrade after the control plane
-failed kubeadm upgrade that records diagnostics and remains rerunnable
-failed host boot after sysext staging that rolls back only host generation
+real stacked-etcd snapshot evidence before control-plane mutation
+candidate generation staging, commit, reboot activation, and node readiness
+pre-mutation failure and post-mutation repair-required operation semantics
 ```
 
-Until those VM tests exist, Kubernetes upgrade execution remains unsupported by
-default. Plan-only records are allowed; mutating execution is refused until the
-target kubeadm access mode and kubelet activation gate are selected,
-implemented, and proven.
+The v0.1 proof pair is Kubernetes v1.36.0 to v1.36.1 in a two-node VM cluster.
+Multi-control-plane rolling upgrade, member replacement, and destructive
+failure recovery remain separate gates.
 
 ## Deferred Questions
 

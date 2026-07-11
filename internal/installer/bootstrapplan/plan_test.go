@@ -91,6 +91,9 @@ func TestCreateAcceptsBootstrapInitFromStoredIntent(t *testing.T) {
 
 func TestCreateAcceptsWorkerJoinFromStoredIntent(t *testing.T) {
 	root := cleanRoot(t, "worker")
+	editIntent(t, root, func(intent *installer.ClusterIntent) {
+		intent.Kubernetes.PayloadVersion = ""
+	})
 	source, ref, client := serveKubernetesBundleFixture(t, "v1.36.1", "worker join kubernetes sysext payload")
 	req := operation.BootstrapRequest{
 		InventoryNodeName:        "worker-1",

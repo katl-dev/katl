@@ -26,6 +26,7 @@ type StateAssets struct {
 	VarMount           string
 	EtcKubernetesMount string
 	GenerationActivate string
+	KubeadmActivate    string
 	KubeadmReadyTarget string
 	BootCompleteTarget string
 	BootHealthService  string
@@ -78,6 +79,7 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		}, "\n"),
 		EtcKubernetesMount: kubernetesMount,
 		GenerationActivate: renderGenerationActivateService(),
+		KubeadmActivate:    renderKubeadmActivateService(),
 		KubeadmReadyTarget: renderKubeadmReadyTarget(),
 		BootCompleteTarget: renderBootCompleteTarget(),
 		BootHealthService:  renderBootHealthService(),
@@ -148,12 +150,34 @@ func renderKubeadmReadyTarget() string {
 		"[Unit]",
 		"Description=Katl kubeadm-ready handoff point",
 		"Documentation=man:systemd.target(5)",
-		"ConditionPathIsExecutable=/usr/bin/kubeadm",
-		"ConditionPathIsExecutable=/usr/bin/crictl",
-		"Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
-		"After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
+		"ConditionFileIsExecutable=/usr/bin/kubeadm",
+		"ConditionFileIsExecutable=/usr/bin/crictl",
+		"Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
+		"After=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
 		"",
 		"[Install]",
+		"",
+	}, "\n")
+}
+
+func renderKubeadmActivateService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Activate the committed Katl Kubernetes runtime",
+		"Documentation=man:systemd-confext(8) man:systemd-sysext(8)",
+		"Requires=systemd-sysext.service systemd-confext.service",
+		"After=systemd-sysext.service systemd-confext.service",
+		"ConditionFileIsExecutable=/usr/bin/kubeadm",
+		"ConditionFileIsExecutable=/usr/bin/kubelet",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"RemainAfterExit=yes",
+		"ExecStart=/usr/bin/systemctl daemon-reload",
+		"ExecStart=/usr/bin/systemctl start katl-kubeadm-ready.target",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
 		"",
 	}, "\n")
 }
@@ -335,6 +359,12 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-generation-activate.service", assets.GenerationActivate, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-kubeadm-activate.service", assets.KubeadmActivate, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-activate.service", "../katl-kubeadm-activate.service"); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-kubeadm-ready.target", assets.KubeadmReadyTarget, 0o644); err != nil {

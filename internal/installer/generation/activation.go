@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/zariel/katl/internal/installer/operation"
 )
 
 const (
@@ -200,7 +202,41 @@ func rejectKubernetesSysextChange(root string, record Record) error {
 	if !previousOK {
 		return nil
 	}
+	if err := authorizeKubernetesUpgradeActivation(root, record, nextRef); err == nil {
+		return nil
+	} else if record.KubernetesUpgrade != nil {
+		return err
+	}
 	return fmt.Errorf("normal runtime configuration cannot activate Kubernetes sysext change from %s/%s to %s/%s before target kubeadm access mode and kubelet activation gate are implemented", previousRef.PayloadVersion, previousRef.SHA256, nextRef.PayloadVersion, nextRef.SHA256)
+}
+
+func authorizeKubernetesUpgradeActivation(root string, record Record, nextRef ExtensionRef) error {
+	upgrade := record.KubernetesUpgrade
+	if upgrade == nil {
+		return fmt.Errorf("generation has no Kubernetes upgrade authorization")
+	}
+	if upgrade.TargetKubeadmAccessMode != "operation-private-sysext" || upgrade.KubeletActivationGate != "operation-released-target-kubelet" {
+		return fmt.Errorf("generation %s has unsupported Kubernetes upgrade authorization %q/%q", record.GenerationID, upgrade.TargetKubeadmAccessMode, upgrade.KubeletActivationGate)
+	}
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		return fmt.Errorf("open Kubernetes upgrade operation store: %w", err)
+	}
+	op, err := store.Read(upgrade.OperationID)
+	if err != nil {
+		return fmt.Errorf("read Kubernetes upgrade operation %s: %w", upgrade.OperationID, err)
+	}
+	if op.OperationKind != "kubeadm-upgrade" || !op.Terminal || op.Result != operation.ResultSucceeded || op.CandidateGenerationID != record.GenerationID || op.GenerationCommitState != operation.GenerationCommitCommitted {
+		return fmt.Errorf("Kubernetes upgrade operation %s did not successfully commit generation %s", upgrade.OperationID, record.GenerationID)
+	}
+	if op.KubernetesSysextUpdate == nil || op.KubernetesSysextUpdate.TargetPayloadVersion != nextRef.PayloadVersion || !strings.EqualFold(op.KubernetesSysextUpdate.TargetSysextSHA256, nextRef.SHA256) {
+		return fmt.Errorf("Kubernetes upgrade operation %s target does not match generation %s", upgrade.OperationID, record.GenerationID)
+	}
+	evidence := op.KubeadmUpgradeEvidence
+	if evidence == nil || evidence.TargetKubeadmAccessMode != upgrade.TargetKubeadmAccessMode || evidence.KubeletActivationGate != upgrade.KubeletActivationGate || evidence.KubeletGateState != "target-observed" {
+		return fmt.Errorf("Kubernetes upgrade operation %s lacks completed target kubeadm and kubelet gate evidence", upgrade.OperationID)
+	}
+	return nil
 }
 
 func previousGenerationForActivation(root string, record Record) (string, error) {

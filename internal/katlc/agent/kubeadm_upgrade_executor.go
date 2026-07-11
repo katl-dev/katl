@@ -238,6 +238,17 @@ func (e *Executor) stageKubernetesCandidate(previous generation.GenerationSpec, 
 	spec.PreviousGenerationID = previous.GenerationID
 	spec.Boot.LoaderEntryPath = "loader/entries/katl-" + request.CandidateGenerationID + ".conf"
 	spec.Sysexts = replaceKubernetesRef(spec.Sysexts, ref)
+	spec.KubernetesUpgrade = &generation.KubernetesUpgrade{
+		OperationID:             operationID,
+		TargetKubeadmAccessMode: kubeadmAccessOperationPrivate,
+		KubeletActivationGate:   kubeletGateOperationReleased,
+	}
+	if err := e.cloneCandidateConfext(previous.GenerationID, request.CandidateGenerationID, spec.Confexts); err != nil {
+		return generation.ExtensionRef{}, err
+	}
+	for i := range spec.Confexts {
+		spec.Confexts[i].Path = filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, request.CandidateGenerationID, "confext"))
+	}
 	spec.CreatedAt = e.clock()
 	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, e.clock())
 	if err != nil {
@@ -249,8 +260,25 @@ func (e *Executor) stageKubernetesCandidate(previous generation.GenerationSpec, 
 	return ref, nil
 }
 
+func (e *Executor) cloneCandidateConfext(previousID, candidateID string, refs []generation.GeneratedConfext) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	previousLogical := filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, previousID, "confext"))
+	for _, ref := range refs {
+		if filepath.ToSlash(filepath.Clean(ref.Path)) != previousLogical {
+			return fmt.Errorf("confext %s path %q does not belong to previous generation %s", ref.Name, ref.Path, previousID)
+		}
+	}
+	candidateLogical := filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, candidateID, "confext"))
+	if err := os.CopyFS(rootedRuntimePath(e.Root, candidateLogical), os.DirFS(rootedRuntimePath(e.Root, previousLogical))); err != nil {
+		return fmt.Errorf("inherit confext for candidate generation %s: %w", candidateID, err)
+	}
+	return nil
+}
+
 func (e *Executor) installKubeletGate(gatePath, unit string) error {
-	path := rootedRuntimePath(e.Root, "/etc/systemd/system/"+unit)
+	path := rootedRuntimePath(e.Root, "/run/systemd/system/"+unit)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -327,7 +355,7 @@ func (e *Executor) removeKubeletGate(ctx context.Context, record operation.Opera
 	if record.KubeadmUpgradeEvidence == nil || strings.TrimSpace(record.KubeadmUpgradeEvidence.KubeletGateEnforcementUnit) == "" {
 		return fmt.Errorf("kubelet activation gate enforcement unit is not recorded")
 	}
-	path := rootedRuntimePath(e.Root, "/etc/systemd/system/"+record.KubeadmUpgradeEvidence.KubeletGateEnforcementUnit)
+	path := rootedRuntimePath(e.Root, "/run/systemd/system/"+record.KubeadmUpgradeEvidence.KubeletGateEnforcementUnit)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -398,7 +426,7 @@ func (e *Executor) restoreSourceKubernetesAfterFailure(record operation.Operatio
 	if record.KubeadmUpgradeEvidence != nil && strings.TrimSpace(record.KubeadmUpgradeEvidence.KubeletGateEnforcementUnit) != "" {
 		unit = record.KubeadmUpgradeEvidence.KubeletGateEnforcementUnit
 	}
-	gatePath := rootedRuntimePath(e.Root, "/etc/systemd/system/"+unit)
+	gatePath := rootedRuntimePath(e.Root, "/run/systemd/system/"+unit)
 	removed := false
 	if err := os.Remove(gatePath); err == nil {
 		removed = true

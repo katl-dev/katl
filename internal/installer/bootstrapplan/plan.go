@@ -240,9 +240,6 @@ func validateIntent(intent installer.ClusterIntent) error {
 	if strings.TrimSpace(intent.Inventory.NodeName) == "" {
 		return fmt.Errorf("cluster intent inventory nodeName is required")
 	}
-	if strings.TrimSpace(intent.Kubernetes.PayloadVersion) == "" {
-		return fmt.Errorf("cluster intent Kubernetes payloadVersion is required")
-	}
 	if intent.BootstrapProfile == nil || strings.TrimSpace(intent.BootstrapProfile.Ref) == "" {
 		return fmt.Errorf("cluster intent bootstrapProfile ref is required")
 	}
@@ -300,7 +297,7 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	if kind == OperationKindJoinControlPlane && request.SystemRole != "control-plane" {
 		return fmt.Errorf("%s requires control-plane systemRole", OperationKindJoinControlPlane)
 	}
-	if request.KubernetesPayloadVersion != intent.Kubernetes.PayloadVersion {
+	if strings.TrimSpace(intent.Kubernetes.PayloadVersion) != "" && request.KubernetesPayloadVersion != intent.Kubernetes.PayloadVersion {
 		return fmt.Errorf("bootstrapRequest kubernetesPayloadVersion %q does not match stored intent %q", request.KubernetesPayloadVersion, intent.Kubernetes.PayloadVersion)
 	}
 	if strings.TrimSpace(intent.Kubernetes.BundleSource) != "" || strings.TrimSpace(intent.Kubernetes.BundleRef) != "" {

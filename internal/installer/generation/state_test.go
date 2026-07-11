@@ -172,15 +172,35 @@ func TestKubeadmReadyRuntimeUnits(t *testing.T) {
 	wantTarget := `[Unit]
 Description=Katl kubeadm-ready handoff point
 Documentation=man:systemd.target(5)
-ConditionPathIsExecutable=/usr/bin/kubeadm
-ConditionPathIsExecutable=/usr/bin/crictl
-Requires=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service
-After=systemd-sysext.service systemd-confext.service containerd.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service
+ConditionFileIsExecutable=/usr/bin/kubeadm
+ConditionFileIsExecutable=/usr/bin/crictl
+Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service
+After=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service
 
 [Install]
 `
 	if assets.KubeadmReadyTarget != wantTarget {
 		t.Fatalf("katl-kubeadm-ready.target:\n%s\nwant:\n%s", assets.KubeadmReadyTarget, wantTarget)
+	}
+	wantActivate := `[Unit]
+Description=Activate the committed Katl Kubernetes runtime
+Documentation=man:systemd-confext(8) man:systemd-sysext(8)
+Requires=systemd-sysext.service systemd-confext.service
+After=systemd-sysext.service systemd-confext.service
+ConditionFileIsExecutable=/usr/bin/kubeadm
+ConditionFileIsExecutable=/usr/bin/kubelet
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl daemon-reload
+ExecStart=/usr/bin/systemctl start katl-kubeadm-ready.target
+
+[Install]
+WantedBy=multi-user.target
+`
+	if assets.KubeadmActivate != wantActivate {
+		t.Fatalf("katl-kubeadm-activate.service:\n%s\nwant:\n%s", assets.KubeadmActivate, wantActivate)
 	}
 	wantContainerd := `[Unit]
 Requires=var.mount
@@ -334,6 +354,8 @@ func TestWriteState(t *testing.T) {
 	assertFile(t, filepath.Join(root, "etc/systemd/system/var.mount"), assets.VarMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-generation-activate.service"), assets.GenerationActivate)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-activate.service"), assets.KubeadmActivate)
+	assertSymlink(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-activate.service"), "../katl-kubeadm-activate.service")
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
 	assertMissing(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"))
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-complete.target"), assets.BootCompleteTarget)
@@ -387,6 +409,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "var.mount"), strings.ReplaceAll(assets.VarMount, "PARTUUID="+statePartUUID, "/dev/disk/by-partlabel/KATL_STATE"))
 	assertRepoFile(t, filepath.Join(systemdRoot, "etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-generation-activate.service"), assets.GenerationActivate)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-activate.service"), assets.KubeadmActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-complete.target"), assets.BootCompleteTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-health.service"), assets.BootHealthService)
@@ -402,6 +425,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertSymlink(t, filepath.Join(systemdRoot, "local-fs.target.wants/var.mount"), "../var.mount")
 	assertMissing(t, filepath.Join(systemdRoot, "local-fs.target.wants/etc-kubernetes.mount"))
 	assertMissing(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-kubeadm-ready.target"))
+	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-kubeadm-activate.service"), "../katl-kubeadm-activate.service")
 	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-boot-complete.target"), "../katl-boot-complete.target")
 	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katlc-agent.service"), "../katlc-agent.service")
 	assertMissing(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-state-projection-check.service"))
