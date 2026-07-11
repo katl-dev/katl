@@ -30,6 +30,19 @@ func TestInstalledRuntimeTwoNodeWipeClusterBootstrapSmoke(t *testing.T) {
 	_ = vmtest.RequireWorld(t)
 }
 
+func TestInstalledRuntimeTwoNodeWipeNodeBootstrapSmoke(t *testing.T) {
+	if run, ok := wipeNodeWorldSmokeRun(t); ok {
+		runWipeNodeBootstrapSmoke(t, run)
+		return
+	}
+
+	options := vmtest.DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run two-node node wipe bootstrap smoke")
+	}
+	_ = vmtest.RequireWorld(t)
+}
+
 func TestInstalledRuntimeTwoNodeWipeReinstallBootstrapSmoke(t *testing.T) {
 	if run, ok := wipeReinstallWorldSmokeRun(t); ok {
 		runWipeReinstallBootstrapSmoke(t, run)
@@ -46,6 +59,11 @@ func TestInstalledRuntimeTwoNodeWipeReinstallBootstrapSmoke(t *testing.T) {
 func wipeClusterWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
 	t.Helper()
 	return wipeReinstallWorldSmokeRunNamed(t, "installed-runtime-two-node-wipe-cluster-bootstrap")
+}
+
+func wipeNodeWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
+	t.Helper()
+	return wipeReinstallWorldSmokeRunNamed(t, "installed-runtime-two-node-wipe-node-bootstrap")
 }
 
 func wipeReinstallWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
@@ -237,6 +255,173 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		t.Fatal(err)
 	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func runWipeNodeBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
+	t.Helper()
+	runner, scenario, result, inputs := run.Runner, run.Scenario, run.Result, run.Inputs
+	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{Libvirt: true, OVMF: true, KVM: run.Options.KVM})
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
+	defer cancel()
+	bundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, run.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	defer bundleServer.Close()
+	liveNodes := []vmtest.RunningInstalledRuntimeNode{}
+	defer func() {
+		for _, node := range liveNodes {
+			stopNode(t, node)
+		}
+	}()
+	nodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneMAC, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerMAC)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	liveNodes = nodes
+	initial, err := runWipeReinstallBootstrapRound(t, ctx, run, result, "initial", bundle, nodes)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	cpNode, workerNode := nodeByName(nodes, "cp-1"), nodeByName(nodes, "worker-1")
+	oldMachineID, err := readNodeFileWithRetry(ctx, workerNode, "/var/lib/katl/identity/machine-id", 4<<10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerOverlay, err := bootOverlayPath(workerNode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runWipeNodeHandoff(t, ctx, result, initial, workerNode); err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	stopNode(t, workerNode)
+	liveNodes = []vmtest.RunningInstalledRuntimeNode{cpNode}
+	reinstallRunner := vmtest.NewRunner(vmtest.Options{Enabled: true, StateRoot: filepath.Join(result.RunDir, "wipe-node-reinstall-vm-runs"), Keep: vmtest.KeepAlways, KVM: run.Options.KVM, Missing: vmtest.MissingFails})
+	reinstallResult, err := runWipeReinstallNode(ctx, run, reinstallRunner, "worker-1", workerOverlay, inputs.WorkerInstall, inputs.WorkerMAC)
+	if err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	workerDisk, err := firstInstallResultDisk(reinstallResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postRunner := vmtest.NewRunner(vmtest.Options{Enabled: true, StateRoot: filepath.Join(result.RunDir, "post-node-reinstall-vm-runs"), Keep: vmtest.KeepFailed, KVM: run.Options.KVM, Missing: vmtest.MissingFails})
+	postResult, err := postRunner.Plan(vmtest.Scenario{Name: "post-node-reinstall-bootstrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postResult.Started = time.Now().UTC()
+	reinstalledWorker, err := vmtest.StartInstalledRuntimeNode(ctx, postResult, vmtest.InstalledRuntimeNodeConfig{Name: "worker-1", Runtime: vmtest.InstalledRuntimeConfig{Disk: workerDisk, DiskFormat: vmtest.DiskQCOW2, ESPArtifacts: reinstallResult.Artifacts.InstalledESP, NodeMetadata: inputs.WorkerMetadata, VM: operationBackedVMConfigForRun(run, inputs.WorkerMAC, 0)}}, vmtest.VMRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveNodes = append(liveNodes, reinstalledWorker)
+	if _, err := collectWipeReinstallGeneration0Evidence(ctx, postResult, []vmtest.RunningInstalledRuntimeNode{reinstalledWorker}); err != nil {
+		t.Fatal(err)
+	}
+	newMachineID, err := readNodeFileWithRetry(ctx, reinstalledWorker, "/var/lib/katl/identity/machine-id", 4<<10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(newMachineID)) == strings.TrimSpace(string(oldMachineID)) {
+		t.Fatal("worker reinstall preserved the old node identity")
+	}
+	if err := runReinstalledWorkerJoin(t, ctx, run, postResult, initial.Kubeconfig, bundle, liveNodes); err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func runReinstalledWorkerJoin(t *testing.T, ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode) error {
+	t.Helper()
+	cpNode, workerNode := nodeByName(nodes, "cp-1"), nodeByName(nodes, "worker-1")
+	cpAddress, err := liveNodeIPv4Address(ctx, cpNode, run.Inputs.ControlPlaneAddress)
+	if err != nil {
+		return err
+	}
+	workerAddress, err := liveNodeIPv4Address(ctx, workerNode, run.Inputs.WorkerAddress)
+	if err != nil {
+		return err
+	}
+	if err := installKubernetesBundleCA(ctx, workerNode, bundle); err != nil {
+		return err
+	}
+	if _, err := stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, cpAddress, workerAddress); err != nil {
+		return err
+	}
+	dir := filepath.Join(result.RunDir, "post-node-reinstall")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tokenFiles := map[string]string{"cp-1": filepath.Join(dir, "cp-1.token"), "worker-1": filepath.Join(dir, "worker-1.token")}
+	for _, node := range nodes {
+		token, err := readNodeFileWithRetry(ctx, node, "/var/lib/katl/agent/token", 4<<10, time.Minute)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(tokenFiles[node.Name], token, 0o600); err != nil {
+			return err
+		}
+	}
+	inventoryPath := filepath.Join(dir, "bootstrap-inventory.yaml")
+	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, bundle, cpAddress, workerAddress, tokenFiles); err != nil {
+		return err
+	}
+	var stdout, stderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "bootstrap", "--inventory", inventoryPath, "--init-node", "cp-1", "--join-worker", "worker-1"}, &stdout, &stderr)
+	_ = os.WriteFile(filepath.Join(dir, "worker-join.stdout"), stdout.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "worker-join.stderr"), stderr.Bytes(), 0o600)
+	if err != nil {
+		return fmt.Errorf("join reinstalled worker: %w: %s", err, stderr.String())
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(dir, "kubectl-get-nodes.txt"), 3*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func runWipeNodeHandoff(t *testing.T, ctx context.Context, result vmtest.Result, initial wipeReinstallBootstrapEvidence, worker vmtest.RunningInstalledRuntimeNode) error {
+	t.Helper()
+	dir := filepath.Join(result.RunDir, "wipe-node")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	var stdout, stderr bytes.Buffer
+	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "wipe", "node", "--inventory", initial.Inventory, "--node", "worker-1", "--kubeconfig", initial.Kubeconfig, "--confirm-destructive-wipe", "--acknowledge", wipeClusterAcknowledgement, "--client-request-id", "vmtest-wipe-node", "--timeout", "10m"}, &stdout, &stderr)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stdout"), stdout.Bytes(), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stderr"), stderr.Bytes(), 0o644)
+	if err != nil {
+		return fmt.Errorf("katlctl wipe node failed: %w: %s", err, stderr.String())
+	}
+	var report struct {
+		Kind              string `json:"kind"`
+		KubernetesCleanup string `json:"kubernetesCleanup"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		return err
+	}
+	if report.Kind != "WipeNodeReport" || report.KubernetesCleanup != "succeeded" {
+		return fmt.Errorf("wipe node report = %#v", report)
+	}
+	if _, record, err := waitForDestructiveResetEvidence(ctx, worker, filepath.Join(dir, "evidence", "worker-1")); err != nil {
+		return err
+	} else {
+		assertDestructiveResetRecord(t, record)
+	}
+	if _, err := collectWipeClusterBootArtifactEvidence(ctx, worker, filepath.Join(dir, "evidence", "worker-1")); err != nil {
+		return err
+	}
+	if output, err := kubectlOutput(ctx, initial.Kubeconfig, "get", "node", "worker-1"); err == nil {
+		return fmt.Errorf("worker Kubernetes Node still exists after cleanup: %s", output)
+	}
+	return nil
 }
 
 func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, inventoryPath string, nodes []vmtest.RunningInstalledRuntimeNode) (wipeClusterEvidence, error) {

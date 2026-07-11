@@ -248,6 +248,67 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	return result, nil
 }
 
+// RunAgentWorkerJoin joins one fresh worker to an already initialized cluster.
+// It deliberately does not run bootstrap-init or rewrite operator kubeconfig.
+func RunAgentWorkerJoin(ctx context.Context, request Request, workerName string, deps AgentBootstrapDependencies) (Result, error) {
+	inv := request.Inventory
+	if strings.TrimSpace(request.ControlPlaneEndpoint) != "" {
+		inv.ControlPlaneEndpoint = strings.TrimSpace(request.ControlPlaneEndpoint)
+	}
+	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv, InitNode: request.InitNode, AddressOverride: request.AddressOverrides})
+	if err != nil {
+		return Result{}, err
+	}
+	result := Result{Plan: plan, DryRun: request.DryRun}
+	result.addPhase("plan", "", "", "passed")
+	if err := validateAgentPlan(plan); err != nil {
+		return result, err
+	}
+	if deps.Connector == nil {
+		return result, errors.New("katlc agent connector is required")
+	}
+	statuses, err := checkAgentReadiness(ctx, plan, deps.Connector)
+	if err != nil {
+		result.addPhase("readiness", "", "", "failed")
+		return result, errors.New(inventory.Redact(err.Error()))
+	}
+	result.Readiness = readinessFromStatuses(plan, statuses)
+	if err := inventory.Error(result.Readiness); err != nil {
+		result.addPhase("readiness", "", "", "failed")
+		return result, err
+	}
+	result.addPhase("readiness", "", "", "passed")
+	if request.DryRun {
+		result.addPhase("dry-run", "", "", "passed")
+		return result, nil
+	}
+	initNode, err := findInitNode(plan)
+	if err != nil {
+		return result, err
+	}
+	var worker inventory.PlannedNode
+	for _, candidate := range workerNodes(plan) {
+		if candidate.Name == strings.TrimSpace(workerName) {
+			worker = candidate
+			break
+		}
+	}
+	if worker.Name == "" {
+		return result, fmt.Errorf("worker %q is not a worker join target", workerName)
+	}
+	material, err := createWorkerJoinMaterial(ctx, initNode, worker, statuses[initNode.Name], "existing-cluster", deps)
+	if err != nil {
+		result.addPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "failed")
+		return result, fmt.Errorf("worker join material for %s: %s", worker.Name, inventory.Redact(err.Error()))
+	}
+	if err := submitAndWaitWorkerJoin(ctx, worker, plan, statuses[worker.Name], material, deps); err != nil {
+		result.addPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "failed")
+		return result, fmt.Errorf("worker join operation on %s: %s", worker.Name, inventory.Redact(err.Error()))
+	}
+	result.addPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "passed")
+	return result, nil
+}
+
 func validateAgentPlan(plan inventory.Plan) error {
 	for _, node := range plan.Nodes {
 		if node.Access.Method != "agent" {

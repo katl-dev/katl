@@ -38,6 +38,7 @@ var (
 
 var runBootstrap = cluster.Run
 var runAgentBootstrap = cluster.RunAgentBootstrap
+var runAgentWorkerJoin = cluster.RunAgentWorkerJoin
 var dialVMTestAgent = vmtest.DialAgent
 var dialKatlcAgent = dialKatlcAgentTCP
 var wipeNodeKubectlRunner cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
@@ -1354,6 +1355,7 @@ type clusterBootstrapOptions struct {
 	addresses                              addressOverrides
 	inventoryPath                          string
 	initNode                               string
+	joinWorker                             string
 	controlPlaneEndpoint                   string
 	kubernetesBundleSource                 string
 	kubernetesBundleRef                    string
@@ -1381,6 +1383,7 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster bootstrap inventory")
 	cmd.Flags().StringVar(&opts.initNode, "init-node", "", "first control-plane node for kubeadm init")
+	cmd.Flags().StringVar(&opts.joinWorker, "join-worker", "", "join one fresh worker to an already initialized cluster without rerunning kubeadm init")
 	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
 	cmd.Flags().StringVar(&opts.kubernetesBundleSource, "kubernetes-bundle-source", "", "HTTPS Kubernetes payload bundle source")
 	cmd.Flags().StringVar(&opts.kubernetesBundleRef, "kubernetes-bundle-ref", "", "exact Kubernetes payload bundle ref vMAJOR.MINOR.PATCH@sha256:<digest>")
@@ -1426,6 +1429,19 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		OverwriteKubeconfig:  opts.overwriteKubeconfig,
 		DryRun:               opts.dryRun,
 		Bootstrap:            bootstrap,
+	}
+	if strings.TrimSpace(opts.joinWorker) != "" {
+		if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
+			return fmt.Errorf("--join-worker requires katlc agent transport")
+		}
+		var token string
+		token, err = readAgentToken(opts.agentTokenFile)
+		if err != nil {
+			return err
+		}
+		result, err := runAgentWorkerJoin(ctx, request, strings.TrimSpace(opts.joinWorker), agentBootstrapDependencies(token))
+		printBootstrapResult(stdout, result)
+		return err
 	}
 	var result cluster.Result
 	if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {

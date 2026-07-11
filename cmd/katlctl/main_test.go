@@ -466,6 +466,36 @@ func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
 	}
 }
 
+func TestClusterBootstrapJoinsFreshWorkerWithoutInit(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	oldJoin := runAgentWorkerJoin
+	oldBootstrap := runAgentBootstrap
+	calledBootstrap := false
+	runAgentBootstrap = func(context.Context, cluster.Request, cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+		calledBootstrap = true
+		return cluster.Result{}, nil
+	}
+	var gotWorker string
+	runAgentWorkerJoin = func(_ context.Context, request cluster.Request, worker string, _ cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+		gotWorker = worker
+		return cluster.Result{Plan: inventory.Plan{InitNode: request.InitNode}, Phases: []cluster.Phase{{Name: "worker-join", Node: worker, Status: "passed"}}}, nil
+	}
+	t.Cleanup(func() {
+		runAgentWorkerJoin = oldJoin
+		runAgentBootstrap = oldBootstrap
+	})
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"cluster", "bootstrap", "--inventory", inventoryPath, "--init-node", "cp-1", "--join-worker", "worker-1"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if gotWorker != "worker-1" || calledBootstrap {
+		t.Fatalf("worker = %q, full bootstrap called = %v", gotWorker, calledBootstrap)
+	}
+	if !strings.Contains(stdout.String(), "phase=worker-join node=worker-1 status=passed") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
 func TestClusterBootstrapReturnsAgentBootstrapError(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	old := runAgentBootstrap
