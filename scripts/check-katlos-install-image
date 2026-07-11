@@ -5,8 +5,10 @@ artifact="${1:-}"
 if [[ -z "$artifact" ]]; then
     version="${KATL_VERSION:-0.0.0-dev}"
     architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
-    artifact="_build/mkosi/katlos-install-${version}-${architecture}.squashfs"
+    image_role="${KATL_KATLOS_IMAGE_ROLE:-install}"
+    artifact="_build/mkosi/katlos-${image_role}-${version}-${architecture}.squashfs"
 fi
+image_role="${KATL_KATLOS_IMAGE_ROLE:-install}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
 
@@ -76,10 +78,11 @@ image_size="$(stat -c %s "$artifact")"
 image_sha="$(sha256sum "$artifact" | awk '{print $1}')"
 jq -e \
     --arg sha "$image_sha" \
+    --arg role "$image_role" \
     --argjson size "$image_size" \
     '.apiVersion == "katl.dev/v1alpha1"
       and .kind == "KatlOSImageArtifact"
-      and .imageRole == "install"
+      and .imageRole == $role
       and .format == "squashfs"
       and .path != null
       and .sizeBytes == $size
@@ -94,10 +97,10 @@ index="$tmpdir/image.json"
 unsquashfs -cat "$artifact" katlos/image.json >"$index"
 reject_host_paths_json "embedded KatlOS image index" "$index"
 
-jq -e \
+jq -e --arg role "$image_role" \
     '.apiVersion == "katl.dev/v1alpha1"
       and .kind == "KatlOSImage"
-      and .imageRole == "install"
+      and .imageRole == $role
       and .format == "squashfs"
       and .runtimeInterface == "katl-runtime-1"
       and ([.components[].role] | sort) == ["runtime-root","runtime-uki"]' "$index" >/dev/null ||

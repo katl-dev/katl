@@ -169,6 +169,20 @@ func TestMkosiDefaultBuildIdentityIsStable(t *testing.T) {
 	}
 }
 
+func TestKatlosImageCheckSelectsRequestedRole(t *testing.T) {
+	repo := repoRoot(t)
+	data := mustReadFile(t, filepath.Join(repo, "scripts", "check-katlos-install-image"))
+	for _, want := range []string{
+		`image_role="${KATL_KATLOS_IMAGE_ROLE:-install}"`,
+		`katlos-${image_role}-${version}-${architecture}.squashfs`,
+		`.imageRole == $role`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("check-katlos-install-image missing %q", want)
+		}
+	}
+}
+
 func TestMkosiRuntimeCacheUsesIncludedBinaryIdentity(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()
