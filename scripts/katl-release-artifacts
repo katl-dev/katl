@@ -23,7 +23,22 @@ EOF
 
 is_katlos_tag() {
     local tag="$1"
-    [[ "$tag" =~ ^v[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|rc)\.(0|[1-9][0-9]*))?$ ]]
+    [[ "$tag" =~ ^v[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]]
+}
+
+previous_katlos_tag() {
+    local target="$1"
+    local current_tag="$2"
+    local commit tag
+
+    while IFS= read -r commit; do
+        while IFS= read -r tag; do
+            is_katlos_tag "$tag" || continue
+            [[ "$tag" != "$current_tag" ]] || continue
+            printf '%s\n' "$tag"
+            return 0
+        done < <(git tag --points-at "$commit" --list 'v*' --sort=refname)
+    done < <(git rev-list --first-parent "$target")
 }
 
 generate_release_notes() {
@@ -38,12 +53,7 @@ generate_release_notes() {
     git rev-parse --verify --quiet "$target^{commit}" >/dev/null ||
         fail "release notes target is not a commit: $target"
 
-    while IFS= read -r tag; do
-        is_katlos_tag "$tag" || continue
-        [[ "$tag" != "$current_tag" ]] || continue
-        previous_tag="$tag"
-        break
-    done < <(git tag --merged "$target" --list 'v*' --sort=-version:refname)
+    previous_tag="$(previous_katlos_tag "$target" "$current_tag" || true)"
 
     if [[ -n "$previous_tag" ]]; then
         range="$previous_tag..$target"
@@ -86,8 +96,8 @@ validate_version() {
     local version="$1"
     [[ -n "$version" ]] || fail "release version is empty"
     ((${#version} <= 80)) || fail "release version is longer than 80 characters"
-    [[ "$version" =~ ^[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|rc)\.(0|[1-9][0-9]*))?$ ]] ||
-        fail "release version is not canonical KatlOS CalVer (YYYY.M.PATCH[-dev.N|-rc.N]): $version"
+    [[ "$version" =~ ^[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]] ||
+        fail "release version is not canonical KatlOS CalVer (YYYY.M.PATCH[-dev.N|-alpha.N|-beta.N|-rc.N]): $version"
 }
 
 verify_artifact() {

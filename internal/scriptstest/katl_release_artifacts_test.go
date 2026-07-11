@@ -25,6 +25,8 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 	}{
 		{name: "stable tag", args: []string{"version", "push", "tag", "v2026.7.0"}, want: "2026.7.0"},
 		{name: "development tag", args: []string{"version", "push", "tag", "v2026.7.0-dev.0"}, want: "2026.7.0-dev.0"},
+		{name: "alpha tag", args: []string{"version", "push", "tag", "v2026.7.0-alpha.1"}, want: "2026.7.0-alpha.1"},
+		{name: "beta branch", args: []string{"version", "push", "branch", "release/2026.7.0-beta.2"}, want: "2026.7.0-beta.2"},
 		{name: "release candidate branch", args: []string{"version", "push", "branch", "release/2026.7.0-rc.1"}, want: "2026.7.0-rc.1"},
 		{name: "versioned branch", args: []string{"version", "push", "branch", "release/v2026.7.0"}, want: "2026.7.0"},
 		{name: "manual", args: []string{"version", "workflow_dispatch", "branch", "main", "2026.7.0-dev.1"}, want: "2026.7.0-dev.1"},
@@ -58,6 +60,52 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 				t.Fatalf("version = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestKatlReleaseArtifactNotesFollowReleaseHistory(t *testing.T) {
+	repo := repoRoot(t)
+	gitDir := t.TempDir()
+	runGit(t, gitDir, "init", "--quiet")
+	runGit(t, gitDir, "config", "user.name", "Katl Test")
+	runGit(t, gitDir, "config", "user.email", "test@katl.dev")
+
+	for index, release := range []struct {
+		tag     string
+		subject string
+	}{
+		{tag: "v2026.7.0-dev.4", subject: "release: finish development train"},
+		{tag: "v2026.7.0-alpha.1", subject: "release: publish first alpha"},
+		{tag: "v2026.7.0-beta.1", subject: "release: publish first beta"},
+	} {
+		path := filepath.Join(gitDir, fmt.Sprintf("release-%d", index))
+		if err := os.WriteFile(path, []byte(release.subject+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, gitDir, "add", filepath.Base(path))
+		runGit(t, gitDir, "commit", "--quiet", "-m", release.subject)
+		runGit(t, gitDir, "tag", release.tag)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-beta.1")
+	cmd.Dir = gitDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("notes failed: %v\n%s", err, output)
+	}
+	notes := string(output)
+	for _, value := range []string{
+		"publish first beta",
+		"v2026.7.0-alpha.1...v2026.7.0-beta.1",
+	} {
+		if !strings.Contains(notes, value) {
+			t.Fatalf("release notes missing %q:\n%s", value, notes)
+		}
+	}
+	for _, value := range []string{"publish first alpha", "finish development train"} {
+		if strings.Contains(notes, value) {
+			t.Fatalf("release notes unexpectedly contain %q:\n%s", value, notes)
+		}
 	}
 }
 

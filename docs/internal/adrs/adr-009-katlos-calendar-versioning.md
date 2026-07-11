@@ -6,9 +6,10 @@ Date: 2026-07-11.
 
 ## Context
 
-The v0.1 project milestone needs public development, release-candidate, and
-stable artifact identities. `v0.1` describes the milestone scope, but using it
-as the product version would discard the requested date-based release identity.
+The v0.1 project milestone needs public development, alpha, beta,
+release-candidate, and stable artifact identities. `v0.1` describes the
+milestone scope, but using it as the product version would discard the requested
+date-based release identity.
 
 The version is embedded in KatlOS image names and metadata, Go binaries,
 release-branch artifacts, Git tags, and GitHub Releases. It must sort in a
@@ -22,6 +23,8 @@ KatlOS uses calendar versions in this SemVer-compatible form:
 ```text
 YYYY.M.PATCH
 YYYY.M.PATCH-dev.N
+YYYY.M.PATCH-alpha.N
+YYYY.M.PATCH-beta.N
 YYYY.M.PATCH-rc.N
 ```
 
@@ -30,14 +33,16 @@ YYYY.M.PATCH-rc.N
 cut in the same month. A release keeps its original version after the month
 changes; the version records its release line, not the current date.
 
-`dev.N` identifies development publications and `rc.N` identifies release
-candidates. Both sequences start at `0` and increment for materially different
-published artifacts. Development builds precede release candidates, which
-precede the stable release:
+`dev.N` identifies development publications, `alpha.N` and `beta.N` communicate
+public API maturity, and `rc.N` identifies release candidates. Counters contain
+no leading zero and increment for materially different published artifacts.
+The intended maturity sequence is:
 
 ```text
 2026.7.0-dev.0
 2026.7.0-dev.1
+2026.7.0-alpha.1
+2026.7.0-beta.1
 2026.7.0-rc.0
 2026.7.0-rc.1
 2026.7.0
@@ -45,14 +50,19 @@ precede the stable release:
 
 The v0.1 project milestone is therefore a scope milestone, not the literal
 KatlOS product version. Its first development publication is
-`2026.7.0-dev.0`, and its first release candidate is `2026.7.0-rc.0`.
+`2026.7.0-dev.0`, and its first public alpha is `2026.7.0-alpha.1`.
 
-Git tags use a leading `v`, for example `v2026.7.0-rc.0`. Release branches use
+Git tags use a leading `v`, for example `v2026.7.0-alpha.1`. Release branches use
 the exact product version after `release/`, for example
-`release/2026.7.0-rc.0`. The release tooling accepts an optional `v` in either
+`release/2026.7.0-alpha.1`. The release tooling accepts an optional `v` in either
 place, removes it from embedded artifact metadata, and rejects zero-padded
 months, leading-zero counters, other prerelease labels, and non-calendar
 versions. Manual workflow runs use the product version without the `v`.
+
+SemVer compares textual prerelease identifiers lexically, which does not place
+`dev`, `alpha`, `beta`, and `rc` in Katl's maturity order. Release notes and
+automation therefore select the previous KatlOS release from first-parent Git
+history, not from lexical or `version:refname` tag ordering.
 
 The calendar version identifies a KatlOS release as a whole. Kubernetes payload
 bundles and node-extension bundles retain their independent payload versions
@@ -60,14 +70,14 @@ and compatibility metadata; they do not inherit the KatlOS calendar version.
 
 ## Consequences
 
-Release automation can distinguish development builds and release candidates
-using the prerelease suffix while retaining one date-based stable identity.
-Standard SemVer comparison places `dev` before `rc` and both before the stable
-version for the same release line.
+Release automation can distinguish development, alpha, beta, and release
+candidate builds using the prerelease suffix while retaining one date-based
+stable identity. All prereleases still compare before the stable version for
+the same release line.
 
 Cutting a new month does not automatically renumber unreleased artifacts. The
 release owner chooses the target calendar line, then increments its development
-or release-candidate counter for every materially different publication.
+or maturity-stage counter for every materially different publication.
 
 The workflow intentionally rejects loose labels such as `nightly`, literal
 milestone versions such as `0.1.0`, zero-padded forms such as `2026.07.0`, and

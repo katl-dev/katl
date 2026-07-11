@@ -213,11 +213,11 @@ with an explicit version for build verification. Release-branch and manual runs
 retain one GitHub Actions artifact; tag runs additionally publish those exact
 files as assets on the matching GitHub Release.
 
-KatlOS release versions use `YYYY.M.PATCH` calendar versions with `-dev.N` and
-`-rc.N` prereleases. The first development and release-candidate identities for
-the July 2026 line are `2026.7.0-dev.0` and `2026.7.0-rc.0`; the stable identity
-is `2026.7.0`. Use tags such as `v2026.7.0-rc.0` and release branches such as
-`release/2026.7.0-rc.0`. The workflow strips an optional `v` before embedding
+KatlOS release versions use `YYYY.M.PATCH` calendar versions with `-dev.N`,
+`-alpha.N`, `-beta.N`, and `-rc.N` prereleases. The first public alpha for the
+July 2026 line is `2026.7.0-alpha.1`; the stable identity is `2026.7.0`. Use
+tags such as `v2026.7.0-alpha.1` and release branches such as
+`release/2026.7.0-alpha.1`. The workflow strips an optional `v` before embedding
 the version and rejects noncanonical versions. See
 `docs/internal/adrs/adr-009-katlos-calendar-versioning.md` for the policy.
 
