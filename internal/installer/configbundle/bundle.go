@@ -296,7 +296,24 @@ func WriteArchive(path string, request BuildRequest) (Result, error) {
 }
 
 func DecodeSource(reader io.Reader) (SourceConfig, error) {
-	decoder := yaml.NewDecoder(reader)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return SourceConfig{}, fmt.Errorf("read cluster config: %w", err)
+	}
+	var document yaml.Node
+	nodeDecoder := yaml.NewDecoder(bytes.NewReader(data))
+	if err := nodeDecoder.Decode(&document); err != nil {
+		return SourceConfig{}, fmt.Errorf("decode cluster config: %w", err)
+	}
+	var trailing yaml.Node
+	if err := nodeDecoder.Decode(&trailing); err != io.EOF {
+		return SourceConfig{}, fmt.Errorf("decode cluster config: multiple YAML documents")
+	}
+	if err := validateSourceFields(&document); err != nil {
+		return SourceConfig{}, fmt.Errorf("decode cluster config: %w", err)
+	}
+
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	var config SourceConfig
 	if err := decoder.Decode(&config); err != nil {

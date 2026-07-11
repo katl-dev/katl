@@ -23,6 +23,30 @@ spec: {}
 `spec` is the only policy-bearing top-level field. Unsupported top-level fields
 or unsupported fields under `spec` are rejected before bundle output is written.
 
+Before creating installation media or a bundle, run the non-writing compiler
+preflight:
+
+```console
+katlctl config validate ./cluster.yaml
+```
+
+The command resolves local references, applies every layer, compiles all node
+plans, and reports the cluster name, content digests, and resolved node names and
+roles. It does not create an output file. Errors identify the source field path,
+including node indexes, for example
+`spec.nodes[0].overrides.install.targetDisk.byPath`.
+
+Editors and validation tools can consume the exact structural schema shipped by
+the installed CLI:
+
+```console
+katlctl config schema > cluster-config-v1alpha1.schema.json
+```
+
+The JSON Schema is derived from the same Go types as the strict YAML decoder.
+The compiler remains authoritative for semantic rules such as destructive disk
+guards, Kubernetes selection, local-reference safety, and layer conflicts.
+
 ## Layer Model
 
 Every node is rendered from four explicit layers, in this order:
@@ -69,8 +93,6 @@ spec:
         authorizedKeys: []
     networkd:
       files: []
-    sysctl:
-      settings: {}
     kubernetes:
       version: v1.36.1
       bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:<OCI-manifest-digest>
@@ -84,8 +106,6 @@ spec:
           minSizeMiB: 65536
       networkd:
         files: []
-      sysctl:
-        settings: {}
       kubernetes:
         labels: {}
         taints: []

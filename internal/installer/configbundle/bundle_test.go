@@ -3,7 +3,9 @@ package configbundle
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -239,7 +241,7 @@ spec:
   nodeRange:
     prefix: worker
 `,
-			want: "field nodeRange not found",
+			want: "spec.nodeRange: field is not supported",
 		},
 	}
 	for _, tt := range tests {
@@ -289,8 +291,38 @@ spec:
     count: 3
 `)
 	_, _, err := BuildArchive(BuildRequest{SourcePath: path})
-	if err == nil || !strings.Contains(err.Error(), "field nodeTemplate not found") {
+	if err == nil || !strings.Contains(err.Error(), "spec.nodeTemplate: field is not supported") {
 		t.Fatalf("BuildArchive() error = %v, want unknown template field", err)
+	}
+}
+
+func TestSourceSchemaGolden(t *testing.T) {
+	data, err := SourceSchema()
+	if err != nil {
+		t.Fatalf("SourceSchema() error = %v", err)
+	}
+	var document struct {
+		ID   string `json:"$id"`
+		Defs map[string]struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	if document.ID != SourceSchemaID {
+		t.Fatalf("schema id = %q, want %q", document.ID, SourceSchemaID)
+	}
+	root := document.Defs["configbundle.SourceConfig"]
+	for _, field := range []string{"apiVersion", "kind", "metadata", "spec"} {
+		if _, ok := root.Properties[field]; !ok {
+			t.Fatalf("root schema is missing %q", field)
+		}
+	}
+	got := fmt.Sprintf("%x", sha256.Sum256(data))
+	const want = "dc5d97319f79566dfba750852860dc360d441ce29b72254517865926229df2a6"
+	if got != want {
+		t.Fatalf("schema SHA-256 = %s, want %s; review the authoring contract before accepting a new golden", got, want)
 	}
 }
 

@@ -197,6 +197,78 @@ func TestConfigBundleCommandWritesBundle(t *testing.T) {
 	}
 }
 
+func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read temp directory: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "cluster.yaml" {
+		t.Fatalf("validation wrote files: %#v", entries)
+	}
+	var report configValidationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if report.Kind != "ClusterConfigValidation" || report.ClusterName != "lab" || report.Source != sourcePath {
+		t.Fatalf("report = %#v", report)
+	}
+	if !strings.HasPrefix(report.SourceDigest, "sha256:") || !strings.HasPrefix(report.BundleDigest, "sha256:") || !strings.HasPrefix(report.ArtifactVersion, "sha256:") {
+		t.Fatalf("report digests = %#v", report)
+	}
+	if len(report.Nodes) != 1 || report.Nodes[0] != (configValidationNode{Name: "cp-1", SystemRole: "control-plane"}) {
+		t.Fatalf("resolved nodes = %#v", report.Nodes)
+	}
+}
+
+func TestConfigValidateReportsNestedFieldPath(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
+	source := strings.Replace(configBundleSource(), "targetDisk:\n            byID:", "targetDisk:\n            unsupportedSelector: true\n            byID:", 1)
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "spec.nodes[0].overrides.install.targetDisk.unsupportedSelector: field is not supported") {
+		t.Fatalf("run() error = %v, want nested field path", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want empty", stdout.String(), stderr.String())
+	}
+}
+
+func TestConfigSchemaCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"config", "schema"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	var schema struct {
+		ID    string `json:"$id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	if schema.ID != "https://katl.dev/schemas/config.katl.dev/v1alpha1/cluster-config.json" || schema.Title != "config.katl.dev/v1alpha1 ClusterConfig" {
+		t.Fatalf("schema identity = %#v", schema)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestLoadInventoryPreservesKubernetesBundleSelection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "inventory.yaml")
 	bundleRef := "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:" + strings.Repeat("a", 64)

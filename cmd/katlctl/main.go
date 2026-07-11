@@ -103,6 +103,8 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	configCmd := &cobra.Command{Use: "config", Short: "Katl configuration operations"}
 	configCmd.AddCommand(newConfigPathCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigTopologyCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigValidateCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigSchemaCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigBundleCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigApplyCommand(ctx, stdout, stderr))
 	cmd.AddCommand(configCmd)
@@ -903,6 +905,83 @@ func runConfigTopology(opts configTopologyOptions, stdout, stderr io.Writer) err
 type configBundleOptions struct {
 	sourcePath string
 	outputPath string
+}
+
+type configValidationNode struct {
+	Name       string `json:"name"`
+	SystemRole string `json:"systemRole"`
+}
+
+type configValidationReport struct {
+	APIVersion      string                 `json:"apiVersion"`
+	Kind            string                 `json:"kind"`
+	Source          string                 `json:"source"`
+	ClusterName     string                 `json:"clusterName"`
+	SourceDigest    string                 `json:"sourceDigest"`
+	BundleDigest    string                 `json:"bundleDigest"`
+	ArtifactVersion string                 `json:"artifactVersion"`
+	Nodes           []configValidationNode `json:"nodes"`
+}
+
+func newConfigValidateCommand(stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate SOURCE",
+		Short: "Validate and resolve a cluster config without writing a bundle",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return runConfigValidate(args[0], stdout, stderr)
+		},
+	}
+}
+
+func runConfigValidate(sourcePath string, stdout, stderr io.Writer) error {
+	_ = stderr
+	_, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
+		SourcePath:     sourcePath,
+		KatlctlVersion: version,
+		KatlctlCommit:  commit,
+		CreatedBy:      "katlctl config validate",
+	})
+	if err != nil {
+		return err
+	}
+	nodes := make([]configValidationNode, 0, len(result.Manifest.Nodes))
+	for _, node := range result.Manifest.Nodes {
+		nodes = append(nodes, configValidationNode{Name: node.Name, SystemRole: node.SystemRole})
+	}
+	report := configValidationReport{
+		APIVersion:      configbundle.APIVersion,
+		Kind:            "ClusterConfigValidation",
+		Source:          sourcePath,
+		ClusterName:     result.Manifest.ClusterName,
+		SourceDigest:    result.Manifest.Source.SourceDigest,
+		BundleDigest:    result.Digest,
+		ArtifactVersion: result.Manifest.ArtifactVersion,
+		Nodes:           nodes,
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config validation report: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+func newConfigSchemaCommand(stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "schema",
+		Short: "Print the ClusterConfig JSON Schema",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			_ = stderr
+			data, err := configbundle.SourceSchema()
+			if err != nil {
+				return err
+			}
+			_, err = stdout.Write(data)
+			return err
+		},
+	}
 }
 
 type configBundleReport struct {
