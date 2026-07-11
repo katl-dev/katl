@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+cd "$repo_root"
+
+mapfile -d '' go_files < <(git ls-files -z '*.go')
+if ((${#go_files[@]} > 0)); then
+    unformatted="$(gofmt -l "${go_files[@]}")"
+    if [[ -n "$unformatted" ]]; then
+        printf 'gofmt required for:\n%s\n' "$unformatted" >&2
+        exit 1
+    fi
+fi
+
+if (($# > 1)); then
+    printf 'usage: scripts/check-fast [GIT_DIFF_RANGE]\n' >&2
+    exit 2
+fi
+git diff --check
+git diff --cached --check
+if (($# == 1)); then
+    git diff --check "$1"
+fi
+
+go test ./... -count=1

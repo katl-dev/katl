@@ -32,14 +32,9 @@ generate_release_notes() {
     local -a commits=()
 
     validate_version "$version"
-    if [[ "${GITHUB_REF_TYPE:-}" != branch ]] &&
-        git rev-parse --verify --quiet "refs/tags/$current_tag^{commit}" >/dev/null; then
-        target="refs/tags/$current_tag^{commit}"
-    else
-        target="${KATL_RELEASE_TARGET:-${GITHUB_SHA:-HEAD}}"
-        git rev-parse --verify --quiet "$target^{commit}" >/dev/null ||
-            fail "release notes target is not a commit: $target"
-    fi
+    target="${KATL_RELEASE_TARGET:-HEAD}"
+    git rev-parse --verify --quiet "$target^{commit}" >/dev/null ||
+        fail "release notes target is not a commit: $target"
 
     while IFS= read -r tag; do
         is_katlos_tag "$tag" || continue

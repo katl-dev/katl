@@ -58,6 +58,12 @@ Katl is a greenfield project that produces and maintains KatlOS: an installable,
 ## Git Workflow
 
 - Review `git status --short` before editing, staging, or committing.
+- Deliver changes through ready-for-review pull requests; use drafts only when
+  the user explicitly asks for one.
+- Keep pull request descriptions concise. Summarize the change and its reason
+  or root cause, but do not enumerate routine local validation commands.
+- Enable auto-merge after required checks when the repository supports it and
+  the user has authorized publishing the change.
 - Only stage and commit files that are part of the current task. Do not sweep unrelated local changes into a commit.
 - Prefer explicit path staging, for example `git add AGENTS.md docs/internal/initial-design.md`.
 - Agents must use `git commit-wrapped` for commits and must supply both a title and a body.
