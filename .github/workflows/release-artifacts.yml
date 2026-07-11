@@ -5,7 +5,7 @@ on:
     branches:
       - "release/**"
     tags:
-      - "**"
+      - "v*"
   workflow_dispatch:
     inputs:
       version:

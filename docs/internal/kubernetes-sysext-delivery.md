@@ -90,7 +90,7 @@ The YAML-facing install or bootstrap intent uses:
 ```yaml
 node:
   bootstrap:
-    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/kubernetes-payloads
+    kubernetesBundleSource: https://ghcr.io/v2/katl-dev/bundles
     kubernetesBundleRef: v1.36.0@sha256:<bundle-manifest-digest>
 ```
 
@@ -103,7 +103,7 @@ pre-decision scaffolding and replaced by these fields during implementation.
 Examples:
 
 ```text
-source=https://ghcr.io/v2/katl-dev/kubernetes-payloads
+source=https://ghcr.io/v2/katl-dev/bundles
 ref=v1.36.0@sha256:<bundle-manifest-digest>
 
 source=https://github.com/katl-dev/katl/releases/download/kubernetes-v1.36.0/oci
@@ -259,16 +259,15 @@ annotations:
 Tags are convenience aliases only:
 
 ```text
-v1.36.0
-v1.36.0-x86_64
-v1.36.0-katl.1-x86_64
+kubernetes-v1.36.0-katl.1-x86_64
+kubernetes-sha256-<bundle-manifest-digest>
 ```
 
 Tags must never be recorded in generation metadata without resolving to the
 bundle manifest digest and sysext payload digest. A release tag must not be
 moved after publication. If a payload must be rebuilt for the same Kubernetes
 patch, publish a new `artifactVersion` and tag such as
-`v1.36.0-katl.2-x86_64`; the `payloadVersion` remains `v1.36.0`.
+`kubernetes-v1.36.0-katl.2-x86_64`; the `payloadVersion` remains `v1.36.0`.
 
 The GitHub Releases or local fixture static layout uses the same custom
 manifest bytes and digest:
@@ -335,7 +334,7 @@ publish a new bundle manifest digest.
 User-facing refs are therefore stable across hosting shapes:
 
 ```text
-source=https://ghcr.io/v2/katl-dev/kubernetes-payloads
+source=https://ghcr.io/v2/katl-dev/bundles
 ref=v1.36.0@sha256:<bundle-manifest-digest>
 
 source=https://github.com/katl-dev/katl/releases/download/kubernetes-v1.36.0/oci
@@ -518,7 +517,7 @@ Renovate updates mkosi.profiles/kubernetes-sysext/kubernetes.env
   -> GitHub Actions builds the Kubernetes sysext for the exact target version
   -> checks verify sysext contents, metadata, package locks, and checksums
   -> katl-publish-kubernetes-sysext stages the OCI bundle manifest, layers, and catalog data
-  -> GHCR or GitHub Releases-hosted OCI artifacts are published immutably
+  -> the custom OCI artifact is published immutably to ghcr.io/katl-dev/bundles
 ```
 
 The producer consumes Katl runtime compatibility as data, even while it lives in
@@ -878,11 +877,14 @@ and node-local configuration remain in `katl-dev/katl`.
 
 ## Publication Target
 
-OCI is the preferred publication shape for forward compatibility. GHCR is the
-natural registry target. GitHub Releases may still host the same bundle as a
-static OCI layout, index, or mirrored artifact set for simple HTTPS retrieval
-and inspection. In both cases, the object users reference is the bundle/catalog
-endpoint, not a raw sysext blob.
+OCI in GHCR is the canonical publication shape. All project-minted bundle kinds
+share `ghcr.io/katl-dev/bundles` and use kind-prefixed immutable tags. A
+Kubernetes bundle has a human-facing
+`kubernetes-<artifactVersion>-<architecture>` tag and a mandatory
+`kubernetes-sha256-<bundle-manifest-digest>` tag. `katlc` derives the latter
+from the exact source/ref, resolves the OCI image manifest, and requires the
+pinned Katl bundle manifest to be its config. GitHub Releases or a static HTTPS
+layout may mirror the same bytes later, but they are not the primary store.
 
 The OCI manifest digest is the distribution digest. The sysext payload digest is
 still recorded as the activation digest in bundle metadata, catalog data, and

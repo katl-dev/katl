@@ -1,6 +1,7 @@
 package kubernetesbundle
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +17,10 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
+	"github.com/opencontainers/image-spec/specs-go"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/content/memory"
 )
 
 func TestFetchAndStage(t *testing.T) {
@@ -72,6 +77,80 @@ func TestFetchAndStage(t *testing.T) {
 	readJSON(t, filepath.Join(cacheDir, "index.json"), &index)
 	if len(index.Entries) != 1 || index.Entries[0].BundleManifestDigest != staged.BundleManifestDigest {
 		t.Fatalf("local index = %#v", index)
+	}
+}
+
+func TestFetchAndStageOCI(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	repository := writeOCIRepository(t, fixture, nil)
+	parsedRef, err := parseRef(fixture.ref())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Source:           "https://ghcr.io/v2/katl-dev/bundles",
+		Ref:              fixture.ref(),
+		CacheDir:         t.TempDir(),
+		RuntimeInterface: "katl-runtime-1",
+		Architecture:     "x86_64",
+	}
+
+	staged, err := fetchAndStageOCI(context.Background(), request, parsedRef, repository)
+	if err != nil {
+		t.Fatalf("fetchAndStageOCI() error = %v", err)
+	}
+	if staged.BundleManifestDigest != fixture.staged.BundleManifestDigest || staged.PayloadVersion != "v1.36.0" {
+		t.Fatalf("staged identity = %#v", staged)
+	}
+	payload, err := os.ReadFile(staged.SysextPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "kubernetes sysext 1.36.0" {
+		t.Fatalf("payload = %q", payload)
+	}
+}
+
+func TestFetchAndStageOCIRejectsMissingLayer(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", "kubernetes sysext 1.36.0")
+	repository := writeOCIRepository(t, fixture, func(manifest *ocispec.Manifest) {
+		manifest.Layers = manifest.Layers[:len(manifest.Layers)-1]
+	})
+	parsedRef, err := parseRef(fixture.ref())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Source:           "https://ghcr.io/v2/katl-dev/bundles",
+		Ref:              fixture.ref(),
+		CacheDir:         t.TempDir(),
+		RuntimeInterface: "katl-runtime-1",
+		Architecture:     "x86_64",
+	}
+
+	_, err = fetchAndStageOCI(context.Background(), request, parsedRef, repository)
+	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "OCI manifest has 3 layers, want 4") {
+		t.Fatalf("fetchAndStageOCI() error = %v, want missing layer rejection", err)
+	}
+}
+
+func TestRegistryRepositorySource(t *testing.T) {
+	for _, test := range []struct {
+		source string
+		want   bool
+	}{
+		{source: "https://ghcr.io/v2/katl-dev/bundles", want: true},
+		{source: "https://packages.katl.dev/kubernetes", want: false},
+		{source: "https://ghcr.io/v2/", want: false},
+		{source: "https://user:secret@ghcr.io/v2/katl-dev/bundles", want: false},
+	} {
+		_, got, err := registryRepository(test.source, http.DefaultClient)
+		if err != nil {
+			t.Fatalf("registryRepository(%q) error = %v", test.source, err)
+		}
+		if got != test.want {
+			t.Fatalf("registryRepository(%q) match = %t, want %t", test.source, got, test.want)
+		}
 	}
 }
 
@@ -243,6 +322,67 @@ func writeFixture(t *testing.T, payloadVersion string, payload string) fixture {
 		t.Fatalf("index entries = %d, want 1", len(index.Entries))
 	}
 	return fixture{root: outputDir, staged: staged, indexEntry: index.Entries[0]}
+}
+
+func writeOCIRepository(t *testing.T, fixture fixture, mutate func(*ocispec.Manifest)) *memory.Store {
+	t.Helper()
+	ctx := context.Background()
+	repository := memory.New()
+	bundleBytes, err := os.ReadFile(fixture.staged.BundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := content.NewDescriptorFromBytes(bundleMediaType, bundleBytes)
+	if config.Digest.String() != fixture.staged.BundleManifestDigest {
+		t.Fatalf("OCI config digest = %s, want %s", config.Digest, fixture.staged.BundleManifestDigest)
+	}
+	if err := repository.Push(ctx, config, bytes.NewReader(bundleBytes)); err != nil {
+		t.Fatal(err)
+	}
+
+	var bundle Bundle
+	readJSON(t, fixture.staged.BundlePath, &bundle)
+	paths := map[string]string{
+		sysextRole:     fixture.staged.ArtifactPath,
+		metadataRole:   filepath.Join(filepath.Dir(fixture.staged.BundlePath), "metadata.json"),
+		provenanceRole: fixture.staged.PackageProvenancePath,
+		catalogRole:    fixture.staged.CatalogFragmentPath,
+	}
+	var layers []ocispec.Descriptor
+	for _, descriptor := range append(append([]Descriptor(nil), bundle.Payloads...), bundle.Metadata...) {
+		data, err := os.ReadFile(paths[descriptor.Role])
+		if err != nil {
+			t.Fatal(err)
+		}
+		layer := content.NewDescriptorFromBytes(descriptor.MediaType, data)
+		if layer.Digest.String() != descriptor.Digest || layer.Size != descriptor.SizeBytes {
+			t.Fatalf("OCI layer for %s = %#v, want digest %s size %d", descriptor.Role, layer, descriptor.Digest, descriptor.SizeBytes)
+		}
+		if err := repository.Push(ctx, layer, bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+		layers = append(layers, layer)
+	}
+	manifest := ocispec.Manifest{
+		Versioned:    specs.Versioned{SchemaVersion: 2},
+		MediaType:    ocispec.MediaTypeImageManifest,
+		ArtifactType: bundleArtifactType,
+		Config:       config,
+		Layers:       layers,
+	}
+	if mutate != nil {
+		mutate(&manifest)
+	}
+	manifestBytes := marshalJSON(t, manifest)
+	manifestDescriptor := content.NewDescriptorFromBytes(ocispec.MediaTypeImageManifest, manifestBytes)
+	if err := repository.Push(ctx, manifestDescriptor, bytes.NewReader(manifestBytes)); err != nil {
+		t.Fatal(err)
+	}
+	tag := registryTagPrefix + strings.TrimPrefix(fixture.staged.BundleManifestDigest, "sha256:")
+	if err := repository.Tag(ctx, manifestDescriptor, tag); err != nil {
+		t.Fatal(err)
+	}
+	return repository
 }
 
 func fixtureServer(t *testing.T, root string) *httptest.Server {

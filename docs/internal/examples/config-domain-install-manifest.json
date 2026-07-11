@@ -21,7 +21,7 @@
       "inventoryNodeName": "control-plane-01",
       "controlPlaneEndpoint": "api.katl.test:6443",
       "bootstrapProfileRef": "control-plane",
-      "kubernetesBundleSource": "https://ghcr.io/v2/katl-dev/kubernetes-payloads",
+      "kubernetesBundleSource": "https://ghcr.io/v2/katl-dev/bundles",
       "kubernetesBundleRef": "v1.36.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     },
     "networkd": {

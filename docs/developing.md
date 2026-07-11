@@ -208,7 +208,7 @@ and release gates.
 ## GitHub Release Artifacts
 
 `.github/workflows/release-artifacts.yml` builds Katl artifacts for pushes to
-`release/**` branches and all pushed tags. It can also be dispatched manually
+`release/**` branches and pushed `v*` KatlOS tags. It can also be dispatched manually
 with an explicit version for build verification. Release-branch and manual runs
 retain one GitHub Actions artifact; tag runs additionally publish those exact
 files as assets on the matching GitHub Release.
@@ -233,6 +233,30 @@ published through this workflow. Kubernetes bundles have a separate producer
 contract. Katl release artifacts are currently unsigned, and each publication
 includes an `UNSIGNED.txt` marker stating that checksums provide integrity but
 not publisher authenticity.
+
+## Kubernetes Bundle Artifacts
+
+`.github/workflows/kubernetes-bundles.yml` is the independent Kubernetes
+payload producer. Dispatch it with an exact Kubernetes payload such as
+`v1.36.0`, an immutable Katl build identity such as `v1.36.0-katl.1`, and
+`publish: false` for a build-only verification run. A successful build uploads
+the complete staged bundle as a GitHub Actions artifact.
+
+Set `publish: true` only for a reviewed bundle identity. The workflow refuses
+to replace either immutable GHCR tag, publishes the Katl custom bundle manifest
+as the OCI config with the sysext and metadata as layers, pulls the config back
+for byte verification, and creates a GitHub build-provenance attestation. The
+canonical shared store is `ghcr.io/katl-dev/bundles`; Kubernetes tags are
+prefixed with `kubernetes-` so other Katl-minted bundle kinds can share the OCI
+repository without sharing artifact identities.
+
+GitHub creates a new container package as private. After the first publication,
+an organization owner must make the `bundles` package public in its package
+settings so uncredentialed KatlOS nodes can fetch it. This is a one-time GHCR
+namespace operation. The workflow summary prints the exact HTTPS source and
+digest-pinned bundle ref for install/bootstrap manifests. Published development
+bundles remain unsigned until the signing policy lands; the GitHub attestation
+records build provenance but is not yet a trust decision enforced by `katlc`.
 
 ## GitHub VM Tests
 

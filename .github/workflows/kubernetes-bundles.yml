@@ -1,0 +1,292 @@
+name: Kubernetes Bundle Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload_version:
+        description: Exact Kubernetes payload version, for example v1.36.0
+        required: true
+        default: v1.36.0
+        type: string
+      artifact_version:
+        description: Immutable Katl bundle build version, for example v1.36.0-katl.1
+        required: true
+        default: v1.36.0-katl.1
+        type: string
+      publish:
+        description: Publish the verified OCI artifact to ghcr.io/katl-dev/bundles
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.artifact_version }}-x86_64
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build And Publish Kubernetes Bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+
+    env:
+      ARTIFACT_VERSION: ${{ inputs.artifact_version }}
+      GOTOOLCHAIN: auto
+      KATL_ARCHITECTURE: x86_64
+      KATL_BUILD_COMMIT: ${{ inputs.artifact_version }}
+      KATL_CONTAINER_RUNTIME: docker
+      KATL_KUBERNETES_PAYLOAD_VERSION: ${{ inputs.payload_version }}
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      OCI_REPOSITORY: ghcr.io/katl-dev/bundles
+      PAYLOAD_VERSION: ${{ inputs.payload_version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@v1
+        with:
+          version: 1.3.2
+
+      - name: Validate release identity
+        shell: bash
+        run: |
+          if [[ ! "$PAYLOAD_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: payload_version must look like v1.36.0" >&2
+            exit 1
+          fi
+          if [[ ! "$ARTIFACT_VERSION" =~ ^${PAYLOAD_VERSION}-katl\.[0-9]+$ ]]; then
+            echo "error: artifact_version must look like ${PAYLOAD_VERSION}-katl.1" >&2
+            exit 1
+          fi
+
+      - name: Restore Katl Go build caches
+        uses: actions/cache@v6
+        with:
+          path: |
+            _build/go-mod
+            _build/go-cache
+          key: katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
+
+      - name: Resolve mkosi cache identity
+        id: mkosi-cache
+        shell: bash
+        run: |
+          digest="$({
+            sha256sum \
+              Containerfile.mkosi \
+              mkosi.conf \
+              mkosi.profiles/kubernetes-sysext/kubernetes.env \
+              mkosi.profiles/kubernetes-sysext/mkosi.conf \
+              mkosi.profiles/runtime/mkosi.conf
+          } | sha256sum | cut -d ' ' -f 1)"
+          echo "key=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Restore mkosi package cache
+        uses: actions/cache@v6
+        with:
+          path: _build/mkosi/package-cache
+          key: katl-kubernetes-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}
+          restore-keys: |
+            katl-kubernetes-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+            katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+
+      - name: Run producer unit tests
+        run: |
+          go test ./cmd/katl-publish-kubernetes-sysext \
+            ./internal/installer/kubernetesbundle \
+            ./internal/installer/sysextcatalog \
+            -count=1
+
+      - name: Build compatible runtime and Kubernetes sysext
+        shell: bash
+        run: |
+          scripts/mkosi build-runtime
+          scripts/mkosi build-kubernetes-sysext
+
+      - name: Verify built runtime and Kubernetes sysext
+        shell: bash
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            --env KATL_REPO_ROOT=/work \
+            --env KATL_ARCHITECTURE \
+            --env KATL_KUBERNETES_PAYLOAD_VERSION \
+            "$KATL_MKOSI_IMAGE" \
+            bash -euo pipefail -c '
+              scripts/check-runtime-root
+              scripts/check-kubernetes-sysext
+            '
+
+      - name: Stage Kubernetes payload bundle
+        id: bundle
+        shell: bash
+        run: |
+          go run ./cmd/katl-publish-kubernetes-sysext \
+            --metadata _build/mkosi/katl-kubernetes.raw.json \
+            --output-dir dist | tee _build/kubernetes-bundle-stage.txt
+
+          metadata=_build/mkosi/katl-kubernetes.raw.json
+          actual_payload="$(jq -r '.payloadVersion' "$metadata")"
+          actual_artifact="$(jq -r '.version' "$metadata")"
+          architecture="$(jq -r '.architecture' "$metadata")"
+          if [[ "$actual_payload" != "$PAYLOAD_VERSION" ]]; then
+            echo "error: built payload version $actual_payload does not match $PAYLOAD_VERSION" >&2
+            exit 1
+          fi
+          if [[ "$actual_artifact" != "$ARTIFACT_VERSION" ]]; then
+            echo "error: built artifact version $actual_artifact does not match $ARTIFACT_VERSION" >&2
+            exit 1
+          fi
+          if [[ "$architecture" != "$KATL_ARCHITECTURE" ]]; then
+            echo "error: built architecture $architecture does not match $KATL_ARCHITECTURE" >&2
+            exit 1
+          fi
+
+          bundle_digest="$(awk '$1 == "bundle-manifest-digest:" { print $2 }' _build/kubernetes-bundle-stage.txt)"
+          if [[ ! "$bundle_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "error: invalid staged bundle digest: $bundle_digest" >&2
+            exit 1
+          fi
+          version_tag="kubernetes-${ARTIFACT_VERSION}-${architecture}"
+          digest_tag="kubernetes-sha256-${bundle_digest#sha256:}"
+          bundle_dir="dist/bundles/${PAYLOAD_VERSION}/${architecture}"
+          raw="dist/katl-kubernetes-${PAYLOAD_VERSION}-${architecture}.sysext.raw"
+
+          (
+            cd dist
+            sha256sum --check "$(basename "$raw").sha256"
+            sha256sum --check checksums.txt
+          )
+
+          {
+            echo "architecture=$architecture"
+            echo "bundle-digest=$bundle_digest"
+            echo "bundle-dir=$bundle_dir"
+            echo "digest-tag=$digest_tag"
+            echo "raw=$raw"
+            echo "version-tag=$version_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate OCI artifact layout
+        shell: bash
+        env:
+          BUNDLE_DIR: ${{ steps.bundle.outputs.bundle-dir }}
+          RAW: ${{ steps.bundle.outputs.raw }}
+          VERSION_TAG: ${{ steps.bundle.outputs.version-tag }}
+        run: |
+          oras push --oci-layout "_build/oci-layout:${VERSION_TAG}" \
+            --artifact-type application/vnd.katl.kubernetes.payload.bundle.v1 \
+            --config "${BUNDLE_DIR}/bundle.json:application/vnd.katl.kubernetes.payload.bundle.v1+json" \
+            "${RAW}:application/vnd.katl.sysext.raw.v1" \
+            "${BUNDLE_DIR}/metadata.json:application/vnd.katl.kubernetes.sysext.metadata.v1+json" \
+            "${BUNDLE_DIR}/package-provenance.json:application/vnd.katl.package-provenance.v1+json" \
+            "${BUNDLE_DIR}/catalog-entry.json:application/vnd.katl.kubernetes.catalog.entry.v1+json"
+          oras manifest fetch --oci-layout "_build/oci-layout:${VERSION_TAG}" > _build/oci-manifest.json
+          jq -e '
+            .artifactType == "application/vnd.katl.kubernetes.payload.bundle.v1" and
+            .config.mediaType == "application/vnd.katl.kubernetes.payload.bundle.v1+json" and
+            (.layers | length) == 4
+          ' _build/oci-manifest.json >/dev/null
+
+      - name: Upload inspected bundle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: katl-kubernetes-bundle-${{ inputs.artifact_version }}-${{ steps.bundle.outputs.architecture }}
+          path: |
+            dist/
+            _build/oci-manifest.json
+          if-no-files-found: error
+
+      - name: Log in to GHCR
+        if: ${{ inputs.publish }}
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "$GHCR_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish immutable OCI bundle
+        if: ${{ inputs.publish }}
+        id: publish
+        shell: bash
+        env:
+          BUNDLE_DIGEST: ${{ steps.bundle.outputs.bundle-digest }}
+          BUNDLE_DIR: ${{ steps.bundle.outputs.bundle-dir }}
+          DIGEST_TAG: ${{ steps.bundle.outputs.digest-tag }}
+          RAW: ${{ steps.bundle.outputs.raw }}
+          VERSION_TAG: ${{ steps.bundle.outputs.version-tag }}
+        run: |
+          for tag in "$VERSION_TAG" "$DIGEST_TAG"; do
+            error_file="$(mktemp)"
+            if oras manifest fetch "${OCI_REPOSITORY}:${tag}" >/dev/null 2>"$error_file"; then
+              echo "error: immutable OCI tag already exists: ${OCI_REPOSITORY}:${tag}" >&2
+              exit 1
+            fi
+            if ! grep -Eqi 'MANIFEST_UNKNOWN|NAME_UNKNOWN|not found|status code: 404' "$error_file"; then
+              echo "error: could not prove immutable OCI tag is absent: ${OCI_REPOSITORY}:${tag}" >&2
+              cat "$error_file" >&2
+              exit 1
+            fi
+            rm -f "$error_file"
+          done
+
+          oras push "${OCI_REPOSITORY}:${VERSION_TAG},${DIGEST_TAG}" \
+            --artifact-type application/vnd.katl.kubernetes.payload.bundle.v1 \
+            --config "${BUNDLE_DIR}/bundle.json:application/vnd.katl.kubernetes.payload.bundle.v1+json" \
+            --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --annotation "org.opencontainers.image.version=${ARTIFACT_VERSION}" \
+            --annotation "dev.katl.bundle.kind=kubernetes" \
+            "${RAW}:application/vnd.katl.sysext.raw.v1" \
+            "${BUNDLE_DIR}/metadata.json:application/vnd.katl.kubernetes.sysext.metadata.v1+json" \
+            "${BUNDLE_DIR}/package-provenance.json:application/vnd.katl.package-provenance.v1+json" \
+            "${BUNDLE_DIR}/catalog-entry.json:application/vnd.katl.kubernetes.catalog.entry.v1+json" \
+            --format json > _build/oras-push.json
+
+          manifest_digest="$(jq -r '.digest' _build/oras-push.json)"
+          if [[ ! "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "error: ORAS returned invalid manifest digest: $manifest_digest" >&2
+            exit 1
+          fi
+          oras manifest fetch --output _build/remote-manifest.json "${OCI_REPOSITORY}@${manifest_digest}"
+          oras manifest fetch-config --output _build/remote-bundle.json "${OCI_REPOSITORY}@${manifest_digest}"
+          cmp "${BUNDLE_DIR}/bundle.json" _build/remote-bundle.json
+
+          echo "manifest-digest=$manifest_digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Published Kubernetes bundle"
+            echo
+            echo "- OCI: \`${OCI_REPOSITORY}@${manifest_digest}\`"
+            echo "- Source: \`https://ghcr.io/v2/katl-dev/bundles\`"
+            echo "- Ref: \`${PAYLOAD_VERSION}@${BUNDLE_DIGEST}\`"
+            echo "- Version tag: \`${OCI_REPOSITORY}:${VERSION_TAG}\`"
+            echo "- Digest tag: \`${OCI_REPOSITORY}:${DIGEST_TAG}\`"
+            echo
+            echo "This development bundle is digest-verified but remains unsigned until katl-dty.9.35.6 lands."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest published OCI manifest
+        if: ${{ inputs.publish }}
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.OCI_REPOSITORY }}
+          subject-digest: ${{ steps.publish.outputs.manifest-digest }}
+          push-to-registry: true
