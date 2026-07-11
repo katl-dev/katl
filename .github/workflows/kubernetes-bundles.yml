@@ -59,10 +59,18 @@ jobs:
           cache: true
 
       - name: Set up ORAS
-        uses: oras-project/setup-oras@v1
-        with:
-          url: https://github.com/oras-project/oras/releases/download/v1.3.3/oras_1.3.3_linux_amd64.tar.gz
-          checksum: aeb684d8c24c18dce28fd1f7326636e4782b573108e244a93d4b1c4a5ec50f48
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/oras_1.3.3_linux_amd64.tar.gz"
+          install_dir="$RUNNER_TEMP/oras-bin"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            https://github.com/oras-project/oras/releases/download/v1.3.3/oras_1.3.3_linux_amd64.tar.gz
+          echo "aeb684d8c24c18dce28fd1f7326636e4782b573108e244a93d4b1c4a5ec50f48  $archive" | sha256sum --check
+          mkdir -p "$install_dir"
+          tar --extract --gzip --file "$archive" --directory "$install_dir" oras
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/oras" version
 
       - name: Validate release identity
         shell: bash
