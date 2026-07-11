@@ -22,7 +22,7 @@
         "/^mkosi\\.profiles/kubernetes-sysext/kubernetes\\.env$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>rpm) depName=(?<depName>\\S+) versioning=(?<versioning>rpm) registryUrl=(?<registryUrl>\\S+)\\n: \\\"\\$\\{KATL_KUBERNETES_[A-Z]+_VERSION:=0:(?<currentValue>[^}]+)\\.x86_64\\}\\\""
+        "# renovate: datasource=(?<datasource>rpm) depName=(?<depName>\\S+) versioning=(?<versioning>rpm) registryUrl=(?<registryUrl>\\S+)\\n: \\\"\\$\\{KATL_KUBERNETES_[A-Z]+_VERSION:=0:(?<currentValue>[^}]+)\\}\\\""
       ]
     }
   ],
