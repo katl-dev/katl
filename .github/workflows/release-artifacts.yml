@@ -71,15 +71,13 @@ jobs:
           } | sha256sum | cut -d ' ' -f 1)"
           echo "key=$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Restore mkosi package caches
+      - name: Restore mkosi package cache
         uses: actions/cache@v6
         with:
-          path: |
-            _build/mkosi/cache
-            _build/mkosi/package-cache
-          key: katl-mkosi-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}
+          path: _build/mkosi/package-cache
+          key: katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}
           restore-keys: |
-            katl-mkosi-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+            katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
 
       - name: Resolve release identity
         id: release
