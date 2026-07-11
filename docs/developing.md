@@ -249,6 +249,9 @@ for byte verification, and creates a GitHub build-provenance attestation. The
 canonical package is `ghcr.io/katl-dev/kubernetes`. Its readable tags use the
 bundle build identity directly, for example `v1.36.0-katl.1`, while a
 second `sha256-<bundle-manifest-digest>` tag supports exact Katl resolution.
+The OCI manifest carries the standard source, description, and MIT license
+annotations that GHCR renders on the package page, plus title, documentation,
+revision, and version metadata for other OCI clients.
 
 GitHub creates a new container package as private. After the first publication,
 an organization owner must make the `kubernetes` package public in its package

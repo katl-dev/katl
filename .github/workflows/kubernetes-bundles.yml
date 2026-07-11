@@ -47,6 +47,9 @@ jobs:
       KATL_KUBERNETES_PAYLOAD_VERSION: ${{ inputs.payload_version }}
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
       OCI_REPOSITORY: ghcr.io/katl-dev/kubernetes
+      OCI_DESCRIPTION: Kubernetes system extension bundle for KatlOS nodes
+      OCI_LICENSES: MIT
+      OCI_TITLE: KatlOS Kubernetes system extension
       PAYLOAD_VERSION: ${{ inputs.payload_version }}
 
     steps:
@@ -206,15 +209,28 @@ jobs:
           oras push --oci-layout "_build/oci-layout:${VERSION_TAG}" \
             --artifact-type application/vnd.katl.kubernetes.payload.bundle.v1 \
             --config "${BUNDLE_DIR}/bundle.json:application/vnd.katl.kubernetes.payload.bundle.v1+json" \
+            --annotation "org.opencontainers.image.title=${OCI_TITLE}" \
+            --annotation "org.opencontainers.image.description=${OCI_DESCRIPTION}" \
+            --annotation "org.opencontainers.image.licenses=${OCI_LICENSES}" \
+            --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.documentation=https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/installing.md" \
+            --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --annotation "org.opencontainers.image.version=${ARTIFACT_VERSION}" \
             "${RAW}:application/vnd.katl.sysext.raw.v1" \
             "${BUNDLE_DIR}/metadata.json:application/vnd.katl.kubernetes.sysext.metadata.v1+json" \
             "${BUNDLE_DIR}/package-provenance.json:application/vnd.katl.package-provenance.v1+json" \
             "${BUNDLE_DIR}/catalog-entry.json:application/vnd.katl.kubernetes.catalog.entry.v1+json"
           oras manifest fetch --oci-layout "_build/oci-layout:${VERSION_TAG}" > _build/oci-manifest.json
-          jq -e '
+          jq -e \
+            --arg description "$OCI_DESCRIPTION" \
+            --arg licenses "$OCI_LICENSES" \
+            --arg source "https://github.com/${GITHUB_REPOSITORY}" '
             .artifactType == "application/vnd.katl.kubernetes.payload.bundle.v1" and
             .config.mediaType == "application/vnd.katl.kubernetes.payload.bundle.v1+json" and
-            (.layers | length) == 4
+            (.layers | length) == 4 and
+            .annotations["org.opencontainers.image.description"] == $description and
+            .annotations["org.opencontainers.image.licenses"] == $licenses and
+            .annotations["org.opencontainers.image.source"] == $source
           ' _build/oci-manifest.json >/dev/null
 
       - name: Upload inspected bundle artifact
@@ -261,7 +277,11 @@ jobs:
           oras push "${OCI_REPOSITORY}:${VERSION_TAG},${DIGEST_TAG}" \
             --artifact-type application/vnd.katl.kubernetes.payload.bundle.v1 \
             --config "${BUNDLE_DIR}/bundle.json:application/vnd.katl.kubernetes.payload.bundle.v1+json" \
+            --annotation "org.opencontainers.image.title=${OCI_TITLE}" \
+            --annotation "org.opencontainers.image.description=${OCI_DESCRIPTION}" \
+            --annotation "org.opencontainers.image.licenses=${OCI_LICENSES}" \
             --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.documentation=https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/installing.md" \
             --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --annotation "org.opencontainers.image.version=${ARTIFACT_VERSION}" \
             --annotation "dev.katl.bundle.kind=kubernetes" \
@@ -279,6 +299,14 @@ jobs:
           oras manifest fetch --output _build/remote-manifest.json "${OCI_REPOSITORY}@${manifest_digest}"
           oras manifest fetch-config --output _build/remote-bundle.json "${OCI_REPOSITORY}@${manifest_digest}"
           cmp "${BUNDLE_DIR}/bundle.json" _build/remote-bundle.json
+          jq -e \
+            --arg description "$OCI_DESCRIPTION" \
+            --arg licenses "$OCI_LICENSES" \
+            --arg source "https://github.com/${GITHUB_REPOSITORY}" '
+            .annotations["org.opencontainers.image.description"] == $description and
+            .annotations["org.opencontainers.image.licenses"] == $licenses and
+            .annotations["org.opencontainers.image.source"] == $source
+          ' _build/remote-manifest.json >/dev/null
 
           echo "manifest-digest=$manifest_digest" >> "$GITHUB_OUTPUT"
           {

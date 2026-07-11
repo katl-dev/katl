@@ -20,6 +20,11 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 		"scripts/check-kubernetes-sysext",
 		"go run ./cmd/katl-publish-kubernetes-sysext",
 		"ghcr.io/katl-dev/kubernetes",
+		"org.opencontainers.image.description",
+		"org.opencontainers.image.licenses",
+		"org.opencontainers.image.source",
+		"org.opencontainers.image.documentation",
+		"Kubernetes system extension bundle for KatlOS nodes",
 		"application/vnd.katl.kubernetes.payload.bundle.v1",
 		"sha256-",
 		`version_tag="$ARTIFACT_VERSION"`,
@@ -29,6 +34,15 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 	for _, value := range required {
 		if !strings.Contains(workflow, value) {
 			t.Fatalf("Kubernetes bundle workflow missing %q", value)
+		}
+	}
+	for _, key := range []string{
+		"org.opencontainers.image.description",
+		"org.opencontainers.image.licenses",
+		"org.opencontainers.image.source",
+	} {
+		if count := strings.Count(workflow, `--annotation "`+key+`=`); count != 2 {
+			t.Fatalf("Kubernetes bundle workflow annotation %q count = %d, want local and published copies", key, count)
 		}
 	}
 
