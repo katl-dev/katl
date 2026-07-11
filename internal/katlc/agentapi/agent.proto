@@ -123,6 +123,17 @@ message KubernetesSysextUpdateOperationRequest {
   string target_sysext_sha256 = 3;
   uint64 target_sysext_size_bytes = 4;
   string target_activation_path = 5;
+  string candidate_generation_id = 6;
+  string upgrade_role = 7;
+  string source_payload_version = 8;
+  string snapshot_ref = 9;
+  string snapshot_digest = 10;
+  string snapshot_revision = 11;
+  string snapshot_created_at = 12;
+  string captured_member_list_digest = 13;
+  string source_etcd_version = 14;
+  string snapshot_storage_location = 15;
+  string snapshot_operator_identity = 16;
 }
 
 message DestructiveResetOperationRequest {

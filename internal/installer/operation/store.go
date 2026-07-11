@@ -91,6 +91,7 @@ type OperationRecord struct {
 	BootstrapRequest            *BootstrapRequest       `json:"bootstrapRequest,omitempty"`
 	ConfigApplyRequest          *ConfigApplyRequest     `json:"configApplyRequest,omitempty"`
 	KubernetesSysextUpdate      *KubernetesSysextUpdate `json:"kubernetesSysextUpdate,omitempty"`
+	KubeadmUpgradeEvidence      *KubeadmUpgradeEvidence `json:"kubeadmUpgradeEvidence,omitempty"`
 	DestructiveResetRequest     *DestructiveReset       `json:"destructiveResetRequest,omitempty"`
 	HostUpgradeRequest          *HostUpgrade            `json:"hostUpgradeRequest,omitempty"`
 	ActivationMode              string                  `json:"activationMode,omitempty"`
@@ -160,11 +161,35 @@ type ConfigApplyRequest struct {
 }
 
 type KubernetesSysextUpdate struct {
-	TargetPayloadVersion string `json:"targetPayloadVersion"`
-	TargetSysextPath     string `json:"targetSysextPath"`
-	TargetSysextSHA256   string `json:"targetSysextSHA256"`
-	TargetSysextSize     uint64 `json:"targetSysextSizeBytes,omitempty"`
-	TargetActivationPath string `json:"targetActivationPath,omitempty"`
+	TargetPayloadVersion     string `json:"targetPayloadVersion"`
+	TargetSysextPath         string `json:"targetSysextPath"`
+	TargetSysextSHA256       string `json:"targetSysextSHA256"`
+	TargetSysextSize         uint64 `json:"targetSysextSizeBytes,omitempty"`
+	TargetActivationPath     string `json:"targetActivationPath,omitempty"`
+	CandidateGenerationID    string `json:"candidateGenerationID,omitempty"`
+	UpgradeRole              string `json:"upgradeRole,omitempty"`
+	SourcePayloadVersion     string `json:"sourcePayloadVersion,omitempty"`
+	SnapshotRef              string `json:"snapshotRef,omitempty"`
+	SnapshotDigest           string `json:"snapshotDigest,omitempty"`
+	SnapshotRevision         string `json:"snapshotRevision,omitempty"`
+	SnapshotCreatedAt        string `json:"snapshotCreatedAt,omitempty"`
+	CapturedMemberListDigest string `json:"capturedMemberListDigest,omitempty"`
+	SourceEtcdVersion        string `json:"sourceEtcdVersion,omitempty"`
+	SnapshotStorageLocation  string `json:"snapshotStorageLocation,omitempty"`
+	SnapshotOperatorIdentity string `json:"snapshotOperatorIdentity,omitempty"`
+}
+
+type KubeadmUpgradeEvidence struct {
+	TargetKubeadmAccessMode         string `json:"targetKubeadmAccessMode"`
+	TargetKubeadmArtifactPath       string `json:"targetKubeadmArtifactPath,omitempty"`
+	TargetKubeadmArtifactDigest     string `json:"targetKubeadmArtifactDigest,omitempty"`
+	TargetKubeadmObservedVersion    string `json:"targetKubeadmObservedVersion,omitempty"`
+	KubeletActivationGate           string `json:"kubeletActivationGate"`
+	KubeletGateState                string `json:"kubeletGateState"`
+	KubeletGateTokenPath            string `json:"kubeletGateTokenPath,omitempty"`
+	KubeletGateEnforcementUnit      string `json:"kubeletGateEnforcementUnit,omitempty"`
+	SourceKubeletPolicy             string `json:"sourceKubeletPolicy"`
+	GlobalTargetActiveBeforeKubeadm bool   `json:"globalTargetSysextActiveBeforeKubeadmMutation"`
 }
 
 type DestructiveReset struct {
@@ -704,6 +729,11 @@ func ValidateRecord(record OperationRecord) error {
 		if err := validateKubernetesSysextUpdate(*record.KubernetesSysextUpdate); err != nil {
 			return err
 		}
+		if strings.TrimSpace(record.KubernetesSysextUpdate.UpgradeRole) != "" {
+			if err := validateKubeadmUpgradeEvidence(record.KubeadmUpgradeEvidence); err != nil {
+				return err
+			}
+		}
 	}
 	if record.DestructiveResetRequest != nil {
 		if err := ValidateDestructiveReset(*record.DestructiveResetRequest); err != nil {
@@ -853,6 +883,11 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	if !reflect.DeepEqual(next.KubernetesSysextUpdate, previous.KubernetesSysextUpdate) {
 		return fmt.Errorf("operation kubernetesSysextUpdate is immutable")
 	}
+	if previous.KubeadmUpgradeEvidence != nil {
+		if next.KubeadmUpgradeEvidence == nil || next.KubeadmUpgradeEvidence.TargetKubeadmAccessMode != previous.KubeadmUpgradeEvidence.TargetKubeadmAccessMode || next.KubeadmUpgradeEvidence.KubeletActivationGate != previous.KubeadmUpgradeEvidence.KubeletActivationGate || next.KubeadmUpgradeEvidence.SourceKubeletPolicy != previous.KubeadmUpgradeEvidence.SourceKubeletPolicy || (previous.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm && !next.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm) {
+			return fmt.Errorf("operation kubeadmUpgradeEvidence safety policy is immutable")
+		}
+	}
 	if !reflect.DeepEqual(next.DestructiveResetRequest, previous.DestructiveResetRequest) {
 		return fmt.Errorf("operation destructiveResetRequest is immutable")
 	}
@@ -942,6 +977,10 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	if record.KubernetesSysextUpdate != nil {
 		request := *record.KubernetesSysextUpdate
 		record.KubernetesSysextUpdate = &request
+	}
+	if record.KubeadmUpgradeEvidence != nil {
+		evidence := *record.KubeadmUpgradeEvidence
+		record.KubeadmUpgradeEvidence = &evidence
 	}
 	if record.DestructiveResetRequest != nil {
 		request := *record.DestructiveResetRequest
@@ -1543,6 +1582,59 @@ func validateKubernetesSysextUpdate(request KubernetesSysextUpdate) error {
 	}
 	if err := validateSHA256Hex("kubernetesSysextUpdate targetSysext", strings.TrimSpace(request.TargetSysextSHA256)); err != nil {
 		return err
+	}
+	if strings.TrimSpace(request.UpgradeRole) == "" {
+		return nil
+	}
+	if _, err := cleanSegment("kubernetesSysextUpdate candidateGenerationID", request.CandidateGenerationID); err != nil {
+		return err
+	}
+	switch request.UpgradeRole {
+	case "apply", "control-plane", "worker":
+	default:
+		return fmt.Errorf("kubernetesSysextUpdate upgradeRole must be apply, control-plane, or worker")
+	}
+	required := map[string]string{"sourcePayloadVersion": request.SourcePayloadVersion, "snapshotRef": request.SnapshotRef}
+	if request.UpgradeRole != "worker" {
+		required["snapshotCreatedAt"] = request.SnapshotCreatedAt
+		required["capturedMemberListDigest"] = request.CapturedMemberListDigest
+		required["snapshotStorageLocation"] = request.SnapshotStorageLocation
+		required["snapshotOperatorIdentity"] = request.SnapshotOperatorIdentity
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("kubernetesSysextUpdate %s is required", name)
+		}
+	}
+	if err := validateSHA256Hex("kubernetesSysextUpdate snapshot", request.SnapshotDigest); err != nil {
+		return err
+	}
+	if request.UpgradeRole != "worker" {
+		if err := validateSHA256Hex("kubernetesSysextUpdate member list", request.CapturedMemberListDigest); err != nil {
+			return err
+		}
+		if _, err := time.Parse(time.RFC3339, request.SnapshotCreatedAt); err != nil {
+			return fmt.Errorf("kubernetesSysextUpdate snapshotCreatedAt must be RFC3339: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateKubeadmUpgradeEvidence(evidence *KubeadmUpgradeEvidence) error {
+	if evidence == nil {
+		return fmt.Errorf("executable kubeadm-upgrade operation requires kubeadmUpgradeEvidence")
+	}
+	if evidence.TargetKubeadmAccessMode != "operation-private-sysext" {
+		return fmt.Errorf("kubeadmUpgradeEvidence targetKubeadmAccessMode must be operation-private-sysext")
+	}
+	if evidence.KubeletActivationGate != "operation-released-target-kubelet" {
+		return fmt.Errorf("kubeadmUpgradeEvidence kubeletActivationGate must be operation-released-target-kubelet")
+	}
+	if evidence.SourceKubeletPolicy != "keep-running" {
+		return fmt.Errorf("kubeadmUpgradeEvidence sourceKubeletPolicy must be keep-running")
+	}
+	if evidence.GlobalTargetActiveBeforeKubeadm {
+		return fmt.Errorf("kubeadmUpgradeEvidence cannot globally activate target sysext before kubeadm")
 	}
 	return nil
 }

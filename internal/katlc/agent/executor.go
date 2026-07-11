@@ -121,6 +121,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if record.HostUpgradeRequest != nil {
 		return e.executeHostUpgrade(ctx, record)
 	}
+	if record.KubernetesSysextUpdate != nil {
+		return e.executeKubeadmUpgrade(ctx, record)
+	}
 	plan, err := executorPlan(record)
 	if err != nil {
 		_, markErr := e.failRecord(record.OperationID, "executor-plan-refused", "executor-plan-refused", "agent executor could not read operation tool plan", err)

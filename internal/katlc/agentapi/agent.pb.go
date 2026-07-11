@@ -938,14 +938,25 @@ func (x *ConfigApplyOperationRequest) GetConfigYaml() string {
 }
 
 type KubernetesSysextUpdateOperationRequest struct {
-	state                 protoimpl.MessageState `protogen:"open.v1"`
-	TargetPayloadVersion  string                 `protobuf:"bytes,1,opt,name=target_payload_version,json=targetPayloadVersion,proto3" json:"target_payload_version,omitempty"`
-	TargetSysextPath      string                 `protobuf:"bytes,2,opt,name=target_sysext_path,json=targetSysextPath,proto3" json:"target_sysext_path,omitempty"`
-	TargetSysextSha256    string                 `protobuf:"bytes,3,opt,name=target_sysext_sha256,json=targetSysextSha256,proto3" json:"target_sysext_sha256,omitempty"`
-	TargetSysextSizeBytes uint64                 `protobuf:"varint,4,opt,name=target_sysext_size_bytes,json=targetSysextSizeBytes,proto3" json:"target_sysext_size_bytes,omitempty"`
-	TargetActivationPath  string                 `protobuf:"bytes,5,opt,name=target_activation_path,json=targetActivationPath,proto3" json:"target_activation_path,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	TargetPayloadVersion     string                 `protobuf:"bytes,1,opt,name=target_payload_version,json=targetPayloadVersion,proto3" json:"target_payload_version,omitempty"`
+	TargetSysextPath         string                 `protobuf:"bytes,2,opt,name=target_sysext_path,json=targetSysextPath,proto3" json:"target_sysext_path,omitempty"`
+	TargetSysextSha256       string                 `protobuf:"bytes,3,opt,name=target_sysext_sha256,json=targetSysextSha256,proto3" json:"target_sysext_sha256,omitempty"`
+	TargetSysextSizeBytes    uint64                 `protobuf:"varint,4,opt,name=target_sysext_size_bytes,json=targetSysextSizeBytes,proto3" json:"target_sysext_size_bytes,omitempty"`
+	TargetActivationPath     string                 `protobuf:"bytes,5,opt,name=target_activation_path,json=targetActivationPath,proto3" json:"target_activation_path,omitempty"`
+	CandidateGenerationId    string                 `protobuf:"bytes,6,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
+	UpgradeRole              string                 `protobuf:"bytes,7,opt,name=upgrade_role,json=upgradeRole,proto3" json:"upgrade_role,omitempty"`
+	SourcePayloadVersion     string                 `protobuf:"bytes,8,opt,name=source_payload_version,json=sourcePayloadVersion,proto3" json:"source_payload_version,omitempty"`
+	SnapshotRef              string                 `protobuf:"bytes,9,opt,name=snapshot_ref,json=snapshotRef,proto3" json:"snapshot_ref,omitempty"`
+	SnapshotDigest           string                 `protobuf:"bytes,10,opt,name=snapshot_digest,json=snapshotDigest,proto3" json:"snapshot_digest,omitempty"`
+	SnapshotRevision         string                 `protobuf:"bytes,11,opt,name=snapshot_revision,json=snapshotRevision,proto3" json:"snapshot_revision,omitempty"`
+	SnapshotCreatedAt        string                 `protobuf:"bytes,12,opt,name=snapshot_created_at,json=snapshotCreatedAt,proto3" json:"snapshot_created_at,omitempty"`
+	CapturedMemberListDigest string                 `protobuf:"bytes,13,opt,name=captured_member_list_digest,json=capturedMemberListDigest,proto3" json:"captured_member_list_digest,omitempty"`
+	SourceEtcdVersion        string                 `protobuf:"bytes,14,opt,name=source_etcd_version,json=sourceEtcdVersion,proto3" json:"source_etcd_version,omitempty"`
+	SnapshotStorageLocation  string                 `protobuf:"bytes,15,opt,name=snapshot_storage_location,json=snapshotStorageLocation,proto3" json:"snapshot_storage_location,omitempty"`
+	SnapshotOperatorIdentity string                 `protobuf:"bytes,16,opt,name=snapshot_operator_identity,json=snapshotOperatorIdentity,proto3" json:"snapshot_operator_identity,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *KubernetesSysextUpdateOperationRequest) Reset() {
@@ -1009,6 +1020,83 @@ func (x *KubernetesSysextUpdateOperationRequest) GetTargetSysextSizeBytes() uint
 func (x *KubernetesSysextUpdateOperationRequest) GetTargetActivationPath() string {
 	if x != nil {
 		return x.TargetActivationPath
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetCandidateGenerationId() string {
+	if x != nil {
+		return x.CandidateGenerationId
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetUpgradeRole() string {
+	if x != nil {
+		return x.UpgradeRole
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetSourcePayloadVersion() string {
+	if x != nil {
+		return x.SourcePayloadVersion
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetSnapshotRef() string {
+	if x != nil {
+		return x.SnapshotRef
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetSnapshotDigest() string {
+	if x != nil {
+		return x.SnapshotDigest
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetSnapshotRevision() string {
+	if x != nil {
+		return x.SnapshotRevision
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetSnapshotCreatedAt() string {
+	if x != nil {
+		return x.SnapshotCreatedAt
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetCapturedMemberListDigest() string {
+	if x != nil {
+		return x.CapturedMemberListDigest
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetSourceEtcdVersion() string {
+	if x != nil {
+		return x.SourceEtcdVersion
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetSnapshotStorageLocation() string {
+	if x != nil {
+		return x.SnapshotStorageLocation
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetSnapshotOperatorIdentity() string {
+	if x != nil {
+		return x.SnapshotOperatorIdentity
 	}
 	return ""
 }
@@ -2679,13 +2767,25 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"apply_mode\x18\x02 \x01(\tR\tapplyMode\x12\x1b\n" +
 	"\tnode_name\x18\x03 \x01(\tR\bnodeName\x12\x1f\n" +
 	"\vconfig_yaml\x18\x04 \x01(\tR\n" +
-	"configYaml\"\xad\x02\n" +
+	"configYaml\"\xd0\x06\n" +
 	"&KubernetesSysextUpdateOperationRequest\x124\n" +
 	"\x16target_payload_version\x18\x01 \x01(\tR\x14targetPayloadVersion\x12,\n" +
 	"\x12target_sysext_path\x18\x02 \x01(\tR\x10targetSysextPath\x120\n" +
 	"\x14target_sysext_sha256\x18\x03 \x01(\tR\x12targetSysextSha256\x127\n" +
 	"\x18target_sysext_size_bytes\x18\x04 \x01(\x04R\x15targetSysextSizeBytes\x124\n" +
-	"\x16target_activation_path\x18\x05 \x01(\tR\x14targetActivationPath\"\x84\x02\n" +
+	"\x16target_activation_path\x18\x05 \x01(\tR\x14targetActivationPath\x126\n" +
+	"\x17candidate_generation_id\x18\x06 \x01(\tR\x15candidateGenerationId\x12!\n" +
+	"\fupgrade_role\x18\a \x01(\tR\vupgradeRole\x124\n" +
+	"\x16source_payload_version\x18\b \x01(\tR\x14sourcePayloadVersion\x12!\n" +
+	"\fsnapshot_ref\x18\t \x01(\tR\vsnapshotRef\x12'\n" +
+	"\x0fsnapshot_digest\x18\n" +
+	" \x01(\tR\x0esnapshotDigest\x12+\n" +
+	"\x11snapshot_revision\x18\v \x01(\tR\x10snapshotRevision\x12.\n" +
+	"\x13snapshot_created_at\x18\f \x01(\tR\x11snapshotCreatedAt\x12=\n" +
+	"\x1bcaptured_member_list_digest\x18\r \x01(\tR\x18capturedMemberListDigest\x12.\n" +
+	"\x13source_etcd_version\x18\x0e \x01(\tR\x11sourceEtcdVersion\x12:\n" +
+	"\x19snapshot_storage_location\x18\x0f \x01(\tR\x17snapshotStorageLocation\x12<\n" +
+	"\x1asnapshot_operator_identity\x18\x10 \x01(\tR\x18snapshotOperatorIdentity\"\x84\x02\n" +
 	" DestructiveResetOperationRequest\x12.\n" +
 	"\x13inventory_node_name\x18\x01 \x01(\tR\x11inventoryNodeName\x12\x1f\n" +
 	"\vreset_scope\x18\x02 \x01(\tR\n" +

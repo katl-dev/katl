@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,8 +23,12 @@ import (
 const (
 	OperationKindKubeadmUpgrade = "kubeadm-upgrade"
 
-	kubeadmUpgradeRefusedPhase = "execution-refused-unsupported"
-	kubeadmUpgradeNoopPhase    = "planned-current-kubernetes-sysext"
+	kubeadmUpgradeRefusedPhase  = "execution-refused-unsupported"
+	kubeadmUpgradeNoopPhase     = "planned-current-kubernetes-sysext"
+	kubeadmUpgradeAcceptedPhase = "accepted"
+
+	kubeadmAccessOperationPrivate = "operation-private-sysext"
+	kubeletGateOperationReleased  = "operation-released-target-kubelet"
 )
 
 func (s *Server) acceptKubernetesSysextUpdateOperation(req *agentapi.SubmitOperationRequest, digest string, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
@@ -56,6 +61,11 @@ func (s *Server) dryRunKubernetesSysextUpdateOperation(req *agentapi.SubmitOpera
 
 func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperationRequest, digest string, id string, locks []string, now time.Time) (operation.OperationRecord, error) {
 	update := kubernetesSysextUpdateFromProto(req.GetKubernetesSysextUpdate())
+	if update.UpgradeRole != "" {
+		if err := s.validateCandidateGenerationAvailable(update.CandidateGenerationID); err != nil {
+			return operation.OperationRecord{}, status.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
 	currentID, current, currentOK, err := s.currentKubernetesSysext()
 	if err != nil {
 		return operation.OperationRecord{}, status.Errorf(codes.FailedPrecondition, "read current Kubernetes sysext: %v", err)
@@ -92,11 +102,17 @@ func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperati
 		PhasePlan:                   []string{"accepted", kubeadmUpgradeRefusedPhase},
 		PreviousGenerationID:        currentID,
 		KubernetesSysextUpdate:      &update,
-		ActivationMode:              operation.ActivationModeNextBoot,
-		ActivationState:             operation.ActivationStatePending,
-		GenerationCommitState:       operation.GenerationCommitAbandoned,
-		PostKubeadmHealthState:      operation.PostKubeadmHealthNotRun,
-		ResourceLocks:               locks,
+		KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{
+			TargetKubeadmAccessMode: kubeadmAccessOperationPrivate,
+			KubeletActivationGate:   kubeletGateOperationReleased,
+			KubeletGateState:        "locked",
+			SourceKubeletPolicy:     "keep-running",
+		},
+		ActivationMode:         operation.ActivationModeNextBoot,
+		ActivationState:        operation.ActivationStatePending,
+		GenerationCommitState:  operation.GenerationCommitAbandoned,
+		PostKubeadmHealthState: operation.PostKubeadmHealthNotRun,
+		ResourceLocks:          locks,
 	}
 	if !currentFromIntent && sameKubernetesSysext(current, update) {
 		completedAt := now.UTC()
@@ -116,16 +132,26 @@ func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperati
 		if !state.bootstrapped {
 			return operation.OperationRecord{}, status.Error(codes.FailedPrecondition, "Kubernetes sysext selection before kubeadm bootstrap must use the bootstrap operation path")
 		}
-		completedAt := now.UTC()
-		record.Phase = kubeadmUpgradeRefusedPhase
-		record.CompletedPhases = []string{"accepted", kubeadmUpgradeRefusedPhase}
-		record.PhaseIndex = len(record.CompletedPhases)
-		record.Terminal = true
-		record.Result = kubeadmUpgradeRefusedPhase
-		record.RecoveryRequired = false
-		record.NextAction = "select a target kubeadm access mode and kubelet activation gate before enabling Kubernetes sysext upgrades"
-		record.FailureReason = inventory.Redact(kubernetesSysextUpgradeRefusal(state, current, update))
-		record.CompletedAt = &completedAt
+		if update.UpgradeRole == "" {
+			completedAt := now.UTC()
+			record.Phase = kubeadmUpgradeRefusedPhase
+			record.CompletedPhases = []string{"accepted", kubeadmUpgradeRefusedPhase}
+			record.PhaseIndex = len(record.CompletedPhases)
+			record.Terminal = true
+			record.Result = kubeadmUpgradeRefusedPhase
+			record.RecoveryRequired = false
+			record.NextAction = "resubmit with the selected target kubeadm access mode and kubelet activation gate plus an explicit upgrade role, candidate generation, source version, and required snapshot evidence"
+			record.FailureReason = inventory.Redact(kubernetesSysextUpgradeRefusal(state, current, update))
+			record.CompletedAt = &completedAt
+		} else {
+			record.Phase = kubeadmUpgradeAcceptedPhase
+			record.PhasePlan = kubeadmUpgradePhasePlan(update.UpgradeRole)
+			record.CompletedPhases = []string{"accepted"}
+			record.PhaseIndex = 1
+			record.CandidateGenerationID = update.CandidateGenerationID
+			record.GenerationCommitState = operation.GenerationCommitCandidate
+			record.NextAction = "queued for verified private target kubeadm staging"
+		}
 	}
 	return record, nil
 }
@@ -135,11 +161,22 @@ func kubernetesSysextUpdateFromProto(req *agentapi.KubernetesSysextUpdateOperati
 		return operation.KubernetesSysextUpdate{}
 	}
 	return operation.KubernetesSysextUpdate{
-		TargetPayloadVersion: strings.TrimSpace(req.TargetPayloadVersion),
-		TargetSysextPath:     strings.TrimSpace(req.TargetSysextPath),
-		TargetSysextSHA256:   strings.ToLower(strings.TrimSpace(req.TargetSysextSha256)),
-		TargetSysextSize:     req.TargetSysextSizeBytes,
-		TargetActivationPath: strings.TrimSpace(req.TargetActivationPath),
+		TargetPayloadVersion:     strings.TrimSpace(req.TargetPayloadVersion),
+		TargetSysextPath:         strings.TrimSpace(req.TargetSysextPath),
+		TargetSysextSHA256:       strings.ToLower(strings.TrimSpace(req.TargetSysextSha256)),
+		TargetSysextSize:         req.TargetSysextSizeBytes,
+		TargetActivationPath:     strings.TrimSpace(req.TargetActivationPath),
+		CandidateGenerationID:    strings.TrimSpace(req.CandidateGenerationId),
+		UpgradeRole:              strings.TrimSpace(req.UpgradeRole),
+		SourcePayloadVersion:     strings.TrimSpace(req.SourcePayloadVersion),
+		SnapshotRef:              strings.TrimSpace(req.SnapshotRef),
+		SnapshotDigest:           strings.ToLower(strings.TrimSpace(req.SnapshotDigest)),
+		SnapshotRevision:         strings.TrimSpace(req.SnapshotRevision),
+		SnapshotCreatedAt:        strings.TrimSpace(req.SnapshotCreatedAt),
+		CapturedMemberListDigest: strings.ToLower(strings.TrimSpace(req.CapturedMemberListDigest)),
+		SourceEtcdVersion:        strings.TrimSpace(req.SourceEtcdVersion),
+		SnapshotStorageLocation:  strings.TrimSpace(req.SnapshotStorageLocation),
+		SnapshotOperatorIdentity: inventory.Redact(strings.TrimSpace(req.SnapshotOperatorIdentity)),
 	}
 }
 
@@ -165,7 +202,84 @@ func validateKubernetesSysextUpdateRequest(operationKind string, req *agentapi.K
 	if strings.TrimSpace(req.TargetActivationPath) != "" {
 		return fmt.Errorf("raw Kubernetes sysext activation paths are unsupported before the kubelet activation gate exists")
 	}
+	role := strings.TrimSpace(req.UpgradeRole)
+	if role == "" {
+		return nil // Legacy plan-only requests remain explicit refusal records.
+	}
+	if role != "apply" && role != "control-plane" && role != "worker" {
+		return fmt.Errorf("upgradeRole must be apply, control-plane, or worker")
+	}
+	if err := cleanPublicID("candidateGenerationID", strings.TrimSpace(req.CandidateGenerationId)); err != nil {
+		return err
+	}
+	if err := validateKubernetesUpgradeVersions(req.SourcePayloadVersion, req.TargetPayloadVersion); err != nil {
+		return err
+	}
+	required := map[string]string{"snapshotRef": req.SnapshotRef, "snapshotDigest": req.SnapshotDigest}
+	if role != "worker" {
+		required["snapshotCreatedAt"] = req.SnapshotCreatedAt
+		required["capturedMemberListDigest"] = req.CapturedMemberListDigest
+		required["snapshotStorageLocation"] = req.SnapshotStorageLocation
+		required["snapshotOperatorIdentity"] = req.SnapshotOperatorIdentity
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required for Kubernetes upgrade execution", name)
+		}
+	}
+	if err := validateLowercaseSHA256("snapshotDigest", strings.TrimSpace(req.SnapshotDigest)); err != nil {
+		return err
+	}
+	if role != "worker" {
+		if err := validateLowercaseSHA256("capturedMemberListDigest", strings.TrimSpace(req.CapturedMemberListDigest)); err != nil {
+			return err
+		}
+		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(req.SnapshotCreatedAt)); err != nil {
+			return fmt.Errorf("snapshotCreatedAt must be RFC3339: %w", err)
+		}
+	}
 	return nil
+}
+
+func kubeadmUpgradePhasePlan(role string) []string {
+	plan := []string{"accepted", "staged"}
+	if role == "apply" {
+		plan = append(plan, "kubeadm-plan-running", "kubeadm-plan-complete", "kubeadm-apply-running")
+	} else {
+		plan = append(plan, "kubeadm-node-running")
+	}
+	return append(plan, "kubelet-restart-running", "health-check-running", "healthy")
+}
+
+func validateKubernetesUpgradeVersions(source, target string) error {
+	sMajor, sMinor, sPatch, err := parseKubernetesVersion(source)
+	if err != nil {
+		return fmt.Errorf("sourcePayloadVersion: %w", err)
+	}
+	tMajor, tMinor, tPatch, err := parseKubernetesVersion(target)
+	if err != nil {
+		return fmt.Errorf("targetPayloadVersion: %w", err)
+	}
+	if sMajor != tMajor || tMinor < sMinor || tMinor > sMinor+1 || (tMinor == sMinor && tPatch <= sPatch) {
+		return fmt.Errorf("unsupported Kubernetes version transition %s -> %s: only a newer patch or the next minor is allowed", source, target)
+	}
+	return nil
+}
+
+func parseKubernetesVersion(value string) (int, int, int, error) {
+	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(value), "v"), ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, fmt.Errorf("must be vMAJOR.MINOR.PATCH")
+	}
+	values := [3]int{}
+	for i, part := range parts {
+		v, err := strconv.Atoi(part)
+		if err != nil || v < 0 {
+			return 0, 0, 0, fmt.Errorf("must be vMAJOR.MINOR.PATCH")
+		}
+		values[i] = v
+	}
+	return values[0], values[1], values[2], nil
 }
 
 func validateLowercaseSHA256(name string, value string) error {
