@@ -19,6 +19,7 @@ import (
 	"github.com/zariel/katl/internal/installer"
 	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/handoff"
+	"gopkg.in/yaml.v3"
 )
 
 type FirstInstallConfig struct {
@@ -382,10 +383,10 @@ func writeGuestHandoffSeedMedia(ctx context.Context, result Result, config First
 func copyPreseedLocalRef(config FirstInstallConfig, result Result, manifest []byte, preseedDir string) error {
 	var input struct {
 		KatlosImage struct {
-			LocalRef string `json:"localRef"`
-		} `json:"katlosImage"`
+			LocalRef string `json:"localRef" yaml:"localRef"`
+		} `json:"katlosImage" yaml:"katlosImage"`
 	}
-	if err := json.Unmarshal(manifest, &input); err != nil {
+	if err := yaml.Unmarshal(manifest, &input); err != nil {
 		return fmt.Errorf("decode preseed install manifest: %w", err)
 	}
 	localRef := strings.TrimSpace(input.KatlosImage.LocalRef)

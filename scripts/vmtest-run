@@ -330,9 +330,6 @@ build_default_artifacts() {
     local -a targets=()
     case "$artifact_set" in
         default | install)
-            if ! has_explicit_installer_artifact; then
-                targets+=("build-installer")
-            fi
             if ! has_explicit_install_manifest; then
                 targets+=("build-katlos-install-image")
 			targets+=("build-katlos-upgrade-image")
@@ -342,6 +339,9 @@ build_default_artifacts() {
                 targets+=("build-kubernetes-sysext")
             elif ! has_explicit_runtime_artifact; then
                 targets+=("build-runtime")
+            fi
+            if ! has_explicit_installer_artifact; then
+                targets+=("build-installer-iso")
             fi
             ;;
         runtime)
@@ -383,8 +383,8 @@ build_default_artifacts() {
 
 mkosi_cache_label_for_target() {
     case "$1" in
-        build-installer)
-            printf 'installer\n'
+        build-installer-iso)
+			printf 'installer-iso\n'
             ;;
         build-runtime)
             printf 'runtime\n'
@@ -409,7 +409,7 @@ mkosi_cache_label_for_target() {
 
 artifact_build_actions_json() {
     jq -nc \
-        --arg buildInstaller "${artifact_build_actions[build-installer]:-}" \
+        --arg buildInstaller "${artifact_build_actions[build-installer-iso]:-}" \
         --arg buildRuntime "${artifact_build_actions[build-runtime]:-}" \
         --arg buildInstallImage "${artifact_build_actions[build-katlos-install-image]:-}" \
         --arg buildKubernetesSysext "${artifact_build_actions[build-kubernetes-sysext]:-}" \

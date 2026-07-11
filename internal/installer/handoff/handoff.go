@@ -25,8 +25,9 @@ const (
 )
 
 type HandoffServer struct {
-	token    string
-	validate func([]byte) error
+	token              string
+	validate           func([]byte) error
+	defaultKatlosImage manifest.KatlosImage
 
 	mu       sync.Mutex
 	state    HandoffState
@@ -50,6 +51,10 @@ type BundlePayload struct {
 }
 
 func NewHandoffServer(token string, validate func([]byte) error) (*HandoffServer, error) {
+	return NewHandoffServerWithDefaultImage(token, validate, manifest.KatlosImage{})
+}
+
+func NewHandoffServerWithDefaultImage(token string, validate func([]byte) error, defaultImage manifest.KatlosImage) (*HandoffServer, error) {
 	if strings.TrimSpace(token) == "" {
 		generated, err := GenerateHandoffToken()
 		if err != nil {
@@ -58,17 +63,21 @@ func NewHandoffServer(token string, validate func([]byte) error) (*HandoffServer
 		token = generated
 	}
 	if validate == nil {
-		validate = ValidateInstallManifestEnvelope
+		validate = func(data []byte) error {
+			_, _, err := manifest.DecodeWithDefaultImage(bytes.NewReader(data), defaultImage)
+			return err
+		}
 	}
 
 	status := installstatus.New(installstatus.StateWaitingForConfig, time.Now().UTC())
 	status.InputMode = installstatus.InputModeLocalHandoff
 	status.InputSource = installstatus.InputModeLocalHandoff
 	return &HandoffServer{
-		token:    token,
-		validate: validate,
-		state:    HandoffWaiting,
-		status:   status,
+		token:              token,
+		validate:           validate,
+		defaultKatlosImage: defaultImage,
+		state:              HandoffWaiting,
+		status:             status,
 	}, nil
 }
 
@@ -151,7 +160,7 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid manifest: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	decoded, err := manifest.Decode(bytes.NewReader(body))
+	decoded, _, err := manifest.DecodeWithDefaultImage(bytes.NewReader(body), s.defaultKatlosImage)
 	if err != nil {
 		http.Error(w, "invalid manifest: "+err.Error(), http.StatusBadRequest)
 		return
@@ -202,8 +211,9 @@ func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(body), configbundle.ReadOptions{
-		ExpectedDigest: expectedDigest,
-		NodeName:       nodeName,
+		ExpectedDigest:     expectedDigest,
+		NodeName:           nodeName,
+		DefaultKatlosImage: s.defaultKatlosImage,
 	})
 	if err != nil {
 		http.Error(w, "invalid config bundle: "+err.Error(), http.StatusBadRequest)

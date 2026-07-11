@@ -236,7 +236,7 @@ and testable.
 ## Node Configuration References
 
 PXE/preseed, USB/local handoff, and VM tests all use the same node configuration
-model after input discovery. That configuration points to one KatlOS image:
+model after input discovery. Loose-artifact deployment points to one KatlOS image:
 
 ```text
 katlosImage.url or katlosImage.localRef
@@ -250,10 +250,11 @@ fetch the install manifest or payload reference, but durable install policy stay
 in the install manifest. Kernel arguments must not carry node secrets or inline
 large manifests.
 
-Offline media may place the KatlOS image on the same ISO/USB filesystem as the
-installer wrapper. Local handoff may post a manifest that references that local
-image or a network image. In all cases, the node-specific manifest/config is
-separate from the reusable KatlOS image.
+The versioned release ISO places exactly one KatlOS install image and its media
+descriptor on the ISO filesystem. When `katlosImage` is absent, the installer
+binds the node configuration to that embedded image. Local handoff may still
+post an explicit local or network image reference. In all cases, node-specific
+configuration remains separate from the reusable KatlOS image.
 
 ## Verification
 

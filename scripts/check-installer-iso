@@ -6,6 +6,7 @@ artifact="${1:-$repo_root/_build/mkosi/katl-installer.iso}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
 installer="${KATL_INSTALLER_UKI:-$repo_root/_build/mkosi/katl-installer.efi}"
+katlos_image="${KATL_KATLOS_IMAGE:-$repo_root/_build/mkosi/katlos-install-${KATL_VERSION:-0.0.0-dev}-${KATL_ARCHITECTURE:-$(uname -m)}.squashfs}"
 version="${KATL_VERSION:-0.0.0-dev}"
 architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
 
@@ -21,6 +22,8 @@ done
 [[ -f "$metadata" ]] || fail "installer ISO metadata not found: $metadata"
 [[ -f "$checksum" ]] || fail "installer ISO checksum not found: $checksum"
 [[ -f "$installer" ]] || fail "installer UKI not found: $installer"
+[[ -f "$katlos_image" ]] || fail "KatlOS install image not found: $katlos_image"
+[[ -f "$katlos_image.json" ]] || fail "KatlOS install image metadata not found: $katlos_image.json"
 
 (cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
 digest="$(sha256sum "$artifact" | awk '{print $1}')"
@@ -49,5 +52,27 @@ xorriso -osirrox on -indev "$artifact" -extract /efiboot.img "$work/efiboot.img"
 mcopy -i "$work/efiboot.img" ::/EFI/BOOT/BOOTX64.EFI "$work/BOOTX64.EFI" ||
     fail "extract fallback EFI executable from boot image failed"
 cmp -- "$installer" "$work/BOOTX64.EFI" || fail "installer ISO does not contain the built installer UKI"
+
+image_name="$(basename "$katlos_image")"
+xorriso -osirrox on -indev "$artifact" -extract /katl/media.json "$work/media.json" >/dev/null 2>&1 ||
+    fail "extract installer ISO media metadata failed"
+xorriso -osirrox on -indev "$artifact" -extract "/katl/images/$image_name" "$work/$image_name" >/dev/null 2>&1 ||
+    fail "extract installer ISO KatlOS image failed"
+cmp -- "$katlos_image.json" "$work/media.json" || fail "installer ISO media metadata does not match the KatlOS install image"
+cmp -- "$katlos_image" "$work/$image_name" || fail "installer ISO does not contain the built KatlOS install image"
+
+image_digest="$(sha256sum "$work/$image_name" | awk '{print $1}')"
+image_size="$(stat -c %s "$work/$image_name")"
+jq -e \
+    --arg path "$image_name" \
+    --arg digest "$image_digest" \
+    --argjson size "$image_size" \
+    --arg version "$version" \
+    --arg architecture "$architecture" \
+    '.kind == "KatlOSImageArtifact" and
+     .imageRole == "install" and .format == "squashfs" and
+     .path == $path and .sha256 == $digest and .sizeBytes == $size and
+     .version == $version and .architecture == $architecture' \
+    "$work/media.json" >/dev/null || fail "installer ISO media metadata does not match its embedded KatlOS image"
 
 echo "ok: $artifact"

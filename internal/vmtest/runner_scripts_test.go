@@ -389,7 +389,7 @@ exec "$@"
 	}
 
 	mkosiArgs := readLines(t, mkosiArgsPath)
-	if !reflect.DeepEqual(mkosiArgs, []string{"build-installer", "build-katlos-install-image", "build-katlos-upgrade-image", "build-kubernetes-sysext"}) {
+	if !reflect.DeepEqual(mkosiArgs, []string{"build-katlos-install-image", "build-katlos-upgrade-image", "build-kubernetes-sysext", "build-installer-iso"}) {
 		t.Fatalf("mkosi args = %#v", mkosiArgs)
 	}
 	goArgs := readLines(t, goArgsPath)
@@ -425,8 +425,8 @@ func TestVMTestRunRecordsCacheResolvedArtifacts(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
 case "$*" in
-  build-installer)
-    printf 'mkosi cache hit: installer artifacts match the current repo\n'
+  build-installer-iso)
+    printf 'mkosi cache hit: installer-iso artifacts match the current repo\n'
     ;;
   build-katlos-install-image)
     printf 'mkosi cache hit: katlos-install-image artifacts match the current repo\n'

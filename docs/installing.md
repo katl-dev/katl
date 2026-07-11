@@ -2,17 +2,18 @@
 
 Status: early user-facing guide.
 
-Katl produces generic KatlOS artifacts. You publish those artifacts through your
-own boot or release infrastructure, then provide node-specific install input at
-boot time. Katl does not manage DHCP, TFTP, iPXE, matchbox, firmware boot order,
-USB imaging, GitOps repositories, CNI add-ons, Flux, or Kubernetes workloads.
+Katl publishes a versioned installer ISO containing the matching KatlOS payload.
+Write or attach that one artifact, then provide node-specific install input at
+boot time. Loose boot and payload artifacts remain available for PXE. Katl does
+not manage DHCP, TFTP, iPXE, matchbox, firmware boot order, USB imaging, GitOps
+repositories, CNI add-ons, Flux, or Kubernetes workloads.
 
 The install boundary is:
 
 ```text
 Katl build output
-  reusable installer boot artifacts
-  one KatlOS install image payload
+  one self-contained installer ISO
+  loose installer and KatlOS payload artifacts for PXE
 
 User-managed provisioning
   PXE, iPXE, matchbox, virtual media, USB, or another boot path
@@ -29,7 +30,19 @@ katlctl cluster bootstrap
 
 ## Artifacts
 
-Publish the installer boot artifacts that match your boot path:
+For USB, optical, or virtual media, use the primary release artifact:
+
+```text
+katl-installer.iso
+katl-installer.iso.sha256
+katl-installer.iso.json
+```
+
+The ISO metadata records the release version and architecture. The ISO contains
+the temporary installer and exactly one matching KatlOS install image. It never
+contains node identity or credentials.
+
+For PXE, publish the loose installer boot artifacts that match your boot path:
 
 ```text
 katl-installer-<version>-<arch>.efi
@@ -45,7 +58,7 @@ katl-installer-<version>-<arch>.initrd.sha256
 katl-installer-<version>-<arch>.initrd.json
 ```
 
-Publish one KatlOS install payload:
+and one KatlOS install payload:
 
 ```text
 katlos-install-<version>-<arch>.squashfs
@@ -65,8 +78,8 @@ Each node needs an `install.katl.dev/v1alpha1` manifest. YAML is the preferred
 operator-facing format because it keeps native systemd and kubeadm snippets
 readable. JSON manifests are accepted for tooling compatibility.
 
-This example is a control-plane node that uses DHCP and one published KatlOS
-image:
+This example is a control-plane node that uses DHCP and the KatlOS image embedded
+in its installer ISO:
 
 ```yaml
 apiVersion: install.katl.dev/v1alpha1
@@ -103,15 +116,12 @@ install:
   targetDisk:
     byID: /dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK
     minSizeMiB: 32768
-katlosImage:
-  url: https://artifacts.example.invalid/katl/katlos-install-2026.06.04-x86_64.squashfs
-  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  sizeBytes: 1073741824
-  version: "2026.06.04"
-  architecture: x86_64
-  runtimeInterface: katl-runtime-1
-  role: install
 ```
+
+When booted from the versioned ISO, omit `katlosImage`; the installer binds the
+manifest to the embedded image metadata and verifies the image before disk
+mutation. PXE and other loose-artifact flows must provide an explicit
+`katlosImage.url` or `katlosImage.localRef` with its digest and identity.
 
 Worker nodes use the same schema with `systemRole: worker` and a worker
 bootstrap profile reference when you want to preserve that intent for later
@@ -244,8 +254,8 @@ create matchbox profiles or groups for you.
 
 ## USB Or Local Handoff
 
-For hands-on installs, boot the generic installer UKI or a USB/virtual-media
-wrapper without a preseeded manifest. `katlos-install` enters local handoff mode,
+For hands-on installs, boot the versioned KatlOS ISO without a preseeded
+manifest. `katlos-install` mounts its payload read-only, enters local handoff mode,
 prints a URL and one-time token to the console and journal, and waits for one
 valid install manifest.
 
@@ -268,10 +278,10 @@ Operator flow:
 After a manifest is accepted, the handoff endpoint refuses later submissions.
 Invalid manifests keep the installer waiting and do not authorize disk mutation.
 
-Offline USB media may carry the KatlOS image as local preseed material. The
-current installer looks for seed media with the `KATLSEED` label or the
-`virtio-katl-seed` disk ID and copies local payloads into `/run/katl/preseed`.
-Use `katlosImage.localRef` for paths under that preseed root:
+The release ISO is already offline-capable, so the submitted node manifest omits
+`katlosImage`. Separate seed media with the `KATLSEED` label or the
+`virtio-katl-seed` disk ID is only needed for preseeded node configuration and
+credentials. Advanced custom media can still use `katlosImage.localRef`:
 
 ```yaml
 katlosImage:
@@ -285,8 +295,8 @@ katlosImage:
 ```
 
 The full manifest still carries node identity, disk selection, role, kubeadm
-config reference, and bootstrap intent. The local image reference only changes
-where the payload is read from.
+config reference, and bootstrap intent. An explicit image reference overrides
+media selection and changes only where the payload is read from.
 
 ## Installer Safety And Status
 
@@ -404,8 +414,9 @@ Common failures:
 ```text
 manifest rejected
   Check apiVersion, kind, required node.identity.ssh.authorizedKeys,
-  node.systemRole, optional node.kubernetes.kubeadm.configRef, targetDisk, and
-  katlosImage fields.
+  node.systemRole, optional node.kubernetes.kubeadm.configRef, and targetDisk.
+  PXE manifests must also include the katlosImage fields; ISO installs derive
+  them from the embedded media descriptor.
 
 destructive install refused
   Confirm install.wipeTarget is true and boot input selected

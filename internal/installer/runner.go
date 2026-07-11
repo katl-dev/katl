@@ -59,6 +59,9 @@ type Context struct {
 	LoaderRecord          *generation.Record
 	KatlosImage           *katlosimage.Payload
 	KatlosResolver        KatlosImageResolver
+	MediaKatlosResolver   KatlosImageResolver
+	DefaultKatlosImage    manifest.KatlosImage
+	KatlosImageFromMedia  bool
 	Discovery             discovery.DiscoverySource
 	HardwareFacts         discovery.HardwareFacts
 	RootProfile           manifest.RootDiskProfile
@@ -207,11 +210,12 @@ func (loadManifestStep) Run(ctx context.Context, install *Context) error {
 	if install.InputSource == "" {
 		install.InputSource = install.ManifestPath
 	}
-	decoded, err := manifest.Decode(bytes.NewReader(data))
+	decoded, defaulted, err := manifest.DecodeWithDefaultImage(bytes.NewReader(data), install.DefaultKatlosImage)
 	if err != nil {
 		return err
 	}
 	install.Manifest = decoded
+	install.KatlosImageFromMedia = defaulted || (!manifest.KatlosImageEmpty(install.DefaultKatlosImage) && decoded.KatlosImage == install.DefaultKatlosImage)
 	digest, err := installstatus.DigestManifest(decoded)
 	if err != nil {
 		return err
@@ -257,8 +261,12 @@ func (verifyKatlosImageStep) Run(ctx context.Context, install *Context) error {
 		return ctx.Err()
 	default:
 	}
-	if install.KatlosResolver != nil {
-		payload, err := install.KatlosResolver.ResolveKatlosImage(ctx, install.Manifest.KatlosImage)
+	resolver := install.KatlosResolver
+	if install.KatlosImageFromMedia && install.MediaKatlosResolver != nil {
+		resolver = install.MediaKatlosResolver
+	}
+	if resolver != nil {
+		payload, err := resolver.ResolveKatlosImage(ctx, install.Manifest.KatlosImage)
 		if err != nil {
 			return err
 		}

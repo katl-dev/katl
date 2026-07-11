@@ -19,6 +19,8 @@ func TestBuildInstallerISO(t *testing.T) {
 		t.Fatal(err)
 	}
 	installer := writeArtifact(t, tmp, "katl-installer.efi", "installer")
+	katlosImage := writeArtifact(t, tmp, "katlos-install-2026.7.0-dev.1-x86_64.squashfs", "katlos")
+	writeKatlosImageSidecars(t, katlosImage, "2026.7.0-dev.1")
 	output := filepath.Join(tmp, "katl-installer.iso")
 	for _, tool := range []string{"mkfs.vfat", "mcopy", "mmd"} {
 		writeFakeExecutable(t, bin, tool, "exit 0\n")
@@ -40,6 +42,9 @@ touch "$output"
 	cmd.Env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_INSTALLER_UKI="+installer,
+		"KATL_KATLOS_IMAGE="+katlosImage,
+		"KATL_VERSION=2026.7.0-dev.1",
+		"KATL_ARCHITECTURE=x86_64",
 		"KATL_INSTALLER_ISO="+output,
 		"TMPDIR="+tmp,
 	)
@@ -59,6 +64,26 @@ func TestCheckInstallerISO(t *testing.T) {
 		t.Fatal(err)
 	}
 	installer := writeArtifact(t, tmp, "katl-installer.efi", "installer")
+	katlosImage := writeArtifact(t, tmp, "katlos-install-2026.7.0-dev.1-x86_64.squashfs", "katlos")
+	katlosDigest := sha256.Sum256(mustReadFile(t, katlosImage))
+	katlosMetadata, err := json.Marshal(map[string]any{
+		"apiVersion":       "katl.dev/v1alpha1",
+		"kind":             "KatlOSImageArtifact",
+		"imageRole":        "install",
+		"format":           "squashfs",
+		"path":             filepath.Base(katlosImage),
+		"sha256":           hex.EncodeToString(katlosDigest[:]),
+		"sizeBytes":        len("katlos"),
+		"version":          "2026.7.0-dev.1",
+		"architecture":     "x86_64",
+		"runtimeInterface": "katl-runtime-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(katlosImage+".json", append(katlosMetadata, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	artifact := writeArtifact(t, tmp, "katl-installer.iso", "iso")
 	digest := sha256.Sum256(mustReadFile(t, artifact))
 	digestText := hex.EncodeToString(digest[:])
@@ -89,6 +114,14 @@ if [[ " $* " == *" -extract /efiboot.img "* ]]; then
   touch "${@: -1}"
   exit 0
 fi
+if [[ " $* " == *" -extract /katl/media.json "* ]]; then
+  cp "$KATL_TEST_MEDIA_METADATA" "${@: -1}"
+  exit 0
+fi
+if [[ " $* " == *" -extract /katl/images/"* ]]; then
+  cp "$KATL_TEST_KATLOS_IMAGE" "${@: -1}"
+  exit 0
+fi
 exit 1
 `)
 	writeFakeExecutable(t, bin, "mcopy", `cp "$KATL_TEST_INSTALLER" "${@: -1}"`+"\n")
@@ -98,6 +131,9 @@ exit 1
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_INSTALLER_UKI="+installer,
 		"KATL_TEST_INSTALLER="+installer,
+		"KATL_KATLOS_IMAGE="+katlosImage,
+		"KATL_TEST_KATLOS_IMAGE="+katlosImage,
+		"KATL_TEST_MEDIA_METADATA="+katlosImage+".json",
 		"KATL_VERSION=2026.7.0-dev.1",
 		"KATL_ARCHITECTURE=x86_64",
 		"TMPDIR="+tmp,
@@ -117,6 +153,11 @@ func TestMkosiInstallerISOUsesBuilder(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	katlosImage := writeArtifact(t, buildDir, "katlos-install-2026.7.0-dev.1-x86_64.squashfs", "katlos")
+	writeKatlosImageSidecars(t, katlosImage, "2026.7.0-dev.1")
 	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
 	seedInstallerRPMCache(t, repo)
 	podmanArgs := filepath.Join(tmp, "podman-args.txt")
@@ -156,6 +197,34 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 		if !containsString(args, want) {
 			t.Fatalf("podman args missing %q: %#v", want, args)
 		}
+	}
+}
+
+func writeKatlosImageSidecars(t *testing.T, image, version string) {
+	t.Helper()
+	content := mustReadFile(t, image)
+	digest := sha256.Sum256(content)
+	digestText := hex.EncodeToString(digest[:])
+	metadata, err := json.Marshal(map[string]any{
+		"apiVersion":       "katl.dev/v1alpha1",
+		"kind":             "KatlOSImageArtifact",
+		"imageRole":        "install",
+		"format":           "squashfs",
+		"path":             filepath.Base(image),
+		"sha256":           digestText,
+		"sizeBytes":        len(content),
+		"version":          version,
+		"architecture":     "x86_64",
+		"runtimeInterface": "katl-runtime-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(image+".json", append(metadata, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(image+".sha256", []byte(digestText+"  "+filepath.Base(image)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

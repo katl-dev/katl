@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/zariel/katl/internal/installer/manifest"
 )
 
 type bundleGolden struct {
@@ -81,6 +83,35 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 		if _, ok := files[blobPath]; !ok {
 			t.Fatalf("descriptor %s missing blob %s", desc.FileName, blobPath)
 		}
+	}
+}
+
+func TestBuildArchiveDefersKatlosImageToInstallMedia(t *testing.T) {
+	source := validSourceConfig()
+	start := strings.Index(source, "  katlosImage:\n")
+	end := strings.Index(source[start:], "  defaults:\n")
+	if start < 0 || end < 0 {
+		t.Fatal("valid source image block not found")
+	}
+	source = source[:start] + source[start+end:]
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	defaultImage := manifest.KatlosImage{
+		LocalRef: "images/katlos-install.squashfs", SHA256: strings.Repeat("a", 64),
+		SizeBytes: 1024, Version: "2026.7.0", Architecture: "x86_64",
+		RuntimeInterface: "katl-runtime-1", Role: "install",
+	}
+	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", DefaultKatlosImage: defaultImage})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode() error = %v", err)
+	}
+	if !selected.KatlosImageFromMedia || selected.InstallManifest.KatlosImage != defaultImage {
+		t.Fatalf("selected media image = %#v, from media = %v", selected.InstallManifest.KatlosImage, selected.KatlosImageFromMedia)
+	}
+	if _, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1"}); err == nil || !strings.Contains(err.Error(), "katlosImage") {
+		t.Fatalf("ReadSelectedNode() error = %v, want missing media image rejection", err)
 	}
 }
 

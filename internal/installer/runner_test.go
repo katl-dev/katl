@@ -422,6 +422,33 @@ func TestRunnerResolvesKatlosImageBeforePlanning(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesInstallMediaImage(t *testing.T) {
+	defaultImage := manifest.KatlosImage{
+		LocalRef: "images/katlos-install.squashfs", SHA256: strings.Repeat("b", 64),
+		SizeBytes: 4096, Version: "2026.7.0", Architecture: "x86_64",
+		RuntimeInterface: "katl-runtime-1", Role: "install",
+	}
+	external := &recordingKatlosResolver{err: errString("external resolver must not run")}
+	media := &recordingKatlosResolver{payload: katlosimage.Payload{Index: katlosimage.Index{Version: defaultImage.Version}}}
+	install := &Context{
+		ManifestPath:        writeManifestWithoutImage(t),
+		Commands:            &NoopCommandRunner{},
+		Store:               &MemoryStateStore{},
+		KatlosResolver:      external,
+		MediaKatlosResolver: media,
+		DefaultKatlosImage:  defaultImage,
+	}
+	if err := NewRunner(Plan{loadManifestStep{}, verifyKatlosImageStep{}}, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !install.KatlosImageFromMedia || media.image != defaultImage {
+		t.Fatalf("media selected = %v, image = %#v", install.KatlosImageFromMedia, media.image)
+	}
+	if !manifest.KatlosImageEmpty(external.image) {
+		t.Fatalf("external resolver image = %#v", external.image)
+	}
+}
+
 func TestRunnerRejectsKatlosImageBeforeMutation(t *testing.T) {
 	store := &MemoryStateStore{}
 	install := &Context{
@@ -1271,6 +1298,28 @@ func writeCompactManifest(t *testing.T) string {
 	data := `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest","node":{"identity":{"hostname":"lab-node-01","ssh":{"authorizedKeys":["` + sshKey + `"]}},"systemRole":"control-plane"},"install":{"wipeTarget":true,"targetDisk":{"byID":"/dev/disk/by-id/ata-root","minSizeMiB":32768}},"katlosImage":{"url":"https://example.invalid/katlos-install.squashfs","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sizeBytes":1073741824,"version":"2026.06.04","architecture":"x86_64","runtimeInterface":"katl-runtime-1","role":"install"}}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write manifest: %v", err)
+	}
+	return path
+}
+
+func writeManifestWithoutImage(t *testing.T) string {
+	t.Helper()
+	path := writeManifest(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		t.Fatal(err)
+	}
+	delete(object, "katlosImage")
+	data, err = json.Marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	return path
 }

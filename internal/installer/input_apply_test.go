@@ -228,6 +228,34 @@ func TestApplyInputMountsSeedDevice(t *testing.T) {
 	}
 }
 
+func TestApplyInputMountsInstallMediaReadOnly(t *testing.T) {
+	root := t.TempDir()
+	device := filepath.Join(root, "installer-media")
+	mountPoint := filepath.Join(root, "media")
+	writeTestFile(t, device, "iso")
+
+	commands := &NoopCommandRunner{}
+	var stdout bytes.Buffer
+	if err := ApplyInput(InputApplyRequest{
+		PreseedDirs:  []string{filepath.Join(root, "missing-preseed")},
+		MediaDevices: []string{filepath.Join(root, "missing-media"), device},
+		MediaMount:   mountPoint,
+		Commands:     commands,
+		Stdout:       &stdout,
+	}); err != nil {
+		t.Fatalf("ApplyInput() error = %v", err)
+	}
+	if len(commands.Calls) != 1 || commands.Calls[0].Name != "mount" {
+		t.Fatalf("commands = %#v, want one media mount", commands.Calls)
+	}
+	if got := strings.Join(commands.Calls[0].Args, " "); got != "-o ro "+device+" "+mountPoint {
+		t.Fatalf("mount args = %q", got)
+	}
+	if got := stdout.String(); !strings.Contains(got, "mounted install media") {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
 func TestApplyInputSkipsMissingSeedDevice(t *testing.T) {
 	root := t.TempDir()
 	preseed := filepath.Join(root, "seed")

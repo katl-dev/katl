@@ -38,6 +38,9 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 	for _, tool := range []string{"dnf5", "ukify", "xargs"} {
 		writeFakeExecutable(t, bin, tool, "exit 0\n")
 	}
+	for _, name := range []string{"katl-installer.iso", "katl-installer.iso.json", "katl-installer.iso.sha256"} {
+		preserveFile(t, filepath.Join(repo, "_build", "mkosi", name))
+	}
 	seedInstallerRPMCache(t, repo)
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer")

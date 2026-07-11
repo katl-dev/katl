@@ -153,29 +153,43 @@ type RootDiskProfile struct {
 }
 
 func Decode(reader io.Reader) (Manifest, error) {
+	manifest, _, err := DecodeWithDefaultImage(reader, KatlosImage{})
+	return manifest, err
+}
+
+func DecodeWithDefaultImage(reader io.Reader, defaultImage KatlosImage) (Manifest, bool, error) {
 	decoder := yaml.NewDecoder(reader)
 	decoder.KnownFields(true)
 
 	var manifest Manifest
 	if err := decoder.Decode(&manifest); err != nil {
-		return Manifest{}, fmt.Errorf("decode install manifest: %w", normalizeDecodeError(err))
+		return Manifest{}, false, fmt.Errorf("decode install manifest: %w", normalizeDecodeError(err))
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		if err == nil {
-			return Manifest{}, fmt.Errorf("decode install manifest: multiple YAML documents")
+			return Manifest{}, false, fmt.Errorf("decode install manifest: multiple YAML documents")
 		}
-		return Manifest{}, fmt.Errorf("decode install manifest: %w", normalizeDecodeError(err))
+		return Manifest{}, false, fmt.Errorf("decode install manifest: %w", normalizeDecodeError(err))
 	}
 	if manifest.APIVersion != APIVersion {
-		return Manifest{}, fmt.Errorf("apiVersion must be %s", APIVersion)
+		return Manifest{}, false, fmt.Errorf("apiVersion must be %s", APIVersion)
 	}
 	if manifest.Kind != Kind {
-		return Manifest{}, fmt.Errorf("kind must be %s", Kind)
+		return Manifest{}, false, fmt.Errorf("kind must be %s", Kind)
+	}
+	defaulted := false
+	if KatlosImageEmpty(manifest.KatlosImage) && !KatlosImageEmpty(defaultImage) {
+		manifest.KatlosImage = defaultImage
+		defaulted = true
 	}
 	if err := Validate(manifest); err != nil {
-		return Manifest{}, err
+		return Manifest{}, false, err
 	}
-	return manifest, nil
+	return manifest, defaulted, nil
+}
+
+func KatlosImageEmpty(image KatlosImage) bool {
+	return image == (KatlosImage{})
 }
 
 func normalizeDecodeError(err error) error {
@@ -189,6 +203,14 @@ func normalizeDecodeError(err error) error {
 }
 
 func Validate(manifest Manifest) error {
+	return ValidateWithOptions(manifest, ValidateOptions{})
+}
+
+type ValidateOptions struct {
+	AllowMissingKatlosImage bool
+}
+
+func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	if !manifest.Install.WipeTarget {
 		return fmt.Errorf("install.wipeTarget must be true")
 	}
@@ -226,8 +248,10 @@ func Validate(manifest Manifest) error {
 	if err := validateDiskSelector("install.targetDisk", manifest.Install.TargetDisk); err != nil {
 		return err
 	}
-	if err := validateKatlosImage(manifest.KatlosImage); err != nil {
-		return err
+	if !(options.AllowMissingKatlosImage && KatlosImageEmpty(manifest.KatlosImage)) {
+		if err := validateKatlosImage(manifest.KatlosImage); err != nil {
+			return err
+		}
 	}
 	for i, extra := range manifest.Install.ExtraDisks {
 		if strings.TrimSpace(extra.Name) == "" {

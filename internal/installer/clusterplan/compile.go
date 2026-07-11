@@ -213,7 +213,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		},
 		KatlosImage: config.Spec.KatlosImage,
 	}
-	if err := manifest.Validate(installManifest); err != nil {
+	if err := manifest.ValidateWithOptions(installManifest, manifest.ValidateOptions{AllowMissingKatlosImage: true}); err != nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q manifest: %w", name, err)
 	}
 	kubeadmConfig := inventory.KubeadmConfig{}
@@ -413,6 +413,9 @@ func selectKubernetes(selection KubernetesSelection, image manifest.KatlosImage,
 			activationPath: validationActivationPath,
 		}, nil
 	}
+	if manifest.KatlosImageEmpty(image) {
+		return selectedKubernetes{}, fmt.Errorf("spec.katlosImage is required when spec.kubernetes.catalogRef selects an architecture-specific payload")
+	}
 
 	ref, err := sysextcatalog.Select(sysextcatalog.SelectionRequest{
 		Catalog: request.KubernetesCatalog,
@@ -436,6 +439,9 @@ func selectKubernetes(selection KubernetesSelection, image manifest.KatlosImage,
 }
 
 func validateClusterImage(image manifest.KatlosImage) error {
+	if manifest.KatlosImageEmpty(image) {
+		return nil
+	}
 	testManifest := manifest.Manifest{
 		APIVersion: manifest.APIVersion,
 		Kind:       manifest.Kind,

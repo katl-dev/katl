@@ -540,6 +540,25 @@ func TestFirstInstallPreseedLocalRef(t *testing.T) {
 	}
 }
 
+func TestFirstInstallPreseedYAMLWithoutLocalRef(t *testing.T) {
+	root := t.TempDir()
+	result, _ := vmFixture(t)
+	result.Artifacts.ManifestsDir = filepath.Join(root, "run", "manifests")
+	result.Artifacts.InstallManifest = filepath.Join(result.Artifacts.ManifestsDir, "install-manifest.yaml")
+	manifest := []byte("apiVersion: install.katl.dev/v1alpha1\nkind: InstallManifest\n")
+	preseed, err := writePreseedMedia(context.Background(), result, FirstInstallConfig{PreseedRunner: fakePreseedRunner{}}, manifest)
+	if err != nil {
+		t.Fatalf("writePreseedMedia() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(preseed.Dir, "install-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(manifest) {
+		t.Fatalf("preseed manifest = %q", data)
+	}
+}
+
 func TestFirstInstallUsesInstalledESPExtractor(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")

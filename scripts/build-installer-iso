@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="${KATL_REPO_ROOT:-$(git rev-parse --show-toplevel)}"
 build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 installer="${KATL_INSTALLER_UKI:-$build_dir/katl-installer.efi}"
+katlos_image="${KATL_KATLOS_IMAGE:-$build_dir/katlos-install-${KATL_VERSION:-0.0.0-dev}-${KATL_ARCHITECTURE:-$(uname -m)}.squashfs}"
 output="${KATL_INSTALLER_ISO:-$build_dir/katl-installer.iso}"
 
 fail() {
@@ -11,12 +12,32 @@ fail() {
     exit 1
 }
 
-for tool in mkfs.vfat mcopy mmd truncate xorriso; do
+for tool in jq mkfs.vfat mcopy mmd sha256sum truncate xorriso; do
     command -v "$tool" >/dev/null 2>&1 || fail "$tool is required to build the installer ISO"
 done
 [[ -f "$installer" ]] || fail "installer UKI not found: $installer"
 [[ -s "$installer" ]] || fail "installer UKI is empty: $installer"
+[[ -f "$katlos_image" ]] || fail "KatlOS install image not found: $katlos_image"
+[[ -s "$katlos_image" ]] || fail "KatlOS install image is empty: $katlos_image"
+[[ -f "$katlos_image.json" ]] || fail "KatlOS install image metadata not found: $katlos_image.json"
+[[ -f "$katlos_image.sha256" ]] || fail "KatlOS install image checksum not found: $katlos_image.sha256"
 [[ -n "$output" && "$output" != / && "$output" != . ]] || fail "unsafe installer ISO output: $output"
+
+(cd "$(dirname "$katlos_image")" && sha256sum -c "$(basename "$katlos_image").sha256") >/dev/null ||
+    fail "KatlOS install image checksum does not match"
+katlos_digest="$(sha256sum "$katlos_image" | awk '{print $1}')"
+katlos_size="$(stat -c %s "$katlos_image")"
+jq -e \
+    --arg path "$(basename "$katlos_image")" \
+    --arg digest "$katlos_digest" \
+    --argjson size "$katlos_size" \
+    --arg version "${KATL_VERSION:-0.0.0-dev}" \
+    --arg architecture "${KATL_ARCHITECTURE:-$(uname -m)}" \
+    '.kind == "KatlOSImageArtifact" and
+     .imageRole == "install" and .format == "squashfs" and
+     .path == $path and .sha256 == $digest and .sizeBytes == $size and
+     .version == $version and .architecture == $architecture' \
+    "$katlos_image.json" >/dev/null || fail "KatlOS install image metadata does not match the requested installer release"
 
 mkdir -p "$(dirname "$output")"
 work="$(mktemp -d "${TMPDIR:-/tmp}/katl-installer-iso.XXXXXX")"
@@ -31,11 +52,15 @@ tree="$work/iso"
 temporary="$work/katl-installer.iso"
 
 mkdir -p "$tree"
+mkdir -p "$tree/katl/images"
 truncate -s "$esp_size" "$esp"
 mkfs.vfat -F 32 -n KATLISOEFI "$esp" >/dev/null
 mmd -i "$esp" ::/EFI ::/EFI/BOOT
 mcopy -i "$esp" "$installer" ::/EFI/BOOT/BOOTX64.EFI
 cp -- "$esp" "$tree/efiboot.img"
+cp -- "$katlos_image" "$tree/katl/images/$(basename "$katlos_image")"
+cp -- "$katlos_image.sha256" "$tree/katl/images/$(basename "$katlos_image").sha256"
+cp -- "$katlos_image.json" "$tree/katl/media.json"
 
 xorriso -as mkisofs \
     -quiet \

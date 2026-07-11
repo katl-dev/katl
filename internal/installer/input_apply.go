@@ -17,20 +17,23 @@ import (
 )
 
 type InputApplyRequest struct {
-	Context     context.Context
-	PreseedDirs []string
-	SeedDevices []string
-	SeedMount   string
-	SeedWait    time.Duration
-	Commands    CommandRunner
-	RunDir      string
-	EtcDir      string
-	NetworkDir  string
-	Stdout      io.Writer
+	Context      context.Context
+	PreseedDirs  []string
+	MediaDevices []string
+	MediaMount   string
+	SeedDevices  []string
+	SeedMount    string
+	SeedWait     time.Duration
+	Commands     CommandRunner
+	RunDir       string
+	EtcDir       string
+	NetworkDir   string
+	Stdout       io.Writer
 }
 
 const (
 	DefaultSeedMount        = "/run/katl/preseed"
+	DefaultMediaMount       = "/run/katl/media"
 	KubeadmConfigObjectsDir = "kubeadm-configs"
 	KubeadmConfigFilesDir   = "kubeadm"
 )
@@ -38,6 +41,10 @@ const (
 var DefaultSeedDevices = []string{
 	"/dev/disk/by-label/KATLSEED",
 	"/dev/disk/by-id/virtio-katl-seed",
+}
+
+var DefaultMediaDevices = []string{
+	"/dev/disk/by-label/KATL_INSTALLER",
 }
 
 func DefaultPreseedDirs() []string {
@@ -69,6 +76,9 @@ func ApplyInput(request InputApplyRequest) error {
 	if stdout == nil {
 		stdout = io.Discard
 	}
+	if err := mountInstallMedia(ctx, request, stdout); err != nil {
+		return err
+	}
 	if err := mountSeedDevice(ctx, request, stdout); err != nil {
 		return err
 	}
@@ -85,6 +95,38 @@ func ApplyInput(request InputApplyRequest) error {
 		fmt.Fprintln(stdout, "katl input: no preseed files found")
 	}
 	return nil
+}
+
+func mountInstallMedia(ctx context.Context, request InputApplyRequest, stdout io.Writer) error {
+	device := firstExistingDevice(request.MediaDevices)
+	if device == "" {
+		return nil
+	}
+	mountPoint := request.MediaMount
+	if mountPoint == "" {
+		mountPoint = DefaultMediaMount
+	}
+	commands := request.Commands
+	if commands == nil {
+		commands = NewExecCommandRunner()
+	}
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		return fmt.Errorf("create install media mount %s: %w", mountPoint, err)
+	}
+	if err := commands.Run(ctx, "mount", "-o", "ro", device, mountPoint); err != nil {
+		return fmt.Errorf("mount install media %s: %w", device, err)
+	}
+	fmt.Fprintf(stdout, "katl input: mounted install media %s at %s\n", device, mountPoint)
+	return nil
+}
+
+func firstExistingDevice(devices []string) string {
+	for _, device := range devices {
+		if _, err := os.Stat(device); err == nil {
+			return device
+		}
+	}
+	return ""
 }
 
 func mountSeedDevice(ctx context.Context, request InputApplyRequest, stdout io.Writer) error {

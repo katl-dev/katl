@@ -24,6 +24,38 @@ func TestDecodeAcceptsMinimal(t *testing.T) {
 	}
 }
 
+func TestDecodeUsesDefaultKatlosImage(t *testing.T) {
+	input := `apiVersion: install.katl.dev/v1alpha1
+kind: InstallManifest
+node:
+  identity:
+    hostname: lab-node-01
+    ssh:
+      authorizedKeys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+  systemRole: control-plane
+install:
+  wipeTarget: true
+  targetDisk:
+    byID: /dev/disk/by-id/ata-root
+`
+	defaultImage := KatlosImage{
+		LocalRef: "images/katlos-install.squashfs", SHA256: strings.Repeat("a", 64),
+		SizeBytes: 1024, Version: "2026.7.0", Architecture: "x86_64",
+		RuntimeInterface: "katl-runtime-1", Role: "install",
+	}
+	got, defaulted, err := DecodeWithDefaultImage(strings.NewReader(input), defaultImage)
+	if err != nil {
+		t.Fatalf("DecodeWithDefaultImage() error = %v", err)
+	}
+	if !defaulted || got.KatlosImage != defaultImage {
+		t.Fatalf("defaulted = %v, image = %#v", defaulted, got.KatlosImage)
+	}
+	if _, err := Decode(strings.NewReader(input)); err == nil || !strings.Contains(err.Error(), "katlosImage") {
+		t.Fatalf("Decode() error = %v, want missing image rejection", err)
+	}
+}
+
 func TestDecodeAcceptsYAML(t *testing.T) {
 	manifest, err := Decode(strings.NewReader(`apiVersion: install.katl.dev/v1alpha1
 kind: InstallManifest

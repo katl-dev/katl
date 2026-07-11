@@ -23,6 +23,7 @@ import (
 	"github.com/zariel/katl/internal/installer/discovery"
 	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/handoff"
+	"github.com/zariel/katl/internal/installer/installmedia"
 	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/kubeadmconfig"
 	installstatus "github.com/zariel/katl/internal/installer/status"
@@ -75,6 +76,10 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 		return nil, err
 	}
 	commands := installer.NewExecCommandRunner()
+	media, _, err := loadInstallMedia()
+	if err != nil {
+		return nil, err
+	}
 	return &installer.Context{
 		ManifestPath: manifestPath,
 		StateDir:     stateDir,
@@ -86,13 +91,19 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 			WorkDir:   filepath.Join(stateDir, "katlos-image"),
 			Commands:  commands,
 		},
-		Discovery:      discovery.NewCommandDiscoverySource(commands),
-		RootSlotOpener: disk.FileRootSlotDeviceOpener{},
-		IdentityRandom: rand.Reader,
-		Chown:          os.Chown,
-		KubeadmConfigs: kubeadmConfigs,
-		InputMode:      inputMode,
-		InputSource:    inputSource,
+		MediaKatlosResolver: katlosimage.Resolver{
+			MediaRoot: media.Root,
+			WorkDir:   filepath.Join(stateDir, "katlos-image"),
+			Commands:  commands,
+		},
+		DefaultKatlosImage: media.Image,
+		Discovery:          discovery.NewCommandDiscoverySource(commands),
+		RootSlotOpener:     disk.FileRootSlotDeviceOpener{},
+		IdentityRandom:     rand.Reader,
+		Chown:              os.Chown,
+		KubeadmConfigs:     kubeadmConfigs,
+		InputMode:          inputMode,
+		InputSource:        inputSource,
 	}, nil
 }
 
@@ -106,9 +117,14 @@ func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, st
 	if strings.TrimSpace(inputSource) == "" {
 		inputSource = bundlePath
 	}
+	media, _, err := loadInstallMedia()
+	if err != nil {
+		return err
+	}
 	selected, err := configbundle.ReadSelectedNodeFile(bundlePath, configbundle.ReadOptions{
-		ExpectedDigest: expectedDigest,
-		NodeName:       selectedNode,
+		ExpectedDigest:     expectedDigest,
+		NodeName:           selectedNode,
+		DefaultKatlosImage: media.Image,
 	})
 	if err != nil {
 		return err
@@ -135,6 +151,10 @@ func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSou
 		return nil, err
 	}
 	commands := installer.NewExecCommandRunner()
+	media, _, err := loadInstallMedia()
+	if err != nil {
+		return nil, err
+	}
 	return &installer.Context{
 		ManifestPath: manifestPath,
 		StateDir:     stateDir,
@@ -146,6 +166,13 @@ func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSou
 			WorkDir:   filepath.Join(stateDir, "katlos-image"),
 			Commands:  commands,
 		},
+		MediaKatlosResolver: katlosimage.Resolver{
+			MediaRoot: media.Root,
+			WorkDir:   filepath.Join(stateDir, "katlos-image"),
+			Commands:  commands,
+		},
+		DefaultKatlosImage:    media.Image,
+		KatlosImageFromMedia:  selected.KatlosImageFromMedia,
 		Discovery:             discovery.NewCommandDiscoverySource(commands),
 		RootSlotOpener:        disk.FileRootSlotDeviceOpener{},
 		IdentityRandom:        rand.Reader,
@@ -181,6 +208,14 @@ func manifestMediaRoot(manifestPath string) (string, error) {
 		return "", fmt.Errorf("resolve manifest path: %w", err)
 	}
 	return filepath.Dir(path), nil
+}
+
+func loadInstallMedia() (installmedia.Media, bool, error) {
+	root := strings.TrimSpace(os.Getenv("KATL_INSTALL_MEDIA_ROOT"))
+	if root == "" {
+		root = filepath.Join(installer.DefaultMediaMount, "katl")
+	}
+	return installmedia.Load(root)
 }
 
 func loadKubeadmConfigs(mediaRoot string) (map[string]kubeadmconfig.Plan, error) {
@@ -500,7 +535,11 @@ func readFile(path string) ([]byte, bool) {
 }
 
 func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) error {
-	server, err := handoff.NewHandoffServer("", nil)
+	media, _, err := loadInstallMedia()
+	if err != nil {
+		return err
+	}
+	server, err := handoff.NewHandoffServerWithDefaultImage("", nil, media.Image)
 	if err != nil {
 		return err
 	}
@@ -708,15 +747,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			preseedDirs = append([]string{strings.TrimSpace(*preseedDir)}, preseedDirs...)
 		}
 		return installer.ApplyInput(installer.InputApplyRequest{
-			Context:     ctx,
-			PreseedDirs: preseedDirs,
-			SeedDevices: installer.DefaultSeedDevices,
-			SeedMount:   installer.DefaultSeedMount,
-			SeedWait:    *seedWait,
-			Commands:    installer.NewExecCommandRunner(),
-			RunDir:      *runDir,
-			EtcDir:      *etcDir,
-			Stdout:      stdout,
+			Context:      ctx,
+			PreseedDirs:  preseedDirs,
+			MediaDevices: installer.DefaultMediaDevices,
+			MediaMount:   installer.DefaultMediaMount,
+			SeedDevices:  installer.DefaultSeedDevices,
+			SeedMount:    installer.DefaultSeedMount,
+			SeedWait:     *seedWait,
+			Commands:     installer.NewExecCommandRunner(),
+			RunDir:       *runDir,
+			EtcDir:       *etcDir,
+			Stdout:       stdout,
 		})
 	}
 

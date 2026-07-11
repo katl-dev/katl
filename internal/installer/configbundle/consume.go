@@ -18,8 +18,9 @@ import (
 )
 
 type ReadOptions struct {
-	ExpectedDigest string
-	NodeName       string
+	ExpectedDigest     string
+	NodeName           string
+	DefaultKatlosImage manifest.KatlosImage
 }
 
 type SelectedNodeMaterial struct {
@@ -32,6 +33,7 @@ type SelectedNodeMaterial struct {
 	SourceDigest          string
 	NodeMaterialDigest    string
 	InstallMaterialDigest string
+	KatlosImageFromMedia  bool
 }
 
 func ReadSelectedNodeFile(path string, options ReadOptions) (SelectedNodeMaterial, error) {
@@ -80,7 +82,7 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 	if err != nil {
 		return SelectedNodeMaterial{}, fmt.Errorf("read selected install material: %w", err)
 	}
-	installManifest, err := manifest.Decode(bytes.NewReader(installData))
+	installManifest, defaulted, err := manifest.DecodeWithDefaultImage(bytes.NewReader(installData), options.DefaultKatlosImage)
 	if err != nil {
 		return SelectedNodeMaterial{}, fmt.Errorf("decode selected install material %q: %w", node.Name, err)
 	}
@@ -103,6 +105,7 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 		SourceDigest:          bundle.Source.SourceDigest,
 		NodeMaterialDigest:    node.NodeMaterial.Digest,
 		InstallMaterialDigest: node.InstallMaterial.Digest,
+		KatlosImageFromMedia:  defaulted || (!manifest.KatlosImageEmpty(options.DefaultKatlosImage) && installManifest.KatlosImage == options.DefaultKatlosImage),
 	}, nil
 }
 

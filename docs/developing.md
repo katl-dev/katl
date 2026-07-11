@@ -223,9 +223,11 @@ the version and rejects noncanonical versions. See
 
 The published set contains the KatlOS install and upgrade SquashFS images and
 the installer UKI, kernel, initrd, and UEFI-bootable ISO variants, each with
-adjacent JSON metadata and SHA-256 files. The ISO is a generic wrapper around
-the installer UKI and uses the same manifest and KatlOS image input contract;
-it does not embed node-specific configuration or a KatlOS payload image.
+adjacent JSON metadata and SHA-256 files. The ISO embeds the matching KatlOS
+install image and its metadata, so it is the primary self-contained install
+artifact. It remains generic because node identity, disk selection, network,
+and bootstrap configuration are supplied separately at boot. The loose
+installer and install-image artifacts remain available for PXE deployments.
 Loose runtime root/UKI intermediates and Kubernetes payload bundles are not
 published through this workflow. Kubernetes bundles have a separate producer
 contract. Katl release artifacts are currently unsigned, and each publication

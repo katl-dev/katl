@@ -425,13 +425,6 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "systemRole",
 		},
 		{
-			name: "missing image",
-			mut: func(config *Config) {
-				config.Spec.KatlosImage = manifest.KatlosImage{}
-			},
-			want: "katlosImage",
-		},
-		{
 			name: "missing wipe target",
 			mut: func(config *Config) {
 				config.Spec.WipeTarget = false
@@ -659,6 +652,23 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 				t.Fatalf("Compile() error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestCompileAllowsInstallMediaImage(t *testing.T) {
+	config := validConfig()
+	config.Spec.KatlosImage = manifest.KatlosImage{}
+	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if !manifest.KatlosImageEmpty(plan.KatlosImage) {
+		t.Fatalf("KatlosImage = %#v, want install-media selection", plan.KatlosImage)
+	}
+	for _, node := range plan.Nodes {
+		if !manifest.KatlosImageEmpty(node.InstallManifest.KatlosImage) {
+			t.Fatalf("node %s KatlosImage = %#v", node.Name, node.InstallManifest.KatlosImage)
+		}
 	}
 }
 
