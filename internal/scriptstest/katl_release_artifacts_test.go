@@ -92,7 +92,11 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
-	cmd.Env = append(os.Environ(), "KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl")
+	cmd.Env = append(environmentWithout("KATL_RELEASE_TARGET"),
+		"GITHUB_REF_TYPE=branch",
+		"GITHUB_SHA=not-a-commit-in-the-test-repository",
+		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
+	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("notes failed: %v\n%s", err, output)
@@ -117,6 +121,22 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 			t.Fatalf("release notes unexpectedly contain %q:\n%s", value, notes)
 		}
 	}
+}
+
+func environmentWithout(names ...string) []string {
+	excluded := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		excluded[name] = struct{}{}
+	}
+
+	environment := make([]string, 0, len(os.Environ()))
+	for _, value := range os.Environ() {
+		name, _, _ := strings.Cut(value, "=")
+		if _, found := excluded[name]; !found {
+			environment = append(environment, value)
+		}
+	}
+	return environment
 }
 
 func TestKatlReleaseArtifactStage(t *testing.T) {

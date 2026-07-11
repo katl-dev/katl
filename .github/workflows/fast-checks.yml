@@ -43,36 +43,21 @@ jobs:
       - name: Show Go version
         run: go version
 
-      - name: Check Go formatting
-        shell: bash
-        run: |
-          mapfile -d '' files < <(git ls-files -z '*.go')
-          unformatted="$(gofmt -l "${files[@]}")"
-          if [ -n "$unformatted" ]; then
-            printf 'gofmt required for:\n%s\n' "$unformatted"
-            exit 1
-          fi
-
-      - name: Check patch whitespace
+      - name: Resolve comparison range
+        id: comparison
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git diff --check "origin/${{ github.base_ref }}...HEAD"
+            range="origin/${{ github.base_ref }}...HEAD"
           elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            git diff --check "${{ github.event.before }}..HEAD"
+            range="${{ github.event.before }}..HEAD"
           else
-            git diff --check --root HEAD
+            range="$(git hash-object -t tree /dev/null)..HEAD"
           fi
+          echo "range=$range" >> "$GITHUB_OUTPUT"
 
-      - name: Run unit and golden tests
-        run: go test ./...
-
-      - name: Run delivery fixture gate
-        run: |
-          go test ./internal/installer/sysextcatalog \
-            ./internal/installer/kubernetesbundle \
-            ./internal/installer/nodeextensionbundle \
-            -count=1
+      - name: Run fast checks
+        run: scripts/check-fast "${{ steps.comparison.outputs.range }}"
 
       # VM/libvirt/KVM, mkosi artifact builds, and publishing are intentionally
       # excluded from this low-cost workflow. Those gates run through the

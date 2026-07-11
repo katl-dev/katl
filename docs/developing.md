@@ -189,17 +189,17 @@ scripts are not the supported way to run enabled VM or kubeadm suites.
 ## GitHub Fast Checks
 
 The low-cost pull-request workflow runs formatting, whitespace, unit/golden, and
-delivery fixture checks only:
+delivery fixture checks through the same command used locally. Before pushing a
+branch, run:
 
 ```sh
-git ls-files '*.go' | xargs gofmt -l
-git diff --check
-go test ./...
-go test ./internal/installer/sysextcatalog \
-  ./internal/installer/kubernetesbundle \
-  ./internal/installer/nodeextensionbundle \
-  -count=1
+scripts/check-fast origin/main...HEAD
 ```
+
+The command checks all tracked Go formatting, patch whitespace, and runs the
+complete Go suite with `-count=1` so cached test results cannot hide failures.
+Changes reach `main` through pull requests after the `Format And Unit Tests`
+check passes; direct pushes are not part of the supported development loop.
 
 It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
 publishing. Those host-specific gates belong to the capable-host vmtest workflow
