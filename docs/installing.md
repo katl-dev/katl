@@ -17,10 +17,11 @@ Katl build output
 
 User-managed provisioning
   PXE, iPXE, matchbox, virtual media, USB, or another boot path
-  per-node install manifests and credentials
+  one compiled cluster config bundle, a selected node name, and credentials
 
 katlos-install
-  validates one install manifest and one KatlOS image
+  verifies the bundle and selects one node's compiled install plan
+  binds that plan to the embedded or explicitly supplied KatlOS image
   mutates the selected disk only after validation
   installs generation 0 and records installed-node handoff state
 
@@ -62,17 +63,17 @@ contains node identity or credentials.
 For PXE, publish the loose installer boot artifacts that match your boot path:
 
 ```text
-katl-installer-<version>-<arch>.efi
-katl-installer-<version>-<arch>.efi.sha256
-katl-installer-<version>-<arch>.efi.json
+katl-installer.efi
+katl-installer.efi.sha256
+katl-installer.efi.json
 
-katl-installer-<version>-<arch>.vmlinuz
-katl-installer-<version>-<arch>.vmlinuz.sha256
-katl-installer-<version>-<arch>.vmlinuz.json
+katl-installer.vmlinuz
+katl-installer.vmlinuz.sha256
+katl-installer.vmlinuz.json
 
-katl-installer-<version>-<arch>.initrd
-katl-installer-<version>-<arch>.initrd.sha256
-katl-installer-<version>-<arch>.initrd.json
+katl-installer.initrd
+katl-installer.initrd.sha256
+katl-installer.initrd.json
 ```
 
 and one KatlOS install payload:
@@ -87,7 +88,8 @@ The installer boot artifacts start the temporary installer environment. The
 KatlOS image is the payload that `katlos-install` verifies and writes into the
 installed system. Do not rebuild either artifact for each node. Put node
 identity, disk selection, networkd snippets, SSH authorized keys, system role,
-and bootstrap intent in the install manifest.
+and bootstrap intent in one `ClusterConfig`, then compile one bundle for all
+nodes.
 
 ### Verify release provenance
 
@@ -106,7 +108,7 @@ the Katl release workflow. Pin the expected tag in the verification policy:
 gh attestation verify katl-installer.iso \
   --repo katl-dev/katl \
   --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
-  --source-ref refs/tags/v2026.7.0-dev.4
+  --source-ref refs/tags/v2026.7.0-alpha.1
 ```
 
 Repeat the attestation check for the KatlOS SquashFS or loose PXE artifact you
@@ -115,236 +117,220 @@ and source commit. It does not make the build vulnerability-free and is not a
 UEFI Secure Boot signature; production boot-key policy and node-side signature
 enforcement remain separate work.
 
-## Install Manifest
+## Author One ClusterConfig
 
-Each node needs an `install.katl.dev/v1alpha1` manifest. YAML is the preferred
-operator-facing format because it keeps native systemd and kubeadm snippets
-readable. JSON manifests are accepted for tooling compatibility.
+Normal installation starts from one `config.katl.dev/v1alpha1` `ClusterConfig`.
+The compiler resolves shared defaults and node overrides, embeds kubeadm inputs
+and bootstrap inventory, and produces one content-addressed `.katlcfg` archive.
+The same archive is used for every node; boot input selects the node by name.
 
-This example is a control-plane node that uses DHCP and the KatlOS image embedded
-in its installer ISO:
-
-```yaml
-apiVersion: install.katl.dev/v1alpha1
-kind: InstallManifest
-node:
-  identity:
-    hostname: cp-1
-    ssh:
-      authorizedKeys:
-        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
-  systemRole: control-plane
-  networkd:
-    files:
-      - name: 10-lan.network
-        content: |
-          [Match]
-          Name=enp1s0
-
-          [Network]
-          DHCP=yes
-  kubernetes:
-    kubeadm:
-      configRef: control-plane
-  bootstrap:
-    clusterName: katl-lab
-    inventoryNodeName: cp-1
-    nodeAddress: 192.0.2.11
-    controlPlaneEndpoint: api.katl.test:6443
-    bootstrapProfileRef: control-plane
-    kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-install:
-  wipeTarget: true
-  targetDisk:
-    byID: /dev/disk/by-id/ata-KATL_EXAMPLE_ROOT_DISK
-    minSizeMiB: 32768
-```
-
-When booted from the versioned ISO, omit `katlosImage`; the installer binds the
-manifest to the embedded image metadata and verifies the image before disk
-mutation. PXE and other loose-artifact flows must provide an explicit
-`katlosImage.url` or `katlosImage.localRef` with its digest and identity.
-
-Worker nodes use the same schema with `systemRole: worker` and a worker
-bootstrap profile reference when you want to preserve that intent for later
-`katlctl cluster bootstrap`.
-
-Worker node fields differ only where the node identity, role, disk selector, and
-bootstrap profile differ:
+This two-node example uses DHCP and the KatlOS image embedded in the release ISO.
+Replace the SSH key, Kubernetes OCI digest, node addresses, and stable disk IDs:
 
 ```yaml
-node:
-  identity:
-    hostname: worker-1
-    ssh:
-      authorizedKeys:
-        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
-  systemRole: worker
+apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: katl-lab
+spec:
+  controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
-    kubeadm:
-      configRef: worker
-  bootstrap:
-    clusterName: katl-lab
-    inventoryNodeName: worker-1
-    nodeAddress: 192.0.2.21
-    controlPlaneEndpoint: api.katl.test:6443
-    bootstrapProfileRef: worker
-    kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    version: v1.36.1
+    bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  defaults:
+    install:
+      wipeTarget: true
+      targetDiskDefaults:
+        minSizeMiB: 32768
+    identity:
+      ssh:
+        authorizedKeys:
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+    networkd:
+      files:
+        - name: 10-lan.network
+          content: |
+            [Match]
+            Name=enp1s0
+
+            [Network]
+            DHCP=yes
+    bootstrap:
+      access:
+        method: agent
+        credentialRef: agent/default
+  systemRoleDefaults:
+    control-plane:
+      kubernetes:
+        kubeadm:
+          configRef: control-plane
+    worker:
+      kubernetes:
+        kubeadm:
+          configRef: worker
+  kubeadmConfigs:
+    control-plane:
+      config: |
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: InitConfiguration
+        nodeRegistration:
+          criSocket: unix:///run/containerd/containerd.sock
+        ---
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: ClusterConfiguration
+        kubernetesVersion: v1.36.1
+    worker:
+      config: |
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: JoinConfiguration
+        nodeRegistration:
+          criSocket: unix:///run/containerd/containerd.sock
+  nodes:
+    - name: cp-1
+      systemRole: control-plane
+      overrides:
+        identity:
+          hostname: cp-1
+        bootstrap:
+          address: 192.0.2.11
+        install:
+          targetDisk:
+            byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
+    - name: worker-1
+      systemRole: worker
+      overrides:
+        identity:
+          hostname: worker-1
+        bootstrap:
+          address: 192.0.2.21
+        install:
+          targetDisk:
+            byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
 ```
 
-The destructive install guard is intentionally duplicated: the manifest must set
-`install.wipeTarget` to `true`, and the boot path must select an install mode
-that allows mutation. Prefer stable disk selectors such as
-`/dev/disk/by-id/...`, WWN, or serial. Do not use short kernel-assigned device
-names in manifests.
+The release ISO supplies `katlosImage`, so do not put an external KatlOS URL in
+this source for the ISO flow. PXE uses the same source but adds an explicit
+`spec.katlosImage` descriptor for the published loose SquashFS.
+
+Validate the complete source without writing output, then compile it:
+
+```sh
+katlctl config validate ./cluster.yaml
+katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
+sha256sum ./katl-lab.katlcfg
+```
+
+Save both values printed by these commands. `bundleDigest` identifies the
+verified bundle manifest inside the archive; the `sha256sum` value protects the
+archive bytes while a PXE node downloads them. They are different digests.
+
+The destructive guard has two parts: the resolved node must set
+`install.wipeTarget: true`, and boot input must set `katl.install.mode=auto`.
+Always inspect each resolved target disk before enabling automatic install.
+Use `byID`, WWN, or serial selectors, never `/dev/sda`-style names.
 
 ## PXE Or Matchbox
 
-For network boot, publish the split installer kernel/initrd and each node's
-install manifest through your own HTTP infrastructure. Your PXE, iPXE, or
-matchbox config passes only enough input for `katlos-install` to find and verify
-the manifest.
+Publish the loose installer kernel and initrd, the KatlOS SquashFS and metadata,
+and the single `.katlcfg` archive through your own HTTP infrastructure. Add the
+published KatlOS image descriptor to `spec.katlosImage` before validating and
+compiling the PXE bundle:
 
-Bootstrap-ready manifests that set `node.kubernetes.kubeadm.configRef` also need
-the referenced kubeadm sidecars in the installer material set:
-
-```text
-kubeadm-configs/<configRef>.yaml
-kubeadm/<configRef>.yaml
+```yaml
+spec:
+  katlosImage:
+    url: https://boot.example.invalid/katl/2026.7.0/katlos-install-2026.7.0-x86_64.squashfs
+    sha256: <KatlOS-SquashFS-SHA-256>
+    sizeBytes: <exact-size-in-bytes>
+    version: 2026.7.0
+    architecture: x86_64
+    runtimeInterface: katl-runtime-1
+    role: install
 ```
 
-The current URL boot path downloads the manifest itself. It does not yet fetch
-those sidecars over the network. If the node must preserve kubeadm bootstrap
-intent for later `katlctl cluster bootstrap`, provide the manifest and sidecars
-through local preseed or USB media, or ensure your installer wrapper places
-those directories beside the downloaded manifest before `katlos-install` runs.
-
-Current installer kernel arguments:
+Current bundle-oriented kernel arguments are:
 
 ```text
-katl.manifest.url=<InstallManifest URL>
-katl.manifest.sha256=<InstallManifest SHA-256>
-katl.manifest=<local manifest path>
+katl.bundle.url=<config bundle URL>
+katl.bundle.sha256=<config bundle archive SHA-256>
+katl.bundle.digest=<internal bundle manifest digest>
+katl.bundle=<local config bundle path>
 katl.node=<node name>
 katl.install.mode=auto
-katl.artifact-base-url=<artifact base URL>
 katl.wait-for-config=1
 katl.hold-for-debug=1
 console=...
 ip=...
 ```
 
-Use `katl.install.mode=auto` only when the manifest is correct and the target
-disk selector has been checked. URL manifests require `katl.manifest.sha256`; a
-URL without a digest fails before disk mutation. Without any manifest, or with
-`katl.wait-for-config=1`, the installer waits for local handoff input instead of
-mutating disks. `katl.hold-for-debug=1` keeps the installer in debug mode.
+A URL bundle must have `katl.bundle.sha256`; otherwise it cannot authorize disk
+mutation. Supplying `katl.bundle.digest` is strongly recommended and detects a
+valid archive that contains the wrong compiled cluster. Without input, or with
+`katl.wait-for-config=1`, the installer waits for handoff. Debug mode never
+starts an install.
 
-Illustrative iPXE entry:
+Illustrative iPXE entry for `cp-1`:
 
 ```ipxe
 #!ipxe
-set base https://boot.example.invalid/katl/2026.06.04
+set base https://boot.example.invalid/katl/2026.7.0
 set node cp-1
-set manifest_sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-kernel ${base}/katl-installer-2026.06.04-x86_64.vmlinuz initrd=katl-installer-2026.06.04-x86_64.initrd console=ttyS0,115200n8 katl.node=${node} katl.manifest.url=https://boot.example.invalid/katl/manifests/${node}.yaml katl.manifest.sha256=${manifest_sha} katl.install.mode=auto
-initrd ${base}/katl-installer-2026.06.04-x86_64.initrd
+set bundle_sha <config-bundle-archive-sha256>
+set bundle_digest sha256:<internal-bundle-manifest-digest>
+kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.bundle.sha256=${bundle_sha} katl.bundle.digest=${bundle_digest} katl.install.mode=auto
+initrd ${base}/katl-installer.initrd
 boot
 ```
 
-Illustrative matchbox profile:
+Matchbox profiles carry the same five `katl.*` arguments. Groups should select
+only `katl.node`; they do not need a different bundle URL or archive digest per
+node. Katl does not create or operate DHCP, iPXE, or matchbox configuration.
 
-```json
-{
-  "id": "katlos-installer-x86_64",
-  "name": "KatlOS installer",
-  "boot": {
-    "kernel": "https://boot.example.invalid/katl/2026.06.04/katl-installer-2026.06.04-x86_64.vmlinuz",
-    "initrd": [
-      "https://boot.example.invalid/katl/2026.06.04/katl-installer-2026.06.04-x86_64.initrd"
-    ],
-    "args": [
-      "console=ttyS0,115200n8",
-      "katl.node=${mac:hexhyp}",
-      "katl.manifest.url=https://boot.example.invalid/katl/manifests/${mac:hexhyp}.yaml",
-      "katl.manifest.sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "katl.install.mode=auto"
-    ]
-  }
-}
+## ISO Or Local Handoff
+
+Boot the same `katl-installer.iso` on each node without preseed input. The
+installer mounts its embedded KatlOS image read-only, prints a handoff URL and
+one-time token to the console and journal, and waits without mutating disks.
+
+For `cp-1`, submit the bundle and select that node:
+
+```sh
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer <one-time-token>" \
+  -H "Content-Type: application/vnd.katl.config.bundle.v1" \
+  --data-binary @katl-lab.katlcfg \
+  "http://<installer-ip>:8080/v1/config-bundle?node=cp-1&digest=<bundleDigest>"
 ```
 
-Illustrative matchbox group:
+For the worker, boot the same ISO and submit the same file with
+`node=worker-1`. Check `http://<installer-ip>:8080/v1/status` before and after
+submission. A valid request verifies the archive, internal bundle digest,
+selected node, compiled install material, and embedded KatlOS image before the
+installer can mutate the selected disk. The endpoint refuses later submissions.
 
-```json
-{
-  "id": "katlos-cp-1",
-  "name": "KatlOS cp-1",
-  "profile": "katlos-installer-x86_64",
-  "selector": {
-    "mac": "52:54:00:12:34:56"
-  },
-  "metadata": {
-    "node": "cp-1"
-  }
-}
-```
+The console advertises `/v1/config-bundle` as the preferred endpoint.
+`/v1/install` remains available for advanced compiled-manifest integrations.
 
-These snippets are examples of the boot input contract only. Katl does not
-create matchbox profiles or groups for you.
+Separate seed media with the `KATLSEED` label or `virtio-katl-seed` disk ID is
+only needed when provisioning input without the HTTP handoff.
 
-## USB Or Local Handoff
+## Advanced Compiled InstallManifest Boundary
 
-For hands-on installs, boot the versioned KatlOS ISO without a preseeded
-manifest. `katlos-install` mounts its payload read-only, enters local handoff mode,
-prints a URL and one-time token to the console and journal, and waits for one
-valid install manifest.
-
-Operator flow:
-
-```text
-1. Boot the installer artifact.
-2. Read the console line:
-   katlos-install waiting for config at http://<installer-ip>:8080/v1/install token=<token>
-3. Check status:
-   curl http://<installer-ip>:8080/v1/status
-4. Submit the same install manifest used by PXE:
-   curl -X POST \
-     -H "Authorization: Bearer <token>" \
-     -H "Content-Type: application/yaml" \
-     --data-binary @cp-1.install.yaml \
-     http://<installer-ip>:8080/v1/install
-```
-
-After a manifest is accepted, the handoff endpoint refuses later submissions.
-Invalid manifests keep the installer waiting and do not authorize disk mutation.
-
-The release ISO is already offline-capable, so the submitted node manifest omits
-`katlosImage`. Separate seed media with the `KATLSEED` label or the
-`virtio-katl-seed` disk ID is only needed for preseeded node configuration and
-credentials. Advanced custom media can still use `katlosImage.localRef`:
-
-```yaml
-katlosImage:
-  localRef: images/katlos-install-2026.06.04-x86_64.squashfs
-  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  sizeBytes: 1073741824
-  version: "2026.06.04"
-  architecture: x86_64
-  runtimeInterface: katl-runtime-1
-  role: install
-```
-
-The full manifest still carries node identity, disk selection, role, kubeadm
-config reference, and bootstrap intent. An explicit image reference overrides
-media selection and changes only where the payload is read from.
+The bundle contains one compiled `install.katl.dev/v1alpha1` `InstallManifest`
+per node. That schema and the legacy `katl.manifest.*` kernel arguments remain
+an advanced integration boundary for installer tooling and debugging. They are
+not the normal authoring API: a raw manifest omits cluster-wide validation,
+embedded kubeadm sidecars, resolved inventory, and proof that every node was
+compiled from the same source. Author `ClusterConfig` and distribute its bundle
+unless you are deliberately integrating at that lower-level boundary.
 
 ## Installer Safety And Status
 
 `katlos-install` validates before destructive disk mutation:
 
 ```text
-install manifest schema
+config bundle archive and internal manifest digests
+selected node and compiled install manifest schema
 destructive install guard
 target disk selector and size
 KatlOS image SHA-256 and size
@@ -388,7 +374,7 @@ Kubernetes sysext. It stores the node role and bootstrap intent needed for a
 later explicit operator action.
 
 The Kubernetes bundle is one ordinary OCI image reference. For example,
-`node.bootstrap.kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:<digest>`
+`spec.kubernetes.bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:<digest>`
 means bootstrap must select that exact OCI manifest. During the explicit
 bootstrap operation, `katlc` fetches that bundle, verifies the Katl bundle
 metadata and payload digests, stages the sysext locally, and selects it for
@@ -418,13 +404,48 @@ patch updates. An unpinned tag is resolved once for the operation record; a
 digest pin prevents the tag from selecting different content before that point.
 
 After all nodes are installed and reachable through their node-local `katlc`
-management endpoints, run bootstrap from an operator workstation:
+management endpoints, create the current bootstrap inventory. The alpha CLI
+still requires this small duplicate view even though the config bundle already
+contains the same resolved inventory; direct bundle bootstrap is the next
+operator-flow change.
+
+```yaml
+controlPlaneEndpoint: api.katl.test:6443
+kubernetesVersion: v1.36.1
+kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:<OCI-manifest-digest>
+nodes:
+  - name: cp-1
+    address: 192.0.2.11
+    systemRole: control-plane
+    access:
+      method: agent
+      credentialRef: agent/default
+    kubeadmConfig:
+      ref: control-plane
+      path: /etc/katl/kubeadm/control-plane/config.yaml
+      intent: control-plane
+    kubernetesVersion: v1.36.1
+  - name: worker-1
+    address: 192.0.2.21
+    systemRole: worker
+    access:
+      method: agent
+      credentialRef: agent/default
+    kubeadmConfig:
+      ref: worker
+      path: /etc/katl/kubeadm/worker/config.yaml
+      intent: worker
+    kubernetesVersion: v1.36.1
+```
+
+Save it as `cluster.inventory.yaml`, then run bootstrap from the operator
+workstation:
 
 ```text
 katlctl cluster bootstrap \
-  --inventory cluster.yaml \
+  --inventory cluster.inventory.yaml \
   --init-node cp-1 \
-  --control-plane-endpoint api.katl.test:6443 \
+  --agent-token-file ./katlc-agent.token \
   --kubeconfig-out kubeconfig \
   --overwrite-kubeconfig
 ```
@@ -464,7 +485,7 @@ installer console output
 journalctl -b
 journalctl -b -u katlos-install.service
 /var/lib/katl/install status and copied manifest files
-the install manifest used for this node
+the config bundle, selected node name, and both bundle digests
 the KatlOS image metadata and SHA-256 file
 systemctl status katlc-agent.service
 systemctl status katl-boot-complete.target
@@ -473,16 +494,16 @@ systemctl status katl-boot-complete.target
 Common failures:
 
 ```text
-manifest rejected
-  Check apiVersion, kind, required node.identity.ssh.authorizedKeys,
-  node.systemRole, optional node.kubernetes.kubeadm.configRef, and targetDisk.
-  PXE manifests must also include the katlosImage fields; ISO installs derive
-  them from the embedded media descriptor.
+bundle or selected node rejected
+  Run katlctl config validate again. Check the selected node name, internal
+  bundleDigest, archive SHA-256, SSH authorized keys, system role, kubeadm
+  config reference, and target disk. PXE sources must include spec.katlosImage;
+  ISO installs derive it from the embedded media descriptor.
 
 destructive install refused
   Confirm install.wipeTarget is true and boot input selected
-  katl.install.mode=auto. For URL manifests, confirm katl.manifest.sha256 is
-  present and matches the published manifest bytes.
+  katl.install.mode=auto. For URL bundles, confirm katl.bundle.sha256 is present
+  and matches the published archive bytes.
 
 target disk not found
   Prefer /dev/disk/by-id, WWN, or serial selectors. Confirm firmware and HBA

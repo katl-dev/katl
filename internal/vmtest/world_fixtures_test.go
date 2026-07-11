@@ -149,6 +149,26 @@ func TestWorldFixturesStageDirectKernelInstallerBoot(t *testing.T) {
 	}
 }
 
+func TestWorldFixturesStageInstallerISO(t *testing.T) {
+	world := testWorld(t)
+	scenario := world.NewScenario(t, "installer ISO")
+	node := scenario.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	factory := scenario.NodeFixtures(node)
+	source := writeFixtureFile(t, filepath.Join(t.TempDir(), "katl-installer.iso"), "iso")
+
+	boot, err := factory.InstallerBoot(InstallerBootConfig{InstallerISO: source})
+	if err != nil {
+		t.Fatalf("InstallerBoot() error = %v", err)
+	}
+	if boot.InstallerISO == "" || boot.InstallerISO == source || boot.InstallerUKI != "" || boot.InstallerKernel != "" || boot.InstallerInitrd != "" {
+		t.Fatalf("staged ISO boot = %#v", boot)
+	}
+	manifest := readScenarioManifest(t, scenario.ManifestPath)
+	if !hasFixtureKind(manifest.Fixtures, FixtureInstallerISO) {
+		t.Fatalf("scenario fixtures missing ISO: %#v", manifest.Fixtures)
+	}
+}
+
 func TestWorldFixturesRejectStaleCachedFile(t *testing.T) {
 	world := testWorld(t)
 	scenario := world.NewScenario(t, "stale cache")

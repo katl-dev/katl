@@ -209,7 +209,7 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 	request := readLog(t, result.Artifacts.HandoffRequest)
-	if request.URL != "http://10.0.2.15:8080/v1/install" || request.PostURL != request.URL || request.GuestAddress != "10.0.2.15" || request.DomainName == "" || request.SerialLog == "" || !strings.Contains(request.SerialTail, "10.0.2.15") {
+	if request.URL != "http://10.0.2.15:8080/v1/config-bundle" || request.PostURL != "http://10.0.2.15:8080/v1/install" || request.GuestAddress != "10.0.2.15" || request.DomainName == "" || request.SerialLog == "" || !strings.Contains(request.SerialTail, "10.0.2.15") {
 		t.Fatalf("handoff request = %#v", request)
 	}
 	response := readLog(t, result.Artifacts.HandoffResponse)

@@ -876,9 +876,6 @@ func handoffPayload(config FirstInstallConfig, manifest []byte) ([]byte, string,
 }
 
 func handoffPostURL(raw string, config FirstInstallConfig) string {
-	if strings.TrimSpace(config.ConfigBundle) == "" {
-		return raw
-	}
 	parsed, err := neturl.Parse(raw)
 	if err != nil {
 		return raw
@@ -887,7 +884,11 @@ func handoffPostURL(raw string, config FirstInstallConfig) string {
 	if parsed.Path == "" || parsed.Path == "/" || base == "." {
 		base = ""
 	}
-	parsed.Path = base + "/config-bundle"
+	endpoint := "/install"
+	if strings.TrimSpace(config.ConfigBundle) != "" {
+		endpoint = "/config-bundle"
+	}
+	parsed.Path = base + endpoint
 	query := parsed.Query()
 	if node := strings.TrimSpace(config.SelectedNode); node != "" {
 		query.Set("node", node)

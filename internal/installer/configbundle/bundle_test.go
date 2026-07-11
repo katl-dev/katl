@@ -117,6 +117,32 @@ func TestBuildArchiveDefersKatlosImageToInstallMedia(t *testing.T) {
 	}
 }
 
+func TestInstallingGuideClusterConfigCompiles(t *testing.T) {
+	data, err := os.ReadFile("../../../docs/installing.md")
+	if err != nil {
+		t.Fatalf("read installing guide: %v", err)
+	}
+	_, section, ok := strings.Cut(string(data), "## Author One ClusterConfig")
+	if !ok {
+		t.Fatal("installing guide is missing ClusterConfig section")
+	}
+	_, example, ok := strings.Cut(section, "```yaml\n")
+	if !ok {
+		t.Fatal("installing guide is missing ClusterConfig YAML example")
+	}
+	example, _, ok = strings.Cut(example, "\n```")
+	if !ok {
+		t.Fatal("installing guide ClusterConfig example is not terminated")
+	}
+	_, result, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, example)})
+	if err != nil {
+		t.Fatalf("compile installing guide ClusterConfig: %v", err)
+	}
+	if result.Manifest.ClusterName != "katl-lab" || len(result.Manifest.Nodes) != 2 {
+		t.Fatalf("installing guide bundle = cluster %q nodes %#v", result.Manifest.ClusterName, result.Manifest.Nodes)
+	}
+}
+
 func TestBuildArchiveNodeClassGoldenScenarios(t *testing.T) {
 	tests := []struct {
 		name string

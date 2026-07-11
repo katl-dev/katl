@@ -124,7 +124,7 @@ func (s *HandoffServer) Status() HandoffStatus {
 }
 
 func (s *HandoffServer) Announcement(baseURL string) string {
-	return fmt.Sprintf("katlos-install waiting for config at %s/v1/install token=%s", strings.TrimRight(baseURL, "/"), s.token)
+	return fmt.Sprintf("katlos-install waiting for config at %s/v1/config-bundle token=%s", strings.TrimRight(baseURL, "/"), s.token)
 }
 
 func (s *HandoffServer) Handler() http.Handler {

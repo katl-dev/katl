@@ -420,6 +420,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	repo := t.TempDir()
 	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	installer := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.efi"), "installer")
+	installerISO := writeFixtureFile(t, filepath.Join(mkosiDir, "katl-installer.iso"), "installer-iso")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw"), "kubernetes")
 	writeFixtureFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), `{"payloadVersion":"v1.36.0"}`)
@@ -438,6 +439,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	writeFixtureFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{
   "artifacts": [
     {"kind":"installer-uki","path":"_build/mkosi/katl-installer.efi"},
+    {"kind":"installer-iso","path":"_build/mkosi/katl-installer.iso"},
     {"kind":"runtime-root","path":"_build/mkosi/katl-runtime-root.squashfs"}
   ]
 }`)
@@ -504,6 +506,20 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 		if !hasFixtureKind(scenarioManifest.Fixtures, kind) {
 			t.Fatalf("scenario fixtures missing %s: %#v", kind, scenarioManifest.Fixtures)
 		}
+	}
+
+	handoff, err := planFirstInstallWorldRun(world, "local mkosi handoff", repo, NodeSpec{Name: "cp-2", Role: ControlPlane}, firstInstallWorldInput{
+		Mode:           firstInstallWorldGuestHandoff,
+		TargetDiskSize: "20G",
+	}, KVMOff)
+	if err != nil {
+		t.Fatalf("planFirstInstallWorldRun(handoff) error = %v", err)
+	}
+	if handoff.Config.Installer.InstallerISO == "" || handoff.Config.Installer.InstallerISO == installerISO || handoff.Config.Installer.InstallerUKI != "" {
+		t.Fatalf("handoff installer input = %#v", handoff.Config.Installer)
+	}
+	if handoff.Config.ConfigBundle == "" || handoff.Config.SelectedNode != "cp-2" {
+		t.Fatalf("handoff bundle input = %#v", handoff.Config)
 	}
 }
 

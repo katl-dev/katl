@@ -16,6 +16,7 @@ import (
 const (
 	FixtureMkosiArtifactIndex    = "mkosi-artifact-index"
 	FixtureInstallerUKI          = "installer-uki"
+	FixtureInstallerISO          = "installer-iso"
 	FixtureInstallerKernel       = "installer-kernel"
 	FixtureInstallerInitrd       = "installer-initrd"
 	FixtureRuntimeArtifact       = "runtime-artifact"
@@ -86,6 +87,17 @@ func (factory NodeFixtureFactory) MkosiArtifactIndex(source string) (FixtureReco
 
 func (factory NodeFixtureFactory) InstallerBoot(input InstallerBootConfig) (InstallerBootConfig, error) {
 	output := input
+	if strings.TrimSpace(input.InstallerISO) != "" {
+		iso, err := factory.stageFileFixture(FixtureInstallerISO, filepath.Base(input.InstallerISO), input.InstallerISO)
+		if err != nil {
+			return InstallerBootConfig{}, err
+		}
+		output.InstallerISO = iso.Path
+		output.InstallerUKI = ""
+		output.InstallerKernel = ""
+		output.InstallerInitrd = ""
+		return output, nil
+	}
 	if strings.TrimSpace(input.InstallerKernel) != "" || strings.TrimSpace(input.InstallerInitrd) != "" {
 		kernel, err := factory.stageFileFixture(FixtureInstallerKernel, filepath.Base(input.InstallerKernel), input.InstallerKernel)
 		if err != nil {

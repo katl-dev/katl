@@ -44,7 +44,8 @@ func TestHandoffServerHealthStatusAndAnnouncement(t *testing.T) {
 	}
 
 	announcement := server.Announcement("http://192.0.2.10:8080/")
-	if !strings.Contains(announcement, "http://192.0.2.10:8080/v1/install") || !strings.Contains(announcement, "token=test-token") {
+	if !strings.Contains(announcement, "http://192.0.2.10:8080/v1/config-bundle") ||
+		!strings.Contains(announcement, "token=test-token") {
 		t.Fatalf("announcement = %q", announcement)
 	}
 }

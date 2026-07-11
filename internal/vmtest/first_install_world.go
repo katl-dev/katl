@@ -830,9 +830,16 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 			return input, err
 		}
 	}
-	if input.Installer.InstallerUKI == "" && input.Installer.InstallerKernel == "" && input.Installer.InstallerInitrd == "" {
-		if artifact, ok := index.artifact("installer-uki"); ok {
-			input.Installer.InstallerUKI = artifact.Path
+	if input.Installer.InstallerUKI == "" && input.Installer.InstallerISO == "" && input.Installer.InstallerKernel == "" && input.Installer.InstallerInitrd == "" {
+		if input.Mode == FirstInstallWorldGuestHandoff {
+			if artifact, ok := index.artifact("installer-iso"); ok {
+				input.Installer.InstallerISO = artifact.Path
+			}
+		}
+		if input.Installer.InstallerISO == "" {
+			if artifact, ok := index.artifact("installer-uki"); ok {
+				input.Installer.InstallerUKI = artifact.Path
+			}
 		}
 	}
 	if strings.TrimSpace(input.RuntimeArtifact) != "" {
@@ -844,7 +851,7 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 	input.UseInstalledESP = true
 	if input.InstallManifest == "" {
 		if input.ConfigBundle == "" {
-			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index)
+			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index, input.Mode == FirstInstallWorldGuestHandoff)
 			if err != nil {
 				return input, err
 			}
@@ -869,7 +876,11 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 }
 
 func writeSelectedInstallManifestFromBundle(_ *WorldScenario, bundlePath, nodeName string) (string, error) {
-	selected, err := configbundle.ReadSelectedNodeFile(bundlePath, configbundle.ReadOptions{NodeName: nodeName})
+	return writeSelectedInstallManifestFromBundleWithDefault(nil, bundlePath, nodeName, installmanifest.KatlosImage{})
+}
+
+func writeSelectedInstallManifestFromBundleWithDefault(_ *WorldScenario, bundlePath, nodeName string, defaultImage installmanifest.KatlosImage) (string, error) {
+	selected, err := configbundle.ReadSelectedNodeFile(bundlePath, configbundle.ReadOptions{NodeName: nodeName, DefaultKatlosImage: defaultImage})
 	if err != nil {
 		return "", err
 	}
@@ -980,7 +991,7 @@ func (index mkosiArtifactIndex) artifact(kind string) (mkosiArtifact, bool) {
 	return mkosiArtifact{}, false
 }
 
-func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex) (string, string, error) {
+func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex, bindInstallMedia bool) (string, string, error) {
 	image, ok := index.artifact("katlos-install-image")
 	if !ok {
 		var err error
@@ -1061,52 +1072,55 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	}
 	nodes = append(nodes, firstInstallWorldSourceNode(spec.Name, spec.Role, "/dev/disk/by-id/virtio-katl-root"))
 
+	sourceSpec := map[string]any{
+		"controlPlaneEndpoint": "api.katl.test:6443",
+		"kubernetes": map[string]any{
+			"version": kubernetesVersion,
+		},
+		"defaults": map[string]any{
+			"install": map[string]any{
+				"wipeTarget": true,
+			},
+			"identity": map[string]any{
+				"ssh": map[string]any{
+					"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
+				},
+			},
+			"networkd": map[string]any{
+				"files": []map[string]any{{
+					"name":    "80-katl-vmtest-dhcp.network",
+					"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
+				}},
+			},
+			"bootstrap": map[string]any{
+				"access": map[string]any{
+					"method":        "agent",
+					"credentialRef": "vsock:1234:10240",
+				},
+			},
+		},
+		"systemRoleDefaults": systemRoleDefaults,
+		"kubeadmConfigs":     kubeadmConfigs,
+		"nodes":              nodes,
+	}
+	if !bindInstallMedia {
+		sourceSpec["katlosImage"] = map[string]any{
+			"localRef":         localRef,
+			"sha256":           metadata.SHA256,
+			"sizeBytes":        metadata.SizeBytes,
+			"version":          metadata.Version,
+			"architecture":     metadata.Architecture,
+			"runtimeInterface": metadata.RuntimeInterface,
+			"role":             metadata.Role,
+		}
+	}
 	source := map[string]any{
 		"apiVersion": configbundle.APIVersion,
 		"kind":       configbundle.Kind,
 		"metadata": map[string]any{
 			"name": "katl-smoke",
 		},
-		"spec": map[string]any{
-			"controlPlaneEndpoint": "api.katl.test:6443",
-			"kubernetes": map[string]any{
-				"version": kubernetesVersion,
-			},
-			"katlosImage": map[string]any{
-				"localRef":         localRef,
-				"sha256":           metadata.SHA256,
-				"sizeBytes":        metadata.SizeBytes,
-				"version":          metadata.Version,
-				"architecture":     metadata.Architecture,
-				"runtimeInterface": metadata.RuntimeInterface,
-				"role":             metadata.Role,
-			},
-			"defaults": map[string]any{
-				"install": map[string]any{
-					"wipeTarget": true,
-				},
-				"identity": map[string]any{
-					"ssh": map[string]any{
-						"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
-					},
-				},
-				"networkd": map[string]any{
-					"files": []map[string]any{{
-						"name":    "80-katl-vmtest-dhcp.network",
-						"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
-					}},
-				},
-				"bootstrap": map[string]any{
-					"access": map[string]any{
-						"method":        "agent",
-						"credentialRef": "vsock:1234:10240",
-					},
-				},
-			},
-			"systemRoleDefaults": systemRoleDefaults,
-			"kubeadmConfigs":     kubeadmConfigs,
-			"nodes":              nodes,
-		},
+		"spec": sourceSpec,
 	}
 	sourcePath := filepath.Join(sourceDir, "cluster.yaml")
 	sourceData, err := yaml.Marshal(source)
@@ -1120,7 +1134,19 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	if _, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{SourcePath: sourcePath, CreatedBy: "vmtest first-install"}); err != nil {
 		return "", "", err
 	}
-	manifestPath, err := writeSelectedInstallManifestFromBundle(scenario, bundlePath, spec.Name)
+	defaultImage := installmanifest.KatlosImage{}
+	if bindInstallMedia {
+		defaultImage = installmanifest.KatlosImage{
+			LocalRef:         localRef,
+			SHA256:           metadata.SHA256,
+			SizeBytes:        metadata.SizeBytes,
+			Version:          metadata.Version,
+			Architecture:     metadata.Architecture,
+			RuntimeInterface: metadata.RuntimeInterface,
+			Role:             metadata.Role,
+		}
+	}
+	manifestPath, err := writeSelectedInstallManifestFromBundleWithDefault(scenario, bundlePath, spec.Name, defaultImage)
 	if err != nil {
 		return "", "", err
 	}

@@ -189,6 +189,7 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	result, err = RunFirstInstall(ctx, runner, scenario, FirstInstallConfig{
 		Installer: InstallerBootConfig{
 			InstallerUKI:    worldRun.Config.Installer.InstallerUKI,
+			InstallerISO:    worldRun.Config.Installer.InstallerISO,
 			InstallerKernel: worldRun.Config.Installer.InstallerKernel,
 			InstallerInitrd: worldRun.Config.Installer.InstallerInitrd,
 			CommandLine:     worldRun.Config.Installer.CommandLine,
@@ -277,6 +278,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	result, err = RunFirstInstall(ctx, runner, scenario, FirstInstallConfig{
 		Installer: InstallerBootConfig{
 			InstallerUKI:    worldRun.Config.Installer.InstallerUKI,
+			InstallerISO:    worldRun.Config.Installer.InstallerISO,
 			InstallerKernel: worldRun.Config.Installer.InstallerKernel,
 			InstallerInitrd: worldRun.Config.Installer.InstallerInitrd,
 			CommandLine:     worldRun.Config.Installer.CommandLine,
@@ -290,6 +292,8 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 		},
 		UseInstalledESP: worldRun.Config.UseInstalledESP,
 		ManifestPath:    worldRun.Config.ManifestPath,
+		ConfigBundle:    worldRun.Config.ConfigBundle,
+		SelectedNode:    worldRun.Config.SelectedNode,
 		GuestHandoff:    true,
 		TargetDisk:      worldRun.Config.TargetDisk,
 	})
