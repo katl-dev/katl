@@ -1331,7 +1331,7 @@ func writeOperationBackedInventory(path, kubernetesVersion string, kubernetesBun
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data := `controlPlaneEndpoint: ""
+	data := `controlPlaneEndpoint: ` + cpAddress + `:6443
 kubernetesVersion: ` + kubernetesVersion + `
 kubernetesBundleSource: ` + strconv.Quote(kubernetesBundle.Source) + `
 kubernetesBundleRef: ` + strconv.Quote(kubernetesBundle.Ref) + `

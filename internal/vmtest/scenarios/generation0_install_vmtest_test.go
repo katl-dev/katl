@@ -485,6 +485,10 @@ func collectGeneration0NodeEvidence(ctx context.Context, node vmtest.RunningInst
 			if err != nil {
 				return generation0EvidencePaths{}, err
 			}
+			data, err = normalizeGeneration0Evidence(file.guestPath, data)
+			if err != nil {
+				return generation0EvidencePaths{}, err
+			}
 		}
 		hostPath := filepath.Join(evidenceDir, file.name)
 		if err := os.WriteFile(hostPath, data, 0o600); err != nil {
@@ -507,17 +511,42 @@ func collectGeneration0NodeEvidence(ctx context.Context, node vmtest.RunningInst
 	}, nil
 }
 
+func normalizeGeneration0Evidence(path string, data []byte) ([]byte, error) {
+	var value any
+	var err error
+	switch path {
+	case "/var/lib/katl/generations/0/spec.json":
+		value, err = decodePersistedOrLegacy[generation.GenerationSpec](data)
+	case "/var/lib/katl/boot/selection.json":
+		value, err = decodePersistedOrLegacy[generation.BootSelectionRecord](data)
+	default:
+		return data, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	normalized, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(normalized, '\n'), nil
+}
+
 func waitForGeneration0BootHealth(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, timeout time.Duration) ([]byte, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
 		data, err := readNodeFile(ctx, node, "/var/lib/katl/generations/0/status.json", 256<<10)
 		if err == nil {
-			var status generation.GenerationStatus
-			if err := json.Unmarshal(data, &status); err != nil {
+			status, err := decodePersistedOrLegacy[generation.GenerationStatus](data)
+			if err != nil {
 				lastErr = err
 			} else if status.CommitState == generation.CommitStateCommitted && status.BootState == generation.BootStateGood && status.HealthState == generation.HealthStateHealthy {
-				return data, nil
+				normalized, err := json.MarshalIndent(status, "", "  ")
+				if err != nil {
+					return nil, err
+				}
+				return append(normalized, '\n'), nil
 			} else {
 				lastErr = fmt.Errorf("generation 0 status = commit:%q boot:%q health:%q", status.CommitState, status.BootState, status.HealthState)
 			}
