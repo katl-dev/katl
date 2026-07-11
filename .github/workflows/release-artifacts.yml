@@ -114,6 +114,7 @@ jobs:
           scripts/mkosi build-katlos-install-image
           scripts/mkosi build-installer-iso
           KATL_KATLOS_IMAGE_ROLE=upgrade scripts/mkosi build-katlos-install-image
+          scripts/katl-release-artifacts build-katlctl "$KATL_VERSION"
 
       - name: Verify built artifacts
         shell: bash

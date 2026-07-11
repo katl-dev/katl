@@ -221,8 +221,9 @@ is `2026.7.0`. Use tags such as `v2026.7.0-rc.0` and release branches such as
 the version and rejects noncanonical versions. See
 `docs/internal/adrs/adr-009-katlos-calendar-versioning.md` for the policy.
 
-The published set contains the KatlOS install and upgrade SquashFS images and
-the installer UKI, kernel, initrd, and UEFI-bootable ISO variants, each with
+The published set contains the Linux amd64 `katlctl` operator CLI, the KatlOS
+install and upgrade SquashFS images, and the installer UKI, kernel, initrd, and
+UEFI-bootable ISO variants, each with
 adjacent JSON metadata and SHA-256 files. The ISO embeds the matching KatlOS
 install image and its metadata, so it is the primary self-contained install
 artifact. It remains generic because node identity, disk selection, network,

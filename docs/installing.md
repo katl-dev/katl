@@ -30,6 +30,23 @@ katlctl cluster bootstrap
 
 ## Artifacts
 
+Download the operator CLI for the workstation that will compile configuration
+and bootstrap the cluster:
+
+```text
+katlctl-<version>-linux-amd64
+katlctl-<version>-linux-amd64.sha256
+katlctl-<version>-linux-amd64.json
+```
+
+Install it under the stable command name and confirm that its embedded release
+identity matches the KatlOS release:
+
+```sh
+install -m 0755 katlctl-<version>-linux-amd64 ~/.local/bin/katlctl
+katlctl version
+```
+
 For USB, optical, or virtual media, use the primary release artifact:
 
 ```text

@@ -74,6 +74,7 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 		`--source-digest "$GITHUB_SHA"`,
 		"fetch-depth: 0",
 		"--notes-file dist/RELEASE_NOTES.md",
+		`katl-release-artifacts build-katlctl "$KATL_VERSION"`,
 	} {
 		if !strings.Contains(releaseWorkflow, value) {
 			t.Fatalf("KatlOS release workflow missing %q", value)
