@@ -89,6 +89,7 @@ stage_artifacts() {
         "katl-installer.vmlinuz"
         "katl-installer.initrd"
         "katlos-install-${version}-${architecture}.squashfs"
+        "katlos-upgrade-${version}-${architecture}.squashfs"
     )
 
     validate_version "$version"

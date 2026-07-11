@@ -221,8 +221,9 @@ is `2026.7.0`. Use tags such as `v2026.7.0-rc.0` and release branches such as
 the version and rejects noncanonical versions. See
 `docs/internal/adrs/adr-009-katlos-calendar-versioning.md` for the policy.
 
-The published set contains the KatlOS install SquashFS and the installer UKI,
-kernel, and initrd variants, each with adjacent JSON metadata and SHA-256 files.
+The published set contains the KatlOS install and upgrade SquashFS images and
+the installer UKI, kernel, and initrd variants, each with adjacent JSON metadata
+and SHA-256 files.
 Loose runtime root/UKI intermediates and Kubernetes payload bundles are not
 published through this workflow. Kubernetes bundles have a separate producer
 contract. Katl release artifacts are currently unsigned, and each publication

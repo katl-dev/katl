@@ -46,6 +46,7 @@ message SubmitOperationRequest {
   ConfigApplyOperationRequest config_apply = 13;
   KubernetesSysextUpdateOperationRequest kubernetes_sysext_update = 14;
   DestructiveResetOperationRequest destructive_reset = 15;
+  HostUpgradeOperationRequest host_upgrade = 16;
 }
 
 message BootstrapOperationRequest {
@@ -130,6 +131,14 @@ message DestructiveResetOperationRequest {
   string target_generation_id = 3;
   bool discard_cluster_identity = 4;
   repeated string wipe_surfaces = 5;
+}
+
+message HostUpgradeOperationRequest {
+  string image_url = 1;
+  string image_local_ref = 2;
+  string image_sha256 = 3;
+  uint64 image_size_bytes = 4;
+  string candidate_generation_id = 5;
 }
 
 message CreateWorkerJoinMaterialRequest {

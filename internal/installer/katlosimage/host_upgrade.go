@@ -85,6 +85,9 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 	if p.Index.Architecture != request.PreviousSpec.Root.Architecture {
 		return HostUpgradePlan{}, fmt.Errorf("KatlOS image architecture %q does not match current runtime architecture %q", p.Index.Architecture, request.PreviousSpec.Root.Architecture)
 	}
+	if p.Index.RuntimeInterface != request.PreviousSpec.Root.RuntimeInterface {
+		return HostUpgradePlan{}, fmt.Errorf("KatlOS image runtime interface %q does not match current runtime interface %q", p.Index.RuntimeInterface, request.PreviousSpec.Root.RuntimeInterface)
+	}
 
 	createdAt := request.CreatedAt
 	if createdAt.IsZero() {

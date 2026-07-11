@@ -1136,6 +1136,48 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
+	fake := &fakeKatlcAgentClient{
+		stageAccepted: &agentapi.OperationAccepted{
+			OperationId:   "host-upgrade-01",
+			OperationKind: "host-upgrade",
+			RequestDigest: strings.Repeat("a", 64),
+		},
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(_ context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" || token != "" {
+			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+		}
+		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"host", "upgrade",
+		"--endpoint", "node-a.example.test:9443",
+		"--image-url", "https://updates.example.test/katlos-upgrade.squashfs",
+		"--image-sha256", strings.Repeat("b", 64),
+		"--image-size-bytes", "4096",
+		"--candidate-generation", "generation-upgrade-1",
+		"--client-request-id", "req-host-upgrade",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	request := fake.submitRequest
+	if request == nil || request.OperationKind != "host-upgrade" || request.GetHostUpgrade() == nil {
+		t.Fatalf("submit request = %+v", request)
+	}
+	if request.HostUpgrade.ImageUrl != "https://updates.example.test/katlos-upgrade.squashfs" || request.HostUpgrade.ImageSha256 != strings.Repeat("b", 64) || request.HostUpgrade.CandidateGenerationId != "generation-upgrade-1" {
+		t.Fatalf("host upgrade request = %+v", request.HostUpgrade)
+	}
+	if !strings.Contains(stdout.String(), "host-upgrade-01") {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
 func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {

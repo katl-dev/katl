@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -91,6 +92,7 @@ type OperationRecord struct {
 	ConfigApplyRequest          *ConfigApplyRequest     `json:"configApplyRequest,omitempty"`
 	KubernetesSysextUpdate      *KubernetesSysextUpdate `json:"kubernetesSysextUpdate,omitempty"`
 	DestructiveResetRequest     *DestructiveReset       `json:"destructiveResetRequest,omitempty"`
+	HostUpgradeRequest          *HostUpgrade            `json:"hostUpgradeRequest,omitempty"`
 	ActivationMode              string                  `json:"activationMode,omitempty"`
 	ActivationState             string                  `json:"activationState,omitempty"`
 	GenerationCommitState       string                  `json:"generationCommitState,omitempty"`
@@ -171,6 +173,14 @@ type DestructiveReset struct {
 	TargetGenerationID     string   `json:"targetGenerationID,omitempty"`
 	DiscardClusterIdentity bool     `json:"discardClusterIdentity"`
 	WipeSurfaces           []string `json:"wipeSurfaces,omitempty"`
+}
+
+type HostUpgrade struct {
+	ImageURL              string `json:"imageURL,omitempty"`
+	ImageLocalRef         string `json:"imageLocalRef,omitempty"`
+	ImageSHA256           string `json:"imageSHA256"`
+	ImageSizeBytes        uint64 `json:"imageSizeBytes,omitempty"`
+	CandidateGenerationID string `json:"candidateGenerationID"`
 }
 
 type InvocationRecord struct {
@@ -700,6 +710,11 @@ func ValidateRecord(record OperationRecord) error {
 			return err
 		}
 	}
+	if record.HostUpgradeRequest != nil {
+		if err := ValidateHostUpgrade(*record.HostUpgradeRequest); err != nil {
+			return err
+		}
+	}
 	if err := validateRequestBodyConsistency(record); err != nil {
 		return err
 	}
@@ -756,6 +771,9 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	if record.DestructiveResetRequest != nil {
 		bodyCount++
 	}
+	if record.HostUpgradeRequest != nil {
+		bodyCount++
+	}
 	if bodyCount > 1 {
 		return fmt.Errorf("operation record has multiple request bodies")
 	}
@@ -770,6 +788,12 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	}
 	if record.OperationKind == "destructive-reset" && record.DestructiveResetRequest == nil {
 		return fmt.Errorf("destructive-reset operation requires destructiveResetRequest")
+	}
+	if record.HostUpgradeRequest != nil && record.OperationKind != "host-upgrade" {
+		return fmt.Errorf("operation kind %q cannot include hostUpgradeRequest", record.OperationKind)
+	}
+	if record.OperationKind == "host-upgrade" && record.HostUpgradeRequest == nil {
+		return fmt.Errorf("host-upgrade operation requires hostUpgradeRequest")
 	}
 	return nil
 }
@@ -831,6 +855,9 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	}
 	if !reflect.DeepEqual(next.DestructiveResetRequest, previous.DestructiveResetRequest) {
 		return fmt.Errorf("operation destructiveResetRequest is immutable")
+	}
+	if !reflect.DeepEqual(next.HostUpgradeRequest, previous.HostUpgradeRequest) {
+		return fmt.Errorf("operation hostUpgradeRequest is immutable")
 	}
 	return nil
 }
@@ -920,6 +947,10 @@ func cloneRecord(record OperationRecord) OperationRecord {
 		request := *record.DestructiveResetRequest
 		request.WipeSurfaces = cloneStrings(request.WipeSurfaces)
 		record.DestructiveResetRequest = &request
+	}
+	if record.HostUpgradeRequest != nil {
+		request := *record.HostUpgradeRequest
+		record.HostUpgradeRequest = &request
 	}
 	if record.ExecutorPlan != nil {
 		plan := *record.ExecutorPlan
@@ -1537,6 +1568,31 @@ func ValidateDestructiveReset(request DestructiveReset) error {
 		if strings.TrimSpace(surface) == "" {
 			return fmt.Errorf("destructiveResetRequest wipeSurfaces[%d] is empty", i)
 		}
+	}
+	return nil
+}
+
+func ValidateHostUpgrade(request HostUpgrade) error {
+	if (strings.TrimSpace(request.ImageURL) == "") == (strings.TrimSpace(request.ImageLocalRef) == "") {
+		return fmt.Errorf("hostUpgradeRequest requires exactly one imageURL or imageLocalRef")
+	}
+	if strings.TrimSpace(request.ImageURL) != "" {
+		parsed, err := url.Parse(request.ImageURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("hostUpgradeRequest imageURL must be an HTTPS URL without credentials, query, or fragment")
+		}
+	}
+	if strings.TrimSpace(request.ImageLocalRef) != "" {
+		ref := filepath.ToSlash(filepath.Clean(request.ImageLocalRef))
+		if filepath.IsAbs(request.ImageLocalRef) || ref != request.ImageLocalRef || ref == "." || ref == ".." || strings.HasPrefix(ref, "../") {
+			return fmt.Errorf("hostUpgradeRequest imageLocalRef must be a clean relative path")
+		}
+	}
+	if err := validateSHA256Hex("hostUpgradeRequest image", strings.TrimSpace(request.ImageSHA256)); err != nil {
+		return err
+	}
+	if _, err := cleanSegment("hostUpgradeRequest candidateGenerationID", request.CandidateGenerationID); err != nil {
+		return err
 	}
 	return nil
 }

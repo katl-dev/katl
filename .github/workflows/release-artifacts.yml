@@ -74,6 +74,7 @@ jobs:
           scripts/mkosi build-runtime
           scripts/mkosi build-installer
           scripts/mkosi build-katlos-install-image
+          KATL_KATLOS_IMAGE_ROLE=upgrade scripts/mkosi build-katlos-install-image
 
       - name: Verify built artifacts
         shell: bash
@@ -89,6 +90,7 @@ jobs:
               scripts/check-runtime-boot-asset
               scripts/check-installer-image
               scripts/check-katlos-install-image
+              KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
             '
 
       - name: Stage supported publication artifacts

@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -48,6 +49,7 @@ var bootstrapOperationKinds = []string{
 	"generation-stage",
 	"kubeadm-upgrade",
 	OperationKindDestructiveReset,
+	OperationKindHostUpgrade,
 }
 
 type Dispatcher interface {
@@ -308,6 +310,9 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	if req.GetDestructiveReset() != nil {
 		return s.acceptDestructiveResetOperation(req, digest, id, locks, now)
 	}
+	if req.GetHostUpgrade() != nil {
+		return s.acceptHostUpgradeOperation(req, digest, id, locks, now)
+	}
 	bootstrapRequest := bootstrapRequestFromProto(req.GetBootstrap())
 	candidateID := strings.TrimSpace(bootstrapRequest.CandidateGenerationID)
 	if candidateID == "" {
@@ -521,6 +526,9 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if req.GetDestructiveReset() != nil {
 		bodyCount++
 	}
+	if req.GetHostUpgrade() != nil {
+		bodyCount++
+	}
 	if bodyCount != 1 {
 		return status.Error(codes.InvalidArgument, "exactly one operation request body is required")
 	}
@@ -535,6 +543,10 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	} else if req.GetDestructiveReset() != nil {
 		if err := validateDestructiveResetRequest(req.OperationKind, req.GetDestructiveReset()); err != nil {
 			return status.Errorf(codes.InvalidArgument, "destructive reset request: %v", err)
+		}
+	} else if req.GetHostUpgrade() != nil {
+		if err := validateHostUpgradeRequest(req.OperationKind, req.GetHostUpgrade()); err != nil {
+			return status.Errorf(codes.InvalidArgument, "host upgrade request: %v", err)
 		}
 	} else {
 		if err := validateBootstrapRequest(req.OperationKind, req.GetBootstrap()); err != nil {
@@ -906,9 +918,9 @@ func RequestDigest(req *agentapi.SubmitOperationRequest) (string, error) {
 	if req == nil {
 		return "", fmt.Errorf("request is required")
 	}
-	clone := *req
+	clone := proto.Clone(req).(*agentapi.SubmitOperationRequest)
 	clone.RequestDigest = ""
-	data, err := protojson.MarshalOptions{EmitUnpopulated: false}.Marshal(&clone)
+	data, err := protojson.MarshalOptions{EmitUnpopulated: false}.Marshal(clone)
 	if err != nil {
 		return "", err
 	}
@@ -934,6 +946,8 @@ func resourceLocks(kind string) []string {
 		return []string{"generation-state.lock", "config-apply.lock"}
 	case OperationKindDestructiveReset:
 		return []string{"generation-state.lock", "kubeadm-state.lock", "destructive-reset.lock"}
+	case OperationKindHostUpgrade:
+		return []string{"generation-state.lock", "sysupdate.lock"}
 	default:
 		return nil
 	}
@@ -949,6 +963,8 @@ func operationScope(kind string) string {
 		return "host-generation"
 	case OperationKindDestructiveReset:
 		return "destructive-reset"
+	case OperationKindHostUpgrade:
+		return "host-generation"
 	default:
 		return "host-generation"
 	}

@@ -590,6 +590,9 @@ func validateConfigApplyRequest(operationKind string, req *agentapi.ConfigApplyO
 }
 
 func requestCandidateGenerationID(req *agentapi.SubmitOperationRequest) string {
+	if req.GetHostUpgrade() != nil {
+		return strings.TrimSpace(req.GetHostUpgrade().GetCandidateGenerationId())
+	}
 	if req.GetConfigApply() != nil {
 		return strings.TrimSpace(req.GetConfigApply().GetCandidateGenerationId())
 	}
@@ -597,6 +600,9 @@ func requestCandidateGenerationID(req *agentapi.SubmitOperationRequest) string {
 }
 
 func requestActivationMode(req *agentapi.SubmitOperationRequest) string {
+	if req.GetHostUpgrade() != nil {
+		return operation.ActivationModeNextBoot
+	}
 	if req.GetConfigApply() != nil {
 		return strings.TrimSpace(req.GetConfigApply().GetApplyMode())
 	}

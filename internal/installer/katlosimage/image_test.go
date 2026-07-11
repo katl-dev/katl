@@ -246,6 +246,16 @@ func TestHostUpgradePlanRejectsIncompatibleImage(t *testing.T) {
 	}
 }
 
+func TestHostUpgradePlanRejectsRuntimeInterfaceChange(t *testing.T) {
+	payload := upgradePayload(t, nil)
+	payload.Index.RuntimeInterface = "katl-runtime-2"
+	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", strings.Repeat("b", 64), "v1.36.0")
+	_, err := payload.HostUpgradePlan(validHostUpgradeRequest(previousSpec, previousStatus))
+	if err == nil || !strings.Contains(err.Error(), "runtime interface") {
+		t.Fatalf("HostUpgradePlan() error = %v, want runtime interface mismatch", err)
+	}
+}
+
 func TestHostUpgradePlanPreservesKubernetesOnBootstrappedNode(t *testing.T) {
 	payload := upgradePayload(t, nil)
 	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", strings.Repeat("b", sha256.Size*2), "v1.35.0")

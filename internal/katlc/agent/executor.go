@@ -23,6 +23,7 @@ import (
 	"github.com/zariel/katl/internal/installer/configapply"
 	"github.com/zariel/katl/internal/installer/disk"
 	"github.com/zariel/katl/internal/installer/generation"
+	"github.com/zariel/katl/internal/installer/katlosimage"
 	"github.com/zariel/katl/internal/installer/operation"
 )
 
@@ -46,6 +47,7 @@ type ToolRunner func(context.Context, []string, func(int)) ToolResult
 
 type BootRootMounter func(context.Context, string) error
 type BootEntrySetter func(context.Context, string, string) error
+type HostUpgradeResolver func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error)
 
 type Executor struct {
 	Root                 string
@@ -60,6 +62,7 @@ type Executor struct {
 	ConfigApplyRunner    configapply.CommandRunner
 	ConfigApplyActivator configapply.ConfextActivator
 	BundleClient         *http.Client
+	ResolveHostUpgrade   HostUpgradeResolver
 	Async                bool
 }
 
@@ -114,6 +117,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	}
 	if record.DestructiveResetRequest != nil {
 		return e.executeDestructiveReset(ctx, record)
+	}
+	if record.HostUpgradeRequest != nil {
+		return e.executeHostUpgrade(ctx, record)
 	}
 	plan, err := executorPlan(record)
 	if err != nil {

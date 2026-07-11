@@ -450,10 +450,10 @@ func validateIndex(index Index, expected manifest.KatlosImage) error {
 	if index.Format != FormatSquashFS {
 		return fmt.Errorf("KatlOS image format must be %s", FormatSquashFS)
 	}
-	if index.Version != expected.Version {
+	if expected.Version != "" && index.Version != expected.Version {
 		return fmt.Errorf("KatlOS image version %q does not match manifest %q", index.Version, expected.Version)
 	}
-	if index.Architecture != expected.Architecture {
+	if expected.Architecture != "" && index.Architecture != expected.Architecture {
 		return fmt.Errorf("KatlOS image architecture %q does not match manifest %q", index.Architecture, expected.Architecture)
 	}
 	if strings.TrimSpace(index.RuntimeInterface) == "" {

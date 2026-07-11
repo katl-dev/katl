@@ -107,6 +107,69 @@ func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
 	}
 }
 
+func TestSubmitOperationRecordsHostUpgrade(t *testing.T) {
+	server := newTestServer(t)
+	var dispatched atomic.Int32
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+		dispatched.Add(1)
+		return nil
+	})
+	req := &agentapi.SubmitOperationRequest{
+		ApiVersion:      APIVersion,
+		Kind:            RequestKind,
+		ClientRequestId: "req-host-upgrade",
+		OperationKind:   OperationKindHostUpgrade,
+		Actor:           "test-actor",
+		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
+			ImageUrl:              "https://updates.example.test/katlos-upgrade.squashfs",
+			ImageSha256:           strings.Repeat("a", 64),
+			ImageSizeBytes:        4096,
+			CandidateGenerationId: "gen-upgrade-1",
+		},
+	}
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched.Load() != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", dispatched.Load())
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.HostUpgradeRequest == nil || record.HostUpgradeRequest.ImageURL != req.HostUpgrade.ImageUrl || record.HostUpgradeRequest.ImageSHA256 != req.HostUpgrade.ImageSha256 {
+		t.Fatalf("host upgrade request = %+v", record.HostUpgradeRequest)
+	}
+	if record.ActivationMode != operation.ActivationModeNextBoot || !record.BootHealthPending || record.CandidateGenerationID != "gen-upgrade-1" {
+		t.Fatalf("host upgrade lifecycle = %+v", record)
+	}
+	if !reflect.DeepEqual(record.ResourceLocks, []string{"generation-state.lock", "sysupdate.lock"}) {
+		t.Fatalf("host upgrade locks = %#v", record.ResourceLocks)
+	}
+}
+
+func TestSubmitOperationRejectsUnsafeHostUpgradeReference(t *testing.T) {
+	server := newTestServer(t)
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
+	req := &agentapi.SubmitOperationRequest{
+		ApiVersion:      APIVersion,
+		Kind:            RequestKind,
+		ClientRequestId: "req-host-upgrade-unsafe",
+		OperationKind:   OperationKindHostUpgrade,
+		Actor:           "test-actor",
+		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
+			ImageUrl:              "https://token@example.test/katlos.squashfs?secret=yes",
+			ImageSha256:           strings.Repeat("a", 64),
+			CandidateGenerationId: "gen-upgrade-1",
+		},
+	}
+	_, err := server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "without credentials, query, or fragment") {
+		t.Fatalf("SubmitOperation() error = %v, want unsafe URL rejection", err)
+	}
+}
+
 func TestSubmitOperationRecordsKubernetesBundleRequest(t *testing.T) {
 	server := newTestServer(t)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {

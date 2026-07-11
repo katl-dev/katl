@@ -46,6 +46,36 @@ func TestStoreCreatesAndUpdatesJournalFirstRecord(t *testing.T) {
 	}
 }
 
+func TestValidateHostUpgrade(t *testing.T) {
+	valid := HostUpgrade{
+		ImageLocalRef:         "updates/katlos-upgrade.squashfs",
+		ImageSHA256:           strings.Repeat("a", 64),
+		ImageSizeBytes:        4096,
+		CandidateGenerationID: "gen-upgrade-1",
+	}
+	if err := ValidateHostUpgrade(valid); err != nil {
+		t.Fatalf("ValidateHostUpgrade() error = %v", err)
+	}
+	for _, tt := range []struct {
+		name   string
+		mutate func(*HostUpgrade)
+		want   string
+	}{
+		{name: "two refs", mutate: func(v *HostUpgrade) { v.ImageURL = "https://example.test/image" }, want: "exactly one"},
+		{name: "path escape", mutate: func(v *HostUpgrade) { v.ImageLocalRef = "../image" }, want: "clean relative"},
+		{name: "bad digest", mutate: func(v *HostUpgrade) { v.ImageSHA256 = "bad" }, want: "SHA-256"},
+		{name: "bad generation", mutate: func(v *HostUpgrade) { v.CandidateGenerationID = "../gen" }, want: "clean path segment"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := valid
+			tt.mutate(&request)
+			if err := ValidateHostUpgrade(request); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ValidateHostUpgrade() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestStoreAllowsBootstrapBundleDigestResolution(t *testing.T) {
 	store := testStore(t)
 	created, err := store.Create(bootstrapBundleRecord("op-bootstrap-digest"), "accepted", time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
