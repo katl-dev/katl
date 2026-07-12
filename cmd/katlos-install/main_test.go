@@ -430,6 +430,13 @@ kind: InitConfiguration
 }
 
 func TestBootWait(t *testing.T) {
+	previousNotify := notifySystemd
+	t.Cleanup(func() { notifySystemd = previousNotify })
+	var notifications []string
+	notifySystemd = func(payload string) error {
+		notifications = append(notifications, payload)
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
@@ -452,6 +459,9 @@ func TestBootWait(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, "waiting for config") {
 		t.Fatalf("stdout = %q, want handoff announcement", got)
+	}
+	if len(notifications) < 2 || !strings.Contains(notifications[0], "STATUS=reading installer boot inputs") || !strings.Contains(notifications[1], "READY=1\nSTATUS=configuration handoff mode selected") {
+		t.Fatalf("notifications = %#v", notifications)
 	}
 }
 

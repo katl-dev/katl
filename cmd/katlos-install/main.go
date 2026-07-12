@@ -57,6 +57,9 @@ func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSo
 	if err != nil {
 		return err
 	}
+	install.ReportStep = func(step installer.StepID) {
+		reportInstallerProgress(stdout, "install step "+string(step), false)
+	}
 	runner := installer.NewRunner(installer.PreseededManifestPlan(), install)
 
 	if err := runner.Run(ctx); err != nil {
@@ -136,6 +139,9 @@ func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, st
 	install, err := bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSource, selected)
 	if err != nil {
 		return err
+	}
+	install.ReportStep = func(step installer.StepID) {
+		reportInstallerProgress(stdout, "install step "+string(step), false)
 	}
 	runner := installer.NewRunner(installer.PreseededManifestPlan(), install)
 	if err := runner.Run(ctx); err != nil {
@@ -271,6 +277,7 @@ func runBoot(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.
 }
 
 func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string, stdout io.Writer, handoffRunner func(context.Context, string, string, io.Writer) error) error {
+	reportInstallerProgress(stdout, "reading installer boot inputs", false)
 	input, err := bootInput(runDir, etcDir)
 	if err != nil {
 		return err
@@ -285,13 +292,17 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 
 	switch input.Action {
 	case installer.InstallActionHoldForDebug:
+		reportInstallerProgress(stdout, "debug hold active", true)
 		fmt.Fprintln(stdout, "katlos-install debug hold active")
 		<-ctx.Done()
 		return ctx.Err()
 	case installer.InstallActionWaitForConfig:
+		reportInstallerProgress(stdout, "configuration handoff mode selected; starting listener", true)
 		return handoffRunner(ctx, runDir, handoffAddr, stdout)
 	case installer.InstallActionRun:
+		reportInstallerProgress(stdout, "automatic install mode selected", true)
 		if input.BundleURL != "" {
+			reportInstallerProgress(stdout, "downloading configuration bundle", false)
 			bundlePath, err := fetchBundleURL(ctx, input.BundleURL, input.BundleSHA256, runDir)
 			if err != nil {
 				return err
@@ -300,9 +311,11 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 			return runBundle(ctx, bundlePath, input.NodeName, input.BundleDigest, filepath.Join(runDir, "state"), inputMode, bundleURL, stdout)
 		}
 		if input.BundlePath != "" {
+			reportInstallerProgress(stdout, "loading local configuration bundle", false)
 			return runBundle(ctx, input.BundlePath, input.NodeName, input.BundleDigest, filepath.Join(runDir, "state"), inputMode, input.BundlePath, stdout)
 		}
 		if input.ManifestURL != "" {
+			reportInstallerProgress(stdout, "downloading install manifest", false)
 			manifestPath, err := fetchManifestURL(ctx, input.ManifestURL, input.ManifestSHA256, runDir)
 			if err != nil {
 				return err
@@ -310,6 +323,7 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 			fmt.Fprintf(stdout, "katlos-install downloaded manifest url=%s path=%s\n", manifestURL, manifestPath)
 			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), inputMode, manifestURL, stdout)
 		}
+		reportInstallerProgress(stdout, "loading local install manifest", false)
 		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"), inputMode, input.ManifestPath, stdout)
 	default:
 		return fmt.Errorf("unsupported install action %q", input.Action)
@@ -540,6 +554,7 @@ func readFile(path string) ([]byte, bool) {
 }
 
 func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) error {
+	reportInstallerProgress(stdout, "starting configuration handoff listener on "+addr, false)
 	media, _, err := loadInstallMedia()
 	if err != nil {
 		return err
@@ -569,15 +584,18 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 	defer httpServer.Shutdown(context.Background())
 
 	fmt.Fprintln(stdout, "katlos-install waiting for handoff announcement address")
+	reportInstallerProgress(stdout, "waiting for a network address to announce", false)
 	baseURL, err := waitHandoffAnnouncementBaseURL(ctx, listener.Addr())
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, server.Announcement(baseURL))
+	reportInstallerProgress(stdout, "waiting for configuration at "+baseURL, false)
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		if bundle := server.Bundle(); len(bundle.Data) > 0 {
+			reportInstallerProgress(stdout, "configuration received for node "+bundle.NodeName, false)
 			bundlePath := filepath.Join(runDir, "config.katlcfg")
 			if err := os.MkdirAll(runDir, 0o755); err != nil {
 				return fmt.Errorf("create handoff dir: %w", err)
@@ -591,6 +609,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 			return err
 		}
 		if len(server.Manifest()) > 0 {
+			reportInstallerProgress(stdout, "install manifest received", false)
 			manifestPath := filepath.Join(runDir, "install-manifest.json")
 			if err := os.MkdirAll(runDir, 0o755); err != nil {
 				return fmt.Errorf("create handoff dir: %w", err)

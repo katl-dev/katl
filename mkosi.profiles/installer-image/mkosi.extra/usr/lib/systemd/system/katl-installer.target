@@ -1,0 +1,6 @@
+[Unit]
+Description=Katl installer environment
+DefaultDependencies=no
+Wants=systemd-journald.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service
+After=systemd-journald.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service
+AllowIsolate=yes

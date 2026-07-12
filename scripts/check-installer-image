@@ -82,6 +82,7 @@ for path in \
     /usr/bin/findmnt \
     /usr/bin/sshd \
     /usr/lib/systemd/system/katlos-install.service \
+    /usr/lib/systemd/system/katl-installer.target \
     /usr/lib/systemd/system/katl-input-apply.service \
     /usr/lib/systemd/system/katl-installer-smoke.service \
     /usr/lib/systemd/system/systemd-networkd.service \
@@ -95,6 +96,9 @@ do
 done
 
 file_has /usr/lib/systemd/system/katlos-install.service "ExecStart=/usr/bin/katlos-install --boot"
+file_has /usr/lib/systemd/system/katlos-install.service "Type=notify"
+file_has /usr/lib/systemd/system/katlos-install.service "NotifyAccess=main"
+file_has /usr/lib/systemd/system/katl-installer.target "Wants=systemd-journald.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service"
 file_has /usr/lib/systemd/system/katl-input-apply.service "ExecStart=/usr/bin/katlos-install --apply-input"
 file_has /usr/lib/systemd/system/katl-installer-smoke.service "Katl installer ready"
 file_has /etc/systemd/system/sshd.service.d/10-katl-disabled.conf "ConditionPathExists=/etc/katl/installer-ssh.enabled"

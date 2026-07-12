@@ -80,6 +80,23 @@ func TestPreseededManifestPlanSkipsLocalConfigWait(t *testing.T) {
 	}
 }
 
+func TestRunnerReportsStepBeforeExecution(t *testing.T) {
+	store := &MemoryStateStore{}
+	var reported []StepID
+	install := &Context{
+		Commands:   &NoopCommandRunner{},
+		Store:      store,
+		ReportStep: func(step StepID) { reported = append(reported, step) },
+	}
+	runner := NewRunner(Plan{stubStep{id: DiscoverInstallerInput}, stubStep{id: WaitForLocalConfig}}, install)
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []StepID{DiscoverInstallerInput, WaitForLocalConfig}; !reflect.DeepEqual(reported, want) {
+		t.Fatalf("reported steps = %#v, want %#v", reported, want)
+	}
+}
+
 func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 	root := t.TempDir()
 	installedAt := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)

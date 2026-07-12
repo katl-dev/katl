@@ -33,7 +33,7 @@ func TestInstallerISOBootSmoke(t *testing.T) {
 		vmtest.Scenario{Name: "installer-iso-boot"},
 		vmtest.InstallerBootConfig{
 			InstallerISO: iso,
-			Expect:       "katl input: mounted install media",
+			Expect:       "katlos-install progress: waiting for configuration at",
 			VM: vmtest.VMConfig{
 				KVM:     options.KVM,
 				RAMMiB:  2048,

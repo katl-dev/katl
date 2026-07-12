@@ -85,6 +85,7 @@ type Context struct {
 	NodeMaterialDigest    string
 	InstallMaterialDigest string
 	PreviousStatus        *installstatus.Record
+	ReportStep            func(StepID)
 }
 
 type Step interface {
@@ -176,6 +177,9 @@ func (r Runner) Run(ctx context.Context) error {
 	}
 
 	for _, step := range r.plan {
+		if r.ctx.ReportStep != nil {
+			r.ctx.ReportStep(step.ID())
+		}
 		if err := step.Run(ctx, r.ctx); err != nil {
 			if statusErr := recordFailure(ctx, r.ctx, step.ID(), err); statusErr != nil {
 				return fmt.Errorf("%s: %w", step.ID(), errors.Join(err, fmt.Errorf("record failure status: %w", statusErr)))
