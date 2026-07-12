@@ -1,7 +1,7 @@
 # Katl
 
 [![Fast Checks](https://github.com/katl-dev/katl/actions/workflows/fast-checks.yml/badge.svg)](https://github.com/katl-dev/katl/actions/workflows/fast-checks.yml)
-[![Release](https://img.shields.io/github/v/release/katl-dev/katl?include_prereleases&sort=semver)](https://github.com/katl-dev/katl/releases)
+[![Release](https://img.shields.io/github/v/release/katl-dev/katl?include_prereleases&sort=date)](https://github.com/katl-dev/katl/releases)
 [![License](https://img.shields.io/github/license/katl-dev/katl)](LICENSE)
 
 Katl produces and maintains **KatlOS**, an immutable, installable, upgradeable,
