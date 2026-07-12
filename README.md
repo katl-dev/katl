@@ -151,16 +151,29 @@ different layers and are not interchangeable.
 
 Attach or write `katl-installer.iso` using your normal UEFI virtual-media or USB
 workflow, then boot it. Without preseed input, the installer waits safely and
-prints an HTTP handoff URL and one-time token. Submit the same bundle to every
-node while selecting that node by name:
+prints an HTTP handoff URL and one-time token. Store the token in a protected
+temporary file, then submit the same bundle to every node while selecting that
+node by name:
 
 ```sh
-curl --fail-with-body -X POST \
-  -H "Authorization: Bearer <one-time-token>" \
-  -H "Content-Type: application/vnd.katl.config.bundle.v1" \
-  --data-binary @katl-lab.katlcfg \
-  "http://<installer-ip>:8080/v1/config-bundle?node=cp-1&digest=<bundleDigest>"
+INSTALLER_ENDPOINT=http://192.0.2.10:8080
+BUNDLE_DIGEST='sha256:...'
+umask 077
+read -rsp 'Installer token: ' INSTALL_TOKEN; printf '\n'
+printf '%s\n' "$INSTALL_TOKEN" > ./installer.token
+unset INSTALL_TOKEN
+
+katlctl install apply \
+  --endpoint "$INSTALLER_ENDPOINT" \
+  --token-file ./installer.token \
+  --config-bundle ./katl-lab.katlcfg \
+  --config-bundle-digest "$BUNDLE_DIGEST" \
+  --node cp-1
 ```
+
+The command validates the bundle and selected node locally, confirms the
+installer is waiting, submits once, and waits for reboot-ready or a classified
+failure. Remove the temporary token file after the handoff.
 
 Installation is destructive only when both the resolved node sets
 `install.wipeTarget: true` and boot input authorizes automatic installation.

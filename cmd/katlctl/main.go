@@ -111,6 +111,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	configCmd.AddCommand(newConfigRenderNodeCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigApplyCommand(ctx, stdout, stderr))
 	cmd.AddCommand(configCmd)
+	cmd.AddCommand(newInstallCommand(ctx, stdout, stderr))
 
 	hostCmd := &cobra.Command{Use: "host", Short: "KatlOS host lifecycle operations"}
 	hostCmd.AddCommand(newHostUpgradeCommand(ctx, stdout, stderr))

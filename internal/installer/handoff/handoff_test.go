@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 func TestHandoffServerHealthStatusAndAnnouncement(t *testing.T) {
@@ -47,6 +48,29 @@ func TestHandoffServerHealthStatusAndAnnouncement(t *testing.T) {
 	if !strings.Contains(announcement, "http://192.0.2.10:8080/v1/config-bundle") ||
 		!strings.Contains(announcement, "token=test-token") {
 		t.Fatalf("announcement = %q", announcement)
+	}
+}
+
+func TestHandoffStatusUsesDurableInstallerState(t *testing.T) {
+	server := newTestHandoffServer(t)
+	durable := server.Status().InstallStatus
+	durable.State = "reboot-requested"
+	durable.CurrentStep = "Reboot"
+	durable.InstalledGeneration = "0"
+	server.SetStatusReader(func() (installstatus.Record, error) {
+		return durable, nil
+	})
+
+	status := server.Status()
+	if status.InstallStatus.State != "reboot-requested" || status.InstallStatus.CurrentStep != "Reboot" || status.InstallStatus.InstalledGeneration != "0" {
+		t.Fatalf("durable install status = %#v", status.InstallStatus)
+	}
+
+	server.SetStatusReader(func() (installstatus.Record, error) {
+		return installstatus.Record{}, os.ErrNotExist
+	})
+	if fallback := server.Status().InstallStatus; fallback.State != "waiting-for-config" {
+		t.Fatalf("fallback status = %#v", fallback)
 	}
 }
 

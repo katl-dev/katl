@@ -304,21 +304,46 @@ Boot the same `katl-installer.iso` on each node without preseed input. The
 installer mounts its embedded KatlOS image read-only, prints a handoff URL and
 one-time token to the console and journal, and waits without mutating disks.
 
-For `cp-1`, submit the bundle and select that node:
+The current handoff uses a bearer token over unencrypted HTTP. Use only an
+isolated provisioning network, never expose port 8080 to an untrusted network,
+and remove the temporary token file after use.
+
+For `cp-1`, first confirm the installer is waiting:
 
 ```sh
-curl --fail-with-body -X POST \
-  -H "Authorization: Bearer <one-time-token>" \
-  -H "Content-Type: application/vnd.katl.config.bundle.v1" \
-  --data-binary @katl-lab.katlcfg \
-  "http://<installer-ip>:8080/v1/config-bundle?node=cp-1&digest=<bundleDigest>"
+INSTALLER_ENDPOINT=http://192.0.2.10:8080
+katlctl install status --endpoint "$INSTALLER_ENDPOINT"
+```
+
+Copy the one-time token from the console into a protected temporary file, then
+submit the verified bundle:
+
+```sh
+BUNDLE_DIGEST='sha256:...'
+umask 077
+read -rsp 'Installer token: ' INSTALL_TOKEN; printf '\n'
+printf '%s\n' "$INSTALL_TOKEN" > ./installer.token
+unset INSTALL_TOKEN
+
+katlctl install apply \
+  --endpoint "$INSTALLER_ENDPOINT" \
+  --token-file ./installer.token \
+  --config-bundle ./katl-lab.katlcfg \
+  --config-bundle-digest "$BUNDLE_DIGEST" \
+  --node cp-1
+
+rm -f ./installer.token
 ```
 
 For the worker, boot the same ISO and submit the same file with
-`node=worker-1`. Check `http://<installer-ip>:8080/v1/status` before and after
-submission. A valid request verifies the archive, internal bundle digest,
-selected node, compiled install material, and embedded KatlOS image before the
-installer can mutate the selected disk. The endpoint refuses later submissions.
+`--node worker-1`. `katlctl install apply` validates the archive, internal
+bundle digest, and selected node before contacting the installer. The installer
+then validates the compiled install material and embedded KatlOS image before
+it can mutate the selected disk. The endpoint refuses later submissions.
+
+The command waits by default and returns structured status when installation is
+reboot-ready or reaches a classified failure. Pass `--no-wait` only when
+another operator process will monitor `katlctl install status` and the console.
 
 The console advertises `/v1/config-bundle` as the preferred endpoint.
 `/v1/install` remains available for advanced compiled-manifest integrations.

@@ -5,8 +5,9 @@ with the task that matches the current node state; do not skip directly to a
 mutating command.
 
 KatlOS is experimental. Read the [support boundary](../support.md) before using
-these procedures. The current management API uses bearer authentication over
-unencrypted TCP and is suitable only on an isolated evaluation network.
+these procedures. The current installer handoff and management API use bearer
+authentication over unencrypted HTTP/TCP and are suitable only on isolated
+evaluation networks.
 
 ## Lifecycle Map
 

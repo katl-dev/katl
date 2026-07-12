@@ -28,6 +28,7 @@ type HandoffServer struct {
 	token              string
 	validate           func([]byte) error
 	defaultKatlosImage manifest.KatlosImage
+	statusReader       func() (installstatus.Record, error)
 
 	mu       sync.Mutex
 	state    HandoffState
@@ -112,15 +113,28 @@ func (s *HandoffServer) Bundle() BundlePayload {
 
 func (s *HandoffServer) Status() HandoffStatus {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return HandoffStatus{
+	status := HandoffStatus{
 		State:            s.state,
 		ManifestAccepted: len(s.manifest) > 0,
 		BundleAccepted:   len(s.bundle) > 0,
 		SelectedNode:     s.nodeName,
 		InstallStatus:    s.status,
 	}
+	reader := s.statusReader
+	s.mu.Unlock()
+
+	if reader != nil {
+		if durable, err := reader(); err == nil {
+			status.InstallStatus = durable
+		}
+	}
+	return status
+}
+
+func (s *HandoffServer) SetStatusReader(reader func() (installstatus.Record, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statusReader = reader
 }
 
 func (s *HandoffServer) Announcement(baseURL string) string {

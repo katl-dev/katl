@@ -543,6 +543,9 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 	if err != nil {
 		return err
 	}
+	server.SetStatusReader(func() (installstatus.Record, error) {
+		return installstatus.ReadFile(filepath.Join(runDir, "state", "status.json"))
+	})
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen for handoff: %w", err)
@@ -578,7 +581,9 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 				return fmt.Errorf("write handoff config bundle: %w", err)
 			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted bundle=%s node=%s\n", bundlePath, bundle.NodeName)
-			return runBundle(ctx, bundlePath, bundle.NodeName, "", filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, bundlePath, stdout)
+			err := runBundle(ctx, bundlePath, bundle.NodeName, "", filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, bundlePath, stdout)
+			waitForHandoffStatusObservation(ctx)
+			return err
 		}
 		if len(server.Manifest()) > 0 {
 			manifestPath := filepath.Join(runDir, "install-manifest.json")
@@ -592,7 +597,9 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 				return err
 			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted manifest=%s\n", manifestPath)
-			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath, stdout)
+			err := runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath, stdout)
+			waitForHandoffStatusObservation(ctx)
+			return err
 		}
 		select {
 		case <-ctx.Done():
@@ -601,6 +608,15 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 			return err
 		case <-ticker.C:
 		}
+	}
+}
+
+func waitForHandoffStatusObservation(ctx context.Context) {
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
 	}
 }
 
