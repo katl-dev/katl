@@ -60,6 +60,19 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		}
 		fmt.Fprintf(stdout, "artifact index: %s\n", relPath(repoRoot, indexPath))
 		return nil
+	case "write-runtime-index":
+		indexPath := cfg.DefaultIndex
+		if len(args) > 1 {
+			return fmt.Errorf("write-runtime-index accepts at most one INDEX argument")
+		}
+		if len(args) == 1 {
+			indexPath = absPath(repoRoot, args[0])
+		}
+		if err := writeRuntimeIndex(indexPath, cfg); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "runtime artifact index: %s\n", relPath(repoRoot, indexPath))
+		return nil
 	case "path":
 		if len(args) < 1 {
 			return fmt.Errorf("path requires KIND")
@@ -100,6 +113,7 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
+	   katl-mkosi-artifacts write-runtime-index [INDEX]
        katl-mkosi-artifacts path KIND [INDEX]
        katl-mkosi-artifacts write-runtime-root --artifact PATH
        katl-mkosi-artifacts write-runtime-uki --artifact PATH --runtime-artifact PATH --runtime-sha256 SHA --kernel-version VERSION
@@ -1069,6 +1083,62 @@ func writeIndex(indexPath string, cfg config) error {
 		return fmt.Errorf("write artifact index %s: %w", relPath(cfg.RepoRoot, indexPath), err)
 	}
 	return nil
+}
+
+func writeRuntimeIndex(indexPath string, cfg config) error {
+	for _, input := range []struct {
+		label string
+		path  string
+	}{
+		{"runtime UKI", cfg.RuntimeUKI},
+		{"runtime UKI metadata", cfg.RuntimeUKIMetadata},
+		{"runtime UKI checksum", cfg.RuntimeUKIChecksum},
+		{"runtime SquashFS", cfg.RuntimeRoot},
+		{"runtime metadata", cfg.RuntimeMetadata},
+		{"runtime checksum", cfg.RuntimeChecksum},
+	} {
+		if err := requireFile(input.label, input.path, cfg.RepoRoot); err != nil {
+			return err
+		}
+	}
+	runtimeEntries := make([]artifactEntry, 0, 2)
+	for _, artifact := range []struct {
+		kind     string
+		format   string
+		path     string
+		metadata string
+		checksum string
+	}{
+		{"runtime-uki", "uki", cfg.RuntimeUKI, cfg.RuntimeUKIMetadata, cfg.RuntimeUKIChecksum},
+		{"runtime-root", "squashfs", cfg.RuntimeRoot, cfg.RuntimeMetadata, cfg.RuntimeChecksum},
+	} {
+		entry, err := newEntry(artifact.kind, artifact.format, artifact.path, artifact.metadata, artifact.checksum, cfg.RepoRoot)
+		if err != nil {
+			return err
+		}
+		runtimeEntries = append(runtimeEntries, entry)
+	}
+	index := artifactIndex{SchemaVersion: 1}
+	if data, err := os.ReadFile(indexPath); err == nil {
+		if err := json.Unmarshal(data, &index); err != nil {
+			return fmt.Errorf("decode artifact index %s: %w", relPath(cfg.RepoRoot, indexPath), err)
+		}
+		if index.SchemaVersion != 1 {
+			return fmt.Errorf("artifact index %s has unsupported schemaVersion %d", relPath(cfg.RepoRoot, indexPath), index.SchemaVersion)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read artifact index %s: %w", relPath(cfg.RepoRoot, indexPath), err)
+	}
+	entries := make([]artifactEntry, 0, len(index.Artifacts)+2)
+	for _, entry := range index.Artifacts {
+		if entry.Kind != "runtime-uki" && entry.Kind != "runtime-root" {
+			entries = append(entries, entry)
+		}
+	}
+	index.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	index.Generation = cfg.Generation
+	index.Artifacts = append(entries, runtimeEntries...)
+	return writeJSON(indexPath, index, cfg.RepoRoot)
 }
 
 func writeBootMetadata(role, format, artifactPath, created string, cfg config) error {

@@ -152,6 +152,54 @@ func TestWriteIncludesExistingInstallerISO(t *testing.T) {
 	t.Fatalf("existing installer ISO omitted from index: %#v", index.Artifacts)
 }
 
+func TestWriteRuntimeIndexReplacesRuntimeAndPreservesInstaller(t *testing.T) {
+	repo := testRepoRoot(t)
+	workDir := testWorkDir(t, repo)
+	runtimeUKI := writeTestFile(t, workDir, "runtime.efi", "new runtime uki")
+	runtimeRoot := writeTestFile(t, workDir, "runtime-root.squashfs", "new runtime root")
+	for _, path := range []string{runtimeUKI, runtimeRoot} {
+		writeTestChecksum(t, path)
+		writeTestJSON(t, path+".json", map[string]any{"path": filepath.Base(path)})
+	}
+	indexPath := filepath.Join(workDir, "artifacts.json")
+	writeTestJSON(t, indexPath, artifactIndex{
+		SchemaVersion: 1,
+		Generation:    "old-build",
+		Artifacts: []artifactEntry{
+			{Kind: "installer-uki", Path: "installer.efi", SHA256: strings.Repeat("a", 64)},
+			{Kind: "runtime-root", Path: "old-runtime.squashfs", SHA256: strings.Repeat("b", 64)},
+		},
+	})
+	cfg := config{
+		RepoRoot:           repo,
+		RuntimeUKI:         runtimeUKI,
+		RuntimeUKIMetadata: runtimeUKI + ".json",
+		RuntimeUKIChecksum: runtimeUKI + ".sha256",
+		RuntimeRoot:        runtimeRoot,
+		RuntimeMetadata:    runtimeRoot + ".json",
+		RuntimeChecksum:    runtimeRoot + ".sha256",
+		Generation:         "new-build",
+	}
+	if err := writeRuntimeIndex(indexPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var index artifactIndex
+	readTestJSON(t, indexPath, &index)
+	if index.Generation != "new-build" || len(index.Artifacts) != 3 {
+		t.Fatalf("index = %#v", index)
+	}
+	byKind := make(map[string]artifactEntry, len(index.Artifacts))
+	for _, entry := range index.Artifacts {
+		byKind[entry.Kind] = entry
+	}
+	if byKind["installer-uki"].Path != "installer.efi" {
+		t.Fatalf("installer entry = %#v", byKind["installer-uki"])
+	}
+	if byKind["runtime-root"].Path != relPath(repo, runtimeRoot) || byKind["runtime-root"].SHA256 != testFileSHA256(t, runtimeRoot) {
+		t.Fatalf("runtime root entry = %#v", byKind["runtime-root"])
+	}
+}
+
 func TestPathForKindRejectsDuplicate(t *testing.T) {
 	repo := testRepoRoot(t)
 	indexPath := filepath.Join(testWorkDir(t, repo), "artifacts.json")

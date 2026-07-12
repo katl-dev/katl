@@ -307,6 +307,11 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
   -count=1 -failfast -timeout 60m
 ```
 
+The runtime artifact set is intentionally limited to direct-runtime tests.
+Installed-runtime tests consume the KatlOS install image and reject
+`--artifact-set=runtime`; run them with `--artifact-set=default` or
+`--artifact-set=install` so fixture invalidation follows the installed payload.
+
 CI sets `KATL_VMTEST_KEEP=always` only long enough to upload the run directory
 as a workflow artifact, excluding large VM disk images, then removes the local
 run directory. Live-domain debug preservation is disabled in CI; local debugging

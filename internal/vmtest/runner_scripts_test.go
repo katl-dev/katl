@@ -506,7 +506,7 @@ exec "$@"
 	}
 }
 
-func TestVMTestRunBuildsRuntimeOnlyArtifacts(t *testing.T) {
+func TestVMTestRunRecordsRuntimeOnlyCacheProvenance(t *testing.T) {
 	realRepo := scriptTestRepoRoot(t)
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
@@ -516,6 +516,7 @@ func TestVMTestRunBuildsRuntimeOnlyArtifacts(t *testing.T) {
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
+printf 'mkosi cache hit: runtime artifacts match the current repo\n'
 `)
 	writeExecutable(t, filepath.Join(repo, "scripts", "vmtest-exec"), `#!/usr/bin/env bash
 set -euo pipefail
@@ -523,6 +524,29 @@ export KATL_VMTEST_RUN=1
 export KATL_VMTEST_WORLD_STRICT=1
 exec "$@"
 `)
+	runtimePath := filepath.Join(repo, "_build", "mkosi", "katl-runtime-root.squashfs")
+	if err := os.MkdirAll(filepath.Dir(runtimePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runtimePath, []byte("current runtime"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runtimeSHA := strings.Repeat("a", 64)
+	artifactIndex := map[string]any{
+		"schemaVersion": 1,
+		"artifacts": []map[string]any{{
+			"kind": "runtime-root", "path": "_build/mkosi/katl-runtime-root.squashfs",
+			"sha256": runtimeSHA, "sizeBytes": len("current runtime"),
+		}},
+	}
+	indexData, err := json.Marshal(artifactIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexPath := filepath.Join(repo, "_build", "mkosi", "artifacts.json")
+	if err := os.WriteFile(indexPath, indexData, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tmp := t.TempDir()
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
@@ -572,9 +596,18 @@ exec "$@"
 	if world.ArtifactSet != "runtime" {
 		t.Fatalf("world artifact set = %q", world.ArtifactSet)
 	}
+	if len(world.Artifacts) != 1 || world.Artifacts[0].Kind != "runtime-root" || world.Artifacts[0].Digest != runtimeSHA || world.Artifacts[0].Action != "cache-resolved" {
+		t.Fatalf("world artifacts = %#v", world.Artifacts)
+	}
+	if world.ArtifactInputs == nil || len(world.ArtifactInputs.Tools) != 1 || world.ArtifactInputs.Tools[0].Name != "mkosi-artifact-index" || world.ArtifactInputs.Tools[0].SHA256 == "" {
+		t.Fatalf("world artifact inputs = %#v", world.ArtifactInputs)
+	}
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
 	if runIndex.ArtifactSet != "runtime" {
 		t.Fatalf("run index artifact set = %q", runIndex.ArtifactSet)
+	}
+	if len(runIndex.Artifacts) != 1 || runIndex.Artifacts[0].Action != "cache-resolved" || runIndex.ArtifactInputs == nil {
+		t.Fatalf("run index provenance = artifacts=%#v inputs=%#v", runIndex.Artifacts, runIndex.ArtifactInputs)
 	}
 }
 

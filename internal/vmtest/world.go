@@ -212,6 +212,17 @@ func ValidateWorld(world World) error {
 		}
 	}
 	if world.ArtifactInputs != nil {
+		for i, tool := range world.ArtifactInputs.Tools {
+			if strings.TrimSpace(tool.Name) == "" {
+				return fmt.Errorf("vmtestArtifactInputs.tools[%d].name is required", i)
+			}
+			if strings.TrimSpace(tool.Path) != "" && !filepath.IsAbs(tool.Path) {
+				return fmt.Errorf("vmtestArtifactInputs.tools[%d].path must be an absolute path", i)
+			}
+			if strings.TrimSpace(tool.SHA256) != "" && !validWorldSHA256(tool.SHA256) {
+				return fmt.Errorf("vmtestArtifactInputs.tools[%d].sha256 must be lowercase SHA-256", i)
+			}
+		}
 		for i, profile := range world.ArtifactInputs.MkosiProfiles {
 			if strings.TrimSpace(profile.Name) == "" {
 				return fmt.Errorf("vmtestArtifactInputs.mkosiProfiles[%d].name is required", i)

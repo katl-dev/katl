@@ -453,6 +453,10 @@ file_sha256() {
 }
 
 prepare_resource_manifest() {
+    if [[ "$artifact_set" == "runtime" ]]; then
+        prepare_runtime_artifact_provenance
+        return
+    fi
     if ! uses_installer_artifacts; then
         return 0
     fi
@@ -510,6 +514,66 @@ prepare_resource_manifest() {
           }
         ' "$resource_manifest"
 	)"
+}
+
+prepare_runtime_artifact_provenance() {
+    local index="${KATL_MKOSI_ARTIFACT_INDEX:-$repo_root/_build/mkosi/artifacts.json}"
+    if [[ ! -f "$index" ]]; then
+        setup_failures+=("runtime artifact index is missing after build-runtime: $index")
+        return 1
+    fi
+    local action="${artifact_build_actions[build-runtime]:-validated}"
+    vmtest_artifacts_json="$(
+        jq -ce '
+          def abs_path($repo):
+            if (.path | startswith("/")) then .path else ($repo + "/" + .path) end;
+          [.artifacts[]
+            | select(.kind == "runtime-root" or .kind == "runtime-uki")
+            | {
+                name: .kind,
+                kind,
+                path: abs_path($repoRoot),
+                repoPath: .path,
+                sha256,
+                sizeBytes,
+                source: "mkosi-artifact-index",
+                action: $action
+              }]
+          | if any(.[]; .kind == "runtime-root") then .
+            else error("runtime-root is missing from mkosi artifact index") end
+        ' --arg repoRoot "$repo_root" --arg action "$action" "$index"
+    )" || {
+        setup_failures+=("runtime artifact index is invalid: $index")
+        return 1
+    }
+    local path expected_sha expected_size actual_sha actual_size
+    while IFS=$'\t' read -r path expected_sha expected_size; do
+        if [[ ! -f "$path" ]]; then
+            setup_failures+=("runtime artifact is missing: $path")
+            return 1
+        fi
+        actual_sha="$(file_sha256 "$path")"
+        actual_size="$(stat -c %s "$path")"
+        if [[ "$actual_sha" != "$expected_sha" || "$actual_size" != "$expected_size" ]]; then
+            setup_failures+=("runtime artifact does not match mkosi artifact index: $path (sha256 $actual_sha, size $actual_size; expected sha256 $expected_sha, size $expected_size)")
+            return 1
+        fi
+    done < <(jq -r '.[] | [.path, .sha256, (.sizeBytes | tostring)] | @tsv' <<<"$vmtest_artifacts_json")
+    local index_sha revision
+    index_sha="$(file_sha256 "$index")"
+    revision="$(git_revision)"
+    vmtest_artifact_inputs_json="$(
+        jq -nc \
+            --arg revision "$revision" \
+            --arg path "$index" \
+            --arg sha256 "$index_sha" \
+            '{
+              resourceManifestGitRevision: $revision,
+              tools: [{name: "mkosi-artifact-index", path: $path, sha256: $sha256}],
+              mkosiProfiles: [],
+              packageSets: []
+            }'
+    )"
 }
 
 probe_vm_capabilities() {

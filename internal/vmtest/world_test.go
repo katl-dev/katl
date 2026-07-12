@@ -372,6 +372,11 @@ func TestDecodeWorldArtifactProvenance(t *testing.T) {
 		Action:    "cache-resolved",
 	}}
 	world.ArtifactInputs = &WorldArtifactInputs{
+		Tools: []WorldToolInput{{
+			Name:   "mkosi-artifact-index",
+			Path:   "/repo/_build/mkosi/artifacts.json",
+			SHA256: strings.Repeat("d", 64),
+		}},
 		MkosiProfiles: []WorldMkosiProfile{{
 			Name:         "installer-image",
 			Path:         "mkosi.profiles/installer-image",
@@ -408,6 +413,11 @@ func TestDecodeWorldArtifactProvenance(t *testing.T) {
 			want:   "vmtestArtifacts[0].action must be built, cache-resolved, or validated",
 		},
 		{
+			name:   "tool digest",
+			mutate: func(world *World) { world.ArtifactInputs.Tools[0].SHA256 = "bad" },
+			want:   "vmtestArtifactInputs.tools[0].sha256 must be lowercase SHA-256",
+		},
+		{
 			name:   "profile digest",
 			mutate: func(world *World) { world.ArtifactInputs.MkosiProfiles[0].ConfigSHA256 = "bad" },
 			want:   "vmtestArtifactInputs.mkosiProfiles[0].configSHA256 must be lowercase SHA-256",
@@ -424,6 +434,7 @@ func TestDecodeWorldArtifactProvenance(t *testing.T) {
 			mutated := world
 			mutated.Artifacts = append([]WorldArtifact(nil), world.Artifacts...)
 			inputs := *world.ArtifactInputs
+			inputs.Tools = append([]WorldToolInput(nil), world.ArtifactInputs.Tools...)
 			inputs.MkosiProfiles = append([]WorldMkosiProfile(nil), world.ArtifactInputs.MkosiProfiles...)
 			inputs.PackageSets = append([]WorldPackageSetInput(nil), world.ArtifactInputs.PackageSets...)
 			mutated.ArtifactInputs = &inputs

@@ -854,6 +854,11 @@ set +e
             fi
         fi
     fi
+    if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
+        if ! mkosi_artifacts write-runtime-index >/dev/null; then
+            status=1
+        fi
+    fi
     if [[ "$status" -eq 0 && "${KATL_EMIT_KUBERNETES_SYSEXT:-0}" == 1 ]]; then
         artifact=_build/mkosi/katl-kubernetes.raw
         runtime_meta=_build/mkosi/katl-runtime-root.squashfs.json

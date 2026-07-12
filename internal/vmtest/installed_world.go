@@ -97,6 +97,13 @@ func WorldFixtureCacheDir(world World) string {
 	return filepath.Join(world.RunDir, "_build")
 }
 
+func validateInstalledRuntimeArtifactSet(world World) error {
+	if world.ArtifactSet == "runtime" {
+		return errors.New("installed-runtime VM tests require --artifact-set=default or --artifact-set=install; --artifact-set=runtime is only for direct-runtime tests")
+	}
+	return nil
+}
+
 func FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots []string, spec NodeSpec) (PublishedFirstInstallRuntimeFixture, error) {
 	return findPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots, spec, "")
 }

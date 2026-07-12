@@ -24,6 +24,9 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec) (inst
 		return installedRuntimeWorldRun{}, false
 	}
 	world := RequireWorld(t)
+	if err := validateInstalledRuntimeArtifactSet(world); err != nil {
+		failInstalledRuntimeWorldFixtureSetup(t, world, name, err)
+	}
 	repo := repoRoot(t)
 	options := DefaultOptions()
 	input := DefaultFirstInstallWorldInputFromEnv(FirstInstallWorldPreseed, envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"))
@@ -41,6 +44,16 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec) (inst
 		failWorldSetup(t, run.Scenario, err)
 	}
 	return run, true
+}
+
+func TestInstalledRuntimeArtifactSetRejectsRuntimeOnly(t *testing.T) {
+	err := validateInstalledRuntimeArtifactSet(World{ArtifactSet: "runtime"})
+	if err == nil || !strings.Contains(err.Error(), "only for direct-runtime tests") {
+		t.Fatalf("validateInstalledRuntimeArtifactSet() error = %v", err)
+	}
+	if err := validateInstalledRuntimeArtifactSet(World{ArtifactSet: "install"}); err != nil {
+		t.Fatalf("validateInstalledRuntimeArtifactSet(install) error = %v", err)
+	}
 }
 
 func failInstalledRuntimeWorldFixtureSetup(t *testing.T, world World, name string, err error) {
