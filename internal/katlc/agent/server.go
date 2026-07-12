@@ -101,6 +101,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
 	}
+	currentGenerationID, _ := currentGenerationID(s.Root)
 	return &agentapi.NodeStatus{
 		ApiVersion:              APIVersion,
 		MachineId:               machineID,
@@ -110,6 +111,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		SupportedOperationKinds: append([]string(nil), s.supportedOperationKinds()...),
 		OperationLockHeld:       len(ids) > 0,
 		ActiveOperationIds:      ids,
+		CurrentGenerationId:     currentGenerationID,
 	}, nil
 }
 

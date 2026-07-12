@@ -219,8 +219,24 @@ katlctl host upgrade \
 The node calculates and records the downloaded image identity before changing
 the inactive root slot.
 
-Remove `--plan` only after reviewing the response. Automated fleet rollout and
-Kubernetes version upgrade execution are not supported alpha workflows.
+Kubernetes upgrades use the workstation cluster context and a readable bundle
+reference. Plan the whole control-plane-first rollout without supplying bundle
+digests, artifact paths, snapshot metadata, generation IDs, or operation IDs:
+
+```sh
+katlctl cluster upgrade kubernetes \
+  --bundle ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1 \
+  --plan
+```
+
+Remove `--plan` to upgrade the next eligible node. Reboot that node, verify
+cluster health, then rerun the same command to advance through control planes
+and workers one at a time. Each node fetches and verifies the selected bundle
+itself; control-plane nodes capture pre-mutation etcd snapshot evidence. See
+[Upgrade Kubernetes](docs/operations/upgrade-kubernetes.md).
+
+Remove `--plan` only after reviewing the response. Unattended fleet rollout is
+not a supported alpha workflow.
 
 Mutating commands follow the node's durable operation to completion by default.
 Progress is written to stderr and the final structured result to stdout. A lost

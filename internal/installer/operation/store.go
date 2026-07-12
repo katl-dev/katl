@@ -207,6 +207,9 @@ type KubernetesSysextUpdate struct {
 	SourceEtcdVersion        string `json:"sourceEtcdVersion,omitempty"`
 	SnapshotStorageLocation  string `json:"snapshotStorageLocation,omitempty"`
 	SnapshotOperatorIdentity string `json:"snapshotOperatorIdentity,omitempty"`
+	KubernetesBundleSource   string `json:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef      string `json:"kubernetesBundleRef,omitempty"`
+	BundleManifestDigest     string `json:"bundleManifestDigest,omitempty"`
 }
 
 type KubeadmUpgradeEvidence struct {
@@ -953,7 +956,7 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	if !reflect.DeepEqual(next.ConfigApplyRequest, previous.ConfigApplyRequest) {
 		return fmt.Errorf("operation configApplyRequest is immutable")
 	}
-	if !reflect.DeepEqual(next.KubernetesSysextUpdate, previous.KubernetesSysextUpdate) {
+	if !kubernetesSysextUpdateTransitionAllowed(previous.KubernetesSysextUpdate, next.KubernetesSysextUpdate) {
 		return fmt.Errorf("operation kubernetesSysextUpdate is immutable")
 	}
 	if !kubeadmControlPlaneConfigTransitionAllowed(previous.KubeadmControlPlaneConfig, next.KubeadmControlPlaneConfig) {
@@ -1003,6 +1006,44 @@ func bootstrapRequestTransitionAllowed(previous *BootstrapRequest, next *Bootstr
 	}
 	return resolvedDigestTransitionAllowed(previous.KubernetesBundleManifestDigest, next.KubernetesBundleManifestDigest) &&
 		resolvedDigestTransitionAllowed(previous.KubernetesSysextPayloadDigest, next.KubernetesSysextPayloadDigest)
+}
+
+func kubernetesSysextUpdateTransitionAllowed(previous *KubernetesSysextUpdate, next *KubernetesSysextUpdate) bool {
+	if previous == nil || next == nil {
+		return previous == nil && next == nil
+	}
+	previousComparable := *previous
+	nextComparable := *next
+	for _, clear := range []func(*KubernetesSysextUpdate){
+		func(v *KubernetesSysextUpdate) { v.TargetSysextPath = "" },
+		func(v *KubernetesSysextUpdate) { v.TargetSysextSHA256 = "" },
+		func(v *KubernetesSysextUpdate) { v.TargetSysextSize = 0 },
+		func(v *KubernetesSysextUpdate) { v.BundleManifestDigest = "" },
+		func(v *KubernetesSysextUpdate) { v.SnapshotRef = "" },
+		func(v *KubernetesSysextUpdate) { v.SnapshotDigest = "" },
+		func(v *KubernetesSysextUpdate) { v.SnapshotRevision = "" },
+		func(v *KubernetesSysextUpdate) { v.SnapshotCreatedAt = "" },
+		func(v *KubernetesSysextUpdate) { v.CapturedMemberListDigest = "" },
+		func(v *KubernetesSysextUpdate) { v.SourceEtcdVersion = "" },
+		func(v *KubernetesSysextUpdate) { v.SnapshotStorageLocation = "" },
+		func(v *KubernetesSysextUpdate) { v.SnapshotOperatorIdentity = "" },
+	} {
+		clear(&previousComparable)
+		clear(&nextComparable)
+	}
+	return reflect.DeepEqual(previousComparable, nextComparable) &&
+		resolvedDigestTransitionAllowed(previous.TargetSysextPath, next.TargetSysextPath) &&
+		resolvedDigestTransitionAllowed(previous.TargetSysextSHA256, next.TargetSysextSHA256) &&
+		(previous.TargetSysextSize == next.TargetSysextSize || previous.TargetSysextSize == 0 && next.TargetSysextSize > 0) &&
+		resolvedDigestTransitionAllowed(previous.BundleManifestDigest, next.BundleManifestDigest) &&
+		resolvedDigestTransitionAllowed(previous.SnapshotRef, next.SnapshotRef) &&
+		resolvedDigestTransitionAllowed(previous.SnapshotDigest, next.SnapshotDigest) &&
+		resolvedDigestTransitionAllowed(previous.SnapshotRevision, next.SnapshotRevision) &&
+		resolvedDigestTransitionAllowed(previous.SnapshotCreatedAt, next.SnapshotCreatedAt) &&
+		resolvedDigestTransitionAllowed(previous.CapturedMemberListDigest, next.CapturedMemberListDigest) &&
+		resolvedDigestTransitionAllowed(previous.SourceEtcdVersion, next.SourceEtcdVersion) &&
+		resolvedDigestTransitionAllowed(previous.SnapshotStorageLocation, next.SnapshotStorageLocation) &&
+		resolvedDigestTransitionAllowed(previous.SnapshotOperatorIdentity, next.SnapshotOperatorIdentity)
 }
 
 func kubeadmControlPlaneConfigTransitionAllowed(previous *KubeadmControlPlaneConfig, next *KubeadmControlPlaneConfig) bool {
@@ -1764,11 +1805,31 @@ func validateKubernetesSysextUpdate(request KubernetesSysextUpdate) error {
 	if strings.TrimSpace(request.TargetPayloadVersion) == "" {
 		return fmt.Errorf("kubernetesSysextUpdate targetPayloadVersion is required")
 	}
-	if strings.TrimSpace(request.TargetSysextPath) == "" {
-		return fmt.Errorf("kubernetesSysextUpdate targetSysextPath is required")
+	hasBundleSource := strings.TrimSpace(request.KubernetesBundleSource) != ""
+	hasBundleRef := strings.TrimSpace(request.KubernetesBundleRef) != ""
+	if hasBundleSource != hasBundleRef {
+		return fmt.Errorf("kubernetesSysextUpdate bundle source and ref must be provided together")
 	}
-	if err := validateSHA256Hex("kubernetesSysextUpdate targetSysext", strings.TrimSpace(request.TargetSysextSHA256)); err != nil {
-		return err
+	if hasBundleSource {
+		parsed, err := url.Parse(request.KubernetesBundleSource)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return fmt.Errorf("kubernetesSysextUpdate bundle source must be an HTTPS URL")
+		}
+	}
+	hasTargetPath := strings.TrimSpace(request.TargetSysextPath) != ""
+	hasTargetDigest := strings.TrimSpace(request.TargetSysextSHA256) != ""
+	if hasTargetPath != hasTargetDigest || !hasBundleSource && !hasTargetPath {
+		return fmt.Errorf("kubernetesSysextUpdate requires a bundle reference or a target sysext path and digest")
+	}
+	if hasTargetDigest {
+		if err := validateSHA256Hex("kubernetesSysextUpdate targetSysext", strings.TrimSpace(request.TargetSysextSHA256)); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(request.BundleManifestDigest) != "" {
+		if err := validateSHA256Digest("kubernetesSysextUpdate bundle manifest", request.BundleManifestDigest); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(request.UpgradeRole) == "" {
 		return nil
@@ -1781,22 +1842,27 @@ func validateKubernetesSysextUpdate(request KubernetesSysextUpdate) error {
 	default:
 		return fmt.Errorf("kubernetesSysextUpdate upgradeRole must be apply, control-plane, or worker")
 	}
-	required := map[string]string{"sourcePayloadVersion": request.SourcePayloadVersion, "snapshotRef": request.SnapshotRef}
-	if request.UpgradeRole != "worker" {
-		required["snapshotCreatedAt"] = request.SnapshotCreatedAt
-		required["capturedMemberListDigest"] = request.CapturedMemberListDigest
-		required["snapshotStorageLocation"] = request.SnapshotStorageLocation
-		required["snapshotOperatorIdentity"] = request.SnapshotOperatorIdentity
-	}
+	required := map[string]string{"sourcePayloadVersion": request.SourcePayloadVersion}
 	for name, value := range required {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("kubernetesSysextUpdate %s is required", name)
 		}
 	}
-	if err := validateSHA256Hex("kubernetesSysextUpdate snapshot", request.SnapshotDigest); err != nil {
-		return err
+	hasSnapshot := strings.TrimSpace(request.SnapshotRef) != "" || strings.TrimSpace(request.SnapshotDigest) != "" || strings.TrimSpace(request.SnapshotStorageLocation) != ""
+	if hasSnapshot {
+		if strings.TrimSpace(request.SnapshotRef) == "" || strings.TrimSpace(request.SnapshotDigest) == "" {
+			return fmt.Errorf("kubernetesSysextUpdate snapshot ref and digest must be provided together")
+		}
+		if err := validateSHA256Hex("kubernetesSysextUpdate snapshot", request.SnapshotDigest); err != nil {
+			return err
+		}
 	}
-	if request.UpgradeRole != "worker" {
+	if request.UpgradeRole != "worker" && hasSnapshot {
+		for name, value := range map[string]string{"snapshotCreatedAt": request.SnapshotCreatedAt, "capturedMemberListDigest": request.CapturedMemberListDigest, "snapshotStorageLocation": request.SnapshotStorageLocation, "snapshotOperatorIdentity": request.SnapshotOperatorIdentity} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("kubernetesSysextUpdate %s is required with snapshot evidence", name)
+			}
+		}
 		if err := validateSHA256Hex("kubernetesSysextUpdate member list", request.CapturedMemberListDigest); err != nil {
 			return err
 		}

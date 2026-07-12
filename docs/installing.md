@@ -558,15 +558,15 @@ runtime root, boot assets, versions, architecture, runtime
 interface, and digests. An upgrade operation creates a candidate generation from
 that image and validates component compatibility before selection.
 
-Kubernetes version upgrades remain separate from day-one install. They require a
-kubeadm-aware operation that can make the target `kubeadm` available before the
-target kubelet starts. Katl's node-side operation and VM proof now exercise a
-control-plane-first `v1.36.0` to `v1.36.1` upgrade, including an etcd snapshot,
-reboots, worker upgrade, and final cluster health. There is not yet a supported
-`katlctl` command that coordinates that operation across an operator's cluster,
-so continue to treat Kubernetes upgrades as unsupported operational work. A
-published sysext alone is not sufficient authorization to perform the mutation
-manually.
+Kubernetes version upgrades remain separate from day-one install. Use
+`katlctl cluster upgrade kubernetes` to plan and execute the kubeadm-aware,
+control-plane-first rollout from a published bundle. Katl resolves the bundle
+identity, captures control-plane etcd snapshot evidence, stages the target
+`kubeadm` privately before releasing the target kubelet, and reports recovery
+requirements without asking operators for digests, artifact paths, snapshot
+metadata, generation IDs, or operation IDs. Follow
+[Upgrade Kubernetes](operations/upgrade-kubernetes.md); activating a published
+sysext manually is not a supported upgrade.
 
 ## Troubleshooting
 
@@ -619,7 +619,6 @@ Current day-one docs intentionally do not cover:
 Katl-managed DHCP, TFTP, iPXE, or matchbox services
 automatic cluster reconciliation after bootstrap
 control-plane join through operation-backed bootstrap
-Kubernetes version upgrade execution
 optional node application sysexts such as BIRD, gVisor, or Kata
 hardware extension catalogs or per-node installer artifact rebuilds
 secret distribution beyond protected install input or local handoff
