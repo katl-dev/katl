@@ -91,16 +91,18 @@ Authenticate the installer against the release workflow, replacing `<tag>`
 with the exact tag you downloaded:
 
 ```sh
+TAG=v2026.7.0-alpha.2
 gh attestation verify katl-installer.iso \
   --repo katl-dev/katl \
   --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
-  --source-ref refs/tags/<tag>
+  --source-ref "refs/tags/$TAG"
 ```
 
 Install the matching operator CLI and confirm its embedded identity:
 
 ```sh
-install -m 0755 katlctl-<version>-linux-amd64 ~/.local/bin/katlctl
+VERSION=2026.7.0-alpha.2
+install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
 katlctl version
 ```
 
@@ -171,14 +173,16 @@ activation. Kubernetes bootstrap is a separate operator action.
 ### 4. Bootstrap Kubernetes
 
 Once all installed nodes are reachable through their `katlc` endpoints, use the
-same config bundle and its internal digest:
+same config bundle and its internal digest. First retrieve each node's distinct
+agent token over SSH and populate the per-node `file:` credential references as
+described in [Access installed nodes](docs/operations/access.md):
 
 ```sh
+BUNDLE_DIGEST='sha256:...'
 katlctl cluster bootstrap \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest <bundleDigest> \
+  --config-bundle-digest "$BUNDLE_DIGEST" \
   --init-node cp-1 \
-  --agent-token-file ./katlc-agent.token \
   --kubeconfig-out ./kubeconfig \
   --overwrite-kubeconfig
 ```
@@ -209,15 +213,20 @@ Host upgrades consume the published `katlos-upgrade-<version>-<arch>.squashfs`
 artifact. Plan before accepting a next-boot generation:
 
 ```sh
+TAG=v2026.7.0-alpha.2
+VERSION=${TAG#v}
+IMAGE="katlos-upgrade-$VERSION-x86_64.squashfs"
+IMAGE_SHA256=$(sha256sum "$IMAGE" | awk '{print $1}')
+IMAGE_SIZE=$(stat -c %s "$IMAGE")
 katlctl host upgrade \
   --plan \
   --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./katlc-agent.token \
-  --candidate-generation katlos-<version> \
-  --client-request-id cp-1-katlos-<version> \
-  --image-url https://github.com/katl-dev/katl/releases/download/<tag>/katlos-upgrade-<version>-x86_64.squashfs \
-  --image-sha256 <sha256> \
-  --image-size-bytes <bytes>
+  --agent-token-file ./tokens/cp-1.token \
+  --candidate-generation "katlos-$VERSION" \
+  --client-request-id "cp-1-katlos-$VERSION" \
+  --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE" \
+  --image-sha256 "$IMAGE_SHA256" \
+  --image-size-bytes "$IMAGE_SIZE"
 ```
 
 Remove `--plan` only after reviewing the response. Automated fleet rollout and
@@ -248,6 +257,8 @@ matching loose artifacts, one explicitly selected disk per node, the matching
 bundle. Hardware claims extend only to retained release evidence.
 
 - [Installing KatlOS](docs/installing.md) — complete ISO and PXE workflows.
+- [Operating KatlOS](docs/operations/README.md) — task-oriented runbooks for
+  access, bootstrap, configuration, upgrades, wipe/reinstall, and diagnosis.
 - [Support boundary](docs/support.md) — compatibility, trust, recovery, and
   reporting expectations.
 - [Developing Katl](docs/developing.md) — build, test, and contribution loop.

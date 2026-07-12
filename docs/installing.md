@@ -3,6 +3,11 @@
 Status: early user-facing guide. KatlOS is experimental alpha software; read
 the [support boundary](support.md) before installing it.
 
+This document is the installation reference for ISO and PXE paths. After
+generation 0 boots, continue with the task-oriented
+[KatlOS Operator Guide](operations/README.md) for management access, Kubernetes
+bootstrap, configuration, upgrades, recovery, and troubleshooting.
+
 Katl publishes a versioned installer ISO containing the matching KatlOS payload.
 Write or attach that one artifact, then provide node-specific install input at
 boot time. Loose boot and payload artifacts remain available for PXE. Katl does
@@ -45,7 +50,8 @@ Install it under the stable command name and confirm that its embedded release
 identity matches the KatlOS release:
 
 ```sh
-install -m 0755 katlctl-<version>-linux-amd64 ~/.local/bin/katlctl
+VERSION=2026.7.0-alpha.2
+install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
 katlctl version
 ```
 
@@ -108,10 +114,11 @@ Then authenticate each asset against the keyless GitHub attestation issued to
 the Katl release workflow. Pin the expected tag in the verification policy:
 
 ```sh
+TAG=v2026.7.0-alpha.2
 gh attestation verify katl-installer.iso \
   --repo katl-dev/katl \
   --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
-  --source-ref refs/tags/<tag>
+  --source-ref "refs/tags/$TAG"
 ```
 
 Repeat the attestation check for the KatlOS SquashFS or loose PXE artifact you
@@ -158,10 +165,6 @@ spec:
 
             [Network]
             DHCP=yes
-    bootstrap:
-      access:
-        method: agent
-        credentialRef: agent/default
   systemRoleDefaults:
     control-plane:
       kubernetes:
@@ -196,6 +199,9 @@ spec:
           hostname: cp-1
         bootstrap:
           address: 192.0.2.11
+          access:
+            method: agent
+            credentialRef: file:/absolute/path/to/tokens/cp-1.token
         install:
           targetDisk:
             byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
@@ -206,6 +212,9 @@ spec:
           hostname: worker-1
         bootstrap:
           address: 192.0.2.21
+          access:
+            method: agent
+            credentialRef: file:/absolute/path/to/tokens/worker-1.token
         install:
           targetDisk:
             byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
@@ -411,11 +420,11 @@ management endpoints, bootstrap directly from the same verified bundle. Use the
 `bundleDigest` printed by `katlctl config bundle`, not the archive SHA-256:
 
 ```text
+BUNDLE_DIGEST='sha256:...'
 katlctl cluster bootstrap \
   --config-bundle katl-lab.katlcfg \
-  --config-bundle-digest <bundleDigest> \
+  --config-bundle-digest "$BUNDLE_DIGEST" \
   --init-node cp-1 \
-  --agent-token-file ./katlc-agent.token \
   --kubeconfig-out kubeconfig \
   --overwrite-kubeconfig
 ```
@@ -426,11 +435,12 @@ references, Kubernetes version, and OCI bundle selection. Do not combine
 `--kubernetes-bundle`. `--node-address node=address` remains available for an
 operator-observed address that differs from the compiled source.
 
-`--agent-token-file` is the common fallback token. A node whose embedded
-`credentialRef` is `file:/path/to/token` reads that per-node file instead and
-overrides the common token. Other reference names such as `agent/default` do not
-embed secret material and use the common token until a credential provider is
-configured.
+Each freshly installed node generates a distinct agent token. Retrieve it over
+SSH as described in [Access installed KatlOS nodes](operations/access.md), then
+store its workstation path in that node's `file:` credential reference. Do not
+put the token value in `ClusterConfig`. A common `--agent-token-file` is only a
+fallback when every selected node was deliberately provisioned with the same
+token; fresh installs do not have that property.
 
 `katlctl` is a bounded client. Node-local `katlc` validates and records the
 authoritative bootstrap operations, creates generation 1, runs `kubeadm`, and
@@ -469,7 +479,7 @@ Plan the change through the node agent before accepting an operation:
 ```text
 katlctl config apply validate \
   --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./katlc-agent.token \
+  --agent-token-file ./tokens/cp-1.token \
   --source ./cluster.yaml \
   --node cp-1 \
   --desired-version 2 \
@@ -481,11 +491,12 @@ If the source has already been compiled, use the verified bundle instead of
 recompiling it:
 
 ```text
+BUNDLE_DIGEST='sha256:...'
 katlctl config apply validate \
   --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./katlc-agent.token \
+  --agent-token-file ./tokens/cp-1.token \
   --config-bundle ./katl-lab.katlcfg \
-  --config-bundle-digest <bundleDigest> \
+  --config-bundle-digest "$BUNDLE_DIGEST" \
   --node cp-1 \
   --desired-version 2 \
   --candidate-generation config-2 \

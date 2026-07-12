@@ -37,6 +37,11 @@ provenance attestations. Kubernetes bundles are digest-addressable OCI
 artifacts with GitHub provenance. Verify both before use and prefer immutable
 digest-pinned bundle references.
 
+The current `katlc` management API uses bearer authentication over unencrypted
+TCP. Restrict port 9443 to an isolated evaluation management network. It is not
+a production-grade remote-management trust boundary, even when artifact
+provenance verification succeeds.
+
 This proves which repository workflow produced the bytes. It does not provide:
 
 - UEFI Secure Boot signatures or a production boot-key policy;
