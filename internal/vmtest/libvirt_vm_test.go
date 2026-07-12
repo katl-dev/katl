@@ -265,9 +265,10 @@ exit 42
 	}
 }
 
-func TestLibvirtVMExecutorCleansUpOnTimeout(t *testing.T) {
+func TestLibvirtVMExecutorCleansUpOnCancellation(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "virsh.log")
+	domstateStarted := filepath.Join(tmp, "domstate-started")
 	virsh := filepath.Join(tmp, "virsh")
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
 set -euo pipefail
@@ -280,8 +281,8 @@ case "${1:-}" in
         exit 0
         ;;
     domstate)
-        printf 'running\n'
-        exit 0
+        touch "$KATL_FAKE_DOMSTATE_STARTED"
+        while :; do sleep 1; done
         ;;
     *)
         echo "unexpected virsh args: $*" >&2
@@ -290,13 +291,33 @@ case "${1:-}" in
 esac
 `)
 	t.Setenv("KATL_FAKE_VIRSH_LOG", logPath)
+	t.Setenv("KATL_FAKE_DOMSTATE_STARTED", domstateStarted)
 	xmlPath := filepath.Join(tmp, "domain.xml")
 	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
 		t.Fatalf("write domain XML: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			if _, err := os.Stat(domstateStarted); err == nil {
+				cancel()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	fallback := time.AfterFunc(5*time.Second, cancel)
+	defer fallback.Stop()
 	err := LibvirtVMExecutor{
 		TempDir:       filepath.Join(tmp, "run-tmp"),
 		VirshPath:     virsh,
@@ -305,8 +326,12 @@ esac
 		DomainXMLFile: xmlPath,
 		PollInterval:  time.Millisecond,
 	}.Run(ctx, "", nil, nil)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Run() error = %v, want deadline", err)
+	<-cancelDone
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want cancellation", err)
+	}
+	if _, err := os.Stat(domstateStarted); err != nil {
+		t.Fatalf("domstate was not started before cancellation: %v", err)
 	}
 	logData, err := os.ReadFile(logPath)
 	if err != nil {
