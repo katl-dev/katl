@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/vmtest"
 )
 
@@ -28,8 +29,18 @@ func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, spe
 	timeout := time.Duration(firstInt(len(specs), 1)) * 30 * time.Minute
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	input := vmtest.DefaultFirstInstallWorldInputFromEnv(vmtest.FirstInstallWorldPreseed, katlctlEnvBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"))
+	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")); value != "" {
+		image, err := kubernetesbundle.ParseImageReference(value)
+		if err != nil {
+			return fmt.Errorf("parse published Kubernetes bundle: %w", err)
+		}
+		input.KubernetesVersion = image.PayloadVersion
+	} else {
+		input.KubernetesVersion = strings.TrimSpace(os.Getenv("KATL_KUBERNETES_VERSION"))
+	}
 	return vmtest.EnsurePublishedFirstInstallRuntimeFixtures(ctx, world, repo, specs, vmtest.FirstInstallRuntimeFixtureOptions{
-		Input:                      vmtest.DefaultFirstInstallWorldInputFromEnv(vmtest.FirstInstallWorldPreseed, katlctlEnvBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")),
+		Input:                      input,
 		KVM:                        kvm,
 		RequireInstallerProvenance: true,
 	})

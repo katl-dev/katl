@@ -156,11 +156,13 @@ func TestInstallerConsoleAndVMGateContract(t *testing.T) {
 			t.Fatalf("installer profile missing console %q", value)
 		}
 	}
-	for _, value := range []string{"CompressOutput=zstd", "CompressLevel=19"} {
+	for _, value := range []string{"CompressOutput=zstd", "CompressLevel=22", "KernelModules="} {
 		if !strings.Contains(profile, value) {
 			t.Fatalf("installer profile missing compression setting %q", value)
 		}
 	}
+	isoBuilder := string(mustReadFile(t, filepath.Join(repo, "scripts/build-installer-iso")))
+	assertTextContains(t, isoBuilder, `overhead=$((8 * 1024 * 1024))`)
 	checker := string(mustReadFile(t, filepath.Join(repo, "scripts/check-installer-image")))
 	for _, value := range []string{"need zstd", `zstd -q -d -c "$initrd"`} {
 		if !strings.Contains(checker, value) {

@@ -66,6 +66,25 @@ func TestVMTestImageSupportIsExplicitAndCacheScoped(t *testing.T) {
 	assertTextContains(t, releaseWorkflow, `KATL_VMTEST_IMAGE_SUPPORT: "0"`)
 }
 
+func TestReleaseRootPackagingIsCompressedAndPruned(t *testing.T) {
+	repo := repoRoot(t)
+	mkosi := string(mustReadFile(t, filepath.Join(repo, "scripts", "mkosi")))
+	assertTextContains(t, mkosi,
+		`runtime_packages=_build/mkosi/katl-runtime.packages.tsv`,
+		`"$root/usr/lib/sysimage/rpm"`,
+		`find "$root/usr/lib/modules" -type f \( -name System.map -o -name vmlinuz \) -delete`,
+		`rm -f "$root/usr/bin/ctr"`,
+		`-b 1M`,
+		`-Xcompression-level 22`,
+	)
+	installImage := string(mustReadFile(t, filepath.Join(repo, "scripts", "build-katlos-install-image")))
+	assertTextContains(t, installImage, `-b 1M`, `-Xcompression-level 22`)
+	runtimeBuild := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.build")))
+	installerBuild := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "installer-image", "mkosi.build")))
+	assertTextContains(t, runtimeBuild, `-ldflags="-s -w`)
+	assertTextContains(t, installerBuild, `-ldflags="-s -w`)
+}
+
 func runRuntimeBuild(t *testing.T, repo, bin, dest, support string) {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.build"))

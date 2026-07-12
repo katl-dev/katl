@@ -5,6 +5,7 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 installer_artifact="${KATL_INSTALLER_ARTIFACT:-$repo_root/_build/mkosi/katl-installer.efi}"
 runtime_artifact="${KATL_RUNTIME_ARTIFACT:-$repo_root/_build/mkosi/katl-runtime-root.squashfs}"
 runtime_root="${KATL_RUNTIME_ROOT:-$repo_root/_build/mkosi/katl-runtime-root}"
+runtime_packages="${KATL_RUNTIME_PACKAGES:-$repo_root/_build/mkosi/katl-runtime.packages.tsv}"
 installer_max_mib="${KATL_INSTALLER_MAX_MIB:-450}"
 runtime_max_mib="${KATL_RUNTIME_MAX_MIB:-390}"
 runtime_tree_max_mib="${KATL_RUNTIME_TREE_MAX_MIB:-700}"
@@ -154,7 +155,8 @@ rpms() {
         return
     fi
     if [[ ! -d "$runtime_root/usr/lib/sysimage/rpm" ]]; then
-        echo "largest runtime RPM payloads: skipped (runtime rpmdb unavailable)"
+        [[ -s "$runtime_packages" ]] || fail "runtime package inventory not found: $(rel "$runtime_packages")"
+        echo "runtime RPM inventory: $(wc -l <"$runtime_packages") packages (payload sizes omitted after rpmdb pruning)"
         return
     fi
     local output

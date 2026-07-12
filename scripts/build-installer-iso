@@ -44,7 +44,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/katl-installer-iso.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 installer_size="$(stat -c %s "$installer")"
-overhead=$((32 * 1024 * 1024))
+overhead=$((8 * 1024 * 1024))
 mebibyte=$((1024 * 1024))
 esp_size=$((((installer_size + overhead + mebibyte - 1) / mebibyte) * mebibyte))
 esp="$work/efiboot.img"
