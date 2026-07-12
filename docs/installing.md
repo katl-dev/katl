@@ -95,8 +95,10 @@ nodes.
 ### Verify release provenance
 
 Each KatlOS tag release includes `SHA256SUMS`, adjacent checksum files, and
-`PROVENANCE.md`. After downloading the required assets into one directory,
-verify their transport integrity:
+`PROVENANCE.md`. It also includes `katl-installer.packages.tsv`, the resolved
+package inventory for the temporary installer environment used to produce the
+boot media. After downloading the required assets into one directory, verify
+their transport integrity:
 
 ```sh
 sha256sum --ignore-missing --check SHA256SUMS
