@@ -37,7 +37,7 @@ GOMODCACHE="$gomodcache" \
 go build \
     -trimpath \
     -buildvcs=false \
-    -ldflags="-X main.version=$version -X main.commit=$commit -X main.date=$date" \
+    -ldflags="-s -w -X main.version=$version -X main.commit=$commit -X main.date=$date" \
     -o "$DESTDIR/usr/bin/katlos-install" \
     ./cmd/katlos-install
 

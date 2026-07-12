@@ -164,6 +164,7 @@ jq -e \
 
 superblock="$(unsquashfs -s "$artifact")"
 grep -Fq "Compression zstd" <<<"$superblock" || fail "runtime root is not zstd-compressed SquashFS"
+grep -Eq 'Block size[[:space:]]+1048576' <<<"$superblock" || fail "runtime root does not use 1 MiB SquashFS blocks"
 runtime_inventory="$(unsquashfs -ll "$artifact")" || fail "list runtime root failed"
 if grep -Eiq 'squashfs-root/[^[:space:]]*(vmtest|vm-test)' <<<"$runtime_inventory"; then
     fail "runtime image contains VM-test support"
@@ -237,6 +238,32 @@ do
 done
 
 for path in \
+    /boot \
+    /buildroot \
+    /etc/dnf \
+    /etc/dracut.conf \
+    /etc/dracut.conf.d \
+    /usr/bin/containerd-stress \
+    /usr/bin/ctr \
+    /usr/bin/dracut \
+    /usr/bin/lsinitrd \
+    /usr/lib/dracut \
+    /usr/lib/sysimage/rpm \
+    /var/lib/rpm-state \
+    /usr/libexec/cni/bandwidth \
+    /usr/libexec/cni/dhcp \
+    /usr/libexec/cni/dummy \
+    /usr/libexec/cni/firewall \
+    /usr/libexec/cni/host-device \
+    /usr/libexec/cni/ipvlan \
+    /usr/libexec/cni/macvlan \
+    /usr/libexec/cni/sample \
+    /usr/libexec/cni/sbr \
+    /usr/libexec/cni/static \
+    /usr/libexec/cni/tap \
+    /usr/libexec/cni/tuning \
+    /usr/libexec/cni/vlan \
+    /usr/libexec/cni/vrf \
     /usr/lib/katl/vmtest \
     /usr/lib/systemd/system/katl-vmtest-agent.service \
     /usr/lib/systemd/system/katl-vmtest-debug-shell.service \
@@ -245,6 +272,10 @@ for path in \
 do
     misses_path "$path"
 done
+
+if grep -Eq 'squashfs-root/usr/lib/modules/[^/[:space:]]+/(System[.]map|vmlinuz)([[:space:]]|$)' <<<"$runtime_inventory"; then
+    fail "runtime image contains duplicate kernel build artifacts"
+fi
 
 root_locked
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime reached systemd userspace"

@@ -190,13 +190,8 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 		readKatlOSIndex = oldReadKatlOSIndex
 	})
 	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
-		if !strings.HasSuffix(root, "katl-runtime-root") {
-			t.Fatalf("root = %q", root)
-		}
-		return []resourcetest.Package{{
-			Name:  "systemd",
-			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
-		}}, nil
+		t.Fatalf("runtime package inventory should avoid querying the pruned root: %s", root)
+		return nil, nil
 	}
 	readKatlOSIndex = func(path string) (katlosIndex, error) {
 		return katlosTestIndex(strings.Repeat("d", 64)), nil
@@ -213,6 +208,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	writeFile(t, filepath.Join(mkosiDir, "katl-kubernetes.raw"), "kubernetes")
 	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.0-150500.1.1")
 	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-installer.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
+	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-runtime.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
 	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
 
 	manifestPath := filepath.Join(dir, "resource-manifest.json")

@@ -1,8 +1,8 @@
 [Unit]
 Description=Run Katl installer entrypoint
 DefaultDependencies=no
-Wants=katl-input-apply.service systemd-networkd.service systemd-resolved.service
-After=katl-input-apply.service systemd-networkd.service systemd-resolved.service
+Wants=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service
+After=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service
 Before=initrd.target
 
 [Service]

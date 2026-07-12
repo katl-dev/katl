@@ -81,7 +81,13 @@ mkosi_artifacts write-katlos-index \
 
 mkdir -p "$(dirname "$output")"
 rm -f -- "$output" "$output.sha256" "$output.json"
-mksquashfs "$work_root" "$output" -noappend -all-root -comp zstd >/dev/null
+mksquashfs "$work_root" "$output" \
+    -noappend \
+    -all-root \
+    -comp zstd \
+    -b 1M \
+    -Xcompression-level 22 \
+    >/dev/null
 mkosi_artifacts write-katlos-artifact \
     --artifact "$output" \
     --image-role "$image_role" \

@@ -451,9 +451,16 @@ func addMkosiArtifacts(manifest *resourcetest.Manifest, mkosiDir string) error {
 }
 
 func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, repo resourcetest.PackageRepository, lockDigest string) error {
-	packages, err := queryRPMPackages(runtimeRoot)
+	packagePath := filepath.Join(filepath.Dir(runtimeRoot), "katl-runtime.packages.tsv")
+	packages, ok, err := readRPMPackageFile(packagePath)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		packages, err = queryRPMPackages(runtimeRoot)
+		if err != nil {
+			return err
+		}
 	}
 	profileDigest, err := profileConfigDigest("mkosi.profiles/runtime")
 	if err != nil {

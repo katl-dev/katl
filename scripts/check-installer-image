@@ -42,6 +42,32 @@ if grep -Eq '^usr/lib/modules/[^/]+/(System\.map|vmlinuz)$' <<<"$initrd_list"; t
     fail "installer initrd contains duplicate kernel build artifacts"
 fi
 
+modules_builtin_path="$(grep -E '^usr/lib/modules/[^/]+/modules[.]builtin$' <<<"$initrd_list")"
+[[ -n "$modules_builtin_path" ]] || fail "installer kernel modules.builtin is missing"
+modules_builtin="$(cpio -i --to-stdout "$modules_builtin_path" <"$initrd_cpio" 2>/dev/null)" ||
+    fail "read installer modules.builtin failed"
+
+require_module() {
+    local name="$1"
+    grep -Eq "^usr/lib/modules/[^/]+/kernel/.*/${name}[.]ko([.][[:alnum:]]+)?$" <<<"$initrd_list" ||
+        grep -Eq "/${name}[.]ko$" <<<"$modules_builtin" ||
+        fail "installer kernel module support missing: $name"
+}
+
+deny_module_family() {
+    local path="$1"
+    if grep -Eq "^usr/lib/modules/[^/]+/kernel/${path}/.*[.]ko([.][[:alnum:]]+)?$" <<<"$initrd_list"; then
+        fail "installer initrd contains unsupported kernel module family: $path"
+    fi
+}
+
+for module in ahci loop nvme virtio_blk virtio_net virtio_scsi e1000e igb ixgbe r8169 megaraid_sas mpt3sas; do
+    require_module "$module"
+done
+for family in drivers/accel drivers/bluetooth drivers/gpu drivers/media drivers/net/wireless; do
+    deny_module_family "$family"
+done
+
 has_path() {
     local path="${1#/}"
     grep -Fxq "$path" <<<"$initrd_list" || fail "missing installer path: /$path"
@@ -90,7 +116,8 @@ for path in \
     /usr/lib/systemd/system/sshd.service \
     /etc/systemd/system/sshd.service.d/10-katl-disabled.conf \
     /etc/systemd/journald.conf.d/10-katl-installer-console.conf \
-    /usr/lib/systemd/network/80-katl-installer-dhcp.network
+    /usr/lib/systemd/network/80-katl-installer-dhcp.network \
+    /usr/lib/modules-load.d/50-katl-installer.conf
 do
     has_path "$path"
 done
@@ -98,12 +125,14 @@ done
 file_has /usr/lib/systemd/system/katlos-install.service "ExecStart=/usr/bin/katlos-install --boot"
 file_has /usr/lib/systemd/system/katlos-install.service "Type=notify"
 file_has /usr/lib/systemd/system/katlos-install.service "NotifyAccess=main"
+file_has /usr/lib/systemd/system/katlos-install.service "After=katl-input-apply.service systemd-modules-load.service"
 file_has /usr/lib/systemd/system/katl-installer.target "Wants=systemd-journald.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service"
 file_has /usr/lib/systemd/system/katl-input-apply.service "ExecStart=/usr/bin/katlos-install --apply-input"
 file_has /usr/lib/systemd/system/katl-installer-smoke.service "Katl installer ready"
 file_has /etc/systemd/system/sshd.service.d/10-katl-disabled.conf "ConditionPathExists=/etc/katl/installer-ssh.enabled"
 file_has /etc/systemd/journald.conf.d/10-katl-installer-console.conf "ForwardToConsole=yes"
 file_has /etc/systemd/journald.conf.d/10-katl-installer-console.conf "TTYPath=/dev/ttyS0"
+file_has /usr/lib/modules-load.d/50-katl-installer.conf "loop"
 
 for path in \
     /usr/bin/mkosi \

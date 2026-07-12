@@ -30,15 +30,16 @@ type FirstInstallWorldRun struct {
 }
 
 type FirstInstallWorldInput struct {
-	Installer       InstallerBootConfig
-	RuntimeArtifact string
-	RuntimeESP      string
-	NodeMetadata    string
-	InstallManifest string
-	ConfigBundle    string
-	Mode            FirstInstallWorldMode
-	UseInstalledESP bool
-	TargetDiskSize  string
+	Installer         InstallerBootConfig
+	RuntimeArtifact   string
+	RuntimeESP        string
+	NodeMetadata      string
+	InstallManifest   string
+	ConfigBundle      string
+	KubernetesVersion string
+	Mode              FirstInstallWorldMode
+	UseInstalledESP   bool
+	TargetDiskSize    string
 }
 
 type FirstInstallWorldMode string
@@ -851,7 +852,7 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 	input.UseInstalledESP = true
 	if input.InstallManifest == "" {
 		if input.ConfigBundle == "" {
-			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index, input.Mode == FirstInstallWorldGuestHandoff)
+			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index, input.Mode == FirstInstallWorldGuestHandoff, input.KubernetesVersion)
 			if err != nil {
 				return input, err
 			}
@@ -991,7 +992,7 @@ func (index mkosiArtifactIndex) artifact(kind string) (mkosiArtifact, bool) {
 	return mkosiArtifact{}, false
 }
 
-func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex, bindInstallMedia bool) (string, string, error) {
+func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex, bindInstallMedia bool, requestedKubernetesVersion string) (string, string, error) {
 	image, ok := index.artifact("katlos-install-image")
 	if !ok {
 		var err error
@@ -1029,7 +1030,10 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	} else if err != nil {
 		return "", "", err
 	}
-	kubernetesVersion := metadata.KubernetesPayloadVersion()
+	kubernetesVersion := strings.TrimSpace(requestedKubernetesVersion)
+	if kubernetesVersion == "" {
+		kubernetesVersion = metadata.KubernetesPayloadVersion()
+	}
 	if kubernetesVersion == "" {
 		if artifact, ok := index.artifact("kubernetes-sysext"); ok {
 			var err error
