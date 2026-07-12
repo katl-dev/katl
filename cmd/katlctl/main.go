@@ -15,6 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
@@ -106,6 +107,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	configCmd.AddCommand(newConfigValidateCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigSchemaCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigBundleCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigRenderNodeCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigApplyCommand(ctx, stdout, stderr))
 	cmd.AddCommand(configCmd)
 
@@ -907,6 +909,15 @@ type configBundleOptions struct {
 	outputPath string
 }
 
+type nodeConfigInputOptions struct {
+	sourcePath     string
+	bundlePath     string
+	bundleDigest   string
+	nodeName       string
+	sourceID       string
+	desiredVersion string
+}
+
 type configValidationNode struct {
 	Name       string `json:"name"`
 	SystemRole string `json:"systemRole"`
@@ -1041,10 +1052,94 @@ func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
 	return err
 }
 
+func newConfigRenderNodeCommand(stdout, stderr io.Writer) *cobra.Command {
+	opts := nodeConfigInputOptions{}
+	mode := generation.ApplyModeAuto
+	cmd := &cobra.Command{
+		Use:   "render-node",
+		Short: "Render one node's runtime configuration from cluster intent",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			_ = stderr
+			data, err := renderNodeConfig(opts, mode)
+			if err != nil {
+				return err
+			}
+			_, err = stdout.Write(data)
+			return err
+		},
+	}
+	addNodeConfigInputFlags(cmd, &opts)
+	cmd.Flags().StringVar(&mode, "mode", mode, "apply mode: auto, live, or next-boot")
+	return cmd
+}
+
+func addNodeConfigInputFlags(cmd *cobra.Command, opts *nodeConfigInputOptions) {
+	cmd.Flags().StringVar(&opts.sourcePath, "source", "", "ClusterConfig source YAML")
+	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "verified Katl config bundle")
+	cmd.Flags().StringVar(&opts.bundleDigest, "config-bundle-digest", "", "expected internal config bundle manifest digest")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from cluster intent")
+	cmd.Flags().StringVar(&opts.sourceID, "source-id", "", "runtime configuration source id; defaults to the cluster name")
+	cmd.Flags().StringVar(&opts.desiredVersion, "desired-version", "", "monotonic unsigned runtime configuration version")
+}
+
+func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) {
+	fromSource := strings.TrimSpace(opts.sourcePath) != ""
+	fromBundle := strings.TrimSpace(opts.bundlePath) != ""
+	if fromSource == fromBundle {
+		return nil, fmt.Errorf("exactly one of --source or --config-bundle is required")
+	}
+	if strings.TrimSpace(opts.nodeName) == "" {
+		return nil, fmt.Errorf("--node is required")
+	}
+	if strings.TrimSpace(opts.desiredVersion) == "" {
+		return nil, fmt.Errorf("--desired-version is required")
+	}
+	if fromSource && strings.TrimSpace(opts.bundleDigest) != "" {
+		return nil, fmt.Errorf("--config-bundle-digest requires --config-bundle")
+	}
+	if fromBundle && strings.TrimSpace(opts.bundleDigest) == "" {
+		return nil, fmt.Errorf("--config-bundle-digest is required with --config-bundle")
+	}
+
+	readOptions := configbundle.ReadOptions{ExpectedDigest: opts.bundleDigest, NodeName: opts.nodeName}
+	var selected configbundle.SelectedNodeMaterial
+	var err error
+	if fromSource {
+		archive, _, buildErr := configbundle.BuildArchive(configbundle.BuildRequest{
+			SourcePath:     opts.sourcePath,
+			KatlctlVersion: version,
+			KatlctlCommit:  commit,
+			CreatedBy:      "katlctl config render-node",
+		})
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		selected, err = configbundle.ReadSelectedNode(bytes.NewReader(archive), readOptions)
+	} else {
+		selected, err = configbundle.ReadSelectedNodeFile(opts.bundlePath, readOptions)
+	}
+	if err != nil {
+		return nil, err
+	}
+	sourceID := strings.TrimSpace(opts.sourceID)
+	if sourceID == "" {
+		sourceID = selected.BundleManifest.ClusterName
+	}
+	return configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
+		NodeName:       selected.Node.Name,
+		Manifest:       selected.InstallManifest,
+		SourceID:       sourceID,
+		DesiredVersion: opts.desiredVersion,
+		ApplyMode:      mode,
+	})
+}
+
 type configApplyOptions struct {
 	endpoint            string
 	agentTokenFile      string
 	configPath          string
+	nodeConfig          nodeConfigInputOptions
 	mode                string
 	candidateGeneration string
 	clientRequestID     string
@@ -1086,7 +1181,8 @@ func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
-	cmd.Flags().StringVar(&opts.configPath, "file", "", "Katl node configuration YAML")
+	cmd.Flags().StringVar(&opts.configPath, "file", "", "pre-rendered NodeConfigurationChange YAML")
+	addNodeConfigInputFlags(cmd, &opts.nodeConfig)
 	cmd.Flags().StringVar(&opts.mode, "mode", opts.mode, "apply mode: auto, live, or next-boot")
 	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key for this apply request")
@@ -1103,15 +1199,29 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if strings.TrimSpace(opts.endpoint) == "" {
 		return fmt.Errorf("--endpoint is required")
 	}
-	if strings.TrimSpace(opts.configPath) == "" {
-		return fmt.Errorf("--file is required")
-	}
 	if strings.TrimSpace(opts.clientRequestID) == "" {
 		return fmt.Errorf("--client-request-id is required")
 	}
-	configYAML, err := os.ReadFile(opts.configPath)
-	if err != nil {
-		return fmt.Errorf("read config file: %w", err)
+	fileInput := strings.TrimSpace(opts.configPath) != ""
+	intentInput := strings.TrimSpace(opts.nodeConfig.sourcePath) != "" || strings.TrimSpace(opts.nodeConfig.bundlePath) != ""
+	if fileInput == intentInput {
+		return fmt.Errorf("exactly one of --file, --source, or --config-bundle is required")
+	}
+	var configYAML []byte
+	var err error
+	if fileInput {
+		if strings.TrimSpace(opts.nodeConfig.bundleDigest) != "" || strings.TrimSpace(opts.nodeConfig.sourceID) != "" || strings.TrimSpace(opts.nodeConfig.desiredVersion) != "" {
+			return fmt.Errorf("--config-bundle-digest, --source-id, and --desired-version require --source or --config-bundle")
+		}
+		configYAML, err = os.ReadFile(opts.configPath)
+		if err != nil {
+			return fmt.Errorf("read config file: %w", err)
+		}
+	} else {
+		configYAML, err = renderNodeConfig(opts.nodeConfig, opts.mode)
+		if err != nil {
+			return err
+		}
 	}
 	token, err := readAgentToken(opts.agentTokenFile)
 	if err != nil {
@@ -1133,6 +1243,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			Actor:                 opts.actor,
 			ApplyMode:             opts.mode,
 			CandidateGenerationId: opts.candidateGeneration,
+			NodeName:              opts.nodeConfig.nodeName,
 			ConfigYaml:            string(configYAML),
 		})
 		if err != nil {
@@ -1152,6 +1263,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		ClientRequestId:       opts.clientRequestID,
 		Actor:                 opts.actor,
 		CandidateGenerationId: opts.candidateGeneration,
+		NodeName:              opts.nodeConfig.nodeName,
 		ConfigYaml:            string(configYAML),
 	}
 	var accepted *agentapi.OperationAccepted
@@ -1171,6 +1283,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			Actor:                 opts.actor,
 			ApplyMode:             requestedMode,
 			CandidateGenerationId: opts.candidateGeneration,
+			NodeName:              opts.nodeConfig.nodeName,
 			ConfigYaml:            string(configYAML),
 		})
 		if err != nil {
@@ -1195,6 +1308,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			ConfigApply: &agentapi.ConfigApplyOperationRequest{
 				CandidateGenerationId: opts.candidateGeneration,
 				ApplyMode:             requestedMode,
+				NodeName:              opts.nodeConfig.nodeName,
 				ConfigYaml:            string(configYAML),
 			},
 		})

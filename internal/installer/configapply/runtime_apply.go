@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -411,7 +413,7 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		applyOverlay(&merged.Node, nodeOverlay, &domains, &unsafeFiles)
 	}
 	if len(domains.domains) == 0 {
-		return manifest.Manifest{}, nil, nil, fmt.Errorf("runtime configuration change has no supported changed domains")
+		return manifest.Manifest{}, nil, nil, fmt.Errorf("runtime configuration change has no supported changed domains; desired state already matches")
 	}
 	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), unsafeFiles, nil
 }
@@ -426,32 +428,50 @@ func validateOverlay(path string, overlay NodeOverlay) error {
 func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
 	if overlay.Identity != nil {
 		if overlay.Identity.Hostname != "" {
+			changed := node.Identity.Hostname != overlay.Identity.Hostname
 			node.Identity.Hostname = overlay.Identity.Hostname
-			domains.add(DomainNodeIdentity)
-			domains.add(DomainBootstrapNodeMetadata)
+			if changed {
+				domains.add(DomainNodeIdentity)
+				domains.add(DomainBootstrapNodeMetadata)
+			}
 		}
 		if overlay.Identity.AuthorizedKeys != nil {
+			changed := !slices.Equal(node.Identity.SSH.AuthorizedKeys, overlay.Identity.AuthorizedKeys)
 			node.Identity.SSH.AuthorizedKeys = append([]string(nil), overlay.Identity.AuthorizedKeys...)
-			domains.add(DomainSSHOperatorAccess)
+			if changed {
+				domains.add(DomainSSHOperatorAccess)
+			}
 		}
 	}
 	if overlay.SystemRole != "" {
+		changed := node.SystemRole != overlay.SystemRole
 		node.SystemRole = overlay.SystemRole
-		domains.add(DomainSystemRole)
-		domains.add(DomainBootstrapNodeMetadata)
+		if changed {
+			domains.add(DomainSystemRole)
+			domains.add(DomainBootstrapNodeMetadata)
+		}
 	}
 	if overlay.Networkd != nil {
+		changed := !slices.Equal(node.Networkd.Files, overlay.Networkd.Files)
 		node.Networkd = *overlay.Networkd
-		domains.add(DomainNetworkd)
+		if changed {
+			domains.add(DomainNetworkd)
+		}
 	}
 	if overlay.Sysctl != nil {
+		changed := !maps.Equal(node.Sysctl.Settings, overlay.Sysctl.Settings)
 		node.Sysctl = *overlay.Sysctl
-		domains.add(DomainSysctl)
+		if changed {
+			domains.add(DomainSysctl)
+		}
 	}
 	if overlay.Kubernetes != nil {
+		changed := node.Kubernetes != *overlay.Kubernetes
 		node.Kubernetes = *overlay.Kubernetes
-		domains.add(DomainSelectedKubeadmConfig)
-		domains.add(DomainBootstrapNodeMetadata)
+		if changed {
+			domains.add(DomainSelectedKubeadmConfig)
+			domains.add(DomainBootstrapNodeMetadata)
+		}
 	}
 	if overlay.KubeadmChanged {
 		domains.add(DomainKubeadmConfig)

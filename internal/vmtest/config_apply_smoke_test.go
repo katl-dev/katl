@@ -36,11 +36,13 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	runtime := InstalledRuntimeConfig{}
 	var plannedAddress string
 	var plannedMAC string
+	var worldScenario *WorldScenario
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-config-apply-modes", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
 		runner = worldRun.Runner
 		runtime = worldRun.Config
 		plannedAddress = worldRun.Node.Address
 		plannedMAC = worldRun.Node.MACAddress
+		worldScenario = worldRun.Scenario
 	} else {
 		_ = RequireWorld(t)
 	}
@@ -119,6 +121,11 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	node.Result.finish(StatusPassed, "", runner.time())
 	if err := runner.Write(scenario, node.Result); err != nil {
 		t.Fatalf("Write() error = %v", err)
+	}
+	if worldScenario != nil {
+		if err := worldScenario.WriteResult(WorldStatusPassed, ""); err != nil {
+			t.Fatalf("write world scenario result: %v", err)
+		}
 	}
 }
 
