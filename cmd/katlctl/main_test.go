@@ -1748,6 +1748,7 @@ type fakeKatlcAgentClient struct {
 	operationRequest  *agentapi.GetOperationRequest
 	operations        *agentapi.ListOperationsResponse
 	operationsRequest *agentapi.ListOperationsRequest
+	onSubmit          func(*agentapi.SubmitOperationRequest)
 }
 
 type fakeWipeClusterConnector struct {
@@ -1827,6 +1828,9 @@ func (c *fakeKatlcAgentClient) StageGeneration(_ context.Context, req *agentapi.
 }
 
 func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.SubmitOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
+	if c.onSubmit != nil {
+		c.onSubmit(req)
+	}
 	c.submitRequest = req
 	c.submitRequests = append(c.submitRequests, req)
 	if req.DryRun {

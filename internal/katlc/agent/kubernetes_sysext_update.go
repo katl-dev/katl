@@ -14,6 +14,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
@@ -177,6 +178,9 @@ func kubernetesSysextUpdateFromProto(req *agentapi.KubernetesSysextUpdateOperati
 		SourceEtcdVersion:        strings.TrimSpace(req.SourceEtcdVersion),
 		SnapshotStorageLocation:  strings.TrimSpace(req.SnapshotStorageLocation),
 		SnapshotOperatorIdentity: inventory.Redact(strings.TrimSpace(req.SnapshotOperatorIdentity)),
+		KubernetesBundleSource:   strings.TrimSpace(req.KubernetesBundleSource),
+		KubernetesBundleRef:      strings.TrimSpace(req.KubernetesBundleRef),
+		BundleManifestDigest:     strings.TrimSpace(req.KubernetesBundleManifestDigest),
 	}
 }
 
@@ -190,14 +194,41 @@ func validateKubernetesSysextUpdateRequest(operationKind string, req *agentapi.K
 	if strings.TrimSpace(req.TargetPayloadVersion) == "" {
 		return fmt.Errorf("targetPayloadVersion is required")
 	}
-	if strings.TrimSpace(req.TargetSysextPath) == "" {
-		return fmt.Errorf("targetSysextPath is required")
+	hasBundleSource := strings.TrimSpace(req.KubernetesBundleSource) != ""
+	hasBundleRef := strings.TrimSpace(req.KubernetesBundleRef) != ""
+	if hasBundleSource != hasBundleRef {
+		return fmt.Errorf("kubernetesBundleSource and kubernetesBundleRef must be provided together")
 	}
-	if strings.TrimSpace(req.TargetSysextSha256) == "" {
-		return fmt.Errorf("targetSysextSHA256 is required")
+	hasTargetPath := strings.TrimSpace(req.TargetSysextPath) != ""
+	hasTargetDigest := strings.TrimSpace(req.TargetSysextSha256) != ""
+	if hasTargetPath != hasTargetDigest {
+		return fmt.Errorf("targetSysextPath and targetSysextSHA256 must be provided together")
 	}
-	if err := validateLowercaseSHA256("targetSysextSHA256", strings.TrimSpace(req.TargetSysextSha256)); err != nil {
-		return err
+	if !hasBundleSource && !hasTargetPath {
+		return fmt.Errorf("kubernetes bundle reference is required")
+	}
+	if hasBundleSource && hasTargetPath {
+		return fmt.Errorf("target sysext path and digest are resolved by the node when a Kubernetes bundle reference is supplied")
+	}
+	if strings.TrimSpace(req.KubernetesBundleManifestDigest) != "" {
+		return fmt.Errorf("kubernetesBundleManifestDigest is resolved by the node")
+	}
+	if hasBundleSource {
+		image, err := kubernetesbundle.ParseImageReference(req.KubernetesBundleRef)
+		if err != nil {
+			return fmt.Errorf("kubernetesBundleRef: %w", err)
+		}
+		if strings.TrimRight(strings.TrimSpace(req.KubernetesBundleSource), "/") != image.Source {
+			return fmt.Errorf("kubernetesBundleSource does not match kubernetesBundleRef repository")
+		}
+		if image.PayloadVersion != strings.TrimSpace(req.TargetPayloadVersion) {
+			return fmt.Errorf("kubernetesBundleRef payload %s does not match targetPayloadVersion %s", image.PayloadVersion, req.TargetPayloadVersion)
+		}
+	}
+	if hasTargetDigest {
+		if err := validateLowercaseSHA256("targetSysextSHA256", strings.TrimSpace(req.TargetSysextSha256)); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(req.TargetActivationPath) != "" {
 		return fmt.Errorf("raw Kubernetes sysext activation paths are unsupported before the kubelet activation gate exists")
@@ -215,22 +246,25 @@ func validateKubernetesSysextUpdateRequest(operationKind string, req *agentapi.K
 	if err := validateKubernetesUpgradeVersions(req.SourcePayloadVersion, req.TargetPayloadVersion); err != nil {
 		return err
 	}
-	required := map[string]string{"snapshotRef": req.SnapshotRef, "snapshotDigest": req.SnapshotDigest}
-	if role != "worker" {
-		required["snapshotCreatedAt"] = req.SnapshotCreatedAt
-		required["capturedMemberListDigest"] = req.CapturedMemberListDigest
-		required["snapshotStorageLocation"] = req.SnapshotStorageLocation
-		required["snapshotOperatorIdentity"] = req.SnapshotOperatorIdentity
-	}
-	for name, value := range required {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s is required for Kubernetes upgrade execution", name)
+	hasSnapshot := strings.TrimSpace(req.SnapshotRef) != "" || strings.TrimSpace(req.SnapshotDigest) != "" || strings.TrimSpace(req.SnapshotStorageLocation) != ""
+	if hasSnapshot {
+		required := map[string]string{"snapshotRef": req.SnapshotRef, "snapshotDigest": req.SnapshotDigest}
+		if role != "worker" {
+			required["snapshotCreatedAt"] = req.SnapshotCreatedAt
+			required["capturedMemberListDigest"] = req.CapturedMemberListDigest
+			required["snapshotStorageLocation"] = req.SnapshotStorageLocation
+			required["snapshotOperatorIdentity"] = req.SnapshotOperatorIdentity
+		}
+		for name, value := range required {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s is required when snapshot evidence is supplied", name)
+			}
+		}
+		if err := validateLowercaseSHA256("snapshotDigest", strings.TrimSpace(req.SnapshotDigest)); err != nil {
+			return err
 		}
 	}
-	if err := validateLowercaseSHA256("snapshotDigest", strings.TrimSpace(req.SnapshotDigest)); err != nil {
-		return err
-	}
-	if role != "worker" {
+	if role != "worker" && hasSnapshot {
 		if err := validateLowercaseSHA256("capturedMemberListDigest", strings.TrimSpace(req.CapturedMemberListDigest)); err != nil {
 			return err
 		}

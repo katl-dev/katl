@@ -144,6 +144,26 @@ func TestValidateKubeadmUpgradeExecutionSafetyInputs(t *testing.T) {
 	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, base); err != nil {
 		t.Fatalf("valid request: %v", err)
 	}
+	bundle := *base
+	bundle.TargetSysextPath = ""
+	bundle.TargetSysextSha256 = ""
+	bundle.TargetSysextSizeBytes = 0
+	bundle.SnapshotRef = ""
+	bundle.SnapshotDigest = ""
+	bundle.SnapshotCreatedAt = ""
+	bundle.CapturedMemberListDigest = ""
+	bundle.SnapshotStorageLocation = ""
+	bundle.SnapshotOperatorIdentity = ""
+	bundle.KubernetesBundleSource = "https://ghcr.io/v2/katl-dev/kubernetes"
+	bundle.KubernetesBundleRef = "ghcr.io/katl-dev/kubernetes:v1.36.2-katl.1"
+	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &bundle); err != nil {
+		t.Fatalf("valid bundle request: %v", err)
+	}
+	bundle.TargetSysextPath = base.TargetSysextPath
+	bundle.TargetSysextSha256 = base.TargetSysextSha256
+	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &bundle); err == nil || !strings.Contains(err.Error(), "resolved by the node") {
+		t.Fatalf("operator-resolved target error = %v", err)
+	}
 	missing := *base
 	missing.SnapshotDigest = ""
 	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &missing); err == nil || !strings.Contains(err.Error(), "snapshotDigest is required") {
@@ -154,6 +174,84 @@ func TestValidateKubeadmUpgradeExecutionSafetyInputs(t *testing.T) {
 	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &skip); err == nil || !strings.Contains(err.Error(), "only a newer patch or the next minor") {
 		t.Fatalf("skip error = %v", err)
 	}
+}
+
+func TestExecutorResolvesUpgradeBundleInsideNode(t *testing.T) {
+	root := t.TempDir()
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(root, store, "agent-test")
+	source, ref := configureExecutorBundle(t, executor, "v1.35.1", "target-payload")
+	record := createUnresolvedUpgradeRecord(t, store, "resolve-upgrade", &operation.KubernetesSysextUpdate{TargetPayloadVersion: "v1.35.1", CandidateGenerationID: "gen1", UpgradeRole: "worker", SourcePayloadVersion: "v1.35.0", KubernetesBundleSource: source, KubernetesBundleRef: ref})
+	resolved, err := executor.resolveKubernetesUpgradePayload(context.Background(), record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := resolved.KubernetesSysextUpdate
+	if request.TargetSysextPath == "" || request.TargetSysextSHA256 == "" || request.TargetSysextSize == 0 || request.BundleManifestDigest == "" {
+		t.Fatalf("resolved request = %#v", request)
+	}
+	if strings.HasPrefix(request.TargetSysextPath, root) {
+		t.Fatalf("resolved path leaked host root: %s", request.TargetSysextPath)
+	}
+	if err := verifyFileDigest(rootedRuntimePath(root, request.TargetSysextPath), request.TargetSysextSHA256, request.TargetSysextSize); err != nil {
+		t.Fatalf("resolved payload: %v", err)
+	}
+}
+
+func TestExecutorCapturesUpgradeSnapshotInsideNode(t *testing.T) {
+	root := t.TempDir()
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := createUnresolvedUpgradeRecord(t, store, "snapshot-upgrade", &operation.KubernetesSysextUpdate{TargetPayloadVersion: "v1.36.2", TargetSysextPath: "/var/lib/katl/artifacts/kubernetes.raw", TargetSysextSHA256: strings.Repeat("a", 64), CandidateGenerationID: "gen1", UpgradeRole: "apply", SourcePayloadVersion: "v1.36.1"})
+	executor := NewExecutor(root, store, "agent-test")
+	executor.Now = func() time.Time { return time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC) }
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		joined := strings.Join(argv, " ")
+		switch {
+		case joined == "crictl ps --state Running --name etcd -q":
+			return ToolResult{Stdout: []byte("etcd-container\n")}
+		case strings.Contains(joined, "snapshot save"):
+			location := argv[len(argv)-1]
+			path := rootedRuntimePath(root, location)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return ToolResult{Err: err, ExitStatus: 1}
+			}
+			if err := os.WriteFile(path, []byte("snapshot"), 0o600); err != nil {
+				return ToolResult{Err: err, ExitStatus: 1}
+			}
+			return ToolResult{}
+		case strings.Contains(joined, "member list"):
+			return ToolResult{Stdout: []byte("member-a\n")}
+		default:
+			return ToolResult{Err: errors.New("unexpected command: " + joined), ExitStatus: 1}
+		}
+	}
+	resolved, err := executor.prepareKubeadmUpgradeSnapshot(context.Background(), record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := resolved.KubernetesSysextUpdate
+	if request.SnapshotRef == "" || request.SnapshotDigest == "" || request.SnapshotCreatedAt == "" || request.CapturedMemberListDigest == "" || request.SnapshotStorageLocation == "" || request.SnapshotOperatorIdentity != "katlctl" {
+		t.Fatalf("snapshot request = %#v", request)
+	}
+	if err := verifyFileDigest(rootedRuntimePath(root, request.SnapshotStorageLocation), request.SnapshotDigest, 0); err != nil {
+		t.Fatalf("snapshot evidence: %v", err)
+	}
+}
+
+func createUnresolvedUpgradeRecord(t *testing.T, store operation.Store, id string, request *operation.KubernetesSysextUpdate) operation.OperationRecord {
+	t.Helper()
+	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
+	record, err := store.Create(operation.OperationRecord{OperationID: id, OperationKind: OperationKindKubeadmUpgrade, Scope: "kubeadm-state", Actor: "katlctl", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", PhasePlan: kubeadmUpgradePhasePlan(request.UpgradeRole), CompletedPhases: []string{"accepted"}, PhaseIndex: 1, CandidateGenerationID: request.CandidateGenerationID, KubernetesSysextUpdate: request, KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running"}, ActivationMode: operation.ActivationModeNextBoot, ActivationState: operation.ActivationStatePending, GenerationCommitState: operation.GenerationCommitCandidate, PostKubeadmHealthState: operation.PostKubeadmHealthNotRun, ResourceLocks: []string{"generation-state.lock", "kubeadm-state.lock"}}, "accepted", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record
 }
 
 func TestExecutorRefusesUpgradeBeforeMutationWhenSafetyGateFails(t *testing.T) {

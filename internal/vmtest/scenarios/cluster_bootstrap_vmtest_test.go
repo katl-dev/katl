@@ -611,6 +611,9 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-before-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return fmt.Errorf("wait for cluster readiness after bootstrap generation reboot: %w", err)
 	}
+	if bundle := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); bundle != "" {
+		return runPublishedKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), bundle, cpNode, workerNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath, cniFixtures, kubeconfigPath, evidenceDir)
+	}
 	targetHost := filepath.Join(katlRepoRoot(t), "_build/mkosi/katl-kubernetes-upgrade.raw")
 	metadataHost := targetHost + ".json"
 	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); value != "" {
@@ -726,6 +729,79 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 		}
 		if generationRecord.Status.CommitState != generation.CommitStateCommitted {
 			return fmt.Errorf("%s upgrade candidate is %s", item.node.Name, generationRecord.Status.CommitState)
+		}
+	}
+	return nil
+}
+
+func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, cpTokenPath, workerTokenPath string, cniFixtures map[string]nodeCNIFixture, kubeconfigPath, evidenceDir string) error {
+	configPath := filepath.Join(evidenceDir, "katlctl-upgrade.yaml")
+	config := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n        credentialRef: file:%s\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n        credentialRef: file:%s\n", cpAddress, cpAddress, cpTokenPath, workerAddress, workerTokenPath)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		return fmt.Errorf("write katlctl upgrade context: %w", err)
+	}
+	for i, item := range []struct {
+		name string
+		node vmtest.RunningInstalledRuntimeNode
+	}{{"cp-1", cpNode}, {"worker-1", workerNode}} {
+		command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "cluster", "upgrade", "kubernetes", "--config", configPath, "--bundle", bundle, "--timeout", "25m")
+		command.Dir = repoRoot
+		stdout, err := command.Output()
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				_ = os.WriteFile(filepath.Join(evidenceDir, fmt.Sprintf("katlctl-kubernetes-upgrade-%d.stderr", i+1)), exitErr.Stderr, 0o600)
+			}
+			return fmt.Errorf("katlctl Kubernetes upgrade step %d: %w", i+1, err)
+		}
+		if err := os.WriteFile(filepath.Join(evidenceDir, fmt.Sprintf("katlctl-kubernetes-upgrade-%d.json", i+1)), stdout, 0o600); err != nil {
+			return err
+		}
+		var report struct {
+			SourceVersion string `json:"sourceVersion"`
+			TargetVersion string `json:"targetVersion"`
+			Nodes         []struct {
+				Name   string `json:"name"`
+				Result string `json:"result"`
+			} `json:"nodes"`
+		}
+		if err := json.Unmarshal(stdout, &report); err != nil {
+			return fmt.Errorf("decode katlctl Kubernetes upgrade report step %d: %w", i+1, err)
+		}
+		if report.SourceVersion != "v1.36.0" || report.TargetVersion != "v1.36.1" || len(report.Nodes) != 1 || report.Nodes[0].Name != item.name || report.Nodes[0].Result != operation.ResultSucceeded {
+			return fmt.Errorf("unexpected katlctl Kubernetes upgrade report step %d: %+v", i+1, report)
+		}
+		_, record, err := collectOperationEvidence(ctx, item.node, filepath.Join(evidenceDir, item.name, "upgrade-pre-reboot"), "kubeadm-upgrade")
+		if err != nil {
+			return err
+		}
+		if !record.Terminal || record.Result != operation.ResultSucceeded || record.RecoveryRequired || record.GenerationCommitState != operation.GenerationCommitCommitted || record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || !record.BootHealthPending {
+			return fmt.Errorf("%s upgrade did not commit a healthy candidate: %+v", item.node.Name, record)
+		}
+		if err := rebootIntoGeneration(ctx, item.node, record.CandidateGenerationID); err != nil {
+			return fmt.Errorf("reboot upgraded %s: %w", item.node.Name, err)
+		}
+		if err := activateNodeCNIFixture(ctx, item.node, cniFixtures[item.node.Name]); err != nil {
+			return fmt.Errorf("reactivate %s CNI fixture after upgrade reboot: %w", item.node.Name, err)
+		}
+		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-"+item.node.Name+"-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+			return err
+		}
+	}
+	for _, item := range []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode} {
+		dir := filepath.Join(evidenceDir, item.Name, "upgrade")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		_, record, err := collectOperationEvidence(ctx, item, dir, "kubeadm-upgrade")
+		if err != nil {
+			return err
+		}
+		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.KubernetesBundleRef != bundle || record.KubernetesSysextUpdate.BundleManifestDigest == "" || record.KubernetesSysextUpdate.TargetSysextSHA256 == "" {
+			return fmt.Errorf("%s upgrade did not resolve the published bundle internally: %+v", item.Name, record.KubernetesSysextUpdate)
+		}
+		if item.Name == cpNode.Name && (record.KubernetesSysextUpdate.SnapshotDigest == "" || record.KubernetesSysextUpdate.SnapshotStorageLocation == "") {
+			return fmt.Errorf("%s upgrade did not capture etcd snapshot evidence", item.Name)
 		}
 	}
 	return nil

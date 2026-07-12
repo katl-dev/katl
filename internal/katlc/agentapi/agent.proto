@@ -29,6 +29,7 @@ message NodeStatus {
   repeated string supported_operation_kinds = 6;
   bool operation_lock_held = 7;
   repeated string active_operation_ids = 8;
+  string current_generation_id = 9;
 }
 
 message SubmitOperationRequest {
@@ -160,6 +161,9 @@ message KubernetesSysextUpdateOperationRequest {
   string source_etcd_version = 14;
   string snapshot_storage_location = 15;
   string snapshot_operator_identity = 16;
+  string kubernetes_bundle_source = 17;
+  string kubernetes_bundle_ref = 18;
+  string kubernetes_bundle_manifest_digest = 19;
 }
 
 message DestructiveResetOperationRequest {

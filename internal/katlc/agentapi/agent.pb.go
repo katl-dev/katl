@@ -67,6 +67,7 @@ type NodeStatus struct {
 	SupportedOperationKinds []string               `protobuf:"bytes,6,rep,name=supported_operation_kinds,json=supportedOperationKinds,proto3" json:"supported_operation_kinds,omitempty"`
 	OperationLockHeld       bool                   `protobuf:"varint,7,opt,name=operation_lock_held,json=operationLockHeld,proto3" json:"operation_lock_held,omitempty"`
 	ActiveOperationIds      []string               `protobuf:"bytes,8,rep,name=active_operation_ids,json=activeOperationIds,proto3" json:"active_operation_ids,omitempty"`
+	CurrentGenerationId     string                 `protobuf:"bytes,9,opt,name=current_generation_id,json=currentGenerationId,proto3" json:"current_generation_id,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -155,6 +156,13 @@ func (x *NodeStatus) GetActiveOperationIds() []string {
 		return x.ActiveOperationIds
 	}
 	return nil
+}
+
+func (x *NodeStatus) GetCurrentGenerationId() string {
+	if x != nil {
+		return x.CurrentGenerationId
+	}
+	return ""
 }
 
 type SubmitOperationRequest struct {
@@ -1150,25 +1158,28 @@ func (x *KubeadmControlPlaneConfigOperationRequest) GetNodeName() string {
 }
 
 type KubernetesSysextUpdateOperationRequest struct {
-	state                    protoimpl.MessageState `protogen:"open.v1"`
-	TargetPayloadVersion     string                 `protobuf:"bytes,1,opt,name=target_payload_version,json=targetPayloadVersion,proto3" json:"target_payload_version,omitempty"`
-	TargetSysextPath         string                 `protobuf:"bytes,2,opt,name=target_sysext_path,json=targetSysextPath,proto3" json:"target_sysext_path,omitempty"`
-	TargetSysextSha256       string                 `protobuf:"bytes,3,opt,name=target_sysext_sha256,json=targetSysextSha256,proto3" json:"target_sysext_sha256,omitempty"`
-	TargetSysextSizeBytes    uint64                 `protobuf:"varint,4,opt,name=target_sysext_size_bytes,json=targetSysextSizeBytes,proto3" json:"target_sysext_size_bytes,omitempty"`
-	TargetActivationPath     string                 `protobuf:"bytes,5,opt,name=target_activation_path,json=targetActivationPath,proto3" json:"target_activation_path,omitempty"`
-	CandidateGenerationId    string                 `protobuf:"bytes,6,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
-	UpgradeRole              string                 `protobuf:"bytes,7,opt,name=upgrade_role,json=upgradeRole,proto3" json:"upgrade_role,omitempty"`
-	SourcePayloadVersion     string                 `protobuf:"bytes,8,opt,name=source_payload_version,json=sourcePayloadVersion,proto3" json:"source_payload_version,omitempty"`
-	SnapshotRef              string                 `protobuf:"bytes,9,opt,name=snapshot_ref,json=snapshotRef,proto3" json:"snapshot_ref,omitempty"`
-	SnapshotDigest           string                 `protobuf:"bytes,10,opt,name=snapshot_digest,json=snapshotDigest,proto3" json:"snapshot_digest,omitempty"`
-	SnapshotRevision         string                 `protobuf:"bytes,11,opt,name=snapshot_revision,json=snapshotRevision,proto3" json:"snapshot_revision,omitempty"`
-	SnapshotCreatedAt        string                 `protobuf:"bytes,12,opt,name=snapshot_created_at,json=snapshotCreatedAt,proto3" json:"snapshot_created_at,omitempty"`
-	CapturedMemberListDigest string                 `protobuf:"bytes,13,opt,name=captured_member_list_digest,json=capturedMemberListDigest,proto3" json:"captured_member_list_digest,omitempty"`
-	SourceEtcdVersion        string                 `protobuf:"bytes,14,opt,name=source_etcd_version,json=sourceEtcdVersion,proto3" json:"source_etcd_version,omitempty"`
-	SnapshotStorageLocation  string                 `protobuf:"bytes,15,opt,name=snapshot_storage_location,json=snapshotStorageLocation,proto3" json:"snapshot_storage_location,omitempty"`
-	SnapshotOperatorIdentity string                 `protobuf:"bytes,16,opt,name=snapshot_operator_identity,json=snapshotOperatorIdentity,proto3" json:"snapshot_operator_identity,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	state                          protoimpl.MessageState `protogen:"open.v1"`
+	TargetPayloadVersion           string                 `protobuf:"bytes,1,opt,name=target_payload_version,json=targetPayloadVersion,proto3" json:"target_payload_version,omitempty"`
+	TargetSysextPath               string                 `protobuf:"bytes,2,opt,name=target_sysext_path,json=targetSysextPath,proto3" json:"target_sysext_path,omitempty"`
+	TargetSysextSha256             string                 `protobuf:"bytes,3,opt,name=target_sysext_sha256,json=targetSysextSha256,proto3" json:"target_sysext_sha256,omitempty"`
+	TargetSysextSizeBytes          uint64                 `protobuf:"varint,4,opt,name=target_sysext_size_bytes,json=targetSysextSizeBytes,proto3" json:"target_sysext_size_bytes,omitempty"`
+	TargetActivationPath           string                 `protobuf:"bytes,5,opt,name=target_activation_path,json=targetActivationPath,proto3" json:"target_activation_path,omitempty"`
+	CandidateGenerationId          string                 `protobuf:"bytes,6,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
+	UpgradeRole                    string                 `protobuf:"bytes,7,opt,name=upgrade_role,json=upgradeRole,proto3" json:"upgrade_role,omitempty"`
+	SourcePayloadVersion           string                 `protobuf:"bytes,8,opt,name=source_payload_version,json=sourcePayloadVersion,proto3" json:"source_payload_version,omitempty"`
+	SnapshotRef                    string                 `protobuf:"bytes,9,opt,name=snapshot_ref,json=snapshotRef,proto3" json:"snapshot_ref,omitempty"`
+	SnapshotDigest                 string                 `protobuf:"bytes,10,opt,name=snapshot_digest,json=snapshotDigest,proto3" json:"snapshot_digest,omitempty"`
+	SnapshotRevision               string                 `protobuf:"bytes,11,opt,name=snapshot_revision,json=snapshotRevision,proto3" json:"snapshot_revision,omitempty"`
+	SnapshotCreatedAt              string                 `protobuf:"bytes,12,opt,name=snapshot_created_at,json=snapshotCreatedAt,proto3" json:"snapshot_created_at,omitempty"`
+	CapturedMemberListDigest       string                 `protobuf:"bytes,13,opt,name=captured_member_list_digest,json=capturedMemberListDigest,proto3" json:"captured_member_list_digest,omitempty"`
+	SourceEtcdVersion              string                 `protobuf:"bytes,14,opt,name=source_etcd_version,json=sourceEtcdVersion,proto3" json:"source_etcd_version,omitempty"`
+	SnapshotStorageLocation        string                 `protobuf:"bytes,15,opt,name=snapshot_storage_location,json=snapshotStorageLocation,proto3" json:"snapshot_storage_location,omitempty"`
+	SnapshotOperatorIdentity       string                 `protobuf:"bytes,16,opt,name=snapshot_operator_identity,json=snapshotOperatorIdentity,proto3" json:"snapshot_operator_identity,omitempty"`
+	KubernetesBundleSource         string                 `protobuf:"bytes,17,opt,name=kubernetes_bundle_source,json=kubernetesBundleSource,proto3" json:"kubernetes_bundle_source,omitempty"`
+	KubernetesBundleRef            string                 `protobuf:"bytes,18,opt,name=kubernetes_bundle_ref,json=kubernetesBundleRef,proto3" json:"kubernetes_bundle_ref,omitempty"`
+	KubernetesBundleManifestDigest string                 `protobuf:"bytes,19,opt,name=kubernetes_bundle_manifest_digest,json=kubernetesBundleManifestDigest,proto3" json:"kubernetes_bundle_manifest_digest,omitempty"`
+	unknownFields                  protoimpl.UnknownFields
+	sizeCache                      protoimpl.SizeCache
 }
 
 func (x *KubernetesSysextUpdateOperationRequest) Reset() {
@@ -1309,6 +1320,27 @@ func (x *KubernetesSysextUpdateOperationRequest) GetSnapshotStorageLocation() st
 func (x *KubernetesSysextUpdateOperationRequest) GetSnapshotOperatorIdentity() string {
 	if x != nil {
 		return x.SnapshotOperatorIdentity
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetKubernetesBundleSource() string {
+	if x != nil {
+		return x.KubernetesBundleSource
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetKubernetesBundleRef() string {
+	if x != nil {
+		return x.KubernetesBundleRef
+	}
+	return ""
+}
+
+func (x *KubernetesSysextUpdateOperationRequest) GetKubernetesBundleManifestDigest() string {
+	if x != nil {
+		return x.KubernetesBundleManifestDigest
 	}
 	return ""
 }
@@ -3006,7 +3038,7 @@ var File_internal_katlc_agentapi_agent_proto protoreflect.FileDescriptor
 const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\n" +
 	"#internal/katlc/agentapi/agent.proto\x12\rkatl.agent.v1\"\x16\n" +
-	"\x14GetNodeStatusRequest\"\xf0\x02\n" +
+	"\x14GetNodeStatusRequest\"\xa4\x03\n" +
 	"\n" +
 	"NodeStatus\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
@@ -3018,7 +3050,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x16supported_api_versions\x18\x05 \x03(\tR\x14supportedApiVersions\x12:\n" +
 	"\x19supported_operation_kinds\x18\x06 \x03(\tR\x17supportedOperationKinds\x12.\n" +
 	"\x13operation_lock_held\x18\a \x01(\bR\x11operationLockHeld\x120\n" +
-	"\x14active_operation_ids\x18\b \x03(\tR\x12activeOperationIds\"\x8d\b\n" +
+	"\x14active_operation_ids\x18\b \x03(\tR\x12activeOperationIds\x122\n" +
+	"\x15current_generation_id\x18\t \x01(\tR\x13currentGenerationId\"\x8d\b\n" +
 	"\x16SubmitOperationRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -3134,7 +3167,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x13snapshot_created_at\x18\x12 \x01(\tR\x11snapshotCreatedAt\x12:\n" +
 	"\x19snapshot_storage_location\x18\x13 \x01(\tR\x17snapshotStorageLocation\x12<\n" +
 	"\x1asnapshot_operator_identity\x18\x14 \x01(\tR\x18snapshotOperatorIdentity\x12\x1b\n" +
-	"\tnode_name\x18\x15 \x01(\tR\bnodeName\"\xd0\x06\n" +
+	"\tnode_name\x18\x15 \x01(\tR\bnodeName\"\x89\b\n" +
 	"&KubernetesSysextUpdateOperationRequest\x124\n" +
 	"\x16target_payload_version\x18\x01 \x01(\tR\x14targetPayloadVersion\x12,\n" +
 	"\x12target_sysext_path\x18\x02 \x01(\tR\x10targetSysextPath\x120\n" +
@@ -3152,7 +3185,10 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x1bcaptured_member_list_digest\x18\r \x01(\tR\x18capturedMemberListDigest\x12.\n" +
 	"\x13source_etcd_version\x18\x0e \x01(\tR\x11sourceEtcdVersion\x12:\n" +
 	"\x19snapshot_storage_location\x18\x0f \x01(\tR\x17snapshotStorageLocation\x12<\n" +
-	"\x1asnapshot_operator_identity\x18\x10 \x01(\tR\x18snapshotOperatorIdentity\"\x84\x02\n" +
+	"\x1asnapshot_operator_identity\x18\x10 \x01(\tR\x18snapshotOperatorIdentity\x128\n" +
+	"\x18kubernetes_bundle_source\x18\x11 \x01(\tR\x16kubernetesBundleSource\x122\n" +
+	"\x15kubernetes_bundle_ref\x18\x12 \x01(\tR\x13kubernetesBundleRef\x12I\n" +
+	"!kubernetes_bundle_manifest_digest\x18\x13 \x01(\tR\x1ekubernetesBundleManifestDigest\"\x84\x02\n" +
 	" DestructiveResetOperationRequest\x12.\n" +
 	"\x13inventory_node_name\x18\x01 \x01(\tR\x11inventoryNodeName\x12\x1f\n" +
 	"\vreset_scope\x18\x02 \x01(\tR\n" +

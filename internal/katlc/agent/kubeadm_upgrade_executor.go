@@ -14,12 +14,22 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
 const kubeadmUpgradeTimeout = 30 * time.Minute
 
 func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.OperationRecord) error {
+	var err error
+	record, err = e.resolveKubernetesUpgradePayload(ctx, record)
+	if err != nil {
+		return e.failKubeadmUpgrade(record, "resolve-target", err, false)
+	}
+	record, err = e.prepareKubeadmUpgradeSnapshot(ctx, record)
+	if err != nil {
+		return e.failKubeadmUpgrade(record, "snapshot", err, false)
+	}
 	request := record.KubernetesSysextUpdate
 	if request == nil || request.UpgradeRole == "" {
 		return fmt.Errorf("executable kubeadm upgrade request is required")
@@ -153,6 +163,108 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	}
 	retainToolView = false
 	return nil
+}
+
+func (e *Executor) resolveKubernetesUpgradePayload(ctx context.Context, record operation.OperationRecord) (operation.OperationRecord, error) {
+	request := record.KubernetesSysextUpdate
+	if request == nil {
+		return record, fmt.Errorf("Kubernetes upgrade request is missing")
+	}
+	if strings.TrimSpace(request.TargetSysextPath) != "" && strings.TrimSpace(request.TargetSysextSHA256) != "" {
+		return record, nil
+	}
+	if strings.TrimSpace(request.KubernetesBundleSource) == "" || strings.TrimSpace(request.KubernetesBundleRef) == "" {
+		return record, fmt.Errorf("Kubernetes bundle reference is missing")
+	}
+	cacheDir := rootedRuntimePath(e.Root, filepath.ToSlash(filepath.Join("/var/lib/katl/artifacts/kubernetes-upgrades", record.OperationID)))
+	staged, err := kubernetesbundle.FetchAndStage(ctx, kubernetesbundle.Request{
+		Source:           request.KubernetesBundleSource,
+		Ref:              request.KubernetesBundleRef,
+		CacheDir:         cacheDir,
+		RuntimeInterface: "katl-runtime-1",
+		Architecture:     "x86_64",
+		Client:           e.BundleClient,
+	})
+	if err != nil {
+		return record, fmt.Errorf("fetch Kubernetes bundle: %w", err)
+	}
+	if staged.PayloadVersion != request.TargetPayloadVersion {
+		return record, fmt.Errorf("fetched Kubernetes payload %s does not match requested target %s", staged.PayloadVersion, request.TargetPayloadVersion)
+	}
+	logicalPath, err := runtimeLogicalPath(e.Root, staged.SysextPath)
+	if err != nil {
+		return record, err
+	}
+	info, err := os.Stat(staged.SysextPath)
+	if err != nil {
+		return record, fmt.Errorf("stat fetched Kubernetes sysext: %w", err)
+	}
+	return e.Store.Update(record.OperationID, "kubernetes-upgrade-target-resolved", "target-resolved", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.KubernetesSysextUpdate.TargetSysextPath = logicalPath
+		current.KubernetesSysextUpdate.TargetSysextSHA256 = strings.TrimPrefix(staged.SysextPayloadDigest, "sha256:")
+		current.KubernetesSysextUpdate.TargetSysextSize = uint64(info.Size())
+		current.KubernetesSysextUpdate.BundleManifestDigest = staged.BundleManifestDigest
+		current.Phase = "target-resolved"
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "accepted", "target-resolved")
+		current.PhaseIndex = len(current.CompletedPhases)
+		current.UpdatedAt = e.clock()
+		current.NextAction = "capture pre-upgrade etcd evidence when required"
+		return current, nil
+	})
+}
+
+func (e *Executor) prepareKubeadmUpgradeSnapshot(ctx context.Context, record operation.OperationRecord) (operation.OperationRecord, error) {
+	request := record.KubernetesSysextUpdate
+	if request == nil || request.UpgradeRole == "worker" || strings.TrimSpace(request.SnapshotStorageLocation) != "" {
+		return record, nil
+	}
+	containerResult := e.toolRunner()(ctx, []string{"crictl", "ps", "--state", "Running", "--name", "etcd", "-q"}, nil)
+	if containerResult.Err != nil || containerResult.ExitStatus != 0 {
+		return record, fmt.Errorf("locate running etcd container: %s", toolFailure(containerResult))
+	}
+	containers := strings.Fields(string(containerResult.Stdout))
+	if len(containers) != 1 {
+		return record, fmt.Errorf("expected one running etcd container, got %d", len(containers))
+	}
+	location := filepath.ToSlash(filepath.Join("/var/lib/etcd", "katl-upgrade-"+record.OperationID+".db"))
+	etcdctl := []string{"crictl", "exec", containers[0], "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/etc/kubernetes/pki/etcd/ca.crt", "--cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt", "--key=/etc/kubernetes/pki/etcd/healthcheck-client.key"}
+	saveResult := e.toolRunner()(ctx, append(append([]string(nil), etcdctl...), "snapshot", "save", location), nil)
+	if saveResult.Err != nil || saveResult.ExitStatus != 0 {
+		return record, fmt.Errorf("save pre-upgrade etcd snapshot: %s", toolFailure(saveResult))
+	}
+	digest, _, err := fileDigest(rootedRuntimePath(e.Root, location))
+	if err != nil {
+		return record, fmt.Errorf("hash pre-upgrade etcd snapshot: %w", err)
+	}
+	membersResult := e.toolRunner()(ctx, append(append([]string(nil), etcdctl...), "member", "list"), nil)
+	if membersResult.Err != nil || membersResult.ExitStatus != 0 {
+		return record, fmt.Errorf("capture pre-upgrade etcd member list: %s", toolFailure(membersResult))
+	}
+	membersHash := sha256.Sum256(membersResult.Stdout)
+	now := e.clock()
+	return e.Store.Update(record.OperationID, "kubernetes-upgrade-snapshot-prepared", "snapshot-prepared", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		update := current.KubernetesSysextUpdate
+		update.SnapshotRef = "pre-" + update.SourcePayloadVersion + "-to-" + update.TargetPayloadVersion
+		update.SnapshotDigest = digest
+		update.SnapshotCreatedAt = now.Format(time.RFC3339)
+		update.CapturedMemberListDigest = hex.EncodeToString(membersHash[:])
+		update.SnapshotStorageLocation = location
+		update.SnapshotOperatorIdentity = inventory.Redact(current.Actor)
+		current.Phase = "snapshot-prepared"
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "snapshot-prepared")
+		current.PhaseIndex = len(current.CompletedPhases)
+		current.UpdatedAt = now
+		current.NextAction = "stage the verified target Kubernetes payload"
+		return current, nil
+	})
+}
+
+func runtimeLogicalPath(root, hostPath string) (string, error) {
+	rel, err := filepath.Rel(runtimeRoot(root), hostPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("resolved Kubernetes sysext is outside the runtime root")
+	}
+	return "/" + filepath.ToSlash(rel), nil
 }
 
 func (e *Executor) runKubeadmUpgradeCommand(ctx context.Context, record operation.OperationRecord, phase string, argv []string, mutating bool) error {
@@ -495,24 +607,30 @@ func rootedRuntimePath(root, path string) string {
 	return filepath.Join(runtimeRoot(root), strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)))
 }
 func verifyFileDigest(path, want string, size uint64) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	hash := sha256.New()
-	n, err := io.Copy(hash, file)
+	got, n, err := fileDigest(path)
 	if err != nil {
 		return err
 	}
 	if size > 0 && uint64(n) != size {
 		return fmt.Errorf("size %d, want %d", n, size)
 	}
-	got := hex.EncodeToString(hash.Sum(nil))
 	if got != want {
 		return fmt.Errorf("sha256 %s, want %s", got, want)
 	}
 	return nil
+}
+func fileDigest(path string) (string, int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	n, err := io.Copy(hash, file)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), n, nil
 }
 func copyVerifiedFile(source, target, want string) error {
 	in, err := os.Open(source)

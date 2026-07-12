@@ -26,7 +26,7 @@ func TestPublishedSupportBoundaryContract(t *testing.T) {
 		"persisted-state formats",
 		"Reinstall may be required",
 		"do not roll back etcd",
-		"Kubernetes version upgrade execution",
+		"Kubernetes upgrades support an explicit serial rollout",
 		"support SLA",
 		"Katl GitHub issue",
 		"private vulnerability",

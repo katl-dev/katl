@@ -120,6 +120,6 @@ endpoint, and node readiness matches the chosen CNI stage.
 
 Do not assume rerunning bootstrap is safe. If kubeadm or API mutation began,
 host generation rollback does not erase it. Preserve the command result and follow
-[Troubleshoot KatlOS](troubleshoot.md). Additional-control-plane repair,
-Kubernetes version upgrade, and general reconciliation are not supported alpha
-operations.
+[Troubleshoot KatlOS](troubleshoot.md). Kubernetes upgrades use the separate
+[Upgrade Kubernetes](upgrade-kubernetes.md) workflow. Additional-control-plane
+repair and general reconciliation remain unsupported alpha operations.

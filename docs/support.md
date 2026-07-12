@@ -76,11 +76,13 @@ objects, persistent volumes, application data, or external infrastructure.
 After a partial kubeadm or Kubernetes mutation, the node may report that manual
 recovery is required.
 
-Kubernetes version upgrade execution, automated fleet rollout, etcd disaster
-recovery, failed control-plane replacement, and general cluster reconciliation
-are not supported alpha workflows. Wipe/reinstall is destructive recovery, not
-backup or same-cluster disaster recovery. Keep independent etcd, workload, and
-data backups; do not rely on Katl generation rollback as a cluster backup.
+Kubernetes upgrades support an explicit serial rollout to a newer patch or the
+next minor using a published Katl bundle. They do not provide automatic fleet
+rollout, automatic post-mutation repair, etcd disaster recovery, failed
+control-plane replacement, or general cluster reconciliation. Wipe/reinstall is
+destructive recovery, not backup or same-cluster disaster recovery. Keep
+independent etcd, workload, and data backups; do not rely on Katl generation
+rollback as a cluster backup.
 
 ## Explicitly Unsupported
 
