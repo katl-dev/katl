@@ -12,6 +12,12 @@ go_test_timeout="90m"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
 run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 run_dir="${KATL_VMTEST_RUN_DIR:-$tmp_parent/$run_id}"
+if [[ "$run_dir" != /* ]]; then
+    run_dir="$repo_root/$run_dir"
+    if command -v realpath >/dev/null 2>&1; then
+        run_dir="$(realpath -m -- "$run_dir")"
+    fi
+fi
 run_dir_preexisting=0
 if [[ -e "$run_dir" ]]; then
     run_dir_preexisting=1

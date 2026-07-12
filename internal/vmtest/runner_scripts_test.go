@@ -16,7 +16,24 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	tmp := t.TempDir()
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
-	runDir := filepath.Join(tmp, "run")
+	buildDir := filepath.Join(repo, "_build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatalf("create build dir: %v", err)
+	}
+	runRoot, err := os.MkdirTemp(buildDir, "vmtest-relative-run-")
+	if err != nil {
+		t.Fatalf("create relative run root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(runRoot); err != nil {
+			t.Errorf("remove relative run root: %v", err)
+		}
+	})
+	runDir := filepath.Join(runRoot, "run")
+	relativeRunDir, err := filepath.Rel(repo, runDir)
+	if err != nil {
+		t.Fatalf("relative run dir: %v", err)
+	}
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 	childArgsPath := filepath.Join(tmp, "child-args.txt")
 	childEnvPath := filepath.Join(tmp, "child-env.txt")
@@ -35,7 +52,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		"KATL_FAKE_CHILD_ARGS="+childArgsPath,
 		"KATL_FAKE_CHILD_ENV="+childEnvPath,
 		"KATL_VMTEST_RUN_ID=run-1",
-		"KATL_VMTEST_RUN_DIR="+runDir,
+		"KATL_VMTEST_RUN_DIR="+relativeRunDir,
 		"TMPDIR="+tmp,
 	)
 	output, err := cmd.CombinedOutput()
