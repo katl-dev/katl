@@ -4,8 +4,8 @@ set -euo pipefail
 builddir="${BUILDDIR:-/tmp}"
 repo="${SRCDIR:-}"
 version="${KATL_VERSION:-0.0.0-dev}"
+vmtest_image_support="${KATL_VMTEST_IMAGE_SUPPORT:-0}"
 
-mkdir -p "$DESTDIR/usr/lib/katl/vmtest"
 mkdir -p "$DESTDIR/usr/lib/katl/runtime"
 mkdir -p "$DESTDIR/usr/bin"
 mkdir -p "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants"
@@ -16,9 +16,17 @@ if [[ ! -f "$repo/go.mod" && -f /work/go.mod ]]; then
 fi
 
 if [[ ! -f "$repo/go.mod" ]]; then
-    echo "error: could not find repository root for katl-vmtest-agent build" >&2
+    echo "error: could not find repository root for Katl runtime build" >&2
     exit 1
 fi
+
+case "$vmtest_image_support" in
+    0|1) ;;
+    *)
+        echo "error: KATL_VMTEST_IMAGE_SUPPORT must be 0 or 1" >&2
+        exit 1
+        ;;
+esac
 
 cd "$repo"
 gomodcache="${KATL_GOMODCACHE:-$repo/_build/go-mod}"
@@ -45,17 +53,30 @@ go build \
     -o "$DESTDIR/usr/bin/katlc" \
     ./cmd/katlc
 
-CGO_ENABLED=0 \
-GOOS=linux \
-GOARCH=amd64 \
-GOCACHE="$builddir/go-build" \
-GOMODCACHE="$gomodcache" \
-go build \
-    -trimpath \
-    -buildvcs=false \
-    -ldflags="-X main.version=$version -X main.commit=$commit -X main.date=$date" \
-    -o "$DESTDIR/usr/lib/katl/vmtest/katl-vmtest-agent" \
-    ./cmd/katl-vmtest-agent
+if [[ "$vmtest_image_support" == 1 ]]; then
+    mkdir -p \
+        "$DESTDIR/usr/lib/katl/vmtest" \
+        "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants"
+    cp "$repo/internal/vmtest/image/katl-vmtest-agent.service" \
+        "$repo/internal/vmtest/image/katl-vmtest-debug-shell.service" \
+        "$DESTDIR/usr/lib/systemd/system/"
+    ln -sf ../katl-vmtest-agent.service \
+        "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-vmtest-agent.service"
+    ln -sf ../katl-vmtest-debug-shell.service \
+        "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-vmtest-debug-shell.service"
+
+    CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    GOCACHE="$builddir/go-build" \
+    GOMODCACHE="$gomodcache" \
+    go build \
+        -trimpath \
+        -buildvcs=false \
+        -ldflags="-X main.version=$version -X main.commit=$commit -X main.date=$date" \
+        -o "$DESTDIR/usr/lib/katl/vmtest/katl-vmtest-agent" \
+        ./cmd/katl-vmtest-agent
+fi
 
 CGO_ENABLED=0 \
 GOOS=linux \

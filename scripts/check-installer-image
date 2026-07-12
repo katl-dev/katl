@@ -29,6 +29,9 @@ grep -Fq 'console=ttyS0,115200n8 systemd.log_target=console loglevel=6' <<<"$ins
     fail "installer UKI command line mismatch"
 
 initrd_list="$(cpio -it <"$initrd" 2>/dev/null)" || fail "list installer initrd failed"
+if grep -Eiq '(^|/)[^/]*(vmtest|vm-test)[^/]*($|/)' <<<"$initrd_list"; then
+    fail "installer image contains VM-test support"
+fi
 
 has_path() {
     local path="${1#/}"

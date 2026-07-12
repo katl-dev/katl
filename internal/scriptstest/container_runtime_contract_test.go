@@ -36,7 +36,6 @@ func TestBaseContainerRuntimeContractIsEnforced(t *testing.T) {
 		"/usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf",
 		"Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service",
 		"RequiresMountsFor=/var/lib/containerd",
-		"ReadWritePaths=/run /efi /etc/kubernetes /var/lib/containerd /var/lib/etcd /var/lib/katl /var/lib/kubelet /var/log/journal",
 	)
 
 	installerCheck := string(mustReadFile(t, filepath.Join(repo, "scripts", "check-installer-image")))

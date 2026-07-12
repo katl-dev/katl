@@ -96,9 +96,8 @@ install:
 	result, err := vmtest.RunFirstInstall(ctx, vmtest.NewRunner(options), vmtest.Scenario{Name: "installer-iso-first-install"}, vmtest.FirstInstallConfig{
 		Installer: vmtest.InstallerBootConfig{InstallerISO: iso, VM: vm},
 		Runtime: vmtest.InstalledRuntimeConfig{
-			Expect:             "katl-boot-health generation=0 result=success",
-			RequireVMTestAgent: true,
-			VM:                 vm,
+			Expect: "katl-boot-health generation=0 result=success",
+			VM:     vm,
 		},
 		Manifest:        manifest,
 		PreseedManifest: true,

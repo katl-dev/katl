@@ -164,6 +164,10 @@ jq -e \
 
 superblock="$(unsquashfs -s "$artifact")"
 grep -Fq "Compression zstd" <<<"$superblock" || fail "runtime root is not zstd-compressed SquashFS"
+runtime_inventory="$(unsquashfs -ll "$artifact")" || fail "list runtime root failed"
+if grep -Eiq 'squashfs-root/[^[:space:]]*(vmtest|vm-test)' <<<"$runtime_inventory"; then
+    fail "runtime image contains VM-test support"
+fi
 
 for path in \
     /usr/lib/os-release \
@@ -192,7 +196,6 @@ for path in \
     /usr/lib/katl/runtime/katl-boot-health \
     /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
-    /usr/lib/katl/vmtest/katl-vmtest-agent \
     /usr/lib/systemd/system/systemd-networkd.service \
     /usr/lib/systemd/system/systemd-resolved.service \
     /usr/lib/systemd/system/dbus-broker.service \
@@ -215,12 +218,10 @@ for path in \
     /usr/lib/systemd/system/katl-state-projection-check.service \
     /usr/lib/systemd/system/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/katlc-agent.service \
-    /usr/lib/systemd/system/katl-vmtest-debug-shell.service \
     /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf \
     /usr/lib/systemd/system/systemd-networkd.service.d/10-katl-confext.conf \
     /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf \
     /usr/lib/systemd/system/katl-runtime-boot-signal.service \
-    /usr/lib/systemd/system/katl-vmtest-agent.service \
     /usr/lib/modules-load.d/50-katl-kubernetes.conf \
     /usr/lib/sysctl.d/50-katl-kubernetes.conf \
     /usr/lib/systemd/system/local-fs.target.wants/var.mount \
@@ -230,10 +231,19 @@ for path in \
     /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-boot-health.service \
     /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/multi-user.target.wants/katlc-agent.service \
-    /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service \
-    /usr/lib/systemd/system/multi-user.target.wants/katl-vmtest-debug-shell.service
+    /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
 do
     has_path "$path"
+done
+
+for path in \
+    /usr/lib/katl/vmtest \
+    /usr/lib/systemd/system/katl-vmtest-agent.service \
+    /usr/lib/systemd/system/katl-vmtest-debug-shell.service \
+    /usr/lib/systemd/system/multi-user.target.wants/katl-vmtest-agent.service \
+    /usr/lib/systemd/system/multi-user.target.wants/katl-vmtest-debug-shell.service
+do
+    misses_path "$path"
 done
 
 root_locked
@@ -294,12 +304,6 @@ file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/agent 0700 root ro
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/cluster 0750 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/config-requests 0750 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -"
-file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ConditionKernelCommandLine=katl.vmtest_agent=1"
-file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent"
-file_has /usr/lib/systemd/system/katl-vmtest-agent.service "TimeoutStopSec=5s"
-file_has /usr/lib/systemd/system/katl-vmtest-agent.service "ReadWritePaths=/run /efi /etc/kubernetes /var/lib/containerd /var/lib/etcd /var/lib/katl /var/lib/kubelet /var/log/journal"
-file_has /usr/lib/systemd/system/katl-vmtest-debug-shell.service "ConditionKernelCommandLine=katl.vmtest_debug_shell=1"
-file_has /usr/lib/systemd/system/katl-vmtest-debug-shell.service "ExecStart=-/usr/sbin/agetty --autologin root --noclear ttyS0 115200"
 check_kernel_support
 
 for path in \

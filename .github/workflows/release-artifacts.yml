@@ -39,6 +39,7 @@ jobs:
       KATL_BUILD_COMMIT: ${{ github.sha }}
       KATL_CONTAINER_RUNTIME: docker
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_VMTEST_IMAGE_SUPPORT: "0"
 
     steps:
       - name: Check out repository

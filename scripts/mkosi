@@ -17,6 +17,15 @@ mkosi_env=(--environment "KATL_BUILD_COMMIT=$build_commit")
 if [[ -n "${KATL_VERSION:-}" ]]; then
     mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
 fi
+vmtest_image_support="${KATL_VMTEST_IMAGE_SUPPORT:-0}"
+case "$vmtest_image_support" in
+    0|1) ;;
+    *)
+        echo "error: KATL_VMTEST_IMAGE_SUPPORT must be 0 or 1" >&2
+        exit 2
+        ;;
+esac
+mkosi_env+=(--environment "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support")
 emit_runtime_artifact=0
 emit_kubernetes_sysext=0
 emit_installer_iso=0
@@ -132,6 +141,10 @@ cache_input_matches_target() {
             return 1
             ;;
     esac
+    if [[ "$path" == internal/vmtest/image/* ]]; then
+        [[ "$vmtest_image_support" == 1 && ( "$target" == runtime || "$target" == katlos-install-image ) ]]
+        return
+    fi
     case "$target" in
         installer | installer-iso)
             case "$path" in
@@ -173,7 +186,9 @@ target_go_binaries() {
             ;;
         runtime)
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlc" "./cmd/katlc" "versioned"
-            printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/vmtest/katl-vmtest-agent" "./cmd/katl-vmtest-agent" "versioned"
+            if [[ "$vmtest_image_support" == 1 ]]; then
+                printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/vmtest/katl-vmtest-agent" "./cmd/katl-vmtest-agent" "versioned"
+            fi
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-runtime-status" "./cmd/katl-runtime-status" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-generation-activate" "./cmd/katl-generation-activate" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-boot-health" "./cmd/katl-boot-health" "plain"
@@ -269,6 +284,7 @@ cache_fingerprint() {
             printf 'KATL_ARCHITECTURE=%s\n' "${KATL_ARCHITECTURE:-$(uname -m)}"
             printf 'KATL_KATLOS_IMAGE_ROLE=%s\n' "${KATL_KATLOS_IMAGE_ROLE:-install}"
             printf 'KATL_RUNTIME_INTERFACE=%s\n' "${KATL_RUNTIME_INTERFACE:-katl-runtime-1}"
+            printf 'KATL_VMTEST_IMAGE_SUPPORT=%s\n' "$vmtest_image_support"
             printf 'KATL_KUBERNETES_MINOR=%s\n' "$KATL_KUBERNETES_MINOR"
             printf 'KATL_KUBERNETES_REPO_ID=%s\n' "$KATL_KUBERNETES_REPO_ID"
             printf 'KATL_KUBERNETES_REPO_BASEURL=%s\n' "$KATL_KUBERNETES_REPO_BASEURL"
@@ -640,6 +656,7 @@ run_flags=(
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
     --env "KATL_EMIT_KUBERNETES_SYSEXT=$emit_kubernetes_sysext"
     --env "KATL_EMIT_INSTALLER_ISO=$emit_installer_iso"
+    --env "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support"
     --env "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR"
     --env "KATL_KUBERNETES_REPO_ID=$KATL_KUBERNETES_REPO_ID"
     --env "KATL_KUBERNETES_REPO_BASEURL=$KATL_KUBERNETES_REPO_BASEURL"
