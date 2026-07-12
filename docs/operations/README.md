@@ -52,6 +52,25 @@ Treat command outcomes precisely:
 Use a unique, stable `--client-request-id` for each intended mutation. Reuse it
 only when retrying the exact same request. Changing inputs requires a new ID.
 
+For every accepted mutation, retain both `operationId` and `requestDigest`.
+Use the generic status path for config apply, host upgrade, bootstrap, and
+destructive reset:
+
+```sh
+katlctl operation status \
+  --endpoint cp-1.example.test:9443 \
+  --agent-token-file ./tokens/cp-1.token \
+  --operation-id "$OPERATION_ID" \
+  --request-digest "$REQUEST_DIGEST" \
+  --watch
+```
+
+Without `--watch`, the command returns one authoritative snapshot. With it,
+progress is written to stderr and final structured status to stdout. A lost
+watch automatically falls back to polling the durable node record. Use
+`--diagnostics verbose` when the normal redacted status is insufficient. A
+watched terminal failure still prints its final JSON status and exits nonzero.
+
 ## Boundaries That Matter During Operations
 
 KatlOS generations own the immutable root, UKI, selected sysexts, and compiled

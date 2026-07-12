@@ -176,33 +176,35 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	status := statuses[initNode.Name]
 	initResult, err := submitAndWaitBootstrapInit(ctx, initNode, plan, status, deps)
 	if err != nil {
-		result.addPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "failed")
+		result.addOperationPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "failed", initResult.Operation)
 		return result, fmt.Errorf("bootstrap-init operation on %s: %s", initNode.Name, inventory.Redact(err.Error()))
 	}
-	result.addPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed")
+	result.addOperationPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed", initResult.Operation)
 	for _, node := range controlPlaneJoinNodes(plan) {
-		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.OperationID, deps)
+		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, deps)
 		if err != nil {
 			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
 			return result, fmt.Errorf("control-plane join material for %s: %s", node.Name, inventory.Redact(err.Error()))
 		}
-		if err := submitAndWaitControlPlaneJoin(ctx, node, plan, statuses[node.Name], material, deps); err != nil {
-			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
+		operationRef, err := submitAndWaitControlPlaneJoin(ctx, node, plan, statuses[node.Name], material, deps)
+		if err != nil {
+			result.addOperationPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed", operationRef)
 			return result, fmt.Errorf("control-plane join operation on %s: %s", node.Name, inventory.Redact(err.Error()))
 		}
-		result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "passed")
+		result.addOperationPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "passed", operationRef)
 	}
 	for _, node := range workerNodes(plan) {
-		material, err := createWorkerJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.OperationID, deps)
+		material, err := createWorkerJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, deps)
 		if err != nil {
 			result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "failed")
 			return result, fmt.Errorf("worker join material for %s: %s", node.Name, inventory.Redact(err.Error()))
 		}
-		if err := submitAndWaitWorkerJoin(ctx, node, plan, statuses[node.Name], material, deps); err != nil {
-			result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "failed")
+		operationRef, err := submitAndWaitWorkerJoin(ctx, node, plan, statuses[node.Name], material, deps)
+		if err != nil {
+			result.addOperationPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "failed", operationRef)
 			return result, fmt.Errorf("worker join operation on %s: %s", node.Name, inventory.Redact(err.Error()))
 		}
-		result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "passed")
+		result.addOperationPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "passed", operationRef)
 	}
 	stableEndpointReady := false
 	if bootstrap.enabled() {
@@ -301,11 +303,12 @@ func RunAgentWorkerJoin(ctx context.Context, request Request, workerName string,
 		result.addPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "failed")
 		return result, fmt.Errorf("worker join material for %s: %s", worker.Name, inventory.Redact(err.Error()))
 	}
-	if err := submitAndWaitWorkerJoin(ctx, worker, plan, statuses[worker.Name], material, deps); err != nil {
-		result.addPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "failed")
+	operationRef, err := submitAndWaitWorkerJoin(ctx, worker, plan, statuses[worker.Name], material, deps)
+	if err != nil {
+		result.addOperationPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "failed", operationRef)
 		return result, fmt.Errorf("worker join operation on %s: %s", worker.Name, inventory.Redact(err.Error()))
 	}
-	result.addPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "passed")
+	result.addOperationPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "passed", operationRef)
 	return result, nil
 }
 
@@ -377,8 +380,13 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 }
 
 type bootstrapInitResult struct {
-	OperationID string
+	Operation   operationReference
 	Credentials AdminCredentials
+}
+
+type operationReference struct {
+	ID            string
+	RequestDigest string
 }
 
 type workerJoinMaterial struct {
@@ -397,15 +405,16 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	if err != nil {
 		return bootstrapInitResult{}, fmt.Errorf("submit operation: %w", err)
 	}
+	result := bootstrapInitResult{Operation: operationReference{ID: accepted.GetOperationId(), RequestDigest: accepted.GetRequestDigest()}}
 	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
 	if err != nil {
-		return bootstrapInitResult{}, err
+		return result, err
 	}
 	if !final.GetTerminal() {
-		return bootstrapInitResult{}, fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
+		return result, fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
 	}
 	if final.GetResult() != "" && final.GetResult() != operation.ResultSucceeded {
-		return bootstrapInitResult{}, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
+		return result, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
 	}
 	output, err := conn.Client.GetOperation(ctx, &agentapi.GetOperationRequest{
 		OperationId:           accepted.GetOperationId(),
@@ -413,13 +422,14 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 		IncludeDiagnostics:    "bootstrap-output",
 	})
 	if err != nil {
-		return bootstrapInitResult{}, fmt.Errorf("get bootstrap output for operation %s: %w", accepted.GetOperationId(), err)
+		return result, fmt.Errorf("get bootstrap output for operation %s: %w", accepted.GetOperationId(), err)
 	}
 	credentials, err := parseAdminCredentials([]byte(output.GetAdminKubeconfig()))
 	if err != nil {
-		return bootstrapInitResult{}, err
+		return result, err
 	}
-	return bootstrapInitResult{OperationID: accepted.GetOperationId(), Credentials: credentials}, nil
+	result.Credentials = credentials
+	return result, nil
 }
 
 func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
@@ -464,18 +474,18 @@ func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.Planne
 	return workerJoinMaterial{Ref: ref, Material: material}, nil
 }
 
-func submitAndWaitControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies) error {
+func submitAndWaitControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies) (operationReference, error) {
 	return submitAndWaitJoin(ctx, node, plan, status, material, deps, "bootstrap-join-control-plane")
 }
 
-func submitAndWaitWorkerJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies) error {
+func submitAndWaitWorkerJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies) (operationReference, error) {
 	return submitAndWaitJoin(ctx, node, plan, status, material, deps, "bootstrap-join-worker")
 }
 
-func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies, kind string) error {
+func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies, kind string) (operationReference, error) {
 	conn, err := deps.Connector.Connect(ctx, node)
 	if err != nil {
-		return fmt.Errorf("connect to katlc agent: %w", err)
+		return operationReference{}, fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
 	req := bootstrapOperationRequest(node, plan, status, deps, kind)
@@ -483,19 +493,20 @@ func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inv
 	req.Bootstrap.WorkerJoinMaterial = material.Material
 	accepted, err := conn.Client.SubmitOperation(ctx, req)
 	if err != nil {
-		return fmt.Errorf("submit operation: %w", err)
+		return operationReference{}, fmt.Errorf("submit operation: %w", err)
 	}
+	operationRef := operationReference{ID: accepted.GetOperationId(), RequestDigest: accepted.GetRequestDigest()}
 	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
 	if err != nil {
-		return err
+		return operationRef, err
 	}
 	if !final.GetTerminal() {
-		return fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
+		return operationRef, fmt.Errorf("operation %s did not reach terminal status", accepted.GetOperationId())
 	}
 	if final.GetResult() != "" && final.GetResult() != operation.ResultSucceeded {
-		return fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
+		return operationRef, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
 	}
-	return nil
+	return operationRef, nil
 }
 
 func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) *agentapi.SubmitOperationRequest {

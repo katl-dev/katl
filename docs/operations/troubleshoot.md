@@ -32,23 +32,24 @@ find /var/lib/katl/generations -maxdepth 2 -type f -print
 find /var/lib/katl/operations -maxdepth 3 -type f -print
 ```
 
-For one accepted operation, stream its durable record to `jq` on the operator
-workstation:
+For one accepted operation, first query its redacted durable status through the
+agent:
 
 ```sh
-OPERATION_ID=operation-id-from-katlctl
-ssh root@affected-node \
-  "cat '/var/lib/katl/operations/$OPERATION_ID/record.json'" | \
-  jq '.payload.record | {
-  operationID, operationKind, requestDigest, phase, completedPhases,
-  terminal, result, externalMutationStarted, mutationScopes,
-  recoveryRequired, failureReason, nextAction, diagnosticArtifacts
-}'
+katlctl operation status \
+  --endpoint affected-node.example.test:9443 \
+  --agent-token-file ./tokens/affected-node.token \
+  --operation-id "$OPERATION_ID" \
+  --request-digest "$REQUEST_DIGEST" \
+  --diagnostics verbose
 ```
 
-The journal directory is authoritative when a snapshot looks stale:
+If the agent is unavailable, use SSH as a break-glass evidence path and read
+the record without editing it. The journal directory is authoritative when a
+snapshot looks stale:
 
 ```text
+/var/lib/katl/operations/$OPERATION_ID/record.json
 /var/lib/katl/operations/$OPERATION_ID/journal/
 ```
 

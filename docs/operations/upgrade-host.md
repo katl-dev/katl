@@ -48,14 +48,16 @@ candidate generation, resource locks, and refusal diagnostics.
 Run the identical command without `--plan`. Save the returned `operationId` and
 `requestDigest`. The response means accepted, not staged successfully.
 
-Until a general remote operation-status command is exposed, inspect the durable
-record on the node over SSH:
+Follow the accepted operation through the node agent, binding the query to the
+returned request digest:
 
 ```sh
-OPERATION_ID=host-upgrade-...
-ssh root@cp-1.example.test \
-  "cat '/var/lib/katl/operations/$OPERATION_ID/record.json'" | \
-  jq '.payload.record | {operationID, operationKind, phase, terminal, result, candidateGenerationID, bootHealthPending, recoveryRequired, failureReason, nextAction}'
+katlctl operation status \
+  --endpoint cp-1.example.test:9443 \
+  --agent-token-file ./tokens/cp-1.token \
+  --operation-id "$OPERATION_ID" \
+  --request-digest "$REQUEST_DIGEST" \
+  --watch
 ```
 
 Do not reboot until the operation is terminal with `result: succeeded` and

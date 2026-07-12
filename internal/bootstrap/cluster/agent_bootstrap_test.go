@@ -111,6 +111,9 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "control-plane-join", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
 	}
+	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[2].RequestDigest != "digest-init" || result.Phases[3].OperationID != "bootstrap-join-control-plane-1" || result.Phases[3].RequestDigest != "digest-cp-join" {
+		t.Fatalf("operation phases = %#v", result.Phases)
+	}
 	if len(cpClient.createMaterialRequests) != 1 {
 		t.Fatalf("CreateWorkerJoinMaterial requests = %d, want 1", len(cpClient.createMaterialRequests))
 	}
@@ -126,6 +129,25 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	}
 	if cp2Req.Bootstrap.JoinMaterialRef != "operation:bootstrap-init-1/control-plane:cp-2" {
 		t.Fatalf("join material ref = %q", cp2Req.Bootstrap.JoinMaterialRef)
+	}
+}
+
+func TestRunAgentBootstrapPreservesFailedOperationReference(t *testing.T) {
+	client := &fakeAgentClient{
+		status: readyAgentStatus("machine-cp-1"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-init-failed",
+			RequestDigest: "digest-failed",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-failed", Terminal: true, Result: "failed", FailureReason: "kubeadm refused input"},
+		},
+	}
+	result, err := RunAgentBootstrap(context.Background(), Request{Inventory: validSingleNodeInventory()}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})})
+	if err == nil || !strings.Contains(err.Error(), "kubeadm refused input") {
+		t.Fatalf("RunAgentBootstrap() error = %v", err)
+	}
+	failed := result.Phases[len(result.Phases)-1]
+	if failed.Status != "failed" || failed.OperationID != "bootstrap-init-failed" || failed.RequestDigest != "digest-failed" {
+		t.Fatalf("failed phase = %#v", failed)
 	}
 }
 

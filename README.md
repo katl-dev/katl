@@ -245,6 +245,23 @@ katlctl host upgrade \
 Remove `--plan` only after reviewing the response. Automated fleet rollout and
 Kubernetes version upgrade execution are not supported alpha workflows.
 
+Every accepted config, host-upgrade, bootstrap, and destructive-reset response
+includes an `operationId` and `requestDigest`. Query a snapshot or follow it to
+terminal state through the same node agent:
+
+```sh
+katlctl operation status \
+  --endpoint cp-1.example.test:9443 \
+  --agent-token-file ./tokens/cp-1.token \
+  --operation-id "$OPERATION_ID" \
+  --request-digest "$REQUEST_DIGEST" \
+  --watch
+```
+
+The digest binds the query to the exact accepted request. Watch streams are an
+optimization; `katlctl` falls back to the node's authoritative persisted status
+if a stream is interrupted.
+
 ## Release artifacts
 
 | Artifact | Purpose |

@@ -81,7 +81,22 @@ wiped surface, preserved surface, and refusal.
 
 Run the identical command without `--plan` only when the cluster is intentionally
 being discarded. The command submits node-local destructive-reset operations
-and reports their operation IDs and terminal results.
+and reports their operation IDs, request digests, and initial status.
+
+For each reported node endpoint, operation ID, and request digest, follow the
+node-local reset to terminal state:
+
+```sh
+katlctl operation status \
+  --endpoint worker-1.example.test:9443 \
+  --agent-token-file ./tokens/worker-1.token \
+  --operation-id "$OPERATION_ID" \
+  --request-digest "$REQUEST_DIGEST" \
+  --watch
+```
+
+Do not proceed to reinstall until every intended reset reports `terminal: true`
+and `result: succeeded`. Treat `recoveryRequired: true` as a stop condition.
 
 ## Plan One Worker Replacement
 

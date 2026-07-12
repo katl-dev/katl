@@ -75,6 +75,19 @@ first control plane, creates join material, joins remaining nodes, checks
 post-kubeadm health, commits generation 1, and writes the operator kubeconfig.
 Save the command output and returned operation IDs.
 
+Bootstrap waits for its submitted operations, but their node-local records
+remain queryable afterward. If the workstation disconnects or a result is
+unclear, query the affected node with the returned ID and digest:
+
+```sh
+katlctl operation status \
+  --endpoint cp-1.example.test:9443 \
+  --agent-token-file ./tokens/cp-1.token \
+  --operation-id "$OPERATION_ID" \
+  --request-digest "$REQUEST_DIGEST" \
+  --watch
+```
+
 ## Establish Cluster Networking
 
 Kubeadm nodes normally remain `NotReady` until a CNI is installed. Katl does not

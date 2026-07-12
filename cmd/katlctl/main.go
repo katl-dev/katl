@@ -112,6 +112,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	configCmd.AddCommand(newConfigApplyCommand(ctx, stdout, stderr))
 	cmd.AddCommand(configCmd)
 	cmd.AddCommand(newInstallCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newOperationCommand(ctx, stdout, stderr))
 
 	hostCmd := &cobra.Command{Use: "host", Short: "KatlOS host lifecycle operations"}
 	hostCmd.AddCommand(newHostUpgradeCommand(ctx, stdout, stderr))
@@ -1742,15 +1743,7 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string, token string) (katl
 	if endpoint == "" {
 		return katlcAgentConnection{}, fmt.Errorf("katlc agent endpoint is required")
 	}
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}
-	if strings.TrimSpace(token) != "" {
-		opts = append(opts, grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-			return invoker(metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+strings.TrimSpace(token)), method, req, reply, cc, opts...)
-		}))
-	}
-	conn, err := grpc.DialContext(ctx, endpoint, opts...)
+	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions(token)...)
 	if err != nil {
 		return katlcAgentConnection{}, err
 	}
@@ -1758,6 +1751,24 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string, token string) (katl
 		Client: agentapi.NewKatlcAgentClient(conn),
 		Close:  conn.Close,
 	}, nil
+}
+
+func katlcAgentDialOptions(token string) []grpc.DialOption {
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+	if strings.TrimSpace(token) != "" {
+		authorization := "Bearer " + strings.TrimSpace(token)
+		opts = append(opts,
+			grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+				return invoker(metadata.AppendToOutgoingContext(ctx, "authorization", authorization), method, req, reply, cc, opts...)
+			}),
+			grpc.WithStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+				return streamer(metadata.AppendToOutgoingContext(ctx, "authorization", authorization), desc, cc, method, opts...)
+			}),
+		)
+	}
+	return opts
 }
 
 func printBootstrapResult(stdout io.Writer, result cluster.Result) {
@@ -1768,11 +1779,15 @@ func printBootstrapResult(stdout io.Writer, result cluster.Result) {
 		}
 	}
 	for _, phase := range result.Phases {
+		operationFields := ""
+		if phase.OperationID != "" {
+			operationFields = fmt.Sprintf(" operation-id=%s request-digest=%s", phase.OperationID, phase.RequestDigest)
+		}
 		if phase.Node != "" {
-			fmt.Fprintf(stdout, "phase=%s node=%s status=%s\n", phase.Name, phase.Node, phase.Status)
+			fmt.Fprintf(stdout, "phase=%s node=%s status=%s%s\n", phase.Name, phase.Node, phase.Status, operationFields)
 			continue
 		}
-		fmt.Fprintf(stdout, "phase=%s status=%s\n", phase.Name, phase.Status)
+		fmt.Fprintf(stdout, "phase=%s status=%s%s\n", phase.Name, phase.Status, operationFields)
 	}
 	if result.NextStep != "" {
 		fmt.Fprintf(stdout, "next: %s\n", result.NextStep)

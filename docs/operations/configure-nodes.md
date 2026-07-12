@@ -76,6 +76,21 @@ Keep the inputs and client request ID identical to the reviewed plan. The JSON
 response records the operation ID, request digest, and initial status. Accepted
 does not mean complete.
 
+Follow the accepted operation before evaluating generation health:
+
+```sh
+katlctl operation status \
+  --endpoint cp-1.example.test:9443 \
+  --agent-token-file ./tokens/cp-1.token \
+  --operation-id "$OPERATION_ID" \
+  --request-digest "$REQUEST_DIGEST" \
+  --watch
+```
+
+Require `terminal: true` and `result: succeeded`. If `recoveryRequired` is
+true, stop and follow `failureReason` and `nextAction`; do not submit a new
+apply merely because the watch disconnected.
+
 ## Check Generation Status
 
 Query the candidate through the agent:

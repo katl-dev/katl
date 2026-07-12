@@ -1684,6 +1684,20 @@ func TestAddressOverrideValidation(t *testing.T) {
 	}
 }
 
+func TestPrintBootstrapResultIncludesOperationReference(t *testing.T) {
+	var stdout bytes.Buffer
+	printBootstrapResult(&stdout, cluster.Result{Phases: []cluster.Phase{{
+		Name:          "bootstrap-init",
+		Node:          "cp-1",
+		Status:        "failed",
+		OperationID:   "bootstrap-init-1",
+		RequestDigest: "digest-1",
+	}}})
+	if got := stdout.String(); !strings.Contains(got, "operation-id=bootstrap-init-1 request-digest=digest-1") {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
 type configApplyFixture struct {
 	GenerationID       string
 	PreviousGeneration string
@@ -1709,6 +1723,7 @@ type fakeKatlcAgentClient struct {
 	generation        *agentapi.Generation
 	generationRequest *agentapi.GetGenerationRequest
 	operationStatus   *agentapi.OperationStatus
+	operationRequest  *agentapi.GetOperationRequest
 }
 
 type fakeWipeClusterConnector struct {
@@ -1807,7 +1822,8 @@ func (c *fakeKatlcAgentClient) CreateWorkerJoinMaterial(context.Context, *agenta
 	return nil, nil
 }
 
-func (c *fakeKatlcAgentClient) GetOperation(context.Context, *agentapi.GetOperationRequest, ...grpc.CallOption) (*agentapi.OperationStatus, error) {
+func (c *fakeKatlcAgentClient) GetOperation(_ context.Context, req *agentapi.GetOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationStatus, error) {
+	c.operationRequest = req
 	return c.operationStatus, nil
 }
 
