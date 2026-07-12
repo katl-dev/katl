@@ -21,14 +21,14 @@ before accepting the operation.
 The current wipe commands accept a low-level bootstrap inventory, not the
 verified `.katlcfg` directly. This is an acknowledged alpha UX gap. The
 inventory must describe the same installed nodes, addresses, roles, per-node
-token references, Kubernetes version, and digest-pinned bundle recorded in the
+token references, Kubernetes version, and bundle reference recorded in the
 compiled cluster intent. Do not use an older inventory merely because its nodes
 are reachable. A two-node shape is:
 
 ```yaml
 controlPlaneEndpoint: api.katl.test:6443
 kubernetesVersion: v1.36.0
-kubernetesBundle: ghcr.io/katl-dev/kubernetes:<version>@sha256:<digest>
+kubernetesBundle: ghcr.io/katl-dev/kubernetes:<version>
 nodes:
   - name: cp-1
     address: 192.0.2.11

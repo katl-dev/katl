@@ -1,8 +1,11 @@
 # Verify KatlOS Release Artifacts
 
-Use this procedure before booting installation media or staging an upgrade.
-Download every asset in a verification set from one GitHub release; never mix
-files from different tags.
+This is an optional expert workflow for operators who want to authenticate
+downloaded artifacts against the Katl release pipeline. It is not a prerequisite
+for installing or operating KatlOS on the normal trusted home-lab path.
+
+When using it, download every asset in a verification set from one GitHub
+release; never mix files from different tags.
 
 ## Inputs
 
@@ -81,8 +84,9 @@ workflow, source ref, and commit. They do not provide Secure Boot signatures,
 node-side signature enforcement, revocation, downgrade prevention, vulnerability
 scanning guarantees, or a production incident-response commitment.
 
-Kubernetes bundles have their own OCI digest and GitHub provenance. Prefer a
-reference containing both the readable tag and immutable manifest digest:
+Kubernetes bundles have their own OCI digest and GitHub provenance. An operator
+who wants exact byte identity can use a reference containing both the readable
+tag and immutable manifest digest:
 
 ```text
 ghcr.io/katl-dev/kubernetes:<version>@sha256:<oci-manifest-digest>

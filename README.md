@@ -42,7 +42,7 @@ prepares kubeadm-ready nodes; users operate the cluster built on top.
 ClusterConfig YAML
         │
         ▼
-katlctl validate + bundle ───────► one verified .katlcfg for every node
+katlctl config bundle ───────────► one .katlcfg for every node
                                             │
 KatlOS installer ISO ── boot node ◄─────────┘ select node by name
         │
@@ -50,7 +50,7 @@ KatlOS installer ISO ── boot node ◄─────────┘ select n
 immutable generation 0 + node-local katlc agent
         │
         ▼
-katlctl cluster bootstrap ───────► verified Kubernetes OCI bundle
+katlctl cluster bootstrap ───────► Kubernetes OCI bundle
         │
         ▼
 kubeadm cluster handoff ─────────► user-managed CNI, GitOps, and workloads
@@ -67,36 +67,19 @@ arguments, disk safety rules, and troubleshooting, is in the
 [installation guide](docs/installing.md). The outline below shows the normal ISO
 path.
 
-### 1. Download and verify a release
+### 1. Download a release
 
 From the [Katl releases page](https://github.com/katl-dev/katl/releases),
 download these files from the same release:
 
 ```text
 katl-installer.iso
-katl-installer.iso.sha256
 katlctl-<version>-linux-amd64
-katlctl-<version>-linux-amd64.sha256
-SHA256SUMS
-PROVENANCE.md
 ```
 
-Verify transport integrity before using them:
-
-```sh
-sha256sum --ignore-missing --check SHA256SUMS
-```
-
-Authenticate the installer against the release workflow, replacing `<tag>`
-with the exact tag you downloaded:
-
-```sh
-TAG=v2026.7.0-alpha.2
-gh attestation verify katl-installer.iso \
-  --repo katl-dev/katl \
-  --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
-  --source-ref "refs/tags/$TAG"
-```
+Checksums and GitHub build attestations are also published for operators who
+want to authenticate downloaded artifacts. They are optional on the normal
+trusted-home-network path; see [Verify release artifacts](docs/operations/verify-release.md).
 
 Install the matching operator CLI and confirm its embedded identity:
 
@@ -126,20 +109,19 @@ spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
     version: v1.36.0
-    bundle: ghcr.io/katl-dev/kubernetes:<version>@sha256:<oci-manifest-digest>
+    bundle: ghcr.io/katl-dev/kubernetes:<version>
   # defaults, kubeadmConfigs, and nodes omitted here; use the complete example
   # in docs/installing.md.
 ```
 
-Digest pins are strongly recommended. A readable tag is accepted and works
-with Renovate's Docker datasource, but a digest prevents the selected content
-from changing before the operation resolves it.
+Use the readable version tag on the normal path. Katl resolves the selected
+content once for the operation and checks what it downloads internally. An
+immutable digest pin remains available as an optional reproducibility control.
 
-Validate the source without writing output, then compile one content-addressed
-bundle for all nodes:
+Compile one bundle for all nodes. The command checks the source as part of
+building it:
 
 ```sh
-katlctl config validate ./cluster.yaml
 katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
 ```
 

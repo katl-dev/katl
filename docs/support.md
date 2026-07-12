@@ -34,8 +34,9 @@ application lifecycle.
 
 KatlOS release assets provide SHA-256 checksums and keyless GitHub build-
 provenance attestations. Kubernetes bundles are digest-addressable OCI
-artifacts with GitHub provenance. Verify both before use and prefer immutable
-digest-pinned bundle references.
+artifacts with GitHub provenance. These are optional tools for operators who
+want a stricter supply-chain policy; the normal home-lab path accepts readable
+release and bundle versions and performs its own internal consistency checks.
 
 The current `katlc` management API uses bearer authentication over unencrypted
 TCP. Restrict port 9443 to an isolated evaluation management network. It is not
@@ -101,14 +102,14 @@ using the bug report form. Remove tokens, private keys, kubeconfigs, join
 commands, and other secrets before attaching anything. Include:
 
 - the KatlOS version, release URL, and `katlctl version` output;
-- exact artifact filenames, SHA-256 values, Kubernetes OCI reference and
-  digest, and whether provenance verification passed;
+- exact artifact filenames and Kubernetes OCI reference, plus SHA-256 values
+  or provenance results when they are relevant and available;
 - hardware or hypervisor, firmware/UEFI mode, CPU, storage controller and disk
   identity, and network devices;
 - the smallest redacted `ClusterConfig` and exact command sequence that
   reproduces the problem;
-- relevant operation IDs, generation IDs, config bundle digest, selected node,
-  and failure timestamps; and
+- relevant operation IDs, generation IDs, selected node, and failure
+  timestamps; and
 - redacted installer output, `systemctl` status, `journalctl` output, or retained
   `scripts/vmtest-run` run directory named by the failure.
 

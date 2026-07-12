@@ -13,7 +13,7 @@ evaluation networks.
 
 | Current state | Operator goal | Runbook |
 | --- | --- | --- |
-| No KatlOS media downloaded | Authenticate a release | [Verify release artifacts](verify-release.md) |
+| No KatlOS media downloaded | Download a release | [Install KatlOS](../installing.md) |
 | Bare or disposable machine | Install generation 0 | [Install KatlOS](../installing.md) |
 | Generation 0 booted | Establish node management access | [Access installed nodes](access.md) |
 | All intended nodes installed | Create the kubeadm cluster | [Bootstrap Kubernetes](bootstrap-kubernetes.md) |
@@ -25,16 +25,16 @@ evaluation networks.
 ## Operating Rules
 
 The operator workstation needs the `katlctl` binary from the matching release,
-`ssh`, `curl`, GNU `sha256sum`, and `jq`. Provenance verification additionally
-uses GitHub CLI `gh`; cluster handoff checks use a `kubectl` version compatible
-with the selected Kubernetes release. These tools run on the workstation, not
-inside the KatlOS image.
+`ssh`, `curl`, and `jq`. Optional checksum and provenance inspection uses GNU
+`sha256sum` and GitHub CLI `gh`; cluster handoff checks use a `kubectl` version
+compatible with the selected Kubernetes release. These tools run on the
+workstation, not inside the KatlOS image.
 
 Keep these artifacts together for the life of an evaluation:
 
-- the exact KatlOS release URL, assets, checksums, and provenance result;
+- the KatlOS release URL and assets used;
 - the source `ClusterConfig` and compiled `.katlcfg` bundle;
-- the digest-pinned Kubernetes OCI reference;
+- the Kubernetes OCI reference;
 - one protected agent token file per node;
 - the kubeconfig, operation IDs, generation IDs, and relevant timestamps; and
 - independent etcd, application, and persistent-data backups.
