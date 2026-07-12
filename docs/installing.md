@@ -111,7 +111,7 @@ the Katl release workflow. Pin the expected tag in the verification policy:
 gh attestation verify katl-installer.iso \
   --repo katl-dev/katl \
   --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
-  --source-ref refs/tags/v2026.7.0-alpha.1
+  --source-ref refs/tags/<tag>
 ```
 
 Repeat the attestation check for the KatlOS SquashFS or loose PXE artifact you
