@@ -435,6 +435,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses, tokenFiles, bootstrapGenerations map[string]string, inventoryPath, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture, snapshot threeControlPlaneEtcdReport) error {
 	t.Helper()
 	const generationID = "2026.07.11-vmtest-control-plane-config"
+	const configName = "control-plane-profiled"
 	proofDir := filepath.Join(result.RunDir, "kubeadm-control-plane-config")
 	if err := os.MkdirAll(proofDir, 0o755); err != nil {
 		return err
@@ -477,7 +478,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		return err
 	}
 	requestPath := filepath.Join(proofDir, "config-apply.yaml")
-	request := []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\nmetadata:\n  sourceID: vmtest\n  desiredVersion: \"20260711\"\napply:\n  mode: next-boot\nspec:\n  clusterDefaults:\n    kubernetes:\n      kubeadm:\n        configRef: control-plane\n")
+	request := fmt.Appendf(nil, "apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\nmetadata:\n  sourceID: vmtest\n  desiredVersion: \"20260711\"\napply:\n  mode: next-boot\nspec:\n  clusterDefaults:\n    kubernetes:\n      kubeadm:\n        configRef: %s\n", configName)
 	if err := os.WriteFile(requestPath, request, 0o600); err != nil {
 		return err
 	}
@@ -487,8 +488,8 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		if err := writeNodeFile(ctx, node, guestConfig, desiredConfig, 0o600, true); err != nil {
 			return fmt.Errorf("stage desired kubeadm config on %s: %w", node.Name, err)
 		}
-		installed := "/var/lib/katl/cluster/kubeadm/control-plane/config.yaml"
-		copyResult, err := runNodeCommandWithRetry(ctx, node, []string{"install", "-m", "0600", guestConfig, installed}, 16<<10)
+		installed := "/var/lib/katl/cluster/kubeadm/" + configName + "/config.yaml"
+		copyResult, err := runNodeCommandWithRetry(ctx, node, []string{"install", "-D", "-m", "0600", guestConfig, installed}, 16<<10)
 		if err != nil {
 			return fmt.Errorf("install desired kubeadm config on %s: %w", node.Name, err)
 		}
@@ -504,7 +505,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		if err := protojson.Unmarshal(stdout, &accepted); err != nil || accepted.RecordPath == "" {
 			return fmt.Errorf("decode %s staged generation acceptance: %w", node.Name, err)
 		}
-		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, accepted.RecordPath, false); err != nil {
+		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, configName, accepted.RecordPath, false); err != nil {
 			return err
 		}
 	}
@@ -515,7 +516,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
 			return fmt.Errorf("reactivate %s CNI fixture: %w", node.Name, err)
 		}
-		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, "", true); err != nil {
+		if err := waitForConfigGeneration(ctx, katlctl, proofDir, node, addresses[node.Name], tokenFiles[node.Name], generationID, configName, "", true); err != nil {
 			return err
 		}
 		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-after-reboot-"+node.Name+".txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
@@ -538,7 +539,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	if len(snapshot.Health.EndpointStatuses) > 0 {
 		etcdVersion = snapshot.Health.EndpointStatuses[0].Version
 	}
-	args := []string{"cluster", "kubeadm-control-plane-config", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", "control-plane", "--desired-config-sha256", desiredDigest, "--expected-live-sha256", liveDigest, "--kubernetes-version", bundle.PayloadVersion, "--kubernetes-sha256", strings.TrimPrefix(bundle.SysextPayloadDigest, "sha256:"), "--rollout-id", "2026.07.11-vmtest-control-plane-config", "--snapshot-ref", filepath.Base(snapshot.Snapshot.Path), "--snapshot-sha256", snapshotSHA, "--snapshot-revision", snapshot.Snapshot.Revision, "--member-list-sha256", hex.EncodeToString(memberSum[:]), "--source-etcd-version", etcdVersion, "--snapshot-created-at", time.Now().UTC().Format(time.RFC3339), "--snapshot-location", snapshot.Snapshot.Path, "--snapshot-operator", "katl-vmtest"}
+	args := []string{"cluster", "kubeadm-control-plane-config", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--desired-config-sha256", desiredDigest, "--expected-live-sha256", liveDigest, "--kubernetes-version", bundle.PayloadVersion, "--kubernetes-sha256", strings.TrimPrefix(bundle.SysextPayloadDigest, "sha256:"), "--rollout-id", "2026.07.11-vmtest-control-plane-config", "--snapshot-ref", filepath.Base(snapshot.Snapshot.Path), "--snapshot-sha256", snapshotSHA, "--snapshot-revision", snapshot.Snapshot.Revision, "--member-list-sha256", hex.EncodeToString(memberSum[:]), "--source-etcd-version", etcdVersion, "--snapshot-created-at", time.Now().UTC().Format(time.RFC3339), "--snapshot-location", snapshot.Snapshot.Path, "--snapshot-operator", "katl-vmtest"}
 	for _, delta := range deltas {
 		args = append(args, "--field-delta", delta)
 	}
@@ -662,7 +663,7 @@ func runProofKatlctl(ctx context.Context, binary, dir, name string, args ...stri
 	return stdout.Bytes(), stderr.String(), err
 }
 
-func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmtest.RunningInstalledRuntimeNode, address, tokenFile, generationID, operationRecordPath string, healthy bool) error {
+func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmtest.RunningInstalledRuntimeNode, address, tokenFile, generationID, configName, operationRecordPath string, healthy bool) error {
 	deadline := time.Now().Add(5 * time.Minute)
 	var last string
 	for time.Now().Before(deadline) {
@@ -684,7 +685,7 @@ func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmte
 				if healthy {
 					ready = ready && generation.HealthState == "healthy"
 				}
-				if ready && generation.GetConfigApply().GetKubeadmActionRequired() && generation.GetConfigApply().GetSelectedKubeadmConfigName() == "control-plane" {
+				if ready && generation.GetConfigApply().GetKubeadmActionRequired() && generation.GetConfigApply().GetSelectedKubeadmConfigName() == configName {
 					return nil
 				}
 				last = generation.String()
