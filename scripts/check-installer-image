@@ -38,6 +38,9 @@ initrd_list="$(cpio -it <"$initrd_cpio" 2>/dev/null)" || fail "list installer in
 if grep -Eiq '(^|/)[^/]*(vmtest|vm-test)[^/]*($|/)' <<<"$initrd_list"; then
     fail "installer image contains VM-test support"
 fi
+if grep -Eq '^usr/lib/modules/[^/]+/(System\.map|vmlinuz)$' <<<"$initrd_list"; then
+    fail "installer initrd contains duplicate kernel build artifacts"
+fi
 
 has_path() {
     local path="${1#/}"
