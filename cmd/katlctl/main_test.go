@@ -1395,8 +1395,6 @@ func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 		"host", "upgrade",
 		"--endpoint", "node-a.example.test:9443",
 		"--image-url", "https://updates.example.test/katlos-upgrade.squashfs",
-		"--image-sha256", strings.Repeat("b", 64),
-		"--image-size-bytes", "4096",
 		"--candidate-generation", "generation-upgrade-1",
 		"--client-request-id", "req-host-upgrade",
 	}, &stdout, &stderr)
@@ -1407,7 +1405,7 @@ func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 	if request == nil || request.OperationKind != "host-upgrade" || request.GetHostUpgrade() == nil {
 		t.Fatalf("submit request = %+v", request)
 	}
-	if request.HostUpgrade.ImageUrl != "https://updates.example.test/katlos-upgrade.squashfs" || request.HostUpgrade.ImageSha256 != strings.Repeat("b", 64) || request.HostUpgrade.CandidateGenerationId != "generation-upgrade-1" {
+	if request.HostUpgrade.ImageUrl != "https://updates.example.test/katlos-upgrade.squashfs" || request.HostUpgrade.ImageSha256 != "" || request.HostUpgrade.ImageSizeBytes != 0 || request.HostUpgrade.CandidateGenerationId != "generation-upgrade-1" {
 		t.Fatalf("host upgrade request = %+v", request.HostUpgrade)
 	}
 	if !strings.Contains(stdout.String(), "host-upgrade-01") || strings.Contains(stdout.String(), "requestDigest") {
@@ -1699,13 +1697,18 @@ func TestOperatorCommandsHideIntegrityDigestFlags(t *testing.T) {
 		{"config", "render-node", "--help"},
 		{"config", "apply", "--help"},
 		{"cluster", "bootstrap", "--help"},
+		{"cluster", "kubeadm-control-plane-config", "--help"},
+		{"host", "upgrade", "--help"},
 		{"operation", "status", "--help"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
 			t.Fatalf("run(%v) error = %v", args, err)
 		}
-		if strings.Contains(stdout.String(), "config-bundle-digest") || strings.Contains(stdout.String(), "request-digest") {
+		for _, hidden := range []string{"config-bundle-digest", "request-digest", "image-sha256", "image-size-bytes", "desired-config-sha256", "expected-live-sha256", "kubernetes-sha256", "snapshot-sha256", "member-list-sha256", "field-delta"} {
+			if !strings.Contains(stdout.String(), hidden) {
+				continue
+			}
 			t.Fatalf("run(%v) exposed digest plumbing:\n%s", args, stdout.String())
 		}
 	}

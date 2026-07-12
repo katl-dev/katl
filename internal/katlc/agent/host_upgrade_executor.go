@@ -31,6 +31,21 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
 	defer e.cleanupHostUpgradeMount(payload)
+	if strings.TrimSpace(payload.ImageSHA256) == "" || payload.ImageSizeBytes == 0 {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("resolved KatlOS image identity is incomplete"))
+	}
+	record, err = e.Store.Update(record.OperationID, "host-upgrade-image-resolved", "verify-katlos-image", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.HostUpgradeRequest.ImageSHA256 = payload.ImageSHA256
+		current.HostUpgradeRequest.ImageSizeBytes = payload.ImageSizeBytes
+		current.Phase = "verify-katlos-image"
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "verify-katlos-image")
+		current.UpdatedAt = e.clock()
+		current.NextAction = "stage the internally identified root and UKI components through systemd-sysupdate"
+		return current, nil
+	})
+	if err != nil {
+		return err
+	}
 	currentID, err := currentGenerationID(e.Root)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
@@ -76,7 +91,7 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		current.ExternalMutationStarted = true
 		current.MutationScopes = appendMissing(current.MutationScopes, "root-slot-labels", "runtime-root", "runtime-uki")
 		current.UpdatedAt = e.clock()
-		current.NextAction = "stage verified root and UKI components through systemd-sysupdate"
+		current.NextAction = "stage root and UKI components through systemd-sysupdate"
 		return current, nil
 	})
 	if err != nil {

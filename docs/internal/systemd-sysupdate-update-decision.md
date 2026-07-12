@@ -156,12 +156,13 @@ metadata as the single image. The single image remains the contract for
 installers and offline media. The component view is an implementation view for
 sysupdate transport.
 
-For local or offline updates, Katl may mount a verified KatlOS image and run
+For local or offline updates, Katl may mount a KatlOS image and run
 sysupdate with `regular-file` sources and `--definitions=` pointing at
 Katl-generated transfer definitions for the mounted component directory. Local
 regular-file sources do not provide sysupdate's remote signature verification,
-so Katl must verify the top-level image digest and embedded component digests
-before invoking sysupdate.
+so Katl calculates and records the top-level image identity and checks embedded
+component digests before invoking sysupdate. Operators do not supply that
+identity on the normal path.
 
 Because sysupdate source `MatchPattern=` values must contain `@v`, the mounted
 image layout must either include a sysupdate-compatible component directory or

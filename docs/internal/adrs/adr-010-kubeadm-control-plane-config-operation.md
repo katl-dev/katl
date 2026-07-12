@@ -115,13 +115,13 @@ all nodes agree on cluster identity and stable control-plane endpoint
 all nodes run the same Kubernetes payload version and digest
 the desired generation is active and committed on every target node
 the selected KubeadmConfig name and cluster-wide digest agree on every node
-the live kubeadm ConfigMap digest matches the request's expected-live digest
-the only desired/live differences are supported profiling=false additions
+katlc derives the live kubeadm ConfigMap identity immediately before mutation
+the internally observed desired/live differences are supported profiling=false
+  additions only
 all three nodes are Ready and the stable API endpoint is healthy
 all three stacked-etcd members are healthy and voting
 no concurrent kubeadm-state operation owns a target node
-an etcd snapshot record names its path, SHA-256, revision, member-list digest,
-  creation time, source etcd version, and operator identity
+stacked-etcd and API health pass before and after each bounded node mutation
 ```
 
 The operation refuses:
@@ -138,8 +138,8 @@ InitConfiguration, JoinConfiguration, KubeletConfiguration, or
 adding, removing, or replacing a control-plane or etcd member
 combined Kubernetes payload and control-plane configuration changes
 one-node or two-node execution presented as the three-control-plane release path
-parallel node mutation, unknown quorum, an unhealthy API, or stale expected-live
-  evidence
+parallel node mutation, unknown quorum, an unhealthy API, or desired state that
+  changed after operation acceptance
 ```
 
 Katl may later expand the allowlist one field at a time with an explicit phase,
@@ -152,11 +152,11 @@ Planning is read-only. The explicit plan reports:
 
 ```text
 config name and desired generation
-desired and live canonical digests
-supported field-level delta
-Kubernetes payload version and digest
+internally derived desired and live canonical identities
+internally observed supported field-level delta
+active Kubernetes payload version and identity
 three-node order and coordinator
-etcd member and snapshot preconditions
+etcd member and API health preconditions
 static manifest digests before mutation
 commands that would run
 unsupported differences and required manual action
@@ -310,7 +310,8 @@ post-upload-health-complete
 ```
 
 `katlctl` retains a non-authoritative rollout summary that references every
-node-local operation ID and request digest. Node-local journals remain the
+node-local operation ID. Node-local journals retain internally derived request,
+desired-state, live-state, payload, and manifest identities and remain the
 mutation authority.
 
 ## Consequences

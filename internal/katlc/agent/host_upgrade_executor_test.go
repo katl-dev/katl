@@ -78,10 +78,12 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := katlosimage.Payload{
-		Root:    payloadRoot,
-		Index:   katlosimage.Index{ImageRole: katlosimage.RoleUpgrade, Version: "2026.7.0-dev.1", Architecture: "x86_64", RuntimeInterface: "katl-runtime-1"},
-		Runtime: katlosimage.Component{Name: "runtime-root", Role: katlosimage.ComponentRuntimeRoot, Path: "components/runtime/root.squashfs", SizeBytes: int64(len(runtimeBytes)), SHA256: testSHA(runtimeBytes), Version: "2026.7.0-dev.1", Architecture: "x86_64"},
-		Boot:    katlosimage.Component{Name: "runtime-uki", Role: katlosimage.ComponentRuntimeUKI, Path: "components/boot/katl.efi", SizeBytes: int64(len(ukiBytes)), SHA256: testSHA(ukiBytes), Version: "2026.7.0-dev.1", Architecture: "x86_64"},
+		Root:           payloadRoot,
+		ImageSHA256:    strings.Repeat("e", 64),
+		ImageSizeBytes: 4096,
+		Index:          katlosimage.Index{ImageRole: katlosimage.RoleUpgrade, Version: "2026.7.0-dev.1", Architecture: "x86_64", RuntimeInterface: "katl-runtime-1"},
+		Runtime:        katlosimage.Component{Name: "runtime-root", Role: katlosimage.ComponentRuntimeRoot, Path: "components/runtime/root.squashfs", SizeBytes: int64(len(runtimeBytes)), SHA256: testSHA(runtimeBytes), Version: "2026.7.0-dev.1", Architecture: "x86_64"},
+		Boot:           katlosimage.Component{Name: "runtime-uki", Role: katlosimage.ComponentRuntimeUKI, Path: "components/boot/katl.efi", SizeBytes: int64(len(ukiBytes)), SHA256: testSHA(ukiBytes), Version: "2026.7.0-dev.1", Architecture: "x86_64"},
 	}
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
 	if err != nil {

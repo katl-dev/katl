@@ -49,8 +49,6 @@ func TestStoreCreatesAndUpdatesJournalFirstRecord(t *testing.T) {
 func TestValidateHostUpgrade(t *testing.T) {
 	valid := HostUpgrade{
 		ImageLocalRef:         "updates/katlos-upgrade.squashfs",
-		ImageSHA256:           strings.Repeat("a", 64),
-		ImageSizeBytes:        4096,
 		CandidateGenerationID: "gen-upgrade-1",
 	}
 	if err := ValidateHostUpgrade(valid); err != nil {
@@ -63,7 +61,7 @@ func TestValidateHostUpgrade(t *testing.T) {
 	}{
 		{name: "two refs", mutate: func(v *HostUpgrade) { v.ImageURL = "https://example.test/image" }, want: "exactly one"},
 		{name: "path escape", mutate: func(v *HostUpgrade) { v.ImageLocalRef = "../image" }, want: "clean relative"},
-		{name: "bad digest", mutate: func(v *HostUpgrade) { v.ImageSHA256 = "bad" }, want: "SHA-256"},
+		{name: "bad optional digest", mutate: func(v *HostUpgrade) { v.ImageSHA256 = "bad" }, want: "SHA-256"},
 		{name: "bad generation", mutate: func(v *HostUpgrade) { v.CandidateGenerationID = "../gen" }, want: "clean path segment"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

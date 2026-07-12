@@ -264,7 +264,8 @@ Required order:
 
 ```text
 resolve the KatlOS image from the manifest or local media
-verify the top-level image SHA-256 against the manifest or trusted local metadata
+calculate the top-level image SHA-256 and compare it when optional expected
+  metadata was explicitly supplied
 mount the image read-only
 load /katlos/image.json with unknown fields rejected
 validate apiVersion, kind, imageRole, architecture, and runtimeInterface

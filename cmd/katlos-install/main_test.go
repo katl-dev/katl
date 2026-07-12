@@ -244,6 +244,32 @@ func TestFetchBundleURL(t *testing.T) {
 	}
 }
 
+func TestFetchBundleURLDerivesDigestWhenNotSupplied(t *testing.T) {
+	bundle := []byte("bundle archive")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bundle)
+	}))
+	t.Cleanup(server.Close)
+
+	path, err := fetchBundleURL(context.Background(), server.URL+"/cluster.katlcfg", "", t.TempDir())
+	if err != nil {
+		t.Fatalf("fetchBundleURL() error = %v", err)
+	}
+	assertFile(t, path, "bundle archive")
+}
+
+func TestFetchBundleURLRejectsOptionalDigestMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("bundle archive"))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := fetchBundleURL(context.Background(), server.URL+"/cluster.katlcfg", strings.Repeat("a", 64), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("fetchBundleURL() error = %v, want optional digest mismatch", err)
+	}
+}
+
 func TestFetchManifestURL(t *testing.T) {
 	manifest := []byte(`{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest"}`)
 	digest := sha256.Sum256(manifest)

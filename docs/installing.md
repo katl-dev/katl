@@ -265,7 +265,7 @@ Current bundle-oriented kernel arguments are:
 
 ```text
 katl.bundle.url=<config bundle URL>
-katl.bundle.sha256=<config bundle archive SHA-256>
+katl.bundle.sha256=<optional expected config bundle archive SHA-256>
 katl.bundle=<local config bundle path>
 katl.node=<node name>
 katl.install.mode=auto
@@ -275,9 +275,9 @@ console=...
 ip=...
 ```
 
-A URL bundle must have `katl.bundle.sha256`; otherwise it cannot authorize disk
-mutation. The installer derives the internal bundle identity after verifying
-the downloaded archive. Without input, or with
+The installer calculates the downloaded archive identity and checks the bundle
+structure itself. `katl.bundle.sha256` is an optional expert control when an
+external expected checksum is already available. Without input, or with
 `katl.wait-for-config=1`, the installer waits for handoff. Debug mode never
 starts an install.
 
@@ -287,15 +287,14 @@ Illustrative iPXE entry for `cp-1`:
 #!ipxe
 set base https://boot.example.invalid/katl/2026.7.0
 set node cp-1
-set bundle_sha <config-bundle-archive-sha256>
-kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.bundle.sha256=${bundle_sha} katl.install.mode=auto
+kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto
 initrd ${base}/katl-installer.initrd
 boot
 ```
 
-Matchbox profiles carry the same four `katl.*` arguments. Groups should select
-only `katl.node`; they do not need a different bundle URL or archive digest per
-node. Katl does not create or operate DHCP, iPXE, or matchbox configuration.
+Matchbox profiles carry the same `katl.*` arguments. Groups should select only
+`katl.node`; they do not need a different bundle URL per node. Katl does not
+create or operate DHCP, iPXE, or matchbox configuration.
 
 ## ISO Or Local Handoff
 
@@ -595,8 +594,8 @@ bundle or selected node rejected
 
 destructive install refused
   Confirm install.wipeTarget is true and boot input selected
-  katl.install.mode=auto. For URL bundles, confirm katl.bundle.sha256 is present
-  and matches the published archive bytes.
+  katl.install.mode=auto. Confirm the URL is reachable and returns the intended
+  .katlcfg archive.
 
 target disk not found
   Prefer /dev/disk/by-id, WWN, or serial selectors. Confirm firmware and HBA

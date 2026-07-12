@@ -91,7 +91,7 @@ func TestDiscoverBootInputBundleKernelArgs(t *testing.T) {
 	}
 }
 
-func TestDiscoverBootInputBundleURLWithoutDigestDoesNotMutateDisks(t *testing.T) {
+func TestDiscoverBootInputBundleURLWithoutDigestCanMutateDisks(t *testing.T) {
 	input, err := DiscoverBootInput(BootInputRequest{
 		KernelCmdline: "katl.bundle.url=https://kernel.example/cluster.katlcfg katl.install.mode=auto katl.node=cp-1",
 	})
@@ -101,8 +101,8 @@ func TestDiscoverBootInputBundleURLWithoutDigestDoesNotMutateDisks(t *testing.T)
 	if input.Action != InstallActionRun {
 		t.Fatalf("action = %q, want run", input.Action)
 	}
-	if input.CanMutateDisks() {
-		t.Fatalf("bundle URL without transport digest must not allow disk mutation")
+	if !input.CanMutateDisks() {
+		t.Fatalf("bundle URL must allow disk mutation without an operator-supplied transport digest")
 	}
 }
 
