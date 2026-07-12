@@ -250,6 +250,9 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "dist")
 	version := "2026.7.0-rc.0"
 	names := writeRequiredReleaseArtifacts(t, buildDir)
+	if err := os.WriteFile(filepath.Join(buildDir, "katl-installer.packages.tsv"), []byte("bash\t5.3.0\tx86_64\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	writeReleaseArtifact(t, buildDir, "katl-runtime.efi")
 	if err := os.WriteFile(filepath.Join(buildDir, "artifacts.json"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -274,7 +277,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		got = append(got, entry.Name())
 	}
 	sort.Strings(got)
-	want := []string{"PROVENANCE.md", "RELEASE_NOTES.md", "SHA256SUMS", "SUPPORT.md"}
+	want := []string{"PROVENANCE.md", "RELEASE_NOTES.md", "SHA256SUMS", "SUPPORT.md", "katl-installer.packages.tsv"}
 	for _, name := range names {
 		want = append(want, name, name+".json", name+".sha256")
 	}
@@ -304,12 +307,12 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	}
 
 	checksums := mustReadFile(t, filepath.Join(output, "SHA256SUMS"))
-	for _, name := range append([]string{"PROVENANCE.md", "RELEASE_NOTES.md", "SUPPORT.md"}, names...) {
+	for _, name := range append([]string{"PROVENANCE.md", "RELEASE_NOTES.md", "SUPPORT.md", "katl-installer.packages.tsv"}, names...) {
 		if !strings.Contains(string(checksums), "  "+name+"\n") {
 			t.Fatalf("SHA256SUMS missing %q: %q", name, checksums)
 		}
 		for _, suffix := range []string{".json", ".sha256"} {
-			if name == "PROVENANCE.md" || name == "RELEASE_NOTES.md" || name == "SUPPORT.md" {
+			if name == "PROVENANCE.md" || name == "RELEASE_NOTES.md" || name == "SUPPORT.md" || name == "katl-installer.packages.tsv" {
 				continue
 			}
 			if !strings.Contains(string(checksums), "  "+name+suffix+"\n") {

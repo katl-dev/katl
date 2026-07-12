@@ -224,6 +224,7 @@ stage_artifacts() {
         "katlos-upgrade-${version}-${architecture}.squashfs"
     )
     local operator_name="katlctl-${version}-linux-amd64"
+    local installer_packages="katl-installer.packages.tsv"
 
     validate_version "$version"
     [[ -n "$output" && "$output" != / && "$output" != . ]] ||
@@ -247,6 +248,7 @@ stage_artifacts() {
     done
     verify_artifact "$operator_name" "$version" amd64
     names+=("$operator_name")
+    [[ -f "$build_dir/$installer_packages" ]] || fail "release installer package inventory is missing: $build_dir/$installer_packages"
 
     mkdir -p "$output"
     for name in "${names[@]}"; do
@@ -254,6 +256,7 @@ stage_artifacts() {
             cp -- "$build_dir/$name$suffix" "$output/"
         done
     done
+    cp -- "$build_dir/$installer_packages" "$output/$installer_packages"
     [[ -f "$repo_root/docs/support.md" ]] || fail "release support boundary is missing: $repo_root/docs/support.md"
     cp -- "$repo_root/docs/support.md" "$output/SUPPORT.md"
     cat >"$output/PROVENANCE.md" <<'EOF'
