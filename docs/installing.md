@@ -1,6 +1,7 @@
 # Installing KatlOS
 
-Status: early user-facing guide.
+Status: early user-facing guide. KatlOS is experimental alpha software; read
+the [support boundary](support.md) before installing it.
 
 Katl publishes a versioned installer ISO containing the matching KatlOS payload.
 Write or attach that one artifact, then provide node-specific install input at
@@ -577,4 +578,6 @@ production signing, revocation, and private artifact distribution policy
 ```
 
 Those areas need separate design and tests before they become supported
-operator workflows.
+operator workflows. The complete production, compatibility, trust, recovery,
+hardware-evidence, and issue-reporting boundary is maintained in
+[`support.md`](support.md).

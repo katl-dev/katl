@@ -151,6 +151,8 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	}
 	notes := string(output)
 	for _, value := range []string{
+		"## Support boundary",
+		"SUPPORT.md",
 		"## Changes",
 		"- **release:** attest KatlOS artifacts",
 		"- **release:** automate Kubernetes bundles",
@@ -272,7 +274,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		got = append(got, entry.Name())
 	}
 	sort.Strings(got)
-	want := []string{"PROVENANCE.md", "RELEASE_NOTES.md", "SHA256SUMS"}
+	want := []string{"PROVENANCE.md", "RELEASE_NOTES.md", "SHA256SUMS", "SUPPORT.md"}
 	for _, name := range names {
 		want = append(want, name, name+".json", name+".sha256")
 	}
@@ -295,19 +297,19 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		}
 	}
 	releaseNotes := string(mustReadFile(t, filepath.Join(output, "RELEASE_NOTES.md")))
-	for _, value := range []string{"## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
+	for _, value := range []string{"## Support boundary", "SUPPORT.md", "## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
 		if !strings.Contains(releaseNotes, value) {
 			t.Fatalf("release notes missing %q: %q", value, releaseNotes)
 		}
 	}
 
 	checksums := mustReadFile(t, filepath.Join(output, "SHA256SUMS"))
-	for _, name := range append([]string{"PROVENANCE.md", "RELEASE_NOTES.md"}, names...) {
+	for _, name := range append([]string{"PROVENANCE.md", "RELEASE_NOTES.md", "SUPPORT.md"}, names...) {
 		if !strings.Contains(string(checksums), "  "+name+"\n") {
 			t.Fatalf("SHA256SUMS missing %q: %q", name, checksums)
 		}
 		for _, suffix := range []string{".json", ".sha256"} {
-			if name == "PROVENANCE.md" || name == "RELEASE_NOTES.md" {
+			if name == "PROVENANCE.md" || name == "RELEASE_NOTES.md" || name == "SUPPORT.md" {
 				continue
 			}
 			if !strings.Contains(string(checksums), "  "+name+suffix+"\n") {

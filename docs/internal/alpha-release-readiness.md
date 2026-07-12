@@ -58,29 +58,29 @@ The capable-host workflow remains tracked by `katl-dty.13.3`. An alpha must not
 claim a VM, install, update, or Kubernetes gate passed merely because
 `go test ./...` passed.
 
-## Documentation Defects Found During Audit
+## Public-UX Defects Resolved During Audit
 
-The current guide does not match the published and implemented interfaces:
+The alpha hardening work corrected these user-facing gaps:
 
-- release PXE boot assets are named `katl-installer.efi`,
-  `katl-installer.vmlinuz`, and `katl-installer.initrd`, while the guide shows
-  versioned loose filenames;
-- the currently published Kubernetes bundle revision differs from the examples;
-- bundle URL, digest, node-selection kernel arguments and the bundle handoff
-  endpoint are implemented but absent from the guide;
-- `katlctl config bundle` and the `ClusterConfig` contract are absent from the
-  primary install journey;
-- the bootstrap command cannot yet consume the inventory already embedded in
-  the config bundle;
-- no released asset provides the `katlctl` command required by the guide.
+- release asset names and the tested immutable Kubernetes bundle reference now
+  match the guide;
+- bundle URL, digest, node selection, local handoff, and PXE input are
+  documented around one `ClusterConfig` and one compiled bundle;
+- the release includes `katlctl`, non-writing validation, and the source schema;
+- bootstrap consumes the verified bundle's embedded inventory and Kubernetes
+  selection;
+- runtime configuration derives a bounded per-node request from the same source
+  or verified bundle; and
+- `SUPPORT.md` ships beside every release with the alpha boundary and issue
+  evidence requirements.
 
-These are release blockers because they prevent a new user from reproducing the
-implemented happy path without reading internal design documents or building
-the repository.
+The remaining release blocker is proof of the complete journey against the
+exact public release artifacts, tracked by `katl-dty.16.25.7`.
 
 ## Accepted Alpha Limitations
 
-The alpha may ship with these explicit boundaries:
+The public, release-shipped contract is [`../support.md`](../support.md). In
+summary, the alpha may ship with these explicit boundaries:
 
 - x86-64 and EFI-only;
 - experimental `v1alpha1` configuration APIs with no beta compatibility

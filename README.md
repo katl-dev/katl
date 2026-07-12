@@ -14,4 +14,6 @@ runtime behavior are expected to change. Do not use Katl for production
 clusters.
 
 For the current install boundary and PXE/USB handoff examples, see
-[`docs/installing.md`](docs/installing.md).
+[`docs/installing.md`](docs/installing.md). Before evaluating a release, read
+the [KatlOS support boundary](docs/support.md) for the tested surface, trust and
+compatibility limits, recovery scope, and required bug-report evidence.

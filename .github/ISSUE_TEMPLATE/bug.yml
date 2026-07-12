@@ -1,0 +1,62 @@
+name: KatlOS bug report
+description: Report a reproducible KatlOS alpha failure with release evidence
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        KatlOS is experimental alpha software without a support SLA. Remove tokens, private keys, kubeconfigs, join commands, and other secrets. For sensitive security reports, use the repository's [private vulnerability reporting](https://github.com/katl-dev/katl/security/advisories/new) instead.
+  - type: input
+    id: version
+    attributes:
+      label: KatlOS release
+      description: Provide the version, release URL, and katlctl version output.
+      placeholder: v2026.7.0-alpha.1; https://github.com/katl-dev/katl/releases/tag/...; katlctl version=...
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Artifact identity and verification
+      description: List exact filenames and SHA-256 values, the Kubernetes OCI tag@digest, and whether checksum and provenance verification passed.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Hardware or virtual environment
+      description: Include hypervisor or machine model, UEFI firmware, CPU architecture, storage controller and target disk identity, and network devices.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide the smallest redacted ClusterConfig and exact command or boot sequence. Never include credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+      description: State what you expected and what happened instead, including the failure timestamp.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted runtime evidence
+      description: Include operation and generation IDs, bundle digest and selected node, relevant systemctl/journalctl output, or the retained vmtest run directory.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials, tokens, private keys, kubeconfigs, join commands, and other secrets.
+          required: true
+        - label: I understand this alpha has no production support or compatibility guarantee.
+          required: true

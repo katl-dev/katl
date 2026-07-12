@@ -62,6 +62,12 @@ generate_release_notes() {
     fi
 
     mapfile -t commits < <(git log --format='%H%x09%s' "$range")
+    printf '## Support boundary\n\n'
+    if [[ "$version" == *-alpha.* ]]; then
+        printf 'This is an experimental alpha release, not a production-supported release. '
+    fi
+    printf 'Read SUPPORT.md before installation for the tested surface, trust and compatibility limits, recovery scope, and required issue evidence.\n\n'
+
     printf '## Changes\n\n'
     if ((${#commits[@]} == 0)); then
         printf '_No commits were added since the previous KatlOS release._\n'
@@ -248,6 +254,8 @@ stage_artifacts() {
             cp -- "$build_dir/$name$suffix" "$output/"
         done
     done
+    [[ -f "$repo_root/docs/support.md" ]] || fail "release support boundary is missing: $repo_root/docs/support.md"
+    cp -- "$repo_root/docs/support.md" "$output/SUPPORT.md"
     cat >"$output/PROVENANCE.md" <<'EOF'
 # KatlOS release provenance
 
