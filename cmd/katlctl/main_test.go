@@ -18,6 +18,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -196,6 +197,37 @@ func TestConfigBundleCommandWritesBundle(t *testing.T) {
 	}
 	if report.Kind != "ConfigBundleReport" || report.Output != outputPath || !strings.HasPrefix(report.BundleDigest, "sha256:") {
 		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestConfigRenderNodeFromSource(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
+	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{
+		"config", "render-node",
+		"--source", sourcePath,
+		"--node", "cp-1",
+		"--desired-version", "2",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	request, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(stdout.String()), configapply.TrustedBundleRequest{})
+	if err != nil {
+		t.Fatalf("decode rendered node config: %v\n%s", err, stdout.String())
+	}
+	if request.SourceID != "lab" || request.DesiredVersion != "2" || request.ApplyMode != generation.ApplyModeAuto {
+		t.Fatalf("rendered request metadata = %#v", request)
+	}
+	overlay := request.NodeOverrides["cp-1"]
+	if overlay.Identity == nil || overlay.Identity.Hostname != "cp-1" || len(overlay.Identity.AuthorizedKeys) != 1 {
+		t.Fatalf("rendered node overlay = %#v", overlay)
+	}
+	if overlay.SystemRole != "" || overlay.Kubernetes != nil {
+		t.Fatalf("rendered node overlay contains lifecycle state = %#v", overlay)
 	}
 }
 
@@ -1432,6 +1464,63 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 		t.Fatalf("decode stdout = %v: %s", err, stdout.String())
 	}
 	if output["accepted"] != true || output["candidateGenerationId"] != "generation-plan" || !strings.Contains(stdout.String(), `"networkd"`) {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
+	bundlePath, bundleDigest := writeConfigBundle(t)
+	fake := &fakeKatlcAgentClient{
+		validateResult: &agentapi.ConfigValidationResult{
+			Accepted:              true,
+			RequestDigest:         strings.Repeat("c", 64),
+			AcceptedApplyMode:     generation.ApplyModeLive,
+			CandidateGenerationId: "generation-bundle",
+			ChangedDomains:        []string{"node-identity", "networkd"},
+		},
+		stageAccepted: &agentapi.OperationAccepted{
+			OperationId:   "generation-bundle-apply",
+			OperationKind: "generation-apply",
+			RequestDigest: strings.Repeat("d", 64),
+		},
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(_ context.Context, endpoint string, token string) (katlcAgentConnection, error) {
+		if endpoint != "node-a.example.test:9443" || token != "" {
+			t.Fatalf("dial endpoint=%q token=%q", endpoint, token)
+		}
+		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "apply",
+		"--endpoint", "node-a.example.test:9443",
+		"--config-bundle", bundlePath,
+		"--config-bundle-digest", bundleDigest,
+		"--node", "cp-1",
+		"--desired-version", "2",
+		"--candidate-generation", "generation-bundle",
+		"--client-request-id", "req-bundle",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if fake.validateRequest == nil || fake.validateRequest.NodeName != "cp-1" {
+		t.Fatalf("validate request = %+v", fake.validateRequest)
+	}
+	if fake.submitRequest == nil || fake.submitRequest.GetConfigApply().GetNodeName() != "cp-1" {
+		t.Fatalf("submit request = %+v", fake.submitRequest)
+	}
+	request, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(fake.validateRequest.ConfigYaml), configapply.TrustedBundleRequest{})
+	if err != nil {
+		t.Fatalf("decode rendered config: %v\n%s", err, fake.validateRequest.ConfigYaml)
+	}
+	if request.SourceID != "lab" || request.DesiredVersion != "2" || request.NodeOverrides["cp-1"].Identity == nil {
+		t.Fatalf("rendered request = %#v", request)
+	}
+	if !strings.Contains(stdout.String(), "generation-bundle-apply") {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }

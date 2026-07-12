@@ -440,6 +440,69 @@ storage classes, and cluster add-ons. Test fixtures may apply a small CNI or
 workload manifest to prove handoff behavior, but Katl is not a Kubernetes
 distribution or add-on manager.
 
+## Apply Runtime Configuration
+
+`ClusterConfig` is the user-authored source for installation and supported
+node runtime configuration. `NodeConfigurationChange` is the node-agent
+operation envelope; normal users do not need to reverse-engineer or maintain it
+by hand.
+
+Inspect the exact per-node runtime request without contacting a node:
+
+```text
+katlctl config render-node \
+  --source ./cluster.yaml \
+  --node cp-1 \
+  --desired-version 2 > cp-1.runtime.yaml
+```
+
+`--desired-version` is a monotonically increasing unsigned number for this
+configuration source. It provides replay and stale-change protection. The
+source id defaults to `metadata.name`; use `--source-id` only when the same
+cluster needs independently versioned configuration streams.
+
+Plan the change through the node agent before accepting an operation:
+
+```text
+katlctl config apply validate \
+  --endpoint cp-1.example.test:9443 \
+  --agent-token-file ./katlc-agent.token \
+  --source ./cluster.yaml \
+  --node cp-1 \
+  --desired-version 2 \
+  --candidate-generation config-2 \
+  --client-request-id cp-1-config-2
+```
+
+If the source has already been compiled, use the verified bundle instead of
+recompiling it:
+
+```text
+katlctl config apply validate \
+  --endpoint cp-1.example.test:9443 \
+  --agent-token-file ./katlc-agent.token \
+  --config-bundle ./katl-lab.katlcfg \
+  --config-bundle-digest <bundleDigest> \
+  --node cp-1 \
+  --desired-version 2 \
+  --candidate-generation config-2 \
+  --client-request-id cp-1-config-2
+```
+
+Remove `validate` to submit the accepted plan. The default `--mode auto` uses
+the agent's domain matrix to choose live apply or next boot; `--mode live` and
+`--mode next-boot` request an explicit policy and are rejected when unsafe.
+Keep the same inputs when submitting; the client request id becomes the
+idempotency key for the accepted operation.
+
+The renderer currently carries hostname, SSH authorized keys, and systemd-
+networkd files from the selected node. It deliberately excludes disk/install
+policy, system role, Kubernetes bundle selection, and kubeadm lifecycle state.
+Those changes require reinstall, host update, Kubernetes upgrade, or another
+explicit lifecycle operation. `--file` remains available for an advanced,
+pre-rendered `NodeConfigurationChange`, with `--node` selecting any
+`nodeOverrides` entry it contains.
+
 ## Upgrades
 
 KatlOS upgrades also consume one KatlOS image artifact. The image records

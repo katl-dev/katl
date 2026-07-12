@@ -212,10 +212,13 @@ func TestApplyTrustedBundleResolvesRoleAndNodeOverlaysForNextBoot(t *testing.T) 
 	if result.Manifest.Node.SystemRole != "control-plane" || result.Manifest.Node.Identity.Hostname != "worker-1" {
 		t.Fatalf("merged node = %#v", result.Manifest.Node)
 	}
-	for _, domain := range []string{DomainNetworkd, DomainSSHOperatorAccess, DomainNodeIdentity, DomainBootstrapNodeMetadata} {
+	for _, domain := range []string{DomainNetworkd, DomainNodeIdentity, DomainBootstrapNodeMetadata} {
 		if !containsDomain(result.Plan.Decision.ChangedDomains, domain) {
 			t.Fatalf("changed domains = %#v, missing %s", result.Plan.Decision.ChangedDomains, domain)
 		}
+	}
+	if containsDomain(result.Plan.Decision.ChangedDomains, DomainSSHOperatorAccess) {
+		t.Fatalf("unchanged SSH access reported as changed: %#v", result.Plan.Decision.ChangedDomains)
 	}
 	if result.Status.Phase != generation.ConfigApplyPhaseNextBoot {
 		t.Fatalf("status phase = %q", result.Status.Phase)
