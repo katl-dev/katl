@@ -138,12 +138,19 @@ jobs:
       - name: Verify release resource lock
         shell: bash
         run: |
+          mkosi_version="$(docker run --rm "$KATL_MKOSI_IMAGE" mkosi --version)"
+          mkosi_version="${mkosi_version#mkosi }"
+          if [[ ! "$mkosi_version" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
+            echo "unexpected mkosi version from builder: $mkosi_version" >&2
+            exit 1
+          fi
           go run ./cmd/katl-resource-lock prepare-mkosi \
             -manifest _build/release-resource-test-manifest.json \
             -lock mkosi.profiles/resource-package-lock.json \
             -mode strict \
             -run-id "release-${KATL_VERSION}-${GITHUB_SHA:0:12}" \
-            -git-revision "$GITHUB_SHA"
+            -git-revision "$GITHUB_SHA" \
+            -mkosi-version "$mkosi_version"
 
       - name: Stage supported publication artifacts
         shell: bash
