@@ -66,6 +66,8 @@ func TestBaseContainerRuntimeContractIsEnforced(t *testing.T) {
 func TestReleaseProfilesPinTrustPackages(t *testing.T) {
 	repo := repoRoot(t)
 	wants := []string{
+		"libacl-0:2.3.2-6.fc44.x86_64",
+		"libattr-0:2.5.2-8.fc44.x86_64",
 		"p11-kit-0:0.26.2-1.fc44.x86_64",
 		"p11-kit-trust-0:0.26.2-1.fc44.x86_64",
 	}
