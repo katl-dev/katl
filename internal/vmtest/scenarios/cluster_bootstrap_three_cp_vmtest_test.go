@@ -5,11 +5,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -462,11 +460,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	if err := os.WriteFile(filepath.Join(proofDir, "live-cluster-configuration.yaml"), liveConfig, 0o600); err != nil {
 		return err
 	}
-	desiredConfig, deltas, err := controlPlaneProfilingConfig(liveConfig)
-	if err != nil {
-		return err
-	}
-	liveDigest, err := kubeadmplan.CanonicalClusterConfigurationSHA256(liveConfig)
+	desiredConfig, _, err := controlPlaneProfilingConfig(liveConfig)
 	if err != nil {
 		return err
 	}
@@ -515,23 +509,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-before-operation.txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
 		return err
 	}
-	snapshotSHA, err := nodeFileSHA256(ctx, nodes[0], snapshot.Snapshot.Path)
-	if err != nil {
-		return err
-	}
-	membersJSON, err := json.Marshal(snapshot.Health.Members)
-	if err != nil {
-		return err
-	}
-	memberSum := sha256.Sum256(membersJSON)
-	etcdVersion := "unknown"
-	if len(snapshot.Health.EndpointStatuses) > 0 {
-		etcdVersion = snapshot.Health.EndpointStatuses[0].Version
-	}
-	args := []string{"cluster", "kubeadm-control-plane-config", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--desired-config-sha256", desiredDigest, "--expected-live-sha256", liveDigest, "--kubernetes-version", bundle.PayloadVersion, "--kubernetes-sha256", strings.TrimPrefix(bundle.SysextPayloadDigest, "sha256:"), "--rollout-id", "2026.07.11-vmtest-control-plane-config", "--snapshot-ref", filepath.Base(snapshot.Snapshot.Path), "--snapshot-sha256", snapshotSHA, "--snapshot-revision", snapshot.Snapshot.Revision, "--member-list-sha256", hex.EncodeToString(memberSum[:]), "--source-etcd-version", etcdVersion, "--snapshot-created-at", time.Now().UTC().Format(time.RFC3339), "--snapshot-location", snapshot.Snapshot.Path, "--snapshot-operator", "katl-vmtest"}
-	for _, delta := range deltas {
-		args = append(args, "--field-delta", delta)
-	}
+	args := []string{"cluster", "kubeadm-control-plane-config", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--rollout-id", "2026.07.11-vmtest-control-plane-config"}
 	stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "rollout", args...)
 	if err != nil {
 		return fmt.Errorf("run serial control-plane config rollout: %w: %s", err, stderr)

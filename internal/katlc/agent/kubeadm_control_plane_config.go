@@ -48,15 +48,12 @@ func validateKubeadmControlPlaneConfigRequest(kind string, req *agentapi.Kubeadm
 	if name == "" || filepath.Base(name) != name {
 		return fmt.Errorf("configName is invalid")
 	}
-	for field, value := range map[string]string{
-		"desiredConfigSHA256": req.GetDesiredConfigSha256(), "expectedLiveConfigSHA256": req.GetExpectedLiveConfigSha256(), "kubernetesPayloadSHA256": req.GetKubernetesPayloadSha256(), "snapshotDigest": req.GetSnapshotDigest(), "capturedMemberListDigest": req.GetCapturedMemberListDigest(),
-	} {
-		if err := validateDigestValue(field, value); err != nil {
-			return err
+	for field, value := range map[string]string{"desiredConfigSHA256": req.GetDesiredConfigSha256(), "expectedLiveConfigSHA256": req.GetExpectedLiveConfigSha256(), "kubernetesPayloadSHA256": req.GetKubernetesPayloadSha256()} {
+		if strings.TrimSpace(value) != "" {
+			if err := validateDigestValue(field, value); err != nil {
+				return err
+			}
 		}
-	}
-	if strings.TrimSpace(req.GetKubernetesPayloadVersion()) == "" || len(req.GetSupportedFieldDelta()) == 0 {
-		return fmt.Errorf("kubernetesPayloadVersion and supportedFieldDelta are required")
 	}
 	seen := map[string]bool{}
 	for _, field := range req.GetSupportedFieldDelta() {
@@ -64,16 +61,6 @@ func validateKubeadmControlPlaneConfigRequest(kind string, req *agentapi.Kubeadm
 			return fmt.Errorf("unsupported or repeated field delta %q", field)
 		}
 		seen[field] = true
-	}
-	for field, value := range map[string]string{
-		"snapshotRef": req.GetSnapshotRef(), "snapshotRevision": req.GetSnapshotRevision(), "sourceEtcdVersion": req.GetSourceEtcdVersion(), "snapshotStorageLocation": req.GetSnapshotStorageLocation(), "snapshotOperatorIdentity": req.GetSnapshotOperatorIdentity(),
-	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s is required", field)
-		}
-	}
-	if _, err := time.Parse(time.RFC3339, req.GetSnapshotCreatedAt()); err != nil {
-		return fmt.Errorf("snapshotCreatedAt must be RFC3339")
 	}
 	return nil
 }
@@ -114,9 +101,13 @@ func (s *Server) validateKubeadmControlPlaneConfigState(req *agentapi.SubmitOper
 		return body, fmt.Errorf("read selected kubeadm config: %w", err)
 	}
 	desiredDigest, err := kubeadmplan.CanonicalClusterConfigurationSHA256(data)
-	if err != nil || desiredDigest != body.DesiredConfigSHA256 {
+	if err != nil {
+		return body, fmt.Errorf("read selected kubeadm config identity: %w", err)
+	}
+	if body.DesiredConfigSHA256 != "" && desiredDigest != body.DesiredConfigSHA256 {
 		return body, fmt.Errorf("selected kubeadm config digest changed")
 	}
+	body.DesiredConfigSHA256 = desiredDigest
 	spec, _, err := generation.ReadGeneration(s.Root, body.DesiredGenerationID)
 	if err != nil {
 		return body, fmt.Errorf("read desired generation: %w", err)
@@ -129,15 +120,25 @@ func (s *Server) validateKubeadmControlPlaneConfigState(req *agentapi.SubmitOper
 	if err != nil || applyStatus.Kubeadm.SelectedConfigName != body.ConfigName || !applyStatus.Kubeadm.Required {
 		return body, fmt.Errorf("active generation does not select kubeadm config %q as action-required", body.ConfigName)
 	}
-	matchedPayload := false
+	var matchedPayload *generation.ExtensionRef
 	for _, ref := range spec.Sysexts {
-		if ref.Name == "kubernetes" && ref.PayloadVersion == body.KubernetesPayloadVersion && ref.SHA256 == body.KubernetesPayloadSHA256 {
-			matchedPayload = true
+		if ref.Name == "kubernetes" {
+			copy := ref
+			matchedPayload = &copy
+			break
 		}
 	}
-	if !matchedPayload {
-		return body, fmt.Errorf("active Kubernetes payload version or digest does not match request")
+	if matchedPayload == nil || matchedPayload.PayloadVersion == "" || matchedPayload.SHA256 == "" {
+		return body, fmt.Errorf("active generation has no identified Kubernetes payload")
 	}
+	if body.KubernetesPayloadVersion != "" && body.KubernetesPayloadVersion != matchedPayload.PayloadVersion {
+		return body, fmt.Errorf("active Kubernetes payload version does not match request")
+	}
+	if body.KubernetesPayloadSHA256 != "" && body.KubernetesPayloadSHA256 != matchedPayload.SHA256 {
+		return body, fmt.Errorf("active Kubernetes payload digest does not match request")
+	}
+	body.KubernetesPayloadVersion = matchedPayload.PayloadVersion
+	body.KubernetesPayloadSHA256 = matchedPayload.SHA256
 	return body, nil
 }
 
@@ -147,6 +148,10 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
+	desiredDigest, err := kubeadmplan.CanonicalClusterConfigurationSHA256(desired)
+	if err != nil || desiredDigest != request.DesiredConfigSHA256 {
+		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("selected kubeadm config changed after operation acceptance"))
+	}
 	liveResult := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}"}, nil)
 	if liveResult.Err != nil || liveResult.ExitStatus != 0 {
 		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("collect live kubeadm config: %s", toolFailure(liveResult)))
@@ -155,12 +160,16 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
-	sort.Strings(request.SupportedFieldDelta)
-	if !reflect.DeepEqual(delta, request.SupportedFieldDelta) {
+	requestedDelta := append([]string(nil), request.SupportedFieldDelta...)
+	sort.Strings(requestedDelta)
+	if len(requestedDelta) > 0 && !reflect.DeepEqual(delta, requestedDelta) {
 		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("observed supported delta %v does not match request %v", delta, request.SupportedFieldDelta))
 	}
 	liveDigest, err := kubeadmplan.CanonicalClusterConfigurationSHA256(liveResult.Stdout)
-	if err != nil || liveDigest != request.ExpectedLiveConfigSHA256 {
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("identify live kubeadm config: %w", err))
+	}
+	if request.ExpectedLiveConfigSHA256 != "" && liveDigest != request.ExpectedLiveConfigSHA256 {
 		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("live kubeadm config digest is stale"))
 	}
 	if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-dry-run", []string{"/usr/bin/kubeadm", "init", "phase", "control-plane", "all", "--config", request.ConfigPath, "--dry-run"}, false); err != nil {
@@ -172,6 +181,8 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 	}
 	originalUnschedulable := strings.TrimSpace(string(schedResult.Stdout)) == "true"
 	if _, err := e.Store.Update(record.OperationID, "preflight-complete", "preflight-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.KubeadmControlPlaneConfig.ExpectedLiveConfigSHA256 = liveDigest
+		current.KubeadmControlPlaneConfig.SupportedFieldDelta = append([]string(nil), delta...)
 		current.KubeadmControlPlaneConfig.OriginalNodeUnschedulable = originalUnschedulable
 		current.Phase = "preflight-complete"
 		current.UpdatedAt = e.clock()

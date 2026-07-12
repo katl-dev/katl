@@ -17,12 +17,8 @@ import (
 )
 
 type kubeadmControlPlaneConfigOptions struct {
-	inventoryPath, coordinator, generationID, configName               string
-	desiredDigest, liveDigest, payloadVersion, payloadDigest           string
-	rolloutID                                                          string
-	fieldDelta                                                         stringList
-	snapshotRef, snapshotDigest, snapshotRevision, memberDigest        string
-	etcdVersion, snapshotCreatedAt, snapshotLocation, snapshotOperator string
+	inventoryPath, coordinator, generationID, configName string
+	rolloutID                                            string
 }
 
 func newKubeadmControlPlaneConfigCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -33,20 +29,7 @@ func newKubeadmControlPlaneConfigCommand(ctx context.Context, stdout, stderr io.
 	f.StringVar(&opts.coordinator, "coordinator", "", "coordinator control-plane node changed last")
 	f.StringVar(&opts.generationID, "generation", "", "active desired generation ID")
 	f.StringVar(&opts.configName, "config-name", "", "selected KubeadmConfig name")
-	f.StringVar(&opts.desiredDigest, "desired-config-sha256", "", "canonical desired config SHA-256")
-	f.StringVar(&opts.liveDigest, "expected-live-sha256", "", "expected live kubeadm ConfigMap SHA-256")
-	f.StringVar(&opts.payloadVersion, "kubernetes-version", "", "active Kubernetes payload version")
-	f.StringVar(&opts.payloadDigest, "kubernetes-sha256", "", "active Kubernetes sysext SHA-256")
 	f.StringVar(&opts.rolloutID, "rollout-id", "", "rollout identity")
-	f.Var(&opts.fieldDelta, "field-delta", "supported profiling=false field delta")
-	f.StringVar(&opts.snapshotRef, "snapshot-ref", "", "etcd snapshot reference")
-	f.StringVar(&opts.snapshotDigest, "snapshot-sha256", "", "etcd snapshot SHA-256")
-	f.StringVar(&opts.snapshotRevision, "snapshot-revision", "", "etcd snapshot revision")
-	f.StringVar(&opts.memberDigest, "member-list-sha256", "", "captured etcd member-list SHA-256")
-	f.StringVar(&opts.etcdVersion, "source-etcd-version", "", "source etcd version")
-	f.StringVar(&opts.snapshotCreatedAt, "snapshot-created-at", "", "snapshot RFC3339 creation time")
-	f.StringVar(&opts.snapshotLocation, "snapshot-location", "", "snapshot storage location")
-	f.StringVar(&opts.snapshotOperator, "snapshot-operator", "", "snapshot operator identity")
 	_ = stderr
 	return cmd
 }
@@ -69,13 +52,12 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 	if err != nil {
 		return err
 	}
-	if len(opts.fieldDelta.values) == 0 {
-		return fmt.Errorf("at least one --field-delta is required")
-	}
 	type target struct {
-		node    inventory.Node
-		conn    katlcAgentConnection
-		machine string
+		node           inventory.Node
+		conn           katlcAgentConnection
+		machine        string
+		payloadVersion string
+		payloadSHA256  string
 	}
 	targets := make([]target, 0, 3)
 	defer func() {
@@ -106,16 +88,22 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 		if gen.ConfigApply == nil || !gen.ConfigApply.KubeadmActionRequired || gen.ConfigApply.SelectedKubeadmConfigName != opts.configName {
 			return fmt.Errorf("node %s generation %s does not select kubeadm config %q as action-required", node.Name, opts.generationID, opts.configName)
 		}
-		matched := false
+		payloadVersion := ""
+		payloadSHA256 := ""
 		for _, ref := range gen.Sysexts {
-			if ref.Name == "kubernetes" && ref.PayloadVersion == opts.payloadVersion && ref.Sha256 == opts.payloadDigest {
-				matched = true
+			if ref.Name == "kubernetes" && ref.PayloadVersion != "" && ref.Sha256 != "" {
+				payloadVersion = ref.PayloadVersion
+				payloadSHA256 = ref.Sha256
+				break
 			}
 		}
-		if !matched {
-			return fmt.Errorf("node %s Kubernetes payload does not match rollout", node.Name)
+		if payloadVersion == "" {
+			return fmt.Errorf("node %s generation %s has no active Kubernetes payload", node.Name, opts.generationID)
 		}
-		targets = append(targets, target{node: node, conn: conn, machine: status.MachineId})
+		if len(targets) > 0 && (payloadVersion != targets[0].payloadVersion || payloadSHA256 != targets[0].payloadSHA256) {
+			return fmt.Errorf("node %s active Kubernetes payload does not match %s", node.Name, targets[0].node.Name)
+		}
+		targets = append(targets, target{node: node, conn: conn, machine: status.MachineId, payloadVersion: payloadVersion, payloadSHA256: payloadSHA256})
 	}
 	var summary []map[string]string
 	for i, t := range targets {
@@ -147,7 +135,7 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 }
 
 func kubeadmControlPlaneConfigBody(opts kubeadmControlPlaneConfigOptions, node inventory.Node, position uint32) *agentapi.KubeadmControlPlaneConfigOperationRequest {
-	return &agentapi.KubeadmControlPlaneConfigOperationRequest{RolloutId: opts.rolloutID, NodePosition: position, NodeCount: 3, NodeName: node.Name, CoordinatorNode: opts.coordinator, CoordinatorUpload: node.Name == opts.coordinator, DesiredGenerationId: opts.generationID, ConfigName: opts.configName, DesiredConfigSha256: opts.desiredDigest, ExpectedLiveConfigSha256: opts.liveDigest, KubernetesPayloadVersion: opts.payloadVersion, KubernetesPayloadSha256: opts.payloadDigest, SupportedFieldDelta: append([]string(nil), opts.fieldDelta.values...), SnapshotRef: opts.snapshotRef, SnapshotDigest: opts.snapshotDigest, SnapshotRevision: opts.snapshotRevision, CapturedMemberListDigest: opts.memberDigest, SourceEtcdVersion: opts.etcdVersion, SnapshotCreatedAt: opts.snapshotCreatedAt, SnapshotStorageLocation: opts.snapshotLocation, SnapshotOperatorIdentity: opts.snapshotOperator}
+	return &agentapi.KubeadmControlPlaneConfigOperationRequest{RolloutId: opts.rolloutID, NodePosition: position, NodeCount: 3, NodeName: node.Name, CoordinatorNode: opts.coordinator, CoordinatorUpload: node.Name == opts.coordinator, DesiredGenerationId: opts.generationID, ConfigName: opts.configName}
 }
 
 func orderControlPlanes(nodes []inventory.Node, coordinator string) ([]inventory.Node, error) {

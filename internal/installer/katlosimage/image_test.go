@@ -389,8 +389,8 @@ func TestLocalResolverMountsFileRef(t *testing.T) {
 	}
 	sum := sha256.Sum256(imageBytes)
 	expected := expectedImage()
-	expected.SHA256 = hex.EncodeToString(sum[:])
-	expected.SizeBytes = uint64(len(imageBytes))
+	expected.SHA256 = ""
+	expected.SizeBytes = 0
 	mounter := &fixtureMountRunner{populate: func(root string) {
 		writeImagePayloadAt(t, root, func(*Index) {})
 	}}
@@ -410,6 +410,9 @@ func TestLocalResolverMountsFileRef(t *testing.T) {
 	}
 	if payload.Root != mounter.calls[0][4] {
 		t.Fatalf("payload root = %q, mountpoint = %q", payload.Root, mounter.calls[0][4])
+	}
+	if payload.ImageSHA256 != hex.EncodeToString(sum[:]) || payload.ImageSizeBytes != uint64(len(imageBytes)) {
+		t.Fatalf("derived image identity = %s/%d", payload.ImageSHA256, payload.ImageSizeBytes)
 	}
 }
 
@@ -441,8 +444,8 @@ func TestRemoteResolverDownloadsAndMountsURL(t *testing.T) {
 	expected := expectedImage()
 	expected.LocalRef = ""
 	expected.URL = "https://artifacts.example.invalid/katlos-install.squashfs"
-	expected.SHA256 = hex.EncodeToString(sum[:])
-	expected.SizeBytes = uint64(len(imageBytes))
+	expected.SHA256 = ""
+	expected.SizeBytes = 0
 	mounter := &fixtureMountRunner{populate: func(root string) {
 		writeImagePayloadAt(t, root, func(*Index) {})
 	}}
@@ -469,6 +472,9 @@ func TestRemoteResolverDownloadsAndMountsURL(t *testing.T) {
 	}
 	if payload.Root != mounter.calls[0][4] {
 		t.Fatalf("payload root = %q, mountpoint = %q", payload.Root, mounter.calls[0][4])
+	}
+	if payload.ImageSHA256 != hex.EncodeToString(sum[:]) || payload.ImageSizeBytes != uint64(len(imageBytes)) {
+		t.Fatalf("derived image identity = %s/%d", payload.ImageSHA256, payload.ImageSizeBytes)
 	}
 }
 

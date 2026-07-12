@@ -206,18 +206,17 @@ artifact. Plan before accepting a next-boot generation:
 TAG=v2026.7.0-alpha.2
 VERSION=${TAG#v}
 IMAGE="katlos-upgrade-$VERSION-x86_64.squashfs"
-IMAGE_SHA256=$(sha256sum "$IMAGE" | awk '{print $1}')
-IMAGE_SIZE=$(stat -c %s "$IMAGE")
 katlctl host upgrade \
   --plan \
   --endpoint cp-1.example.test:9443 \
   --agent-token-file ./tokens/cp-1.token \
   --candidate-generation "katlos-$VERSION" \
   --client-request-id "cp-1-katlos-$VERSION" \
-  --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE" \
-  --image-sha256 "$IMAGE_SHA256" \
-  --image-size-bytes "$IMAGE_SIZE"
+  --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE"
 ```
+
+The node calculates and records the downloaded image identity before changing
+the inactive root slot.
 
 Remove `--plan` only after reviewing the response. Automated fleet rollout and
 Kubernetes version upgrade execution are not supported alpha workflows.

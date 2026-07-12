@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -127,8 +126,6 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		"--endpoint", endpoint,
 		"--agent-token-file", tokenFile,
 		"--image-local-ref", localRef,
-		"--image-sha256", upgrade.SHA256,
-		"--image-size-bytes", strconv.FormatUint(upgrade.SizeBytes, 10),
 		"--candidate-generation", candidateGeneration,
 		"--client-request-id", "vmtest-host-upgrade-"+candidateGeneration,
 		"--actor", "installed runtime host upgrade vmtest",
@@ -138,6 +135,19 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	status := waitKatlcOperationTerminal(t, ctx, endpoint, token, accepted.OperationId)
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
 		t.Fatalf("host upgrade operation status = %+v", status)
+	}
+	recordData := readGuestFile(t, ctx, guest, "/var/lib/katl/operations/"+accepted.OperationId+"/record.json")
+	envelope, err := persistedrecord.DecodeEnvelope([]byte(recordData))
+	if err != nil {
+		t.Fatalf("decode host upgrade operation envelope: %v", err)
+	}
+	persisted, err := persistedrecord.DecodePayload[operation.Snapshot](envelope)
+	if err != nil {
+		t.Fatalf("decode host upgrade operation snapshot: %v", err)
+	}
+	request := persisted.Record.HostUpgradeRequest
+	if request == nil || request.ImageSHA256 != upgrade.SHA256 || request.ImageSizeBytes != upgrade.SizeBytes {
+		t.Fatalf("host upgrade did not persist derived image identity: %#v", request)
 	}
 	trial := bootSelectionFromGuest(t, ctx, guest)
 	if trial.TrialGenerationID != candidateGeneration || trial.PreviousKnownGoodGenerationID != previousGeneration || !trial.PendingHealthValidation {

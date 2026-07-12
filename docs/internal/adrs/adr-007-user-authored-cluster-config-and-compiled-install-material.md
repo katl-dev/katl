@@ -358,7 +358,7 @@ v0.1 config bundle trust is digest-only. Consumers verify:
 ```text
 the archive unpacks as one OCI image layout
 the OCI config descriptor media type is application/vnd.katl.config.bundle.v1+json
-the custom manifest digest matches the expected bundle digest
+the custom manifest digest is derived from its canonical bytes
 every descriptor digest and size matches the fetched member bytes
 compatibility metadata matches the installer/runtime interface and architecture
 the selected node material exists and matches the selected node
@@ -373,18 +373,18 @@ Delivery paths identify and verify the same bundle this way:
 
 ```text
 USB/offline media
-  media carries homelab.katlcfg plus expected sha256 digest metadata; the
-  installer receives or derives the selected node name and verifies the digest
-  before selecting nodes/<node>/install/material.json.
+  media carries homelab.katlcfg; the installer receives or derives the selected
+  node name and checks the bundle's internal descriptors before selecting
+  nodes/<node>/install/material.json.
 
 PXE/matchbox
-  boot input provides a bundle URL, expected bundle digest, and selected node.
-  The installer fetches the archive, verifies the digest, and rejects mutable
-  URL-only input.
+  boot input provides a bundle URL and selected node. The installer fetches the
+  archive, calculates its identity, and checks its internal descriptors. An
+  expected archive SHA-256 is an optional stricter transport control.
 
 local handoff
-  the operator posts the bundle archive, selected node, and expected digest to
-  the waiting installer. The installer verifies the posted bytes before
+  the operator posts the bundle archive and selected node to the waiting
+  installer. The installer derives identity and checks the posted bytes before
   mutation.
 
 VM tests
@@ -392,9 +392,9 @@ VM tests
   supplies each VM with the same archive plus selected node.
 
 runtime apply
-  katlctl submits bundle bytes or a bundle source plus expected digest to
-  katlc. katlc stages the bundle, verifies descriptors, and then applies only
-  the operation-allowed runtime domains.
+  katlctl submits bundle bytes or a bundle source to katlc. katlc stages the
+  bundle, checks descriptors, and then applies only the operation-allowed
+  runtime domains.
 
 future controllers
   controllers store desired bundle source/ref/digest and reconcile only after

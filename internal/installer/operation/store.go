@@ -938,10 +938,25 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	if !reflect.DeepEqual(next.DestructiveResetRequest, previous.DestructiveResetRequest) {
 		return fmt.Errorf("operation destructiveResetRequest is immutable")
 	}
-	if !reflect.DeepEqual(next.HostUpgradeRequest, previous.HostUpgradeRequest) {
+	if !hostUpgradeTransitionAllowed(previous.HostUpgradeRequest, next.HostUpgradeRequest) {
 		return fmt.Errorf("operation hostUpgradeRequest is immutable")
 	}
 	return nil
+}
+
+func hostUpgradeTransitionAllowed(previous *HostUpgrade, next *HostUpgrade) bool {
+	if previous == nil || next == nil {
+		return previous == nil && next == nil
+	}
+	previousComparable := *previous
+	nextComparable := *next
+	previousComparable.ImageSHA256 = ""
+	nextComparable.ImageSHA256 = ""
+	previousComparable.ImageSizeBytes = 0
+	nextComparable.ImageSizeBytes = 0
+	return reflect.DeepEqual(previousComparable, nextComparable) &&
+		resolvedDigestTransitionAllowed(previous.ImageSHA256, next.ImageSHA256) &&
+		(previous.ImageSizeBytes == next.ImageSizeBytes || previous.ImageSizeBytes == 0 && next.ImageSizeBytes > 0)
 }
 
 func bootstrapRequestTransitionAllowed(previous *BootstrapRequest, next *BootstrapRequest) bool {
@@ -975,7 +990,13 @@ func kubeadmControlPlaneConfigTransitionAllowed(previous *KubeadmControlPlaneCon
 	nextComparable.AfterManifestSHA256 = nil
 	previousComparable.OriginalNodeUnschedulable = false
 	nextComparable.OriginalNodeUnschedulable = false
-	return reflect.DeepEqual(previousComparable, nextComparable)
+	previousComparable.ExpectedLiveConfigSHA256 = ""
+	nextComparable.ExpectedLiveConfigSHA256 = ""
+	previousComparable.SupportedFieldDelta = nil
+	nextComparable.SupportedFieldDelta = nil
+	return reflect.DeepEqual(previousComparable, nextComparable) &&
+		resolvedDigestTransitionAllowed(previous.ExpectedLiveConfigSHA256, next.ExpectedLiveConfigSHA256) &&
+		(previous.SupportedFieldDelta == nil || reflect.DeepEqual(previous.SupportedFieldDelta, next.SupportedFieldDelta))
 }
 
 func resolvedDigestTransitionAllowed(previous string, next string) bool {
@@ -1660,9 +1681,7 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 		"rolloutID": request.RolloutID, "coordinatorNode": request.CoordinatorNode,
 		"nodeName": request.NodeName, "desiredGenerationID": request.DesiredGenerationID,
 		"configName": request.ConfigName, "configPath": request.ConfigPath,
-		"kubernetesPayloadVersion": request.KubernetesPayloadVersion, "snapshotRef": request.SnapshotRef,
-		"snapshotRevision": request.SnapshotRevision, "sourceEtcdVersion": request.SourceEtcdVersion,
-		"snapshotStorageLocation": request.SnapshotStorageLocation, "snapshotOperatorIdentity": request.SnapshotOperatorIdentity,
+		"kubernetesPayloadVersion": request.KubernetesPayloadVersion,
 	}
 	for name, value := range required {
 		if strings.TrimSpace(value) == "" {
@@ -1676,19 +1695,28 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 		return fmt.Errorf("kubeadmControlPlaneConfig config path is invalid")
 	}
 	for name, value := range map[string]string{
-		"desired config": request.DesiredConfigSHA256, "expected live config": request.ExpectedLiveConfigSHA256,
-		"kubernetes payload": request.KubernetesPayloadSHA256, "snapshot": request.SnapshotDigest,
-		"captured member list": request.CapturedMemberListDigest,
+		"desired config":     request.DesiredConfigSHA256,
+		"kubernetes payload": request.KubernetesPayloadSHA256,
 	} {
 		if err := validateSHA256Hex("kubeadmControlPlaneConfig "+name, value); err != nil {
 			return err
 		}
 	}
-	if len(request.SupportedFieldDelta) == 0 {
-		return fmt.Errorf("kubeadmControlPlaneConfig supportedFieldDelta is required")
+	for name, value := range map[string]string{
+		"expected live config": request.ExpectedLiveConfigSHA256,
+		"snapshot":             request.SnapshotDigest,
+		"captured member list": request.CapturedMemberListDigest,
+	} {
+		if strings.TrimSpace(value) != "" {
+			if err := validateSHA256Hex("kubeadmControlPlaneConfig "+name, value); err != nil {
+				return err
+			}
+		}
 	}
-	if _, err := time.Parse(time.RFC3339, request.SnapshotCreatedAt); err != nil {
-		return fmt.Errorf("kubeadmControlPlaneConfig snapshotCreatedAt must be RFC3339: %w", err)
+	if strings.TrimSpace(request.SnapshotCreatedAt) != "" {
+		if _, err := time.Parse(time.RFC3339, request.SnapshotCreatedAt); err != nil {
+			return fmt.Errorf("kubeadmControlPlaneConfig snapshotCreatedAt must be RFC3339: %w", err)
+		}
 	}
 	for name, digest := range request.BeforeManifestSHA256 {
 		if err := validateSHA256Hex("kubeadmControlPlaneConfig before manifest "+name, digest); err != nil {
@@ -1810,8 +1838,10 @@ func ValidateHostUpgrade(request HostUpgrade) error {
 			return fmt.Errorf("hostUpgradeRequest imageLocalRef must be a clean relative path")
 		}
 	}
-	if err := validateSHA256Hex("hostUpgradeRequest image", strings.TrimSpace(request.ImageSHA256)); err != nil {
-		return err
+	if strings.TrimSpace(request.ImageSHA256) != "" {
+		if err := validateSHA256Hex("hostUpgradeRequest image", strings.TrimSpace(request.ImageSHA256)); err != nil {
+			return err
+		}
 	}
 	if _, err := cleanSegment("hostUpgradeRequest candidateGenerationID", request.CandidateGenerationID); err != nil {
 		return err

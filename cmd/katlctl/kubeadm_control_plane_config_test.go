@@ -47,8 +47,7 @@ func TestRunKubeadmControlPlaneConfigSubmitsSerialCoordinatorLast(t *testing.T) 
 		}
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
-	opts := kubeadmControlPlaneConfigOptions{inventoryPath: inventoryPath, coordinator: "cp-3", generationID: "gen-2", configName: "control-plane", desiredDigest: strings.Repeat("a", 64), liveDigest: strings.Repeat("b", 64), payloadVersion: "v1.36.1", payloadDigest: strings.Repeat("c", 64), rolloutID: "rollout-1", snapshotRef: "snap", snapshotDigest: strings.Repeat("d", 64), snapshotRevision: "42", memberDigest: strings.Repeat("e", 64), etcdVersion: "3.6.5", snapshotCreatedAt: "2026-07-11T08:00:00Z", snapshotLocation: "/var/lib/katl/snap.db", snapshotOperator: "operator"}
-	opts.fieldDelta.values = []string{"ClusterConfiguration.apiServer.extraArgs.profiling=false"}
+	opts := kubeadmControlPlaneConfigOptions{inventoryPath: inventoryPath, coordinator: "cp-3", generationID: "gen-2", configName: "control-plane", rolloutID: "rollout-1"}
 	var stdout bytes.Buffer
 	if err := runKubeadmControlPlaneConfig(context.Background(), opts, &stdout); err != nil {
 		t.Fatal(err)
@@ -64,6 +63,10 @@ func TestRunKubeadmControlPlaneConfigSubmitsSerialCoordinatorLast(t *testing.T) 
 		req := requests[1]
 		if req == nil || req.KubeadmControlPlaneConfig.NodePosition != uint32(index+1) || req.KubeadmControlPlaneConfig.CoordinatorUpload != (name == "cp-3") {
 			t.Fatalf("%s request=%#v", name, req)
+		}
+		body := req.KubeadmControlPlaneConfig
+		if body.DesiredConfigSha256 != "" || body.ExpectedLiveConfigSha256 != "" || body.KubernetesPayloadSha256 != "" || body.SnapshotDigest != "" || len(body.SupportedFieldDelta) != 0 {
+			t.Fatalf("%s request exposed operator-derived state: %#v", name, body)
 		}
 	}
 }

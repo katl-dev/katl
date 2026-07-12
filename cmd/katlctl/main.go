@@ -138,8 +138,6 @@ type hostUpgradeOptions struct {
 	agentTokenFile      string
 	imageURL            string
 	imageLocalRef       string
-	imageSHA256         string
-	imageSizeBytes      uint64
 	candidateGeneration string
 	clientRequestID     string
 	actor               string
@@ -151,7 +149,7 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	opts := hostUpgradeOptions{actor: "katlctl host upgrade", output: "json"}
 	cmd := &cobra.Command{
 		Use:   "upgrade",
-		Short: "Stage one verified KatlOS image for bounded next-boot activation",
+		Short: "Stage one KatlOS image for bounded next-boot activation",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runHostUpgrade(ctx, opts, stdout, stderr)
@@ -161,8 +159,6 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.imageURL, "image-url", "", "HTTPS KatlOS upgrade image URL")
 	cmd.Flags().StringVar(&opts.imageLocalRef, "image-local-ref", "", "relative KatlOS image reference under the node artifact store")
-	cmd.Flags().StringVar(&opts.imageSHA256, "image-sha256", "", "expected KatlOS image SHA-256")
-	cmd.Flags().Uint64Var(&opts.imageSizeBytes, "image-size-bytes", 0, "expected KatlOS image size")
 	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "idempotency key")
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
@@ -185,8 +181,6 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	request := operation.HostUpgrade{
 		ImageURL:              strings.TrimSpace(opts.imageURL),
 		ImageLocalRef:         strings.TrimSpace(opts.imageLocalRef),
-		ImageSHA256:           strings.TrimSpace(opts.imageSHA256),
-		ImageSizeBytes:        opts.imageSizeBytes,
 		CandidateGenerationID: strings.TrimSpace(opts.candidateGeneration),
 	}
 	if err := operation.ValidateHostUpgrade(request); err != nil {
@@ -211,8 +205,6 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
 			ImageUrl:              request.ImageURL,
 			ImageLocalRef:         request.ImageLocalRef,
-			ImageSha256:           request.ImageSHA256,
-			ImageSizeBytes:        request.ImageSizeBytes,
 			CandidateGenerationId: request.CandidateGenerationID,
 		},
 	})

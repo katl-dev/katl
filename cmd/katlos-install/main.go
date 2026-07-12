@@ -317,7 +317,7 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 }
 
 func fetchBundleURL(ctx context.Context, bundleURL, wantSHA256, runDir string) (string, error) {
-	body, err := fetchURLWithSHA256(ctx, bundleURL, wantSHA256, "bundle", 64<<20)
+	body, err := fetchURLWithSHA256(ctx, bundleURL, wantSHA256, "bundle", 64<<20, false)
 	if err != nil {
 		return "", err
 	}
@@ -349,7 +349,7 @@ func fetchBundleURL(ctx context.Context, bundleURL, wantSHA256, runDir string) (
 }
 
 func fetchManifestURL(ctx context.Context, manifestURL, wantSHA256, runDir string) (string, error) {
-	body, err := fetchURLWithSHA256(ctx, manifestURL, wantSHA256, "manifest", 1<<20)
+	body, err := fetchURLWithSHA256(ctx, manifestURL, wantSHA256, "manifest", 1<<20, true)
 	if err != nil {
 		return "", err
 	}
@@ -380,7 +380,7 @@ func fetchManifestURL(ctx context.Context, manifestURL, wantSHA256, runDir strin
 	return path, nil
 }
 
-func fetchURLWithSHA256(ctx context.Context, rawURL, wantSHA256, label string, limit int64) ([]byte, error) {
+func fetchURLWithSHA256(ctx context.Context, rawURL, wantSHA256, label string, limit int64, requireDigest bool) ([]byte, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return nil, fmt.Errorf("parse %s URL: invalid URL", label)
@@ -392,11 +392,16 @@ func fetchURLWithSHA256(ctx context.Context, rawURL, wantSHA256, label string, l
 		return nil, fmt.Errorf("%s URL missing host", label)
 	}
 	wantSHA256 = strings.ToLower(strings.TrimSpace(wantSHA256))
-	if len(wantSHA256) != 64 {
+	if requireDigest && wantSHA256 == "" {
 		return nil, fmt.Errorf("%s URL requires %sSHA256", label, label)
 	}
-	if _, err := hex.DecodeString(wantSHA256); err != nil {
-		return nil, fmt.Errorf("%sSHA256 is not valid hex: %w", label, err)
+	if wantSHA256 != "" {
+		if len(wantSHA256) != 64 {
+			return nil, fmt.Errorf("%sSHA256 must be 64 hexadecimal characters", label)
+		}
+		if _, err := hex.DecodeString(wantSHA256); err != nil {
+			return nil, fmt.Errorf("%sSHA256 is not valid hex: %w", label, err)
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
@@ -424,7 +429,7 @@ func fetchURLWithSHA256(ctx context.Context, rawURL, wantSHA256, label string, l
 		return nil, fmt.Errorf("%s URL response exceeds %d bytes", label, limit)
 	}
 	gotSHA256 := sha256.Sum256(body)
-	if got := hex.EncodeToString(gotSHA256[:]); got != wantSHA256 {
+	if got := hex.EncodeToString(gotSHA256[:]); wantSHA256 != "" && got != wantSHA256 {
 		return nil, fmt.Errorf("%s URL digest mismatch: got %s want %s", label, got, wantSHA256)
 	}
 	return body, nil

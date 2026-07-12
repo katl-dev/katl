@@ -1,29 +1,26 @@
 # Upgrade a KatlOS Host
 
 KatlOS host upgrades are explicit, one-node-at-a-time, next-boot operations.
-They stage a verified root and UKI into the inactive slot and arm a bounded trial
+They stage a root and UKI into the inactive slot and arm a bounded trial
 boot. They do not upgrade Kubernetes or orchestrate fleet availability.
 
 ## Preconditions
 
 - the node is healthy on a known-good generation;
 - no other mutating node operation is active;
-- the exact upgrade SquashFS, metadata, checksum, and provenance are verified;
+- the selected upgrade SquashFS is from the intended KatlOS release;
 - the upgrade declares a compatible architecture and runtime interface;
 - the node can fetch the HTTPS image URL, or the image is already in its local
   artifact store;
 - an operator controls the reboot window; and
 - Kubernetes and workload availability have been handled outside Katl.
 
-Follow [Verify release artifacts](verify-release.md) first. Record the exact
-image SHA-256 and size:
+Choose the release and image name:
 
 ```sh
 TAG=v2026.7.0-alpha.2
 VERSION=${TAG#v}
 IMAGE="katlos-upgrade-$VERSION-x86_64.squashfs"
-IMAGE_SHA256=$(sha256sum "$IMAGE" | awk '{print $1}')
-IMAGE_SIZE=$(stat -c %s "$IMAGE")
 ```
 
 ## Plan
@@ -35,13 +32,15 @@ katlctl host upgrade \
   --agent-token-file ./tokens/cp-1.token \
   --candidate-generation "katlos-$VERSION" \
   --client-request-id "cp-1-katlos-$VERSION" \
-  --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE" \
-  --image-sha256 "$IMAGE_SHA256" \
-  --image-size-bytes "$IMAGE_SIZE"
+  --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE"
 ```
 
 A plan response has dry-run status and no durable mutation. Review the image,
 candidate generation, resource locks, and refusal diagnostics.
+
+During staging, the node downloads or opens the image, calculates its SHA-256
+and size, records that resolved identity in the operation, and checks the image's
+component metadata before changing the inactive slot.
 
 ## Stage the Trial
 

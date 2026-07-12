@@ -122,8 +122,6 @@ func TestSubmitOperationRecordsHostUpgrade(t *testing.T) {
 		Actor:           "test-actor",
 		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
 			ImageUrl:              "https://updates.example.test/katlos-upgrade.squashfs",
-			ImageSha256:           strings.Repeat("a", 64),
-			ImageSizeBytes:        4096,
 			CandidateGenerationId: "gen-upgrade-1",
 		},
 	}
@@ -138,7 +136,7 @@ func TestSubmitOperationRecordsHostUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.HostUpgradeRequest == nil || record.HostUpgradeRequest.ImageURL != req.HostUpgrade.ImageUrl || record.HostUpgradeRequest.ImageSHA256 != req.HostUpgrade.ImageSha256 {
+	if record.HostUpgradeRequest == nil || record.HostUpgradeRequest.ImageURL != req.HostUpgrade.ImageUrl || record.HostUpgradeRequest.ImageSHA256 != "" {
 		t.Fatalf("host upgrade request = %+v", record.HostUpgradeRequest)
 	}
 	if record.ActivationMode != operation.ActivationModeNextBoot || !record.BootHealthPending || record.CandidateGenerationID != "gen-upgrade-1" {

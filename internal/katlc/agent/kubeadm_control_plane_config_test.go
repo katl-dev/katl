@@ -49,9 +49,6 @@ func TestAcceptKubeadmControlPlaneConfigBindsActiveGeneration(t *testing.T) {
 	}
 	body := validControlPlaneConfigRequest()
 	body.DesiredGenerationId = "generation-0"
-	body.KubernetesPayloadVersion = "v1.35.0"
-	body.KubernetesPayloadSha256 = digestBytesForAgentTest([]byte("current kubernetes sysext\n"))
-	body.DesiredConfigSha256, _ = kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(config))
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
 		dispatched.Add(1)
@@ -66,7 +63,8 @@ func TestAcceptKubeadmControlPlaneConfigBindsActiveGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dispatched.Load() != 1 || record.KubeadmControlPlaneConfig.ConfigName != "control-plane" || record.PreviousGenerationID != "generation-0" {
+	wantDesired, _ := kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(config))
+	if dispatched.Load() != 1 || record.KubeadmControlPlaneConfig.ConfigName != "control-plane" || record.PreviousGenerationID != "generation-0" || record.KubeadmControlPlaneConfig.DesiredConfigSHA256 != wantDesired || record.KubeadmControlPlaneConfig.KubernetesPayloadVersion != "v1.35.0" {
 		t.Fatalf("dispatches=%d record=%#v accepted=%#v", dispatched.Load(), record, accepted)
 	}
 }
@@ -80,6 +78,8 @@ func TestExecuteKubeadmControlPlaneConfigRunsBoundedPhases(t *testing.T) {
 	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
 	body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
 	body.CoordinatorUpload = true
+	body.KubernetesPayloadVersion = "v1.36.1"
+	body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
 	liveConfig := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\n"
 	desiredConfig := liveConfig + "apiServer:\n  extraArgs:\n    - name: profiling\n      value: \"false\"\n"
 	desiredPath := filepath.Join(root, "etc/katl/kubeadm/control-plane/config.yaml")
@@ -135,6 +135,9 @@ func TestExecuteKubeadmControlPlaneConfigRunsBoundedPhases(t *testing.T) {
 	if err != nil || !completed.Terminal || completed.Result != operation.ResultSucceeded || !completed.MutatingToolRan {
 		t.Fatalf("completed = %#v, err = %v", completed, err)
 	}
+	if completed.KubeadmControlPlaneConfig.ExpectedLiveConfigSHA256 == "" || len(completed.KubeadmControlPlaneConfig.SupportedFieldDelta) != 1 {
+		t.Fatalf("operation did not persist internally observed state: %#v", completed.KubeadmControlPlaneConfig)
+	}
 }
 
 func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testing.T) {
@@ -144,6 +147,8 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 		t.Fatal(err)
 	}
 	body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
+	body.KubernetesPayloadVersion = "v1.36.1"
+	body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
 	liveConfig := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\n"
 	desiredConfig := liveConfig + "apiServer:\n  extraArgs:\n    - name: profiling\n      value: \"false\"\n"
 	path := filepath.Join(root, "etc/katl/kubeadm/control-plane/config.yaml")
@@ -185,6 +190,6 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 
 func validControlPlaneConfigRequest() *agentapi.KubeadmControlPlaneConfigOperationRequest {
 	return &agentapi.KubeadmControlPlaneConfigOperationRequest{
-		RolloutId: "rollout-1", NodePosition: 1, NodeCount: 3, CoordinatorNode: "cp-3", NodeName: "cp-1", DesiredGenerationId: "gen-2", ConfigName: "control-plane", DesiredConfigSha256: strings.Repeat("a", 64), ExpectedLiveConfigSha256: strings.Repeat("b", 64), KubernetesPayloadVersion: "v1.36.1", KubernetesPayloadSha256: strings.Repeat("c", 64), SupportedFieldDelta: []string{"ClusterConfiguration.apiServer.extraArgs.profiling=false"}, SnapshotRef: "snapshot-1", SnapshotDigest: strings.Repeat("d", 64), SnapshotRevision: "42", CapturedMemberListDigest: strings.Repeat("e", 64), SourceEtcdVersion: "3.6.5", SnapshotCreatedAt: "2026-07-11T07:55:00Z", SnapshotStorageLocation: "/var/lib/katl/snapshots/snapshot-1.db", SnapshotOperatorIdentity: "operator@example.test",
+		RolloutId: "rollout-1", NodePosition: 1, NodeCount: 3, CoordinatorNode: "cp-3", NodeName: "cp-1", DesiredGenerationId: "gen-2", ConfigName: "control-plane",
 	}
 }

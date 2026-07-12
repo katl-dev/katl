@@ -59,7 +59,7 @@ type BootInput struct {
 }
 
 func (i BootInput) CanMutateDisks() bool {
-	return i.Action == InstallActionRun && i.InstallMode == "auto" && (i.ManifestPath != "" || (i.ManifestURL != "" && i.ManifestSHA256 != "") || i.BundlePath != "" || (i.BundleURL != "" && i.BundleSHA256 != ""))
+	return i.Action == InstallActionRun && i.InstallMode == "auto" && (i.ManifestPath != "" || (i.ManifestURL != "" && i.ManifestSHA256 != "") || i.BundlePath != "" || i.BundleURL != "")
 }
 
 func DiscoverBootInput(request BootInputRequest) (BootInput, error) {
