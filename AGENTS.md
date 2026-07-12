@@ -4,6 +4,16 @@ Katl is a greenfield project that produces and maintains KatlOS: an installable,
 
 ## Project Direction
 
+- Optimize the supported KatlOS journey for a home-lab operator on a trusted
+  network. Install, configuration, bootstrap, upgrade, and routine management
+  must work without user-managed hashes, attestations, expected-state digests,
+  or redundant verification steps.
+- Keep structural checks, destructive-action safeguards, and integrity metadata
+  internal and automatic on the normal path. Give users clear errors for inputs
+  Katl cannot apply, but do not turn implementation invariants into operator
+  ceremony. Stricter provenance, pinning, and trust-policy workflows may be
+  available as optional expert paths for users who choose a different threat
+  model.
 - Treat `katlc` as the KatlOS state/configuration command. It accepts user-supplied Katl YAML or configuration, validates it, compiles it into generation-scoped sysext/confext payloads, and applies, stages, reports, or rolls back that runtime state.
 - Use Go for Katl product logic: `katlc`, installer state machines, node/update agents, config validation, disk/update planners, and reusable libraries that need unit tests.
 - Do not write Go just to wrap `mkosi`, `podman`, hypervisor binaries, or `virsh` during early scaffolding. Start with thin scripts for build/boot orchestration and promote to Go only when the wrapper has meaningful parsing, state, or testable behavior. The current supported VM test path is the libvirt-backed `scripts/vmtest-run` world.

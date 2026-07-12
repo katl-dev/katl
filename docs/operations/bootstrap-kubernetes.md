@@ -6,10 +6,10 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 ## Prerequisites
 
 - every intended node completed [generation 0 handoff](access.md);
-- the same verified `.katlcfg` bundle used for installation is available;
+- the same `.katlcfg` bundle used for installation is available;
 - each node has a reachable address and protected per-node token file;
-- the Kubernetes bundle reference is digest-pinned and compatible with the
-  KatlOS runtime;
+- the Kubernetes bundle reference names a version compatible with the KatlOS
+  runtime;
 - the control-plane endpoint resolves or routes as designed; and
 - independent recovery/backup expectations are understood.
 
@@ -17,18 +17,17 @@ Katl fetches the Kubernetes bundle during this operation. Nodes need registry
 and CA access to `ghcr.io` unless the bundle is supplied through an explicitly
 supported local mechanism.
 
-## Review the Compiled Intent
+## Rebuild Changed Intent
 
-Revalidate the source and, if needed, rebuild the bundle before any node has
-been installed. Do not silently replace the bundle after installation:
+If the source changed before any node was installed, rebuild the bundle. Do not
+silently replace the bundle after installation:
 
 ```sh
-katlctl config validate ./cluster.yaml
 katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
 ```
 
-Katl derives and verifies the bundle's integrity metadata when it reads the
-file; it is not an operator input.
+Katl maintains the bundle's internal consistency metadata; it is not an
+operator input.
 
 ## Dry Run
 

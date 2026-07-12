@@ -26,7 +26,7 @@ User-managed provisioning
   one compiled cluster config bundle, a selected node name, and credentials
 
 katlos-install
-  verifies the bundle and selects one node's compiled install plan
+  reads the bundle and selects one node's compiled install plan
   binds that plan to the embedded or explicitly supplied KatlOS image
   mutates the selected disk only after validation
   installs generation 0 and records installed-node handoff state
@@ -98,13 +98,16 @@ identity, disk selection, networkd snippets, SSH authorized keys, system role,
 and bootstrap intent in one `ClusterConfig`, then compile one bundle for all
 nodes.
 
-### Verify release provenance
+### Optional: authenticate release artifacts
 
-Each KatlOS tag release includes `SHA256SUMS`, adjacent checksum files, and
-`PROVENANCE.md`. It also includes `katl-installer.packages.tsv`, the resolved
-package inventory for the temporary installer environment used to produce the
-boot media. After downloading the required assets into one directory, verify
-their transport integrity:
+The ISO and matching `katlctl` binary are sufficient for the normal trusted
+home-lab path. Each KatlOS tag also includes `SHA256SUMS`, adjacent checksum
+files, `PROVENANCE.md`, and a resolved package inventory for operators who want
+to authenticate the downloaded bytes. Those checks are optional and do not
+change how KatlOS operates.
+
+To check transport integrity, download the checksum manifest alongside the
+artifacts and run:
 
 ```sh
 sha256sum --ignore-missing --check SHA256SUMS
@@ -135,7 +138,8 @@ and bootstrap inventory, and produces one content-addressed `.katlcfg` archive.
 The same archive is used for every node; boot input selects the node by name.
 
 This two-node example uses DHCP and the KatlOS image embedded in the release ISO.
-Replace the SSH key, Kubernetes OCI digest, node addresses, and stable disk IDs:
+Replace the SSH key, Kubernetes bundle version, node addresses, and stable disk
+IDs:
 
 ```yaml
 apiVersion: config.katl.dev/v1alpha1
@@ -146,7 +150,7 @@ spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
     version: v1.36.0
-    bundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b
+    bundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3
   defaults:
     install:
       wipeTarget: true
@@ -224,15 +228,14 @@ The release ISO supplies `katlosImage`, so do not put an external KatlOS URL in
 this source for the ISO flow. PXE uses the same source but adds an explicit
 `spec.katlosImage` descriptor for the published loose SquashFS.
 
-Validate the complete source without writing output, then compile it:
+Compile the source. Katl checks it as part of building the bundle:
 
 ```sh
-katlctl config validate ./cluster.yaml
 katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
 ```
 
-Katl derives and verifies the bundle's content-addressed integrity metadata
-whenever it reads the file. Operators do not need to retain or pass it.
+Katl maintains the bundle's internal consistency metadata itself. Operators do
+not need to retain or pass it.
 
 The destructive guard has two parts: the resolved node must set
 `install.wipeTarget: true`, and boot input must set `katl.install.mode=auto`.
@@ -312,7 +315,7 @@ katlctl install status --endpoint "$INSTALLER_ENDPOINT"
 ```
 
 Copy the one-time token from the console into a protected temporary file, then
-submit the verified bundle:
+submit the bundle:
 
 ```sh
 umask 077
@@ -404,12 +407,10 @@ Installation does not run `kubeadm`, fetch Kubernetes payloads, or bundle a
 Kubernetes sysext. It stores the node role and bootstrap intent needed for a
 later explicit operator action.
 
-The Kubernetes bundle is one ordinary OCI image reference. For example,
-`spec.kubernetes.bundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b`
-means bootstrap must select that exact OCI manifest. During the explicit
-bootstrap operation, `katlc` fetches that bundle, verifies the Katl bundle
-metadata and payload digests, stages the sysext locally, and selects it for
-generation 1. The selected alpha reference above supplies the `v1.36.0`
+The Kubernetes bundle is one ordinary OCI image reference. During the explicit
+bootstrap operation, `katlc` resolves and fetches that bundle, checks its
+contents internally, stages the sysext locally, and selects it for generation
+1. The selected alpha reference above supplies the `v1.36.0`
 payload; a different Kubernetes version requires its matching bundle reference
 and a KatlOS runtime compatible with that bundle.
 
@@ -420,7 +421,8 @@ public `ghcr.io/katl-dev/kubernetes` package. A tag-only reference is accepted:
 ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3
 ```
 
-Pinning the OCI manifest is strongly recommended for reproducible provisioning:
+An immutable OCI manifest pin is optional when exact byte-for-byte
+reproducibility matters:
 
 ```text
 ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b
@@ -435,7 +437,7 @@ patch updates. An unpinned tag is resolved once for the operation record; a
 digest pin prevents the tag from selecting different content before that point.
 
 After all nodes are installed and reachable through their node-local `katlc`
-management endpoints, bootstrap directly from the same verified bundle:
+management endpoints, bootstrap directly from the same bundle:
 
 ```text
 katlctl cluster bootstrap \
@@ -503,7 +505,7 @@ katlctl config apply validate \
   --client-request-id cp-1-config-2
 ```
 
-If the source has already been compiled, use the verified bundle instead of
+If the source has already been compiled, use the bundle instead of
 recompiling it:
 
 ```text

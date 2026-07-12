@@ -1064,7 +1064,7 @@ func newConfigRenderNodeCommand(stdout, stderr io.Writer) *cobra.Command {
 
 func addNodeConfigInputFlags(cmd *cobra.Command, opts *nodeConfigInputOptions) {
 	cmd.Flags().StringVar(&opts.sourcePath, "source", "", "ClusterConfig source YAML")
-	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "verified Katl config bundle")
+	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "Katl config bundle")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from cluster intent")
 	cmd.Flags().StringVar(&opts.sourceID, "source-id", "", "runtime configuration source id; defaults to the cluster name")
 	cmd.Flags().StringVar(&opts.desiredVersion, "desired-version", "", "monotonic unsigned runtime configuration version")
@@ -1556,11 +1556,11 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 		},
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster bootstrap inventory")
-	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to verified Katl config bundle")
+	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to a Katl config bundle")
 	cmd.Flags().StringVar(&opts.initNode, "init-node", "", "first control-plane node for kubeadm init")
 	cmd.Flags().StringVar(&opts.joinWorker, "join-worker", "", "join one fresh worker to an already initialized cluster without rerunning kubeadm init")
 	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
-	cmd.Flags().StringVar(&opts.kubernetesBundle, "kubernetes-bundle", "", "Kubernetes OCI bundle image reference; an @sha256 manifest pin is strongly recommended")
+	cmd.Flags().StringVar(&opts.kubernetesBundle, "kubernetes-bundle", "", "Kubernetes OCI bundle image reference; an @sha256 manifest pin is optional")
 	cmd.Flags().StringVar(&opts.kubeconfigOut, "kubeconfig-out", "", "operator kubeconfig output path")
 	cmd.Flags().BoolVar(&opts.overwriteKubeconfig, "overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "validate and print the bootstrap plan without running kubeadm")

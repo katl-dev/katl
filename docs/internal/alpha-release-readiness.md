@@ -26,14 +26,15 @@ One repository-controlled `config.katl.dev/v1alpha1` `ClusterConfig` is the
 operator source of truth:
 
 1. Download `katlctl` and the KatlOS installer ISO from one KatlOS release.
-2. Verify checksums and GitHub build provenance.
-3. Validate the `ClusterConfig` without writing output.
-4. Compile it into one content-addressed Katl config bundle.
-5. Boot the same ISO on every node and select a node from that bundle through
-   local handoff, seed media, or verified PXE URL input.
-6. Reboot installed generation-0 nodes and bootstrap Kubernetes directly from
-   the verified bundle's embedded inventory and Kubernetes selection.
-7. Plan and apply later node configuration through an explicit runtime-change
+2. Optionally authenticate the release with its checksums and GitHub build
+   provenance when that matches the operator's threat model.
+3. Compile the `ClusterConfig` into one Katl config bundle; Katl checks the
+   source and bundle structure as part of this command.
+4. Boot the same ISO on every node and select a node from that bundle through
+   local handoff, seed media, or PXE URL input.
+5. Reboot installed generation-0 nodes and bootstrap Kubernetes directly from
+   the bundle's embedded inventory and Kubernetes selection.
+6. Plan and apply later node configuration through an explicit runtime-change
    interface derived from the same source intent.
 
 The compiled `install.katl.dev/v1alpha1` `InstallManifest` remains an internal
@@ -93,8 +94,8 @@ summary, the alpha may ship with these explicit boundaries:
 - user-managed DHCP, PXE, DNS, CNI, GitOps, storage, ingress, and application
   workloads;
 - only hardware and VM paths named by retained release evidence;
-- tag-only Kubernetes bundle references accepted but immutable digest pins
-  strongly recommended.
+- readable Kubernetes bundle tags on the normal path, with immutable digest
+  pins available as an optional reproducibility control.
 
 ## Beta Blockers
 

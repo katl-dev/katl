@@ -60,7 +60,7 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	opts := installApplyOptions{timeout: 30 * time.Minute, output: "json"}
 	cmd := &cobra.Command{
 		Use:   "apply",
-		Short: "Submit one verified config bundle to a waiting KatlOS installer",
+		Short: "Submit one config bundle to a waiting KatlOS installer",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runInstallApply(ctx, opts, stdout, stderr)
@@ -69,7 +69,7 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL such as http://192.0.2.10:8080")
 	cmd.Flags().StringVar(&opts.token, "token", "", "one-time installer token; --token-file avoids shell history exposure")
 	cmd.Flags().StringVar(&opts.tokenFile, "token-file", "", "protected file containing the one-time installer token")
-	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "verified Katl config bundle")
+	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "Katl config bundle")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from the config bundle")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
