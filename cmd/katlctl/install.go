@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -208,6 +209,26 @@ func normalizeInstallerEndpoint(value string) (string, error) {
 	}
 	parsed.Path = ""
 	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func normalizeInstallerAddress(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("address is required")
+	}
+	if strings.Contains(value, "://") {
+		return normalizeInstallerEndpoint(value)
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return normalizeInstallerEndpoint("http://" + net.JoinHostPort(ip.String(), "8080"))
+	}
+	if host, port, err := net.SplitHostPort(value); err == nil && host != "" && port != "" {
+		return normalizeInstallerEndpoint("http://" + value)
+	}
+	if strings.Contains(value, ":") {
+		return "", fmt.Errorf("address %q must be an IP, hostname, host:port, or HTTP base URL", value)
+	}
+	return normalizeInstallerEndpoint("http://" + net.JoinHostPort(value, "8080"))
 }
 
 func fetchInstallStatus(ctx context.Context, client *http.Client, endpoint string) (handoff.HandoffStatus, error) {

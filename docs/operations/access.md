@@ -55,6 +55,12 @@ The command connects as `root` using the workstation's normal SSH agent. Use
 - verifies authenticated access to TCP port `9443`; and
 - writes or updates the selected cluster in `katlctl.yaml`.
 
+`katlctl config init` and `katlctl install discover CLUSTER_CONFIG` also read
+supported public keys from the active SSH agent when creating the initial SSH
+authorization. This works with agent-only keys such as 1Password. An explicit
+`--ssh-authorized-key PATH` remains available when only one key should be
+authorized.
+
 `katlctl config init` generates the matching credential references. In a
 hand-authored `ClusterConfig`, use workstation paths rather than secret values:
 

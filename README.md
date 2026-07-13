@@ -101,13 +101,28 @@ and kubeadm-ready starting point; repeat `--node` for the intended topology:
 
 ```sh
 katlctl config init ./cluster.yaml \
-  --ssh-authorized-key ~/.ssh/id_ed25519.pub \
   --node cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-KATL_CP_1_ROOT \
   --node worker-1=worker,192.0.2.21,/dev/disk/by-id/ata-KATL_WORKER_1_ROOT
 ```
 
+By default, config generation imports supported public keys from the active SSH
+agent, including the 1Password SSH agent, and then tries
+`~/.ssh/id_ed25519.pub`. Use `--ssh-authorized-key PATH` to select one key
+explicitly. If no key is available, Katl still writes the editable config with
+a warning; add an authorized key before `install apply`.
+
 Review the generated disk identities, addresses, Kubernetes selection, and
 network configuration before installing.
+
+When an installer address is already known, `config init` can fetch its live
+status and disk inventory instead of requiring the full node tuple. Repeat the
+flag to build a multi-node starter config in the supplied order:
+
+```sh
+katlctl config init ./cluster.yaml \
+  --installer 192.0.2.11 \
+  --installer 192.0.2.21
+```
 
 If the nodes are already booted into the installer, skip the manual `--node`
 arguments and generate this same file from live discovery in the next step.

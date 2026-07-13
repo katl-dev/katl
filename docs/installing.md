@@ -322,6 +322,19 @@ Discover waiting installers and their disk inventory from the workstation:
 katlctl install discover
 ```
 
+If the installer addresses are already known, query them directly while
+creating the config instead of scanning the local subnet:
+
+```sh
+katlctl config init ./cluster.yaml \
+  --installer 192.0.2.11 \
+  --installer 192.0.2.21
+```
+
+Bare addresses use HTTP port 8080. A hostname, `host:port`, or complete HTTP(S)
+base URL is also accepted. The first supplied installer becomes `cp-1`; later
+installers become workers.
+
 The report marks a disk `selectable` only when it is a writable whole disk, is
 not mounted, and has a stable by-id, WWN, or serial selector. To turn all waiting
 installers into an editable cluster source directly, provide an output path:
@@ -329,6 +342,12 @@ installers into an editable cluster source directly, provide an output path:
 ```sh
 katlctl install discover ./cluster.yaml
 ```
+
+Config generation imports supported public keys from the active SSH agent,
+including the 1Password SSH agent, and falls back to
+`~/.ssh/id_ed25519.pub`. Pass `--ssh-authorized-key PATH` to choose a key file
+explicitly. If neither source provides a key, discovery still writes the file
+and warns that an authorized key must be added before `install apply`.
 
 The first discovered endpoint becomes `cp-1`; subsequent endpoints become
 workers. Katl writes a target selector only when an installer reports exactly

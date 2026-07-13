@@ -117,7 +117,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	cmd.AddCommand(kubernetesCmd)
 
 	configCmd := &cobra.Command{Use: "config", Short: "Katl configuration operations"}
-	configCmd.AddCommand(newConfigInitCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigInitCommand(ctx, stdout, stderr))
 	configCmd.AddCommand(newConfigPathCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigTopologyCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigValidateCommand(stdout, stderr))

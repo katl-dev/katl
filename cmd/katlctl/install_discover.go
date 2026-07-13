@@ -68,7 +68,7 @@ func runInstallDiscover(ctx context.Context, opts installDiscoverOptions, stdout
 		if err != nil {
 			return err
 		}
-		return runConfigInit(opts.configInit, stdout, stderr)
+		return runConfigInit(ctx, opts.configInit, stdout, stderr)
 	}
 	report := installDiscoveryReport{APIVersion: "katl.dev/v1alpha1", Kind: "InstallerDiscovery", Installers: installers}
 	data, err := json.MarshalIndent(report, "", "  ")

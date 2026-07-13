@@ -34,6 +34,7 @@
               git
               go
               jq
+              openssh
               podman
               protobuf
               protoc-gen-go
