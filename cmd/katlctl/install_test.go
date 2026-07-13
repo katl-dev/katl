@@ -78,17 +78,15 @@ func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
 	t.Cleanup(func() { installerDiscoveryProbe = oldProbe })
 
 	dir := t.TempDir()
-	keyPath := filepath.Join(dir, "id_ed25519.pub")
-	if err := os.WriteFile(keyPath, []byte(uxTestSSHKey+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	oldAgent := sshAgentPublicKeys
+	sshAgentPublicKeys = func() ([]byte, error) { return []byte(uxTestSSHKey + "\n"), nil }
+	t.Cleanup(func() { sshAgentPublicKeys = oldAgent })
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "katlctl.yaml"))
 	outputPath := filepath.Join(dir, "cluster.yaml")
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"install", "discover", outputPath,
 		"--name", "homelab",
-		"--ssh-authorized-key", keyPath,
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
@@ -103,6 +101,9 @@ func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
 	}
 	if source.Metadata.Name != "homelab" || source.Spec.ControlPlaneEndpoint != "192.0.2.11:6443" || len(source.Spec.Nodes) != 2 {
 		t.Fatalf("generated source = %#v", source)
+	}
+	if keys := source.Spec.Defaults.Identity.SSH.AuthorizedKeys; len(keys) != 1 || keys[0] != uxTestSSHKey {
+		t.Fatalf("authorized keys = %#v", keys)
 	}
 	cp, worker := source.Spec.Nodes[0], source.Spec.Nodes[1]
 	if cp.Name != "cp-1" || cp.SystemRole != inventory.RoleControlPlane || cp.Overrides.Bootstrap.Address != "192.0.2.11" || cp.Overrides.Install.TargetDisk == nil || cp.Overrides.Install.TargetDisk.ByID != "/dev/disk/by-id/ata-cp-root" {
@@ -159,6 +160,66 @@ func TestDiscoveredInitNodesRejectsUnsafeInference(t *testing.T) {
 				t.Fatalf("discoveredInitNodes() error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestConfigInitFromInstallerAddress(t *testing.T) {
+	status := installTestStatus(handoff.HandoffWaiting, installstatus.StateWaitingForConfig, "")
+	status.Disks = []handoff.HandoffDisk{{
+		Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/virtio-root"}, Selectable: true,
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(status)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "katlctl.yaml"))
+	oldAgent := sshAgentPublicKeys
+	sshAgentPublicKeys = func() ([]byte, error) { return []byte(uxTestSSHKey + "\n"), nil }
+	t.Cleanup(func() { sshAgentPublicKeys = oldAgent })
+
+	address := strings.TrimPrefix(server.URL, "http://")
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "init",
+		"--name", "direct-lab",
+		"--installer", address,
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
+	}
+	source, err := configbundle.DecodeSource(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatalf("DecodeSource() error = %v\n%s", err, stdout.String())
+	}
+	if len(source.Spec.Nodes) != 1 || source.Spec.Nodes[0].Name != "cp-1" || source.Spec.Nodes[0].Overrides.Install.TargetDisk == nil || source.Spec.Nodes[0].Overrides.Install.TargetDisk.ByID != "/dev/disk/by-id/virtio-root" {
+		t.Fatalf("generated source = %#v", source)
+	}
+	if got := source.Spec.Nodes[0].Overrides.Bootstrap.Address; got != "127.0.0.1" {
+		t.Fatalf("bootstrap address = %q", got)
+	}
+}
+
+func TestConfigInitInstallerInputValidation(t *testing.T) {
+	endpoint, err := normalizeInstallerAddress("192.0.2.11")
+	if err != nil || endpoint != "http://192.0.2.11:8080" {
+		t.Fatalf("normalizeInstallerAddress() = %q, %v", endpoint, err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = run(context.Background(), []string{
+		"config", "init",
+		"--node", "cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-root",
+		"--installer", "192.0.2.11",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "--node and --installer cannot be used together") {
+		t.Fatalf("run() error = %v", err)
 	}
 }
 

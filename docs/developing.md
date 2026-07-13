@@ -88,10 +88,10 @@ direnv allow
 Use `direnv` plus `nix-direnv` if you want the flake shell loaded
 automatically when entering the repository.
 
-That shell provides the Go and protobuf toolchain, Git, `jq`, `curl`, and Podman.
-Image construction stays behind `scripts/mkosi`; mkosi, Fedora package tools,
-UKI tooling, filesystem tools, and compression tools run inside its builder
-container instead of being installed on the host.
+That shell provides the Go and protobuf toolchain, Git, OpenSSH, `jq`, `curl`,
+and Podman. Image construction stays behind `scripts/mkosi`; mkosi, Fedora
+package tools, UKI tooling, filesystem tools, and compression tools run inside
+its builder container instead of being installed on the host.
 
 `katlctl` is also available in both development shells. It runs from the current
 checkout so local source changes are used immediately:

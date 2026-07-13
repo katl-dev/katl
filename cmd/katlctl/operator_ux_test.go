@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,84 @@ func TestConfigInitEmitsStarterClusterConfig(t *testing.T) {
 	}
 	if got := source.Spec.Nodes[0].Overrides.Bootstrap.Access.CredentialRef; !strings.Contains(got, "/credentials/homelab/cp-1.token") {
 		t.Fatalf("credentialRef = %q", got)
+	}
+}
+
+func TestConfigInitUsesSSHAgentKeys(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "katlctl.yaml"))
+	oldAgent := sshAgentPublicKeys
+	sshAgentPublicKeys = func() ([]byte, error) {
+		return []byte(uxTestSSHKey + "\n" + uxTestSSHKey + "\n"), nil
+	}
+	t.Cleanup(func() { sshAgentPublicKeys = oldAgent })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "init",
+		"--node", "cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-cp-root",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
+	}
+	source, err := configbundle.DecodeSource(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := source.Spec.Defaults.Identity.SSH.AuthorizedKeys
+	if len(keys) != 1 || keys[0] != uxTestSSHKey {
+		t.Fatalf("authorized keys = %#v", keys)
+	}
+	if !strings.Contains(stderr.String(), "using 1 SSH public key(s) from the active SSH agent") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestConfigInitWithoutSSHKeysWritesEditableConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "katlctl.yaml"))
+	oldAgent := sshAgentPublicKeys
+	sshAgentPublicKeys = func() ([]byte, error) { return nil, errors.New("no agent") }
+	t.Cleanup(func() { sshAgentPublicKeys = oldAgent })
+
+	outputPath := filepath.Join(dir, "cluster.yaml")
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "init", outputPath,
+		"--node", "cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-cp-root",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := configbundle.DecodeSource(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys := source.Spec.Defaults.Identity.SSH.AuthorizedKeys; len(keys) != 0 {
+		t.Fatalf("authorized keys = %#v", keys)
+	}
+	if !strings.Contains(stderr.String(), "generated ClusterConfig has no SSH authorized keys") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestConfigInitExplicitSSHKeyDoesNotFallBack(t *testing.T) {
+	oldAgent := sshAgentPublicKeys
+	sshAgentPublicKeys = func() ([]byte, error) {
+		t.Fatal("SSH agent was queried for an explicit key path")
+		return nil, nil
+	}
+	t.Cleanup(func() { sshAgentPublicKeys = oldAgent })
+
+	_, _, err := configSSHKeys(filepath.Join(t.TempDir(), "missing.pub"))
+	if err == nil || !strings.Contains(err.Error(), "read SSH public key") {
+		t.Fatalf("configSSHKeys() error = %v", err)
 	}
 }
 
