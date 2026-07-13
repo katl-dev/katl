@@ -52,6 +52,7 @@ var newWipeClusterConnector = func(token string) cluster.AgentConnector {
 
 const (
 	configBundleCreator      = "katlctl config bundle"
+	clusterBootstrapCreator  = "katlctl cluster bootstrap"
 	wipeClusterOperationKind = "destructive-reset"
 	wipeAcknowledgementText  = "I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity."
 )
@@ -1594,6 +1595,7 @@ func firstNonEmpty(values ...string) string {
 
 type clusterBootstrapOptions struct {
 	addresses                              addressOverrides
+	sourcePath                             string
 	inventoryPath                          string
 	configBundlePath                       string
 	initNode                               string
@@ -1615,10 +1617,13 @@ type clusterBootstrapOptions struct {
 func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := clusterBootstrapOptions{}
 	cmd := &cobra.Command{
-		Use:   "bootstrap",
-		Short: "Bootstrap Kubernetes from a Katl config bundle or node inventory",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Use:   "bootstrap [SOURCE]",
+		Short: "Bootstrap Kubernetes from a cluster config or node inventory",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				opts.sourcePath = args[0]
+			}
 			return runClusterBootstrap(ctx, opts, stdout, stderr)
 		},
 	}
@@ -1699,22 +1704,42 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 }
 
 func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, error) {
+	sourcePath := strings.TrimSpace(opts.sourcePath)
 	inventoryPath := strings.TrimSpace(opts.inventoryPath)
 	bundlePath := strings.TrimSpace(opts.configBundlePath)
-	if inventoryPath == "" && bundlePath == "" {
-		return inventory.Inventory{}, fmt.Errorf("exactly one of --config-bundle or --inventory is required")
+	inputs := 0
+	for _, value := range []string{sourcePath, inventoryPath, bundlePath} {
+		if value != "" {
+			inputs++
+		}
 	}
-	if inventoryPath != "" && bundlePath != "" {
-		return inventory.Inventory{}, fmt.Errorf("--config-bundle and --inventory are mutually exclusive")
+	if inputs != 1 {
+		return inventory.Inventory{}, fmt.Errorf("exactly one cluster config SOURCE, --config-bundle, or --inventory is required")
 	}
-	if bundlePath == "" {
+	if inventoryPath != "" {
 		return loadInventory(inventoryPath)
 	}
 	if strings.TrimSpace(opts.kubernetesBundle) != "" {
-		return inventory.Inventory{}, fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in --config-bundle")
+		return inventory.Inventory{}, fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the cluster config")
 	}
 	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
-		return inventory.Inventory{}, fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in --config-bundle")
+		return inventory.Inventory{}, fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in the cluster config")
+	}
+	if sourcePath != "" {
+		archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
+			SourcePath:     sourcePath,
+			KatlctlVersion: version,
+			KatlctlCommit:  commit,
+			CreatedBy:      clusterBootstrapCreator,
+		})
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("compile cluster config: %w", err)
+		}
+		bundle, err := configbundle.ReadBundle(bytes.NewReader(archive), result.Digest)
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("read compiled cluster config: %w", err)
+		}
+		return bundle.Manifest.Cluster.BootstrapInventory, nil
 	}
 	bundle, err := configbundle.ReadBundleFile(bundlePath, "")
 	if err != nil {

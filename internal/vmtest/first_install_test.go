@@ -32,7 +32,6 @@ func TestFirstInstall(t *testing.T) {
 			VM:           vmConfig,
 		},
 		Manifest:        []byte(firstManifest()),
-		HandoffToken:    "test-token",
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVM("Katl installer ready"),
@@ -83,7 +82,6 @@ func TestFirstInstallFailure(t *testing.T) {
 			VM:           vmConfig,
 		},
 		Manifest:        []byte(firstManifest()),
-		HandoffToken:    "test-token",
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVM("Katl installer ready"),
@@ -140,7 +138,6 @@ func TestFirstInstallFailsFastOnInstallerServiceFailure(t *testing.T) {
 			VM:           vmConfig,
 		},
 		Manifest:        []byte(firstManifest()),
-		HandoffToken:    "test-token",
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVMWithExecutor(vmExec{write: "katlos-install.service: Failed with result 'exit-code'.\ncollect facts failed\n"}),
@@ -160,10 +157,7 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
 	_, vmConfig := vmFixture(t)
 	vmConfig.HostForwards = nil
-	server, err := handoff.NewHandoffServer("guest-token", nil)
-	if err != nil {
-		t.Fatalf("NewHandoffServer() error = %v", err)
-	}
+	server := handoff.NewHandoffServer(nil)
 	handoffPosted := make(chan struct{})
 	installerSerial := stagedVMExec{
 		first: server.Announcement("http://10.0.2.15:8080") + "\n",
@@ -186,11 +180,11 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 		},
 		Manifest:     []byte(firstManifest()),
 		GuestHandoff: true,
-		HandoffPoster: func(ctx context.Context, url, token string, manifest []byte) (int, string, error) {
+		HandoffPoster: func(ctx context.Context, url string, manifest []byte) (int, string, error) {
 			if url != "http://10.0.2.15:8080/v1/install" {
 				t.Fatalf("handoff post URL = %q", url)
 			}
-			status, body, err := postLocal(ctx, server.Handler(), url, token, FirstInstallConfig{}, manifest)
+			status, body, err := postLocal(ctx, server.Handler(), url, FirstInstallConfig{}, manifest)
 			if err == nil {
 				close(handoffPosted)
 			}
@@ -240,7 +234,7 @@ func TestFirstInstallGuestHandoffPostsConfigBundle(t *testing.T) {
 	vmConfig.HostForwards = nil
 	posted := make(chan struct{})
 	installerSerial := stagedVMExec{
-		first: guestHandoffSignal + "http://10.0.2.15:8080 token=guest-token\n",
+		first: guestHandoffSignal + "http://10.0.2.15:8080\n",
 		wait:  posted,
 		then:  guestHandoffAcceptedSignal + "/run/katl/config.katlcfg\n" + bundleCompletedSignal + "/run/katl/config.katlcfg\n",
 	}
@@ -261,12 +255,9 @@ func TestFirstInstallGuestHandoffPostsConfigBundle(t *testing.T) {
 		ConfigBundle: bundle,
 		SelectedNode: "cp-1",
 		GuestHandoff: true,
-		HandoffPoster: func(_ context.Context, url, token string, payload []byte) (int, string, error) {
+		HandoffPoster: func(_ context.Context, url string, payload []byte) (int, string, error) {
 			if url != "http://10.0.2.15:8080/config-bundle?node=cp-1" {
 				t.Fatalf("handoff post URL = %q", url)
-			}
-			if token != "guest-token" {
-				t.Fatalf("handoff token = %q", token)
 			}
 			if string(payload) != "bundle" {
 				t.Fatalf("handoff payload = %q", payload)
@@ -301,10 +292,7 @@ func TestFirstInstallGuestHandoffFailureIncludesDebugContext(t *testing.T) {
 	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
 	_, vmConfig := vmFixture(t)
 	vmConfig.HostForwards = nil
-	server, err := handoff.NewHandoffServer("guest-token", nil)
-	if err != nil {
-		t.Fatalf("NewHandoffServer() error = %v", err)
-	}
+	server := handoff.NewHandoffServer(nil)
 	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",
@@ -320,7 +308,7 @@ func TestFirstInstallGuestHandoffFailureIncludesDebugContext(t *testing.T) {
 		},
 		Manifest:     []byte(firstManifest()),
 		GuestHandoff: true,
-		HandoffPoster: func(context.Context, string, string, []byte) (int, string, error) {
+		HandoffPoster: func(context.Context, string, []byte) (int, string, error) {
 			return 0, "", fmt.Errorf("network unreachable")
 		},
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
@@ -588,7 +576,6 @@ func TestFirstInstallUsesInstalledESPExtractor(t *testing.T) {
 			return outputDir, nil
 		},
 		Manifest:        []byte(firstManifest()),
-		HandoffToken:    "test-token",
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		InstallerRunner: fakeVM("Katl installer ready"),

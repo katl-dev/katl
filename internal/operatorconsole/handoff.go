@@ -9,18 +9,17 @@ import (
 	"time"
 )
 
-func WriteHandoff(path, url, token string) error {
+func WriteHandoff(path, url string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return fmt.Errorf("handoff projection path is required")
 	}
 	record := Handoff{
 		URL:       strings.TrimRight(strings.TrimSpace(url), "/") + "/v1/config-bundle",
-		Token:     strings.TrimSpace(token),
 		UpdatedAt: time.Now().UTC(),
 	}
-	if strings.TrimSpace(url) == "" || record.Token == "" {
-		return fmt.Errorf("handoff URL and token are required")
+	if strings.TrimSpace(url) == "" {
+		return fmt.Errorf("handoff URL is required")
 	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {

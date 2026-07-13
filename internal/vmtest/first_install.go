@@ -33,9 +33,8 @@ type FirstInstallConfig struct {
 	SelectedNode    string
 	GuestHandoff    bool
 	PreseedManifest bool
-	HandoffToken    string
 	HandoffURL      string
-	HandoffPoster   func(context.Context, string, string, []byte) (int, string, error)
+	HandoffPoster   func(context.Context, string, []byte) (int, string, error)
 	TargetDisk      DiskFixture
 	DiskRunner      DiskRunner
 	PreseedRunner   DiskRunner
@@ -55,7 +54,6 @@ const (
 type handoffLog struct {
 	URL          string `json:"url"`
 	PostURL      string `json:"postUrl,omitempty"`
-	Token        string `json:"token,omitempty"`
 	ManifestPath string `json:"manifestPath"`
 	Announcement string `json:"announcement,omitempty"`
 	GuestAddress string `json:"guestAddress,omitempty"`
@@ -685,7 +683,7 @@ func runToolOutput(ctx context.Context, name string, args ...string) ([]byte, er
 }
 
 func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, event SerialHookEvent, serialText string) error {
-	announcement, url, token, err := parseHandoffAnnouncement(serialText)
+	announcement, url, err := parseHandoffAnnouncement(serialText)
 	if err != nil {
 		return err
 	}
@@ -697,7 +695,6 @@ func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstall
 	request := handoffLog{
 		URL:          url,
 		PostURL:      postURL,
-		Token:        token,
 		ManifestPath: result.Artifacts.InstallManifest,
 		Announcement: announcement,
 		GuestAddress: handoffGuestAddress(url),
@@ -708,7 +705,7 @@ func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstall
 	if err := writeJSON(result.Artifacts.HandoffRequest, request); err != nil {
 		return err
 	}
-	status, body, err := postHandoff(ctx, config, postURL, token, manifest)
+	status, body, err := postHandoff(ctx, config, postURL, manifest)
 	if err != nil {
 		return fmt.Errorf("guest handoff post failed: %w; %s", err, handoffContext(request))
 	}
@@ -742,7 +739,7 @@ func handoffContext(log handoffLog) string {
 	return strings.Join(parts, "; ")
 }
 
-func parseHandoffAnnouncement(serialText string) (announcement string, url string, token string, err error) {
+func parseHandoffAnnouncement(serialText string) (announcement string, url string, err error) {
 	for _, line := range strings.Split(serialText, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.Contains(line, guestHandoffSignal) {
@@ -750,48 +747,32 @@ func parseHandoffAnnouncement(serialText string) (announcement string, url strin
 		}
 	}
 	if announcement == "" {
-		return "", "", "", errors.New("handoff announcement not found in installer serial log")
+		return "", "", errors.New("handoff announcement not found in installer serial log")
 	}
 	start := strings.Index(announcement, guestHandoffSignal)
 	if start < 0 {
-		return "", "", "", fmt.Errorf("could not parse handoff announcement: %s", announcement)
+		return "", "", fmt.Errorf("could not parse handoff announcement: %s", announcement)
 	}
-	payload := strings.TrimSpace(announcement[start+len(guestHandoffSignal):])
-	const tokenPrefix = " token="
-	tokenStart := strings.LastIndex(payload, tokenPrefix)
-	if tokenStart < 0 {
-		return "", "", "", fmt.Errorf("could not parse handoff token from announcement: %s", announcement)
+	url = strings.TrimSpace(announcement[start+len(guestHandoffSignal):])
+	if url == "" {
+		return "", "", fmt.Errorf("could not parse handoff URL from announcement: %s", announcement)
 	}
-	url = strings.TrimSpace(payload[:tokenStart])
-	token = strings.TrimSpace(payload[tokenStart+len(tokenPrefix):])
-	if url == "" || token == "" {
-		return "", "", "", fmt.Errorf("could not parse handoff URL/token from announcement: %s", announcement)
-	}
-	return announcement, url, token, nil
+	return announcement, url, nil
 }
 
 func deliverHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte) error {
 	url := config.HandoffURL
-	token := config.HandoffToken
 	var announcement string
 	var handler http.Handler
 	if url == "" {
-		server, err := handoff.NewHandoffServer(token, nil)
-		if err != nil {
-			return err
-		}
+		server := handoff.NewHandoffServer(nil)
 		handler = server.Handler()
 		url = handoffPostURL("http://vmtest.local/v1/install", config)
-		token = server.Token()
 		announcement = server.Announcement("http://vmtest.local")
-	}
-	if token == "" {
-		return errors.New("handoff token is required")
 	}
 
 	request := handoffLog{
 		URL:          url,
-		Token:        token,
 		ManifestPath: result.Artifacts.InstallManifest,
 		Announcement: announcement,
 	}
@@ -800,32 +781,32 @@ func deliverHandoff(ctx context.Context, result Result, config FirstInstallConfi
 	}
 
 	if handler != nil {
-		status, body, err := postLocal(ctx, handler, url, token, config, manifest)
+		status, body, err := postLocal(ctx, handler, url, config, manifest)
 		if err != nil {
 			return err
 		}
 		return writeHandoff(result, url, status, body)
 	}
-	status, body, err := postHandoff(ctx, config, url, token, manifest)
+	status, body, err := postHandoff(ctx, config, url, manifest)
 	if err != nil {
 		return err
 	}
 	return writeHandoff(result, url, status, body)
 }
 
-func postHandoff(ctx context.Context, config FirstInstallConfig, url, token string, manifest []byte) (int, string, error) {
+func postHandoff(ctx context.Context, config FirstInstallConfig, url string, manifest []byte) (int, string, error) {
 	payload, contentType, err := handoffPayload(config, manifest)
 	if err != nil {
 		return 0, "", err
 	}
 	url = handoffPostURL(url, config)
 	if config.HandoffPoster != nil {
-		return config.HandoffPoster(ctx, url, token, payload)
+		return config.HandoffPoster(ctx, url, payload)
 	}
-	return postRemote(ctx, url, token, payload, contentType)
+	return postRemote(ctx, url, payload, contentType)
 }
 
-func postLocal(ctx context.Context, handler http.Handler, url, token string, config FirstInstallConfig, manifest []byte) (int, string, error) {
+func postLocal(ctx context.Context, handler http.Handler, url string, config FirstInstallConfig, manifest []byte) (int, string, error) {
 	payload, contentType, err := handoffPayload(config, manifest)
 	if err != nil {
 		return 0, "", err
@@ -835,7 +816,6 @@ func postLocal(ctx context.Context, handler http.Handler, url, token string, con
 		return 0, "", err
 	}
 	httpRequest.Header.Set("Content-Type", contentType)
-	httpRequest.Header.Set("X-Katl-Install-Token", token)
 	response := &responseCapture{header: http.Header{}}
 	handler.ServeHTTP(response, httpRequest)
 	if response.status == 0 {
@@ -844,13 +824,12 @@ func postLocal(ctx context.Context, handler http.Handler, url, token string, con
 	return response.status, response.body.String(), nil
 }
 
-func postRemote(ctx context.Context, url, token string, payload []byte, contentType string) (int, string, error) {
+func postRemote(ctx context.Context, url string, payload []byte, contentType string) (int, string, error) {
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return 0, "", err
 	}
 	httpRequest.Header.Set("Content-Type", contentType)
-	httpRequest.Header.Set("X-Katl-Install-Token", token)
 	client := &http.Client{Timeout: 5 * time.Second}
 	response, err := client.Do(httpRequest)
 	if err != nil {

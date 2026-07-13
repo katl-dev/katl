@@ -566,10 +566,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 	if err != nil {
 		return err
 	}
-	server, err := handoff.NewHandoffServerWithDefaultImage("", nil, media.Image)
-	if err != nil {
-		return err
-	}
+	server := handoff.NewHandoffServerWithDefaultImage(nil, media.Image)
 	writeConsoleInstallStatus(runDir, server.Status().InstallStatus, stdout)
 	server.SetStatusReader(func() (installstatus.Record, error) {
 		return installstatus.ReadFile(filepath.Join(runDir, "state", "status.json"))
@@ -597,7 +594,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 	if err != nil {
 		return err
 	}
-	if err := operatorconsole.WriteHandoff(consoleHandoffPath, baseURL, server.Token()); err != nil {
+	if err := operatorconsole.WriteHandoff(consoleHandoffPath, baseURL); err != nil {
 		fmt.Fprintf(stdout, "katlos-install console handoff projection: %v\n", err)
 	}
 	fmt.Fprintln(stdout, server.Announcement(baseURL))

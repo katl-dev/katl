@@ -228,14 +228,13 @@ The release ISO supplies `katlosImage`, so do not put an external KatlOS URL in
 this source for the ISO flow. PXE uses the same source but adds an explicit
 `spec.katlosImage` descriptor for the published loose SquashFS.
 
-Compile the source. Katl checks it as part of building the bundle:
-
-```sh
-katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
-```
+The ISO flow consumes this source directly: `katlctl install apply` and
+`katlctl cluster bootstrap` compile the internal bundle automatically. Produce
+an explicit bundle only for PXE or offline provisioning, as shown in the next
+section.
 
 Katl maintains the bundle's internal consistency metadata itself. Operators do
-not need to retain or pass it.
+not need to retain it, pass it on the ISO path, or handle its digests.
 
 The destructive guard has two parts: the resolved node must set
 `install.wipeTarget: true`, and boot input must set `katl.install.mode=auto`.
@@ -259,6 +258,12 @@ spec:
     architecture: x86_64
     runtimeInterface: katl-runtime-1
     role: install
+```
+
+Compile the PXE artifact explicitly:
+
+```sh
+katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
 ```
 
 Current bundle-oriented kernel arguments are:
@@ -300,15 +305,16 @@ create or operate DHCP, iPXE, or matchbox configuration.
 
 Boot the same `katl-installer.iso` on each node without preseed input. The
 installer mounts its embedded KatlOS image read-only, prints a handoff URL and
-one-time token to the console and journal, and waits without mutating disks.
+waits without mutating disks.
 The VGA console keeps a KatlOS dashboard on `tty1` showing installer state,
-active network addresses, the handoff URL and token, disk-mutation status, and a
+active network addresses, the handoff URL, disk-mutation status, and a
 live tail of the boot journal. Press `Ctrl+Alt+F2` for a local recovery shell;
 the dashboard, serial journal, and SSH service operate independently.
 
-The current handoff uses a bearer token over unencrypted HTTP. Use only an
-isolated provisioning network, never expose port 8080 to an untrusted network,
-and remove the temporary token file after use.
+The handoff is intentionally unauthenticated HTTP for the trusted home-lab
+path. Use only the provisioning network and never expose port 8080 to an
+untrusted network. The installer accepts one valid submission and then closes
+the handoff path.
 
 For `cp-1`, first confirm the installer is waiting:
 
@@ -317,26 +323,16 @@ INSTALLER_ENDPOINT=http://192.0.2.10:8080
 katlctl install status --endpoint "$INSTALLER_ENDPOINT"
 ```
 
-Copy the one-time token from the console into a protected temporary file, then
-submit the bundle:
+Apply the cluster source directly:
 
 ```sh
-umask 077
-read -rsp 'Installer token: ' INSTALL_TOKEN; printf '\n'
-printf '%s\n' "$INSTALL_TOKEN" > ./installer.token
-unset INSTALL_TOKEN
-
-katlctl install apply \
+katlctl install apply ./cluster.yaml \
   --endpoint "$INSTALLER_ENDPOINT" \
-  --token-file ./installer.token \
-  --config-bundle ./katl-lab.katlcfg \
   --node cp-1
-
-rm -f ./installer.token
 ```
 
-For the worker, boot the same ISO and submit the same file with
-`--node worker-1`. `katlctl install apply` validates the archive integrity and
+For the worker, boot the same ISO and apply the same source with
+`--node worker-1`. `katlctl install apply` compiles and validates the source and
 selected node before contacting the installer. The installer
 then validates the compiled install material and embedded KatlOS image before
 it can mutate the selected disk. The endpoint refuses later submissions.
@@ -440,20 +436,18 @@ patch updates. An unpinned tag is resolved once for the operation record; a
 digest pin prevents the tag from selecting different content before that point.
 
 After all nodes are installed and reachable through their node-local `katlc`
-management endpoints, bootstrap directly from the same bundle:
+management endpoints, bootstrap directly from the same source:
 
 ```text
-katlctl cluster bootstrap \
-  --config-bundle katl-lab.katlcfg \
+katlctl cluster bootstrap ./cluster.yaml \
   --init-node cp-1 \
   --kubeconfig-out kubeconfig \
   --overwrite-kubeconfig
 ```
 
-The bundle supplies the control-plane endpoint, node topology, roles, kubeadm
-references, Kubernetes version, and OCI bundle selection. Do not combine
-`--config-bundle` with `--inventory`, `--control-plane-endpoint`, or
-`--kubernetes-bundle`. `--node-address node=address` remains available for an
+Katl compiles the source internally to obtain the control-plane endpoint, node
+topology, roles, kubeadm references, Kubernetes version, and OCI bundle
+selection. `--node-address node=address` remains available for an
 operator-observed address that differs from the compiled source.
 
 Each freshly installed node generates a distinct agent token. Retrieve it over

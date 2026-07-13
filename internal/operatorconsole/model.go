@@ -39,6 +39,5 @@ type NetworkInterface struct {
 
 type Handoff struct {
 	URL       string    `json:"url"`
-	Token     string    `json:"token"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

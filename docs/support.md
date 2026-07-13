@@ -43,9 +43,10 @@ TCP. Restrict port 9443 to an isolated evaluation management network. It is not
 a production-grade remote-management trust boundary, even when artifact
 provenance verification succeeds.
 
-The ISO install handoff similarly sends its one-time bearer token over
-unencrypted HTTP. Restrict port 8080 to an isolated provisioning network and
-remove copied token files after the installer accepts the bundle.
+The ISO install handoff is intentionally unauthenticated HTTP for the supported
+trusted home-lab path. Restrict port 8080 to the provisioning network: the
+installer accepts one structurally valid configuration and then closes the
+handoff path.
 
 This proves which repository workflow produced the bytes. It does not provide:
 

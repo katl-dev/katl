@@ -684,11 +684,35 @@ func TestClusterBootstrapReturnsAgentBootstrapError(t *testing.T) {
 	}
 }
 
-func TestClusterBootstrapRequiresInventory(t *testing.T) {
+func TestClusterBootstrapRequiresInput(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"cluster", "bootstrap"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "exactly one of --config-bundle or --inventory is required") {
+	if err == nil || !strings.Contains(err.Error(), "exactly one cluster config SOURCE") {
 		t.Fatalf("run() error = %v, want input error", err)
+	}
+}
+
+func TestClusterBootstrapCompilesSourceInventory(t *testing.T) {
+	sourcePath := writeClusterConfig(t)
+	var got cluster.Request
+	old := runAgentBootstrap
+	runAgentBootstrap = func(_ context.Context, request cluster.Request, _ cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+		got = request
+		return cluster.Result{Plan: inventory.Plan{InitNode: request.InitNode}}, nil
+	}
+	t.Cleanup(func() { runAgentBootstrap = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "bootstrap", sourcePath,
+		"--init-node", "cp-1",
+		"--dry-run",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if got.Inventory.ControlPlaneEndpoint != "api.katl.test:6443" || got.Inventory.KubernetesVersion != "v1.36.1" || len(got.Inventory.Nodes) != 1 {
+		t.Fatalf("source inventory = %#v", got.Inventory)
 	}
 }
 
@@ -722,13 +746,15 @@ func TestClusterBootstrapUsesConfigBundleInventory(t *testing.T) {
 
 func TestClusterBootstrapRejectsConfigBundleConflicts(t *testing.T) {
 	bundlePath, _ := writeConfigBundle(t)
+	sourcePath := writeClusterConfig(t)
 	inventoryPath := writeInventory(t)
 	tests := []struct {
 		name string
 		args []string
 		want string
 	}{
-		{name: "inventory", args: []string{"--config-bundle", bundlePath, "--inventory", inventoryPath}, want: "mutually exclusive"},
+		{name: "inventory", args: []string{"--config-bundle", bundlePath, "--inventory", inventoryPath}, want: "exactly one"},
+		{name: "source and bundle", args: []string{sourcePath, "--config-bundle", bundlePath}, want: "exactly one"},
 		{name: "Kubernetes", args: []string{"--config-bundle", bundlePath, "--kubernetes-bundle", "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.2"}, want: "conflicts with the selection embedded"},
 		{name: "endpoint", args: []string{"--config-bundle", bundlePath, "--control-plane-endpoint", "other.test:6443"}, want: "conflicts with the endpoint embedded"},
 	}
@@ -2245,18 +2271,23 @@ spec:
 
 func writeConfigBundle(t *testing.T) (string, string) {
 	t.Helper()
-	dir := t.TempDir()
-	sourcePath := filepath.Join(dir, "cluster.yaml")
-	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	sourcePath := writeClusterConfig(t)
 	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{SourcePath: sourcePath})
 	if err != nil {
 		t.Fatalf("BuildArchive() error = %v", err)
 	}
-	bundlePath := filepath.Join(dir, "cluster.katlcfg")
+	bundlePath := filepath.Join(filepath.Dir(sourcePath), "cluster.katlcfg")
 	if err := os.WriteFile(bundlePath, archive, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return bundlePath, result.Digest
+}
+
+func writeClusterConfig(t *testing.T) string {
+	t.Helper()
+	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
+	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return sourcePath
 }
