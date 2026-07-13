@@ -93,7 +93,14 @@ func (render *Renderer) Append(dst []byte, snapshot *Snapshot, journal Journal, 
 	}
 	if snapshot.Handoff.URL != "" {
 		render.fieldLine("Configure").appendString(snapshot.Handoff.URL).finish()
-		render.line().appendString("Run: katlctl install apply <cluster.yaml> --endpoint <base URL> --node <name>").finish()
+		line = render.fieldLine("Run")
+		line.appendString("katlctl config init cluster.yaml --installer ")
+		if address := firstIPv4(snapshot.Network); address != "" {
+			line.appendString(address)
+		} else {
+			line.appendString(installerBaseURL(snapshot.Handoff.URL))
+		}
+		line.finish()
 	}
 	appendWrappedField(render, "Error", snapshot.LastError)
 	appendWrappedField(render, "Next action", snapshot.RetryHint)
@@ -482,6 +489,14 @@ func firstIPv4(network []NetworkInterface) string {
 		}
 	}
 	return ""
+}
+
+func installerBaseURL(value string) string {
+	value = strings.TrimSpace(value)
+	if index := strings.Index(value, "/v1/"); index >= 0 {
+		return value[:index]
+	}
+	return strings.TrimRight(value, "/")
 }
 
 func fallback(value, fallback string) string {

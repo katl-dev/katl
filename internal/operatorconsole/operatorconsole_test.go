@@ -108,7 +108,7 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		"Network:      enp1s0: 192.0.2.10/24",
 		"Disk changes: started - do not power off",
 		"Configure:    http://192.0.2.10:8080/v1/config-bundle",
-		"Run: katlctl install apply <cluster.yaml> --endpoint <base URL> --node <name>",
+		"Run:          katlctl config init cluster.yaml --installer 192.0.2.10",
 		"Journal (live)",
 		"installing root[31m",
 		"Ctrl+Alt+F2: local console | SSH disabled by installer config",
@@ -116,6 +116,9 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "<cluster.yaml>") || strings.Contains(got, "<base URL>") || strings.Contains(got, "<name>") {
+		t.Fatalf("render contains command placeholders:\n%s", got)
 	}
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
 	if len(lines) != 25 {
@@ -125,6 +128,21 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		if len([]rune(line)) > 80 {
 			t.Fatalf("line %d width = %d", number+1, len([]rune(line)))
 		}
+	}
+}
+
+func TestRenderInstallerCommandUsesHandoffURLWithoutIPv4(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:    ModeInstaller,
+		State:   installstatus.StateWaitingForConfig,
+		Handoff: Handoff{URL: "http://[2001:db8::10]:8080/v1/config-bundle"},
+		Network: []NetworkInterface{{Name: "enp1s0", Addresses: []string{"2001:db8::10/64"}}},
+	}
+	var renderer Renderer
+	got := string(renderer.Append(make([]byte, 0, RenderCapacity(100, 18)), &snapshot, nil, 100, 18))
+	want := "Run:          katlctl config init cluster.yaml --installer http://[2001:db8::10]:8080"
+	if !strings.Contains(got, want) {
+		t.Fatalf("render missing %q:\n%s", want, got)
 	}
 }
 
