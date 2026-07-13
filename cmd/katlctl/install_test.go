@@ -9,11 +9,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
@@ -47,6 +51,114 @@ func TestInstallDiscoverFindsWaitingInstallerAndDisks(t *testing.T) {
 	endpoint, err := resolveInstallerEndpoint(context.Background(), "", time.Second)
 	if err != nil || endpoint != "http://192.0.2.42:8080" {
 		t.Fatalf("resolveInstallerEndpoint() = %q, %v", endpoint, err)
+	}
+}
+
+func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
+	oldAddrs := installerInterfaceAddrs
+	installerInterfaceAddrs = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.0.2.5"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	t.Cleanup(func() { installerInterfaceAddrs = oldAddrs })
+	oldProbe := installerDiscoveryProbe
+	installerDiscoveryProbe = func(_ context.Context, endpoint string, _ time.Duration) (handoff.HandoffStatus, error) {
+		status := handoff.HandoffStatus{State: handoff.HandoffWaiting}
+		switch endpoint {
+		case "http://192.0.2.11:8080":
+			status.Disks = []handoff.HandoffDisk{{
+				Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/virtio-cp-root", "/dev/disk/by-id/ata-cp-root"}, Selectable: true,
+			}}
+		case "http://192.0.2.21:8080":
+			status.Disks = []handoff.HandoffDisk{{Path: "/dev/sda", WWN: "worker-root-wwn", Selectable: true}}
+		default:
+			return handoff.HandoffStatus{}, fmt.Errorf("not an installer")
+		}
+		return status, nil
+	}
+	t.Cleanup(func() { installerDiscoveryProbe = oldProbe })
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519.pub")
+	if err := os.WriteFile(keyPath, []byte(uxTestSSHKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "katlctl.yaml"))
+	outputPath := filepath.Join(dir, "cluster.yaml")
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"install", "discover", outputPath,
+		"--name", "homelab",
+		"--ssh-authorized-key", keyPath,
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := configbundle.DecodeSource(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("DecodeSource() error = %v\n%s", err, data)
+	}
+	if source.Metadata.Name != "homelab" || source.Spec.ControlPlaneEndpoint != "192.0.2.11:6443" || len(source.Spec.Nodes) != 2 {
+		t.Fatalf("generated source = %#v", source)
+	}
+	cp, worker := source.Spec.Nodes[0], source.Spec.Nodes[1]
+	if cp.Name != "cp-1" || cp.SystemRole != inventory.RoleControlPlane || cp.Overrides.Bootstrap.Address != "192.0.2.11" || cp.Overrides.Install.TargetDisk == nil || cp.Overrides.Install.TargetDisk.ByID != "/dev/disk/by-id/ata-cp-root" {
+		t.Fatalf("control-plane node = %#v", cp)
+	}
+	if worker.Name != "worker-1" || worker.SystemRole != inventory.RoleWorker || worker.Overrides.Bootstrap.Address != "192.0.2.21" || worker.Overrides.Install.TargetDisk == nil || worker.Overrides.Install.TargetDisk.WWN != "worker-root-wwn" {
+		t.Fatalf("worker node = %#v", worker)
+	}
+	if !strings.Contains(stdout.String(), "created "+outputPath) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(context.Background(), []string{"config", "validate", outputPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("validate generated config: %v\nstderr=%s", err, stderr.String())
+	}
+}
+
+func TestDiscoveredInitNodesRejectsUnsafeInference(t *testing.T) {
+	tests := []struct {
+		name       string
+		installers []discoveredInstaller
+		want       string
+	}{
+		{
+			name:       "no waiting installer",
+			installers: []discoveredInstaller{{Endpoint: "http://192.0.2.11:8080", Status: handoff.HandoffStatus{State: handoff.HandoffAccepted}}},
+			want:       "no waiting KatlOS installer",
+		},
+		{
+			name: "no selectable disk",
+			installers: []discoveredInstaller{{
+				Endpoint: "http://192.0.2.11:8080",
+				Status:   handoff.HandoffStatus{State: handoff.HandoffWaiting, Disks: []handoff.HandoffDisk{{Path: "/dev/vda"}}},
+			}},
+			want: "0 selectable disks",
+		},
+		{
+			name: "ambiguous disks",
+			installers: []discoveredInstaller{{
+				Endpoint: "http://192.0.2.11:8080",
+				Status: handoff.HandoffStatus{State: handoff.HandoffWaiting, Disks: []handoff.HandoffDisk{
+					{Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/virtio-a"}, Selectable: true},
+					{Path: "/dev/vdb", ByID: []string{"/dev/disk/by-id/virtio-b"}, Selectable: true},
+				}},
+			}},
+			want: "2 selectable disks (/dev/vda, /dev/vdb)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := discoveredInitNodes(tt.installers)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("discoveredInitNodes() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

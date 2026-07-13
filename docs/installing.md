@@ -323,9 +323,19 @@ katlctl install discover
 ```
 
 The report marks a disk `selectable` only when it is a writable whole disk, is
-not mounted, and has a stable by-id, WWN, or serial selector. Copy the intended
-stable selector into the matching node in `cluster.yaml`; never substitute the
-transient `/dev/vda` or `/dev/sda` path.
+not mounted, and has a stable by-id, WWN, or serial selector. To turn all waiting
+installers into an editable cluster source directly, provide an output path:
+
+```sh
+katlctl install discover ./cluster.yaml
+```
+
+The first discovered endpoint becomes `cp-1`; subsequent endpoints become
+workers. Katl writes a target selector only when an installer reports exactly
+one selectable disk and refuses to guess when multiple disks are eligible.
+Review and adjust the generated node names, roles, addresses, disk identities,
+and Kubernetes selection before applying it. Never substitute a transient
+`/dev/vda` or `/dev/sda` path.
 
 Apply the cluster source directly:
 

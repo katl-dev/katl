@@ -7,18 +7,21 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/handoff"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/spf13/cobra"
 )
 
 type installDiscoverOptions struct {
-	timeout time.Duration
-	output  string
+	timeout    time.Duration
+	configInit configInitOptions
 }
 
 type discoveredInstaller struct {
@@ -38,28 +41,34 @@ var installerDiscoveryProbe = func(ctx context.Context, endpoint string, timeout
 }
 
 func newInstallDiscoverCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := installDiscoverOptions{timeout: 3 * time.Second, output: "json"}
+	opts := installDiscoverOptions{timeout: 3 * time.Second, configInit: defaultConfigInitOptions()}
 	cmd := &cobra.Command{
-		Use:   "discover",
-		Short: "Find waiting KatlOS installers and inspect their disks",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Use:   "discover [CLUSTER_CONFIG]",
+		Short: "Find waiting KatlOS installers and optionally create a ClusterConfig",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				opts.configInit.outputPath = args[0]
+			}
 			return runInstallDiscover(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall local-network discovery timeout")
-	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
+	addConfigInitFlags(cmd, &opts.configInit)
 	return cmd
 }
 
 func runInstallDiscover(ctx context.Context, opts installDiscoverOptions, stdout, stderr io.Writer) error {
-	_ = stderr
-	if opts.output != "json" {
-		return fmt.Errorf("--output = %q, want json", opts.output)
-	}
 	installers, err := discoverInstallers(ctx, opts.timeout)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(opts.configInit.outputPath) != "" {
+		opts.configInit.nodes, err = discoveredInitNodes(installers)
+		if err != nil {
+			return err
+		}
+		return runConfigInit(opts.configInit, stdout, stderr)
 	}
 	report := installDiscoveryReport{APIVersion: "katl.dev/v1alpha1", Kind: "InstallerDiscovery", Installers: installers}
 	data, err := json.MarshalIndent(report, "", "  ")
@@ -68,6 +77,81 @@ func runInstallDiscover(ctx context.Context, opts installDiscoverOptions, stdout
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err
+}
+
+func discoveredInitNodes(installers []discoveredInstaller) (initNodeSpecs, error) {
+	waiting := make([]discoveredInstaller, 0, len(installers))
+	for _, installer := range installers {
+		if installer.Status.State == handoff.HandoffWaiting {
+			waiting = append(waiting, installer)
+		}
+	}
+	if len(waiting) == 0 {
+		return nil, fmt.Errorf("no waiting KatlOS installer was discovered; boot the installation media and retry")
+	}
+
+	nodes := make(initNodeSpecs, 0, len(waiting))
+	worker := 1
+	for i, installer := range waiting {
+		address, err := installerAddress(installer.Endpoint)
+		if err != nil {
+			return nil, err
+		}
+		disk, err := discoveredTargetDisk(installer)
+		if err != nil {
+			return nil, err
+		}
+		name := "cp-1"
+		role := inventory.RoleControlPlane
+		if i > 0 {
+			name = fmt.Sprintf("worker-%d", worker)
+			role = inventory.RoleWorker
+			worker++
+		}
+		nodes = append(nodes, initNodeSpec{name: name, role: role, address: address, disk: disk})
+	}
+	return nodes, nil
+}
+
+func installerAddress(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Hostname() == "" {
+		return "", fmt.Errorf("discovered installer endpoint %q has no usable address", endpoint)
+	}
+	return parsed.Hostname(), nil
+}
+
+func discoveredTargetDisk(installer discoveredInstaller) (manifest.DiskSelector, error) {
+	selectable := make([]handoff.HandoffDisk, 0, len(installer.Status.Disks))
+	for _, disk := range installer.Status.Disks {
+		if disk.Selectable {
+			selectable = append(selectable, disk)
+		}
+	}
+	if len(selectable) != 1 {
+		paths := make([]string, 0, len(selectable))
+		for _, disk := range selectable {
+			paths = append(paths, disk.Path)
+		}
+		detail := "none"
+		if len(paths) > 0 {
+			detail = strings.Join(paths, ", ")
+		}
+		return manifest.DiskSelector{}, fmt.Errorf("installer %s reports %d selectable disks (%s); create the ClusterConfig with katlctl config init and choose the intended stable disk", installer.Endpoint, len(selectable), detail)
+	}
+	disk := selectable[0]
+	if len(disk.ByID) > 0 {
+		byID := append([]string(nil), disk.ByID...)
+		sort.Strings(byID)
+		return manifest.DiskSelector{ByID: byID[0]}, nil
+	}
+	if strings.TrimSpace(disk.WWN) != "" {
+		return manifest.DiskSelector{WWN: disk.WWN}, nil
+	}
+	if strings.TrimSpace(disk.Serial) != "" {
+		return manifest.DiskSelector{Serial: disk.Serial}, nil
+	}
+	return manifest.DiskSelector{}, fmt.Errorf("installer %s marked %s selectable without a stable disk identity", installer.Endpoint, disk.Path)
 }
 
 func resolveInstallerEndpoint(ctx context.Context, value string, timeout time.Duration) (string, error) {

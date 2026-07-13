@@ -36,7 +36,7 @@ type initNodeSpec struct {
 	name    string
 	role    inventory.SystemRole
 	address string
-	disk    string
+	disk    manifest.DiskSelector
 }
 
 type initNodeSpecs []initNodeSpec
@@ -61,16 +61,12 @@ func (values *initNodeSpecs) Set(value string) error {
 	if !strings.HasPrefix(disk, "/dev/disk/by-id/") {
 		return fmt.Errorf("node %q disk must be a stable /dev/disk/by-id path", name)
 	}
-	*values = append(*values, initNodeSpec{name: strings.TrimSpace(name), role: role, address: address, disk: disk})
+	*values = append(*values, initNodeSpec{name: strings.TrimSpace(name), role: role, address: address, disk: manifest.DiskSelector{ByID: disk}})
 	return nil
 }
 
 func newConfigInitCommand(stdout, stderr io.Writer) *cobra.Command {
-	opts := configInitOptions{
-		clusterName:       "katl-lab",
-		kubernetesVersion: defaultKubernetesVersion,
-		kubernetesBundle:  defaultKubernetesBundle,
-	}
+	opts := defaultConfigInitOptions()
 	cmd := &cobra.Command{
 		Use:   "init [PATH]",
 		Short: "Create an editable starter ClusterConfig",
@@ -82,14 +78,26 @@ func newConfigInitCommand(stdout, stderr io.Writer) *cobra.Command {
 			return runConfigInit(opts, stdout, stderr)
 		},
 	}
+	addConfigInitFlags(cmd, &opts)
+	cmd.Flags().Var(&opts.nodes, "node", "node as name=role,address,/dev/disk/by-id/... (repeatable)")
+	return cmd
+}
+
+func defaultConfigInitOptions() configInitOptions {
+	return configInitOptions{
+		clusterName:       "katl-lab",
+		kubernetesVersion: defaultKubernetesVersion,
+		kubernetesBundle:  defaultKubernetesBundle,
+	}
+}
+
+func addConfigInitFlags(cmd *cobra.Command, opts *configInitOptions) {
 	cmd.Flags().StringVar(&opts.clusterName, "name", opts.clusterName, "cluster name")
 	cmd.Flags().StringVar(&opts.controlPlane, "control-plane-endpoint", "", "stable Kubernetes API endpoint host:port; defaults to the first control-plane address")
 	cmd.Flags().StringVar(&opts.kubernetesVersion, "kubernetes-version", opts.kubernetesVersion, "Kubernetes payload version")
 	cmd.Flags().StringVar(&opts.kubernetesBundle, "kubernetes-bundle", opts.kubernetesBundle, "Kubernetes bundle image")
 	cmd.Flags().StringVar(&opts.sshKeyPath, "ssh-authorized-key", "", "public SSH key file; defaults to ~/.ssh/id_ed25519.pub")
-	cmd.Flags().Var(&opts.nodes, "node", "node as name=role,address,/dev/disk/by-id/... (repeatable)")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "replace an existing output file")
-	return cmd
 }
 
 func runConfigInit(opts configInitOptions, stdout, stderr io.Writer) error {
@@ -167,11 +175,12 @@ func runConfigInit(opts configInitOptions, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		targetDisk := node.disk
 		source.Spec.Nodes = append(source.Spec.Nodes, configbundle.SourceNode{
 			Name: node.name, SystemRole: node.role,
 			Overrides: configbundle.SourceNodeLayer{
 				Identity:  configbundle.SourceIdentity{Hostname: node.name},
-				Install:   configbundle.SourceInstallLayer{TargetDisk: &manifest.DiskSelector{ByID: node.disk}},
+				Install:   configbundle.SourceInstallLayer{TargetDisk: &targetDisk},
 				Bootstrap: clusterplan.BootstrapLayer{Address: node.address, Access: inventory.Access{Method: "agent", CredentialRef: "file:" + credentialPath}},
 			},
 		})

@@ -109,6 +109,9 @@ katlctl config init ./cluster.yaml \
 Review the generated disk identities, addresses, Kubernetes selection, and
 network configuration before installing.
 
+If the nodes are already booted into the installer, skip the manual `--node`
+arguments and generate this same file from live discovery in the next step.
+
 Use the readable version tag on the normal path. Katl resolves the selected
 content once for the operation and checks what it downloads internally. An
 immutable digest pin remains available as an optional reproducibility control.
@@ -137,9 +140,21 @@ their stable disk identities:
 katlctl install discover
 ```
 
-Update the node's target disk if discovery shows a different stable identity,
-then apply the cluster source. When exactly one installer is waiting, no URL
-needs to be copied from the console:
+To create `cluster.yaml` directly from all waiting installers, give discovery
+the output path:
+
+```sh
+katlctl install discover ./cluster.yaml
+```
+
+Discovery assigns the first endpoint to `cp-1` and subsequent endpoints to
+`worker-1`, `worker-2`, and so on. It writes a disk selector only when each
+installer reports exactly one safe selectable disk; ambiguous disks produce an
+error instead of a guess. Review the generated node names, roles, addresses,
+disk identities, and Kubernetes selection before applying it.
+
+When exactly one installer is waiting, no URL needs to be copied from the
+console:
 
 ```sh
 katlctl install apply ./cluster.yaml --node cp-1
