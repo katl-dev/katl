@@ -36,7 +36,7 @@ Keep these artifacts together for the life of an evaluation:
 - the KatlOS release URL and assets used;
 - the source `ClusterConfig` and any `.katlcfg` produced for PXE or offline use;
 - the Kubernetes OCI reference;
-- one protected agent token file per node;
+- one enrolled workstation context with a protected agent token per node;
 - the kubeconfig, command results, generation IDs, and relevant timestamps; and
 - independent etcd, application, and persistent-data backups.
 
@@ -59,8 +59,7 @@ or recent node work later with:
 
 ```sh
 katlctl operations list \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token
+  --node cp-1
 ```
 
 `katlctl operation status --operation-id ID` remains an advanced diagnostic

@@ -98,6 +98,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	})
 
 	clusterCmd := &cobra.Command{Use: "cluster", Short: "Cluster lifecycle operations"}
+	clusterCmd.AddCommand(newClusterEnrollCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newClusterBootstrapCommand(ctx, stdout, stderr))
 	clusterUpgradeCmd := &cobra.Command{Use: "upgrade", Short: "Cluster upgrade operations"}
 	clusterUpgradeCmd.AddCommand(newKubernetesUpgradeCommand(ctx, stdout, stderr))
@@ -109,6 +110,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	cmd.AddCommand(clusterCmd)
 
 	configCmd := &cobra.Command{Use: "config", Short: "Katl configuration operations"}
+	configCmd.AddCommand(newConfigInitCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigPathCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigTopologyCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigValidateCommand(stdout, stderr))
@@ -141,6 +143,9 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 type hostUpgradeOptions struct {
 	endpoint            string
 	agentTokenFile      string
+	workstationConfig   string
+	contextName         string
+	nodeName            string
 	imageURL            string
 	imageLocalRef       string
 	candidateGeneration string
@@ -164,6 +169,9 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().StringVar(&opts.workstationConfig, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
 	cmd.Flags().StringVar(&opts.imageURL, "image-url", "", "HTTPS KatlOS upgrade image URL")
 	cmd.Flags().StringVar(&opts.imageLocalRef, "image-local-ref", "", "relative KatlOS image reference under the node artifact store")
 	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
@@ -182,9 +190,6 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if strings.TrimSpace(opts.endpoint) == "" {
-		return fmt.Errorf("--endpoint is required")
-	}
 	if opts.waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
@@ -200,11 +205,14 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err := operation.ValidateHostUpgrade(request); err != nil {
 		return err
 	}
-	token, err := readAgentToken(opts.agentTokenFile)
+	target, err := resolveManagementTarget(managementTargetOptions{
+		configPath: opts.workstationConfig, contextName: opts.contextName, nodeName: opts.nodeName,
+		endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+	})
 	if err != nil {
 		return err
 	}
-	conn, err := dialKatlcAgent(ctx, opts.endpoint, token)
+	conn, err := dialKatlcAgent(ctx, target.endpoint, target.token)
 	if err != nil {
 		return err
 	}
@@ -1174,6 +1182,8 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 type configApplyOptions struct {
 	endpoint            string
 	agentTokenFile      string
+	workstationConfig   string
+	contextName         string
 	configPath          string
 	nodeConfig          nodeConfigInputOptions
 	mode                string
@@ -1186,13 +1196,21 @@ type configApplyOptions struct {
 	output              string
 }
 
+var configApplyNow = func() time.Time { return time.Now().UTC() }
+
 func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := configApplyOptions{mode: generation.ApplyModeAuto, actor: "katlctl config apply", output: "json"}
 	cmd := &cobra.Command{
-		Use:   "apply",
+		Use:   "apply [SOURCE]",
 		Short: "Validate or apply node configuration",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if strings.TrimSpace(opts.nodeConfig.sourcePath) != "" {
+					return fmt.Errorf("SOURCE cannot be combined with --source")
+				}
+				opts.nodeConfig.sourcePath = args[0]
+			}
 			return runConfigApply(ctx, opts, stdout, stderr)
 		},
 	}
@@ -1224,10 +1242,17 @@ func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().StringVar(&opts.workstationConfig, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.configPath, "file", "", "pre-rendered NodeConfigurationChange YAML")
 	addNodeConfigInputFlags(cmd, &opts.nodeConfig)
 	cmd.Flags().StringVar(&opts.mode, "mode", opts.mode, "apply mode: auto, live, or next-boot")
 	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
+	for _, name := range []string{"source", "desired-version", "candidate-generation"} {
+		if flag := cmd.Flags().Lookup(name); flag != nil {
+			flag.Hidden = true
+		}
+	}
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
@@ -1241,9 +1266,6 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if strings.TrimSpace(opts.endpoint) == "" {
-		return fmt.Errorf("--endpoint is required")
-	}
 	if opts.waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
@@ -1255,6 +1277,22 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	intentInput := strings.TrimSpace(opts.nodeConfig.sourcePath) != "" || strings.TrimSpace(opts.nodeConfig.bundlePath) != ""
 	if fileInput == intentInput {
 		return fmt.Errorf("exactly one of --file, --source, or --config-bundle is required")
+	}
+	target, err := resolveManagementTarget(managementTargetOptions{
+		configPath: opts.workstationConfig, contextName: opts.contextName,
+		nodeName: opts.nodeConfig.nodeName, endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+	})
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.nodeConfig.nodeName) == "" {
+		opts.nodeConfig.nodeName = target.nodeName
+	}
+	if strings.TrimSpace(opts.nodeConfig.desiredVersion) == "" && intentInput {
+		opts.nodeConfig.desiredVersion = strconv.FormatInt(configApplyNow().UnixNano(), 10)
+	}
+	if strings.TrimSpace(opts.candidateGeneration) == "" {
+		opts.candidateGeneration = "config-" + strconv.FormatInt(configApplyNow().UnixNano(), 10)
 	}
 	var configYAML []byte
 	if fileInput {
@@ -1271,19 +1309,12 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			return err
 		}
 	}
-	token, err := readAgentToken(opts.agentTokenFile)
-	if err != nil {
-		return err
-	}
-	conn, err := dialKatlcAgent(ctx, opts.endpoint, token)
+	conn, err := dialKatlcAgent(ctx, target.endpoint, target.token)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	if opts.plan {
-		if strings.TrimSpace(opts.candidateGeneration) == "" {
-			return fmt.Errorf("--candidate-generation is required with --plan")
-		}
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion:            operation.APIVersion,
 			Kind:                  "ValidateConfigRequest",
@@ -1323,9 +1354,6 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	case generation.ApplyModeNextBoot:
 		accepted, err = conn.Client.StageGeneration(ctx, req)
 	case generation.ApplyModeAuto:
-		if strings.TrimSpace(opts.candidateGeneration) == "" {
-			return fmt.Errorf("--candidate-generation is required with --mode auto")
-		}
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion:            operation.APIVersion,
 			Kind:                  "ValidateConfigRequest",
@@ -1389,6 +1417,9 @@ type configApplyStatusOptions struct {
 	root               string
 	endpoint           string
 	agentTokenFile     string
+	workstationConfig  string
+	contextName        string
+	nodeName           string
 	generationID       string
 	activeGeneration   string
 	nextBootGeneration string
@@ -1408,6 +1439,9 @@ func newConfigApplyStatusCommand(ctx context.Context, stdout, stderr io.Writer) 
 	cmd.Flags().StringVar(&opts.root, "root", "/", "runtime root to inspect")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().StringVar(&opts.workstationConfig, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
 	cmd.Flags().StringVar(&opts.generationID, "generation", "", "generation id to query from katlc agent")
 	cmd.Flags().StringVar(&opts.activeGeneration, "active-generation", "", "active generation id")
 	cmd.Flags().StringVar(&opts.nextBootGeneration, "next-boot-generation", "", "next boot generation id")
@@ -1420,21 +1454,33 @@ func runConfigApplyStatus(ctx context.Context, opts configApplyStatusOptions, st
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if strings.TrimSpace(opts.endpoint) != "" {
-		if strings.TrimSpace(opts.generationID) == "" {
-			return fmt.Errorf("--generation is required with --endpoint")
-		}
-		token, err := readAgentToken(opts.agentTokenFile)
+	remote := strings.TrimSpace(opts.endpoint) != "" || strings.TrimSpace(opts.workstationConfig) != "" || strings.TrimSpace(opts.contextName) != "" || strings.TrimSpace(opts.nodeName) != ""
+	if remote {
+		target, err := resolveManagementTarget(managementTargetOptions{
+			configPath: opts.workstationConfig, contextName: opts.contextName, nodeName: opts.nodeName,
+			endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+		})
 		if err != nil {
 			return err
 		}
-		conn, err := dialKatlcAgent(ctx, opts.endpoint, token)
+		conn, err := dialKatlcAgent(ctx, target.endpoint, target.token)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
+		generationID := strings.TrimSpace(opts.generationID)
+		if generationID == "" {
+			status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+			if err != nil {
+				return err
+			}
+			generationID = strings.TrimSpace(status.GetCurrentGenerationId())
+			if generationID == "" {
+				return fmt.Errorf("node %q did not report a current generation", target.nodeName)
+			}
+		}
 		generation, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{
-			GenerationId:       opts.generationID,
+			GenerationId:       generationID,
 			IncludeConfigApply: true,
 		})
 		if err != nil {

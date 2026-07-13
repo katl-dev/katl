@@ -16,30 +16,15 @@ It excludes disk/install policy, system role, Kubernetes bundle selection, and
 kubeadm lifecycle state. A desired kubeadm input may be rendered and recorded as
 requiring a later explicit action; config apply does not run kubeadm.
 
-## Render and Review
+## Plan an Apply
 
-Use a monotonically increasing desired version for this source:
-
-```sh
-katlctl config render-node \
-  --source ./cluster.yaml \
-  --node cp-1 \
-  --desired-version 2 > cp-1.runtime.yaml
-```
-
-Review the rendered files before contacting the node. Do not place private
-keys, bearer tokens, or other secret values in source configuration.
-
-## Validate Through the Node
+An optional plan compiles the selected node configuration and asks the node to
+validate it without accepting an operation:
 
 ```sh
-katlctl config apply validate \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --source ./cluster.yaml \
+katlctl config apply ./cluster.yaml \
   --node cp-1 \
-  --desired-version 2 \
-  --candidate-generation config-2
+  --plan
 ```
 
 Validation reports the changed domains and accepted apply mode without
@@ -47,32 +32,28 @@ accepting an operation. The default `auto` lets the domain policy select live or
 next-boot application. Request `--mode live` or `--mode next-boot` only when you
 intend to constrain that policy; unsafe requests are refused.
 
-If the source has already been compiled, replace `--source` with:
+If the source has already been compiled, use the expert bundle input instead of
+the positional source:
 
-```text
---config-bundle ./katl-lab.katlcfg
+```sh
+katlctl config apply --config-bundle ./katl-lab.katlcfg --node cp-1 --plan
 ```
 
 Katl derives and verifies the bundle's integrity metadata from the file.
 
 ## Apply the Reviewed Request
 
-Run the same arguments without the `validate` subcommand:
+Run the same arguments without `--plan`:
 
 ```sh
-katlctl config apply \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --source ./cluster.yaml \
-  --node cp-1 \
-  --desired-version 2 \
-  --candidate-generation config-2
+katlctl config apply ./cluster.yaml --node cp-1
 ```
 
-Keep the configuration inputs identical to the reviewed plan. `katlctl`
-generates the retry identity, follows the durable apply, and exits only after a
-terminal result. Require `terminal: true` and `result: succeeded`. If
-`recoveryRequired` is true, stop and follow `failureReason` and `nextAction`.
+`katlctl` resolves the selected workstation context, reads the node credential,
+derives the monotonically increasing desired version and candidate generation,
+validates the change, follows the durable apply, and exits only after a terminal
+result. Require `terminal: true` and `result: succeeded`. If `recoveryRequired`
+is true, stop and follow `failureReason` and `nextAction`.
 
 ## Check Generation Status
 
@@ -80,12 +61,12 @@ Query the candidate through the agent:
 
 ```sh
 katlctl config apply status \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --generation config-2
+  --node cp-1
 ```
 
-For a live change, require committed state and healthy config-apply evidence.
+The command selects the node's current generation automatically. Pass
+`--generation` only to inspect an older or staged generation. For a live change,
+require committed state and healthy config-apply evidence.
 For a next-boot change, require committed staged state, reboot in a controlled
 window, then require the candidate to become healthy after
 `katl-boot-complete.target`.

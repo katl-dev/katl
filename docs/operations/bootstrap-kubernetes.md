@@ -7,7 +7,7 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 
 - every intended node completed [generation 0 handoff](access.md);
 - the same `ClusterConfig` source used for installation is available;
-- each node has a reachable address and protected per-node token file;
+- `katlctl cluster enroll ./cluster.yaml` completed successfully;
 - the Kubernetes bundle reference names a version compatible with the KatlOS
   runtime;
 - the control-plane endpoint resolves or routes as designed; and
@@ -37,8 +37,7 @@ katlctl cluster bootstrap ./cluster.yaml \
   --kubeconfig-out ./kubeconfig
 ```
 
-When every node has a `file:` credential reference, do not add a common
-`--agent-token-file`; `katlctl` reads the per-node files. Use
+The enrolled `file:` credential references are read automatically. Use
 `--node-address node=address` only for an observed address that differs from the
 compiled source.
 
@@ -68,8 +67,7 @@ unclear, discover the affected node's current and recent operations:
 
 ```sh
 katlctl operations list \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token
+  --node cp-1
 ```
 
 ## Establish Cluster Networking

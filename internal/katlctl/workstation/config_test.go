@@ -286,6 +286,41 @@ func TestExplicitInventoryDoesNotBorrowFromConfig(t *testing.T) {
 	}
 }
 
+func TestSaveAndUpsertClusterPreservePrivateConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "katlctl.yaml")
+	cfg := Config{}.UpsertCluster("lab", Cluster{
+		Name:  "lab",
+		Nodes: []Node{{Name: "cp-1", ManagementEndpoint: "cp-1.test:9443", SystemRole: inventory.RoleControlPlane, CredentialRef: "file:/secure/cp-1.token"}},
+	})
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CurrentContext != "lab" || len(loaded.Clusters) != 1 {
+		t.Fatalf("loaded config = %#v", loaded)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode = %v", info.Mode().Perm())
+	}
+}
+
+func TestCredentialPathLivesBesideConfig(t *testing.T) {
+	path, err := CredentialPath("/tmp/katl/katlctl.yaml", "lab", "cp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/tmp/katl/credentials/lab/cp-1.token" {
+		t.Fatalf("CredentialPath() = %q", path)
+	}
+}
+
 func writeConfig(t *testing.T, data string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "katlctl.yaml")

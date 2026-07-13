@@ -40,6 +40,9 @@ type operationClient interface {
 type operationStatusOptions struct {
 	endpoint       string
 	agentTokenFile string
+	configPath     string
+	contextName    string
+	nodeName       string
 	operationID    string
 	diagnostics    string
 	watch          bool
@@ -50,6 +53,9 @@ type operationStatusOptions struct {
 type operationListOptions struct {
 	endpoint       string
 	agentTokenFile string
+	configPath     string
+	contextName    string
+	nodeName       string
 	activeOnly     bool
 	limit          int32
 	diagnostics    string
@@ -76,6 +82,9 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
 	cmd.Flags().StringVar(&opts.operationID, "operation-id", "", "accepted operation id")
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "follow the operation until it reaches terminal state")
@@ -96,6 +105,9 @@ func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
 	cmd.Flags().BoolVar(&opts.activeOnly, "active", false, "show only non-terminal operations")
 	cmd.Flags().Int32Var(&opts.limit, "limit", opts.limit, "maximum operations to return")
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
@@ -109,9 +121,6 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if strings.TrimSpace(opts.endpoint) == "" {
-		return fmt.Errorf("--endpoint is required")
-	}
 	if opts.limit < 1 || opts.limit > 100 {
 		return fmt.Errorf("--limit must be between 1 and 100")
 	}
@@ -121,13 +130,16 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	token, err := readAgentToken(opts.agentTokenFile)
+	target, err := resolveManagementTarget(managementTargetOptions{
+		configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
+		endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+	})
 	if err != nil {
 		return err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
-	conn, err := dialKatlcAgent(requestCtx, opts.endpoint, token)
+	conn, err := dialKatlcAgent(requestCtx, target.endpoint, target.token)
 	if err != nil {
 		return err
 	}
@@ -155,9 +167,6 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if strings.TrimSpace(opts.endpoint) == "" {
-		return fmt.Errorf("--endpoint is required")
-	}
 	if strings.TrimSpace(opts.operationID) == "" {
 		return fmt.Errorf("--operation-id is required")
 	}
@@ -167,13 +176,16 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	token, err := readAgentToken(opts.agentTokenFile)
+	target, err := resolveManagementTarget(managementTargetOptions{
+		configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
+		endpoint: opts.endpoint, agentTokenFile: opts.agentTokenFile,
+	})
 	if err != nil {
 		return err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
-	conn, err := dialKatlcAgent(requestCtx, opts.endpoint, token)
+	conn, err := dialKatlcAgent(requestCtx, target.endpoint, target.token)
 	if err != nil {
 		return err
 	}

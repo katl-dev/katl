@@ -39,7 +39,9 @@ XDG_CONFIG_HOME
 
 ## Schema
 
-The file is a minimal client-side profile store:
+The file is a minimal client-side profile store. `katlctl cluster enroll
+SOURCE` creates or updates it on the normal path; operators do not need to
+author this YAML by hand:
 
 ```yaml
 currentContext: prod
@@ -66,7 +68,9 @@ KatlOS system roles, credential references, and optionally the stable
 control-plane endpoint used by operator workflows.
 
 The config must not contain inline bearer tokens, private keys, kubeconfigs, or
-cluster PKI. Store references to credentials, not credential material.
+cluster PKI. Enrollment stores per-node bearer tokens beneath the adjacent
+`credentials/<cluster>/` directory with mode `0600` and records only `file:`
+references here.
 
 `katlctl config topology` prints the resolved context topology as JSON.
 The topology output includes `credentialRef` values because they are operator

@@ -450,12 +450,16 @@ topology, roles, kubeadm references, Kubernetes version, and OCI bundle
 selection. `--node-address node=address` remains available for an
 operator-observed address that differs from the compiled source.
 
-Each freshly installed node generates a distinct agent token. Retrieve it over
-SSH as described in [Access installed KatlOS nodes](operations/access.md), then
-store its workstation path in that node's `file:` credential reference. Do not
-put the token value in `ClusterConfig`. A common `--agent-token-file` is only a
-fallback when every selected node was deliberately provisioned with the same
-token; fresh installs do not have that property.
+Each freshly installed node generates a distinct agent token. Enroll the
+installed nodes before bootstrap:
+
+```text
+katlctl cluster enroll ./cluster.yaml
+```
+
+`katlctl` retrieves the tokens over SSH, stores them at the `file:` credential
+references with mode `0600`, verifies every management endpoint, and creates a
+workstation context. Do not put token values in `ClusterConfig`.
 
 `katlctl` is a bounded client. Node-local `katlc` validates and records the
 authoritative bootstrap operations, creates generation 1, runs `kubeadm`, and
@@ -475,46 +479,27 @@ node runtime configuration. `NodeConfigurationChange` is the node-agent
 operation envelope; normal users do not need to reverse-engineer or maintain it
 by hand.
 
-Inspect the exact per-node runtime request without contacting a node:
+Optionally plan the exact per-node runtime request through the node agent:
 
 ```text
-katlctl config render-node \
-  --source ./cluster.yaml \
-  --node cp-1 \
-  --desired-version 2 > cp-1.runtime.yaml
+katlctl config apply ./cluster.yaml --node cp-1 --plan
 ```
 
-`--desired-version` is a monotonically increasing unsigned number for this
-configuration source. It provides replay and stale-change protection. The
-source id defaults to `metadata.name`; use `--source-id` only when the same
-cluster needs independently versioned configuration streams.
-
-Plan the change through the node agent before accepting an operation:
-
-```text
-katlctl config apply validate \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --source ./cluster.yaml \
-  --node cp-1 \
-  --desired-version 2 \
-  --candidate-generation config-2
-```
+`katlctl` derives the source version, candidate generation, authenticated
+endpoint, validation request, and operation tracking. These are internal
+replay and lifecycle details, not operator inputs.
 
 If the source has already been compiled, use the bundle instead of
 recompiling it:
 
 ```text
-katlctl config apply validate \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
+katlctl config apply \
   --config-bundle ./katl-lab.katlcfg \
   --node cp-1 \
-  --desired-version 2 \
-  --candidate-generation config-2
+  --plan
 ```
 
-Remove `validate` to submit the accepted plan. The default `--mode auto` uses
+Remove `--plan` to submit the accepted plan. The default `--mode auto` uses
 the agent's domain matrix to choose live apply or next boot; `--mode live` and
 `--mode next-boot` request an explicit policy and are rejected when unsafe.
 Keep the same configuration inputs when submitting. `katlctl` generates the

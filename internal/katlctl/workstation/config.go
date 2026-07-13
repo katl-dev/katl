@@ -15,6 +15,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const credentialsDirName = "credentials"
+
 type Config struct {
 	CurrentContext string    `json:"currentContext" yaml:"currentContext"`
 	Contexts       []Context `json:"contexts" yaml:"contexts"`
@@ -112,6 +114,93 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// Save writes a workstation configuration atomically. The containing
+// directory and file are private because the configuration points at local
+// credential material even though it does not contain the credentials itself.
+func Save(path string, cfg Config) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("katlctl config path is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("encode katlctl config: %w", err)
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create katlctl config directory: %w", err)
+	}
+	temp, err := os.CreateTemp(dir, ".katlctl-*.yaml")
+	if err != nil {
+		return fmt.Errorf("create katlctl config temporary file: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return fmt.Errorf("protect katlctl config temporary file: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return fmt.Errorf("write katlctl config temporary file: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close katlctl config temporary file: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace katlctl config: %w", err)
+	}
+	return nil
+}
+
+// CredentialPath returns the private token location managed by katlctl for a
+// node. It intentionally lives beside, rather than inside, katlctl.yaml.
+func CredentialPath(configPath, clusterName, nodeName string) (string, error) {
+	if err := validateName("cluster", clusterName); err != nil {
+		return "", err
+	}
+	if err := validateName("node", nodeName); err != nil {
+		return "", err
+	}
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		var err error
+		configPath, err = ConfigPath()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(filepath.Dir(configPath), credentialsDirName, clusterName, nodeName+".token"), nil
+}
+
+// UpsertCluster installs or replaces one cluster and its context while
+// retaining unrelated workstation profiles.
+func (cfg Config) UpsertCluster(contextName string, cluster Cluster) Config {
+	contextName = strings.TrimSpace(contextName)
+	cluster.Name = strings.TrimSpace(cluster.Name)
+	nextContexts := make([]Context, 0, len(cfg.Contexts)+1)
+	for _, existing := range cfg.Contexts {
+		if strings.TrimSpace(existing.Name) != contextName {
+			nextContexts = append(nextContexts, existing)
+		}
+	}
+	nextContexts = append(nextContexts, Context{Name: contextName, Cluster: cluster.Name})
+	nextClusters := make([]Cluster, 0, len(cfg.Clusters)+1)
+	for _, existing := range cfg.Clusters {
+		if strings.TrimSpace(existing.Name) != cluster.Name {
+			nextClusters = append(nextClusters, existing)
+		}
+	}
+	nextClusters = append(nextClusters, cluster)
+	cfg.CurrentContext = contextName
+	cfg.Contexts = nextContexts
+	cfg.Clusters = nextClusters
+	return cfg
 }
 
 func (cfg Config) Validate() error {

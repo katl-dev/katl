@@ -95,24 +95,19 @@ available for PXE.
 
 ### 2. Describe the cluster once
 
-Author one `config.katl.dev/v1alpha1` `ClusterConfig` containing shared
-defaults and per-node overrides. It selects stable target-disk identities,
-networkd configuration, SSH keys, system roles, kubeadm input, and a Kubernetes
-bundle:
+Create one `config.katl.dev/v1alpha1` `ClusterConfig` containing shared
+defaults and per-node overrides. `katlctl config init` supplies a working DHCP
+and kubeadm-ready starting point; repeat `--node` for the intended topology:
 
-```yaml
-apiVersion: config.katl.dev/v1alpha1
-kind: ClusterConfig
-metadata:
-  name: katl-lab
-spec:
-  controlPlaneEndpoint: api.katl.test:6443
-  kubernetes:
-    version: v1.36.1
-    bundle: ghcr.io/katl-dev/kubernetes:<version>
-  # defaults, kubeadmConfigs, and nodes omitted here; use the complete example
-  # in docs/installing.md.
+```sh
+katlctl config init ./cluster.yaml \
+  --ssh-authorized-key ~/.ssh/id_ed25519.pub \
+  --node cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-KATL_CP_1_ROOT \
+  --node worker-1=worker,192.0.2.21,/dev/disk/by-id/ata-KATL_WORKER_1_ROOT
 ```
+
+Review the generated disk identities, addresses, Kubernetes selection, and
+network configuration before installing.
 
 Use the readable version tag on the normal path. Katl resolves the selected
 content once for the operation and checks what it downloads internally. An
@@ -159,10 +154,15 @@ activation. Kubernetes bootstrap is a separate operator action.
 
 ### 4. Bootstrap Kubernetes
 
-Once all installed nodes are reachable through their `katlc` endpoints, use the
-same cluster source. First retrieve each node's distinct
-agent token over SSH and populate the per-node `file:` credential references as
-described in [Access installed nodes](docs/operations/access.md):
+Once all installed nodes are reachable over SSH, enroll them from the same
+cluster source. This retrieves each distinct agent token, stores it privately,
+verifies the management API, and creates the current workstation context:
+
+```sh
+katlctl cluster enroll ./cluster.yaml
+```
+
+Then bootstrap without repeating endpoints or credential files:
 
 ```sh
 katlctl cluster bootstrap ./cluster.yaml \
@@ -178,20 +178,18 @@ kubeconfig to the operator.
 
 ## Configuration and upgrades
 
-`ClusterConfig` remains the user-authored source after installation. Preview a
-node-specific runtime request before submitting it:
+`ClusterConfig` remains the user-authored source after installation. An
+optional plan contacts the selected node but does not accept an operation:
 
 ```sh
-katlctl config render-node \
-  --source ./cluster.yaml \
-  --node cp-1 \
-  --desired-version 2 > cp-1.runtime.yaml
+katlctl config apply ./cluster.yaml --node cp-1 --plan
 ```
 
-Use `katlctl config apply validate` to plan through the node agent, then submit
-the identical inputs without `validate`. Supported changes compile into
-generation-scoped confext/sysext state and are applied live or on next boot
-according to the domain policy. See [Apply runtime configuration](docs/installing.md#apply-runtime-configuration).
+Run the command without `--plan` to apply it. `katlctl` derives config versions,
+generation names, validation, credentials, and operation tracking internally.
+Supported changes compile into generation-scoped confext/sysext state and are
+applied live or on next boot according to the domain policy. See
+[Apply runtime configuration](docs/installing.md#apply-runtime-configuration).
 
 Host upgrades consume the published `katlos-upgrade-<version>-<arch>.squashfs`
 artifact. Plan before accepting a next-boot generation:
@@ -240,8 +238,7 @@ discoverable afterward:
 
 ```sh
 katlctl operations list \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token
+  --node cp-1
 ```
 
 ## Release artifacts
