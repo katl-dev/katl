@@ -28,13 +28,12 @@ dependency and should not be required by automated tests.
 The current local boot contract proves only the installer OS
 build/boot/test loop.
 
-- Build tool: `mkosi 26`.
+- Build tool: `mkosi 26`, run inside the project's containerized builder.
 - Base distribution: Fedora, chosen for current systemd and mkosi support.
 - Output format: a bootable `disk` image with systemd-boot/UKI support.
 - Output directory: `_build/mkosi/`.
 - Primary artifact name: `katl-installer.raw`.
-- Build command: `mkosi -f build`.
-- Interactive boot command: `mkosi vm --firmware uefi --console console`.
+- Build command: `scripts/mkosi build-installer`.
 - Required smoke path: `scripts/vmtest-run` with libvirt system VM execution
   and deterministic serial capture.
 - Firmware expectation: the runner is given readable OVMF/edk2 pflash images.
@@ -74,7 +73,7 @@ the public developer interface.
 
 ## Nix Dev Shell
 
-On NixOS or any host with flakes enabled, enter the minimum mkosi build shell:
+On NixOS or any host with flakes enabled, enter the default development shell:
 
 ```sh
 nix develop
@@ -89,21 +88,22 @@ direnv allow
 Use `direnv` plus `nix-direnv` if you want the flake shell loaded
 automatically when entering the repository.
 
-That shell provides mkosi, Fedora package tooling (`dnf5` and `rpm`), UKI
-tooling, filesystem tools, compression tools, crypto tools, and CA
-certificates needed by the current Fedora-based `mkosi.conf`.
+That shell provides the Go and protobuf toolchain, Git, `jq`, `curl`, and Podman.
+Image construction stays behind `scripts/mkosi`; mkosi, Fedora package tools,
+UKI tooling, filesystem tools, and compression tools run inside its builder
+container instead of being installed on the host.
 
-Check the mkosi tool view from inside the shell:
+`katlctl` is also available in both development shells. It runs from the current
+checkout so local source changes are used immediately:
 
 ```sh
-nix develop --command mkosi dependencies
-nix develop --command mkosi summary
+nix develop --command katlctl --help
 ```
 
-Build the current installer image:
+Build current artifacts through the supported container wrapper:
 
 ```sh
-nix develop --command mkosi -f build
+nix develop --command scripts/mkosi build-installer
 ```
 
 For manual VM work and VM tests, use the optional VM shell:
