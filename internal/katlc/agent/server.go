@@ -33,6 +33,7 @@ const (
 	APIVersion = operation.APIVersion
 
 	RequestKind                   = "SubmitOperationRequest"
+	RebootRequestKind             = "RebootRequest"
 	WorkerJoinMaterialRequestKind = "CreateWorkerJoinMaterialRequest"
 
 	DefaultListen = "tcp://0.0.0.0:9443"
@@ -69,6 +70,7 @@ type Server struct {
 	SupportedOperationKinds []string
 	Dispatcher              Dispatcher
 	RunJoinMaterial         ToolRunner
+	RunReboot               ToolRunner
 	Now                     func() time.Time
 	OperationID             func(string, time.Time) (string, error)
 	submitMu                sync.Mutex
@@ -84,9 +86,65 @@ func NewServer(root string, store operation.Store) *Server {
 		StartedAt:               now,
 		SupportedOperationKinds: append([]string(nil), bootstrapOperationKinds...),
 		RunJoinMaterial:         runChildProcess,
+		RunReboot:               runChildProcess,
 		Now:                     func() time.Time { return time.Now().UTC() },
 		OperationID:             defaultOperationID,
 	}
+}
+
+func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agentapi.RebootAccepted, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if req.ApiVersion != APIVersion {
+		return nil, status.Errorf(codes.InvalidArgument, "apiVersion must be %q", APIVersion)
+	}
+	if req.Kind != RebootRequestKind {
+		return nil, status.Errorf(codes.InvalidArgument, "kind must be %q", RebootRequestKind)
+	}
+	if strings.TrimSpace(req.Actor) == "" {
+		return nil, status.Error(codes.InvalidArgument, "actor is required")
+	}
+	machineID, err := s.machineID()
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
+	}
+	if strings.TrimSpace(req.ExpectedMachineId) == "" || req.ExpectedMachineId != machineID {
+		return nil, status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
+	}
+	target := strings.TrimSpace(req.TargetGenerationId)
+	if err := cleanPublicID("targetGenerationID", target); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	_, generationStatus, err := generation.ReadGeneration(s.Root, target)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "read target generation: %v", err)
+	}
+	if generationStatus.CommitState != generation.CommitStateCommitted {
+		return nil, status.Errorf(codes.FailedPrecondition, "target generation %q is not committed", target)
+	}
+	selection, err := generation.ReadBootSelection(s.Root)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "read boot selection: %v", err)
+	}
+	if selection.TargetBootGenerationID != target && selection.DefaultGenerationID != target {
+		return nil, status.Errorf(codes.FailedPrecondition, "target generation %q is not selected for boot", target)
+	}
+	active, err := s.activeOperationIDs()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read operation locks: %v", err)
+	}
+	if len(active) > 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot reboot while operation %s is active", strings.Join(active, ","))
+	}
+	if s.RunReboot == nil {
+		return nil, status.Error(codes.FailedPrecondition, "node reboot runner is not configured")
+	}
+	result := s.RunReboot(ctx, []string{"systemd-run", "--unit=katl-reboot", "--collect", "--on-active=2s", "systemctl", "reboot"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return nil, status.Errorf(codes.Internal, "schedule reboot: %s", inventory.Redact(toolFailure(result)))
+	}
+	return &agentapi.RebootAccepted{Scheduled: true, TargetGenerationId: target}, nil
 }
 
 func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusRequest) (*agentapi.NodeStatus, error) {

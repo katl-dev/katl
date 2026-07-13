@@ -740,53 +740,50 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return fmt.Errorf("write katlctl upgrade context: %w", err)
 	}
-	for i, item := range []struct {
-		name string
-		node vmtest.RunningInstalledRuntimeNode
-	}{{"cp-1", cpNode}, {"worker-1", workerNode}} {
-		command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "cluster", "upgrade", "kubernetes", "--config", configPath, "--bundle", bundle, "--timeout", "25m")
-		command.Dir = repoRoot
-		stdout, err := command.Output()
-		if err != nil {
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
-				_ = os.WriteFile(filepath.Join(evidenceDir, fmt.Sprintf("katlctl-kubernetes-upgrade-%d.stderr", i+1)), exitErr.Stderr, 0o600)
-			}
-			return fmt.Errorf("katlctl Kubernetes upgrade step %d: %w", i+1, err)
+	image, err := kubernetesbundle.ParseImageReference(bundle)
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", image.ArtifactVersion, "--config", configPath, "--timeout", "25m")
+	command.Dir = repoRoot
+	stdout, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			_ = os.WriteFile(filepath.Join(evidenceDir, "katlctl-kubernetes-upgrade.stderr"), exitErr.Stderr, 0o600)
 		}
-		if err := os.WriteFile(filepath.Join(evidenceDir, fmt.Sprintf("katlctl-kubernetes-upgrade-%d.json", i+1)), stdout, 0o600); err != nil {
-			return err
+		return fmt.Errorf("katlctl Kubernetes upgrade rollout: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(evidenceDir, "katlctl-kubernetes-upgrade.json"), stdout, 0o600); err != nil {
+		return err
+	}
+	var report struct {
+		SourceVersion string `json:"sourceVersion"`
+		TargetVersion string `json:"targetVersion"`
+		Nodes         []struct {
+			Name   string `json:"name"`
+			Result string `json:"result"`
+			Phase  string `json:"phase"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(stdout, &report); err != nil {
+		return fmt.Errorf("decode katlctl Kubernetes upgrade report: %w", err)
+	}
+	if report.SourceVersion != "v1.36.0" || report.TargetVersion != "v1.36.1" || len(report.Nodes) != 2 {
+		return fmt.Errorf("unexpected katlctl Kubernetes upgrade report: %+v", report)
+	}
+	for i, want := range []string{"cp-1", "worker-1"} {
+		if report.Nodes[i].Name != want || report.Nodes[i].Result != operation.ResultSucceeded || report.Nodes[i].Phase != "boot-healthy" {
+			return fmt.Errorf("unexpected katlctl Kubernetes upgrade node report %d: %+v", i, report.Nodes[i])
 		}
-		var report struct {
-			SourceVersion string `json:"sourceVersion"`
-			TargetVersion string `json:"targetVersion"`
-			Nodes         []struct {
-				Name   string `json:"name"`
-				Result string `json:"result"`
-			} `json:"nodes"`
+	}
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode} {
+		if err := activateNodeCNIFixture(ctx, node, cniFixtures[node.Name]); err != nil {
+			return fmt.Errorf("reactivate %s CNI fixture after upgrade reboot: %w", node.Name, err)
 		}
-		if err := json.Unmarshal(stdout, &report); err != nil {
-			return fmt.Errorf("decode katlctl Kubernetes upgrade report step %d: %w", i+1, err)
-		}
-		if report.SourceVersion != "v1.36.0" || report.TargetVersion != "v1.36.1" || len(report.Nodes) != 1 || report.Nodes[0].Name != item.name || report.Nodes[0].Result != operation.ResultSucceeded {
-			return fmt.Errorf("unexpected katlctl Kubernetes upgrade report step %d: %+v", i+1, report)
-		}
-		_, record, err := collectOperationEvidence(ctx, item.node, filepath.Join(evidenceDir, item.name, "upgrade-pre-reboot"), "kubeadm-upgrade")
-		if err != nil {
-			return err
-		}
-		if !record.Terminal || record.Result != operation.ResultSucceeded || record.RecoveryRequired || record.GenerationCommitState != operation.GenerationCommitCommitted || record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || !record.BootHealthPending {
-			return fmt.Errorf("%s upgrade did not commit a healthy candidate: %+v", item.node.Name, record)
-		}
-		if err := rebootIntoGeneration(ctx, item.node, record.CandidateGenerationID); err != nil {
-			return fmt.Errorf("reboot upgraded %s: %w", item.node.Name, err)
-		}
-		if err := activateNodeCNIFixture(ctx, item.node, cniFixtures[item.node.Name]); err != nil {
-			return fmt.Errorf("reactivate %s CNI fixture after upgrade reboot: %w", item.node.Name, err)
-		}
-		if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-"+item.node.Name+"-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
-			return err
-		}
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+		return err
 	}
 	for _, item := range []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode} {
 		dir := filepath.Join(evidenceDir, item.Name, "upgrade")
@@ -797,7 +794,8 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		if err != nil {
 			return err
 		}
-		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.KubernetesBundleRef != bundle || record.KubernetesSysextUpdate.BundleManifestDigest == "" || record.KubernetesSysextUpdate.TargetSysextSHA256 == "" {
+		versionRef := image.Repository + ":" + image.Tag
+		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.KubernetesBundleRef != versionRef || record.KubernetesSysextUpdate.BundleManifestDigest == "" || record.KubernetesSysextUpdate.TargetSysextSHA256 == "" {
 			return fmt.Errorf("%s upgrade did not resolve the published bundle internally: %+v", item.Name, record.KubernetesSysextUpdate)
 		}
 		if item.Name == cpNode.Name && (record.KubernetesSysextUpdate.SnapshotDigest == "" || record.KubernetesSysextUpdate.SnapshotStorageLocation == "") {

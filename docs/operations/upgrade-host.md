@@ -1,8 +1,9 @@
 # Upgrade a KatlOS Host
 
-KatlOS host upgrades are explicit, one-node-at-a-time, next-boot operations.
-They stage a root and UKI into the inactive slot and arm a bounded trial
-boot. They do not upgrade Kubernetes or orchestrate fleet availability.
+KatlOS host upgrades are one-node-at-a-time operations. The normal command
+resolves a release, stages its root and UKI into the inactive slot, reboots into
+a bounded trial, and waits for boot health. It does not upgrade Kubernetes or
+orchestrate availability across several hosts.
 
 ## Preconditions
 
@@ -10,69 +11,42 @@ boot. They do not upgrade Kubernetes or orchestrate fleet availability.
 - no other mutating node operation is active;
 - the selected upgrade SquashFS is from the intended KatlOS release;
 - the upgrade declares a compatible architecture and runtime interface;
-- the node can fetch the HTTPS image URL, or the image is already in its local
-  artifact store;
-- an operator controls the reboot window; and
+- the node can fetch release artifacts from GitHub;
+- the current workstation context contains the node and its enrolled agent
+  credential;
+- the command is run during the intended reboot window; and
 - Kubernetes and workload availability have been handled outside Katl.
-
-Choose the release and image name:
-
-```sh
-TAG=v2026.7.0-alpha.2
-VERSION=${TAG#v}
-IMAGE="katlos-upgrade-$VERSION-x86_64.squashfs"
-```
 
 ## Plan
 
 ```sh
-katlctl host upgrade \
-  --plan \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --candidate-generation "katlos-$VERSION" \
-  --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE"
+katlctl host upgrade v2026.7.0-alpha.9 --node cp-1 --plan
 ```
 
-A plan response has dry-run status and no durable mutation. Review the image,
-candidate generation, resource locks, and refusal diagnostics.
+A plan response has no durable mutation and does not reboot the node.
 
 During staging, the node downloads or opens the image, calculates its SHA-256
 and size, records that resolved identity in the operation, and checks the image's
 component metadata before changing the inactive slot.
 
-## Stage the Trial
+## Upgrade
 
-Run the identical command without `--plan`. `katlctl` follows the durable stage
-operation and returns its terminal result.
-
-Do not reboot until the operation is terminal with `result: succeeded` and
-`nextAction` says to reboot into the bounded candidate trial. A terminal staging
-success still has `bootHealthPending: true`.
-
-## Reboot and Verify
-
-Reboot one node during the controlled window:
+Run the command without `--plan`:
 
 ```sh
-ssh root@cp-1.example.test systemctl reboot
+katlctl host upgrade v2026.7.0-alpha.9 --node cp-1
 ```
 
-After it returns:
-
-```sh
-ssh root@cp-1.example.test systemctl is-active katl-boot-complete.target
-ssh root@cp-1.example.test systemctl status katl-boot-health.service --no-pager
-ssh root@cp-1.example.test cat /var/lib/katl/boot/selection.json
-```
-
-Require the candidate generation to be the booted/default generation with no
-pending health validation before moving to another node. Also verify kubelet,
-the Kubernetes Node, and workload availability.
+`katlctl` follows staging progress, asks the authenticated node agent to reboot,
+waits for the agent to restart, and requires the selected generation to be
+committed, booted, and healthy. A successful JSON result has `rebooted: true`
+and `bootHealth: healthy`. Check workload availability before upgrading another
+host.
 
 ## Failure Boundary
 
-Boot health may select the previous known-good host generation. That does not
+Boot health may select the previous known-good host generation. `katlctl`
+reports that rollback and stops. It does not
 undo Kubernetes, etcd, workload, or external-infrastructure changes. If the
 operation record says `recoveryRequired: true`, or the node fails to return,
 stop the rollout and collect the evidence in [Troubleshoot KatlOS](troubleshoot.md).

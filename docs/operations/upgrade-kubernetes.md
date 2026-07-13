@@ -1,10 +1,9 @@
 # Upgrade Kubernetes
 
-Katl upgrades Kubernetes as an explicit cluster operation. `katlctl` validates
-every pending node, then upgrades one node per invocation. Rerunning the same
-command advances control planes before workers. The first control plane runs
-`kubeadm upgrade apply`; remaining control planes and workers run `kubeadm
-upgrade node`.
+Katl upgrades Kubernetes as an explicit, non-interactive cluster rollout.
+`katlctl` validates every pending node, then upgrades and reboots control planes
+before workers, one node at a time. The first control plane runs `kubeadm
+upgrade apply`; remaining control planes and workers run `kubeadm upgrade node`.
 
 ## Preconditions
 
@@ -23,8 +22,13 @@ An immutable `@sha256:` suffix is recommended but not required.
 
 ```sh
 katlctl cluster upgrade kubernetes \
-  --bundle ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1 \
-  --plan
+  v1.36.1-katl.1 --plan
+```
+
+The shorter top-level form is equivalent:
+
+```sh
+katlctl kubernetes upgrade v1.36.1-katl.1 --plan
 ```
 
 By default, `katlctl` uses the current context in its workstation configuration.
@@ -35,7 +39,7 @@ Kubernetes payload, derives the control-plane/worker order, and asks every
 pending node to validate its operation. It does not fetch a bundle, create a
 candidate generation, take a snapshot, or run kubeadm.
 
-Operators provide only the cluster selection and bundle reference. Katl derives
+Operators provide only the cluster selection and bundle version. Katl derives
 and records bundle digests, sysext paths and sizes, candidate generation IDs,
 operation IDs, and snapshot evidence internally.
 
@@ -44,38 +48,26 @@ operation IDs, and snapshot evidence internally.
 Run the same command without `--plan`:
 
 ```sh
-katlctl cluster upgrade kubernetes \
-  --bundle ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1
+katlctl kubernetes upgrade v1.36.1-katl.1
 ```
 
-The command validates every pending operation but executes only the next
-eligible node. That node fetches and verifies the OCI bundle before mutation.
+The command itself authorizes the rollout; there is no additional confirmation
+prompt. It validates every pending operation, then processes every eligible
+node serially. Each node fetches and verifies the OCI bundle before mutation.
 Control-plane nodes capture a local pre-upgrade etcd snapshot and member-list
 digest. The target sysext is mounted privately so target `kubeadm` runs while
 the source kubelet remains active. Katl releases the target kubelet only after
 kubeadm succeeds, performs local health checks, and commits the candidate
 generation.
 
-The command stops immediately on the first failed or recovery-required node. It
-does not continue through the remaining cluster.
+After each node-local operation succeeds, `katlctl` requests a reboot through
+the authenticated agent, waits for the agent to restart, and requires the
+target generation and Kubernetes payload to pass boot health before continuing.
+The command stops immediately on the first failed, rolled-back, or
+recovery-required node and does not touch the remaining nodes.
 
-## Reboot and verify
-
-After the node operation succeeds, reboot the named node. Wait for the node and
-its workloads to become healthy:
-
-```sh
-ssh root@cp-1.example.test systemctl reboot
-kubectl --kubeconfig ./kubeconfig get nodes -o wide
-kubectl --kubeconfig ./kubeconfig get pods -A
-```
-
-Also require `katl-boot-complete.target` to be active on the rebooted node. The
-upgrade is not fully proven until the committed candidate has passed boot
-health. Then rerun the same `katlctl cluster upgrade kubernetes` command. It
-recognizes nodes already on the target version and advances the next control
-plane or worker. Repeat the execute, reboot, and verify loop until the command
-reports that every node already runs the selected version.
+After a successful rollout, check workload-level health with your normal
+Kubernetes tooling, for example `kubectl get nodes` and `kubectl get pods -A`.
 
 ## Failure boundary
 

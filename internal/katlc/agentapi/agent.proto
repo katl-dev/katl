@@ -6,6 +6,7 @@ option go_package = "github.com/katl-dev/katl/internal/katlc/agentapi;agentapi";
 
 service KatlcAgent {
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+  rpc Reboot(RebootRequest) returns (RebootAccepted);
   rpc ValidateConfig(ValidateConfigRequest) returns (ConfigValidationResult);
   rpc ApplyGeneration(GenerationApplyRequest) returns (OperationAccepted);
   rpc StageGeneration(GenerationApplyRequest) returns (OperationAccepted);
@@ -345,4 +346,17 @@ message ConfigApplyStatus {
   bool kubeadm_action_required = 6;
   string previous_kubeadm_config_name = 7;
   string selected_kubeadm_config_name = 8;
+}
+
+message RebootRequest {
+  string api_version = 1;
+  string kind = 2;
+  string actor = 3;
+  string expected_machine_id = 4;
+  string target_generation_id = 5;
+}
+
+message RebootAccepted {
+  bool scheduled = 1;
+  string target_generation_id = 2;
 }

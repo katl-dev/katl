@@ -3033,6 +3033,134 @@ func (x *ConfigApplyStatus) GetSelectedKubeadmConfigName() string {
 	return ""
 }
 
+type RebootRequest struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion         string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind               string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Actor              string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	ExpectedMachineId  string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
+	TargetGenerationId string                 `protobuf:"bytes,5,opt,name=target_generation_id,json=targetGenerationId,proto3" json:"target_generation_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *RebootRequest) Reset() {
+	*x = RebootRequest{}
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RebootRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RebootRequest) ProtoMessage() {}
+
+func (x *RebootRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RebootRequest.ProtoReflect.Descriptor instead.
+func (*RebootRequest) Descriptor() ([]byte, []int) {
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *RebootRequest) GetApiVersion() string {
+	if x != nil {
+		return x.ApiVersion
+	}
+	return ""
+}
+
+func (x *RebootRequest) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *RebootRequest) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *RebootRequest) GetExpectedMachineId() string {
+	if x != nil {
+		return x.ExpectedMachineId
+	}
+	return ""
+}
+
+func (x *RebootRequest) GetTargetGenerationId() string {
+	if x != nil {
+		return x.TargetGenerationId
+	}
+	return ""
+}
+
+type RebootAccepted struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Scheduled          bool                   `protobuf:"varint,1,opt,name=scheduled,proto3" json:"scheduled,omitempty"`
+	TargetGenerationId string                 `protobuf:"bytes,2,opt,name=target_generation_id,json=targetGenerationId,proto3" json:"target_generation_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *RebootAccepted) Reset() {
+	*x = RebootAccepted{}
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RebootAccepted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RebootAccepted) ProtoMessage() {}
+
+func (x *RebootAccepted) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RebootAccepted.ProtoReflect.Descriptor instead.
+func (*RebootAccepted) Descriptor() ([]byte, []int) {
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *RebootAccepted) GetScheduled() bool {
+	if x != nil {
+		return x.Scheduled
+	}
+	return false
+}
+
+func (x *RebootAccepted) GetTargetGenerationId() string {
+	if x != nil {
+		return x.TargetGenerationId
+	}
+	return ""
+}
+
 var File_internal_katlc_agentapi_agent_proto protoreflect.FileDescriptor
 
 const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
@@ -3354,10 +3482,21 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x0efailure_reason\x18\x05 \x01(\tR\rfailureReason\x126\n" +
 	"\x17kubeadm_action_required\x18\x06 \x01(\bR\x15kubeadmActionRequired\x12?\n" +
 	"\x1cprevious_kubeadm_config_name\x18\a \x01(\tR\x19previousKubeadmConfigName\x12?\n" +
-	"\x1cselected_kubeadm_config_name\x18\b \x01(\tR\x19selectedKubeadmConfigName2\x8c\b\n" +
+	"\x1cselected_kubeadm_config_name\x18\b \x01(\tR\x19selectedKubeadmConfigName\"\xbc\x01\n" +
+	"\rRebootRequest\x12\x1f\n" +
+	"\vapi_version\x18\x01 \x01(\tR\n" +
+	"apiVersion\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +
+	"\x05actor\x18\x03 \x01(\tR\x05actor\x12.\n" +
+	"\x13expected_machine_id\x18\x04 \x01(\tR\x11expectedMachineId\x120\n" +
+	"\x14target_generation_id\x18\x05 \x01(\tR\x12targetGenerationId\"`\n" +
+	"\x0eRebootAccepted\x12\x1c\n" +
+	"\tscheduled\x18\x01 \x01(\bR\tscheduled\x120\n" +
+	"\x14target_generation_id\x18\x02 \x01(\tR\x12targetGenerationId2\xd3\b\n" +
 	"\n" +
 	"KatlcAgent\x12O\n" +
-	"\rGetNodeStatus\x12#.katl.agent.v1.GetNodeStatusRequest\x1a\x19.katl.agent.v1.NodeStatus\x12]\n" +
+	"\rGetNodeStatus\x12#.katl.agent.v1.GetNodeStatusRequest\x1a\x19.katl.agent.v1.NodeStatus\x12E\n" +
+	"\x06Reboot\x12\x1c.katl.agent.v1.RebootRequest\x1a\x1d.katl.agent.v1.RebootAccepted\x12]\n" +
 	"\x0eValidateConfig\x12$.katl.agent.v1.ValidateConfigRequest\x1a%.katl.agent.v1.ConfigValidationResult\x12Z\n" +
 	"\x0fApplyGeneration\x12%.katl.agent.v1.GenerationApplyRequest\x1a .katl.agent.v1.OperationAccepted\x12Z\n" +
 	"\x0fStageGeneration\x12%.katl.agent.v1.GenerationApplyRequest\x1a .katl.agent.v1.OperationAccepted\x12Z\n" +
@@ -3381,7 +3520,7 @@ func file_internal_katlc_agentapi_agent_proto_rawDescGZIP() []byte {
 	return file_internal_katlc_agentapi_agent_proto_rawDescData
 }
 
-var file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_internal_katlc_agentapi_agent_proto_goTypes = []any{
 	(*GetNodeStatusRequest)(nil),                      // 0: katl.agent.v1.GetNodeStatusRequest
 	(*NodeStatus)(nil),                                // 1: katl.agent.v1.NodeStatus
@@ -3414,6 +3553,8 @@ var file_internal_katlc_agentapi_agent_proto_goTypes = []any{
 	(*ExtensionRef)(nil),                              // 28: katl.agent.v1.ExtensionRef
 	(*GeneratedConfext)(nil),                          // 29: katl.agent.v1.GeneratedConfext
 	(*ConfigApplyStatus)(nil),                         // 30: katl.agent.v1.ConfigApplyStatus
+	(*RebootRequest)(nil),                             // 31: katl.agent.v1.RebootRequest
+	(*RebootAccepted)(nil),                            // 32: katl.agent.v1.RebootAccepted
 }
 var file_internal_katlc_agentapi_agent_proto_depIdxs = []int32{
 	3,  // 0: katl.agent.v1.SubmitOperationRequest.bootstrap:type_name -> katl.agent.v1.BootstrapOperationRequest
@@ -3435,29 +3576,31 @@ var file_internal_katlc_agentapi_agent_proto_depIdxs = []int32{
 	29, // 16: katl.agent.v1.Generation.confexts:type_name -> katl.agent.v1.GeneratedConfext
 	30, // 17: katl.agent.v1.Generation.config_apply:type_name -> katl.agent.v1.ConfigApplyStatus
 	0,  // 18: katl.agent.v1.KatlcAgent.GetNodeStatus:input_type -> katl.agent.v1.GetNodeStatusRequest
-	5,  // 19: katl.agent.v1.KatlcAgent.ValidateConfig:input_type -> katl.agent.v1.ValidateConfigRequest
-	7,  // 20: katl.agent.v1.KatlcAgent.ApplyGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
-	7,  // 21: katl.agent.v1.KatlcAgent.StageGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
-	2,  // 22: katl.agent.v1.KatlcAgent.SubmitOperation:input_type -> katl.agent.v1.SubmitOperationRequest
-	13, // 23: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:input_type -> katl.agent.v1.CreateWorkerJoinMaterialRequest
-	16, // 24: katl.agent.v1.KatlcAgent.GetOperation:input_type -> katl.agent.v1.GetOperationRequest
-	17, // 25: katl.agent.v1.KatlcAgent.ListOperations:input_type -> katl.agent.v1.ListOperationsRequest
-	22, // 26: katl.agent.v1.KatlcAgent.WatchOperation:input_type -> katl.agent.v1.WatchOperationRequest
-	24, // 27: katl.agent.v1.KatlcAgent.ListGenerations:input_type -> katl.agent.v1.ListGenerationsRequest
-	26, // 28: katl.agent.v1.KatlcAgent.GetGeneration:input_type -> katl.agent.v1.GetGenerationRequest
-	1,  // 29: katl.agent.v1.KatlcAgent.GetNodeStatus:output_type -> katl.agent.v1.NodeStatus
-	6,  // 30: katl.agent.v1.KatlcAgent.ValidateConfig:output_type -> katl.agent.v1.ConfigValidationResult
-	15, // 31: katl.agent.v1.KatlcAgent.ApplyGeneration:output_type -> katl.agent.v1.OperationAccepted
-	15, // 32: katl.agent.v1.KatlcAgent.StageGeneration:output_type -> katl.agent.v1.OperationAccepted
-	15, // 33: katl.agent.v1.KatlcAgent.SubmitOperation:output_type -> katl.agent.v1.OperationAccepted
-	14, // 34: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:output_type -> katl.agent.v1.CreateWorkerJoinMaterialResponse
-	19, // 35: katl.agent.v1.KatlcAgent.GetOperation:output_type -> katl.agent.v1.OperationStatus
-	18, // 36: katl.agent.v1.KatlcAgent.ListOperations:output_type -> katl.agent.v1.ListOperationsResponse
-	23, // 37: katl.agent.v1.KatlcAgent.WatchOperation:output_type -> katl.agent.v1.OperationEvent
-	25, // 38: katl.agent.v1.KatlcAgent.ListGenerations:output_type -> katl.agent.v1.ListGenerationsResponse
-	27, // 39: katl.agent.v1.KatlcAgent.GetGeneration:output_type -> katl.agent.v1.Generation
-	29, // [29:40] is the sub-list for method output_type
-	18, // [18:29] is the sub-list for method input_type
+	31, // 19: katl.agent.v1.KatlcAgent.Reboot:input_type -> katl.agent.v1.RebootRequest
+	5,  // 20: katl.agent.v1.KatlcAgent.ValidateConfig:input_type -> katl.agent.v1.ValidateConfigRequest
+	7,  // 21: katl.agent.v1.KatlcAgent.ApplyGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
+	7,  // 22: katl.agent.v1.KatlcAgent.StageGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
+	2,  // 23: katl.agent.v1.KatlcAgent.SubmitOperation:input_type -> katl.agent.v1.SubmitOperationRequest
+	13, // 24: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:input_type -> katl.agent.v1.CreateWorkerJoinMaterialRequest
+	16, // 25: katl.agent.v1.KatlcAgent.GetOperation:input_type -> katl.agent.v1.GetOperationRequest
+	17, // 26: katl.agent.v1.KatlcAgent.ListOperations:input_type -> katl.agent.v1.ListOperationsRequest
+	22, // 27: katl.agent.v1.KatlcAgent.WatchOperation:input_type -> katl.agent.v1.WatchOperationRequest
+	24, // 28: katl.agent.v1.KatlcAgent.ListGenerations:input_type -> katl.agent.v1.ListGenerationsRequest
+	26, // 29: katl.agent.v1.KatlcAgent.GetGeneration:input_type -> katl.agent.v1.GetGenerationRequest
+	1,  // 30: katl.agent.v1.KatlcAgent.GetNodeStatus:output_type -> katl.agent.v1.NodeStatus
+	32, // 31: katl.agent.v1.KatlcAgent.Reboot:output_type -> katl.agent.v1.RebootAccepted
+	6,  // 32: katl.agent.v1.KatlcAgent.ValidateConfig:output_type -> katl.agent.v1.ConfigValidationResult
+	15, // 33: katl.agent.v1.KatlcAgent.ApplyGeneration:output_type -> katl.agent.v1.OperationAccepted
+	15, // 34: katl.agent.v1.KatlcAgent.StageGeneration:output_type -> katl.agent.v1.OperationAccepted
+	15, // 35: katl.agent.v1.KatlcAgent.SubmitOperation:output_type -> katl.agent.v1.OperationAccepted
+	14, // 36: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:output_type -> katl.agent.v1.CreateWorkerJoinMaterialResponse
+	19, // 37: katl.agent.v1.KatlcAgent.GetOperation:output_type -> katl.agent.v1.OperationStatus
+	18, // 38: katl.agent.v1.KatlcAgent.ListOperations:output_type -> katl.agent.v1.ListOperationsResponse
+	23, // 39: katl.agent.v1.KatlcAgent.WatchOperation:output_type -> katl.agent.v1.OperationEvent
+	25, // 40: katl.agent.v1.KatlcAgent.ListGenerations:output_type -> katl.agent.v1.ListGenerationsResponse
+	27, // 41: katl.agent.v1.KatlcAgent.GetGeneration:output_type -> katl.agent.v1.Generation
+	30, // [30:42] is the sub-list for method output_type
+	18, // [18:30] is the sub-list for method input_type
 	18, // [18:18] is the sub-list for extension type_name
 	18, // [18:18] is the sub-list for extension extendee
 	0,  // [0:18] is the sub-list for field type_name
@@ -3474,7 +3617,7 @@ func file_internal_katlc_agentapi_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_katlc_agentapi_agent_proto_rawDesc), len(file_internal_katlc_agentapi_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   31,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

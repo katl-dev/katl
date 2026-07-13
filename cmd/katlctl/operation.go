@@ -327,8 +327,19 @@ func writeMutationOperationStatus(stdout io.Writer, status *agentapi.OperationSt
 }
 
 func waitAcceptedOperation(ctx context.Context, client operationClient, accepted *agentapi.OperationAccepted, timeout time.Duration, stdout, stderr io.Writer) error {
+	status, err := waitAcceptedOperationStatus(ctx, client, accepted, timeout, stderr)
+	if writeErr := writeMutationOperationStatus(stdout, status); writeErr != nil {
+		return writeErr
+	}
+	if err != nil {
+		return err
+	}
+	return operationResultError(status)
+}
+
+func waitAcceptedOperationStatus(ctx context.Context, client operationClient, accepted *agentapi.OperationAccepted, timeout time.Duration, stderr io.Writer) (*agentapi.OperationStatus, error) {
 	if accepted == nil || strings.TrimSpace(accepted.GetOperationId()) == "" {
-		return fmt.Errorf("agent returned an empty operation acceptance")
+		return nil, fmt.Errorf("agent returned an empty operation acceptance")
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -338,7 +349,7 @@ func waitAcceptedOperation(ctx context.Context, client operationClient, accepted
 		var err error
 		status, err = client.GetOperation(waitCtx, request)
 		if err != nil {
-			return fmt.Errorf("get accepted operation %s: %w", accepted.GetOperationId(), err)
+			return nil, fmt.Errorf("get accepted operation %s: %w", accepted.GetOperationId(), err)
 		}
 	}
 	status = proto.Clone(status).(*agentapi.OperationStatus)
@@ -352,13 +363,10 @@ func waitAcceptedOperation(ctx context.Context, client operationClient, accepted
 	if !status.GetTerminal() {
 		status, err = followOperation(waitCtx, client, request, status, stderr)
 	}
-	if writeErr := writeMutationOperationStatus(stdout, status); writeErr != nil {
-		return writeErr
-	}
 	if err != nil {
-		return err
+		return status, err
 	}
-	return operationResultError(status)
+	return status, nil
 }
 
 func writeOperationAccepted(stdout io.Writer, accepted *agentapi.OperationAccepted) error {
