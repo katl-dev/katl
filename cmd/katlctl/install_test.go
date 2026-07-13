@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,15 +18,12 @@ import (
 )
 
 func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
-	server, err := handoff.NewHandoffServer("install-token", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := handoff.NewHandoffServer(nil)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
 	var stdout, stderr bytes.Buffer
-	err = run(context.Background(), []string{"install", "status", "--endpoint", ts.URL}, &stdout, &stderr)
+	err := run(context.Background(), []string{"install", "status", "--endpoint", ts.URL}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
 	}
@@ -41,21 +36,16 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 	}
 }
 
-func TestInstallApplyValidatesAndSubmitsBundle(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
-	server, err := handoff.NewHandoffServer("install-token", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
+	sourcePath := writeClusterConfig(t)
+	server := handoff.NewHandoffServer(nil)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
 	var stdout, stderr bytes.Buffer
-	err = run(context.Background(), []string{
-		"install", "apply",
+	err := run(context.Background(), []string{
+		"install", "apply", sourcePath,
 		"--endpoint", ts.URL,
-		"--token", "install-token",
-		"--config-bundle", bundlePath,
 		"--node", "cp-1",
 		"--no-wait",
 	}, &stdout, &stderr)
@@ -75,35 +65,25 @@ func TestInstallApplyValidatesAndSubmitsBundle(t *testing.T) {
 	}
 }
 
-func TestInstallApplyReadsProtectedTokenFile(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
-	server, err := handoff.NewHandoffServer("file-token", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ts := httptest.NewServer(server.Handler())
-	defer ts.Close()
-	tokenPath := filepath.Join(t.TempDir(), "installer.token")
-	if err := os.WriteFile(tokenPath, []byte("file-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+func TestInstallApplyHelpKeepsBundleInternal(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err = run(context.Background(), []string{
-		"install", "apply",
-		"--endpoint", ts.URL,
-		"--token-file", tokenPath,
-		"--config-bundle", bundlePath,
-		"--node", "cp-1",
-		"--no-wait",
-	}, &stdout, &stderr)
+	err := run(context.Background(), []string{"install", "apply", "--help"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
+	}
+	help := stdout.String()
+	if !strings.Contains(help, "katlctl install apply SOURCE") {
+		t.Fatalf("help does not advertise source input:\n%s", help)
+	}
+	for _, hiddenDetail := range []string{"--config-bundle", "--token", "--token-file"} {
+		if strings.Contains(help, hiddenDetail) {
+			t.Fatalf("help exposes %q:\n%s", hiddenDetail, help)
+		}
 	}
 }
 
 func TestInstallApplyWaitsForRebootReady(t *testing.T) {
-	bundlePath, bundleDigest := writeConfigBundle(t)
+	sourcePath := writeClusterConfig(t)
 	var statusRequests atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
@@ -117,7 +97,7 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(status)
 	})
 	mux.HandleFunc("POST /v1/config-bundle", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer wait-token" || r.URL.Query().Get("node") != "cp-1" || r.URL.Query().Get("digest") != bundleDigest {
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("node") != "cp-1" || !strings.HasPrefix(r.URL.Query().Get("digest"), "sha256:") {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -132,10 +112,8 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply",
+		"install", "apply", sourcePath,
 		"--endpoint", ts.URL,
-		"--token", "wait-token",
-		"--config-bundle", bundlePath,
 		"--node", "cp-1",
 		"--timeout", "5s",
 	}, &stdout, &stderr)
@@ -152,7 +130,7 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 }
 
 func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
+	sourcePath := writeClusterConfig(t)
 	var statusRequests atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
@@ -171,8 +149,7 @@ func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", "--endpoint", ts.URL, "--token", "failure-token",
-		"--config-bundle", bundlePath,
+		"install", "apply", sourcePath, "--endpoint", ts.URL,
 		"--node", "cp-1", "--timeout", "5s",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "failed-before-mutation") || !strings.Contains(err.Error(), "target disk was not found") {
@@ -184,7 +161,7 @@ func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
 }
 
 func TestInstallApplyValidatesLocallyBeforeNetwork(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
+	sourcePath := writeClusterConfig(t)
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -194,8 +171,7 @@ func TestInstallApplyValidatesLocallyBeforeNetwork(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", "--endpoint", ts.URL, "--token", "local-token",
-		"--config-bundle", bundlePath,
+		"install", "apply", sourcePath, "--endpoint", ts.URL,
 		"--node", "missing-node", "--no-wait",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "missing-node") {
@@ -206,9 +182,8 @@ func TestInstallApplyValidatesLocallyBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestInstallApplyRedactsTokenFromHTTPFailure(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
-	const token = "secret-install-token"
+func TestInstallApplySendsNoAuthorization(t *testing.T) {
+	sourcePath := writeClusterConfig(t)
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -216,17 +191,20 @@ func TestInstallApplyRedactsTokenFromHTTPFailure(t *testing.T) {
 			return
 		}
 		requests.Add(1)
-		http.Error(w, "rejected "+token, http.StatusUnauthorized)
+		if r.Header.Get("Authorization") != "" || r.Header.Get("X-Katl-Install-Token") != "" {
+			http.Error(w, "unexpected authorization", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(installTestStatus(handoff.HandoffAccepted, installstatus.StateRunning, "Validate"))
 	}))
 	defer ts.Close()
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", "--endpoint", ts.URL, "--token", token,
-		"--config-bundle", bundlePath,
+		"install", "apply", sourcePath, "--endpoint", ts.URL,
 		"--node", "cp-1", "--no-wait",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "<redacted>") || strings.Contains(err.Error(), token) {
+	if err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 	if requests.Load() != 1 {
@@ -234,7 +212,7 @@ func TestInstallApplyRedactsTokenFromHTTPFailure(t *testing.T) {
 	}
 }
 
-func TestInstallApplyRejectsInvalidEndpointAndOversizedBundle(t *testing.T) {
+func TestInstallApplyRejectsInvalidEndpoint(t *testing.T) {
 	for _, endpoint := range []string{"installer.test:8080", "ftp://installer.test", "http://user@installer.test", "http://installer.test/path", "http://installer.test?token=secret"} {
 		var stdout, stderr bytes.Buffer
 		err := run(context.Background(), []string{"install", "status", "--endpoint", endpoint}, &stdout, &stderr)
@@ -243,25 +221,6 @@ func TestInstallApplyRejectsInvalidEndpointAndOversizedBundle(t *testing.T) {
 		}
 	}
 
-	path := filepath.Join(t.TempDir(), "large.katlcfg")
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Truncate(maxInstallBundleSize + 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	err = run(context.Background(), []string{
-		"install", "apply", "--endpoint", "http://installer.test:8080", "--token", "token",
-		"--config-bundle", path, "--node", "cp-1",
-	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("oversized bundle error = %v", err)
-	}
 }
 
 func installTestStatus(handoffState handoff.HandoffState, state, step string) handoff.HandoffStatus {
@@ -278,7 +237,7 @@ func installTestStatus(handoffState handoff.HandoffState, state, step string) ha
 }
 
 func TestInstallApplyRejectsUnavailableStatusAfterSubmission(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
+	sourcePath := writeClusterConfig(t)
 	var submitted atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -296,43 +255,10 @@ func TestInstallApplyRejectsUnavailableStatusAfterSubmission(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", "--endpoint", ts.URL, "--token", "token",
-		"--config-bundle", bundlePath,
+		"install", "apply", sourcePath, "--endpoint", ts.URL,
 		"--node", "cp-1", "--timeout", "3s",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "became unavailable") || !strings.Contains(err.Error(), "Partition") {
-		t.Fatalf("run() error = %v", err)
-	}
-}
-
-func TestInstallTokenFlagsAreExclusive(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
-	for _, args := range [][]string{
-		{"--token", "a", "--token-file", "token-file"},
-		{},
-	} {
-		base := []string{"install", "apply", "--endpoint", "http://installer.test:8080", "--config-bundle", bundlePath, "--node", "cp-1", "--no-wait"}
-		base = append(base, args...)
-		var stdout, stderr bytes.Buffer
-		err := run(context.Background(), base, &stdout, &stderr)
-		if err == nil || !strings.Contains(err.Error(), "exactly one") {
-			t.Fatalf("args=%v error=%v", args, err)
-		}
-	}
-}
-
-func TestInstallTokenFileMustBePrivate(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
-	tokenPath := filepath.Join(t.TempDir(), "installer.token")
-	if err := os.WriteFile(tokenPath, []byte("token\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{
-		"install", "apply", "--endpoint", "http://installer.test:8080", "--token-file", tokenPath,
-		"--config-bundle", bundlePath, "--node", "cp-1", "--no-wait",
-	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "permissions") {
 		t.Fatalf("run() error = %v", err)
 	}
 }

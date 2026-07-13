@@ -181,7 +181,7 @@ In waiting mode, `katlos-install` should:
 ```text
 bring up installer networking
 start a small HTTP server
-print the installer IP address, URL, and one-time token to console and journal
+print the installer IP address and URL to console and journal
 serve a read-only status endpoint
 accept exactly one install manifest submission
 validate the submitted manifest before any destructive action
@@ -199,9 +199,10 @@ POST /v1/install
 `POST /v1/install` should accept the same install manifest used by preseeded
 network installs. The API must not introduce a separate configuration model.
 
-The handoff mode should require a one-time token by default. For local VM tests
-tests, the token can be captured from the serial log. A deliberately insecure
-test-only mode may exist, but it must be explicit.
+The handoff is intentionally unauthenticated on the supported trusted-network
+path. It accepts exactly one structurally valid submission and stops accepting
+configuration when installation begins. Operators must keep the listener on an
+isolated provisioning network.
 
 This mode is only for supplying initial installer input. It is not a long-lived
 runtime management API and it must not continue running after install begins.

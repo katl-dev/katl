@@ -176,8 +176,8 @@ inline node config containing secrets
 ```
 
 Secret-bearing material must arrive through protected fetched input, local
-handoff with an operator token, offline media with an explicit trust boundary,
-or a later dedicated secret channel.
+handoff on a trusted provisioning network, offline media with an explicit trust
+boundary, or a later dedicated secret channel.
 
 ## Variant Behavior
 

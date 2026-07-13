@@ -118,8 +118,9 @@ The active installer flow is Katl-native:
 1. User-managed boot infrastructure or local VM boots installer-image.
 2. katlos-install reads kernel arguments, embedded media, local files, or enters
    local handoff mode.
-3. If no manifest is present, local handoff starts a token-protected HTTP
-   endpoint and waits for exactly one install manifest.
+3. If no manifest is present, local handoff starts an unauthenticated HTTP
+   endpoint on the trusted provisioning network and waits for exactly one
+   install configuration.
 4. katlos-install validates the manifest before any destructive disk action.
 5. katlos-install verifies the KatlOS image and trust material. It does not
    bundle or fetch a Kubernetes sysext.

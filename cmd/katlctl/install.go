@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -21,14 +20,12 @@ import (
 const (
 	maxInstallBundleSize   = 64 << 20
 	maxInstallResponseSize = 1 << 20
-	maxInstallTokenSize    = 4 << 10
+	installApplyCreator    = "katlctl install apply"
 )
 
 type installApplyOptions struct {
 	endpoint   string
-	token      string
-	tokenFile  string
-	bundlePath string
+	sourcePath string
 	nodeName   string
 	noWait     bool
 	timeout    time.Duration
@@ -59,18 +56,16 @@ func newInstallCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := installApplyOptions{timeout: 30 * time.Minute, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "apply",
-		Short: "Submit one config bundle to a waiting KatlOS installer",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Use:   "apply SOURCE",
+		Short: "Compile a cluster config and apply it to a waiting KatlOS installer",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			opts.sourcePath = args[0]
 			return runInstallApply(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL such as http://192.0.2.10:8080")
-	cmd.Flags().StringVar(&opts.token, "token", "", "one-time installer token; --token-file avoids shell history exposure")
-	cmd.Flags().StringVar(&opts.tokenFile, "token-file", "", "protected file containing the one-time installer token")
-	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "Katl config bundle")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from the config bundle")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from the cluster config")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
@@ -104,25 +99,31 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	token, err := readInstallToken(opts.token, opts.tokenFile)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(opts.bundlePath) == "" {
-		return fmt.Errorf("--config-bundle is required")
+	if strings.TrimSpace(opts.sourcePath) == "" {
+		return fmt.Errorf("source config path is required")
 	}
 	if strings.TrimSpace(opts.nodeName) == "" {
 		return fmt.Errorf("--node is required")
 	}
-	if err := validateInstallBundleSize(opts.bundlePath); err != nil {
-		return err
+	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
+		SourcePath:     opts.sourcePath,
+		KatlctlVersion: version,
+		KatlctlCommit:  commit,
+		CreatedBy:      installApplyCreator,
+	})
+	if err != nil {
+		return fmt.Errorf("compile cluster config: %w", err)
 	}
-	selected, err := configbundle.ReadSelectedNodeFile(opts.bundlePath, configbundle.ReadOptions{
+	if len(archive) > maxInstallBundleSize {
+		return fmt.Errorf("compiled config bundle size %d exceeds %d bytes", len(archive), maxInstallBundleSize)
+	}
+	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(archive), configbundle.ReadOptions{
+		ExpectedDigest:          result.Digest,
 		NodeName:                opts.nodeName,
 		AllowMissingKatlosImage: true,
 	})
 	if err != nil {
-		return fmt.Errorf("validate config bundle: %w", err)
+		return fmt.Errorf("select node from compiled cluster config: %w", err)
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, opts.timeout)
@@ -130,15 +131,15 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	client := &http.Client{Timeout: requestTimeout(opts.timeout)}
 	before, err := fetchInstallStatus(waitCtx, client, endpoint)
 	if err != nil {
-		return redactInstallError(err, token)
+		return err
 	}
 	if before.State != handoff.HandoffWaiting {
 		return fmt.Errorf("installer is not accepting config: state=%s selectedNode=%s", before.State, before.SelectedNode)
 	}
 
-	accepted, err := submitInstallBundle(waitCtx, client, endpoint, token, opts.bundlePath, selected.BundleDigest, selected.Node.Name)
+	accepted, err := submitInstallBundle(waitCtx, client, endpoint, archive, selected.BundleDigest, selected.Node.Name)
 	if err != nil {
-		return redactInstallError(err, token)
+		return err
 	}
 	report := newInstallHandoffReport(endpoint, selected.Node.Name, accepted)
 	if opts.noWait {
@@ -146,7 +147,7 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	}
 	status, err := waitForInstall(waitCtx, client, endpoint, accepted, stderr)
 	if err != nil {
-		return redactInstallError(err, token)
+		return err
 	}
 	report.Handoff = status
 	if err := writeInstallReport(stdout, report); err != nil {
@@ -207,63 +208,6 @@ func normalizeInstallerEndpoint(value string) (string, error) {
 	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
-func readInstallToken(value, path string) (string, error) {
-	value = strings.TrimSpace(value)
-	path = strings.TrimSpace(path)
-	if (value == "") == (path == "") {
-		return "", fmt.Errorf("exactly one of --token or --token-file is required")
-	}
-	if path != "" {
-		file, err := os.Open(path)
-		if err != nil {
-			return "", fmt.Errorf("open installer token file: %w", err)
-		}
-		defer file.Close()
-		info, err := file.Stat()
-		if err != nil {
-			return "", fmt.Errorf("stat installer token file: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			return "", fmt.Errorf("installer token file must be a regular file")
-		}
-		if info.Mode().Perm()&0o077 != 0 {
-			return "", fmt.Errorf("installer token file permissions must not allow group or other access")
-		}
-		data, err := io.ReadAll(io.LimitReader(file, maxInstallTokenSize+1))
-		if err != nil {
-			return "", fmt.Errorf("read installer token file: %w", err)
-		}
-		if len(data) > maxInstallTokenSize {
-			return "", fmt.Errorf("installer token file exceeds %d bytes", maxInstallTokenSize)
-		}
-		value = strings.TrimSpace(string(data))
-	}
-	if value == "" {
-		return "", fmt.Errorf("installer token is empty")
-	}
-	if strings.ContainsAny(value, "\r\n") {
-		return "", fmt.Errorf("installer token must be one line")
-	}
-	return value, nil
-}
-
-func validateInstallBundleSize(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("stat config bundle: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("config bundle must be a regular file")
-	}
-	if info.Size() <= 0 {
-		return fmt.Errorf("config bundle is empty")
-	}
-	if info.Size() > maxInstallBundleSize {
-		return fmt.Errorf("config bundle size %d exceeds %d bytes", info.Size(), maxInstallBundleSize)
-	}
-	return nil
-}
-
 func fetchInstallStatus(ctx context.Context, client *http.Client, endpoint string) (handoff.HandoffStatus, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/v1/status", nil)
 	if err != nil {
@@ -273,12 +217,7 @@ func fetchInstallStatus(ctx context.Context, client *http.Client, endpoint strin
 	return doInstallRequest(client, req, "read installer status")
 }
 
-func submitInstallBundle(ctx context.Context, client *http.Client, endpoint, token, path, digest, node string) (handoff.HandoffStatus, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return handoff.HandoffStatus{}, fmt.Errorf("open config bundle: %w", err)
-	}
-	defer file.Close()
+func submitInstallBundle(ctx context.Context, client *http.Client, endpoint string, archive []byte, digest, node string) (handoff.HandoffStatus, error) {
 	requestURL, err := url.Parse(endpoint + "/v1/config-bundle")
 	if err != nil {
 		return handoff.HandoffStatus{}, fmt.Errorf("create installer handoff URL: %w", err)
@@ -287,14 +226,11 @@ func submitInstallBundle(ctx context.Context, client *http.Client, endpoint, tok
 	query.Set("node", node)
 	query.Set("digest", digest)
 	requestURL.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), file)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(archive))
 	if err != nil {
 		return handoff.HandoffStatus{}, fmt.Errorf("create installer handoff request: %w", err)
 	}
-	if info, statErr := file.Stat(); statErr == nil {
-		req.ContentLength = info.Size()
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.ContentLength = int64(len(archive))
 	req.Header.Set("Content-Type", "application/vnd.katl.config.bundle.v1")
 	req.Header.Set("Accept", "application/json")
 	return doInstallRequest(client, req, "submit installer config bundle")
@@ -411,11 +347,4 @@ func writeInstallReport(stdout io.Writer, report installHandoffReport) error {
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err
-}
-
-func redactInstallError(err error, token string) error {
-	if err == nil || strings.TrimSpace(token) == "" {
-		return err
-	}
-	return fmt.Errorf("%s", strings.ReplaceAll(err.Error(), token, "<redacted>"))
 }

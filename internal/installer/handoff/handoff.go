@@ -2,10 +2,7 @@ package handoff
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -25,7 +22,6 @@ const (
 )
 
 type HandoffServer struct {
-	token              string
 	validate           func([]byte) error
 	defaultKatlosImage manifest.KatlosImage
 	statusReader       func() (installstatus.Record, error)
@@ -51,18 +47,11 @@ type BundlePayload struct {
 	NodeName string
 }
 
-func NewHandoffServer(token string, validate func([]byte) error) (*HandoffServer, error) {
-	return NewHandoffServerWithDefaultImage(token, validate, manifest.KatlosImage{})
+func NewHandoffServer(validate func([]byte) error) *HandoffServer {
+	return NewHandoffServerWithDefaultImage(validate, manifest.KatlosImage{})
 }
 
-func NewHandoffServerWithDefaultImage(token string, validate func([]byte) error, defaultImage manifest.KatlosImage) (*HandoffServer, error) {
-	if strings.TrimSpace(token) == "" {
-		generated, err := GenerateHandoffToken()
-		if err != nil {
-			return nil, err
-		}
-		token = generated
-	}
+func NewHandoffServerWithDefaultImage(validate func([]byte) error, defaultImage manifest.KatlosImage) *HandoffServer {
 	if validate == nil {
 		validate = func(data []byte) error {
 			_, _, err := manifest.DecodeWithDefaultImage(bytes.NewReader(data), defaultImage)
@@ -74,24 +63,11 @@ func NewHandoffServerWithDefaultImage(token string, validate func([]byte) error,
 	status.InputMode = installstatus.InputModeLocalHandoff
 	status.InputSource = installstatus.InputModeLocalHandoff
 	return &HandoffServer{
-		token:              token,
 		validate:           validate,
 		defaultKatlosImage: defaultImage,
 		state:              HandoffWaiting,
 		status:             status,
-	}, nil
-}
-
-func GenerateHandoffToken() (string, error) {
-	var raw [24]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("generate handoff token: %w", err)
 	}
-	return hex.EncodeToString(raw[:]), nil
-}
-
-func (s *HandoffServer) Token() string {
-	return s.token
 }
 
 func (s *HandoffServer) Manifest() []byte {
@@ -138,7 +114,7 @@ func (s *HandoffServer) SetStatusReader(reader func() (installstatus.Record, err
 }
 
 func (s *HandoffServer) Announcement(baseURL string) string {
-	return fmt.Sprintf("katlos-install waiting for config at %s/v1/config-bundle token=%s", strings.TrimRight(baseURL, "/"), s.token)
+	return "katlos-install waiting for config at " + strings.TrimRight(baseURL, "/") + "/v1/config-bundle"
 }
 
 func (s *HandoffServer) Handler() http.Handler {
@@ -160,11 +136,6 @@ func (s *HandoffServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
-		http.Error(w, "missing or invalid token", http.StatusUnauthorized)
-		return
-	}
-
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "read manifest", http.StatusBadRequest)
@@ -213,10 +184,6 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
-		http.Error(w, "missing or invalid token", http.StatusUnauthorized)
-		return
-	}
 	nodeName := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("node"), r.Header.Get("X-Katl-Node-Name")))
 	expectedDigest := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("digest"), r.Header.Get("X-Katl-Bundle-Digest")))
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20))
@@ -271,14 +238,6 @@ func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Reques
 	s.mu.Unlock()
 
 	writeJSON(w, response)
-}
-
-func (s *HandoffServer) authorized(r *http.Request) bool {
-	if r.Header.Get("X-Katl-Install-Token") == s.token {
-		return true
-	}
-	auth := r.Header.Get("Authorization")
-	return auth == "Bearer "+s.token
 }
 
 func ValidateInstallManifestEnvelope(data []byte) error {

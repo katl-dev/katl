@@ -118,15 +118,16 @@ Use the readable version tag on the normal path. Katl resolves the selected
 content once for the operation and checks what it downloads internally. An
 immutable digest pin remains available as an optional reproducibility control.
 
-Compile one bundle for all nodes. The command checks the source as part of
-building it:
+Keep `cluster.yaml` as the operator-facing source. `katlctl` compiles the
+internal bundle automatically when installing and bootstrapping. Explicit
+bundle output remains available for PXE and offline provisioning:
 
 ```sh
 katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
 ```
 
-Katl verifies the bundle's content-addressed structure whenever it reads the
-file; operators do not need to copy or pass its internal digests.
+Operators do not need to produce this file for the normal ISO path or copy any
+of its internal digests.
 
 ### 3. Install each node
 
@@ -134,27 +135,19 @@ Attach or write `katl-installer.iso` using your normal UEFI virtual-media or USB
 workflow, then boot it. The installer reports progress on both a local VGA
 console and a 115200-baud serial console. Secure Boot must remain disabled until
 Katl publishes signed boot artifacts. Without preseed input, the installer waits
-safely and prints an HTTP handoff URL and one-time token. Store the token in a
-protected temporary file, then submit the same bundle to every node while
-selecting that node by name:
+safely and prints its HTTP handoff URL. On the trusted provisioning network,
+apply the cluster source while selecting the node by name:
 
 ```sh
 INSTALLER_ENDPOINT=http://192.0.2.10:8080
-umask 077
-read -rsp 'Installer token: ' INSTALL_TOKEN; printf '\n'
-printf '%s\n' "$INSTALL_TOKEN" > ./installer.token
-unset INSTALL_TOKEN
-
-katlctl install apply \
+katlctl install apply ./cluster.yaml \
   --endpoint "$INSTALLER_ENDPOINT" \
-  --token-file ./installer.token \
-  --config-bundle ./katl-lab.katlcfg \
   --node cp-1
 ```
 
-The command validates the bundle and selected node locally, confirms the
-installer is waiting, submits once, and waits for reboot-ready or a classified
-failure. Remove the temporary token file after the handoff.
+The command validates and compiles the source locally, confirms the installer
+is waiting, submits the selected configuration once, and waits for reboot-ready
+or a classified failure.
 
 Installation is destructive only when both the resolved node sets
 `install.wipeTarget: true` and boot input authorizes automatic installation.
@@ -167,13 +160,12 @@ activation. Kubernetes bootstrap is a separate operator action.
 ### 4. Bootstrap Kubernetes
 
 Once all installed nodes are reachable through their `katlc` endpoints, use the
-same config bundle. First retrieve each node's distinct
+same cluster source. First retrieve each node's distinct
 agent token over SSH and populate the per-node `file:` credential references as
 described in [Access installed nodes](docs/operations/access.md):
 
 ```sh
-katlctl cluster bootstrap \
-  --config-bundle ./katl-lab.katlcfg \
+katlctl cluster bootstrap ./cluster.yaml \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --overwrite-kubeconfig

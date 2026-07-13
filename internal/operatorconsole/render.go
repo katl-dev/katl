@@ -93,8 +93,7 @@ func (render *Renderer) Append(dst []byte, snapshot *Snapshot, journal Journal, 
 	}
 	if snapshot.Handoff.URL != "" {
 		render.fieldLine("Configure").appendString(snapshot.Handoff.URL).finish()
-		render.fieldLine("Token").appendString(snapshot.Handoff.Token).finish()
-		render.line().appendString("From another machine use: katlctl install apply").finish()
+		render.line().appendString("Run: katlctl install apply <cluster.yaml> --endpoint <base URL> --node <name>").finish()
 	}
 	appendWrappedField(render, "Error", snapshot.LastError)
 	appendWrappedField(render, "Next action", snapshot.RetryHint)
@@ -363,7 +362,7 @@ func statusRows(snapshot *Snapshot, width int) int {
 		rows++
 	}
 	if snapshot.Handoff.URL != "" {
-		rows += 3
+		rows += 2
 	}
 	if snapshot.LastError != "" {
 		rows += wrappedRows(snapshot.LastError, width)

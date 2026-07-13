@@ -18,14 +18,14 @@ func (a testAddr) String() string  { return string(a) }
 
 func TestWriteAndReadHandoff(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "console", "handoff.json")
-	if err := WriteHandoff(path, "http://192.0.2.10:8080/", "test-token"); err != nil {
+	if err := WriteHandoff(path, "http://192.0.2.10:8080/"); err != nil {
 		t.Fatalf("WriteHandoff() error = %v", err)
 	}
 	record, err := ReadHandoff(path)
 	if err != nil {
 		t.Fatalf("ReadHandoff() error = %v", err)
 	}
-	if record.URL != "http://192.0.2.10:8080/v1/config-bundle" || record.Token != "test-token" || record.UpdatedAt.IsZero() {
+	if record.URL != "http://192.0.2.10:8080/v1/config-bundle" || record.UpdatedAt.IsZero() {
 		t.Fatalf("handoff = %#v", record)
 	}
 	info, err := os.Stat(path)
@@ -48,7 +48,7 @@ func TestCollectorReadsInstallerStateAndNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	handoffPath := filepath.Join(root, "handoff.json")
-	if err := WriteHandoff(handoffPath, "http://192.0.2.10:8080", "token"); err != nil {
+	if err := WriteHandoff(handoffPath, "http://192.0.2.10:8080"); err != nil {
 		t.Fatal(err)
 	}
 	collector := Collector{
@@ -76,7 +76,7 @@ func TestCollectorReadsInstallerStateAndNetwork(t *testing.T) {
 	if len(snapshot.Network) != 1 || strings.Join(snapshot.Network[0].Addresses, ",") != "192.0.2.10/24" {
 		t.Fatalf("snapshot network = %#v", snapshot.Network)
 	}
-	if snapshot.Handoff.Token != "token" {
+	if snapshot.Handoff.URL != "http://192.0.2.10:8080/v1/config-bundle" {
 		t.Fatalf("snapshot handoff = %#v", snapshot)
 	}
 	network := &snapshot.Network[0]
@@ -96,7 +96,7 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		CurrentStep:         "InstallRootSlot",
 		TargetDisk:          "/dev/disk/by-id/virtio-root",
 		DestructiveMutation: true,
-		Handoff:             Handoff{URL: "http://192.0.2.10:8080/v1/config-bundle", Token: "secret-token"},
+		Handoff:             Handoff{URL: "http://192.0.2.10:8080/v1/config-bundle"},
 		Network:             []NetworkInterface{{Name: "enp1s0", Addresses: []string{"192.0.2.10/24"}}},
 	}
 	journal := testJournal{[]byte("old line"), []byte("installing root\x1b[31m"), []byte("latest line")}
@@ -108,7 +108,7 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		"Network:      enp1s0: 192.0.2.10/24",
 		"Disk changes: started - do not power off",
 		"Configure:    http://192.0.2.10:8080/v1/config-bundle",
-		"Token:        secret-token",
+		"Run: katlctl install apply <cluster.yaml> --endpoint <base URL> --node <name>",
 		"Journal (live)",
 		"installing root[31m",
 		"Ctrl+Alt+F2: local console | SSH disabled by installer config",
