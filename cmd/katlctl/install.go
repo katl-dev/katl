@@ -126,7 +126,11 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if err != nil {
 		return fmt.Errorf("select node from compiled cluster config: %w", err)
 	}
-	endpoint, err := resolveInstallerEndpoint(ctx, installEndpointHint(opts.endpoint, opts.nodeName, nodeName), opts.timeout)
+	endpointHint, err := installEndpointHint(opts.endpoint, opts.nodeName, nodeName)
+	if err != nil {
+		return err
+	}
+	endpoint, err := resolveInstallerEndpoint(ctx, endpointHint, opts.timeout)
 	if err != nil {
 		return err
 	}
@@ -164,15 +168,15 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	return nil
 }
 
-func installEndpointHint(endpoint, selector, nodeName string) string {
+func installEndpointHint(endpoint, selector, nodeName string) (string, error) {
 	if endpoint = strings.TrimSpace(endpoint); endpoint != "" {
-		return endpoint
+		return normalizeInstallerEndpoint(endpoint)
 	}
 	selector = strings.TrimSpace(selector)
 	if selector != "" && selector != nodeName {
-		return selector
+		return normalizeInstallerAddress(selector)
 	}
-	return ""
+	return "", nil
 }
 
 func resolveInstallNode(archive []byte, digest, selector string) (string, error) {

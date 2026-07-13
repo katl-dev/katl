@@ -366,15 +366,23 @@ func TestInstallEndpointHint(t *testing.T) {
 		want     string
 	}{
 		{name: "explicit endpoint", endpoint: "http://installer.test:8080", selector: "192.0.2.11", nodeName: "cp-1", want: "http://installer.test:8080"},
-		{name: "address selector", selector: "192.0.2.11", nodeName: "cp-1", want: "192.0.2.11"},
+		{name: "IPv4 address selector", selector: "192.0.2.11", nodeName: "cp-1", want: "http://192.0.2.11:8080"},
+		{name: "IPv6 address selector", selector: "2001:db8::11", nodeName: "cp-1", want: "http://[2001:db8::11]:8080"},
+		{name: "hostname selector", selector: "installer.home.arpa", nodeName: "cp-1", want: "http://installer.home.arpa:8080"},
+		{name: "address with port selector", selector: "192.0.2.11:9080", nodeName: "cp-1", want: "http://192.0.2.11:9080"},
 		{name: "node name discovers", selector: "cp-1", nodeName: "cp-1"},
 		{name: "inferred node discovers", nodeName: "cp-1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := installEndpointHint(test.endpoint, test.selector, test.nodeName); got != test.want {
-				t.Fatalf("installEndpointHint() = %q, want %q", got, test.want)
+			got, err := installEndpointHint(test.endpoint, test.selector, test.nodeName)
+			if err != nil || got != test.want {
+				t.Fatalf("installEndpointHint() = %q, %v, want %q", got, err, test.want)
 			}
 		})
+	}
+
+	if _, err := installEndpointHint("installer.test:8080", "192.0.2.11", "cp-1"); err == nil || !strings.Contains(err.Error(), "scheme must be http or https") {
+		t.Fatalf("bare explicit endpoint error = %v", err)
 	}
 }
 
