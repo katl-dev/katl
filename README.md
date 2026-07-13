@@ -199,42 +199,31 @@ Supported changes compile into generation-scoped confext/sysext state and are
 applied live or on next boot according to the domain policy. See
 [Apply runtime configuration](docs/installing.md#apply-runtime-configuration).
 
-Host upgrades consume the published `katlos-upgrade-<version>-<arch>.squashfs`
-artifact. Plan before accepting a next-boot generation:
+Host upgrades take a release version and a node from the current workstation
+context. `katlctl` resolves the published image, stages it, reboots the node,
+and waits for the new generation to pass boot health:
 
 ```sh
-TAG=v2026.7.0-alpha.2
-VERSION=${TAG#v}
-IMAGE="katlos-upgrade-$VERSION-x86_64.squashfs"
-katlctl host upgrade \
-  --plan \
-  --endpoint cp-1.example.test:9443 \
-  --agent-token-file ./tokens/cp-1.token \
-  --candidate-generation "katlos-$VERSION" \
-  --image-url "https://github.com/katl-dev/katl/releases/download/$TAG/$IMAGE"
+katlctl host upgrade v2026.7.0-alpha.9 --node cp-1
 ```
 
-The node calculates and records the downloaded image identity before changing
-the inactive root slot.
+Add `--plan` to check the upgrade without changing or rebooting the node. The
+node calculates and records image identity internally before changing the
+inactive root slot.
 
 Kubernetes upgrades use the workstation cluster context and a readable bundle
 reference. Plan the whole control-plane-first rollout without supplying bundle
 digests, artifact paths, snapshot metadata, generation IDs, or operation IDs:
 
 ```sh
-katlctl cluster upgrade kubernetes \
-  --bundle ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1 \
-  --plan
+katlctl kubernetes upgrade v1.36.1-katl.1 --plan
 ```
 
-Remove `--plan` to upgrade the next eligible node. Reboot that node, verify
-cluster health, then rerun the same command to advance through control planes
-and workers one at a time. Each node fetches and verifies the selected bundle
-itself; control-plane nodes capture pre-mutation etcd snapshot evidence. See
-[Upgrade Kubernetes](docs/operations/upgrade-kubernetes.md).
-
-Remove `--plan` only after reviewing the response. Unattended fleet rollout is
-not a supported alpha workflow.
+Remove `--plan` to run the complete control-plane-first, worker-second rollout.
+The command upgrades and reboots one node at a time, requires boot health before
+continuing, and stops on the first failure. Each node fetches the selected
+bundle itself; control-plane nodes capture pre-mutation etcd snapshot evidence.
+See [Upgrade Kubernetes](docs/operations/upgrade-kubernetes.md).
 
 Mutating commands follow the node's durable operation to completion by default.
 Progress is written to stderr and the final structured result to stdout. A lost

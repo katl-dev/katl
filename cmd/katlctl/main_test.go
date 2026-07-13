@@ -1427,6 +1427,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 
 func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 	fake := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{MachineId: "machine-a", CurrentGenerationId: "generation-current"},
 		stageAccepted: &agentapi.OperationAccepted{
 			OperationId:   "host-upgrade-01",
 			OperationKind: "host-upgrade",
@@ -1463,6 +1464,41 @@ func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 		t.Fatalf("host upgrade request = %+v", request.HostUpgrade)
 	}
 	assertSuccessfulMutationOutput(t, stdout.Bytes())
+}
+
+func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
+	fake := &fakeKatlcAgentClient{
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-a", AgentStartId: "before", CurrentGenerationId: "generation-current"},
+		generation:      &agentapi.Generation{GenerationId: "generation-current", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", Architecture: "x86_64"}}},
+		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
+		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
+	}
+	fake.onReboot = func(req *agentapi.RebootRequest) {
+		fake.nodeStatus.AgentStartId = "after"
+		fake.nodeStatus.CurrentGenerationId = req.TargetGenerationId
+		fake.generation = &agentapi.Generation{GenerationId: req.TargetGenerationId, CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy}
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(context.Context, string, string) (katlcAgentConnection, error) {
+		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"host", "upgrade", "v2026.7.0-alpha.9", "--endpoint", "node-a.example.test:9443", "--timeout", "1m"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	request := fake.submitRequest.GetHostUpgrade()
+	if request.GetImageUrl() != "https://github.com/katl-dev/katl/releases/download/v2026.7.0-alpha.9/katlos-upgrade-2026.7.0-alpha.9-x86_64.squashfs" || request.GetCandidateGenerationId() != "katlos-2026.7.0-alpha.9" {
+		t.Fatalf("host upgrade request = %#v", request)
+	}
+	var report hostUpgradeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Result != operation.ResultSucceeded || !report.Rebooted || report.BootHealth != generation.HealthStateHealthy {
+		t.Fatalf("report = %#v", report)
+	}
 }
 
 func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
@@ -1802,6 +1838,8 @@ type fakeKatlcAgentClient struct {
 	operations        *agentapi.ListOperationsResponse
 	operationsRequest *agentapi.ListOperationsRequest
 	onSubmit          func(*agentapi.SubmitOperationRequest)
+	rebootRequests    []*agentapi.RebootRequest
+	onReboot          func(*agentapi.RebootRequest)
 }
 
 type fakeWipeClusterConnector struct {
@@ -1863,6 +1901,14 @@ func readyWipeClusterClient(machineID string) *fakeKatlcAgentClient {
 
 func (c *fakeKatlcAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error) {
 	return c.nodeStatus, c.nodeStatusErr
+}
+
+func (c *fakeKatlcAgentClient) Reboot(_ context.Context, req *agentapi.RebootRequest, _ ...grpc.CallOption) (*agentapi.RebootAccepted, error) {
+	c.rebootRequests = append(c.rebootRequests, req)
+	if c.onReboot != nil {
+		c.onReboot(req)
+	}
+	return &agentapi.RebootAccepted{Scheduled: true, TargetGenerationId: req.TargetGenerationId}, nil
 }
 
 func (c *fakeKatlcAgentClient) ValidateConfig(_ context.Context, req *agentapi.ValidateConfigRequest, _ ...grpc.CallOption) (*agentapi.ConfigValidationResult, error) {

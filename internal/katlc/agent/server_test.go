@@ -94,6 +94,34 @@ func TestListOperationsFiltersActiveRecords(t *testing.T) {
 	}
 }
 
+func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	var argv []string
+	server.RunReboot = func(_ context.Context, got []string, _ func(int)) ToolResult {
+		argv = append([]string(nil), got...)
+		return ToolResult{ExitStatus: 0}
+	}
+	machineID, err := server.machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := server.Reboot(context.Background(), &agentapi.RebootRequest{
+		ApiVersion: generation.APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: machineID, TargetGenerationId: "generation-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !accepted.Scheduled || accepted.TargetGenerationId != "generation-0" {
+		t.Fatalf("accepted = %#v", accepted)
+	}
+	want := []string{"systemd-run", "--unit=katl-reboot", "--collect", "--on-active=2s", "systemctl", "reboot"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("reboot argv = %#v, want %#v", argv, want)
+	}
+}
+
 func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
 	server := newTestServer(t)
 	var dispatched atomic.Int32

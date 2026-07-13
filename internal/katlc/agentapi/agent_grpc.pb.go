@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	KatlcAgent_GetNodeStatus_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetNodeStatus"
+	KatlcAgent_Reboot_FullMethodName                   = "/katl.agent.v1.KatlcAgent/Reboot"
 	KatlcAgent_ValidateConfig_FullMethodName           = "/katl.agent.v1.KatlcAgent/ValidateConfig"
 	KatlcAgent_ApplyGeneration_FullMethodName          = "/katl.agent.v1.KatlcAgent/ApplyGeneration"
 	KatlcAgent_StageGeneration_FullMethodName          = "/katl.agent.v1.KatlcAgent/StageGeneration"
@@ -37,6 +38,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type KatlcAgentClient interface {
 	GetNodeStatus(ctx context.Context, in *GetNodeStatusRequest, opts ...grpc.CallOption) (*NodeStatus, error)
+	Reboot(ctx context.Context, in *RebootRequest, opts ...grpc.CallOption) (*RebootAccepted, error)
 	ValidateConfig(ctx context.Context, in *ValidateConfigRequest, opts ...grpc.CallOption) (*ConfigValidationResult, error)
 	ApplyGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
 	StageGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
@@ -61,6 +63,16 @@ func (c *katlcAgentClient) GetNodeStatus(ctx context.Context, in *GetNodeStatusR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NodeStatus)
 	err := c.cc.Invoke(ctx, KatlcAgent_GetNodeStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) Reboot(ctx context.Context, in *RebootRequest, opts ...grpc.CallOption) (*RebootAccepted, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RebootAccepted)
+	err := c.cc.Invoke(ctx, KatlcAgent_Reboot_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +193,7 @@ func (c *katlcAgentClient) GetGeneration(ctx context.Context, in *GetGenerationR
 // for forward compatibility.
 type KatlcAgentServer interface {
 	GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error)
+	Reboot(context.Context, *RebootRequest) (*RebootAccepted, error)
 	ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error)
 	ApplyGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error)
 	StageGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error)
@@ -203,6 +216,9 @@ type UnimplementedKatlcAgentServer struct{}
 
 func (UnimplementedKatlcAgentServer) GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetNodeStatus not implemented")
+}
+func (UnimplementedKatlcAgentServer) Reboot(context.Context, *RebootRequest) (*RebootAccepted, error) {
+	return nil, status.Error(codes.Unimplemented, "method Reboot not implemented")
 }
 func (UnimplementedKatlcAgentServer) ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method ValidateConfig not implemented")
@@ -269,6 +285,24 @@ func _KatlcAgent_GetNodeStatus_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(KatlcAgentServer).GetNodeStatus(ctx, req.(*GetNodeStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KatlcAgent_Reboot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RebootRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).Reboot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_Reboot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).Reboot(ctx, req.(*RebootRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -456,6 +490,10 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetNodeStatus",
 			Handler:    _KatlcAgent_GetNodeStatus_Handler,
+		},
+		{
+			MethodName: "Reboot",
+			Handler:    _KatlcAgent_Reboot_Handler,
 		},
 		{
 			MethodName: "ValidateConfig",

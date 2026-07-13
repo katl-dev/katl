@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,11 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	clusterWipeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl cluster wipe node"))
 	clusterCmd.AddCommand(clusterWipeCmd)
 	cmd.AddCommand(clusterCmd)
+	kubernetesCmd := &cobra.Command{Use: "kubernetes", Short: "Kubernetes lifecycle operations"}
+	kubernetesUpgradeCmd := newKubernetesUpgradeCommand(ctx, stdout, stderr)
+	kubernetesUpgradeCmd.Use = "upgrade VERSION"
+	kubernetesCmd.AddCommand(kubernetesUpgradeCmd)
+	cmd.AddCommand(kubernetesCmd)
 
 	configCmd := &cobra.Command{Use: "config", Short: "Katl configuration operations"}
 	configCmd.AddCommand(newConfigInitCommand(stdout, stderr))
@@ -142,6 +148,7 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 }
 
 type hostUpgradeOptions struct {
+	version             string
 	endpoint            string
 	agentTokenFile      string
 	workstationConfig   string
@@ -158,13 +165,27 @@ type hostUpgradeOptions struct {
 	output              string
 }
 
+type hostUpgradeReport struct {
+	Node       string `json:"node"`
+	Version    string `json:"version"`
+	Image      string `json:"image"`
+	Result     string `json:"result"`
+	Rebooted   bool   `json:"rebooted"`
+	BootHealth string `json:"bootHealth"`
+}
+
+var katlOSReleasePattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
+
 func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := hostUpgradeOptions{actor: "katlctl host upgrade", waitTimeout: 30 * time.Minute, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "upgrade",
-		Short: "Stage one KatlOS image for bounded next-boot activation",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Use:   "upgrade VERSION",
+		Short: "Upgrade one KatlOS host and verify its next boot",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				opts.version = args[0]
+			}
 			return runHostUpgrade(ctx, opts, stdout, stderr)
 		},
 	}
@@ -176,6 +197,9 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd.Flags().StringVar(&opts.imageURL, "image-url", "", "HTTPS KatlOS upgrade image URL")
 	cmd.Flags().StringVar(&opts.imageLocalRef, "image-local-ref", "", "relative KatlOS image reference under the node artifact store")
 	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
+	cmd.Flags().Lookup("image-url").Hidden = true
+	cmd.Flags().Lookup("image-local-ref").Hidden = true
+	cmd.Flags().Lookup("candidate-generation").Hidden = true
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
@@ -187,12 +211,25 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 }
 
 func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr io.Writer) error {
-	_ = stderr
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
 	if opts.waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
+	}
+	direct := strings.TrimSpace(opts.version) != ""
+	if direct {
+		if strings.TrimSpace(opts.imageURL) != "" || strings.TrimSpace(opts.imageLocalRef) != "" || strings.TrimSpace(opts.candidateGeneration) != "" {
+			return fmt.Errorf("VERSION cannot be combined with expert image or candidate flags")
+		}
+		version, err := katlOSVersion(opts.version)
+		if err != nil {
+			return err
+		}
+		opts.version, opts.candidateGeneration = version, "katlos-"+version
+		if opts.noWait {
+			return fmt.Errorf("--no-wait is unavailable for a managed VERSION upgrade")
+		}
 	}
 	requestID, err := clientRequestID(opts.clientRequestID)
 	if err != nil {
@@ -203,8 +240,10 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		ImageLocalRef:         strings.TrimSpace(opts.imageLocalRef),
 		CandidateGenerationID: strings.TrimSpace(opts.candidateGeneration),
 	}
-	if err := operation.ValidateHostUpgrade(request); err != nil {
-		return err
+	if !direct {
+		if err := operation.ValidateHostUpgrade(request); err != nil {
+			return err
+		}
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
 		configPath: opts.workstationConfig, contextName: opts.contextName, nodeName: opts.nodeName,
@@ -218,13 +257,40 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		return err
 	}
 	defer conn.Close()
+	status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		return fmt.Errorf("read node status: %w", err)
+	}
+	if direct {
+		current, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: status.GetCurrentGenerationId()})
+		if err != nil {
+			return fmt.Errorf("read current node generation: %w", err)
+		}
+		architecture, err := nodeArtifactArchitecture(current)
+		if err != nil {
+			return err
+		}
+		request.ImageURL = katlOSReleaseURL(opts.version, architecture)
+		if err := operation.ValidateHostUpgrade(request); err != nil {
+			return err
+		}
+		if current.GetGenerationId() == request.CandidateGenerationID && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
+			node := target.nodeName
+			if node == "" {
+				node = target.endpoint
+			}
+			return writeJSON(stdout, hostUpgradeReport{Node: node, Version: opts.version, Image: request.ImageURL, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy})
+		}
+	}
 	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
-		ApiVersion:      operation.APIVersion,
-		Kind:            "SubmitOperationRequest",
-		ClientRequestId: requestID,
-		OperationKind:   "host-upgrade",
-		Actor:           strings.TrimSpace(opts.actor),
-		DryRun:          opts.plan,
+		ApiVersion:                  operation.APIVersion,
+		Kind:                        "SubmitOperationRequest",
+		ClientRequestId:             requestID,
+		OperationKind:               "host-upgrade",
+		Actor:                       strings.TrimSpace(opts.actor),
+		ExpectedMachineId:           status.GetMachineId(),
+		ExpectedCurrentGenerationId: status.GetCurrentGenerationId(),
+		DryRun:                      opts.plan,
 		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
 			ImageUrl:              request.ImageURL,
 			ImageLocalRef:         request.ImageLocalRef,
@@ -234,10 +300,90 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
+	if direct {
+		report := hostUpgradeReport{Node: target.nodeName, Version: opts.version, Image: request.ImageURL, Result: "planned", BootHealth: "not-run"}
+		if report.Node == "" {
+			report.Node = target.endpoint
+		}
+		if opts.plan {
+			return writeJSON(stdout, report)
+		}
+		terminal, err := waitAcceptedOperationStatus(ctx, conn.Client, accepted, opts.waitTimeout, stderr)
+		if err != nil {
+			report.Result = "failed"
+			_ = writeJSON(stdout, report)
+			return err
+		}
+		if err := operationResultError(terminal); err != nil {
+			report.Result = terminal.GetResult()
+			_ = writeJSON(stdout, report)
+			return err
+		}
+		agentStart := status.GetAgentStartId()
+		if err := requestNodeReboot(ctx, conn.Client, status.GetMachineId(), request.CandidateGenerationID); err != nil {
+			report.Result = "staged"
+			_ = writeJSON(stdout, report)
+			return fmt.Errorf("reboot node %s: %w", report.Node, err)
+		}
+		_ = conn.Close()
+		bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
+		verifiedConn, _, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, target.token, agentStart, request.CandidateGenerationID, stderr)
+		cancel()
+		if err != nil {
+			report.Result = "failed"
+			report.Rebooted = true
+			report.BootHealth = "failed"
+			_ = writeJSON(stdout, report)
+			return err
+		}
+		_ = verifiedConn.Close()
+		report.Result = operation.ResultSucceeded
+		report.Rebooted = true
+		report.BootHealth = generation.HealthStateHealthy
+		return writeJSON(stdout, report)
+	}
 	if opts.plan || opts.noWait {
 		return writeOperationAccepted(stdout, accepted)
 	}
 	return waitAcceptedOperation(ctx, conn.Client, accepted, opts.waitTimeout, stdout, stderr)
+}
+
+func katlOSVersion(input string) (string, error) {
+	version := strings.TrimPrefix(strings.TrimSpace(input), "v")
+	if !katlOSReleasePattern.MatchString(version) {
+		return "", fmt.Errorf("VERSION %q must look like 2026.7.0-alpha.9", input)
+	}
+	return version, nil
+}
+
+func nodeArtifactArchitecture(current *agentapi.Generation) (string, error) {
+	for _, ref := range current.GetSysexts() {
+		architecture := strings.TrimSpace(ref.GetArchitecture())
+		switch architecture {
+		case "x86_64", "aarch64":
+			return architecture, nil
+		case "amd64":
+			return "x86_64", nil
+		case "arm64":
+			return "aarch64", nil
+		}
+	}
+	return "", fmt.Errorf("current node generation does not report a supported artifact architecture")
+}
+
+func katlOSReleaseURL(version, architecture string) string {
+	tag := "v" + version
+	name := "katlos-upgrade-" + version + "-" + architecture + ".squashfs"
+	return "https://github.com/katl-dev/katl/releases/download/" + tag + "/" + name
+}
+
+func writeJSON(stdout io.Writer, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
 }
 
 type wipeClusterOptions struct {
