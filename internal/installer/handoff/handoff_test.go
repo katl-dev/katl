@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/discovery"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
@@ -47,6 +48,23 @@ func TestHandoffServerHealthStatusAndAnnouncement(t *testing.T) {
 	announcement := server.Announcement("http://192.0.2.10:8080/")
 	if announcement != "katlos-install waiting for config at http://192.0.2.10:8080/v1/config-bundle" {
 		t.Fatalf("announcement = %q", announcement)
+	}
+}
+
+func TestHandoffStatusReportsStableSelectableDisks(t *testing.T) {
+	server := newTestHandoffServer(t)
+	server.SetHardwareFacts(discovery.HardwareFacts{
+		BlockDevices: []discovery.BlockDevice{
+			{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/virtio-root"}, Model: "Virtual Disk", SizeBytes: 64 << 30},
+			{Path: "/dev/vdb", Type: discovery.DeviceDisk, Serial: "data", SizeBytes: 128 << 30, Partitions: []discovery.BlockDevice{{Path: "/dev/vdb1", Mountpoints: []string{"/mnt"}}}},
+		},
+	})
+	status := server.Status()
+	if len(status.Disks) != 2 || !status.Disks[0].Selectable || status.Disks[0].ByID[0] != "/dev/disk/by-id/virtio-root" {
+		t.Fatalf("disks = %#v", status.Disks)
+	}
+	if status.Disks[1].Selectable || !status.Disks[1].Mounted {
+		t.Fatalf("mounted disk = %#v", status.Disks[1])
 	}
 }
 

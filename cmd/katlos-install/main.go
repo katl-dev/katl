@@ -567,6 +567,12 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 		return err
 	}
 	server := handoff.NewHandoffServerWithDefaultImage(nil, media.Image)
+	facts, discoveryErr := discovery.NewCommandDiscoverySource(installer.NewExecCommandRunner()).Discover(ctx)
+	if discoveryErr != nil {
+		fmt.Fprintf(stdout, "katlos-install hardware discovery: %v\n", discoveryErr)
+	} else {
+		server.SetHardwareFacts(facts)
+	}
 	writeConsoleInstallStatus(runDir, server.Status().InstallStatus, stdout)
 	server.SetStatusReader(func() (installstatus.Record, error) {
 		return installstatus.ReadFile(filepath.Join(runDir, "state", "status.json"))

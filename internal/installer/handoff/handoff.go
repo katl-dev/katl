@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
@@ -32,6 +34,7 @@ type HandoffServer struct {
 	bundle   []byte
 	nodeName string
 	status   installstatus.Record
+	disks    []HandoffDisk
 }
 
 type HandoffStatus struct {
@@ -40,6 +43,19 @@ type HandoffStatus struct {
 	BundleAccepted   bool                 `json:"bundleAccepted,omitempty"`
 	SelectedNode     string               `json:"selectedNode,omitempty"`
 	InstallStatus    installstatus.Record `json:"installStatus"`
+	Disks            []HandoffDisk        `json:"disks,omitempty"`
+}
+
+type HandoffDisk struct {
+	Path       string   `json:"path"`
+	ByID       []string `json:"byID,omitempty"`
+	WWN        string   `json:"wwn,omitempty"`
+	Serial     string   `json:"serial,omitempty"`
+	Model      string   `json:"model,omitempty"`
+	SizeBytes  uint64   `json:"sizeBytes"`
+	ReadOnly   bool     `json:"readOnly,omitempty"`
+	Mounted    bool     `json:"mounted,omitempty"`
+	Selectable bool     `json:"selectable"`
 }
 
 type BundlePayload struct {
@@ -95,6 +111,7 @@ func (s *HandoffServer) Status() HandoffStatus {
 		BundleAccepted:   len(s.bundle) > 0,
 		SelectedNode:     s.nodeName,
 		InstallStatus:    s.status,
+		Disks:            append([]HandoffDisk(nil), s.disks...),
 	}
 	reader := s.statusReader
 	s.mu.Unlock()
@@ -105,6 +122,40 @@ func (s *HandoffServer) Status() HandoffStatus {
 		}
 	}
 	return status
+}
+
+func (s *HandoffServer) SetHardwareFacts(facts discovery.HardwareFacts) {
+	disks := make([]HandoffDisk, 0, len(facts.BlockDevices))
+	for _, device := range facts.BlockDevices {
+		if device.Type != discovery.DeviceDisk {
+			continue
+		}
+		mounted := len(device.Mountpoints) > 0
+		for _, partition := range device.Partitions {
+			mounted = mounted || len(partition.Mountpoints) > 0
+		}
+		for _, mount := range facts.Mounts {
+			if mount.Source == device.Path {
+				mounted = true
+			}
+			for _, partition := range device.Partitions {
+				if mount.Source == partition.Path {
+					mounted = true
+				}
+			}
+		}
+		byID := append([]string(nil), device.ByID...)
+		sort.Strings(byID)
+		disks = append(disks, HandoffDisk{
+			Path: device.Path, ByID: byID, WWN: device.WWN, Serial: device.Serial,
+			Model: device.Model, SizeBytes: device.SizeBytes, ReadOnly: device.ReadOnly,
+			Mounted: mounted, Selectable: !device.ReadOnly && !mounted && (len(byID) > 0 || device.WWN != "" || device.Serial != ""),
+		})
+	}
+	sort.Slice(disks, func(i, j int) bool { return disks[i].Path < disks[j].Path })
+	s.mu.Lock()
+	s.disks = disks
+	s.mu.Unlock()
 }
 
 func (s *HandoffServer) SetStatusReader(reader func() (installstatus.Record, error)) {

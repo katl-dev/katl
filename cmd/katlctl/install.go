@@ -48,6 +48,7 @@ type installHandoffReport struct {
 
 func newInstallCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{Use: "install", Short: "KatlOS installer handoff operations"}
+	cmd.AddCommand(newInstallDiscoverCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newInstallApplyCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newInstallStatusCommand(ctx, stdout, stderr))
 	return cmd
@@ -64,7 +65,7 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 			return runInstallApply(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL such as http://192.0.2.10:8080")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL; discovers a unique waiting installer when omitted")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from the cluster config")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
@@ -75,14 +76,15 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 func newInstallStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := installStatusOptions{timeout: 15 * time.Second, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "status",
-		Short: "Report a waiting or running KatlOS installer",
-		Args:  cobra.NoArgs,
+		Use:     "status",
+		Aliases: []string{"inspect"},
+		Short:   "Report a waiting or running KatlOS installer",
+		Args:    cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runInstallStatus(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL such as http://192.0.2.10:8080")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL; discovers a unique waiting installer when omitted")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "status request timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
 	return cmd
@@ -92,7 +94,7 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	endpoint, err := normalizeInstallerEndpoint(opts.endpoint)
+	endpoint, err := resolveInstallerEndpoint(ctx, opts.endpoint, opts.timeout)
 	if err != nil {
 		return err
 	}
@@ -164,7 +166,7 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	endpoint, err := normalizeInstallerEndpoint(opts.endpoint)
+	endpoint, err := resolveInstallerEndpoint(ctx, opts.endpoint, opts.timeout)
 	if err != nil {
 		return err
 	}

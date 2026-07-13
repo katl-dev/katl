@@ -18,44 +18,11 @@ before accepting the operation.
 - stop if a control-plane or etcd member is expected to remain part of the same
   cluster.
 
-The current wipe commands accept a low-level bootstrap inventory, not the
-verified `.katlcfg` directly. This is an acknowledged alpha UX gap. The
-inventory must describe the same installed nodes, addresses, roles, per-node
-token references, Kubernetes version, and bundle reference recorded in the
-compiled cluster intent. Do not use an older inventory merely because its nodes
-are reachable. A two-node shape is:
-
-```yaml
-controlPlaneEndpoint: api.katl.test:6443
-kubernetesVersion: v1.36.0
-kubernetesBundle: ghcr.io/katl-dev/kubernetes:<version>
-nodes:
-  - name: cp-1
-    address: 192.0.2.11
-    systemRole: control-plane
-    access:
-      method: agent
-      credentialRef: file:/absolute/path/to/tokens/cp-1.token
-    kubeadmConfig:
-      ref: control-plane
-      path: /etc/katl/kubeadm/control-plane/config.yaml
-      intent: control-plane
-    kubernetesVersion: v1.36.0
-  - name: worker-1
-    address: 192.0.2.21
-    systemRole: worker
-    access:
-      method: agent
-      credentialRef: file:/absolute/path/to/tokens/worker-1.token
-    kubeadmConfig:
-      ref: worker
-      path: /etc/katl/kubeadm/worker/config.yaml
-      intent: worker
-    kubernetesVersion: v1.36.0
-```
-
-Compare it with the retained config source, bundle report, and live cluster
-before planning. Native config-bundle input is tracked for a future release.
+Use the retained `ClusterConfig` as the normal input. `katlctl` compiles the
+internal inventory itself. `--config-bundle` remains available for PXE/offline
+material and `--inventory` for expert recovery tooling. Add `--context NAME`
+when the enrolled workstation context should override the source's management
+addresses and credential references.
 
 The required acknowledgement is intentionally exact:
 
@@ -67,20 +34,26 @@ I understand this will remove KatlOS disk boot artifacts on the selected nodes s
 
 ```sh
 katlctl cluster wipe \
+  ./cluster.yaml \
   --plan \
-  --inventory ./cluster-inventory.yaml \
+  --all
+```
+
+Planning is non-mutating and does not require destructive acknowledgement.
+Review every target, address, role, wiped surface, preserved surface, and
+refusal.
+
+Execute only when the cluster is intentionally being discarded:
+
+```sh
+katlctl cluster wipe ./cluster.yaml \
   --all \
   --confirm-destructive-wipe \
   --acknowledge 'I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.'
 ```
 
-Even a plan requires the acknowledgement so automation cannot casually turn a
-review command into a destructive one. Review every target, address, role,
-wiped surface, preserved surface, and refusal.
-
-Run the identical command without `--plan` only when the cluster is intentionally
-being discarded. The command follows every node-local destructive reset and
-reports each terminal result.
+The command follows every node-local destructive reset and reports each
+terminal result.
 
 Do not proceed to reinstall until every intended reset reports `terminal: true`
 and `result: succeeded`. Treat `recoveryRequired: true` as a stop condition.
@@ -91,11 +64,9 @@ Single-node wipe coordinates Kubernetes Node cleanup before the node-local reset
 
 ```sh
 katlctl cluster wipe node \
+  ./cluster.yaml \
   --plan \
-  --inventory ./cluster-inventory.yaml \
-  --node worker-1 \
-  --confirm-destructive-wipe \
-  --acknowledge 'I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.'
+  --node worker-1
 ```
 
 Execution additionally requires `--kubeconfig ./kubeconfig`. If Kubernetes

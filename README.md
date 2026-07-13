@@ -130,15 +130,23 @@ Attach or write `katl-installer.iso` using your normal UEFI virtual-media or USB
 workflow, then boot it. The installer reports progress on both a local VGA
 console and a 115200-baud serial console. Secure Boot must remain disabled until
 Katl publishes signed boot artifacts. Without preseed input, the installer waits
-safely and prints its HTTP handoff URL. On the trusted provisioning network,
-apply the cluster source while selecting the node by name:
+safely. From the trusted provisioning network, discover waiting installers and
+their stable disk identities:
 
 ```sh
-INSTALLER_ENDPOINT=http://192.0.2.10:8080
-katlctl install apply ./cluster.yaml \
-  --endpoint "$INSTALLER_ENDPOINT" \
-  --node cp-1
+katlctl install discover
 ```
+
+Update the node's target disk if discovery shows a different stable identity,
+then apply the cluster source. When exactly one installer is waiting, no URL
+needs to be copied from the console:
+
+```sh
+katlctl install apply ./cluster.yaml --node cp-1
+```
+
+With multiple waiting installers, select the intended URL from discovery with
+`--endpoint`.
 
 The command validates and compiles the source locally, confirms the installer
 is waiting, submits the selected configuration once, and waits for reboot-ready

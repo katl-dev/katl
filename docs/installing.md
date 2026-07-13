@@ -304,8 +304,8 @@ create or operate DHCP, iPXE, or matchbox configuration.
 ## ISO Or Local Handoff
 
 Boot the same `katl-installer.iso` on each node without preseed input. The
-installer mounts its embedded KatlOS image read-only, prints a handoff URL and
-waits without mutating disks.
+installer mounts its embedded KatlOS image read-only and waits without mutating
+disks.
 The VGA console keeps a KatlOS dashboard on `tty1` showing installer state,
 active network addresses, the handoff URL, disk-mutation status, and a
 live tail of the boot journal. Press `Ctrl+Alt+F2` for a local recovery shell;
@@ -316,20 +316,26 @@ path. Use only the provisioning network and never expose port 8080 to an
 untrusted network. The installer accepts one valid submission and then closes
 the handoff path.
 
-For `cp-1`, first confirm the installer is waiting:
+Discover waiting installers and their disk inventory from the workstation:
 
 ```sh
-INSTALLER_ENDPOINT=http://192.0.2.10:8080
-katlctl install status --endpoint "$INSTALLER_ENDPOINT"
+katlctl install discover
 ```
+
+The report marks a disk `selectable` only when it is a writable whole disk, is
+not mounted, and has a stable by-id, WWN, or serial selector. Copy the intended
+stable selector into the matching node in `cluster.yaml`; never substitute the
+transient `/dev/vda` or `/dev/sda` path.
 
 Apply the cluster source directly:
 
 ```sh
-katlctl install apply ./cluster.yaml \
-  --endpoint "$INSTALLER_ENDPOINT" \
-  --node cp-1
+katlctl install apply ./cluster.yaml --node cp-1
 ```
+
+`katlctl` selects the endpoint automatically when exactly one installer is
+waiting. If multiple installers are present, choose the intended discovery
+result with `--endpoint URL`.
 
 For the worker, boot the same ISO and apply the same source with
 `--node worker-1`. `katlctl install apply` compiles and validates the source and

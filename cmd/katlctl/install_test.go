@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,38 @@ import (
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
+
+func TestInstallDiscoverFindsWaitingInstallerAndDisks(t *testing.T) {
+	oldAddrs := installerInterfaceAddrs
+	installerInterfaceAddrs = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.0.2.5"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	t.Cleanup(func() { installerInterfaceAddrs = oldAddrs })
+	oldProbe := installerDiscoveryProbe
+	installerDiscoveryProbe = func(_ context.Context, endpoint string, _ time.Duration) (handoff.HandoffStatus, error) {
+		if endpoint != "http://192.0.2.42:8080" {
+			return handoff.HandoffStatus{}, fmt.Errorf("not an installer")
+		}
+		return handoff.HandoffStatus{State: handoff.HandoffWaiting, InstallStatus: installstatus.New(installstatus.StateWaitingForConfig, time.Now()), Disks: []handoff.HandoffDisk{{Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/virtio-root"}, Selectable: true}}}, nil
+	}
+	t.Cleanup(func() { installerDiscoveryProbe = oldProbe })
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"install", "discover"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	var report installDiscoveryReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Installers) != 1 || report.Installers[0].Endpoint != "http://192.0.2.42:8080" || !report.Installers[0].Status.Disks[0].Selectable {
+		t.Fatalf("report = %#v", report)
+	}
+	endpoint, err := resolveInstallerEndpoint(context.Background(), "", time.Second)
+	if err != nil || endpoint != "http://192.0.2.42:8080" {
+		t.Fatalf("resolveInstallerEndpoint() = %q, %v", endpoint, err)
+	}
+}
 
 func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 	server := handoff.NewHandoffServer(nil)

@@ -950,6 +950,33 @@ func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
 	}
 }
 
+func TestWipeClusterPlanAcceptsClusterConfigWithoutDestructiveAcknowledgement(t *testing.T) {
+	sourcePath := writeClusterConfig(t)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"cp-1": readyWipeClusterClient("cp-machine"),
+	})
+	old := newWipeClusterConnector
+	newWipeClusterConnector = func(string) cluster.AgentConnector { return connector }
+	t.Cleanup(func() { newWipeClusterConnector = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "wipe", sourcePath,
+		"--all",
+		"--plan",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeClusterReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if !report.Plan || report.AcknowledgementAccepted || len(report.Targets) != 1 || report.Targets[0].Name != "cp-1" {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
 func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{

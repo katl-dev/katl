@@ -16,12 +16,22 @@ Required destructive acknowledgement text:
 I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.
 ```
 
-Required common flags:
+Normal input:
 
 ```text
---inventory PATH
-  Cluster inventory containing node names, addresses, roles, and node-local
-  katlc access credentials or credential references.
+SOURCE
+  The retained ClusterConfig used for installation and enrollment. katlctl
+  compiles its internal inventory automatically. --config-bundle and
+  --inventory remain expert alternatives.
+
+--context NAME
+  Optional workstation context override for management addresses and
+  credential references.
+```
+
+Required execution flags:
+
+```text
 
 --confirm-destructive-wipe
   Required boolean flag. Short flags such as --yes or --force are not aliases.
@@ -37,8 +47,9 @@ Optional common flags:
 
 ```text
 --plan
-  Validate targets, credentials, acknowledgement, and visible cluster state, then
-  print the planned per-node actions without accepting node-local operations.
+  Validate targets, credentials, and visible cluster state, then print the
+  planned per-node actions without accepting node-local operations. Planning
+  does not require destructive acknowledgement.
 
 --timeout DURATION
   Upper bound for client-side waits. Timeout stops waiting but does not cancel an
@@ -95,7 +106,7 @@ State preserved:
 
 Requests are refused before node-local mutation when:
 
-- The acknowledgement flag or exact acknowledgement text is missing.
+- An executing request is missing the acknowledgement flag or exact text.
 - Target selection is empty, duplicated, or ambiguous.
 - The inventory lacks a node address, role, or usable node-local credential for a
   selected node.
@@ -119,7 +130,7 @@ Failure behavior:
 Command:
 
 ```text
-katlctl wipe node --inventory PATH --node NAME --kubeconfig PATH \
+katlctl cluster wipe node SOURCE --node NAME --kubeconfig PATH \
   --confirm-destructive-wipe --acknowledge TEXT
 ```
 
@@ -168,7 +179,7 @@ Result:
 Command:
 
 ```text
-katlctl cluster wipe --inventory PATH --all \
+katlctl cluster wipe SOURCE --all \
   --confirm-destructive-wipe --acknowledge TEXT
 ```
 

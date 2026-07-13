@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -240,32 +241,42 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 }
 
 type wipeClusterOptions struct {
-	command         string
-	selectedNodes   stringList
-	inventoryPath   string
-	all             bool
-	allowPartial    bool
-	confirm         bool
-	acknowledgement string
-	clientRequestID string
-	agentTokenFile  string
-	planOnly        bool
-	noWait          bool
-	timeout         string
-	output          string
+	command           string
+	selectedNodes     stringList
+	sourcePath        string
+	inventoryPath     string
+	configBundlePath  string
+	workstationConfig string
+	contextName       string
+	all               bool
+	allowPartial      bool
+	confirm           bool
+	acknowledgement   string
+	clientRequestID   string
+	agentTokenFile    string
+	planOnly          bool
+	noWait            bool
+	timeout           string
+	output            string
 }
 
 func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
 	opts := wipeClusterOptions{command: commandName, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "wipe",
+		Use:   "wipe [SOURCE]",
 		Short: "Destructively reset cluster nodes for installer-media reinstall",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				opts.sourcePath = args[0]
+			}
 			return runWipeClusterOptions(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster inventory")
+	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to a Katl config bundle")
+	cmd.Flags().StringVar(&opts.workstationConfig, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().BoolVar(&opts.all, "all", false, "select every node in the inventory")
 	cmd.Flags().BoolVar(&opts.allowPartial, "allow-partial-cluster", false, "allow a partial cluster target set")
 	cmd.Flags().BoolVar(&opts.confirm, "confirm-destructive-wipe", false, "confirm destructive wipe")
@@ -286,14 +297,13 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if strings.TrimSpace(opts.inventoryPath) == "" {
-		return fmt.Errorf("--inventory is required")
-	}
-	if !opts.confirm {
-		return fmt.Errorf("--confirm-destructive-wipe is required")
-	}
-	if opts.acknowledgement != wipeAcknowledgementText {
-		return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
+	if !opts.planOnly {
+		if !opts.confirm {
+			return fmt.Errorf("--confirm-destructive-wipe is required")
+		}
+		if opts.acknowledgement != wipeAcknowledgementText {
+			return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
+		}
 	}
 	requestID, err := clientRequestID(opts.clientRequestID)
 	if err != nil {
@@ -307,7 +317,11 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		return fmt.Errorf("--all and --node cannot be combined")
 	}
 
-	inv, err := loadInventory(opts.inventoryPath)
+	inv, err := loadWipeInventory(opts.sourcePath, opts.configBundlePath, opts.inventoryPath)
+	if err != nil {
+		return err
+	}
+	inv, err = overlayWipeContext(inv, opts.workstationConfig, opts.contextName)
 	if err != nil {
 		return err
 	}
@@ -320,6 +334,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		return err
 	}
 	report := newWipeClusterReport(opts.planOnly, partial, targets)
+	report.AcknowledgementAccepted = opts.confirm && opts.acknowledgement == wipeAcknowledgementText
 	report.Command = opts.command
 	if partial && !opts.allowPartial {
 		report.Refusals = append(report.Refusals, "partial cluster wipe requires --allow-partial-cluster")
@@ -355,31 +370,41 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 }
 
 type wipeNodeOptions struct {
-	command         string
-	selectedNodes   stringList
-	inventoryPath   string
-	kubeconfigPath  string
-	confirm         bool
-	acknowledgement string
-	clientRequestID string
-	agentTokenFile  string
-	planOnly        bool
-	noWait          bool
-	timeout         string
-	output          string
+	command           string
+	selectedNodes     stringList
+	sourcePath        string
+	inventoryPath     string
+	configBundlePath  string
+	workstationConfig string
+	contextName       string
+	kubeconfigPath    string
+	confirm           bool
+	acknowledgement   string
+	clientRequestID   string
+	agentTokenFile    string
+	planOnly          bool
+	noWait            bool
+	timeout           string
+	output            string
 }
 
 func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
 	opts := wipeNodeOptions{command: commandName, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "node",
+		Use:   "node [SOURCE]",
 		Short: "Destructively reset one node for installer-media reinstall",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				opts.sourcePath = args[0]
+			}
 			return runWipeNodeOptions(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster inventory")
+	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to a Katl config bundle")
+	cmd.Flags().StringVar(&opts.workstationConfig, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.kubeconfigPath, "kubeconfig", "", "path to operator kubeconfig")
 	cmd.Flags().BoolVar(&opts.confirm, "confirm-destructive-wipe", false, "confirm destructive wipe")
 	cmd.Flags().StringVar(&opts.acknowledgement, "acknowledge", "", "required destructive acknowledgement text")
@@ -399,20 +424,19 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want json", opts.output)
 	}
-	if strings.TrimSpace(opts.inventoryPath) == "" {
-		return fmt.Errorf("--inventory is required")
-	}
 	if len(opts.selectedNodes.values) != 1 {
 		return fmt.Errorf("exactly one --node is required")
 	}
 	if !opts.planOnly && strings.TrimSpace(opts.kubeconfigPath) == "" {
 		return fmt.Errorf("--kubeconfig is required")
 	}
-	if !opts.confirm {
-		return fmt.Errorf("--confirm-destructive-wipe is required")
-	}
-	if opts.acknowledgement != wipeAcknowledgementText {
-		return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
+	if !opts.planOnly {
+		if !opts.confirm {
+			return fmt.Errorf("--confirm-destructive-wipe is required")
+		}
+		if opts.acknowledgement != wipeAcknowledgementText {
+			return fmt.Errorf("--acknowledge must exactly match the destructive wipe acknowledgement text")
+		}
 	}
 	requestID, err := clientRequestID(opts.clientRequestID)
 	if err != nil {
@@ -423,7 +447,11 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return fmt.Errorf("--timeout must be a positive duration")
 	}
 
-	inv, err := loadInventory(opts.inventoryPath)
+	inv, err := loadWipeInventory(opts.sourcePath, opts.configBundlePath, opts.inventoryPath)
+	if err != nil {
+		return err
+	}
+	inv, err = overlayWipeContext(inv, opts.workstationConfig, opts.contextName)
 	if err != nil {
 		return err
 	}
@@ -437,6 +465,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	}
 	target := targets[0]
 	report := newWipeNodeReport(opts.planOnly, partial, target)
+	report.AcknowledgementAccepted = opts.confirm && opts.acknowledgement == wipeAcknowledgementText
 	report.Command = opts.command
 	if target.SystemRole == inventory.RoleControlPlane {
 		report.KubernetesCleanup = "refused"
@@ -484,6 +513,66 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return printErr
 	}
 	return submitErr
+}
+
+func loadWipeInventory(sourcePath, bundlePath, inventoryPath string) (inventory.Inventory, error) {
+	inputs := 0
+	for _, value := range []string{sourcePath, bundlePath, inventoryPath} {
+		if strings.TrimSpace(value) != "" {
+			inputs++
+		}
+	}
+	if inputs != 1 {
+		return inventory.Inventory{}, fmt.Errorf("exactly one cluster config SOURCE, --config-bundle, or --inventory is required")
+	}
+	if strings.TrimSpace(inventoryPath) != "" {
+		return loadInventory(inventoryPath)
+	}
+	if strings.TrimSpace(sourcePath) != "" {
+		archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
+			SourcePath: sourcePath, KatlctlVersion: version, KatlctlCommit: commit, CreatedBy: "katlctl cluster wipe",
+		})
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("compile cluster config: %w", err)
+		}
+		bundle, err := configbundle.ReadBundle(bytes.NewReader(archive), result.Digest)
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("read compiled cluster config: %w", err)
+		}
+		return bundle.Manifest.Cluster.BootstrapInventory, nil
+	}
+	bundle, err := configbundle.ReadBundleFile(bundlePath, "")
+	if err != nil {
+		return inventory.Inventory{}, err
+	}
+	return bundle.Manifest.Cluster.BootstrapInventory, nil
+}
+
+func overlayWipeContext(inv inventory.Inventory, configPath, contextName string) (inventory.Inventory, error) {
+	if strings.TrimSpace(configPath) == "" && strings.TrimSpace(contextName) == "" {
+		return inv, nil
+	}
+	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: strings.TrimSpace(configPath), ContextName: strings.TrimSpace(contextName)})
+	if err != nil {
+		return inventory.Inventory{}, err
+	}
+	byName := make(map[string]workstation.TopologyNode, len(topology.Nodes))
+	for _, node := range topology.Nodes {
+		byName[node.Name] = node
+	}
+	for index := range inv.Nodes {
+		node, ok := byName[inv.Nodes[index].Name]
+		if !ok {
+			return inventory.Inventory{}, fmt.Errorf("node %q from wipe input is missing from context %q", inv.Nodes[index].Name, topology.ContextName)
+		}
+		host, _, err := net.SplitHostPort(node.ManagementEndpoint)
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
+		}
+		inv.Nodes[index].Address = host
+		inv.Nodes[index].Access = inventory.Access{Method: "agent", CredentialRef: node.CredentialRef}
+	}
+	return inv, nil
 }
 
 type wipeClusterReport struct {
