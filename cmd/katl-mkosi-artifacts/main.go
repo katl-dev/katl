@@ -60,6 +60,15 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		}
 		fmt.Fprintf(stdout, "artifact index: %s\n", relPath(repoRoot, indexPath))
 		return nil
+	case "write-installer-artifacts":
+		if len(args) != 0 {
+			return fmt.Errorf("write-installer-artifacts does not accept arguments")
+		}
+		if err := writeInstallerArtifacts(cfg); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "installer artifact metadata written")
+		return nil
 	case "write-runtime-index":
 		indexPath := cfg.DefaultIndex
 		if len(args) > 1 {
@@ -113,6 +122,7 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
+	   katl-mkosi-artifacts write-installer-artifacts
 	   katl-mkosi-artifacts write-runtime-index [INDEX]
        katl-mkosi-artifacts path KIND [INDEX]
        katl-mkosi-artifacts write-runtime-root --artifact PATH
@@ -997,38 +1007,11 @@ func writeIndex(indexPath string, cfg config) error {
 		}
 	}
 	includeInstallerISO := cfg.InstallerISOExplicit || fileExists(cfg.InstallerISO)
-	if includeInstallerISO {
-		if err := requireFile("installer ISO", cfg.InstallerISO, cfg.RepoRoot); err != nil {
-			return err
-		}
+	if err := writeInstallerArtifacts(cfg); err != nil {
+		return err
 	}
 
 	created := time.Now().UTC().Format(time.RFC3339)
-	bootArtifacts := []struct {
-		role   string
-		format string
-		path   string
-	}{
-		{"installer-uki", "uki", cfg.InstallerUKI},
-		{"installer-kernel", "linux-kernel", cfg.InstallerKernel},
-		{"installer-initrd", "initrd", cfg.InstallerInitrd},
-	}
-	if includeInstallerISO {
-		bootArtifacts = append(bootArtifacts, struct {
-			role   string
-			format string
-			path   string
-		}{"installer-iso", "iso", cfg.InstallerISO})
-	}
-	for _, artifact := range bootArtifacts {
-		if err := writeChecksum(artifact.path); err != nil {
-			return err
-		}
-		if err := writeBootMetadata(artifact.role, artifact.format, artifact.path, created, cfg); err != nil {
-			return err
-		}
-	}
-
 	entries := []artifactEntry{}
 	indexedArtifacts := []struct {
 		kind     string
@@ -1082,6 +1065,42 @@ func writeIndex(indexPath string, cfg config) error {
 	}
 	if err := os.WriteFile(indexPath, append(data, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write artifact index %s: %w", relPath(cfg.RepoRoot, indexPath), err)
+	}
+	return nil
+}
+
+func writeInstallerArtifacts(cfg config) error {
+	artifacts := []struct {
+		label  string
+		role   string
+		format string
+		path   string
+	}{
+		{"installer UKI", "installer-uki", "uki", cfg.InstallerUKI},
+		{"installer kernel", "installer-kernel", "linux-kernel", cfg.InstallerKernel},
+		{"installer initrd", "installer-initrd", "initrd", cfg.InstallerInitrd},
+	}
+	if cfg.InstallerISOExplicit || fileExists(cfg.InstallerISO) {
+		artifacts = append(artifacts, struct {
+			label  string
+			role   string
+			format string
+			path   string
+		}{"installer ISO", "installer-iso", "iso", cfg.InstallerISO})
+	}
+	for _, artifact := range artifacts {
+		if err := requireFile(artifact.label, artifact.path, cfg.RepoRoot); err != nil {
+			return err
+		}
+	}
+	created := time.Now().UTC().Format(time.RFC3339)
+	for _, artifact := range artifacts {
+		if err := writeChecksum(artifact.path); err != nil {
+			return err
+		}
+		if err := writeBootMetadata(artifact.role, artifact.format, artifact.path, created, cfg); err != nil {
+			return err
+		}
 	}
 	return nil
 }

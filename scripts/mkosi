@@ -351,7 +351,6 @@ target_outputs() {
     case "$1" in
         installer)
             printf '%s\n' \
-                "$build_dir/artifacts.json" \
                 "$build_dir/katl-installer.efi" \
                 "$build_dir/katl-installer.efi.json" \
                 "$build_dir/katl-installer.efi.sha256" \
@@ -366,6 +365,7 @@ target_outputs() {
         installer-iso)
             target_outputs installer
             printf '%s\n' \
+                "$build_dir/artifacts.json" \
                 "$build_dir/katl-installer.iso" \
                 "$build_dir/katl-installer.iso.json" \
                 "$build_dir/katl-installer.iso.sha256"
@@ -733,7 +733,8 @@ if [[ "$runtime" == direct ]]; then
         write_installer_package_set || status=1
     fi
     if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
-        GOCACHE="${GOCACHE:-$TMPDIR/katl-go-cache}" go run ./cmd/katl-mkosi-artifacts write >/dev/null || status=1
+        GOCACHE="${GOCACHE:-$TMPDIR/katl-go-cache}" \
+            go run ./cmd/katl-mkosi-artifacts write-installer-artifacts >/dev/null || status=1
     fi
     if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
         store_target_cache "$cache_target"
@@ -931,7 +932,11 @@ set +e
         fi
     fi
     if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
-        if ! mkosi_artifacts write >/dev/null; then
+        metadata_command=write-installer-artifacts
+        if [[ "${KATL_EMIT_INSTALLER_ISO:-0}" == 1 ]]; then
+            metadata_command=write
+        fi
+        if ! mkosi_artifacts "$metadata_command" >/dev/null; then
             status=1
         fi
     fi

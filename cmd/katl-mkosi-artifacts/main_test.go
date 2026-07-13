@@ -112,6 +112,38 @@ func TestWriteAndPath(t *testing.T) {
 	}
 }
 
+func TestWriteInstallerArtifactsDoesNotRequireRuntime(t *testing.T) {
+	repo := testRepoRoot(t)
+	workDir := testWorkDir(t, repo)
+	installerUKI := writeTestFile(t, workDir, "installer.efi", "installer uki")
+	installerKernel := writeTestFile(t, workDir, "vmlinuz", "kernel")
+	installerInitrd := writeTestFile(t, workDir, "initrd", "initrd")
+
+	var stdout bytes.Buffer
+	err := run([]string{"write-installer-artifacts"}, &stdout, &bytes.Buffer{}, []string{
+		"KATL_BUILD_COMMIT=test-build",
+		"KATL_VERSION=2026.7.0-dev.1",
+		"KATL_ARCHITECTURE=x86_64",
+		"KATL_INSTALLER_UKI=" + installerUKI,
+		"KATL_INSTALLER_KERNEL=" + installerKernel,
+		"KATL_INSTALLER_INITRD=" + installerInitrd,
+	})
+	if err != nil {
+		t.Fatalf("write installer artifacts error = %v", err)
+	}
+	if stdout.String() != "installer artifact metadata written\n" {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	for _, artifact := range []string{installerUKI, installerKernel, installerInitrd} {
+		if _, err := os.Stat(artifact + ".json"); err != nil {
+			t.Errorf("installer metadata missing for %s: %v", artifact, err)
+		}
+		if _, err := os.Stat(artifact + ".sha256"); err != nil {
+			t.Errorf("installer checksum missing for %s: %v", artifact, err)
+		}
+	}
+}
+
 func TestWriteIncludesExistingInstallerISO(t *testing.T) {
 	repo := testRepoRoot(t)
 	workDir := testWorkDir(t, repo)

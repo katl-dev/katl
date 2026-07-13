@@ -87,7 +87,7 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 		"_build/mkosi/workspace/installer",
 		"_build/mkosi/workspace/runtime",
 	)
-	if got := readLinesForScripts(t, goArgs); !reflect.DeepEqual(got, []string{"run", "./cmd/katl-mkosi-artifacts", "write"}) {
+	if got := readLinesForScripts(t, goArgs); !reflect.DeepEqual(got, []string{"run", "./cmd/katl-mkosi-artifacts", "write-installer-artifacts"}) {
 		t.Fatalf("go args = %#v", got)
 	}
 	if got := strings.TrimSpace(string(mustReadFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv")))); got != "systemd\t0:259.6-1.fc44.x86_64" {
