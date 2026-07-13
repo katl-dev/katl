@@ -68,15 +68,22 @@ func TestCollectorReadsInstallerStateAndNetwork(t *testing.T) {
 			return nil, nil
 		},
 	}
-	snapshot := collector.Collect([]string{"one", "two"})
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
 	if snapshot.State != installstatus.StateRunning || snapshot.CurrentStep != "InstallRootSlot" || !snapshot.DestructiveMutation {
 		t.Fatalf("snapshot status = %#v", snapshot)
 	}
 	if len(snapshot.Network) != 1 || strings.Join(snapshot.Network[0].Addresses, ",") != "192.0.2.10/24" {
 		t.Fatalf("snapshot network = %#v", snapshot.Network)
 	}
-	if snapshot.Handoff.Token != "token" || len(snapshot.Journal) != 2 {
-		t.Fatalf("snapshot handoff/journal = %#v", snapshot)
+	if snapshot.Handoff.Token != "token" {
+		t.Fatalf("snapshot handoff = %#v", snapshot)
+	}
+	network := &snapshot.Network[0]
+	address := &snapshot.Network[0].Addresses[0]
+	collector.Collect(&snapshot)
+	if &snapshot.Network[0] != network || &snapshot.Network[0].Addresses[0] != address {
+		t.Fatal("Collect() did not reuse snapshot network storage")
 	}
 }
 
@@ -91,9 +98,10 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		DestructiveMutation: true,
 		Handoff:             Handoff{URL: "http://192.0.2.10:8080/v1/config-bundle", Token: "secret-token"},
 		Network:             []NetworkInterface{{Name: "enp1s0", Addresses: []string{"192.0.2.10/24"}}},
-		Journal:             []string{"old line", "installing root\x1b[31m", "latest line"},
 	}
-	got := Render(snapshot, 80, 25)
+	journal := testJournal{[]byte("old line"), []byte("installing root\x1b[31m"), []byte("latest line")}
+	var renderer Renderer
+	got := string(renderer.Append(make([]byte, 0, RenderCapacity(80, 25)), &snapshot, journal, 80, 25))
 	for _, want := range []string{
 		"KatlOS Installer  2026.7.0-alpha.9",
 		"State:        Installing",
@@ -121,7 +129,7 @@ func TestRenderInstallerDashboard(t *testing.T) {
 }
 
 func TestRenderRuntimeFailure(t *testing.T) {
-	got := Render(Snapshot{
+	snapshot := Snapshot{
 		Mode:             ModeRuntime,
 		Version:          "2026.7.0-alpha.9",
 		Hostname:         "cp-1",
@@ -133,10 +141,45 @@ func TestRenderRuntimeFailure(t *testing.T) {
 		RetryHint:        "inspect the previous generation",
 		SSHEnabled:       true,
 		Network:          []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
-	}, 80, 20)
+	}
+	var renderer Renderer
+	got := string(renderer.Append(make([]byte, 0, RenderCapacity(80, 20)), &snapshot, nil, 80, 20))
 	for _, want := range []string{"Installed system needs repair", "Generation:   4  boot=failed health=unhealthy", "Error:", "boot health check failed", "SSH: ssh root@192.0.2.20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
 	}
+}
+
+func TestRendererReusesBuffer(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:       ModeRuntime,
+		State:      installstatus.StateKubeadmReady,
+		SSHEnabled: true,
+	}
+	journal := testJournal{[]byte("journal line")}
+	var renderer Renderer
+	buffer := make([]byte, 0, RenderCapacity(80, 25))
+	buffer = renderer.Append(buffer, &snapshot, &journal, 80, 25)
+	start := &buffer[0]
+
+	allocations := testing.AllocsPerRun(1000, func() {
+		buffer = renderer.Append(buffer[:0], &snapshot, &journal, 80, 25)
+	})
+	if allocations != 0 {
+		t.Fatalf("Renderer.Append() allocations = %v, want 0", allocations)
+	}
+	if &buffer[0] != start {
+		t.Fatal("Renderer.Append() replaced caller-owned buffer")
+	}
+}
+
+type testJournal [][]byte
+
+func (j testJournal) AppendTail(dst []byte, rows, width int) ([]byte, int) {
+	rows = min(rows, len(j))
+	for _, line := range j[len(j)-rows:] {
+		dst = AppendJournalLine(dst, line, width)
+	}
+	return dst, rows
 }

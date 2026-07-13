@@ -22,11 +22,12 @@ type Collector struct {
 	Addrs       func(net.Interface) ([]net.Addr, error)
 }
 
-func (c Collector) Collect(journal []string) Snapshot {
-	snapshot := Snapshot{
+func (c Collector) Collect(snapshot *Snapshot) {
+	network := snapshot.Network
+	*snapshot = Snapshot{
 		Mode:    c.Mode,
 		Version: strings.TrimSpace(c.Version),
-		Journal: append([]string(nil), journal...),
+		Network: network[:0],
 	}
 	if c.Hostname == nil {
 		c.Hostname = os.Hostname
@@ -40,7 +41,7 @@ func (c Collector) Collect(journal []string) Snapshot {
 	if hostname, err := c.Hostname(); err == nil {
 		snapshot.Hostname = hostname
 	}
-	snapshot.Network = c.collectNetwork()
+	snapshot.Network = c.collectNetwork(snapshot.Network)
 	snapshot.SSHEnabled = c.Mode == ModeRuntime || fileExists(rooted(c.Root, "/etc/katl/installer-ssh.enabled"))
 
 	statusPath := c.StatusPath
@@ -84,24 +85,34 @@ func (c Collector) Collect(journal []string) Snapshot {
 			}
 		}
 	} else {
-		c.collectGeneration(&snapshot)
+		c.collectGeneration(snapshot)
 	}
-	return snapshot
 }
 
-func (c Collector) collectNetwork() []NetworkInterface {
+func (c Collector) collectNetwork(result []NetworkInterface) []NetworkInterface {
 	interfaces, err := c.Interfaces()
 	if err != nil {
-		return nil
+		return result[:0]
 	}
-	result := make([]NetworkInterface, 0, len(interfaces))
+	if cap(result) < len(interfaces) {
+		result = make([]NetworkInterface, 0, len(interfaces))
+	} else {
+		result = result[:0]
+	}
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
 			continue
 		}
-		item := NetworkInterface{Name: iface.Name}
+		index := len(result)
+		result = result[:index+1]
+		addressesBuffer := result[index].Addresses[:0]
+		result[index] = NetworkInterface{Name: iface.Name, Addresses: addressesBuffer}
+		item := &result[index]
 		addresses, err := c.Addrs(iface)
 		if err == nil {
+			if cap(item.Addresses) < len(addresses) {
+				item.Addresses = make([]string, 0, len(addresses))
+			}
 			for _, address := range addresses {
 				ip, _, err := net.ParseCIDR(address.String())
 				if err != nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
@@ -111,7 +122,6 @@ func (c Collector) collectNetwork() []NetworkInterface {
 			}
 		}
 		sort.Strings(item.Addresses)
-		result = append(result, item)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result

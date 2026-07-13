@@ -30,7 +30,6 @@ type Snapshot struct {
 	SSHEnabled          bool
 	UpdatedAt           time.Time
 	StatusError         string
-	Journal             []string
 }
 
 type NetworkInterface struct {

@@ -1,206 +1,485 @@
 package operatorconsole
 
 import (
-	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
-func Render(snapshot Snapshot, width, height int) string {
-	if width < 40 {
-		width = 40
-	}
-	if height < 12 {
-		height = 12
-	}
-	lines := make([]string, 0, height)
-	title := "KatlOS"
-	if snapshot.Mode == ModeInstaller {
-		title += " Installer"
-	}
-	if snapshot.Version != "" {
-		title += "  " + snapshot.Version
-	}
-	lines = append(lines, title, strings.Repeat("=", min(width, 72)))
-	lines = append(lines, field("State", stateLabel(snapshot.State)))
-	if snapshot.Hostname != "" {
-		lines = append(lines, field("Node", snapshot.Hostname))
-	}
-	lines = append(lines, networkLines(snapshot.Network)...)
-	if snapshot.CurrentStep != "" {
-		lines = append(lines, field("Current step", snapshot.CurrentStep))
-	}
-	if snapshot.TargetDisk != "" {
-		lines = append(lines, field("Target disk", snapshot.TargetDisk))
-	}
-	if snapshot.Generation != "" {
-		value := snapshot.Generation
-		if snapshot.GenerationBoot != "" || snapshot.GenerationHealth != "" {
-			value += fmt.Sprintf("  boot=%s health=%s", fallback(snapshot.GenerationBoot, "unknown"), fallback(snapshot.GenerationHealth, "unknown"))
-		}
-		lines = append(lines, field("Generation", value))
-	}
-	if snapshot.Mode == ModeInstaller && snapshot.State == "running" {
-		mutation := "not started"
-		if snapshot.DestructiveMutation {
-			mutation = "started - do not power off"
-		}
-		lines = append(lines, field("Disk changes", mutation))
-	}
-	if snapshot.Handoff.URL != "" {
-		lines = append(lines, field("Configure", snapshot.Handoff.URL), field("Token", snapshot.Handoff.Token))
-		lines = append(lines, "From another machine use: katlctl install apply")
-	}
-	if snapshot.LastError != "" {
-		lines = append(lines, wrapField("Error", snapshot.LastError, width)...)
-	}
-	if snapshot.RetryHint != "" {
-		lines = append(lines, wrapField("Next action", snapshot.RetryHint, width)...)
-	}
-	if snapshot.StatusError != "" {
-		lines = append(lines, wrapField("Status read", snapshot.StatusError, width)...)
+const (
+	minimumWidth  = 40
+	minimumHeight = 12
+	fieldWidth    = 14
+)
+
+// Journal appends its newest lines to dst. Implementations may retain a lock
+// while appending because the caller has already reserved enough render memory.
+type Journal interface {
+	AppendTail(dst []byte, rows, width int) ([]byte, int)
+}
+
+// RenderCapacity returns enough capacity for a complete render without growth.
+// UTFMax accounts for every terminal cell containing a four-byte UTF-8 rune.
+func RenderCapacity(width, height int) int {
+	width, height = renderDimensions(width, height)
+	return height * (width*utf8.UTFMax + 1)
+}
+
+// Renderer retains line state between calls so fluent line construction does
+// not allocate.
+type Renderer struct {
+	dst         []byte
+	width       int
+	contentRows int
+	rows        int
+	lineState   lineWriter
+}
+
+// Append appends a dashboard to caller-owned memory.
+func (render *Renderer) Append(dst []byte, snapshot *Snapshot, journal Journal, width, height int) []byte {
+	width, height = renderDimensions(width, height)
+	*render = Renderer{
+		dst:         dst,
+		width:       width,
+		contentRows: height - 1,
 	}
 
-	footer := "Ctrl+Alt+F2: local console"
-	if snapshot.SSHEnabled {
-		if address := firstIPv4(snapshot.Network); address != "" {
-			footer += " | SSH: ssh root@" + address
-		} else {
-			footer += " | SSH enabled"
-		}
-	} else if snapshot.Mode == ModeInstaller {
-		footer += " | SSH disabled by installer config"
+	line := render.line().appendString("KatlOS")
+	if snapshot.Mode == ModeInstaller {
+		line.appendString(" Installer")
 	}
-	journalRows := height - len(lines) - 3
+	if snapshot.Version != "" {
+		line.appendString("  ")
+		line.appendString(snapshot.Version)
+	}
+	line.finish()
+
+	line = render.line()
+	for range min(width, 72) {
+		line.appendByte('=')
+	}
+	line.finish()
+
+	render.fieldLine("State").appendString(stateLabel(snapshot.State)).finish()
+	if snapshot.Hostname != "" {
+		render.fieldLine("Node").appendString(snapshot.Hostname).finish()
+	}
+	appendNetwork(render, snapshot.Network)
+	if snapshot.CurrentStep != "" {
+		render.fieldLine("Current step").appendString(snapshot.CurrentStep).finish()
+	}
+	if snapshot.TargetDisk != "" {
+		render.fieldLine("Target disk").appendString(snapshot.TargetDisk).finish()
+	}
+	if snapshot.Generation != "" {
+		line = render.fieldLine("Generation")
+		line.appendString(snapshot.Generation)
+		if snapshot.GenerationBoot != "" || snapshot.GenerationHealth != "" {
+			line.appendString("  boot=")
+			line.appendString(fallback(snapshot.GenerationBoot, "unknown"))
+			line.appendString(" health=")
+			line.appendString(fallback(snapshot.GenerationHealth, "unknown"))
+		}
+		line.finish()
+	}
+	if snapshot.Mode == ModeInstaller && snapshot.State == "running" {
+		line = render.fieldLine("Disk changes")
+		if snapshot.DestructiveMutation {
+			line.appendString("started - do not power off")
+		} else {
+			line.appendString("not started")
+		}
+		line.finish()
+	}
+	if snapshot.Handoff.URL != "" {
+		render.fieldLine("Configure").appendString(snapshot.Handoff.URL).finish()
+		render.fieldLine("Token").appendString(snapshot.Handoff.Token).finish()
+		render.line().appendString("From another machine use: katlctl install apply").finish()
+	}
+	appendWrappedField(render, "Error", snapshot.LastError)
+	appendWrappedField(render, "Next action", snapshot.RetryHint)
+	appendWrappedField(render, "Status read", snapshot.StatusError)
+
+	journalRows := height - statusRows(snapshot, width) - 3
 	if journalRows < 2 {
 		journalRows = 2
 	}
-	lines = append(lines, "", "Journal (live)")
-	journal := snapshot.Journal
-	if len(journal) > journalRows {
-		journal = journal[len(journal)-journalRows:]
+	render.finishBlank()
+	render.line().appendString("Journal (live)").finish()
+	if remaining := render.contentRows - render.rows; journal != nil && remaining > 0 {
+		journalRows = min(journalRows, remaining)
+		var written int
+		render.dst, written = journal.AppendTail(render.dst, journalRows, width)
+		render.rows += written
 	}
-	for _, line := range journal {
-		lines = append(lines, truncate(sanitize(line), width))
+	for render.rows < render.contentRows {
+		render.finishBlank()
 	}
-	for len(lines) < height-1 {
-		lines = append(lines, "")
+
+	footer := newLine(render.dst, width)
+	footer.appendString("Ctrl+Alt+F2: local console")
+	if snapshot.SSHEnabled {
+		if address := firstIPv4(snapshot.Network); address != "" {
+			footer.appendString(" | SSH: ssh root@")
+			footer.appendString(address)
+		} else {
+			footer.appendString(" | SSH enabled")
+		}
+	} else if snapshot.Mode == ModeInstaller {
+		footer.appendString(" | SSH disabled by installer config")
 	}
-	if len(lines) >= height {
-		lines = lines[:height-1]
-	}
-	lines = append(lines, truncate(footer, width))
-	for i := range lines {
-		lines[i] = truncate(lines[i], width)
-	}
-	return strings.Join(lines, "\n") + "\n"
+	return footer.end()
 }
 
-func networkLines(network []NetworkInterface) []string {
-	if len(network) == 0 {
-		return []string{field("Network", "waiting for an active interface")}
+// AppendJournalLine sanitizes, truncates, and appends one journal row.
+func AppendJournalLine(dst, value []byte, width int) []byte {
+	if width < minimumWidth {
+		width = minimumWidth
 	}
-	lines := make([]string, 0, len(network))
-	for i, iface := range network {
-		value := iface.Name + ": configuring"
-		if len(iface.Addresses) > 0 {
-			value = iface.Name + ": " + strings.Join(iface.Addresses, ", ")
+	line := newLine(dst, width)
+	line.appendBytes(value)
+	return line.end()
+}
+
+func (r *Renderer) line() *lineWriter {
+	if r.rows >= r.contentRows {
+		r.lineState = lineWriter{owner: r}
+		return &r.lineState
+	}
+	r.lineState = newLine(r.dst, r.width)
+	r.lineState.owner = r
+	return &r.lineState
+}
+
+func (r *Renderer) fieldLine(label string) *lineWriter {
+	line := r.line()
+	if !line.active {
+		return line
+	}
+	line.appendString(label)
+	if label != "" {
+		line.appendByte(':')
+	}
+	for line.columns < fieldWidth {
+		line.appendByte(' ')
+	}
+	return line
+}
+
+func (r *Renderer) continuationLine() *lineWriter {
+	line := r.line()
+	if !line.active {
+		return line
+	}
+	for range fieldWidth {
+		line.appendByte(' ')
+	}
+	return line
+}
+
+func (r *Renderer) finishLine(line *lineWriter) {
+	if r.rows < r.contentRows {
+		r.dst = line.end()
+	}
+	r.rows++
+}
+
+func (r *Renderer) finishBlank() {
+	r.line().finish()
+}
+
+type lineWriter struct {
+	owner     *Renderer
+	dst       []byte
+	lastRune  int
+	width     int
+	columns   int
+	truncated bool
+	active    bool
+}
+
+func newLine(dst []byte, width int) lineWriter {
+	return lineWriter{dst: dst, lastRune: len(dst), width: width, active: true}
+}
+
+func (l *lineWriter) appendByte(value byte) *lineWriter {
+	if !l.active || l.truncated {
+		return l
+	}
+	if l.columns == l.width {
+		l.truncated = true
+		return l
+	}
+	l.lastRune = len(l.dst)
+	l.dst = append(l.dst, value)
+	l.columns++
+	return l
+}
+
+func (l *lineWriter) appendString(value string) *lineWriter {
+	for len(value) > 0 && !l.truncated && l.active {
+		r, size := utf8.DecodeRuneInString(value)
+		encoded := value[:size]
+		value = value[size:]
+		if r == '\t' {
+			l.appendByte(' ')
+			continue
 		}
+		if unicode.IsControl(r) {
+			continue
+		}
+		if l.columns == l.width {
+			l.truncated = true
+			return l
+		}
+		l.lastRune = len(l.dst)
+		if r == utf8.RuneError && size == 1 {
+			l.dst = utf8.AppendRune(l.dst, r)
+		} else {
+			l.dst = append(l.dst, encoded...)
+		}
+		l.columns++
+	}
+	return l
+}
+
+func (l *lineWriter) appendBytes(value []byte) *lineWriter {
+	for len(value) > 0 && !l.truncated && l.active {
+		r, size := utf8.DecodeRune(value)
+		encoded := value[:size]
+		value = value[size:]
+		if r == '\t' {
+			l.appendByte(' ')
+			continue
+		}
+		if unicode.IsControl(r) {
+			continue
+		}
+		if l.columns == l.width {
+			l.truncated = true
+			return l
+		}
+		l.lastRune = len(l.dst)
+		if r == utf8.RuneError && size == 1 {
+			l.dst = utf8.AppendRune(l.dst, r)
+		} else {
+			l.dst = append(l.dst, encoded...)
+		}
+		l.columns++
+	}
+	return l
+}
+
+func (l *lineWriter) finish() {
+	l.owner.finishLine(l)
+}
+
+func (l *lineWriter) end() []byte {
+	if !l.active {
+		return l.dst
+	}
+	if l.truncated {
+		l.dst = l.dst[:l.lastRune]
+		l.dst = append(l.dst, '~')
+	}
+	return append(l.dst, '\n')
+}
+
+func appendNetwork(render *Renderer, network []NetworkInterface) {
+	if len(network) == 0 {
+		render.fieldLine("Network").appendString("waiting for an active interface").finish()
+		return
+	}
+	for index, iface := range network {
 		label := ""
-		if i == 0 {
+		if index == 0 {
 			label = "Network"
 		}
-		lines = append(lines, field(label, value))
+		line := render.fieldLine(label)
+		line.appendString(iface.Name)
+		if len(iface.Addresses) == 0 {
+			line.appendString(": configuring")
+		} else {
+			line.appendString(": ")
+			for addressIndex, address := range iface.Addresses {
+				if addressIndex > 0 {
+					line.appendString(", ")
+				}
+				line.appendString(address)
+			}
+		}
+		line.finish()
 	}
-	return lines
+}
+
+func appendWrappedField(render *Renderer, label, value string) {
+	if value == "" {
+		return
+	}
+	available := max(render.width-fieldWidth, 10)
+	line := render.fieldLine(label)
+	position := 0
+	currentWidth := 0
+	wroteWord := false
+	for {
+		word, next, width, ok := nextWord(value, position)
+		if !ok {
+			break
+		}
+		position = next
+		if wroteWord && currentWidth+1+width > available {
+			line.finish()
+			line = render.continuationLine()
+			currentWidth = 0
+			wroteWord = false
+		}
+		if wroteWord {
+			line.appendByte(' ')
+			currentWidth++
+		}
+		line.appendString(word)
+		currentWidth += width
+		wroteWord = true
+	}
+	line.finish()
+}
+
+func statusRows(snapshot *Snapshot, width int) int {
+	rows := 3 // title, separator, state
+	if snapshot.Hostname != "" {
+		rows++
+	}
+	rows += max(len(snapshot.Network), 1)
+	if snapshot.CurrentStep != "" {
+		rows++
+	}
+	if snapshot.TargetDisk != "" {
+		rows++
+	}
+	if snapshot.Generation != "" {
+		rows++
+	}
+	if snapshot.Mode == ModeInstaller && snapshot.State == "running" {
+		rows++
+	}
+	if snapshot.Handoff.URL != "" {
+		rows += 3
+	}
+	if snapshot.LastError != "" {
+		rows += wrappedRows(snapshot.LastError, width)
+	}
+	if snapshot.RetryHint != "" {
+		rows += wrappedRows(snapshot.RetryHint, width)
+	}
+	if snapshot.StatusError != "" {
+		rows += wrappedRows(snapshot.StatusError, width)
+	}
+	return rows
+}
+
+func wrappedRows(value string, width int) int {
+	available := max(width-fieldWidth, 10)
+	position := 0
+	rows := 0
+	currentWidth := 0
+	for {
+		_, next, wordWidth, ok := nextWord(value, position)
+		if !ok {
+			break
+		}
+		position = next
+		if rows == 0 {
+			rows = 1
+			currentWidth = wordWidth
+			continue
+		}
+		if currentWidth+1+wordWidth > available {
+			rows++
+			currentWidth = wordWidth
+		} else {
+			currentWidth += 1 + wordWidth
+		}
+	}
+	return max(rows, 1)
+}
+
+func nextWord(value string, position int) (string, int, int, bool) {
+	for position < len(value) {
+		r, size := utf8.DecodeRuneInString(value[position:])
+		if wordSeparator(r) {
+			position += size
+			continue
+		}
+		if !unicode.IsControl(r) {
+			break
+		}
+		position += size
+	}
+	if position == len(value) {
+		return "", position, 0, false
+	}
+	start := position
+	width := 0
+	for position < len(value) {
+		r, size := utf8.DecodeRuneInString(value[position:])
+		if wordSeparator(r) {
+			break
+		}
+		position += size
+		if !unicode.IsControl(r) {
+			width++
+		}
+	}
+	return value[start:position], position, width, true
+}
+
+func wordSeparator(r rune) bool {
+	return r == '\t' || (!unicode.IsControl(r) && unicode.IsSpace(r))
 }
 
 func stateLabel(state string) string {
-	labels := map[string]string{
-		"starting-installer":            "Starting installer",
-		"starting-runtime":              "Starting installed system",
-		"running":                       "Installing",
-		"debug-hold":                    "Debug hold; installation disabled",
-		"waiting-for-config":            "Waiting for configuration",
-		"install-refused":               "Installation refused",
-		"failed-before-mutation":        "Installation failed; disk unchanged",
-		"failed-after-mutation":         "Installation failed; repair required",
-		"reboot-requested":              "Installation complete; rebooting",
-		"kubeadm-ready":                 "Ready for Kubernetes bootstrap",
-		"waiting-for-cluster-bootstrap": "Waiting for Kubernetes bootstrap",
-		"runtime-booted-not-ready":      "Installed system booted; not ready",
-		"runtime-failed-needs-repair":   "Installed system needs repair",
+	switch state {
+	case "starting-installer":
+		return "Starting installer"
+	case "starting-runtime":
+		return "Starting installed system"
+	case "running":
+		return "Installing"
+	case "debug-hold":
+		return "Debug hold; installation disabled"
+	case "waiting-for-config":
+		return "Waiting for configuration"
+	case "install-refused":
+		return "Installation refused"
+	case "failed-before-mutation":
+		return "Installation failed; disk unchanged"
+	case "failed-after-mutation":
+		return "Installation failed; repair required"
+	case "reboot-requested":
+		return "Installation complete; rebooting"
+	case "kubeadm-ready":
+		return "Ready for Kubernetes bootstrap"
+	case "waiting-for-cluster-bootstrap":
+		return "Waiting for Kubernetes bootstrap"
+	case "runtime-booted-not-ready":
+		return "Installed system booted; not ready"
+	case "runtime-failed-needs-repair":
+		return "Installed system needs repair"
+	default:
+		return fallback(state, "Unknown")
 	}
-	if label := labels[state]; label != "" {
-		return label
-	}
-	return fallback(state, "Unknown")
-}
-
-func field(label, value string) string {
-	if label == "" {
-		return fmt.Sprintf("%-14s%s", "", value)
-	}
-	return fmt.Sprintf("%-14s%s", label+":", value)
-}
-
-func wrapField(label, value string, width int) []string {
-	prefix := field(label, "")
-	available := width - utf8.RuneCountInString(prefix)
-	if available < 10 {
-		available = 10
-	}
-	words := strings.Fields(sanitize(value))
-	if len(words) == 0 {
-		return []string{prefix}
-	}
-	var lines []string
-	current := ""
-	for _, word := range words {
-		if current != "" && utf8.RuneCountInString(current)+1+utf8.RuneCountInString(word) > available {
-			lines = append(lines, prefix+current)
-			prefix = strings.Repeat(" ", utf8.RuneCountInString(prefix))
-			current = word
-			continue
-		}
-		if current != "" {
-			current += " "
-		}
-		current += word
-	}
-	return append(lines, prefix+current)
-}
-
-func sanitize(value string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\t' {
-			return ' '
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, value)
-}
-
-func truncate(value string, width int) string {
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width < 2 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-1]) + "~"
 }
 
 func firstIPv4(network []NetworkInterface) string {
 	for _, iface := range network {
 		for _, address := range iface.Addresses {
-			if strings.Contains(address, ".") {
-				return strings.SplitN(address, "/", 2)[0]
+			if strings.IndexByte(address, '.') < 0 {
+				continue
 			}
+			if slash := strings.IndexByte(address, '/'); slash >= 0 {
+				return address[:slash]
+			}
+			return address
 		}
 	}
 	return ""
@@ -211,4 +490,8 @@ func fallback(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func renderDimensions(width, height int) (int, int) {
+	return max(width, minimumWidth), max(height, minimumHeight)
 }
