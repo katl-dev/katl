@@ -78,12 +78,13 @@ func run(ctx context.Context, args []string) error {
 	snapshotPathValue := strings.TrimSpace(*snapshotPath)
 	var snapshot operatorconsole.Snapshot
 	var renderBuffer []byte
+	var snapshotBuffer []byte
 	var dashboard operatorconsole.Renderer
 	ticker := time.NewTicker(*refresh)
 	defer ticker.Stop()
 	for {
 		collector.Collect(&snapshot)
-		if err := render(tty, snapshotPathValue, &snapshot, ring, &dashboard, &renderBuffer); err != nil {
+		if err := render(tty, snapshotPathValue, &snapshot, ring, &dashboard, &renderBuffer, &snapshotBuffer); err != nil {
 			return err
 		}
 		select {
@@ -94,7 +95,7 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
-func render(tty *os.File, snapshotPath string, snapshot *operatorconsole.Snapshot, journal operatorconsole.Journal, dashboard *operatorconsole.Renderer, buffer *[]byte) error {
+func render(tty *os.File, snapshotPath string, snapshot *operatorconsole.Snapshot, journal operatorconsole.Journal, dashboard *operatorconsole.Renderer, buffer, snapshotBuffer *[]byte) error {
 	width, height := terminalSize(tty)
 	required := len("\x1b[H\x1b[2J") + operatorconsole.RenderCapacity(width, height)
 	if cap(*buffer) < required {
@@ -102,8 +103,7 @@ func render(tty *os.File, snapshotPath string, snapshot *operatorconsole.Snapsho
 	}
 	data := (*buffer)[:0]
 	data = append(data, "\x1b[H\x1b[2J"...)
-	plainStart := len(data)
-	data = dashboard.Append(data, snapshot, journal, width, height)
+	data = dashboard.AppendColor(data, snapshot, journal, width, height)
 	*buffer = data
 	if written, err := tty.Write(data); err != nil {
 		return fmt.Errorf("render dashboard: %w", err)
@@ -111,7 +111,12 @@ func render(tty *os.File, snapshotPath string, snapshot *operatorconsole.Snapsho
 		return fmt.Errorf("render dashboard: %w", io.ErrShortWrite)
 	}
 	if snapshotPath != "" {
-		if err := writeSnapshot(snapshotPath, data[plainStart:]); err != nil {
+		if cap(*snapshotBuffer) < required {
+			*snapshotBuffer = make([]byte, 0, required)
+		}
+		plain := dashboard.Append((*snapshotBuffer)[:0], snapshot, journal, width, height)
+		*snapshotBuffer = plain
+		if err := writeSnapshot(snapshotPath, plain); err != nil {
 			return err
 		}
 	}
@@ -210,14 +215,27 @@ func (r *journalRing) nextLineLocked(length int) []byte {
 
 func (r *journalRing) AppendTail(dst []byte, rows, width int) ([]byte, int) {
 	r.mu.Lock()
-	rows = min(rows, r.count)
-	first := r.count - rows
-	for offset := range rows {
+	selected := 0
+	selectedRows := 0
+	for selected < r.count && selectedRows < rows {
+		index := (r.start + r.count - selected - 1) % len(r.lines)
+		lineRows := operatorconsole.JournalLineRows(r.lines[index], width)
+		if selected > 0 && selectedRows+lineRows > rows {
+			break
+		}
+		selected++
+		selectedRows += lineRows
+	}
+	first := r.count - selected
+	written := 0
+	for offset := range selected {
 		index := (r.start + first + offset) % len(r.lines)
-		dst = operatorconsole.AppendJournalLine(dst, r.lines[index], width)
+		var lineRows int
+		dst, lineRows = operatorconsole.AppendJournalLine(dst, r.lines[index], width, rows-written)
+		written += lineRows
 	}
 	r.mu.Unlock()
-	return dst, rows
+	return dst, written
 }
 
 func followJournal(ctx context.Context, ring *journalRing) {
@@ -240,7 +258,7 @@ func followJournal(ctx context.Context, ring *journalRing) {
 type commandContext func(context.Context, string, ...string) *exec.Cmd
 
 func streamJournal(ctx context.Context, ring *journalRing, command commandContext) error {
-	cmd := command(ctx, "journalctl", "--boot", "--follow", "--lines=100", "--output=short-monotonic", "--no-pager")
+	cmd := command(ctx, "journalctl", journalctlArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -277,3 +295,5 @@ func streamJournal(ctx context.Context, ring *journalRing, command commandContex
 	}
 	return nil
 }
+
+var journalctlArgs = []string{"--boot", "--follow", "--lines=100", "--output=short-iso", "--no-pager"}

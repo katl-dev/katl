@@ -56,8 +56,6 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	if err == nil {
 		snapshot.State = record.State
 		snapshot.CurrentStep = record.CurrentStep
-		snapshot.InputMode = record.InputMode
-		snapshot.TargetDisk = record.TargetDiskStableID
 		snapshot.Generation = record.InstalledGeneration
 		snapshot.DestructiveMutation = record.DestructiveMutation
 		snapshot.LastError = record.LastError
@@ -145,7 +143,6 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 	if err != nil {
 		return
 	}
-	snapshot.GenerationBoot = status.BootState
 	snapshot.GenerationHealth = status.HealthState
 }
 

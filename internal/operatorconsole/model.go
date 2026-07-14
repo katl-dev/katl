@@ -17,10 +17,7 @@ type Snapshot struct {
 	Hostname            string
 	State               string
 	CurrentStep         string
-	InputMode           string
-	TargetDisk          string
 	Generation          string
-	GenerationBoot      string
 	GenerationHealth    string
 	DestructiveMutation bool
 	LastError           string

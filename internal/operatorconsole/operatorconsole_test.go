@@ -94,7 +94,6 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		Hostname:            "katl-installer",
 		State:               installstatus.StateRunning,
 		CurrentStep:         "InstallRootSlot",
-		TargetDisk:          "/dev/disk/by-id/virtio-root",
 		DestructiveMutation: true,
 		Handoff:             Handoff{URL: "http://192.0.2.10:8080/v1/config-bundle"},
 		Network:             []NetworkInterface{{Name: "enp1s0", Addresses: []string{"192.0.2.10/24"}}},
@@ -109,9 +108,9 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		"Disk changes: started - do not power off",
 		"Configure:    http://192.0.2.10:8080/v1/config-bundle",
 		"Run:          katlctl config init cluster.yaml --installer 192.0.2.10",
-		"Journal (live)",
-		"installing root[31m",
-		"Ctrl+Alt+F2: local console | SSH disabled by installer config",
+		"Journal",
+		"installing root",
+		"Ctrl+Alt+F2: console | SSH disabled",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
@@ -153,7 +152,6 @@ func TestRenderRuntimeFailure(t *testing.T) {
 		Hostname:         "cp-1",
 		State:            installstatus.StateRuntimeFailedNeedsRepair,
 		Generation:       "4",
-		GenerationBoot:   "failed",
 		GenerationHealth: "unhealthy",
 		LastError:        "boot health check failed",
 		RetryHint:        "inspect the previous generation",
@@ -162,10 +160,94 @@ func TestRenderRuntimeFailure(t *testing.T) {
 	}
 	var renderer Renderer
 	got := string(renderer.Append(make([]byte, 0, RenderCapacity(80, 20)), &snapshot, nil, 80, 20))
-	for _, want := range []string{"Installed system needs repair", "Generation:   4  boot=failed health=unhealthy", "Error:", "boot health check failed", "SSH: ssh root@192.0.2.20"} {
+	for _, want := range []string{"KatlOS needs repair", "Generation:   4  health=FAILED", "Error:", "boot health check failed", "SSH: root@192.0.2.20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestRenderKatlOSHealthAndColour(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:             ModeRuntime,
+		State:            installstatus.StateKubeadmReady,
+		Generation:       "0",
+		GenerationHealth: "healthy",
+		CurrentStep:      "Reboot",
+	}
+	var renderer Renderer
+	plain := string(renderer.Append(nil, &snapshot, nil, 80, 15))
+	for _, want := range []string{"KatlOS\n", "Generation:   0  health=OK", "Journal"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("plain render missing %q:\n%s", want, plain)
+		}
+	}
+	for _, unwanted := range []string{"runtime", "installed system", "boot=", "Target disk", "Progress:     Reboot", "\x1b["} {
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("plain render contains %q:\n%s", unwanted, plain)
+		}
+	}
+	colored := string(renderer.AppendColor(nil, &snapshot, nil, 80, 15))
+	if !strings.Contains(colored, styleTitle) || !strings.Contains(colored, styleGood) {
+		t.Fatalf("coloured render lacks semantic styles: %q", colored)
+	}
+}
+
+func TestRenderRebootHidesRedundantProgress(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:        ModeInstaller,
+		State:       installstatus.StateRebootRequested,
+		CurrentStep: "Reboot",
+	}
+	var renderer Renderer
+	got := string(renderer.Append(nil, &snapshot, nil, 80, 15))
+	if !strings.Contains(got, "Installation complete; rebooting") || strings.Contains(got, "Progress:") {
+		t.Fatalf("reboot dashboard =\n%s", got)
+	}
+}
+
+func TestRenderWrapsOperatorContentAtNarrowWidth(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:      ModeInstaller,
+		State:     installstatus.StateWaitingForConfig,
+		LastError: "installer diagnostic has a deliberately-long-unbroken-value-with-tail-marker",
+		Handoff:   Handoff{URL: "http://[2001:db8:1234:5678::10]:8080/v1/config-bundle"},
+		Network: []NetworkInterface{{
+			Name:      "enp1s0",
+			Addresses: []string{"2001:db8:1234:5678::10/64", "192.0.2.10/24"},
+		}},
+	}
+	var renderer Renderer
+	got := string(renderer.Append(nil, &snapshot, nil, 40, 40))
+	joined := strings.ReplaceAll(got, "\n"+strings.Repeat(" ", fieldWidth), "")
+	for _, want := range []string{"tail-marker", "config-bundle", "192.0.2.10/24"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("narrow render lost %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "~") {
+		t.Fatalf("narrow render truncated content:\n%s", got)
+	}
+	for number, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
+		if len([]rune(line)) > 40 {
+			t.Fatalf("line %d width = %d: %q", number+1, len([]rune(line)), line)
+		}
+	}
+}
+
+func TestJournalLineWrapsAndStripsANSI(t *testing.T) {
+	value := []byte("2026-07-14T00:01:02+01:00 host service[1]: " + strings.Repeat("payload", 8) + "\x1b[31m")
+	got, rows := AppendJournalLine(nil, value, 40, 10)
+	if rows < 2 || strings.Contains(string(got), "\x1b") || strings.Contains(string(got), "[31m") || strings.Contains(string(got), "~") {
+		t.Fatalf("AppendJournalLine() = %q, rows=%d", got, rows)
+	}
+	for number, line := range strings.Split(strings.TrimSuffix(string(got), "\n"), "\n") {
+		if len([]rune(line)) > 40 {
+			t.Fatalf("line %d width = %d: %q", number+1, len([]rune(line)), line)
+		}
+	}
+	if joined := strings.ReplaceAll(string(got), "\n", ""); joined != strings.TrimSuffix(string(value), "\x1b[31m") {
+		t.Fatalf("wrapped content changed: %q", joined)
 	}
 }
 
@@ -196,8 +278,11 @@ type testJournal [][]byte
 
 func (j testJournal) AppendTail(dst []byte, rows, width int) ([]byte, int) {
 	rows = min(rows, len(j))
+	written := 0
 	for _, line := range j[len(j)-rows:] {
-		dst = AppendJournalLine(dst, line, width)
+		var lineRows int
+		dst, lineRows = AppendJournalLine(dst, line, width, rows-written)
+		written += lineRows
 	}
-	return dst, rows
+	return dst, written
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,12 @@ func TestJournalRingIsBounded(t *testing.T) {
 	got, rows := ring.AppendTail(make([]byte, 0, 32), 2, 80)
 	if rows != 2 || string(got) != "two\nthree\n" {
 		t.Fatalf("AppendTail() = %q, %d rows", got, rows)
+	}
+}
+
+func TestJournalUsesDateTimeTimestamps(t *testing.T) {
+	if !slices.Contains(journalctlArgs, "--output=short-iso") || slices.Contains(journalctlArgs, "--output=short-monotonic") {
+		t.Fatalf("journalctlArgs = %#v", journalctlArgs)
 	}
 }
 
