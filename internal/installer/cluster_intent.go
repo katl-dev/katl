@@ -13,7 +13,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/configdomain"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
-	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 )
@@ -35,7 +34,6 @@ type ClusterIntent struct {
 	BootstrapProfile   *ClusterIntentProfile   `json:"bootstrapProfile,omitempty"`
 	Kubernetes         ClusterIntentKubernetes `json:"kubernetes"`
 	Kubeadm            *ClusterIntentKubeadm   `json:"kubeadm,omitempty"`
-	KatlosImage        manifest.KatlosImage    `json:"katlosImage"`
 	Source             ClusterIntentSource     `json:"source"`
 	RequestDigest      string                  `json:"requestDigest,omitempty"`
 	InstalledAt        time.Time               `json:"installedAt"`
@@ -47,20 +45,16 @@ type ClusterIntentIdentity struct {
 }
 
 type ClusterIntentInventory struct {
-	ClusterName          string                   `json:"clusterName,omitempty"`
-	NodeName             string                   `json:"nodeName"`
-	NodeAddress          string                   `json:"nodeAddress,omitempty"`
-	ControlPlaneEndpoint string                   `json:"controlPlaneEndpoint,omitempty"`
-	Access               manifest.BootstrapAccess `json:"access,omitempty"`
-	Labels               map[string]string        `json:"labels,omitempty"`
-	Taints               []manifest.NodeTaint     `json:"taints,omitempty"`
+	ClusterName          string               `json:"clusterName,omitempty"`
+	NodeName             string               `json:"nodeName"`
+	NodeAddress          string               `json:"nodeAddress,omitempty"`
+	ControlPlaneEndpoint string               `json:"controlPlaneEndpoint,omitempty"`
+	Labels               map[string]string    `json:"labels,omitempty"`
+	Taints               []manifest.NodeTaint `json:"taints,omitempty"`
 }
 
 type ClusterIntentKubernetes struct {
 	PayloadVersion string `json:"payloadVersion,omitempty"`
-	CatalogRef     string `json:"catalogRef,omitempty"`
-	BundleSource   string `json:"bundleSource,omitempty"`
-	BundleRef      string `json:"bundleRef,omitempty"`
 	SysextPath     string `json:"sysextPath,omitempty"`
 	SysextSHA256   string `json:"sysextSHA256,omitempty"`
 	SysextSize     uint64 `json:"sysextSizeBytes,omitempty"`
@@ -81,8 +75,7 @@ type ClusterIntentKubeadm struct {
 }
 
 type ClusterIntentSource struct {
-	RequestDigest     string `json:"requestDigest,omitempty"`
-	KatlosImageSHA256 string `json:"katlosImageSHA256,omitempty"`
+	RequestDigest string `json:"requestDigest,omitempty"`
 }
 
 type ClusterIntentRequest struct {
@@ -221,8 +214,7 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 		Kubernetes: ClusterIntentKubernetes{
 			PayloadVersion: strings.TrimSpace(request.KubernetesVersion),
 		},
-		KatlosImage:        request.Manifest.KatlosImage,
-		Source:             ClusterIntentSource{RequestDigest: strings.TrimSpace(request.RequestDigest), KatlosImageSHA256: strings.TrimSpace(request.Manifest.KatlosImage.SHA256)},
+		Source:             ClusterIntentSource{RequestDigest: strings.TrimSpace(request.RequestDigest)},
 		RequestDigest:      strings.TrimSpace(request.RequestDigest),
 		InstalledAt:        installedAt.UTC(),
 		TargetDiskStableID: strings.TrimSpace(request.TargetDiskStableID),
@@ -232,18 +224,8 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 		intent.Inventory.ClusterName = strings.TrimSpace(bootstrap.ClusterName)
 		intent.Inventory.NodeAddress = strings.TrimSpace(bootstrap.NodeAddress)
 		intent.Inventory.ControlPlaneEndpoint = strings.TrimSpace(bootstrap.ControlPlaneEndpoint)
-		intent.Inventory.Access = trimBootstrapAccess(bootstrap.Access)
 		intent.Inventory.Labels = copyBootstrapLabels(bootstrap.Labels)
 		intent.Inventory.Taints = append([]manifest.NodeTaint(nil), bootstrap.Taints...)
-		intent.Kubernetes.CatalogRef = strings.TrimSpace(bootstrap.KubernetesCatalogRef)
-		if bundle := strings.TrimSpace(bootstrap.KubernetesBundle); bundle != "" {
-			image, err := kubernetesbundle.ParseImageReference(bundle)
-			if err != nil {
-				return ClusterIntent{}, fmt.Errorf("node.bootstrap.kubernetesBundle: %w", err)
-			}
-			intent.Kubernetes.BundleSource = image.Source
-			intent.Kubernetes.BundleRef = image.Value
-		}
 	}
 	if request.KubernetesSysext != nil {
 		intent.Kubernetes.SysextPath = strings.TrimSpace(request.KubernetesSysext.Path)
@@ -383,14 +365,6 @@ func inventoryNodeName(m manifest.Manifest) string {
 		}
 	}
 	return strings.TrimSpace(m.Node.Identity.Hostname)
-}
-
-func trimBootstrapAccess(access manifest.BootstrapAccess) manifest.BootstrapAccess {
-	return manifest.BootstrapAccess{
-		Method:        strings.TrimSpace(access.Method),
-		User:          strings.TrimSpace(access.User),
-		CredentialRef: strings.TrimSpace(access.CredentialRef),
-	}
 }
 
 func copyBootstrapLabels(labels map[string]string) map[string]string {

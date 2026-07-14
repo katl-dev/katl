@@ -61,28 +61,9 @@ authorization. This works with agent-only keys such as 1Password. An explicit
 `--ssh-authorized-key PATH` remains available when only one key should be
 authorized.
 
-`katlctl config init` generates the matching credential references. In a
-hand-authored `ClusterConfig`, use workstation paths rather than secret values:
-
-```yaml
-nodes:
-  - name: cp-1
-    systemRole: control-plane
-    overrides:
-      bootstrap:
-        address: 192.0.2.11
-        access:
-          method: agent
-            credentialRef: file:/home/operator/.config/katl/credentials/katl-lab/cp-1.token
-  - name: worker-1
-    systemRole: worker
-    overrides:
-      bootstrap:
-        address: 192.0.2.21
-        access:
-          method: agent
-            credentialRef: file:/home/operator/.config/katl/credentials/katl-lab/worker-1.token
-```
+ClusterConfig contains node addresses but never credentials or workstation
+paths. Enrollment creates and maintains those references in the workstation
+context instead.
 
 Each freshly installed node generates its own token. Do not assume one fallback
 token authenticates to the entire cluster. Enrollment refuses to overwrite a

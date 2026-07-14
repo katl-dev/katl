@@ -21,8 +21,8 @@ before accepting the operation.
 Use the retained `ClusterConfig` as the normal input. `katlctl` compiles the
 internal inventory itself. `--config-bundle` remains available for PXE/offline
 material and `--inventory` for expert recovery tooling. Add `--context NAME`
-when the enrolled workstation context should override the source's management
-addresses and credential references.
+when the enrolled workstation context should supply management addresses and
+credentials independently of the source.
 
 The required acknowledgement is intentionally exact:
 

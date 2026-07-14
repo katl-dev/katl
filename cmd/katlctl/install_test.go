@@ -107,10 +107,10 @@ func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
 		t.Fatalf("authorized keys = %#v", keys)
 	}
 	cp, worker := source.Spec.Nodes[0], source.Spec.Nodes[1]
-	if cp.Name != "cp-1" || cp.SystemRole != inventory.RoleControlPlane || cp.Overrides.Bootstrap.Address != "192.0.2.11" || cp.Overrides.Install.TargetDisk == nil || cp.Overrides.Install.TargetDisk.ByID != "/dev/disk/by-id/ata-cp-root" {
+	if cp.Name != "cp-1" || cp.SystemRole != inventory.RoleControlPlane || cp.Bootstrap.Address != "192.0.2.11" || cp.Install.TargetDisk == nil || cp.Install.TargetDisk.ByID != "/dev/disk/by-id/ata-cp-root" {
 		t.Fatalf("control-plane node = %#v", cp)
 	}
-	if worker.Name != "worker-1" || worker.SystemRole != inventory.RoleWorker || worker.Overrides.Bootstrap.Address != "192.0.2.21" || worker.Overrides.Install.TargetDisk == nil || worker.Overrides.Install.TargetDisk.WWN != "worker-root-wwn" {
+	if worker.Name != "worker-1" || worker.SystemRole != inventory.RoleWorker || worker.Bootstrap.Address != "192.0.2.21" || worker.Install.TargetDisk == nil || worker.Install.TargetDisk.WWN != "worker-root-wwn" {
 		t.Fatalf("worker node = %#v", worker)
 	}
 	if !strings.Contains(stdout.String(), "created "+outputPath) {
@@ -199,10 +199,10 @@ func TestConfigInitFromInstallerAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeSource() error = %v\n%s", err, stdout.String())
 	}
-	if len(source.Spec.Nodes) != 1 || source.Spec.Nodes[0].Name != "cp-1" || source.Spec.Nodes[0].Overrides.Install.TargetDisk == nil || source.Spec.Nodes[0].Overrides.Install.TargetDisk.ByID != "/dev/disk/by-id/virtio-root" {
+	if len(source.Spec.Nodes) != 1 || source.Spec.Nodes[0].Name != "cp-1" || source.Spec.Nodes[0].Install.TargetDisk == nil || source.Spec.Nodes[0].Install.TargetDisk.ByID != "/dev/disk/by-id/virtio-root" {
 		t.Fatalf("generated source = %#v", source)
 	}
-	if got := source.Spec.Nodes[0].Overrides.Bootstrap.Address; got != "127.0.0.1" {
+	if got := source.Spec.Nodes[0].Bootstrap.Address; got != "127.0.0.1" {
 		t.Fatalf("bootstrap address = %q", got)
 	}
 }
@@ -225,7 +225,15 @@ func TestConfigInitInstallerInputValidation(t *testing.T) {
 }
 
 func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
-	server := handoff.NewHandoffServer(nil)
+	server := handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
+		LocalRef:         "images/katlos-install-test-x86_64.squashfs",
+		SHA256:           strings.Repeat("a", 64),
+		SizeBytes:        1,
+		Version:          "test",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Role:             "install",
+	})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
@@ -245,7 +253,15 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 
 func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	sourcePath := writeClusterConfig(t)
-	server := handoff.NewHandoffServer(nil)
+	server := handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
+		LocalRef:         "images/katlos-install-test-x86_64.squashfs",
+		SHA256:           strings.Repeat("a", 64),
+		SizeBytes:        1,
+		Version:          "test",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Role:             "install",
+	})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 

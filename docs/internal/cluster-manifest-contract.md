@@ -1,16 +1,14 @@
-# Cluster Manifest Contract
+# ClusterConfig Contract
 
-Status: v0.1 reference contract for user-authored cluster config.
+Status: v1alpha1 reference contract for operator-authored cluster intent.
 
-This document defines the user-facing cluster manifest shape that
-`katlctl config bundle` compiles into a resolved Katl config bundle. It applies
-ADR-006 node classes and keeps the source manifest explicit. The compiled
-install manifest remains `install.katl.dev/v1alpha1`; users should not author
-one compiled install manifest per node for normal workflows.
+`ClusterConfig` describes meaningful cluster and node choices. It does not ask
+operators to model Katl's compiler, artifact selection, generated profiles,
+generations, credentials, or operation bookkeeping. `katlctl` compiles one
+source into the per-node material needed by install, configuration, and
+bootstrap workflows.
 
 ## Envelope
-
-The v0.1 source manifest kind is:
 
 ```yaml
 apiVersion: config.katl.dev/v1alpha1
@@ -20,177 +18,46 @@ metadata:
 spec: {}
 ```
 
-`spec` is the only policy-bearing top-level field. Unsupported top-level fields
-or unsupported fields under `spec` are rejected before bundle output is written.
+Unknown fields are rejected. The API is still alpha, so removed aliases and
+unshipped shapes are not retained for compatibility.
 
-Before creating installation media or a bundle, run the non-writing compiler
-preflight:
+Use the compiler and its schema directly:
 
 ```console
 katlctl config validate ./cluster.yaml
-```
-
-The command resolves local references, applies every layer, compiles all node
-plans, and reports the cluster name, content digests, and resolved node names and
-roles. It does not create an output file. Errors identify the source field path,
-including node indexes, for example
-`spec.nodes[0].overrides.install.targetDisk.byPath`.
-
-Editors and validation tools can consume the exact structural schema shipped by
-the installed CLI:
-
-```console
 katlctl config schema > cluster-config-v1alpha1.schema.json
 ```
 
-The JSON Schema is derived from the same Go types as the strict YAML decoder.
-The compiler remains authoritative for semantic rules such as destructive disk
-guards, Kubernetes selection, local-reference safety, and layer conflicts.
+## Authoring Model
 
-## Layer Model
+There are two authoring levels:
 
-Every node is rendered from four explicit layers, in this order:
+1. `spec.defaults` for desired behavior shared by every node.
+2. Flat entries in `spec.nodes` for concrete node choices.
 
-```text
-1. spec.defaults
-2. spec.nodeClasses[<node.nodeClass>]
-3. spec.systemRoleDefaults[<node.systemRole>]
-4. nodes[].overrides
-```
+There are no node classes, system-role default layers, or `overrides` wrapper.
+Katl selects its control-plane and worker kubeadm profiles internally from
+`systemRole`.
 
-Later layers may override earlier scalar values only when that configuration
-domain explicitly defines override semantics. Lists and maps merge only where
-the domain defines identity and conflict handling. Otherwise the compiler
-rejects the manifest instead of guessing.
-
-`spec.defaults` contains cluster-wide defaults shared by all nodes.
-
-`spec.nodeClasses` is a map of named hardware/model classes. A node may
-reference at most one class with `nodeClass`. Classes are user-declared only;
-Katl does not infer classes from DMI, PCI IDs, disk model strings, MAC OUIs, or
-other hardware facts in v0.1.
-
-`spec.systemRoleDefaults` is keyed by `control-plane` and `worker`. It carries
-role-specific bootstrap and runtime defaults. System role remains Kubernetes
-lifecycle intent; it is not a hardware capability system.
-
-`nodes[].overrides` contains concrete per-node identity, address, target disk
-identity, and other node-specific corrections.
-
-## Supported Field Shape
-
-The source manifest uses this reference shape:
-
-```yaml
-spec:
-  defaults:
-    install:
-      wipeTarget: true
-      targetDiskDefaults:
-        minSizeMiB: 32768
-    identity:
-      ssh:
-        authorizedKeys: []
-    networkd:
-      files: []
-    kubernetes:
-      version: v1.36.1
-      bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:<OCI-manifest-digest>
-      kubeadm:
-        configRef: worker
-
-  nodeClasses:
-    example-class:
-      install:
-        targetDiskDefaults:
-          minSizeMiB: 65536
-      networkd:
-        files: []
-      kubernetes:
-        labels: {}
-        taints: []
-
-  systemRoleDefaults:
-    control-plane:
-      kubernetes:
-        kubeadm:
-          configRef: control-plane
-    worker:
-      kubernetes:
-        kubeadm:
-          configRef: worker
-
-  nodes:
-    - name: cp-1
-      systemRole: control-plane
-      nodeClass: example-class
-      overrides:
-        identity:
-          hostname: cp-1
-        bootstrap:
-          address: 192.0.2.11
-        install:
-          targetDisk:
-            byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
-```
-
-The exact domain schemas remain the domain contracts. This reference shape names
-the source-manifest layer locations and merge order that those domain schemas
-compile from.
-
-## Destructive Install Guard
-
-Every rendered node install material must contain:
-
-```yaml
-install:
-  wipeTarget: true
-  targetDisk:
-    byID: /dev/disk/by-id/ata-KATL_NODE_ROOT
-```
-
-`install.wipeTarget: true` is the installer guard that authorizes destructive
-mutation of the selected target disk. Missing, false, or null values are refused
-before disk mutation.
-
-`install.targetDiskDefaults` is allowed only for safe non-identifying
-constraints, for example:
-
-```yaml
-install:
-  targetDiskDefaults:
-    minSizeMiB: 32768
-```
-
-`targetDiskDefaults` must not select a destructive target by itself. Per-node
-target disk identity remains required for destructive install. Stable identity
-belongs under `nodes[].overrides.install.targetDisk` and should use `byID`,
-`wwn`, or `serial`. Short kernel names such as `/dev/sda` are not valid
-destructive selectors.
-
-The compiler rejects class-level or defaults-level target disk identity that
-would apply to multiple nodes.
-
-## All Same Hardware Example
-
-This example uses `spec.defaults` for the common hardware policy and keeps only
-node identity, address, role, and disk identity under each node.
+## Supported Shape
 
 ```yaml
 apiVersion: config.katl.dev/v1alpha1
 kind: ClusterConfig
 metadata:
-  name: all-nuc
+  name: homelab
 spec:
+  # Optional; defaults to the first control-plane node address on port 6443.
+  controlPlaneEndpoint: api.home.arpa:6443
+
+  kubernetes:
+    version: v1.36.1
+
   defaults:
-    install:
-      wipeTarget: true
-      targetDiskDefaults:
-        minSizeMiB: 32768
     identity:
       ssh:
         authorizedKeys:
-          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+          - ssh-ed25519 AAAA... operator@home
     networkd:
       files:
         - name: 10-lan.network
@@ -200,153 +67,98 @@ spec:
 
             [Network]
             DHCP=yes
+    install:
+      targetDiskDefaults:
+        minSizeMiB: 32768
+      extraDisks: []
     kubernetes:
-      version: v1.36.1
-      bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-
-  systemRoleDefaults:
-    control-plane:
-      kubernetes:
-        kubeadm:
-          configRef: control-plane
-    worker:
-      kubernetes:
-        kubeadm:
-          configRef: worker
+      labels: {}
+      taints: []
 
   nodes:
     - name: cp-1
       systemRole: control-plane
-      overrides:
-        identity:
-          hostname: cp-1
-        bootstrap:
-          address: 192.0.2.11
-        install:
-          targetDisk:
-            byID: /dev/disk/by-id/ata-NUC_CP_1_ROOT
-
-    - name: worker-1
-      systemRole: worker
-      overrides:
-        identity:
-          hostname: worker-1
-        bootstrap:
-          address: 192.0.2.21
-        install:
-          targetDisk:
-            byID: /dev/disk/by-id/ata-NUC_WORKER_1_ROOT
-```
-
-## Mixed MS-01/MSA2 Example
-
-This example uses node classes for hardware-specific defaults and still keeps
-destructive disk identity per node.
-
-```yaml
-apiVersion: config.katl.dev/v1alpha1
-kind: ClusterConfig
-metadata:
-  name: mixed-homelab
-spec:
-  defaults:
-    install:
-      wipeTarget: true
-      targetDiskDefaults:
-        minSizeMiB: 32768
-    identity:
-      ssh:
-        authorizedKeys:
-          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
-    kubernetes:
-      version: v1.36.1
-      bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-
-  nodeClasses:
-    ms01:
+      bootstrap:
+        address: 192.0.2.11
       install:
-        targetDiskDefaults:
-          minSizeMiB: 65536
-      networkd:
-        files:
-          - name: 10-ms01-lan.network
-            content: |
-              [Match]
-              Name=enp2s0
-
-              [Network]
-              DHCP=yes
+        targetDisk:
+          byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
       kubernetes:
         labels:
-          katl.dev/hardware-class: ms01
-
-    msa2:
-      install:
-        targetDiskDefaults:
-          minSizeMiB: 32768
-      networkd:
-        files:
-          - name: 10-msa2-lan.network
-            content: |
-              [Match]
-              Name=end0
-
-              [Network]
-              DHCP=yes
-      kubernetes:
-        labels:
-          katl.dev/hardware-class: msa2
-
-  systemRoleDefaults:
-    control-plane:
-      kubernetes:
-        kubeadm:
-          configRef: control-plane
-    worker:
-      kubernetes:
-        kubeadm:
-          configRef: worker
-
-  nodes:
-    - name: ms01-cp-1
-      systemRole: control-plane
-      nodeClass: ms01
-      overrides:
-        identity:
-          hostname: ms01-cp-1
-        bootstrap:
-          address: 192.0.2.11
-        install:
-          targetDisk:
-            serial: MS01_CP_1_NVME_ROOT
-
-    - name: msa2-worker-1
-      systemRole: worker
-      nodeClass: msa2
-      overrides:
-        identity:
-          hostname: msa2-worker-1
-        bootstrap:
-          address: 192.0.2.21
-        install:
-          targetDisk:
-            serial: MSA2_WORKER_1_NVME_ROOT
+          topology.kubernetes.io/zone: rack-a
+        taints: []
 ```
 
-## Rejected Behavior
+`name` is also the node hostname. A separate hostname alias is deliberately not
+part of the contract.
 
-Katl v0.1 rejects:
+Nodes use a generated DHCP systemd-networkd profile when neither defaults nor
+the node supplies native networkd files. Default and node files merge by file
+name and conflicting content is rejected.
+
+Kubernetes labels merge by key and taints by their Kubernetes identity.
+Conflicting values are rejected instead of silently selecting a layer.
+
+## Install Selection
+
+Each node chooses its own install target. Prefer durable `byID`, `wwn`, or
+`serial` selectors; short kernel names such as `/dev/sda` are not valid
+destructive selectors.
+
+`targetDiskDefaults` may contain only non-identifying constraints such as
+minimum size. It cannot select a disk for several nodes. Extra disks are desired
+node storage and therefore remain valid cluster intent.
+
+The decision to execute a destructive install belongs to the install operation,
+not ClusterConfig. There is no `wipeTarget` authorization field in this API.
+
+## Deliberately Internal Inputs
+
+The following are not ClusterConfig fields:
+
+- KatlOS image URLs, checksums, local paths, or release descriptors;
+- Kubernetes OCI bundle references, catalogs, resolver inputs, or digests;
+- kubeadm configuration documents or profile references;
+- bootstrap access methods, tokens, or credential references;
+- node classes, platform API endpoint helpers, or role-default layers;
+- generation IDs, operation IDs, source digests, or validation bookkeeping.
+
+Release media, provisioning commands, workstation contexts, and Katl's
+compiler provide these inputs at the operation boundary. For example, PXE
+bundle compilation takes KatlOS artifact metadata as command flags while the
+same ClusterConfig remains usable for ISO installation.
+
+## Runtime Planning
+
+When a ClusterConfig is rendered for an installed node, Katl includes every
+supported desired field in the node change request. Runtime-live fields such as
+SSH keys and networkd files can be applied directly. Operation-only fields such
+as system role and the internally selected kubeadm profile remain visible to
+the planner and produce an explicit lifecycle action or refusal; the renderer
+must not silently omit them.
+
+Disk installation fields are consumed by installation and are not runtime
+configuration. Kubernetes version changes are handled by the Kubernetes
+upgrade workflow rather than ordinary node configuration apply.
+
+## Rejected Flexibility
+
+Katl v1alpha1 rejects aliases and speculative mechanisms including:
 
 ```text
-unknown nodeClass references
-more than one nodeClass on one node
-class-level targetDisk identity that could wipe multiple nodes
-template expressions, loops, ranges, or generated node lists
-Jinja, Helm, Jsonnet, Starlark, Lua, shell, or arbitrary expression languages
-hardware auto-detection for selecting nodeClass
-implicit target disk selection from model, size, or class alone
-unresolved local file references in compiled bundle output
+nodes[].overrides
+spec.systemRoleDefaults
+spec.nodeClasses and nodes[].nodeClass
+spec.platformAPIEndpoint
+spec.katlosImage
+spec.kubernetes.bundle and spec.kubernetes.catalogRef
+spec.kubeadmConfigs and kubeadm config references
+bootstrap access or credential fields
+identity.hostname
+install.wipeTarget
+nodeLabels and nodeTaints aliases
+templates, loops, ranges, generated node lists, and expression languages
 ```
 
-Users may generate a Katl manifest with their own tooling before passing it to
-Katl. Katl itself validates only the explicit manifest it receives.
+Operators may generate valid ClusterConfig YAML with external tooling. Katl
+validates only the concrete document it receives.

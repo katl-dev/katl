@@ -22,7 +22,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/installer/platformendpoint"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,6 +41,15 @@ type BuildRequest struct {
 	KatlctlVersion string
 	KatlctlCommit  string
 	CreatedBy      string
+	Planning       PlanningInputs
+}
+
+// PlanningInputs are operation-scoped mechanisms supplied by Katl, not
+// operator-authored cluster intent.
+type PlanningInputs struct {
+	KatlosImage      manifest.KatlosImage
+	KubernetesBundle string
+	BootstrapAccess  map[string]inventory.Access
 }
 
 type Result struct {
@@ -62,70 +70,50 @@ type Metadata struct {
 }
 
 type SourceSpec struct {
-	ControlPlaneEndpoint string                                   `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
-	PlatformAPIEndpoint  *platformendpoint.Config                 `yaml:"platformAPIEndpoint,omitempty" json:"platformAPIEndpoint,omitempty"`
-	Kubernetes           SourceKubernetesCluster                  `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	KatlosImage          manifest.KatlosImage                     `yaml:"katlosImage,omitempty" json:"katlosImage,omitempty"`
-	Defaults             SourceNodeLayer                          `yaml:"defaults,omitempty" json:"defaults,omitempty"`
-	NodeClasses          map[string]SourceNodeLayer               `yaml:"nodeClasses,omitempty" json:"nodeClasses,omitempty"`
-	SystemRoleDefaults   map[inventory.SystemRole]SourceNodeLayer `yaml:"systemRoleDefaults,omitempty" json:"systemRoleDefaults,omitempty"`
-	Nodes                []SourceNode                             `yaml:"nodes" json:"nodes"`
-	KubeadmConfigs       map[string]SourceKubeadmConfig           `yaml:"kubeadmConfigs,omitempty" json:"kubeadmConfigs,omitempty"`
+	ControlPlaneEndpoint string                  `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
+	Kubernetes           SourceKubernetesCluster `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Defaults             SourceNodeLayer         `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Nodes                []SourceNode            `yaml:"nodes" json:"nodes"`
 }
 
 type SourceNode struct {
-	Name       string               `yaml:"name" json:"name"`
-	SystemRole inventory.SystemRole `yaml:"systemRole" json:"systemRole"`
-	NodeClass  string               `yaml:"nodeClass,omitempty" json:"nodeClass,omitempty"`
-	Overrides  SourceNodeLayer      `yaml:"overrides,omitempty" json:"overrides,omitempty"`
+	Name       string                  `yaml:"name" json:"name"`
+	SystemRole inventory.SystemRole    `yaml:"systemRole" json:"systemRole"`
+	Identity   SourceIdentity          `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Networkd   manifest.NetworkdConfig `yaml:"networkd,omitempty" json:"networkd,omitempty"`
+	Install    SourceInstallLayer      `yaml:"install,omitempty" json:"install,omitempty"`
+	Kubernetes SourceKubernetesLayer   `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Bootstrap  SourceBootstrapLayer    `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
 }
 
 type SourceNodeLayer struct {
-	Identity   SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
-	Networkd   manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
-	Install    SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
-	Kubernetes SourceKubernetesLayer      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Bootstrap  clusterplan.BootstrapLayer `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
+	Identity   SourceIdentity          `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Networkd   manifest.NetworkdConfig `yaml:"networkd,omitempty" json:"networkd,omitempty"`
+	Install    SourceInstallLayer      `yaml:"install,omitempty" json:"install,omitempty"`
+	Kubernetes SourceKubernetesLayer   `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+}
+
+type SourceBootstrapLayer struct {
+	Address string `yaml:"address,omitempty" json:"address,omitempty"`
 }
 
 type SourceIdentity struct {
-	Hostname string               `yaml:"hostname,omitempty" json:"hostname,omitempty"`
-	SSH      manifest.SSHIdentity `yaml:"ssh,omitempty" json:"ssh,omitempty"`
+	SSH manifest.SSHIdentity `yaml:"ssh,omitempty" json:"ssh,omitempty"`
 }
 
 type SourceInstallLayer struct {
-	WipeTarget         *bool                  `yaml:"wipeTarget,omitempty" json:"wipeTarget,omitempty"`
 	TargetDisk         *manifest.DiskSelector `yaml:"targetDisk,omitempty" json:"targetDisk,omitempty"`
 	TargetDiskDefaults *manifest.DiskSelector `yaml:"targetDiskDefaults,omitempty" json:"targetDiskDefaults,omitempty"`
 	ExtraDisks         []manifest.ExtraDisk   `yaml:"extraDisks,omitempty" json:"extraDisks,omitempty"`
 }
 
 type SourceKubernetesCluster struct {
-	Version    string `yaml:"version,omitempty" json:"version,omitempty"`
-	Bundle     string `yaml:"bundle,omitempty" json:"bundle,omitempty"`
-	CatalogRef string `yaml:"catalogRef,omitempty" json:"catalogRef,omitempty"`
+	Version string `yaml:"version,omitempty" json:"version,omitempty"`
 }
 
 type SourceKubernetesLayer struct {
-	Version    string               `yaml:"version,omitempty" json:"version,omitempty"`
-	Bundle     string               `yaml:"bundle,omitempty" json:"bundle,omitempty"`
-	CatalogRef string               `yaml:"catalogRef,omitempty" json:"catalogRef,omitempty"`
-	Kubeadm    SourceKubeadmRef     `yaml:"kubeadm,omitempty" json:"kubeadm,omitempty"`
-	Labels     map[string]string    `yaml:"labels,omitempty" json:"labels,omitempty"`
-	NodeLabels map[string]string    `yaml:"nodeLabels,omitempty" json:"nodeLabels,omitempty"`
-	Taints     []manifest.NodeTaint `yaml:"taints,omitempty" json:"taints,omitempty"`
-	NodeTaints []manifest.NodeTaint `yaml:"nodeTaints,omitempty" json:"nodeTaints,omitempty"`
-}
-
-type SourceKubeadmRef struct {
-	ConfigRef string `yaml:"configRef,omitempty" json:"configRef,omitempty"`
-}
-
-type SourceKubeadmConfig struct {
-	Config            string `yaml:"config,omitempty" json:"config,omitempty"`
-	ConfigFile        string `yaml:"configFile,omitempty" json:"configFile,omitempty"`
-	PatchesDir        string `yaml:"patchesDir,omitempty" json:"patchesDir,omitempty"`
-	KubernetesVersion string `yaml:"kubernetesVersion,omitempty" json:"kubernetesVersion,omitempty"`
+	Labels map[string]string    `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Taints []manifest.NodeTaint `yaml:"taints,omitempty" json:"taints,omitempty"`
 }
 
 type BundleManifest struct {
@@ -160,10 +148,9 @@ type SourceRecord struct {
 }
 
 type ClusterRecord struct {
-	ResolvedPlan         Descriptor                `json:"resolvedPlan"`
-	BootstrapInventory   inventory.Inventory       `json:"bootstrapInventory"`
-	KubernetesPayloads   []KubernetesPayloadRecord `json:"kubernetesPayloads"`
-	PlatformEndpointPlan *platformendpoint.Plan    `json:"platformEndpointPlan,omitempty"`
+	ResolvedPlan       Descriptor                `json:"resolvedPlan"`
+	BootstrapInventory inventory.Inventory       `json:"bootstrapInventory"`
+	KubernetesPayloads []KubernetesPayloadRecord `json:"kubernetesPayloads"`
 }
 
 type KubernetesPayloadRecord struct {
@@ -182,7 +169,6 @@ type KubernetesPayloadRecord struct {
 type NodeRecord struct {
 	Name            string       `json:"name"`
 	SystemRole      string       `json:"systemRole"`
-	NodeClass       string       `json:"nodeClass,omitempty"`
 	Architecture    string       `json:"architecture,omitempty"`
 	NodeMaterial    Descriptor   `json:"nodeMaterial"`
 	InstallMaterial Descriptor   `json:"installMaterial"`
@@ -233,17 +219,20 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 		return nil, Result{}, err
 	}
 	source = defaultSource(source)
-	repoRoot := filepath.Dir(sourcePath)
 	normalized, err := marshalCanonical(source)
 	if err != nil {
 		return nil, Result{}, err
 	}
 	sourceDigest := digestBytes(normalized)
-	kubeadmConfigs, err := resolveKubeadmConfigs(repoRoot, source, selectedKubernetesVersion(source))
+	kubeadmConfigs, err := resolveKubeadmConfigs(selectedKubernetesVersion(source))
 	if err != nil {
 		return nil, Result{}, err
 	}
-	config, err := LowerSource(source)
+	planning := request.Planning
+	if strings.TrimSpace(planning.KubernetesBundle) == "" {
+		planning.KubernetesBundle = defaultKubernetesBundle(selectedKubernetesVersion(source))
+	}
+	config, err := LowerSource(source, planning)
 	if err != nil {
 		return nil, Result{}, err
 	}
@@ -284,6 +273,14 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 		return nil, Result{}, err
 	}
 	return archive, Result{Digest: manifestDigest, Manifest: manifest, ArchiveSize: int64(len(archive))}, nil
+}
+
+func defaultKubernetesBundle(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = DefaultKubernetesVersion
+	}
+	return "ghcr.io/katl-dev/kubernetes:" + version + "-katl.1"
 }
 
 func WriteArchive(path string, request BuildRequest) (Result, error) {
@@ -337,79 +334,51 @@ func DecodeSource(reader io.Reader) (SourceConfig, error) {
 	return config, nil
 }
 
-func LowerSource(source SourceConfig) (clusterplan.Config, error) {
+func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Config, error) {
 	source = defaultSource(source)
-	wipe := source.Spec.Defaults.Install.WipeTarget
-	if wipe == nil || !*wipe {
-		return clusterplan.Config{}, fmt.Errorf("spec.defaults.install.wipeTarget must be true")
-	}
-	selection, err := lowerKubernetesSelection(source)
+	selection, err := lowerKubernetesSelection(source, planning.KubernetesBundle)
 	if err != nil {
 		return clusterplan.Config{}, err
 	}
-	classes := make(map[string]clusterplan.NodeLayer, len(source.Spec.NodeClasses))
-	for name, layer := range source.Spec.NodeClasses {
-		if hasClusterKubernetesSelection(layer.Kubernetes) {
-			return clusterplan.Config{}, fmt.Errorf("spec.nodeClasses.%s.kubernetes must not set version, bundle, or catalogRef", name)
-		}
-		classes[name] = lowerNodeLayer(layer)
-	}
-	roleDefaults := make(map[inventory.SystemRole]clusterplan.NodeLayer, len(source.Spec.SystemRoleDefaults))
-	for role, layer := range source.Spec.SystemRoleDefaults {
-		if hasClusterKubernetesSelection(layer.Kubernetes) {
-			return clusterplan.Config{}, fmt.Errorf("spec.systemRoleDefaults.%s.kubernetes must not set version, bundle, or catalogRef", role)
-		}
-		roleDefaults[role] = lowerNodeLayer(layer)
-	}
 	nodes := make([]clusterplan.Node, 0, len(source.Spec.Nodes))
 	for _, node := range source.Spec.Nodes {
-		if hasClusterKubernetesSelection(node.Overrides.Kubernetes) {
-			return clusterplan.Config{}, fmt.Errorf("node %q overrides.kubernetes must not set version, bundle, or catalogRef", node.Name)
+		layer := lowerNodeLayer(sourceNodeLayer(node))
+		layer.Bootstrap.Address = strings.TrimSpace(node.Bootstrap.Address)
+		if access, ok := planning.BootstrapAccess[node.Name]; ok {
+			layer.Bootstrap.Access = access
 		}
+		layer.Kubernetes.KubeadmConfigRef = defaultKubeadmConfigRef(node.SystemRole)
 		nodes = append(nodes, clusterplan.Node{
 			Name:       node.Name,
 			SystemRole: node.SystemRole,
-			NodeClass:  node.NodeClass,
-			Overrides:  lowerNodeLayer(node.Overrides),
+			Overrides:  layer,
 		})
 	}
-	defaults := source.Spec.Defaults
-	defaults.Install.WipeTarget = nil
 	return clusterplan.Config{
 		APIVersion: clusterplan.APIVersion,
 		Kind:       clusterplan.Kind,
 		Metadata:   clusterplan.Metadata{Name: source.Metadata.Name},
 		Spec: clusterplan.Spec{
 			ControlPlaneEndpoint: source.Spec.ControlPlaneEndpoint,
-			PlatformAPIEndpoint:  source.Spec.PlatformAPIEndpoint,
 			Kubernetes:           selection,
-			KatlosImage:          source.Spec.KatlosImage,
+			KatlosImage:          planning.KatlosImage,
 			WipeTarget:           true,
-			Defaults:             lowerNodeLayer(defaults),
-			NodeClasses:          classes,
-			SystemRoleDefaults:   roleDefaults,
+			Defaults:             lowerNodeLayer(source.Spec.Defaults),
 			Nodes:                nodes,
 		},
 	}, nil
 }
 
-func lowerKubernetesSelection(source SourceConfig) (clusterplan.KubernetesSelection, error) {
-	selection := source.Spec.Kubernetes
-	if strings.TrimSpace(selection.Version) == "" && strings.TrimSpace(selection.Bundle) == "" && strings.TrimSpace(selection.CatalogRef) == "" {
-		selection = SourceKubernetesCluster{
-			Version:    source.Spec.Defaults.Kubernetes.Version,
-			Bundle:     source.Spec.Defaults.Kubernetes.Bundle,
-			CatalogRef: source.Spec.Defaults.Kubernetes.CatalogRef,
-		}
-	}
-	out := clusterplan.KubernetesSelection{PayloadVersion: strings.TrimSpace(selection.Version), CatalogRef: strings.TrimSpace(selection.CatalogRef)}
-	if bundle := strings.TrimSpace(selection.Bundle); bundle != "" {
+func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.KubernetesSelection, error) {
+	version := strings.TrimSpace(source.Spec.Kubernetes.Version)
+	out := clusterplan.KubernetesSelection{PayloadVersion: version}
+	if bundle = strings.TrimSpace(bundle); bundle != "" {
 		image, err := kubernetesbundle.ParseImageReference(bundle)
 		if err != nil {
-			return clusterplan.KubernetesSelection{}, fmt.Errorf("kubernetes.bundle: %w", err)
+			return clusterplan.KubernetesSelection{}, fmt.Errorf("operation Kubernetes bundle: %w", err)
 		}
-		if out.PayloadVersion != "" && out.PayloadVersion != image.PayloadVersion {
-			return clusterplan.KubernetesSelection{}, fmt.Errorf("kubernetes.version %q does not match bundle %q", out.PayloadVersion, bundle)
+		if version != "" && version != image.PayloadVersion {
+			return clusterplan.KubernetesSelection{}, fmt.Errorf("spec.kubernetes.version %q is not available from the selected Kubernetes bundle %q", version, bundle)
 		}
 		out.PayloadVersion = ""
 		out.BundleSource = image.Source
@@ -419,17 +388,7 @@ func lowerKubernetesSelection(source SourceConfig) (clusterplan.KubernetesSelect
 }
 
 func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
-	labels := copyLabels(layer.Kubernetes.Labels)
-	for key, value := range layer.Kubernetes.NodeLabels {
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		labels[key] = value
-	}
-	taints := append([]manifest.NodeTaint(nil), layer.Kubernetes.Taints...)
-	taints = append(taints, layer.Kubernetes.NodeTaints...)
 	return clusterplan.NodeLayer{
-		Hostname: layer.Identity.Hostname,
 		SSH:      layer.Identity.SSH,
 		Networkd: layer.Networkd,
 		Install: clusterplan.InstallLayer{
@@ -438,39 +397,43 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 			ExtraDisks:         append([]manifest.ExtraDisk(nil), layer.Install.ExtraDisks...),
 		},
 		Kubernetes: clusterplan.KubernetesLayer{
-			KubeadmConfigRef: strings.TrimSpace(layer.Kubernetes.Kubeadm.ConfigRef),
-			NodeLabels:       labels,
-			NodeTaints:       taints,
+			NodeLabels: copyLabels(layer.Kubernetes.Labels),
+			NodeTaints: append([]manifest.NodeTaint(nil), layer.Kubernetes.Taints...),
 		},
-		Bootstrap: layer.Bootstrap,
 	}
 }
 
-func hasClusterKubernetesSelection(kubernetes SourceKubernetesLayer) bool {
-	return strings.TrimSpace(kubernetes.Version) != "" ||
-		strings.TrimSpace(kubernetes.Bundle) != "" ||
-		strings.TrimSpace(kubernetes.CatalogRef) != ""
+func sourceNodeLayer(node SourceNode) SourceNodeLayer {
+	return SourceNodeLayer{
+		Identity:   node.Identity,
+		Networkd:   node.Networkd,
+		Install:    node.Install,
+		Kubernetes: node.Kubernetes,
+	}
+}
+
+func defaultKubeadmConfigRef(role inventory.SystemRole) string {
+	switch role {
+	case inventory.RoleControlPlane:
+		return "control-plane"
+	case inventory.RoleWorker:
+		return "worker"
+	default:
+		return ""
+	}
 }
 
 func selectedKubernetesVersion(source SourceConfig) string {
-	if value := strings.TrimSpace(source.Spec.Kubernetes.Version); value != "" {
-		return value
-	}
-	if bundle := strings.TrimSpace(source.Spec.Kubernetes.Bundle); bundle != "" {
-		if image, err := kubernetesbundle.ParseImageReference(bundle); err == nil {
-			return image.PayloadVersion
-		}
-	}
-	return strings.TrimSpace(source.Spec.Defaults.Kubernetes.Version)
+	return strings.TrimSpace(source.Spec.Kubernetes.Version)
 }
 
 func defaultSource(source SourceConfig) SourceConfig {
 	spec := source.Spec
 	spec.Nodes = append([]SourceNode(nil), spec.Nodes...)
-	if strings.TrimSpace(spec.ControlPlaneEndpoint) == "" && spec.PlatformAPIEndpoint == nil {
+	if strings.TrimSpace(spec.ControlPlaneEndpoint) == "" {
 		for _, node := range spec.Nodes {
 			if node.SystemRole == inventory.RoleControlPlane {
-				if address := strings.TrimSpace(node.Overrides.Bootstrap.Address); address != "" {
+				if address := strings.TrimSpace(node.Bootstrap.Address); address != "" {
 					spec.ControlPlaneEndpoint = net.JoinHostPort(address, "6443")
 					break
 				}
@@ -478,55 +441,11 @@ func defaultSource(source SourceConfig) SourceConfig {
 		}
 	}
 	version := strings.TrimSpace(spec.Kubernetes.Version)
-	bundle := strings.TrimSpace(spec.Kubernetes.Bundle)
-	catalog := strings.TrimSpace(spec.Kubernetes.CatalogRef)
-	if version == "" && bundle == "" && catalog == "" {
+	if version == "" {
 		spec.Kubernetes.Version = DefaultKubernetesVersion
-		spec.Kubernetes.Bundle = DefaultKubernetesBundle
-	} else if version == DefaultKubernetesVersion && bundle == "" && catalog == "" {
-		spec.Kubernetes.Bundle = DefaultKubernetesBundle
-	}
-	if spec.Defaults.Install.WipeTarget == nil {
-		wipe := true
-		spec.Defaults.Install.WipeTarget = &wipe
-	}
-	spec.SystemRoleDefaults = cloneRoleDefaults(spec.SystemRoleDefaults)
-	cp := spec.SystemRoleDefaults[inventory.RoleControlPlane]
-	if strings.TrimSpace(cp.Kubernetes.Kubeadm.ConfigRef) == "" {
-		cp.Kubernetes.Kubeadm.ConfigRef = "control-plane"
-		spec.SystemRoleDefaults[inventory.RoleControlPlane] = cp
-	}
-	worker := spec.SystemRoleDefaults[inventory.RoleWorker]
-	if strings.TrimSpace(worker.Kubernetes.Kubeadm.ConfigRef) == "" {
-		worker.Kubernetes.Kubeadm.ConfigRef = "worker"
-		spec.SystemRoleDefaults[inventory.RoleWorker] = worker
-	}
-	spec.KubeadmConfigs = cloneKubeadmConfigs(spec.KubeadmConfigs)
-	version = selectedKubernetesVersion(SourceConfig{Spec: spec})
-	if _, ok := spec.KubeadmConfigs["control-plane"]; !ok {
-		spec.KubeadmConfigs["control-plane"] = SourceKubeadmConfig{Config: defaultKubeadmInitConfig(version)}
-	}
-	if _, ok := spec.KubeadmConfigs["worker"]; !ok {
-		spec.KubeadmConfigs["worker"] = SourceKubeadmConfig{Config: defaultKubeadmJoinConfig()}
 	}
 	source.Spec = spec
 	return source
-}
-
-func cloneRoleDefaults(source map[inventory.SystemRole]SourceNodeLayer) map[inventory.SystemRole]SourceNodeLayer {
-	cloned := make(map[inventory.SystemRole]SourceNodeLayer, len(source)+2)
-	for role, layer := range source {
-		cloned[role] = layer
-	}
-	return cloned
-}
-
-func cloneKubeadmConfigs(source map[string]SourceKubeadmConfig) map[string]SourceKubeadmConfig {
-	cloned := make(map[string]SourceKubeadmConfig, len(source)+2)
-	for name, config := range source {
-		cloned[name] = config
-	}
-	return cloned
 }
 
 func defaultKubeadmInitConfig(version string) string {
@@ -541,43 +460,20 @@ func defaultKubeadmJoinConfig() string {
 	return "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n"
 }
 
-func resolveKubeadmConfigs(repoRoot string, source SourceConfig, kubernetesVersion string) (map[string]kubeadmconfig.Plan, error) {
-	configs := make(map[string]kubeadmconfig.Plan, len(source.Spec.KubeadmConfigs))
-	names := make([]string, 0, len(source.Spec.KubeadmConfigs))
-	for name := range source.Spec.KubeadmConfigs {
-		names = append(names, name)
+func resolveKubeadmConfigs(kubernetesVersion string) (map[string]kubeadmconfig.Plan, error) {
+	inputs := map[string]string{
+		"control-plane": defaultKubeadmInitConfig(kubernetesVersion),
+		"worker":        defaultKubeadmJoinConfig(),
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		input := source.Spec.KubeadmConfigs[name]
-		if strings.TrimSpace(input.Config) != "" {
-			if strings.TrimSpace(input.ConfigFile) != "" || strings.TrimSpace(input.PatchesDir) != "" {
-				return nil, fmt.Errorf("spec.kubeadmConfigs.%s must not combine inline config with configFile or patchesDir", name)
-			}
-			plan, err := kubeadmconfig.PlanFromRenderedFiles(name, []kubeadmconfig.File{{
-				RenderPath: "/etc/katl/kubeadm/" + name + "/config.yaml",
-				Content:    []byte(input.Config),
-				Mode:       0o644,
-			}})
-			if err != nil {
-				return nil, fmt.Errorf("spec.kubeadmConfigs.%s: %w", name, err)
-			}
-			configs[name] = plan
-			continue
-		}
-		object := kubeadmconfig.Object{
-			APIVersion: kubeadmconfig.APIVersion,
-			Kind:       kubeadmconfig.Kind,
-			Metadata:   kubeadmconfig.Metadata{Name: name},
-			Spec: kubeadmconfig.Spec{
-				ConfigFile:        input.ConfigFile,
-				PatchesDir:        input.PatchesDir,
-				KubernetesVersion: input.KubernetesVersion,
-			},
-		}
-		plan, err := kubeadmconfig.Resolve(kubeadmconfig.ResolveRequest{RepoRoot: repoRoot, Object: object, KubernetesVersion: kubernetesVersion})
+	configs := make(map[string]kubeadmconfig.Plan, len(inputs))
+	for _, name := range []string{"control-plane", "worker"} {
+		plan, err := kubeadmconfig.PlanFromRenderedFiles(name, []kubeadmconfig.File{{
+			RenderPath: "/etc/katl/kubeadm/" + name + "/config.yaml",
+			Content:    []byte(inputs[name]),
+			Mode:       0o644,
+		}})
 		if err != nil {
-			return nil, fmt.Errorf("spec.kubeadmConfigs.%s: %w", name, err)
+			return nil, fmt.Errorf("select internal kubeadm profile %s: %w", name, err)
 		}
 		configs[name] = plan
 	}
@@ -618,7 +514,6 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 	if err != nil {
 		return nil, BundleManifest{}, err
 	}
-	nodeClasses := nodeClassByName(source)
 	nodeRecords := make([]NodeRecord, 0, len(plan.Nodes))
 	for _, node := range plan.Nodes {
 		materialDesc, err := add("node-material", node.Name, "application/vnd.katl.node-material.v1+json", "nodes/"+node.Name+"/material.json", node, nil)
@@ -661,7 +556,6 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 		nodeRecords = append(nodeRecords, NodeRecord{
 			Name:            node.Name,
 			SystemRole:      string(node.SystemRole),
-			NodeClass:       nodeClasses[node.Name],
 			Architecture:    plan.KatlosImage.Architecture,
 			NodeMaterial:    materialDesc,
 			InstallMaterial: installDesc,
@@ -690,10 +584,9 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 			SourceDigest:     sourceDigest,
 		},
 		Cluster: ClusterRecord{
-			ResolvedPlan:         planDesc,
-			BootstrapInventory:   plan.BootstrapInventory,
-			KubernetesPayloads:   payloads,
-			PlatformEndpointPlan: plan.PlatformAPIEndpoint,
+			ResolvedPlan:       planDesc,
+			BootstrapInventory: plan.BootstrapInventory,
+			KubernetesPayloads: payloads,
 		},
 		Nodes:       nodeRecords,
 		Descriptors: descriptors,
@@ -891,16 +784,6 @@ func nonEmptyStrings(values ...string) []string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
 			out = append(out, strings.TrimSpace(value))
-		}
-	}
-	return out
-}
-
-func nodeClassByName(source SourceConfig) map[string]string {
-	out := make(map[string]string, len(source.Spec.Nodes))
-	for _, node := range source.Spec.Nodes {
-		if strings.TrimSpace(node.NodeClass) != "" {
-			out[node.Name] = strings.TrimSpace(node.NodeClass)
 		}
 	}
 	return out

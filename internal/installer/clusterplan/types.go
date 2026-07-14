@@ -6,7 +6,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/installer/platformendpoint"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
 
@@ -27,15 +26,12 @@ type Metadata struct {
 }
 
 type Spec struct {
-	ControlPlaneEndpoint string                             `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
-	PlatformAPIEndpoint  *platformendpoint.Config           `yaml:"platformAPIEndpoint,omitempty" json:"platformAPIEndpoint,omitempty"`
-	Kubernetes           KubernetesSelection                `yaml:"kubernetes" json:"kubernetes"`
-	KatlosImage          manifest.KatlosImage               `yaml:"katlosImage" json:"katlosImage"`
-	WipeTarget           bool                               `yaml:"wipeTarget" json:"wipeTarget"`
-	Defaults             NodeLayer                          `yaml:"defaults,omitempty" json:"defaults,omitempty"`
-	NodeClasses          map[string]NodeLayer               `yaml:"nodeClasses,omitempty" json:"nodeClasses,omitempty"`
-	SystemRoleDefaults   map[inventory.SystemRole]NodeLayer `yaml:"systemRoleDefaults,omitempty" json:"systemRoleDefaults,omitempty"`
-	Nodes                []Node                             `yaml:"nodes" json:"nodes"`
+	ControlPlaneEndpoint string               `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
+	Kubernetes           KubernetesSelection  `yaml:"kubernetes" json:"kubernetes"`
+	KatlosImage          manifest.KatlosImage `yaml:"katlosImage" json:"katlosImage"`
+	WipeTarget           bool                 `yaml:"wipeTarget" json:"wipeTarget"`
+	Defaults             NodeLayer            `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Nodes                []Node               `yaml:"nodes" json:"nodes"`
 }
 
 type KubernetesSelection struct {
@@ -48,7 +44,6 @@ type KubernetesSelection struct {
 type Node struct {
 	Name       string               `yaml:"name" json:"name"`
 	SystemRole inventory.SystemRole `yaml:"systemRole" json:"systemRole"`
-	NodeClass  string               `yaml:"nodeClass,omitempty" json:"nodeClass,omitempty"`
 	Overrides  NodeLayer            `yaml:"overrides,omitempty" json:"overrides,omitempty"`
 }
 
@@ -89,7 +84,6 @@ type CompileRequest struct {
 
 type Plan struct {
 	ControlPlaneEndpoint   string                      `json:"controlPlaneEndpoint,omitempty"`
-	PlatformAPIEndpoint    *platformendpoint.Plan      `json:"platformAPIEndpoint,omitempty"`
 	KubernetesVersion      string                      `json:"kubernetesVersion,omitempty"`
 	KubernetesCatalogRef   string                      `json:"kubernetesCatalogRef,omitempty"`
 	KubernetesBundleSource string                      `json:"kubernetesBundleSource,omitempty"`

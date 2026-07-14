@@ -96,7 +96,7 @@ available for PXE.
 ### 2. Describe the cluster once
 
 Create one `config.katl.dev/v1alpha1` `ClusterConfig` containing shared
-defaults and per-node overrides. `katlctl config init` supplies a working DHCP
+defaults and flat per-node intent. `katlctl config init` supplies a working DHCP
 and kubeadm-ready starting point; repeat `--node` for the intended topology:
 
 ```sh
@@ -182,8 +182,8 @@ The command validates and compiles the source locally, confirms the installer
 is waiting, submits the selected configuration once, and waits for reboot-ready
 or a classified failure.
 
-Installation is destructive only when both the resolved node sets
-`install.wipeTarget: true` and boot input authorizes automatic installation.
+Installation is destructive only when the install operation authorizes disk
+mutation; Katl carries the compiled wipe guard internally.
 Use `/dev/disk/by-id`, WWN, or serial selectors; do not rely on `/dev/sda`-style
 names. Inspect the resolved disk for every node before granting wipe consent.
 

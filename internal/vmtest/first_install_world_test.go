@@ -13,6 +13,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	installmanifest "github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -563,8 +564,8 @@ func TestPlanFirstInstallWorldRunSelectsNodesFromSharedConfigBundle(t *testing.T
 	assertFileContains(t, workerRun.Config.ManifestPath, `"hostname": "worker-shared-1"`)
 	assertFileContains(t, workerRun.Config.ManifestPath, `"systemRole": "worker"`)
 	assertFileContains(t, workerRun.Config.ManifestPath, `"byID": "/dev/disk/by-id/virtio-katl-worker-root"`)
-	assertFileContains(t, filepath.Join(filepath.Dir(cpRun.Config.ManifestPath), installer.KubeadmConfigFilesDir, "control-plane.yaml"), "name: cp-shared-1")
-	assertFileContains(t, filepath.Join(filepath.Dir(workerRun.Config.ManifestPath), installer.KubeadmConfigFilesDir, "worker.yaml"), "name: worker-shared-1")
+	assertFileContains(t, filepath.Join(filepath.Dir(cpRun.Config.ManifestPath), installer.KubeadmConfigFilesDir, "control-plane.yaml"), "kind: InitConfiguration")
+	assertFileContains(t, filepath.Join(filepath.Dir(workerRun.Config.ManifestPath), installer.KubeadmConfigFilesDir, "worker.yaml"), "kind: JoinConfiguration")
 }
 
 func writeFixtureKatlOSInstallImage(t *testing.T, repo string) string {
@@ -600,19 +601,7 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 			"kubernetes": map[string]any{
 				"version": "v1.36.1",
 			},
-			"katlosImage": map[string]any{
-				"localRef":         filepath.Base(image),
-				"sha256":           strings.Repeat("a", 64),
-				"sizeBytes":        11,
-				"version":          "2026.06.04",
-				"architecture":     "x86_64",
-				"runtimeInterface": "katl-runtime-1",
-				"role":             "install",
-			},
 			"defaults": map[string]any{
-				"install": map[string]any{
-					"wipeTarget": true,
-				},
 				"identity": map[string]any{
 					"ssh": map[string]any{
 						"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
@@ -624,28 +613,6 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 						"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
 					}},
 				},
-				"bootstrap": map[string]any{
-					"access": map[string]any{
-						"method":        "agent",
-						"credentialRef": "vsock:1234:10240",
-					},
-				},
-			},
-			"systemRoleDefaults": map[string]any{
-				string(ControlPlane): map[string]any{
-					"kubernetes": map[string]any{
-						"kubeadm": map[string]any{"configRef": "control-plane"},
-					},
-				},
-				string(Worker): map[string]any{
-					"kubernetes": map[string]any{
-						"kubeadm": map[string]any{"configRef": "worker"},
-					},
-				},
-			},
-			"kubeadmConfigs": map[string]any{
-				"control-plane": map[string]any{"config": controlPlaneKubeadmConfig("cp-shared-1", "v1.36.1")},
-				"worker":        map[string]any{"config": workerKubeadmConfig("worker-shared-1")},
 			},
 			"nodes": []map[string]any{
 				firstInstallWorldSourceNode("cp-shared-1", ControlPlane, "/dev/disk/by-id/virtio-katl-control-plane-root"),
@@ -659,7 +626,16 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 	}
 	sourcePath := writeFixtureFile(t, filepath.Join(dir, "cluster.yaml"), string(sourceData))
 	bundlePath := filepath.Join(dir, "config.katlcfg")
-	if _, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{SourcePath: sourcePath, CreatedBy: "vmtest shared bundle"}); err != nil {
+	planning := configbundle.PlanningInputs{KatlosImage: installmanifest.KatlosImage{
+		LocalRef:         filepath.Base(image),
+		SHA256:           strings.Repeat("a", 64),
+		SizeBytes:        11,
+		Version:          "2026.06.04",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Role:             "install",
+	}}
+	if _, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{SourcePath: sourcePath, CreatedBy: "vmtest shared bundle", Planning: planning}); err != nil {
 		t.Fatalf("WriteArchive() error = %v", err)
 	}
 	return bundlePath

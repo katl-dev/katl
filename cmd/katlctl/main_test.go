@@ -200,6 +200,36 @@ func TestConfigBundleCommandWritesBundle(t *testing.T) {
 	}
 }
 
+func TestConfigBundleCommandBindsPXEImageAsOperationInput(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	metadataPath := filepath.Join(dir, "katlos-install.squashfs.json")
+	outputPath := filepath.Join(dir, "homelab.katlcfg")
+	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	metadata := `{"apiVersion":"katl.dev/v1alpha1","kind":"KatlOSImageArtifact","imageRole":"install","format":"squashfs","version":"2026.7.0-test","architecture":"x86_64","runtimeInterface":"katl-runtime-1","sizeBytes":1234,"sha256":"` + strings.Repeat("a", 64) + `"}`
+	if err := os.WriteFile(metadataPath, []byte(metadata), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	imageURL := "https://boot.example.test/katlos-install.squashfs"
+	if err := run(context.Background(), []string{
+		"config", "bundle", sourcePath,
+		"--output", outputPath,
+		"--katlos-image-url", imageURL,
+		"--katlos-image-metadata", metadataPath,
+	}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	selected, err := configbundle.ReadSelectedNodeFile(outputPath, configbundle.ReadOptions{NodeName: "cp-1"})
+	if err != nil {
+		t.Fatalf("ReadSelectedNodeFile() error = %v", err)
+	}
+	if selected.InstallManifest.KatlosImage.URL != imageURL || selected.InstallManifest.KatlosImage.Version != "2026.7.0-test" {
+		t.Fatalf("PXE image = %#v", selected.InstallManifest.KatlosImage)
+	}
+}
+
 func TestConfigRenderNodeFromSource(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
 	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
@@ -226,21 +256,15 @@ func TestConfigRenderNodeFromSource(t *testing.T) {
 	if overlay.Identity == nil || overlay.Identity.Hostname != "cp-1" || len(overlay.Identity.AuthorizedKeys) != 1 {
 		t.Fatalf("rendered node overlay = %#v", overlay)
 	}
-	if overlay.SystemRole != "" || overlay.Kubernetes != nil {
-		t.Fatalf("rendered node overlay contains lifecycle state = %#v", overlay)
+	if overlay.SystemRole != "control-plane" || overlay.Kubernetes == nil || overlay.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
+		t.Fatalf("rendered node overlay operation state = %#v", overlay)
 	}
 }
 
 func TestConfigRenderNodeFromMediaBundle(t *testing.T) {
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "cluster.yaml")
-	source := configBundleSource()
-	imageStart := strings.Index(source, "  katlosImage:\n")
-	defaultsStart := strings.Index(source, "  defaults:\n")
-	if imageStart < 0 || defaultsStart <= imageStart {
-		t.Fatal("source image block not found")
-	}
-	if err := os.WriteFile(sourcePath, []byte(source[:imageStart]+source[defaultsStart:]), 0o644); err != nil {
+	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	archive, _, err := configbundle.BuildArchive(configbundle.BuildRequest{SourcePath: sourcePath})
@@ -321,13 +345,13 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 
 func TestConfigValidateReportsNestedFieldPath(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
-	source := strings.Replace(configBundleSource(), "targetDisk:\n            byID:", "targetDisk:\n            unsupportedSelector: true\n            byID:", 1)
+	source := strings.Replace(configBundleSource(), "targetDisk:\n          byID:", "targetDisk:\n          unsupportedSelector: true\n          byID:", 1)
 	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "spec.nodes[0].overrides.install.targetDisk.unsupportedSelector: field is not supported") {
+	if err == nil || !strings.Contains(err.Error(), "spec.nodes[0].install.targetDisk.unsupportedSelector: field is not supported") {
 		t.Fatalf("run() error = %v, want nested field path", err)
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
@@ -739,7 +763,7 @@ func TestClusterBootstrapUsesConfigBundleInventory(t *testing.T) {
 	if got.Inventory.ControlPlaneEndpoint != "api.katl.test:6443" || got.Inventory.KubernetesVersion != "v1.36.1" || len(got.Inventory.Nodes) != 1 {
 		t.Fatalf("bundle inventory = %#v", got.Inventory)
 	}
-	if got.Inventory.KubernetesBundleRef == "" || got.Inventory.Nodes[0].Access.CredentialRef != "vsock:1234:10240" {
+	if got.Inventory.KubernetesBundleRef == "" || got.Inventory.Nodes[0].Access.CredentialRef != "agent/cp-1" {
 		t.Fatalf("bundle selection = %#v", got.Inventory)
 	}
 }
@@ -2292,53 +2316,22 @@ spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
     version: v1.36.1
-    bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:` + strings.Repeat("b", 64) + `
-  katlosImage:
-    url: https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs
-    sha256: ` + strings.Repeat("a", 64) + `
-    sizeBytes: 1073741824
-    version: 2026.06.04
-    architecture: x86_64
-    runtimeInterface: katl-runtime-1
-    role: install
   defaults:
     install:
-      wipeTarget: true
       targetDiskDefaults:
         minSizeMiB: 32768
     identity:
       ssh:
         authorizedKeys:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
-    bootstrap:
-      access:
-        method: agent
-        credentialRef: vsock:1234:10240
-  systemRoleDefaults:
-    control-plane:
-      kubernetes:
-        kubeadm:
-          configRef: control-plane
-  kubeadmConfigs:
-    control-plane:
-      config: |
-        apiVersion: kubeadm.k8s.io/v1beta4
-        kind: InitConfiguration
-        nodeRegistration:
-          criSocket: unix:///run/containerd/containerd.sock
-        ---
-        apiVersion: kubeadm.k8s.io/v1beta4
-        kind: ClusterConfiguration
-        kubernetesVersion: v1.36.1
   nodes:
     - name: cp-1
       systemRole: control-plane
-      overrides:
-        bootstrap:
-          address: 10.0.0.11
-        install:
-          targetDisk:
-            byID: /dev/disk/by-id/ata-cp-root
+      bootstrap:
+        address: 10.0.0.11
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/ata-cp-root
 `
 }
 

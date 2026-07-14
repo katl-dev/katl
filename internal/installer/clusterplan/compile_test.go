@@ -9,11 +9,8 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
-	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/installer/platformendpoint"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
 
@@ -99,37 +96,6 @@ func TestCompileMakesWorkstationCredentialRefPortable(t *testing.T) {
 	}
 }
 
-func TestCompileNodeClassGoldenScenarios(t *testing.T) {
-	tests := []struct {
-		name   string
-		config Config
-		golden string
-	}{
-		{
-			name:   "all same hardware defaults",
-			config: allSameHardwareConfig(),
-			golden: "all-same-hardware.golden.json",
-		},
-		{
-			name:   "mixed node classes",
-			config: mixedNodeClassesConfig(),
-			golden: "mixed-node-classes.golden.json",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			plan, err := Compile(CompileRequest{
-				Config:         tt.config,
-				KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
-			})
-			if err != nil {
-				t.Fatalf("Compile() error = %v", err)
-			}
-			assertNodeClassGolden(t, plan, filepath.Join("testdata", tt.golden))
-		})
-	}
-}
-
 func TestCompileAllowsMissingAddressAndAppliesOverride(t *testing.T) {
 	config := validConfig()
 	config.Spec.Nodes[1].Overrides.Bootstrap.Address = ""
@@ -163,71 +129,6 @@ func TestCompileAllowsMissingAddressAndAppliesOverride(t *testing.T) {
 	}
 	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Node != "worker-1" || plan.AddressOverrides[0].Address != "10.0.0.99" {
 		t.Fatalf("address overrides = %#v", plan.AddressOverrides)
-	}
-}
-
-func TestCompileMergesNodeClassLayer(t *testing.T) {
-	config := validConfig()
-	targetCP := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-cp-root"}
-	config.Spec.Nodes[0].Overrides.Install.TargetDisk = &targetCP
-	config.Spec.Nodes[0].NodeClass = "ms01"
-	config.Spec.NodeClasses = map[string]NodeLayer{
-		"ms01": {
-			Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "15-ms01.network",
-				Content: "[Match]\nName=enp3s0\n",
-			}}},
-			Install: InstallLayer{
-				TargetDiskDefaults: &manifest.DiskSelector{MinSizeMiB: 65536},
-			},
-			Kubernetes: KubernetesLayer{
-				NodeLabels: map[string]string{"katl.dev/hardware-class": "ms01"},
-			},
-			Bootstrap: BootstrapLayer{
-				Access: inventory.Access{User: "class-user"},
-			},
-		},
-	}
-	controlPlaneDefaults := config.Spec.SystemRoleDefaults[inventory.RoleControlPlane]
-	controlPlaneDefaults.Bootstrap.Access.User = "role-user"
-	config.Spec.SystemRoleDefaults[inventory.RoleControlPlane] = controlPlaneDefaults
-
-	plan, err := Compile(CompileRequest{
-		Config:         config,
-		KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
-	})
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
-	}
-
-	cp := plan.Nodes[0]
-	targetDisk := cp.InstallManifest.Install.TargetDisk
-	if targetDisk.ByID != "/dev/disk/by-id/ata-cp-root" || targetDisk.MinSizeMiB != 65536 {
-		t.Fatalf("control-plane target disk = %#v", targetDisk)
-	}
-	if cp.NodeLabels["katl.dev/hardware-class"] != "ms01" || cp.InstallManifest.Node.Bootstrap.Labels["katl.dev/hardware-class"] != "ms01" {
-		t.Fatalf("node class labels = material %#v manifest %#v", cp.NodeLabels, cp.InstallManifest.Node.Bootstrap.Labels)
-	}
-	if cp.InstallManifest.Node.Bootstrap.Access.User != "role-user" {
-		t.Fatalf("bootstrap access user = %q", cp.InstallManifest.Node.Bootstrap.Access.User)
-	}
-	foundClassNetworkd := false
-	for _, file := range cp.InstallManifest.Node.Networkd.Files {
-		if file.Name == "15-ms01.network" {
-			foundClassNetworkd = true
-			break
-		}
-	}
-	if !foundClassNetworkd {
-		t.Fatalf("control-plane networkd files = %#v", cp.InstallManifest.Node.Networkd.Files)
-	}
-
-	worker := plan.Nodes[1]
-	if worker.InstallManifest.Install.TargetDisk.MinSizeMiB != 32768 {
-		t.Fatalf("worker target disk = %#v", worker.InstallManifest.Install.TargetDisk)
-	}
-	if _, ok := worker.NodeLabels["katl.dev/hardware-class"]; ok {
-		t.Fatalf("worker labels unexpectedly include node class label: %#v", worker.NodeLabels)
 	}
 }
 
@@ -286,68 +187,6 @@ func TestCompileSelectsKubernetesBundleRef(t *testing.T) {
 	}
 }
 
-func TestCompileComposesHostAdvertisedBGPAPIEndpoint(t *testing.T) {
-	config := validConfig()
-	config.Spec.ControlPlaneEndpoint = ""
-	config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
-		Mode:           platformendpoint.ModeHostAdvertisedBGP,
-		BGPAPIEndpoint: ptrBGPConfig(clusterBGPConfig()),
-	}
-	plan, err := Compile(CompileRequest{
-		Config:         config,
-		KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
-	})
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
-	}
-	if plan.ControlPlaneEndpoint != "api.home.example:6443" {
-		t.Fatalf("control plane endpoint = %q", plan.ControlPlaneEndpoint)
-	}
-	if plan.PlatformAPIEndpoint == nil || plan.PlatformAPIEndpoint.HelperStatus == nil || plan.PlatformAPIEndpoint.HelperStatus.AppID != bgpapivip.AppID {
-		t.Fatalf("platform endpoint plan = %#v", plan.PlatformAPIEndpoint)
-	}
-	if plan.BootstrapInventory.ControlPlaneEndpoint != "api.home.example:6443" {
-		t.Fatalf("bootstrap inventory endpoint = %q", plan.BootstrapInventory.ControlPlaneEndpoint)
-	}
-	if plan.BootstrapInventory.Bootstrap == nil || plan.BootstrapInventory.Bootstrap.StableEndpoint != "api.home.example:6443" || !plan.BootstrapInventory.Bootstrap.StableEndpointBeforeManifests {
-		t.Fatalf("bootstrap stable endpoint = %#v", plan.BootstrapInventory.Bootstrap)
-	}
-	if got := plan.Nodes[0].InstallManifest.Node.Bootstrap.ControlPlaneEndpoint; got != "api.home.example:6443" {
-		t.Fatalf("control-plane install manifest endpoint = %q", got)
-	}
-	if got := plan.Nodes[1].InstallManifest.Node.Bootstrap.ControlPlaneEndpoint; got != "api.home.example:6443" {
-		t.Fatalf("worker install manifest endpoint = %q", got)
-	}
-	assertNodeNativeFile(t, plan.Nodes[0], bgpapivip.ConfigPath, "kind: BGPAPIEndpoint\n")
-	assertNodeNativeFile(t, plan.Nodes[0], bgpapivip.BirdConfigPath, "neighbor 10.0.0.1 as 64500;\n")
-	assertNodeNoNativeFile(t, plan.Nodes[1], bgpapivip.ConfigPath)
-}
-
-func TestCompileComposesExternalPlatformAPIEndpoint(t *testing.T) {
-	config := validConfig()
-	config.Spec.ControlPlaneEndpoint = ""
-	config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
-		Mode:     platformendpoint.ModeExternal,
-		Endpoint: platformendpoint.Endpoint{Host: "api.external.test", Port: 7443},
-	}
-	plan, err := Compile(CompileRequest{
-		Config:         config,
-		KubeadmConfigs: validKubeadmConfigs("v1.36.1"),
-	})
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
-	}
-	if plan.ControlPlaneEndpoint != "api.external.test:7443" {
-		t.Fatalf("control plane endpoint = %q", plan.ControlPlaneEndpoint)
-	}
-	if plan.PlatformAPIEndpoint == nil || plan.PlatformAPIEndpoint.HelperStatus != nil || len(plan.PlatformAPIEndpoint.NativeEtcFiles) != 0 {
-		t.Fatalf("platform endpoint plan = %#v", plan.PlatformAPIEndpoint)
-	}
-	if plan.BootstrapInventory.Bootstrap == nil || plan.BootstrapInventory.Bootstrap.StableEndpoint != "api.external.test:7443" {
-		t.Fatalf("bootstrap stable endpoint = %#v", plan.BootstrapInventory.Bootstrap)
-	}
-}
-
 func TestDecodeRejectsUnknownFields(t *testing.T) {
 	_, err := Decode(strings.NewReader(`apiVersion: cluster.katl.dev/v1alpha1
 kind: ClusterPlan
@@ -387,17 +226,12 @@ spec:
       access:
         method: agent
         credentialRef: vsock:1234:10240
-  systemRoleDefaults:
-    control-plane:
-      kubernetes:
-        kubeadmConfigRef: control-plane
-    worker:
-      kubernetes:
-        kubeadmConfigRef: worker
   nodes:
     - name: cp-1
       systemRole: control-plane
       overrides:
+        kubernetes:
+          kubeadmConfigRef: control-plane
         install:
           targetDisk:
             byID: /dev/disk/by-id/ata-cp-root
@@ -407,6 +241,8 @@ spec:
     - name: worker-1
       systemRole: worker
       overrides:
+        kubernetes:
+          kubeadmConfigRef: worker
         install:
           targetDisk:
             byID: /dev/disk/by-id/ata-worker-root
@@ -460,42 +296,6 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "control-plane endpoint is required",
 		},
 		{
-			name: "conflicting platform endpoint",
-			mut: func(config *Config) {
-				config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
-					Mode:     platformendpoint.ModeExternal,
-					Endpoint: platformendpoint.Endpoint{Host: "other.katl.test"},
-				}
-			},
-			want: "does not match selected platformAPIEndpoint",
-		},
-		{
-			name: "cilium platform endpoint",
-			mut: func(config *Config) {
-				config.Spec.ControlPlaneEndpoint = ""
-				config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
-					Mode:     platformendpoint.ModeCilium,
-					Endpoint: platformendpoint.Endpoint{Host: "api.katl.test"},
-				}
-			},
-			want: "post-Cilium",
-		},
-		{
-			name: "platform endpoint generated file collision",
-			mut: func(config *Config) {
-				config.Spec.ControlPlaneEndpoint = ""
-				config.Spec.PlatformAPIEndpoint = &platformendpoint.Config{
-					Mode:           platformendpoint.ModeHostAdvertisedBGP,
-					BGPAPIEndpoint: ptrBGPConfig(clusterBGPConfig()),
-				}
-				config.Spec.Nodes[0].Overrides.Networkd.Files = append(config.Spec.Nodes[0].Overrides.Networkd.Files, manifest.NetworkdFile{
-					Name:    "20-katl-bgp-api-vip.network",
-					Content: "[Match]\nName=enp2s0\n",
-				})
-			},
-			want: "native /etc files",
-		},
-		{
 			name: "unknown address override",
 			mut: func(config *Config) {
 				config.Spec.Nodes[1].Name = "renamed-worker"
@@ -527,7 +327,8 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 		{
 			name: "conflicting node label",
 			mut: func(config *Config) {
-				config.Spec.Nodes[0].Overrides.Kubernetes.NodeLabels = map[string]string{"node-role.kubernetes.io/control-plane": "different"}
+				config.Spec.Defaults.Kubernetes.NodeLabels = map[string]string{"katl.dev/zone": "rack-a"}
+				config.Spec.Nodes[0].Overrides.Kubernetes.NodeLabels = map[string]string{"katl.dev/zone": "different"}
 			},
 			want: "node label",
 		},
@@ -571,93 +372,11 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "must be vMAJOR.MINOR.PATCH",
 		},
 		{
-			name: "bad system role default",
-			mut: func(config *Config) {
-				config.Spec.SystemRoleDefaults["controlplane"] = NodeLayer{}
-			},
-			want: "systemRoleDefaults key",
-		},
-		{
-			name: "unknown node class",
-			mut: func(config *Config) {
-				config.Spec.Nodes[0].NodeClass = "missing"
-			},
-			want: `nodeClass "missing" is not defined`,
-		},
-		{
-			name: "node class target disk identity",
-			mut: func(config *Config) {
-				config.Spec.NodeClasses = map[string]NodeLayer{
-					"ms01": {Install: InstallLayer{TargetDisk: &manifest.DiskSelector{ByID: "/dev/disk/by-id/shared-root"}}},
-				}
-			},
-			want: "spec.nodeClasses.ms01.install.targetDisk is not allowed",
-		},
-		{
-			name: "target disk defaults identity",
-			mut: func(config *Config) {
-				config.Spec.NodeClasses = map[string]NodeLayer{
-					"ms01": {Install: InstallLayer{TargetDiskDefaults: &manifest.DiskSelector{Serial: "shared-root"}}},
-				}
-			},
-			want: "targetDiskDefaults must not set byID, wwn, or serial",
-		},
-		{
 			name: "defaults target disk identity",
 			mut: func(config *Config) {
 				config.Spec.Defaults.Install.TargetDisk = &manifest.DiskSelector{Serial: "shared-root"}
 			},
 			want: "spec.defaults.install.targetDisk is not allowed",
-		},
-		{
-			name: "node class networkd conflict",
-			mut: func(config *Config) {
-				config.Spec.Nodes[0].NodeClass = "ms01"
-				config.Spec.NodeClasses = map[string]NodeLayer{
-					"ms01": {Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-						Name:    "10-common.network",
-						Content: "[Match]\nName=enp99s0\n",
-					}}}},
-				}
-			},
-			want: "networkd file",
-		},
-		{
-			name: "node class label conflict",
-			mut: func(config *Config) {
-				config.Spec.Nodes[0].NodeClass = "ms01"
-				config.Spec.Defaults.Kubernetes.NodeLabels = map[string]string{"katl.dev/hardware-class": "default"}
-				config.Spec.NodeClasses = map[string]NodeLayer{
-					"ms01": {Kubernetes: KubernetesLayer{NodeLabels: map[string]string{"katl.dev/hardware-class": "ms01"}}},
-				}
-			},
-			want: "node label",
-		},
-		{
-			name: "node class taint conflict",
-			mut: func(config *Config) {
-				config.Spec.Nodes[0].NodeClass = "ms01"
-				config.Spec.Defaults.Kubernetes.NodeTaints = []manifest.NodeTaint{{Key: "katl.dev/hardware", Value: "default", Effect: "NoSchedule"}}
-				config.Spec.NodeClasses = map[string]NodeLayer{
-					"ms01": {Kubernetes: KubernetesLayer{NodeTaints: []manifest.NodeTaint{{Key: "katl.dev/hardware", Value: "ms01", Effect: "NoSchedule"}}}},
-				}
-			},
-			want: "node taint",
-		},
-		{
-			name: "node class extra disk conflict",
-			mut: func(config *Config) {
-				config.Spec.Nodes[0].NodeClass = "ms01"
-				config.Spec.NodeClasses = map[string]NodeLayer{
-					"ms01": {Install: InstallLayer{ExtraDisks: []manifest.ExtraDisk{{
-						Name:       "data",
-						Selector:   manifest.DiskSelector{Serial: "different"},
-						Filesystem: "xfs",
-						Mount:      manifest.ExtraMount{Path: "/srv/data"},
-					}}}},
-				}
-			},
-			want: "extra disk",
 		},
 	}
 	for _, tt := range tests {
@@ -713,7 +432,7 @@ spec:
         - ms01
         - gpu
 `,
-			want: "cannot unmarshal",
+			want: "field nodeClass not found",
 		},
 		{
 			name: "node template",
@@ -752,7 +471,7 @@ spec:
         targetDiskDefaults:
           autoDetect: true
 `,
-			want: "field autoDetect not found",
+			want: "field nodeClasses not found",
 		},
 	}
 	for _, tt := range tests {
@@ -763,100 +482,6 @@ spec:
 			}
 		})
 	}
-}
-
-func assertNodeNativeFile(t *testing.T, node NodeMaterial, path string, content string) {
-	t.Helper()
-	for _, file := range node.NativeEtcFiles {
-		if file.Path == path {
-			if !strings.Contains(file.Content, content) {
-				t.Fatalf("%s did not contain %q:\n%s", path, content, file.Content)
-			}
-			return
-		}
-	}
-	t.Fatalf("node %s missing native file %s", node.Name, path)
-}
-
-func assertNodeNoNativeFile(t *testing.T, node NodeMaterial, path string) {
-	t.Helper()
-	for _, file := range node.NativeEtcFiles {
-		if file.Path == path {
-			t.Fatalf("node %s unexpectedly rendered native file %s", node.Name, path)
-		}
-	}
-}
-
-type nodeClassGolden struct {
-	Nodes              []nodeClassGoldenNode `json:"nodes"`
-	BootstrapInventory inventory.Inventory   `json:"bootstrapInventory"`
-}
-
-type nodeClassGoldenNode struct {
-	Name            string                  `json:"name"`
-	SystemRole      inventory.SystemRole    `json:"systemRole"`
-	Bootstrap       string                  `json:"bootstrapAddress,omitempty"`
-	InstallManifest manifest.Manifest       `json:"installManifest"`
-	NativeEtcFiles  []confext.NativeEtcFile `json:"nativeEtcFiles,omitempty"`
-	NodeLabels      map[string]string       `json:"nodeLabels,omitempty"`
-	NodeTaints      []manifest.NodeTaint    `json:"nodeTaints,omitempty"`
-}
-
-func assertNodeClassGolden(t *testing.T, plan Plan, golden string) {
-	t.Helper()
-	got := nodeClassGolden{BootstrapInventory: plan.BootstrapInventory}
-	for _, node := range plan.Nodes {
-		got.Nodes = append(got.Nodes, nodeClassGoldenNode{
-			Name:            node.Name,
-			SystemRole:      node.SystemRole,
-			Bootstrap:       node.BootstrapAddress,
-			InstallManifest: node.InstallManifest,
-			NativeEtcFiles:  node.NativeEtcFiles,
-			NodeLabels:      node.NodeLabels,
-			NodeTaints:      node.NodeTaints,
-		})
-	}
-	data, err := json.MarshalIndent(got, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = append(data, '\n')
-	want, err := os.ReadFile(golden)
-	if err != nil {
-		t.Fatalf("read golden: %v\nnew golden:\n%s", err, data)
-	}
-	if string(data) != string(want) {
-		t.Fatalf("node class golden mismatch for %s\nwant:\n%s\ngot:\n%s", golden, want, data)
-	}
-}
-
-func clusterBGPConfig() bgpapivip.Config {
-	return bgpapivip.Config{
-		Endpoint: bgpapivip.Endpoint{
-			Host: "api.home.example",
-			VIP:  "10.40.0.10/32",
-		},
-		VIPInterface: bgpapivip.VIPInterface{
-			Kind: "dummy",
-			Name: "katl-api0",
-		},
-		Routing: bgpapivip.Routing{
-			RouterID:        "10.0.0.11",
-			LocalASN:        64512,
-			SourceAddress:   "10.0.0.11",
-			SourceInterface: "enp1s0",
-		},
-		FabricPeers: []bgpapivip.Peer{{
-			Name:                  "router-a",
-			Address:               "10.0.0.1",
-			ASN:                   64500,
-			AllowedExportPrefixes: []string{"10.40.0.10/32"},
-		}},
-	}
-}
-
-func ptrBGPConfig(config bgpapivip.Config) *bgpapivip.Config {
-	return &config
 }
 
 func TestCompileRejectsHostSpecificKubeadmMaterial(t *testing.T) {
@@ -873,9 +498,7 @@ func TestCompileRejectsHostSpecificKubeadmMaterial(t *testing.T) {
 
 func TestCompileRejectsKubeadmIntentAndVersionMismatch(t *testing.T) {
 	config := validConfig()
-	config.Spec.SystemRoleDefaults[inventory.RoleWorker] = NodeLayer{
-		Kubernetes: KubernetesLayer{KubeadmConfigRef: "control-plane"},
-	}
+	config.Spec.Nodes[1].Overrides.Kubernetes.KubeadmConfigRef = "control-plane"
 	_, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
 	if err == nil || !strings.Contains(err.Error(), "requires kubeadm intent") {
 		t.Fatalf("Compile() error = %v, want intent mismatch", err)
@@ -885,59 +508,6 @@ func TestCompileRejectsKubeadmIntentAndVersionMismatch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "does not match selected Kubernetes payload version") {
 		t.Fatalf("Compile() error = %v, want version mismatch", err)
 	}
-}
-
-func allSameHardwareConfig() Config {
-	config := validConfig()
-	config.Spec.Defaults.Install.TargetDiskDefaults = &manifest.DiskSelector{MinSizeMiB: 32768}
-	config.Spec.Defaults.Kubernetes.NodeLabels = map[string]string{"katl.dev/hardware-class": "homelab"}
-	config.Spec.Nodes[0].Overrides.Hostname = ""
-	config.Spec.Nodes[0].Overrides.SSH = manifest.SSHIdentity{}
-	config.Spec.Nodes[0].Overrides.Networkd = manifest.NetworkdConfig{}
-	config.Spec.Nodes[0].Overrides.Kubernetes = KubernetesLayer{}
-	targetCP := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-cp-root"}
-	targetWorker := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-worker-root"}
-	config.Spec.Nodes[0].Overrides.Install.TargetDisk = &targetCP
-	config.Spec.Nodes[1].Overrides.Install.TargetDisk = &targetWorker
-	return config
-}
-
-func mixedNodeClassesConfig() Config {
-	config := validConfig()
-	targetCP := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-cp-root"}
-	targetWorker := manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-worker-root"}
-	config.Spec.Nodes[0].NodeClass = "ms01"
-	config.Spec.Nodes[0].Overrides.Hostname = ""
-	config.Spec.Nodes[0].Overrides.SSH = manifest.SSHIdentity{}
-	config.Spec.Nodes[0].Overrides.Networkd = manifest.NetworkdConfig{}
-	config.Spec.Nodes[0].Overrides.Kubernetes = KubernetesLayer{}
-	config.Spec.Nodes[0].Overrides.Install.TargetDisk = &targetCP
-	config.Spec.Nodes[1].NodeClass = "msa2"
-	config.Spec.Nodes[1].Overrides.Install.TargetDisk = &targetWorker
-	config.Spec.NodeClasses = map[string]NodeLayer{
-		"ms01": {
-			Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "15-ms01.network",
-				Content: "[Match]\nName=enp3s0\n",
-			}}},
-			Install: InstallLayer{TargetDiskDefaults: &manifest.DiskSelector{MinSizeMiB: 65536}},
-			Kubernetes: KubernetesLayer{
-				NodeLabels: map[string]string{"katl.dev/hardware-class": "ms01"},
-				NodeTaints: []manifest.NodeTaint{{Key: "katl.dev/hardware", Value: "ms01", Effect: "NoSchedule"}},
-			},
-		},
-		"msa2": {
-			Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "15-msa2.network",
-				Content: "[Match]\nName=enp4s0\n",
-			}}},
-			Install: InstallLayer{TargetDiskDefaults: &manifest.DiskSelector{MinSizeMiB: 49152}},
-			Kubernetes: KubernetesLayer{
-				NodeLabels: map[string]string{"katl.dev/hardware-class": "msa2"},
-			},
-		},
-	}
-	return config
 }
 
 func validConfig() Config {
@@ -966,17 +536,6 @@ func validConfig() Config {
 				}}},
 				Bootstrap: BootstrapLayer{Access: inventory.Access{Method: "agent", CredentialRef: "vsock:1234:10240"}},
 			},
-			SystemRoleDefaults: map[inventory.SystemRole]NodeLayer{
-				inventory.RoleControlPlane: {Kubernetes: KubernetesLayer{
-					KubeadmConfigRef: "control-plane",
-					NodeLabels:       map[string]string{"node-role.kubernetes.io/control-plane": ""},
-					NodeTaints:       []manifest.NodeTaint{{Key: "node-role.kubernetes.io/control-plane", Effect: "NoSchedule"}},
-				}},
-				inventory.RoleWorker: {Kubernetes: KubernetesLayer{
-					KubeadmConfigRef: "worker",
-					NodeLabels:       map[string]string{"katl.dev/pool": "workers"},
-				}},
-			},
 			Nodes: []Node{
 				{
 					Name:       "cp-1",
@@ -989,7 +548,12 @@ func validConfig() Config {
 							Content: "[Match]\nName=enp2s0\n",
 						}}},
 						Kubernetes: KubernetesLayer{
-							NodeLabels: map[string]string{"katl.dev/zone": "rack-a"},
+							KubeadmConfigRef: "control-plane",
+							NodeLabels: map[string]string{
+								"node-role.kubernetes.io/control-plane": "",
+								"katl.dev/zone":                         "rack-a",
+							},
+							NodeTaints: []manifest.NodeTaint{{Key: "node-role.kubernetes.io/control-plane", Effect: "NoSchedule"}},
 						},
 						Install:   InstallLayer{TargetDisk: &targetCP},
 						Bootstrap: BootstrapLayer{Address: "10.0.0.11"},
@@ -999,7 +563,11 @@ func validConfig() Config {
 					Name:       "worker-1",
 					SystemRole: inventory.RoleWorker,
 					Overrides: NodeLayer{
-						Install:   InstallLayer{TargetDisk: &targetWorker},
+						Install: InstallLayer{TargetDisk: &targetWorker},
+						Kubernetes: KubernetesLayer{
+							KubeadmConfigRef: "worker",
+							NodeLabels:       map[string]string{"katl.dev/pool": "workers"},
+						},
 						Bootstrap: BootstrapLayer{Address: "10.0.0.21", Access: inventory.Access{CredentialRef: "vsock:1235:10240"}},
 					},
 				},

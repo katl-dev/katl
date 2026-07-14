@@ -9,9 +9,8 @@ Day one uses:
 
 ```text
 cluster defaults
-node classes
-systemRole defaults
-per-node overrides
+flat per-node settings
+an internally selected profile for each systemRole
 explicit supported node configuration domains
 ```
 
@@ -185,8 +184,7 @@ Before capabilities become user-facing, Katl needs a separate design for:
 ```text
 whether capabilities are built-in, user-defined, or both
 input schema and naming rules
-merge order relative to cluster defaults, node classes, systemRole defaults,
-  and node overrides
+merge order relative to cluster defaults and flat node settings
 conflict handling when multiple capabilities touch the same domain
 interaction with sysexts and user-managed GitOps
 validation and golden-test expectations
@@ -216,10 +214,8 @@ as `systemRole` values. Those are future capabilities, day-2 sysexts, or user
 GitOps.
 
 User-side templating remains allowed outside Katl. Users may generate Katl input
-with their own tooling, but the Katl API that reaches `katlc` remains explicit
-defaults, node classes, system roles, node overrides, and supported domains for
-the first
-implementation.
+with their own tooling, but ClusterConfig remains explicit defaults, flat nodes,
+system roles, and supported domains for the first implementation.
 
 ## Testing Contract
 
@@ -227,13 +223,9 @@ The compiler and planner need deterministic tests:
 
 ```text
 golden tests for rendered per-node install materials
-golden tests for cluster defaults plus node class plus systemRole defaults
-golden tests for an all-same-hardware manifest using spec.defaults
-golden tests for a mixed-hardware manifest using nodeClasses
+golden tests for cluster defaults plus flat node settings
 negative tests for unknown systemRole
 negative tests for missing systemRole
-negative tests for unknown nodeClass
-negative tests for unsafe targetDisk identity in node classes
 negative tests for systemRole and selected bootstrap profile mismatch
 negative tests for output outside supported domains
 ```
@@ -243,7 +235,7 @@ Golden fixtures should include at least:
 ```text
 single control-plane node
 single worker node
-cluster defaults plus per-node network overrides
+cluster defaults plus per-node network settings
 control-plane node with explicit per-node storage settings
 worker node with explicit per-node extra disk mount request
 ```

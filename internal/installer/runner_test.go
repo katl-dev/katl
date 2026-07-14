@@ -206,15 +206,10 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 	if intent.Inventory.ClusterName != "lab" || intent.Inventory.NodeName != "cp-1" || intent.Inventory.ControlPlaneEndpoint != "api.katl.test:6443" {
 		t.Fatalf("inventory intent = %#v", intent.Inventory)
 	}
-	if intent.Inventory.Access.Method != "agent" || intent.Inventory.Access.CredentialRef != "vsock:1234:10240" {
-		t.Fatalf("inventory access = %#v", intent.Inventory.Access)
-	}
 	if intent.Inventory.Labels["katl.dev/zone"] != "rack-a" || len(intent.Inventory.Taints) != 1 {
 		t.Fatalf("labels/taints = %#v %#v", intent.Inventory.Labels, intent.Inventory.Taints)
 	}
 	if intent.Kubernetes.PayloadVersion != "v1.36.1" ||
-		intent.Kubernetes.BundleSource != "https://ghcr.io/v2/katl-dev/kubernetes" ||
-		intent.Kubernetes.BundleRef != "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:"+strings.Repeat("1", 64) ||
 		intent.Kubernetes.SysextPath != "" ||
 		intent.Kubernetes.SysextSHA256 != "" {
 		t.Fatalf("kubernetes intent = %#v", intent.Kubernetes)
@@ -228,8 +223,17 @@ func TestBuildClusterIntentPersistsBootstrapPlanContext(t *testing.T) {
 	if intent.BootstrapProfile.KubeadmInputDigest == "" || intent.BootstrapProfile.KubeadmInputDigest != intent.Kubeadm.InputDigest {
 		t.Fatalf("profile/input digest = profile %#v kubeadm %#v", intent.BootstrapProfile, intent.Kubeadm)
 	}
-	if intent.Source.RequestDigest != strings.Repeat("d", 64) || intent.Source.KatlosImageSHA256 != strings.Repeat("a", 64) {
+	if intent.Source.RequestDigest != strings.Repeat("d", 64) {
 		t.Fatalf("source intent = %#v", intent.Source)
+	}
+	intentJSON, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"katlosImage", "catalogRef", "bundleSource", "bundleRef", "credentialRef"} {
+		if bytes.Contains(intentJSON, []byte(`"`+field+`"`)) {
+			t.Fatalf("cluster intent contains operation-only field %q: %s", field, intentJSON)
+		}
 	}
 
 	path, err := WriteClusterIntent(ClusterIntentRequest{
@@ -780,8 +784,6 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"bootedGenerationID": "0"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"defaultBootEntry": "loader/entries/katl-0.conf"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"payloadVersion": "v1.34.8"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"bundleSource": "https://ghcr.io/v2/katl-dev/kubernetes"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"bundleRef": "ghcr.io/katl-dev/kubernetes:v1.34.8-katl.1@sha256:`+strings.Repeat("1", 64)+`"`)
 	installedManifestFile, err := os.Open(filepath.Join(targetRoot, "var/lib/katl/install/manifest.json"))
 	if err != nil {
 		t.Fatalf("open installed manifest: %v", err)

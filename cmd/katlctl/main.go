@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
@@ -1200,8 +1202,22 @@ func runConfigTopology(opts configTopologyOptions, stdout, stderr io.Writer) err
 }
 
 type configBundleOptions struct {
-	sourcePath string
-	outputPath string
+	sourcePath          string
+	outputPath          string
+	katlosImageURL      string
+	katlosImageMetadata string
+}
+
+type katlosImageArtifactMetadata struct {
+	APIVersion       string `json:"apiVersion"`
+	Kind             string `json:"kind"`
+	ImageRole        string `json:"imageRole"`
+	Format           string `json:"format"`
+	Version          string `json:"version"`
+	Architecture     string `json:"architecture"`
+	RuntimeInterface string `json:"runtimeInterface"`
+	SizeBytes        int64  `json:"sizeBytes"`
+	SHA256           string `json:"sha256"`
 }
 
 type nodeConfigInputOptions struct {
@@ -1307,6 +1323,8 @@ func newConfigBundleCommand(stdout, stderr io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.outputPath, "output", "", "bundle output path")
+	cmd.Flags().StringVar(&opts.katlosImageURL, "katlos-image-url", "", "published KatlOS install image URL for PXE")
+	cmd.Flags().StringVar(&opts.katlosImageMetadata, "katlos-image-metadata", "", "published KatlOS install image metadata JSON for PXE")
 	return cmd
 }
 
@@ -1315,11 +1333,16 @@ func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
 	if strings.TrimSpace(opts.outputPath) == "" {
 		return fmt.Errorf("--output is required")
 	}
+	katlosImage, err := loadKatlosImagePlanningInput(opts.katlosImageURL, opts.katlosImageMetadata)
+	if err != nil {
+		return err
+	}
 	result, err := configbundle.WriteArchive(opts.outputPath, configbundle.BuildRequest{
 		SourcePath:     opts.sourcePath,
 		KatlctlVersion: version,
 		KatlctlCommit:  commit,
 		CreatedBy:      configBundleCreator,
+		Planning:       configbundle.PlanningInputs{KatlosImage: katlosImage},
 	})
 	if err != nil {
 		return err
@@ -1336,6 +1359,44 @@ func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err
+}
+
+func loadKatlosImagePlanningInput(imageURL, metadataPath string) (manifest.KatlosImage, error) {
+	imageURL = strings.TrimSpace(imageURL)
+	metadataPath = strings.TrimSpace(metadataPath)
+	if (imageURL == "") != (metadataPath == "") {
+		return manifest.KatlosImage{}, fmt.Errorf("--katlos-image-url and --katlos-image-metadata must be used together")
+	}
+	if imageURL == "" {
+		return manifest.KatlosImage{}, nil
+	}
+	parsedURL, err := url.Parse(imageURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		return manifest.KatlosImage{}, fmt.Errorf("--katlos-image-url must be an http or https URL")
+	}
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return manifest.KatlosImage{}, fmt.Errorf("read KatlOS image metadata: %w", err)
+	}
+	var metadata katlosImageArtifactMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return manifest.KatlosImage{}, fmt.Errorf("decode KatlOS image metadata: %w", err)
+	}
+	if metadata.APIVersion != "katl.dev/v1alpha1" || metadata.Kind != "KatlOSImageArtifact" || metadata.ImageRole != "install" || metadata.Format != "squashfs" {
+		return manifest.KatlosImage{}, fmt.Errorf("KatlOS image metadata must describe a katl.dev/v1alpha1 install SquashFS")
+	}
+	if metadata.SizeBytes <= 0 {
+		return manifest.KatlosImage{}, fmt.Errorf("KatlOS image metadata sizeBytes must be positive")
+	}
+	return manifest.KatlosImage{
+		URL:              imageURL,
+		SHA256:           metadata.SHA256,
+		SizeBytes:        uint64(metadata.SizeBytes),
+		Version:          metadata.Version,
+		Architecture:     metadata.Architecture,
+		RuntimeInterface: metadata.RuntimeInterface,
+		Role:             metadata.ImageRole,
+	}, nil
 }
 
 func newConfigRenderNodeCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -2002,9 +2063,6 @@ func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, erro
 	if inventoryPath != "" {
 		return loadInventory(inventoryPath)
 	}
-	if strings.TrimSpace(opts.kubernetesBundle) != "" {
-		return inventory.Inventory{}, fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the cluster config")
-	}
 	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
 		return inventory.Inventory{}, fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in the cluster config")
 	}
@@ -2014,6 +2072,9 @@ func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, erro
 			KatlctlVersion: version,
 			KatlctlCommit:  commit,
 			CreatedBy:      clusterBootstrapCreator,
+			Planning: configbundle.PlanningInputs{
+				KubernetesBundle: opts.kubernetesBundle,
+			},
 		})
 		if err != nil {
 			return inventory.Inventory{}, fmt.Errorf("compile cluster config: %w", err)
@@ -2023,6 +2084,9 @@ func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, erro
 			return inventory.Inventory{}, fmt.Errorf("read compiled cluster config: %w", err)
 		}
 		return bundle.Manifest.Cluster.BootstrapInventory, nil
+	}
+	if strings.TrimSpace(opts.kubernetesBundle) != "" {
+		return inventory.Inventory{}, fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the compiled config bundle")
 	}
 	bundle, err := configbundle.ReadBundleFile(bundlePath, "")
 	if err != nil {

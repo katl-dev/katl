@@ -34,8 +34,10 @@ type renderedNodeConfigurationChangeSpec struct {
 }
 
 type renderedNodeConfigurationOverlay struct {
-	Identity renderedNodeIdentity    `yaml:"identity"`
-	Networkd manifest.NetworkdConfig `yaml:"networkd"`
+	Identity   renderedNodeIdentity       `yaml:"identity"`
+	SystemRole string                     `yaml:"systemRole,omitempty"`
+	Networkd   manifest.NetworkdConfig    `yaml:"networkd"`
+	Kubernetes *manifest.KubernetesConfig `yaml:"kubernetes,omitempty"`
 }
 
 type renderedNodeIdentity struct {
@@ -77,7 +79,9 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 						Hostname:       node.Identity.Hostname,
 						AuthorizedKeys: append([]string{}, node.Identity.SSH.AuthorizedKeys...),
 					},
-					Networkd: node.Networkd,
+					SystemRole: node.SystemRole,
+					Networkd:   node.Networkd,
+					Kubernetes: &node.Kubernetes,
 				},
 			},
 		},

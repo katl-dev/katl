@@ -1,6 +1,6 @@
 # ADR-007: User config compiles to a Katl config bundle
 
-Status: accepted.
+Status: accepted, with the source schema amended by the v1alpha1 contraction.
 
 Date: 2026-06-20.
 
@@ -10,9 +10,8 @@ Katl has three different configuration shapes that should not be confused:
 
 ```text
 source cluster config
-  one operator-owned document, or a small local source tree, that describes the
-  cluster, shared defaults, node classes, system role defaults, nodes, install
-  policy, bootstrap intent, and selected Kubernetes intent
+  one operator-owned document that describes meaningful cluster and node
+  behavior through shared defaults and flat node entries
 
 Katl config bundle
   one resolved, immutable, self-contained artifact produced by katlctl from the
@@ -298,8 +297,8 @@ The compiled install material is the installer-facing node contract. It carries
 the selected node name, role, target disk identity requirements, wipeTarget
 guard, network/install inputs, resolved cluster intent reference, and provenance
 needed for `katlos-install` to write generation 0. It must not require the
-installer to evaluate source-level defaults, node classes, templates, local
-file paths, catalogs, or version policies.
+installer to evaluate source defaults, templates, local file paths, catalogs,
+or version policies.
 
 Node native config material contains only Katl-owned generated runtime
 configuration domains. It is suitable for confext generation or later runtime
@@ -407,60 +406,14 @@ The source cluster config owns user intent:
 
 ```text
 cluster name
-install policy, including wipeTarget
-shared defaults
-node classes
-systemRole defaults
-node list and per-node overrides
-bootstrap endpoint/access intent
-Kubernetes bootstrap intent
-kubeadm/component configuration
+Kubernetes version and stable control-plane endpoint
+shared desired node defaults
+flat node names, roles, addresses, disk selection, networking, and labels
 ```
 
-The source config can be optimized for authoring. It may support inline native
-objects and, if accepted for the source format, local file references. File
-references are resolved only by `katlctl config bundle`; they are not delivered
-as references to the installer.
-
-For the common path, native kubeadm configuration should be expressible inline
-so a user can maintain one portable source document:
-
-```yaml
-spec:
-  kubernetes:
-    version: v1.36.0
-    bootstrapProfiles:
-      control-plane:
-        intent: control-plane
-        kubeadm:
-          config: |
-            apiVersion: kubeadm.k8s.io/v1beta4
-            kind: InitConfiguration
-            nodeRegistration:
-              criSocket: unix:///run/containerd/containerd.sock
-            ---
-            apiVersion: kubeadm.k8s.io/v1beta4
-            kind: ClusterConfiguration
-            kubernetesVersion: v1.36.0
-            controlPlaneEndpoint: api.katl.home:6443
-      worker:
-        intent: worker
-        kubeadm:
-          config: |
-            apiVersion: kubeadm.k8s.io/v1beta4
-            kind: JoinConfiguration
-            nodeRegistration:
-              criSocket: unix:///run/containerd/containerd.sock
-```
-
-If local file references are supported, they are a source-authoring convenience:
-
-```yaml
-kubeadm:
-  configFile: ./kubeadm/control-plane.yaml
-```
-
-The bundle records the resolved content and digest, not the unresolved path.
+Artifact selection, kubeadm profiles, credentials, destructive operation
+authorization, generations, and bookkeeping are deliberately excluded. The
+strict v1alpha1 shape is defined by the current ClusterConfig contract.
 
 ## Installer Consumption
 

@@ -14,7 +14,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/installer/platformendpoint"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
 
@@ -51,12 +50,6 @@ func Compile(request CompileRequest) (Plan, error) {
 	if err := validateSharedLayer("spec.defaults", config.Spec.Defaults); err != nil {
 		return Plan{}, err
 	}
-	if err := validateNodeClasses(config.Spec.NodeClasses); err != nil {
-		return Plan{}, err
-	}
-	if err := validateSystemRoleDefaults(config.Spec.SystemRoleDefaults); err != nil {
-		return Plan{}, err
-	}
 	kubernetes, err := selectKubernetes(config.Spec.Kubernetes, config.Spec.KatlosImage, request)
 	if err != nil {
 		return Plan{}, err
@@ -64,10 +57,7 @@ func Compile(request CompileRequest) (Plan, error) {
 	if len(config.Spec.Nodes) == 0 {
 		return Plan{}, fmt.Errorf("spec.nodes must not be empty")
 	}
-	endpointPlan, controlPlaneEndpoint, err := selectedPlatformEndpoint(config.Spec)
-	if err != nil {
-		return Plan{}, err
-	}
+	controlPlaneEndpoint := strings.TrimSpace(config.Spec.ControlPlaneEndpoint)
 
 	nodes := append([]Node(nil), config.Spec.Nodes...)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
@@ -92,16 +82,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		if role != inventory.RoleControlPlane && role != inventory.RoleWorker {
 			return Plan{}, fmt.Errorf("node %q systemRole %q is unsupported", name, node.SystemRole)
 		}
-		classLayer := NodeLayer{}
-		nodeClass := strings.TrimSpace(node.NodeClass)
-		if nodeClass != "" {
-			var ok bool
-			classLayer, ok = config.Spec.NodeClasses[nodeClass]
-			if !ok {
-				return Plan{}, fmt.Errorf("node %q nodeClass %q is not defined", name, nodeClass)
-			}
-		}
-		layer, err := mergedLayer(config.Spec.Defaults, classLayer, config.Spec.SystemRoleDefaults[role], node.Overrides)
+		layer, err := mergedLayer(config.Spec.Defaults, node.Overrides)
 		if err != nil {
 			return Plan{}, fmt.Errorf("node %q: %w", name, err)
 		}
@@ -110,7 +91,7 @@ func Compile(request CompileRequest) (Plan, error) {
 			layer.Networkd.Files = []manifest.NetworkdFile{{Name: "10-lan.network", Content: defaultNetworkdFile}}
 		}
 		layer = applyTargetDiskDefaults(layer)
-		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, controlPlaneEndpoint, endpointPlan)
+		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, controlPlaneEndpoint)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -150,7 +131,6 @@ func Compile(request CompileRequest) (Plan, error) {
 		KubernetesVersion:      kubernetes.version,
 		KubernetesBundleSource: kubernetes.bundleSource,
 		KubernetesBundleRef:    kubernetes.bundleRef,
-		Bootstrap:              bootstrapEndpoint(endpointPlan),
 		Nodes:                  inventoryNodes,
 	}
 	if err := validateBootstrapInventory(bootstrapInventory); err != nil {
@@ -158,7 +138,6 @@ func Compile(request CompileRequest) (Plan, error) {
 	}
 	return Plan{
 		ControlPlaneEndpoint:   bootstrapInventory.ControlPlaneEndpoint,
-		PlatformAPIEndpoint:    endpointPlan,
 		KubernetesVersion:      kubernetes.version,
 		KubernetesCatalogRef:   kubernetes.catalogRef,
 		KubernetesBundleSource: kubernetes.bundleSource,
@@ -171,7 +150,7 @@ func Compile(request CompileRequest) (Plan, error) {
 	}, nil
 }
 
-func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, controlPlaneEndpoint string, endpointPlan *platformendpoint.Plan) (NodeMaterial, inventory.Node, error) {
+func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, controlPlaneEndpoint string) (NodeMaterial, inventory.Node, error) {
 	hostname := strings.TrimSpace(layer.Hostname)
 	if hostname == "" {
 		hostname = name
@@ -249,9 +228,6 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	if err != nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q config domains: %w", name, err)
 	}
-	if endpointPlan != nil && role == inventory.RoleControlPlane {
-		nativeEtcFiles = append(nativeEtcFiles, platformendpoint.NativeEtcFiles(*endpointPlan)...)
-	}
 	if _, err := confext.ValidateNativeEtcBundle("", nativeEtcFiles); err != nil {
 		return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q native /etc files: %w", name, err)
 	}
@@ -286,31 +262,6 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	}, invNode, nil
 }
 
-func selectedPlatformEndpoint(spec Spec) (*platformendpoint.Plan, string, error) {
-	controlPlaneEndpoint := strings.TrimSpace(spec.ControlPlaneEndpoint)
-	if spec.PlatformAPIEndpoint == nil {
-		return nil, controlPlaneEndpoint, nil
-	}
-	plan, err := platformendpoint.Compose(*spec.PlatformAPIEndpoint)
-	if err != nil {
-		return nil, "", err
-	}
-	if controlPlaneEndpoint != "" && controlPlaneEndpoint != plan.ControlPlaneEndpoint {
-		return nil, "", fmt.Errorf("spec.controlPlaneEndpoint %q does not match selected platformAPIEndpoint %q", controlPlaneEndpoint, plan.ControlPlaneEndpoint)
-	}
-	return &plan, plan.ControlPlaneEndpoint, nil
-}
-
-func bootstrapEndpoint(endpointPlan *platformendpoint.Plan) *inventory.Bootstrap {
-	if endpointPlan == nil || strings.TrimSpace(endpointPlan.StableEndpoint) == "" {
-		return nil
-	}
-	return &inventory.Bootstrap{
-		StableEndpoint:                endpointPlan.StableEndpoint,
-		StableEndpointBeforeManifests: endpointPlan.StableEndpointBeforeManifests,
-	}
-}
-
 func manifestAccess(access inventory.Access) manifest.BootstrapAccess {
 	return manifest.BootstrapAccess{
 		Method:        strings.TrimSpace(access.Method),
@@ -341,36 +292,6 @@ func copyLabels(labels map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
-}
-
-func validateSystemRoleDefaults(defaults map[inventory.SystemRole]NodeLayer) error {
-	for role, layer := range defaults {
-		switch role {
-		case inventory.RoleControlPlane, inventory.RoleWorker:
-		default:
-			return fmt.Errorf("systemRoleDefaults key %q is unsupported", role)
-		}
-		if err := validateSharedLayer("spec.systemRoleDefaults."+string(role), layer); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateNodeClasses(classes map[string]NodeLayer) error {
-	for name, layer := range classes {
-		trimmed := strings.TrimSpace(name)
-		if trimmed == "" {
-			return fmt.Errorf("spec.nodeClasses key is required")
-		}
-		if trimmed != name || strings.ContainsAny(name, `/\`) {
-			return fmt.Errorf("spec.nodeClasses key %q must be a safe name", name)
-		}
-		if err := validateSharedLayer("spec.nodeClasses."+name, layer); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func validateSharedLayer(path string, layer NodeLayer) error {

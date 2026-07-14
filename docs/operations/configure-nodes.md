@@ -8,13 +8,14 @@ a general Kubernetes, disk, kubeadm, or operating-system upgrade mechanism.
 The normal source is the same `ClusterConfig` used for installation. The current
 renderer carries:
 
-- hostname;
-- SSH authorized keys; and
-- systemd-networkd files.
+- SSH authorized keys;
+- systemd-networkd files; and
+- operation-only system role and internally selected kubeadm profile state.
 
-It excludes disk/install policy, system role, Kubernetes bundle selection, and
-kubeadm lifecycle state. A desired kubeadm input may be rendered and recorded as
-requiring a later explicit action; config apply does not run kubeadm.
+Runtime-safe fields can apply normally. Operation-only differences are planned
+and reported as requiring an explicit lifecycle action; config apply does not
+run kubeadm. Disk/install selection and Kubernetes version changes use the
+dedicated install and Kubernetes upgrade workflows.
 
 ## Plan an Apply
 

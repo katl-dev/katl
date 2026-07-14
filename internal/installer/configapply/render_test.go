@@ -47,8 +47,11 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	if overlay.Networkd == nil || len(overlay.Networkd.Files) != 1 || overlay.Networkd.Files[0].Name != "10-lan.network" {
 		t.Fatalf("rendered networkd = %#v", overlay.Networkd)
 	}
-	if overlay.SystemRole != "" || overlay.Kubernetes != nil || strings.Contains(string(data), "systemRole:") || strings.Contains(string(data), "kubernetes:") || strings.Contains(string(data), "install:") {
-		t.Fatalf("rendered change contains lifecycle or install fields:\n%s", data)
+	if overlay.SystemRole != "control-plane" || overlay.Kubernetes == nil || overlay.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
+		t.Fatalf("rendered operation fields = role %q kubernetes %#v", overlay.SystemRole, overlay.Kubernetes)
+	}
+	if strings.Contains(string(data), "install:") {
+		t.Fatalf("rendered change contains install fields:\n%s", data)
 	}
 }
 

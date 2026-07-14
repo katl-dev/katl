@@ -23,7 +23,7 @@ Katl build output
 
 User-managed provisioning
   PXE, iPXE, matchbox, virtual media, USB, or another boot path
-  one compiled cluster config bundle, a selected node name, and credentials
+  one compiled cluster config bundle and a selected node name
 
 katlos-install
   reads the bundle and selects one node's compiled install plan
@@ -133,13 +133,14 @@ enforcement remain separate work.
 ## Author One ClusterConfig
 
 Normal installation starts from one `config.katl.dev/v1alpha1` `ClusterConfig`.
-The compiler resolves shared defaults and node overrides, embeds kubeadm inputs
-and bootstrap inventory, and produces one content-addressed `.katlcfg` archive.
-The same archive is used for every node; boot input selects the node by name.
+It describes operator choices: the Kubernetes version and the desired identity,
+role, networking, and install target of each node. Katl selects release
+artifacts and kubeadm profiles and handles bundle and operation metadata
+internally.
 
-This two-node example uses DHCP and the KatlOS image embedded in the release ISO.
-Replace the SSH key, Kubernetes bundle version, node addresses, and stable disk
-IDs:
+`katlctl config init` generates this minimal form. It uses DHCP and the KatlOS
+image embedded in the release ISO. Replace the SSH key, node addresses, and
+stable disk IDs:
 
 ```yaml
 apiVersion: config.katl.dev/v1alpha1
@@ -147,86 +148,36 @@ kind: ClusterConfig
 metadata:
   name: katl-lab
 spec:
-  controlPlaneEndpoint: api.katl.test:6443
+  # Stable Kubernetes API endpoint for multi-control-plane clusters.
+  # controlPlaneEndpoint: api.home.arpa:6443
+  # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.
   kubernetes:
     version: v1.36.1
-    bundle: ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1
   defaults:
-    install:
-      wipeTarget: true
-      targetDiskDefaults:
-        minSizeMiB: 32768
     identity:
       ssh:
         authorizedKeys:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
-    networkd:
-      files:
-        - name: 10-lan.network
-          content: |
-            [Match]
-            Name=enp1s0
-
-            [Network]
-            DHCP=yes
-  systemRoleDefaults:
-    control-plane:
-      kubernetes:
-        kubeadm:
-          configRef: control-plane
-    worker:
-      kubernetes:
-        kubeadm:
-          configRef: worker
-  kubeadmConfigs:
-    control-plane:
-      config: |
-        apiVersion: kubeadm.k8s.io/v1beta4
-        kind: InitConfiguration
-        nodeRegistration:
-          criSocket: unix:///run/containerd/containerd.sock
-        ---
-        apiVersion: kubeadm.k8s.io/v1beta4
-        kind: ClusterConfiguration
-        kubernetesVersion: v1.36.1
-    worker:
-      config: |
-        apiVersion: kubeadm.k8s.io/v1beta4
-        kind: JoinConfiguration
-        nodeRegistration:
-          criSocket: unix:///run/containerd/containerd.sock
   nodes:
     - name: cp-1
       systemRole: control-plane
-      overrides:
-        identity:
-          hostname: cp-1
-        bootstrap:
-          address: 192.0.2.11
-          access:
-            method: agent
-            credentialRef: file:/absolute/path/to/tokens/cp-1.token
-        install:
-          targetDisk:
-            byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
+      bootstrap:
+        address: 192.0.2.11
     - name: worker-1
       systemRole: worker
-      overrides:
-        identity:
-          hostname: worker-1
-        bootstrap:
-          address: 192.0.2.21
-          access:
-            method: agent
-            credentialRef: file:/absolute/path/to/tokens/worker-1.token
-        install:
-          targetDisk:
-            byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
+      bootstrap:
+        address: 192.0.2.21
 ```
 
-The release ISO supplies `katlosImage`, so do not put an external KatlOS URL in
-this source for the ISO flow. PXE uses the same source but adds an explicit
-`spec.katlosImage` descriptor for the published loose SquashFS.
+The release ISO supplies the KatlOS image. ClusterConfig never contains image
+URLs, bundle references, credentials, kubeadm profiles, node classes, or other
+compiler mechanisms.
 
 The ISO flow consumes this source directly: `katlctl install apply` and
 `katlctl cluster bootstrap` compile the internal bundle automatically. Produce
@@ -236,34 +187,22 @@ section.
 Katl maintains the bundle's internal consistency metadata itself. Operators do
 not need to retain it, pass it on the ISO path, or handle its digests.
 
-The destructive guard has two parts: the resolved node must set
-`install.wipeTarget: true`, and boot input must set `katl.install.mode=auto`.
-Always inspect each resolved target disk before enabling automatic install.
-Use `byID`, WWN, or serial selectors, never `/dev/sda`-style names.
+Disk installation is destructive. Always inspect each resolved target disk
+before enabling automatic install. Use `byID`, WWN, or serial selectors, never
+`/dev/sda`-style names.
 
 ## PXE Or Matchbox
 
 Publish the loose installer kernel and initrd, the KatlOS SquashFS and metadata,
-and the single `.katlcfg` archive through your own HTTP infrastructure. Add the
-published KatlOS image descriptor to `spec.katlosImage` before validating and
-compiling the PXE bundle:
-
-```yaml
-spec:
-  katlosImage:
-    url: https://boot.example.invalid/katl/2026.7.0/katlos-install-2026.7.0-x86_64.squashfs
-    sha256: <KatlOS-SquashFS-SHA-256>
-    sizeBytes: <exact-size-in-bytes>
-    version: 2026.7.0
-    architecture: x86_64
-    runtimeInterface: katl-runtime-1
-    role: install
-```
-
-Compile the PXE artifact explicitly:
+and the single `.katlcfg` archive through your own HTTP infrastructure. Keep the
+image selection out of ClusterConfig and supply the published release artifact
+when compiling the PXE bundle:
 
 ```sh
-katlctl config bundle ./cluster.yaml --output ./katl-lab.katlcfg
+katlctl config bundle ./cluster.yaml \
+  --output ./katl-lab.katlcfg \
+  --katlos-image-url https://boot.example.invalid/katl/2026.7.0/katlos-install-2026.7.0-x86_64.squashfs \
+  --katlos-image-metadata ./katlos-install-2026.7.0-x86_64.squashfs.json
 ```
 
 Current bundle-oriented kernel arguments are:
@@ -540,11 +479,12 @@ the agent's domain matrix to choose live apply or next boot; `--mode live` and
 Keep the same configuration inputs when submitting. `katlctl` generates the
 idempotency key and follows the accepted operation to its terminal result.
 
-The renderer currently carries hostname, SSH authorized keys, and systemd-
-networkd files from the selected node. It deliberately excludes disk/install
-policy, system role, Kubernetes bundle selection, and kubeadm lifecycle state.
-Those changes require reinstall, host update, Kubernetes upgrade, or another
-explicit lifecycle operation. `--file` remains available for an advanced,
+The renderer carries the node's desired identity and systemd-networkd files as
+well as operation-only system-role and internally selected kubeadm state. The
+planner applies runtime-safe changes and reports when a lifecycle operation is
+required; it does not silently discard operation-only differences. Disk install
+selection and Kubernetes version changes use their dedicated install and
+upgrade workflows. `--file` remains available for an advanced,
 pre-rendered `NodeConfigurationChange`, with `--node` selecting any
 `nodeOverrides` entry it contains. An advanced request may carry a named
 desired kubeadm input and select it atomically:
@@ -607,13 +547,13 @@ Common failures:
 bundle or selected node rejected
   Run katlctl config validate again. Check the selected node name, SSH
   authorized keys, system role, kubeadm
-  config reference, and target disk. PXE sources must include spec.katlosImage;
-  ISO installs derive it from the embedded media descriptor.
+  role, address, and target disk. PXE bundle compilation must receive the
+  published image URL and metadata flags; ISO installs derive the image from
+  the embedded media descriptor.
 
 destructive install refused
-  Confirm install.wipeTarget is true and boot input selected
-  katl.install.mode=auto. Confirm the URL is reachable and returns the intended
-  .katlcfg archive.
+  Confirm boot input selected katl.install.mode=auto. Confirm the URL is
+  reachable and returns the intended .katlcfg archive.
 
 target disk not found
   Prefer /dev/disk/by-id, WWN, or serial selectors. Confirm firmware and HBA

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
-	"github.com/katl-dev/katl/internal/installer/clusterplan"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -29,7 +28,6 @@ type configInitOptions struct {
 	clusterName       string
 	controlPlane      string
 	kubernetesVersion string
-	kubernetesBundle  string
 	sshKeyPath        string
 	nodes             initNodeSpecs
 	installers        stringList
@@ -102,7 +100,6 @@ func addConfigInitFlags(cmd *cobra.Command, opts *configInitOptions) {
 	cmd.Flags().StringVar(&opts.clusterName, "name", opts.clusterName, "cluster name")
 	cmd.Flags().StringVar(&opts.controlPlane, "control-plane-endpoint", "", "stable Kubernetes API endpoint host:port; defaults to the first control-plane address")
 	cmd.Flags().StringVar(&opts.kubernetesVersion, "kubernetes-version", opts.kubernetesVersion, "override the default Kubernetes payload version")
-	cmd.Flags().StringVar(&opts.kubernetesBundle, "kubernetes-bundle", opts.kubernetesBundle, "override the default Kubernetes bundle image")
 	cmd.Flags().StringVar(&opts.sshKeyPath, "ssh-authorized-key", "", "public SSH key file; otherwise uses the active SSH agent or ~/.ssh/id_ed25519.pub")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "replace an existing output file")
 }
@@ -148,7 +145,6 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			ControlPlaneEndpoint: strings.TrimSpace(opts.controlPlane),
 			Kubernetes: configbundle.SourceKubernetesCluster{
 				Version: strings.TrimSpace(opts.kubernetesVersion),
-				Bundle:  strings.TrimSpace(opts.kubernetesBundle),
 			},
 			Defaults: configbundle.SourceNodeLayer{
 				Identity: configbundle.SourceIdentity{SSH: manifest.SSHIdentity{AuthorizedKeys: sshKeys}},
@@ -164,17 +160,15 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 		targetDisk := node.disk
 		source.Spec.Nodes = append(source.Spec.Nodes, configbundle.SourceNode{
 			Name: node.name, SystemRole: node.role,
-			Overrides: configbundle.SourceNodeLayer{
-				Install:   configbundle.SourceInstallLayer{TargetDisk: &targetDisk},
-				Bootstrap: clusterplan.BootstrapLayer{Address: node.address},
-			},
+			Install:   configbundle.SourceInstallLayer{TargetDisk: &targetDisk},
+			Bootstrap: configbundle.SourceBootstrapLayer{Address: node.address},
 		})
 	}
 	data, err := yaml.Marshal(source)
 	if err != nil {
 		return fmt.Errorf("encode starter ClusterConfig: %w", err)
 	}
-	data = annotateStarterConfig(data, len(sshKeys) == 0, source.Spec.Kubernetes.Version == configbundle.DefaultKubernetesVersion && source.Spec.Kubernetes.Bundle == "")
+	data = annotateStarterConfig(data, len(sshKeys) == 0)
 	if _, err := configbundle.DecodeSource(strings.NewReader(string(data))); err != nil {
 		return fmt.Errorf("validate generated ClusterConfig: %w", err)
 	}
@@ -203,11 +197,11 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	return nil
 }
 
-func annotateStarterConfig(data []byte, missingSSHKeys, showBundleOverride bool) []byte {
+func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 	comments := "spec:\n" +
 		"    # Stable Kubernetes API endpoint for multi-control-plane clusters.\n" +
 		"    # controlPlaneEndpoint: api.home.arpa:6443\n" +
-		"    # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or node overrides.\n"
+		"    # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.\n"
 	if missingSSHKeys {
 		comments += "    # Add an SSH public key here if console-only access is not sufficient.\n" +
 			"    # defaults:\n" +
@@ -217,11 +211,7 @@ func annotateStarterConfig(data []byte, missingSSHKeys, showBundleOverride bool)
 			"    #                 - ssh-ed25519 AAAA... operator@home\n"
 	}
 	comments += "\n"
-	rendered := strings.Replace(string(data), "spec:\n", comments, 1)
-	if showBundleOverride {
-		rendered = strings.Replace(rendered, "    kubernetes:\n", "    kubernetes:\n        # Override the bundle selected for this Kubernetes version.\n        # bundle: "+configbundle.DefaultKubernetesBundle+"\n", 1)
-	}
-	return []byte(rendered)
+	return []byte(strings.Replace(string(data), "spec:\n", comments, 1))
 }
 
 func initNodesFromInstallers(ctx context.Context, addresses []string, timeout time.Duration) (initNodeSpecs, error) {

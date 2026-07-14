@@ -1047,29 +1047,6 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 		kubernetesVersion = "v1.36.1"
 	}
 
-	kubeadmRef := ""
-	kubeadmConfigs := map[string]any{}
-	kubeadmConfigs["control-plane"] = map[string]any{"config": controlPlaneKubeadmConfig(firstControlPlaneName(spec), kubernetesVersion)}
-	switch spec.Role {
-	case ControlPlane:
-		kubeadmRef = "control-plane"
-	case Worker:
-		kubeadmRef = "worker"
-		kubeadmConfigs[kubeadmRef] = map[string]any{"config": workerKubeadmConfig(spec.Name)}
-	}
-	systemRoleDefaults := map[string]any{}
-	systemRoleDefaults[string(ControlPlane)] = map[string]any{
-		"kubernetes": map[string]any{
-			"kubeadm": map[string]any{"configRef": "control-plane"},
-		},
-	}
-	if kubeadmRef != "" && spec.Role != ControlPlane {
-		systemRoleDefaults[string(spec.Role)] = map[string]any{
-			"kubernetes": map[string]any{
-				"kubeadm": map[string]any{"configRef": kubeadmRef},
-			},
-		}
-	}
 	nodes := []map[string]any{}
 	if spec.Role != ControlPlane {
 		nodes = append(nodes, firstInstallWorldSourceNode(firstControlPlaneName(spec), ControlPlane, "/dev/disk/by-id/virtio-katl-control-plane-root"))
@@ -1082,9 +1059,6 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 			"version": kubernetesVersion,
 		},
 		"defaults": map[string]any{
-			"install": map[string]any{
-				"wipeTarget": true,
-			},
 			"identity": map[string]any{
 				"ssh": map[string]any{
 					"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
@@ -1096,27 +1070,8 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 					"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
 				}},
 			},
-			"bootstrap": map[string]any{
-				"access": map[string]any{
-					"method":        "agent",
-					"credentialRef": "vsock:1234:10240",
-				},
-			},
 		},
-		"systemRoleDefaults": systemRoleDefaults,
-		"kubeadmConfigs":     kubeadmConfigs,
-		"nodes":              nodes,
-	}
-	if !bindInstallMedia {
-		sourceSpec["katlosImage"] = map[string]any{
-			"localRef":         localRef,
-			"sha256":           metadata.SHA256,
-			"sizeBytes":        metadata.SizeBytes,
-			"version":          metadata.Version,
-			"architecture":     metadata.Architecture,
-			"runtimeInterface": metadata.RuntimeInterface,
-			"role":             metadata.Role,
-		}
+		"nodes": nodes,
 	}
 	source := map[string]any{
 		"apiVersion": configbundle.APIVersion,
@@ -1135,7 +1090,19 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 		return "", "", err
 	}
 	bundlePath := filepath.Join(sourceDir, "config.katlcfg")
-	if _, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{SourcePath: sourcePath, CreatedBy: "vmtest first-install"}); err != nil {
+	planning := configbundle.PlanningInputs{}
+	if !bindInstallMedia {
+		planning.KatlosImage = installmanifest.KatlosImage{
+			LocalRef:         localRef,
+			SHA256:           metadata.SHA256,
+			SizeBytes:        metadata.SizeBytes,
+			Version:          metadata.Version,
+			Architecture:     metadata.Architecture,
+			RuntimeInterface: metadata.RuntimeInterface,
+			Role:             metadata.Role,
+		}
+	}
+	if _, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{SourcePath: sourcePath, CreatedBy: "vmtest first-install", Planning: planning}); err != nil {
 		return "", "", err
 	}
 	defaultImage := installmanifest.KatlosImage{}
@@ -1168,12 +1135,10 @@ func firstInstallWorldSourceNode(name string, role NodeRole, diskID string) map[
 	return map[string]any{
 		"name":       name,
 		"systemRole": string(role),
-		"overrides": map[string]any{
-			"install": map[string]any{
-				"targetDisk": map[string]any{
-					"byID":       diskID,
-					"minSizeMiB": 32,
-				},
+		"install": map[string]any{
+			"targetDisk": map[string]any{
+				"byID":       diskID,
+				"minSizeMiB": 32,
 			},
 		},
 	}

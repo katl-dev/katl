@@ -12,6 +12,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/discovery"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
@@ -235,7 +236,15 @@ func TestValidateManifestEnvelope(t *testing.T) {
 
 func newTestHandoffServer(t *testing.T) *HandoffServer {
 	t.Helper()
-	return NewHandoffServer(nil)
+	return NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
+		LocalRef:         "images/katlos-install-test-x86_64.squashfs",
+		SHA256:           strings.Repeat("a", 64),
+		SizeBytes:        1,
+		Version:          "test",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Role:             "install",
+	})
 }
 
 func postManifest(t *testing.T, baseURL string, manifest []byte) *http.Response {
@@ -318,47 +327,17 @@ spec:
   controlPlaneEndpoint: api.katl.test:6443
   kubernetes:
     version: v1.36.1
-  katlosImage:
-    url: https://example.invalid/katlos-install.squashfs
-    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    sizeBytes: 1073741824
-    version: 2026.06.04
-    architecture: x86_64
-    runtimeInterface: katl-runtime-1
-    role: install
   defaults:
     install:
-      wipeTarget: true
     identity:
       ssh:
         authorizedKeys:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
-    bootstrap:
-      access:
-        method: agent
-        credentialRef: vsock:1234:10240
-  systemRoleDefaults:
-    control-plane:
-      kubernetes:
-        kubeadm:
-          configRef: control-plane
-  kubeadmConfigs:
-    control-plane:
-      config: |
-        apiVersion: kubeadm.k8s.io/v1beta4
-        kind: InitConfiguration
-        nodeRegistration:
-          criSocket: unix:///run/containerd/containerd.sock
-        ---
-        apiVersion: kubeadm.k8s.io/v1beta4
-        kind: ClusterConfiguration
-        kubernetesVersion: v1.36.1
   nodes:
     - name: cp-1
       systemRole: control-plane
-      overrides:
-        install:
-          targetDisk:
-            byID: /dev/disk/by-id/ata-root
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/ata-root
 `
 }

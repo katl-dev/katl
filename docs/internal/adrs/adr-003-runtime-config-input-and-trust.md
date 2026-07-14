@@ -63,7 +63,6 @@ requests, and unsupported apply modes before render.
 
 ```text
 cluster defaults
-systemRole-level overrides
 per-node overrides
 ```
 

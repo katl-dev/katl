@@ -15,7 +15,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/generation"
-	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
@@ -176,15 +175,12 @@ func TestCreateAcceptsControlPlaneJoinFromStoredIntent(t *testing.T) {
 	assertNoKubeadmMutation(t, root)
 }
 
-func TestCreateFetchesKubernetesBundleFromStoredIntent(t *testing.T) {
+func TestCreateFetchesKubernetesBundleFromOperationRequest(t *testing.T) {
 	root := cleanRoot(t, "control-plane")
 	fixture := writeKubernetesBundleFixture(t, "v1.36.1", "fetched kubernetes sysext payload")
 	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
 	t.Cleanup(server.Close)
 	editIntent(t, root, func(intent *installer.ClusterIntent) {
-		intent.Kubernetes.CatalogRef = ""
-		intent.Kubernetes.BundleSource = server.URL
-		intent.Kubernetes.BundleRef = fixture.ref
 		intent.Kubernetes.SysextPath = ""
 		intent.Kubernetes.SysextSHA256 = ""
 		intent.Kubernetes.SysextSize = 0
@@ -233,10 +229,6 @@ func TestCreateAcceptsMirroredKubernetesBundle(t *testing.T) {
 	fixture := writeKubernetesBundleFixture(t, "v1.36.1", "mirrored kubernetes sysext payload")
 	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
 	t.Cleanup(server.Close)
-	editIntent(t, root, func(intent *installer.ClusterIntent) {
-		intent.Kubernetes.BundleSource = "https://ghcr.io/v2/katl-dev/kubernetes"
-		intent.Kubernetes.BundleRef = "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1"
-	})
 	req := controlPlaneRequest()
 	req.KubernetesBundleSource = server.URL
 	req.KubernetesBundleRef = fixture.ref
@@ -450,20 +442,12 @@ func writeIntent(t *testing.T, root string, role string) {
 		},
 		Kubernetes: installer.ClusterIntentKubernetes{
 			PayloadVersion: "v1.36.1",
-			CatalogRef:     "default",
 		},
 		Kubeadm: &installer.ClusterIntentKubeadm{
 			ConfigRef:   profile,
 			ConfigPath:  "/etc/katl/kubeadm/" + profile + "/config.yaml",
 			Intent:      intentValue,
 			InputDigest: strings.Repeat("d", 64),
-		},
-		KatlosImage: manifest.KatlosImage{
-			SHA256:           strings.Repeat("e", 64),
-			Version:          "0.1.0",
-			Architecture:     "x86_64",
-			RuntimeInterface: "katl-runtime-1",
-			Role:             "install",
 		},
 		Source:        installer.ClusterIntentSource{RequestDigest: strings.Repeat("f", 64)},
 		RequestDigest: strings.Repeat("f", 64),
