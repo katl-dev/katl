@@ -64,7 +64,7 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 	kubernetesUpgradeNow = func() time.Time { return time.Unix(42, 0).UTC() }
 	dialKubernetesEndpoint = func(context.Context, string) error { return nil }
 	var stdout bytes.Buffer
-	if err := runKubernetesUpgrade(context.Background(), kubernetesUpgradeOptions{configPath: configPath, version: "v1.36.1-katl.1", timeout: time.Minute, output: "json"}, &stdout, &bytes.Buffer{}); err != nil {
+	if err := runKubernetesUpgrade(context.Background(), kubernetesUpgradeOptions{configPath: configPath, version: "v1.36.1", timeout: time.Minute, output: "json"}, &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(stdout.String(), "internal-") || strings.Contains(strings.ToLower(stdout.String()), "digest") {
@@ -99,6 +99,19 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 	}
 	if want := []string{"cp-1", "cp-2", "worker-1"}; !reflect.DeepEqual(executionOrder, want) {
 		t.Fatalf("execution order = %v, want %v", executionOrder, want)
+	}
+}
+
+func TestKubernetesUpgradeBundleUsesReleaseCompatibility(t *testing.T) {
+	bundle, err := kubernetesUpgradeBundle("1.36.1", "")
+	if err != nil {
+		t.Fatalf("kubernetesUpgradeBundle() error = %v", err)
+	}
+	if !strings.Contains(bundle, "v1.36.1-katl.1@sha256:") {
+		t.Fatalf("bundle = %q", bundle)
+	}
+	if _, err := kubernetesUpgradeBundle("v1.36.2", ""); err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("unavailable version error = %v", err)
 	}
 }
 

@@ -327,7 +327,11 @@ artifact.
 Set `publish: true` only for a reviewed bundle identity. The workflow refuses
 to replace either immutable GHCR tag, publishes the Katl custom bundle manifest
 as the OCI config with the sysext and metadata as layers, pulls the config back
-for byte verification, and creates a GitHub build-provenance attestation. The
+for byte verification, and creates a GitHub build-provenance attestation. It
+then records the exact version, manifest digest, architecture, and runtime
+interfaces in the embedded compatibility catalog through a ready auto-merged
+pull request. Install and upgrade clients consume that mapping; they never
+construct a `katl.1` tag from an operator-supplied Kubernetes version. The
 canonical package is `ghcr.io/katl-dev/kubernetes`. Its readable tags use the
 bundle build identity directly, for example `v1.36.0-katl.1`, while a
 second `sha256-<bundle-manifest-digest>` tag supports exact Katl resolution.
@@ -339,9 +343,11 @@ GitHub creates a new container package as private. After the first publication,
 an organization owner must make the `kubernetes` package public in its package
 settings so uncredentialed KatlOS nodes can fetch it. This is a one-time GHCR
 namespace operation. The workflow summary prints the readable and digest-pinned
-OCI bundle references for install/bootstrap manifests. Published development
-bundles remain unsigned until the signing policy lands; the GitHub attestation
-records build provenance but is not yet a trust decision enforced by `katlc`.
+OCI bundle references for release audit and expert diagnostics; ordinary
+ClusterConfig continues to contain only the Kubernetes version. Published
+development bundles remain unsigned until the signing policy lands; the GitHub
+attestation records build provenance but is not yet a trust decision enforced
+by `katlc`.
 
 The scheduled public-bundle workflow derives the selected readable tag from
 the same committed release manifest, resolves its immutable digest

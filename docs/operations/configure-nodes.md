@@ -10,12 +10,17 @@ renderer carries:
 
 - SSH authorized keys;
 - systemd-networkd files; and
-- operation-only system role and internally selected kubeadm profile state.
+- operation-only system role and role-dependent Kubernetes bootstrap state.
 
 Runtime-safe fields can apply normally. Operation-only differences are planned
 and reported as requiring an explicit lifecycle action; config apply does not
 run kubeadm. Disk/install selection and Kubernetes version changes use the
 dedicated install and Kubernetes upgrade workflows.
+
+If `spec.kubernetes.kubeadm` changes, planning reports a kubeadm-aware action.
+Normal config apply does not rewrite live kubeadm or Kubernetes state; use the
+dedicated operation for a supported change, or follow the reported manual
+boundary when Katl does not support that transition.
 
 ## Plan an Apply
 

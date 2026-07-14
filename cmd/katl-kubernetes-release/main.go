@@ -13,9 +13,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 )
 
-const defaultManifest = "mkosi.profiles/kubernetes-sysext/kubernetes.env"
+const (
+	defaultManifest             = "mkosi.profiles/kubernetes-sysext/kubernetes.env"
+	defaultCompatibilityCatalog = "internal/installer/kubernetescompat/catalog.json"
+)
 
 var payloadPattern = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
 
@@ -36,16 +41,115 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, query packageQuery) error {
 	if len(args) == 0 {
-		return errors.New("command is required: identity or prepare")
+		return errors.New("command is required: identity, prepare, or record-compatibility")
 	}
 	switch args[0] {
 	case "identity":
 		return runIdentity(args[1:], stdout, stderr)
 	case "prepare":
 		return runPrepare(args[1:], stdout, stderr, query)
+	case "record-compatibility":
+		return runRecordCompatibility(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unsupported command %q", args[0])
 	}
+}
+
+func runRecordCompatibility(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katl-kubernetes-release record-compatibility", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	catalogPath := flags.String("catalog", defaultCompatibilityCatalog, "release compatibility catalog to update")
+	payload := flags.String("payload-version", "", "exact Kubernetes payload version")
+	artifact := flags.String("artifact-version", "", "immutable Katl bundle build version")
+	manifestDigest := flags.String("manifest-digest", "", "published OCI manifest digest")
+	architecture := flags.String("architecture", "x86_64", "supported architecture")
+	runtimeInterfaces := flags.String("runtime-interfaces", "katl-runtime-1", "comma-separated supported KatlOS runtime interfaces")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if payloadPattern.FindStringSubmatch(strings.TrimSpace(*payload)) == nil {
+		return fmt.Errorf("--payload-version must look like v1.36.1")
+	}
+	wantArtifactPrefix := strings.TrimSpace(*payload) + "-katl."
+	if !strings.HasPrefix(strings.TrimSpace(*artifact), wantArtifactPrefix) {
+		return fmt.Errorf("--artifact-version must look like %s1", wantArtifactPrefix)
+	}
+	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(strings.TrimSpace(*manifestDigest)) {
+		return fmt.Errorf("--manifest-digest must be a sha256 OCI manifest digest")
+	}
+	interfaces := splitNonEmpty(*runtimeInterfaces)
+	if len(interfaces) == 0 {
+		return fmt.Errorf("--runtime-interfaces must contain at least one value")
+	}
+	data, err := os.ReadFile(*catalogPath)
+	if err != nil {
+		return fmt.Errorf("read compatibility catalog: %w", err)
+	}
+	catalog, err := kubernetescompat.Decode(data)
+	if err != nil {
+		return err
+	}
+	entry := kubernetescompat.Entry{
+		KubernetesVersion: strings.TrimSpace(*payload),
+		Bundle:            "ghcr.io/katl-dev/kubernetes:" + strings.TrimSpace(*artifact) + "@" + strings.TrimSpace(*manifestDigest),
+		Architectures:     []string{strings.TrimSpace(*architecture)},
+		RuntimeInterfaces: interfaces,
+	}
+	catalog, err = kubernetescompat.Upsert(catalog, entry)
+	if err != nil {
+		return err
+	}
+	updated, err := kubernetescompat.Marshal(catalog)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(data, updated) {
+		fmt.Fprintf(stdout, "compatibility already records %s as %s\n", entry.KubernetesVersion, entry.Bundle)
+		return nil
+	}
+	info, err := os.Stat(*catalogPath)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(*catalogPath), ".kubernetes-compatibility-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(updated); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, *catalogPath); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "recorded %s as %s\n", entry.KubernetesVersion, entry.Bundle)
+	return nil
+}
+
+func splitNonEmpty(value string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	return out
 }
 
 func runIdentity(args []string, stdout, stderr io.Writer) error {

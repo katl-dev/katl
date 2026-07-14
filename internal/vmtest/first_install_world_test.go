@@ -511,7 +511,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 
 	handoff, err := planFirstInstallWorldRun(world, "local mkosi handoff", repo, NodeSpec{Name: "cp-2", Role: ControlPlane}, firstInstallWorldInput{
 		Mode:              firstInstallWorldGuestHandoff,
-		KubernetesVersion: "v1.35.9",
+		KubernetesVersion: "v1.36.1",
 		TargetDiskSize:    "20G",
 	}, KVMOff)
 	if err != nil {
@@ -523,7 +523,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if handoff.Config.ConfigBundle == "" || handoff.Config.SelectedNode != "cp-2" {
 		t.Fatalf("handoff bundle input = %#v", handoff.Config)
 	}
-	if data, err := os.ReadFile(filepath.Join(filepath.Dir(handoff.Config.ManifestPath), "kubeadm", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "kubernetesVersion: v1.35.9") {
+	if data, err := os.ReadFile(filepath.Join(filepath.Dir(handoff.Config.ManifestPath), "kubeadm", "control-plane.yaml")); err != nil || !strings.Contains(string(data), "kubernetesVersion: v1.36.1") {
 		t.Fatalf("handoff kubeadm version override = %q, err = %v", data, err)
 	}
 }

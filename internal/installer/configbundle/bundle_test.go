@@ -56,8 +56,11 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 	if len(bundle.Nodes[0].KubeadmInputs) != 1 || bundle.Nodes[0].KubeadmInputs[0].Annotations["dev.katl.kubeadm.resolved-id"] != "control-plane" {
 		t.Fatalf("control-plane kubeadm inputs = %#v", bundle.Nodes[0].KubeadmInputs)
 	}
-	if bundle.Cluster.KubernetesPayloads[0].OCIManifestDigest != "" || bundle.Cluster.KubernetesPayloads[0].ArtifactVersion != "v1.36.1-katl.1" {
+	if bundle.Cluster.KubernetesPayloads[0].OCIManifestDigest != "sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537" || bundle.Cluster.KubernetesPayloads[0].ArtifactVersion != "v1.36.1-katl.1" {
 		t.Fatalf("kubernetes payloads = %#v", bundle.Cluster.KubernetesPayloads)
+	}
+	if payload := bundle.Cluster.KubernetesPayloads[0]; payload.ResolverVersion != "release-compatibility-v1" || payload.Architecture != "x86_64" || len(payload.SupportedRuntimeInterfaces) != 1 || payload.SupportedRuntimeInterfaces[0] != "katl-runtime-1" {
+		t.Fatalf("resolved Kubernetes compatibility = %#v", payload)
 	}
 	if !hasDescriptor(bundle.Descriptors, "source-normalized", "source/cluster.normalized.yaml") ||
 		!hasDescriptor(bundle.Descriptors, "node-install-material", "nodes/cp-1/install/material.json") ||
@@ -69,6 +72,104 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 		if _, ok := files[blobPath]; !ok {
 			t.Fatalf("descriptor %s missing blob %s", desc.FileName, blobPath)
 		}
+	}
+}
+
+func TestBuildArchiveCompilesBoundedNativeKubeadmInputByRole(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "kubeadm.yaml")
+	writeFile(t, configPath, `apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+apiServer:
+  extraArgs:
+    - name: profiling
+      value: "false"
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+shutdownGracePeriod: 45s
+`)
+	patchesDir := filepath.Join(dir, "kubeadm-patches")
+	if err := os.MkdirAll(patchesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(patchesDir, "kube-apiserver0+merge.yaml"), "metadata:\n  labels:\n    katl.dev/profile: homelab\n")
+	writeFile(t, filepath.Join(patchesDir, "kubeletconfiguration0+merge.yaml"), "shutdownGracePeriod: 45s\n")
+	source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml\n      patchesDir: ./kubeadm-patches", 1)
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	writeFile(t, sourcePath, source)
+	archive, result, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+
+	controlPlane, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode(control-plane) error = %v", err)
+	}
+	cp := controlPlane.KubeadmConfigs["control-plane"]
+	cpConfig := string(cp.Config.Content)
+	for _, want := range []string{"kind: InitConfiguration", "kind: ClusterConfiguration", "kubernetesVersion: v1.36.1", "name: profiling", "kind: KubeletConfiguration", "directory: /etc/katl/kubeadm/control-plane/patches"} {
+		if !strings.Contains(cpConfig, want) {
+			t.Fatalf("control-plane kubeadm input missing %q:\n%s", want, cpConfig)
+		}
+	}
+	if len(cp.Patches) != 2 || cp.Patches[0].RenderPath != "/etc/katl/kubeadm/control-plane/patches/kube-apiserver0+merge.yaml" {
+		t.Fatalf("control-plane patches = %#v", cp.Patches)
+	}
+
+	worker, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "worker-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode(worker) error = %v", err)
+	}
+	workerPlan := worker.KubeadmConfigs["worker"]
+	workerConfig := string(workerPlan.Config.Content)
+	for _, want := range []string{"kind: JoinConfiguration", "kind: KubeletConfiguration", "directory: /etc/katl/kubeadm/worker/patches"} {
+		if !strings.Contains(workerConfig, want) {
+			t.Fatalf("worker kubeadm input missing %q:\n%s", want, workerConfig)
+		}
+	}
+	if strings.Contains(workerConfig, "kind: ClusterConfiguration") || strings.Contains(workerConfig, "name: profiling") {
+		t.Fatalf("worker kubeadm input contains control-plane documents:\n%s", workerConfig)
+	}
+	if len(workerPlan.Patches) != 1 || workerPlan.Patches[0].RenderPath != "/etc/katl/kubeadm/worker/patches/kubeletconfiguration0+merge.yaml" {
+		t.Fatalf("worker patches = %#v", workerPlan.Patches)
+	}
+
+	writeFile(t, filepath.Join(patchesDir, "kubeletconfiguration0+merge.yaml"), "shutdownGracePeriod: 60s\n")
+	_, changed, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive(changed kubeadm input) error = %v", err)
+	}
+	if changed.Manifest.Source.SourceDigest == result.Manifest.Source.SourceDigest {
+		t.Fatalf("source digest did not change with referenced kubeadm input: %s", changed.Manifest.Source.SourceDigest)
+	}
+}
+
+func TestBuildArchiveRejectsUnsafeAdvancedKubeadmInput(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "kubeadm.yaml"), `apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+apiServer:
+  extraVolumes:
+    - name: host-ssh
+      hostPath: /etc/ssh
+      mountPath: /safe/in-container
+`)
+	source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml", 1)
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	writeFile(t, sourcePath, source)
+	_, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err == nil || !strings.Contains(err.Error(), "host path /etc/ssh is denied") {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+}
+
+func TestBuildArchiveRejectsEmptyAdvancedKubeadmInput(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm: {}", 1)
+	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+	if err == nil || !strings.Contains(err.Error(), "spec.kubernetes.kubeadm.configFile is required") {
+		t.Fatalf("BuildArchive() error = %v", err)
 	}
 }
 
@@ -101,7 +202,7 @@ spec:
 	if result.Manifest.Cluster.BootstrapInventory.ControlPlaneEndpoint != "192.0.2.11:6443" {
 		t.Fatalf("bootstrap inventory = %#v", result.Manifest.Cluster.BootstrapInventory)
 	}
-	if len(result.Manifest.Cluster.KubernetesPayloads) != 1 || result.Manifest.Cluster.KubernetesPayloads[0].Ref != DefaultKubernetesBundle {
+	if len(result.Manifest.Cluster.KubernetesPayloads) != 1 || !strings.Contains(result.Manifest.Cluster.KubernetesPayloads[0].Ref, "v1.36.1-katl.1@sha256:") {
 		t.Fatalf("Kubernetes payloads = %#v", result.Manifest.Cluster.KubernetesPayloads)
 	}
 	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
@@ -346,7 +447,7 @@ func TestSourceSchemaGolden(t *testing.T) {
 		}
 	}
 	got := fmt.Sprintf("%x", sha256.Sum256(data))
-	const want = "14d55c950a63f6c195faec4846f78eebb0119a3a923b811d80ce642031d3b68f"
+	const want = "a131b02e81d1b2cf68cd7d55b032fb714a597e01d03b99892611c0370d1679c7"
 	if got != want {
 		t.Fatalf("schema SHA-256 = %s, want %s; review the authoring contract before accepting a new golden", got, want)
 	}

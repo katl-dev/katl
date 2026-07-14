@@ -1471,6 +1471,7 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 	return configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
 		NodeName:       selected.Node.Name,
 		Manifest:       selected.InstallManifest,
+		KubeadmConfigs: selected.KubeadmConfigs,
 		SourceID:       sourceID,
 		DesiredVersion: opts.desiredVersion,
 		ApplyMode:      mode,

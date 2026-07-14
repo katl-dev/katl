@@ -35,11 +35,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
+      actions: write
       artifact-metadata: write
       attestations: write
-      contents: read
+      contents: write
       id-token: write
       packages: write
+      pull-requests: write
 
     env:
       DISPATCH_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
@@ -359,3 +361,71 @@ jobs:
           subject-name: ${{ env.OCI_REPOSITORY }}
           subject-digest: ${{ steps.publish.outputs.manifest-digest }}
           push-to-registry: true
+
+      - name: Record published compatibility
+        if: ${{ env.PUBLISH == 'true' }}
+        id: compatibility
+        shell: bash
+        env:
+          BUNDLE_DIR: ${{ steps.bundle.outputs.bundle-dir }}
+          MANIFEST_DIGEST: ${{ steps.publish.outputs.manifest-digest }}
+        run: |
+          runtime_interfaces="$(jq -r '.supportedRuntimeInterfaces | join(",")' "${BUNDLE_DIR}/catalog-entry.json")"
+          go run ./cmd/katl-kubernetes-release record-compatibility \
+            --payload-version "$PAYLOAD_VERSION" \
+            --artifact-version "$ARTIFACT_VERSION" \
+            --manifest-digest "$MANIFEST_DIGEST" \
+            --architecture "$KATL_ARCHITECTURE" \
+            --runtime-interfaces "$runtime_interfaces"
+          if git diff --quiet -- internal/installer/kubernetescompat/catalog.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish compatibility update branch
+        if: ${{ steps.compatibility.outputs.changed == 'true' }}
+        id: compatibility-branch
+        shell: bash
+        run: |
+          branch="automation/kubernetes-compatibility-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add internal/installer/kubernetescompat/catalog.json
+          git commit -m "release: record Kubernetes ${PAYLOAD_VERSION} compatibility"
+          git push --set-upstream origin "$branch"
+          echo "name=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Open compatibility pull request
+        if: ${{ steps.compatibility.outputs.changed == 'true' }}
+        uses: actions/github-script@v8
+        env:
+          HEAD_BRANCH: ${{ steps.compatibility-branch.outputs.name }}
+        with:
+          script: |
+            const { data: pull } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              base: "main",
+              head: process.env.HEAD_BRANCH,
+              title: `release: select Kubernetes ${process.env.PAYLOAD_VERSION}`,
+              body: "Selects the newly published immutable Kubernetes bundle and records its KatlOS runtime compatibility for version-only install and upgrade resolution.",
+              draft: false,
+            });
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "fast-checks.yml",
+              ref: process.env.HEAD_BRANCH,
+            });
+            await github.graphql(`
+              mutation($pullRequestId: ID!) {
+                enablePullRequestAutoMerge(input: {
+                  pullRequestId: $pullRequestId,
+                  mergeMethod: SQUASH
+                }) {
+                  pullRequest { number }
+                }
+              }
+            `, { pullRequestId: pull.node_id });

@@ -14,33 +14,24 @@ generations and then coordinate kubeadm init/join.
 
 ## Decision
 
-Kubeadm configuration is an implementation-native Katl configuration object
-that points to native kubeadm YAML files in the user's config repository.
-
-User-facing node intent references a Katl bootstrap profile, not a kubeadm
-command or flag shape:
+The ordinary path is Katl-owned complete kubeadm configuration selected from a
+node's `systemRole`. The bounded advanced path adds one native input to
+`ClusterConfig` without exposing Katl's internal names or references:
 
 ```yaml
-kubernetes:
-  bootstrap:
-    profileRef: control-plane
-```
-
-The bootstrap profile resolves to a native `KubeadmConfig` object for the
-current kubeadm backend. That referenced object owns file locations in the
-config repository:
-
-```yaml
-apiVersion: config.katl.dev/v1alpha1
-kind: KubeadmConfig
-metadata:
-  name: control-plane
 spec:
-  configFile: kubeadm/control-plane.yaml
-  patchesDir: kubeadm/patches/control-plane
+  kubernetes:
+    version: v1.36.1
+    kubeadm:
+      configFile: ./kubeadm.yaml
+      patchesDir: ./kubeadm-patches
 ```
 
-`kubeadm/control-plane.yaml` is native kubeadm YAML, not YAML embedded as a
+The paths are resolved relative to the `ClusterConfig` file and embedded into
+the compiled `.katlcfg`. They are not runtime host paths. `patchesDir` is
+optional; setting it requires `configFile`.
+
+`kubeadm.yaml` is native kubeadm YAML, not YAML embedded as a
 string inside Katl YAML:
 
 ```yaml
@@ -64,16 +55,20 @@ cgroupDriver: systemd
 Katl renders the selected config into generated confext under:
 
 ```text
-/etc/katl/kubeadm/<name>/config.yaml
-/etc/katl/kubeadm/<name>/patches/
-```
-
-For the example above:
-
-```text
 /etc/katl/kubeadm/control-plane/config.yaml
 /etc/katl/kubeadm/control-plane/patches/
+/etc/katl/kubeadm/worker/config.yaml
+/etc/katl/kubeadm/worker/patches/
 ```
+
+Katl splits the native documents by role. Control-plane input contains
+`InitConfiguration`, `ClusterConfiguration`, and any common kubelet or
+kube-proxy document. Worker input contains `JoinConfiguration` and common
+documents. Missing role documents, the selected Kubernetes version, the
+containerd CRI socket, and safe patch paths are supplied by Katl. Control-plane
+join material is derived from the selected init input. Tokens, discovery
+hashes, and certificate keys are injected only by the accepted bootstrap
+operation and are never read from ClusterConfig.
 
 The rendered path is stable for node-local `katlc` operation wrappers:
 
@@ -100,9 +95,9 @@ generation activation, or the kubeadm-ready target.
 Katl owns:
 
 ```text
-bootstrap profile naming and references
-KubeadmConfig object resolution for the kubeadm backend
-repository-local file resolution
+complete default control-plane and worker kubeadm input
+internal profile naming and role selection
+ClusterConfig-relative file resolution and bundle embedding
 kubeadm config parsing and compatibility validation
 safe render paths under /etc/katl/kubeadm/
 generated confext staging and generation selection
@@ -126,6 +121,7 @@ bootstrap is defined in
 The operator owns:
 
 ```text
+optional native kubeadm settings and patches
 when to run kubeadm init or join
 when to run kubeadm upgrade or other cluster reconfiguration
 cluster add-ons, CNI, GitOps, workloads, and ongoing Kubernetes lifecycle after
@@ -134,7 +130,7 @@ bootstrap
 
 ## Validation
 
-Katl should parse the referenced kubeadm YAML as multi-document YAML and reject
+Katl parses the referenced kubeadm YAML as multi-document YAML and rejects
 inputs that violate the runtime OS boundary.
 
 Allowed document families for the first implementation:
@@ -181,11 +177,13 @@ immutable, or kubeadm-output paths. Denied host paths include:
 Kubeadm may create output under `/etc/kubernetes` at runtime. Katl-generated
 confext must not pre-create or overwrite that output.
 
-For kubeadm patches, Katl should copy only regular files from the declared
-`patchesDir`, reject path traversal and symlinks, and render them under the
-selected config directory. If the kubeadm YAML declares an explicit patch
-directory, it must either match the rendered `/etc/katl/kubeadm/<name>/patches`
-path or fail validation. Katl should not allow arbitrary patch directories.
+For kubeadm patches, Katl copies only regular files from the declared
+`patchesDir`, rejects path traversal and symlinks, and renders them under the
+selected role directory. Operator input omits `patches.directory`; Katl writes
+the role-specific `/etc/katl/kubeadm/<role>/patches` path while compiling the
+bundle. Control-plane profiles receive the full patch set; worker profiles
+receive only `kubeletconfiguration` patches. Arbitrary patch directories are
+not accepted.
 
 For kubeadm `extraVolumes` or other host-path-like fields, Katl should allow
 only paths that are already part of the kubeadm contract or explicitly
@@ -197,9 +195,9 @@ is present and conflicts with the selected Kubernetes sysext payload version,
 validation must fail before install or runtime config activation. For first
 install, the selected payload version comes from Katl bootstrap intent and the
 exact matching Kubernetes payload bundle fetched and verified by `katlc`. Katl
-may normalize manifest `1.36.0` to kubeadm's `v1.36.0` form for comparison, but
-it must not use sentinel values or a day-one catalog resolver inside native
-kubeadm YAML.
+may normalize manifest `1.36.0` to kubeadm's `v1.36.0` form for comparison.
+Release compatibility resolution selects the bundle outside native kubeadm
+YAML; no catalog references or sentinel values are written into it.
 
 The CRI socket should default to containerd's socket. A different CRI socket is
 deferred until Katl intentionally supports another runtime.
@@ -210,8 +208,8 @@ Generated confext renders kubeadm input files as regular read-only config under
 `/etc/katl`:
 
 ```text
-/etc/katl/kubeadm/<name>/config.yaml
-/etc/katl/kubeadm/<name>/patches/<patch-files>
+/etc/katl/kubeadm/<role>/config.yaml
+/etc/katl/kubeadm/<role>/patches/<patch-files>
 ```
 
 Suggested modes:
@@ -233,9 +231,9 @@ A runtime configuration update can change the desired kubeadm input:
 
 ```text
 new Katl YAML/configuration
-katlc validates KubeadmConfig
+katlctl validates and compiles the bounded native kubeadm input
 katlc renders a new generated confext generation
-/etc/katl/kubeadm/<name>/config.yaml changes after activation
+/etc/katl/kubeadm/<role>/config.yaml changes after activation
 ```
 
 That does not reconfigure a running cluster by itself.
@@ -281,15 +279,15 @@ The supported v0.1 live control-plane reconfiguration surface, serial rollout,
 and rollback boundary are defined by
 `docs/internal/adrs/adr-010-kubeadm-control-plane-config-operation.md`.
 
-Rolling back rendered `/etc/katl/kubeadm/<name>/config.yaml` restores desired
+Rolling back rendered `/etc/katl/kubeadm/<role>/config.yaml` restores desired
 input only. It does not restore kubeadm output, kubelet runtime config, etcd
 contents, or kubeadm-managed ConfigMaps. Applying or undoing those live changes
 requires an explicit kubeadm-aware operation.
 
 ## Test Harness Use
 
-The single-node API smoke should use a test fixture `KubeadmConfig` and then
-drive the same explicit bootstrap path used by operators:
+The single-node API smoke should use a ClusterConfig with bounded native
+kubeadm input and then drive the same explicit bootstrap path used by operators:
 
 ```text
 run katlctl cluster bootstrap against the installed generation 0 node
@@ -306,25 +304,13 @@ This keeps the smoke test honest: Katl proves it can deliver validated kubeadm
 input and a kubeadm-ready OS; `katlctl` proves the explicit control-client
 boundary; kubeadm proves it can bootstrap the control plane.
 
-## Open Questions
+## Deliberate Boundaries
 
-1. Should `katlc` allow multiple `KubeadmConfig` objects to be installed on one
-   node?
-
-   Initial recommendation: yes, as long as node config selects one default
-   bootstrap `profileRef`. Installing multiple named configs is useful for test
-   fixtures and for operators who want both init and join material available,
-   but Katl should not choose the action.
-
-2. Should Katl rewrite `kubernetesVersion: sysext` in native kubeadm YAML?
-
-   Initial recommendation: avoid sentinel values inside kubeadm YAML. Prefer
-   omitting `kubernetesVersion` or writing the concrete selected sysext version
-   during `katlc` generation. If a shorthand is needed, make it a Katl wrapper
-   field on `KubeadmConfig`, not a fake kubeadm value.
-
-3. How should sensitive kubeadm bootstrap values be supplied?
-
-   Initial recommendation: keep them out of the first API. Operator-run
-   bootstrap tools can pass tokens and certificate keys at action time. A later
-   secret design can add encrypted or external secret references.
+- ClusterConfig exposes one cluster-wide native file and patch directory, not
+  multiple named objects or per-node references.
+- Katl writes the concrete selected Kubernetes version; native sentinel values
+  are not accepted.
+- Bootstrap tokens, discovery hashes, and certificate keys remain operation
+  inputs and are never stored in source configuration.
+- Accepting desired native input does not expand the supported live
+  reconfiguration allowlist in ADR-010.

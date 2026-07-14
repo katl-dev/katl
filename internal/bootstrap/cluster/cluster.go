@@ -1312,6 +1312,9 @@ func synthesizeJoinConfig(initDoc map[string]any) map[string]any {
 	if nodeRegistration, ok := initDoc["nodeRegistration"].(map[string]any); ok {
 		doc["nodeRegistration"] = nodeRegistration
 	}
+	if patches, ok := initDoc["patches"].(map[string]any); ok {
+		doc["patches"] = patches
+	}
 	return doc
 }
 

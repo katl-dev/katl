@@ -255,18 +255,19 @@ Add `--plan` to check the upgrade without changing or rebooting the node. The
 node calculates and records image identity internally before changing the
 inactive root slot.
 
-Kubernetes upgrades use the workstation cluster context and a readable bundle
-reference. Plan the whole control-plane-first rollout without supplying bundle
+Kubernetes upgrades use the workstation cluster context and an exact Kubernetes
+version. Plan the whole control-plane-first rollout without supplying bundle
 digests, artifact paths, snapshot metadata, generation IDs, or operation IDs:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1-katl.1 --plan
+katlctl kubernetes upgrade v1.36.1 --plan
 ```
 
 Remove `--plan` to run the complete control-plane-first, worker-second rollout.
-The command upgrades and reboots one node at a time, requires boot health before
-continuing, and stops on the first failure. Each node fetches the selected
-bundle itself; control-plane nodes capture pre-mutation etcd snapshot evidence.
+Katl resolves the release-owned immutable bundle and runtime compatibility,
+upgrades one node online at a time, and stops on the first failure. Each node
+fetches the selected bundle itself; control-plane nodes capture pre-mutation
+etcd snapshot evidence.
 See [Upgrade Kubernetes](docs/operations/upgrade-kubernetes.md).
 
 Mutating commands follow the node's durable operation to completion by default.

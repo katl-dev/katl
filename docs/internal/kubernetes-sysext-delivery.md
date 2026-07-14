@@ -862,22 +862,32 @@ OCI in GHCR is the canonical publication shape. Each project-minted bundle kind
 uses a clearly named package; Kubernetes is `ghcr.io/katl-dev/kubernetes`. A
 Kubernetes bundle has a human-facing `vMAJOR.MINOR.PATCH-katl.BUILD` tag and a
 mandatory `sha256-<bundle-manifest-digest>` resolver tag. End users provide the
-readable OCI image reference, optionally pinned to its OCI manifest digest;
-`katlc` requires the Katl bundle manifest to be the resolved config. GitHub Releases or a static HTTPS
-layout may mirror the same bytes later, but they are not the primary store.
+Kubernetes version; the matching Katl release resolves it to a readable OCI tag
+and immutable manifest digest. Expert operation APIs may still carry an
+explicit reference. `katlc` requires the Katl bundle manifest to be the resolved
+config. GitHub Releases or a static HTTPS layout may mirror the same bytes
+later, but they are not the primary store.
 
 The readable tag deliberately retains the exact Kubernetes patch version.
 Renovate's Docker datasource preserves tag precision and treats the hyphenated
 suffix as compatibility, so `v1.36.0-katl.1` can advance to
-`v1.36.1-katl.1`. Consumers should pair that readable dependency with a digest
-pin. Katl separately verifies and records the custom bundle manifest digest.
+`v1.36.1-katl.1`. The release catalog pairs that readable identity with its
+digest pin. Katl separately verifies and records the custom bundle manifest
+digest.
 
 The OCI manifest digest is the distribution digest. The sysext payload digest is
 still recorded as the activation digest in bundle metadata, catalog data, and
 generation records after `katlc` stages the payload locally.
 
+The release-owned compatibility catalog maps exact Kubernetes version to OCI
+bundle identity, manifest digest, architectures, and supported KatlOS runtime
+interfaces. It is embedded in `katlctl`, is not a ClusterConfig input, and is
+updated by a ready auto-merged PR after the producer publishes and verifies a
+new immutable bundle. Missing versions and incompatible runtimes fail before an
+install or upgrade operation is accepted.
+
 The catalog is authoritative for discovery, not for trust by itself. Consumers
-must still verify the referenced sysext digest and, once signing is enabled,
+still verify the referenced OCI and sysext digests and, once signing is enabled,
 verify the catalog or artifact signatures before staging or activation.
 
 ## Version Bumps

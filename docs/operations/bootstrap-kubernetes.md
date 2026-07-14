@@ -8,14 +8,14 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 - every intended node completed [generation 0 handoff](access.md);
 - the same `ClusterConfig` source used for installation is available;
 - `katlctl cluster enroll ./cluster.yaml` completed successfully;
-- the Kubernetes bundle reference names a version compatible with the KatlOS
-  runtime;
+- `spec.kubernetes.version` is available in this Katl release's compatibility
+  catalog;
 - the control-plane endpoint resolves or routes as designed; and
 - independent recovery/backup expectations are understood.
 
-Katl fetches the Kubernetes bundle during this operation. Nodes need registry
-and CA access to `ghcr.io` unless the bundle is supplied through an explicitly
-supported local mechanism.
+Katl resolves and fetches the immutable Kubernetes bundle during this
+operation. Nodes need registry and CA access to `ghcr.io` unless the bundle is
+supplied through an explicitly supported local mechanism.
 
 ## Review Changed Intent
 
@@ -41,9 +41,9 @@ The enrolled `file:` credential references are read automatically. Use
 `--node-address node=address` only for an observed address that differs from the
 compiled source.
 
-Review the plan, selected init node, node order, control-plane endpoint,
-Kubernetes version, and bundle reference. A dry run must not create generation
-1 or invoke kubeadm.
+Review the plan, selected init node, node order, control-plane endpoint, and
+Kubernetes version. Katl records the resolved bundle identity internally. A dry
+run must not create generation 1 or invoke kubeadm.
 
 ## Execute Bootstrap
 

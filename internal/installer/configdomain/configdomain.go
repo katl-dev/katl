@@ -24,6 +24,13 @@ type RenderRequest struct {
 func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 	files := networkdFiles(request.Manifest.Node.Networkd)
 	files = append(files, sysctlFiles(request.Manifest.Node.Sysctl)...)
+	files = append(files, confext.NativeEtcFile{
+		Path:    "/etc/hostname",
+		Content: request.Manifest.Node.Identity.Hostname + "\n",
+		Mode:    0o644,
+		UID:     0,
+		GID:     0,
+	})
 	identity, err := generation.RenderSSH(request.Manifest.Node.Identity.SSH.AuthorizedKeys)
 	if err != nil {
 		return nil, err

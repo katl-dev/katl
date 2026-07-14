@@ -99,6 +99,11 @@
       },
       "nativeEtcFiles": [
         {
+          "path": "/etc/hostname",
+          "content": "cp-1-host\n",
+          "mode": 420
+        },
+        {
           "path": "/etc/katl/node.json",
           "content": "{\n  \"apiVersion\": \"katl.dev/v1alpha1\",\n  \"kind\": \"NodeMetadata\",\n  \"identity\": {\n    \"hostname\": \"cp-1-host\"\n  },\n  \"systemRole\": \"control-plane\",\n  \"kubeadm\": {\n    \"configRef\": \"control-plane\",\n    \"configPath\": \"/etc/katl/kubeadm/control-plane/config.yaml\",\n    \"intent\": \"control-plane\"\n  },\n  \"kubernetes\": {\n    \"payloadVersion\": \"v1.36.1\",\n    \"activationPath\": \"/run/extensions/katl-kubernetes.raw\"\n  }\n}\n",
           "mode": 420
@@ -212,6 +217,11 @@
         }
       },
       "nativeEtcFiles": [
+        {
+          "path": "/etc/hostname",
+          "content": "worker-1\n",
+          "mode": 420
+        },
         {
           "path": "/etc/katl/node.json",
           "content": "{\n  \"apiVersion\": \"katl.dev/v1alpha1\",\n  \"kind\": \"NodeMetadata\",\n  \"identity\": {\n    \"hostname\": \"worker-1\"\n  },\n  \"systemRole\": \"worker\",\n  \"kubeadm\": {\n    \"configRef\": \"worker\",\n    \"configPath\": \"/etc/katl/kubeadm/worker/config.yaml\",\n    \"intent\": \"worker\"\n  },\n  \"kubernetes\": {\n    \"payloadVersion\": \"v1.36.1\",\n    \"activationPath\": \"/run/extensions/katl-kubernetes.raw\"\n  }\n}\n",
