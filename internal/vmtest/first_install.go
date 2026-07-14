@@ -23,23 +23,24 @@ import (
 )
 
 type FirstInstallConfig struct {
-	Installer       InstallerBootConfig
-	Runtime         InstalledRuntimeConfig
-	UseInstalledESP bool
-	ESPExtractor    InstalledESPExtractor
-	Manifest        []byte
-	ManifestPath    string
-	ConfigBundle    string
-	SelectedNode    string
-	GuestHandoff    bool
-	PreseedManifest bool
-	HandoffURL      string
-	HandoffPoster   func(context.Context, string, []byte) (int, string, error)
-	TargetDisk      DiskFixture
-	DiskRunner      DiskRunner
-	PreseedRunner   DiskRunner
-	InstallerRunner VMRunner
-	RuntimeRunner   VMRunner
+	Installer           InstallerBootConfig
+	Runtime             InstalledRuntimeConfig
+	UseInstalledESP     bool
+	ESPExtractor        InstalledESPExtractor
+	Manifest            []byte
+	ManifestPath        string
+	ConfigBundle        string
+	SelectedNode        string
+	GuestHandoff        bool
+	PreseedManifest     bool
+	RebootIntoInstalled bool
+	HandoffURL          string
+	HandoffPoster       func(context.Context, string, []byte) (int, string, error)
+	TargetDisk          DiskFixture
+	DiskRunner          DiskRunner
+	PreseedRunner       DiskRunner
+	InstallerRunner     VMRunner
+	RuntimeRunner       VMRunner
 }
 
 type InstalledESPExtractor func(context.Context, DiskPlan, string) (string, error)
@@ -96,6 +97,18 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 			config.Installer.Expect = firstInstallCompletedSignal(config)
 		}
 	}
+	if config.RebootIntoInstalled {
+		if config.Installer.InstallerISO == "" {
+			return failFirst(runner, scenario, result, "installer", errors.New("observing the installed reboot requires installer ISO media"))
+		}
+		installedSignal := first(config.Runtime.VM.Expect, config.Runtime.Expect)
+		if installedSignal == "" {
+			return failFirst(runner, scenario, result, "installer", errors.New("observing the installed reboot requires an installed boot signal"))
+		}
+		config.Installer.Expect = installedSignal
+		config.Installer.VM.Expect = installedSignal
+		config.Installer.DiskFirst = true
+	}
 	if config.GuestHandoff {
 		preseed, err := writeGuestHandoffSeedMedia(ctx, result, config, manifest)
 		if err != nil {
@@ -138,6 +151,23 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		}
 		now := runner.time()
 		result.addPhase("local-handoff", StatusPassed, "", now, now)
+	}
+	if config.RebootIntoInstalled {
+		if err := copyArtifact(result.Artifacts.InstallerSerial, result.Artifacts.RuntimeSerial); err != nil {
+			return failFirst(runner, scenario, result, "installed-reboot", err)
+		}
+		if err := copyArtifact(result.Artifacts.LaunchCommand, result.Artifacts.RuntimeLaunchCommand); err != nil {
+			return failFirst(runner, scenario, result, "installed-reboot", err)
+		}
+		now := runner.time()
+		result.addPhase("installed-reboot", StatusPassed, "", now, now)
+		if err := CleanupDisks(result); err != nil {
+			return failFirst(runner, scenario, result, "cleanup", err)
+		}
+		if err := runner.Write(scenario, result); err != nil {
+			return result, err
+		}
+		return result, nil
 	}
 	if config.UseInstalledESP {
 		esp, err := extractInstalledESP(ctx, result, config)

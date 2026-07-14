@@ -329,6 +329,9 @@ func TestMetadataWriters(t *testing.T) {
 	if rootMetadata.CompatibleBoot == nil || rootMetadata.CompatibleBoot.Kind != "uki" {
 		t.Fatalf("runtime root boot compatibility = %#v", rootMetadata.CompatibleBoot)
 	}
+	if got := strings.Join(rootMetadata.CompatibleBoot.KernelCommandLine, " "); !strings.Contains(got, "console=ttyS0,115200n8 console=tty0") {
+		t.Fatalf("runtime root kernel command line = %q", got)
+	}
 
 	stdout.Reset()
 	if err := run([]string{
@@ -350,6 +353,9 @@ func TestMetadataWriters(t *testing.T) {
 	}
 	if ukiMetadata.KernelVersion != "6.12.0" {
 		t.Fatalf("kernelVersion = %q", ukiMetadata.KernelVersion)
+	}
+	if got := strings.Join(ukiMetadata.KernelCommandLine, " "); !strings.Contains(got, "console=ttyS0,115200n8 console=tty0") {
+		t.Fatalf("runtime UKI kernel command line = %q", got)
 	}
 
 	stdout.Reset()

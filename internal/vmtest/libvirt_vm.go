@@ -20,6 +20,7 @@ import (
 type VMBoot struct {
 	UKI           string
 	ISO           string
+	DiskFirst     bool
 	Kernel        string
 	Initrd        string
 	CommandLine   []string
@@ -1402,6 +1403,10 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
 		}
 	} else if boot.ISO != "" {
+		isoBootOrder := 1
+		if boot.DiskFirst {
+			isoBootOrder = 2
+		}
 		disks = append(disks, libvirtDisk{
 			Path:      boot.ISO,
 			Format:    DiskRaw,
@@ -1409,7 +1414,7 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 			Device:    "cdrom",
 			Bus:       "sata",
 			ReadOnly:  true,
-			BootOrder: 1,
+			BootOrder: isoBootOrder,
 		})
 		if boot.Image != "" {
 			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
@@ -1453,6 +1458,14 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 	}
 	if diskErr != nil {
 		return nil, "", "", "", "", diskErr
+	}
+	if boot.ISO != "" && boot.DiskFirst {
+		for i := range disks {
+			if disks[i].Device == "" {
+				disks[i].BootOrder = 1
+				break
+			}
+		}
 	}
 	return disks, efiTree, efiImage, preseedImage, preseedDir, nil
 }

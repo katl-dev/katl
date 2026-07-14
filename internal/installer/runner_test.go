@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -77,6 +78,54 @@ func TestPreseededManifestPlanSkipsLocalConfigWait(t *testing.T) {
 
 	if got := PreseededManifestPlan().IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreseededManifestPlan IDs = %#v, want %#v", got, want)
+	}
+}
+
+func TestRebootPersistsStatusBeforeRequest(t *testing.T) {
+	store := &MemoryStateStore{}
+	commands := &rebootCommandRunner{store: store}
+	install := &Context{Commands: commands, Store: store}
+
+	if err := (rebootStep{}).Run(context.Background(), install); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	want := []CommandCall{
+		{Name: "sync"},
+		{Name: "systemctl", Args: []string{"--no-block", "reboot"}},
+	}
+	if !reflect.DeepEqual(commands.calls, want) {
+		t.Fatalf("command calls = %#v, want %#v", commands.calls, want)
+	}
+	if commands.statusAtReboot != installstatus.StateRebootRequested {
+		t.Fatalf("status at reboot request = %q, want %q", commands.statusAtReboot, installstatus.StateRebootRequested)
+	}
+	if commands.statusAtSync != installstatus.StateRebootRequested {
+		t.Fatalf("status at sync = %q, want persisted reboot status", commands.statusAtSync)
+	}
+}
+
+func TestRebootRequestFailureIsRecorded(t *testing.T) {
+	store := &MemoryStateStore{}
+	commands := &rebootCommandRunner{store: store, rebootErr: errors.New("reboot transaction rejected")}
+	install := &Context{
+		Commands:  commands,
+		Store:     store,
+		Completed: []StepID{PrepareDisk},
+	}
+
+	err := NewRunner(Plan{rebootStep{}}, install).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "request system reboot: reboot transaction rejected") {
+		t.Fatalf("Run() error = %v, want reboot request failure", err)
+	}
+	if len(store.Statuses) != 2 {
+		t.Fatalf("status records = %d, want reboot request and failure", len(store.Statuses))
+	}
+	if store.Statuses[0].State != installstatus.StateRebootRequested {
+		t.Fatalf("first status = %q, want %q", store.Statuses[0].State, installstatus.StateRebootRequested)
+	}
+	if got := store.Statuses[1]; got.State != installstatus.StateFailedAfterMutation || !strings.Contains(got.LastError, "request system reboot") {
+		t.Fatalf("failure status = %#v", got)
 	}
 }
 
@@ -334,8 +383,8 @@ func TestRunnerRecordsCheckpointsWithoutCommands(t *testing.T) {
 	if targetStatus.State != installstatus.StateRebootRequested || targetStatus.InstalledGeneration != "2026.06.04-000" || !targetStatus.WipeTargetAccepted {
 		t.Fatalf("target status = %#v", targetStatus)
 	}
-	if got := commandNames(commands.Calls); got != "sync" {
-		t.Fatalf("command calls = %q, want sync", got)
+	if got := commandNames(commands.Calls); got != "sync systemctl" {
+		t.Fatalf("command calls = %q, want sync and reboot request", got)
 	}
 }
 
@@ -1577,6 +1626,28 @@ type recordingOutputRunner struct {
 	outputs     map[string][]byte
 	Inputs      map[string]string
 	OutputCalls []string
+}
+
+type rebootCommandRunner struct {
+	store          *MemoryStateStore
+	calls          []CommandCall
+	statusAtReboot string
+	statusAtSync   string
+	rebootErr      error
+}
+
+func (r *rebootCommandRunner) Run(_ context.Context, name string, args ...string) error {
+	r.calls = append(r.calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
+	if len(r.store.Statuses) > 0 && name == "sync" {
+		r.statusAtSync = r.store.Statuses[len(r.store.Statuses)-1].State
+	}
+	if name != "systemctl" {
+		return nil
+	}
+	if len(r.store.Statuses) > 0 {
+		r.statusAtReboot = r.store.Statuses[len(r.store.Statuses)-1].State
+	}
+	return r.rebootErr
 }
 
 func (r *recordingOutputRunner) RunInput(_ context.Context, input string, name string, args ...string) error {

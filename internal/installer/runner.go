@@ -847,12 +847,16 @@ func (rebootStep) Run(ctx context.Context, install *Context) error {
 		return ctx.Err()
 	default:
 	}
-	if install.Commands != nil {
-		if err := install.Commands.Run(ctx, "sync"); err != nil {
-			return fmt.Errorf("sync target writes: %w", err)
-		}
+	if err := recordStep(ctx, install, Reboot); err != nil {
+		return fmt.Errorf("persist reboot status: %w", err)
 	}
-	return recordStep(ctx, install, Reboot)
+	if err := install.Commands.Run(ctx, "sync"); err != nil {
+		return fmt.Errorf("sync install state: %w", err)
+	}
+	if err := install.Commands.Run(ctx, "systemctl", "--no-block", "reboot"); err != nil {
+		return fmt.Errorf("request system reboot: %w", err)
+	}
+	return nil
 }
 
 type stubStep struct {

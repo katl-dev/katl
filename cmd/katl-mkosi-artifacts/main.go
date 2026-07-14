@@ -373,7 +373,7 @@ func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) er
 		CompatibleBoot: &bootCompat{
 			Kind:              "uki",
 			RuntimeInterface:  "katl-runtime-1",
-			KernelCommandLine: []string{"rootfstype=squashfs", "ro"},
+			KernelCommandLine: runtimeKernelCommandLine(),
 		},
 		Created: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -429,7 +429,7 @@ func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) err
 			ArtifactSHA256: *runtimeSHA,
 		},
 		KernelVersion:     *kernelVersion,
-		KernelCommandLine: []string{"rootfstype=squashfs", "ro"},
+		KernelCommandLine: runtimeKernelCommandLine(),
 		Created:           time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
@@ -437,6 +437,15 @@ func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) err
 	}
 	fmt.Fprintln(stdout, digest)
 	return nil
+}
+
+func runtimeKernelCommandLine() []string {
+	return []string{
+		"rootfstype=squashfs",
+		"ro",
+		"console=ttyS0,115200n8",
+		"console=tty0",
+	}
 }
 
 func runWriteKubernetesSysext(args []string, stdout, stderr io.Writer, cfg config) error {

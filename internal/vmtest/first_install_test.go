@@ -65,6 +65,53 @@ func TestFirstInstall(t *testing.T) {
 	}
 }
 
+func TestFirstInstallObservesInstalledReboot(t *testing.T) {
+	root := t.TempDir()
+	iso := writeFixture(t, root, "katl-installer.iso", "iso")
+	_, vmConfig := vmFixture(t)
+	const installedGenerationSignal = "katl.generation=0 katl.root-slot=root-a"
+	serial := preseedInstallerEvidence() + installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n" + installedGenerationSignal + "\n"
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "first-install-reboot"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerISO: iso,
+			VM:           vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			Expect: installedGenerationSignal,
+			VM:     vmConfig,
+		},
+		Manifest:            []byte(firstManifest()),
+		PreseedManifest:     true,
+		RebootIntoInstalled: true,
+		TargetDisk:          TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:          fileDiskRunner{},
+		PreseedRunner:       fakePreseedRunner{},
+		InstallerRunner:     fakeVM(serial),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+	if !hasPhase(result, "installed-reboot") || hasPhase(result, "runtime") {
+		t.Fatalf("phases = %#v, want same-domain installed reboot", result.Phases)
+	}
+	domainXML := readDomainXML(t, result)
+	if !strings.Contains(domainXML, `<source file="`+result.Disks[0].HostPath+`"></source>`) ||
+		!strings.Contains(domainXML, `<boot order="1"></boot>`) ||
+		!strings.Contains(domainXML, `<source file="`+iso+`"></source>`) ||
+		!strings.Contains(domainXML, `<boot order="2"></boot>`) {
+		t.Fatalf("same-domain boot order missing from domain XML:\n%s", domainXML)
+	}
+	if serial, err := os.ReadFile(result.Artifacts.RuntimeSerial); err != nil || !strings.Contains(string(serial), installedGenerationSignal) {
+		t.Fatalf("runtime serial = %q, err = %v", serial, err)
+	}
+}
+
 func TestFirstInstallFailure(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")

@@ -151,13 +151,13 @@ install:
 	result, err := vmtest.RunFirstInstall(ctx, vmtest.NewRunner(options), vmtest.Scenario{Name: "installer-iso-first-install"}, vmtest.FirstInstallConfig{
 		Installer: vmtest.InstallerBootConfig{InstallerISO: iso, VM: vm},
 		Runtime: vmtest.InstalledRuntimeConfig{
-			Expect: "katl-boot-health generation=0 result=success",
+			Expect: "katl.generation=0 katl.root-slot=root-a",
 			VM:     vm,
 		},
-		Manifest:        manifest,
-		PreseedManifest: true,
-		UseInstalledESP: true,
-		TargetDisk:      vmtest.TargetDisk("root", string(vmtest.DiskRaw), "32G"),
+		Manifest:            manifest,
+		PreseedManifest:     true,
+		RebootIntoInstalled: true,
+		TargetDisk:          vmtest.TargetDisk("root", string(vmtest.DiskRaw), "32G"),
 	})
 	if err != nil {
 		_ = worldScenario.WriteSetupFailure(err)

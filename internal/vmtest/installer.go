@@ -14,6 +14,7 @@ type InstallerBootConfig struct {
 	InstallerInitrd string
 	CommandLine     []string
 	RuntimeArtifact string
+	DiskFirst       bool
 	Expect          string
 	VM              VMConfig
 }
@@ -44,7 +45,7 @@ func BootInstaller(ctx context.Context, result Result, config InstallerBootConfi
 			CommandLine: config.CommandLine,
 		}
 	} else if config.InstallerISO != "" {
-		vm.Boot = VMBoot{ISO: config.InstallerISO}
+		vm.Boot = VMBoot{ISO: config.InstallerISO, DiskFirst: config.DiskFirst}
 	} else {
 		vm.Boot = VMBoot{UKI: config.InstallerUKI}
 	}
@@ -52,6 +53,9 @@ func BootInstaller(ctx context.Context, result Result, config InstallerBootConfi
 }
 
 func checkInstallerBoot(config InstallerBootConfig) error {
+	if config.DiskFirst && config.InstallerISO == "" {
+		return errors.New("disk-first installer boot requires an ISO")
+	}
 	modes := 0
 	if config.InstallerUKI != "" {
 		modes++
