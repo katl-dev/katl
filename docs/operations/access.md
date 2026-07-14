@@ -94,12 +94,38 @@ Inspect the resolved context after enrollment:
 
 ```sh
 katlctl config topology
-katlctl operations list --node cp-1
+katlctl host status cp-1
 ```
 
 Enrollment has already performed the authenticated agent health check. Normal
 management commands now need only `--node`; `--context` selects a non-current
 cluster. Explicit `--endpoint` and `--agent-token-file` remain expert overrides.
+
+## Routine Host Management
+
+Show the current KatlOS version, generation, any staged next boot, health, and
+whether the node is busy without exposing machine identity or operation IDs:
+
+```sh
+katlctl host status cp-1
+```
+
+Reboot a node and wait for it to return healthy:
+
+```sh
+katlctl host reboot cp-1
+```
+
+The reboot command does not require a confirmation flag. It honors the node's
+selected boot target, including a generation already staged for next boot, and
+verifies that a new agent instance returns on that generation with good boot
+health.
+Use `--no-wait` only when intentionally detaching, and `--output json` when a
+script needs structured output.
+
+Use SSH for an interactive shell and arbitrary system administration. The
+KatlOS management API intentionally exposes bounded lifecycle operations rather
+than remote command execution.
 
 There is no supported alpha token-rotation workflow. If a token is exposed,
 isolate the node and treat the evaluation identity as compromised; do not

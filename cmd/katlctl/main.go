@@ -130,6 +130,8 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	cmd.AddCommand(newOperationCommand(ctx, stdout, stderr))
 
 	hostCmd := &cobra.Command{Use: "host", Short: "KatlOS host lifecycle operations"}
+	hostCmd.AddCommand(newHostStatusCommand(ctx, stdout, stderr))
+	hostCmd.AddCommand(newHostRebootCommand(ctx, stdout, stderr))
 	hostCmd.AddCommand(newHostUpgradeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(hostCmd)
 
@@ -320,7 +322,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 			return err
 		}
 		agentStart := status.GetAgentStartId()
-		if err := requestNodeReboot(ctx, conn.Client, status.GetMachineId(), request.CandidateGenerationID); err != nil {
+		if err := requestNodeReboot(ctx, conn.Client, opts.actor, status.GetMachineId(), request.CandidateGenerationID); err != nil {
 			report.Result = "staged"
 			_ = writeJSON(stdout, report)
 			return fmt.Errorf("reboot node %s: %w", report.Node, err)

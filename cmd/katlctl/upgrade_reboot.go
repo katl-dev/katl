@@ -18,11 +18,11 @@ type verifiedNodeBoot struct {
 	Generation *agentapi.Generation
 }
 
-func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, machineID, targetGeneration string) error {
+func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, actor, machineID, targetGeneration string) error {
 	accepted, err := client.Reboot(ctx, &agentapi.RebootRequest{
 		ApiVersion:         generation.APIVersion,
 		Kind:               "RebootRequest",
-		Actor:              "katlctl upgrade rollout",
+		Actor:              strings.TrimSpace(actor),
 		ExpectedMachineId:  strings.TrimSpace(machineID),
 		TargetGenerationId: strings.TrimSpace(targetGeneration),
 	})
@@ -52,7 +52,10 @@ func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, token, previous
 					if generationErr == nil {
 						if candidate.GetHealthState() == generation.HealthStateUnhealthy {
 							_ = conn.Close()
-							return katlcAgentConnection{}, verifiedNodeBoot{}, fmt.Errorf("node %s rejected generation %s during boot health and rolled back", nodeName, targetGeneration)
+							if current := status.GetCurrentGenerationId(); current != "" && current != targetGeneration {
+								return katlcAgentConnection{}, verifiedNodeBoot{}, fmt.Errorf("node %s rejected generation %s during boot health and returned on generation %s", nodeName, targetGeneration, current)
+							}
+							return katlcAgentConnection{}, verifiedNodeBoot{}, fmt.Errorf("node %s reported generation %s unhealthy after reboot", nodeName, targetGeneration)
 						}
 						if status.GetCurrentGenerationId() == targetGeneration && candidate.GetCommitState() == generation.CommitStateCommitted && candidate.GetBootState() == generation.BootStateGood && candidate.GetHealthState() == generation.HealthStateHealthy {
 							return conn, verifiedNodeBoot{Status: status, Generation: candidate}, nil

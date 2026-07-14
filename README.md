@@ -229,6 +229,20 @@ Supported changes compile into generation-scoped confext/sysext state and are
 applied live or on next boot according to the domain policy. See
 [Apply runtime configuration](docs/installing.md#apply-runtime-configuration).
 
+Routine host management uses the enrolled workstation context. The current
+context selects a single-node lab automatically; pass a node name in a larger
+cluster:
+
+```sh
+katlctl host status cp-1
+katlctl host reboot cp-1
+```
+
+Status and reboot results are concise text by default. Add `--output json` for
+automation. Reboot honors any generation already staged for the next boot and
+waits for a new agent instance to report healthy; `--no-wait` deliberately
+detaches after the reboot is scheduled.
+
 Host upgrades take a release version and a node from the current workstation
 context. `katlctl` resolves the published image, stages it, reboots the node,
 and waits for the new generation to pass boot health:

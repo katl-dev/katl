@@ -68,6 +68,7 @@ type NodeStatus struct {
 	OperationLockHeld       bool                   `protobuf:"varint,7,opt,name=operation_lock_held,json=operationLockHeld,proto3" json:"operation_lock_held,omitempty"`
 	ActiveOperationIds      []string               `protobuf:"bytes,8,rep,name=active_operation_ids,json=activeOperationIds,proto3" json:"active_operation_ids,omitempty"`
 	CurrentGenerationId     string                 `protobuf:"bytes,9,opt,name=current_generation_id,json=currentGenerationId,proto3" json:"current_generation_id,omitempty"`
+	BootTargetGenerationId  string                 `protobuf:"bytes,10,opt,name=boot_target_generation_id,json=bootTargetGenerationId,proto3" json:"boot_target_generation_id,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -161,6 +162,13 @@ func (x *NodeStatus) GetActiveOperationIds() []string {
 func (x *NodeStatus) GetCurrentGenerationId() string {
 	if x != nil {
 		return x.CurrentGenerationId
+	}
+	return ""
+}
+
+func (x *NodeStatus) GetBootTargetGenerationId() string {
+	if x != nil {
+		return x.BootTargetGenerationId
 	}
 	return ""
 }
@@ -3166,7 +3174,7 @@ var File_internal_katlc_agentapi_agent_proto protoreflect.FileDescriptor
 const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\n" +
 	"#internal/katlc/agentapi/agent.proto\x12\rkatl.agent.v1\"\x16\n" +
-	"\x14GetNodeStatusRequest\"\xa4\x03\n" +
+	"\x14GetNodeStatusRequest\"\xdf\x03\n" +
 	"\n" +
 	"NodeStatus\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
@@ -3179,7 +3187,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x19supported_operation_kinds\x18\x06 \x03(\tR\x17supportedOperationKinds\x12.\n" +
 	"\x13operation_lock_held\x18\a \x01(\bR\x11operationLockHeld\x120\n" +
 	"\x14active_operation_ids\x18\b \x03(\tR\x12activeOperationIds\x122\n" +
-	"\x15current_generation_id\x18\t \x01(\tR\x13currentGenerationId\"\x8d\b\n" +
+	"\x15current_generation_id\x18\t \x01(\tR\x13currentGenerationId\x129\n" +
+	"\x19boot_target_generation_id\x18\n" +
+	" \x01(\tR\x16bootTargetGenerationId\"\x8d\b\n" +
 	"\x16SubmitOperationRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +

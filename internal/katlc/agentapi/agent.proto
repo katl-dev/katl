@@ -31,6 +31,7 @@ message NodeStatus {
   bool operation_lock_held = 7;
   repeated string active_operation_ids = 8;
   string current_generation_id = 9;
+  string boot_target_generation_id = 10;
 }
 
 message SubmitOperationRequest {

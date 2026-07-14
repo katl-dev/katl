@@ -122,6 +122,46 @@ func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
 	}
 }
 
+func TestNodeStatusReportsSelectedBootTarget(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.TargetBootGenerationID = "generation-staged"
+	selection.TargetBootEntry = "loader/entries/katl-generation-staged.conf"
+	if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+		t.Fatal(err)
+	}
+
+	nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStatus.GetCurrentGenerationId() != "generation-0" || nodeStatus.GetBootTargetGenerationId() != "generation-staged" {
+		t.Fatalf("node status generations = current %q target %q", nodeStatus.GetCurrentGenerationId(), nodeStatus.GetBootTargetGenerationId())
+	}
+}
+
+func TestRebootRefusesActiveOperationWithoutExposingID(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	createAgentOperation(t, server.Store, "operation-secret")
+	machineID, err := server.machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = server.Reboot(context.Background(), &agentapi.RebootRequest{
+		ApiVersion: generation.APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: machineID, TargetGenerationId: "generation-0",
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "another operation is active") || strings.Contains(err.Error(), "operation-secret") {
+		t.Fatalf("Reboot() error = %v", err)
+	}
+}
+
 func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
 	server := newTestServer(t)
 	var dispatched atomic.Int32

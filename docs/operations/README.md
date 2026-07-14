@@ -18,6 +18,7 @@ networks.
 | Bare or disposable machine | Install generation 0 | [Install KatlOS](../installing.md) |
 | Generation 0 booted | Establish node management access | [Access installed nodes](access.md) |
 | All intended nodes installed | Create the kubeadm cluster | [Bootstrap Kubernetes](bootstrap-kubernetes.md) |
+| Installed node | Inspect or reboot one host | [Access installed nodes](access.md#routine-host-management) |
 | Installed or bootstrapped node | Change supported runtime configuration | [Apply node configuration](configure-nodes.md) |
 | Healthy installed node | Stage a new KatlOS release | [Upgrade a KatlOS host](upgrade-host.md) |
 | Cluster is intentionally being discarded | Reset boot state and reinstall | [Wipe and reinstall](wipe-reinstall.md) |

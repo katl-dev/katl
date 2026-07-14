@@ -135,7 +135,7 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 		return nil, status.Errorf(codes.Internal, "read operation locks: %v", err)
 	}
 	if len(active) > 0 {
-		return nil, status.Errorf(codes.FailedPrecondition, "cannot reboot while operation %s is active", strings.Join(active, ","))
+		return nil, status.Error(codes.FailedPrecondition, "cannot reboot while another operation is active")
 	}
 	if s.RunReboot == nil {
 		return nil, status.Error(codes.FailedPrecondition, "node reboot runner is not configured")
@@ -160,6 +160,14 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
 	}
 	currentGenerationID, _ := currentGenerationID(s.Root)
+	bootTargetGenerationID := currentGenerationID
+	if selection, selectionErr := generation.ReadBootSelection(s.Root); selectionErr == nil {
+		if target := strings.TrimSpace(selection.TargetBootGenerationID); target != "" {
+			bootTargetGenerationID = target
+		} else if selected := strings.TrimSpace(selection.DefaultGenerationID); selected != "" {
+			bootTargetGenerationID = selected
+		}
+	}
 	return &agentapi.NodeStatus{
 		ApiVersion:              APIVersion,
 		MachineId:               machineID,
@@ -170,6 +178,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		OperationLockHeld:       len(ids) > 0,
 		ActiveOperationIds:      ids,
 		CurrentGenerationId:     currentGenerationID,
+		BootTargetGenerationId:  bootTargetGenerationID,
 	}, nil
 }
 

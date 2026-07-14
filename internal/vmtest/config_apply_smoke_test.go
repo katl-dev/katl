@@ -355,7 +355,15 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		t.Fatalf("boot selection did not change after staged config apply")
 	}
 
-	guest, client = restartGuestAndReconnect(t, ctx, node, guest, client)
+	previousBootID := guestBootID(t, ctx, client)
+	runKatlctl(t, ctx, result, katlctl, "host-reboot-staged-generation",
+		"host", "reboot", "cp-1",
+		"--endpoint", endpoint,
+		"--agent-token-file", tokenFile,
+		"--timeout", "3m",
+	)
+	_ = client.Close()
+	guest, client = reconnectGuestAfterBoot(t, ctx, node, previousBootID)
 	if got := currentGenerationFromGuest(t, ctx, guest); got != stagedGeneration {
 		t.Fatalf("booted generation = %q, want staged networkd generation %q", got, stagedGeneration)
 	}
@@ -432,6 +440,16 @@ func restartGuestAndReconnect(t *testing.T, ctx context.Context, node *RunningIn
 	if node == nil || node.handle == nil {
 		t.Fatal("running installed runtime node handle is required")
 	}
+	previousBootID := guestBootID(t, ctx, client)
+	if err := requestGuestReboot(ctx, guest); err != nil {
+		t.Fatalf("request guest reboot for staged generation restart: %v", err)
+	}
+	_ = client.Close()
+	return reconnectGuestAfterBoot(t, ctx, node, previousBootID)
+}
+
+func guestBootID(t *testing.T, ctx context.Context, client *AgentClient) string {
+	t.Helper()
 	health, err := client.Health(ctx)
 	if err != nil {
 		t.Fatalf("vmtest agent health before staged generation restart: %v", err)
@@ -440,12 +458,11 @@ func restartGuestAndReconnect(t *testing.T, ctx context.Context, node *RunningIn
 	if previousBootID == "" {
 		t.Fatal("vmtest agent health returned empty boot ID before staged generation restart")
 	}
+	return previousBootID
+}
 
-	if err := requestGuestReboot(ctx, guest); err != nil {
-		t.Fatalf("request guest reboot for staged generation restart: %v", err)
-	}
-	_ = client.Close()
-
+func reconnectGuestAfterBoot(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, previousBootID string) (*GuestControl, *AgentClient) {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
 	var lastErr error
 	for time.Now().Before(deadline) {
