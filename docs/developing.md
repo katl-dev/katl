@@ -218,6 +218,31 @@ It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
 publishing. Those host-specific gates belong to the capable-host vmtest workflow
 and release gates.
 
+## Fedora Package Lock
+
+Fedora 44 is the selected base release. Fedora's release repository is frozen,
+but its stable updates repository advances. The committed resource package lock
+is therefore a review gate, not a repository snapshot: release and VM gates
+reject package identities that were not deliberately accepted, while Fedora's
+mirrors remain responsible for serving packages.
+
+Refresh every Fedora-backed profile and update the existing lock with:
+
+```sh
+scripts/update-fedora-package-lock
+```
+
+The command forces fresh runtime, installer, and Kubernetes sysext builds, then
+updates only those package sets; unrelated lock entries are preserved. Use
+`--from-build` only when those three outputs were already rebuilt against the
+repositories being accepted.
+
+`.github/workflows/fedora-package-lock.yml` runs this path weekly and on manual
+dispatch. When package identities change, it opens a ready pull request,
+dispatches the required fast check for that branch, and enables auto-merge. No
+PR is opened when Fedora's selected package set is unchanged or another lock
+update is already open.
+
 ## GitHub Release Artifacts
 
 `.github/workflows/release-artifacts.yml` builds Katl artifacts for pushes to

@@ -155,9 +155,6 @@ func TestMkosiPodmanSkipsRecursiveBuildChown(t *testing.T) {
 fi
 printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 `)
-	writeFakeExecutable(t, bin, "rpm", "printf 'systemd\\t0:259.6-1.fc44.x86_64\\n'\n")
-	seedInstallerRPMCache(t, repo)
-
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer", "--debug")
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),

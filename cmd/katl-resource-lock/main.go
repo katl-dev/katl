@@ -242,6 +242,13 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if *gitRevision == "" {
 		*gitRevision = "unknown"
 	}
+	selectedSets, err := packageSetNames(packageSets)
+	if err != nil {
+		return err
+	}
+	includePackageSet := func(name string) bool {
+		return len(selectedSets) == 0 || selectedSets[name]
+	}
 
 	manifest := resourcetest.NewManifest(*runID, resourcetest.GitState{Revision: *gitRevision})
 	mkosiVersion, err := resolveMkosiVersion(*mkosiVersionFlag)
@@ -258,31 +265,43 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := addInstallerPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-installer.packages.tsv"), repo, ""); err != nil {
-		return err
-	}
-	if err := addRuntimePackageSet(&manifest, *runtimeRoot, repo, ""); err != nil {
-		return err
-	}
-	if err := addKubernetesPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-kubernetes.raw.json"), repo, ""); err != nil {
-		return err
-	}
-	katlosImage, err := findKatlOSImage(*mkosiDir)
-	if err != nil {
-		return err
-	}
-	if katlosImage != "" {
-		if err := addKatlOSPackageSet(&manifest, katlosImage, ""); err != nil {
+	if includePackageSet("installer-image") {
+		if err := addInstallerPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-installer.packages.tsv"), repo, ""); err != nil {
 			return err
+		}
+	}
+	if includePackageSet("runtime") {
+		if err := addRuntimePackageSet(&manifest, *runtimeRoot, repo, ""); err != nil {
+			return err
+		}
+	}
+	if includePackageSet("kubernetes-sysext") {
+		if err := addKubernetesPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-kubernetes.raw.json"), repo, ""); err != nil {
+			return err
+		}
+	}
+	if includePackageSet("katlos-install-image") {
+		katlosImage, err := findKatlOSImage(*mkosiDir)
+		if err != nil {
+			return err
+		}
+		if katlosImage != "" {
+			if err := addKatlOSPackageSet(&manifest, katlosImage, ""); err != nil {
+				return err
+			}
+		}
+	}
+	if *mode == "refresh" && len(selectedSets) > 0 {
+		for name := range selectedSets {
+			if !hasPackageSet(manifest.PackageSets, name) {
+				return fmt.Errorf("selected package set %q is missing from generated artifacts", name)
+			}
 		}
 	}
 	lockDigest := ""
 	switch *mode {
 	case "refresh":
-		if len(packageSets) != 0 {
-			return errors.New("--package-set requires --mode strict")
-		}
-		lock, err := resourcetest.PackageLockFromManifest(manifest)
+		lock, err := refreshedPackageLock(*lockPath, manifest, packageSets)
 		if err != nil {
 			return err
 		}
@@ -329,6 +348,111 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "lockSHA256: %s\n", lockDigest)
 	}
 	return nil
+}
+
+func hasPackageSet(sets []resourcetest.PackageSet, name string) bool {
+	for _, set := range sets {
+		if set.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func refreshedPackageLock(lockPath string, manifest resourcetest.Manifest, packageSets []string) (resourcetest.PackageLock, error) {
+	fresh, err := resourcetest.PackageLockFromManifest(manifest)
+	if err != nil {
+		return resourcetest.PackageLock{}, err
+	}
+	selected, err := packageSetNames(packageSets)
+	if err != nil {
+		return resourcetest.PackageLock{}, err
+	}
+	if len(selected) == 0 {
+		return fresh, nil
+	}
+
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return resourcetest.PackageLock{}, fmt.Errorf("read package lock %s for partial refresh: %w", lockPath, err)
+	}
+	existing, err := resourcetest.DecodePackageLock(bytes.NewReader(data))
+	if err != nil {
+		return resourcetest.PackageLock{}, fmt.Errorf("decode package lock %s for partial refresh: %w", lockPath, err)
+	}
+
+	freshSets := make(map[string]resourcetest.PackageLockPackageSet, len(fresh.PackageSets))
+	for _, set := range fresh.PackageSets {
+		freshSets[set.Name] = set
+	}
+	for name := range selected {
+		if _, ok := freshSets[name]; !ok {
+			return resourcetest.PackageLock{}, fmt.Errorf("selected package set %q is missing from generated package lock", name)
+		}
+	}
+
+	updatedSets := make([]resourcetest.PackageLockPackageSet, 0, len(existing.PackageSets)+len(selected))
+	replacedSets := make(map[string]bool, len(selected))
+	for _, set := range existing.PackageSets {
+		if replacement, ok := freshSets[set.Name]; ok && selected[set.Name] {
+			updatedSets = append(updatedSets, replacement)
+			replacedSets[set.Name] = true
+			continue
+		}
+		updatedSets = append(updatedSets, set)
+	}
+	for _, set := range fresh.PackageSets {
+		if selected[set.Name] && !replacedSets[set.Name] {
+			updatedSets = append(updatedSets, set)
+		}
+	}
+
+	freshProfiles := make(map[string]resourcetest.PackageLockProfile, len(fresh.MkosiProfiles))
+	for _, profile := range fresh.MkosiProfiles {
+		if selected[profile.PackageSetRef] {
+			freshProfiles[profile.Name] = profile
+		}
+	}
+	updatedProfiles := make([]resourcetest.PackageLockProfile, 0, len(existing.MkosiProfiles)+len(freshProfiles))
+	replacedProfiles := make(map[string]bool, len(freshProfiles))
+	for _, profile := range existing.MkosiProfiles {
+		if !selected[profile.PackageSetRef] {
+			updatedProfiles = append(updatedProfiles, profile)
+			continue
+		}
+		if replacement, ok := freshProfiles[profile.Name]; ok {
+			updatedProfiles = append(updatedProfiles, replacement)
+			replacedProfiles[profile.Name] = true
+		}
+	}
+	for _, profile := range fresh.MkosiProfiles {
+		if selected[profile.PackageSetRef] && !replacedProfiles[profile.Name] {
+			updatedProfiles = append(updatedProfiles, profile)
+		}
+	}
+
+	existing.Tools = fresh.Tools
+	existing.PackageSets = updatedSets
+	existing.MkosiProfiles = updatedProfiles
+	if err := resourcetest.ValidatePackageLock(existing); err != nil {
+		return resourcetest.PackageLock{}, err
+	}
+	return existing, nil
+}
+
+func packageSetNames(values []string) (map[string]bool, error) {
+	selected := make(map[string]bool, len(values))
+	for _, value := range values {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			return nil, errors.New("selected package set must not be empty")
+		}
+		if selected[name] {
+			return nil, fmt.Errorf("selected package set %q is duplicated", name)
+		}
+		selected[name] = true
+	}
+	return selected, nil
 }
 
 func runRefresh(args []string, stdout, stderr io.Writer) error {

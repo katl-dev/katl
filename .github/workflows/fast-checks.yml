@@ -1,6 +1,7 @@
 name: Fast Checks
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
@@ -49,6 +50,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             range="origin/${{ github.base_ref }}...HEAD"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            range="origin/main...HEAD"
           elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
             range="${{ github.event.before }}..HEAD"
           else

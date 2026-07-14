@@ -296,6 +296,74 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	}
 }
 
+func TestRunPrepareMkosiPartialRefreshPreservesUnselectedSets(t *testing.T) {
+	oldQuery := queryRPMPackages
+	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		t.Fatalf("runtime package inventory should use the generated package list: %s", root)
+		return nil, nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.0-150500.1.1")
+	installerPackages := filepath.Join(mkosiDir, "katl-installer.packages.tsv")
+	writeInstallerPackages(t, installerPackages, "systemd-0:259.6-1.fc44.x86_64")
+	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-runtime.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
+
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+	lockPath := filepath.Join(dir, "resource-package-lock.json")
+	baseArgs := []string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--lock", lockPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "refresh",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}
+	if err := run(baseArgs, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("initial refresh error = %v", err)
+	}
+
+	oldReadKatlOSIndex := readKatlOSIndex
+	t.Cleanup(func() { readKatlOSIndex = oldReadKatlOSIndex })
+	writeFile(t, filepath.Join(mkosiDir, "katlos-install-stale-x86_64.squashfs"), "stale")
+	readKatlOSIndex = func(path string) (katlosIndex, error) {
+		t.Fatalf("partial Fedora refresh inspected unrelated KatlOS image: %s", path)
+		return katlosIndex{}, nil
+	}
+	writeInstallerPackages(t, installerPackages, "systemd-0:259.7-1.fc44.x86_64")
+	partialArgs := append(append([]string(nil), baseArgs...), "--package-set", "installer-image")
+	if err := run(partialArgs, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("partial refresh error = %v", err)
+	}
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read partial lock: %v", err)
+	}
+	lock, err := resourcetest.DecodePackageLock(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode partial lock: %v", err)
+	}
+	if got := lockedPackageNEVRA(lock, "installer-image", "systemd"); got != "systemd-0:259.7-1.fc44.x86_64" {
+		t.Fatalf("installer systemd = %q", got)
+	}
+	if got := lockedPackageNEVRA(lock, "runtime", "systemd"); got != "systemd-0:259.6-1.fc44.x86_64" {
+		t.Fatalf("runtime systemd = %q, want unselected package preserved", got)
+	}
+	if got := lockedPackageNEVRA(lock, "kubernetes-sysext", "kubeadm"); got != "kubeadm-0:1.36.0-150500.1.1.x86_64" {
+		t.Fatalf("Kubernetes kubeadm = %q, want unselected package set preserved", got)
+	}
+}
+
 func TestRunPrepareMkosiStrictRejectsKubernetesDrift(t *testing.T) {
 	oldQuery := queryRPMPackages
 	t.Cleanup(func() { queryRPMPackages = oldQuery })
@@ -793,6 +861,20 @@ func packageNEVRA(packages []resourcetest.Package, name string) string {
 	for _, pkg := range packages {
 		if pkg.Name == name {
 			return pkg.NEVRA
+		}
+	}
+	return ""
+}
+
+func lockedPackageNEVRA(lock resourcetest.PackageLock, setName, packageName string) string {
+	for _, set := range lock.PackageSets {
+		if set.Name != setName {
+			continue
+		}
+		for _, pkg := range set.Packages {
+			if pkg.Name == packageName {
+				return pkg.NEVRA
+			}
 		}
 	}
 	return ""

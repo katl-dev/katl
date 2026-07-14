@@ -26,6 +26,14 @@ case "$vmtest_image_support" in
         ;;
 esac
 mkosi_env+=(--environment "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support")
+package_lock_refresh="${KATL_PACKAGE_LOCK_REFRESH:-0}"
+case "$package_lock_refresh" in
+    0|1) ;;
+    *)
+        echo "error: KATL_PACKAGE_LOCK_REFRESH must be 0 or 1" >&2
+        exit 2
+        ;;
+esac
 emit_runtime_artifact=0
 emit_kubernetes_sysext=0
 emit_installer_iso=0
@@ -452,6 +460,10 @@ store_target_cache() {
 
 prepare_cached_target() {
     local target="$1"
+    if [[ "$package_lock_refresh" == 1 ]]; then
+        printf 'mkosi package-lock refresh: rebuilding %s against current repositories\n' "$target" >&2
+        return
+    fi
     if target_cache_hit "$target"; then
         printf 'mkosi cache hit: %s artifacts match the current repo\n' "$target" >&2
         exit 0
@@ -814,6 +826,21 @@ set +e
     mkosi_artifacts() {
         go run ./cmd/katl-mkosi-artifacts "$@"
     }
+    if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
+        installer_cache_root=/mkosi-build/cache/fedora~44~x86-64~main.cache
+        if [[ ! -d "$installer_cache_root/usr/lib/sysimage/rpm" ]]; then
+            echo "error: installer RPM database not found: $installer_cache_root/usr/lib/sysimage/rpm" >&2
+            status=1
+        elif ! rpm \
+            --root "$installer_cache_root" \
+            --dbpath /usr/lib/sysimage/rpm \
+            -qa \
+            --queryformat "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n" \
+            | sort >"$KATL_INSTALLER_PACKAGE_SET"; then
+            echo "error: record installer package set" >&2
+            status=1
+        fi
+    fi
     if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
         root=_build/mkosi/katl-runtime-root
         artifact=_build/mkosi/katl-runtime-root.squashfs
@@ -975,9 +1002,6 @@ set +e
 ' bash "${container_mkosi_storage_args[@]}" "${mkosi_env[@]}" "$@"
 status=$?
 set -e
-if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
-    write_installer_package_set || status=1
-fi
 if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
     store_target_cache "$cache_target"
 fi
