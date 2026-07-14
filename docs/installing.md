@@ -135,7 +135,7 @@ enforcement remain separate work.
 Normal installation starts from one `config.katl.dev/v1alpha1` `ClusterConfig`.
 It describes operator choices: the Kubernetes version and the desired identity,
 role, networking, and install target of each node. Katl selects release
-artifacts and kubeadm profiles and handles bundle and operation metadata
+artifacts and role-dependent Kubernetes bootstrap state and handles bundle and operation metadata
 internally.
 
 `katlctl config init` generates this minimal form. It uses DHCP and the KatlOS
@@ -176,8 +176,28 @@ spec:
 ```
 
 The release ISO supplies the KatlOS image. ClusterConfig never contains image
-URLs, bundle references, credentials, kubeadm profiles, node classes, or other
-compiler mechanisms.
+URLs, bundle references, credentials, named kubeadm profiles, node classes, or
+other compiler mechanisms.
+
+Advanced users can keep native kubeadm settings without waiting for Katl to add
+a typed field for each upstream option:
+
+```yaml
+spec:
+  kubernetes:
+    version: v1.36.1
+    kubeadm:
+      configFile: ./kubeadm.yaml
+      patchesDir: ./kubeadm-patches
+```
+
+Both paths are relative to `cluster.yaml`. Katl validates the native document
+kinds and API versions, rejects unsafe host paths and filesystem escapes,
+supplies its required role defaults, and embeds the resulting files into the
+compiled `.katlcfg`. It selects control-plane and worker documents internally
+and injects bootstrap tokens and certificate material only when the explicit
+bootstrap operation runs. Omit the entire `kubeadm` block for Katl's complete
+defaults.
 
 The ISO flow consumes this source directly: `katlctl install apply` and
 `katlctl cluster bootstrap` compile the internal bundle automatically. Produce
@@ -380,34 +400,13 @@ Installation does not run `kubeadm`, fetch Kubernetes payloads, or bundle a
 Kubernetes sysext. It stores the node role and bootstrap intent needed for a
 later explicit operator action.
 
-The Kubernetes bundle is one ordinary OCI image reference. During the explicit
-bootstrap operation, `katlc` resolves and fetches that bundle, checks its
-contents internally, stages the sysext locally, and selects it for generation
-1. The selected alpha reference above supplies the `v1.36.1`
-payload; a different Kubernetes version requires its matching bundle reference
-and a KatlOS runtime compatible with that bundle.
-
-Katl publishes development Kubernetes bundles as custom OCI artifacts in the
-public `ghcr.io/katl-dev/kubernetes` package. A tag-only reference is accepted:
-
-```text
-ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1
-```
-
-An immutable OCI manifest pin is optional when exact byte-for-byte
-reproducibility matters:
-
-```text
-ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537
-```
-
-`katlc` verifies the resolved OCI manifest, the Katl bundle config, every layer
-digest and size, and
-Katl runtime compatibility, and only then stages the sysext. The readable
-`ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1` tag is suitable for Renovate's
-Docker datasource; the full patch precision lets Renovate propose Kubernetes
-patch updates. An unpinned tag is resolved once for the operation record; a
-digest pin prevents the tag from selecting different content before that point.
+During explicit bootstrap, Katl resolves `spec.kubernetes.version` through the
+release compatibility catalog to an immutable bundle digest and compatible
+KatlOS runtime interface. It fails before mutation when the version is not
+available for this Katl release. `katlc` then fetches the selected public
+`ghcr.io/katl-dev/kubernetes` artifact, verifies every OCI layer and its runtime
+compatibility, stages the sysext, and selects it for generation 1. Operators do
+not supply a bundle tag or digest on the normal path.
 
 After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, bootstrap directly from the same source:
@@ -449,9 +448,8 @@ distribution or add-on manager.
 ## Apply Runtime Configuration
 
 `ClusterConfig` is the user-authored source for installation and supported
-node runtime configuration. `NodeConfigurationChange` is the node-agent
-operation envelope; normal users do not need to reverse-engineer or maintain it
-by hand.
+node runtime configuration. `katlctl` compiles and submits the node-agent
+request internally; operators do not maintain a second configuration schema.
 
 Optionally plan the exact per-node runtime request through the node agent:
 
@@ -480,34 +478,15 @@ Keep the same configuration inputs when submitting. `katlctl` generates the
 idempotency key and follows the accepted operation to its terminal result.
 
 The renderer carries the node's desired identity and systemd-networkd files as
-well as operation-only system-role and internally selected kubeadm state. The
+well as operation-only system role and role-dependent Kubernetes bootstrap state. The
 planner applies runtime-safe changes and reports when a lifecycle operation is
 required; it does not silently discard operation-only differences. Disk install
 selection and Kubernetes version changes use their dedicated install and
-upgrade workflows. `--file` remains available for an advanced,
-pre-rendered `NodeConfigurationChange`, with `--node` selecting any
-`nodeOverrides` entry it contains. An advanced request may carry a named
-desired kubeadm input and select it atomically:
-
-```yaml
-spec:
-  kubeadmConfigs:
-    control-plane-profiled:
-      config: |
-        apiVersion: kubeadm.k8s.io/v1beta4
-        kind: ClusterConfiguration
-        kubernetesVersion: v1.36.1
-  clusterDefaults:
-    kubernetes:
-      kubeadm:
-        configRef: control-plane-profiled
-```
-
-Inline `patches` may also map single file names to native kubeadm patch YAML.
-Applying the request renders the named desired input and records that a
-kubeadm-aware action is required; normal config apply still does not mutate
-kubeadm-owned cluster state. Run the explicit Katl kubeadm operation after the
-candidate generation is committed.
+upgrade workflows. A change to bounded native kubeadm input records that a
+kubeadm-aware action is required; normal config apply does not mutate
+kubeadm-owned cluster state. Use the dedicated operation for a supported live
+change. The node-agent request envelope is an internal API and is documented
+separately from the operator installation flow.
 
 ## Upgrades
 

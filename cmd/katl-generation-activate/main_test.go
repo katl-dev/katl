@@ -57,6 +57,36 @@ func TestGenerationActivateRejectsMismatchedMetadata(t *testing.T) {
 	}
 }
 
+func TestActivateHostnameUsesSelectedVerifiedConfext(t *testing.T) {
+	root := t.TempDir()
+	confext := "/var/lib/katl/generations/1/confext"
+	writeCommandFile(t, filepath.Join(root, strings.TrimPrefix(confext, "/"), "etc/hostname"), "cp-1\n")
+	var selected string
+	hostname, err := activateHostname(root, generation.ActivationPlan{
+		Confexts: []generation.ActivationLink{{Name: "katl-node", SourcePath: confext}},
+	}, func(value []byte) error {
+		selected = string(value)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("activateHostname() error = %v", err)
+	}
+	if hostname != "cp-1" || selected != "cp-1" {
+		t.Fatalf("hostname = %q, selected = %q", hostname, selected)
+	}
+}
+
+func TestActivateHostnameKeepsBaseHostnameForOlderGeneration(t *testing.T) {
+	called := false
+	hostname, err := activateHostname(t.TempDir(), generation.ActivationPlan{}, func([]byte) error {
+		called = true
+		return nil
+	})
+	if err != nil || hostname != "" || called {
+		t.Fatalf("activateHostname() hostname = %q, called = %t, error = %v", hostname, called, err)
+	}
+}
+
 func commandActivationRecord(t *testing.T, root string, id string) generation.Record {
 	t.Helper()
 	sysextContent := "selected sysext\n"

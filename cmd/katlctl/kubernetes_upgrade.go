@@ -15,6 +15,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
+	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
@@ -292,11 +293,14 @@ func kubernetesUpgradeBundle(version, explicit string) (string, error) {
 	if version == "" {
 		return "", fmt.Errorf("VERSION is required")
 	}
-	version = strings.TrimPrefix(version, "v")
-	if !strings.Contains(version, "-katl.") {
-		version += "-katl.1"
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
 	}
-	return "ghcr.io/katl-dev/kubernetes:v" + version, nil
+	selection, err := kubernetescompat.Resolve(kubernetescompat.Request{KubernetesVersion: version})
+	if err != nil {
+		return "", fmt.Errorf("resolve Kubernetes upgrade version: %w", err)
+	}
+	return selection.Bundle, nil
 }
 
 func waitKubernetesUpgrade(ctx context.Context, client agentapi.KatlcAgentClient, operationID, nodeName string, stderr io.Writer) (*agentapi.OperationStatus, error) {

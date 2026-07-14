@@ -21,6 +21,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/clusterplan"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
+	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -33,7 +34,6 @@ const (
 	BundleArtifactType      = "application/vnd.katl.config.bundle.v1"
 
 	DefaultKubernetesVersion = "v1.36.1"
-	DefaultKubernetesBundle  = "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1"
 )
 
 type BuildRequest struct {
@@ -108,7 +108,13 @@ type SourceInstallLayer struct {
 }
 
 type SourceKubernetesCluster struct {
-	Version string `yaml:"version,omitempty" json:"version,omitempty"`
+	Version string              `yaml:"version,omitempty" json:"version,omitempty"`
+	Kubeadm *SourceKubeadmInput `yaml:"kubeadm,omitempty" json:"kubeadm,omitempty"`
+}
+
+type SourceKubeadmInput struct {
+	ConfigFile string `yaml:"configFile,omitempty" json:"configFile,omitempty"`
+	PatchesDir string `yaml:"patchesDir,omitempty" json:"patchesDir,omitempty"`
 }
 
 type SourceKubernetesLayer struct {
@@ -223,14 +229,22 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
-	sourceDigest := digestBytes(normalized)
-	kubeadmConfigs, err := resolveKubeadmConfigs(selectedKubernetesVersion(source))
+	kubeadmConfigs, kubeadmSourceInputs, err := resolveKubeadmConfigs(filepath.Dir(sourcePath), source.Spec.Kubernetes.Kubeadm, selectedKubernetesVersion(source))
 	if err != nil {
 		return nil, Result{}, err
 	}
+	sourceDigest := digestSourceInputs(normalized, kubeadmSourceInputs)
 	planning := request.Planning
 	if strings.TrimSpace(planning.KubernetesBundle) == "" {
-		planning.KubernetesBundle = defaultKubernetesBundle(selectedKubernetesVersion(source))
+		selection, err := kubernetescompat.Resolve(kubernetescompat.Request{
+			KubernetesVersion: selectedKubernetesVersion(source),
+			Architecture:      planning.KatlosImage.Architecture,
+			RuntimeInterface:  planning.KatlosImage.RuntimeInterface,
+		})
+		if err != nil {
+			return nil, Result{}, fmt.Errorf("resolve spec.kubernetes.version: %w", err)
+		}
+		planning.KubernetesBundle = selection.Bundle
 	}
 	config, err := LowerSource(source, planning)
 	if err != nil {
@@ -273,14 +287,6 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 		return nil, Result{}, err
 	}
 	return archive, Result{Digest: manifestDigest, Manifest: manifest, ArchiveSize: int64(len(archive))}, nil
-}
-
-func defaultKubernetesBundle(version string) string {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		version = DefaultKubernetesVersion
-	}
-	return "ghcr.io/katl-dev/kubernetes:" + version + "-katl.1"
 }
 
 func WriteArchive(path string, request BuildRequest) (Result, error) {
@@ -460,7 +466,7 @@ func defaultKubeadmJoinConfig() string {
 	return "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n"
 }
 
-func resolveKubeadmConfigs(kubernetesVersion string) (map[string]kubeadmconfig.Plan, error) {
+func defaultKubeadmConfigs(kubernetesVersion string) (map[string]kubeadmconfig.Plan, error) {
 	inputs := map[string]string{
 		"control-plane": defaultKubeadmInitConfig(kubernetesVersion),
 		"worker":        defaultKubeadmJoinConfig(),
@@ -598,6 +604,14 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 			CreatedBy:             firstNonEmpty(request.CreatedBy, "katlctl config bundle"),
 		},
 	}
+	if len(payloads) == 1 {
+		if len(manifest.Compatibility.SupportedArchitectures) == 0 {
+			manifest.Compatibility.SupportedArchitectures = nonEmptyStrings(payloads[0].Architecture)
+		}
+		if len(manifest.Compatibility.SupportedKatlOSRuntimeInterfaces) == 0 {
+			manifest.Compatibility.SupportedKatlOSRuntimeInterfaces = append([]string(nil), payloads[0].SupportedRuntimeInterfaces...)
+		}
+	}
 	return members, manifest, nil
 }
 
@@ -648,6 +662,13 @@ func kubernetesPayloads(plan clusterplan.Plan) []KubernetesPayloadRecord {
 		Architecture:               plan.KatlosImage.Architecture,
 		SupportedRuntimeInterfaces: nonEmptyStrings(plan.KatlosImage.RuntimeInterface),
 		ResolverVersion:            "config-bundle-v1",
+	}
+	if selected, err := kubernetescompat.Resolve(kubernetescompat.Request{KubernetesVersion: plan.KubernetesVersion}); err == nil && selected.Bundle == plan.KubernetesBundleRef {
+		record.ResolverVersion = "release-compatibility-v1"
+		record.SupportedRuntimeInterfaces = append([]string(nil), selected.RuntimeInterfaces...)
+		if record.Architecture == "" && len(selected.Architectures) == 1 {
+			record.Architecture = selected.Architectures[0]
+		}
 	}
 	if image, err := kubernetesbundle.ParseImageReference(plan.KubernetesBundleRef); err == nil {
 		record.ArtifactVersion = image.ArtifactVersion
@@ -749,6 +770,22 @@ func marshalCanonical(value any) ([]byte, error) {
 func digestBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func digestSourceInputs(config []byte, kubeadmInputs []kubeadmSourceInput) string {
+	if len(kubeadmInputs) == 0 {
+		return digestBytes(config)
+	}
+	inputs := append([]kubeadmSourceInput(nil), kubeadmInputs...)
+	sort.Slice(inputs, func(i, j int) bool { return inputs[i].Name < inputs[j].Name })
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "cluster-config:%d\n", len(config))
+	_, _ = hash.Write(config)
+	for _, input := range inputs {
+		_, _ = fmt.Fprintf(hash, "kubeadm-input:%d:%s:%d\n", len(input.Name), input.Name, len(input.Content))
+		_, _ = hash.Write(input.Content)
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func copyLabels(labels map[string]string) map[string]string {

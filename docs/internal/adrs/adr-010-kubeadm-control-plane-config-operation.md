@@ -6,9 +6,9 @@ Date: 2026-07-11.
 
 ## Context
 
-Katl renders desired native kubeadm input under
-`/etc/katl/kubeadm/<name>/config.yaml`, but normal generation activation must
-not rewrite kubeadm-owned state. A running control plane has derived state in
+Katl compiles default or bounded operator-supplied native kubeadm input into
+role-dependent state under `/etc/katl/kubeadm/<name>/config.yaml`, but normal
+generation activation must not rewrite kubeadm-owned state. A running control plane has derived state in
 the `kube-system/kubeadm-config` ConfigMap and in static Pod manifests under
 `/etc/kubernetes/manifests`. Changing the desired file is therefore not the
 same action as changing the live cluster.
@@ -74,7 +74,8 @@ cannot be combined with this operation.
 
 ## Source Of Truth
 
-Desired state is the selected `KubeadmConfig` in one committed Katl generation:
+Desired state is the internally selected, generated kubeadm config in one
+committed Katl generation:
 
 ```text
 desired generation ID
@@ -82,6 +83,10 @@ selected KubeadmConfig name
 /etc/katl/kubeadm/<name>/config.yaml
 canonical desired config SHA-256
 ```
+
+The name is compiled from `systemRole`; it is not an operator-authored
+ClusterConfig reference. When `spec.kubernetes.kubeadm` is present, the desired
+digest includes its validated and role-selected native documents and patches.
 
 The operation accepts only a config selected by the active generation. It does
 not accept an arbitrary path or inline replacement YAML. Every participating

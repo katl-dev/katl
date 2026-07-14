@@ -1,0 +1,26 @@
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "KubernetesCompatibilityCatalog",
+  "entries": [
+    {
+      "kubernetesVersion": "v1.36.0",
+      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b",
+      "architectures": [
+        "x86_64"
+      ],
+      "runtimeInterfaces": [
+        "katl-runtime-1"
+      ]
+    },
+    {
+      "kubernetesVersion": "v1.36.1",
+      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537",
+      "architectures": [
+        "x86_64"
+      ],
+      "runtimeInterfaces": [
+        "katl-runtime-1"
+      ]
+    }
+  ]
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
@@ -49,11 +50,13 @@ func TestCompileClusterPlan(t *testing.T) {
 	if len(cp.InstallManifest.Node.Networkd.Files) != 2 {
 		t.Fatalf("networkd files = %#v", cp.InstallManifest.Node.Networkd.Files)
 	}
-	if len(cp.NativeEtcFiles) != 4 {
-		t.Fatalf("native /etc files = %#v", cp.NativeEtcFiles)
+	hostname := nativeFile(cp.NativeEtcFiles, "/etc/hostname")
+	if hostname == nil || hostname.Content != "cp-1-host\n" {
+		t.Fatalf("hostname confext = %#v", hostname)
 	}
-	if cp.NativeEtcFiles[1].Path != "/etc/ssh/authorized_keys/katl" || cp.NativeEtcFiles[1].Mode != 0o600 || cp.NativeEtcFiles[1].Content != sshKey+"\n" {
-		t.Fatalf("authorized keys confext = %#v", cp.NativeEtcFiles[1])
+	authorizedKeys := nativeFile(cp.NativeEtcFiles, "/etc/ssh/authorized_keys/katl")
+	if authorizedKeys == nil || authorizedKeys.Mode != 0o600 || authorizedKeys.Content != sshKey+"\n" {
+		t.Fatalf("authorized keys confext = %#v", authorizedKeys)
 	}
 	if len(cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys) != 1 {
 		t.Fatalf("ssh keys were not de-duplicated: %#v", cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys)
@@ -76,6 +79,15 @@ func TestCompileClusterPlan(t *testing.T) {
 	if string(data) != string(want) {
 		t.Fatalf("compiled plan mismatch\nwant:\n%s\ngot:\n%s", want, data)
 	}
+}
+
+func nativeFile(files []confext.NativeEtcFile, path string) *confext.NativeEtcFile {
+	for index := range files {
+		if files[index].Path == path {
+			return &files[index]
+		}
+	}
+	return nil
 }
 
 func TestCompileMakesWorkstationCredentialRefPortable(t *testing.T) {

@@ -1520,6 +1520,30 @@ cgroupDriver: systemd
 `
 }
 
+func TestRenderControlPlaneJoinCarriesOperatorPatchDirectory(t *testing.T) {
+	base := []byte(`apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+patches:
+  directory: /etc/katl/kubeadm/control-plane/patches
+`)
+	material := JoinMaterial{Argv: []string{
+		"kubeadm", "join", "api.katl.test:6443",
+		"--token", "abcdef.0123456789abcdef",
+		"--discovery-token-ca-cert-hash", testDiscoveryHash,
+		"--control-plane",
+		"--certificate-key", strings.Repeat("a", 64),
+	}}
+	rendered, err := RenderControlPlaneJoinConfig(base, material)
+	if err != nil {
+		t.Fatalf("RenderControlPlaneJoinConfig() error = %v", err)
+	}
+	if !strings.Contains(string(rendered), "directory: /etc/katl/kubeadm/control-plane/patches") {
+		t.Fatalf("rendered join config did not retain patches directory:\n%s", rendered)
+	}
+}
+
 func adminKubeconfig() string {
 	return `apiVersion: v1
 kind: Config

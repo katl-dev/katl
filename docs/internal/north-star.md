@@ -95,7 +95,10 @@ User input should describe Katl-owned domains and preserve native syntax where
 that is the clearest interface. A network domain may accept `.network`,
 `.netdev`, and `.link` content. Kubeadm input remains native kubeadm YAML.
 Katl adds validation, ownership, render paths, apply mode, trust handling, and
-rollback behavior around those native artifacts.
+rollback behavior around those native artifacts. The common path is complete
+Katl-owned role defaults; a bounded advanced ClusterConfig file reference keeps
+legitimate upstream kubeadm settings available without exposing internal
+profiles or references.
 
 Katl configuration is applied to KatlOS nodes.
 

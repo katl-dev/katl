@@ -40,6 +40,7 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		t.Fatalf("NativeEtcFiles() error = %v", err)
 	}
 	want := []string{
+		"/etc/hostname",
 		"/etc/katl/kubeadm/control-plane/config.yaml",
 		"/etc/katl/node.json",
 		"/etc/ssh/authorized_keys/katl",
@@ -62,8 +63,11 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		}
 	}
 	var metadata map[string]any
-	if err := json.Unmarshal([]byte(files[1].Content), &metadata); err != nil {
-		t.Fatalf("decode node metadata: %v\n%s", err, files[1].Content)
+	if files[0].Content != "lab-node-01\n" {
+		t.Fatalf("hostname content = %q", files[0].Content)
+	}
+	if err := json.Unmarshal([]byte(files[2].Content), &metadata); err != nil {
+		t.Fatalf("decode node metadata: %v\n%s", err, files[2].Content)
 	}
 	if metadata["apiVersion"] != "katl.dev/v1alpha1" || metadata["kind"] != "NodeMetadata" || metadata["systemRole"] != "control-plane" {
 		t.Fatalf("metadata = %#v", metadata)
@@ -76,11 +80,11 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	if kubernetes["payloadVersion"] != "v1.36.1" || kubernetes["activationPath"] != "/run/extensions/katl-kubernetes.raw" {
 		t.Fatalf("metadata kubernetes = %#v", kubernetes)
 	}
-	if files[2].Mode != 0o600 || !strings.Contains(files[2].Content, "ssh-ed25519") {
-		t.Fatalf("authorized keys file = %#v", files[2])
+	if files[3].Mode != 0o600 || !strings.Contains(files[3].Content, "ssh-ed25519") {
+		t.Fatalf("authorized keys file = %#v", files[3])
 	}
-	if !strings.Contains(files[3].Content, "net.ipv4.ip_forward = 1") {
-		t.Fatalf("sysctl content = %q", files[3].Content)
+	if !strings.Contains(files[4].Content, "net.ipv4.ip_forward = 1") {
+		t.Fatalf("sysctl content = %q", files[4].Content)
 	}
 }
 

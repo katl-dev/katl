@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
@@ -52,6 +53,47 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	}
 	if strings.Contains(string(data), "install:") {
 		t.Fatalf("rendered change contains install fields:\n%s", data)
+	}
+}
+
+func TestRenderNodeConfigurationChangeCarriesSelectedKubeadmInput(t *testing.T) {
+	plan, err := kubeadmconfig.PlanFromRenderedFiles("control-plane", []kubeadmconfig.File{
+		{
+			RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+			Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\n"),
+		},
+		{
+			RenderPath: "/etc/katl/kubeadm/control-plane/patches/kube-apiserver0+merge.yaml",
+			Content:    []byte("metadata:\n  labels:\n    katl.dev/profile: homelab\n"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
+		NodeName: "cp-1",
+		Manifest: manifest.Manifest{Node: manifest.NodeConfig{
+			Identity:   manifest.NodeIdentity{Hostname: "cp-1"},
+			SystemRole: "control-plane",
+			Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
+		}},
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{"control-plane": plan},
+		SourceID:       "lab",
+		DesiredVersion: "2",
+	})
+	if err != nil {
+		t.Fatalf("RenderNodeConfigurationChange() error = %v", err)
+	}
+	request, err := DecodeNodeConfigurationChange(strings.NewReader(string(data)), TrustedBundleRequest{})
+	if err != nil {
+		t.Fatalf("DecodeNodeConfigurationChange() error = %v\n%s", err, data)
+	}
+	resolved := request.KubeadmConfigs["control-plane"]
+	if !strings.Contains(string(resolved.Config.Content), "kubernetesVersion: v1.36.1") || len(resolved.Patches) != 1 {
+		t.Fatalf("resolved kubeadm input = %#v", resolved)
+	}
+	if !request.NodeOverrides["cp-1"].KubeadmChanged {
+		t.Fatal("rendered kubeadm input was not planned as an operation-only change")
 	}
 }
 

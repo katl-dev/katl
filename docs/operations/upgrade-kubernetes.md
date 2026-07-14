@@ -14,22 +14,23 @@ upgrade node`.
 - per-node `credentialRef` values point to protected token files;
 - no other mutating Katl operation is active;
 - workloads tolerate a serial control-plane-first rollout; and
-- the selected bundle represents a newer patch or the next Kubernetes minor.
+- the selected Kubernetes version represents a newer patch or the next minor.
 
 Nodes fetch the bundle directly. They need registry and CA access to `ghcr.io`.
-An immutable `@sha256:` suffix is recommended but not required.
+Katl resolves the version to an immutable digest compatible with this KatlOS
+release; operators do not supply the bundle identity.
 
 ## Plan
 
 ```sh
 katlctl cluster upgrade kubernetes \
-  v1.36.1-katl.1 --plan
+  v1.36.1 --plan
 ```
 
 The shorter top-level form is equivalent:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1-katl.1 --plan
+katlctl kubernetes upgrade v1.36.1 --plan
 ```
 
 By default, `katlctl` uses the current context in its workstation configuration.
@@ -40,16 +41,17 @@ Kubernetes payload, derives the control-plane/worker order, and asks every
 pending node to validate its operation. It does not fetch a bundle, create a
 candidate generation, take a snapshot, or run kubeadm.
 
-Operators provide only the cluster selection and bundle version. Katl derives
-and records bundle digests, sysext paths and sizes, candidate generation IDs,
-operation IDs, and snapshot evidence internally.
+Operators provide only the cluster selection and Kubernetes version. Katl
+selects the release-owned compatible bundle and records its digest, sysext paths
+and sizes, candidate generation IDs, operation IDs, and snapshot evidence
+internally. An unavailable version fails before any node operation is accepted.
 
 ## Execute
 
 Run the same command without `--plan`:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1-katl.1
+katlctl kubernetes upgrade v1.36.1
 ```
 
 The command itself authorizes the rollout; there is no additional confirmation
@@ -67,7 +69,7 @@ The default path neither cordons nor drains nodes. To prevent new pods from
 being scheduled onto the node during its upgrade, opt into temporary cordoning:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1-katl.1 \
+katlctl kubernetes upgrade v1.36.1 \
   --cordon --kubeconfig ./kubeconfig
 ```
 

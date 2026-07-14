@@ -40,6 +40,12 @@ func TestKubernetesBundleWorkflowContract(t *testing.T) {
 		`version_tag="$ARTIFACT_VERSION"`,
 		"immutable OCI tag already exists",
 		"actions/attest@v4",
+		"record-compatibility",
+		"internal/installer/kubernetescompat/catalog.json",
+		"automation/kubernetes-compatibility-",
+		"draft: false",
+		"createWorkflowDispatch",
+		"enablePullRequestAutoMerge",
 	}
 	for _, value := range required {
 		if !strings.Contains(workflow, value) {

@@ -37,7 +37,9 @@ There are two authoring levels:
 
 There are no node classes, system-role default layers, or `overrides` wrapper.
 Katl selects its control-plane and worker kubeadm profiles internally from
-`systemRole`.
+`systemRole`. Operators who need a native kubeadm setting that Katl does not
+model may supply one bounded cluster-wide kubeadm file and optional patch
+directory. They never name or select the generated profiles.
 
 ## Supported Shape
 
@@ -52,6 +54,10 @@ spec:
 
   kubernetes:
     version: v1.36.1
+    # Advanced native input, resolved relative to this ClusterConfig.
+    # kubeadm:
+    #   configFile: ./kubeadm.yaml
+    #   patchesDir: ./kubeadm-patches
 
   defaults:
     identity:
@@ -92,6 +98,12 @@ spec:
 `name` is also the node hostname. A separate hostname alias is deliberately not
 part of the contract.
 
+`bootstrap.address` is the operator-reachable address used for installation,
+enrollment, initial Kubernetes bootstrap, and the initial workstation context.
+It need not be a permanent node identity, but it must remain reachable through
+those steps. For DHCP nodes, use a reservation or update the workstation
+context after enrollment when the address changes.
+
 Nodes use a generated DHCP systemd-networkd profile when neither defaults nor
 the node supplies native networkd files. Default and node files merge by file
 name and conflicting content is rejected.
@@ -118,7 +130,7 @@ The following are not ClusterConfig fields:
 
 - KatlOS image URLs, checksums, local paths, or release descriptors;
 - Kubernetes OCI bundle references, catalogs, resolver inputs, or digests;
-- kubeadm configuration documents or profile references;
+- named kubeadm profiles, maps, render paths, or config references;
 - bootstrap access methods, tokens, or credential references;
 - node classes, platform API endpoint helpers, or role-default layers;
 - generation IDs, operation IDs, source digests, or validation bookkeeping.
@@ -128,14 +140,28 @@ compiler provide these inputs at the operation boundary. For example, PXE
 bundle compilation takes KatlOS artifact metadata as command flags while the
 same ClusterConfig remains usable for ISO installation.
 
+The bounded exception is `spec.kubernetes.kubeadm`. `configFile` and
+`patchesDir` are repository-relative operator inputs that `katlctl` validates
+and embeds into the compiled bundle. Katl supplies missing role documents, the
+selected Kubernetes version, the containerd CRI socket, safe rendered paths,
+and dynamic bootstrap credentials. It rejects unsupported API kinds, unsafe
+host paths, symlinks, traversal, and a kubeadm version that conflicts with
+`spec.kubernetes.version`.
+
 ## Runtime Planning
 
 When a ClusterConfig is rendered for an installed node, Katl includes every
 supported desired field in the node change request. Runtime-live fields such as
 SSH keys and networkd files can be applied directly. Operation-only fields such
-as system role and the internally selected kubeadm profile remain visible to
+as system role and role-dependent Kubernetes bootstrap state remain visible to
 the planner and produce an explicit lifecycle action or refusal; the renderer
 must not silently omit them.
+
+Changing bounded native kubeadm input updates desired role-dependent bootstrap
+state. Normal config apply may stage and report that state, but making a running
+cluster match it requires the dedicated kubeadm-aware operation. Native input
+acceptance does not imply that every kubeadm change has a supported live
+transition.
 
 Disk installation fields are consumed by installation and are not runtime
 configuration. Kubernetes version changes are handled by the Kubernetes
@@ -152,7 +178,7 @@ spec.nodeClasses and nodes[].nodeClass
 spec.platformAPIEndpoint
 spec.katlosImage
 spec.kubernetes.bundle and spec.kubernetes.catalogRef
-spec.kubeadmConfigs and kubeadm config references
+spec.kubeadmConfigs, named kubeadm maps, and kubeadm config references
 bootstrap access or credential fields
 identity.hostname
 install.wipeTarget
