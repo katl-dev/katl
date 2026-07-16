@@ -68,10 +68,11 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 	}
 	out := stdout.String()
 	for _, want := range []string{
-		"KatlOS operator client",
+		"katlctl installs and manages KatlOS nodes",
 		"cluster     Cluster lifecycle operations",
-		"config      Katl configuration operations",
-		"wipe        Compatibility aliases for destructive wipe commands",
+		"config      Create and compile ClusterConfig",
+		"context     Inspect enrolled workstation context",
+		"node        Manage individual KatlOS nodes",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stdout = %q, missing %q", out, want)
@@ -80,25 +81,68 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 	if strings.Contains(out, "completion") {
 		t.Fatalf("stdout = %q, want no implicit completion command", out)
 	}
+	for _, obsolete := range []string{"\n  host ", "\n  wipe "} {
+		if strings.Contains(out, obsolete) {
+			t.Fatalf("stdout = %q, contains obsolete top-level command %q", out, obsolete)
+		}
+	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
 }
 
-func TestRootRequiresCommand(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), nil, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "command is required") {
-		t.Fatalf("run() error = %v, want command required", err)
+func TestCommandGroupsExposeOneSupportedPath(t *testing.T) {
+	tests := []struct {
+		group     string
+		required  []string
+		forbidden []string
+	}{
+		{group: "node", required: []string{"apply", "reboot", "status", "upgrade", "wipe"}},
+		{group: "cluster", required: []string{"bootstrap", "enroll", "wipe"}, forbidden: []string{"kubeadm-control-plane-config"}},
+		{group: "kubernetes", required: []string{"apply-config", "upgrade"}},
+		{group: "config", required: []string{"bundle", "init", "schema", "validate"}, forbidden: []string{"apply", "path", "topology"}},
+		{group: "context", required: []string{"path", "show"}},
 	}
-	if stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Fatalf("stdout = %q stderr = %q, want empty", stdout.String(), stderr.String())
+	for _, test := range tests {
+		t.Run(test.group, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), []string{test.group, "--help"}, &stdout, &stderr); err != nil {
+				t.Fatalf("run() error = %v", err)
+			}
+			out := stdout.String()
+			for _, command := range test.required {
+				if !strings.Contains(out, command) {
+					t.Fatalf("stdout = %q, missing command %q", out, command)
+				}
+			}
+			for _, command := range test.forbidden {
+				if strings.Contains(out, command) {
+					t.Fatalf("stdout = %q, contains obsolete command %q", out, command)
+				}
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRootWithoutArgumentsPrintsHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), nil, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Usage:") || !strings.Contains(stdout.String(), "katlctl install discover") {
+		t.Fatalf("stdout = %q, want useful root help", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
 }
 
 func TestOutputFormatValidation(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"config", "topology", "--output", "yaml"}, &stdout, &stderr)
+	err := run(context.Background(), []string{"context", "show", "--output", "yaml"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), `--output = "yaml", want json`) {
 		t.Fatalf("run() error = %v, want output validation", err)
 	}
@@ -155,7 +199,7 @@ func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"config", "path"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"context", "path"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 	if got, want := strings.TrimSpace(stdout.String()), filepath.Join(configHome, "katl", "katlctl.yaml"); got != want {
@@ -437,7 +481,7 @@ clusters:
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"config", "topology",
+		"context", "show",
 		"--context", "stage",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -881,22 +925,17 @@ nodes:
 	}
 }
 
-func TestWipeClusterRequiresExactAcknowledgement(t *testing.T) {
-	inventoryPath := writeInventory(t)
+func TestWipeCommandsExplainConsequenceWithoutConfirmationCeremony(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{
-		"cluster", "wipe",
-		"--inventory", inventoryPath,
-		"--all",
-		"--confirm-destructive-wipe",
-		"--acknowledge", "I know this is destructive",
-		"--client-request-id", "wipe-req",
-	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "--acknowledge must exactly match") {
-		t.Fatalf("run() error = %v, want acknowledgement validation", err)
+	if err := run(context.Background(), []string{"node", "wipe", "--help"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout = %s, want empty", stdout.String())
+	out := stdout.String()
+	if !strings.Contains(out, "must boot installer media or PXE") {
+		t.Fatalf("stdout = %q, want reinstall consequence", out)
+	}
+	if strings.Contains(out, "acknowledge") || strings.Contains(out, "confirm-destructive") {
+		t.Fatalf("stdout = %q, want no confirmation ceremony", out)
 	}
 }
 
@@ -907,8 +946,6 @@ func TestWipeClusterRefusesPartialTargetWithoutOverride(t *testing.T) {
 		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--node", "cp-1",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "wipe-req",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "partial cluster wipe requires --allow-partial-cluster") {
@@ -947,8 +984,6 @@ func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
 		"--inventory", inventoryPath,
 		"--all",
 		"--plan",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "wipe-req",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -958,7 +993,7 @@ func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, stdout.String())
 	}
-	if !report.Plan || !report.AcknowledgementAccepted || report.PartialCluster {
+	if !report.Plan || report.PartialCluster {
 		t.Fatalf("report flags = %#v", report)
 	}
 	if len(report.Targets) != 2 || len(report.NodeLocalOperations) != 2 {
@@ -974,7 +1009,7 @@ func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
 	}
 }
 
-func TestWipeClusterPlanAcceptsClusterConfigWithoutDestructiveAcknowledgement(t *testing.T) {
+func TestWipeClusterPlanAcceptsClusterConfig(t *testing.T) {
 	sourcePath := writeClusterConfig(t)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
 		"cp-1": readyWipeClusterClient("cp-machine"),
@@ -996,7 +1031,52 @@ func TestWipeClusterPlanAcceptsClusterConfigWithoutDestructiveAcknowledgement(t 
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, stdout.String())
 	}
-	if !report.Plan || report.AcknowledgementAccepted || len(report.Targets) != 1 || report.Targets[0].Name != "cp-1" {
+	if !report.Plan || len(report.Targets) != 1 || report.Targets[0].Name != "cp-1" {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestWipeClusterUsesEnrolledContextWithoutSource(t *testing.T) {
+	configPath := writeKatlctlConfig(t, `currentContext: lab
+contexts:
+- name: lab
+  cluster: katl-lab
+clusters:
+- name: katl-lab
+  controlPlaneEndpoint: api.lab.test:6443
+  nodes:
+  - name: cp-1
+    managementEndpoint: 192.0.2.11:9443
+    systemRole: control-plane
+    credentialRef: file:/secure/katl/cp-1.token
+  - name: worker-1
+    managementEndpoint: 192.0.2.21:9443
+    systemRole: worker
+    credentialRef: file:/secure/katl/worker-1.token
+`)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"cp-1":     readyWipeClusterClient("cp-machine"),
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func(string) cluster.AgentConnector { return connector }
+	t.Cleanup(func() { newWipeClusterConnector = oldConnector })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "wipe",
+		"--context-file", configPath,
+		"--all",
+		"--plan",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeClusterReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if len(report.Targets) != 2 || report.PartialCluster {
 		t.Fatalf("report = %#v", report)
 	}
 }
@@ -1018,8 +1098,6 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--all",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "wipe-req",
 		"--timeout", "10m",
 	}, &stdout, &stderr)
@@ -1056,61 +1134,16 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 	}
 }
 
-func TestWipeClusterCompatibilityAliasUsesPrimaryCommand(t *testing.T) {
-	inventoryPath := writeInventory(t)
-	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
-		"cp-1":     readyWipeClusterClient("cp-machine"),
-		"worker-1": readyWipeClusterClient("worker-machine"),
-	})
-	old := newWipeClusterConnector
-	newWipeClusterConnector = func(token string) cluster.AgentConnector {
-		return connector
-	}
-	t.Cleanup(func() { newWipeClusterConnector = old })
-
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{
-		"wipe", "cluster",
-		"--inventory", inventoryPath,
-		"--all",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
-		"--client-request-id", "cluster-wipe-req",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
-	}
-	for name, client := range connector.clients {
-		req := client.submitRequest
-		if req == nil {
-			t.Fatalf("%s submit request = nil", name)
-		}
-		reset := req.GetDestructiveReset()
-		if req.Actor != "katlctl cluster wipe" || reset == nil || reset.ResetScope != "cluster" {
-			t.Fatalf("%s submit request = %+v reset=%+v", name, req, reset)
-		}
-	}
-	var report wipeClusterReport
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v\n%s", err, stdout.String())
-	}
-	if report.Command != "katlctl cluster wipe" {
-		t.Fatalf("report command = %q", report.Command)
-	}
-}
-
 func TestWipeNodeRequiresExactlyOneTarget(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "node",
+		"node", "wipe",
 		"--inventory", inventoryPath,
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "wipe-node-req",
 		"--kubeconfig", "admin.conf",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "exactly one --node is required") {
+	if err == nil || !strings.Contains(err.Error(), "accepts between 1 and 2 arg") {
 		t.Fatalf("run() error = %v, want exact node target validation", err)
 	}
 	if stdout.Len() != 0 {
@@ -1118,7 +1151,7 @@ func TestWipeNodeRequiresExactlyOneTarget(t *testing.T) {
 	}
 }
 
-func TestClusterWipeNodeSubmitsWithNodeActor(t *testing.T) {
+func TestNodeWipeSubmitsWithNodeActor(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
 		"worker-1": readyWipeClusterClient("worker-machine"),
@@ -1137,12 +1170,9 @@ func TestClusterWipeNodeSubmitsWithNodeActor(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"cluster", "wipe", "node",
+		"node", "wipe", "worker-1",
 		"--inventory", inventoryPath,
-		"--node", "worker-1",
 		"--kubeconfig", "admin.conf",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "cluster-wipe-node-req",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -1153,14 +1183,14 @@ func TestClusterWipeNodeSubmitsWithNodeActor(t *testing.T) {
 		t.Fatal("submit request = nil")
 	}
 	reset := req.GetDestructiveReset()
-	if req.Actor != "katlctl cluster wipe node" || reset == nil || reset.ResetScope != "node" {
+	if req.Actor != "katlctl node wipe" || reset == nil || reset.ResetScope != "node" {
 		t.Fatalf("submit request = %+v reset=%+v", req, reset)
 	}
 	var report wipeNodeReport
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, stdout.String())
 	}
-	if report.Command != "katlctl cluster wipe node" {
+	if report.Command != "katlctl node wipe" {
 		t.Fatalf("report command = %q", report.Command)
 	}
 }
@@ -1184,12 +1214,9 @@ func TestWipeNodePlanPrintsUnknownKubernetesCleanupWithoutKubeconfig(t *testing.
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "node",
+		"node", "wipe", "worker-1",
 		"--inventory", inventoryPath,
-		"--node", "worker-1",
 		"--plan",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "wipe-node-req",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -1199,7 +1226,7 @@ func TestWipeNodePlanPrintsUnknownKubernetesCleanupWithoutKubeconfig(t *testing.
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, stdout.String())
 	}
-	if !report.Plan || report.Kind != "WipeNodeReport" || report.Command != "katlctl wipe node" {
+	if !report.Plan || report.Kind != "WipeNodeReport" || report.Command != "katlctl node wipe" {
 		t.Fatalf("report identity = %#v", report)
 	}
 	if report.KubernetesCleanup != "unknown" {
@@ -1210,6 +1237,49 @@ func TestWipeNodePlanPrintsUnknownKubernetesCleanupWithoutKubeconfig(t *testing.
 	}
 	if len(kubectl.calls) != 0 {
 		t.Fatalf("kubectl calls = %#v, want none for plan without kubeconfig", kubectl.calls)
+	}
+}
+
+func TestWipeNodeUsesEnrolledContextWithoutClusterSource(t *testing.T) {
+	configPath := writeKatlctlConfig(t, `currentContext: lab
+contexts:
+- name: lab
+  cluster: katl-lab
+clusters:
+- name: katl-lab
+  controlPlaneEndpoint: api.lab.test:6443
+  nodes:
+  - name: cp-1
+    managementEndpoint: 192.0.2.11:9443
+    systemRole: control-plane
+    credentialRef: file:/secure/katl/cp-1.token
+  - name: worker-1
+    managementEndpoint: 192.0.2.21:9443
+    systemRole: worker
+    credentialRef: file:/secure/katl/worker-1.token
+`)
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
+		"worker-1": readyWipeClusterClient("worker-machine"),
+	})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func(string) cluster.AgentConnector { return connector }
+	t.Cleanup(func() { newWipeClusterConnector = oldConnector })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"node", "wipe", "worker-1",
+		"--context-file", configPath,
+		"--plan",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeNodeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if len(report.Targets) != 1 || report.Targets[0].Name != "worker-1" || report.Targets[0].Address != "192.0.2.21" {
+		t.Fatalf("targets = %#v", report.Targets)
 	}
 }
 
@@ -1232,12 +1302,9 @@ func TestWipeNodeSubmitsAfterKubernetesCleanup(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "node",
+		"node", "wipe", "worker-1",
 		"--inventory", inventoryPath,
-		"--node", "worker-1",
 		"--kubeconfig", "admin.conf",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "wipe-node-req",
 		"--timeout", "7m",
 	}, &stdout, &stderr)
@@ -1295,12 +1362,9 @@ func TestWipeNodeReportsRecoveryRequiredBeforeLocalReset(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "node",
+		"node", "wipe", "worker-1",
 		"--inventory", inventoryPath,
-		"--node", "worker-1",
 		"--kubeconfig", "admin.conf",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "wipe-node-req",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "Kubernetes cleanup failed") {
@@ -1341,12 +1405,9 @@ func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"wipe", "node",
+		"node", "wipe", "cp-1",
 		"--inventory", inventoryPath,
-		"--node", "cp-1",
 		"--kubeconfig", "admin.conf",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeAcknowledgementText,
 		"--client-request-id", "wipe-node-req",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "etcd membership coordination") {
@@ -1386,7 +1447,7 @@ func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"config", "apply", "status",
+		"node", "apply", "status",
 		"--root", root,
 		"--active-generation", "2026.06.05-002",
 		"--next-boot-generation", "2026.06.05-003",
@@ -1433,7 +1494,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"config", "apply",
+		"node", "apply",
 		"--endpoint", "node-a.example.test:9443",
 		"--file", configPath,
 		"--mode", generation.ApplyModeNextBoot,
@@ -1443,7 +1504,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if fake.stageRequest == nil || fake.stageRequest.CandidateGenerationId != "generation-1" || fake.stageRequest.ClientRequestId != "req-stage" || fake.stageRequest.Actor != "katlctl config apply" {
+	if fake.stageRequest == nil || fake.stageRequest.CandidateGenerationId != "generation-1" || fake.stageRequest.ClientRequestId != "req-stage" || fake.stageRequest.Actor != "katlctl node apply" {
 		t.Fatalf("stage request = %+v", fake.stageRequest)
 	}
 	assertSuccessfulMutationOutput(t, stdout.Bytes())
@@ -1469,7 +1530,7 @@ func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"host", "upgrade",
+		"node", "upgrade",
 		"--endpoint", "node-a.example.test:9443",
 		"--image-url", "https://updates.example.test/katlos-upgrade.squashfs",
 		"--candidate-generation", "generation-upgrade-1",
@@ -1509,7 +1570,7 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"host", "upgrade", "v2026.7.0-alpha.9", "--endpoint", "node-a.example.test:9443", "--timeout", "1m"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "upgrade", "v2026.7.0-alpha.9", "--endpoint", "node-a.example.test:9443", "--timeout", "1m"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	request := fake.submitRequest.GetHostUpgrade()
@@ -1556,7 +1617,7 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"config", "apply",
+		"node", "apply",
 		"--endpoint", "node-a.example.test:9443",
 		"--file", configPath,
 		"--candidate-generation", "generation-auto",
@@ -1565,10 +1626,10 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" || fake.validateRequest.Actor != "katlctl config apply" {
+	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" || fake.validateRequest.Actor != "katlctl node apply" {
 		t.Fatalf("validate request = %+v", fake.validateRequest)
 	}
-	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.Actor != "katlctl config apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto {
+	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.Actor != "katlctl node apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto {
 		t.Fatalf("submit request = %+v", fake.submitRequest)
 	}
 	if fake.stageRequest != nil || fake.applyRequest != nil {
@@ -1601,7 +1662,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"config", "apply", "validate",
+		"node", "apply", "validate",
 		"--endpoint", "node-a.example.test:9443",
 		"--file", configPath,
 		"--mode", generation.ApplyModeNextBoot,
@@ -1611,7 +1672,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if fake.validateRequest == nil || fake.validateRequest.CandidateGenerationId != "generation-plan" || fake.validateRequest.ClientRequestId != "req-plan" || fake.validateRequest.Actor != "katlctl config apply validate" || fake.validateRequest.ApplyMode != generation.ApplyModeNextBoot {
+	if fake.validateRequest == nil || fake.validateRequest.CandidateGenerationId != "generation-plan" || fake.validateRequest.ClientRequestId != "req-plan" || fake.validateRequest.Actor != "katlctl node apply validate" || fake.validateRequest.ApplyMode != generation.ApplyModeNextBoot {
 		t.Fatalf("validate request = %+v", fake.validateRequest)
 	}
 	if fake.stageRequest != nil || fake.applyRequest != nil {
@@ -1653,7 +1714,7 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"config", "apply",
+		"node", "apply",
 		"--endpoint", "node-a.example.test:9443",
 		"--config-bundle", bundlePath,
 		"--node", "cp-1",
@@ -1714,7 +1775,7 @@ func TestConfigApplyStatusQueriesGenerationFromAgent(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"config", "apply", "status",
+		"node", "apply", "status",
 		"--endpoint", "node-a.example.test:9443",
 		"--generation", "generation-1",
 	}, &stdout, &stderr)
@@ -1755,7 +1816,7 @@ func TestConfigApplyStatusReportsFailureRollbackAndKubeadmRedacted(t *testing.T)
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"config", "apply", "status",
+		"node", "apply", "status",
 		"--root", root,
 		"--active-generation", "2026.06.05-004",
 		"--next-boot-generation", "2026.06.05-005",
@@ -1814,11 +1875,11 @@ func TestOperatorCommandsHideIntegrityDigestFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"install", "apply", "--help"},
 		{"config", "render-node", "--help"},
-		{"config", "apply", "--help"},
+		{"node", "apply", "--help"},
 		{"cluster", "bootstrap", "--help"},
-		{"cluster", "kubeadm-control-plane-config", "--help"},
-		{"host", "upgrade", "--help"},
-		{"operation", "status", "--help"},
+		{"kubernetes", "apply-config", "--help"},
+		{"node", "upgrade", "--help"},
+		{"operations", "status", "--help"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if err := run(context.Background(), args, &stdout, &stderr); err != nil {

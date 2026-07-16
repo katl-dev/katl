@@ -64,7 +64,7 @@ type operationListOptions struct {
 }
 
 func newOperationCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: "operations", Aliases: []string{"operation"}, Short: "Inspect KatlOS operations"}
+	cmd := &cobra.Command{Use: "operations", Short: "Inspect KatlOS operations"}
 	cmd.AddCommand(newOperationStatusCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newOperationListCommand(ctx, stdout, stderr))
 	return cmd
@@ -82,7 +82,7 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
-	cmd.Flags().StringVar(&opts.configPath, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
 	cmd.Flags().StringVar(&opts.operationID, "operation-id", "", "accepted operation id")
@@ -105,7 +105,7 @@ func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
-	cmd.Flags().StringVar(&opts.configPath, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
 	cmd.Flags().BoolVar(&opts.activeOnly, "active", false, "show only non-terminal operations")

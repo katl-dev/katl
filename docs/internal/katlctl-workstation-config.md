@@ -35,7 +35,7 @@ XDG_CONFIG_HOME
   base config directory; katlctl appends katl/katlctl.yaml
 ```
 
-`katlctl config path` prints the resolved path.
+`katlctl context path` prints the resolved path.
 
 ## Schema
 
@@ -72,7 +72,7 @@ cluster PKI. Enrollment stores per-node bearer tokens beneath the adjacent
 `credentials/<cluster>/` directory with mode `0600` and records only `file:`
 references here.
 
-`katlctl config topology` prints the resolved context topology as JSON.
+`katlctl context show` prints the resolved context topology as JSON.
 The topology output includes `credentialRef` values because they are operator
 references needed by orchestration, not credential material.
 

@@ -23,7 +23,7 @@ type kubeadmControlPlaneConfigOptions struct {
 
 func newKubeadmControlPlaneConfigCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := kubeadmControlPlaneConfigOptions{}
-	cmd := &cobra.Command{Use: "kubeadm-control-plane-config", Short: "Roll out the bounded kubeadm control-plane configuration change", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return runKubeadmControlPlaneConfig(ctx, opts, stdout) }}
+	cmd := &cobra.Command{Use: "apply-config", Short: "Apply staged kubeadm configuration across control planes", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return runKubeadmControlPlaneConfig(ctx, opts, stdout) }}
 	f := cmd.Flags()
 	f.StringVar(&opts.inventoryPath, "inventory", "", "three-control-plane inventory")
 	f.StringVar(&opts.coordinator, "coordinator", "", "coordinator control-plane node changed last")
@@ -108,7 +108,7 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 	var summary []map[string]string
 	for i, t := range targets {
 		body := kubeadmControlPlaneConfigBody(opts, t.node, uint32(i+1))
-		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-dry-run-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl cluster kubeadm-control-plane-config", ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: opts.generationID, DryRun: true, KubeadmControlPlaneConfig: body})
+		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-dry-run-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl kubernetes apply-config", ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: opts.generationID, DryRun: true, KubeadmControlPlaneConfig: body})
 		if err != nil {
 			return fmt.Errorf("dry-run %s: %w", t.node.Name, err)
 		}
@@ -118,7 +118,7 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 	}
 	for i, t := range targets {
 		body := kubeadmControlPlaneConfigBody(opts, t.node, uint32(i+1))
-		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl cluster kubeadm-control-plane-config", ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: opts.generationID, KubeadmControlPlaneConfig: body})
+		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl kubernetes apply-config", ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: opts.generationID, KubeadmControlPlaneConfig: body})
 		if err != nil {
 			return fmt.Errorf("submit %s: %w", t.node.Name, err)
 		}

@@ -44,7 +44,7 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			err := run(context.Background(), []string{
-				"operation", "status",
+				"operations", "status",
 				"--endpoint", "node.test:9443",
 				"--agent-token-file", tokenPath,
 				"--operation-id", "operation-1",
@@ -163,10 +163,10 @@ func TestFollowOperationTimeoutReturnsLastStatus(t *testing.T) {
 
 func TestOperationStatusValidatesFlags(t *testing.T) {
 	for _, args := range [][]string{
-		{"operation", "status"},
-		{"operation", "status", "--endpoint", "node:9443"},
-		{"operation", "status", "--endpoint", "node:9443", "--operation-id", "op-1", "--diagnostics", "everything"},
-		{"operation", "status", "--endpoint", "node:9443", "--operation-id", "op-1", "--timeout", "0s"},
+		{"operations", "status"},
+		{"operations", "status", "--endpoint", "node:9443"},
+		{"operations", "status", "--endpoint", "node:9443", "--operation-id", "op-1", "--diagnostics", "everything"},
+		{"operations", "status", "--endpoint", "node:9443", "--operation-id", "op-1", "--timeout", "0s"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
@@ -186,7 +186,7 @@ func TestOperationWatchReturnsFailureAfterStatus(t *testing.T) {
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"operation", "status", "--endpoint", "node:9443", "--operation-id", "operation-1", "--watch"}, &stdout, &stderr)
+	err := run(context.Background(), []string{"operations", "status", "--endpoint", "node:9443", "--operation-id", "operation-1", "--watch"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "disk mutation requires recovery") {
 		t.Fatalf("run() error = %v", err)
 	}

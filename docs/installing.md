@@ -454,7 +454,7 @@ request internally; operators do not maintain a second configuration schema.
 Optionally plan the exact per-node runtime request through the node agent:
 
 ```text
-katlctl config apply ./cluster.yaml --node cp-1 --plan
+katlctl node apply ./cluster.yaml --node cp-1 --plan
 ```
 
 `katlctl` derives the source version, candidate generation, authenticated
@@ -465,7 +465,7 @@ If the source has already been compiled, use the bundle instead of
 recompiling it:
 
 ```text
-katlctl config apply \
+katlctl node apply \
   --config-bundle ./katl-lab.katlcfg \
   --node cp-1 \
   --plan
@@ -496,7 +496,7 @@ interface, and digests. An upgrade operation creates a candidate generation from
 that image and validates component compatibility before selection.
 
 Kubernetes version upgrades remain separate from day-one install. Use
-`katlctl cluster upgrade kubernetes` to plan and execute the kubeadm-aware,
+`katlctl kubernetes upgrade` to plan and execute the kubeadm-aware,
 control-plane-first rollout from a published bundle. Katl resolves the bundle
 identity, captures control-plane etcd snapshot evidence, stages the target
 `kubeadm` privately before releasing the target kubelet, and reports recovery

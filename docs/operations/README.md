@@ -63,7 +63,7 @@ katlctl operations list \
   --node cp-1
 ```
 
-`katlctl operation status --operation-id ID` remains an advanced diagnostic
+`katlctl operations status --operation-id ID` remains an advanced diagnostic
 path for one exact record. Use `--diagnostics verbose` when normal redacted
 status is insufficient.
 

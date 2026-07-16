@@ -23,7 +23,7 @@ init/join after a post-mutation interruption.
 For day one, and likely beyond, Katl's general rebuild story is:
 
 ```text
-wipe selected nodes or disks with explicit data-loss acknowledgement
+invoke an explicit node or cluster wipe
 install clean KatlOS generation 0
 run a new explicit cluster bootstrap
 create a new Kubernetes cluster identity
@@ -44,7 +44,7 @@ kubelet state under /var/lib/kubelet
 etcd state or snapshots
 Kubernetes API reachability and observed cluster state
 control-plane endpoint intent
-operator acknowledgement of data loss, when destructive action is requested
+the explicitly selected destructive operation and target set
 ```
 
 Katl operation records contain redacted evidence. They do not replace backups of
@@ -77,7 +77,7 @@ Rules:
 ```text
 destructive reinstall
   may create a clean generation 0 and discard local Kubernetes state when the
-  operator explicitly acknowledges data loss
+  operator explicitly invokes the wipe or install workflow
 
 non-destructive reinstall or repair
   must preserve /var/lib/katl, projected /etc/kubernetes, /var/lib/kubelet, and
@@ -107,7 +107,7 @@ Rules:
 ```text
 wipe/reinstall selected nodes
   allowed only through the installer's destructive install guard or a future
-  destructive reset contract with explicit data-loss acknowledgement
+  explicit destructive reset contract
 
 new bootstrap after wipe/reinstall
   creates a new Kubernetes cluster identity and new kubeadm-owned cluster state
@@ -135,21 +135,12 @@ identity, CNI state, or Katl operation history from the selected nodes.
 The user-facing command contract is defined in
 `docs/internal/katlctl-wipe-contract.md`.
 
-The user-facing acknowledgement must be explicit and specific. A request is not
-accepted unless the operator supplies an affirmative destructive flag and a
-human-readable acknowledgement equivalent to:
-
-```text
-I understand this will erase KatlOS, Kubernetes, kubelet, etcd, CNI, operation,
-and generation state on the selected nodes and bootstrap a new cluster identity.
-```
-
-Short flags such as `--force`, `--yes`, or a repeated failed bootstrap attempt
-are not enough. The installer manifest requires `install.wipeTarget: true`, and
-install status records `wipeTargetAccepted` after validation. User-facing wipe
-commands may require stronger cluster lifecycle acknowledgements before they
-produce installer manifests. Diagnostics must not record secrets from the
-discarded cluster.
+The explicit `katlctl node wipe` or `katlctl cluster wipe` invocation is the
+operator's destructive intent. Katl does not require an additional confirmation
+flag, prompt, or acknowledgement phrase. The command must identify its targets
+and explain that installer media or PXE is required afterward. The installer
+still owns target-disk selection and its accepted install plan. Diagnostics must
+not record secrets from the discarded cluster.
 
 For v0.1, wipe/reinstall owns only selected KatlOS target disks and Katl-owned
 state on those disks:
@@ -322,7 +313,7 @@ operation record missing mutation boundary for a mutating workflow
 request digest mismatch between failed operation and retry
 node identity mismatch
 Kubernetes version incompatibility for the requested restore
-data-loss acknowledgement missing for destructive reset or rebuild
+destructive reset target set is empty or ambiguous
 ```
 
 The refusal output should name the state that blocked progress and the explicit

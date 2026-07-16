@@ -110,8 +110,8 @@ a separate local CLI contract.
 Target `katlctl` commands own workstation orchestration:
 
 ```text
-katlctl config apply
-katlctl config apply status
+katlctl node apply
+katlctl node apply status
 katlctl bootstrap init
 katlctl bootstrap join-control-plane
 katlctl bootstrap join-worker

@@ -78,10 +78,9 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 func newInstallStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := installStatusOptions{timeout: 15 * time.Second, output: "json"}
 	cmd := &cobra.Command{
-		Use:     "status",
-		Aliases: []string{"inspect"},
-		Short:   "Report a waiting or running KatlOS installer",
-		Args:    cobra.NoArgs,
+		Use:   "status",
+		Short: "Report a waiting or running KatlOS installer",
+		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runInstallStatus(ctx, opts, stdout, stderr)
 		},

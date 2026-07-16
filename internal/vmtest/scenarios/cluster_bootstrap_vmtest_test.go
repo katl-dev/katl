@@ -739,7 +739,7 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", image.ArtifactVersion, "--config", configPath, "--timeout", "25m")
+	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", image.ArtifactVersion, "--context-file", configPath, "--timeout", "25m")
 	command.Dir = repoRoot
 	stdout, err := command.Output()
 	if err != nil {

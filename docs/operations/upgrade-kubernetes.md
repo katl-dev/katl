@@ -23,18 +23,12 @@ release; operators do not supply the bundle identity.
 ## Plan
 
 ```sh
-katlctl cluster upgrade kubernetes \
+katlctl kubernetes upgrade \
   v1.36.1 --plan
 ```
 
-The shorter top-level form is equivalent:
-
-```sh
-katlctl kubernetes upgrade v1.36.1 --plan
-```
-
 By default, `katlctl` uses the current context in its workstation configuration.
-Use `--context NAME`, `--config PATH`, or `--inventory PATH` when needed.
+Use `--context NAME`, `--context-file PATH`, or `--inventory PATH` when needed.
 
 The plan connects to every node, reads its current healthy generation and
 Kubernetes payload, derives the control-plane/worker order, and asks every

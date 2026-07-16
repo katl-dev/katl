@@ -156,8 +156,6 @@ type wipeClusterEvidence struct {
 	Diagnostics            map[string]string `json:"diagnostics,omitempty"`
 }
 
-const wipeClusterAcknowledgement = "I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity."
-
 func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 	t.Helper()
 	runner := run.Runner
@@ -394,11 +392,11 @@ func runWipeNodeHandoff(t *testing.T, ctx context.Context, result vmtest.Result,
 		return err
 	}
 	var stdout, stderr bytes.Buffer
-	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "wipe", "node", "--inventory", initial.Inventory, "--node", "worker-1", "--kubeconfig", initial.Kubeconfig, "--confirm-destructive-wipe", "--acknowledge", wipeClusterAcknowledgement, "--timeout", "10m"}, &stdout, &stderr)
+	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "wipe", "worker-1", "--inventory", initial.Inventory, "--kubeconfig", initial.Kubeconfig, "--timeout", "10m"}, &stdout, &stderr)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stdout"), stdout.Bytes(), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stderr"), stderr.Bytes(), 0o644)
 	if err != nil {
-		return fmt.Errorf("katlctl wipe node failed: %w: %s", err, stderr.String())
+		return fmt.Errorf("katlctl node wipe failed: %w: %s", err, stderr.String())
 	}
 	var report struct {
 		Kind              string `json:"kind"`
@@ -439,8 +437,6 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--all",
-		"--confirm-destructive-wipe",
-		"--acknowledge", wipeClusterAcknowledgement,
 		"--timeout", "10m",
 	}, &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)

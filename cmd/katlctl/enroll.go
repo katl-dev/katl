@@ -74,7 +74,7 @@ func newClusterEnrollCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 			return runClusterEnroll(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.configPath, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "context name; defaults to the cluster name")
 	cmd.Flags().StringVar(&opts.sshUser, "ssh-user", opts.sshUser, "installed-node SSH user")
 	cmd.Flags().StringVar(&opts.identityFile, "identity-file", "", "SSH private key file")

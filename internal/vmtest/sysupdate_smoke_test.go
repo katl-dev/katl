@@ -122,7 +122,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	tokenFile, token := writeKatlcAgentTokenFile(t, ctx, guest, result.RunDir)
 	candidateGeneration := "host-upgrade-" + strings.ReplaceAll(upgrade.Version, ".", "-")
 	acceptedData := runKatlctl(t, ctx, result, katlctl, "host-upgrade-submit",
-		"host", "upgrade",
+		"node", "upgrade",
 		"--endpoint", endpoint,
 		"--agent-token-file", tokenFile,
 		"--image-local-ref", localRef,

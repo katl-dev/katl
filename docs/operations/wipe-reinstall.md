@@ -18,38 +18,26 @@ before accepting the operation.
 - stop if a control-plane or etcd member is expected to remain part of the same
   cluster.
 
-Use the retained `ClusterConfig` as the normal input. `katlctl` compiles the
-internal inventory itself. `--config-bundle` remains available for PXE/offline
-material and `--inventory` for expert recovery tooling. Add `--context NAME`
-when the enrolled workstation context should supply management addresses and
-credentials independently of the source.
-
-The required acknowledgement is intentionally exact:
-
-```text
-I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.
-```
+After enrollment, the current workstation context is the normal topology and
+credential source. Pass a retained `ClusterConfig` when operating without an
+enrolled context. `--config-bundle` remains available for PXE/offline material
+and `--inventory` for expert recovery tooling.
 
 ## Plan a Whole-Cluster Wipe
 
 ```sh
 katlctl cluster wipe \
-  ./cluster.yaml \
   --plan \
   --all
 ```
 
-Planning is non-mutating and does not require destructive acknowledgement.
-Review every target, address, role, wiped surface, preserved surface, and
-refusal.
+Planning is non-mutating. Review every target, address, role, wiped surface,
+preserved surface, and refusal.
 
 Execute only when the cluster is intentionally being discarded:
 
 ```sh
-katlctl cluster wipe ./cluster.yaml \
-  --all \
-  --confirm-destructive-wipe \
-  --acknowledge 'I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.'
+katlctl cluster wipe --all
 ```
 
 The command follows every node-local destructive reset and reports each
@@ -63,16 +51,20 @@ and `result: succeeded`. Treat `recoveryRequired: true` as a stop condition.
 Single-node wipe coordinates Kubernetes Node cleanup before the node-local reset:
 
 ```sh
-katlctl cluster wipe node \
-  ./cluster.yaml \
-  --plan \
-  --node worker-1
+katlctl node wipe worker-1 ./cluster.yaml --plan
 ```
 
-Execution additionally requires `--kubeconfig ./kubeconfig`. If Kubernetes
-cleanup fails, Katl reports recovery required and refuses the node-local wipe.
-Single control-plane wipe is refused because etcd membership coordination is
-not implemented as a supported operation.
+After enrollment, the workstation context supplies topology and credentials, so
+the source can be omitted:
+
+```sh
+katlctl node wipe worker-1 --kubeconfig ./kubeconfig
+```
+
+Execution requires `--kubeconfig` so Katl can remove the Kubernetes Node first.
+If Kubernetes cleanup fails, Katl reports recovery required and refuses the
+node-local wipe. Single control-plane wipe is refused because etcd membership
+coordination is not implemented as a supported operation.
 
 ## Reinstall
 

@@ -18,7 +18,7 @@ at `/run/katl/console/rendered.txt` for collection over SSH.
 | Installed node does not complete boot | boot console; boot-health and handoff services |
 | Agent cannot be reached | network path to TCP 9443; `katlc-agent.service`; token file mapping |
 | Bootstrap or join fails | `katlctl` phase output; node operation record; kubelet/containerd/kubeadm journals |
-| Config apply stalls or rolls back | `katlctl config apply status`; generation and operation records |
+| Config apply stalls or rolls back | `katlctl node apply status`; generation and operation records |
 | Host upgrade does not stage or boot | host-upgrade operation; boot selection; boot-health journal |
 | Wipe is refused | wipe JSON refusals; selected topology; Kubernetes cleanup diagnostics |
 
@@ -45,7 +45,7 @@ katlctl operations list \
   --agent-token-file ./tokens/affected-node.token
 ```
 
-Use `katlctl operation status --operation-id ID --diagnostics verbose` when an
+Use `katlctl operations status --operation-id ID --diagnostics verbose` when an
 exact record needs deeper inspection.
 
 If the agent is unavailable, use SSH as a break-glass evidence path and read
