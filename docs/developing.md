@@ -215,8 +215,9 @@ Changes reach `main` through pull requests after the `Format And Unit Tests`
 check passes; direct pushes are not part of the supported development loop.
 
 It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
-publishing. Those host-specific gates belong to the capable-host vmtest workflow
-and release gates.
+publishing. Run host-specific VM gates locally with `scripts/vmtest-run` on a
+capable host and record the result with the change or release evidence. Katl
+does not currently provide hosted VM orchestration.
 
 ## Fedora Package Lock
 
@@ -355,20 +356,18 @@ anonymously, verifies every OCI blob, and verifies the GitHub attestation. A
 patch release therefore does not require a second commit just to update a
 hard-coded verifier digest.
 
-## GitHub VM Tests
+## VM Tests on a Capable Host
 
-The heavy pull-request workflow is `.github/workflows/vmtest.yml`. It runs for
-manual dispatches and, when the repository variable
-`KATL_VMTEST_PR_ENABLED=1` is set, same-repository non-draft pull requests. It
-uses self-hosted runners labeled `katl-vmtest`, `libvirt`, `kvm`, `ovmf`, and
-`vsock`. The runner must provide the same capable-host tools and environment as
-the local VM shell, including `nix develop .#vm`, readable `KATL_OVMF_CODE`, and
-readable `KATL_OVMF_VARS`.
+Katl does not currently run VM tests in GitHub Actions because no hosted runner
+provides the required libvirt, KVM, OVMF, and vsock environment. The repository
+deliberately has no VM workflow until the hosting and orchestration model is
+designed and provisioned. Do not make VM jobs required checks while no runner
+can accept them.
 
-The workflow runs a serialized matrix so fail-fast behavior does not leave many
-VMs active at once. The installer-media row includes a complete ISO install and
-observes the installer's autonomous reboot into generation 0; the short ISO and
-PXE checks remain fast boot-media diagnostics:
+Run the applicable gates directly on a capable development or release host.
+The installer-media gate includes a complete ISO install and observes the
+installer's autonomous reboot into generation 0; the short ISO and PXE checks
+remain fast boot-media diagnostics:
 
 ```sh
 scripts/vmtest-run --artifact-set=runtime ./internal/vmtest \
@@ -396,23 +395,21 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
   -count=1 -failfast -timeout 75m
 ```
 
-The upgrade row pins the published source and target OCI references in the
-workflow matrix. It proves etcd snapshot capture, control-plane-first kubeadm
-upgrade, live sysext replacement with a kubelet-only restart, durable generation
-promotion without reboot, worker upgrade, and final cluster health. Update those
-pins deliberately when promoting a newly published bundle pair into the
-compatibility gate.
+The Kubernetes upgrade gate must use deliberately selected, digest-pinned
+source and target OCI references. It proves etcd snapshot capture,
+control-plane-first kubeadm upgrade, live sysext replacement with a kubelet-only
+restart, durable generation promotion without reboot, worker upgrade, and final
+cluster health. Record the selected bundle pair with the retained gate evidence.
 
 The runtime artifact set is intentionally limited to direct-runtime tests.
 Installed-runtime tests consume the KatlOS install image and reject
 `--artifact-set=runtime`; run them with `--artifact-set=default` or
 `--artifact-set=install` so fixture invalidation follows the installed payload.
 
-CI sets `KATL_VMTEST_KEEP=always` only long enough to upload the run directory
-as a workflow artifact, excluding large VM disk images, then removes the local
-run directory. Live-domain debug preservation is disabled in CI; local debugging
-should use `--debug-on-failure` with a single narrow scenario and clean retained
-domains with `scripts/vmtest-clean` when inspection is done.
+Use delete-on-success retention for routine gates. While debugging, use
+`--debug-on-failure` with a single narrow scenario, retain the run directory as
+evidence, and clean retained domains with `scripts/vmtest-clean` when inspection
+is done.
 
 ### Capable-Host Proof
 

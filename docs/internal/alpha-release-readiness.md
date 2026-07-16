@@ -55,9 +55,11 @@ authoring format.
 | The complete public-asset path has not been rerun as one release gate | Released ISO, released `katlctl`, published Kubernetes bundle, install, bootstrap, workload, config apply, update/rollback, and wipe/reinstall have retained evidence | `katl-dty.16.25.7` |
 | Alpha expectations are spread across development documents | The release states architecture, EFI and hardware evidence, trust boundary, compatibility promise, recovery limits, and issue-reporting evidence | `katl-dty.16.25.8` |
 
-The capable-host workflow remains tracked by `katl-dty.13.3`. An alpha must not
-claim a VM, install, update, or Kubernetes gate passed merely because
-`go test ./...` passed.
+Hosted capable-host orchestration remains tracked by `katl-3ca`. Until its
+runner model is designed and provisioned, required VM evidence is produced
+locally with `scripts/vmtest-run` on a capable host. An alpha must not claim a
+VM, install, update, or Kubernetes gate passed merely because `go test ./...`
+passed.
 
 ## Public-UX Defects Resolved During Audit
 

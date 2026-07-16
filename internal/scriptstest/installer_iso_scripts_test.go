@@ -145,11 +145,10 @@ exit 1
 	}
 }
 
-func TestInstallerConsoleAndVMGateContract(t *testing.T) {
+func TestInstallerConsoleAndArtifactContract(t *testing.T) {
 	repo := repoRoot(t)
 	profile := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles/installer-image/mkosi.conf")))
 	journal := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles/installer-image/mkosi.extra/etc/systemd/journald.conf.d/10-katl-installer-console.conf")))
-	workflow := string(mustReadFile(t, filepath.Join(repo, ".github/workflows/vmtest.yml")))
 
 	for _, value := range []string{"console=tty0", "console=ttyS0,115200n8"} {
 		if !strings.Contains(profile, value) {
@@ -174,49 +173,27 @@ func TestInstallerConsoleAndVMGateContract(t *testing.T) {
 			t.Fatalf("installer dual-console journal routing missing %q", value)
 		}
 	}
-	for _, value := range []string{"Installer Media Install VM", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerISOFirstInstallSmoke"} {
-		if !strings.Contains(workflow, value) {
-			t.Fatalf("installer ISO VM workflow missing %q", value)
-		}
-	}
 }
 
-func TestVMWorkflowCoversReleaseCriticalJourneys(t *testing.T) {
+func TestVMDevelopmentShellAndRunnerContract(t *testing.T) {
 	repo := repoRoot(t)
-	workflow := string(mustReadFile(t, filepath.Join(repo, ".github/workflows/vmtest.yml")))
 	flake := string(mustReadFile(t, filepath.Join(repo, "flake.nix")))
 
-	for _, value := range []string{
-		"^TestInstalledRuntimeConfigApplyModesSmoke$",
-		"^TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke$",
-		"^TestInstalledRuntimeSysupdateRootUKITransfer$",
-	} {
-		if !strings.Contains(workflow, value) {
-			t.Fatalf("release-critical VM workflow missing %q", value)
-		}
-	}
-	for _, stale := range []string{
-		"TestInstalledRuntimeKubeadmReadySmoke",
-		"TestInstalledRuntimeTwoNodeKubeadmJoinSmoke",
-	} {
-		if strings.Contains(workflow, stale) {
-			t.Fatalf("VM workflow still selects stale pre-operation scenario %q", stale)
-		}
-	}
 	for _, dependency := range []string{"cpio", "dosfstools", "rpm", "squashfsTools", "systemdUkify", "xorriso", "zstd"} {
 		if !strings.Contains(flake, dependency) {
 			t.Fatalf("VM development shell does not provide %q", dependency)
 		}
 	}
-	for _, tool := range []string{"cpio", "mkfs.vfat", "mksquashfs", "rpm", "ukify", "unsquashfs", "xorriso", "zstd"} {
-		if !strings.Contains(workflow, tool) {
-			t.Fatalf("VM capable-host preflight does not require %q", tool)
-		}
-	}
 	runner := string(mustReadFile(t, filepath.Join(repo, "scripts/vmtest-run")))
-	for _, value := range []string{`scripts/mkosi" builder-version`, `-mkosi-version "$mkosi_version"`} {
+	for _, value := range []string{
+		`probe_vm_capabilities`,
+		`probe_fixture_tool_capabilities`,
+		`write_host_capabilities`,
+		`scripts/mkosi" builder-version`,
+		`-mkosi-version "$mkosi_version"`,
+	} {
 		if !strings.Contains(runner, value) {
-			t.Fatalf("VM resource lock does not record the containerized builder identity %q", value)
+			t.Fatalf("VM runner missing durable capability or resource identity contract %q", value)
 		}
 	}
 }

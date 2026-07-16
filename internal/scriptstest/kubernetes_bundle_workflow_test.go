@@ -242,6 +242,8 @@ func TestKubernetesUpgradeVMTestArtifactContract(t *testing.T) {
 		"verify_kubernetes_upgrade_artifacts",
 		`scripts/check-kubernetes-sysext`,
 		`katl-kubernetes-upgrade.raw`,
+		`KATL_VMTEST_KUBERNETES_BUNDLE`,
+		`KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE`,
 		`KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION`,
 		`published Kubernetes upgrade proof requires both KATL_VMTEST_KUBERNETES_BUNDLE and KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE`,
 		`-package-set installer-image`,
@@ -255,20 +257,6 @@ func TestKubernetesUpgradeVMTestArtifactContract(t *testing.T) {
 		}
 		if !strings.Contains(source, value) {
 			t.Fatalf("Kubernetes upgrade vmtest contract missing %q", value)
-		}
-	}
-
-	workflow := string(mustReadFile(t, repo+"/.github/workflows/vmtest.yml"))
-	for _, value := range []string{
-		"Kubernetes Bundle Upgrade VM",
-		"^TestKubeadmUpgradeOperationSmoke$",
-		"KATL_VMTEST_KUBERNETES_BUNDLE",
-		"KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE",
-		"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b",
-		"ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537",
-	} {
-		if !strings.Contains(workflow, value) {
-			t.Fatalf("Kubernetes upgrade vmtest workflow missing %q", value)
 		}
 	}
 }
