@@ -63,5 +63,6 @@ jobs:
         run: scripts/check-fast "${{ steps.comparison.outputs.range }}"
 
       # VM/libvirt/KVM, mkosi artifact builds, and publishing are intentionally
-      # excluded from this low-cost workflow. Those gates run through the
-      # dedicated capable-host vmtest workflow.
+      # excluded from this low-cost workflow. Run VM gates with
+      # scripts/vmtest-run on a capable host; hosted orchestration is not yet
+      # available.
