@@ -1028,7 +1028,7 @@ common evidence
 common refusal states
   unsupported-recovery-kind, missing-target-record, record-digest-mismatch,
   node-identity-mismatch, stale-ambiguous, scope-not-authorized,
-  live-state-conflict, insufficient-evidence, data-loss-not-acknowledged,
+  live-state-conflict, insufficient-evidence, destructive-target-not-selected,
   quorum-risk, version-incompatible, and concurrent-operation
 ```
 
@@ -1053,7 +1053,7 @@ supported behavior. Each row must be completed with tests before implementation:
 | `repair-generation-status` | Scope `host-generation`; preflight generation spec/status/journal/boot-entry consistency; allow commit/rollback bookkeeping repair only; forbid partial root, sysext, or confext switching |
 | `retry-operation` | Scope matches the original operation; preflight parent record, stale class, request digest, live probes, and material validity; allow rerun only of idempotent or kind-declared retryable phases as a child operation; forbid automatic retry, stale-ambiguous replay, request changes, and implicit cleanup |
 | `renew-certificates` | Scope `kubeadm-state`; preflight kubeadm version, certificate expiry, API/static pod state, and redacted kubeconfig access; allow explicit kubeadm certificate renewal and declared restarts; forbid upgrades, etcd membership changes, and config drift repair |
-| `kubeadm-reset` | Scope `destructive-reset`; preflight explicit data-loss acknowledgement, node identity, system role, cluster membership, and etcd handling decision; allow only the declared reset surface; forbid etcd member replacement, snapshot restore, install input replacement, and undeclared disk wipe |
+| `kubeadm-reset` | Scope `destructive-reset`; preflight explicit operation kind and target set, node identity, system role, cluster membership, and etcd handling decision; allow only the declared reset surface; forbid etcd member replacement, snapshot restore, install input replacement, and undeclared disk wipe |
 | `replace-etcd-member` | Scope `etcd-state`; preflight quorum, member identity, peer URLs, certificate compatibility, version skew, and local member mapping; allow only a named member remove/add flow; forbid snapshot restore, stale data reuse without proof, and automatic failed-join cleanup |
 | `restore-etcd-snapshot` | Scope `etcd-state`; preflight explicit disaster intent, snapshot path/digest/revision, Kubernetes/etcd version compatibility, topology, participant set, and current-state backup decision; allow only the declared snapshot restore procedure; forbid in-place merge, unknown snapshots, partial topology restore, and treating host rollback as etcd rollback |
 

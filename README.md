@@ -220,7 +220,7 @@ kubeconfig to the operator.
 optional plan contacts the selected node but does not accept an operation:
 
 ```sh
-katlctl config apply ./cluster.yaml --node cp-1 --plan
+katlctl node apply ./cluster.yaml --node cp-1 --plan
 ```
 
 Run the command without `--plan` to apply it. `katlctl` derives config versions,
@@ -234,8 +234,8 @@ context selects a single-node lab automatically; pass a node name in a larger
 cluster:
 
 ```sh
-katlctl host status cp-1
-katlctl host reboot cp-1
+katlctl node status cp-1
+katlctl node reboot cp-1
 ```
 
 Status and reboot results are concise text by default. Add `--output json` for
@@ -248,7 +248,7 @@ context. `katlctl` resolves the published image, stages it, reboots the node,
 and waits for the new generation to pass boot health:
 
 ```sh
-katlctl host upgrade v2026.7.0-alpha.9 --node cp-1
+katlctl node upgrade v2026.7.0-alpha.9 --node cp-1
 ```
 
 Add `--plan` to check the upgrade without changing or rebooting the node. The

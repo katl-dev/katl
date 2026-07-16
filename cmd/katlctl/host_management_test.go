@@ -44,7 +44,7 @@ clusters:
 	}, fake)
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"host", "status", "cp-1", "--config", configPath}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "status", "cp-1", "--context-file", configPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	output := stdout.String()
@@ -65,7 +65,7 @@ func TestHostStatusJSON(t *testing.T) {
 	installKatlcDial(t, nil, fake)
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"host", "status", "node-a", "--endpoint", "node-a.test:9443", "--output", "json"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "status", "node-a", "--endpoint", "node-a.test:9443", "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	var report hostStatusReport
@@ -88,14 +88,14 @@ func TestHostRebootHonorsBootTargetAndWaits(t *testing.T) {
 	installKatlcDial(t, nil, fake)
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"host", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "1s"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "1s"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	if len(fake.rebootRequests) != 1 {
 		t.Fatalf("reboot requests = %d, want 1", len(fake.rebootRequests))
 	}
 	request := fake.rebootRequests[0]
-	if request.GetActor() != "katlctl host reboot" || request.GetExpectedMachineId() != "machine-a" || request.GetTargetGenerationId() != "generation-staged" {
+	if request.GetActor() != "katlctl node reboot" || request.GetExpectedMachineId() != "machine-a" || request.GetTargetGenerationId() != "generation-staged" {
 		t.Fatalf("reboot request = %#v", request)
 	}
 	if got := stdout.String(); got != "node-a rebooted successfully; health OK\n" {
@@ -111,7 +111,7 @@ func TestHostRebootNoWaitJSON(t *testing.T) {
 	installKatlcDial(t, nil, fake)
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"host", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--no-wait", "--output", "json"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--no-wait", "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	var report hostRebootReport
@@ -131,7 +131,7 @@ func TestHostRebootReportsUnhealthyReturn(t *testing.T) {
 	}
 	installKatlcDial(t, nil, fake)
 
-	err := run(context.Background(), []string{"host", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "1s"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := run(context.Background(), []string{"node", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "1s"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "reported generation generation-0 unhealthy after reboot") {
 		t.Fatalf("run() error = %v, want unhealthy boot error", err)
 	}
@@ -144,14 +144,14 @@ func TestHostRebootTimesOutWhenAgentDoesNotRestart(t *testing.T) {
 	upgradeRebootPollInterval = time.Millisecond
 	t.Cleanup(func() { upgradeRebootPollInterval = oldInterval })
 
-	err := run(context.Background(), []string{"host", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "10ms"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := run(context.Background(), []string{"node", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "10ms"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "node node-a did not return healthy") {
 		t.Fatalf("run() error = %v, want reboot timeout", err)
 	}
 }
 
 func TestHostManagementRejectsDuplicateNodeSelection(t *testing.T) {
-	err := run(context.Background(), []string{"host", "status", "cp-1", "--node", "worker-1"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := run(context.Background(), []string{"node", "status", "cp-1", "--node", "worker-1"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "NODE cannot be combined with --node") {
 		t.Fatalf("run() error = %v", err)
 	}

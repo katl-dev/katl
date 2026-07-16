@@ -122,7 +122,7 @@ func Load(path string) (Config, error) {
 func Save(path string, cfg Config) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return fmt.Errorf("katlctl config path is required")
+		return fmt.Errorf("workstation context file path is required")
 	}
 	if err := cfg.Validate(); err != nil {
 		return err

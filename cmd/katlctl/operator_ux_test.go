@@ -193,7 +193,7 @@ func TestClusterEnrollCreatesContextAndPrivateTokens(t *testing.T) {
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"cluster", "enroll", sourcePath, "--config", configPath}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"cluster", "enroll", sourcePath, "--context-file", configPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
 	}
 	cfg, err := workstation.Load(configPath)
@@ -254,7 +254,7 @@ func TestConfigApplyUsesContextAndDerivesBookkeeping(t *testing.T) {
 	t.Cleanup(func() { configApplyNow = oldNow })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"config", "apply", writeClusterConfig(t), "--config", configPath, "--node", "cp-1"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "apply", writeClusterConfig(t), "--context-file", configPath, "--node", "cp-1"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
 	}
 	if fake.validateRequest == nil || fake.validateRequest.CandidateGenerationId != "config-42" {

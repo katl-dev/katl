@@ -283,7 +283,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	stagedGeneration := "2026.06.06-vmtest-networkd"
 
 	rejectedOutput := runKatlctl(t, ctx, result, katlctl, "config-apply-validate-rejected",
-		"config", "apply", "validate",
+		"node", "apply", "validate",
 		"--endpoint", endpoint,
 		"--agent-token-file", tokenFile,
 		"--file", configApplyFixture(t, "rejected-live-without-preflight.yaml"),
@@ -360,7 +360,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 
 	previousBootID := guestBootID(t, ctx, client)
 	runKatlctl(t, ctx, result, katlctl, "host-reboot-staged-generation",
-		"host", "reboot", "cp-1",
+		"node", "reboot", "cp-1",
 		"--endpoint", endpoint,
 		"--agent-token-file", tokenFile,
 		"--timeout", "3m",
@@ -404,7 +404,7 @@ func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestCont
 func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, mode, generationID, fixture string, wantFailure bool) agentapi.OperationAccepted {
 	t.Helper()
 	args := []string{
-		"config", "apply",
+		"node", "apply",
 		"--endpoint", endpoint,
 		"--agent-token-file", tokenFile,
 		"--file", fixture,
@@ -446,7 +446,7 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, tokenFile, name, generationID string) agentapi.Generation {
 	t.Helper()
 	output := runKatlctl(t, ctx, result, katlctl, name,
-		"config", "apply", "status",
+		"node", "apply", "status",
 		"--endpoint", endpoint,
 		"--agent-token-file", tokenFile,
 		"--generation", generationID,

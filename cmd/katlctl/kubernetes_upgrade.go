@@ -79,7 +79,7 @@ var dialKubernetesEndpoint = func(ctx context.Context, endpoint string) error {
 func newKubernetesUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := kubernetesUpgradeOptions{timeout: 25 * time.Minute, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "kubernetes VERSION",
+		Use:   "upgrade VERSION",
 		Short: "Upgrade Kubernetes control planes and workers online",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -89,7 +89,7 @@ func newKubernetesUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) 
 			return runKubernetesUpgrade(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.configPath, "config", "", "katlctl config path (defaults to the selected workstation context)")
+	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl config context name")
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "cluster inventory instead of a workstation context")
 	cmd.Flags().StringVar(&opts.bundle, "bundle", "", "Kubernetes bundle image, for example ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1")
@@ -156,7 +156,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		accepted, err := target.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest",
 			ClientRequestId: "katlctl-plan-" + target.candidate, OperationKind: "kubeadm-upgrade",
-			Actor: "katlctl cluster upgrade kubernetes", ExpectedMachineId: target.machineID,
+			Actor: "katlctl kubernetes upgrade", ExpectedMachineId: target.machineID,
 			ExpectedCurrentGenerationId: target.generation, DryRun: true, KubernetesSysextUpdate: body,
 		})
 		if err != nil {
@@ -210,7 +210,7 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 	accepted, err := target.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 		ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest",
 		ClientRequestId: "katlctl-" + target.candidate, OperationKind: "kubeadm-upgrade",
-		Actor: "katlctl cluster upgrade kubernetes", ExpectedMachineId: target.machineID,
+		Actor: "katlctl kubernetes upgrade", ExpectedMachineId: target.machineID,
 		ExpectedCurrentGenerationId: target.generation, OperationTimeout: opts.timeout.String(),
 		KubernetesSysextUpdate: kubernetesUpgradeBody(target, image),
 	})
@@ -333,7 +333,7 @@ func resolveKubernetesUpgradeTopology(opts kubernetesUpgradeOptions) (workstatio
 	request := workstation.ResolveRequest{ConfigPath: strings.TrimSpace(opts.configPath), ContextName: strings.TrimSpace(opts.contextName)}
 	if strings.TrimSpace(opts.inventoryPath) != "" {
 		if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" {
-			return workstation.ResolvedTopology{}, fmt.Errorf("--inventory cannot be combined with --config or --context")
+			return workstation.ResolvedTopology{}, fmt.Errorf("--inventory cannot be combined with --context-file or --context")
 		}
 		inv, err := loadInventory(opts.inventoryPath)
 		if err != nil {

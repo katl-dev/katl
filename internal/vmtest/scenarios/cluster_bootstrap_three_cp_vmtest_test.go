@@ -480,7 +480,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
 	for _, node := range nodes {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "stage-"+node.Name,
-			"config", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--agent-token-file", tokenFiles[node.Name], "--file", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof")
+			"node", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--agent-token-file", tokenFiles[node.Name], "--file", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof")
 		if err != nil {
 			return fmt.Errorf("stage desired generation on %s: %w: %s", node.Name, err, stderr)
 		}
@@ -509,7 +509,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(proofDir, "kubectl-before-operation.txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
 		return err
 	}
-	args := []string{"cluster", "kubeadm-control-plane-config", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--rollout-id", "2026.07.11-vmtest-control-plane-config"}
+	args := []string{"kubernetes", "apply-config", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--rollout-id", "2026.07.11-vmtest-control-plane-config"}
 	stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "rollout", args...)
 	if err != nil {
 		return fmt.Errorf("run serial control-plane config rollout: %w: %s", err, stderr)
@@ -643,7 +643,7 @@ func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmte
 				}
 			}
 		}
-		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "status-"+node.Name, "config", "apply", "status", "--endpoint", net.JoinHostPort(address, "9443"), "--agent-token-file", tokenFile, "--generation", generationID)
+		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "status-"+node.Name, "node", "apply", "status", "--endpoint", net.JoinHostPort(address, "9443"), "--agent-token-file", tokenFile, "--generation", generationID)
 		last = stderr
 		if err == nil {
 			var generation agentapi.Generation

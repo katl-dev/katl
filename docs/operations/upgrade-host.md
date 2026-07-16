@@ -20,7 +20,7 @@ orchestrate availability across several hosts.
 ## Plan
 
 ```sh
-katlctl host upgrade v2026.7.0-alpha.9 --node cp-1 --plan
+katlctl node upgrade v2026.7.0-alpha.9 --node cp-1 --plan
 ```
 
 A plan response has no durable mutation and does not reboot the node.
@@ -34,7 +34,7 @@ component metadata before changing the inactive slot.
 Run the command without `--plan`:
 
 ```sh
-katlctl host upgrade v2026.7.0-alpha.9 --node cp-1
+katlctl node upgrade v2026.7.0-alpha.9 --node cp-1
 ```
 
 `katlctl` follows staging progress, asks the authenticated node agent to reboot,

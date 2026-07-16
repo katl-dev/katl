@@ -1,7 +1,7 @@
 # katlctl Wipe Command Contract
 
 This document defines the v0.1 user-facing contract for destructive wipe flows.
-It is implementation guidance for `katlctl wipe node` and
+It is implementation guidance for `katlctl node wipe` and
 `katlctl cluster wipe`; it does not make either command supported until the
 implementation and VM gates named here exist.
 
@@ -10,46 +10,39 @@ implementation and VM gates named here exist.
 Both commands are explicit operator actions. They are not automatic repair,
 retry, rollback, or reconciliation flows.
 
-Required destructive acknowledgement text:
-
-```text
-I understand this will remove KatlOS disk boot artifacts on the selected nodes so the next reboot must use installer media or PXE to reinstall with a new cluster identity.
-```
-
 Normal input:
 
 ```text
+workstation context
+  The enrolled current context supplies node names, management endpoints,
+  roles, and credential references.
+
 SOURCE
-  The retained ClusterConfig used for installation and enrollment. katlctl
-  compiles its internal inventory automatically. --config-bundle and
-  --inventory remain expert alternatives.
+  Optional retained ClusterConfig when no enrolled context is available.
+  --config-bundle and --inventory remain expert alternatives.
 
 --context NAME
   Optional workstation context override for management addresses and
   credential references.
 ```
 
-Required execution flags:
+Execution behavior:
 
 ```text
-
---confirm-destructive-wipe
-  Required boolean flag. Short flags such as --yes or --force are not aliases.
-
---acknowledge TEXT
-  Must exactly match the acknowledgement text above after shell parsing.
-
 --output json
   v0.1 status and plan output format. Other formats are unsupported.
 ```
+
+The explicit `wipe` command is the operator's destructive intent. Katl does not
+add a confirmation flag, prompt, or acknowledgement phrase. Help and planning
+must state that the selected nodes will require installer media or PXE.
 
 Optional common flags:
 
 ```text
 --plan
   Validate targets, credentials, and visible cluster state, then print the
-  planned per-node actions without accepting node-local operations. Planning
-  does not require destructive acknowledgement.
+  planned per-node actions without accepting node-local operations.
 
 --timeout DURATION
   Upper bound for client-side waits. Timeout stops waiting but does not cancel an
@@ -75,9 +68,8 @@ Authentication and authorization:
 
 Plan and status output:
 
-- `--plan` prints JSON with `command`, `targets`, `acknowledgementAccepted`,
-  `kubernetesCleanup`, `nodeLocalOperations`, `wipedState`, `preservedState`,
-  and `refusals`.
+- `--plan` prints JSON with `command`, `targets`, `kubernetesCleanup`,
+  `nodeLocalOperations`, `wipedState`, `preservedState`, and `refusals`.
 - Executing commands wait by default and print JSON with one entry per selected
   node, including the final phase, terminal status, and redacted diagnostics.
   Opaque operation IDs appear only for detached execution or exact diagnostics.
@@ -102,11 +94,10 @@ State preserved:
 - Off-node artifact repositories, operator workstations, external backups,
   external load balancer configuration, and non-target disks.
 - Kubernetes resources for workloads may remain in an external backup or GitOps
-  source, but `katlctl wipe` does not preserve them from the discarded cluster.
+  source, but the wipe commands do not preserve them from the discarded cluster.
 
 Requests are refused before node-local mutation when:
 
-- An executing request is missing the acknowledgement flag or exact text.
 - Target selection is empty, duplicated, or ambiguous.
 - The inventory lacks a node address, role, or usable node-local credential for a
   selected node.
@@ -125,20 +116,21 @@ Failure behavior:
 - Diagnostics must redact bearer tokens, kubeconfigs, bootstrap tokens,
   certificate private keys, and etcd secrets.
 
-## `katlctl wipe node`
+## `katlctl node wipe`
 
 Command:
 
 ```text
-katlctl cluster wipe node SOURCE --node NAME --kubeconfig PATH \
-  --confirm-destructive-wipe --acknowledge TEXT
+katlctl node wipe NAME [SOURCE] --kubeconfig PATH
 ```
 
 Target selection:
 
-- Exactly one `--node NAME` is required.
+- Exactly one positional node name is required.
 - The node name must exist in the inventory and resolve to one node-local katlc
   endpoint.
+- `SOURCE` may be omitted when an enrolled workstation context supplies the
+  topology and node credential reference.
 
 Graceful Kubernetes cleanup:
 
@@ -179,13 +171,8 @@ Result:
 Command:
 
 ```text
-katlctl cluster wipe SOURCE --all \
-  --confirm-destructive-wipe --acknowledge TEXT
+katlctl cluster wipe [SOURCE] --all
 ```
-
-The old `katlctl wipe cluster` spelling is a temporary compatibility alias. It
-must emit the same report `command` and node-local operation `actor` strings as
-`katlctl cluster wipe`.
 
 Target selection:
 
@@ -208,7 +195,7 @@ Cluster identity:
 Node-local wipe trigger:
 
 - `katlctl` submits destructive-reset operations to all selected nodes after
-  validating inventory and acknowledgements.
+  validating inventory and target selection.
 - Ordering is best-effort parallel for worker nodes and conservative for control
   planes: requests may be submitted to all selected control planes without etcd
   quorum checks because the cluster identity is being discarded.
@@ -224,14 +211,14 @@ Result:
 
 ## VM Gates
 
-Implementation of `katlctl wipe node` must add and pass:
+Implementation of `katlctl node wipe` must add and pass:
 
 ```text
 scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios -run TestInstalledRuntimeTwoNodeWipeNodeBootstrapSmoke -count=1
 ```
 
 The gate must start from a bootstrapped Kubernetes cluster with real Kubernetes
-and etcd state, run `katlctl wipe node` against one node, prove Kubernetes Node
+and etcd state, run `katlctl node wipe` against one node, prove Kubernetes Node
 cleanup and etcd member cleanup when applicable, prove the node reaches
 installer-media handoff, then reinstall/bootstrap the node and prove remote
 kubectl/workload health.

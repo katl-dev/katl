@@ -1,7 +1,7 @@
 # Access Installed KatlOS Nodes
 
-Complete this runbook after generation 0 boots and before bootstrap, config
-apply, host upgrade, or wipe operations.
+Complete this runbook after generation 0 boots and before bootstrap, node
+configuration, node upgrade, or wipe operations.
 
 ## Security Boundary
 
@@ -74,8 +74,8 @@ different local token unless `--force` is explicit.
 Inspect the resolved context after enrollment:
 
 ```sh
-katlctl config topology
-katlctl host status cp-1
+katlctl context show
+katlctl node status cp-1
 ```
 
 Enrollment has already performed the authenticated agent health check. Normal
@@ -88,13 +88,13 @@ Show the current KatlOS version, generation, any staged next boot, health, and
 whether the node is busy without exposing machine identity or operation IDs:
 
 ```sh
-katlctl host status cp-1
+katlctl node status cp-1
 ```
 
 Reboot a node and wait for it to return healthy:
 
 ```sh
-katlctl host reboot cp-1
+katlctl node reboot cp-1
 ```
 
 The reboot command does not require a confirmation flag. It honors the node's

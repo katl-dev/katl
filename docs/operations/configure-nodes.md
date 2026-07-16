@@ -1,6 +1,6 @@
 # Apply KatlOS Node Configuration
 
-Use config apply for supported host configuration after installation. It is not
+Use `katlctl node apply` for supported node configuration after installation. It is not
 a general Kubernetes, disk, kubeadm, or operating-system upgrade mechanism.
 
 ## Supported Input
@@ -13,12 +13,12 @@ renderer carries:
 - operation-only system role and role-dependent Kubernetes bootstrap state.
 
 Runtime-safe fields can apply normally. Operation-only differences are planned
-and reported as requiring an explicit lifecycle action; config apply does not
+and reported as requiring an explicit lifecycle action; node apply does not
 run kubeadm. Disk/install selection and Kubernetes version changes use the
 dedicated install and Kubernetes upgrade workflows.
 
 If `spec.kubernetes.kubeadm` changes, planning reports a kubeadm-aware action.
-Normal config apply does not rewrite live kubeadm or Kubernetes state; use the
+Normal node apply does not rewrite live kubeadm or Kubernetes state; use the
 dedicated operation for a supported change, or follow the reported manual
 boundary when Katl does not support that transition.
 
@@ -28,7 +28,7 @@ An optional plan compiles the selected node configuration and asks the node to
 validate it without accepting an operation:
 
 ```sh
-katlctl config apply ./cluster.yaml \
+katlctl node apply ./cluster.yaml \
   --node cp-1 \
   --plan
 ```
@@ -42,7 +42,7 @@ If the source has already been compiled, use the expert bundle input instead of
 the positional source:
 
 ```sh
-katlctl config apply --config-bundle ./katl-lab.katlcfg --node cp-1 --plan
+katlctl node apply --config-bundle ./katl-lab.katlcfg --node cp-1 --plan
 ```
 
 Katl derives and verifies the bundle's integrity metadata from the file.
@@ -52,7 +52,7 @@ Katl derives and verifies the bundle's integrity metadata from the file.
 Run the same arguments without `--plan`:
 
 ```sh
-katlctl config apply ./cluster.yaml --node cp-1
+katlctl node apply ./cluster.yaml --node cp-1
 ```
 
 `katlctl` resolves the selected workstation context, reads the node credential,
@@ -66,7 +66,7 @@ is true, stop and follow `failureReason` and `nextAction`.
 Query the candidate through the agent:
 
 ```sh
-katlctl config apply status \
+katlctl node apply status \
   --node cp-1
 ```
 

@@ -23,7 +23,7 @@ type managementTarget struct {
 }
 
 func addManagementTargetFlags(cmd *cobra.Command, opts *managementTargetOptions) {
-	cmd.Flags().StringVar(&opts.configPath, "config", "", "katlctl workstation config path")
+	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "explicit katlc agent endpoint host:port")
@@ -33,7 +33,7 @@ func addManagementTargetFlags(cmd *cobra.Command, opts *managementTargetOptions)
 func resolveManagementTarget(opts managementTargetOptions) (managementTarget, error) {
 	if endpoint := strings.TrimSpace(opts.endpoint); endpoint != "" {
 		if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" {
-			return managementTarget{}, fmt.Errorf("--endpoint cannot be combined with --config or --context")
+			return managementTarget{}, fmt.Errorf("--endpoint cannot be combined with --context-file or --context")
 		}
 		token, err := readAgentToken(opts.agentTokenFile)
 		if err != nil {

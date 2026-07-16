@@ -52,7 +52,7 @@ func newHostStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	opts := hostStatusOptions{timeout: 15 * time.Second, output: hostOutputText}
 	cmd := &cobra.Command{
 		Use:   "status [NODE]",
-		Short: "Show the current state of one KatlOS host",
+		Short: "Show the current state of one KatlOS node",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if err := selectHostNode(&opts.target.nodeName, args); err != nil {
@@ -71,7 +71,7 @@ func newHostRebootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	opts := hostRebootOptions{timeout: 10 * time.Minute, output: hostOutputText}
 	cmd := &cobra.Command{
 		Use:   "reboot [NODE]",
-		Short: "Reboot one KatlOS host and wait for it to return healthy",
+		Short: "Reboot one KatlOS node and wait for it to return healthy",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if err := selectHostNode(&opts.target.nodeName, args); err != nil {
@@ -157,7 +157,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 		generationID = strings.TrimSpace(status.GetCurrentGenerationId())
 	}
 	previousAgentStart := status.GetAgentStartId()
-	if err := requestNodeReboot(requestCtx, conn.Client, "katlctl host reboot", status.GetMachineId(), generationID); err != nil {
+	if err := requestNodeReboot(requestCtx, conn.Client, "katlctl node reboot", status.GetMachineId(), generationID); err != nil {
 		_ = conn.Close()
 		cancelRequest()
 		return fmt.Errorf("schedule reboot for %s: %w", node, err)
