@@ -90,6 +90,12 @@ func TestCollectorReadsInstallerStateAndNetwork(t *testing.T) {
 
 func TestCollectorReadsInstalledVersionsFromBootedGeneration(t *testing.T) {
 	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "etc", "kubernetes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc", "kubernetes", "kubelet.conf"), []byte("configured\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
 		GenerationID:          "4",
 		RuntimeVersion:        "2026.7.0-alpha.12",
@@ -154,8 +160,8 @@ func TestCollectorReadsInstalledVersionsFromBootedGeneration(t *testing.T) {
 	}
 	var snapshot Snapshot
 	collector.Collect(&snapshot)
-	if snapshot.Version != "2026.7.0-alpha.12" || snapshot.KubernetesVersion != "v1.36.1" {
-		t.Fatalf("installed versions = KatlOS %q, Kubernetes %q", snapshot.Version, snapshot.KubernetesVersion)
+	if snapshot.Version != "2026.7.0-alpha.12" || snapshot.KubernetesVersion != "v1.36.1" || !snapshot.KubernetesBootstrapped {
+		t.Fatalf("installed state = KatlOS %q, Kubernetes %q, bootstrapped=%t", snapshot.Version, snapshot.KubernetesVersion, snapshot.KubernetesBootstrapped)
 	}
 }
 
@@ -234,7 +240,7 @@ func TestRenderRuntimeFailure(t *testing.T) {
 	}
 	var renderer Renderer
 	got := string(renderer.Append(make([]byte, 0, RenderCapacity(80, 20)), &snapshot, nil, 80, 20))
-	for _, want := range []string{"KatlOS needs repair", "KatlOS:       2026.7.0-alpha.9", "Kubernetes:   v1.36.1", "Generation:   4  health=FAILED", "Error:", "boot health check failed", "SSH: root@192.0.2.20"} {
+	for _, want := range []string{"Status", "Host", "Kubernetes", "Needs repair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation: 4", "Error:", "boot health check failed", "SSH: root@192.0.2.20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
@@ -251,7 +257,7 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 	}
 	var renderer Renderer
 	plain := string(renderer.Append(nil, &snapshot, nil, 80, 15))
-	for _, want := range []string{"KatlOS\n", "Generation:   0  health=OK", "Journal"} {
+	for _, want := range []string{"KatlOS\n", "Status\n", "State:      OK", "Generation: 0", "Journal"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("plain render missing %q:\n%s", want, plain)
 		}
@@ -265,6 +271,111 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 	if !strings.Contains(colored, styleTitle) || !strings.Contains(colored, styleGood) {
 		t.Fatalf("coloured render lacks semantic styles: %q", colored)
 	}
+}
+
+func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:                   ModeRuntime,
+		Version:                "2026.7.0-alpha.12",
+		KubernetesVersion:      "v1.36.1",
+		KubernetesBootstrapped: true,
+		Hostname:               "cp-1",
+		State:                  installstatus.StateWaitingForClusterBootstrap,
+		Generation:             "4",
+		GenerationHealth:       "healthy",
+	}
+	var renderer Renderer
+	got := string(renderer.Append(nil, &snapshot, testJournal{[]byte("latest journal event")}, 80, 18))
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	statusRow := lineIndex(lines, "Status")
+	splitRow := lineIndexContaining(lines, "Host")
+	journalRow := lineIndex(lines, "Journal")
+	if statusRow < 0 || splitRow <= statusRow || journalRow <= splitRow {
+		t.Fatalf("pane order = status %d, split %d, journal %d:\n%s", statusRow, splitRow, journalRow, got)
+	}
+	if !strings.Contains(lines[splitRow], "│Kubernetes") {
+		t.Fatalf("split title row = %q", lines[splitRow])
+	}
+	stateRow := lines[splitRow+1]
+	if !strings.Contains(stateRow, "State:      OK") || !strings.Contains(stateRow, "│State:      Bootstrapped") {
+		t.Fatalf("split state row = %q", stateRow)
+	}
+	versionRow := lines[splitRow+2]
+	if !strings.Contains(versionRow, "Node:       cp-1") || !strings.Contains(versionRow, "│Version:    v1.36.1") {
+		t.Fatalf("split version row = %q", versionRow)
+	}
+	if !strings.Contains(got, "latest journal event") {
+		t.Fatalf("journal pane missing content:\n%s", got)
+	}
+}
+
+func TestRenderRuntimeSubPanesWrapOverflowIndependently(t *testing.T) {
+	hostname := "cp-with-a-deliberately-long-hostname.example.test"
+	version := "v1.36.1-with-a-deliberately-long-build-identifier"
+	generationID := "generation-with-a-deliberately-long-identifier"
+	snapshot := Snapshot{
+		Mode:                   ModeRuntime,
+		Version:                "2026.7.0-alpha.12-with-a-long-build-identifier",
+		KubernetesVersion:      version,
+		KubernetesBootstrapped: true,
+		Hostname:               hostname,
+		State:                  installstatus.StateWaitingForClusterBootstrap,
+		Generation:             generationID,
+		GenerationHealth:       "healthy",
+	}
+	var renderer Renderer
+	plain := string(renderer.Append(nil, &snapshot, nil, 40, 40))
+	colored := string(renderer.AppendColor(nil, &snapshot, nil, 40, 40))
+	for name, output := range map[string]string{"plain": plain, "colored": colored} {
+		if strings.Contains(output, "~") {
+			t.Fatalf("%s render truncated overflow:\n%s", name, output)
+		}
+		for number, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+			if width := visibleWidth(line); width > 40 {
+				t.Fatalf("%s line %d width = %d: %q", name, number+1, width, line)
+			}
+		}
+	}
+
+	lines := strings.Split(strings.TrimSuffix(plain, "\n"), "\n")
+	splitRow := lineIndexContaining(lines, "Host")
+	networkRow := lineIndexContaining(lines, "Network:")
+	journalRow := lineIndex(lines, "Journal")
+	if splitRow < 0 || networkRow <= splitRow || journalRow <= networkRow {
+		t.Fatalf("missing nested panes:\n%s", plain)
+	}
+	var left, right strings.Builder
+	for _, line := range lines[splitRow:networkRow] {
+		divider := strings.IndexRune(line, '│')
+		if divider < 0 || len([]rune(line[:divider])) != 19 {
+			t.Fatalf("unstable divider in %q", line)
+		}
+		left.WriteString(strings.ReplaceAll(line[:divider], " ", ""))
+		right.WriteString(strings.ReplaceAll(line[divider+len("│"):], " ", ""))
+	}
+	for value, side := range map[string]string{hostname: left.String(), generationID: left.String(), version: right.String()} {
+		if !strings.Contains(side, value) {
+			t.Fatalf("wrapped panes lost %q:\n%s", value, plain)
+		}
+	}
+}
+
+func lineIndex(lines []string, value string) int {
+	for index, line := range lines {
+		if line == value {
+			return index
+		}
+	}
+	return -1
+}
+
+func lineIndexContaining(lines []string, value string) int {
+	for index, line := range lines {
+		if strings.Contains(line, value) {
+			return index
+		}
+	}
+	return -1
 }
 
 func TestRenderRebootHidesRedundantProgress(t *testing.T) {

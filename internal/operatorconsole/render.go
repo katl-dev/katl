@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	minimumWidth  = 40
-	minimumHeight = 12
-	fieldWidth    = 14
+	minimumWidth    = 40
+	minimumHeight   = 12
+	fieldWidth      = 14
+	panelFieldWidth = 12
 
 	styleReset = "\x1b[0m"
 	styleTitle = "\x1b[1;36m"
@@ -80,41 +81,15 @@ func (render *Renderer) append(dst []byte, snapshot *Snapshot, journal Journal, 
 	line.resetStyle()
 	line.finish()
 
-	field := render.wrappedField("State")
-	field.style(stateStyle(snapshot.State))
-	field.appendString(stateLabel(snapshot.State))
-	field.resetStyle()
-	field.finish()
-	if snapshot.Hostname != "" {
-		render.wrappedField("Node").appendString(snapshot.Hostname).finish()
-	}
-	appendNetwork(render, snapshot.Network)
-	if snapshot.Version != "" {
-		label := "KatlOS"
-		if snapshot.Mode == ModeInstaller {
-			label = "Media"
-		}
-		render.wrappedField(label).appendString(snapshot.Version).finish()
-	}
-	if snapshot.Mode == ModeRuntime && snapshot.KubernetesVersion != "" {
-		render.wrappedField("Kubernetes").appendString(snapshot.KubernetesVersion).finish()
-	}
-	if snapshot.State == "running" && snapshot.CurrentStep != "" {
-		render.wrappedField("Progress").appendString(snapshot.CurrentStep).finish()
-	}
-	if snapshot.Generation != "" {
-		field = render.wrappedField("Generation")
-		field.appendString(snapshot.Generation)
-		if health := healthLabel(snapshot.GenerationHealth); health != "" {
-			field.appendString("  health=")
-			field.style(healthStyle(health))
-			field.appendString(health)
-			field.resetStyle()
-		}
-		field.finish()
+	if snapshot.Mode == ModeRuntime {
+		appendPaneHeading(render, "Status")
+		appendRuntimeStatusPane(render, snapshot)
+		appendNetwork(render, snapshot.Network)
+	} else {
+		appendInstallerStatus(render, snapshot)
 	}
 	if snapshot.Mode == ModeInstaller && snapshot.State == "running" {
-		field = render.wrappedField("Disk changes")
+		field := render.wrappedField("Disk changes")
 		if snapshot.DestructiveMutation {
 			field.style(styleWarn)
 			field.appendString("started - do not power off")
@@ -126,7 +101,7 @@ func (render *Renderer) append(dst []byte, snapshot *Snapshot, journal Journal, 
 	}
 	if snapshot.Handoff.URL != "" {
 		render.wrappedField("Configure").appendString(snapshot.Handoff.URL).finish()
-		field = render.wrappedField("Run")
+		field := render.wrappedField("Run")
 		field.appendString("katlctl config init cluster.yaml --installer ")
 		if address := firstIPv4(snapshot.Network); address != "" {
 			field.appendString(address)
@@ -174,6 +149,246 @@ func (render *Renderer) append(dst []byte, snapshot *Snapshot, journal Journal, 
 	}
 	footer.resetStyle()
 	return footer.end()
+}
+
+type pane struct {
+	title  string
+	fields []paneField
+}
+
+type paneField struct {
+	label string
+	value string
+	style string
+}
+
+type paneFieldState struct {
+	field    paneField
+	position int
+	first    bool
+	done     bool
+}
+
+func appendPaneHeading(render *Renderer, title string) {
+	line := render.line()
+	line.style(styleTitle).appendString(title).resetStyle()
+	line.finish()
+}
+
+func appendRuntimeStatusPane(render *Renderer, snapshot *Snapshot) {
+	hostState, hostStyle := runtimeHostState(snapshot)
+	kubernetesState, kubernetesStyle := runtimeKubernetesState(snapshot)
+	leftFields := [...]paneField{
+		{label: "State", value: hostState, style: hostStyle},
+		{label: "Node", value: fallback(snapshot.Hostname, "Unknown")},
+		{label: "KatlOS", value: fallback(snapshot.Version, "Unknown")},
+		{label: "Generation", value: fallback(snapshot.Generation, "Unknown")},
+	}
+	rightFields := [...]paneField{
+		{label: "State", value: kubernetesState, style: kubernetesStyle},
+		{label: "Version", value: fallback(snapshot.KubernetesVersion, "Not installed")},
+	}
+	appendSplitPanes(render,
+		pane{title: "Host", fields: leftFields[:]},
+		pane{title: "Kubernetes", fields: rightFields[:]},
+	)
+}
+
+func appendInstallerStatus(render *Renderer, snapshot *Snapshot) {
+	field := render.wrappedField("State")
+	field.style(stateStyle(snapshot.State))
+	field.appendString(stateLabel(snapshot.State))
+	field.resetStyle()
+	field.finish()
+	if snapshot.Hostname != "" {
+		render.wrappedField("Node").appendString(snapshot.Hostname).finish()
+	}
+	appendNetwork(render, snapshot.Network)
+	if snapshot.Version != "" {
+		render.wrappedField("Media").appendString(snapshot.Version).finish()
+	}
+	if snapshot.State == "running" && snapshot.CurrentStep != "" {
+		render.wrappedField("Progress").appendString(snapshot.CurrentStep).finish()
+	}
+	if snapshot.Generation == "" {
+		return
+	}
+	field = render.wrappedField("Generation")
+	field.appendString(snapshot.Generation)
+	if health := healthLabel(snapshot.GenerationHealth); health != "" {
+		field.appendString("  health=")
+		field.style(healthStyle(health))
+		field.appendString(health)
+		field.resetStyle()
+	}
+	field.finish()
+}
+
+func appendSplitPanes(render *Renderer, left, right pane) {
+	if render.rows >= render.contentRows {
+		return
+	}
+	divider := (render.width - 1) / 2
+	line := render.line()
+	line.style(styleTitle)
+	appendStringUntil(line, left.title, divider)
+	line.resetStyle()
+	padLineTo(line, divider)
+	line.style(styleDim).appendRune('│').resetStyle()
+	line.style(styleTitle)
+	appendStringUntil(line, right.title, render.width)
+	line.resetStyle()
+	line.finish()
+
+	count := max(len(left.fields), len(right.fields))
+	for index := 0; index < count && render.rows < render.contentRows; index++ {
+		leftState := paneFieldState{first: true, done: index >= len(left.fields)}
+		if !leftState.done {
+			leftState.field = left.fields[index]
+		}
+		rightState := paneFieldState{first: true, done: index >= len(right.fields)}
+		if !rightState.done {
+			rightState.field = right.fields[index]
+		}
+		for (!leftState.done || !rightState.done) && render.rows < render.contentRows {
+			line = render.line()
+			appendPaneFieldSegment(line, &leftState, 0, divider)
+			padLineTo(line, divider)
+			line.style(styleDim).appendRune('│').resetStyle()
+			appendPaneFieldSegment(line, &rightState, divider+1, render.width)
+			line.finish()
+		}
+	}
+}
+
+func appendPaneFieldSegment(line *lineWriter, state *paneFieldState, start, end int) {
+	if state.done || end <= start {
+		return
+	}
+	padLineTo(line, start)
+	labelWidth := min(panelFieldWidth, end-start-1)
+	if labelWidth < 1 {
+		state.done = true
+		return
+	}
+	if state.first {
+		appendStringUntil(line, state.field.label, start+labelWidth-1)
+		if line.columns < start+labelWidth {
+			line.appendByte(':')
+		}
+		state.first = false
+	}
+	padLineTo(line, start+labelWidth)
+	if line.columns >= end {
+		return
+	}
+
+	state.position = skipVisibleSpace(state.field.value, state.position)
+	if state.position >= len(state.field.value) {
+		state.done = true
+		return
+	}
+	segmentEnd, next := paneSegment(state.field.value, state.position, end-line.columns)
+	if state.field.style != "" {
+		line.style(state.field.style)
+	}
+	line.appendString(state.field.value[state.position:segmentEnd])
+	if state.field.style != "" {
+		line.resetStyle()
+	}
+	state.position = next
+	state.done = skipVisibleSpace(state.field.value, state.position) >= len(state.field.value)
+}
+
+func paneSegment(value string, position, available int) (int, int) {
+	scan := position
+	end := position
+	lastSpace := -1
+	visible := 0
+	for scan < len(value) && visible < available {
+		r, next, ok := nextVisibleString(value, scan)
+		if !ok {
+			return len(value), len(value)
+		}
+		if r == '\n' {
+			return scan, next
+		}
+		if unicode.IsSpace(r) {
+			lastSpace = scan
+		}
+		end = next
+		scan = next
+		visible++
+	}
+	if scan >= len(value) {
+		return end, end
+	}
+	if lastSpace > position {
+		return lastSpace, skipVisibleSpace(value, lastSpace)
+	}
+	return end, end
+}
+
+func skipVisibleSpace(value string, position int) int {
+	for position < len(value) {
+		r, next, ok := nextVisibleString(value, position)
+		if !ok || (!unicode.IsSpace(r) && r != '\n') {
+			return position
+		}
+		position = next
+	}
+	return position
+}
+
+func padLineTo(line *lineWriter, column int) {
+	for line.columns < column {
+		line.appendByte(' ')
+	}
+}
+
+func appendStringUntil(line *lineWriter, value string, end int) {
+	for position := 0; position < len(value) && line.columns < end; {
+		r, next, ok := nextVisibleString(value, position)
+		position = next
+		if !ok || r == '\n' {
+			return
+		}
+		line.appendRune(r)
+	}
+}
+
+func runtimeHostState(snapshot *Snapshot) (string, string) {
+	if snapshot.State == "runtime-failed-needs-repair" {
+		return "Needs repair", styleBad
+	}
+	if health := healthLabel(snapshot.GenerationHealth); health != "" {
+		return health, healthStyle(health)
+	}
+	if snapshot.State == "starting-runtime" {
+		return "Starting", styleWarn
+	}
+	if snapshot.State == "runtime-booted-not-ready" {
+		return "Not ready", styleWarn
+	}
+	return "Running", styleGood
+}
+
+func runtimeKubernetesState(snapshot *Snapshot) (string, string) {
+	if snapshot.KubernetesVersion == "" {
+		return "Not installed", styleWarn
+	}
+	if snapshot.State == "runtime-failed-needs-repair" {
+		return "Unavailable", styleBad
+	}
+	if snapshot.KubernetesBootstrapped {
+		return "Bootstrapped", styleGood
+	}
+	switch snapshot.State {
+	case "kubeadm-ready", "waiting-for-cluster-bootstrap":
+		return "Ready for bootstrap", styleGood
+	default:
+		return "Waiting for KatlOS", styleWarn
+	}
 }
 
 // AppendJournalLine sanitizes and wraps one logical journal line into at most

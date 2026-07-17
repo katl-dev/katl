@@ -83,6 +83,7 @@ func (c Collector) Collect(snapshot *Snapshot) {
 			}
 		}
 	} else {
+		snapshot.KubernetesBootstrapped = fileExists(rooted(c.Root, "/etc/kubernetes/kubelet.conf"))
 		c.collectGeneration(snapshot)
 	}
 }
