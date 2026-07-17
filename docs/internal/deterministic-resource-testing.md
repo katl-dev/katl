@@ -14,7 +14,7 @@ The standard heavy-test entrypoint should:
 
 ```text
 check host capabilities
-build or reuse locked mkosi artifacts
+build or reuse internally consistent mkosi artifacts
 generate deterministic install and node fixtures
 direct-boot runtime squashfs tests that do not need installer state
 run first-install VM setup only for scenarios that publish installed-runtime fixtures
@@ -108,7 +108,7 @@ failed
 
 setup-failed
   repo-owned resource generation failed, an artifact was stale, a digest did not
-  match, a package lock check failed, or a required generated fixture was absent
+  match, package inventory recording failed, or a required generated fixture was absent
 
 host-skipped
   the host lacks a declared optional capability such as libvirt, image tooling,
@@ -193,7 +193,7 @@ classification are the immediate sources of determinism.
 3. Add direct runtime squashfs tests as the first VM feedback tier.
 4. Add the first-install installed-runtime fixture factory for scenarios that
    need installed state.
-5. Add package-set recording and strict lock verification around mkosi builds.
+5. Record package sets and repositories alongside mkosi artifact identities.
 6. Generate deterministic multi-node fixture inputs from source-controlled
    templates.
 7. Wire CI to call the same command, with VM suites on runners that provide the
@@ -208,8 +208,9 @@ classification are the immediate sources of determinism.
    when the required capability is absent. Local development can still report
    `host-skipped` for optional suites.
 
-2. Should the package lock live next to mkosi profiles or under
-   `docs/internal/schemas`?
+2. Does Katl need a reproducible-build channel backed by retained repository
+   metadata and RPM bytes?
 
-   Initial recommendation: keep it near the mkosi profiles because it is an
-   executable build input.
+   Initial recommendation: keep routine builds on current signed Fedora
+   stable updates. Add immutable repository snapshots only for a separately
+   justified reproducibility requirement.

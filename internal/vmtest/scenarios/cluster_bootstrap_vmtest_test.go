@@ -961,8 +961,12 @@ func nodeBootID(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) (s
 }
 
 func rebootIntoGeneration(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, generationID string) error {
+	previousBootID, err := nodeBootID(ctx, node)
+	if err != nil {
+		return fmt.Errorf("read boot ID before reboot: %w", err)
+	}
 	result, err := runNodeCommand(ctx, node, []string{
-		"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-reboot-into-generation", "--on-active=1s",
+		"systemd-run", "--quiet", "--collect", "--no-block", "--unit=katl-vmtest-reboot-into-generation",
 		"/usr/bin/systemctl", "reboot", "--no-block",
 	}, 4<<10)
 	if err != nil {
@@ -973,9 +977,14 @@ func rebootIntoGeneration(ctx context.Context, node vmtest.RunningInstalledRunti
 	}
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
-		data, err := readNodeFile(ctx, node, "/proc/cmdline", 64<<10)
-		if err == nil && strings.Contains(string(data), "katl.generation="+generationID) {
-			return nil
+		health, healthErr := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.HealthResponse, error) {
+			return client.Health(opCtx)
+		})
+		if healthErr == nil && strings.TrimSpace(health.BootId) != "" && strings.TrimSpace(health.BootId) != previousBootID {
+			data, readErr := readNodeFile(ctx, node, "/proc/cmdline", 64<<10)
+			if readErr == nil && strings.Contains(string(data), "katl.generation="+generationID) {
+				return nil
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -1346,8 +1355,6 @@ type multiNodeWorldProvenancePaths struct {
 	HostCapabilities         string
 	ResourceManifest         string
 	ResourceManifestSHA256   string
-	PackageLock              string
-	PackageLockSHA256        string
 	MkosiArtifactIndex       string
 	NetworkLeaseFile         string
 	FixtureProducerScenarios map[string]string
@@ -1361,8 +1368,6 @@ func multiNodeWorldProvenanceForSpecs(world vmtest.World, repo string, specs []v
 		HostCapabilities:       filepath.Join(world.RunDir, "host-capabilities.json"),
 		ResourceManifest:       world.ResourceManifest,
 		ResourceManifestSHA256: world.ResourceDigest,
-		PackageLock:            world.PackageLock,
-		PackageLockSHA256:      world.PackageLockDigest,
 		MkosiArtifactIndex:     os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"),
 		NetworkLeaseFile:       world.Network.LeaseFile,
 	}
@@ -1572,8 +1577,6 @@ type operationBackedArtifactManifest struct {
 	HostCapabilities         string                                    `json:"hostCapabilities,omitempty"`
 	ResourceManifest         string                                    `json:"resourceManifest,omitempty"`
 	ResourceManifestSHA256   string                                    `json:"resourceManifestSHA256,omitempty"`
-	PackageLock              string                                    `json:"packageLock,omitempty"`
-	PackageLockSHA256        string                                    `json:"packageLockSHA256,omitempty"`
 	MkosiArtifactIndex       string                                    `json:"mkosiArtifactIndex,omitempty"`
 	ControlPlaneRunDir       string                                    `json:"controlPlaneRunDir"`
 	WorkerRunDir             string                                    `json:"workerRunDir,omitempty"`
@@ -1641,8 +1644,6 @@ func writeOperationBackedArtifactManifest(path string, result vmtest.Result, inp
 		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
 		ResourceManifest:         inputs.WorldProvenance.ResourceManifest,
 		ResourceManifestSHA256:   inputs.WorldProvenance.ResourceManifestSHA256,
-		PackageLock:              inputs.WorldProvenance.PackageLock,
-		PackageLockSHA256:        inputs.WorldProvenance.PackageLockSHA256,
 		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
 		ControlPlaneRunDir:       nodeRunDir(nodes, "cp-1"),
 		WorkerRunDir:             nodeRunDir(nodes, "worker-1"),
@@ -1689,8 +1690,6 @@ type twoNodeArtifactManifest struct {
 	HostCapabilities         string                        `json:"hostCapabilities,omitempty"`
 	ResourceManifest         string                        `json:"resourceManifest,omitempty"`
 	ResourceManifestSHA256   string                        `json:"resourceManifestSHA256,omitempty"`
-	PackageLock              string                        `json:"packageLock,omitempty"`
-	PackageLockSHA256        string                        `json:"packageLockSHA256,omitempty"`
 	MkosiArtifactIndex       string                        `json:"mkosiArtifactIndex,omitempty"`
 	ControlPlaneRunDir       string                        `json:"controlPlaneRunDir"`
 	WorkerRunDir             string                        `json:"workerRunDir"`
@@ -1732,8 +1731,6 @@ func writeTwoNodeSmokeArtifactManifest(result vmtest.Result, inputs twoNodeSmoke
 		HostCapabilities:         inputs.WorldProvenance.HostCapabilities,
 		ResourceManifest:         inputs.WorldProvenance.ResourceManifest,
 		ResourceManifestSHA256:   inputs.WorldProvenance.ResourceManifestSHA256,
-		PackageLock:              inputs.WorldProvenance.PackageLock,
-		PackageLockSHA256:        inputs.WorldProvenance.PackageLockSHA256,
 		MkosiArtifactIndex:       inputs.WorldProvenance.MkosiArtifactIndex,
 		ControlPlaneRunDir:       nodeByName["cp-1"].Result.RunDir,
 		WorkerRunDir:             nodeByName["worker-1"].Result.RunDir,
@@ -4085,8 +4082,6 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	writeKatlctlPublishedInstalledRuntimeFixture(t, world.CacheDir, "world-worker", "worker-1", vmtest.Worker)
 	world.ResourceManifest = filepath.Join(world.RunDir, "resource-test-manifest.json")
 	world.ResourceDigest = strings.Repeat("a", 64)
-	world.PackageLock = filepath.Join(world.RunDir, "resource-package-lock.json")
-	world.PackageLockDigest = strings.Repeat("b", 64)
 
 	run, err := planTwoNodeWorldSmokeRun(world, repo, "v1.36.1", vmtest.KVMOff)
 	if err != nil {
@@ -4100,7 +4095,7 @@ func TestPlanTwoNodeWorldSmokeRunPrefersWorldPublishedFixtures(t *testing.T) {
 	if run.Inputs.WorldProvenance.VMTestRun != filepath.Join(world.RunDir, "custom-run.json") || run.Inputs.WorldProvenance.WorldManifest != filepath.Join(world.RunDir, "world.json") || run.Inputs.WorldProvenance.HostCapabilities != filepath.Join(world.RunDir, "host-capabilities.json") {
 		t.Fatalf("world provenance = %#v", run.Inputs.WorldProvenance)
 	}
-	if run.Inputs.WorldProvenance.ResourceManifest != world.ResourceManifest || run.Inputs.WorldProvenance.ResourceManifestSHA256 != world.ResourceDigest || run.Inputs.WorldProvenance.PackageLock != world.PackageLock || run.Inputs.WorldProvenance.PackageLockSHA256 != world.PackageLockDigest {
+	if run.Inputs.WorldProvenance.ResourceManifest != world.ResourceManifest || run.Inputs.WorldProvenance.ResourceManifestSHA256 != world.ResourceDigest {
 		t.Fatalf("world resource provenance = %#v", run.Inputs.WorldProvenance)
 	}
 	if run.Inputs.WorldProvenance.FixtureProducerResults["cp-1"] != filepath.Join(world.ScenarioDir, "first-install-installed-runtime-fixture-cp-1-control-plane", "result.json") {

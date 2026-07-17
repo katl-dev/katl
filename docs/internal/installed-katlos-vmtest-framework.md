@@ -115,9 +115,11 @@ vmtest fixture schema version
 relevant feature flags such as UseInstalledESP
 ```
 
-When the repo later records package locks or mkosi input locks, those digests
-should become part of the fixture key. Until then, the key should at least bind
-to the produced artifact digests and mark whether the source tree was dirty.
+The resource manifest's build-input and package inventory identity should be
+retained with the fixture for diagnosis. Fixture reuse is keyed by produced
+artifact digests and relevant public schema versions, not by a committed
+transitive package closure. The key also marks whether the source tree was
+dirty.
 
 Fixture lookup must fail with `setup-failed` when no fixture matches the
 requested key. It may then run the fixture producer if the selected suite allows

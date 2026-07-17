@@ -20,7 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/resourcetest"
 )
 
-const defaultLockPath = "mkosi.profiles/resource-package-lock.json"
+const defaultLockPath = "_build/resource-package-lock.json"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -210,7 +210,7 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	lockPath := flags.String("lock", defaultLockPath, "package lock path")
 	mkosiDir := flags.String("mkosi-dir", "_build/mkosi", "mkosi output directory")
 	runtimeRoot := flags.String("runtime-root", "", "runtime root directory containing an RPM database")
-	mode := flags.String("mode", "strict", "lock mode: strict or refresh")
+	mode := flags.String("mode", "record", "package inventory mode: record, strict, or refresh")
 	runID := flags.String("run-id", "", "resource-test run id")
 	gitRevision := flags.String("git-revision", "", "git revision to record")
 	fedoraRepo := flags.String("fedora-repository", "fedora=", "Fedora repository in id=baseURL form")
@@ -300,6 +300,10 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	}
 	lockDigest := ""
 	switch *mode {
+	case "record":
+		// Package identities describe the artifacts that were built. They are
+		// evidence for debugging, auditing, and release provenance, not an
+		// acceptance policy for Fedora's moving stable repositories.
 	case "refresh":
 		lock, err := refreshedPackageLock(*lockPath, manifest, packageSets)
 		if err != nil {
@@ -335,7 +339,7 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	default:
-		return fmt.Errorf("--mode must be strict or refresh, got %q", *mode)
+		return fmt.Errorf("--mode must be record, strict, or refresh, got %q", *mode)
 	}
 	if err := writeManifest(*manifestPath, manifest); err != nil {
 		return err

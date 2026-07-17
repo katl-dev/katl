@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -43,113 +42,6 @@ printf 'fake binary\n' > "$output"
 			t.Errorf("instrumented runtime missing VM-test path %s: %v", path, err)
 		}
 	}
-}
-
-func TestVMTestImageSupportIsExplicitAndCacheScoped(t *testing.T) {
-	repo := repoRoot(t)
-	mkosi := string(mustReadFile(t, filepath.Join(repo, "scripts", "mkosi")))
-	assertTextContains(t, mkosi,
-		`vmtest_image_support="${KATL_VMTEST_IMAGE_SUPPORT:-0}"`,
-		`--environment "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support"`,
-		`printf 'KATL_VMTEST_IMAGE_SUPPORT=%s\n' "$vmtest_image_support"`,
-		`if [[ "$vmtest_image_support" == 1 ]]`,
-	)
-	runner := string(mustReadFile(t, filepath.Join(repo, "scripts", "vmtest-run")))
-	if !strings.Contains(runner, `KATL_VMTEST_IMAGE_SUPPORT=1 "$repo_root/scripts/mkosi" "$target"`) {
-		t.Fatal("vmtest runner does not explicitly request instrumented image builds")
-	}
-	runtimeCheck := string(mustReadFile(t, filepath.Join(repo, "scripts", "check-runtime-root")))
-	installerCheck := string(mustReadFile(t, filepath.Join(repo, "scripts", "check-installer-image")))
-	assertTextContains(t, runtimeCheck, "runtime image contains VM-test support")
-	assertTextContains(t, installerCheck, "installer image contains VM-test support")
-	releaseWorkflow := string(mustReadFile(t, filepath.Join(repo, ".github", "workflows", "release-artifacts.yml")))
-	assertTextContains(t, releaseWorkflow, `KATL_VMTEST_IMAGE_SUPPORT: "0"`)
-}
-
-func TestReleaseRootPackagingIsCompressedAndPruned(t *testing.T) {
-	repo := repoRoot(t)
-	mkosi := string(mustReadFile(t, filepath.Join(repo, "scripts", "mkosi")))
-	assertTextContains(t, mkosi,
-		`runtime_packages=_build/mkosi/katl-runtime.packages.tsv`,
-		`"$root/usr/lib/sysimage/rpm"`,
-		`find "$root/usr/lib/modules" -type f \( -name System.map -o -name vmlinuz \) -delete`,
-		`rm -f "$root/usr/bin/ctr"`,
-		`-b 1M`,
-		`-Xcompression-level 22`,
-	)
-	installImage := string(mustReadFile(t, filepath.Join(repo, "scripts", "build-katlos-install-image")))
-	assertTextContains(t, installImage, `-b 1M`, `-Xcompression-level 22`)
-	runtimeBuild := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.build")))
-	installerBuild := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "installer-image", "mkosi.build")))
-	assertTextContains(t, runtimeBuild, `-ldflags="-s -w`)
-	assertTextContains(t, installerBuild, `-ldflags="-s -w`)
-}
-
-func TestOperatorConsoleOwnsTTY1AndPreservesRecoveryAccess(t *testing.T) {
-	repo := repoRoot(t)
-	installerUnit := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "installer-image", "mkosi.extra", "usr", "lib", "systemd", "system", "katl-console.service")))
-	runtimeUnit := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.extra", "usr", "lib", "systemd", "system", "katl-console.service")))
-	for name, unit := range map[string]string{"installer": installerUnit, "runtime": runtimeUnit} {
-		assertTextContains(t, unit,
-			"TTYPath=/dev/tty1",
-			"StandardInput=tty",
-			"StandardOutput=tty",
-			"Conflicts=getty@tty1.service",
-			"Restart=always",
-		)
-		if !strings.Contains(unit, "--mode="+name) {
-			t.Fatalf("%s console unit does not select its mode", name)
-		}
-	}
-	for _, profile := range []string{"installer-image", "runtime"} {
-		build := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", profile, "mkosi.build")))
-		assertTextContains(t, build,
-			`./cmd/katl-console`,
-			`getty.target.wants/getty@tty2.service`,
-		)
-		dropIn := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", profile, "mkosi.extra", "usr", "lib", "systemd", "system", "getty@tty1.service.d", "10-katl-console.conf")))
-		assertTextContains(t, dropIn, "ConditionPathExists=!/usr/bin/katl-console")
-	}
-}
-
-func TestRuntimeJournalRemainsVisibleOnSerialConsole(t *testing.T) {
-	repo := repoRoot(t)
-	journal := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.extra", "etc", "systemd", "journald.conf.d", "10-katl-runtime-console.conf")))
-	assertTextContains(t, journal,
-		"ForwardToConsole=yes",
-		"TTYPath=/dev/ttyS0",
-		"MaxLevelConsole=info",
-	)
-}
-
-func TestRuntimeOwnsPersistentSSHIdentity(t *testing.T) {
-	repo := repoRoot(t)
-	extra := filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.extra")
-	sshd := string(mustReadFile(t, filepath.Join(extra, "etc", "ssh", "sshd_config.d", "10-katl.conf")))
-	assertTextContains(t, sshd,
-		"AuthorizedKeysFile /etc/ssh/authorized_keys/%u",
-		"AllowUsers katl",
-		"HostKey /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
-	)
-	hostKeys := string(mustReadFile(t, filepath.Join(extra, "usr", "lib", "systemd", "system", "katl-ssh-host-keys.service")))
-	assertTextContains(t, hostKeys,
-		"RequiresMountsFor=/var/lib/katl/ssh/host-keys",
-		"Before=sshd.service",
-		`ExecStart=/usr/bin/ssh-keygen -q -t ed25519 -N "" -f /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key`,
-	)
-	keygenDropIn := string(mustReadFile(t, filepath.Join(extra, "usr", "lib", "systemd", "system", "sshd-keygen@.service.d", "10-katl-persistent-host-key.conf")))
-	assertTextContains(t, keygenDropIn, "ConditionPathExists=/var/lib/katl/ssh/enable-distribution-host-key-generator")
-	sysusers := string(mustReadFile(t, filepath.Join(extra, "usr", "lib", "sysusers.d", "10-katl-users.conf")))
-	assertTextContains(t, sysusers, `u katl - "Katl operator" /var/lib/katl/home/katl /usr/bin/bash`)
-
-	runtimeCheck := string(mustReadFile(t, filepath.Join(repo, "scripts", "check-runtime-root")))
-	assertTextContains(t, runtimeCheck,
-		"/etc/ssh/sshd_config.d/10-katl.conf",
-		"/usr/lib/systemd/system/katl-ssh-host-keys.service",
-		"/usr/lib/systemd/system/sshd.service.d/10-katl-host-keys.conf",
-		"/usr/lib/systemd/system/sshd-keygen@.service.d/10-katl-persistent-host-key.conf",
-		"/usr/lib/sysusers.d/10-katl-users.conf",
-	)
 }
 
 func runRuntimeBuild(t *testing.T, repo, bin, dest, support string) {

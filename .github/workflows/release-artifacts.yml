@@ -364,15 +364,14 @@ jobs:
           go run ./cmd/katl-mkosi-artifacts write-installer-artifacts >/dev/null
           scripts/check-installer-iso
 
-      - name: Verify release resource lock
+      - name: Record release build inputs
         shell: bash
         env:
           MKOSI_VERSION: ${{ needs.runtime.outputs.mkosi-version }}
         run: |
           go run ./cmd/katl-resource-lock prepare-mkosi \
-            -manifest _build/release-resource-test-manifest.json \
-            -lock mkosi.profiles/resource-package-lock.json \
-            -mode strict \
+            -manifest _build/mkosi/katl-release-build-inputs.json \
+            -mode record \
             -run-id "release-${KATL_VERSION}-${GITHUB_SHA:0:12}" \
             -git-revision "$GITHUB_SHA" \
             -mkosi-version "$MKOSI_VERSION" \

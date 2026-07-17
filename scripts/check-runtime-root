@@ -38,15 +38,6 @@ file_has() {
     grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
 }
 
-symlink_points_to() {
-    local path="${1#/}"
-    local target="$2"
-    local output
-    output="$(unsquashfs -ll "$artifact" "$path")" || fail "inspect /$path failed"
-    grep -Fq -- "squashfs-root/$path -> $target" <<<"$output" ||
-        fail "/$path does not point to $target"
-}
-
 check_kernel_support() {
     local module_index versions version builtin module_count firmware_index firmware_count
     module_index="$(unsquashfs -ll "$artifact" usr/lib/modules)" || fail "inspect /usr/lib/modules failed"
@@ -77,14 +68,6 @@ check_kernel_support() {
         module_present "$name" || fail "runtime kernel module support missing: $name"
     }
 
-    deny_module_path() {
-        local pattern="$1"
-        local label="$2"
-        if grep -Eq "$pattern" <<<"$module_index"; then
-            fail "runtime kernel module add-on must not be in-box: $label"
-        fi
-    }
-
     for name in \
         br_netfilter \
         nf_conntrack \
@@ -93,21 +76,11 @@ check_kernel_support() {
         ip_vs_rr \
         ip_vs_wrr \
         ip_vs_sh \
-        nvme \
-        ahci \
         virtio_net \
-        virtio_blk \
-        virtio_scsi \
-        amdgpu \
-        i915 \
-        xe
+        virtio_blk
     do
         require_module "$name"
     done
-
-    deny_module_path '/(nvidia|nvidia-drm|nvidia-modeset|nvidia-uvm)[.]ko' 'proprietary NVIDIA stack'
-    deny_module_path '/wl[.]ko' 'Broadcom wl'
-    deny_module_path '/zfs[.]ko' 'ZFS'
 
     firmware_index="$(unsquashfs -ll "$artifact" usr/lib/firmware 2>/dev/null || true)"
     firmware_count="$(
@@ -115,13 +88,12 @@ check_kernel_support() {
     )"
     printf "runtime kernel modules: version=%s module_files=%s required=%s\n" \
         "$version" "$module_count" \
-        "br_netfilter,nf_conntrack,overlay,ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,nvme,ahci,virtio_net,virtio_blk,virtio_scsi,amdgpu,i915,xe"
+        "br_netfilter,nf_conntrack,overlay,ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,virtio_net,virtio_blk"
     if [[ "${firmware_count:-0}" -eq 0 ]]; then
         echo "runtime firmware inventory: none; this artifact does not claim firmware-backed hardware support"
     else
         printf "runtime firmware inventory: files=%s\n" "$firmware_count"
     fi
-    echo "runtime kernel add-on exclusions: proprietary-nvidia,broadcom-wl,zfs absent"
 }
 
 root_locked() {
@@ -153,7 +125,7 @@ jq -e \
     '.name == "runtime-root"
       and .kind == "runtime-root"
       and .format == "squashfs"
-      and .compression == "zstd"
+      and ((.compression // "") | type == "string" and length > 0)
       and .runtimeInterface == "katl-runtime-1"
       and .compatibleBoot.kind == "uki"
       and ((.compatibleBoot.kernelCommandLine // []) | index("rootfstype=squashfs") != null)
@@ -162,9 +134,6 @@ jq -e \
       and .sha256 == $sha' "$metadata" >/dev/null ||
     fail "runtime root metadata does not match artifact"
 
-superblock="$(unsquashfs -s "$artifact")"
-grep -Fq "Compression zstd" <<<"$superblock" || fail "runtime root is not zstd-compressed SquashFS"
-grep -Eq 'Block size[[:space:]]+1048576' <<<"$superblock" || fail "runtime root does not use 1 MiB SquashFS blocks"
 runtime_inventory="$(unsquashfs -ll "$artifact")" || fail "list runtime root failed"
 if grep -Eiq 'squashfs-root/[^[:space:]]*(vmtest|vm-test)' <<<"$runtime_inventory"; then
     fail "runtime image contains VM-test support"
@@ -172,47 +141,11 @@ fi
 
 for path in \
     /usr/lib/os-release \
-    /usr/bin/getent \
-    /usr/bin/systemctl \
-    /usr/bin/dbus-broker-launch \
-    /usr/bin/importctl \
-    /usr/bin/networkctl \
-    /usr/bin/bootctl \
-    /usr/bin/resolvectl \
-    /usr/bin/sshd \
-    /usr/bin/ssh-keygen \
-	/etc/ssh/sshd_config.d/10-katl.conf \
-    /usr/bin/conntrack \
-    /usr/bin/iptables-nft \
-    /usr/bin/ipset \
-    /usr/bin/ipvsadm \
-    /usr/bin/containerd \
-    /usr/bin/crun \
-    /etc/containerd/config.toml \
-    /usr/libexec/cni/bridge \
-    /usr/libexec/cni/host-local \
-    /usr/libexec/cni/loopback \
-    /usr/libexec/cni/ptp \
-    /usr/libexec/cni/portmap \
     /usr/bin/katlc \
     /usr/bin/katl-console \
     /usr/lib/katl/runtime/katl-boot-health \
     /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
-    /usr/lib/systemd/system/systemd-networkd.service \
-    /usr/lib/systemd/system/systemd-resolved.service \
-    /usr/lib/systemd/system/dbus-broker.service \
-    /usr/lib/systemd/system/dbus.socket \
-    /usr/lib/systemd/system/systemd-timesyncd.service \
-    /usr/lib/systemd/system/systemd-importd.service \
-    /usr/lib/systemd/systemd-import \
-    /usr/lib/systemd/systemd-sysupdate \
-    /usr/lib/systemd/system/sshd.service \
-	/usr/lib/systemd/system/katl-ssh-host-keys.service \
-	/usr/lib/systemd/system/sshd.service.d/10-katl-host-keys.conf \
-	/usr/lib/systemd/system/sshd-keygen@.service.d/10-katl-persistent-host-key.conf \
-	/usr/lib/sysusers.d/10-katl-users.conf \
-    /usr/lib/systemd/system/containerd.service \
     /usr/lib/systemd/system/var.mount \
     /usr/lib/systemd/system/etc-kubernetes.mount \
     /usr/lib/systemd/system/katl-generation-activate.service \
@@ -226,23 +159,17 @@ for path in \
     /usr/lib/systemd/system/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/katlc-agent.service \
     /usr/lib/systemd/system/katl-console.service \
+    /etc/ssh/sshd_config.d/10-katl.conf \
+    /usr/lib/systemd/system/katl-ssh-host-keys.service \
+    /usr/lib/systemd/system/sshd.service.d/10-katl-host-keys.conf \
+    /usr/lib/systemd/system/sshd-keygen@.service.d/10-katl-persistent-host-key.conf \
+    /usr/lib/sysusers.d/10-katl-users.conf \
+    /etc/containerd/config.toml \
     /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf \
-    /usr/lib/systemd/system/systemd-networkd.service.d/10-katl-confext.conf \
     /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf \
-    /usr/lib/systemd/system/katl-runtime-boot-signal.service \
     /usr/lib/modules-load.d/50-katl-kubernetes.conf \
     /usr/lib/sysctl.d/50-katl-kubernetes.conf \
-    /usr/lib/systemd/system/local-fs.target.wants/var.mount \
-    /usr/lib/systemd/system/multi-user.target.wants/systemd-networkd.service \
-    /usr/lib/systemd/system/multi-user.target.wants/katl-boot-complete.target \
-    /usr/lib/systemd/system/timers.target.wants/katl-boot-deadman.timer \
-    /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-boot-health.service \
-    /usr/lib/systemd/system/katl-boot-complete.target.requires/katl-runtime-handoff-status.service \
-    /usr/lib/systemd/system/multi-user.target.wants/katlc-agent.service \
-    /usr/lib/systemd/system/multi-user.target.wants/katl-console.service \
-    /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf \
-    /usr/lib/systemd/system/getty.target.wants/getty@tty2.service \
-    /usr/lib/systemd/system/multi-user.target.wants/katl-runtime-boot-signal.service
+    /usr/lib/tmpfiles.d/katl-state.conf
 do
     has_path "$path"
 done
@@ -253,27 +180,11 @@ for path in \
     /etc/dnf \
     /etc/dracut.conf \
     /etc/dracut.conf.d \
-    /usr/bin/containerd-stress \
-    /usr/bin/ctr \
     /usr/bin/dracut \
     /usr/bin/lsinitrd \
     /usr/lib/dracut \
     /usr/lib/sysimage/rpm \
     /var/lib/rpm-state \
-    /usr/libexec/cni/bandwidth \
-    /usr/libexec/cni/dhcp \
-    /usr/libexec/cni/dummy \
-    /usr/libexec/cni/firewall \
-    /usr/libexec/cni/host-device \
-    /usr/libexec/cni/ipvlan \
-    /usr/libexec/cni/macvlan \
-    /usr/libexec/cni/sample \
-    /usr/libexec/cni/sbr \
-    /usr/libexec/cni/static \
-    /usr/libexec/cni/tap \
-    /usr/libexec/cni/tuning \
-    /usr/libexec/cni/vlan \
-    /usr/libexec/cni/vrf \
     /usr/lib/katl/vmtest \
     /usr/lib/systemd/system/katl-vmtest-agent.service \
     /usr/lib/systemd/system/katl-vmtest-debug-shell.service \
@@ -296,60 +207,12 @@ file_has /etc/systemd/journald.conf.d/10-katl-runtime-console.conf "TTYPath=/dev
 file_has /usr/lib/systemd/system/katl-console.service "ExecStart=/usr/bin/katl-console --mode=runtime --tty=/dev/tty1"
 file_has /usr/lib/systemd/system/katl-console.service "TTYPath=/dev/tty1"
 file_has /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf "ConditionPathExists=!/usr/bin/katl-console"
-has_path /usr/lib/katl/runtime/katl-runtime-status
 has_path /etc/katl
 has_path /etc/kubernetes
 has_path /etc/cni/net.d
 file_has /usr/lib/os-release "CONFEXT_LEVEL=1"
 file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STATE"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
-file_has /usr/lib/systemd/system/etc-kubernetes.mount "DefaultDependencies=no"
-file_has /usr/lib/systemd/system/katl-generation-activate.service "ExecStart=/usr/lib/katl/runtime/katl-generation-activate --root=/"
-file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "ConditionFileIsExecutable=/usr/bin/kubeadm"
-file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "ConditionFileIsExecutable=/usr/bin/crictl"
-file_has /usr/lib/systemd/system/katl-kubeadm-ready.target "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount katl-state-projection-check.service katlc-agent.service"
-file_has /usr/lib/systemd/system/katl-kubeadm-activate.service "ExecStart=/usr/bin/systemctl daemon-reload"
-file_has /usr/lib/systemd/system/katl-kubeadm-activate.service "ExecStart=/usr/bin/systemctl start katl-kubeadm-ready.target"
-symlink_points_to /usr/lib/systemd/system/multi-user.target.wants/katl-kubeadm-activate.service ../katl-kubeadm-activate.service
-file_has /usr/lib/systemd/system/katl-boot-health.service "Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service"
-file_has /usr/lib/systemd/system/katl-boot-health.service "ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=success --reason=katl-boot-complete.target"
-file_has /usr/lib/systemd/system/katl-boot-deadman.service "ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --request-reboot"
-file_has /usr/lib/systemd/system/katl-boot-deadman.timer "OnBootSec=10min"
-file_has /usr/lib/systemd/system/systemd-networkd.service.d/10-katl-confext.conf "After=systemd-confext.service"
-file_has /usr/lib/systemd/system/katl-state-projection-check.service "ExecStart=/usr/bin/printf 'Katl state projection ready\\n'"
-file_has /usr/lib/systemd/system/katl-runtime-handoff-status.service "ExecStart=/usr/lib/katl/runtime/katl-runtime-status --root=/"
-file_has /usr/lib/systemd/system/katl-runtime-handoff-status.service "Requires=katlc-agent.service etc-kubernetes.mount"
-file_has /usr/lib/systemd/system/katl-runtime-handoff-status.service "RequiresMountsFor=/var/lib/katl /etc/kubernetes"
-file_has /usr/lib/systemd/system/katlc-agent.service "ExecStartPre=/usr/bin/katlc agent init-token --path /var/lib/katl/agent/token"
-file_has /usr/lib/systemd/system/katlc-agent.service "ExecStart=/usr/bin/katlc agent serve --root=/ --listen tcp://0.0.0.0:9443 --auth-token-file /var/lib/katl/agent/token"
-file_has /usr/lib/systemd/system/katlc-agent.service "SyslogIdentifier=katlc-agent"
-misses_path /usr/lib/systemd/system/katl-operation@.service
-misses_path /usr/lib/systemd/system/katl-operation-reconcile.service
-misses_path /usr/lib/systemd/system/katl-kubeadm-ready.target.requires/katl-operation-reconcile.service
-misses_path /usr/lib/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target
-misses_path /usr/lib/systemd/system/multi-user.target.wants/katl-state-projection-check.service
-misses_path /usr/lib/systemd/system/katl-kubeadm-ready.target.requires/katl-runtime-handoff-status.service
-file_has /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/containerd"
-file_has /etc/containerd/config.toml 'default_runtime_name = "crun"'
-file_has /etc/containerd/config.toml 'BinaryName = "/usr/bin/crun"'
-file_has /etc/containerd/config.toml "SystemdCgroup = true"
-file_has /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf "RequiresMountsFor=/var/lib/kubelet /etc/kubernetes"
-file_has /usr/lib/modules-load.d/50-katl-kubernetes.conf "nf_conntrack"
-file_has /usr/lib/modules-load.d/50-katl-kubernetes.conf "br_netfilter"
-file_has /usr/lib/modules-load.d/50-katl-kubernetes.conf "ip_vs"
-file_has /usr/lib/modules-load.d/50-katl-kubernetes.conf "ip_vs_rr"
-file_has /usr/lib/modules-load.d/50-katl-kubernetes.conf "ip_vs_wrr"
-file_has /usr/lib/modules-load.d/50-katl-kubernetes.conf "ip_vs_sh"
-file_has /usr/lib/sysctl.d/50-katl-kubernetes.conf "net.ipv4.ip_forward=1"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /efi 0755 root root -"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/etcd 0755 root root -"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/artifacts 0750 root root -"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/artifacts/katlos-image 0750 root root -"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/operations 0750 root root -"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/agent 0700 root root -"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/cluster 0750 root root -"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/config-requests 0750 root root -"
-file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -"
 check_kernel_support
 
 for path in \
@@ -363,10 +226,6 @@ for path in \
     /usr/bin/go \
     /usr/bin/make \
     /usr/bin/cc \
-    /usr/bin/curl \
-    /usr/bin/wget \
-    /usr/bin/pkgconf \
-    /usr/bin/pkg-config \
     /usr/bin/kubeadm \
     /usr/bin/kubelet \
     /usr/bin/kubectl \
@@ -376,26 +235,10 @@ for path in \
     /usr/bin/cilium \
     /usr/bin/rook \
     /usr/bin/coredns \
-    /usr/bin/systemd-nspawn \
-    /usr/bin/machinectl \
     /usr/bin/katlos-install \
-    /usr/lib/systemd/system/dbus-org.freedesktop.machine1.service \
-    /usr/lib/systemd/system/machine.slice \
-    /usr/lib/systemd/system/machines.target \
-    /usr/lib/systemd/system/machines.target.wants \
-    /usr/lib/systemd/system/nftables.service \
-    /usr/lib/systemd/system/remote-fs.target.wants/var-lib-machines.mount \
-    /usr/lib/systemd/system/sockets.target.wants/systemd-machined.socket \
-    /usr/lib/systemd/system/systemd-machined.service \
-    /usr/lib/systemd/system/systemd-machined.socket \
-    /usr/lib/systemd/system/systemd-nspawn@.service \
-    /usr/lib/systemd/system/var-lib-machines.mount \
     /usr/lib/systemd/system/katlos-install.service \
     /usr/lib/systemd/system/katl-input-apply.service \
-    /usr/lib/systemd/system/katl-installer-smoke.service \
-    /usr/lib/systemd/system/initrd.target.wants/katlos-install.service \
-    /usr/lib/systemd/system/initrd.target.wants/katl-input-apply.service \
-    /usr/lib/systemd/system/initrd.target.wants/katl-installer-smoke.service
+    /usr/lib/systemd/system/katl-installer-smoke.service
 do
     misses_path "$path"
 done

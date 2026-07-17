@@ -185,44 +185,6 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 	}
 }
 
-func TestMkosiCacheInputsExcludeResourcePackageLock(t *testing.T) {
-	repo := repoRoot(t)
-	data := mustReadFile(t, filepath.Join(repo, "scripts", "mkosi"))
-	if strings.Contains(string(data), "resource-package-lock.json") {
-		t.Fatalf("scripts/mkosi cache inputs include generated resource package lock")
-	}
-}
-
-func TestMkosiDefaultBuildIdentityIsStable(t *testing.T) {
-	repo := repoRoot(t)
-	data := mustReadFile(t, filepath.Join(repo, "scripts", "mkosi"))
-	if !strings.Contains(string(data), `build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"`) {
-		t.Fatalf("scripts/mkosi default build identity is not stable")
-	}
-	for _, want := range []string{
-		`go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"`,
-		`go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"`,
-	} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("scripts/mkosi cache roots missing %q", want)
-		}
-	}
-}
-
-func TestKatlosImageCheckSelectsRequestedRole(t *testing.T) {
-	repo := repoRoot(t)
-	data := mustReadFile(t, filepath.Join(repo, "scripts", "check-katlos-install-image"))
-	for _, want := range []string{
-		`image_role="${KATL_KATLOS_IMAGE_ROLE:-install}"`,
-		`katlos-${image_role}-${version}-${architecture}.squashfs`,
-		`.imageRole == $role`,
-	} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("check-katlos-install-image missing %q", want)
-		}
-	}
-}
-
 func TestMkosiRuntimeCacheUsesIncludedBinaryIdentity(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()

@@ -478,7 +478,7 @@ own activation.
 
 The v0.1 Kubernetes payload producer stays in this repository. The first
 release workflow needs one reviewed place where KatlOS runtime-interface
-metadata, mkosi inputs, package locks, sysext content checks, bundle manifest
+metadata, mkosi inputs, package inventories, sysext content checks, bundle manifest
 generation, VM fixtures, and milestone gates can move together. Splitting the
 producer before the artifact contract is executable would create a second
 release surface without reducing risk for the v0.1 proof.
@@ -496,7 +496,7 @@ The in-repository workflow is narrow:
 Renovate updates mkosi.profiles/kubernetes-sysext/kubernetes.env
   -> GitHub Actions builds the runtime base needed for compatibility metadata
   -> GitHub Actions builds the Kubernetes sysext for the exact target version
-  -> checks verify sysext contents, metadata, package locks, and checksums
+  -> checks verify sysext contents, coherent package versions, and checksums
   -> katl-publish-kubernetes-sysext stages the OCI bundle manifest, layers, and catalog data
   -> the custom OCI artifact is published immutably to ghcr.io/katl-dev/kubernetes
 ```
@@ -523,7 +523,7 @@ kubeadm config API support
   Kubeadm config API families and Kubernetes skew policy the payload may serve.
 
 build input identity
-  Runtime artifact digest, package-lock or build-input digest, source revision,
+  Runtime artifact digest, build-input digest, source revision,
   and tool versions needed to reproduce or audit compatibility.
 ```
 
@@ -832,7 +832,7 @@ katlc fetch, cache, digest verification, runtime compatibility validation, and
   generation selection consume only the published bundle contract
 the producer can obtain runtimeInterface and build-input metadata from a
   versioned KatlOS runtime metadata artifact instead of the local build tree
-package-lock refresh, sysext content verification, catalog generation,
+package inventory recording, sysext content verification, catalog generation,
   signature or unsigned-fixture policy, and VM fixture publication have
   equivalent gates in the split repository
 cross-repository release ordering is explicit for the v1.36.0 -> v1.36.1 proof
@@ -919,7 +919,7 @@ payload bundle `v1.36.0` for install/bootstrap and exact next patch bundle
 floating minor, a scheduled-but-unreleased patch, or whatever the node can
 resolve at bootstrap time. If the pair changes, both base and next payload
 versions must be already-released `v1.36` patches and must move through a
-reviewed package-lock update, bundle rebuild, and VM gate. After that cut,
+reviewed Kubernetes input update, bundle rebuild, and VM gate. After that cut,
 user-facing install examples, fixture metadata, catalog entries, kubeadm YAML,
 and generation records must name the exact `vMAJOR.MINOR.PATCH` payload version
 and sysext activation digest.
@@ -940,7 +940,7 @@ katlos runtimeInterface
 
 `payloadVersion` is the cluster intent and kubeadm `kubernetesVersion` match.
 `artifactVersion` distinguishes rebuilt or release-candidate bundles for the
-same payload when provenance, package locks, or manifest format changes.
+same payload when provenance, build inputs, or manifest format changes.
 `runtimeInterface` decides whether the staged payload may be selected with the
 installed KatlOS runtime. Matching KatlOS product versions is not sufficient.
 
@@ -955,7 +955,7 @@ defined with the node extension bundle decision, but raw arbitrary sysext
 activation is not a supported user-facing version policy.
 
 Before artifact signing lands, local and CI fixtures may be checksum-only if
-they use the same bundle manifest, descriptors, payload digests, package lock or
+they use the same bundle manifest, descriptors, payload digests, package or
 build input digest, and runtime compatibility fields as the signed path will
 use. The absence of signatures must be explicit fixture metadata, not an
 implicit trust downgrade. Published v0.1 release artifacts need the signing

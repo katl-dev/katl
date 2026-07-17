@@ -1,25 +1,21 @@
-# Persisted State Compatibility Fixtures
+# Persisted State Fixtures
 
-KatlOS persisted state records are compatibility surfaces. Any accepted
-`recordType` and `recordVersion` pair must have a static fixture under
-`internal/installer/testdata/persisted/v1/`.
+Katl keeps static fixtures for the current persisted record shapes. They prove
+that readers validate identity, paths, digests, enums, timestamps, and replay
+behavior using representative data that is independent of the current writer.
 
-Fixture tests must decode each accepted envelope and pass it through the
-strongest reader available for that record. Readers should validate payload
-shape, record identity, path-derived identity, replay state, and recorded
-digests when the record format carries those invariants.
+These fixtures are not, by themselves, a backward-compatibility promise. All
+current formats are `v1alpha1`; the support boundary permits incompatible
+changes between alpha releases and may require reinstall. When a current shape
+changes, update or replace its fixture and review the affected lifecycle
+behavior.
 
-Schema changes must update fixtures before landing:
+Retain an older fixture only when a shipped Katl release explicitly promises to
+read that version. At that point the fixture should name the supported release
+or version and exercise the strongest public reader. Do not retain obsolete
+development formats merely to keep a byte-level golden or an unshipped design
+working.
 
-- Adding a new persisted `recordType` or accepted version requires a new
-  fixture and a reader assertion.
-- Changing a payload field name, required field, enum value, digest input, or
-  replay behavior requires updating the affected fixture and preserving tests
-  for older accepted versions until the project explicitly drops that version.
-- Negative fixtures must continue to cover unsupported newer versions, missing
-  payloads, strict unknown payload fields, path/type mismatches, record ID
-  mismatches, digest mismatches, invalid enum values, and malformed timestamps.
-
-The fixtures are not generated during tests. Keeping them static makes
-compatibility drift visible in review instead of silently following the current
-writers.
+Negative fixtures should cover durable validation behavior such as unsupported
+versions, missing payloads, unsafe unknown fields, identity mismatches, digest
+mismatches, invalid enum values, and malformed timestamps.

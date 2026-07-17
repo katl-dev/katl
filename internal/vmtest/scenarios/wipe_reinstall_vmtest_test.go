@@ -99,8 +99,6 @@ type wipeReinstallArtifactManifest struct {
 	HostCapabilities        string                                      `json:"hostCapabilities,omitempty"`
 	ResourceManifest        string                                      `json:"resourceManifest,omitempty"`
 	ResourceManifestSHA256  string                                      `json:"resourceManifestSHA256,omitempty"`
-	PackageLock             string                                      `json:"packageLock,omitempty"`
-	PackageLockSHA256       string                                      `json:"packageLockSHA256,omitempty"`
 	MkosiArtifactIndex      string                                      `json:"mkosiArtifactIndex,omitempty"`
 	KubernetesPayloadBundle *threeControlPlaneKubernetesPayloadBundle   `json:"kubernetesPayloadBundle,omitempty"`
 	InitialBootstrap        wipeReinstallBootstrapEvidence              `json:"initialBootstrap"`
@@ -1012,8 +1010,6 @@ func writeWipeReinstallArtifactManifest(path string, inputs operationBackedSmoke
 		HostCapabilities:        inputs.WorldProvenance.HostCapabilities,
 		ResourceManifest:        inputs.WorldProvenance.ResourceManifest,
 		ResourceManifestSHA256:  inputs.WorldProvenance.ResourceManifestSHA256,
-		PackageLock:             inputs.WorldProvenance.PackageLock,
-		PackageLockSHA256:       inputs.WorldProvenance.PackageLockSHA256,
 		MkosiArtifactIndex:      inputs.WorldProvenance.MkosiArtifactIndex,
 		KubernetesPayloadBundle: initial.KubernetesPayloadBundle,
 		InitialBootstrap:        initial,
