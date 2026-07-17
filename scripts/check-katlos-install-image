@@ -154,7 +154,13 @@ jq -e '
 jq -e '
   .components[] | select(.role == "runtime-uki") |
   .compatibility.runtimeInterface == "katl-runtime-1" and
-  .compatibility.kernelCommandLine == ["rootfstype=squashfs","ro"] and
+  ((.compatibility.kernelCommandLine // []) as $cmdline |
+    all([
+      "rootfstype=squashfs",
+      "ro",
+      "console=ttyS0,115200n8",
+      "console=tty0"
+    ][]; . as $required | $cmdline | index($required) != null)) and
   .installTarget.kind == "esp-or-xbootldr"' "$index" >/dev/null ||
     fail "runtime UKI component metadata is incomplete"
 echo "ok: $artifact"
