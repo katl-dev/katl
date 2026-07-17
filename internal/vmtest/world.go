@@ -18,28 +18,26 @@ const (
 )
 
 type World struct {
-	APIVersion        string                 `json:"apiVersion"`
-	Kind              string                 `json:"kind"`
-	RunID             string                 `json:"runID"`
-	RunDir            string                 `json:"runDir"`
-	CacheDir          string                 `json:"cacheDir"`
-	ArtifactDir       string                 `json:"artifactDir"`
-	ScenarioDir       string                 `json:"scenarioDir"`
-	RunIndex          string                 `json:"runIndex,omitempty"`
-	GoTestLog         string                 `json:"goTestLog,omitempty"`
-	ResourceManifest  string                 `json:"resourceManifest,omitempty"`
-	ResourceDigest    string                 `json:"resourceManifestSHA256,omitempty"`
-	PackageLock       string                 `json:"packageLock,omitempty"`
-	PackageLockDigest string                 `json:"packageLockSHA256,omitempty"`
-	Artifacts         []WorldArtifact        `json:"vmtestArtifacts,omitempty"`
-	ArtifactInputs    *WorldArtifactInputs   `json:"vmtestArtifactInputs,omitempty"`
-	AutoRebuild       bool                   `json:"autoRebuild,omitempty"`
-	ArtifactSet       string                 `json:"artifactSet,omitempty"`
-	DebugOnFailure    bool                   `json:"debugOnFailure,omitempty"`
-	DebugShell        bool                   `json:"debugShell,omitempty"`
-	Libvirt           WorldLibvirt           `json:"libvirt"`
-	Network           WorldNetwork           `json:"network"`
-	Capabilities      map[string]WorldStatus `json:"capabilities"`
+	APIVersion       string                 `json:"apiVersion"`
+	Kind             string                 `json:"kind"`
+	RunID            string                 `json:"runID"`
+	RunDir           string                 `json:"runDir"`
+	CacheDir         string                 `json:"cacheDir"`
+	ArtifactDir      string                 `json:"artifactDir"`
+	ScenarioDir      string                 `json:"scenarioDir"`
+	RunIndex         string                 `json:"runIndex,omitempty"`
+	GoTestLog        string                 `json:"goTestLog,omitempty"`
+	ResourceManifest string                 `json:"resourceManifest,omitempty"`
+	ResourceDigest   string                 `json:"resourceManifestSHA256,omitempty"`
+	Artifacts        []WorldArtifact        `json:"vmtestArtifacts,omitempty"`
+	ArtifactInputs   *WorldArtifactInputs   `json:"vmtestArtifactInputs,omitempty"`
+	AutoRebuild      bool                   `json:"autoRebuild,omitempty"`
+	ArtifactSet      string                 `json:"artifactSet,omitempty"`
+	DebugOnFailure   bool                   `json:"debugOnFailure,omitempty"`
+	DebugShell       bool                   `json:"debugShell,omitempty"`
+	Libvirt          WorldLibvirt           `json:"libvirt"`
+	Network          WorldNetwork           `json:"network"`
+	Capabilities     map[string]WorldStatus `json:"capabilities"`
 }
 
 type WorldArtifact struct {
@@ -78,7 +76,6 @@ type WorldPackageSetInput struct {
 	Name         string `json:"name"`
 	Source       string `json:"source,omitempty"`
 	Profile      string `json:"profile,omitempty"`
-	LockSHA256   string `json:"lockSHA256,omitempty"`
 	PackageCount int    `json:"packageCount"`
 }
 
@@ -200,12 +197,6 @@ func ValidateWorld(world World) error {
 	if strings.TrimSpace(world.ResourceDigest) != "" && !validWorldSHA256(world.ResourceDigest) {
 		return fmt.Errorf("resourceManifestSHA256 must be lowercase SHA-256")
 	}
-	if strings.TrimSpace(world.PackageLock) != "" && !filepath.IsAbs(world.PackageLock) {
-		return fmt.Errorf("packageLock must be an absolute path: %s", world.PackageLock)
-	}
-	if strings.TrimSpace(world.PackageLockDigest) != "" && !validWorldSHA256(world.PackageLockDigest) {
-		return fmt.Errorf("packageLockSHA256 must be lowercase SHA-256")
-	}
 	for i, artifact := range world.Artifacts {
 		if err := validateWorldArtifact(i, artifact); err != nil {
 			return err
@@ -237,9 +228,6 @@ func ValidateWorld(world World) error {
 		for i, set := range world.ArtifactInputs.PackageSets {
 			if strings.TrimSpace(set.Name) == "" {
 				return fmt.Errorf("vmtestArtifactInputs.packageSets[%d].name is required", i)
-			}
-			if strings.TrimSpace(set.LockSHA256) != "" && !validWorldSHA256(set.LockSHA256) {
-				return fmt.Errorf("vmtestArtifactInputs.packageSets[%d].lockSHA256 must be lowercase SHA-256", i)
 			}
 		}
 	}

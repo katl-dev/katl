@@ -243,30 +243,21 @@ publishing. Run host-specific VM gates locally with `scripts/vmtest-run` on a
 capable host and record the result with the change or release evidence. Katl
 does not currently provide hosted VM orchestration.
 
-## Fedora Package Lock
+## Fedora Package Inputs
 
-Fedora 44 is the selected base release. Fedora's release repository is frozen,
-but its stable updates repository advances. The committed resource package lock
-is therefore a review gate, not a repository snapshot: release and VM gates
-reject package identities that were not deliberately accepted, while Fedora's
-mirrors remain responsible for serving packages.
+Fedora 44 is the selected base release. Builds consume its signed release and
+stable-updates repositories without committing the complete transitive package
+closure as source policy.
 
-Refresh every Fedora-backed profile and update the existing lock with:
+The mkosi build records resolved package inventories under `_build/mkosi/`.
+Release and VM preparation copy those identities into their resource manifests
+alongside tool, profile, and artifact digests. These inventories are diagnostic
+release evidence for auditing or reproducing a problem, not acceptance policy;
+normal Fedora movement does not require a repository PR.
 
-```sh
-scripts/update-fedora-package-lock
-```
-
-The command forces fresh runtime, installer, and Kubernetes sysext builds, then
-updates only those package sets; unrelated lock entries are preserved. Use
-`--from-build` only when those three outputs were already rebuilt against the
-repositories being accepted.
-
-`.github/workflows/fedora-package-lock.yml` runs this path weekly and on manual
-dispatch. When package identities change, it opens a ready pull request,
-dispatches the required fast check for that branch, and enables auto-merge. No
-PR is opened when Fedora's selected package set is unchanged or another lock
-update is already open.
+Pin an individual package only when a documented Katl compatibility or security
+constraint requires it. See `docs/internal/testing-contract-policy.md` for the
+distinction between product contracts and build evidence.
 
 ## GitHub Release Artifacts
 

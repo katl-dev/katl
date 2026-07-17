@@ -8,6 +8,10 @@ virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"
 kubectl_bin="${KATL_VMTEST_KUBECTL:-kubectl}"
 resource_lock_bin="${KATL_VMTEST_RESOURCE_LOCK:-}"
 resource_go_bin="${KATL_VMTEST_RESOURCE_GO:-go}"
+flock_bin="${KATL_VMTEST_FLOCK:-flock}"
+host_lock_path="${KATL_VMTEST_HOST_LOCK:-/tmp/katl-vmtest-${UID}.lock}"
+host_lock_timeout="${KATL_VMTEST_HOST_LOCK_TIMEOUT:-5400}"
+host_lock_fd=""
 go_test_timeout="90m"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
 run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
@@ -32,9 +36,7 @@ host_capabilities_json="$run_dir/host-capabilities.json"
 run_index="$run_dir/run.json"
 go_test_log="$run_dir/go-test.log"
 resource_manifest="$run_dir/resource-test-manifest.json"
-package_lock="$repo_root/mkosi.profiles/resource-package-lock.json"
 resource_manifest_sha256=""
-package_lock_sha256=""
 vmtest_artifacts_json="[]"
 vmtest_artifact_inputs_json="{}"
 debug_targets_artifact="$run_dir/preserved-vm-debug.txt"
@@ -369,7 +371,7 @@ validate_current_artifact_inputs() {
         return 0
     fi
     if has_explicit_artifact_index || has_explicit_installer_artifact || has_explicit_runtime_artifact || has_explicit_install_manifest; then
-        setup_failures+=("explicit installer artifact inputs are not supported by scripts/vmtest-run; use current repo artifacts validated by katl-resource-lock")
+        setup_failures+=("explicit installer artifact inputs are not supported by scripts/vmtest-run; use current repo artifacts recorded by the resource manifest")
     fi
 	if vmtest_requests_kubernetes_upgrade; then
 		local published_source_set=0
@@ -398,13 +400,13 @@ build_default_artifacts() {
         default | install)
             if ! has_explicit_install_manifest; then
                 targets+=("build-katlos-install-image")
-			targets+=("build-katlos-upgrade-image")
-				if vmtest_requests_kubernetes_upgrade && ! vmtest_uses_published_kubernetes_upgrade_bundles; then
-					targets+=("build-kubernetes-upgrade-sysext")
-				fi
-				if ! vmtest_requests_kubernetes_upgrade || ! vmtest_uses_published_kubernetes_upgrade_bundles; then
-					targets+=("build-kubernetes-sysext")
-				fi
+                targets+=("build-katlos-upgrade-image")
+                if vmtest_requests_kubernetes_upgrade && ! vmtest_uses_published_kubernetes_upgrade_bundles; then
+                    targets+=("build-kubernetes-upgrade-sysext")
+                    targets+=("build-kubernetes-upgrade-source-sysext")
+                elif ! vmtest_requests_kubernetes_upgrade; then
+                    targets+=("build-kubernetes-sysext")
+                fi
             elif ! has_explicit_runtime_artifact; then
                 targets+=("build-runtime")
             fi
@@ -460,7 +462,11 @@ verify_kubernetes_upgrade_artifacts() {
 	local base="$repo_root/_build/mkosi/katl-kubernetes.raw"
 	local target="$repo_root/_build/mkosi/katl-kubernetes-upgrade.raw"
 	printf 'vmtest verifying source Kubernetes sysext independently: %s\n' "$base" >&2
-	"$repo_root/scripts/check-kubernetes-sysext" "$base"
+	KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}" \
+		KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBEADM_VERSION:-0:1.36.0-150500.1.1}" \
+		KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBELET_VERSION:-0:1.36.0-150500.1.1}" \
+		KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBECTL_VERSION:-0:1.36.0-150500.1.1}" \
+		"$repo_root/scripts/check-kubernetes-sysext" "$base"
 	printf 'vmtest verifying target Kubernetes sysext independently: %s\n' "$target" >&2
 	KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}" \
 		KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_KUBEADM_VERSION:-0:1.36.1-150500.1.1}" \
@@ -489,6 +495,9 @@ mkosi_cache_label_for_target() {
 		build-kubernetes-upgrade-sysext)
 			printf 'kubernetes-sysext\n'
 			;;
+		build-kubernetes-upgrade-source-sysext)
+			printf 'kubernetes-sysext\n'
+			;;
         *)
             printf '%s\n' "$1"
             ;;
@@ -501,13 +510,15 @@ artifact_build_actions_json() {
         --arg buildRuntime "${artifact_build_actions[build-runtime]:-}" \
         --arg buildInstallImage "${artifact_build_actions[build-katlos-install-image]:-}" \
         --arg buildKubernetesSysext "${artifact_build_actions[build-kubernetes-sysext]:-}" \
-		--arg buildKubernetesUpgradeSysext "${artifact_build_actions[build-kubernetes-upgrade-sysext]:-}" \
+        --arg buildKubernetesUpgradeSysext "${artifact_build_actions[build-kubernetes-upgrade-sysext]:-}" \
+        --arg buildKubernetesUpgradeSourceSysext "${artifact_build_actions[build-kubernetes-upgrade-source-sysext]:-}" \
         '{
           "build-installer": $buildInstaller,
           "build-runtime": $buildRuntime,
           "build-katlos-install-image": $buildInstallImage,
           "build-kubernetes-sysext": $buildKubernetesSysext,
-		  "build-kubernetes-upgrade-sysext": $buildKubernetesUpgradeSysext
+          "build-kubernetes-upgrade-sysext": $buildKubernetesUpgradeSysext,
+          "build-kubernetes-upgrade-source-sysext": $buildKubernetesUpgradeSourceSysext
         } | with_entries(select(.value != ""))'
 }
 
@@ -540,37 +551,23 @@ prepare_resource_manifest() {
     fi
 
 	local revision mkosi_version
-	local -a lock_args
     revision="$(git_revision)"
 	mkosi_version="${KATL_VMTEST_MKOSI_VERSION:-}"
 	if [[ -z "$mkosi_version" ]] && ! mkosi_version="$("$repo_root/scripts/mkosi" builder-version)"; then
 		setup_failures+=("detect the containerized mkosi builder version")
 		return 1
 	fi
-    printf 'vmtest validating current repo artifacts: katl-resource-lock prepare-mkosi --mode strict\n' >&2
-	lock_args=(prepare-mkosi \
+    printf 'vmtest recording current repo artifacts and resolved package inputs\n' >&2
+	if ! run_resource_lock prepare-mkosi \
         -manifest "$resource_manifest" \
-        -lock "$package_lock" \
-        -mode strict \
+        -mode record \
         -run-id "$run_id" \
 		-git-revision "$revision" \
-		-mkosi-version "$mkosi_version")
-	if vmtest_requests_kubernetes_upgrade; then
-		# The committed lock names the selected release payload. Upgrade tests
-		# deliberately build a different source payload, so validate the KatlOS
-		# package sets here and validate both Kubernetes sysexts independently.
-		lock_args+=(
-			-package-set installer-image
-			-package-set runtime
-			-package-set katlos-install-image
-		)
-	fi
-	if ! run_resource_lock "${lock_args[@]}"; then
-        setup_failures+=("strict vmtest resource manifest validation failed")
+		-mkosi-version "$mkosi_version"; then
+        setup_failures+=("record vmtest resource manifest failed")
         return 1
     fi
 	resource_manifest_sha256="$(file_sha256 "$resource_manifest")"
-	package_lock_sha256="$(file_sha256 "$package_lock")"
 	vmtest_artifacts_json="$(
 		jq -c '
           def abs_path($repo):
@@ -604,7 +601,6 @@ prepare_resource_manifest() {
               name,
               source,
               profile,
-              lockSHA256,
               packageCount: ((.packages // []) | length)
             }))
           }
@@ -827,6 +823,28 @@ cleanup_existing_vmtest_domains() {
     done
 }
 
+acquire_vmtest_host_lock() {
+    if ! have_command "$flock_bin"; then
+        setup_failures+=("flock is required to serialize libvirt-backed VM runs")
+        return 1
+    fi
+    if ! mkdir -p "$(dirname "$host_lock_path")"; then
+        setup_failures+=("create VM test host lock directory failed: $(dirname "$host_lock_path")")
+        return 1
+    fi
+    if ! exec {host_lock_fd}>"$host_lock_path"; then
+        setup_failures+=("open VM test host lock failed: $host_lock_path")
+        return 1
+    fi
+
+    printf 'vmtest host lock: waiting for %s (timeout %ss)\n' "$host_lock_path" "$host_lock_timeout" >&2
+    if ! "$flock_bin" --wait "$host_lock_timeout" "$host_lock_fd"; then
+        setup_failures+=("timed out waiting for another libvirt-backed VM run to release $host_lock_path; wait for it to finish or set KATL_VMTEST_HOST_LOCK to a lock shared by this host")
+        return 1
+    fi
+    printf 'vmtest host lock: acquired %s\n' "$host_lock_path" >&2
+}
+
 ipv4_to_int() {
     local address="$1"
     local a b c d extra
@@ -991,8 +1009,6 @@ write_world() {
         --arg goTestLog "$go_test_log" \
         --arg resourceManifest "$resource_manifest" \
         --arg resourceManifestSHA256 "$resource_manifest_sha256" \
-        --arg packageLock "$package_lock" \
-        --arg packageLockSHA256 "$package_lock_sha256" \
         --argjson vmtestArtifacts "$vmtest_artifacts_json" \
         --argjson vmtestArtifactInputs "$vmtest_artifact_inputs_json" \
         --arg autoRebuild "$auto_rebuild" \
@@ -1031,8 +1047,6 @@ write_world() {
           goTestLog: $goTestLog,
           resourceManifest: $resourceManifest,
           resourceManifestSHA256: $resourceManifestSHA256,
-          packageLock: $packageLock,
-          packageLockSHA256: $packageLockSHA256,
           vmtestArtifacts: $vmtestArtifacts,
           vmtestArtifactInputs: $vmtestArtifactInputs,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
@@ -1091,8 +1105,6 @@ write_run_index() {
         --arg goTestLog "$go_test_log" \
         --arg resourceManifest "$resource_manifest" \
         --arg resourceManifestSHA256 "$resource_manifest_sha256" \
-        --arg packageLock "$package_lock" \
-        --arg packageLockSHA256 "$package_lock_sha256" \
         --argjson vmtestArtifacts "$vmtest_artifacts_json" \
         --argjson vmtestArtifactInputs "$vmtest_artifact_inputs_json" \
         --arg autoRebuild "$auto_rebuild" \
@@ -1116,8 +1128,6 @@ write_run_index() {
           goTestLog: $goTestLog,
           resourceManifest: $resourceManifest,
           resourceManifestSHA256: $resourceManifestSHA256,
-          packageLock: $packageLock,
-          packageLockSHA256: $packageLockSHA256,
           vmtestArtifacts: $vmtestArtifacts,
           vmtestArtifactInputs: $vmtestArtifactInputs,
           autoRebuild: ($autoRebuild == "1" or $autoRebuild == "true" or $autoRebuild == "yes" or $autoRebuild == "on"),
@@ -1309,6 +1319,14 @@ write_host_capabilities
 write_world
 if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
     print_missing_capabilities "vmtest world has missing host capabilities"
+fi
+if ! acquire_vmtest_host_lock; then
+    write_run_index "setup-failed" "$@"
+    printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
+    if ! cleanup_run_dir "setup-failed"; then
+        printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
+    fi
+    exit 2
 fi
 if ! cleanup_existing_vmtest_domains; then
     write_run_index "setup-failed" "$@"

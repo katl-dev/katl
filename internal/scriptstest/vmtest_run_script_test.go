@@ -1,10 +1,12 @@
 package scriptstest
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -73,21 +75,62 @@ case "$1" in
 esac
 `)
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--artifact-set=none", "./internal/vmtest", "-run", "^TestDoesNotMatter$", "-count=1")
-	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
-		"KATL_SCRIPTTEST_LOG="+logPath,
-		"KATL_SCRIPTTEST_STORAGE="+tmp,
-		"KATL_VMTEST_GO="+filepath.Join(binDir, "fake-go"),
-		"KATL_VMTEST_IMAGE_TOOL="+filepath.Join(binDir, "fake-qemu-img"),
-		"KATL_VMTEST_KUBECTL="+filepath.Join(binDir, "fake-kubectl"),
-		"KATL_VMTEST_VIRSH="+filepath.Join(binDir, "fake-virsh"),
-		"KATL_VMTEST_RUN_ID=scripttest",
-		"KATL_VMTEST_RUN_DIR="+filepath.Join(tmp, "run"),
-		"KATL_VMTEST_CACHE_DIR="+filepath.Join(tmp, "cache"),
-		"KATL_VMTEST_KEEP=always",
-		"KATL_VMTEST_REQUIRE_SCENARIO_RESULT=0",
-	)
+	hostLock := filepath.Join(tmp, "host.lock")
+	command := func(runID string) *exec.Cmd {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--artifact-set=none", "./internal/vmtest", "-run", "^TestDoesNotMatter$", "-count=1")
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(),
+			"KATL_SCRIPTTEST_LOG="+logPath,
+			"KATL_SCRIPTTEST_STORAGE="+tmp,
+			"KATL_VMTEST_GO="+filepath.Join(binDir, "fake-go"),
+			"KATL_VMTEST_IMAGE_TOOL="+filepath.Join(binDir, "fake-qemu-img"),
+			"KATL_VMTEST_KUBECTL="+filepath.Join(binDir, "fake-kubectl"),
+			"KATL_VMTEST_VIRSH="+filepath.Join(binDir, "fake-virsh"),
+			"KATL_VMTEST_RUN_ID="+runID,
+			"KATL_VMTEST_RUN_DIR="+filepath.Join(tmp, runID),
+			"KATL_VMTEST_CACHE_DIR="+filepath.Join(tmp, "cache"),
+			"KATL_VMTEST_HOST_LOCK="+hostLock,
+			"KATL_VMTEST_KEEP=always",
+			"KATL_VMTEST_REQUIRE_SCENARIO_RESULT=0",
+		)
+		return cmd
+	}
+
+	lockFile, err := os.OpenFile(hostLock, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	blocked := command("scripttest-blocked")
+	blocked.Env = append(blocked.Env, "KATL_VMTEST_HOST_LOCK_TIMEOUT=0")
+	blockedOutput, blockedErr := blocked.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(blockedErr, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("scripts/vmtest-run under host lock exit = %v, want 2\n%s", blockedErr, blockedOutput)
+	}
+	if !strings.Contains(string(blockedOutput), "timed out waiting for another libvirt-backed VM run") {
+		t.Fatalf("host lock failure missing actionable diagnostic:\n%s", blockedOutput)
+	}
+	blockedLog, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read blocked command log: %v", err)
+	}
+	if strings.Contains(string(blockedLog), " list --all --name") || strings.Contains(string(blockedLog), "go test ") {
+		t.Fatalf("domain cleanup or go test ran without the host lock:\n%s", blockedLog)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := command("scripttest")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("scripts/vmtest-run failed: %v\n%s", err, output)

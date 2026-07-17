@@ -86,7 +86,7 @@ installer, update, disk, kubeadm, or runtime state machines
 structured manifest mutation or schema validation
 JSON generation beyond trivial process-local glue that is explicitly temporary
 resource-test result aggregation or scenario status classification
-VM fixture policy, package lock policy, or artifact compatibility policy
+VM fixture policy, package inventory policy, or artifact compatibility policy
 long-lived daemon behavior or retry/state reconciliation
 ```
 
@@ -118,7 +118,7 @@ Use Go when the job includes:
 ```text
 parsing or writing JSON, YAML, or systemd unit trees
 mutating install manifests, artifact indexes, or resource manifests
-validating user input, host facts, package locks, or artifact compatibility
+validating user input, host facts, package inventories, or artifact compatibility
 planning disk, boot, update, kubeadm, or cluster bootstrap operations
 classifying test outcomes, host capability gaps, or scenario results
 maintaining durable state, retry behavior, or idempotent transitions
@@ -151,7 +151,7 @@ world setup or scenario orchestration.
 state transitions. Shell can put these binaries into images or invoke them in a
 test, but not reimplement their state machines.
 
-`katl-resource-lock` owns resource-test manifests, package locks, and artifact
+`katl-resource-lock` owns resource-test manifests, package inventories, optional strict locks, and artifact
 lock verification. Shell may call it, but package drift policy and manifest JSON
 belong in Go.
 
@@ -168,7 +168,7 @@ compiled test binary, and prints the run directory on failure.
 
 `scripts/check-resource-tests` is the planned CI/developer aggregate for
 resource-backed tests. It may exist as a top-level script while the workflow is
-settling, but it must delegate package locks to `katl-resource-lock`, builds to
+settling, but it must delegate package inventory recording to `katl-resource-lock`, builds to
 the mkosi adapter, VM execution to `scripts/vmtest-run`, and summary or result
 classification to Go. Once its interface is stable or it owns nontrivial policy,
 it should become a Go command.
@@ -184,7 +184,7 @@ Lower-level helpers should not accumulate as permanent top-level scripts.
 
 ```text
 internal/resourcetest
-  Resource manifests, package locks, artifact records, summary logic, and
+  Resource manifests, package inventories, artifact records, summary logic, and
   deterministic resource-test validation.
 
 internal/vmtest
@@ -242,7 +242,7 @@ root and invokes `mksquashfs`; validation, component indexes, checksums, and
 artifact metadata belong to `cmd/katl-mkosi-artifacts`.
 
 `cmd/katl-resource-lock` remains separate from local artifact metadata. It owns
-resource-test manifests, package locks, and deterministic identity records used
+resource-test manifests, package inventories, and deterministic identity records used
 to decide whether resource-sensitive tests are still valid. It may consume
 artifacts produced by `scripts/mkosi` and indexed by
 `cmd/katl-mkosi-artifacts`, but it should not become the image builder.
@@ -327,7 +327,6 @@ world path.
 | `scripts/check-runtime-root` | Inspects SquashFS runtime root content | Move policy checks to Go; Go may still call `unsquashfs` as the external inspector. |
 | `scripts/check-runtime-boot-asset` | Validates runtime UKI metadata and command line | Move metadata and compatibility checks to Go. |
 | `scripts/check-kubernetes-sysext` | Validates Kubernetes sysext metadata and payload version | Absorb into `katl-publish-kubernetes-sysext` or a Go verifier. |
-| `scripts/check-mkosi-size` | Size budget checks for generated artifacts | May remain as a simple CI check while it only uses `stat`/`du`; move to Go if budgets become artifact metadata or release policy. |
 
 ## Devshell And Host Tools
 

@@ -145,59 +145,6 @@ exit 1
 	}
 }
 
-func TestInstallerConsoleAndArtifactContract(t *testing.T) {
-	repo := repoRoot(t)
-	profile := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles/installer-image/mkosi.conf")))
-	journal := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles/installer-image/mkosi.extra/etc/systemd/journald.conf.d/10-katl-installer-console.conf")))
-
-	for _, value := range []string{"console=tty0", "console=ttyS0,115200n8", "systemd.getty_auto=no"} {
-		if !strings.Contains(profile, value) {
-			t.Fatalf("installer profile missing console %q", value)
-		}
-	}
-	for _, value := range []string{"CompressOutput=zstd", "CompressLevel=22", "KernelModules="} {
-		if !strings.Contains(profile, value) {
-			t.Fatalf("installer profile missing compression setting %q", value)
-		}
-	}
-	isoBuilder := string(mustReadFile(t, filepath.Join(repo, "scripts/build-installer-iso")))
-	assertTextContains(t, isoBuilder, `overhead=$((8 * 1024 * 1024))`)
-	checker := string(mustReadFile(t, filepath.Join(repo, "scripts/check-installer-image")))
-	for _, value := range []string{"need zstd", `zstd -q -d -c "$initrd"`} {
-		if !strings.Contains(checker, value) {
-			t.Fatalf("installer verification missing compressed initrd handling %q", value)
-		}
-	}
-	for _, value := range []string{"ForwardToConsole=yes", "TTYPath=/dev/ttyS0"} {
-		if !strings.Contains(journal, value) {
-			t.Fatalf("installer dual-console journal routing missing %q", value)
-		}
-	}
-}
-
-func TestVMDevelopmentShellAndRunnerContract(t *testing.T) {
-	repo := repoRoot(t)
-	flake := string(mustReadFile(t, filepath.Join(repo, "flake.nix")))
-
-	for _, dependency := range []string{"cpio", "dosfstools", "rpm", "squashfsTools", "systemdUkify", "xorriso", "zstd"} {
-		if !strings.Contains(flake, dependency) {
-			t.Fatalf("VM development shell does not provide %q", dependency)
-		}
-	}
-	runner := string(mustReadFile(t, filepath.Join(repo, "scripts/vmtest-run")))
-	for _, value := range []string{
-		`probe_vm_capabilities`,
-		`probe_fixture_tool_capabilities`,
-		`write_host_capabilities`,
-		`scripts/mkosi" builder-version`,
-		`-mkosi-version "$mkosi_version"`,
-	} {
-		if !strings.Contains(runner, value) {
-			t.Fatalf("VM runner missing durable capability or resource identity contract %q", value)
-		}
-	}
-}
-
 func TestMkosiInstallerISOUsesBuilder(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()

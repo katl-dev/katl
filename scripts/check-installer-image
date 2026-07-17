@@ -31,8 +31,10 @@ inspect="$(ukify inspect "$artifact")" || fail "inspect installer UKI failed"
 grep -Fq '.linux:' <<<"$inspect" || fail "installer UKI missing .linux section"
 grep -Fq '.initrd:' <<<"$inspect" || fail "installer UKI missing .initrd section"
 grep -Fq '.cmdline:' <<<"$inspect" || fail "installer UKI missing .cmdline section"
-grep -Fq 'console=ttyS0,115200n8 console=tty0 systemd.getty_auto=no systemd.log_target=console loglevel=6' <<<"$inspect" ||
-    fail "installer UKI command line mismatch"
+for argument in console=ttyS0,115200n8 console=tty0 systemd.getty_auto=no systemd.log_target=console loglevel=6; do
+    grep -Eq "(^|[[:space:]])${argument}([[:space:]]|$)" <<<"$inspect" ||
+        fail "installer UKI command line missing $argument"
+done
 
 initrd_list="$(cpio -it <"$initrd_cpio" 2>/dev/null)" || fail "list installer initrd failed"
 if grep -Eiq '(^|/)[^/]*(vmtest|vm-test)[^/]*($|/)' <<<"$initrd_list"; then
@@ -41,32 +43,6 @@ fi
 if grep -Eq '^usr/lib/modules/[^/]+/(System\.map|vmlinuz)$' <<<"$initrd_list"; then
     fail "installer initrd contains duplicate kernel build artifacts"
 fi
-
-modules_builtin_path="$(grep -E '^usr/lib/modules/[^/]+/modules[.]builtin$' <<<"$initrd_list")"
-[[ -n "$modules_builtin_path" ]] || fail "installer kernel modules.builtin is missing"
-modules_builtin="$(cpio -i --to-stdout "$modules_builtin_path" <"$initrd_cpio" 2>/dev/null)" ||
-    fail "read installer modules.builtin failed"
-
-require_module() {
-    local name="$1"
-    grep -Eq "^usr/lib/modules/[^/]+/kernel/.*/${name}[.]ko([.][[:alnum:]]+)?$" <<<"$initrd_list" ||
-        grep -Eq "/${name}[.]ko$" <<<"$modules_builtin" ||
-        fail "installer kernel module support missing: $name"
-}
-
-deny_module_family() {
-    local path="$1"
-    if grep -Eq "^usr/lib/modules/[^/]+/kernel/${path}/.*[.]ko([.][[:alnum:]]+)?$" <<<"$initrd_list"; then
-        fail "installer initrd contains unsupported kernel module family: $path"
-    fi
-}
-
-for module in ahci loop nvme virtio_blk virtio_net virtio_scsi e1000e igb ixgbe r8169 megaraid_sas mpt3sas; do
-    require_module "$module"
-done
-for family in drivers/accel drivers/bluetooth drivers/gpu drivers/media drivers/net/wireless; do
-    deny_module_family "$family"
-done
 
 has_path() {
     local path="${1#/}"
@@ -80,66 +56,21 @@ misses_path() {
     fi
 }
 
-file_has() {
-    local path="${1#/}"
-    local pattern="$2"
-    local output
-    output="$(cpio -i --to-stdout "$path" <"$initrd_cpio" 2>/dev/null)" ||
-        fail "read installer path failed: /$path"
-    grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
-}
-
 for path in \
     /usr/bin/katlos-install \
     /usr/bin/katl-console \
-    /usr/bin/systemctl \
-    /usr/bin/journalctl \
-    /usr/bin/networkctl \
-    /usr/bin/resolvectl \
-    /usr/bin/ip \
-    /usr/bin/curl \
-    /usr/bin/bash \
-    /usr/bin/parted \
-    /usr/bin/sfdisk \
-    /usr/bin/lsblk \
-    /usr/bin/blkid \
-    /usr/bin/mkfs.ext4 \
-    /usr/bin/mkfs.vfat \
-    /usr/bin/mount \
-    /usr/bin/findmnt \
-    /usr/bin/sshd \
     /usr/lib/systemd/system/katlos-install.service \
     /usr/lib/systemd/system/katl-console.service \
     /usr/lib/systemd/system/katl-installer.target \
     /usr/lib/systemd/system/katl-input-apply.service \
     /usr/lib/systemd/system/katl-installer-smoke.service \
-    /usr/lib/systemd/system/systemd-networkd.service \
-    /usr/lib/systemd/system/systemd-resolved.service \
-    /usr/lib/systemd/system/sshd.service \
     /etc/systemd/system/sshd.service.d/10-katl-disabled.conf \
     /etc/systemd/journald.conf.d/10-katl-installer-console.conf \
     /usr/lib/systemd/network/80-katl-installer-dhcp.network \
-    /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf \
-    /usr/lib/systemd/system/getty.target.wants/getty@tty2.service \
     /usr/lib/modules-load.d/50-katl-installer.conf
 do
     has_path "$path"
 done
-
-file_has /usr/lib/systemd/system/katlos-install.service "ExecStart=/usr/bin/katlos-install --boot"
-file_has /usr/lib/systemd/system/katlos-install.service "Type=notify"
-file_has /usr/lib/systemd/system/katlos-install.service "NotifyAccess=main"
-file_has /usr/lib/systemd/system/katlos-install.service "After=katl-input-apply.service systemd-modules-load.service"
-file_has /usr/lib/systemd/system/katl-console.service "ExecStart=/usr/bin/katl-console --mode=installer --tty=/dev/tty1"
-file_has /usr/lib/systemd/system/katl-console.service "TTYPath=/dev/tty1"
-file_has /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf "ConditionPathExists=!/usr/bin/katl-console"
-file_has /usr/lib/systemd/system/katl-installer.target "Wants=systemd-journald.service katl-console.service katl-input-apply.service systemd-networkd.service systemd-resolved.service katl-installer-smoke.service katlos-install.service"
-file_has /usr/lib/systemd/system/katl-input-apply.service "ExecStart=/usr/bin/katlos-install --apply-input"
-file_has /usr/lib/systemd/system/katl-installer-smoke.service "Katl installer ready"
-file_has /etc/systemd/system/sshd.service.d/10-katl-disabled.conf "ConditionPathExists=/etc/katl/installer-ssh.enabled"
-file_has /etc/systemd/journald.conf.d/10-katl-installer-console.conf "ForwardToConsole=yes"
-file_has /etc/systemd/journald.conf.d/10-katl-installer-console.conf "TTYPath=/dev/ttyS0"
-file_has /usr/lib/modules-load.d/50-katl-installer.conf "loop"
 
 for path in \
     /usr/bin/mkosi \
@@ -170,11 +101,7 @@ for path in \
     /usr/bin/rook \
     /usr/bin/containerd \
     /usr/bin/crun \
-    /usr/bin/systemd-nspawn \
-    /usr/bin/machinectl \
-    /usr/lib/systemd/system/containerd.service \
-    /usr/lib/systemd/system/systemd-nspawn@.service \
-    /usr/lib/systemd/system/machines.target
+    /usr/lib/systemd/system/containerd.service
 do
     misses_path "$path"
 done

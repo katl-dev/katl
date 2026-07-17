@@ -82,7 +82,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.RunIndex != filepath.Join(runDir, "run.json") {
 		t.Fatalf("world run index = %q", world.RunIndex)
 	}
-	if world.GoTestLog != filepath.Join(runDir, "go-test.log") || world.ResourceManifest != filepath.Join(runDir, "resource-test-manifest.json") || world.ResourceDigest != strings.Repeat("a", 64) || world.PackageLock != filepath.Join(repo, "mkosi.profiles", "resource-package-lock.json") || world.PackageLockDigest != strings.Repeat("a", 64) || world.AutoRebuild || world.ArtifactSet != "default" {
+	if world.GoTestLog != filepath.Join(runDir, "go-test.log") || world.ResourceManifest != filepath.Join(runDir, "resource-test-manifest.json") || world.ResourceDigest != strings.Repeat("a", 64) || world.AutoRebuild || world.ArtifactSet != "default" {
 		t.Fatalf("world log/rebuild fields = %#v", world)
 	}
 	if len(world.Artifacts) != 1 {
@@ -97,7 +97,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if len(world.ArtifactInputs.MkosiProfiles) != 1 || world.ArtifactInputs.MkosiProfiles[0].Name != "installer-image" || world.ArtifactInputs.MkosiProfiles[0].ConfigSHA256 != strings.Repeat("a", 64) {
 		t.Fatalf("world artifact input profiles = %#v", world.ArtifactInputs.MkosiProfiles)
 	}
-	if len(world.ArtifactInputs.PackageSets) != 1 || world.ArtifactInputs.PackageSets[0].Name != "installer-image" || world.ArtifactInputs.PackageSets[0].LockSHA256 != strings.Repeat("b", 64) || world.ArtifactInputs.PackageSets[0].PackageCount != 1 {
+	if len(world.ArtifactInputs.PackageSets) != 1 || world.ArtifactInputs.PackageSets[0].Name != "installer-image" || world.ArtifactInputs.PackageSets[0].PackageCount != 1 {
 		t.Fatalf("world artifact input package sets = %#v", world.ArtifactInputs.PackageSets)
 	}
 	if world.Libvirt.URI != "qemu:///system" || world.Libvirt.Network != "default" || world.Libvirt.StoragePool != "default" {
@@ -166,7 +166,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if runIndex.CacheDir != filepath.Join(repo, "_build", "vmtest") {
 		t.Fatalf("run index cache dir = %q", runIndex.CacheDir)
 	}
-	if runIndex.GoTestLog != filepath.Join(runDir, "go-test.log") || runIndex.ResourceManifest != filepath.Join(runDir, "resource-test-manifest.json") || runIndex.ResourceDigest != strings.Repeat("a", 64) || runIndex.PackageLock != filepath.Join(repo, "mkosi.profiles", "resource-package-lock.json") || runIndex.PackageLockDigest != strings.Repeat("a", 64) || runIndex.AutoRebuild || runIndex.ArtifactSet != "default" {
+	if runIndex.GoTestLog != filepath.Join(runDir, "go-test.log") || runIndex.ResourceManifest != filepath.Join(runDir, "resource-test-manifest.json") || runIndex.ResourceDigest != strings.Repeat("a", 64) || runIndex.AutoRebuild || runIndex.ArtifactSet != "default" {
 		t.Fatalf("run index log/rebuild fields = %#v", runIndex)
 	}
 	if len(runIndex.Artifacts) != 1 || runIndex.Artifacts[0].Name != "installer-uki" || runIndex.Artifacts[0].Action != "validated" {
@@ -1743,7 +1743,6 @@ if [[ "${1:-}" != "prepare-mkosi" ]]; then
     exit 43
 fi
 manifest=""
-lock=""
 mode=""
 run_id="resource-test"
 git_revision="unknown"
@@ -1751,10 +1750,6 @@ while (($# > 0)); do
     case "$1" in
         -manifest)
             manifest="$2"
-            shift 2
-            ;;
-        -lock)
-            lock="$2"
             shift 2
             ;;
         -mode)
@@ -1774,7 +1769,7 @@ while (($# > 0)); do
             ;;
     esac
 done
-if [[ -z "$manifest" || "$mode" != "strict" ]]; then
+if [[ -z "$manifest" || "$mode" != "record" ]]; then
     echo "invalid fake katl-resource-lock invocation" >&2
     exit 44
 fi
@@ -1782,7 +1777,6 @@ mkdir -p "$(dirname "$manifest")"
 jq -n \
     --arg runID "$run_id" \
     --arg gitRevision "$git_revision" \
-    --arg lock "$lock" \
     '{
       apiVersion: "katl.dev/v1alpha1",
       kind: "ResourceTestManifest",
@@ -1791,11 +1785,10 @@ jq -n \
       git: {revision: $gitRevision},
       tools: [{name: "mkosi", version: "fake"}],
       mkosiProfiles: [{name: "installer-image", path: "mkosi.profiles/installer-image", configSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", packageSetRef: "installer-image"}],
-      packageSets: [{name: "installer-image", source: "mkosi.profiles/installer-image", lockSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", packages: [{name: "systemd", nevra: "systemd-1.x86_64"}]}],
-      artifacts: [{name: "installer-uki", kind: "uki", path: "/tmp/katl-installer.efi", sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}],
-      fixtures: [{name: "package-lock", kind: "resource-package-lock", path: $lock}]
+      packageSets: [{name: "installer-image", source: "mkosi.profiles/installer-image", packages: [{name: "systemd", nevra: "systemd-1.x86_64"}]}],
+      artifacts: [{name: "installer-uki", kind: "uki", path: "/tmp/katl-installer.efi", sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}]
     }' > "$manifest"
-printf 'manifest: %s\nmode: strict\nartifacts: 1\npackageSets: 1\nlockSHA256: %s\n' "$manifest" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+printf 'manifest: %s\nmode: record\nartifacts: 1\npackageSets: 1\n' "$manifest"
 `)
 	if err := os.WriteFile(tools.ovmfCode, []byte("code"), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", tools.ovmfCode, err)
@@ -1834,6 +1827,7 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_VSOCK_DEVICE="+tools.vsock,
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_VMTEST_RESOURCE_LOCK="+tools.resourceLock,
+		"KATL_VMTEST_HOST_LOCK="+filepath.Join(filepath.Dir(tools.imageTool), "vmtest-host.lock"),
 		"KATL_VMTEST_MKOSI_VERSION=26",
 		"KATL_VMTEST_AUTO_REBUILD=0",
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",
@@ -1920,8 +1914,6 @@ type vmtestRunIndex struct {
 	GoTestLog           string               `json:"goTestLog"`
 	ResourceManifest    string               `json:"resourceManifest"`
 	ResourceDigest      string               `json:"resourceManifestSHA256"`
-	PackageLock         string               `json:"packageLock"`
-	PackageLockDigest   string               `json:"packageLockSHA256"`
 	AutoRebuild         bool                 `json:"autoRebuild"`
 	ArtifactSet         string               `json:"artifactSet"`
 	DebugOnFailure      bool                 `json:"debugOnFailure"`

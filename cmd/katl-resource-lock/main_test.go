@@ -41,27 +41,6 @@ func TestRunRefreshAndVerify(t *testing.T) {
 	}
 }
 
-func TestRepositoryMkosiProfileDigestsAreLocked(t *testing.T) {
-	lockPath := resolveExistingPath("mkosi.profiles/resource-package-lock.json")
-	data, err := os.ReadFile(lockPath)
-	if err != nil {
-		t.Fatalf("read repository package lock: %v", err)
-	}
-	lock, err := resourcetest.DecodePackageLock(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("decode repository package lock: %v", err)
-	}
-	for _, profile := range lock.MkosiProfiles {
-		got, err := profileConfigDigest(profile.Path)
-		if err != nil {
-			t.Fatalf("hash mkosi profile %q: %v", profile.Name, err)
-		}
-		if got != profile.ConfigDigest {
-			t.Errorf("mkosi profile %q config SHA-256 = %s, lock has %s; refresh the resource package lock with the profile change", profile.Name, got, profile.ConfigDigest)
-		}
-	}
-}
-
 func TestRunVerifyRejectsPackageDrift(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "resource-manifest.json")
@@ -293,6 +272,55 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "mode: strict") {
 		t.Fatalf("stdout = %q, want strict mode", stdout.String())
+	}
+}
+
+func TestRunPrepareMkosiRecordsPackageEvidenceWithoutLock(t *testing.T) {
+	oldQuery := queryRPMPackages
+	t.Cleanup(func() { queryRPMPackages = oldQuery })
+	queryRPMPackages = func(root string) ([]resourcetest.Package, error) {
+		return []resourcetest.Package{{
+			Name:  "systemd",
+			NEVRA: "systemd-0:259.6-1.fc44.x86_64",
+		}}, nil
+	}
+
+	dir := t.TempDir()
+	mkosiDir := filepath.Join(dir, "_build", "mkosi")
+	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
+	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir runtime root: %v", err)
+	}
+	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
+	manifestPath := filepath.Join(dir, "resource-manifest.json")
+
+	var stdout bytes.Buffer
+	err := run([]string{
+		"prepare-mkosi",
+		"--manifest", manifestPath,
+		"--mkosi-dir", mkosiDir,
+		"--runtime-root", runtimeRoot,
+		"--mode", "record",
+		"--run-id", "run-1",
+		"--git-revision", "test",
+		"--mkosi-version", "26",
+	}, &stdout, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("prepare record error = %v", err)
+	}
+	manifest, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	runtime := packageSet(manifest.PackageSets, "runtime")
+	if packageNEVRA(runtime.Packages, "systemd") != "systemd-0:259.6-1.fc44.x86_64" {
+		t.Fatalf("runtime package evidence = %#v", runtime)
+	}
+	if runtime.LockDigest != "" {
+		t.Fatalf("runtime package evidence unexpectedly names a lock: %#v", runtime)
+	}
+	if !strings.Contains(stdout.String(), "mode: record") {
+		t.Fatalf("stdout = %q, want record mode", stdout.String())
 	}
 }
 

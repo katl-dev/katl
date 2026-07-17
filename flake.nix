@@ -42,6 +42,7 @@
               cpio
               curl
               dosfstools
+              erofs-utils
               git
               go
               jq

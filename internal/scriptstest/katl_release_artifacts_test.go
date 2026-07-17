@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -250,7 +251,12 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "dist")
 	version := "2026.7.0-rc.0"
 	names := writeRequiredReleaseArtifacts(t, buildDir)
-	if err := os.WriteFile(filepath.Join(buildDir, "katl-installer.packages.tsv"), []byte("bash\t5.3.0\tx86_64\n"), 0o644); err != nil {
+	for _, name := range []string{"katl-installer.packages.tsv", "katl-runtime.packages.tsv"} {
+		if err := os.WriteFile(filepath.Join(buildDir, name), []byte("bash\t0:5.3.0-1.fc44.x86_64\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "katl-release-build-inputs.json"), []byte("{\"kind\":\"ResourceTestManifest\"}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeReleaseArtifact(t, buildDir, "katl-runtime.efi")
@@ -277,7 +283,8 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		got = append(got, entry.Name())
 	}
 	sort.Strings(got)
-	want := []string{"PROVENANCE.md", "RELEASE_NOTES.md", "SHA256SUMS", "SUPPORT.md", "katl-installer.packages.tsv"}
+	evidence := []string{"katl-installer.packages.tsv", "katl-runtime.packages.tsv", "katl-release-build-inputs.json"}
+	want := append([]string{"PROVENANCE.md", "RELEASE_NOTES.md", "SHA256SUMS", "SUPPORT.md"}, evidence...)
 	for _, name := range names {
 		want = append(want, name, name+".json", name+".sha256")
 	}
@@ -307,12 +314,12 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	}
 
 	checksums := mustReadFile(t, filepath.Join(output, "SHA256SUMS"))
-	for _, name := range append([]string{"PROVENANCE.md", "RELEASE_NOTES.md", "SUPPORT.md", "katl-installer.packages.tsv"}, names...) {
+	for _, name := range append(append([]string{"PROVENANCE.md", "RELEASE_NOTES.md", "SUPPORT.md"}, evidence...), names...) {
 		if !strings.Contains(string(checksums), "  "+name+"\n") {
 			t.Fatalf("SHA256SUMS missing %q: %q", name, checksums)
 		}
 		for _, suffix := range []string{".json", ".sha256"} {
-			if name == "PROVENANCE.md" || name == "RELEASE_NOTES.md" || name == "SUPPORT.md" || name == "katl-installer.packages.tsv" {
+			if name == "PROVENANCE.md" || name == "RELEASE_NOTES.md" || name == "SUPPORT.md" || slices.Contains(evidence, name) {
 				continue
 			}
 			if !strings.Contains(string(checksums), "  "+name+suffix+"\n") {
