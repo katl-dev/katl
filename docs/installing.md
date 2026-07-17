@@ -319,7 +319,7 @@ and Kubernetes selection before applying it. Never substitute a transient
 Apply the cluster source directly:
 
 ```sh
-katlctl install apply ./cluster.yaml --node cp-1
+katlctl install apply --config ./cluster.yaml --node cp-1
 ```
 
 `katlctl` selects the endpoint automatically when exactly one installer is
@@ -413,7 +413,7 @@ After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, bootstrap directly from the same source:
 
 ```text
-katlctl cluster bootstrap ./cluster.yaml \
+katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1 \
   --kubeconfig-out kubeconfig \
   --overwrite-kubeconfig
@@ -428,7 +428,7 @@ Each freshly installed node generates a distinct agent token. Enroll the
 installed nodes before bootstrap:
 
 ```text
-katlctl cluster enroll ./cluster.yaml
+katlctl cluster enroll --config ./cluster.yaml
 ```
 
 `katlctl` retrieves the tokens over SSH, stores them at the `file:` credential
@@ -455,7 +455,7 @@ request internally; operators do not maintain a second configuration schema.
 Optionally plan the exact per-node runtime request through the node agent:
 
 ```text
-katlctl node apply ./cluster.yaml --node cp-1 --plan
+katlctl node apply --config ./cluster.yaml --node cp-1 --plan
 ```
 
 `katlctl` derives the source version, candidate generation, authenticated
@@ -467,7 +467,7 @@ recompiling it:
 
 ```text
 katlctl node apply \
-  --config-bundle ./katl-lab.katlcfg \
+  --config ./katl-lab.katlcfg \
   --node cp-1 \
   --plan
 ```

@@ -7,7 +7,7 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 
 - every intended node completed [generation 0 handoff](access.md);
 - the same `ClusterConfig` source used for installation is available;
-- `katlctl cluster enroll ./cluster.yaml` completed successfully;
+- `katlctl cluster enroll --config ./cluster.yaml` completed successfully;
 - `spec.kubernetes.version` is available in this Katl release's compatibility
   catalog;
 - the control-plane endpoint resolves or routes as designed; and
@@ -31,7 +31,7 @@ Validate topology, node access, bundle selection, and bootstrap ordering without
 running kubeadm:
 
 ```sh
-katlctl cluster bootstrap ./cluster.yaml \
+katlctl cluster bootstrap --config ./cluster.yaml \
   --dry-run \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig
@@ -50,7 +50,7 @@ run must not create generation 1 or invoke kubeadm.
 Run the same command without `--dry-run`:
 
 ```sh
-katlctl cluster bootstrap ./cluster.yaml \
+katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --overwrite-kubeconfig
@@ -78,7 +78,7 @@ management workflow, or explicitly include reviewed manifests and readiness
 conditions:
 
 ```sh
-katlctl cluster bootstrap ./cluster.yaml \
+katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --bootstrap-manifest ./cni.yaml \

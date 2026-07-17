@@ -20,8 +20,8 @@ import (
 )
 
 type enrollOptions struct {
-	sourcePath   string
-	configPath   string
+	configInput  string
+	contextPath  string
 	contextName  string
 	sshUser      string
 	identityFile string
@@ -66,15 +66,15 @@ var runEnrollmentSSH = func(ctx context.Context, user, address, identityFile str
 func newClusterEnrollCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := enrollOptions{sshUser: "root"}
 	cmd := &cobra.Command{
-		Use:   "enroll SOURCE",
+		Use:   "enroll",
 		Short: "Set up workstation access to installed KatlOS nodes",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			opts.sourcePath = args[0]
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runClusterEnroll(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
+	cmd.Flags().StringVar(&opts.configInput, "config", "", "ClusterConfig YAML or Katl config bundle")
+	cmd.Flags().StringVar(&opts.contextPath, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "context name; defaults to the cluster name")
 	cmd.Flags().StringVar(&opts.sshUser, "ssh-user", opts.sshUser, "installed-node SSH user")
 	cmd.Flags().StringVar(&opts.identityFile, "identity-file", "", "SSH private key file")
@@ -84,18 +84,13 @@ func newClusterEnrollCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 
 func runClusterEnroll(ctx context.Context, opts enrollOptions, stdout, stderr io.Writer) error {
 	_ = stderr
-	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
-		SourcePath: opts.sourcePath, KatlctlVersion: version, KatlctlCommit: commit, CreatedBy: "katlctl cluster enroll",
-	})
+	config, err := loadKatlConfig(opts.configInput, "katlctl cluster enroll", configbundle.PlanningInputs{})
 	if err != nil {
-		return fmt.Errorf("compile cluster config: %w", err)
+		return err
 	}
-	bundle, err := configbundle.ReadBundle(bytes.NewReader(archive), result.Digest)
-	if err != nil {
-		return fmt.Errorf("read compiled cluster config: %w", err)
-	}
+	bundle := config.Bundle
 	inv := bundle.Manifest.Cluster.BootstrapInventory
-	configPath := strings.TrimSpace(opts.configPath)
+	configPath := strings.TrimSpace(opts.contextPath)
 	if configPath == "" {
 		configPath, err = workstation.ConfigPath()
 		if err != nil {

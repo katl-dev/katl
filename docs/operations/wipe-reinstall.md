@@ -19,9 +19,9 @@ before accepting the operation.
   cluster.
 
 After enrollment, the current workstation context is the normal topology and
-credential source. Pass a retained `ClusterConfig` when operating without an
-enrolled context. `--config-bundle` remains available for PXE/offline material
-and `--inventory` for expert recovery tooling.
+credential source. Pass a retained `ClusterConfig` or PXE/offline config bundle
+through `--config` when operating without an enrolled context. `--inventory`
+remains available for expert recovery tooling.
 
 ## Plan a Whole-Cluster Wipe
 
@@ -51,7 +51,7 @@ and `result: succeeded`. Treat `recoveryRequired: true` as a stop condition.
 Single-node wipe coordinates Kubernetes Node cleanup before the node-local reset:
 
 ```sh
-katlctl node wipe worker-1 ./cluster.yaml --plan
+katlctl node wipe worker-1 --config ./cluster.yaml --plan
 ```
 
 After enrollment, the workstation context supplies topology and credentials, so

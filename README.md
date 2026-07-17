@@ -172,7 +172,7 @@ When exactly one installer is waiting, no URL needs to be copied from the
 console:
 
 ```sh
-katlctl install apply ./cluster.yaml --node cp-1
+katlctl install apply --config ./cluster.yaml --node cp-1
 ```
 
 With multiple waiting installers, select the intended URL from discovery with
@@ -197,13 +197,13 @@ cluster source. This retrieves each distinct agent token, stores it privately,
 verifies the management API, and creates the current workstation context:
 
 ```sh
-katlctl cluster enroll ./cluster.yaml
+katlctl cluster enroll --config ./cluster.yaml
 ```
 
 Then bootstrap without repeating endpoints or credential files:
 
 ```sh
-katlctl cluster bootstrap ./cluster.yaml \
+katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1 \
   --kubeconfig-out ./kubeconfig \
   --overwrite-kubeconfig
@@ -220,7 +220,7 @@ kubeconfig to the operator.
 optional plan contacts the selected node but does not accept an operation:
 
 ```sh
-katlctl node apply ./cluster.yaml --node cp-1 --plan
+katlctl node apply --config ./cluster.yaml --node cp-1 --plan
 ```
 
 Run the command without `--plan` to apply it. `katlctl` derives config versions,

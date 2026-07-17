@@ -267,7 +267,7 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", sourcePath,
+		"install", "apply", "--config", sourcePath,
 		"--endpoint", ts.URL,
 		"--no-wait",
 	}, &stdout, &stderr)
@@ -317,7 +317,7 @@ func TestInstallApplyAcceptsGeneratedConfigByAddress(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	if err := run(context.Background(), []string{
-		"install", "apply", outputPath,
+		"install", "apply", "--config", outputPath,
 		"--endpoint", ts.URL,
 		"--node", "192.0.2.11",
 		"--no-wait",
@@ -409,10 +409,10 @@ func TestInstallApplyHelpKeepsBundleInternal(t *testing.T) {
 		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
 	}
 	help := stdout.String()
-	if !strings.Contains(help, "katlctl install apply SOURCE") {
-		t.Fatalf("help does not advertise source input:\n%s", help)
+	if !strings.Contains(help, "katlctl install apply --config cluster.yaml") || !strings.Contains(help, "--config string") {
+		t.Fatalf("help does not advertise unified config input:\n%s", help)
 	}
-	for _, hiddenDetail := range []string{"--config-bundle", "--token", "--token-file"} {
+	for _, hiddenDetail := range []string{"--config-bundle", "--source", "--token", "--token-file"} {
 		if strings.Contains(help, hiddenDetail) {
 			t.Fatalf("help exposes %q:\n%s", hiddenDetail, help)
 		}
@@ -449,7 +449,7 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", sourcePath,
+		"install", "apply", "--config", sourcePath,
 		"--endpoint", ts.URL,
 		"--node", "cp-1",
 		"--timeout", "5s",
@@ -486,7 +486,7 @@ func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", sourcePath, "--endpoint", ts.URL,
+		"install", "apply", "--config", sourcePath, "--endpoint", ts.URL,
 		"--node", "cp-1", "--timeout", "5s",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "failed-before-mutation") || !strings.Contains(err.Error(), "target disk was not found") {
@@ -508,7 +508,7 @@ func TestInstallApplyValidatesLocallyBeforeNetwork(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", sourcePath, "--endpoint", ts.URL,
+		"install", "apply", "--config", sourcePath, "--endpoint", ts.URL,
 		"--node", "missing-node", "--no-wait",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "missing-node") {
@@ -538,7 +538,7 @@ func TestInstallApplySendsNoAuthorization(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", sourcePath, "--endpoint", ts.URL,
+		"install", "apply", "--config", sourcePath, "--endpoint", ts.URL,
 		"--node", "cp-1", "--no-wait",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -592,7 +592,7 @@ func TestInstallApplyRejectsUnavailableStatusAfterSubmission(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"install", "apply", sourcePath, "--endpoint", ts.URL,
+		"install", "apply", "--config", sourcePath, "--endpoint", ts.URL,
 		"--node", "cp-1", "--timeout", "3s",
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "became unavailable") || !strings.Contains(err.Error(), "Partition") {
