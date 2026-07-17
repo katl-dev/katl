@@ -59,6 +59,8 @@ type VMConfig struct {
 	SerialHooks       []SerialHook
 	VSock             VSockConfig
 	Agent             AgentControlConfig
+	DomainMetadata    string
+	PersistentSerial  bool
 }
 
 type SerialHook struct {
@@ -981,20 +983,22 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	domainName := "katl-" + clean(result.RunID)
 	macAddress := strings.TrimSpace(config.Network.MAC)
 	domainXML, err := libvirtDomainXML(libvirtDomain{
-		Name:        domainName,
-		Accel:       accel,
-		RAMMiB:      config.RAMMiB,
-		CPUs:        config.CPUs,
-		OVMFCode:    firstPath(!directKernel, config.OVMFCode),
-		OVMFVars:    firstPath(!directKernel, filepath.Join(result.VMDir, "OVMF_VARS.fd")),
-		Kernel:      config.Boot.Kernel,
-		Initrd:      config.Boot.Initrd,
-		CommandLine: strings.Join(config.Boot.CommandLine, " "),
-		SerialLog:   serial,
-		Network:     libvirtNetwork,
-		MACAddress:  macAddress,
-		Disks:       disks,
-		VSock:       vsock,
+		Name:             domainName,
+		Accel:            accel,
+		RAMMiB:           config.RAMMiB,
+		CPUs:             config.CPUs,
+		OVMFCode:         firstPath(!directKernel, config.OVMFCode),
+		OVMFVars:         firstPath(!directKernel, filepath.Join(result.VMDir, "OVMF_VARS.fd")),
+		Kernel:           config.Boot.Kernel,
+		Initrd:           config.Boot.Initrd,
+		CommandLine:      strings.Join(config.Boot.CommandLine, " "),
+		SerialLog:        serial,
+		Network:          libvirtNetwork,
+		MACAddress:       macAddress,
+		Disks:            disks,
+		VSock:            vsock,
+		Metadata:         first(config.DomainMetadata, "katl/vmtest"),
+		PersistentSerial: config.PersistentSerial,
 	})
 	if err != nil {
 		return VMPlan{}, fmt.Errorf("marshal libvirt domain XML: %w", err)
@@ -1105,6 +1109,12 @@ func prepareVM(plan VMPlan, config VMConfig) error {
 	return os.WriteFile(plan.CommandFile, []byte(commandLine(plan.VirshPath, plan.Args)+"\n"), 0o644)
 }
 
+// PrepareVM materializes a planned VM's firmware state, generated boot media,
+// domain XML, and launch command without defining or starting the domain.
+func PrepareVM(plan VMPlan, config VMConfig) error {
+	return prepareVM(plan, config)
+}
+
 func normalizeVM(config VMConfig) VMConfig {
 	if config.KVM == "" {
 		config.KVM = KVMAuto
@@ -1178,20 +1188,22 @@ type libvirtDisk struct {
 }
 
 type libvirtDomain struct {
-	Name        string
-	Accel       string
-	RAMMiB      int
-	CPUs        int
-	OVMFCode    string
-	OVMFVars    string
-	Kernel      string
-	Initrd      string
-	CommandLine string
-	SerialLog   string
-	Network     string
-	MACAddress  string
-	Disks       []libvirtDisk
-	VSock       VSockPlan
+	Name             string
+	Accel            string
+	RAMMiB           int
+	CPUs             int
+	OVMFCode         string
+	OVMFVars         string
+	Kernel           string
+	Initrd           string
+	CommandLine      string
+	SerialLog        string
+	Network          string
+	MACAddress       string
+	Disks            []libvirtDisk
+	VSock            VSockPlan
+	Metadata         string
+	PersistentSerial bool
 }
 
 type domainXML struct {
@@ -1316,7 +1328,13 @@ type domainDiskTarget struct {
 type domainSerial struct {
 	Type   string              `xml:"type,attr"`
 	Source *domainSerialSource `xml:"source,omitempty"`
+	Log    *domainSerialLog    `xml:"log,omitempty"`
 	Target domainSerialTarget  `xml:"target"`
+}
+
+type domainSerialLog struct {
+	File   string `xml:"file,attr"`
+	Append string `xml:"append,attr"`
 }
 
 type domainSerialSource struct {
@@ -1474,7 +1492,7 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	doc := domainXML{
 		Type:     domain.Accel,
 		Name:     domain.Name,
-		Metadata: domainMetadata{VMTest: domainVMTest{Value: "katl/vmtest"}},
+		Metadata: domainMetadata{VMTest: domainVMTest{Value: domain.Metadata}},
 		Memory:   domainMemory{Unit: "MiB", Value: domain.RAMMiB},
 		VCPU:     domain.CPUs,
 		OS: domainOS{
@@ -1511,6 +1529,9 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	}
 	if strings.TrimSpace(domain.MACAddress) != "" {
 		doc.Devices.Interface.MAC = &domainInterfaceMAC{Address: strings.TrimSpace(domain.MACAddress)}
+	}
+	if domain.PersistentSerial {
+		doc.Devices.Serial.Log = &domainSerialLog{File: domain.SerialLog, Append: "on"}
 	}
 	for _, disk := range domain.Disks {
 		device := disk.Device

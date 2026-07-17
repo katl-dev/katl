@@ -101,6 +101,34 @@ checkout so local source changes are used immediately:
 nix develop --command katlctl --help
 ```
 
+`katldev` owns persistent developer workflows. To boot the current checkout's
+installer ISO in a reusable libvirt VM:
+
+```sh
+katldev installer start
+```
+
+The command cache-checks and builds the self-contained installer ISO, waits for
+the installer API, and prints its address plus matching `katlctl config init`
+and `install apply` commands. The VM and its 32 GiB target disk live under
+`_build/katldev`; they are not owned or cleaned up by automated vmtest runs.
+
+Use the same VM for repeated manual install and management checks:
+
+```sh
+katldev installer status
+katldev installer console
+katldev installer stop
+katldev installer start
+katldev installer reset
+```
+
+`reset` first prepares the current checkout's ISO, then destroys the managed
+domain, replaces its target disk and UEFI variables, and boots a fresh
+installer. It needs no destructive confirmation because it can only address
+the checkout-scoped development VM. Pass `--no-build` only when deliberately
+reusing the existing `_build/mkosi/katl-installer.iso`.
+
 Build current artifacts through the supported container wrapper:
 
 ```sh

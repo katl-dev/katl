@@ -61,6 +61,31 @@ func TestVMPlan(t *testing.T) {
 	}
 }
 
+func TestVMPlanSupportsIndependentDomainOwnershipAndPersistentSerial(t *testing.T) {
+	result, config := vmFixture(t)
+	config.DomainMetadata = "katl/katldev-installer"
+	config.PersistentSerial = true
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	for _, want := range []string{
+		`<vmtest xmlns="https://katlos.io/xmlns/vmtest/1">katl/katldev-installer</vmtest>`,
+		`<log file="` + plan.SerialLog + `" append="on"></log>`,
+	} {
+		if !strings.Contains(plan.DomainXML, want) {
+			t.Fatalf("domain XML missing %q:\n%s", want, plan.DomainXML)
+		}
+	}
+	if strings.Contains(plan.DomainXML, ">katl/vmtest</vmtest>") {
+		t.Fatalf("independently owned VM uses automated vmtest metadata:\n%s", plan.DomainXML)
+	}
+}
+
 func TestVMLibvirtNetworkFromConfigAndEnv(t *testing.T) {
 	result, config := vmFixture(t)
 	config.LibvirtNetwork = "katl-net"

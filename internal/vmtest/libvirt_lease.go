@@ -65,6 +65,9 @@ func DiscoverLibvirtLease(ctx context.Context, virsh, uri, network, mac string) 
 
 func parseLibvirtLease(output []byte, mac string) (LibvirtLease, bool) {
 	want := strings.ToLower(strings.TrimSpace(mac))
+	var selected LibvirtLease
+	var selectedExpiry time.Time
+	found := false
 	for _, line := range strings.Split(string(output), "\n") {
 		fields := strings.Fields(line)
 		for i, field := range fields {
@@ -78,12 +81,21 @@ func parseLibvirtLease(output []byte, mac string) (LibvirtLease, bool) {
 			if ip := net.ParseIP(address); ip == nil {
 				continue
 			}
-			return LibvirtLease{
+			candidate := LibvirtLease{
 				MACAddress: strings.TrimSpace(mac),
 				IPAddress:  address,
 				RawLine:    strings.TrimSpace(line),
-			}, true
+			}
+			expiry := time.Time{}
+			if i >= 2 {
+				expiry, _ = time.ParseInLocation("2006-01-02 15:04:05", fields[i-2]+" "+fields[i-1], time.Local)
+			}
+			if !found || expiry.After(selectedExpiry) || expiry.IsZero() {
+				selected = candidate
+				selectedExpiry = expiry
+				found = true
+			}
 		}
 	}
-	return LibvirtLease{}, false
+	return selected, found
 }

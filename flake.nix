@@ -23,6 +23,15 @@
           }
           exec ${pkgs.go}/bin/go run "$repo_root/cmd/katlctl" "$@"
         '';
+      katldevFor =
+        pkgs:
+        pkgs.writeShellScriptBin "katldev" ''
+          repo_root="$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)" || {
+            echo "error: katldev must be run from the Katl checkout" >&2
+            exit 1
+          }
+          exec ${pkgs.go}/bin/go run "$repo_root/cmd/katldev" "$@"
+        '';
       shellFor =
         pkgs:
         pkgs.mkShell {
@@ -53,7 +62,10 @@
               xorriso
               zstd
             ])
-            ++ [ (katlctlFor pkgs) ];
+            ++ [
+              (katlctlFor pkgs)
+              (katldevFor pkgs)
+            ];
 
           shellHook = ''
             export TMPDIR="''${TMPDIR:-/tmp}"
