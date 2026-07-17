@@ -1290,8 +1290,8 @@ type nodeConfigInputOptions struct {
 }
 
 type configValidationNode struct {
-	Name       string `json:"name"`
-	SystemRole string `json:"systemRole"`
+	Name         string `json:"name"`
+	ControlPlane bool   `json:"controlPlane,omitempty"`
 }
 
 type configValidationReport struct {
@@ -1326,7 +1326,7 @@ func runConfigValidate(sourcePath string, stdout, stderr io.Writer) error {
 	}
 	nodes := make([]configValidationNode, 0, len(result.Manifest.Nodes))
 	for _, node := range result.Manifest.Nodes {
-		nodes = append(nodes, configValidationNode{Name: node.Name, SystemRole: node.SystemRole})
+		nodes = append(nodes, configValidationNode{Name: node.Name, ControlPlane: node.SystemRole == string(inventory.RoleControlPlane)})
 	}
 	report := configValidationReport{
 		APIVersion:  configbundle.APIVersion,

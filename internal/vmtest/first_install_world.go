@@ -1132,9 +1132,8 @@ func firstControlPlaneName(spec NodeSpec) string {
 }
 
 func firstInstallWorldSourceNode(name string, role NodeRole, diskID string) map[string]any {
-	return map[string]any{
-		"name":       name,
-		"systemRole": string(role),
+	node := map[string]any{
+		"name": name,
 		"install": map[string]any{
 			"targetDisk": map[string]any{
 				"byID":       diskID,
@@ -1142,6 +1141,10 @@ func firstInstallWorldSourceNode(name string, role NodeRole, diskID string) map[
 			},
 		},
 	}
+	if role == ControlPlane {
+		node["controlPlane"] = true
+	}
+	return node
 }
 
 func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex) (string, error) {

@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,9 +60,6 @@ type schemaBuilder struct {
 func (builder *schemaBuilder) schemaFor(t reflect.Type) schemaObject {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
-	}
-	if t == reflect.TypeOf(inventory.SystemRole("")) {
-		return schemaObject{Type: "string", Enum: []string{string(inventory.RoleControlPlane), string(inventory.RoleWorker)}}
 	}
 	switch t.Kind() {
 	case reflect.Struct:

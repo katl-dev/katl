@@ -84,9 +84,10 @@ selected KubeadmConfig name
 canonical desired config SHA-256
 ```
 
-The name is compiled from `systemRole`; it is not an operator-authored
-ClusterConfig reference. When `spec.kubernetes.kubeadm` is present, the desired
-digest includes its validated and role-selected native documents and patches.
+The name is compiled from the node role derived from `controlPlane`; it is not
+an operator-authored ClusterConfig reference. When `spec.kubernetes.kubeadm` is
+present, the desired digest includes its validated and role-selected native
+documents and patches.
 
 The operation accepts only a config selected by the active generation. It does
 not accept an arbitrary path or inline replacement YAML. Every participating

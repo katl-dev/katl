@@ -245,7 +245,8 @@ they must be included in the submitted operation request and recorded in the
 relevant node-local operation records, with any invocation summary linking the same
 values, so diagnostics show what was actually used.
 
-`systemRole` is the only source of desired cluster node role:
+The compiled `systemRole` derives solely from the ClusterConfig
+`controlPlane` choice:
 
 ```text
 control-plane

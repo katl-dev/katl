@@ -12,7 +12,7 @@ compiler concepts and forced operators to understand merge precedence.
 ## Superseding Decision
 
 ClusterConfig now has only shared `spec.defaults` and flat `spec.nodes[]`
-entries. Katl selects role profiles internally from `systemRole`. Node classes,
+entries. Katl selects role profiles internally from `controlPlane`. Node classes,
 system-role default layers, the `overrides` wrapper, and platform API endpoint
 helpers are outside the supported v1alpha1 contract.
 

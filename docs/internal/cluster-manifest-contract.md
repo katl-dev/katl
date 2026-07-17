@@ -37,7 +37,7 @@ There are two authoring levels:
 
 There are no node classes, system-role default layers, or `overrides` wrapper.
 Katl selects its control-plane and worker kubeadm profiles internally from
-`systemRole`. Operators who need a native kubeadm setting that Katl does not
+`controlPlane`. Operators who need a native kubeadm setting that Katl does not
 model may supply one bounded cluster-wide kubeadm file and optional patch
 directory. They never name or select the generated profiles.
 
@@ -83,7 +83,9 @@ spec:
 
   nodes:
     - name: cp-1
-      systemRole: control-plane
+      # Set to true for nodes that join the Kubernetes control plane.
+      # Omission means worker.
+      controlPlane: true
       bootstrap:
         address: 192.0.2.11
       install:
@@ -103,6 +105,10 @@ enrollment, initial Kubernetes bootstrap, and the initial workstation context.
 It need not be a permanent node identity, but it must remain reachable through
 those steps. For DHCP nodes, use a reservation or update the workstation
 context after enrollment when the address changes.
+
+`controlPlane: true` is the only public role choice. Omission or `false` means
+worker, and at least one node must set it to true. Katl derives its internal
+system role, kubeadm material, and lifecycle ordering from this value.
 
 Nodes use a generated DHCP systemd-networkd profile when neither defaults nor
 the node supplies native networkd files. Default and node files merge by file
@@ -153,9 +159,9 @@ host paths, symlinks, traversal, and a kubeadm version that conflicts with
 When a ClusterConfig is rendered for an installed node, Katl includes every
 supported desired field in the node change request. Runtime-live fields such as
 SSH keys and networkd files can be applied directly. Operation-only fields such
-as system role and role-dependent Kubernetes bootstrap state remain visible to
-the planner and produce an explicit lifecycle action or refusal; the renderer
-must not silently omit them.
+as control-plane participation and role-dependent Kubernetes bootstrap state
+remain visible to the planner and produce an explicit lifecycle action or
+refusal; the renderer must not silently omit them.
 
 Changing bounded native kubeadm input updates desired role-dependent bootstrap
 state. Normal config apply may stage and report that state, but making a running
@@ -173,6 +179,7 @@ Katl v1alpha1 rejects aliases and speculative mechanisms including:
 
 ```text
 nodes[].overrides
+nodes[].systemRole
 spec.systemRoleDefaults
 spec.nodeClasses and nodes[].nodeClass
 spec.platformAPIEndpoint

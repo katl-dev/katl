@@ -14,9 +14,9 @@ configuration for generated confext updates. It builds on
 
 Katl can render Katl-native node configuration into generated confext for first
 install. After the node is installed, the same rendering model must support
-changed cluster defaults, systemRole-level configuration, and per-node
-overrides without turning Katl into a general-purpose configuration manager or
-a Kubernetes lifecycle controller.
+changed cluster defaults and flat per-node configuration without turning Katl
+into a general-purpose configuration manager or a Kubernetes lifecycle
+controller.
 
 Runtime configuration input is security-sensitive because it can change
 effective `/etc` content, restart host services, and affect kubeadm-ready

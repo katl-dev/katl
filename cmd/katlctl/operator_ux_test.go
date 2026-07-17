@@ -49,13 +49,16 @@ func TestConfigInitEmitsStarterClusterConfig(t *testing.T) {
 	if got := source.Spec.Nodes[0].Bootstrap.Address; got != "192.0.2.11" {
 		t.Fatalf("generated bootstrap address = %q", got)
 	}
+	if !source.Spec.Nodes[0].ControlPlane || source.Spec.Nodes[1].ControlPlane {
+		t.Fatalf("generated control-plane choices = %#v", source.Spec.Nodes)
+	}
 	rendered := stdout.String()
 	for _, internalDefault := range []string{"katlosImage:", "wipeTarget:", "systemRoleDefaults:", "kubeadmConfigs:", "nodeClasses:", "overrides:", "bundle:", "catalogRef:", "hostname:", "access:"} {
 		if strings.Contains(rendered, internalDefault) {
 			t.Fatalf("generated config contains internal default %q:\n%s", internalDefault, rendered)
 		}
 	}
-	for _, guidance := range []string{"# controlPlaneEndpoint:", "# Nodes use DHCP by default"} {
+	for _, guidance := range []string{"# controlPlaneEndpoint:", "# Set controlPlane: true", "# Nodes use DHCP by default"} {
 		if !strings.Contains(rendered, guidance) {
 			t.Fatalf("generated config is missing guidance %q:\n%s", guidance, rendered)
 		}

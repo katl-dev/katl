@@ -150,6 +150,8 @@ metadata:
 spec:
   # Stable Kubernetes API endpoint for multi-control-plane clusters.
   # controlPlaneEndpoint: api.home.arpa:6443
+  # Set controlPlane: true on nodes that join the Kubernetes control plane.
+  # Omission means worker.
   # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.
   kubernetes:
     version: v1.36.1
@@ -160,14 +162,13 @@ spec:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
   nodes:
     - name: cp-1
-      systemRole: control-plane
+      controlPlane: true
       install:
         targetDisk:
           byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
       bootstrap:
         address: 192.0.2.11
     - name: worker-1
-      systemRole: worker
       install:
         targetDisk:
           byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT

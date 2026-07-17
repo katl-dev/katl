@@ -14,7 +14,7 @@ The single KatlOS payload contract is defined in
 
 Installer boot artifacts are generic per Katl build, architecture, and installer
 version. They must not be rebuilt for each node, cluster, address, target disk,
-systemRole, bootstrap profile, bootstrap token, or KatlOS image URL.
+control-plane choice, bootstrap profile, bootstrap token, or KatlOS image URL.
 
 They may contain:
 

@@ -275,7 +275,7 @@ always-on endpoint controller by default.
 
 Optional endpoint helpers can be supported later through app sysexts and bounded
 native inputs. They must still be explicit user choices with tests, status, and
-rollback behavior. They do not become hidden behavior behind `systemRole`.
+rollback behavior. They do not become hidden behavior behind `controlPlane`.
 
 ## Readiness Gates
 

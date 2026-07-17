@@ -77,13 +77,13 @@ type SourceSpec struct {
 }
 
 type SourceNode struct {
-	Name       string                  `yaml:"name" json:"name"`
-	SystemRole inventory.SystemRole    `yaml:"systemRole" json:"systemRole"`
-	Identity   SourceIdentity          `yaml:"identity,omitempty" json:"identity,omitempty"`
-	Networkd   manifest.NetworkdConfig `yaml:"networkd,omitempty" json:"networkd,omitempty"`
-	Install    SourceInstallLayer      `yaml:"install,omitempty" json:"install,omitempty"`
-	Kubernetes SourceKubernetesLayer   `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Bootstrap  SourceBootstrapLayer    `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
+	Name         string                  `yaml:"name" json:"name"`
+	ControlPlane bool                    `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
+	Identity     SourceIdentity          `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Networkd     manifest.NetworkdConfig `yaml:"networkd,omitempty" json:"networkd,omitempty"`
+	Install      SourceInstallLayer      `yaml:"install,omitempty" json:"install,omitempty"`
+	Kubernetes   SourceKubernetesLayer   `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Bootstrap    SourceBootstrapLayer    `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
 }
 
 type SourceNodeLayer struct {
@@ -342,23 +342,34 @@ func DecodeSource(reader io.Reader) (SourceConfig, error) {
 
 func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Config, error) {
 	source = defaultSource(source)
+	if len(source.Spec.Nodes) == 0 {
+		return clusterplan.Config{}, fmt.Errorf("spec.nodes must not be empty")
+	}
 	selection, err := lowerKubernetesSelection(source, planning.KubernetesBundle)
 	if err != nil {
 		return clusterplan.Config{}, err
 	}
 	nodes := make([]clusterplan.Node, 0, len(source.Spec.Nodes))
+	hasControlPlane := false
 	for _, node := range source.Spec.Nodes {
+		role := sourceNodeRole(node)
+		if role == inventory.RoleControlPlane {
+			hasControlPlane = true
+		}
 		layer := lowerNodeLayer(sourceNodeLayer(node))
 		layer.Bootstrap.Address = strings.TrimSpace(node.Bootstrap.Address)
 		if access, ok := planning.BootstrapAccess[node.Name]; ok {
 			layer.Bootstrap.Access = access
 		}
-		layer.Kubernetes.KubeadmConfigRef = defaultKubeadmConfigRef(node.SystemRole)
+		layer.Kubernetes.KubeadmConfigRef = defaultKubeadmConfigRef(role)
 		nodes = append(nodes, clusterplan.Node{
 			Name:       node.Name,
-			SystemRole: node.SystemRole,
+			SystemRole: role,
 			Overrides:  layer,
 		})
+	}
+	if !hasControlPlane {
+		return clusterplan.Config{}, fmt.Errorf("spec.nodes must include at least one node with controlPlane: true")
 	}
 	return clusterplan.Config{
 		APIVersion: clusterplan.APIVersion,
@@ -418,6 +429,13 @@ func sourceNodeLayer(node SourceNode) SourceNodeLayer {
 	}
 }
 
+func sourceNodeRole(node SourceNode) inventory.SystemRole {
+	if node.ControlPlane {
+		return inventory.RoleControlPlane
+	}
+	return inventory.RoleWorker
+}
+
 func defaultKubeadmConfigRef(role inventory.SystemRole) string {
 	switch role {
 	case inventory.RoleControlPlane:
@@ -438,7 +456,7 @@ func defaultSource(source SourceConfig) SourceConfig {
 	spec.Nodes = append([]SourceNode(nil), spec.Nodes...)
 	if strings.TrimSpace(spec.ControlPlaneEndpoint) == "" {
 		for _, node := range spec.Nodes {
-			if node.SystemRole == inventory.RoleControlPlane {
+			if node.ControlPlane {
 				if address := strings.TrimSpace(node.Bootstrap.Address); address != "" {
 					spec.ControlPlaneEndpoint = net.JoinHostPort(address, "6443")
 					break

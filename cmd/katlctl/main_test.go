@@ -466,7 +466,7 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	if strings.Contains(stdout.String(), "Digest") || strings.Contains(stdout.String(), "artifactVersion") {
 		t.Fatalf("report exposes integrity plumbing = %s", stdout.String())
 	}
-	if len(report.Nodes) != 1 || report.Nodes[0] != (configValidationNode{Name: "cp-1", SystemRole: "control-plane"}) {
+	if len(report.Nodes) != 1 || report.Nodes[0] != (configValidationNode{Name: "cp-1", ControlPlane: true}) {
 		t.Fatalf("resolved nodes = %#v", report.Nodes)
 	}
 
@@ -2481,7 +2481,7 @@ spec:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
   nodes:
     - name: cp-1
-      systemRole: control-plane
+      controlPlane: true
       bootstrap:
         address: 10.0.0.11
       install:
