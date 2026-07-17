@@ -434,19 +434,53 @@ build_default_artifacts() {
 	for target in "${targets[@]}"; do
         local log
         local cache_label
+        local -a build_command
         log="$(mktemp)"
+        case "$target" in
+            build-kubernetes-sysext)
+                build_command=("$repo_root/scripts/build-kubernetes-sysext")
+                ;;
+            build-kubernetes-upgrade-sysext)
+                build_command=(
+                    env
+                    "KATL_KUBERNETES_PAYLOAD_VERSION=${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}"
+                    "KATL_KUBERNETES_KUBEADM_VERSION=${KATL_KUBERNETES_UPGRADE_KUBEADM_VERSION:-0:1.36.1-150500.1.1}"
+                    "KATL_KUBERNETES_KUBELET_VERSION=${KATL_KUBERNETES_UPGRADE_KUBELET_VERSION:-0:1.36.1-150500.1.1}"
+                    "KATL_KUBERNETES_KUBECTL_VERSION=${KATL_KUBERNETES_UPGRADE_KUBECTL_VERSION:-0:1.36.1-150500.1.1}"
+                    "$repo_root/scripts/build-kubernetes-sysext"
+                    --output katl-kubernetes-upgrade
+                )
+                ;;
+            build-kubernetes-upgrade-source-sysext)
+                build_command=(
+                    env
+                    "KATL_KUBERNETES_PAYLOAD_VERSION=${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}"
+                    "KATL_KUBERNETES_ARTIFACT_REVISION=${KATL_KUBERNETES_UPGRADE_SOURCE_ARTIFACT_REVISION:-3}"
+                    "KATL_KUBERNETES_KUBEADM_VERSION=${KATL_KUBERNETES_UPGRADE_SOURCE_KUBEADM_VERSION:-0:1.36.0-150500.1.1}"
+                    "KATL_KUBERNETES_KUBELET_VERSION=${KATL_KUBERNETES_UPGRADE_SOURCE_KUBELET_VERSION:-0:1.36.0-150500.1.1}"
+                    "KATL_KUBERNETES_KUBECTL_VERSION=${KATL_KUBERNETES_UPGRADE_SOURCE_KUBECTL_VERSION:-0:1.36.0-150500.1.1}"
+                    "$repo_root/scripts/build-kubernetes-sysext"
+                )
+                ;;
+            *)
+                build_command=("$repo_root/scripts/mkosi" "$target")
+                ;;
+        esac
 		cache_label="$(mkosi_cache_label_for_target "$target")"
-		printf 'vmtest building current repo artifact: scripts/mkosi %s\n' "$target" >&2
+        printf 'vmtest building current repo artifact:' >&2
+        printf ' %q' "${build_command[@]}" >&2
+        printf '\n' >&2
 		set +e
-		KATL_VMTEST_IMAGE_SUPPORT=1 "$repo_root/scripts/mkosi" "$target" 2>&1 | tee "$log" >&2
+		KATL_VMTEST_IMAGE_SUPPORT=1 "${build_command[@]}" 2>&1 | tee "$log" >&2
 		local -a build_status=("${PIPESTATUS[@]}")
 		set -e
 		if [[ "${build_status[0]}" -ne 0 || "${build_status[1]}" -ne 0 ]]; then
-			setup_failures+=("build default vmtest artifact with scripts/mkosi $target failed")
+			setup_failures+=("build default vmtest artifact $target failed")
 			rm -f "$log"
 			return 1
 		fi
-        if grep -q "^mkosi cache hit: ${cache_label} artifacts match the current repo$" "$log"; then
+        if grep -q "^mkosi cache hit: ${cache_label} artifacts match the current repo$" "$log" ||
+            grep -q '^sysext cache hit: .* artifacts match the current inputs$' "$log"; then
             artifact_build_actions["$target"]="cache-resolved"
         else
             artifact_build_actions["$target"]="built"

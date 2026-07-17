@@ -396,6 +396,10 @@ func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
 `)
+	writeExecutable(t, filepath.Join(repo, "scripts", "build-kubernetes-sysext"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${*:-default}" >> "$KATL_FAKE_SYSEXT_ARGS"
+`)
 	writeExecutable(t, filepath.Join(repo, "scripts", "vmtest-exec"), `#!/usr/bin/env bash
 set -euo pipefail
 export KATL_VMTEST_RUN=1
@@ -409,6 +413,7 @@ exec "$@"
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
+	sysextArgsPath := filepath.Join(tmp, "sysext-args.txt")
 	env := appendHostEnv(os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
@@ -416,6 +421,7 @@ exec "$@"
 		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
 		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
 		"KATL_FAKE_MKOSI_ARGS="+mkosiArgsPath,
+		"KATL_FAKE_SYSEXT_ARGS="+sysextArgsPath,
 		"KATL_VMTEST_RUN_ID=run-build-default",
 		"KATL_VMTEST_RUN_DIR="+runDir,
 		"TMPDIR="+tmp,
@@ -441,8 +447,11 @@ exec "$@"
 	}
 
 	mkosiArgs := readLines(t, mkosiArgsPath)
-	if !reflect.DeepEqual(mkosiArgs, []string{"build-katlos-install-image", "build-katlos-upgrade-image", "build-kubernetes-sysext", "build-installer-iso"}) {
+	if !reflect.DeepEqual(mkosiArgs, []string{"build-katlos-install-image", "build-katlos-upgrade-image", "build-installer-iso"}) {
 		t.Fatalf("mkosi args = %#v", mkosiArgs)
+	}
+	if sysextArgs := readLines(t, sysextArgsPath); !reflect.DeepEqual(sysextArgs, []string{"default"}) {
+		t.Fatalf("sysext args = %#v", sysextArgs)
 	}
 	goArgs := readLines(t, goArgsPath)
 	if !reflect.DeepEqual(goArgs, []string{
@@ -486,6 +495,10 @@ case "$*" in
     printf 'mkosi cache hit: katlos-install-image artifacts match the current repo\n'
     ;;
 esac
+`)
+	writeExecutable(t, filepath.Join(repo, "scripts", "build-kubernetes-sysext"), `#!/usr/bin/env bash
+set -euo pipefail
+printf 'sysext cache hit: katl-kubernetes artifacts match the current inputs\n'
 `)
 	writeExecutable(t, filepath.Join(repo, "scripts", "vmtest-exec"), `#!/usr/bin/env bash
 set -euo pipefail

@@ -55,8 +55,11 @@ updates, GUI tools, and end-user asset publishing.
 
 ## Required For The Current Loop
 
-- `scripts/mkosi`: builds installer, runtime, Kubernetes sysext, and KatlOS
+- `scripts/mkosi`: builds installer, runtime, and KatlOS
   image artifacts through the containerized mkosi builder.
+- `scripts/build-kubernetes-sysext`: explicitly builds one Kubernetes sysext
+  from the selected release manifest and package versions. VM upgrade fixtures
+  call the same builder with explicit version and output inputs.
 - `scripts/vmtest-run`: runs enabled VM, first-install, installed-runtime, and
   multinode kubeadm smokes through a runner-created world.
 - `libvirt`/`virsh`: defines, starts, observes, and tears down local VM test
@@ -66,10 +69,11 @@ updates, GUI tools, and end-user asset publishing.
 - `git commit-wrapped`: required for agent-authored commits.
 
 The supported top-level script surface is intentionally small. Use
-`scripts/mkosi` for local build artifacts and `scripts/vmtest-run` for enabled
-test worlds. Other scripts are compatibility wrappers, debug aids, or temporary
-validators for scaffolding work; do not treat the whole `scripts/` directory as
-the public developer interface.
+`scripts/mkosi` for KatlOS image artifacts,
+`scripts/build-kubernetes-sysext` for Kubernetes payload artifacts, and
+`scripts/vmtest-run` for enabled test worlds. Other scripts are compatibility
+wrappers, debug aids, or temporary validators for scaffolding work; do not
+treat the whole `scripts/` directory as the public developer interface.
 
 ## Nix Dev Shell
 

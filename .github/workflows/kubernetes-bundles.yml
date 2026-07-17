@@ -166,7 +166,7 @@ jobs:
         shell: bash
         run: |
           scripts/mkosi build-runtime
-          scripts/mkosi build-kubernetes-sysext
+          scripts/build-kubernetes-sysext
 
       - name: Verify built runtime and Kubernetes sysext
         shell: bash

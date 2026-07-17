@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+manifest="${KATL_KUBERNETES_MANIFEST:-$repo_root/mkosi.profiles/kubernetes-sysext/kubernetes.env}"
+output_name="katl-kubernetes"
+use_cache=1
+
+usage() {
+    echo "usage: scripts/build-kubernetes-sysext [--output NAME] [--no-cache]" >&2
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --output)
+            [[ $# -ge 2 ]] || {
+                usage
+                exit 2
+            }
+            output_name="$2"
+            shift 2
+            ;;
+        --no-cache)
+            use_cache=0
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown Kubernetes sysext build argument: $1" >&2
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+if [[ ! "$output_name" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+    echo "error: --output must be a file basename containing lowercase letters, digits, dots, or dashes" >&2
+    exit 2
+fi
+if [[ ! -f "$manifest" ]]; then
+    echo "error: Kubernetes sysext manifest not found: $manifest" >&2
+    exit 1
+fi
+
+# shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
+# shellcheck disable=SC1090,SC1091
+source "$manifest"
+cd "$repo_root"
+
+profile="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.conf"
+repo_file="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.sandbox/etc/yum.repos.d/kubernetes.repo"
+runtime_artifact="$build_dir/katl-runtime-root.squashfs"
+runtime_metadata="$runtime_artifact.json"
+base_artifact="$build_dir/katl-kubernetes.raw"
+artifact="$build_dir/$output_name.raw"
+stamp="$build_dir/.katl-stamps/kubernetes-sysext-$output_name.sha256"
+build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
+architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
+
+builder_image_identity() {
+    local runtime="${KATL_CONTAINER_RUNTIME:-}"
+    local image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
+    if [[ -z "$runtime" ]]; then
+        if command -v podman >/dev/null 2>&1; then
+            runtime=podman
+        elif command -v docker >/dev/null 2>&1; then
+            runtime=docker
+        else
+            runtime=unavailable
+        fi
+    fi
+    case "$runtime" in
+        docker | podman)
+            "$runtime" image inspect --format '{{.Id}}' "$image" 2>/dev/null || printf '%s\n' "$image"
+            ;;
+        *)
+            printf '%s\n' "$runtime"
+            ;;
+    esac
+}
+
+list_cache_inputs() {
+    {
+        printf '%s\0' \
+            Containerfile.mkosi \
+            containers-policy.json \
+            go.mod \
+            go.sum \
+            scripts/build-kubernetes-sysext \
+            scripts/mkosi
+        git -C "$repo_root" ls-files -z \
+            cmd/katl-mkosi-artifacts \
+            internal/installer/manifest \
+            mkosi.profiles/kubernetes-sysext
+        git -C "$repo_root" ls-files --others --exclude-standard -z -- \
+            cmd/katl-mkosi-artifacts \
+            internal/installer/manifest \
+            mkosi.profiles/kubernetes-sysext
+    } | sort -zu
+}
+
+cache_fingerprint() {
+    local path digest
+    digest="$({
+        printf 'output=%s\n' "$output_name"
+        printf 'builder-image=%s\n' "${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
+        printf 'builder-image-identity=%s\n' "$(builder_image_identity)"
+        printf 'KATL_BUILD_COMMIT=%s\n' "$build_commit"
+        printf 'KATL_VERSION=%s\n' "${KATL_VERSION:-}"
+        printf 'KATL_ARCHITECTURE=%s\n' "$architecture"
+        printf 'KATL_KUBERNETES_MINOR=%s\n' "$KATL_KUBERNETES_MINOR"
+        printf 'KATL_KUBERNETES_REPO_ID=%s\n' "$KATL_KUBERNETES_REPO_ID"
+        printf 'KATL_KUBERNETES_REPO_BASEURL=%s\n' "$KATL_KUBERNETES_REPO_BASEURL"
+        printf 'KATL_KUBERNETES_REPO_GPGKEY=%s\n' "$KATL_KUBERNETES_REPO_GPGKEY"
+        printf 'KATL_KUBERNETES_PAYLOAD_VERSION=%s\n' "$KATL_KUBERNETES_PAYLOAD_VERSION"
+        printf 'KATL_KUBERNETES_ARTIFACT_REVISION=%s\n' "$KATL_KUBERNETES_ARTIFACT_REVISION"
+        printf 'KATL_KUBERNETES_KUBEADM_VERSION=%s\n' "$KATL_KUBERNETES_KUBEADM_VERSION"
+        printf 'KATL_KUBERNETES_KUBELET_VERSION=%s\n' "$KATL_KUBERNETES_KUBELET_VERSION"
+        printf 'KATL_KUBERNETES_KUBECTL_VERSION=%s\n' "$KATL_KUBERNETES_KUBECTL_VERSION"
+        printf 'KATL_KUBERNETES_CRITOOLS_VERSION=%s\n' "$KATL_KUBERNETES_CRITOOLS_VERSION"
+        while IFS= read -r -d "" path; do
+            if [[ -f "$repo_root/$path" ]]; then
+                sha256sum "$repo_root/$path"
+            else
+                printf 'missing %s\n' "$path"
+            fi
+        done < <(list_cache_inputs)
+        if [[ -f "$runtime_metadata" ]]; then
+            sha256sum "$runtime_metadata"
+        else
+            printf 'missing %s\n' "$runtime_metadata"
+        fi
+    } | sha256sum)"
+    printf '%s\n' "${digest%% *}"
+}
+
+artifact_is_valid() {
+    local digest size
+    [[ -f "$artifact" && -f "$artifact.json" && -f "$artifact.sha256" ]] || return 1
+    (cd "$build_dir" && sha256sum --status -c "$(basename "$artifact.sha256")") || return 1
+    digest="$(sha256sum "$artifact")"
+    digest="${digest%% *}"
+    size="$(stat -c %s "$artifact")"
+    jq -e --arg digest "$digest" --argjson size "$size" \
+        '.sha256 == $digest and .sizeBytes == $size' "$artifact.json" >/dev/null
+}
+
+if [[ "$use_cache" == 1 && -f "$stamp" ]] && artifact_is_valid; then
+    current="$(cache_fingerprint)"
+    recorded="$(<"$stamp")"
+    if [[ "$current" == "$recorded" ]]; then
+        printf 'sysext cache hit: %s artifacts match the current inputs\n' "$output_name" >&2
+        exit 0
+    fi
+fi
+
+repo_backup="$(mktemp)"
+profile_backup="$(mktemp)"
+log="$(mktemp)"
+cp "$repo_file" "$repo_backup"
+cp "$profile" "$profile_backup"
+
+restore_build_files() {
+    if [[ -f "$repo_backup" ]]; then
+        cp "$repo_backup" "$repo_file"
+        rm -f "$repo_backup"
+    fi
+    if [[ -f "$profile_backup" ]]; then
+        cp "$profile_backup" "$profile"
+        rm -f "$profile_backup"
+    fi
+}
+trap 'restore_build_files; rm -f "$log"' EXIT
+
+mkdir -p "$(dirname "$repo_file")" "$build_dir"
+cat >"$repo_file" <<EOF
+[${KATL_KUBERNETES_REPO_ID}]
+name=Kubernetes ${KATL_KUBERNETES_MINOR}
+baseurl=${KATL_KUBERNETES_REPO_BASEURL}
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=${KATL_KUBERNETES_REPO_GPGKEY}
+EOF
+
+for package in kubeadm kubelet kubectl cri-tools; do
+    case "$package" in
+        kubeadm) version="$KATL_KUBERNETES_KUBEADM_VERSION" ;;
+        kubelet) version="$KATL_KUBERNETES_KUBELET_VERSION" ;;
+        kubectl) version="$KATL_KUBERNETES_KUBECTL_VERSION" ;;
+        cri-tools) version="$KATL_KUBERNETES_CRITOOLS_VERSION" ;;
+    esac
+    version="${version%.x86_64}.x86_64"
+    sed -i -E "s#^([[:space:]]*)${package}-[^[:space:]]+#\\1${package}-${version}#" "$profile"
+done
+
+rm -f "$artifact" "$artifact.json" "$artifact.sha256"
+set +e
+"$repo_root/scripts/mkosi" \
+    --environment "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR" \
+    --environment "KATL_KUBERNETES_REPO_ID=$KATL_KUBERNETES_REPO_ID" \
+    --environment "KATL_KUBERNETES_REPO_BASEURL=$KATL_KUBERNETES_REPO_BASEURL" \
+    --environment "KATL_KUBERNETES_PAYLOAD_VERSION=$KATL_KUBERNETES_PAYLOAD_VERSION" \
+    --environment "KATL_KUBERNETES_KUBEADM_VERSION=$KATL_KUBERNETES_KUBEADM_VERSION" \
+    --environment "KATL_KUBERNETES_KUBELET_VERSION=$KATL_KUBERNETES_KUBELET_VERSION" \
+    --environment "KATL_KUBERNETES_KUBECTL_VERSION=$KATL_KUBERNETES_KUBECTL_VERSION" \
+    --environment "KATL_KUBERNETES_CRITOOLS_VERSION=$KATL_KUBERNETES_CRITOOLS_VERSION" \
+    --profile kubernetes-sysext \
+    -f build 2>&1 | tee "$log"
+build_status=("${PIPESTATUS[@]}")
+set -e
+restore_build_files
+if [[ "${build_status[0]}" -ne 0 || "${build_status[1]}" -ne 0 ]]; then
+    exit 1
+fi
+if [[ ! -f "$base_artifact" ]]; then
+    echo "error: Kubernetes sysext artifact not found: $base_artifact" >&2
+    exit 1
+fi
+if [[ "$artifact" != "$base_artifact" ]]; then
+    cp --reflink=auto "$base_artifact" "$artifact"
+fi
+
+KATL_BUILD_COMMIT="$build_commit" \
+KATL_ARCHITECTURE="$architecture" \
+    go run ./cmd/katl-mkosi-artifacts write-kubernetes-sysext-from-log \
+    --artifact "$artifact" \
+    --log "$log" \
+    --runtime-artifact "$runtime_artifact" \
+    --runtime-metadata "$runtime_metadata" \
+    --repo-id "$KATL_KUBERNETES_REPO_ID" \
+    --repo-base-url "$KATL_KUBERNETES_REPO_BASEURL" \
+    --repo-minor "$KATL_KUBERNETES_MINOR" \
+    --expected-payload-version "$KATL_KUBERNETES_PAYLOAD_VERSION" \
+    --expected-kubeadm-version "$KATL_KUBERNETES_KUBEADM_VERSION" \
+    --expected-kubelet-version "$KATL_KUBERNETES_KUBELET_VERSION" \
+    --expected-kubectl-version "$KATL_KUBERNETES_KUBECTL_VERSION" \
+    --expected-cri-tools-version "$KATL_KUBERNETES_CRITOOLS_VERSION" \
+    --expected-ethtool-version "$KATL_KUBERNETES_ETHTOOL_VERSION" \
+    --expected-socat-version "$KATL_KUBERNETES_SOCAT_VERSION" >/dev/null
+
+if [[ "$use_cache" == 1 ]]; then
+    mkdir -p "$(dirname "$stamp")"
+    cache_fingerprint >"$stamp"
+fi

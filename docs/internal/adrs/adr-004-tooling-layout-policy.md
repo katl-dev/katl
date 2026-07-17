@@ -315,7 +315,8 @@ world path.
 
 | Script | Current role | Policy action |
 | --- | --- | --- |
-| `scripts/mkosi` | Supported build entrypoint and containerized mkosi adapter | Keep as the top-level mkosi adapter while scaffolding. Artifact metadata and package provenance are delegated to `cmd/katl-mkosi-artifacts`; move Kubernetes repository mutation and remaining build policy into Go or mkosi config as they stabilize. |
+| `scripts/mkosi` | Supported KatlOS image build entrypoint and containerized mkosi adapter | Keep as the generic top-level mkosi adapter while scaffolding. It must not select Kubernetes payload versions, outputs, or VM fixture variants. Artifact metadata and package provenance are delegated to `cmd/katl-mkosi-artifacts`. |
+| `scripts/build-kubernetes-sysext` | Explicit Kubernetes sysext producer over the generic mkosi adapter | Keep as a narrow artifact entrypoint. It owns the Kubernetes repository/profile preparation and one requested output; callers, including VM tests, supply non-release versions and output names explicitly. Move its remaining structured validation and cache policy into Go as they stabilize. |
 | `scripts/vmtest-run` | Supported enabled VM world entrypoint over `go test -exec` | Keep as the canonical developer entrypoint. Keep it thin; move fixture policy, leases, aggregation, and host policy into Go helpers or a future Go runner command. |
 | `scripts/vmtest-exec` | `go test -exec` package-binary wrapper | Keep as an implementation detail of `scripts/vmtest-run`; do not document it as a developer entrypoint. |
 | `scripts/vmtest-debug` | Compatibility wrapper for retained-domain debug target rendering | Keep as a thin wrapper around `cmd/katl-vmtest-debug`; debug target discovery and rendering policy live in Go. |

@@ -12,7 +12,7 @@ fi
 cd "$repo_root"
 go run ./cmd/katl-kubernetes-release prepare --payload-version "$payload_version"
 scripts/mkosi build-runtime
-scripts/mkosi build-kubernetes-sysext
+scripts/build-kubernetes-sysext
 scripts/check-kubernetes-sysext
 go test \
     ./cmd/katl-kubernetes-release \

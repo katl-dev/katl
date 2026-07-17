@@ -9,10 +9,6 @@ build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 stamp_dir="$build_dir/.katl-stamps"
 go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"
 go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"
-kube_manifest="$repo_root/mkosi.profiles/kubernetes-sysext/kubernetes.env"
-# shellcheck source=mkosi.profiles/kubernetes-sysext/kubernetes.env
-# shellcheck disable=SC1091
-source "$kube_manifest"
 mkosi_env=(--environment "KATL_BUILD_COMMIT=$build_commit")
 if [[ -n "${KATL_VERSION:-}" ]]; then
     mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
@@ -27,14 +23,9 @@ case "$vmtest_image_support" in
 esac
 mkosi_env+=(--environment "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support")
 emit_runtime_artifact=0
-emit_kubernetes_sysext=0
 emit_installer_iso=0
 installer_package_set=""
 cache_target=""
-kubernetes_repo_file=""
-kubernetes_repo_backup=""
-kubernetes_profile_file=""
-kubernetes_profile_backup=""
 mkosi_installer_package_set=""
 container_mkosi_storage_args=(
     --output-directory /mkosi-build
@@ -55,60 +46,6 @@ prepare_build_dirs() {
         "$go_mod_cache" \
         "$go_build_cache"
 }
-
-write_kubernetes_repo_file() {
-    local path="$1"
-    mkdir -p "$(dirname "$path")"
-    cat > "$path" <<EOF
-[${KATL_KUBERNETES_REPO_ID}]
-name=Kubernetes ${KATL_KUBERNETES_MINOR}
-baseurl=${KATL_KUBERNETES_REPO_BASEURL}
-enabled=1
-gpgcheck=1
-repo_gpgcheck=1
-gpgkey=${KATL_KUBERNETES_REPO_GPGKEY}
-EOF
-}
-
-restore_kubernetes_repo_file() {
-    if [[ -n "$kubernetes_repo_file" && -n "$kubernetes_repo_backup" && -f "$kubernetes_repo_backup" ]]; then
-        cp "$kubernetes_repo_backup" "$kubernetes_repo_file"
-        rm -f "$kubernetes_repo_backup"
-    fi
-}
-
-prepare_kubernetes_package_profile() {
-	local path="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.conf"
-	local package variable version
-	kubernetes_profile_file="$path"
-	kubernetes_profile_backup="$(mktemp)"
-	cp "$path" "$kubernetes_profile_backup"
-	for package in kubeadm kubelet kubectl cri-tools; do
-		case "$package" in
-			kubeadm) variable="${KATL_KUBERNETES_KUBEADM_VERSION:-}" ;;
-			kubelet) variable="${KATL_KUBERNETES_KUBELET_VERSION:-}" ;;
-			kubectl) variable="${KATL_KUBERNETES_KUBECTL_VERSION:-}" ;;
-			cri-tools) variable="${KATL_KUBERNETES_CRITOOLS_VERSION:-}" ;;
-		esac
-		[[ -n "$variable" ]] || continue
-		version="${variable%.x86_64}.x86_64"
-		sed -i -E "s#^([[:space:]]*)${package}-[^[:space:]]+#\\1${package}-${version}#" "$path"
-	done
-}
-
-restore_kubernetes_profile_file() {
-	if [[ -n "$kubernetes_profile_file" && -n "$kubernetes_profile_backup" && -f "$kubernetes_profile_backup" ]]; then
-		cp "$kubernetes_profile_backup" "$kubernetes_profile_file"
-		rm -f "$kubernetes_profile_backup"
-	fi
-}
-
-restore_kubernetes_build_files() {
-	restore_kubernetes_repo_file
-	restore_kubernetes_profile_file
-}
-
-trap restore_kubernetes_build_files EXIT
 
 list_repo_inputs() {
     {
@@ -160,13 +97,6 @@ cache_input_matches_target() {
                     ;;
             esac
             ;;
-        kubernetes-sysext)
-            case "$path" in
-                mkosi.profiles/kubernetes-sysext/*)
-                    return 0
-                    ;;
-            esac
-            ;;
         katlos-install-image)
             case "$path" in
                 scripts/build-katlos-install-image | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/*)
@@ -194,9 +124,6 @@ target_go_binaries() {
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-runtime-status" "./cmd/katl-runtime-status" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-generation-activate" "./cmd/katl-generation-activate" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-boot-health" "./cmd/katl-boot-health" "plain"
-            printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
-            ;;
-        kubernetes-sysext)
             printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
             ;;
         katlos-install-image)
@@ -287,14 +214,6 @@ cache_fingerprint() {
             printf 'KATL_KATLOS_IMAGE_ROLE=%s\n' "${KATL_KATLOS_IMAGE_ROLE:-install}"
             printf 'KATL_RUNTIME_INTERFACE=%s\n' "${KATL_RUNTIME_INTERFACE:-katl-runtime-1}"
             printf 'KATL_VMTEST_IMAGE_SUPPORT=%s\n' "$vmtest_image_support"
-            printf 'KATL_KUBERNETES_MINOR=%s\n' "$KATL_KUBERNETES_MINOR"
-            printf 'KATL_KUBERNETES_REPO_ID=%s\n' "$KATL_KUBERNETES_REPO_ID"
-            printf 'KATL_KUBERNETES_REPO_BASEURL=%s\n' "$KATL_KUBERNETES_REPO_BASEURL"
-            printf 'KATL_KUBERNETES_PAYLOAD_VERSION=%s\n' "$KATL_KUBERNETES_PAYLOAD_VERSION"
-            printf 'KATL_KUBERNETES_KUBEADM_VERSION=%s\n' "$KATL_KUBERNETES_KUBEADM_VERSION"
-            printf 'KATL_KUBERNETES_KUBELET_VERSION=%s\n' "$KATL_KUBERNETES_KUBELET_VERSION"
-            printf 'KATL_KUBERNETES_KUBECTL_VERSION=%s\n' "$KATL_KUBERNETES_KUBECTL_VERSION"
-            printf 'KATL_KUBERNETES_CRITOOLS_VERSION=%s\n' "$KATL_KUBERNETES_CRITOOLS_VERSION"
             while IFS= read -r -d "" path; do
                 if [[ -f "$repo_root/$path" ]]; then
                     read -r file_digest _ < <(sha256sum "$repo_root/$path")
@@ -315,15 +234,6 @@ cache_fingerprint() {
             case "$target" in
                 installer-iso)
                     path="$(katlos_image_output).json"
-                    if [[ -f "$path" ]]; then
-                        read -r file_digest _ < <(sha256sum "$path")
-                        printf 'generated %s %s\n' "${path#$repo_root/}" "$file_digest"
-                    else
-                        printf 'missing %s\n' "${path#$repo_root/}"
-                    fi
-                    ;;
-                kubernetes-sysext)
-                    path="$build_dir/katl-runtime-root.squashfs.json"
                     if [[ -f "$path" ]]; then
                         read -r file_digest _ < <(sha256sum "$path")
                         printf 'generated %s %s\n' "${path#$repo_root/}" "$file_digest"
@@ -383,13 +293,6 @@ target_outputs() {
                 "$build_dir/katl-runtime.efi" \
                 "$build_dir/katl-runtime.efi.json" \
                 "$build_dir/katl-runtime.efi.sha256"
-            ;;
-        kubernetes-sysext)
-            printf '%s\n' \
-                "$build_dir/artifacts.json" \
-                "$build_dir/katl-kubernetes.raw" \
-                "$build_dir/katl-kubernetes.raw.json" \
-                "$build_dir/katl-kubernetes.raw.sha256"
             ;;
         katlos-install-image)
             local image_output
@@ -596,56 +499,6 @@ else
                 set -- --profile runtime -f build "$@"
             fi
             ;;
-        build-kubernetes-sysext)
-            shift
-            emit_kubernetes_sysext=1
-            kubernetes_repo_file="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.sandbox/etc/yum.repos.d/kubernetes.repo"
-            kubernetes_repo_backup="$(mktemp)"
-            cp "$kubernetes_repo_file" "$kubernetes_repo_backup"
-            write_kubernetes_repo_file "$kubernetes_repo_file"
-            prepare_kubernetes_package_profile
-            if [[ $# -eq 0 ]]; then
-                cache_target=kubernetes-sysext
-                prepare_cached_target "$cache_target"
-                set -- --profile kubernetes-sysext -f build
-            else
-                set -- --profile kubernetes-sysext -f build "$@"
-            fi
-            ;;
-		build-kubernetes-upgrade-sysext)
-			shift
-			if [[ $# -ne 0 ]]; then
-				echo "error: build-kubernetes-upgrade-sysext does not accept mkosi arguments" >&2
-				exit 2
-			fi
-			KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}" \
-				KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_KUBEADM_VERSION:-0:1.36.1-150500.1.1}" \
-				KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_KUBELET_VERSION:-0:1.36.1-150500.1.1}" \
-				KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_KUBECTL_VERSION:-0:1.36.1-150500.1.1}" \
-				"$repo_root/scripts/mkosi" build-kubernetes-sysext
-			for suffix in raw raw.json; do
-				cp "$build_dir/katl-kubernetes.$suffix" "$build_dir/katl-kubernetes-upgrade.$suffix"
-			done
-			(
-				cd "$build_dir"
-				sha256sum katl-kubernetes-upgrade.raw > katl-kubernetes-upgrade.raw.sha256
-			)
-			exit 0
-			;;
-		build-kubernetes-upgrade-source-sysext)
-			shift
-			if [[ $# -ne 0 ]]; then
-				echo "error: build-kubernetes-upgrade-source-sysext does not accept mkosi arguments" >&2
-				exit 2
-			fi
-			KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}" \
-				KATL_KUBERNETES_ARTIFACT_REVISION="${KATL_KUBERNETES_UPGRADE_SOURCE_ARTIFACT_REVISION:-3}" \
-				KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBEADM_VERSION:-0:1.36.0-150500.1.1}" \
-				KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBELET_VERSION:-0:1.36.0-150500.1.1}" \
-				KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBECTL_VERSION:-0:1.36.0-150500.1.1}" \
-				"$repo_root/scripts/mkosi" build-kubernetes-sysext
-			exit 0
-			;;
         build-katlos-install-image)
             shift
             if [[ $# -eq 0 ]] && target_cache_hit katlos-install-image; then
@@ -695,17 +548,8 @@ run_flags=(
     --env "KATL_BUILD_COMMIT=$build_commit"
     --env "KATL_VERSION=${KATL_VERSION:-0.0.0-dev}"
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
-    --env "KATL_EMIT_KUBERNETES_SYSEXT=$emit_kubernetes_sysext"
     --env "KATL_EMIT_INSTALLER_ISO=$emit_installer_iso"
     --env "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support"
-    --env "KATL_KUBERNETES_MINOR=$KATL_KUBERNETES_MINOR"
-    --env "KATL_KUBERNETES_REPO_ID=$KATL_KUBERNETES_REPO_ID"
-    --env "KATL_KUBERNETES_REPO_BASEURL=$KATL_KUBERNETES_REPO_BASEURL"
-    --env "KATL_KUBERNETES_PAYLOAD_VERSION=$KATL_KUBERNETES_PAYLOAD_VERSION"
-    --env "KATL_KUBERNETES_KUBEADM_VERSION=$KATL_KUBERNETES_KUBEADM_VERSION"
-    --env "KATL_KUBERNETES_KUBELET_VERSION=$KATL_KUBERNETES_KUBELET_VERSION"
-    --env "KATL_KUBERNETES_KUBECTL_VERSION=$KATL_KUBERNETES_KUBECTL_VERSION"
-    --env "KATL_KUBERNETES_CRITOOLS_VERSION=$KATL_KUBERNETES_CRITOOLS_VERSION"
 )
 chown_build=1
 
@@ -736,12 +580,12 @@ if [[ "$runtime" == direct ]]; then
         mkosi_installer_package_set="$repo_root/$installer_package_set"
         mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
     fi
-    if [[ "$emit_runtime_artifact" == 1 || "$emit_kubernetes_sysext" == 1 || "$emit_installer_iso" == 1 ]]; then
+    if [[ "$emit_runtime_artifact" == 1 || "$emit_installer_iso" == 1 ]]; then
         echo "error: KATL_CONTAINER_RUNTIME=direct currently supports installer-image builds only" >&2
         exit 1
     fi
     log="$(mktemp)"
-    trap 'restore_kubernetes_build_files; rm -f "$log"' EXIT
+    trap 'rm -f "$log"' EXIT
     prepare_build_dirs
     direct_workspace="${KATL_MKOSI_WORKSPACE_DIR:-${TMPDIR:-/tmp}/katl-mkosi-workspace}"
     mkdir -p "$direct_workspace"
@@ -949,32 +793,6 @@ set +e
     if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
         if ! mkosi_artifacts write-runtime-index >/dev/null; then
             status=1
-        fi
-    fi
-    if [[ "$status" -eq 0 && "${KATL_EMIT_KUBERNETES_SYSEXT:-0}" == 1 ]]; then
-        artifact=_build/mkosi/katl-kubernetes.raw
-        runtime_meta=_build/mkosi/katl-runtime-root.squashfs.json
-        if [[ ! -f "$artifact" ]]; then
-            echo "error: Kubernetes sysext artifact not found: $artifact" >&2
-            status=1
-        else
-            if ! mkosi_artifacts write-kubernetes-sysext-from-log \
-                --artifact "$artifact" \
-                --log "$log" \
-                --runtime-artifact _build/mkosi/katl-runtime-root.squashfs \
-                --runtime-metadata "$runtime_meta" \
-                --repo-id "${KATL_KUBERNETES_REPO_ID:?}" \
-                --repo-base-url "${KATL_KUBERNETES_REPO_BASEURL:?}" \
-                --repo-minor "${KATL_KUBERNETES_MINOR:?}" \
-                --expected-payload-version "${KATL_KUBERNETES_PAYLOAD_VERSION:-}" \
-                --expected-kubeadm-version "${KATL_KUBERNETES_KUBEADM_VERSION:-}" \
-                --expected-kubelet-version "${KATL_KUBERNETES_KUBELET_VERSION:-}" \
-                --expected-kubectl-version "${KATL_KUBERNETES_KUBECTL_VERSION:-}" \
-                --expected-cri-tools-version "${KATL_KUBERNETES_CRITOOLS_VERSION:-}" \
-                --expected-ethtool-version "${KATL_KUBERNETES_ETHTOOL_VERSION:-}" \
-                --expected-socat-version "${KATL_KUBERNETES_SOCAT_VERSION:-}" >/dev/null; then
-                status=1
-            fi
         fi
     fi
     if [[ "$status" -eq 0 && "${KATL_EMIT_INSTALLER_ISO:-0}" == 1 ]]; then
