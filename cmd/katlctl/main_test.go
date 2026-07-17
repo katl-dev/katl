@@ -236,6 +236,72 @@ func TestRootWithoutArgumentsPrintsHelp(t *testing.T) {
 	}
 }
 
+func TestCommandGroupsWithoutArgumentsPrintHelp(t *testing.T) {
+	for _, group := range []string{"cluster", "config", "context", "install", "kubernetes", "node", "operations"} {
+		t.Run(group, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), []string{group}, &stdout, &stderr); err != nil {
+				t.Fatalf("run() error = %v", err)
+			}
+			if !strings.Contains(stdout.String(), "Usage:") || !strings.Contains(stdout.String(), "Available Commands:") {
+				t.Fatalf("stdout = %q, want useful group help", stdout.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+		})
+	}
+}
+
+func TestNestedCommandTyposFailWithSuggestions(t *testing.T) {
+	tests := []struct {
+		args       []string
+		command    string
+		suggestion string
+	}{
+		{args: []string{"cluster", "bootstra"}, command: "bootstra", suggestion: "bootstrap"},
+		{args: []string{"config", "validae"}, command: "validae", suggestion: "validate"},
+		{args: []string{"context", "shw"}, command: "shw", suggestion: "show"},
+		{args: []string{"install", "discovr"}, command: "discovr", suggestion: "discover"},
+		{args: []string{"node", "upgade"}, command: "upgade", suggestion: "upgrade"},
+		{args: []string{"kubernetes", "upgrde"}, command: "upgrde", suggestion: "upgrade"},
+		{args: []string{"operations", "stats"}, command: "stats", suggestion: "status"},
+		{args: []string{"node", "apply", "valdte"}, command: "valdte", suggestion: "validate"},
+	}
+	for _, test := range tests {
+		t.Run(strings.Join(test.args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(context.Background(), test.args, &stdout, &stderr)
+			if err == nil {
+				t.Fatal("run() error = nil")
+			}
+			for _, want := range []string{`unknown command "` + test.command + `"`, "Did you mean this?", test.suggestion} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("run() error = %q, missing %q", err, want)
+				}
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Fatalf("stdout=%q stderr=%q, want no misleading help", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestHostUpgradeWithoutVersionPrintsHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"node", "upgrade"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	for _, want := range []string{"Usage:", "katlctl node upgrade VERSION", "katlctl node upgrade 2026.7.0 --node cp-1"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestOutputFormatValidation(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"context", "show", "--output", "yaml"}, &stdout, &stderr)
@@ -1562,47 +1628,6 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	}
 	if fake.stageRequest == nil || fake.stageRequest.CandidateGenerationId != "generation-1" || fake.stageRequest.ClientRequestId != "req-stage" || fake.stageRequest.Actor != "katlctl node apply" {
 		t.Fatalf("stage request = %+v", fake.stageRequest)
-	}
-	assertSuccessfulMutationOutput(t, stdout.Bytes())
-}
-
-func TestHostUpgradeSubmitsSingleImageOperation(t *testing.T) {
-	fake := &fakeKatlcAgentClient{
-		nodeStatus: &agentapi.NodeStatus{MachineId: "machine-a", CurrentGenerationId: "generation-current"},
-		stageAccepted: &agentapi.OperationAccepted{
-			OperationId:   "host-upgrade-01",
-			OperationKind: "host-upgrade",
-			RequestDigest: strings.Repeat("a", 64),
-		},
-	}
-	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
-		if endpoint != "node-a.example.test:9443" {
-			t.Fatalf("dial endpoint=%q", endpoint)
-		}
-		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
-	}
-	t.Cleanup(func() { dialKatlcAgent = oldDial })
-
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{
-		"node", "upgrade",
-		"--endpoint", "node-a.example.test:9443",
-		"--image-url", "https://updates.example.test/katlos-upgrade.squashfs",
-		"--candidate-generation", "generation-upgrade-1",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
-	}
-	request := fake.submitRequest
-	if request == nil || request.OperationKind != "host-upgrade" || request.GetHostUpgrade() == nil {
-		t.Fatalf("submit request = %+v", request)
-	}
-	if !strings.HasPrefix(request.ClientRequestId, "katlctl-") {
-		t.Fatalf("generated client request id = %q", request.ClientRequestId)
-	}
-	if request.HostUpgrade.ImageUrl != "https://updates.example.test/katlos-upgrade.squashfs" || request.HostUpgrade.ImageSha256 != "" || request.HostUpgrade.ImageSizeBytes != 0 || request.HostUpgrade.CandidateGenerationId != "generation-upgrade-1" {
-		t.Fatalf("host upgrade request = %+v", request.HostUpgrade)
 	}
 	assertSuccessfulMutationOutput(t, stdout.Bytes())
 }

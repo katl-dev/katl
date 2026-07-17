@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -143,8 +144,39 @@ Start with "katlctl install discover" for a waiting installer or
 	nodeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl node wipe"))
 	cmd.AddCommand(nodeCmd)
 
+	configureCommandGroups(cmd)
 	setMinimumInvocationExamples(cmd)
 	return cmd
+}
+
+func configureCommandGroups(root *cobra.Command) {
+	var visit func(*cobra.Command)
+	visit = func(command *cobra.Command) {
+		if command != root && command.HasSubCommands() && command.Run == nil && command.RunE == nil {
+			command.Args = rejectUnknownSubcommand
+			command.RunE = func(command *cobra.Command, _ []string) error {
+				return command.Help()
+			}
+		}
+		for _, child := range command.Commands() {
+			visit(child)
+		}
+	}
+	visit(root)
+}
+
+func rejectUnknownSubcommand(command *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	message := fmt.Sprintf("unknown command %q for %q", args[0], command.CommandPath())
+	if command.SuggestionsMinimumDistance <= 0 {
+		command.SuggestionsMinimumDistance = 2
+	}
+	if suggestions := command.SuggestionsFor(args[0]); len(suggestions) > 0 {
+		message += "\n\nDid you mean this?\n\t" + strings.Join(suggestions, "\n\t")
+	}
+	return errors.New(message)
 }
 
 func setMinimumInvocationExamples(root *cobra.Command) {
@@ -194,20 +226,16 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 }
 
 type hostUpgradeOptions struct {
-	version             string
-	endpoint            string
-	workstationConfig   string
-	contextName         string
-	nodeName            string
-	imageURL            string
-	imageLocalRef       string
-	candidateGeneration string
-	clientRequestID     string
-	actor               string
-	plan                bool
-	noWait              bool
-	waitTimeout         time.Duration
-	output              string
+	version           string
+	endpoint          string
+	workstationConfig string
+	contextName       string
+	nodeName          string
+	clientRequestID   string
+	actor             string
+	plan              bool
+	waitTimeout       time.Duration
+	output            string
 }
 
 type hostUpgradeReport struct {
@@ -227,10 +255,11 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 		Use:   "upgrade VERSION",
 		Short: "Upgrade one KatlOS node and verify its next boot",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if len(args) == 1 {
-				opts.version = args[0]
+		RunE: func(command *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return command.Help()
 			}
+			opts.version = args[0]
 			return runHostUpgrade(ctx, opts, stdout, stderr)
 		},
 	}
@@ -238,17 +267,10 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd.Flags().StringVar(&opts.workstationConfig, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
-	cmd.Flags().StringVar(&opts.imageURL, "image-url", "", "HTTPS KatlOS upgrade image URL")
-	cmd.Flags().StringVar(&opts.imageLocalRef, "image-local-ref", "", "relative KatlOS image reference under the node artifact store")
-	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
-	cmd.Flags().Lookup("image-url").Hidden = true
-	cmd.Flags().Lookup("image-local-ref").Hidden = true
-	cmd.Flags().Lookup("candidate-generation").Hidden = true
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "validate without accepting an operation")
-	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
 	return cmd
@@ -261,33 +283,17 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if opts.waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	direct := strings.TrimSpace(opts.version) != ""
-	if direct {
-		if strings.TrimSpace(opts.imageURL) != "" || strings.TrimSpace(opts.imageLocalRef) != "" || strings.TrimSpace(opts.candidateGeneration) != "" {
-			return fmt.Errorf("VERSION cannot be combined with expert image or candidate flags")
-		}
-		version, err := katlOSVersion(opts.version)
-		if err != nil {
-			return err
-		}
-		opts.version, opts.candidateGeneration = version, "katlos-"+version
-		if opts.noWait {
-			return fmt.Errorf("--no-wait is unavailable for a managed VERSION upgrade")
-		}
+	version, err := katlOSVersion(opts.version)
+	if err != nil {
+		return err
 	}
+	opts.version = version
 	requestID, err := clientRequestID(opts.clientRequestID)
 	if err != nil {
 		return err
 	}
 	request := operation.HostUpgrade{
-		ImageURL:              strings.TrimSpace(opts.imageURL),
-		ImageLocalRef:         strings.TrimSpace(opts.imageLocalRef),
-		CandidateGenerationID: strings.TrimSpace(opts.candidateGeneration),
-	}
-	if !direct {
-		if err := operation.ValidateHostUpgrade(request); err != nil {
-			return err
-		}
+		CandidateGenerationID: "katlos-" + version,
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
 		configPath: opts.workstationConfig, contextName: opts.contextName, nodeName: opts.nodeName,
@@ -305,26 +311,24 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return fmt.Errorf("read node status: %w", err)
 	}
-	if direct {
-		current, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: status.GetCurrentGenerationId()})
-		if err != nil {
-			return fmt.Errorf("read current node generation: %w", err)
+	current, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: status.GetCurrentGenerationId()})
+	if err != nil {
+		return fmt.Errorf("read current node generation: %w", err)
+	}
+	architecture, err := nodeArtifactArchitecture(current)
+	if err != nil {
+		return err
+	}
+	request.ImageURL = katlOSReleaseURL(opts.version, architecture)
+	if err := operation.ValidateHostUpgrade(request); err != nil {
+		return err
+	}
+	if current.GetGenerationId() == request.CandidateGenerationID && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
+		node := target.nodeName
+		if node == "" {
+			node = target.endpoint
 		}
-		architecture, err := nodeArtifactArchitecture(current)
-		if err != nil {
-			return err
-		}
-		request.ImageURL = katlOSReleaseURL(opts.version, architecture)
-		if err := operation.ValidateHostUpgrade(request); err != nil {
-			return err
-		}
-		if current.GetGenerationId() == request.CandidateGenerationID && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
-			node := target.nodeName
-			if node == "" {
-				node = target.endpoint
-			}
-			return writeJSON(stdout, hostUpgradeReport{Node: node, Version: opts.version, Image: request.ImageURL, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy})
-		}
+		return writeJSON(stdout, hostUpgradeReport{Node: node, Version: opts.version, Image: request.ImageURL, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy})
 	}
 	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 		ApiVersion:                  operation.APIVersion,
@@ -344,52 +348,46 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	if direct {
-		report := hostUpgradeReport{Node: target.nodeName, Version: opts.version, Image: request.ImageURL, Result: "planned", BootHealth: "not-run"}
-		if report.Node == "" {
-			report.Node = target.endpoint
-		}
-		if opts.plan {
-			return writeJSON(stdout, report)
-		}
-		terminal, err := waitAcceptedOperationStatus(ctx, conn.Client, accepted, opts.waitTimeout, stderr)
-		if err != nil {
-			report.Result = "failed"
-			_ = writeJSON(stdout, report)
-			return err
-		}
-		if err := operationResultError(terminal); err != nil {
-			report.Result = terminal.GetResult()
-			_ = writeJSON(stdout, report)
-			return err
-		}
-		agentStart := status.GetAgentStartId()
-		if err := requestNodeReboot(ctx, conn.Client, opts.actor, status.GetMachineId(), request.CandidateGenerationID); err != nil {
-			report.Result = "staged"
-			_ = writeJSON(stdout, report)
-			return fmt.Errorf("reboot node %s: %w", report.Node, err)
-		}
-		_ = conn.Close()
-		bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-		verifiedConn, _, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, stderr)
-		cancel()
-		if err != nil {
-			report.Result = "failed"
-			report.Rebooted = true
-			report.BootHealth = "failed"
-			_ = writeJSON(stdout, report)
-			return err
-		}
-		_ = verifiedConn.Close()
-		report.Result = operation.ResultSucceeded
-		report.Rebooted = true
-		report.BootHealth = generation.HealthStateHealthy
+	report := hostUpgradeReport{Node: target.nodeName, Version: opts.version, Image: request.ImageURL, Result: "planned", BootHealth: "not-run"}
+	if report.Node == "" {
+		report.Node = target.endpoint
+	}
+	if opts.plan {
 		return writeJSON(stdout, report)
 	}
-	if opts.plan || opts.noWait {
-		return writeOperationAccepted(stdout, accepted)
+	terminal, err := waitAcceptedOperationStatus(ctx, conn.Client, accepted, opts.waitTimeout, stderr)
+	if err != nil {
+		report.Result = "failed"
+		_ = writeJSON(stdout, report)
+		return err
 	}
-	return waitAcceptedOperation(ctx, conn.Client, accepted, opts.waitTimeout, stdout, stderr)
+	if err := operationResultError(terminal); err != nil {
+		report.Result = terminal.GetResult()
+		_ = writeJSON(stdout, report)
+		return err
+	}
+	agentStart := status.GetAgentStartId()
+	if err := requestNodeReboot(ctx, conn.Client, opts.actor, status.GetMachineId(), request.CandidateGenerationID); err != nil {
+		report.Result = "staged"
+		_ = writeJSON(stdout, report)
+		return fmt.Errorf("reboot node %s: %w", report.Node, err)
+	}
+	_ = conn.Close()
+	bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
+	verifiedConn, _, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, stderr)
+	cancel()
+	if err != nil {
+		report.Result = "failed"
+		report.Rebooted = true
+		report.BootHealth = "failed"
+		_ = writeJSON(stdout, report)
+		return err
+	}
+	_ = verifiedConn.Close()
+	report.Result = operation.ResultSucceeded
+	report.Rebooted = true
+	report.BootHealth = generation.HealthStateHealthy
+	return writeJSON(stdout, report)
 }
 
 func katlOSVersion(input string) (string, error) {
@@ -1529,7 +1527,7 @@ func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Validate or apply node configuration",
-		Args:  cobra.NoArgs,
+		Args:  rejectUnknownSubcommand,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runConfigApply(ctx, opts, stdout, stderr)
 		},
