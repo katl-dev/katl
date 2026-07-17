@@ -251,7 +251,7 @@ Illustrative iPXE entry for `cp-1`:
 #!ipxe
 set base https://boot.example.invalid/katl/2026.7.0
 set node cp-1
-kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto
+kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 systemd.getty_auto=no katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto
 initrd ${base}/katl-installer.initrd
 boot
 ```

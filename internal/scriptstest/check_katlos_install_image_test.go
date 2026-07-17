@@ -20,6 +20,7 @@ func TestCheckKatlOSInstallImageKernelCommandLine(t *testing.T) {
 		"ro",
 		"console=ttyS0,115200n8",
 		"console=tty0",
+		"systemd.getty_auto=no",
 	}
 	cases := []testCase{
 		{
@@ -29,6 +30,7 @@ func TestCheckKatlOSInstallImageKernelCommandLine(t *testing.T) {
 				"quiet",
 				"ro",
 				"console=ttyS0,115200n8",
+				"systemd.getty_auto=no",
 				"rootfstype=squashfs",
 			},
 		},
