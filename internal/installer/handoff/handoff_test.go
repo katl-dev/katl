@@ -335,7 +335,7 @@ spec:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
   nodes:
     - name: cp-1
-      systemRole: control-plane
+      controlPlane: true
       install:
         targetDisk:
           byID: /dev/disk/by-id/ata-root

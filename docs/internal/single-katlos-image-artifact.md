@@ -158,8 +158,8 @@ component digests and compatibility metadata
 
 Node-specific configuration remains outside the image. The install manifest,
 PXE/preseed input, USB/local handoff, or VM harness supplies identity, disk
-selection, network configuration, bootstrap profile references, systemRole, the
-exact Kubernetes payload version, and other supported day-one node
+selection, network configuration, bootstrap profile references, the
+control-plane choice, the exact Kubernetes payload version, and other supported day-one node
 configuration. Capability overlays are a day-2 design item. Reusing the same
 install image for multiple nodes must not require rebuilding the image.
 
@@ -336,8 +336,8 @@ Secret rules:
 node identity, SSH host keys, kubeadm tokens, certificate keys, and cluster
   bootstrap secrets are not stored in KatlOS images
 
-node-specific network addresses and systemRole choices are not stored in KatlOS
-  images
+node-specific network addresses and control-plane choices are not stored in
+KatlOS images
 
 credentials for fetching a private image are supplied by installer input or a
   protected local channel, not embedded in the reusable image

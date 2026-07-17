@@ -50,6 +50,9 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 	if bundle.Kind != "KatlConfigBundle" || bundle.ClusterName != "lab" || len(bundle.Nodes) != 2 {
 		t.Fatalf("bundle manifest = %#v", bundle)
 	}
+	if bundle.Nodes[0].SystemRole != string(inventory.RoleControlPlane) || bundle.Nodes[1].SystemRole != string(inventory.RoleWorker) {
+		t.Fatalf("compiled node roles = %#v", bundle.Nodes)
+	}
 	if bundle.Nodes[0].InstallMaterial.Digest == "" {
 		t.Fatalf("control-plane node record = %#v", bundle.Nodes[0])
 	}
@@ -188,7 +191,7 @@ spec:
           - `+testSSHKey+`
   nodes:
     - name: cp-1
-      systemRole: control-plane
+      controlPlane: true
       install:
         targetDisk:
           byID: /dev/disk/by-id/ata-cp-root
@@ -217,6 +220,14 @@ spec:
 	}
 	if selected.NodeMaterial.KubeadmConfig.Ref != "control-plane" || selected.KubeadmConfigs["control-plane"].Config.RenderPath == "" {
 		t.Fatalf("defaulted kubeadm = material %#v configs %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
+	}
+}
+
+func TestBuildArchiveRequiresControlPlaneNode(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "      controlPlane: true\n", "", 1)
+	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+	if err == nil || !strings.Contains(err.Error(), "at least one node with controlPlane: true") {
+		t.Fatalf("BuildArchive() error = %v, want missing control-plane guidance", err)
 	}
 }
 
@@ -361,6 +372,11 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 			want: "spec.systemRoleDefaults: field is not supported",
 		},
 		{
+			name: "system role alias",
+			raw:  strings.Replace(validSourceConfig(), "      controlPlane: true\n", "      systemRole: control-plane\n", 1),
+			want: "spec.nodes[0].systemRole: field is not supported",
+		},
+		{
 			name: "platform endpoint",
 			raw:  strings.Replace(validSourceConfig(), "  defaults:\n", "  platformAPIEndpoint: {}\n  defaults:\n", 1),
 			want: "spec.platformAPIEndpoint: field is not supported",
@@ -446,8 +462,15 @@ func TestSourceSchemaGolden(t *testing.T) {
 			t.Fatalf("root schema is missing %q", field)
 		}
 	}
+	node := document.Defs["configbundle.SourceNode"]
+	if _, ok := node.Properties["controlPlane"]; !ok {
+		t.Fatal("source node schema is missing controlPlane")
+	}
+	if _, ok := node.Properties["systemRole"]; ok {
+		t.Fatal("source node schema exposes removed systemRole")
+	}
 	got := fmt.Sprintf("%x", sha256.Sum256(data))
-	const want = "a131b02e81d1b2cf68cd7d55b032fb714a597e01d03b99892611c0370d1679c7"
+	const want = "54a2a0e591f398e4e927b84282004563a973631ecc07ea129d00ce4a125a2eec"
 	if got != want {
 		t.Fatalf("schema SHA-256 = %s, want %s; review the authoring contract before accepting a new golden", got, want)
 	}
@@ -693,7 +716,7 @@ spec:
             DHCP=yes
   nodes:
     - name: cp-1
-      systemRole: control-plane
+      controlPlane: true
       bootstrap:
         address: 10.0.0.11
       install:
@@ -706,7 +729,6 @@ spec:
           - key: node-role.kubernetes.io/control-plane
             effect: NoSchedule
     - name: worker-1
-      systemRole: worker
       bootstrap:
         address: 10.0.0.21
       install:

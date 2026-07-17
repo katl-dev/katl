@@ -15,8 +15,9 @@ generations and then coordinate kubeadm init/join.
 ## Decision
 
 The ordinary path is Katl-owned complete kubeadm configuration selected from a
-node's `systemRole`. The bounded advanced path adds one native input to
-`ClusterConfig` without exposing Katl's internal names or references:
+node's compiled role, derived from `controlPlane`. The bounded advanced path
+adds one native input to `ClusterConfig` without exposing Katl's internal names
+or references:
 
 ```yaml
 spec:

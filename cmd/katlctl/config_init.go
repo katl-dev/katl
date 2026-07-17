@@ -159,9 +159,10 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 		seen[node.name] = struct{}{}
 		targetDisk := node.disk
 		source.Spec.Nodes = append(source.Spec.Nodes, configbundle.SourceNode{
-			Name: node.name, SystemRole: node.role,
-			Install:   configbundle.SourceInstallLayer{TargetDisk: &targetDisk},
-			Bootstrap: configbundle.SourceBootstrapLayer{Address: node.address},
+			Name:         node.name,
+			ControlPlane: node.role == inventory.RoleControlPlane,
+			Install:      configbundle.SourceInstallLayer{TargetDisk: &targetDisk},
+			Bootstrap:    configbundle.SourceBootstrapLayer{Address: node.address},
 		})
 	}
 	data, err := yaml.Marshal(source)
@@ -201,6 +202,8 @@ func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 	comments := "spec:\n" +
 		"    # Stable Kubernetes API endpoint for multi-control-plane clusters.\n" +
 		"    # controlPlaneEndpoint: api.home.arpa:6443\n" +
+		"    # Set controlPlane: true on nodes that join the Kubernetes control plane.\n" +
+		"    # Omission means worker.\n" +
 		"    # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.\n"
 	if missingSSHKeys {
 		comments += "    # Add an SSH public key here if console-only access is not sufficient.\n" +

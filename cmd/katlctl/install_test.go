@@ -107,10 +107,10 @@ func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
 		t.Fatalf("authorized keys = %#v", keys)
 	}
 	cp, worker := source.Spec.Nodes[0], source.Spec.Nodes[1]
-	if cp.Name != "cp-1" || cp.SystemRole != inventory.RoleControlPlane || cp.Bootstrap.Address != "192.0.2.11" || cp.Install.TargetDisk == nil || cp.Install.TargetDisk.ByID != "/dev/disk/by-id/ata-cp-root" {
+	if cp.Name != "cp-1" || !cp.ControlPlane || cp.Bootstrap.Address != "192.0.2.11" || cp.Install.TargetDisk == nil || cp.Install.TargetDisk.ByID != "/dev/disk/by-id/ata-cp-root" {
 		t.Fatalf("control-plane node = %#v", cp)
 	}
-	if worker.Name != "worker-1" || worker.SystemRole != inventory.RoleWorker || worker.Bootstrap.Address != "192.0.2.21" || worker.Install.TargetDisk == nil || worker.Install.TargetDisk.WWN != "worker-root-wwn" {
+	if worker.Name != "worker-1" || worker.ControlPlane || worker.Bootstrap.Address != "192.0.2.21" || worker.Install.TargetDisk == nil || worker.Install.TargetDisk.WWN != "worker-root-wwn" {
 		t.Fatalf("worker node = %#v", worker)
 	}
 	if !strings.Contains(stdout.String(), "created "+outputPath) {

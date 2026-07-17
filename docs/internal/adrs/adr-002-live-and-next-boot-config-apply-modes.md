@@ -262,8 +262,8 @@ networkd
 
 Bootstrap node metadata
   Live-applicable only for non-secret descriptive fields that do not change
-  systemRole, stable node identity, selected bootstrap profile, or selected
-  Kubernetes payload.
+  control-plane participation, stable node identity, selected bootstrap
+  profile, or selected Kubernetes payload.
 ```
 
 Outside the v0.1 release cut, next-boot-only domains can be rendered into a
@@ -313,7 +313,7 @@ bootstrap, join, reset, repair, certificate renewal, etcd membership changes
 Rejected changes fail before render or activation:
 
 ```text
-systemRole changes
+controlPlane changes
 selected bootstrap profile or rendered kubeadm input changes
 selected Kubernetes sysext payload changes requested for live apply
 kubelet node identity changes
@@ -451,7 +451,7 @@ GitOps controllers
 Changing kubeadm desired input is normal Katl configuration, but applying that
 input to a live cluster is a separate kubeadm-aware operation with its own
 planner, explicit user request, status, rollback story, and tests. A `live`
-configuration request that would change systemRole, selected bootstrap profile,
+configuration request that would change controlPlane, selected bootstrap profile,
 rendered kubeadm input, or node identity is rejected instead of silently
 changing cluster state.
 
