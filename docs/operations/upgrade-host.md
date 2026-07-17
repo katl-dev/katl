@@ -12,14 +12,15 @@ orchestrate availability across several hosts.
 - the selected upgrade SquashFS is from the intended KatlOS release;
 - the upgrade declares a compatible architecture and runtime interface;
 - the node can fetch release artifacts from GitHub;
-- the current workstation context contains the node management endpoint;
+- the installation `ClusterConfig` contains the node and its current management
+  address, or `--endpoint` supplies an override;
 - the command is run during the intended reboot window; and
 - Kubernetes and workload availability have been handled outside Katl.
 
 ## Plan
 
 ```sh
-katlctl node upgrade v2026.7.0-alpha.9 --node cp-1 --plan
+katlctl node upgrade v2026.7.0-alpha.9 --config ./cluster.yaml --node cp-1 --plan
 ```
 
 A plan response has no durable mutation and does not reboot the node.
@@ -33,8 +34,12 @@ component metadata before changing the inactive slot.
 Run the command without `--plan`:
 
 ```sh
-katlctl node upgrade v2026.7.0-alpha.9 --node cp-1
+katlctl node upgrade v2026.7.0-alpha.9 --config ./cluster.yaml --node cp-1
 ```
+
+For repeated day-two commands, `katlctl context save --config ./cluster.yaml`
+can save this topology locally. That context is optional; it is not a second
+cluster configuration operators must maintain.
 
 `katlctl` follows staging progress, asks the node agent to reboot,
 waits for the agent to restart, and requires the selected generation to be

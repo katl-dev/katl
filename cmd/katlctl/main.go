@@ -206,10 +206,10 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl operations":              "katlctl operations list --node cp-1",
 		"katlctl operations status":       "katlctl operations status --node cp-1 --operation-id OPERATION_ID",
 		"katlctl operations list":         "katlctl operations list --node cp-1",
-		"katlctl node":                    "katlctl node status cp-1",
-		"katlctl node status":             "katlctl node status cp-1",
-		"katlctl node reboot":             "katlctl node reboot cp-1",
-		"katlctl node upgrade":            "katlctl node upgrade 2026.7.0 --node cp-1",
+		"katlctl node":                    "katlctl node status cp-1 --config cluster.yaml",
+		"katlctl node status":             "katlctl node status cp-1 --config cluster.yaml",
+		"katlctl node reboot":             "katlctl node reboot cp-1 --config cluster.yaml",
+		"katlctl node upgrade":            "katlctl node upgrade 2026.7.0 --config cluster.yaml --node cp-1",
 		"katlctl node apply":              "katlctl node apply --config cluster.yaml --node cp-1",
 		"katlctl node apply validate":     "katlctl node apply validate --config cluster.yaml --node cp-1",
 		"katlctl node apply status":       "katlctl node apply status --node cp-1",
@@ -226,16 +226,13 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 }
 
 type hostUpgradeOptions struct {
-	version           string
-	endpoint          string
-	workstationConfig string
-	contextName       string
-	nodeName          string
-	clientRequestID   string
-	actor             string
-	plan              bool
-	waitTimeout       time.Duration
-	output            string
+	version         string
+	target          managementTargetOptions
+	clientRequestID string
+	actor           string
+	plan            bool
+	waitTimeout     time.Duration
+	output          string
 }
 
 type hostUpgradeReport struct {
@@ -254,7 +251,10 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd := &cobra.Command{
 		Use:   "upgrade VERSION",
 		Short: "Upgrade one KatlOS node and verify its next boot",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Upgrade one KatlOS node to a published KatlOS release, reboot it, and verify that it returns healthy.
+
+Use the same ClusterConfig used to install the node. --endpoint can override its recorded address when DHCP or local routing changed. A saved katlctl context is optional shorthand for repeated commands.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return command.Help()
@@ -263,16 +263,15 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 			return runHostUpgrade(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
-	cmd.Flags().StringVar(&opts.workstationConfig, "context-file", "", "workstation context file path")
-	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
+	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
+	cmd.Flags().Lookup("actor").Hidden = true
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "validate without accepting an operation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
 	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
+	cmd.Flags().Lookup("output").Hidden = true
 	return cmd
 }
 
@@ -295,10 +294,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	request := operation.HostUpgrade{
 		CandidateGenerationID: "katlos-" + version,
 	}
-	target, err := resolveManagementTarget(managementTargetOptions{
-		configPath: opts.workstationConfig, contextName: opts.contextName, nodeName: opts.nodeName,
-		endpoint: opts.endpoint,
-	})
+	target, err := resolveManagementTarget(opts.target)
 	if err != nil {
 		return err
 	}

@@ -160,6 +160,9 @@ func TestConfigInputFlagsUseOneName(t *testing.T) {
 		"katlctl install apply":       true,
 		"katlctl node apply":          true,
 		"katlctl node apply validate": true,
+		"katlctl node reboot":         true,
+		"katlctl node status":         true,
+		"katlctl node upgrade":        true,
 		"katlctl node wipe":           true,
 	}
 	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
@@ -292,13 +295,101 @@ func TestHostUpgradeWithoutVersionPrintsHelp(t *testing.T) {
 	if err := run(context.Background(), []string{"node", "upgrade"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	for _, want := range []string{"Usage:", "katlctl node upgrade VERSION", "katlctl node upgrade 2026.7.0 --node cp-1"} {
+	for _, want := range []string{"Usage:", "katlctl node upgrade VERSION", "katlctl node upgrade 2026.7.0 --config cluster.yaml --node cp-1"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
 		}
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestHostUpgradeHelpLeadsWithClusterConfig(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"node", "upgrade", "--help"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	for _, want := range []string{
+		"Use the same ClusterConfig used to install the node",
+		"--config string",
+		"--node string",
+		"--endpoint string",
+		"optional saved context created by 'katlctl context save'",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+	for _, hidden := range []string{"--actor", "--context-file", "--no-wait", "--output"} {
+		if strings.Contains(stdout.String(), hidden) {
+			t.Fatalf("stdout = %q, exposes internal flag %q", stdout.String(), hidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestManagementTargetUsesClusterConfigAndEndpointOverride(t *testing.T) {
+	configPath := writeClusterConfig(t)
+	target, err := resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.nodeName != "cp-1" || target.endpoint != "10.0.0.11:9443" {
+		t.Fatalf("target = %#v", target)
+	}
+
+	target, err = resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath, nodeName: "cp-1", endpoint: "192.0.2.44"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.nodeName != "cp-1" || target.endpoint != "192.0.2.44:9443" {
+		t.Fatalf("override target = %#v", target)
+	}
+
+	bundlePath, _ := writeConfigBundle(t)
+	target, err = resolveManagementTarget(managementTargetOptions{clusterConfigPath: bundlePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.nodeName != "cp-1" || target.endpoint != "10.0.0.11:9443" {
+		t.Fatalf("bundle target = %#v", target)
+	}
+}
+
+func TestManagementTargetMissingSourceExplainsRecovery(t *testing.T) {
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "missing-katlctl.yaml"))
+	_, err := resolveManagementTarget(managementTargetOptions{nodeName: "cp-1"})
+	if err == nil {
+		t.Fatal("resolveManagementTarget() error = nil")
+	}
+	for _, want := range []string{"--config cluster.yaml", "--endpoint ADDRESS", "katlctl context save --config cluster.yaml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, missing %q", err, want)
+		}
+	}
+}
+
+func TestManagementEndpointAcceptsOperatorAddressForms(t *testing.T) {
+	tests := map[string]string{
+		"192.0.2.44":            "192.0.2.44:9443",
+		"node.home.arpa":        "node.home.arpa:9443",
+		"node.home.arpa:10443":  "node.home.arpa:10443",
+		"tcp://node.home.arpa":  "node.home.arpa:9443",
+		"tcp://[2001:db8::44]/": "[2001:db8::44]:9443",
+	}
+	for input, want := range tests {
+		t.Run(input, func(t *testing.T) {
+			got, err := normalizeManagementAddress(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Fatalf("normalizeManagementAddress(%q) = %q, want %q", input, got, want)
+			}
+		})
 	}
 }
 
@@ -1645,13 +1736,16 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 		fake.generation = &agentapi.Generation{GenerationId: req.TargetGenerationId, CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy}
 	}
 	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "10.0.0.11:9443" {
+			t.Fatalf("dial endpoint = %q", endpoint)
+		}
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 	}
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "upgrade", "v2026.7.0-alpha.9", "--endpoint", "node-a.example.test:9443", "--timeout", "1m"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "upgrade", "v2026.7.0-alpha.9", "--config", writeClusterConfig(t), "--node", "cp-1", "--timeout", "1m"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	request := fake.submitRequest.GetHostUpgrade()

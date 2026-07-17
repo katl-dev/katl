@@ -231,27 +231,28 @@ Supported changes compile into generation-scoped confext/sysext state and are
 applied live or on next boot according to the domain policy. See
 [Apply runtime configuration](docs/installing.md#apply-runtime-configuration).
 
-Routine host management can use an optional workstation context created with
-`katlctl context save --config ./cluster.yaml`. The command records and checks
-topology only; it does not retrieve credentials. The current context selects a
-single-node lab automatically; pass a node name in a larger cluster:
+Routine host management uses the same `ClusterConfig` as installation and
+bootstrap. Pass a node name in a larger cluster:
 
 ```sh
-katlctl node status cp-1
-katlctl node reboot cp-1
+katlctl node status cp-1 --config ./cluster.yaml
+katlctl node reboot cp-1 --config ./cluster.yaml
 ```
+
+An optional workstation context created with `katlctl context save --config
+./cluster.yaml` shortens repeated commands; it is not a prerequisite.
 
 Status and reboot results are concise text by default. Add `--output json` for
 automation. Reboot honors any generation already staged for the next boot and
 waits for a new agent instance to report healthy; `--no-wait` deliberately
 detaches after the reboot is scheduled.
 
-Host upgrades take a release version and a node from the current workstation
-context. `katlctl` resolves the published image, stages it, reboots the node,
-and waits for the new generation to pass boot health:
+Host upgrades take a release version and select the node from `ClusterConfig`.
+`katlctl` resolves the published image, stages it, reboots the node, and waits
+for the new generation to pass boot health:
 
 ```sh
-katlctl node upgrade v2026.7.0-alpha.9 --node cp-1
+katlctl node upgrade v2026.7.0-alpha.9 --config ./cluster.yaml --node cp-1
 ```
 
 Add `--plan` to check the upgrade without changing or rebooting the node. The
