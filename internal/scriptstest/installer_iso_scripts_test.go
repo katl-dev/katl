@@ -150,7 +150,7 @@ func TestInstallerConsoleAndArtifactContract(t *testing.T) {
 	profile := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles/installer-image/mkosi.conf")))
 	journal := string(mustReadFile(t, filepath.Join(repo, "mkosi.profiles/installer-image/mkosi.extra/etc/systemd/journald.conf.d/10-katl-installer-console.conf")))
 
-	for _, value := range []string{"console=tty0", "console=ttyS0,115200n8"} {
+	for _, value := range []string{"console=tty0", "console=ttyS0,115200n8", "systemd.getty_auto=no"} {
 		if !strings.Contains(profile, value) {
 			t.Fatalf("installer profile missing console %q", value)
 		}

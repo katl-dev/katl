@@ -37,6 +37,8 @@ func controlledKernelCommandLineOption(option string) bool {
 		return true
 	case strings.HasPrefix(option, "systemd.machine_id="):
 		return true
+	case strings.HasPrefix(option, "systemd.getty_auto="):
+		return true
 	case strings.HasPrefix(option, "katl.generation="):
 		return true
 	case strings.HasPrefix(option, "katl.root-slot="):

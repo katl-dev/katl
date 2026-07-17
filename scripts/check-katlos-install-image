@@ -159,7 +159,8 @@ jq -e '
       "rootfstype=squashfs",
       "ro",
       "console=ttyS0,115200n8",
-      "console=tty0"
+      "console=tty0",
+      "systemd.getty_auto=no"
     ][]; . as $required | $cmdline | index($required) != null)) and
   .installTarget.kind == "esp-or-xbootldr"' "$index" >/dev/null ||
     fail "runtime UKI component metadata is incomplete"
