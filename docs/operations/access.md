@@ -45,7 +45,7 @@ Expected state before Kubernetes bootstrap:
 Use the same source used for installation:
 
 ```sh
-katlctl cluster enroll ./cluster.yaml
+katlctl cluster enroll --config ./cluster.yaml
 ```
 
 The command connects as `root` using the workstation's normal SSH agent. Use

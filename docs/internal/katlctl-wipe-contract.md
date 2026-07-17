@@ -17,9 +17,9 @@ workstation context
   The enrolled current context supplies node names, management endpoints,
   roles, and credential references.
 
-SOURCE
-  Optional retained ClusterConfig when no enrolled context is available.
-  --config-bundle and --inventory remain expert alternatives.
+--config PATH
+  Optional retained ClusterConfig YAML or compiled Katl config bundle when no
+  enrolled context is available. --inventory remains an expert alternative.
 
 --context NAME
   Optional workstation context override for management addresses and
@@ -121,7 +121,7 @@ Failure behavior:
 Command:
 
 ```text
-katlctl node wipe NAME [SOURCE] --kubeconfig PATH
+katlctl node wipe NAME [--config PATH] --kubeconfig PATH
 ```
 
 Target selection:
@@ -129,7 +129,7 @@ Target selection:
 - Exactly one positional node name is required.
 - The node name must exist in the inventory and resolve to one node-local katlc
   endpoint.
-- `SOURCE` may be omitted when an enrolled workstation context supplies the
+- `--config` may be omitted when an enrolled workstation context supplies the
   topology and node credential reference.
 
 Graceful Kubernetes cleanup:
@@ -171,7 +171,7 @@ Result:
 Command:
 
 ```text
-katlctl cluster wipe [SOURCE] --all
+katlctl cluster wipe [--config PATH] --all
 ```
 
 Target selection:

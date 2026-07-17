@@ -28,7 +28,7 @@ An optional plan compiles the selected node configuration and asks the node to
 validate it without accepting an operation:
 
 ```sh
-katlctl node apply ./cluster.yaml \
+katlctl node apply --config ./cluster.yaml \
   --node cp-1 \
   --plan
 ```
@@ -38,11 +38,10 @@ accepting an operation. The default `auto` lets the domain policy select live or
 next-boot application. Request `--mode live` or `--mode next-boot` only when you
 intend to constrain that policy; unsafe requests are refused.
 
-If the source has already been compiled, use the expert bundle input instead of
-the positional source:
+If the source has already been compiled, pass the bundle through the same flag:
 
 ```sh
-katlctl node apply --config-bundle ./katl-lab.katlcfg --node cp-1 --plan
+katlctl node apply --config ./katl-lab.katlcfg --node cp-1 --plan
 ```
 
 Katl derives and verifies the bundle's integrity metadata from the file.
@@ -52,7 +51,7 @@ Katl derives and verifies the bundle's integrity metadata from the file.
 Run the same arguments without `--plan`:
 
 ```sh
-katlctl node apply ./cluster.yaml --node cp-1
+katlctl node apply --config ./cluster.yaml --node cp-1
 ```
 
 `katlctl` resolves the selected workstation context, reads the node credential,

@@ -27,7 +27,7 @@ const (
 
 type installApplyOptions struct {
 	endpoint   string
-	sourcePath string
+	configPath string
 	nodeName   string
 	noWait     bool
 	timeout    time.Duration
@@ -59,14 +59,14 @@ func newInstallCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := installApplyOptions{timeout: 30 * time.Minute, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "apply SOURCE",
-		Short: "Compile a cluster config and apply it to a waiting KatlOS installer",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			opts.sourcePath = args[0]
+		Use:   "apply",
+		Short: "Apply a ClusterConfig YAML or config bundle to a waiting KatlOS installer",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runInstallApply(ctx, opts, stdout, stderr)
 		},
 	}
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer base URL; discovers a unique waiting installer when omitted")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name or configured address; inferred when the config contains one node")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
@@ -98,27 +98,20 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	if strings.TrimSpace(opts.sourcePath) == "" {
-		return fmt.Errorf("source config path is required")
-	}
-	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
-		SourcePath:     opts.sourcePath,
-		KatlctlVersion: version,
-		KatlctlCommit:  commit,
-		CreatedBy:      installApplyCreator,
-	})
+	config, err := loadKatlConfig(opts.configPath, installApplyCreator, configbundle.PlanningInputs{})
 	if err != nil {
-		return fmt.Errorf("compile cluster config: %w", err)
+		return err
 	}
+	archive := config.Archive
 	if len(archive) > maxInstallBundleSize {
 		return fmt.Errorf("compiled config bundle size %d exceeds %d bytes", len(archive), maxInstallBundleSize)
 	}
-	nodeName, err := resolveInstallNode(archive, result.Digest, opts.nodeName)
+	nodeName, err := resolveInstallNode(archive, config.Bundle.Digest, opts.nodeName)
 	if err != nil {
 		return err
 	}
 	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(archive), configbundle.ReadOptions{
-		ExpectedDigest:          result.Digest,
+		ExpectedDigest:          config.Bundle.Digest,
 		NodeName:                nodeName,
 		AllowMissingKatlosImage: true,
 	})

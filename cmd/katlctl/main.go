@@ -144,7 +144,54 @@ Start with "katlctl install discover" for a waiting installer or
 	nodeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl node wipe"))
 	cmd.AddCommand(nodeCmd)
 
+	setMinimumInvocationExamples(cmd)
 	return cmd
+}
+
+func setMinimumInvocationExamples(root *cobra.Command) {
+	examples := map[string]string{
+		"katlctl":                         "katlctl install discover",
+		"katlctl version":                 "katlctl version",
+		"katlctl cluster":                 "katlctl cluster bootstrap --config cluster.yaml",
+		"katlctl cluster enroll":          "katlctl cluster enroll --config cluster.yaml",
+		"katlctl cluster bootstrap":       "katlctl cluster bootstrap --config cluster.yaml",
+		"katlctl cluster wipe":            "katlctl cluster wipe --all",
+		"katlctl kubernetes":              "katlctl kubernetes upgrade v1.36.1",
+		"katlctl kubernetes upgrade":      "katlctl kubernetes upgrade v1.36.1",
+		"katlctl kubernetes apply-config": "katlctl kubernetes apply-config --inventory cluster.json --coordinator cp-1 --generation 1 --config-name default --rollout-id rollout-1",
+		"katlctl config":                  "katlctl config validate cluster.yaml",
+		"katlctl config init":             "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
+		"katlctl config validate":         "katlctl config validate cluster.yaml",
+		"katlctl config schema":           "katlctl config schema",
+		"katlctl config bundle":           "katlctl config bundle cluster.yaml --output cluster.katlcfg",
+		"katlctl config render-node":      "katlctl config render-node --config cluster.yaml --node cp-1 --desired-version 1",
+		"katlctl context":                 "katlctl context show",
+		"katlctl context path":            "katlctl context path",
+		"katlctl context show":            "katlctl context show",
+		"katlctl install":                 "katlctl install discover",
+		"katlctl install discover":        "katlctl install discover",
+		"katlctl install apply":           "katlctl install apply --config cluster.yaml",
+		"katlctl install status":          "katlctl install status",
+		"katlctl operations":              "katlctl operations list --node cp-1",
+		"katlctl operations status":       "katlctl operations status --node cp-1 --operation-id OPERATION_ID",
+		"katlctl operations list":         "katlctl operations list --node cp-1",
+		"katlctl node":                    "katlctl node status cp-1",
+		"katlctl node status":             "katlctl node status cp-1",
+		"katlctl node reboot":             "katlctl node reboot cp-1",
+		"katlctl node upgrade":            "katlctl node upgrade 2026.7.0 --node cp-1",
+		"katlctl node apply":              "katlctl node apply --config cluster.yaml --node cp-1",
+		"katlctl node apply validate":     "katlctl node apply validate --config cluster.yaml --node cp-1",
+		"katlctl node apply status":       "katlctl node apply status --node cp-1",
+		"katlctl node wipe":               "katlctl node wipe worker-1 --kubeconfig kubeconfig",
+	}
+	var visit func(*cobra.Command)
+	visit = func(command *cobra.Command) {
+		command.Example = examples[command.CommandPath()]
+		for _, child := range command.Commands() {
+			visit(child)
+		}
+	}
+	visit(root)
 }
 
 type hostUpgradeOptions struct {
@@ -389,9 +436,8 @@ func writeJSON(stdout io.Writer, value any) error {
 type wipeClusterOptions struct {
 	command           string
 	selectedNodes     stringList
-	sourcePath        string
+	configPath        string
 	inventoryPath     string
-	configBundlePath  string
 	workstationConfig string
 	contextName       string
 	all               bool
@@ -407,19 +453,16 @@ type wipeClusterOptions struct {
 func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
 	opts := wipeClusterOptions{command: commandName, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "wipe [SOURCE]",
+		Use:   "wipe",
 		Short: "Destructively reset cluster nodes for installer-media reinstall",
 		Long:  "Erase KatlOS boot artifacts from the selected cluster nodes. Every wiped node must boot installer media or PXE before it can be used again.",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if len(args) == 1 {
-				opts.sourcePath = args[0]
-			}
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runWipeClusterOptions(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster inventory")
-	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to a Katl config bundle")
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.workstationConfig, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().BoolVar(&opts.all, "all", false, "select every node in the inventory")
@@ -492,7 +535,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 }
 
 func resolveWipeClusterTargets(opts wipeClusterOptions) ([]inventory.PlannedNode, bool, error) {
-	hasExplicitTopology := strings.TrimSpace(opts.sourcePath) != "" || strings.TrimSpace(opts.configBundlePath) != "" || strings.TrimSpace(opts.inventoryPath) != ""
+	hasExplicitTopology := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != ""
 	if !hasExplicitTopology {
 		topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
 			ConfigPath:  strings.TrimSpace(opts.workstationConfig),
@@ -517,7 +560,7 @@ func resolveWipeClusterTargets(opts wipeClusterOptions) ([]inventory.PlannedNode
 		return wipeClusterTargets(plan, opts.all, opts.selectedNodes.values)
 	}
 
-	inv, err := loadWipeInventory(opts.sourcePath, opts.configBundlePath, opts.inventoryPath)
+	inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath)
 	if err != nil {
 		return nil, false, err
 	}
@@ -535,9 +578,8 @@ func resolveWipeClusterTargets(opts wipeClusterOptions) ([]inventory.PlannedNode
 type wipeNodeOptions struct {
 	command           string
 	selectedNodes     stringList
-	sourcePath        string
+	configPath        string
 	inventoryPath     string
-	configBundlePath  string
 	workstationConfig string
 	contextName       string
 	kubeconfigPath    string
@@ -552,20 +594,17 @@ type wipeNodeOptions struct {
 func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
 	opts := wipeNodeOptions{command: commandName, output: "json"}
 	cmd := &cobra.Command{
-		Use:   "wipe NODE [SOURCE]",
+		Use:   "wipe NODE",
 		Short: "Remove one node and reset it for installer-media reinstall",
 		Long:  "Remove one worker from Kubernetes and erase its KatlOS boot artifacts. The node must boot installer media or PXE before it can be used again.",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			opts.selectedNodes.values = []string{args[0]}
-			if len(args) == 2 {
-				opts.sourcePath = args[1]
-			}
 			return runWipeNodeOptions(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster inventory")
-	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to a Katl config bundle")
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.workstationConfig, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.kubeconfigPath, "kubeconfig", "", "path to operator kubeconfig")
@@ -654,7 +693,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 }
 
 func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, error) {
-	hasExplicitTopology := strings.TrimSpace(opts.sourcePath) != "" || strings.TrimSpace(opts.configBundlePath) != "" || strings.TrimSpace(opts.inventoryPath) != ""
+	hasExplicitTopology := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != ""
 	if !hasExplicitTopology {
 		topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
 			ConfigPath:  strings.TrimSpace(opts.workstationConfig),
@@ -681,7 +720,7 @@ func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, e
 		return inventory.PlannedNode{}, false, fmt.Errorf("node %q is not in context %q", opts.selectedNodes.values[0], topology.ContextName)
 	}
 
-	inv, err := loadWipeInventory(opts.sourcePath, opts.configBundlePath, opts.inventoryPath)
+	inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath)
 	if err != nil {
 		return inventory.PlannedNode{}, false, err
 	}
@@ -700,37 +739,24 @@ func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, e
 	return targets[0], partial, nil
 }
 
-func loadWipeInventory(sourcePath, bundlePath, inventoryPath string) (inventory.Inventory, error) {
+func loadWipeInventory(configPath, inventoryPath string) (inventory.Inventory, error) {
 	inputs := 0
-	for _, value := range []string{sourcePath, bundlePath, inventoryPath} {
+	for _, value := range []string{configPath, inventoryPath} {
 		if strings.TrimSpace(value) != "" {
 			inputs++
 		}
 	}
 	if inputs != 1 {
-		return inventory.Inventory{}, fmt.Errorf("exactly one cluster config SOURCE, --config-bundle, or --inventory is required")
+		return inventory.Inventory{}, fmt.Errorf("exactly one of --config or --inventory is required")
 	}
 	if strings.TrimSpace(inventoryPath) != "" {
 		return loadInventory(inventoryPath)
 	}
-	if strings.TrimSpace(sourcePath) != "" {
-		archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
-			SourcePath: sourcePath, KatlctlVersion: version, KatlctlCommit: commit, CreatedBy: "katlctl cluster wipe",
-		})
-		if err != nil {
-			return inventory.Inventory{}, fmt.Errorf("compile cluster config: %w", err)
-		}
-		bundle, err := configbundle.ReadBundle(bytes.NewReader(archive), result.Digest)
-		if err != nil {
-			return inventory.Inventory{}, fmt.Errorf("read compiled cluster config: %w", err)
-		}
-		return bundle.Manifest.Cluster.BootstrapInventory, nil
-	}
-	bundle, err := configbundle.ReadBundleFile(bundlePath, "")
+	config, err := loadKatlConfig(configPath, "katlctl cluster wipe", configbundle.PlanningInputs{})
 	if err != nil {
 		return inventory.Inventory{}, err
 	}
-	return bundle.Manifest.Cluster.BootstrapInventory, nil
+	return config.Bundle.Manifest.Cluster.BootstrapInventory, nil
 }
 
 func overlayWipeContext(inv inventory.Inventory, configPath, contextName string) (inventory.Inventory, error) {
@@ -1257,8 +1283,7 @@ type katlosImageArtifactMetadata struct {
 }
 
 type nodeConfigInputOptions struct {
-	sourcePath     string
-	bundlePath     string
+	configPath     string
 	nodeName       string
 	sourceID       string
 	desiredVersion string
@@ -1458,19 +1483,13 @@ func newConfigRenderNodeCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func addNodeConfigInputFlags(cmd *cobra.Command, opts *nodeConfigInputOptions) {
-	cmd.Flags().StringVar(&opts.sourcePath, "source", "", "ClusterConfig source YAML")
-	cmd.Flags().StringVar(&opts.bundlePath, "config-bundle", "", "Katl config bundle")
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node to select from cluster intent")
 	cmd.Flags().StringVar(&opts.sourceID, "source-id", "", "runtime configuration source id; defaults to the cluster name")
 	cmd.Flags().StringVar(&opts.desiredVersion, "desired-version", "", "monotonic unsigned runtime configuration version")
 }
 
 func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) {
-	fromSource := strings.TrimSpace(opts.sourcePath) != ""
-	fromBundle := strings.TrimSpace(opts.bundlePath) != ""
-	if fromSource == fromBundle {
-		return nil, fmt.Errorf("exactly one of --source or --config-bundle is required")
-	}
 	if strings.TrimSpace(opts.nodeName) == "" {
 		return nil, fmt.Errorf("--node is required")
 	}
@@ -1481,22 +1500,11 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 		NodeName:                opts.nodeName,
 		AllowMissingKatlosImage: true,
 	}
-	var selected configbundle.SelectedNodeMaterial
-	var err error
-	if fromSource {
-		archive, _, buildErr := configbundle.BuildArchive(configbundle.BuildRequest{
-			SourcePath:     opts.sourcePath,
-			KatlctlVersion: version,
-			KatlctlCommit:  commit,
-			CreatedBy:      configBundleCreator,
-		})
-		if buildErr != nil {
-			return nil, buildErr
-		}
-		selected, err = configbundle.ReadSelectedNode(bytes.NewReader(archive), readOptions)
-	} else {
-		selected, err = configbundle.ReadSelectedNodeFile(opts.bundlePath, readOptions)
+	config, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{})
+	if err != nil {
+		return nil, err
 	}
+	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(config.Archive), readOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -1519,7 +1527,6 @@ type configApplyOptions struct {
 	agentTokenFile      string
 	workstationConfig   string
 	contextName         string
-	configPath          string
 	nodeConfig          nodeConfigInputOptions
 	mode                string
 	candidateGeneration string
@@ -1536,16 +1543,10 @@ var configApplyNow = func() time.Time { return time.Now().UTC() }
 func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := configApplyOptions{mode: generation.ApplyModeAuto, actor: "katlctl node apply", output: "json"}
 	cmd := &cobra.Command{
-		Use:   "apply [SOURCE]",
+		Use:   "apply",
 		Short: "Validate or apply node configuration",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if len(args) == 1 {
-				if strings.TrimSpace(opts.nodeConfig.sourcePath) != "" {
-					return fmt.Errorf("SOURCE cannot be combined with --source")
-				}
-				opts.nodeConfig.sourcePath = args[0]
-			}
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runConfigApply(ctx, opts, stdout, stderr)
 		},
 	}
@@ -1579,11 +1580,10 @@ func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 	cmd.Flags().StringVar(&opts.agentTokenFile, "agent-token-file", "", "katlc agent bearer token file")
 	cmd.Flags().StringVar(&opts.workstationConfig, "context-file", "", "workstation context file path")
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
-	cmd.Flags().StringVar(&opts.configPath, "file", "", "pre-rendered NodeConfigurationChange YAML")
 	addNodeConfigInputFlags(cmd, &opts.nodeConfig)
 	cmd.Flags().StringVar(&opts.mode, "mode", opts.mode, "apply mode: auto, live, or next-boot")
 	cmd.Flags().StringVar(&opts.candidateGeneration, "candidate-generation", "", "candidate generation id")
-	for _, name := range []string{"source", "desired-version", "candidate-generation"} {
+	for _, name := range []string{"desired-version", "candidate-generation"} {
 		if flag := cmd.Flags().Lookup(name); flag != nil {
 			flag.Hidden = true
 		}
@@ -1608,10 +1608,8 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	fileInput := strings.TrimSpace(opts.configPath) != ""
-	intentInput := strings.TrimSpace(opts.nodeConfig.sourcePath) != "" || strings.TrimSpace(opts.nodeConfig.bundlePath) != ""
-	if fileInput == intentInput {
-		return fmt.Errorf("exactly one of --file, --source, or --config-bundle is required")
+	if strings.TrimSpace(opts.nodeConfig.configPath) == "" {
+		return fmt.Errorf("--config is required")
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
 		configPath: opts.workstationConfig, contextName: opts.contextName,
@@ -1623,25 +1621,16 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if strings.TrimSpace(opts.nodeConfig.nodeName) == "" {
 		opts.nodeConfig.nodeName = target.nodeName
 	}
-	if strings.TrimSpace(opts.nodeConfig.desiredVersion) == "" && intentInput {
-		opts.nodeConfig.desiredVersion = strconv.FormatInt(configApplyNow().UnixNano(), 10)
-	}
 	if strings.TrimSpace(opts.candidateGeneration) == "" {
 		opts.candidateGeneration = "config-" + strconv.FormatInt(configApplyNow().UnixNano(), 10)
 	}
-	var configYAML []byte
-	if fileInput {
+	configYAML, rendered, err := nodeConfigYAML(opts.nodeConfig, opts.mode)
+	if err != nil {
+		return err
+	}
+	if !rendered {
 		if strings.TrimSpace(opts.nodeConfig.sourceID) != "" || strings.TrimSpace(opts.nodeConfig.desiredVersion) != "" {
-			return fmt.Errorf("--source-id and --desired-version require --source or --config-bundle")
-		}
-		configYAML, err = os.ReadFile(opts.configPath)
-		if err != nil {
-			return fmt.Errorf("read config file: %w", err)
-		}
-	} else {
-		configYAML, err = renderNodeConfig(opts.nodeConfig, opts.mode)
-		if err != nil {
-			return err
+			return fmt.Errorf("--source-id and --desired-version cannot be used with a pre-rendered NodeConfigurationChange")
 		}
 	}
 	conn, err := dialKatlcAgent(ctx, target.endpoint, target.token)
@@ -1735,6 +1724,24 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		return writeOperationAccepted(stdout, accepted)
 	}
 	return waitAcceptedOperation(ctx, conn.Client, accepted, opts.waitTimeout, stdout, stderr)
+}
+
+func nodeConfigYAML(opts nodeConfigInputOptions, mode string) ([]byte, bool, error) {
+	data, err := os.ReadFile(strings.TrimSpace(opts.configPath))
+	if err != nil {
+		return nil, false, fmt.Errorf("read --config %s: %w", opts.configPath, err)
+	}
+	var identity struct {
+		Kind string `yaml:"kind"`
+	}
+	if err := yaml.Unmarshal(data, &identity); err == nil && identity.Kind == configapply.NodeConfigurationChangeKind {
+		return data, false, nil
+	}
+	if strings.TrimSpace(opts.desiredVersion) == "" {
+		opts.desiredVersion = strconv.FormatInt(configApplyNow().UnixNano(), 10)
+	}
+	rendered, err := renderNodeConfig(opts, mode)
+	return rendered, true, err
 }
 
 func configApplyOperationKind(acceptedMode string) (string, error) {
@@ -1976,9 +1983,8 @@ func firstNonEmpty(values ...string) string {
 
 type clusterBootstrapOptions struct {
 	addresses                              addressOverrides
-	sourcePath                             string
+	configPath                             string
 	inventoryPath                          string
-	configBundlePath                       string
 	initNode                               string
 	joinWorker                             string
 	controlPlaneEndpoint                   string
@@ -1998,18 +2004,17 @@ type clusterBootstrapOptions struct {
 func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := clusterBootstrapOptions{}
 	cmd := &cobra.Command{
-		Use:   "bootstrap [SOURCE]",
-		Short: "Bootstrap Kubernetes from a cluster config or node inventory",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if len(args) == 1 {
-				opts.sourcePath = args[0]
-			}
+		Use:   "bootstrap",
+		Short: "Bootstrap Kubernetes from a ClusterConfig or config bundle",
+		Long:  "Bootstrap Kubernetes from a ClusterConfig YAML manifest or compiled Katl config bundle. Katl detects the --config format internally.",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runClusterBootstrap(ctx, opts, stdout, stderr)
 		},
 	}
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "path to cluster bootstrap inventory")
-	cmd.Flags().StringVar(&opts.configBundlePath, "config-bundle", "", "path to a Katl config bundle")
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
+	cmd.Flags().Lookup("inventory").Hidden = true
 	cmd.Flags().StringVar(&opts.initNode, "init-node", "", "first control-plane node for kubeadm init")
 	cmd.Flags().StringVar(&opts.joinWorker, "join-worker", "", "join one fresh worker to an already initialized cluster without rerunning kubeadm init")
 	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
@@ -2085,17 +2090,16 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 }
 
 func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, error) {
-	sourcePath := strings.TrimSpace(opts.sourcePath)
+	configPath := strings.TrimSpace(opts.configPath)
 	inventoryPath := strings.TrimSpace(opts.inventoryPath)
-	bundlePath := strings.TrimSpace(opts.configBundlePath)
 	inputs := 0
-	for _, value := range []string{sourcePath, inventoryPath, bundlePath} {
+	for _, value := range []string{configPath, inventoryPath} {
 		if value != "" {
 			inputs++
 		}
 	}
 	if inputs != 1 {
-		return inventory.Inventory{}, fmt.Errorf("exactly one cluster config SOURCE, --config-bundle, or --inventory is required")
+		return inventory.Inventory{}, fmt.Errorf("exactly one of --config or --inventory is required")
 	}
 	if inventoryPath != "" {
 		return loadInventory(inventoryPath)
@@ -2103,33 +2107,14 @@ func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, erro
 	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
 		return inventory.Inventory{}, fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in the cluster config")
 	}
-	if sourcePath != "" {
-		archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
-			SourcePath:     sourcePath,
-			KatlctlVersion: version,
-			KatlctlCommit:  commit,
-			CreatedBy:      clusterBootstrapCreator,
-			Planning: configbundle.PlanningInputs{
-				KubernetesBundle: opts.kubernetesBundle,
-			},
-		})
-		if err != nil {
-			return inventory.Inventory{}, fmt.Errorf("compile cluster config: %w", err)
-		}
-		bundle, err := configbundle.ReadBundle(bytes.NewReader(archive), result.Digest)
-		if err != nil {
-			return inventory.Inventory{}, fmt.Errorf("read compiled cluster config: %w", err)
-		}
-		return bundle.Manifest.Cluster.BootstrapInventory, nil
-	}
-	if strings.TrimSpace(opts.kubernetesBundle) != "" {
-		return inventory.Inventory{}, fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the compiled config bundle")
-	}
-	bundle, err := configbundle.ReadBundleFile(bundlePath, "")
+	config, err := loadKatlConfig(configPath, clusterBootstrapCreator, configbundle.PlanningInputs{KubernetesBundle: opts.kubernetesBundle})
 	if err != nil {
 		return inventory.Inventory{}, err
 	}
-	return bundle.Manifest.Cluster.BootstrapInventory, nil
+	if !config.Source && strings.TrimSpace(opts.kubernetesBundle) != "" {
+		return inventory.Inventory{}, fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the compiled config bundle")
+	}
+	return config.Bundle.Manifest.Cluster.BootstrapInventory, nil
 }
 
 func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {

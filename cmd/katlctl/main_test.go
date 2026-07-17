@@ -26,6 +26,7 @@ import (
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
+	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -88,6 +89,101 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestEveryCommandHelpShowsOneMinimumInvocation(t *testing.T) {
+	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
+	var commands []*cobra.Command
+	var collect func(*cobra.Command)
+	collect = func(command *cobra.Command) {
+		commands = append(commands, command)
+		for _, child := range command.Commands() {
+			collect(child)
+		}
+	}
+	collect(root)
+
+	for _, command := range commands {
+		path := command.CommandPath()
+		example := strings.TrimSpace(command.Example)
+		if example == "" {
+			t.Errorf("%s has no minimum invocation example", path)
+			continue
+		}
+		if strings.Contains(example, "\n") {
+			t.Errorf("%s example = %q, want one concise invocation", path, example)
+		}
+		if !strings.HasPrefix(example, path) {
+			t.Errorf("%s example = %q, want command path prefix", path, example)
+		}
+		var help bytes.Buffer
+		command.SetOut(&help)
+		if err := command.Help(); err != nil {
+			t.Errorf("%s help error = %v", path, err)
+			continue
+		}
+		if !strings.Contains(help.String(), "Examples:\n"+example+"\n") {
+			t.Errorf("%s help does not show its minimum invocation:\n%s", path, help.String())
+		}
+	}
+}
+
+func TestClusterBootstrapHelpLeadsWithUnifiedConfigInput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"cluster", "bootstrap", "--help"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	help := stdout.String()
+	for _, want := range []string{
+		"ClusterConfig YAML manifest or compiled Katl config bundle",
+		"katlctl cluster bootstrap --config cluster.yaml",
+		"--config string",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help is missing %q:\n%s", want, help)
+		}
+	}
+	for _, obsolete := range []string{"--source", "--config-bundle"} {
+		if strings.Contains(help, obsolete) {
+			t.Fatalf("help exposes obsolete config input %q:\n%s", obsolete, help)
+		}
+	}
+}
+
+func TestConfigInputFlagsUseOneName(t *testing.T) {
+	want := map[string]bool{
+		"katlctl cluster enroll":      true,
+		"katlctl cluster bootstrap":   true,
+		"katlctl cluster wipe":        true,
+		"katlctl config render-node":  true,
+		"katlctl install apply":       true,
+		"katlctl node apply":          true,
+		"katlctl node apply validate": true,
+		"katlctl node wipe":           true,
+	}
+	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
+	var visit func(*cobra.Command)
+	visit = func(command *cobra.Command) {
+		path := command.CommandPath()
+		if flag := command.Flags().Lookup("config"); flag != nil {
+			if !want[path] {
+				t.Errorf("unexpected --config input on %s", path)
+			}
+			delete(want, path)
+		}
+		for _, obsolete := range []string{"source", "config-bundle", "file"} {
+			if command.Flags().Lookup(obsolete) != nil {
+				t.Errorf("%s still exposes --%s instead of --config", path, obsolete)
+			}
+		}
+		for _, child := range command.Commands() {
+			visit(child)
+		}
+	}
+	visit(root)
+	for path := range want {
+		t.Errorf("%s does not expose --config", path)
 	}
 }
 
@@ -283,7 +379,7 @@ func TestConfigRenderNodeFromSource(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run(context.Background(), []string{
 		"config", "render-node",
-		"--source", sourcePath,
+		"--config", sourcePath,
 		"--node", "cp-1",
 		"--desired-version", "2",
 	}, &stdout, &stderr); err != nil {
@@ -323,7 +419,7 @@ func TestConfigRenderNodeFromMediaBundle(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run(context.Background(), []string{
 		"config", "render-node",
-		"--config-bundle", bundlePath,
+		"--config", bundlePath,
 		"--node", "cp-1",
 		"--desired-version", "2",
 	}, &stdout, &stderr); err != nil {
@@ -755,7 +851,7 @@ func TestClusterBootstrapReturnsAgentBootstrapError(t *testing.T) {
 func TestClusterBootstrapRequiresInput(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"cluster", "bootstrap"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "exactly one cluster config SOURCE") {
+	if err == nil || !strings.Contains(err.Error(), "exactly one of --config or --inventory") {
 		t.Fatalf("run() error = %v, want input error", err)
 	}
 }
@@ -772,7 +868,7 @@ func TestClusterBootstrapCompilesSourceInventory(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"cluster", "bootstrap", sourcePath,
+		"cluster", "bootstrap", "--config", sourcePath,
 		"--init-node", "cp-1",
 		"--dry-run",
 	}, &stdout, &stderr)
@@ -797,7 +893,7 @@ func TestClusterBootstrapUsesConfigBundleInventory(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"cluster", "bootstrap",
-		"--config-bundle", bundlePath,
+		"--config", bundlePath,
 		"--init-node", "cp-1",
 		"--dry-run",
 	}, &stdout, &stderr)
@@ -814,17 +910,15 @@ func TestClusterBootstrapUsesConfigBundleInventory(t *testing.T) {
 
 func TestClusterBootstrapRejectsConfigBundleConflicts(t *testing.T) {
 	bundlePath, _ := writeConfigBundle(t)
-	sourcePath := writeClusterConfig(t)
 	inventoryPath := writeInventory(t)
 	tests := []struct {
 		name string
 		args []string
 		want string
 	}{
-		{name: "inventory", args: []string{"--config-bundle", bundlePath, "--inventory", inventoryPath}, want: "exactly one"},
-		{name: "source and bundle", args: []string{sourcePath, "--config-bundle", bundlePath}, want: "exactly one"},
-		{name: "Kubernetes", args: []string{"--config-bundle", bundlePath, "--kubernetes-bundle", "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.2"}, want: "conflicts with the selection embedded"},
-		{name: "endpoint", args: []string{"--config-bundle", bundlePath, "--control-plane-endpoint", "other.test:6443"}, want: "conflicts with the endpoint embedded"},
+		{name: "inventory", args: []string{"--config", bundlePath, "--inventory", inventoryPath}, want: "exactly one"},
+		{name: "Kubernetes", args: []string{"--config", bundlePath, "--kubernetes-bundle", "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.2"}, want: "conflicts with the selection embedded"},
+		{name: "endpoint", args: []string{"--config", bundlePath, "--control-plane-endpoint", "other.test:6443"}, want: "conflicts with the endpoint embedded"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1020,7 +1114,7 @@ func TestWipeClusterPlanAcceptsClusterConfig(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
-		"cluster", "wipe", sourcePath,
+		"cluster", "wipe", "--config", sourcePath,
 		"--all",
 		"--plan",
 	}, &stdout, &stderr)
@@ -1143,7 +1237,7 @@ func TestWipeNodeRequiresExactlyOneTarget(t *testing.T) {
 		"--client-request-id", "wipe-node-req",
 		"--kubeconfig", "admin.conf",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "accepts between 1 and 2 arg") {
+	if err == nil || !strings.Contains(err.Error(), "accepts 1 arg") {
 		t.Fatalf("run() error = %v, want exact node target validation", err)
 	}
 	if stdout.Len() != 0 {
@@ -1496,7 +1590,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	err := run(context.Background(), []string{
 		"node", "apply",
 		"--endpoint", "node-a.example.test:9443",
-		"--file", configPath,
+		"--config", configPath,
 		"--mode", generation.ApplyModeNextBoot,
 		"--candidate-generation", "generation-1",
 		"--client-request-id", "req-stage",
@@ -1619,7 +1713,7 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	err := run(context.Background(), []string{
 		"node", "apply",
 		"--endpoint", "node-a.example.test:9443",
-		"--file", configPath,
+		"--config", configPath,
 		"--candidate-generation", "generation-auto",
 		"--client-request-id", "req-auto",
 	}, &stdout, &stderr)
@@ -1664,7 +1758,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	err := run(context.Background(), []string{
 		"node", "apply", "validate",
 		"--endpoint", "node-a.example.test:9443",
-		"--file", configPath,
+		"--config", configPath,
 		"--mode", generation.ApplyModeNextBoot,
 		"--candidate-generation", "generation-plan",
 		"--client-request-id", "req-plan",
@@ -1716,7 +1810,7 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 	err := run(context.Background(), []string{
 		"node", "apply",
 		"--endpoint", "node-a.example.test:9443",
-		"--config-bundle", bundlePath,
+		"--config", bundlePath,
 		"--node", "cp-1",
 		"--desired-version", "2",
 		"--candidate-generation", "generation-bundle",
