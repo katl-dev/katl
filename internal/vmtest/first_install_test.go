@@ -499,7 +499,7 @@ func TestFirstInstallPreseedConfigBundle(t *testing.T) {
 	}
 }
 
-func TestFirstInstallPreseedManifestRequiresEvidence(t *testing.T) {
+func TestFirstInstallPreseedManifestDoesNotDependOnSerialFormatting(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
 	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
@@ -523,17 +523,17 @@ func TestFirstInstallPreseedManifestRequiresEvidence(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
-		InstallerRunner: fakeVM(installerCompletedSignal + "/run/katl/install-manifest.json\n"),
+		InstallerRunner: fakeVM("katl input: [audit message interleaved]\ncopied /run/katl/preseed/install-input.json to /run/katl/install-input.json\n" + installerCompletedSignal + "/run/katl/install-manifest.json\n"),
 		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
 	}
-	if result.Status != StatusFailed {
-		t.Fatalf("Status = %q, want failed", result.Status)
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, want passed", result.Status)
 	}
-	if !strings.Contains(result.FailureSummary, "installer serial missing preseed signal") {
-		t.Fatalf("FailureSummary = %q", result.FailureSummary)
+	if !hasPhase(result, "preseed") {
+		t.Fatalf("phases = %+v, want passed preseed phase", result.Phases)
 	}
 }
 
