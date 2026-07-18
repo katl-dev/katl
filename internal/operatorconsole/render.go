@@ -9,6 +9,8 @@ import (
 const (
 	minimumWidth    = 40
 	minimumHeight   = 12
+	maximumWidth    = 512
+	maximumHeight   = 256
 	fieldWidth      = 14
 	panelFieldWidth = 12
 
@@ -138,6 +140,9 @@ func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
 	if render.color {
 		render.output.writeString(clearScreen)
 	}
+	if render.output.width < minimumWidth || render.output.rows < minimumHeight {
+		return render.renderCompact(snapshot)
+	}
 
 	line := render.line()
 	line.style(styleTitle)
@@ -225,6 +230,30 @@ func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
 		footer.writeString(" | SSH disabled")
 	}
 	footer.resetStyle()
+	footer.endFrame()
+	return render.output.bytes()
+}
+
+func (render *Renderer) renderCompact(snapshot *Snapshot) []byte {
+	line := render.line()
+	line.style(styleTitle).writeString("KatlOS").resetStyle()
+	line.finish()
+
+	if render.row < render.contentRows {
+		line = render.line()
+		line.style(stateStyle(snapshot.State)).writeString(stateLabel(snapshot.State)).resetStyle()
+		line.finish()
+	}
+	if address := firstIPv4(snapshot.Network); address != "" && render.row < render.contentRows {
+		render.line().writeString(address).finish()
+	}
+	for render.row < render.contentRows {
+		render.finishBlank()
+	}
+
+	footer := newLine(&render.output)
+	footer.color = render.color
+	footer.style(styleDim).writeString("F2: console").resetStyle()
 	footer.endFrame()
 	return render.output.bytes()
 }
@@ -481,10 +510,7 @@ type JournalWriter struct {
 // NewJournalWriter binds a bounded journal writer to a fixed render target. It
 // is primarily useful for testing journal sources independently.
 func NewJournalWriter(target RenderTarget) JournalWriter {
-	if target.width < minimumWidth {
-		target.width = minimumWidth
-	}
-	target.rows = max(target.rows, 0)
+	target.width, target.rows = renderDimensions(target.width, target.rows)
 	target.reset()
 	return JournalWriter{output: target}
 }
@@ -556,9 +582,7 @@ func (writer *JournalWriter) writeLine(value []byte) int {
 }
 
 func journalLineRows(value []byte, width int) int {
-	if width < minimumWidth {
-		width = minimumWidth
-	}
+	width, _ = renderDimensions(width, 1)
 	columns := 0
 	rows := 0
 	wrote := false
@@ -1063,5 +1087,5 @@ func fallback(value, fallback string) string {
 }
 
 func renderDimensions(width, height int) (int, int) {
-	return max(width, minimumWidth), max(height, minimumHeight)
+	return min(max(width, 1), maximumWidth), min(max(height, 1), maximumHeight)
 }

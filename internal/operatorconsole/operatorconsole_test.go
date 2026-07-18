@@ -513,6 +513,42 @@ func TestRenderWrapsOperatorContentAtNarrowWidth(t *testing.T) {
 	}
 }
 
+func TestRenderUsesActualUndersizedTerminal(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:  ModeInstaller,
+		State: "starting-installer",
+		Network: []NetworkInterface{{
+			Name:      "enp1s0",
+			Addresses: []string{"192.0.2.10/24"},
+		}},
+	}
+	const width, height = 20, 8
+	got := string(renderDashboard(&snapshot, nil, width, height, false))
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != height {
+		t.Fatalf("rendered rows = %d, want %d:\n%s", len(lines), height, got)
+	}
+	for number, line := range lines {
+		if visibleWidth(line) > width {
+			t.Fatalf("line %d exceeds actual width: %q", number+1, line)
+		}
+	}
+	for _, want := range []string{"KatlOS", "Starting installer", "192.0.2.10", "F2: console"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("compact render missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDimensionsAreCapped(t *testing.T) {
+	if got, want := RenderCapacity(maximumWidth+1, maximumHeight+1), RenderCapacity(maximumWidth, maximumHeight); got != want {
+		t.Fatalf("oversized render capacity = %d, want %d", got, want)
+	}
+	if got, want := RenderCapacity(20, 8), 8*(20*utf8.UTFMax+32); got != want {
+		t.Fatalf("undersized render capacity = %d, want %d", got, want)
+	}
+}
+
 func TestTerminalRenderDoesNotScrollCompletedFrame(t *testing.T) {
 	snapshot := Snapshot{
 		Mode:       ModeRuntime,
