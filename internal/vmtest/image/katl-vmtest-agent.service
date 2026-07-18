@@ -2,7 +2,6 @@
 Description=Katl vmtest guest agent
 Documentation=man:systemd.service(5)
 After=basic.target
-ConditionKernelCommandLine=katl.vmtest_agent=1
 
 [Service]
 Type=simple

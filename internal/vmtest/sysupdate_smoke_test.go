@@ -101,17 +101,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}()
 
 	previousGeneration := currentGenerationFromGuest(t, ctx, guest)
-	previousSpec, previousStatus := generationRecordsFromGuest(t, ctx, guest, previousGeneration)
-	previousSpec.KernelCommandLine = append(previousSpec.KernelCommandLine,
-		"console=ttyS0,115200n8", "systemd.log_target=console", "loglevel=6", "katl.vmtest_agent=1")
-	digest, err := generation.CanonicalSpecDigest(previousSpec)
-	if err != nil {
-		t.Fatalf("digest vmtest-visible previous generation: %v", err)
-	}
-	previousStatus.SpecDigest = digest
-	previousStatus.UpdatedAt = time.Now().UTC()
-	writeGuestJSON(t, ctx, guest, "/var/lib/katl/generations/"+previousGeneration+"/spec.json", previousSpec)
-	writeGuestJSON(t, ctx, guest, "/var/lib/katl/generations/"+previousGeneration+"/status.json", previousStatus)
+	previousSpec, _ := generationRecordsFromGuest(t, ctx, guest, previousGeneration)
 	stateMarker := "/var/lib/katl/test-artifacts/host-upgrade-state-marker"
 	writeGuestFile(t, ctx, guest, stateMarker, []byte("state-survives-host-upgrade-and-rollback\n"), 0o600)
 

@@ -2,7 +2,6 @@
 Description=Katl vmtest debug serial shell
 Documentation=man:agetty(8) man:systemd.service(5)
 After=systemd-user-sessions.service
-ConditionKernelCommandLine=katl.vmtest_debug_shell=1
 
 [Service]
 Type=idle

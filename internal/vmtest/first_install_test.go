@@ -54,7 +54,7 @@ func TestFirstInstall(t *testing.T) {
 		t.Fatalf("installer command = %q, err = %v", command, err)
 	}
 	domainXML := readDomainXML(t, result)
-	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "vdb.snapshot.qcow2")+`"></source>`) {
+	if strings.Contains(domainXML, "katl-efi") || !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "vda.snapshot.qcow2")+`"></source>`) {
 		t.Fatalf("runtime domain XML = %s", domainXML)
 	}
 	if command, err := os.ReadFile(result.Artifacts.RuntimeLaunchCommand); err != nil || !strings.Contains(string(command), "virsh -c qemu:///system define") {
