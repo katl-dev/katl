@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katl-dev/katl/internal/operatorconsole"
 )
@@ -22,6 +26,45 @@ func TestJournalRingIsBounded(t *testing.T) {
 	if rows != 2 || string(got) != "two\nthree\n" {
 		t.Fatalf("WriteTail() = %q, %d rows", got, rows)
 	}
+}
+
+func TestJournalRingTruncatesOversizedEntries(t *testing.T) {
+	ring := newJournalRing(1)
+	ring.Add([]byte(strings.Repeat("x", journalLineCapacity) + "SECRET-TAIL"))
+	if got := len(ring.lines[0]); got != journalLineCapacity {
+		t.Fatalf("journal slot length = %d", got)
+	}
+	writer := operatorconsole.NewJournalWriter(operatorconsole.NewRenderTarget(make([]byte, 4096), 128, 10))
+	ring.WriteTail(&writer)
+	got := string(writer.Bytes())
+	if !strings.Contains(got, journalTruncated) || strings.Contains(got, "SECRET-TAIL") {
+		t.Fatalf("truncated journal entry = %q", got)
+	}
+}
+
+func TestStreamJournalCancelsFollowerAfterOversizedLine(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	command := func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestJournalOversizeHelper")
+		cmd.Env = append(os.Environ(), "KATL_JOURNAL_OVERSIZE_HELPER=1")
+		return cmd
+	}
+	err := streamJournal(ctx, newJournalRing(1), command)
+	if err == nil || !strings.Contains(err.Error(), "token too long") {
+		t.Fatalf("streamJournal() error = %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("streamJournal() waited for the context deadline: %v", ctx.Err())
+	}
+}
+
+func TestJournalOversizeHelper(t *testing.T) {
+	if os.Getenv("KATL_JOURNAL_OVERSIZE_HELPER") != "1" {
+		return
+	}
+	_, _ = fmt.Fprint(os.Stdout, strings.Repeat("x", journalScanCapacity+4096))
+	select {}
 }
 
 func TestJournalUsesDateTimeTimestamps(t *testing.T) {

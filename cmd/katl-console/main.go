@@ -161,7 +161,11 @@ type journalRing struct {
 	count int
 }
 
-const journalLineCapacity = 1024
+const (
+	journalLineCapacity = 1024
+	journalScanCapacity = 256 << 10
+	journalTruncated    = "… [truncated]"
+)
 
 func newJournalRing(limit int) *journalRing {
 	storage := make([]byte, limit*journalLineCapacity)
@@ -179,8 +183,8 @@ func (r *journalRing) Add(line []byte) {
 		return
 	}
 	r.mu.Lock()
-	index, target := r.nextLineLocked(len(line))
-	copy(target, line)
+	index, target := r.nextLineLocked(min(len(line), journalLineCapacity))
+	copyBoundedJournalLine(target, line)
 	r.lines[index] = compactJournalTimestamp(target)
 	r.mu.Unlock()
 }
@@ -191,8 +195,8 @@ func (r *journalRing) AddString(line string) {
 		return
 	}
 	r.mu.Lock()
-	_, target := r.nextLineLocked(len(line))
-	copy(target, line)
+	_, target := r.nextLineLocked(min(len(line), journalLineCapacity))
+	copyBoundedJournalLine(target, []byte(line))
 	r.mu.Unlock()
 }
 
@@ -204,12 +208,21 @@ func (r *journalRing) nextLineLocked(length int) (int, []byte) {
 	} else {
 		r.count++
 	}
-	if cap(r.lines[index]) < length {
-		r.lines[index] = make([]byte, length)
-	} else {
-		r.lines[index] = r.lines[index][:length]
-	}
+	r.lines[index] = r.lines[index][:min(length, journalLineCapacity)]
 	return index, r.lines[index]
+}
+
+func copyBoundedJournalLine(target, line []byte) {
+	if len(line) <= len(target) {
+		copy(target, line)
+		return
+	}
+	prefix := max(len(target)-len(journalTruncated), 0)
+	for prefix > 0 && prefix < len(line) && line[prefix]&0xc0 == 0x80 {
+		prefix--
+	}
+	copied := copy(target, line[:prefix])
+	copy(target[copied:], journalTruncated)
 }
 
 func compactJournalTimestamp(line []byte) []byte {
@@ -328,7 +341,9 @@ func followJournal(ctx context.Context, ring *journalRing) {
 type commandContext func(context.Context, string, ...string) *exec.Cmd
 
 func streamJournal(ctx context.Context, ring *journalRing, command commandContext) error {
-	cmd := command(ctx, "journalctl", journalctlArgs...)
+	streamContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := command(streamContext, "journalctl", journalctlArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -347,11 +362,17 @@ func streamJournal(ctx context.Context, ring *journalRing, command commandContex
 		close(done)
 	}()
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 4096), 256<<10)
+	scanner.Buffer(make([]byte, 4096), journalScanCapacity)
 	for scanner.Scan() {
 		ring.Add(scanner.Bytes())
 	}
 	scanErr := scanner.Err()
+	if scanErr != nil {
+		cancel()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}
 	waitErr := cmd.Wait()
 	<-done
 	if scanErr != nil {
