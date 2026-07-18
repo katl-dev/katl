@@ -111,7 +111,7 @@ func runtimeUserspaceFixture(t *testing.T) runtimeFixture {
 		}},
 		Extension: confext.ExtensionRelease{
 			Name:         "katl-node",
-			ID:           "katl",
+			ID:           "katlos",
 			VersionID:    "0.1.0",
 			ConfextLevel: 1,
 		},
@@ -160,7 +160,7 @@ func runtimeUserspaceFixture(t *testing.T) runtimeFixture {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         confextSHA,
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
+				ID:           "katlos",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},

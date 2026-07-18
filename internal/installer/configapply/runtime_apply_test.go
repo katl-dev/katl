@@ -162,7 +162,7 @@ func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read confext release: %v", err)
 	}
-	if got := string(release); got != "ID=fedora\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n" {
+	if got := string(release); got != "ID=katlos\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n" {
 		t.Fatalf("confext release = %q", got)
 	}
 	record, err := generation.ReadRecord(result.MetadataPath)
@@ -172,7 +172,7 @@ func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkd(t *testing.T) {
 	if record.ConfigApply == nil || record.ConfigApply.RequestedApplyMode != generation.ApplyModeAuto || record.ConfigApply.AcceptedApplyMode != generation.ApplyModeNextBoot {
 		t.Fatalf("config apply metadata = %#v", record.ConfigApply)
 	}
-	if len(record.Confexts) != 1 || record.Confexts[0].Compatibility.ID != "fedora" || record.Confexts[0].Compatibility.VersionID != "0.1.0" || record.Confexts[0].Compatibility.ConfextLevel != 1 {
+	if len(record.Confexts) != 1 || record.Confexts[0].Compatibility.ID != "katlos" || record.Confexts[0].Compatibility.VersionID != "0.1.0" || record.Confexts[0].Compatibility.ConfextLevel != 1 {
 		t.Fatalf("confext metadata = %#v", record.Confexts)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)

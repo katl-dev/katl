@@ -565,7 +565,7 @@ func espFixture(t *testing.T) string {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("b", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
+				ID:           "katlos",
 				VersionID:    "44",
 				ConfextLevel: 1,
 			},

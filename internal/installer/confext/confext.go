@@ -389,7 +389,7 @@ func normalizeExtensionRelease(release ExtensionRelease) (ExtensionRelease, erro
 		release.Name = "katl-node"
 	}
 	if release.ID == "" {
-		release.ID = "katl"
+		release.ID = "katlos"
 	}
 	if release.VersionID == "" {
 		release.VersionID = "0.1.0"

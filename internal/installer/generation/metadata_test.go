@@ -39,7 +39,7 @@ func TestNewFirstInstallRecordSerializesConfextSelection(t *testing.T) {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("c", 64),
 			Compatibility: ConfextCompatibility{
-				ID:           "katl",
+				ID:           "katlos",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},
@@ -94,7 +94,7 @@ func TestNewFirstInstallRecordSerializesConfextSelection(t *testing.T) {
       "activationPath": "/run/confexts/katl-node",
       "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "compatibility": {
-        "id": "katl",
+        "id": "katlos",
         "versionID": "0.1.0",
         "confextLevel": 1
       }
@@ -210,7 +210,7 @@ func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
       "activationPath": "/run/confexts/katl-node",
       "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "compatibility": {
-        "id": "katl",
+        "id": "katlos",
         "versionID": "0.1.0",
         "confextLevel": 1
       }
@@ -495,7 +495,7 @@ func validFirstInstallRequest(root string) FirstInstallRequest {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("c", 64),
 			Compatibility: ConfextCompatibility{
-				ID:           "katl",
+				ID:           "katlos",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},
@@ -535,7 +535,7 @@ func runtimeConfext(id string) GeneratedConfext {
 		ActivationPath: "/run/confexts/katl-node",
 		SHA256:         strings.Repeat("d", 64),
 		Compatibility: ConfextCompatibility{
-			ID:           "katl",
+			ID:           "katlos",
 			VersionID:    "0.1.0",
 			ConfextLevel: 1,
 		},

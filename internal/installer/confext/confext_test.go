@@ -205,7 +205,7 @@ func TestRenderGenerationTreeWritesFilesAndMetadata(t *testing.T) {
 		},
 		Extension: ExtensionRelease{
 			Name:         "katl-node",
-			ID:           "katl",
+			ID:           "katlos",
 			VersionID:    "0.1.0",
 			ConfextLevel: 1,
 		},
@@ -238,7 +238,7 @@ func TestRenderGenerationTreeWritesFilesAndMetadata(t *testing.T) {
 
 	assertFile(t, filepath.Join(tree.ConfextDir, "etc", "katl", "node.yaml"), "node: lab-node-01\n", 0o640)
 	assertFile(t, filepath.Join(tree.ConfextDir, "etc", "systemd", "network", "10-lan.network"), "[Match]\nName=enp1s0\n", 0o644)
-	assertFile(t, tree.ExtensionReleasePath, "ID=katl\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n", 0o644)
+	assertFile(t, tree.ExtensionReleasePath, "ID=katlos\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n", 0o644)
 
 	wantChowns := []string{
 		"node.yaml:0:0",

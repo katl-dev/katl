@@ -384,7 +384,7 @@ func cleanRoot(t *testing.T, role string) string {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("b", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
+				ID:           "katlos",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},

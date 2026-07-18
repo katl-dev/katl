@@ -415,7 +415,7 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 		Root:     generation.RootSelection{Slot: "root-a", PartitionUUID: "aaaaaaaa-1111-2222-3333-444444444444", RuntimeVersion: "2026.7.0-dev.0", RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", RuntimeArtifactSHA256: strings.Repeat("d", 64)},
 		Boot:     generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl.efi", LoaderEntryPath: "loader/entries/katl-gen0.conf"},
 		Sysexts:  []generation.ExtensionRef{{Name: "kubernetes", Path: "/var/lib/katl/generations/gen0/sysext/kubernetes.raw", ActivationPath: "/run/extensions/katl-kubernetes.raw", SHA256: strings.Repeat("e", 64), ArtifactVersion: "v1.36.1", PayloadVersion: "v1.36.1", Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}}},
-		Confexts: []generation.GeneratedConfext{{Name: "katl-node", Path: "/var/lib/katl/generations/gen0/confext", ActivationPath: "/run/confexts/katl-node", SHA256: confextSHA, Compatibility: generation.ConfextCompatibility{ID: "katl", VersionID: "1", ConfextLevel: 1}}},
+		Confexts: []generation.GeneratedConfext{{Name: "katl-node", Path: "/var/lib/katl/generations/gen0/confext", ActivationPath: "/run/confexts/katl-node", SHA256: confextSHA, Compatibility: generation.ConfextCompatibility{ID: "katlos", VersionID: "1", ConfextLevel: 1}}},
 	}
 	status, err := generation.NewGenerationStatus(previous, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, previous.CreatedAt)
 	if err != nil {

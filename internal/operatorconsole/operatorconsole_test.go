@@ -369,7 +369,7 @@ func TestCollectorReadsInstalledVersionsFromBootedGeneration(t *testing.T) {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("c", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
+				ID:           "katlos",
 				VersionID:    "2026.7.0-alpha.12",
 				ConfextLevel: 1,
 			},
@@ -489,7 +489,7 @@ func testConsoleGeneration(t *testing.T, root, id, runtimeVersion, kubernetesVer
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("c", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "katl",
+				ID:           "katlos",
 				VersionID:    runtimeVersion,
 				ConfextLevel: 1,
 			},
