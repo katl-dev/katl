@@ -284,6 +284,7 @@ func (s *Server) generationReadModel(id string, includeConfigApply bool) (*agent
 	out := &agentapi.Generation{
 		GenerationId:         spec.GenerationID,
 		RuntimeVersion:       spec.RuntimeVersion,
+		RuntimeArchitecture:  spec.Root.Architecture,
 		PreviousGenerationId: spec.PreviousGenerationID,
 		CommitState:          genStatus.CommitState,
 		BootState:            genStatus.BootState,

@@ -425,18 +425,30 @@ func katlOSVersion(input string) (string, error) {
 }
 
 func nodeArtifactArchitecture(current *agentapi.Generation) (string, error) {
+	if architecture, ok := supportedArtifactArchitecture(current.GetRuntimeArchitecture()); ok {
+		return architecture, nil
+	}
 	for _, ref := range current.GetSysexts() {
-		architecture := strings.TrimSpace(ref.GetArchitecture())
-		switch architecture {
-		case "x86_64", "aarch64":
+		if architecture, ok := supportedArtifactArchitecture(ref.GetArchitecture()); ok {
 			return architecture, nil
-		case "amd64":
-			return "x86_64", nil
-		case "arm64":
-			return "aarch64", nil
 		}
 	}
 	return "", fmt.Errorf("current node generation does not report a supported artifact architecture")
+}
+
+func supportedArtifactArchitecture(value string) (string, bool) {
+	switch strings.TrimSpace(value) {
+	case "x86_64":
+		return "x86_64", true
+	case "aarch64":
+		return "aarch64", true
+	case "amd64":
+		return "x86_64", true
+	case "arm64":
+		return "aarch64", true
+	default:
+		return "", false
+	}
 }
 
 func katlOSReleaseURL(version, architecture string) string {

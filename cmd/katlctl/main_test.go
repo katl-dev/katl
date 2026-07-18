@@ -1912,6 +1912,16 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeUsesRuntimeArchitectureWithoutKubernetesExtension(t *testing.T) {
+	architecture, err := nodeArtifactArchitecture(&agentapi.Generation{RuntimeArchitecture: "amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if architecture != "x86_64" {
+		t.Fatalf("architecture = %q", architecture)
+	}
+}
+
 func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {

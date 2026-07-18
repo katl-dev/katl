@@ -2679,6 +2679,7 @@ type Generation struct {
 	Sysexts              []*ExtensionRef        `protobuf:"bytes,10,rep,name=sysexts,proto3" json:"sysexts,omitempty"`
 	Confexts             []*GeneratedConfext    `protobuf:"bytes,11,rep,name=confexts,proto3" json:"confexts,omitempty"`
 	ConfigApply          *ConfigApplyStatus     `protobuf:"bytes,12,opt,name=config_apply,json=configApply,proto3" json:"config_apply,omitempty"`
+	RuntimeArchitecture  string                 `protobuf:"bytes,13,opt,name=runtime_architecture,json=runtimeArchitecture,proto3" json:"runtime_architecture,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -2795,6 +2796,13 @@ func (x *Generation) GetConfigApply() *ConfigApplyStatus {
 		return x.ConfigApply
 	}
 	return nil
+}
+
+func (x *Generation) GetRuntimeArchitecture() string {
+	if x != nil {
+		return x.RuntimeArchitecture
+	}
+	return ""
 }
 
 type ExtensionRef struct {
@@ -3471,7 +3479,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\vgenerations\x18\x01 \x03(\v2\x19.katl.agent.v1.GenerationR\vgenerations\"m\n" +
 	"\x14GetGenerationRequest\x12#\n" +
 	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x120\n" +
-	"\x14include_config_apply\x18\x02 \x01(\bR\x12includeConfigApply\"\x8d\x04\n" +
+	"\x14include_config_apply\x18\x02 \x01(\bR\x12includeConfigApply\"\xc0\x04\n" +
 	"\n" +
 	"Generation\x12#\n" +
 	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x12'\n" +
@@ -3490,7 +3498,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\asysexts\x18\n" +
 	" \x03(\v2\x1b.katl.agent.v1.ExtensionRefR\asysexts\x12;\n" +
 	"\bconfexts\x18\v \x03(\v2\x1f.katl.agent.v1.GeneratedConfextR\bconfexts\x12C\n" +
-	"\fconfig_apply\x18\f \x01(\v2 .katl.agent.v1.ConfigApplyStatusR\vconfigApply\"\xef\x01\n" +
+	"\fconfig_apply\x18\f \x01(\v2 .katl.agent.v1.ConfigApplyStatusR\vconfigApply\x121\n" +
+	"\x14runtime_architecture\x18\r \x01(\tR\x13runtimeArchitecture\"\xef\x01\n" +
 	"\fExtensionRef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12'\n" +

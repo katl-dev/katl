@@ -559,7 +559,7 @@ func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gen.GenerationId != "generation-1" || gen.PreviousGenerationId != "generation-0" || gen.CommitState != generation.CommitStateCommitted || gen.ConfigApply == nil || gen.ConfigApply.Phase != generation.ConfigApplyPhaseNextBoot {
+	if gen.GenerationId != "generation-1" || gen.PreviousGenerationId != "generation-0" || gen.RuntimeArchitecture != "x86_64" || gen.CommitState != generation.CommitStateCommitted || gen.ConfigApply == nil || gen.ConfigApply.Phase != generation.ConfigApplyPhaseNextBoot {
 		t.Fatalf("generation read model = %+v", gen)
 	}
 	assertConfigApplyGenerationCommitted(t, server.Root, "generation-1", accepted.OperationId)
