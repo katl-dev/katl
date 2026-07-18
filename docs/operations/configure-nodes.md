@@ -28,9 +28,8 @@ An optional plan compiles the selected node configuration and asks the node to
 validate it without accepting an operation:
 
 ```sh
-katlctl node apply --config ./cluster.yaml \
-  --node cp-1 \
-  --plan
+katlctl node apply cp-1 --config ./cluster.yaml \
+	--plan
 ```
 
 Validation reports the changed domains and accepted apply mode without
@@ -41,7 +40,7 @@ intend to constrain that policy; unsafe requests are refused.
 If the source has already been compiled, pass the bundle through the same flag:
 
 ```sh
-katlctl node apply --config ./katl-lab.katlcfg --node cp-1 --plan
+katlctl node apply cp-1 --config ./katl-lab.katlcfg --plan
 ```
 
 Katl derives and verifies the bundle's integrity metadata from the file.
@@ -51,7 +50,7 @@ Katl derives and verifies the bundle's integrity metadata from the file.
 Run the same arguments without `--plan`:
 
 ```sh
-katlctl node apply --config ./cluster.yaml --node cp-1
+katlctl node apply cp-1 --config ./cluster.yaml
 ```
 
 `katlctl` resolves the selected workstation context, reads the node credential,
@@ -60,21 +59,11 @@ validates the change, follows the durable apply, and exits only after a terminal
 result. Require `terminal: true` and `result: succeeded`. If `recoveryRequired`
 is true, stop and follow `failureReason` and `nextAction`.
 
-## Check Generation Status
+## Check Status
 
-Query the candidate through the agent:
-
-```sh
-katlctl node apply status \
-  --node cp-1
-```
-
-The command selects the node's current generation automatically. Pass
-`--generation` only to inspect an older or staged generation. For a live change,
-require committed state and healthy config-apply evidence.
-For a next-boot change, require committed staged state, reboot in a controlled
-window, then require the candidate to become healthy after
-`katl-boot-complete.target`.
+Use `katlctl node status cp-1 --config ./cluster.yaml` for the current healthy
+generation. Use `katlctl operations list --config ./cluster.yaml --node cp-1`
+when diagnosing an accepted or recently completed configuration operation.
 
 On-node evidence remains available under:
 

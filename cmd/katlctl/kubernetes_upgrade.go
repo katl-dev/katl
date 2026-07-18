@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -23,6 +25,7 @@ import (
 
 type kubernetesUpgradeOptions struct {
 	version       string
+	clusterConfig string
 	configPath    string
 	contextName   string
 	inventoryPath string
@@ -76,35 +79,40 @@ var dialKubernetesEndpoint = func(ctx context.Context, endpoint string) error {
 }
 
 func newKubernetesUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := kubernetesUpgradeOptions{timeout: 25 * time.Minute, output: "json"}
+	opts := kubernetesUpgradeOptions{timeout: 25 * time.Minute, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "upgrade VERSION",
 		Short: "Upgrade Kubernetes control planes and workers online",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			if len(args) == 1 {
 				opts.version = args[0]
+			} else {
+				return command.Help()
 			}
 			return runKubernetesUpgrade(ctx, opts, stdout, stderr)
 		},
 	}
+	cmd.Flags().StringVar(&opts.clusterConfig, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
-	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl config context name")
+	cmd.Flags().Lookup("context-file").Hidden = true
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "optional saved context created by 'katlctl context save'")
 	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "cluster inventory instead of a workstation context")
+	cmd.Flags().Lookup("inventory").Hidden = true
 	cmd.Flags().StringVar(&opts.bundle, "bundle", "", "Kubernetes bundle image, for example ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1")
 	cmd.Flags().Lookup("bundle").Hidden = true
 	cmd.Flags().BoolVar(&opts.cordon, "cordon", false, "temporarily cordon each node during its online upgrade")
 	cmd.Flags().StringVar(&opts.kubeconfig, "kubeconfig", "", "operator kubeconfig used with --cordon")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "validate the complete rollout without accepting operations")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "per-node operation timeout")
-	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	_ = stderr
 	return cmd
 }
 
 func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, stdout, stderr io.Writer) error {
-	if opts.output != "json" {
-		return fmt.Errorf("--output = %q, want json", opts.output)
+	if opts.output != "text" && opts.output != "json" {
+		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
@@ -148,7 +156,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 	} else {
 		report.SourceVersion = image.PayloadVersion
 		report.NextAction = "every node already runs the selected Kubernetes version"
-		return writeKubernetesUpgradeReport(stdout, report)
+		return writeKubernetesUpgradeReport(stdout, opts.output, report)
 	}
 	for _, target := range targets {
 		body := kubernetesUpgradeBody(target, image)
@@ -167,7 +175,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		report.Nodes = append(report.Nodes, kubernetesUpgradeNodeReport{Name: target.node.Name, Role: target.role, SourceVersion: target.source, TargetVersion: image.PayloadVersion, Result: "planned"})
 	}
 	if opts.plan {
-		return writeKubernetesUpgradeReport(stdout, report)
+		return writeKubernetesUpgradeReport(stdout, opts.output, report)
 	}
 
 	report.Nodes = nil
@@ -176,12 +184,12 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		nodeReport, err := runKubernetesUpgradeTarget(ctx, topology, opts, *target, image, stderr)
 		report.Nodes = append(report.Nodes, nodeReport)
 		if err != nil {
-			_ = writeKubernetesUpgradeReport(stdout, report)
+			_ = writeKubernetesUpgradeReport(stdout, opts.output, report)
 			return err
 		}
 	}
 	report.NextAction = "rollout complete; every upgraded node is healthy on the target Kubernetes version without reboot"
-	return writeKubernetesUpgradeReport(stdout, report)
+	return writeKubernetesUpgradeReport(stdout, opts.output, report)
 }
 
 func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.ResolvedTopology, opts kubernetesUpgradeOptions, target kubernetesUpgradeTarget, image kubernetesbundle.ImageReference, stderr io.Writer) (nodeReport kubernetesUpgradeNodeReport, resultErr error) {
@@ -329,6 +337,12 @@ func waitKubernetesUpgrade(ctx context.Context, client agentapi.KatlcAgentClient
 }
 
 func resolveKubernetesUpgradeTopology(opts kubernetesUpgradeOptions) (workstation.ResolvedTopology, error) {
+	if strings.TrimSpace(opts.clusterConfig) != "" {
+		if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" || strings.TrimSpace(opts.inventoryPath) != "" {
+			return workstation.ResolvedTopology{}, fmt.Errorf("--config cannot be combined with --context, --context-file, or --inventory")
+		}
+		return resolveClusterConfigTopology(opts.clusterConfig)
+	}
 	request := workstation.ResolveRequest{ConfigPath: strings.TrimSpace(opts.configPath), ContextName: strings.TrimSpace(opts.contextName)}
 	if strings.TrimSpace(opts.inventoryPath) != "" {
 		if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" {
@@ -340,7 +354,11 @@ func resolveKubernetesUpgradeTopology(opts kubernetesUpgradeOptions) (workstatio
 		}
 		request.ExplicitInventory = &inv
 	}
-	return workstation.ResolveTopology(request)
+	resolved, err := workstation.ResolveTopology(request)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		return workstation.ResolvedTopology{}, fmt.Errorf("no cluster source: use --config cluster.yaml; for shorter repeated commands, first run 'katlctl context save --config cluster.yaml'")
+	}
+	return resolved, err
 }
 
 func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.ResolvedTopology, targetVersion string) ([]kubernetesUpgradeTarget, error) {
@@ -473,7 +491,31 @@ func kubernetesUpgradeCandidate(version, node, runID string) string {
 	return "kubernetes-" + version + "-" + node + "-" + runID
 }
 
-func writeKubernetesUpgradeReport(stdout io.Writer, report kubernetesUpgradeReport) error {
+func writeKubernetesUpgradeReport(stdout io.Writer, output string, report kubernetesUpgradeReport) error {
+	if output == "text" {
+		action := "Kubernetes upgrade"
+		if report.Plan {
+			action = "Kubernetes upgrade plan"
+		}
+		fmt.Fprintf(stdout, "%s: %s -> %s\n", action, report.SourceVersion, report.TargetVersion)
+		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "NODE\tROLE\tRESULT\tPHASE")
+		for _, node := range report.Nodes {
+			phase := node.Phase
+			if phase == "" {
+				phase = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", node.Name, node.Role, node.Result, phase)
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		if report.NextAction != "" {
+			_, err := fmt.Fprintf(stdout, "Next action: %s\n", report.NextAction)
+			return err
+		}
+		return nil
+	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err

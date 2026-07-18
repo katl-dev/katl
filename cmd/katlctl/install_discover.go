@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -21,6 +22,7 @@ import (
 
 type installDiscoverOptions struct {
 	timeout    time.Duration
+	output     string
 	configInit configInitOptions
 }
 
@@ -41,7 +43,7 @@ var installerDiscoveryProbe = func(ctx context.Context, endpoint string, timeout
 }
 
 func newInstallDiscoverCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := installDiscoverOptions{timeout: 3 * time.Second, configInit: defaultConfigInitOptions()}
+	opts := installDiscoverOptions{timeout: 3 * time.Second, output: "text", configInit: defaultConfigInitOptions()}
 	cmd := &cobra.Command{
 		Use:   "discover [CLUSTER_CONFIG]",
 		Short: "Find waiting KatlOS installers and optionally create a ClusterConfig",
@@ -54,6 +56,7 @@ func newInstallDiscoverCommand(ctx context.Context, stdout, stderr io.Writer) *c
 		},
 	}
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall local-network discovery timeout")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	addConfigInitFlags(cmd, &opts.configInit)
 	return cmd
 }
@@ -71,6 +74,17 @@ func runInstallDiscover(ctx context.Context, opts installDiscoverOptions, stdout
 		return runConfigInit(ctx, opts.configInit, stdout, stderr)
 	}
 	report := installDiscoveryReport{APIVersion: "katl.dev/v1alpha1", Kind: "InstallerDiscovery", Installers: installers}
+	if opts.output == "text" {
+		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "ENDPOINT\tSTATE\tNODE")
+		for _, installer := range installers {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", installer.Endpoint, installer.Status.State, installer.Status.SelectedNode)
+		}
+		return w.Flush()
+	}
+	if opts.output != "json" {
+		return fmt.Errorf("--output = %q, want text or json", opts.output)
+	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode installer discovery: %w", err)

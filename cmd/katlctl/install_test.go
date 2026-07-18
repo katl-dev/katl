@@ -39,7 +39,7 @@ func TestInstallDiscoverFindsWaitingInstallerAndDisks(t *testing.T) {
 	t.Cleanup(func() { installerDiscoveryProbe = oldProbe })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"install", "discover"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"install", "discover", "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 	var report installDiscoveryReport
@@ -238,7 +238,7 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 	defer ts.Close()
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"install", "status", "--endpoint", strings.TrimPrefix(ts.URL, "http://")}, &stdout, &stderr)
+	err := run(context.Background(), []string{"install", "status", "--endpoint", strings.TrimPrefix(ts.URL, "http://"), "--output", "json"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
 	}
@@ -276,6 +276,7 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err = run(context.Background(), []string{
 		"install", "apply", "--config", sourcePath,
+		"--output", "json",
 		"--no-wait",
 	}, &stdout, &stderr)
 	if err != nil {
@@ -325,6 +326,7 @@ func TestInstallApplyAcceptsGeneratedConfigByAddress(t *testing.T) {
 	stderr.Reset()
 	if err := run(context.Background(), []string{
 		"install", "apply", "--config", outputPath,
+		"--output", "json",
 		"--endpoint", strings.TrimPrefix(ts.URL, "http://"),
 		"--node", "192.0.2.11",
 		"--no-wait",
@@ -459,6 +461,7 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"install", "apply", "--config", sourcePath,
+		"--output", "json",
 		"--endpoint", ts.URL,
 		"--node", "cp-1",
 		"--timeout", "5s",

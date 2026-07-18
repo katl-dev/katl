@@ -68,7 +68,7 @@ unclear, discover the affected node's current and recent operations:
 
 ```sh
 katlctl operations list \
-  --node cp-1
+  --config ./cluster.yaml --node cp-1
 ```
 
 ## Establish Cluster Networking

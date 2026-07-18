@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
@@ -57,7 +58,7 @@ func newInstallCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 }
 
 func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := installApplyOptions{timeout: 30 * time.Minute, output: "json"}
+	opts := installApplyOptions{timeout: 30 * time.Minute, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Apply a ClusterConfig YAML or config bundle to a waiting KatlOS installer",
@@ -71,12 +72,12 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name or bootstrap address; required unless the config contains one node")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
-	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
 }
 
 func newInstallStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := installStatusOptions{timeout: 15 * time.Second, output: "json"}
+	opts := installStatusOptions{timeout: 15 * time.Second, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Report a waiting or running KatlOS installer",
@@ -87,13 +88,13 @@ func newInstallStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 	}
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer IP, host, host:port, or HTTP(S) base URL; discovers a unique waiting installer when omitted")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "status request timeout")
-	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
 }
 
 func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stderr io.Writer) error {
-	if opts.output != "json" {
-		return fmt.Errorf("--output = %q, want json", opts.output)
+	if opts.output != "text" && opts.output != "json" {
+		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
@@ -148,14 +149,14 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	}
 	report := newInstallHandoffReport(endpoint, selected.Node.Name, accepted)
 	if opts.noWait {
-		return writeInstallReport(stdout, report)
+		return writeInstallReport(stdout, opts.output, report)
 	}
 	status, err := waitForInstall(waitCtx, client, endpoint, accepted, stderr)
 	if err != nil {
 		return err
 	}
 	report.Handoff = status
-	if err := writeInstallReport(stdout, report); err != nil {
+	if err := writeInstallReport(stdout, opts.output, report); err != nil {
 		return err
 	}
 	if installFailed(status.InstallStatus.State) {
@@ -230,8 +231,8 @@ func installNodeChoices(manifest configbundle.BundleManifest) string {
 
 func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, stderr io.Writer) error {
 	_ = stderr
-	if opts.output != "json" {
-		return fmt.Errorf("--output = %q, want json", opts.output)
+	if opts.output != "text" && opts.output != "json" {
+		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
 	endpoint, err := resolveInstallerEndpoint(ctx, opts.endpoint, opts.timeout)
 	if err != nil {
@@ -246,7 +247,7 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 	if err != nil {
 		return err
 	}
-	return writeInstallReport(stdout, newInstallHandoffReport(endpoint, status.SelectedNode, status))
+	return writeInstallReport(stdout, opts.output, newInstallHandoffReport(endpoint, status.SelectedNode, status))
 }
 
 func normalizeInstallerEndpoint(value string) (string, error) {
@@ -425,11 +426,25 @@ func newInstallHandoffReport(endpoint, node string, status handoff.HandoffStatus
 	}
 }
 
-func writeInstallReport(stdout io.Writer, report installHandoffReport) error {
+func writeInstallReport(stdout io.Writer, output string, report installHandoffReport) error {
 	report.Handoff.InstallStatus.BundleDigest = ""
 	report.Handoff.InstallStatus.SourceDigest = ""
 	report.Handoff.InstallStatus.NodeMaterialDigest = ""
 	report.Handoff.InstallStatus.InstallMaterialDigest = ""
+	if output == "text" {
+		step := strings.TrimSpace(report.Handoff.InstallStatus.CurrentStep)
+		if step == "" {
+			step = "-"
+		}
+		node := report.SelectedNode
+		if node == "" {
+			node = "-"
+		}
+		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "NODE\tENDPOINT\tSTATE\tSTEP")
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", node, report.Endpoint, report.Handoff.State, step)
+		return w.Flush()
+	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal installer handoff report: %w", err)

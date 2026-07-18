@@ -122,6 +122,31 @@ func readManagementInventory(path string) (inventory.Inventory, error) {
 	return bundle.Manifest.Cluster.BootstrapInventory, nil
 }
 
+func resolveClusterConfigTopology(path string) (workstation.ResolvedTopology, error) {
+	inv, err := readManagementInventory(path)
+	if err != nil {
+		return workstation.ResolvedTopology{}, err
+	}
+	resolved, err := workstation.ResolveTopology(workstation.ResolveRequest{ExplicitInventory: &inv})
+	if err != nil {
+		return workstation.ResolvedTopology{}, err
+	}
+	data, err := os.ReadFile(strings.TrimSpace(path))
+	if err != nil {
+		return workstation.ResolvedTopology{}, fmt.Errorf("read --config %s: %w", path, err)
+	}
+	if source, sourceErr := configbundle.DecodeSource(bytes.NewReader(data)); sourceErr == nil {
+		resolved.ClusterName = strings.TrimSpace(source.Metadata.Name)
+		return resolved, nil
+	}
+	bundle, err := configbundle.ReadBundle(bytes.NewReader(data), "")
+	if err != nil {
+		return workstation.ResolvedTopology{}, fmt.Errorf("read --config %s: %w", path, err)
+	}
+	resolved.ClusterName = strings.TrimSpace(bundle.Manifest.ClusterName)
+	return resolved, nil
+}
+
 func targetFromInventory(inv inventory.Inventory, selected string) (managementTarget, error) {
 	selected = strings.TrimSpace(selected)
 	if selected == "" {

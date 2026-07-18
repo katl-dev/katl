@@ -97,6 +97,9 @@ func TestEveryCommandHelpShowsOneMinimumInvocation(t *testing.T) {
 	var commands []*cobra.Command
 	var collect func(*cobra.Command)
 	collect = func(command *cobra.Command) {
+		if command.Hidden {
+			return
+		}
 		commands = append(commands, command)
 		for _, child := range command.Commands() {
 			collect(child)
@@ -117,6 +120,10 @@ func TestEveryCommandHelpShowsOneMinimumInvocation(t *testing.T) {
 		if !strings.HasPrefix(example, path) {
 			t.Errorf("%s example = %q, want command path prefix", path, example)
 		}
+		argv := strings.Fields(example)
+		if len(argv) == 0 || argv[0] != "katlctl" {
+			t.Errorf("%s example = %q, want a parseable katlctl invocation", path, example)
+		}
 		var help bytes.Buffer
 		command.SetOut(&help)
 		if err := command.Help(); err != nil {
@@ -125,6 +132,35 @@ func TestEveryCommandHelpShowsOneMinimumInvocation(t *testing.T) {
 		}
 		if !strings.Contains(help.String(), "Examples:\n"+example+"\n") {
 			t.Errorf("%s help does not show its minimum invocation:\n%s", path, help.String())
+		}
+	}
+}
+
+func TestRoutineRemoteExamplesDeclareClusterConfig(t *testing.T) {
+	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
+	for _, path := range []string{
+		"cluster bootstrap", "cluster status", "cluster wipe", "kubernetes upgrade",
+		"node apply", "node reboot", "node status", "node upgrade", "node wipe",
+		"operations list", "operations status",
+	} {
+		command, _, err := root.Find(strings.Fields(path))
+		if err != nil {
+			t.Fatalf("find %s: %v", path, err)
+		}
+		if !strings.Contains(command.Example, "--config cluster.yaml") {
+			t.Errorf("%s minimum invocation silently depends on workstation state: %s", command.CommandPath(), command.Example)
+		}
+	}
+}
+
+func TestLocalMinimumInvocationsExecute(t *testing.T) {
+	for _, args := range [][]string{{"version"}, {"config", "schema"}, {"context", "path"}} {
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+			t.Errorf("katlctl %s: %v", strings.Join(args, " "), err)
+		}
+		if stdout.Len() == 0 || stderr.Len() != 0 {
+			t.Errorf("katlctl %s stdout=%q stderr=%q", strings.Join(args, " "), stdout.String(), stderr.String())
 		}
 	}
 }
@@ -151,13 +187,42 @@ func TestClusterBootstrapHelpLeadsWithUnifiedConfigInput(t *testing.T) {
 	}
 }
 
+func TestPublicHelpHidesInternalOperationAndTestInputs(t *testing.T) {
+	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
+	var visit func(*cobra.Command)
+	visit = func(command *cobra.Command) {
+		if command.Hidden {
+			return
+		}
+		var help bytes.Buffer
+		command.SetOut(&help)
+		if err := command.Help(); err != nil {
+			t.Errorf("%s help: %v", command.CommandPath(), err)
+			return
+		}
+		for _, internal := range []string{"--vmtest-transcript-dir", "--kubernetes-bundle", "--actor", "--source-id", "--candidate-generation", "--active-generation", "--config-name", "--rollout-id"} {
+			if strings.Contains(help.String(), internal) {
+				t.Errorf("%s exposes internal input %s", command.CommandPath(), internal)
+			}
+		}
+		for _, child := range command.Commands() {
+			visit(child)
+		}
+	}
+	visit(root)
+}
+
 func TestConfigInputFlagsUseOneName(t *testing.T) {
 	want := map[string]bool{
+		"katlctl cluster status":      true,
 		"katlctl context save":        true,
 		"katlctl cluster bootstrap":   true,
 		"katlctl cluster wipe":        true,
 		"katlctl config render-node":  true,
 		"katlctl install apply":       true,
+		"katlctl kubernetes upgrade":  true,
+		"katlctl operations list":     true,
+		"katlctl operations status":   true,
 		"katlctl node apply":          true,
 		"katlctl node apply validate": true,
 		"katlctl node reboot":         true,
@@ -197,10 +262,10 @@ func TestCommandGroupsExposeOneSupportedPath(t *testing.T) {
 		forbidden []string
 	}{
 		{group: "node", required: []string{"apply", "reboot", "status", "upgrade", "wipe"}},
-		{group: "cluster", required: []string{"bootstrap", "wipe"}, forbidden: []string{"enroll", "kubeadm-control-plane-config"}},
-		{group: "kubernetes", required: []string{"apply-config", "upgrade"}},
+		{group: "cluster", required: []string{"bootstrap", "status", "wipe"}, forbidden: []string{"enroll", "kubeadm-control-plane-config"}},
+		{group: "kubernetes", required: []string{"upgrade"}, forbidden: []string{"apply-config"}},
 		{group: "config", required: []string{"bundle", "init", "schema", "validate"}, forbidden: []string{"apply", "path", "topology"}},
-		{group: "context", required: []string{"path", "save", "show"}},
+		{group: "context", required: []string{"current", "list", "path", "save", "show", "use"}},
 	}
 	for _, test := range tests {
 		t.Run(test.group, func(t *testing.T) {
@@ -269,7 +334,6 @@ func TestNestedCommandTyposFailWithSuggestions(t *testing.T) {
 		{args: []string{"node", "upgade"}, command: "upgade", suggestion: "upgrade"},
 		{args: []string{"kubernetes", "upgrde"}, command: "upgrde", suggestion: "upgrade"},
 		{args: []string{"operations", "stats"}, command: "stats", suggestion: "status"},
-		{args: []string{"node", "apply", "valdte"}, command: "valdte", suggestion: "validate"},
 	}
 	for _, test := range tests {
 		t.Run(strings.Join(test.args, " "), func(t *testing.T) {
@@ -295,13 +359,26 @@ func TestHostUpgradeWithoutVersionPrintsHelp(t *testing.T) {
 	if err := run(context.Background(), []string{"node", "upgrade"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	for _, want := range []string{"Usage:", "katlctl node upgrade VERSION", "katlctl node upgrade 2026.7.0 --config cluster.yaml --node cp-1"} {
+	for _, want := range []string{"Usage:", "katlctl node upgrade VERSION", "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
 		}
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRequiredArgumentCommandsPrintHelpWhenEmpty(t *testing.T) {
+	for _, args := range [][]string{{"node", "upgrade"}, {"node", "wipe"}, {"kubernetes", "upgrade"}, {"operations", "status"}} {
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+			t.Errorf("katlctl %s: %v", strings.Join(args, " "), err)
+			continue
+		}
+		if !strings.Contains(stdout.String(), "Usage:") || stderr.Len() != 0 {
+			t.Errorf("katlctl %s stdout=%q stderr=%q", strings.Join(args, " "), stdout.String(), stderr.String())
+		}
 	}
 }
 
@@ -321,7 +398,7 @@ func TestHostUpgradeHelpLeadsWithClusterConfig(t *testing.T) {
 			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
 		}
 	}
-	for _, hidden := range []string{"--actor", "--context-file", "--no-wait", "--output"} {
+	for _, hidden := range []string{"--actor", "--context-file", "--no-wait"} {
 		if strings.Contains(stdout.String(), hidden) {
 			t.Fatalf("stdout = %q, exposes internal flag %q", stdout.String(), hidden)
 		}
@@ -372,6 +449,17 @@ func TestManagementTargetMissingSourceExplainsRecovery(t *testing.T) {
 	}
 }
 
+func TestClusterCommandsMissingSourceExplainRecovery(t *testing.T) {
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "missing-katlctl.yaml"))
+	for _, args := range [][]string{{"cluster", "status"}, {"kubernetes", "upgrade", "v1.36.1", "--plan"}} {
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), args, &stdout, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "use --config cluster.yaml") {
+			t.Errorf("katlctl %s error = %v", strings.Join(args, " "), err)
+		}
+	}
+}
+
 func TestManagementEndpointAcceptsOperatorAddressForms(t *testing.T) {
 	tests := map[string]string{
 		"192.0.2.44":            "192.0.2.44:9443",
@@ -396,7 +484,7 @@ func TestManagementEndpointAcceptsOperatorAddressForms(t *testing.T) {
 func TestOutputFormatValidation(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"context", "show", "--output", "yaml"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), `--output = "yaml", want json`) {
+	if err == nil || !strings.Contains(err.Error(), `--output = "yaml", want text or json`) {
 		t.Fatalf("run() error = %v, want output validation", err)
 	}
 	if stdout.Len() != 0 {
@@ -600,7 +688,7 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"config", "validate", sourcePath, "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
 	if stderr.Len() != 0 {
@@ -733,6 +821,7 @@ clusters:
 	err := run(context.Background(), []string{
 		"context", "show",
 		"--context", "stage",
+		"--output", "json",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
@@ -1164,6 +1253,7 @@ func TestWipeClusterRefusesPartialTargetWithoutOverride(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"cluster", "wipe",
+		"--output", "json",
 		"--inventory", inventoryPath,
 		"--node", "cp-1",
 		"--client-request-id", "wipe-req",
@@ -1198,6 +1288,7 @@ func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"cluster", "wipe",
+		"--output", "json",
 		"--inventory", inventoryPath,
 		"--all",
 		"--plan",
@@ -1238,6 +1329,7 @@ func TestWipeClusterPlanAcceptsClusterConfig(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"cluster", "wipe", "--config", sourcePath,
+		"--output", "json",
 		"--all",
 		"--plan",
 	}, &stdout, &stderr)
@@ -1280,6 +1372,7 @@ clusters:
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"cluster", "wipe",
+		"--output", "json",
 		"--context-file", configPath,
 		"--all",
 		"--plan",
@@ -1311,6 +1404,7 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"cluster", "wipe",
+		"--output", "json",
 		"--inventory", inventoryPath,
 		"--all",
 		"--client-request-id", "wipe-req",
@@ -1358,11 +1452,11 @@ func TestWipeNodeRequiresExactlyOneTarget(t *testing.T) {
 		"--client-request-id", "wipe-node-req",
 		"--kubeconfig", "admin.conf",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "accepts 1 arg") {
-		t.Fatalf("run() error = %v, want exact node target validation", err)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout = %s, want empty", stdout.String())
+	if !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("stdout = %s, want help", stdout.String())
 	}
 }
 
@@ -1386,6 +1480,7 @@ func TestNodeWipeSubmitsWithNodeActor(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "wipe", "worker-1",
+		"--output", "json",
 		"--inventory", inventoryPath,
 		"--kubeconfig", "admin.conf",
 		"--client-request-id", "cluster-wipe-node-req",
@@ -1430,6 +1525,7 @@ func TestWipeNodePlanPrintsUnknownKubernetesCleanupWithoutKubeconfig(t *testing.
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "wipe", "worker-1",
+		"--output", "json",
 		"--inventory", inventoryPath,
 		"--plan",
 		"--client-request-id", "wipe-node-req",
@@ -1481,6 +1577,7 @@ clusters:
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "wipe", "worker-1",
+		"--output", "json",
 		"--context-file", configPath,
 		"--plan",
 	}, &stdout, &stderr)
@@ -1516,6 +1613,7 @@ func TestWipeNodeSubmitsAfterKubernetesCleanup(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "wipe", "worker-1",
+		"--output", "json",
 		"--inventory", inventoryPath,
 		"--kubeconfig", "admin.conf",
 		"--client-request-id", "wipe-node-req",
@@ -1576,6 +1674,7 @@ func TestWipeNodeReportsRecoveryRequiredBeforeLocalReset(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "wipe", "worker-1",
+		"--output", "json",
 		"--inventory", inventoryPath,
 		"--kubeconfig", "admin.conf",
 		"--client-request-id", "wipe-node-req",
@@ -1619,6 +1718,7 @@ func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "wipe", "cp-1",
+		"--output", "json",
 		"--inventory", inventoryPath,
 		"--kubeconfig", "admin.conf",
 		"--client-request-id", "wipe-node-req",
@@ -1713,6 +1813,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 		"--mode", generation.ApplyModeNextBoot,
 		"--candidate-generation", "generation-1",
 		"--client-request-id", "req-stage",
+		"--output", "json",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
@@ -1745,7 +1846,7 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "upgrade", "v2026.7.0-alpha.9", "--config", writeClusterConfig(t), "--node", "cp-1", "--timeout", "1m"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "upgrade", "v2026.7.0-alpha.9", "--config", writeClusterConfig(t), "--node", "cp-1", "--timeout", "1m", "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	request := fake.submitRequest.GetHostUpgrade()
@@ -1797,6 +1898,7 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 		"--config", configPath,
 		"--candidate-generation", "generation-auto",
 		"--client-request-id", "req-auto",
+		"--output", "json",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
@@ -1843,6 +1945,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 		"--mode", generation.ApplyModeNextBoot,
 		"--candidate-generation", "generation-plan",
 		"--client-request-id", "req-plan",
+		"--output", "json",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
@@ -1896,6 +1999,7 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 		"--desired-version", "2",
 		"--candidate-generation", "generation-bundle",
 		"--client-request-id", "req-bundle",
+		"--output", "json",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
@@ -2033,7 +2137,7 @@ func TestAddressOverrideValidation(t *testing.T) {
 	}
 }
 
-func TestPrintBootstrapResultIncludesOperationReference(t *testing.T) {
+func TestPrintBootstrapResultHidesOperationReference(t *testing.T) {
 	var stdout bytes.Buffer
 	printBootstrapResult(&stdout, cluster.Result{Phases: []cluster.Phase{{
 		Name:        "bootstrap-init",
@@ -2041,7 +2145,7 @@ func TestPrintBootstrapResultIncludesOperationReference(t *testing.T) {
 		Status:      "failed",
 		OperationID: "bootstrap-init-1",
 	}}})
-	if got := stdout.String(); !strings.Contains(got, "operation-id=bootstrap-init-1") || strings.Contains(got, "digest") {
+	if got := stdout.String(); strings.Contains(got, "operation-id") || strings.Contains(got, "digest") || !strings.Contains(got, "phase=bootstrap-init node=cp-1 status=failed") {
 		t.Fatalf("stdout = %q", got)
 	}
 }

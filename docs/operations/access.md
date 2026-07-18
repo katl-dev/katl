@@ -63,12 +63,18 @@ Inspect the resolved context after saving it:
 
 ```sh
 katlctl context show
+katlctl context list
 katlctl node status cp-1
 ```
 
 The save command has already performed the agent health check. Normal management
 commands now need only `--node`; `--context` selects a non-current cluster.
 An explicit `--endpoint` remains available when operating without a saved
+context.
+
+Use `katlctl context current` to print the selection and `katlctl context use
+NAME` to switch between saved clusters. `katlctl cluster status --config
+./cluster.yaml` summarizes every configured node without requiring a saved
 context.
 
 ## Routine Host Management

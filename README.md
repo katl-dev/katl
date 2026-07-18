@@ -222,7 +222,7 @@ kubeconfig to the operator.
 optional plan contacts the selected node but does not accept an operation:
 
 ```sh
-katlctl node apply --config ./cluster.yaml --node cp-1 --plan
+katlctl node apply cp-1 --config ./cluster.yaml --plan
 ```
 
 Run the command without `--plan` to apply it. `katlctl` derives config versions,
@@ -252,19 +252,19 @@ Host upgrades take a release version and select the node from `ClusterConfig`.
 for the new generation to pass boot health:
 
 ```sh
-katlctl node upgrade v2026.7.0-alpha.9 --config ./cluster.yaml --node cp-1
+katlctl node upgrade v2026.7.0-alpha.9 cp-1 --config ./cluster.yaml
 ```
 
 Add `--plan` to check the upgrade without changing or rebooting the node. The
 node calculates and records image identity internally before changing the
 inactive root slot.
 
-Kubernetes upgrades use the workstation cluster context and an exact Kubernetes
+Kubernetes upgrades use the retained `ClusterConfig` and an exact Kubernetes
 version. Plan the whole control-plane-first rollout without supplying bundle
 digests, artifact paths, snapshot metadata, generation IDs, or operation IDs:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1 --plan
+katlctl kubernetes upgrade v1.36.1 --config ./cluster.yaml --plan
 ```
 
 Remove `--plan` to run the complete control-plane-first, worker-second rollout.
@@ -284,7 +284,7 @@ discoverable afterward:
 
 ```sh
 katlctl operations list \
-  --node cp-1
+  --config ./cluster.yaml --node cp-1
 ```
 
 ## Release artifacts

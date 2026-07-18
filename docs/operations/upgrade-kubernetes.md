@@ -8,7 +8,7 @@ upgrade node`.
 
 ## Preconditions
 
-- every node is reachable through the selected `katlctl` workstation context;
+- every node in the retained `ClusterConfig` is reachable;
 - every node reports either the common source version or the selected target
   version on a committed, healthy generation;
 - no other mutating Katl operation is active;
@@ -23,11 +23,11 @@ release; operators do not supply the bundle identity.
 
 ```sh
 katlctl kubernetes upgrade \
-  v1.36.1 --plan
+  v1.36.1 --config ./cluster.yaml --plan
 ```
 
-By default, `katlctl` uses the current context in its workstation configuration.
-Use `--context NAME`, `--context-file PATH`, or `--inventory PATH` when needed.
+The retained `ClusterConfig` is the normal topology source. A saved context is
+optional shorthand: use `--context NAME` after `katlctl context save`.
 
 The plan connects to every node, reads its current healthy generation and
 Kubernetes payload, derives the control-plane/worker order, and asks every
@@ -44,7 +44,7 @@ internally. An unavailable version fails before any node operation is accepted.
 Run the same command without `--plan`:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1
+katlctl kubernetes upgrade v1.36.1 --config ./cluster.yaml
 ```
 
 The command itself authorizes the rollout; there is no additional confirmation
@@ -62,7 +62,7 @@ The default path neither cordons nor drains nodes. To prevent new pods from
 being scheduled onto the node during its upgrade, opt into temporary cordoning:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1 \
+katlctl kubernetes upgrade v1.36.1 --config ./cluster.yaml \
   --cordon --kubeconfig ./kubeconfig
 ```
 

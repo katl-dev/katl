@@ -18,15 +18,15 @@ before accepting the operation.
 - stop if a control-plane or etcd member is expected to remain part of the same
   cluster.
 
-The current workstation context is the normal saved topology source. Pass a
-retained `ClusterConfig` or PXE/offline config bundle
-through `--config` when operating without a saved context. `--inventory`
-remains available for expert recovery tooling.
+The retained `ClusterConfig` or PXE/offline config bundle is the normal topology
+source. A saved workstation context is optional shorthand for repeated work;
+the lower-level inventory input is reserved for recovery tooling.
 
 ## Plan a Whole-Cluster Wipe
 
 ```sh
 katlctl cluster wipe \
+  --config ./cluster.yaml \
   --plan \
   --all
 ```
@@ -37,7 +37,7 @@ preserved surface, and refusal.
 Execute only when the cluster is intentionally being discarded:
 
 ```sh
-katlctl cluster wipe --all
+katlctl cluster wipe --config ./cluster.yaml --all
 ```
 
 The command follows every node-local destructive reset and reports each
@@ -58,7 +58,7 @@ After saving it, the workstation context supplies topology, so
 the source can be omitted:
 
 ```sh
-katlctl node wipe worker-1 --kubeconfig ./kubeconfig
+katlctl node wipe worker-1 --config ./cluster.yaml --kubeconfig ./kubeconfig
 ```
 
 Execution requires `--kubeconfig` so Katl can remove the Kubernetes Node first.

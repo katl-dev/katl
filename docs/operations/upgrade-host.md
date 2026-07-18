@@ -20,7 +20,7 @@ orchestrate availability across several hosts.
 ## Plan
 
 ```sh
-katlctl node upgrade v2026.7.0-alpha.9 --config ./cluster.yaml --node cp-1 --plan
+katlctl node upgrade v2026.7.0-alpha.9 cp-1 --config ./cluster.yaml --plan
 ```
 
 A plan response has no durable mutation and does not reboot the node.
@@ -34,7 +34,7 @@ component metadata before changing the inactive slot.
 Run the command without `--plan`:
 
 ```sh
-katlctl node upgrade v2026.7.0-alpha.9 --config ./cluster.yaml --node cp-1
+katlctl node upgrade v2026.7.0-alpha.9 cp-1 --config ./cluster.yaml
 ```
 
 For repeated day-two commands, `katlctl context save --config ./cluster.yaml`
@@ -43,9 +43,9 @@ cluster configuration operators must maintain.
 
 `katlctl` follows staging progress, asks the node agent to reboot,
 waits for the agent to restart, and requires the selected generation to be
-committed, booted, and healthy. A successful JSON result has `rebooted: true`
-and `bootHealth: healthy`. Check workload availability before upgrading another
-host.
+committed, booted, and healthy. The default result is concise text; use
+`--output json` when automation needs the structured `rebooted` and
+`bootHealth` fields. Check workload availability before upgrading another host.
 
 ## Failure Boundary
 

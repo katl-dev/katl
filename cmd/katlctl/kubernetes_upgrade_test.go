@@ -124,11 +124,21 @@ func TestKubernetesUpgradePlanDoesNotExecute(t *testing.T) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 	var stdout bytes.Buffer
-	if err := run(context.Background(), []string{"kubernetes", "upgrade", "v1.36.1", "--inventory", inv, "--plan", "--timeout", "1m"}, &stdout, &bytes.Buffer{}); err != nil {
+	if err := run(context.Background(), []string{"kubernetes", "upgrade", "v1.36.1", "--inventory", inv, "--plan", "--timeout", "1m", "--output", "json"}, &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.submitRequests) != 1 || !client.submitRequests[0].DryRun || !strings.Contains(stdout.String(), `"result": "planned"`) {
 		t.Fatalf("requests=%#v output=%s", client.submitRequests, stdout.String())
+	}
+}
+
+func TestKubernetesUpgradeResolvesClusterConfigWithoutContext(t *testing.T) {
+	topology, err := resolveKubernetesUpgradeTopology(kubernetesUpgradeOptions{clusterConfig: writeClusterConfig(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(topology.Nodes) != 1 || topology.Nodes[0].Name != "cp-1" || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" {
+		t.Fatalf("topology = %#v", topology)
 	}
 }
 

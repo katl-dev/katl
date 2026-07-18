@@ -45,6 +45,7 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 				"--endpoint", "node.test:9443",
 				"--operation-id", "operation-1",
 				"--diagnostics", "verbose",
+				"--output", "json",
 			}, &stdout, &stderr)
 			if err != nil {
 				t.Fatalf("run() error = %v", err)
@@ -78,7 +79,7 @@ func TestOperationsListDiscoversRecentWork(t *testing.T) {
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"operations", "list", "--endpoint", "node:9443", "--active", "--limit", "5"}, &stdout, &stderr)
+	err := run(context.Background(), []string{"operations", "list", "--endpoint", "node:9443", "--active", "--limit", "5", "--output", "json"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +95,25 @@ func TestOperationsListDiscoversRecentWork(t *testing.T) {
 	}
 	if client.operationsRequest == nil || !client.operationsRequest.ActiveOnly || client.operationsRequest.Limit != 5 {
 		t.Fatalf("list request = %#v", client.operationsRequest)
+	}
+}
+
+func TestOperationsListTargetsClusterConfigWithoutContext(t *testing.T) {
+	client := &fakeKatlcAgentClient{operations: &agentapi.ListOperationsResponse{}}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "10.0.0.11:9443" {
+			t.Fatalf("endpoint = %q", endpoint)
+		}
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"operations", "list", "--config", writeClusterConfig(t)}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "ID") || client.operationsRequest == nil {
+		t.Fatalf("stdout=%q request=%#v", stdout.String(), client.operationsRequest)
 	}
 }
 
@@ -159,8 +179,6 @@ func TestFollowOperationTimeoutReturnsLastStatus(t *testing.T) {
 
 func TestOperationStatusValidatesFlags(t *testing.T) {
 	for _, args := range [][]string{
-		{"operations", "status"},
-		{"operations", "status", "--endpoint", "node:9443"},
 		{"operations", "status", "--endpoint", "node:9443", "--operation-id", "op-1", "--diagnostics", "everything"},
 		{"operations", "status", "--endpoint", "node:9443", "--operation-id", "op-1", "--timeout", "0s"},
 	} {
@@ -182,7 +200,7 @@ func TestOperationWatchReturnsFailureAfterStatus(t *testing.T) {
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"operations", "status", "--endpoint", "node:9443", "--operation-id", "operation-1", "--watch"}, &stdout, &stderr)
+	err := run(context.Background(), []string{"operations", "status", "--endpoint", "node:9443", "--operation-id", "operation-1", "--watch", "--output", "json"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "disk mutation requires recovery") {
 		t.Fatalf("run() error = %v", err)
 	}

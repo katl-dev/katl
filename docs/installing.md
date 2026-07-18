@@ -461,7 +461,7 @@ request internally; operators do not maintain a second configuration schema.
 Optionally plan the exact per-node runtime request through the node agent:
 
 ```text
-katlctl node apply --config ./cluster.yaml --node cp-1 --plan
+katlctl node apply cp-1 --config ./cluster.yaml --plan
 ```
 
 `katlctl` derives the source version, candidate generation, management endpoint,
@@ -472,10 +472,9 @@ If the source has already been compiled, use the bundle instead of
 recompiling it:
 
 ```text
-katlctl node apply \
-  --config ./katl-lab.katlcfg \
-  --node cp-1 \
-  --plan
+katlctl node apply cp-1 \
+	--config ./katl-lab.katlcfg \
+	--plan
 ```
 
 Remove `--plan` to submit the accepted plan. The default `--mode auto` uses

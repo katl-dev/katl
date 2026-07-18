@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,7 +204,57 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	}
 }
 
-func TestConfigApplyUsesContextAndDerivesBookkeeping(t *testing.T) {
+func TestContextListCurrentAndUse(t *testing.T) {
+	path := writeKatlctlConfig(t, `currentContext: lab
+contexts:
+- name: lab
+  cluster: lab
+- name: stage
+  cluster: stage
+clusters:
+- name: lab
+  nodes:
+  - name: cp-1
+    managementEndpoint: 192.0.2.11:9443
+    systemRole: control-plane
+- name: stage
+  nodes:
+  - name: cp-1
+    managementEndpoint: 192.0.2.21:9443
+    systemRole: control-plane
+`)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"context", "list", "--context-file", path}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(stdout.String())
+	if !slices.Contains(fields, "*") || !slices.Contains(fields, "lab") || !slices.Contains(fields, "stage") {
+		t.Fatalf("context list = %q", stdout.String())
+	}
+	stdout.Reset()
+	if err := run(context.Background(), []string{"context", "use", "stage", "--context-file", path}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if err := run(context.Background(), []string{"context", "current", "--context-file", path}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "stage" {
+		t.Fatalf("current context = %q", got)
+	}
+}
+
+func TestContextMissingFileExplainsHowToCreateOne(t *testing.T) {
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"context", "list"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "katlctl context save --config cluster.yaml") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestConfigApplyUsesClusterConfigAndDerivesBookkeeping(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "katlctl.yaml")
 	cfg := workstation.Config{CurrentContext: "lab", Contexts: []workstation.Context{{Name: "lab", Cluster: "lab"}}, Clusters: []workstation.Cluster{{
@@ -229,7 +280,7 @@ func TestConfigApplyUsesContextAndDerivesBookkeeping(t *testing.T) {
 	t.Cleanup(func() { configApplyNow = oldNow })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "apply", "--config", writeClusterConfig(t), "--context-file", configPath, "--node", "cp-1"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "apply", "cp-1", "--config", writeClusterConfig(t), "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
 	}
 	if fake.validateRequest == nil || fake.validateRequest.CandidateGenerationId != "config-42" {

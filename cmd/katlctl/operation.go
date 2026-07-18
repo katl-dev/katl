@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -38,27 +39,29 @@ type operationClient interface {
 }
 
 type operationStatusOptions struct {
-	endpoint    string
-	configPath  string
-	contextName string
-	nodeName    string
-	operationID string
-	diagnostics string
-	watch       bool
-	timeout     time.Duration
-	output      string
+	clusterConfig string
+	endpoint      string
+	configPath    string
+	contextName   string
+	nodeName      string
+	operationID   string
+	diagnostics   string
+	watch         bool
+	timeout       time.Duration
+	output        string
 }
 
 type operationListOptions struct {
-	endpoint    string
-	configPath  string
-	contextName string
-	nodeName    string
-	activeOnly  bool
-	limit       int32
-	diagnostics string
-	timeout     time.Duration
-	output      string
+	clusterConfig string
+	endpoint      string
+	configPath    string
+	contextName   string
+	nodeName      string
+	activeOnly    bool
+	limit         int32
+	diagnostics   string
+	timeout       time.Duration
+	output        string
 }
 
 func newOperationCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -69,29 +72,40 @@ func newOperationCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.C
 }
 
 func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := operationStatusOptions{diagnostics: "normal", timeout: 30 * time.Minute, output: "json"}
+	opts := operationStatusOptions{diagnostics: "normal", timeout: 30 * time.Minute, output: "text"}
 	cmd := &cobra.Command{
-		Use:   "status",
+		Use:   "status [OPERATION_ID]",
 		Short: "Query or follow one accepted KatlOS operation",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if strings.TrimSpace(opts.operationID) != "" {
+					return fmt.Errorf("OPERATION_ID cannot be combined with --operation-id")
+				}
+				opts.operationID = args[0]
+			} else if strings.TrimSpace(opts.operationID) == "" {
+				return command.Help()
+			}
 			return runOperationStatus(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
+	cmd.Flags().StringVar(&opts.clusterConfig, "config", "", "ClusterConfig YAML or Katl config bundle")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "node address override: IP, hostname, host:port, or tcp:// URL")
 	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
-	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
+	cmd.Flags().Lookup("context-file").Hidden = true
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "optional saved context created by 'katlctl context save'")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name from --config or a saved context; optional for one node")
 	cmd.Flags().StringVar(&opts.operationID, "operation-id", "", "accepted operation id")
+	cmd.Flags().Lookup("operation-id").Hidden = true
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "follow the operation until it reaches terminal state")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall status or watch timeout")
-	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
 }
 
 func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := operationListOptions{limit: 20, diagnostics: "normal", timeout: 15 * time.Second, output: "json"}
+	opts := operationListOptions{limit: 20, diagnostics: "normal", timeout: 15 * time.Second, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List current and recent KatlOS operations",
@@ -100,22 +114,24 @@ func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 			return runOperationList(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "katlc agent TCP endpoint host:port")
+	cmd.Flags().StringVar(&opts.clusterConfig, "config", "", "ClusterConfig YAML or Katl config bundle")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "node address override: IP, hostname, host:port, or tcp:// URL")
 	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
-	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name in the selected context")
+	cmd.Flags().Lookup("context-file").Hidden = true
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "optional saved context created by 'katlctl context save'")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name from --config or a saved context; optional for one node")
 	cmd.Flags().BoolVar(&opts.activeOnly, "active", false, "show only non-terminal operations")
 	cmd.Flags().Int32Var(&opts.limit, "limit", opts.limit, "maximum operations to return")
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "list request timeout")
-	cmd.Flags().StringVar(&opts.output, "output", opts.output, "output format: json")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
 }
 
 func runOperationList(ctx context.Context, opts operationListOptions, stdout, stderr io.Writer) error {
 	_ = stderr
-	if opts.output != "json" {
-		return fmt.Errorf("--output = %q, want json", opts.output)
+	if opts.output != "text" && opts.output != "json" {
+		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
 	if opts.limit < 1 || opts.limit > 100 {
 		return fmt.Errorf("--limit must be between 1 and 100")
@@ -127,7 +143,7 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 		return fmt.Errorf("--timeout must be positive")
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
-		configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
+		clusterConfigPath: opts.clusterConfig, configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
 		endpoint: opts.endpoint,
 	})
 	if err != nil {
@@ -151,6 +167,18 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	for _, status := range response.GetOperations() {
 		status.RequestDigest = ""
 	}
+	if opts.output == "text" {
+		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tKIND\tPHASE\tRESULT\tUPDATED")
+		for _, status := range response.GetOperations() {
+			result := status.GetResult()
+			if result == "" {
+				result = "running"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", status.GetOperationId(), status.GetOperationKind(), status.GetPhase(), result, status.GetUpdatedAt())
+		}
+		return w.Flush()
+	}
 	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(response)
 	if err != nil {
 		return fmt.Errorf("marshal operations: %w", err)
@@ -160,8 +188,8 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 }
 
 func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout, stderr io.Writer) error {
-	if opts.output != "json" {
-		return fmt.Errorf("--output = %q, want json", opts.output)
+	if opts.output != "text" && opts.output != "json" {
+		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
 	if strings.TrimSpace(opts.operationID) == "" {
 		return fmt.Errorf("--operation-id is required")
@@ -173,7 +201,7 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 		return fmt.Errorf("--timeout must be positive")
 	}
 	target, err := resolveManagementTarget(managementTargetOptions{
-		configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
+		clusterConfigPath: opts.clusterConfig, configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
 		endpoint: opts.endpoint,
 	})
 	if err != nil {
@@ -199,17 +227,17 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 		return fmt.Errorf("agent returned an empty operation status")
 	}
 	if !opts.watch {
-		return writeOperationStatus(stdout, status)
+		return writeOperationStatus(stdout, opts.output, status)
 	}
 	if status.GetTerminal() {
-		if err := writeOperationStatus(stdout, status); err != nil {
+		if err := writeOperationStatus(stdout, opts.output, status); err != nil {
 			return err
 		}
 		return operationResultError(status)
 	}
 
 	status, err = followOperation(requestCtx, conn.Client, request, status, stderr)
-	if writeErr := writeOperationStatus(stdout, status); writeErr != nil {
+	if writeErr := writeOperationStatus(stdout, opts.output, status); writeErr != nil {
 		return writeErr
 	}
 	if err != nil {
@@ -293,12 +321,26 @@ func followOperation(ctx context.Context, client operationClient, request *agent
 	}
 }
 
-func writeOperationStatus(stdout io.Writer, status *agentapi.OperationStatus) error {
+func writeOperationStatus(stdout io.Writer, output string, status *agentapi.OperationStatus) error {
 	if status == nil {
 		return fmt.Errorf("agent returned an empty operation status")
 	}
 	publicStatus := proto.Clone(status).(*agentapi.OperationStatus)
 	publicStatus.RequestDigest = ""
+	if output == "text" {
+		result := publicStatus.GetResult()
+		if result == "" {
+			result = "running"
+		}
+		if _, err := fmt.Fprintf(stdout, "%s %s: phase=%s result=%s\n", publicStatus.GetOperationId(), publicStatus.GetOperationKind(), publicStatus.GetPhase(), result); err != nil {
+			return err
+		}
+		if next := strings.TrimSpace(publicStatus.GetNextAction()); next != "" {
+			_, err := fmt.Fprintf(stdout, "Next action: %s\n", next)
+			return err
+		}
+		return nil
+	}
 	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicStatus)
 	if err != nil {
 		return fmt.Errorf("marshal operation status: %w", err)
