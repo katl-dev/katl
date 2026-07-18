@@ -31,6 +31,19 @@ func TestESPCheck(t *testing.T) {
 	}
 }
 
+func TestVMTestServicesDoNotDependOnBootEntryInjection(t *testing.T) {
+	for _, name := range []string{"katl-vmtest-agent.service", "katl-vmtest-debug-shell.service"} {
+		path := filepath.Join(repoRoot(t), "internal", "vmtest", "image", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if strings.Contains(string(data), "ConditionKernelCommandLine=") {
+			t.Fatalf("%s still depends on boot-entry injection:\n%s", name, data)
+		}
+	}
+}
+
 func TestInstalledRuntime(t *testing.T) {
 	root := t.TempDir()
 	disk := filepath.Join(root, "installed.raw")
@@ -75,8 +88,8 @@ func TestInstalledRuntime(t *testing.T) {
 		t.Fatalf("installed runtime input = %#v", input)
 	}
 	domainXML := readDomainXML(t, result)
-	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "efi.img")+`"></source>`) {
-		t.Fatalf("default runtime boot did not attach prepared ESP image:\n%s", domainXML)
+	if strings.Contains(domainXML, "katl-efi") || !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "vda.snapshot.qcow2")+`"></source>`) {
+		t.Fatalf("default runtime boot did not use the installed disk snapshot:\n%s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
 	if err != nil {
@@ -85,10 +98,12 @@ func TestInstalledRuntime(t *testing.T) {
 	if strings.Contains(string(entry), "katl.vmtest_agent=1") {
 		t.Fatalf("default runtime boot injected vmtest agent flag: %s", entry)
 	}
-	for _, option := range runtimeConsoleOptions {
-		if !strings.Contains(string(entry), option) {
-			t.Fatalf("default runtime option %q missing from copied loader entry: %s", option, entry)
-		}
+	source, err := os.ReadFile(loaderEntry(t, esp))
+	if err != nil {
+		t.Fatalf("read source loader entry: %v", err)
+	}
+	if string(entry) != string(source) {
+		t.Fatalf("copied loader entry was mutated:\n%s", entry)
 	}
 }
 
@@ -131,17 +146,15 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 		t.Fatalf("vsock = %#v", result.VSock)
 	}
 	domainXML := readDomainXML(t, result)
-	if !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "efi.img")+`"></source>`) {
-		t.Fatalf("runtime domain XML did not boot injected ESP image:\n%s", domainXML)
+	if strings.Contains(domainXML, "katl-efi") || !strings.Contains(domainXML, `<source file="`+filepath.Join(result.VMDir, "vda.snapshot.qcow2")+`"></source>`) {
+		t.Fatalf("runtime domain XML did not boot the installed disk snapshot:\n%s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
 	if err != nil {
 		t.Fatalf("read copied loader entry: %v", err)
 	}
-	for _, option := range runtimeVMTestOptions {
-		if !strings.Contains(string(entry), option) {
-			t.Fatalf("vmtest runtime option %q missing from copied loader entry: %s", option, entry)
-		}
+	if strings.Contains(string(entry), "katl.vmtest_agent=1") {
+		t.Fatalf("installed runtime mutated the copied boot entry for VM support: %s", entry)
 	}
 	input := readInstalledRuntimeInput(t, result.Artifacts.InstalledRuntime)
 	if input.Disk != disk || input.DiskFormat != string(DiskRaw) || input.ESPArtifacts != esp || !input.RequireVMTestAgent {
@@ -167,11 +180,6 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	}
 	if strings.Contains(string(source), "katl.vmtest_agent=1") {
 		t.Fatalf("source ESP artifact was mutated: %s", source)
-	}
-	for _, option := range runtimeVMTestOptions[1:] {
-		if strings.Contains(string(source), option) {
-			t.Fatalf("source ESP artifact was mutated with %q: %s", option, source)
-		}
 	}
 }
 
@@ -204,7 +212,7 @@ func TestInstalledRuntimeRejectsMalformedFixtureManifest(t *testing.T) {
 	}
 }
 
-func TestInstalledRuntimeInjectsDebugShellOptionWhenEnabled(t *testing.T) {
+func TestInstalledRuntimeDoesNotInjectDebugShellOption(t *testing.T) {
 	t.Setenv("KATL_VMTEST_DEBUG_ON_FAILURE", "1")
 	root := t.TempDir()
 	disk := filepath.Join(root, "installed.raw")
@@ -230,8 +238,8 @@ func TestInstalledRuntimeInjectsDebugShellOptionWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read copied loader entry: %v", err)
 	}
-	if !strings.Contains(string(entry), runtimeDebugShellOption) {
-		t.Fatalf("debug shell option missing from copied loader entry: %s", entry)
+	if strings.Contains(string(entry), runtimeDebugShellOption) {
+		t.Fatalf("debug support mutated the copied loader entry: %s", entry)
 	}
 }
 

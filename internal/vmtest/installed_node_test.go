@@ -78,15 +78,15 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		t.Fatalf("runtime serial = %q, err = %v", serial, err)
 	}
 	domainXML := readDomainXML(t, node.Result)
-	if !strings.Contains(domainXML, `<cid auto="no" address="62000"></cid>`) || !strings.Contains(domainXML, `<source file="`+filepath.Join(node.Result.VMDir, "efi.img")+`"></source>`) {
+	if !strings.Contains(domainXML, `<cid auto="no" address="62000"></cid>`) || strings.Contains(domainXML, "katl-efi") || !strings.Contains(domainXML, `<source file="`+filepath.Join(node.Result.VMDir, "vda.snapshot.qcow2")+`"></source>`) {
 		t.Fatalf("node domain XML = %s", domainXML)
 	}
 	entry, err := os.ReadFile(filepath.Join(node.Result.RunDir, "esp", "loader", "entries", filepath.Base(loaderEntry(t, esp))))
 	if err != nil {
 		t.Fatalf("read copied loader entry: %v", err)
 	}
-	if !strings.Contains(string(entry), "katl.vmtest_agent=1") {
-		t.Fatalf("vmtest agent flag missing from copied loader entry: %s", entry)
+	if strings.Contains(string(entry), "katl.vmtest_agent=1") {
+		t.Fatalf("VM support mutated the copied loader entry: %s", entry)
 	}
 	input := readInstalledRuntimeInput(t, node.Result.Artifacts.InstalledRuntime)
 	if input.FixtureManifest != fixtureManifest || input.NodeMetadata != nodeMetadata {

@@ -56,7 +56,6 @@ func RunInstalledKubeadmAPISmoke(ctx context.Context, result Result, config Kube
 		Image:         runtime.Disk,
 		ImageFormat:   diskFormat(runtime.DiskFormat),
 		ImageSnapshot: true,
-		EFITree:       runtimeESPPath(result),
 	}
 	vm.VSock.Enabled = true
 

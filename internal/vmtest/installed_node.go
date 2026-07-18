@@ -54,7 +54,6 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		Image:         runtime.Disk,
 		ImageFormat:   diskFormat(runtime.DiskFormat),
 		ImageSnapshot: true,
-		EFITree:       runtimeESPPath(result),
 	}
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
