@@ -38,6 +38,10 @@ func TestDiskExecutorDryRunOutput(t *testing.T) {
 	if !strings.HasSuffix(strings.Join(formatESP.Args, " "), "/dev/disk/by-partlabel/KATL_ESP") {
 		t.Fatalf("format ESP args = %#v", formatESP.Args)
 	}
+	formatState := findOp(result.Operations, "format-state")
+	if got := strings.Join(formatState.Args, " "); got != "-L KATL_STATE -O verity /dev/disk/by-partlabel/KATL_STATE" {
+		t.Fatalf("format state args = %q", got)
+	}
 	if countOps(result.Operations, "write-root-a") != 1 || countOps(result.Operations, "write-root-b") != 0 {
 		t.Fatalf("root write operations = %#v", result.Operations)
 	}

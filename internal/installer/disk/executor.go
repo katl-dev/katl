@@ -256,6 +256,12 @@ func formatArgs(partition PartitionPlan) []string {
 	switch partition.Filesystem {
 	case "vfat":
 		return []string{"-n", partition.GPTLabel, device}
+	case "ext4":
+		args := []string{"-L", partition.GPTLabel}
+		if partition.Name == "state" {
+			args = append(args, "-O", "verity")
+		}
+		return append(args, device)
 	default:
 		return []string{"-L", partition.GPTLabel, device}
 	}
