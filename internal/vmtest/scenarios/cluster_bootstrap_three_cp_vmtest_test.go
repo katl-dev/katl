@@ -449,7 +449,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
 	for _, node := range nodes {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "stage-"+node.Name,
-			"node", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--file", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof")
+			"node", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--config", requestPath, "--mode", "next-boot", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof", "--output", "json")
 		if err != nil {
 			return fmt.Errorf("stage desired generation on %s: %w: %s", node.Name, err, stderr)
 		}

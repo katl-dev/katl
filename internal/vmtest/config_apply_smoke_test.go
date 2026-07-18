@@ -235,15 +235,19 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	liveGeneration := "2026.06.06-vmtest-live"
 	stagedGeneration := "2026.06.06-vmtest-networkd"
 
-	rejectedOutput := runKatlctl(t, ctx, result, katlctl, "config-apply-validate-rejected",
+	rejectedArgs := []string{
 		"node", "apply", "validate",
 		"--endpoint", endpoint,
-		"--file", configApplyFixture(t, "rejected-live-without-preflight.yaml"),
+	}
+	rejectedArgs = append(rejectedArgs, configApplyConfigArgs(configApplyFixture(t, "rejected-live-without-preflight.yaml"))...)
+	rejectedArgs = append(rejectedArgs,
 		"--mode", "live",
 		"--candidate-generation", rejectedGeneration,
 		"--client-request-id", "vmtest-config-apply-rejected",
 		"--actor", "installed-runtime config apply vmtest",
+		"--output", "json",
 	)
+	rejectedOutput := runKatlctl(t, ctx, result, katlctl, "config-apply-validate-rejected", rejectedArgs...)
 	var rejected agentapi.ConfigValidationResult
 	mustUnmarshalProtoJSON(t, rejectedOutput, &rejected)
 	if rejected.Accepted || !strings.Contains(strings.Join(rejected.Diagnostics, "\n"), "staged-only") {
@@ -357,10 +361,13 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 	args := []string{
 		"node", "apply",
 		"--endpoint", endpoint,
-		"--file", fixture,
+	}
+	args = append(args, configApplyConfigArgs(fixture)...)
+	args = append(args,
 		"--candidate-generation", generationID,
 		"--actor", "installed-runtime config apply vmtest",
-	}
+		"--output", "json",
+	)
 	if mode != "" {
 		args = append(args, "--mode", mode)
 	}
@@ -377,7 +384,7 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 		t.Fatalf("%s terminal result = %+v", name, &terminal)
 	}
 	listOutput := runKatlctl(t, ctx, result, katlctl, name+"-operations",
-		"operations", "list", "--endpoint", endpoint, "--limit", "20")
+		"operations", "list", "--endpoint", endpoint, "--limit", "20", "--output", "json")
 	var listed agentapi.ListOperationsResponse
 	mustUnmarshalProtoJSON(t, listOutput, &listed)
 	for _, status := range listed.Operations {
@@ -391,6 +398,10 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 	}
 	t.Fatalf("%s operation for generation %q not found in recent operations", name, generationID)
 	return agentapi.OperationAccepted{}
+}
+
+func configApplyConfigArgs(path string) []string {
+	return []string{"--config", path}
 }
 
 func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, name, generationID string) agentapi.Generation {
