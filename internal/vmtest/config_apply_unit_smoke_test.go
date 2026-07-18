@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,13 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
+
+func TestConfigApplyVMJourneyUsesPublicConfigFlag(t *testing.T) {
+	want := []string{"--config", "/tmp/cluster.yaml"}
+	if got := configApplyConfigArgs("/tmp/cluster.yaml"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("config apply input args = %q, want %q", got, want)
+	}
+}
 
 func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {
 	fixture := runtimeUserspaceFixture(t)
