@@ -133,11 +133,16 @@ func TestKubernetesUpgradePlanDoesNotExecute(t *testing.T) {
 }
 
 func TestKubernetesUpgradeResolvesClusterConfigWithoutContext(t *testing.T) {
-	topology, err := resolveKubernetesUpgradeTopology(kubernetesUpgradeOptions{clusterConfig: writeClusterConfig(t)})
+	configPath := filepath.Join(t.TempDir(), "cluster.yaml")
+	config := strings.Replace(configBundleSource(), "  controlPlaneEndpoint: api.katl.test:6443\n", "", 1)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	topology, err := resolveKubernetesUpgradeTopology(kubernetesUpgradeOptions{clusterConfig: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(topology.Nodes) != 1 || topology.Nodes[0].Name != "cp-1" || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" {
+	if len(topology.Nodes) != 1 || topology.Nodes[0].Name != "cp-1" || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" || topology.ControlPlaneEndpoint != "10.0.0.11:6443" {
 		t.Fatalf("topology = %#v", topology)
 	}
 }

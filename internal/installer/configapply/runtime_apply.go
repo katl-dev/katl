@@ -30,6 +30,8 @@ const (
 	configRequestDecisionVersion      = 1
 )
 
+var ErrNoChanges = errors.New("runtime configuration change has no supported changed domains; desired state already matches")
+
 type TrustedBundleRequest struct {
 	Root                            string
 	SourceID                        string
@@ -413,7 +415,7 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		applyOverlay(&merged.Node, nodeOverlay, &domains, &unsafeFiles)
 	}
 	if len(domains.domains) == 0 {
-		return manifest.Manifest{}, nil, nil, fmt.Errorf("runtime configuration change has no supported changed domains; desired state already matches")
+		return merged, nil, nil, ErrNoChanges
 	}
 	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), unsafeFiles, nil
 }

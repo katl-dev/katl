@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -224,9 +225,11 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 		t.Fatalf("candidate status = %#v", plan.Status)
 	}
 	if plan.BootSelection.DefaultGenerationID != "gen0" ||
+		plan.BootSelection.TargetBootGenerationID != "gen1" ||
 		plan.BootSelection.TrialGenerationID != "gen1" ||
 		plan.BootSelection.PreviousKnownGoodGenerationID != "gen0" ||
 		plan.BootSelection.TrialBootEntry != "loader/entries/katl-gen1.conf" ||
+		plan.BootSelection.TargetBootEntry != "loader/entries/katl-gen1.conf" ||
 		plan.BootSelection.PreviousKnownGoodBootEntry != "loader/entries/katl-gen0.conf" ||
 		!plan.BootSelection.PendingHealthValidation ||
 		plan.BootSelection.PersistentDefaultPromotion != generation.DefaultPromotionPending ||
@@ -475,6 +478,31 @@ func TestRemoteResolverDownloadsAndMountsURL(t *testing.T) {
 	}
 	if payload.ImageSHA256 != hex.EncodeToString(sum[:]) || payload.ImageSizeBytes != uint64(len(imageBytes)) {
 		t.Fatalf("derived image identity = %s/%d", payload.ImageSHA256, payload.ImageSizeBytes)
+	}
+}
+
+func TestRemoteResolverTreatsTypedNilHTTPClientAsDefault(t *testing.T) {
+	imageBytes := []byte("remote squashfs image")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(imageBytes)
+	}))
+	t.Cleanup(server.Close)
+	expected := expectedImage()
+	expected.LocalRef = ""
+	expected.URL = server.URL
+	expected.SHA256 = ""
+	expected.SizeBytes = 0
+	mounter := &fixtureMountRunner{populate: func(root string) {
+		writeImagePayloadAt(t, root, func(*Index) {})
+	}}
+	var client *http.Client
+
+	if _, err := (RemoteResolver{
+		WorkDir:  filepath.Join(t.TempDir(), "work"),
+		Commands: mounter,
+		Client:   client,
+	}).ResolveKatlosImage(context.Background(), expected); err != nil {
+		t.Fatalf("ResolveKatlosImage() error = %v", err)
 	}
 }
 

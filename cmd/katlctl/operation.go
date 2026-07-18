@@ -38,6 +38,10 @@ type operationClient interface {
 	WatchOperation(context.Context, *agentapi.WatchOperationRequest, ...grpc.CallOption) (agentapi.KatlcAgent_WatchOperationClient, error)
 }
 
+type operationLister interface {
+	ListOperations(context.Context, *agentapi.ListOperationsRequest, ...grpc.CallOption) (*agentapi.ListOperationsResponse, error)
+}
+
 type operationStatusOptions struct {
 	clusterConfig string
 	endpoint      string
@@ -75,7 +79,8 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 	opts := operationStatusOptions{diagnostics: "normal", timeout: 30 * time.Minute, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "status [OPERATION_ID]",
-		Short: "Query or follow one accepted KatlOS operation",
+		Short: "Show an active or recent KatlOS operation",
+		Long:  "Show an active KatlOS operation, or the most recent operation when none is active. Supply an operation ID only when selecting a specific operation.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if len(args) == 1 {
@@ -83,8 +88,6 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 					return fmt.Errorf("OPERATION_ID cannot be combined with --operation-id")
 				}
 				opts.operationID = args[0]
-			} else if strings.TrimSpace(opts.operationID) == "" {
-				return command.Help()
 			}
 			return runOperationStatus(ctx, opts, stdout, stderr)
 		},
@@ -192,9 +195,6 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
-	if strings.TrimSpace(opts.operationID) == "" {
-		return fmt.Errorf("--operation-id is required")
-	}
 	if opts.diagnostics != "normal" && opts.diagnostics != "verbose" {
 		return fmt.Errorf("--diagnostics must be %q or %q", "normal", "verbose")
 	}
@@ -215,9 +215,16 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 		return err
 	}
 	defer conn.Close()
+	operationID := strings.TrimSpace(opts.operationID)
+	if operationID == "" {
+		operationID, err = selectOperationID(requestCtx, conn.Client)
+		if err != nil {
+			return err
+		}
+	}
 
 	request := &agentapi.GetOperationRequest{
-		OperationId:        strings.TrimSpace(opts.operationID),
+		OperationId:        operationID,
 		IncludeDiagnostics: opts.diagnostics,
 	}
 	status, err := conn.Client.GetOperation(requestCtx, request)
@@ -245,6 +252,32 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 		return err
 	}
 	return operationResultError(status)
+}
+
+func selectOperationID(ctx context.Context, client operationLister) (string, error) {
+	active, err := client.ListOperations(ctx, &agentapi.ListOperationsRequest{ActiveOnly: true, Limit: 2})
+	if err != nil {
+		return "", fmt.Errorf("list active operations: %w", err)
+	}
+	operations := active.GetOperations()
+	if len(operations) > 1 {
+		ids := make([]string, 0, len(operations))
+		for _, operation := range operations {
+			ids = append(ids, operation.GetOperationId())
+		}
+		return "", fmt.Errorf("more than one operation is active (%s); specify the operation ID shown by 'katlctl operations list --active'", strings.Join(ids, ", "))
+	}
+	if len(operations) == 1 {
+		return operations[0].GetOperationId(), nil
+	}
+	recent, err := client.ListOperations(ctx, &agentapi.ListOperationsRequest{Limit: 1})
+	if err != nil {
+		return "", fmt.Errorf("list recent operations: %w", err)
+	}
+	if len(recent.GetOperations()) == 0 {
+		return "", fmt.Errorf("no operations have run on this node")
+	}
+	return recent.GetOperations()[0].GetOperationId(), nil
 }
 
 func followOperation(ctx context.Context, client operationClient, request *agentapi.GetOperationRequest, current *agentapi.OperationStatus, stderr io.Writer) (*agentapi.OperationStatus, error) {

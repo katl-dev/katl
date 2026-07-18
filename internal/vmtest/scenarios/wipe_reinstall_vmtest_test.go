@@ -380,7 +380,7 @@ func runWipeNodeHandoff(t *testing.T, ctx context.Context, result vmtest.Result,
 		return err
 	}
 	var stdout, stderr bytes.Buffer
-	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "wipe", "worker-1", "--inventory", initial.Inventory, "--kubeconfig", initial.Kubeconfig, "--timeout", "10m"}, &stdout, &stderr)
+	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "wipe", "worker-1", "--inventory", initial.Inventory, "--kubeconfig", initial.Kubeconfig, "--timeout", "10m", "--output", "json"}, &stdout, &stderr)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stdout"), stdout.Bytes(), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stderr"), stderr.Bytes(), 0o644)
 	if err != nil {
@@ -426,6 +426,7 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 		"--inventory", inventoryPath,
 		"--all",
 		"--timeout", "10m",
+		"--output", "json",
 	}, &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)

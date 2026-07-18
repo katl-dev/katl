@@ -99,6 +99,7 @@ message ConfigValidationResult {
   repeated string changed_domains = 8;
   repeated string diagnostics = 9;
   string failure_reason = 10;
+  bool no_changes = 11;
 }
 
 message GenerationApplyRequest {
@@ -320,6 +321,7 @@ message Generation {
   repeated ExtensionRef sysexts = 10;
   repeated GeneratedConfext confexts = 11;
   ConfigApplyStatus config_apply = 12;
+  string runtime_architecture = 13;
 }
 
 message ExtensionRef {

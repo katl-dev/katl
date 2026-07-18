@@ -665,6 +665,7 @@ type ConfigValidationResult struct {
 	ChangedDomains        []string               `protobuf:"bytes,8,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
 	Diagnostics           []string               `protobuf:"bytes,9,rep,name=diagnostics,proto3" json:"diagnostics,omitempty"`
 	FailureReason         string                 `protobuf:"bytes,10,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	NoChanges             bool                   `protobuf:"varint,11,opt,name=no_changes,json=noChanges,proto3" json:"no_changes,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -767,6 +768,13 @@ func (x *ConfigValidationResult) GetFailureReason() string {
 		return x.FailureReason
 	}
 	return ""
+}
+
+func (x *ConfigValidationResult) GetNoChanges() bool {
+	if x != nil {
+		return x.NoChanges
+	}
+	return false
 }
 
 type GenerationApplyRequest struct {
@@ -2671,6 +2679,7 @@ type Generation struct {
 	Sysexts              []*ExtensionRef        `protobuf:"bytes,10,rep,name=sysexts,proto3" json:"sysexts,omitempty"`
 	Confexts             []*GeneratedConfext    `protobuf:"bytes,11,rep,name=confexts,proto3" json:"confexts,omitempty"`
 	ConfigApply          *ConfigApplyStatus     `protobuf:"bytes,12,opt,name=config_apply,json=configApply,proto3" json:"config_apply,omitempty"`
+	RuntimeArchitecture  string                 `protobuf:"bytes,13,opt,name=runtime_architecture,json=runtimeArchitecture,proto3" json:"runtime_architecture,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -2787,6 +2796,13 @@ func (x *Generation) GetConfigApply() *ConfigApplyStatus {
 		return x.ConfigApply
 	}
 	return nil
+}
+
+func (x *Generation) GetRuntimeArchitecture() string {
+	if x != nil {
+		return x.RuntimeArchitecture
+	}
+	return ""
 }
 
 type ExtensionRef struct {
@@ -3252,7 +3268,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"configYaml\x12*\n" +
 	"\x11client_request_id\x18\n" +
 	" \x01(\tR\x0fclientRequestId\x12+\n" +
-	"\x11operation_timeout\x18\v \x01(\tR\x10operationTimeout\"\x9c\x03\n" +
+	"\x11operation_timeout\x18\v \x01(\tR\x10operationTimeout\"\xbb\x03\n" +
 	"\x16ConfigValidationResult\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -3265,7 +3281,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x0fchanged_domains\x18\b \x03(\tR\x0echangedDomains\x12 \n" +
 	"\vdiagnostics\x18\t \x03(\tR\vdiagnostics\x12%\n" +
 	"\x0efailure_reason\x18\n" +
-	" \x01(\tR\rfailureReason\"\xce\x03\n" +
+	" \x01(\tR\rfailureReason\x12\x1d\n" +
+	"\n" +
+	"no_changes\x18\v \x01(\bR\tnoChanges\"\xce\x03\n" +
 	"\x16GenerationApplyRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -3461,7 +3479,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\vgenerations\x18\x01 \x03(\v2\x19.katl.agent.v1.GenerationR\vgenerations\"m\n" +
 	"\x14GetGenerationRequest\x12#\n" +
 	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x120\n" +
-	"\x14include_config_apply\x18\x02 \x01(\bR\x12includeConfigApply\"\x8d\x04\n" +
+	"\x14include_config_apply\x18\x02 \x01(\bR\x12includeConfigApply\"\xc0\x04\n" +
 	"\n" +
 	"Generation\x12#\n" +
 	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x12'\n" +
@@ -3480,7 +3498,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\asysexts\x18\n" +
 	" \x03(\v2\x1b.katl.agent.v1.ExtensionRefR\asysexts\x12;\n" +
 	"\bconfexts\x18\v \x03(\v2\x1f.katl.agent.v1.GeneratedConfextR\bconfexts\x12C\n" +
-	"\fconfig_apply\x18\f \x01(\v2 .katl.agent.v1.ConfigApplyStatusR\vconfigApply\"\xef\x01\n" +
+	"\fconfig_apply\x18\f \x01(\v2 .katl.agent.v1.ConfigApplyStatusR\vconfigApply\x121\n" +
+	"\x14runtime_architecture\x18\r \x01(\tR\x13runtimeArchitecture\"\xef\x01\n" +
 	"\fExtensionRef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12'\n" +

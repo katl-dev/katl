@@ -1,6 +1,7 @@
 package configapply
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -143,7 +144,7 @@ func TestRenderedNodeConfigurationDoesNotPlanUnchangedDomains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeNodeConfigurationChange() error = %v", err)
 	}
-	if _, _, _, err := mergeRuntimeConfig(request); err == nil || !strings.Contains(err.Error(), "desired state already matches") {
+	if _, _, _, err := mergeRuntimeConfig(request); !errors.Is(err, ErrNoChanges) {
 		t.Fatalf("mergeRuntimeConfig() error = %v, want unchanged desired state", err)
 	}
 }

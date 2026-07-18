@@ -9,6 +9,10 @@ vmtest_image_support="${KATL_VMTEST_IMAGE_SUPPORT:-0}"
 mkdir -p "$DESTDIR/usr/lib/katl/runtime"
 mkdir -p "$DESTDIR/usr/bin"
 mkdir -p "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants"
+mkdir -p "$DESTDIR/opt/cni" "$DESTDIR/etc/cni"
+rm -rf "$DESTDIR/opt/cni/bin" "$DESTDIR/etc/cni/net.d"
+ln -s /var/lib/katl/kubernetes/cni/bin "$DESTDIR/opt/cni/bin"
+ln -s /var/lib/katl/kubernetes/cni/net.d "$DESTDIR/etc/cni/net.d"
 ln -sf ../systemd-networkd.service "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/systemd-networkd.service"
 
 if [[ ! -f "$repo/go.mod" && -f /work/go.mod ]]; then

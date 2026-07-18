@@ -291,6 +291,8 @@ func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir s
 	}
 	if client == nil {
 		client = http.DefaultClient
+	} else if httpClient, ok := client.(*http.Client); ok && httpClient == nil {
+		client = http.DefaultClient
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, expected.URL, nil)
 	if err != nil {

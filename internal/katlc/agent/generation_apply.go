@@ -127,6 +127,17 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	decoded.GenerationID = candidateID
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err != nil {
+		if errors.Is(err, configapply.ErrNoChanges) {
+			return &agentapi.ConfigValidationResult{
+				ApiVersion:            APIVersion,
+				Kind:                  "ConfigValidationResult",
+				Accepted:              true,
+				RequestDigest:         requestDigest,
+				RequestedApplyMode:    applyMode,
+				CandidateGenerationId: candidateID,
+				NoChanges:             true,
+			}, nil
+		}
 		return rejected(err, configApplyDiagnostics(plan.Plan.Decision)), nil
 	}
 	operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)
@@ -273,6 +284,7 @@ func (s *Server) generationReadModel(id string, includeConfigApply bool) (*agent
 	out := &agentapi.Generation{
 		GenerationId:         spec.GenerationID,
 		RuntimeVersion:       spec.RuntimeVersion,
+		RuntimeArchitecture:  spec.Root.Architecture,
 		PreviousGenerationId: spec.PreviousGenerationID,
 		CommitState:          genStatus.CommitState,
 		BootState:            genStatus.BootState,

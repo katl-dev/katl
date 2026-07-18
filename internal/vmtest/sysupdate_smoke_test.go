@@ -20,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/katlc/agent"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 
@@ -54,7 +55,6 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	katlctl := buildKatlctlForConfigApplySmoke(t, ctx)
 	vm := runtime.VM
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB = 2048
@@ -120,22 +120,34 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	uploadGuestFile(t, ctx, guest, upgrade.Path, "/var/lib/katl/artifacts/"+localRef, 4<<20)
 	endpoint := katlcEndpoint(t, node, "")
 	candidateGeneration := "host-upgrade-" + strings.ReplaceAll(upgrade.Version, ".", "-")
-	acceptedData := runKatlctl(t, ctx, result, katlctl, "host-upgrade-submit",
-		"node", "upgrade",
-		"--endpoint", endpoint,
-		"--image-local-ref", localRef,
-		"--candidate-generation", candidateGeneration,
-		"--client-request-id", "vmtest-host-upgrade-"+candidateGeneration,
-		"--actor", "installed runtime host upgrade vmtest",
-		"--no-wait",
-	)
-	var accepted agentapi.OperationAccepted
-	mustUnmarshalProtoJSON(t, acceptedData, &accepted)
-	status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.OperationId)
+	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		conn.Close()
+		t.Fatalf("read node status before host upgrade: %v", err)
+	}
+	accepted, err := katlc.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
+		ApiVersion:                  operation.APIVersion,
+		Kind:                        agent.RequestKind,
+		ClientRequestId:             "vmtest-host-upgrade-" + candidateGeneration,
+		OperationKind:               agent.OperationKindHostUpgrade,
+		Actor:                       "installed runtime host upgrade vmtest",
+		ExpectedMachineId:           nodeStatus.GetMachineId(),
+		ExpectedCurrentGenerationId: previousGeneration,
+		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
+			ImageLocalRef:         localRef,
+			CandidateGenerationId: candidateGeneration,
+		},
+	})
+	conn.Close()
+	if err != nil {
+		t.Fatalf("submit host upgrade operation: %v", err)
+	}
+	status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.GetOperationId())
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
 		t.Fatalf("host upgrade operation status = %+v", status)
 	}
-	recordData := readGuestFile(t, ctx, guest, "/var/lib/katl/operations/"+accepted.OperationId+"/record.json")
+	recordData := readGuestFile(t, ctx, guest, "/var/lib/katl/operations/"+accepted.GetOperationId()+"/record.json")
 	envelope, err := persistedrecord.DecodeEnvelope([]byte(recordData))
 	if err != nil {
 		t.Fatalf("decode host upgrade operation envelope: %v", err)

@@ -9,3 +9,7 @@ version = 3
 [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.crun.options]
   BinaryName = "/usr/bin/crun"
   SystemdCgroup = true
+
+[plugins.'io.containerd.cri.v1.runtime'.cni]
+  bin_dirs = ["/var/lib/katl/kubernetes/cni/bin", "/usr/libexec/cni"]
+  conf_dir = "/var/lib/katl/kubernetes/cni/net.d"

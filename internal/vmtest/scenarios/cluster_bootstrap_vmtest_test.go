@@ -518,14 +518,14 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect control-plane generation evidence: %v", err)
 	}
-	assertCommittedGeneration(t, cpGenerationRecord, cpRecord.CandidateGenerationID)
+	assertActiveGeneration(t, cpGenerationRecord, cpRecord.CandidateGenerationID)
 	workerGenerationPath, workerGenerationRecord, err := collectGenerationEvidence(ctx, workerNode, workerEvidenceDir, workerRecord.CandidateGenerationID)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect worker generation evidence: %v", err)
 	}
-	assertCommittedGeneration(t, workerGenerationRecord, workerRecord.CandidateGenerationID)
+	assertActiveGeneration(t, workerGenerationRecord, workerRecord.CandidateGenerationID)
 	cpSelectionPath, cpSelection, err := collectBootSelectionEvidence(ctx, cpNode, cpEvidenceDir)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
@@ -2981,7 +2981,7 @@ func assertOperationBackedInitRecord(t *testing.T, record operation.OperationRec
 	if record.ActivationState != operation.ActivationStateActiveLive ||
 		record.GenerationCommitState != operation.GenerationCommitCommitted ||
 		record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed ||
-		!record.BootHealthPending {
+		record.BootHealthPending {
 		t.Fatalf("operation lifecycle = activation %q commit %q health %q pending %v", record.ActivationState, record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
 	if record.BootstrapRequest == nil ||
@@ -3037,7 +3037,7 @@ func assertOperationBackedWorkerRecord(t *testing.T, record operation.OperationR
 	if record.ActivationState != operation.ActivationStateActiveLive ||
 		record.GenerationCommitState != operation.GenerationCommitCommitted ||
 		record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed ||
-		!record.BootHealthPending {
+		record.BootHealthPending {
 		t.Fatalf("worker operation lifecycle = activation %q commit %q health %q pending %v", record.ActivationState, record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
 	if record.BootstrapRequest == nil ||
@@ -3186,17 +3186,17 @@ func decodePersistedOrLegacy[T any](data []byte) (T, error) {
 	return record, nil
 }
 
-func assertCommittedGeneration(t *testing.T, record operationBackedGenerationRecord, generationID string) {
+func assertActiveGeneration(t *testing.T, record operationBackedGenerationRecord, generationID string) {
 	t.Helper()
 	if record.Spec.GenerationID != generationID || record.Status.GenerationID != generationID {
 		t.Fatalf("generation IDs = spec %q status %q want %q", record.Spec.GenerationID, record.Status.GenerationID, generationID)
 	}
 	if record.Status.CommitState != generation.CommitStateCommitted ||
-		record.Status.BootState != generation.BootStateTrying ||
-		record.Status.HealthState != generation.HealthStateUnknown ||
+		record.Status.BootState != generation.BootStateGood ||
+		record.Status.HealthState != generation.HealthStateHealthy ||
 		record.Status.CommittedAt == nil ||
 		record.Status.CommittedByOperation == "" {
-		t.Fatalf("generation status = %#v, want committed trying with deferred boot health", record.Status)
+		t.Fatalf("generation status = %#v, want committed healthy active generation", record.Status)
 	}
 	if record.Spec.PreviousGenerationID != "0" {
 		t.Fatalf("generation previous ID = %q, want 0", record.Spec.PreviousGenerationID)
@@ -3323,19 +3323,21 @@ func collectNodeLocalStatusFailureEvidence(ctx context.Context, evidenceDir stri
 
 func assertPostBootstrapSelection(t *testing.T, selection generation.BootSelectionRecord, candidate string) {
 	t.Helper()
-	if selection.DefaultGenerationID != "0" ||
-		selection.TargetBootGenerationID != candidate ||
-		selection.TrialGenerationID != candidate ||
+	if selection.DefaultGenerationID != candidate ||
+		selection.TargetBootGenerationID != "" ||
+		selection.TrialGenerationID != "" ||
 		selection.PreviousKnownGoodGenerationID != "0" ||
 		selection.Generation0FallbackID != "0" ||
-		!selection.PendingHealthValidation ||
-		selection.PersistentDefaultPromotion != generation.DefaultPromotionPending {
-		t.Fatalf("post-bootstrap selection = %#v, want generation %s armed for boot health with gen0 fallback", selection, candidate)
+		selection.BootedGenerationID != candidate ||
+		selection.PendingHealthValidation ||
+		selection.PersistentDefaultPromotion != generation.DefaultPromotionDone {
+		t.Fatalf("post-bootstrap selection = %#v, want generation %s active and persistent with gen0 fallback", selection, candidate)
 	}
-	if selection.PendingTransactionID == "" ||
-		selection.TargetBootEntry != "loader/entries/katl-"+candidate+".conf" ||
-		selection.TrialBootEntry != selection.TargetBootEntry {
-		t.Fatalf("post-bootstrap boot transaction = %#v", selection)
+	entry := "loader/entries/katl-" + candidate + ".conf"
+	if selection.PendingTransactionID != "" ||
+		selection.DefaultBootEntry != entry ||
+		selection.BootedBootEntry != entry {
+		t.Fatalf("post-bootstrap boot selection = %#v", selection)
 	}
 }
 

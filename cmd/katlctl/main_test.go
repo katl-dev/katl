@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -370,7 +371,7 @@ func TestHostUpgradeWithoutVersionPrintsHelp(t *testing.T) {
 }
 
 func TestRequiredArgumentCommandsPrintHelpWhenEmpty(t *testing.T) {
-	for _, args := range [][]string{{"node", "upgrade"}, {"node", "wipe"}, {"kubernetes", "upgrade"}, {"operations", "status"}} {
+	for _, args := range [][]string{{"node", "upgrade"}, {"node", "wipe"}, {"kubernetes", "upgrade"}} {
 		var stdout, stderr bytes.Buffer
 		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
 			t.Errorf("katlctl %s: %v", strings.Join(args, " "), err)
@@ -1279,6 +1280,21 @@ func TestWipeCommandsExplainConsequenceWithoutConfirmationCeremony(t *testing.T)
 	}
 }
 
+func TestWipeCommandsUseAgentCompatibleTimeout(t *testing.T) {
+	for name, command := range map[string]*cobra.Command{
+		"cluster": newWipeClusterCommand(context.Background(), io.Discard, io.Discard, "katlctl cluster wipe"),
+		"node":    newWipeNodeCommand(context.Background(), io.Discard, io.Discard, "katlctl node wipe"),
+	} {
+		if got := command.Flags().Lookup("timeout").DefValue; got != defaultWipeTimeout {
+			t.Fatalf("%s wipe timeout = %q, want %q", name, got, defaultWipeTimeout)
+		}
+	}
+	err := runWipeClusterOptions(context.Background(), wipeClusterOptions{timeout: "25m1s", output: "text"}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "must not exceed 25m") {
+		t.Fatalf("oversized wipe timeout error = %v", err)
+	}
+}
+
 func TestWipeClusterRefusesPartialTargetWithoutOverride(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	var stdout, stderr bytes.Buffer
@@ -1772,6 +1788,56 @@ func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestWipeTextLabelsRefusedNodes(t *testing.T) {
+	report := wipeClusterReport{
+		Plan:    true,
+		Targets: []wipeClusterTarget{{Name: "cp-1", SystemRole: string(inventory.RoleControlPlane), Address: "192.0.2.11"}},
+		Nodes:   []wipeClusterNodeResult{{Node: "cp-1", Result: "refused", Diagnostics: []string{"operation lock is held"}}},
+		Refusals: []string{
+			"node-local preflight failed for: cp-1",
+		},
+	}
+	var stdout bytes.Buffer
+	if err := printWipeText(&stdout, report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "cp-1") || !strings.Contains(stdout.String(), "refused") || !strings.Contains(stdout.String(), "operation lock is held") || strings.Contains(stdout.String(), "planned") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestWipeTextReportsSubmissionFailures(t *testing.T) {
+	report := wipeClusterReport{
+		Targets: []wipeClusterTarget{{Name: "cp-1", SystemRole: string(inventory.RoleControlPlane), Address: "192.0.2.11"}},
+		Nodes: []wipeClusterNodeResult{{
+			Node:        "cp-1",
+			Diagnostics: []string{"operationTimeout must not exceed 25m0s"},
+		}},
+	}
+	var stdout bytes.Buffer
+	if err := printWipeText(&stdout, report); err != nil {
+		t.Fatal(err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "failed") || !strings.Contains(output, "cp-1: operationTimeout must not exceed 25m0s") || strings.Contains(output, "planned") {
+		t.Fatalf("stdout = %q", output)
+	}
+}
+
+func TestWipeTextReportsTheInstallerHandoffNextStep(t *testing.T) {
+	report := wipeClusterReport{
+		Targets:    []wipeClusterTarget{{Name: "cp-1", SystemRole: string(inventory.RoleControlPlane), Address: "192.0.2.11"}},
+		Nodes:      []wipeClusterNodeResult{{Node: "cp-1", Accepted: true, Terminal: true, Result: operation.ResultSucceeded}},
+		NextAction: wipeNextAction(false),
+	}
+	var stdout bytes.Buffer
+	if err := printWipeText(&stdout, report); err != nil {
+		t.Fatal(err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "Next: reboot each wiped node with installer media or PXE available") {
+		t.Fatalf("stdout = %q", output)
+	}
+}
+
 func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 	root := t.TempDir()
 	writeConfigApplyFixture(t, root, configApplyFixture{
@@ -1893,6 +1959,16 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeUsesRuntimeArchitectureWithoutKubernetesExtension(t *testing.T) {
+	architecture, err := nodeArtifactArchitecture(&agentapi.Generation{RuntimeArchitecture: "amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if architecture != "x86_64" {
+		t.Fatalf("architecture = %q", architecture)
+	}
+}
+
 func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
@@ -1993,6 +2069,40 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	}
 	if output["accepted"] != true || output["candidateGenerationId"] != "generation-plan" || !strings.Contains(stdout.String(), `"networkd"`) || strings.Contains(stdout.String(), "requestDigest") {
 		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+func TestConfigApplyAlreadyMatchesWithoutSubmittingOperation(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, plan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("plan=%t", plan), func(t *testing.T) {
+			fake := &fakeKatlcAgentClient{validateResult: &agentapi.ConfigValidationResult{
+				Accepted:  true,
+				NoChanges: true,
+			}}
+			oldDial := dialKatlcAgent
+			dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+				return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+			}
+			t.Cleanup(func() { dialKatlcAgent = oldDial })
+			args := []string{"node", "apply", "--endpoint", "node-a.example.test:9443", "--config", configPath}
+			if plan {
+				args = append(args, "--plan")
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+				t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "configuration already matches") {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+			if fake.submitRequest != nil || fake.stageRequest != nil || fake.applyRequest != nil {
+				t.Fatalf("no-op submitted mutation: submit=%+v stage=%+v apply=%+v", fake.submitRequest, fake.stageRequest, fake.applyRequest)
+			}
+		})
 	}
 }
 
@@ -2231,6 +2341,7 @@ type fakeKatlcAgentClient struct {
 	operationStatus   *agentapi.OperationStatus
 	operationRequest  *agentapi.GetOperationRequest
 	operations        *agentapi.ListOperationsResponse
+	operationLists    []*agentapi.ListOperationsResponse
 	operationsRequest *agentapi.ListOperationsRequest
 	onSubmit          func(*agentapi.SubmitOperationRequest)
 	rebootRequests    []*agentapi.RebootRequest
@@ -2362,6 +2473,11 @@ func (c *fakeKatlcAgentClient) GetOperation(_ context.Context, req *agentapi.Get
 
 func (c *fakeKatlcAgentClient) ListOperations(_ context.Context, req *agentapi.ListOperationsRequest, _ ...grpc.CallOption) (*agentapi.ListOperationsResponse, error) {
 	c.operationsRequest = req
+	if len(c.operationLists) > 0 {
+		response := c.operationLists[0]
+		c.operationLists = c.operationLists[1:]
+		return response, nil
+	}
 	if c.operations == nil {
 		return &agentapi.ListOperationsResponse{}, nil
 	}

@@ -425,18 +425,30 @@ func katlOSVersion(input string) (string, error) {
 }
 
 func nodeArtifactArchitecture(current *agentapi.Generation) (string, error) {
+	if architecture, ok := supportedArtifactArchitecture(current.GetRuntimeArchitecture()); ok {
+		return architecture, nil
+	}
 	for _, ref := range current.GetSysexts() {
-		architecture := strings.TrimSpace(ref.GetArchitecture())
-		switch architecture {
-		case "x86_64", "aarch64":
+		if architecture, ok := supportedArtifactArchitecture(ref.GetArchitecture()); ok {
 			return architecture, nil
-		case "amd64":
-			return "x86_64", nil
-		case "arm64":
-			return "aarch64", nil
 		}
 	}
 	return "", fmt.Errorf("current node generation does not report a supported artifact architecture")
+}
+
+func supportedArtifactArchitecture(value string) (string, bool) {
+	switch strings.TrimSpace(value) {
+	case "x86_64":
+		return "x86_64", true
+	case "aarch64":
+		return "aarch64", true
+	case "amd64":
+		return "x86_64", true
+	case "arm64":
+		return "aarch64", true
+	default:
+		return "", false
+	}
 }
 
 func katlOSReleaseURL(version, architecture string) string {
@@ -470,6 +482,8 @@ type wipeClusterOptions struct {
 	output            string
 }
 
+const defaultWipeTimeout = "25m"
+
 func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
 	opts := wipeClusterOptions{command: commandName, output: "text"}
 	cmd := &cobra.Command{
@@ -493,7 +507,7 @@ func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, comman
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operations")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after nodes accept their operations")
-	cmd.Flags().StringVar(&opts.timeout, "timeout", "30m", "operation and wait timeout duration")
+	cmd.Flags().StringVar(&opts.timeout, "timeout", defaultWipeTimeout, "operation and wait timeout duration")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
 	cmd.Flags().Var(&opts.selectedNodes, "node", "inventory node name to wipe; may be repeated")
 	return cmd
@@ -511,6 +525,9 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	waitTimeout, err := time.ParseDuration(opts.timeout)
 	if err != nil || waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be a positive duration")
+	}
+	if waitTimeout > 25*time.Minute {
+		return fmt.Errorf("--timeout must not exceed 25m")
 	}
 	if opts.all && len(opts.selectedNodes.values) > 0 {
 		return fmt.Errorf("--all and --node cannot be combined")
@@ -546,6 +563,9 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		return printWipeClusterReport(stdout, report)
 	}
 	submitErr := submitWipeCluster(ctx, connector, &report, targets, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
+	if submitErr == nil {
+		report.NextAction = wipeNextAction(opts.noWait)
+	}
 	if printErr := printWipeClusterReport(stdout, report); printErr != nil {
 		return printErr
 	}
@@ -634,7 +654,7 @@ func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandNa
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operation")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
-	cmd.Flags().StringVar(&opts.timeout, "timeout", "30m", "operation and wait timeout duration")
+	cmd.Flags().StringVar(&opts.timeout, "timeout", defaultWipeTimeout, "operation and wait timeout duration")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
 	return cmd
 }
@@ -658,6 +678,9 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	if err != nil || waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be a positive duration")
 	}
+	if waitTimeout > 25*time.Minute {
+		return fmt.Errorf("--timeout must not exceed 25m")
+	}
 
 	target, partial, err := resolveWipeNodeTarget(opts)
 	if err != nil {
@@ -668,6 +691,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	report.Command = opts.command
 	if target.SystemRole == inventory.RoleControlPlane {
 		report.KubernetesCleanup = "refused"
+		report.Nodes = append(report.Nodes, wipeClusterNodeResult{Node: target.Name, Result: "refused"})
 		report.Refusals = append(report.Refusals, "single control-plane wipe requires etcd membership coordination before node-local reset")
 		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
 			return printErr
@@ -704,6 +728,9 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	}
 
 	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
+	if submitErr == nil {
+		report.NextAction = wipeNextAction(opts.noWait)
+	}
 	if printErr := printWipeNodeReport(stdout, report); printErr != nil {
 		return printErr
 	}
@@ -816,6 +843,7 @@ type wipeClusterReport struct {
 	NodeLocalOperations []wipeClusterNodeLocalOperation `json:"nodeLocalOperations"`
 	WipedState          []string                        `json:"wipedState"`
 	PreservedState      []string                        `json:"preservedState"`
+	NextAction          string                          `json:"nextAction,omitempty"`
 	Refusals            []string                        `json:"refusals,omitempty"`
 	Nodes               []wipeClusterNodeResult         `json:"nodes,omitempty"`
 }
@@ -931,12 +959,14 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 	for _, node := range targets {
 		result := wipeClusterNodeResult{Node: node.Name}
 		if strings.TrimSpace(node.Address) == "" {
+			result.Result = "refused"
 			result.Diagnostics = append(result.Diagnostics, "inventory node address is required")
 			report.Nodes = append(report.Nodes, result)
 			failures = append(failures, node.Name)
 			continue
 		}
 		if node.Access.Method != "agent" {
+			result.Result = "refused"
 			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("inventory access method %q is not supported", node.Access.Method))
 			report.Nodes = append(report.Nodes, result)
 			failures = append(failures, node.Name)
@@ -944,6 +974,7 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 		}
 		conn, err := connector.Connect(ctx, node)
 		if err != nil {
+			result.Result = "refused"
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
 			report.Nodes = append(report.Nodes, result)
 			failures = append(failures, node.Name)
@@ -961,6 +992,7 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(closeErr.Error()))
 		}
 		if len(result.Diagnostics) > 0 {
+			result.Result = "refused"
 			failures = append(failures, node.Name)
 		}
 		report.Nodes = append(report.Nodes, result)
@@ -1157,18 +1189,26 @@ func printWipeText(stdout io.Writer, report wipeClusterReport) error {
 	results := make(map[string]string, len(report.Nodes))
 	for _, node := range report.Nodes {
 		result := node.Result
-		if result == "" && node.Accepted {
-			result = "accepted"
-		}
 		if result == "" {
-			result = "planned"
+			switch {
+			case report.Plan:
+				result = "planned"
+			case node.Accepted:
+				result = "accepted"
+			default:
+				result = "failed"
+			}
 		}
 		results[node.Node] = result
 	}
 	for _, target := range report.Targets {
 		result := results[target.Name]
 		if result == "" {
-			result = "planned"
+			if report.Plan {
+				result = "planned"
+			} else {
+				result = "failed"
+			}
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", target.Name, target.SystemRole, target.Address, result)
 	}
@@ -1178,7 +1218,22 @@ func printWipeText(stdout io.Writer, report wipeClusterReport) error {
 	for _, refusal := range report.Refusals {
 		fmt.Fprintf(stdout, "Refused: %s\n", refusal)
 	}
+	for _, node := range report.Nodes {
+		for _, diagnostic := range node.Diagnostics {
+			fmt.Fprintf(stdout, "%s: %s\n", node.Node, diagnostic)
+		}
+	}
+	if strings.TrimSpace(report.NextAction) != "" {
+		fmt.Fprintf(stdout, "Next: %s\n", report.NextAction)
+	}
 	return nil
+}
+
+func wipeNextAction(noWait bool) string {
+	if noWait {
+		return "wait for every destructive reset to succeed, then reboot each wiped node with installer media or PXE available"
+	}
+	return "reboot each wiped node with installer media or PXE available"
 }
 
 type wipeNodeCleanupResult struct {
@@ -1752,6 +1807,10 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			if !result.Accepted {
 				return fmt.Errorf("configuration for %s was rejected: %s", opts.nodeConfig.nodeName, firstNonEmpty(result.FailureReason, strings.Join(result.Diagnostics, "; ")))
 			}
+			if result.GetNoChanges() {
+				fmt.Fprintf(stdout, "%s configuration already matches\n", opts.nodeConfig.nodeName)
+				return nil
+			}
 			fmt.Fprintf(stdout, "%s configuration is valid; apply mode %s\n", opts.nodeConfig.nodeName, result.AcceptedApplyMode)
 			for _, diagnostic := range result.Diagnostics {
 				fmt.Fprintf(stdout, "- %s\n", diagnostic)
@@ -1802,6 +1861,20 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 				return fmt.Errorf("config validation rejected: %s", result.FailureReason)
 			}
 			return fmt.Errorf("config validation rejected: %s", strings.Join(result.Diagnostics, "; "))
+		}
+		if result.GetNoChanges() {
+			if opts.output == "json" {
+				publicResult := proto.Clone(result).(*agentapi.ConfigValidationResult)
+				publicResult.RequestDigest = ""
+				data, marshalErr := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicResult)
+				if marshalErr != nil {
+					return fmt.Errorf("marshal validation result: %w", marshalErr)
+				}
+				_, err = stdout.Write(append(data, '\n'))
+				return err
+			}
+			fmt.Fprintf(stdout, "%s configuration already matches\n", opts.nodeConfig.nodeName)
+			return nil
 		}
 		operationKind, err := configApplyOperationKind(result.AcceptedApplyMode)
 		if err != nil {

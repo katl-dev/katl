@@ -99,6 +99,63 @@ func TestOperationsListDiscoversRecentWork(t *testing.T) {
 	}
 }
 
+func TestOperationStatusSelectsActiveOrMostRecentOperation(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		lists []*agentapi.ListOperationsResponse
+		want  string
+	}{
+		{
+			name:  "active",
+			lists: []*agentapi.ListOperationsResponse{{Operations: []*agentapi.OperationStatus{{OperationId: "active-1"}}}},
+			want:  "active-1",
+		},
+		{
+			name: "recent",
+			lists: []*agentapi.ListOperationsResponse{
+				{},
+				{Operations: []*agentapi.OperationStatus{{OperationId: "recent-1"}}},
+			},
+			want: "recent-1",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeKatlcAgentClient{
+				operationLists:  test.lists,
+				operationStatus: &agentapi.OperationStatus{OperationId: test.want, Terminal: true, Result: "succeeded"},
+			}
+			oldDial := dialKatlcAgent
+			dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+				return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+			}
+			t.Cleanup(func() { dialKatlcAgent = oldDial })
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), []string{"operations", "status", "--endpoint", "node:9443"}, &stdout, &stderr); err != nil {
+				t.Fatal(err)
+			}
+			if client.operationRequest.GetOperationId() != test.want || !strings.Contains(stdout.String(), test.want) {
+				t.Fatalf("request=%+v stdout=%q", client.operationRequest, stdout.String())
+			}
+		})
+	}
+}
+
+func TestOperationStatusExplainsAmbiguousActiveOperations(t *testing.T) {
+	client := &fakeKatlcAgentClient{operationLists: []*agentapi.ListOperationsResponse{{Operations: []*agentapi.OperationStatus{
+		{OperationId: "active-1"}, {OperationId: "active-2"},
+	}}}}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"operations", "status", "--endpoint", "node:9443"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "katlctl operations list --active") || !strings.Contains(err.Error(), "active-1") {
+		t.Fatalf("run() error = %v", err)
+	}
+}
+
 func TestOperationsListTargetsClusterConfigWithoutContext(t *testing.T) {
 	client := &fakeKatlcAgentClient{operations: &agentapi.ListOperationsResponse{}}
 	oldDial := dialKatlcAgent

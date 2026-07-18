@@ -38,6 +38,15 @@ file_has() {
     grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
 }
 
+links_to() {
+    local path="${1#/}"
+    local target="$2"
+    local output
+    output="$(unsquashfs -ll "$artifact" "$path")" || fail "inspect /$path failed"
+    grep -Fq "squashfs-root/$path -> $target" <<<"$output" ||
+        fail "/$path does not link to $target"
+}
+
 check_kernel_support() {
     local module_index versions version builtin module_count firmware_index firmware_count
     module_index="$(unsquashfs -ll "$artifact" usr/lib/modules)" || fail "inspect /usr/lib/modules failed"
@@ -213,6 +222,12 @@ has_path /etc/cni/net.d
 file_has /usr/lib/os-release "CONFEXT_LEVEL=1"
 file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STATE"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
+file_has /etc/containerd/config.toml 'bin_dirs = ["/var/lib/katl/kubernetes/cni/bin", "/usr/libexec/cni"]'
+file_has /etc/containerd/config.toml 'conf_dir = "/var/lib/katl/kubernetes/cni/net.d"'
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/bin 0755 root root -"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/net.d 0755 root root -"
+links_to /opt/cni/bin /var/lib/katl/kubernetes/cni/bin
+links_to /etc/cni/net.d /var/lib/katl/kubernetes/cni/net.d
 check_kernel_support
 
 for path in \

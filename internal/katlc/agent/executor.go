@@ -85,6 +85,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		RunReadiness:  runReadinessCommand,
 		RunPostHealth: runPostKubeadmHealthCommand,
 		MountBootRoot: mountRuntimeBootRoot,
+		BundleClient:  http.DefaultClient,
 		Async:         true,
 		workerCtx:     workerCtx,
 		workerCancel:  workerCancel,
@@ -588,7 +589,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	if err != nil {
 		return err
 	}
-	if err := e.commitCandidateGeneration(ctx, record, completedAt, "kubeadm completed and post-kubeadm health checks passed"); err != nil {
+	if err := e.promoteCandidateGenerationLive(ctx, record, completedAt, "kubeadm completed and post-kubeadm health checks passed"); err != nil {
 		_, markErr := e.Store.Update(operationID, "bootstrap-generation-commit-failed", "bootstrap-generation-commit", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 			record.Phase = "post-kubeadm-health"
 			record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
@@ -610,15 +611,41 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 		record.PhaseIndex = len(record.CompletedPhases)
 		record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
 		record.GenerationCommitState = operation.GenerationCommitCommitted
-		record.BootHealthPending = true
+		record.ActivationState = operation.ActivationStateActiveLive
+		record.BootHealthPending = false
 		record.CompletedAt = &completedAt
 		record.Terminal = true
 		record.Result = operation.ResultSucceeded
-		record.NextAction = "reboot into committed generation for boot health validation"
+		record.NextAction = "continue managing the node through its active generation"
 		record.UpdatedAt = completedAt
 		return record, nil
 	})
 	return errors.Join(err, artifactErr)
+}
+
+func (e *Executor) promoteCandidateGenerationLive(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
+	candidate := strings.TrimSpace(record.CandidateGenerationID)
+	if candidate == "" {
+		return fmt.Errorf("candidate generation id is required")
+	}
+	_, _, _, err := e.writeCandidateLoaderEntry(ctx, candidate)
+	if err != nil {
+		return err
+	}
+	if e.SetBootDefault == nil {
+		return fmt.Errorf("persistent boot default updater is not configured")
+	}
+	_, err = generation.PromoteLiveGeneration(generation.LivePromotionRequest{
+		Root:         e.Root,
+		GenerationID: candidate,
+		OperationID:  record.OperationID,
+		Reason:       reason,
+		Now:          now,
+		SetBootDefault: func(root, entry string) error {
+			return e.SetBootDefault(ctx, root, entry)
+		},
+	})
+	return err
 }
 
 func (e *Executor) commitCandidateGeneration(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
