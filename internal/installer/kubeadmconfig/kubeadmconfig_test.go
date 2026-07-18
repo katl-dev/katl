@@ -54,7 +54,7 @@ func TestResolveAcceptsInitConfigAndPatches(t *testing.T) {
 		Files:           files,
 		Extension: confext.ExtensionRelease{
 			Name:         "katl-node",
-			ID:           "katl",
+			ID:           "katlos",
 			VersionID:    "0.1.0",
 			ConfextLevel: 1,
 		},

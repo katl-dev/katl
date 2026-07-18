@@ -38,6 +38,14 @@ file_has() {
     grep -Fq -- "$pattern" <<<"$output" || fail "/$path missing $pattern"
 }
 
+file_has_line() {
+    local path="${1#/}"
+    local line="$2"
+    local output
+    output="$(unsquashfs -cat "$artifact" "$path")" || fail "read /$path failed"
+    grep -Fxq -- "$line" <<<"$output" || fail "/$path missing exact line $line"
+}
+
 links_to() {
     local path="${1#/}"
     local target="$2"
@@ -128,6 +136,8 @@ need unsquashfs
 
 size="$(stat -c %s "$artifact")"
 sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+runtime_version="$(jq -r '.version // empty' "$metadata")"
+[[ -n "$runtime_version" ]] || fail "runtime root metadata version is missing"
 jq -e \
     --arg sha "$sha256" \
     --argjson size "$size" \
@@ -219,7 +229,18 @@ file_has /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf "Cond
 has_path /etc/katl
 has_path /etc/kubernetes
 has_path /etc/cni/net.d
-file_has /usr/lib/os-release "CONFEXT_LEVEL=1"
+file_has_line /usr/lib/os-release "CONFEXT_LEVEL=1"
+file_has_line /usr/lib/os-release 'NAME="KatlOS"'
+file_has_line /usr/lib/os-release 'ID=katlos'
+file_has_line /usr/lib/os-release 'ID_LIKE=fedora'
+file_has_line /usr/lib/os-release "VERSION=\"$runtime_version\""
+file_has_line /usr/lib/os-release "VERSION_ID=\"$runtime_version\""
+file_has_line /usr/lib/os-release "PRETTY_NAME=\"KatlOS $runtime_version\""
+file_has_line /usr/lib/os-release 'VARIANT="Kubernetes Node OS"'
+file_has_line /usr/lib/os-release 'VARIANT_ID=katlos'
+file_has_line /usr/lib/os-release 'KATL_BASE_ID=fedora'
+file_has_line /usr/lib/os-release 'KATL_BASE_VERSION_ID=44'
+file_has_line /usr/lib/os-release "SYSEXT_LEVEL=katl-runtime-1"
 file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STATE"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
 file_has /etc/containerd/config.toml 'bin_dirs = ["/var/lib/katl/kubernetes/cni/bin", "/usr/libexec/cni"]'

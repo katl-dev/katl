@@ -582,6 +582,15 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("kubectl nodes did not converge: %v\n%s", err, output)
 	}
+	if err := verifyKubernetesNodeOSImages(ctx, kubeconfigPath, filepath.Join(result.RunDir, "kubectl-node-os-images.json"), map[string]string{
+		"cp-1":     cpGenerationRecord.Spec.RuntimeVersion,
+		"worker-1": workerGenerationRecord.Spec.RuntimeVersion,
+	}); err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("Kubernetes node OS identity: %v", err)
+	}
 	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":6443")
 	for _, node := range []struct {
 		running    vmtest.RunningInstalledRuntimeNode
@@ -3676,6 +3685,45 @@ func waitForKubectlNodes(ctx context.Context, kubeconfigPath, outputPath string,
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+func verifyKubernetesNodeOSImages(ctx context.Context, kubeconfigPath, outputPath string, runtimeVersions map[string]string) error {
+	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "json")
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		if writeErr := os.WriteFile(outputPath, output, 0o644); writeErr != nil {
+			return writeErr
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("read Kubernetes node OS images: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				NodeInfo struct {
+					OSImage string `json:"osImage"`
+				} `json:"nodeInfo"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(output, &list); err != nil {
+		return fmt.Errorf("decode Kubernetes node OS images: %w", err)
+	}
+	observed := make(map[string]string, len(list.Items))
+	for _, node := range list.Items {
+		observed[node.Metadata.Name] = strings.TrimSpace(node.Status.NodeInfo.OSImage)
+	}
+	for node, version := range runtimeVersions {
+		want := "KatlOS " + strings.TrimSpace(version)
+		if observed[node] != want {
+			return fmt.Errorf("node %s reports OS image %q, want %q", node, observed[node], want)
+		}
+	}
+	return nil
 }
 
 func containsAllText(text string, wants ...string) bool {

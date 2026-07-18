@@ -24,6 +24,15 @@ if [[ ! -f "$repo/go.mod" ]]; then
     exit 1
 fi
 
+os_release_template="$repo/mkosi.profiles/runtime/os-release.in"
+if [[ ! -f "$os_release_template" ]]; then
+    echo "error: KatlOS os-release template not found: $os_release_template" >&2
+    exit 1
+fi
+mkdir -p "$DESTDIR/usr/lib"
+awk -v version="$version" '{gsub(/@KATL_VERSION@/, version); print}' \
+    "$os_release_template" >"$DESTDIR/usr/lib/os-release"
+
 case "$vmtest_image_support" in
     0|1) ;;
     *)

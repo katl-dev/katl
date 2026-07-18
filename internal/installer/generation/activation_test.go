@@ -202,7 +202,7 @@ func activationRecord(t *testing.T, root string, id string, sysextContent string
 				ActivationPath: "/run/confexts/katl-node",
 				SHA256:         confextDigest,
 				Compatibility: ConfextCompatibility{
-					ID:           "katl",
+					ID:           "katlos",
 					VersionID:    "0.1.0",
 					ConfextLevel: 1,
 				},

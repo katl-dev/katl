@@ -1025,7 +1025,7 @@ func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("b", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "fedora",
+				ID:           "katlos",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},
@@ -1044,7 +1044,7 @@ func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/systemd/network/80-test-dhcp.network"), "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n")
-	writeTestFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora\n")
+	writeTestFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katlos\n")
 	writeTestFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), "0123456789abcdef0123456789abcdef\n")
 	writeBootSelection(t, root, "0")
 	if _, err := installer.WriteClusterIntent(installer.ClusterIntentRequest{

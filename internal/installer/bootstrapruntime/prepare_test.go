@@ -105,7 +105,7 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "InitConfiguration")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "controlPlaneEndpoint: api.katl.test:6443")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
-	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora")
+	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katlos")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/systemd/network/80-katl-vmtest-dhcp.network"), "DHCP=yes")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), "What=/var/lib/katl/kubernetes/etc-kubernetes")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount")
@@ -248,7 +248,7 @@ func writeGenerationZero(t *testing.T, root string) (generation.GenerationSpec, 
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("b", 64),
 			Compatibility: generation.ConfextCompatibility{
-				ID:           "fedora",
+				ID:           "katlos",
 				VersionID:    "0.1.0",
 				ConfextLevel: 1,
 			},
@@ -268,7 +268,7 @@ func writeGenerationZero(t *testing.T, root string) (generation.GenerationSpec, 
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/systemd/network/80-katl-vmtest-dhcp.network"), "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n")
-	writeFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/extension-release.d/extension-release.katl-node"), "ID=fedora\n")
+	writeFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katlos\n")
 	return spec, status
 }
 

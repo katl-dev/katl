@@ -1,0 +1,15 @@
+NAME="KatlOS"
+VERSION="@KATL_VERSION@"
+ID=katlos
+ID_LIKE=fedora
+VERSION_ID="@KATL_VERSION@"
+PRETTY_NAME="KatlOS @KATL_VERSION@"
+HOME_URL="https://katl.dev/"
+DOCUMENTATION_URL="https://github.com/katl-dev/katl/tree/main/docs"
+BUG_REPORT_URL="https://github.com/katl-dev/katl/issues"
+VARIANT="Kubernetes Node OS"
+VARIANT_ID=katlos
+KATL_BASE_ID=fedora
+KATL_BASE_VERSION_ID=44
+SYSEXT_LEVEL=katl-runtime-1
+CONFEXT_LEVEL=1

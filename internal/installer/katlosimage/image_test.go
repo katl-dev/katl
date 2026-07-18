@@ -762,7 +762,7 @@ func knownGoodGeneration(t *testing.T, id string, kubernetesSHA string, kubernet
 				ActivationPath: "/run/confexts/katl-node",
 				SHA256:         strings.Repeat("c", sha256.Size*2),
 				Compatibility: generation.ConfextCompatibility{
-					ID:           "katl",
+					ID:           "katlos",
 					VersionID:    "2026.06.06",
 					ConfextLevel: 1,
 				},

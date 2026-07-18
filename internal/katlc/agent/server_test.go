@@ -2290,7 +2290,7 @@ func writeCleanGenerationZeroState(t *testing.T, root string) {
 			Path:           "/var/lib/katl/generations/generation-0/confext",
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("b", 64),
-			Compatibility:  generation.ConfextCompatibility{ID: "katl", VersionID: "0.1.0", ConfextLevel: 1},
+			Compatibility:  generation.ConfextCompatibility{ID: "katlos", VersionID: "0.1.0", ConfextLevel: 1},
 		},
 		CreatedAt: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC),
 	})
@@ -2342,7 +2342,7 @@ func writeConfigApplyBaseState(t *testing.T, root string) {
 			Path:           "/var/lib/katl/generations/generation-0/confext",
 			ActivationPath: "/run/confexts/katl-node",
 			SHA256:         strings.Repeat("b", 64),
-			Compatibility:  generation.ConfextCompatibility{ID: "katl", VersionID: "0.1.0", ConfextLevel: 1},
+			Compatibility:  generation.ConfextCompatibility{ID: "katlos", VersionID: "0.1.0", ConfextLevel: 1},
 		},
 		CreatedAt: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC),
 	})
