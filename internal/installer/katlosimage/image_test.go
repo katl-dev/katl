@@ -225,9 +225,11 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 		t.Fatalf("candidate status = %#v", plan.Status)
 	}
 	if plan.BootSelection.DefaultGenerationID != "gen0" ||
+		plan.BootSelection.TargetBootGenerationID != "gen1" ||
 		plan.BootSelection.TrialGenerationID != "gen1" ||
 		plan.BootSelection.PreviousKnownGoodGenerationID != "gen0" ||
 		plan.BootSelection.TrialBootEntry != "loader/entries/katl-gen1.conf" ||
+		plan.BootSelection.TargetBootEntry != "loader/entries/katl-gen1.conf" ||
 		plan.BootSelection.PreviousKnownGoodBootEntry != "loader/entries/katl-gen0.conf" ||
 		!plan.BootSelection.PendingHealthValidation ||
 		plan.BootSelection.PersistentDefaultPromotion != generation.DefaultPromotionPending ||

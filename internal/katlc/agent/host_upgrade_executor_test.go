@@ -170,7 +170,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.TrialGenerationID != "gen1" || selection.DefaultGenerationID != "gen0" || !selection.PendingHealthValidation {
+	if selection.TargetBootGenerationID != "gen1" || selection.TrialGenerationID != "gen1" || selection.DefaultGenerationID != "gen0" || !selection.PendingHealthValidation {
 		t.Fatalf("trial selection = %+v", selection)
 	}
 	completed, err := store.Read(record.OperationID)
