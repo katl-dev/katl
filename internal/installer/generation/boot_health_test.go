@@ -161,6 +161,50 @@ func TestRecordBootHealthInfersBootedTrialFromCommandLine(t *testing.T) {
 	}
 }
 
+func TestRecordBootHealthRejectsHealthyFallbackDuringPendingTrial(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 7, 18, 15, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateTrying, HealthStateUnknown, now.Add(-time.Hour))
+	want := BootSelectionRecord{
+		APIVersion:                    APIVersion,
+		Kind:                          BootSelectionKind,
+		DefaultGenerationID:           "gen0",
+		TargetBootGenerationID:        "gen1",
+		TrialGenerationID:             "gen1",
+		PreviousKnownGoodGenerationID: "gen0",
+		BootedGenerationID:            "gen0",
+		DefaultBootEntry:              "loader/entries/katl-gen0.conf",
+		TargetBootEntry:               "loader/entries/katl-gen1.conf",
+		TrialBootEntry:                "loader/entries/katl-gen1.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+		BootedBootEntry:               "loader/entries/katl-gen0.conf",
+		PendingTransactionID:          "txn-gen1",
+		PendingHealthValidation:       true,
+		PersistentDefaultPromotion:    DefaultPromotionPending,
+		UpdatedAt:                     now.Add(-30 * time.Minute),
+	}
+	writeBootHealthSelection(t, root, want)
+
+	_, err := RecordBootHealth(BootHealthRequest{
+		Root:         root,
+		GenerationID: "gen0",
+		CommandLine:  bootHealthCommandLine("gen0"),
+		Result:       BootHealthSuccess,
+		Now:          now,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match pending boot target gen1") {
+		t.Fatalf("RecordBootHealth(fallback) error = %v, want pending target mismatch", err)
+	}
+	selection, readErr := ReadBootSelection(root)
+	if readErr != nil {
+		t.Fatalf("ReadBootSelection() error = %v", readErr)
+	}
+	if !selection.PendingHealthValidation || selection.TargetBootGenerationID != "gen1" || selection.DefaultGenerationID != "gen0" {
+		t.Fatalf("selection after rejected fallback = %#v, want pending gen1 preserved", selection)
+	}
+}
+
 func TestRecordBootHealthPromotesFirstBootPendingGeneration(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)

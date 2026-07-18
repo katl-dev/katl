@@ -268,6 +268,13 @@ func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, ge
 }
 
 func validateBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) error {
+	if selection.PendingHealthValidation {
+		targetID := strings.TrimSpace(selection.TargetBootGenerationID)
+		trialID := strings.TrimSpace(selection.TrialGenerationID)
+		if generationID != targetID && generationID != trialID {
+			return fmt.Errorf("selected generation %s does not match pending boot target %s", generationID, firstNonEmptyBootGeneration(targetID, trialID))
+		}
+	}
 	if strings.TrimSpace(selection.BootedGenerationID) == "" {
 		return fmt.Errorf("bootedGenerationID is required for boot health")
 	}
@@ -299,6 +306,15 @@ func validateBootedSelection(selection BootSelectionRecord, spec GenerationSpec,
 		return fmt.Errorf("bootedBootEntry %s does not match generation loader entry %s", bootedEntry, spec.Boot.LoaderEntryPath)
 	}
 	return nil
+}
+
+func firstNonEmptyBootGeneration(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return "<missing>"
 }
 
 func validRollbackTarget(root string, generationID string) bool {
