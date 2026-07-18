@@ -1280,6 +1280,21 @@ func TestWipeCommandsExplainConsequenceWithoutConfirmationCeremony(t *testing.T)
 	}
 }
 
+func TestWipeCommandsUseAgentCompatibleTimeout(t *testing.T) {
+	for name, command := range map[string]*cobra.Command{
+		"cluster": newWipeClusterCommand(context.Background(), io.Discard, io.Discard, "katlctl cluster wipe"),
+		"node":    newWipeNodeCommand(context.Background(), io.Discard, io.Discard, "katlctl node wipe"),
+	} {
+		if got := command.Flags().Lookup("timeout").DefValue; got != defaultWipeTimeout {
+			t.Fatalf("%s wipe timeout = %q, want %q", name, got, defaultWipeTimeout)
+		}
+	}
+	err := runWipeClusterOptions(context.Background(), wipeClusterOptions{timeout: "25m1s", output: "text"}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "must not exceed 25m") {
+		t.Fatalf("oversized wipe timeout error = %v", err)
+	}
+}
+
 func TestWipeClusterRefusesPartialTargetWithoutOverride(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	var stdout, stderr bytes.Buffer

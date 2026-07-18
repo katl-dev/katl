@@ -482,6 +482,8 @@ type wipeClusterOptions struct {
 	output            string
 }
 
+const defaultWipeTimeout = "25m"
+
 func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
 	opts := wipeClusterOptions{command: commandName, output: "text"}
 	cmd := &cobra.Command{
@@ -505,7 +507,7 @@ func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, comman
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operations")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after nodes accept their operations")
-	cmd.Flags().StringVar(&opts.timeout, "timeout", "30m", "operation and wait timeout duration")
+	cmd.Flags().StringVar(&opts.timeout, "timeout", defaultWipeTimeout, "operation and wait timeout duration")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
 	cmd.Flags().Var(&opts.selectedNodes, "node", "inventory node name to wipe; may be repeated")
 	return cmd
@@ -523,6 +525,9 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	waitTimeout, err := time.ParseDuration(opts.timeout)
 	if err != nil || waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be a positive duration")
+	}
+	if waitTimeout > 25*time.Minute {
+		return fmt.Errorf("--timeout must not exceed 25m")
 	}
 	if opts.all && len(opts.selectedNodes.values) > 0 {
 		return fmt.Errorf("--all and --node cannot be combined")
@@ -646,7 +651,7 @@ func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandNa
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operation")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
-	cmd.Flags().StringVar(&opts.timeout, "timeout", "30m", "operation and wait timeout duration")
+	cmd.Flags().StringVar(&opts.timeout, "timeout", defaultWipeTimeout, "operation and wait timeout duration")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
 	return cmd
 }
@@ -669,6 +674,9 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	waitTimeout, err := time.ParseDuration(opts.timeout)
 	if err != nil || waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be a positive duration")
+	}
+	if waitTimeout > 25*time.Minute {
+		return fmt.Errorf("--timeout must not exceed 25m")
 	}
 
 	target, partial, err := resolveWipeNodeTarget(opts)
