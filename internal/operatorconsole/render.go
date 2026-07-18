@@ -110,30 +110,33 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 	divider := NewViewport(&render.frame, Rect{Y: 1, Width: min(render.frame.Width, 72), Height: 1})
 	divider.Write(strings.Repeat("=", divider.bounds.Width), WrapOptions{Style: styleDim})
 
-	content := NewViewport(&render.frame, Rect{Y: 2, Width: render.frame.Width, Height: render.frame.Height - 3})
+	contentRect := Rect{Y: 2, Width: render.frame.Width, Height: render.frame.Height - 3}
+	alerts := activeAlerts(snapshot)
+	reservedAlerts := min(measureAlertRows(contentRect.Width, alerts), max(contentRect.Height-1, 0))
+	normal := NewViewport(&render.frame, Rect{Y: contentRect.Y, Width: contentRect.Width, Height: contentRect.Height - reservedAlerts})
 	if snapshot.Mode == ModeRuntime {
-		writeHeading(&content, "Status")
-		render.writeRuntimeStatus(&content, snapshot)
-		writeNetwork(&content, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces)
+		writeHeading(&normal, "Status")
+		render.writeRuntimeStatus(&normal, snapshot)
+		writeNetwork(&normal, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces)
 	} else {
-		writeInstallerStatus(&content, snapshot)
+		writeInstallerStatus(&normal, snapshot)
 	}
 	if snapshot.Mode == ModeInstaller && snapshot.State == "running" {
 		value, style := "not started", Style("")
 		if snapshot.DestructiveMutation {
 			value, style = "started - do not power off", styleWarn
 		}
-		writeField(&content, "Disk changes", value, style)
+		writeField(&normal, "Disk changes", value, style)
 	}
 	if snapshot.Handoff.URL != "" {
-		writeField(&content, "Configure", snapshot.Handoff.URL, "")
-		writeField(&content, "Run", "katlctl config init cluster.yaml --installer "+installerCommandEndpoint(snapshot.Handoff.URL), "")
+		writeField(&normal, "Configure", snapshot.Handoff.URL, "")
+		writeField(&normal, "Run", "katlctl config init cluster.yaml --installer "+installerCommandEndpoint(snapshot.Handoff.URL), "")
 	}
-	writeOptionalField(&content, "Error", snapshot.LastError, styleBad)
-	writeOptionalField(&content, "Next action", snapshot.RetryHint, styleWarn)
-	writeOptionalField(&content, "Status read", snapshot.StatusError, styleWarn)
 
-	if content.rowsRemaining() > 0 {
+	content := NewViewport(&render.frame, contentRect)
+	content.advance(normal.rowsUsed())
+	writeAlerts(&content, alerts)
+	if content.rowsRemaining() > 1 {
 		content.advance(1)
 	}
 	if content.rowsRemaining() > 0 {
@@ -144,6 +147,55 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 		writer := newJournalWriter(journalViewport)
 		journal.WriteTail(&writer)
 		content.advance(writer.RowsWritten())
+	}
+}
+
+type alertSpec struct {
+	label string
+	value string
+	style Style
+}
+
+func activeAlerts(snapshot *Snapshot) []alertSpec {
+	alerts := make([]alertSpec, 0, 3)
+	if strings.TrimSpace(snapshot.LastError) != "" {
+		alerts = append(alerts, alertSpec{label: "Error", value: snapshot.LastError, style: styleBad})
+	}
+	if strings.TrimSpace(snapshot.RetryHint) != "" {
+		alerts = append(alerts, alertSpec{label: "Next action", value: snapshot.RetryHint, style: styleWarn})
+	}
+	if strings.TrimSpace(snapshot.StatusError) != "" {
+		alerts = append(alerts, alertSpec{label: "Status read", value: snapshot.StatusError, style: styleWarn})
+	}
+	return alerts
+}
+
+func measureAlertRows(width int, alerts []alertSpec) int {
+	if len(alerts) == 0 {
+		return 0
+	}
+	width, _ = renderDimensions(width, 1)
+	frame := Frame{Width: width, Height: maximumHeight}
+	viewport := NewViewport(&frame, Rect{Width: width, Height: maximumHeight})
+	for _, alert := range alerts {
+		writeField(&viewport, alert.label, alert.value, alert.style)
+	}
+	return viewport.rowsUsed()
+}
+
+func writeAlerts(viewport *Viewport, alerts []alertSpec) {
+	for index, alert := range alerts {
+		if viewport.rowsRemaining() == 0 {
+			return
+		}
+		remainingAlerts := len(alerts) - index - 1
+		frame := Frame{Width: viewport.bounds.Width, Height: maximumHeight}
+		measure := NewViewport(&frame, Rect{Width: viewport.bounds.Width, Height: maximumHeight})
+		writeField(&measure, alert.label, alert.value, alert.style)
+		height := min(max(measure.rowsUsed(), 1), max(viewport.rowsRemaining()-remainingAlerts, 1))
+		alertViewport := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: height})
+		writeField(&alertViewport, alert.label, alert.value, alert.style)
+		viewport.advance(max(alertViewport.rowsUsed(), 1))
 	}
 }
 
@@ -267,6 +319,7 @@ func pluralCount(count int, singular, plural string) string {
 
 func writeHeading(viewport *Viewport, value string) {
 	if viewport.rowsRemaining() == 0 {
+		viewport.markTruncated(styleTitle)
 		return
 	}
 	heading := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: 1})
@@ -274,14 +327,9 @@ func writeHeading(viewport *Viewport, value string) {
 	viewport.advance(1)
 }
 
-func writeOptionalField(viewport *Viewport, label, value string, style Style) {
-	if strings.TrimSpace(value) != "" {
-		writeField(viewport, label, value, style)
-	}
-}
-
 func writeField(viewport *Viewport, label, value string, style Style) {
 	if viewport.rowsRemaining() == 0 {
+		viewport.markTruncated(style)
 		return
 	}
 	if viewport.bounds.Width < 28 && label != "" {

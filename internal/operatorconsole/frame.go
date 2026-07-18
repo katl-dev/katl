@@ -116,8 +116,12 @@ func (viewport *Viewport) advance(rows int) {
 // engine and paints only cells inside the viewport.
 func (viewport *Viewport) Write(text string, options WrapOptions) WriteResult {
 	start := viewport.y
-	if viewport.frame == nil || viewport.bounds.Width == 0 || viewport.rowsRemaining() == 0 || text == "" {
+	if viewport.frame == nil || viewport.bounds.Width == 0 || text == "" {
 		return WriteResult{}
+	}
+	if viewport.rowsRemaining() == 0 {
+		viewport.markTruncated(options.Style)
+		return WriteResult{Truncated: true}
 	}
 	options.FirstIndent = min(max(options.FirstIndent, 0), viewport.bounds.Width-1)
 	options.ContinuationIndent = min(max(options.ContinuationIndent, 0), viewport.bounds.Width-1)

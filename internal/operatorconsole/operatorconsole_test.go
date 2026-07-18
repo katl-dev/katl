@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -464,6 +465,47 @@ func TestRenderRuntimeFailure(t *testing.T) {
 	for _, want := range []string{"Status", "Host", "Kubernetes", "Needsrepair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation:4", "Error:", "boothealthcheckfailed", "SSH:katl@192.0.2.20"} {
 		if !containsIgnoringLayout(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderReservesFailureAndRecoveryAtShortHeight(t *testing.T) {
+	interfaces := make([]NetworkInterface, 20)
+	for index := range interfaces {
+		interfaces[index] = NetworkInterface{
+			Name:      "interface-" + strconv.Itoa(index),
+			Addresses: []string{"192.0.2." + strconv.Itoa(index+1) + "/24"},
+		}
+	}
+	snapshot := Snapshot{
+		Mode:              ModeInstaller,
+		State:             installstatus.StateFailedAfterMutation,
+		Version:           strings.Repeat("version", 20),
+		DisplayInterfaces: interfaces,
+		Handoff:           Handoff{URL: "https://192.0.2.10:8443/v1/config-bundle"},
+		LastError:         "disk write failed",
+		RetryHint:         "boot recovery media",
+	}
+	got := string(renderDashboard(&snapshot, testJournal{[]byte("journal noise")}, 40, minimumHeight, false))
+	for _, want := range []string{"Installationfailed", "Error:diskwritefailed", "Nextaction:bootrecoverymedia", "…"} {
+		if !containsIgnoringLayout(got, want) {
+			t.Fatalf("short failure render missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderBudgetsEachActiveAlert(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:        ModeRuntime,
+		State:       installstatus.StateRuntimeFailedNeedsRepair,
+		LastError:   strings.Repeat("failure ", 80),
+		RetryHint:   strings.Repeat("recover ", 80),
+		StatusError: strings.Repeat("corrupt ", 80),
+	}
+	got := string(renderDashboard(&snapshot, nil, 40, minimumHeight, false))
+	for _, label := range []string{"Error:", "Nextaction:", "Statusread:"} {
+		if !containsIgnoringLayout(got, label) {
+			t.Fatalf("budgeted alerts missing %q:\n%s", label, got)
 		}
 	}
 }
