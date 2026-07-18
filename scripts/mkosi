@@ -720,7 +720,32 @@ set +e
                     echo "error: runtime os-release not found: $os_release" >&2
                     status=1
                 else
-                    if ! cp --reflink=auto "$kernel" "$runtime_kernel" || ! cp --reflink=auto "$initrd" "$runtime_initrd"; then
+                    initrd_overlay=$(mktemp -d)
+                    initrd_raw=$(mktemp)
+                    mkdir -p "$initrd_overlay/usr/lib64"
+                    if ! cp -a \
+                        "$root/usr/lib64/libseccomp.so.2" \
+                        "$root/usr/lib64/libseccomp.so.2."* \
+                        "$initrd_overlay/usr/lib64/"; then
+                        echo "error: stage runtime initrd libseccomp overlay" >&2
+                        status=1
+                    elif ! zstd -q -d -c "$initrd" >"$initrd_raw"; then
+                        echo "error: decompress runtime initrd" >&2
+                        status=1
+                    elif ! (
+                        cd "$initrd_overlay"
+                        find . -print0 \
+                            | LC_ALL=C sort -z \
+                            | cpio --null --create --append --format=newc --owner=0:0 --reproducible --quiet --file="$initrd_raw"
+                    ); then
+                        echo "error: append runtime initrd libseccomp overlay" >&2
+                        status=1
+                    elif ! zstd -q --ultra -22 -f "$initrd_raw" -o "$initrd"; then
+                        echo "error: recompress runtime initrd" >&2
+                        status=1
+                    fi
+                    rm -rf "$initrd_overlay" "$initrd_raw"
+                    if [[ "$status" -eq 0 ]] && { ! cp --reflink=auto "$kernel" "$runtime_kernel" || ! cp --reflink=auto "$initrd" "$runtime_initrd"; }; then
                         echo "error: publish runtime direct-boot kernel and initrd" >&2
                         status=1
                     fi
@@ -766,6 +791,10 @@ set +e
                     "$root/usr/lib/dracut" \
                     "$root/usr/lib/sysimage/rpm" \
                     "$root/var/lib/rpm-state"
+                rm -f \
+                    "$root/usr/lib/systemd/system"/dracut-*.service \
+                    "$root/usr/lib/systemd/system/initrd.target.wants"/dracut-*.service \
+                    "$root/usr/lib/systemd/system/sysinit.target.wants/dracut-shutdown.service"
                 find "$root/usr/lib/modules" -type f \( -name System.map -o -name vmlinuz \) -delete
                 if [[ "${KATL_VMTEST_IMAGE_SUPPORT:-0}" == 0 ]]; then
                     rm -f "$root/usr/bin/ctr"

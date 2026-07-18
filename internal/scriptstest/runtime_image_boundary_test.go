@@ -4,8 +4,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestRuntimeInitrdIncludesLibseccomp(t *testing.T) {
+	wrapper, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "mkosi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(wrapper)
+	for _, want := range []string{
+		`"$root/usr/lib64/libseccomp.so.2"`,
+		"cpio --null --create --append --format=newc",
+		`zstd -q --ultra -22 -f "$initrd_raw" -o "$initrd"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runtime artifact packaging does not append libseccomp to the initrd: missing %q", want)
+		}
+	}
+}
 
 func TestRuntimeBuildExcludesVMTestSupportByDefault(t *testing.T) {
 	repo := repoRoot(t)
