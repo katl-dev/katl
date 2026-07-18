@@ -52,17 +52,23 @@ func ListenVSock(ctx context.Context, port uint32, handler func(*os.File)) error
 	if err := unix.Listen(fd, 16); err != nil {
 		return err
 	}
-	go func() {
-		<-ctx.Done()
-		_ = unix.Close(fd)
-	}()
+	if err := unix.SetNonblock(fd, true); err != nil {
+		return err
+	}
+	pollFDs := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		nfd, _, err := unix.Accept(fd)
 		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
 			if err == unix.EINTR {
+				continue
+			}
+			if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
+				if _, err := unix.Poll(pollFDs, 100); err != nil && err != unix.EINTR {
+					return err
+				}
 				continue
 			}
 			return err
