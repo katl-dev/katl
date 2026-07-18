@@ -335,7 +335,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		t.Fatalf("booted networkd katlctl generation status = %+v, want next-boot config apply", bootedGenerationStatus.GetConfigApply())
 	}
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
-	powerOffGuestForCleanSuccess(t, ctx, node, guest, client)
+	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)
 	return guest, nil
 }
 
@@ -496,6 +496,24 @@ func powerOffGuestForCleanSuccess(t *testing.T, ctx context.Context, node *Runni
 	}
 	if err := waitGuestPoweredOff(node.handle, 45*time.Second); err != nil {
 		t.Fatalf("wait for guest poweroff after config apply smoke success: %v", err)
+	}
+}
+
+func shutdownGuestThroughKatlctl(t *testing.T, ctx context.Context, result Result, katlctl, endpoint string, node *RunningInstalledRuntimeNode, client *AgentClient) {
+	t.Helper()
+	if node == nil || node.handle == nil {
+		t.Fatal("running installed runtime node handle is required")
+	}
+	runKatlctl(t, ctx, result, katlctl, "host-shutdown",
+		"node", "shutdown", "cp-1",
+		"--endpoint", endpoint,
+		"--timeout", "2m",
+	)
+	if client != nil {
+		_ = client.Close()
+	}
+	if err := waitGuestPoweredOff(node.handle, 45*time.Second); err != nil {
+		t.Fatalf("wait for guest shutdown after config apply smoke success: %v", err)
 	}
 }
 

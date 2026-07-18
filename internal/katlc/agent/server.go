@@ -34,6 +34,7 @@ const (
 
 	RequestKind                   = "SubmitOperationRequest"
 	RebootRequestKind             = "RebootRequest"
+	ShutdownRequestKind           = "ShutdownRequest"
 	WorkerJoinMaterialRequestKind = "CreateWorkerJoinMaterialRequest"
 
 	DefaultListen = "tcp://0.0.0.0:9443"
@@ -71,6 +72,7 @@ type Server struct {
 	Dispatcher              Dispatcher
 	RunJoinMaterial         ToolRunner
 	RunReboot               ToolRunner
+	RunShutdown             ToolRunner
 	Now                     func() time.Time
 	OperationID             func(string, time.Time) (string, error)
 	submitMu                sync.Mutex
@@ -87,6 +89,7 @@ func NewServer(root string, store operation.Store) *Server {
 		SupportedOperationKinds: append([]string(nil), bootstrapOperationKinds...),
 		RunJoinMaterial:         runChildProcess,
 		RunReboot:               runChildProcess,
+		RunShutdown:             runChildProcess,
 		Now:                     func() time.Time { return time.Now().UTC() },
 		OperationID:             defaultOperationID,
 	}
@@ -145,6 +148,43 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 		return nil, status.Errorf(codes.Internal, "schedule reboot: %s", inventory.Redact(toolFailure(result)))
 	}
 	return &agentapi.RebootAccepted{Scheduled: true, TargetGenerationId: target}, nil
+}
+
+func (s *Server) Shutdown(ctx context.Context, req *agentapi.ShutdownRequest) (*agentapi.ShutdownAccepted, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if req.ApiVersion != APIVersion {
+		return nil, status.Errorf(codes.InvalidArgument, "apiVersion must be %q", APIVersion)
+	}
+	if req.Kind != ShutdownRequestKind {
+		return nil, status.Errorf(codes.InvalidArgument, "kind must be %q", ShutdownRequestKind)
+	}
+	if strings.TrimSpace(req.Actor) == "" {
+		return nil, status.Error(codes.InvalidArgument, "actor is required")
+	}
+	machineID, err := s.machineID()
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
+	}
+	if strings.TrimSpace(req.ExpectedMachineId) == "" || req.ExpectedMachineId != machineID {
+		return nil, status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
+	}
+	active, err := s.activeOperationIDs()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read operation locks: %v", err)
+	}
+	if len(active) > 0 {
+		return nil, status.Error(codes.FailedPrecondition, "cannot shut down while another operation is active")
+	}
+	if s.RunShutdown == nil {
+		return nil, status.Error(codes.FailedPrecondition, "node shutdown runner is not configured")
+	}
+	result := s.RunShutdown(ctx, []string{"systemd-run", "--unit=katl-shutdown", "--collect", "--on-active=2s", "systemctl", "poweroff"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return nil, status.Errorf(codes.Internal, "schedule shutdown: %s", inventory.Redact(toolFailure(result)))
+	}
+	return &agentapi.ShutdownAccepted{Scheduled: true}, nil
 }
 
 func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusRequest) (*agentapi.NodeStatus, error) {

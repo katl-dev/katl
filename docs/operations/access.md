@@ -92,12 +92,20 @@ Reboot a node and wait for it to return healthy:
 katlctl node reboot cp-1
 ```
 
+Shut down a node and wait for its management API to stop:
+
+```sh
+katlctl node shutdown cp-1
+```
+
 The reboot command does not require a confirmation flag. It honors the node's
 selected boot target, including a generation already staged for next boot, and
 verifies that a new agent instance returns on that generation with good boot
 health.
-Use `--no-wait` only when intentionally detaching, and `--output json` when a
-script needs structured output.
+Neither command requires confirmation. Use `--no-wait` only when intentionally
+detaching, and `--output json` when a script needs structured output. Shutdown
+can prove that KatlOS management is offline; without an out-of-band power API,
+it cannot independently prove the machine's final hardware power state.
 
 Use SSH for an interactive shell and arbitrary system administration. The
 KatlOS management API intentionally exposes bounded lifecycle operations rather

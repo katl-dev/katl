@@ -146,6 +146,7 @@ Start with "katlctl install discover" for a waiting installer or
 	nodeCmd := &cobra.Command{Use: "node", Short: "Manage individual KatlOS nodes"}
 	nodeCmd.AddCommand(newHostStatusCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostRebootCommand(ctx, stdout, stderr))
+	nodeCmd.AddCommand(newHostShutdownCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostUpgradeCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newConfigApplyCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl node wipe"))
@@ -219,6 +220,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl node":                "katlctl node status cp-1 --config cluster.yaml",
 		"katlctl node status":         "katlctl node status cp-1 --config cluster.yaml",
 		"katlctl node reboot":         "katlctl node reboot cp-1 --config cluster.yaml",
+		"katlctl node shutdown":       "katlctl node shutdown cp-1 --config cluster.yaml",
 		"katlctl node upgrade":        "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml",
 		"katlctl node apply":          "katlctl node apply cp-1 --config cluster.yaml",
 		"katlctl node apply validate": "katlctl node apply validate --config cluster.yaml --node cp-1",

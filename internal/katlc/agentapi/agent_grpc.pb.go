@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	KatlcAgent_GetNodeStatus_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetNodeStatus"
 	KatlcAgent_Reboot_FullMethodName                   = "/katl.agent.v1.KatlcAgent/Reboot"
+	KatlcAgent_Shutdown_FullMethodName                 = "/katl.agent.v1.KatlcAgent/Shutdown"
 	KatlcAgent_ValidateConfig_FullMethodName           = "/katl.agent.v1.KatlcAgent/ValidateConfig"
 	KatlcAgent_ApplyGeneration_FullMethodName          = "/katl.agent.v1.KatlcAgent/ApplyGeneration"
 	KatlcAgent_StageGeneration_FullMethodName          = "/katl.agent.v1.KatlcAgent/StageGeneration"
@@ -39,6 +40,7 @@ const (
 type KatlcAgentClient interface {
 	GetNodeStatus(ctx context.Context, in *GetNodeStatusRequest, opts ...grpc.CallOption) (*NodeStatus, error)
 	Reboot(ctx context.Context, in *RebootRequest, opts ...grpc.CallOption) (*RebootAccepted, error)
+	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownAccepted, error)
 	ValidateConfig(ctx context.Context, in *ValidateConfigRequest, opts ...grpc.CallOption) (*ConfigValidationResult, error)
 	ApplyGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
 	StageGeneration(ctx context.Context, in *GenerationApplyRequest, opts ...grpc.CallOption) (*OperationAccepted, error)
@@ -73,6 +75,16 @@ func (c *katlcAgentClient) Reboot(ctx context.Context, in *RebootRequest, opts .
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RebootAccepted)
 	err := c.cc.Invoke(ctx, KatlcAgent_Reboot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownAccepted, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ShutdownAccepted)
+	err := c.cc.Invoke(ctx, KatlcAgent_Shutdown_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -194,6 +206,7 @@ func (c *katlcAgentClient) GetGeneration(ctx context.Context, in *GetGenerationR
 type KatlcAgentServer interface {
 	GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error)
 	Reboot(context.Context, *RebootRequest) (*RebootAccepted, error)
+	Shutdown(context.Context, *ShutdownRequest) (*ShutdownAccepted, error)
 	ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error)
 	ApplyGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error)
 	StageGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error)
@@ -219,6 +232,9 @@ func (UnimplementedKatlcAgentServer) GetNodeStatus(context.Context, *GetNodeStat
 }
 func (UnimplementedKatlcAgentServer) Reboot(context.Context, *RebootRequest) (*RebootAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method Reboot not implemented")
+}
+func (UnimplementedKatlcAgentServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownAccepted, error) {
+	return nil, status.Error(codes.Unimplemented, "method Shutdown not implemented")
 }
 func (UnimplementedKatlcAgentServer) ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method ValidateConfig not implemented")
@@ -303,6 +319,24 @@ func _KatlcAgent_Reboot_Handler(srv interface{}, ctx context.Context, dec func(i
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(KatlcAgentServer).Reboot(ctx, req.(*RebootRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KatlcAgent_Shutdown_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ShutdownRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).Shutdown(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_Shutdown_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).Shutdown(ctx, req.(*ShutdownRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -494,6 +528,10 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Reboot",
 			Handler:    _KatlcAgent_Reboot_Handler,
+		},
+		{
+			MethodName: "Shutdown",
+			Handler:    _KatlcAgent_Shutdown_Handler,
 		},
 		{
 			MethodName: "ValidateConfig",

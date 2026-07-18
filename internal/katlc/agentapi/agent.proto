@@ -7,6 +7,7 @@ option go_package = "github.com/katl-dev/katl/internal/katlc/agentapi;agentapi";
 service KatlcAgent {
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
   rpc Reboot(RebootRequest) returns (RebootAccepted);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownAccepted);
   rpc ValidateConfig(ValidateConfigRequest) returns (ConfigValidationResult);
   rpc ApplyGeneration(GenerationApplyRequest) returns (OperationAccepted);
   rpc StageGeneration(GenerationApplyRequest) returns (OperationAccepted);
@@ -363,4 +364,15 @@ message RebootRequest {
 message RebootAccepted {
   bool scheduled = 1;
   string target_generation_id = 2;
+}
+
+message ShutdownRequest {
+  string api_version = 1;
+  string kind = 2;
+  string actor = 3;
+  string expected_machine_id = 4;
+}
+
+message ShutdownAccepted {
+  bool scheduled = 1;
 }

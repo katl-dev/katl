@@ -236,15 +236,16 @@ bootstrap. Pass a node name in a larger cluster:
 ```sh
 katlctl node status cp-1 --config ./cluster.yaml
 katlctl node reboot cp-1 --config ./cluster.yaml
+katlctl node shutdown cp-1 --config ./cluster.yaml
 ```
 
 An optional workstation context created with `katlctl context save --config
 ./cluster.yaml` shortens repeated commands; it is not a prerequisite.
 
-Status and reboot results are concise text by default. Add `--output json` for
-automation. Reboot honors any generation already staged for the next boot and
-waits for a new agent instance to report healthy; `--no-wait` deliberately
-detaches after the reboot is scheduled.
+Results are concise text by default. Add `--output json` for automation. Reboot
+honors any generation already staged for the next boot and waits for a new
+agent instance to report healthy. Shutdown waits for the management API to go
+offline. `--no-wait` deliberately detaches after either action is scheduled.
 
 Host upgrades take a release version and select the node from `ClusterConfig`.
 `katlctl` resolves the published image, stages it, reboots the node, and waits

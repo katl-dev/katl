@@ -31,6 +31,13 @@ type hostRebootOptions struct {
 	output  string
 }
 
+type hostShutdownOptions struct {
+	target  managementTargetOptions
+	timeout time.Duration
+	noWait  bool
+	output  string
+}
+
 type hostStatusReport struct {
 	Node          string `json:"node"`
 	Endpoint      string `json:"endpoint"`
@@ -47,6 +54,13 @@ type hostRebootReport struct {
 	Generation string `json:"generation"`
 	Health     string `json:"health,omitempty"`
 }
+
+type hostShutdownReport struct {
+	Node   string `json:"node"`
+	Result string `json:"result"`
+}
+
+var hostShutdownPollInterval = 500 * time.Millisecond
 
 func newHostStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := hostStatusOptions{timeout: 15 * time.Second, output: hostOutputText}
@@ -83,6 +97,29 @@ func newHostRebootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "time to wait for the host to return healthy")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the host schedules the reboot")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	return cmd
+}
+
+func newHostShutdownCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	opts := hostShutdownOptions{timeout: 2 * time.Minute, output: hostOutputText}
+	cmd := &cobra.Command{
+		Use:   "shutdown [NODE]",
+		Short: "Shut down one KatlOS node",
+		Long: `Shut down one KatlOS node and wait for its management API to stop.
+
+Use the same ClusterConfig used to install the node. --endpoint can override its recorded address when DHCP or local routing changed.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if err := selectHostNode(&opts.target.nodeName, args); err != nil {
+				return err
+			}
+			return runHostShutdown(ctx, opts, stdout, stderr)
+		},
+	}
+	addManagementTargetFlags(cmd, &opts.target)
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "time to wait for the management API to stop")
+	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the host schedules the shutdown")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
 }
@@ -182,6 +219,83 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	return writeHostReboot(stdout, opts.output, report)
 }
 
+func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stderr io.Writer) error {
+	if err := validateHostOutput(opts.output); err != nil {
+		return err
+	}
+	if opts.timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	target, err := resolveManagementTarget(opts.target)
+	if err != nil {
+		return err
+	}
+	node := hostTargetName(target)
+	requestCtx, cancelRequest := context.WithTimeout(ctx, opts.timeout)
+	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
+	if err != nil {
+		cancelRequest()
+		return fmt.Errorf("connect to %s at %s: %w", node, target.endpoint, err)
+	}
+	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		_ = conn.Close()
+		cancelRequest()
+		return fmt.Errorf("read status from %s: %w", node, err)
+	}
+	accepted, err := conn.Client.Shutdown(requestCtx, &agentapi.ShutdownRequest{
+		ApiVersion:        generation.APIVersion,
+		Kind:              "ShutdownRequest",
+		Actor:             "katlctl node shutdown",
+		ExpectedMachineId: status.GetMachineId(),
+	})
+	_ = conn.Close()
+	cancelRequest()
+	if err != nil {
+		return fmt.Errorf("schedule shutdown for %s: %w", node, err)
+	}
+	if !accepted.GetScheduled() {
+		return fmt.Errorf("%s did not schedule shutdown", node)
+	}
+
+	report := hostShutdownReport{Node: node, Result: "scheduled"}
+	if opts.noWait {
+		return writeHostShutdown(stdout, opts.output, report)
+	}
+	_, _ = fmt.Fprintf(stderr, "Shutdown scheduled for %s; waiting for its management API to stop...\n", node)
+	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
+	err = waitNodeOffline(waitCtx, target.endpoint)
+	cancelWait()
+	if err != nil {
+		return fmt.Errorf("%s did not shut down: %w", node, err)
+	}
+	report.Result = "offline"
+	return writeHostShutdown(stdout, opts.output, report)
+}
+
+func waitNodeOffline(ctx context.Context, endpoint string) error {
+	for {
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
+		conn, err := dialKatlcAgent(attemptCtx, endpoint)
+		if err == nil {
+			_, err = conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{})
+			_ = conn.Close()
+		}
+		cancelAttempt()
+		if err != nil {
+			return nil
+		}
+
+		timer := time.NewTimer(hostShutdownPollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func readHostState(ctx context.Context, client agentapi.KatlcAgentClient, node string) (*agentapi.NodeStatus, *agentapi.Generation, error) {
 	status, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
@@ -258,6 +372,18 @@ func writeHostReboot(stdout io.Writer, output string, report hostRebootReport) e
 		return err
 	}
 	_, err := fmt.Fprintf(stdout, "%s rebooted successfully; health %s\n", report.Node, report.Health)
+	return err
+}
+
+func writeHostShutdown(stdout io.Writer, output string, report hostShutdownReport) error {
+	if output == hostOutputJSON {
+		return writeJSON(stdout, report)
+	}
+	if report.Result == "scheduled" {
+		_, err := fmt.Fprintf(stdout, "%s shutdown scheduled\n", report.Node)
+		return err
+	}
+	_, err := fmt.Fprintf(stdout, "%s shut down; management API is offline\n", report.Node)
 	return err
 }
 

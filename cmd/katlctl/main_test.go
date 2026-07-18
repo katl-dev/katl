@@ -141,7 +141,7 @@ func TestRoutineRemoteExamplesDeclareClusterConfig(t *testing.T) {
 	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
 	for _, path := range []string{
 		"cluster bootstrap", "cluster status", "cluster wipe", "kubernetes upgrade",
-		"node apply", "node reboot", "node status", "node upgrade", "node wipe",
+		"node apply", "node reboot", "node shutdown", "node status", "node upgrade", "node wipe",
 		"operations list", "operations status",
 	} {
 		command, _, err := root.Find(strings.Fields(path))
@@ -227,6 +227,7 @@ func TestConfigInputFlagsUseOneName(t *testing.T) {
 		"katlctl node apply":          true,
 		"katlctl node apply validate": true,
 		"katlctl node reboot":         true,
+		"katlctl node shutdown":       true,
 		"katlctl node status":         true,
 		"katlctl node upgrade":        true,
 		"katlctl node wipe":           true,
@@ -262,7 +263,7 @@ func TestCommandGroupsExposeOneSupportedPath(t *testing.T) {
 		required  []string
 		forbidden []string
 	}{
-		{group: "node", required: []string{"apply", "reboot", "status", "upgrade", "wipe"}},
+		{group: "node", required: []string{"apply", "reboot", "shutdown", "status", "upgrade", "wipe"}},
 		{group: "cluster", required: []string{"bootstrap", "status", "wipe"}, forbidden: []string{"enroll", "kubeadm-control-plane-config"}},
 		{group: "kubernetes", required: []string{"upgrade"}, forbidden: []string{"apply-config"}},
 		{group: "config", required: []string{"bundle", "init", "schema", "validate"}, forbidden: []string{"apply", "path", "topology"}},
@@ -2346,6 +2347,8 @@ type fakeKatlcAgentClient struct {
 	onSubmit          func(*agentapi.SubmitOperationRequest)
 	rebootRequests    []*agentapi.RebootRequest
 	onReboot          func(*agentapi.RebootRequest)
+	shutdownRequests  []*agentapi.ShutdownRequest
+	onShutdown        func(*agentapi.ShutdownRequest)
 }
 
 type fakeWipeClusterConnector struct {
@@ -2415,6 +2418,14 @@ func (c *fakeKatlcAgentClient) Reboot(_ context.Context, req *agentapi.RebootReq
 		c.onReboot(req)
 	}
 	return &agentapi.RebootAccepted{Scheduled: true, TargetGenerationId: req.TargetGenerationId}, nil
+}
+
+func (c *fakeKatlcAgentClient) Shutdown(_ context.Context, req *agentapi.ShutdownRequest, _ ...grpc.CallOption) (*agentapi.ShutdownAccepted, error) {
+	c.shutdownRequests = append(c.shutdownRequests, req)
+	if c.onShutdown != nil {
+		c.onShutdown(req)
+	}
+	return &agentapi.ShutdownAccepted{Scheduled: true}, nil
 }
 
 func (c *fakeKatlcAgentClient) ValidateConfig(_ context.Context, req *agentapi.ValidateConfigRequest, _ ...grpc.CallOption) (*agentapi.ConfigValidationResult, error) {

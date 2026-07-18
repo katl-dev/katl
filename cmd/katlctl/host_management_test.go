@@ -142,6 +142,52 @@ func TestHostRebootTimesOutWhenAgentDoesNotRestart(t *testing.T) {
 	}
 }
 
+func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
+	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
+	fake.onShutdown = func(*agentapi.ShutdownRequest) {
+		fake.nodeStatusErr = context.Canceled
+	}
+	installKatlcDial(t, nil, fake)
+	oldInterval := hostShutdownPollInterval
+	hostShutdownPollInterval = time.Millisecond
+	t.Cleanup(func() { hostShutdownPollInterval = oldInterval })
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"node", "shutdown", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "1s"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	if len(fake.shutdownRequests) != 1 {
+		t.Fatalf("shutdown requests = %d, want 1", len(fake.shutdownRequests))
+	}
+	request := fake.shutdownRequests[0]
+	if request.GetActor() != "katlctl node shutdown" || request.GetExpectedMachineId() != "machine-a" {
+		t.Fatalf("shutdown request = %#v", request)
+	}
+	if got := stdout.String(); got != "node-a shut down; management API is offline\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Shutdown scheduled for node-a") {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestHostShutdownNoWaitJSON(t *testing.T) {
+	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
+	installKatlcDial(t, nil, fake)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"node", "shutdown", "node-a", "--endpoint", "node-a.test:9443", "--no-wait", "--output", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report hostShutdownReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode shutdown: %v\n%s", err, stdout.String())
+	}
+	if report.Node != "node-a" || report.Result != "scheduled" {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
 func TestHostManagementRejectsDuplicateNodeSelection(t *testing.T) {
 	err := run(context.Background(), []string{"node", "status", "cp-1", "--node", "worker-1"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "NODE cannot be combined with --node") {

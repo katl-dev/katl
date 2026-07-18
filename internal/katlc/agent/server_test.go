@@ -122,6 +122,33 @@ func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
 	}
 }
 
+func TestShutdownSchedulesPoweroff(t *testing.T) {
+	server := newTestServer(t)
+	var argv []string
+	server.RunShutdown = func(_ context.Context, got []string, _ func(int)) ToolResult {
+		argv = append([]string(nil), got...)
+		return ToolResult{ExitStatus: 0}
+	}
+	machineID, err := server.machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := server.Shutdown(context.Background(), &agentapi.ShutdownRequest{
+		ApiVersion: generation.APIVersion, Kind: ShutdownRequestKind, Actor: "test",
+		ExpectedMachineId: machineID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !accepted.Scheduled {
+		t.Fatalf("accepted = %#v", accepted)
+	}
+	want := []string{"systemd-run", "--unit=katl-shutdown", "--collect", "--on-active=2s", "systemctl", "poweroff"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("shutdown argv = %#v, want %#v", argv, want)
+	}
+}
+
 func TestNodeStatusReportsSelectedBootTarget(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
@@ -159,6 +186,23 @@ func TestRebootRefusesActiveOperationWithoutExposingID(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "another operation is active") || strings.Contains(err.Error(), "operation-secret") {
 		t.Fatalf("Reboot() error = %v", err)
+	}
+}
+
+func TestShutdownRefusesActiveOperationWithoutExposingID(t *testing.T) {
+	server := newTestServer(t)
+	createAgentOperation(t, server.Store, "operation-secret")
+	machineID, err := server.machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = server.Shutdown(context.Background(), &agentapi.ShutdownRequest{
+		ApiVersion: generation.APIVersion, Kind: ShutdownRequestKind, Actor: "test",
+		ExpectedMachineId: machineID,
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "another operation is active") || strings.Contains(err.Error(), "operation-secret") {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 }
 
