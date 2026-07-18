@@ -477,11 +477,15 @@ func defaultKubeadmInitConfig(version string) string {
 	if version != "" {
 		config += "kubernetesVersion: " + version + "\n"
 	}
-	return config
+	return config + defaultKubeletConfig()
 }
 
 func defaultKubeadmJoinConfig() string {
-	return "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n"
+	return "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n" + defaultKubeletConfig()
+}
+
+func defaultKubeletConfig() string {
+	return "---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nvolumePluginDir: /var/lib/kubelet/plugins/volume/exec\n"
 }
 
 func defaultKubeadmConfigs(kubernetesVersion string) (map[string]kubeadmconfig.Plan, error) {

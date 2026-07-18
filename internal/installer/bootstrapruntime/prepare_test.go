@@ -145,6 +145,7 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	assertContains(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf"), "RequiresMountsFor=/var/lib/containerd")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf"), "Requires=containerd.service etc-kubernetes.mount")
+	assertContains(t, filepath.Join(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf"), "ConditionPathExists=/var/lib/kubelet/config.yaml")
 	assertContains(t, filepath.Join(root, "run/systemd/system/katl-generation-activate.service.d/10-katl-live-generation.conf"), "--generation 1")
 	assertSymlink(t, filepath.Join(root, "run/extensions/katl-kubernetes.raw"), "/var/lib/katl/generations/1/sysext/katl-kubernetes.raw")
 	selection, err := generation.ReadBootSelection(root)

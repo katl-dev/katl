@@ -110,7 +110,7 @@ shutdownGracePeriod: 45s
 	}
 	cp := controlPlane.KubeadmConfigs["control-plane"]
 	cpConfig := string(cp.Config.Content)
-	for _, want := range []string{"kind: InitConfiguration", "kind: ClusterConfiguration", "kubernetesVersion: v1.36.1", "name: profiling", "kind: KubeletConfiguration", "directory: /etc/katl/kubeadm/control-plane/patches"} {
+	for _, want := range []string{"kind: InitConfiguration", "kind: ClusterConfiguration", "kubernetesVersion: v1.36.1", "name: profiling", "kind: KubeletConfiguration", "volumePluginDir: /var/lib/kubelet/plugins/volume/exec", "directory: /etc/katl/kubeadm/control-plane/patches"} {
 		if !strings.Contains(cpConfig, want) {
 			t.Fatalf("control-plane kubeadm input missing %q:\n%s", want, cpConfig)
 		}
@@ -125,7 +125,7 @@ shutdownGracePeriod: 45s
 	}
 	workerPlan := worker.KubeadmConfigs["worker"]
 	workerConfig := string(workerPlan.Config.Content)
-	for _, want := range []string{"kind: JoinConfiguration", "kind: KubeletConfiguration", "directory: /etc/katl/kubeadm/worker/patches"} {
+	for _, want := range []string{"kind: JoinConfiguration", "kind: KubeletConfiguration", "volumePluginDir: /var/lib/kubelet/plugins/volume/exec", "directory: /etc/katl/kubeadm/worker/patches"} {
 		if !strings.Contains(workerConfig, want) {
 			t.Fatalf("worker kubeadm input missing %q:\n%s", want, workerConfig)
 		}
@@ -218,6 +218,9 @@ spec:
 	}
 	if selected.NodeMaterial.KubeadmConfig.Ref != "control-plane" || selected.KubeadmConfigs["control-plane"].Config.RenderPath == "" {
 		t.Fatalf("defaulted kubeadm = material %#v configs %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
+	}
+	if config := string(selected.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(config, "volumePluginDir: /var/lib/kubelet/plugins/volume/exec") {
+		t.Fatalf("defaulted kubeadm does not keep plugins on writable state:\n%s", config)
 	}
 }
 

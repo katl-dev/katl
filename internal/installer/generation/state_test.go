@@ -236,10 +236,14 @@ RequiresMountsFor=/var/lib/containerd
 		t.Fatalf("containerd drop-in:\n%s\nwant:\n%s", assets.ContainerdDropIn, wantContainerd)
 	}
 	wantKubelet := `[Unit]
+ConditionPathExists=/var/lib/kubelet/config.yaml
 Requires=containerd.service etc-kubernetes.mount
 After=var.mount containerd.service etc-kubernetes.mount
 Before=katl-kubeadm-ready.target
 RequiresMountsFor=/var/lib/kubelet /etc/kubernetes
+
+[Service]
+Environment=KUBELET_EXTRA_ARGS=
 `
 	if assets.KubeletDropIn != wantKubelet {
 		t.Fatalf("kubelet drop-in:\n%s\nwant:\n%s", assets.KubeletDropIn, wantKubelet)

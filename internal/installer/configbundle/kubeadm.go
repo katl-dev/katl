@@ -12,7 +12,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const kubeadmCRISocket = "unix:///run/containerd/containerd.sock"
+const (
+	kubeadmCRISocket = "unix:///run/containerd/containerd.sock"
+)
 
 type kubeadmSourceInput struct {
 	Name    string
@@ -170,6 +172,11 @@ func provideKubeadmDefaults(documents map[string]map[string]any, kubernetesVersi
 		}
 		document["nodeRegistration"] = nodeRegistration
 	}
+	kubelet := documents["KubeletConfiguration"]
+	if value, _ := kubelet["volumePluginDir"].(string); strings.TrimSpace(value) != "" && value != kubeadmconfig.KubeletVolumePluginDir {
+		return fmt.Errorf("spec.kubernetes.kubeadm.configFile KubeletConfiguration volumePluginDir must be %q on KatlOS", kubeadmconfig.KubeletVolumePluginDir)
+	}
+	kubelet["volumePluginDir"] = kubeadmconfig.KubeletVolumePluginDir
 	return nil
 }
 

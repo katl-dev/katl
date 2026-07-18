@@ -17,6 +17,8 @@ import (
 const (
 	APIVersion = "config.katl.dev/v1alpha1"
 	Kind       = "KubeadmConfig"
+
+	KubeletVolumePluginDir = "/var/lib/kubelet/plugins/volume/exec"
 )
 
 type Object struct {
@@ -432,6 +434,9 @@ func validateYAMLPaths(node *yaml.Node, patchesRenderDir string) error {
 			return nil
 		}
 		if len(path) == 1 && path[0] == "certificatesDir" && value == "/etc/kubernetes/pki" {
+			return nil
+		}
+		if len(path) == 1 && path[0] == "volumePluginDir" && value == KubeletVolumePluginDir {
 			return nil
 		}
 		if strings.HasPrefix(value, "/") && deniedHostPath(value) {

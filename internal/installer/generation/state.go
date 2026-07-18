@@ -286,10 +286,14 @@ func renderContainerdDropIn() string {
 func renderKubeletDropIn() string {
 	return strings.Join([]string{
 		"[Unit]",
+		"ConditionPathExists=/var/lib/kubelet/config.yaml",
 		"Requires=containerd.service etc-kubernetes.mount",
 		"After=var.mount containerd.service etc-kubernetes.mount",
 		"Before=katl-kubeadm-ready.target",
 		"RequiresMountsFor=/var/lib/kubelet /etc/kubernetes",
+		"",
+		"[Service]",
+		"Environment=KUBELET_EXTRA_ARGS=",
 		"",
 	}, "\n")
 }
