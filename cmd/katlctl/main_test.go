@@ -953,6 +953,37 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	}
 }
 
+func TestClusterBootstrapDefaultsKubeconfigAndPrintsProgress(t *testing.T) {
+	inventoryPath := writeInventory(t)
+	var got cluster.Request
+	old := runAgentBootstrap
+	runAgentBootstrap = func(_ context.Context, request cluster.Request, deps cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+		got = request
+		deps.Progress(cluster.AgentBootstrapProgress{Node: "cp-1", OperationID: "bootstrap-init-1", Kind: "bootstrap-init", Phase: "kubeadm-init", NextAction: "wait for kubeadm"})
+		return cluster.Result{Plan: inventory.Plan{InitNode: "cp-1", Nodes: []inventory.PlannedNode{{Name: "cp-1"}}}, DryRun: true}, nil
+	}
+	t.Cleanup(func() { runAgentBootstrap = old })
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"cluster", "bootstrap",
+		"--inventory", inventoryPath,
+		"--dry-run",
+		"--verbose",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if got.KubeconfigOut != "kubeconfig" {
+		t.Fatalf("KubeconfigOut = %q, want kubeconfig", got.KubeconfigOut)
+	}
+	for _, want := range []string{"node=cp-1", "operation=bootstrap-init", "phase=kubeadm-init", "operation-id=bootstrap-init-1", `next="wait for kubeadm"`} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("progress missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
 func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	var got cluster.Request

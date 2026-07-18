@@ -89,7 +89,7 @@ func TestListOperationsFiltersActiveRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Operations) != 1 || response.Operations[0].OperationId != active.OperationID {
+	if len(response.Operations) != 1 || response.Operations[0].OperationId != active.OperationID || response.Operations[0].ClientRequestId != active.ClientRequestID {
 		t.Fatalf("operations = %#v", response.Operations)
 	}
 }

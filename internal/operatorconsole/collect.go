@@ -140,20 +140,32 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 		return
 	}
 	snapshot.Generation = id
-	spec, status, err := generation.ReadGeneration(root, id)
+	bootedSpec, status, err := generation.ReadGeneration(root, id)
 	if err != nil {
 		return
 	}
-	if version := strings.TrimSpace(spec.RuntimeVersion); version != "" {
+	if version := strings.TrimSpace(bootedSpec.RuntimeVersion); version != "" {
 		snapshot.Version = version
 	}
-	for _, extension := range spec.Sysexts {
+	snapshot.GenerationHealth = status.HealthState
+
+	softwareSpec := bootedSpec
+	target := strings.TrimSpace(selection.TargetBootGenerationID)
+	if target != "" && target != id {
+		snapshot.NextGeneration = target
+		// Bootstrap and online lifecycle operations activate their candidate
+		// before arming it for boot. Report the selected software immediately,
+		// while keeping the booted and next-boot generations distinct.
+		if spec, _, targetErr := generation.ReadGeneration(root, target); targetErr == nil {
+			softwareSpec = spec
+		}
+	}
+	for _, extension := range softwareSpec.Sysexts {
 		if extension.Name == "kubernetes" {
 			snapshot.KubernetesVersion = strings.TrimSpace(extension.PayloadVersion)
 			break
 		}
 	}
-	snapshot.GenerationHealth = status.HealthState
 }
 
 func cleanRoot(root string) string {

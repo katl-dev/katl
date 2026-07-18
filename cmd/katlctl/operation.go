@@ -165,6 +165,7 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 		return err
 	}
 	for _, status := range response.GetOperations() {
+		status.ClientRequestId = ""
 		status.RequestDigest = ""
 	}
 	if opts.output == "text" {
@@ -326,6 +327,7 @@ func writeOperationStatus(stdout io.Writer, output string, status *agentapi.Oper
 		return fmt.Errorf("agent returned an empty operation status")
 	}
 	publicStatus := proto.Clone(status).(*agentapi.OperationStatus)
+	publicStatus.ClientRequestId = ""
 	publicStatus.RequestDigest = ""
 	if output == "text" {
 		result := publicStatus.GetResult()
@@ -355,6 +357,7 @@ func writeMutationOperationStatus(stdout io.Writer, status *agentapi.OperationSt
 	}
 	publicStatus := proto.Clone(status).(*agentapi.OperationStatus)
 	publicStatus.OperationId = ""
+	publicStatus.ClientRequestId = ""
 	publicStatus.RequestDigest = ""
 	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicStatus)
 	if err != nil {

@@ -166,6 +166,105 @@ func TestCollectorReadsInstalledVersionsFromBootedGeneration(t *testing.T) {
 	}
 }
 
+func TestCollectorReportsLiveBootstrapCandidateBeforeReboot(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	booted := testConsoleGeneration(t, root, "0", "2026.7.0-alpha.16", "", now)
+	candidate := testConsoleGeneration(t, root, "bootstrap-init-candidate", "2026.7.0-alpha.16", "v1.36.1", now.Add(time.Minute))
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion:             generation.APIVersion,
+		Kind:                   generation.BootSelectionKind,
+		DefaultGenerationID:    booted.GenerationID,
+		BootedGenerationID:     booted.GenerationID,
+		TargetBootGenerationID: candidate.GenerationID,
+		UpdatedAt:              now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc", "kubernetes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc", "kubernetes", "kubelet.conf"), []byte("configured\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	collector := Collector{
+		Mode:       ModeRuntime,
+		Version:    "binary-version",
+		Root:       root,
+		Hostname:   func() (string, error) { return "cp-1", nil },
+		Interfaces: func() ([]net.Interface, error) { return nil, nil },
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if snapshot.Generation != "0" || snapshot.NextGeneration != "bootstrap-init-candidate" {
+		t.Fatalf("generation = %q, next = %q", snapshot.Generation, snapshot.NextGeneration)
+	}
+	if snapshot.Version != "2026.7.0-alpha.16" || snapshot.KubernetesVersion != "v1.36.1" || !snapshot.KubernetesBootstrapped {
+		t.Fatalf("software state = KatlOS %q, Kubernetes %q, bootstrapped=%t", snapshot.Version, snapshot.KubernetesVersion, snapshot.KubernetesBootstrapped)
+	}
+	rendered := string(renderDashboard(&snapshot, nil, 80, 20, false))
+	for _, want := range []string{"Generation: 0", "Next boot:  bootstrap-init-candidate", "Version:    v1.36.1", "Bootstrapped"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("render missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func testConsoleGeneration(t *testing.T, root, id, runtimeVersion, kubernetesVersion string, now time.Time) generation.GenerationSpec {
+	t.Helper()
+	extensions := []generation.ExtensionRef(nil)
+	if kubernetesVersion != "" {
+		extensions = append(extensions, generation.ExtensionRef{
+			Name:            "kubernetes",
+			Path:            "/var/lib/katl/generations/" + id + "/sysext/kubernetes.raw",
+			ActivationPath:  "/run/extensions/katl-kubernetes.raw",
+			SHA256:          strings.Repeat("b", 64),
+			ArtifactVersion: kubernetesVersion + "-katl.1",
+			PayloadVersion:  kubernetesVersion,
+			Architecture:    "x86_64",
+			Compatibility: generation.ExtensionCompatibility{
+				RuntimeInterfaces: []string{"katl-runtime-1"},
+			},
+		})
+	}
+	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
+		GenerationID:          id,
+		RuntimeVersion:        runtimeVersion,
+		RuntimeInterface:      "katl-runtime-1",
+		RuntimeArchitecture:   "x86_64",
+		RootSlot:              "root-a",
+		RootPartitionUUID:     "11111111-2222-3333-4444-555555555555",
+		RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		UKIPath:               "/efi/EFI/Linux/katl-" + id + ".efi",
+		Sysexts:               extensions,
+		GeneratedConfext: generation.GeneratedConfext{
+			Name:           "katl-node",
+			Path:           "/var/lib/katl/generations/" + id + "/confext",
+			ActivationPath: "/run/confexts/katl-node",
+			SHA256:         strings.Repeat("c", 64),
+			Compatibility: generation.ConfextCompatibility{
+				ID:           "katl",
+				VersionID:    runtimeVersion,
+				ConfextLevel: 1,
+			},
+		},
+		CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := generation.SpecFromRecord(record)
+	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	return spec
+}
+
 func TestRenderInstallerDashboard(t *testing.T) {
 	snapshot := Snapshot{
 		Mode:                ModeInstaller,
@@ -238,7 +337,7 @@ func TestRenderRuntimeFailure(t *testing.T) {
 		Network:           []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
 	}
 	got := string(renderDashboard(&snapshot, nil, 80, 20, false))
-	for _, want := range []string{"Status", "Host", "Kubernetes", "Needs repair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation: 4", "Error:", "boot health check failed", "SSH: root@192.0.2.20"} {
+	for _, want := range []string{"Status", "Host", "Kubernetes", "Needs repair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation: 4", "Error:", "boot health check failed", "SSH: katl@192.0.2.20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
@@ -409,6 +508,30 @@ func TestRenderWrapsOperatorContentAtNarrowWidth(t *testing.T) {
 	for number, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
 		if len([]rune(line)) > 40 {
 			t.Fatalf("line %d width = %d: %q", number+1, len([]rune(line)), line)
+		}
+	}
+}
+
+func TestTerminalRenderClearsPendingAutowrapOnEveryRow(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:       ModeRuntime,
+		Hostname:   "cp-with-a-long-name",
+		Version:    "2026.7.0-alpha.15",
+		Generation: "generation-with-a-long-identifier",
+		Network: []NetworkInterface{{
+			Name:      "enp1s0",
+			Addresses: []string{"2001:db8:1234:5678::10/64", "192.0.2.10/24"},
+		}},
+	}
+	got := renderDashboard(&snapshot, testJournal{[]byte(strings.Repeat("j", 40))}, 40, 30, true)
+	for index, value := range got {
+		if value == '\n' && (index == 0 || got[index-1] != '\r') {
+			t.Fatalf("terminal row %d lacks carriage return before line feed: %q", index, got[max(0, index-8):index+1])
+		}
+	}
+	for number, line := range strings.Split(strings.TrimSuffix(string(got), "\r\n"), "\r\n") {
+		if width := visibleWidth(line); width > 40 {
+			t.Fatalf("line %d width = %d: %q", number+1, width, line)
 		}
 	}
 }

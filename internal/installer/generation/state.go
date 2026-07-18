@@ -466,6 +466,7 @@ func stateDirs() []StateDir {
 		{Path: KubernetesSource, Mode: 0o755},
 		{Path: "/var/lib/katl/ssh", Mode: 0o755},
 		{Path: "/var/lib/katl/ssh/host-keys", Mode: 0o700},
+		{Path: "/var/lib/katl/home", Mode: 0o755},
 		{Path: "/var/lib/katl/home/katl", Mode: 0o700},
 		{Path: "/var/lib/containerd", Mode: 0o755},
 		{Path: "/var/lib/etcd", Mode: 0o755},

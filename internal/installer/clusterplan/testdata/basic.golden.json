@@ -111,7 +111,7 @@
         {
           "path": "/etc/ssh/authorized_keys/katl",
           "content": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example\n",
-          "mode": 384
+          "mode": 420
         },
         {
           "path": "/etc/systemd/network/10-common.network",
@@ -230,7 +230,7 @@
         {
           "path": "/etc/ssh/authorized_keys/katl",
           "content": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example\n",
-          "mode": 384
+          "mode": 420
         },
         {
           "path": "/etc/systemd/network/10-common.network",

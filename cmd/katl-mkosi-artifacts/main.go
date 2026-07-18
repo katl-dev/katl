@@ -368,6 +368,7 @@ func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) er
 		SHA256:           digest,
 		Compression:      "zstd",
 		Generation:       cfg.Generation,
+		Version:          cfg.Version,
 		Architecture:     cfg.Architecture,
 		RuntimeInterface: "katl-runtime-1",
 		CompatibleBoot: &bootCompat{
@@ -790,7 +791,7 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 				Format:       rootMeta.Format,
 				SizeBytes:    rootMeta.SizeBytes,
 				SHA256:       rootMeta.SHA256,
-				Version:      firstNonEmpty(rootMeta.Generation, rootMeta.Version, *buildID),
+				Version:      firstNonEmpty(rootMeta.Version, *version, rootMeta.Generation, *buildID),
 				Architecture: rootMeta.Architecture,
 				Compatibility: katlosCompatibility{
 					RuntimeInterface: rootMeta.RuntimeInterface,

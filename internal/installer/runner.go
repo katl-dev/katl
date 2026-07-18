@@ -853,7 +853,10 @@ func (rebootStep) Run(ctx context.Context, install *Context) error {
 	if err := install.Commands.Run(ctx, "sync"); err != nil {
 		return fmt.Errorf("sync install state: %w", err)
 	}
-	if err := install.Commands.Run(ctx, "systemctl", "--no-block", "reboot"); err != nil {
+	// Leave the handoff API alive briefly after persisting reboot-requested so
+	// operators can observe the terminal state before the installer disappears.
+	// A transient timer keeps the delay outside the installer state machine.
+	if err := install.Commands.Run(ctx, "systemd-run", "--unit=katl-installer-reboot", "--on-active=2s", "systemctl", "--no-block", "reboot"); err != nil {
 		return fmt.Errorf("request system reboot: %w", err)
 	}
 	return nil

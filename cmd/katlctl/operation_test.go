@@ -23,6 +23,7 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 			client := &fakeKatlcAgentClient{operationStatus: &agentapi.OperationStatus{
 				OperationId:             "operation-1",
 				OperationKind:           kind,
+				ClientRequestId:         "internal-request-1",
 				RequestDigest:           strings.Repeat("a", 64),
 				Phase:                   "complete",
 				Terminal:                true,
@@ -57,8 +58,8 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 			if got.GetOperationKind() != kind || !got.GetRecoveryRequired() || got.GetFailureReason() != "operator recovery is required" {
 				t.Fatalf("status = %#v", &got)
 			}
-			if got.GetRequestDigest() != "" || strings.Contains(stdout.String(), "requestDigest") {
-				t.Fatalf("status exposed request digest: %s", stdout.String())
+			if got.GetClientRequestId() != "" || got.GetRequestDigest() != "" || strings.Contains(stdout.String(), "clientRequestId") || strings.Contains(stdout.String(), "requestDigest") {
+				t.Fatalf("status exposed internal request identity: %s", stdout.String())
 			}
 			if client.operationRequest.GetExpectedRequestDigest() != "" || client.operationRequest.GetIncludeDiagnostics() != "verbose" {
 				t.Fatalf("request = %#v", client.operationRequest)
@@ -69,8 +70,8 @@ func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 
 func TestOperationsListDiscoversRecentWork(t *testing.T) {
 	client := &fakeKatlcAgentClient{operations: &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{
-		{OperationId: "active-1", OperationKind: "host-upgrade", RequestDigest: strings.Repeat("a", 64), Phase: "download"},
-		{OperationId: "done-1", OperationKind: "generation-apply", RequestDigest: strings.Repeat("b", 64), Phase: "complete", Terminal: true, Result: "succeeded"},
+		{OperationId: "active-1", OperationKind: "host-upgrade", ClientRequestId: "internal-active", RequestDigest: strings.Repeat("a", 64), Phase: "download"},
+		{OperationId: "done-1", OperationKind: "generation-apply", ClientRequestId: "internal-done", RequestDigest: strings.Repeat("b", 64), Phase: "complete", Terminal: true, Result: "succeeded"},
 	}}}
 	oldDial := dialKatlcAgent
 	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
@@ -90,8 +91,8 @@ func TestOperationsListDiscoversRecentWork(t *testing.T) {
 	if len(got.Operations) != 2 || got.Operations[0].OperationId != "active-1" {
 		t.Fatalf("operations = %#v", got.Operations)
 	}
-	if strings.Contains(stdout.String(), "requestDigest") {
-		t.Fatalf("operations exposed request digest: %s", stdout.String())
+	if strings.Contains(stdout.String(), "clientRequestId") || strings.Contains(stdout.String(), "requestDigest") {
+		t.Fatalf("operations exposed internal request identity: %s", stdout.String())
 	}
 	if client.operationsRequest == nil || !client.operationsRequest.ActiveOnly || client.operationsRequest.Limit != 5 {
 		t.Fatalf("list request = %#v", client.operationsRequest)

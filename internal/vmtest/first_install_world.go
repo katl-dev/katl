@@ -37,6 +37,7 @@ type FirstInstallWorldInput struct {
 	InstallManifest   string
 	ConfigBundle      string
 	KubernetesVersion string
+	SSHAuthorizedKey  string
 	Mode              FirstInstallWorldMode
 	UseInstalledESP   bool
 	TargetDiskSize    string
@@ -852,7 +853,7 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 	input.UseInstalledESP = true
 	if input.InstallManifest == "" {
 		if input.ConfigBundle == "" {
-			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index, input.Mode == FirstInstallWorldGuestHandoff, input.KubernetesVersion)
+			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index, input.Mode == FirstInstallWorldGuestHandoff, input.KubernetesVersion, input.SSHAuthorizedKey)
 			if err != nil {
 				return input, err
 			}
@@ -992,7 +993,7 @@ func (index mkosiArtifactIndex) artifact(kind string) (mkosiArtifact, bool) {
 	return mkosiArtifact{}, false
 }
 
-func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex, bindInstallMedia bool, requestedKubernetesVersion string) (string, string, error) {
+func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex, bindInstallMedia bool, requestedKubernetesVersion, sshAuthorizedKey string) (string, string, error) {
 	image, ok := index.artifact("katlos-install-image")
 	if !ok {
 		var err error
@@ -1053,6 +1054,10 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	}
 	nodes = append(nodes, firstInstallWorldSourceNode(spec.Name, spec.Role, "/dev/disk/by-id/virtio-katl-root"))
 
+	sshAuthorizedKey = strings.TrimSpace(sshAuthorizedKey)
+	if sshAuthorizedKey == "" {
+		sshAuthorizedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
+	}
 	sourceSpec := map[string]any{
 		"controlPlaneEndpoint": "api.katl.test:6443",
 		"kubernetes": map[string]any{
@@ -1061,7 +1066,7 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 		"defaults": map[string]any{
 			"identity": map[string]any{
 				"ssh": map[string]any{
-					"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
+					"authorizedKeys": []string{sshAuthorizedKey},
 				},
 			},
 			"networkd": map[string]any{

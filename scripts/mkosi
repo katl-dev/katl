@@ -478,10 +478,9 @@ else
                 echo "error: build-installer-iso does not accept mkosi arguments" >&2
                 exit 2
             fi
-            install_image="$(KATL_KATLOS_IMAGE_ROLE=install katlos_image_output)"
-            if [[ ! -f "$install_image" || ! -f "$install_image.json" || ! -f "$install_image.sha256" ]]; then
-                KATL_KATLOS_IMAGE_ROLE=install "$repo_root/scripts/mkosi" build-katlos-install-image
-            fi
+            # Always enter the source-fingerprinted target. It returns quickly on a
+            # real cache hit and refreshes a stale payload before the ISO embeds it.
+            KATL_KATLOS_IMAGE_ROLE=install "$repo_root/scripts/mkosi" build-katlos-install-image
             emit_installer_iso=1
             installer_package_set=_build/mkosi/katl-installer.packages.tsv
             cache_target=installer-iso
