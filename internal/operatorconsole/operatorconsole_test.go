@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/katl-dev/katl/internal/installer/generation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
@@ -512,7 +513,7 @@ func TestRenderWrapsOperatorContentAtNarrowWidth(t *testing.T) {
 	}
 }
 
-func TestTerminalRenderClearsPendingAutowrapOnEveryRow(t *testing.T) {
+func TestTerminalRenderDoesNotScrollCompletedFrame(t *testing.T) {
 	snapshot := Snapshot{
 		Mode:       ModeRuntime,
 		Hostname:   "cp-with-a-long-name",
@@ -523,17 +524,88 @@ func TestTerminalRenderClearsPendingAutowrapOnEveryRow(t *testing.T) {
 			Addresses: []string{"2001:db8:1234:5678::10/64", "192.0.2.10/24"},
 		}},
 	}
-	got := renderDashboard(&snapshot, testJournal{[]byte(strings.Repeat("j", 40))}, 40, 30, true)
-	for index, value := range got {
-		if value == '\n' && (index == 0 || got[index-1] != '\r') {
-			t.Fatalf("terminal row %d lacks carriage return before line feed: %q", index, got[max(0, index-8):index+1])
-		}
+	const width, height = 40, 30
+	got := renderDashboard(&snapshot, testJournal{[]byte(strings.Repeat("j", width))}, width, height, true)
+	terminal := emulateTerminal(t, got, width, height)
+	if terminal.scrolls != 0 {
+		t.Fatalf("completed frame scrolled %d times", terminal.scrolls)
 	}
-	for number, line := range strings.Split(strings.TrimSuffix(string(got), "\r\n"), "\r\n") {
-		if width := visibleWidth(line); width > 40 {
-			t.Fatalf("line %d width = %d: %q", number+1, width, line)
-		}
+	if row := strings.TrimSpace(string(terminal.rows[0])); row != "KatlOS" {
+		t.Fatalf("first terminal row = %q", row)
 	}
+	if row := strings.TrimSpace(string(terminal.rows[height-1])); !strings.HasPrefix(row, "Ctrl+Alt+F2: console") {
+		t.Fatalf("footer terminal row = %q", row)
+	}
+}
+
+type terminalState struct {
+	rows    [][]rune
+	row     int
+	column  int
+	pending bool
+	scrolls int
+}
+
+func emulateTerminal(t *testing.T, data []byte, width, height int) terminalState {
+	t.Helper()
+	state := terminalState{rows: make([][]rune, height)}
+	for index := range state.rows {
+		state.rows[index] = []rune(strings.Repeat(" ", width))
+	}
+	for position := 0; position < len(data); {
+		if data[position] == '\x1b' {
+			next := skipANSIBytes(data, position)
+			sequence := string(data[position:next])
+			switch sequence {
+			case "\x1b[H":
+				state.row, state.column, state.pending = 0, 0, false
+			case "\x1b[2J":
+				for row := range state.rows {
+					for column := range state.rows[row] {
+						state.rows[row][column] = ' '
+					}
+				}
+			}
+			position = next
+			continue
+		}
+		switch data[position] {
+		case '\r':
+			state.column, state.pending = 0, false
+			position++
+			continue
+		case '\n':
+			state.row++
+			state.pending = false
+			if state.row == height {
+				copy(state.rows, state.rows[1:])
+				state.rows[height-1] = []rune(strings.Repeat(" ", width))
+				state.row--
+				state.scrolls++
+			}
+			position++
+			continue
+		}
+		value, size := utf8.DecodeRune(data[position:])
+		if state.pending {
+			state.row++
+			state.column, state.pending = 0, false
+			if state.row == height {
+				copy(state.rows, state.rows[1:])
+				state.rows[height-1] = []rune(strings.Repeat(" ", width))
+				state.row--
+				state.scrolls++
+			}
+		}
+		state.rows[state.row][state.column] = value
+		if state.column == width-1 {
+			state.pending = true
+		} else {
+			state.column++
+		}
+		position += size
+	}
+	return state
 }
 
 func TestJournalLineWrapsAndStripsANSI(t *testing.T) {

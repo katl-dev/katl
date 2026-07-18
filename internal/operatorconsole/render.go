@@ -225,7 +225,7 @@ func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
 		footer.writeString(" | SSH disabled")
 	}
 	footer.resetStyle()
-	footer.end()
+	footer.endFrame()
 	return render.output.bytes()
 }
 
@@ -702,6 +702,29 @@ func (l *lineWriter) finish() {
 }
 
 func (l *lineWriter) end() {
+	l.finishOutput()
+	// A character in the terminal's final column leaves autowrap pending. A
+	// carriage return clears that state before the line feed, so one rendered
+	// row always consumes exactly one terminal row.
+	if l.color {
+		l.output.writeByte('\r')
+	}
+	l.output.writeByte('\n')
+}
+
+func (l *lineWriter) endFrame() {
+	l.finishOutput()
+	if l.color {
+		// The footer occupies the terminal's bottom row. Leave the cursor on that
+		// row and clear pending autowrap without emitting a line feed that would
+		// scroll the completed frame.
+		l.output.writeByte('\r')
+		return
+	}
+	l.output.writeByte('\n')
+}
+
+func (l *lineWriter) finishOutput() {
 	if !l.active {
 		return
 	}
@@ -712,13 +735,6 @@ func (l *lineWriter) end() {
 			l.output.writeString(styleReset)
 		}
 	}
-	// A character in the terminal's final column leaves autowrap pending. A
-	// carriage return clears that state before the line feed, so one rendered
-	// row always consumes exactly one terminal row.
-	if l.color {
-		l.output.writeByte('\r')
-	}
-	l.output.writeByte('\n')
 }
 
 type wrappedWriter struct {
