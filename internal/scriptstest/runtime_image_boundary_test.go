@@ -52,6 +52,7 @@ printf 'fake binary\n' > "$output"
 			t.Errorf("production runtime contains VM-test path %s: %v", path, err)
 		}
 	}
+	assertRuntimeServicePolicy(t, production)
 
 	instrumented := filepath.Join(t.TempDir(), "instrumented")
 	runRuntimeBuild(t, repo, bin, instrumented, "1")
@@ -59,6 +60,34 @@ printf 'fake binary\n' > "$output"
 		if _, err := os.Lstat(path); err != nil {
 			t.Errorf("instrumented runtime missing VM-test path %s: %v", path, err)
 		}
+	}
+}
+
+func assertRuntimeServicePolicy(t *testing.T, root string) {
+	t.Helper()
+	for _, unit := range []string{
+		"authselect-apply-changes.service",
+		"fips-crypto-policy-overlay.service",
+		"systemd-homed-activate.service",
+		"systemd-homed.service",
+		"systemd-oomd.service",
+		"systemd-oomd.socket",
+		"systemd-preset-all.service",
+		"systemd-tpm2-clear.service",
+	} {
+		path := filepath.Join(root, "etc", "systemd", "system", unit)
+		target, err := os.Readlink(path)
+		if err != nil {
+			t.Errorf("runtime mask %s: %v", unit, err)
+			continue
+		}
+		if target != "/dev/null" {
+			t.Errorf("runtime mask %s = %q, want /dev/null", unit, target)
+		}
+	}
+	getty := filepath.Join(root, "usr", "lib", "systemd", "system", "getty.target.wants", "getty@tty2.service")
+	if _, err := os.Lstat(getty); !os.IsNotExist(err) {
+		t.Errorf("runtime includes unsupported tty2 getty %s: %v", getty, err)
 	}
 }
 
