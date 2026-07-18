@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/katl-dev/katl/internal/installer/generation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
@@ -23,6 +24,7 @@ type Collector struct {
 	Interfaces            func() ([]net.Interface, error)
 	Addrs                 func(net.Interface) ([]net.Addr, error)
 	DefaultRouteInterface func() (string, error)
+	Now                   func() time.Time
 }
 
 const (
@@ -34,8 +36,10 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	interfaces := snapshot.DisplayInterfaces
 	*snapshot = Snapshot{
 		Mode:              c.Mode,
-		Version:           strings.TrimSpace(c.Version),
 		DisplayInterfaces: interfaces[:0],
+	}
+	if c.Mode == ModeInstaller {
+		snapshot.Version = strings.TrimSpace(c.Version)
 	}
 	if c.Hostname == nil {
 		c.Hostname = os.Hostname
@@ -50,6 +54,9 @@ func (c Collector) Collect(snapshot *Snapshot) {
 		c.DefaultRouteInterface = func() (string, error) {
 			return readDefaultRouteInterface(rooted(c.Root, "/proc/net/route"))
 		}
+	}
+	if c.Now == nil {
+		c.Now = time.Now
 	}
 	if hostname, err := c.Hostname(); err == nil {
 		snapshot.Hostname = hostname
@@ -69,13 +76,18 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	if err == nil {
 		snapshot.State = record.State
 		snapshot.CurrentStep = record.CurrentStep
-		snapshot.Generation = record.InstalledGeneration
+		if c.Mode == ModeInstaller {
+			snapshot.Generation = record.InstalledGeneration
+		}
 		snapshot.DestructiveMutation = record.DestructiveMutation
 		snapshot.LastError = record.LastError
 		snapshot.RetryHint = record.RetryHint
 		snapshot.UpdatedAt = record.UpdatedAt
 	} else if !errors.Is(err, os.ErrNotExist) {
 		snapshot.StatusError = err.Error()
+	}
+	if statusCanBecomeStale(snapshot.State) && !snapshot.UpdatedAt.IsZero() && c.Now().Sub(snapshot.UpdatedAt) > 10*time.Minute {
+		snapshot.StatusStale = true
 	}
 	if snapshot.State == "" {
 		if c.Mode == ModeInstaller {
@@ -94,10 +106,21 @@ func (c Collector) Collect(snapshot *Snapshot) {
 			if snapshot.State == "starting-installer" {
 				snapshot.State = installstatus.StateWaitingForConfig
 			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			snapshot.HandoffError = "installer handoff is unreadable; restart the installer handoff service"
 		}
 	} else {
-		snapshot.KubernetesBootstrapped = fileExists(rooted(c.Root, "/etc/kubernetes/kubelet.conf"))
+		snapshot.KubernetesConfigured = fileExists(rooted(c.Root, "/etc/kubernetes/kubelet.conf"))
 		c.collectGeneration(snapshot)
+	}
+}
+
+func statusCanBecomeStale(state string) bool {
+	switch state {
+	case installstatus.StateRunning, installstatus.StateRuntimeBootedNotReady:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -226,6 +249,7 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 	root := cleanRoot(c.Root)
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {
+		snapshot.GenerationError = "generation metadata is unavailable; inspect the KatlOS generation store"
 		return
 	}
 	id := strings.TrimSpace(selection.BootedGenerationID)
@@ -233,35 +257,56 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 		id = strings.TrimSpace(selection.DefaultGenerationID)
 	}
 	if id == "" {
+		snapshot.GenerationError = "generation metadata does not identify the running KatlOS generation"
 		return
 	}
-	snapshot.Generation = id
 	bootedSpec, status, err := generation.ReadGeneration(root, id)
 	if err != nil {
+		snapshot.GenerationError = "running generation metadata is unreadable; inspect the KatlOS generation store"
 		return
 	}
-	if version := strings.TrimSpace(bootedSpec.RuntimeVersion); version != "" {
-		snapshot.Version = version
-	}
+	snapshot.CurrentSoftware = softwareFromSpec(bootedSpec)
 	snapshot.GenerationHealth = status.HealthState
 
-	softwareSpec := bootedSpec
+	nextID := strings.TrimSpace(selection.TargetBootGenerationID)
+	if nextID == "" {
+		nextID = strings.TrimSpace(selection.DefaultGenerationID)
+	}
+	if nextID == "" || nextID == id {
+		snapshot.NextBootSoftware = snapshot.CurrentSoftware
+	} else if spec, _, nextErr := generation.ReadGeneration(root, nextID); nextErr == nil {
+		snapshot.NextBootSoftware = softwareFromSpec(spec)
+	} else {
+		snapshot.NextBootSoftware = Software{Generation: nextID}
+		snapshot.GenerationError = "next-boot generation metadata is unreadable; inspect the KatlOS generation store"
+	}
+
+	snapshot.LiveSoftware = snapshot.CurrentSoftware
 	target := strings.TrimSpace(selection.TargetBootGenerationID)
 	if target != "" && target != id {
-		snapshot.NextGeneration = target
 		// Bootstrap and online lifecycle operations activate their candidate
 		// before arming it for boot. Report the selected software immediately,
 		// while keeping the booted and next-boot generations distinct.
 		if spec, _, targetErr := generation.ReadGeneration(root, target); targetErr == nil {
-			softwareSpec = spec
+			snapshot.LiveSoftware = softwareFromSpec(spec)
+		} else if snapshot.GenerationError == "" {
+			snapshot.GenerationError = "live-selected generation metadata is unreadable; inspect the KatlOS generation store"
 		}
 	}
-	for _, extension := range softwareSpec.Sysexts {
+}
+
+func softwareFromSpec(spec generation.GenerationSpec) Software {
+	software := Software{
+		Generation:    strings.TrimSpace(spec.GenerationID),
+		KatlOSVersion: strings.TrimSpace(spec.RuntimeVersion),
+	}
+	for _, extension := range spec.Sysexts {
 		if extension.Name == "kubernetes" {
-			snapshot.KubernetesVersion = strings.TrimSpace(extension.PayloadVersion)
+			software.KubernetesVersion = strings.TrimSpace(extension.PayloadVersion)
 			break
 		}
 	}
+	return software
 }
 
 func cleanRoot(root string) string {

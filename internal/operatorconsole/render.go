@@ -14,7 +14,7 @@ const (
 	maximumWidth    = 512
 	maximumHeight   = 256
 	wideLayoutWidth = 72
-	fieldWidth      = 14
+	fieldWidth      = 18
 
 	styleReset Style = "\x1b[0m"
 	styleTitle Style = "\x1b[1;36m"
@@ -94,7 +94,11 @@ func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
 func (render *Renderer) paintCompact(snapshot *Snapshot) {
 	content := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: max(render.frame.Height-1, 0)})
 	content.Write("KatlOS", WrapOptions{Style: styleTitle, WordWrap: true})
-	content.Write(stateLabel(snapshot.State), WrapOptions{Style: stateStyle(snapshot.State), WordWrap: true})
+	presentation := presentInstaller(snapshot)
+	if snapshot.Mode == ModeRuntime {
+		presentation = NewDashboardModel(snapshot).Host
+	}
+	content.Write(presentation.Label, WrapOptions{Style: presentationStyle(presentation.State), WordWrap: true})
 	if address := snapshot.ManagementAddress; address != "" {
 		content.Write(address, WrapOptions{WordWrap: true})
 	}
@@ -157,7 +161,7 @@ type alertSpec struct {
 }
 
 func activeAlerts(snapshot *Snapshot) []alertSpec {
-	alerts := make([]alertSpec, 0, 3)
+	alerts := make([]alertSpec, 0, 6)
 	if strings.TrimSpace(snapshot.LastError) != "" {
 		alerts = append(alerts, alertSpec{label: "Error", value: snapshot.LastError, style: styleBad})
 	}
@@ -166,6 +170,15 @@ func activeAlerts(snapshot *Snapshot) []alertSpec {
 	}
 	if strings.TrimSpace(snapshot.StatusError) != "" {
 		alerts = append(alerts, alertSpec{label: "Status read", value: snapshot.StatusError, style: styleWarn})
+	}
+	if snapshot.StatusStale {
+		alerts = append(alerts, alertSpec{label: "Status stale", value: "state has not updated recently; verify the active KatlOS operation", style: styleWarn})
+	}
+	if snapshot.HandoffError != "" {
+		alerts = append(alerts, alertSpec{label: "Handoff read", value: snapshot.HandoffError, style: styleWarn})
+	}
+	if snapshot.GenerationError != "" {
+		alerts = append(alerts, alertSpec{label: "Generation read", value: snapshot.GenerationError, style: styleWarn})
 	}
 	return alerts
 }
@@ -223,18 +236,18 @@ type paneField struct {
 }
 
 func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot) {
-	hostState, hostStyle := runtimeHostState(snapshot)
-	kubernetesState, kubernetesStyle := runtimeKubernetesState(snapshot)
+	model := NewDashboardModel(snapshot)
 	host := []paneField{
-		{label: "State", value: hostState, style: hostStyle},
+		{label: "State", value: model.Host.Label, style: presentationStyle(model.Host.State)},
 		{label: "Node", value: fallback(snapshot.Hostname, "Unknown")},
-		{label: "KatlOS", value: fallback(snapshot.Version, "Unknown")},
-		{label: "Generation", value: fallback(snapshot.Generation, "Unknown")},
-		{label: "Next boot", value: fallback(snapshot.NextGeneration, "-")},
+		{label: "Current", value: softwareLabel(model.Current)},
+		{label: "Next boot", value: softwareLabel(model.NextBoot)},
+		{label: "Live selected", value: softwareLabel(model.Live)},
 	}
 	kubernetes := []paneField{
-		{label: "State", value: kubernetesState, style: kubernetesStyle},
-		{label: "Version", value: fallback(snapshot.KubernetesVersion, "Not installed")},
+		{label: "State", value: model.Kubernetes.Label, style: presentationStyle(model.Kubernetes.State)},
+		{label: "Version", value: fallback(model.Live.KubernetesVersion, "Not installed")},
+		{label: "Live generation", value: fallback(model.Live.Generation, "Unknown")},
 	}
 	if content.bounds.Width < wideLayoutWidth {
 		writePane(content, "Host", host)
@@ -257,6 +270,20 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	}
 }
 
+func softwareLabel(software Software) string {
+	parts := make([]string, 0, 2)
+	if software.Generation != "" {
+		parts = append(parts, "generation "+software.Generation)
+	}
+	if software.KatlOSVersion != "" {
+		parts = append(parts, "KatlOS "+software.KatlOSVersion)
+	}
+	if len(parts) == 0 {
+		return "Unknown"
+	}
+	return strings.Join(parts, ", ")
+}
+
 func writePane(viewport *Viewport, title string, fields []paneField) {
 	writeHeading(viewport, title)
 	for _, field := range fields {
@@ -265,7 +292,8 @@ func writePane(viewport *Viewport, title string, fields []paneField) {
 }
 
 func writeInstallerStatus(content *Viewport, snapshot *Snapshot) {
-	writeField(content, "State", stateLabel(snapshot.State), stateStyle(snapshot.State))
+	presentation := presentInstaller(snapshot)
+	writeField(content, "State", presentation.Label, presentationStyle(presentation.State))
 	if snapshot.Hostname != "" {
 		writeField(content, "Node", snapshot.Hostname, "")
 	}
@@ -354,40 +382,6 @@ func writeField(viewport *Viewport, label, value string, style Style) {
 	valueView := viewport.sub(Rect{X: labelWidth, Y: viewport.y, Width: viewport.bounds.Width - labelWidth, Height: viewport.rowsRemaining()})
 	result := valueView.Write(value, WrapOptions{Style: style, WordWrap: true})
 	viewport.advance(max(result.Rows, 1))
-}
-
-func runtimeHostState(snapshot *Snapshot) (string, Style) {
-	if snapshot.State == "runtime-failed-needs-repair" {
-		return "Needs repair", styleBad
-	}
-	if health := healthLabel(snapshot.GenerationHealth); health != "" {
-		return health, healthStyle(health)
-	}
-	if snapshot.State == "starting-runtime" {
-		return "Starting", styleWarn
-	}
-	if snapshot.State == "runtime-booted-not-ready" {
-		return "Not ready", styleWarn
-	}
-	return "Running", styleGood
-}
-
-func runtimeKubernetesState(snapshot *Snapshot) (string, Style) {
-	if snapshot.KubernetesVersion == "" {
-		return "Not installed", styleWarn
-	}
-	if snapshot.State == "runtime-failed-needs-repair" {
-		return "Unavailable", styleBad
-	}
-	if snapshot.KubernetesBootstrapped {
-		return "Bootstrapped", styleGood
-	}
-	switch snapshot.State {
-	case "kubeadm-ready", "waiting-for-cluster-bootstrap":
-		return "Ready for bootstrap", styleGood
-	default:
-		return "Waiting for KatlOS", styleWarn
-	}
 }
 
 // JournalWriter renders logical journal entries through the same bounded
@@ -501,73 +495,6 @@ func serializeFrame(output []byte, frame *Frame, rows int, color, clear bool) []
 		}
 	}
 	return output
-}
-
-func stateLabel(state string) string {
-	switch state {
-	case "starting-installer":
-		return "Starting installer"
-	case "starting-runtime":
-		return "Starting KatlOS"
-	case "running":
-		return "Installing"
-	case "debug-hold":
-		return "Debug hold; installation disabled"
-	case "waiting-for-config":
-		return "Waiting for configuration"
-	case "install-refused":
-		return "Installation refused"
-	case "failed-before-mutation":
-		return "Installation failed; disk unchanged"
-	case "failed-after-mutation":
-		return "Installation failed; repair required"
-	case "reboot-requested":
-		return "Installation complete; rebooting"
-	case "kubeadm-ready":
-		return "Ready for Kubernetes bootstrap"
-	case "waiting-for-cluster-bootstrap":
-		return "Waiting for Kubernetes bootstrap"
-	case "runtime-booted-not-ready":
-		return "KatlOS booted; not ready"
-	case "runtime-failed-needs-repair":
-		return "KatlOS needs repair"
-	default:
-		return fallback(state, "Unknown")
-	}
-}
-
-func stateStyle(state string) Style {
-	switch state {
-	case "failed-before-mutation", "failed-after-mutation", "install-refused", "runtime-failed-needs-repair":
-		return styleBad
-	case "kubeadm-ready", "waiting-for-cluster-bootstrap":
-		return styleGood
-	default:
-		return styleWarn
-	}
-}
-
-func healthLabel(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "":
-		return ""
-	case "healthy", "good", "ok", "success":
-		return "OK"
-	case "unhealthy", "failed", "failure":
-		return "FAILED"
-	default:
-		return strings.ToUpper(strings.TrimSpace(value))
-	}
-}
-
-func healthStyle(value string) Style {
-	if value == "" {
-		return ""
-	}
-	if value == "OK" {
-		return styleGood
-	}
-	return styleBad
 }
 
 func visibleWidth(value string) int {

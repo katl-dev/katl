@@ -12,26 +12,59 @@ const (
 )
 
 type Snapshot struct {
-	Mode                   Mode
-	Version                string
-	KubernetesVersion      string
-	KubernetesBootstrapped bool
-	Hostname               string
-	State                  string
-	CurrentStep            string
-	Generation             string
-	NextGeneration         string
-	GenerationHealth       string
-	DestructiveMutation    bool
-	LastError              string
-	RetryHint              string
-	Handoff                Handoff
-	ManagementAddress      string
-	DisplayInterfaces      []NetworkInterface
-	AdditionalInterfaces   int
-	SSHEnabled             bool
-	UpdatedAt              time.Time
-	StatusError            string
+	Mode                 Mode
+	Version              string
+	Hostname             string
+	State                string
+	CurrentStep          string
+	Generation           string
+	GenerationHealth     string
+	CurrentSoftware      Software
+	NextBootSoftware     Software
+	LiveSoftware         Software
+	KubernetesConfigured bool
+	DestructiveMutation  bool
+	LastError            string
+	RetryHint            string
+	Handoff              Handoff
+	ManagementAddress    string
+	DisplayInterfaces    []NetworkInterface
+	AdditionalInterfaces int
+	SSHEnabled           bool
+	UpdatedAt            time.Time
+	StatusStale          bool
+	StatusError          string
+	HandoffError         string
+	GenerationError      string
+}
+
+type Software struct {
+	Generation        string
+	KatlOSVersion     string
+	KubernetesVersion string
+}
+
+type PresentationState string
+
+const (
+	PresentationHealthy     PresentationState = "healthy"
+	PresentationProgressing PresentationState = "progressing"
+	PresentationDegraded    PresentationState = "degraded"
+	PresentationFailed      PresentationState = "failed"
+	PresentationUnknown     PresentationState = "unknown"
+)
+
+type Presentation struct {
+	State PresentationState
+	Label string
+}
+
+type DashboardModel struct {
+	Host       Presentation
+	Kubernetes Presentation
+	Current    Software
+	NextBoot   Software
+	Live       Software
 }
 
 type NetworkInterface struct {

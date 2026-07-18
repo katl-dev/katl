@@ -177,6 +177,135 @@ func TestReadDefaultRouteInterface(t *testing.T) {
 	}
 }
 
+func TestCollectorSurfacesCorruptHandoff(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "handoff.json")
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector := Collector{
+		Mode:        ModeInstaller,
+		Root:        root,
+		HandoffPath: path,
+		Interfaces:  func() ([]net.Interface, error) { return nil, nil },
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if snapshot.HandoffError == "" || snapshot.Handoff.URL != "" {
+		t.Fatalf("corrupt handoff snapshot = %#v", snapshot)
+	}
+	rendered := string(renderDashboard(&snapshot, nil, 80, 18, false))
+	if !containsIgnoringLayout(rendered, "Handoffread:installerhandoffisunreadable") {
+		t.Fatalf("corrupt handoff not visible:\n%s", rendered)
+	}
+}
+
+func TestCollectorDoesNotPresentBinaryVersionForCorruptGeneration(t *testing.T) {
+	root := t.TempDir()
+	path, err := generation.BootSelectionPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector := Collector{
+		Mode:       ModeRuntime,
+		Version:    "console-binary-version",
+		Root:       root,
+		Interfaces: func() ([]net.Interface, error) { return nil, nil },
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if snapshot.GenerationError == "" || snapshot.Version != "" || snapshot.CurrentSoftware.KatlOSVersion != "" {
+		t.Fatalf("corrupt generation snapshot = %#v", snapshot)
+	}
+	rendered := string(renderDashboard(&snapshot, nil, 80, 20, false))
+	if strings.Contains(rendered, "console-binary-version") || !containsIgnoringLayout(rendered, "Generationread:generationmetadataisunavailable") || !strings.Contains(rendered, "Unknown") {
+		t.Fatalf("corrupt generation presentation:\n%s", rendered)
+	}
+}
+
+func TestCollectorMarksStaleInstallingState(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	statusPath := filepath.Join(root, "status.json")
+	if err := installstatus.WriteFile(statusPath, installstatus.New(installstatus.StateRunning, now.Add(-11*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	collector := Collector{
+		Mode:        ModeInstaller,
+		Root:        root,
+		StatusPath:  statusPath,
+		HandoffPath: filepath.Join(root, "missing-handoff.json"),
+		Interfaces:  func() ([]net.Interface, error) { return nil, nil },
+		Now:         func() time.Time { return now },
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if !snapshot.StatusStale {
+		t.Fatalf("stale snapshot = %#v", snapshot)
+	}
+	rendered := string(renderDashboard(&snapshot, nil, 80, 18, false))
+	if strings.Contains(rendered, "Installing") || !containsIgnoringLayout(rendered, "Unknown(stalestatus)") || !containsIgnoringLayout(rendered, "Statusstale:") {
+		t.Fatalf("stale state presentation:\n%s", rendered)
+	}
+}
+
+func TestRuntimePresentationStatesFailClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		state  string
+		health string
+		stale  bool
+		want   PresentationState
+		style  Style
+	}{
+		{name: "healthy", state: installstatus.StateKubeadmReady, health: generation.HealthStateHealthy, want: PresentationHealthy, style: styleGood},
+		{name: "deferred", state: installstatus.StateKubeadmReady, health: generation.HealthStateDeferred, want: PresentationProgressing, style: styleWarn},
+		{name: "unknown health", state: installstatus.StateKubeadmReady, health: generation.HealthStateUnknown, want: PresentationUnknown, style: styleDim},
+		{name: "unfamiliar health", state: installstatus.StateKubeadmReady, health: "mystery", want: PresentationUnknown, style: styleDim},
+		{name: "unfamiliar state", state: "future-runtime-state", health: generation.HealthStateHealthy, want: PresentationUnknown, style: styleDim},
+		{name: "stale", state: installstatus.StateKubeadmReady, health: generation.HealthStateHealthy, stale: true, want: PresentationUnknown, style: styleDim},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			presentation := NewDashboardModel(&Snapshot{Mode: ModeRuntime, State: test.state, GenerationHealth: test.health, StatusStale: test.stale}).Host
+			if presentation.State != test.want {
+				t.Fatalf("presentation = %#v, want %q", presentation, test.want)
+			}
+			if got := presentationStyle(presentation.State); got != test.style {
+				t.Fatalf("presentation style = %q, want %q", got, test.style)
+			}
+		})
+	}
+}
+
+func TestKubernetesConfigurationIsNotPresentedAsHealthy(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:                 ModeRuntime,
+		State:                installstatus.StateWaitingForClusterBootstrap,
+		LiveSoftware:         Software{Generation: "4", KubernetesVersion: "v1.36.1"},
+		KubernetesConfigured: true,
+	}
+	presentation := NewDashboardModel(&snapshot).Kubernetes
+	if presentation.State != PresentationProgressing || presentation.Label != "Configured" {
+		t.Fatalf("Kubernetes presentation = %#v", presentation)
+	}
+}
+
+func TestPendingGenerationHealthIsWarningNotFailure(t *testing.T) {
+	for _, health := range []string{generation.HealthStateUnknown, generation.HealthStateDeferred} {
+		label := healthLabel(health)
+		if style := healthStyle(label); style != styleWarn {
+			t.Fatalf("health %q label %q style = %q", health, label, style)
+		}
+	}
+}
+
 func interfaceNames(interfaces []NetworkInterface) []string {
 	names := make([]string, len(interfaces))
 	for index := range interfaces {
@@ -257,8 +386,8 @@ func TestCollectorReadsInstalledVersionsFromBootedGeneration(t *testing.T) {
 	}
 	var snapshot Snapshot
 	collector.Collect(&snapshot)
-	if snapshot.Version != "2026.7.0-alpha.12" || snapshot.KubernetesVersion != "v1.36.1" || !snapshot.KubernetesBootstrapped {
-		t.Fatalf("installed state = KatlOS %q, Kubernetes %q, bootstrapped=%t", snapshot.Version, snapshot.KubernetesVersion, snapshot.KubernetesBootstrapped)
+	if snapshot.CurrentSoftware.KatlOSVersion != "2026.7.0-alpha.12" || snapshot.LiveSoftware.KubernetesVersion != "v1.36.1" || !snapshot.KubernetesConfigured {
+		t.Fatalf("installed state = current %#v, live %#v, configured=%t", snapshot.CurrentSoftware, snapshot.LiveSoftware, snapshot.KubernetesConfigured)
 	}
 }
 
@@ -293,14 +422,14 @@ func TestCollectorReportsLiveBootstrapCandidateBeforeReboot(t *testing.T) {
 	}
 	var snapshot Snapshot
 	collector.Collect(&snapshot)
-	if snapshot.Generation != "0" || snapshot.NextGeneration != "bootstrap-init-candidate" {
-		t.Fatalf("generation = %q, next = %q", snapshot.Generation, snapshot.NextGeneration)
+	if snapshot.CurrentSoftware.Generation != "0" || snapshot.NextBootSoftware.Generation != "bootstrap-init-candidate" || snapshot.LiveSoftware.Generation != "bootstrap-init-candidate" {
+		t.Fatalf("software provenance = current %#v, next %#v, live %#v", snapshot.CurrentSoftware, snapshot.NextBootSoftware, snapshot.LiveSoftware)
 	}
-	if snapshot.Version != "2026.7.0-alpha.16" || snapshot.KubernetesVersion != "v1.36.1" || !snapshot.KubernetesBootstrapped {
-		t.Fatalf("software state = KatlOS %q, Kubernetes %q, bootstrapped=%t", snapshot.Version, snapshot.KubernetesVersion, snapshot.KubernetesBootstrapped)
+	if snapshot.CurrentSoftware.KatlOSVersion != "2026.7.0-alpha.16" || snapshot.LiveSoftware.KubernetesVersion != "v1.36.1" || !snapshot.KubernetesConfigured {
+		t.Fatalf("software state = current %#v, live %#v, configured=%t", snapshot.CurrentSoftware, snapshot.LiveSoftware, snapshot.KubernetesConfigured)
 	}
 	rendered := string(renderDashboard(&snapshot, nil, 80, 20, false))
-	for _, want := range []string{"Generation:0", "Nextboot:bootstrap-init-candidate", "Version:v1.36.1", "Bootstrapped"} {
+	for _, want := range []string{"Current:generation0", "Nextboot:generationbootstrap-init-candidate", "Liveselected:generationbootstrap-init-candidate", "Version:v1.36.1", "Configured"} {
 		if !containsIgnoringLayout(rendered, want) {
 			t.Fatalf("render missing %q:\n%s", want, rendered)
 		}
@@ -448,21 +577,22 @@ func TestRenderInstallerCommandPreservesCanonicalEndpoint(t *testing.T) {
 
 func TestRenderRuntimeFailure(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:              ModeRuntime,
-		Version:           "2026.7.0-alpha.9",
-		KubernetesVersion: "v1.36.1",
-		Hostname:          "cp-1",
-		State:             installstatus.StateRuntimeFailedNeedsRepair,
-		Generation:        "4",
-		GenerationHealth:  "unhealthy",
-		LastError:         "boot health check failed",
-		RetryHint:         "inspect the previous generation",
-		SSHEnabled:        true,
-		ManagementAddress: "192.0.2.20",
-		DisplayInterfaces: []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
+		Mode:                 ModeRuntime,
+		Hostname:             "cp-1",
+		State:                installstatus.StateRuntimeFailedNeedsRepair,
+		CurrentSoftware:      Software{Generation: "4", KatlOSVersion: "2026.7.0-alpha.9"},
+		NextBootSoftware:     Software{Generation: "4", KatlOSVersion: "2026.7.0-alpha.9"},
+		LiveSoftware:         Software{Generation: "4", KatlOSVersion: "2026.7.0-alpha.9", KubernetesVersion: "v1.36.1"},
+		GenerationHealth:     "unhealthy",
+		KubernetesConfigured: true,
+		LastError:            "boot health check failed",
+		RetryHint:            "inspect the previous generation",
+		SSHEnabled:           true,
+		ManagementAddress:    "192.0.2.20",
+		DisplayInterfaces:    []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
 	}
 	got := string(renderDashboard(&snapshot, nil, 80, 20, false))
-	for _, want := range []string{"Status", "Host", "Kubernetes", "Needsrepair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation:4", "Error:", "boothealthcheckfailed", "SSH:katl@192.0.2.20"} {
+	for _, want := range []string{"Status", "Host", "Kubernetes", "Needsrepair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Current:generation4", "Error:", "boothealthcheckfailed", "SSH:katl@192.0.2.20"} {
 		if !containsIgnoringLayout(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
@@ -514,12 +644,14 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 	snapshot := Snapshot{
 		Mode:             ModeRuntime,
 		State:            installstatus.StateKubeadmReady,
-		Generation:       "0",
+		CurrentSoftware:  Software{Generation: "0"},
+		NextBootSoftware: Software{Generation: "0"},
+		LiveSoftware:     Software{Generation: "0"},
 		GenerationHealth: "healthy",
 		CurrentStep:      "Reboot",
 	}
 	plain := string(renderDashboard(&snapshot, nil, 80, 15, false))
-	for _, want := range []string{"KatlOS", "Status", "State:OK", "Generation:0", "Journal"} {
+	for _, want := range []string{"KatlOS", "Status", "State:Healthy", "Current:generation0", "Journal"} {
 		if !containsIgnoringLayout(plain, want) {
 			t.Fatalf("plain render missing %q:\n%s", want, plain)
 		}
@@ -537,14 +669,14 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 
 func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:                   ModeRuntime,
-		Version:                "2026.7.0-alpha.12",
-		KubernetesVersion:      "v1.36.1",
-		KubernetesBootstrapped: true,
-		Hostname:               "cp-1",
-		State:                  installstatus.StateWaitingForClusterBootstrap,
-		Generation:             "4",
-		GenerationHealth:       "healthy",
+		Mode:                 ModeRuntime,
+		CurrentSoftware:      Software{Generation: "4", KatlOSVersion: "2026.7.0-alpha.12"},
+		NextBootSoftware:     Software{Generation: "4", KatlOSVersion: "2026.7.0-alpha.12"},
+		LiveSoftware:         Software{Generation: "4", KatlOSVersion: "2026.7.0-alpha.12", KubernetesVersion: "v1.36.1"},
+		KubernetesConfigured: true,
+		Hostname:             "cp-1",
+		State:                installstatus.StateWaitingForClusterBootstrap,
+		GenerationHealth:     "healthy",
 	}
 	got := string(renderDashboard(&snapshot, testJournal{[]byte("latest journal event")}, 80, 18, false))
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
@@ -558,7 +690,7 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 		t.Fatalf("split title row = %q", lines[splitRow])
 	}
 	stateRow := lines[splitRow+1]
-	if !containsIgnoringLayout(stateRow, "State:OK") || !containsIgnoringLayout(stateRow, "│State:Bootstrapped") {
+	if !containsIgnoringLayout(stateRow, "State:Healthy") || !containsIgnoringLayout(stateRow, "│State:Configured") {
 		t.Fatalf("split state row = %q", stateRow)
 	}
 	versionRow := lines[splitRow+2]
@@ -575,14 +707,14 @@ func TestRenderRuntimeStacksPanesAtNarrowWidths(t *testing.T) {
 	version := "v1.36.1-with-a-deliberately-long-build-identifier"
 	generationID := "generation-with-a-deliberately-long-identifier"
 	snapshot := Snapshot{
-		Mode:                   ModeRuntime,
-		Version:                "2026.7.0-alpha.12-with-a-long-build-identifier",
-		KubernetesVersion:      version,
-		KubernetesBootstrapped: true,
-		Hostname:               hostname,
-		State:                  installstatus.StateWaitingForClusterBootstrap,
-		Generation:             generationID,
-		GenerationHealth:       "healthy",
+		Mode:                 ModeRuntime,
+		CurrentSoftware:      Software{Generation: generationID, KatlOSVersion: "2026.7.0-alpha.12-with-a-long-build-identifier"},
+		NextBootSoftware:     Software{Generation: generationID, KatlOSVersion: "2026.7.0-alpha.12-with-a-long-build-identifier"},
+		LiveSoftware:         Software{Generation: generationID, KatlOSVersion: "2026.7.0-alpha.12-with-a-long-build-identifier", KubernetesVersion: version},
+		KubernetesConfigured: true,
+		Hostname:             hostname,
+		State:                installstatus.StateWaitingForClusterBootstrap,
+		GenerationHealth:     "healthy",
 	}
 	plain := string(renderDashboard(&snapshot, nil, 40, 60, false))
 	colored := string(renderDashboard(&snapshot, nil, 40, 60, true))
@@ -726,10 +858,11 @@ func TestRenderDimensionsAreCapped(t *testing.T) {
 
 func TestTerminalRenderDoesNotScrollCompletedFrame(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:       ModeRuntime,
-		Hostname:   "cp-with-a-long-name",
-		Version:    "2026.7.0-alpha.15",
-		Generation: "generation-with-a-long-identifier",
+		Mode:             ModeRuntime,
+		Hostname:         "cp-with-a-long-name",
+		CurrentSoftware:  Software{Generation: "generation-with-a-long-identifier", KatlOSVersion: "2026.7.0-alpha.15"},
+		NextBootSoftware: Software{Generation: "generation-with-a-long-identifier", KatlOSVersion: "2026.7.0-alpha.15"},
+		LiveSoftware:     Software{Generation: "generation-with-a-long-identifier", KatlOSVersion: "2026.7.0-alpha.15"},
 		DisplayInterfaces: []NetworkInterface{{
 			Name:      "enp1s0",
 			Addresses: []string{"2001:db8:1234:5678::10/64", "192.0.2.10/24"},
@@ -905,11 +1038,21 @@ func TestWidePaneDividerIsPaintedAfterBoundedContent(t *testing.T) {
 	renderer := NewRenderer(NewRenderTarget(make([]byte, RenderCapacity(80, 40)), 80, 40), false)
 	content := NewViewport(&renderer.frame, Rect{Width: 80, Height: 38})
 	snapshot := Snapshot{
-		Mode:              ModeRuntime,
-		Hostname:          strings.Repeat("host界\x1b[31m", 30),
-		Version:           strings.Repeat("version", 30),
-		Generation:        strings.Repeat("generation", 30),
-		KubernetesVersion: strings.Repeat("v1.36.1👩‍💻", 30),
+		Mode:     ModeRuntime,
+		Hostname: strings.Repeat("host界\x1b[31m", 30),
+		CurrentSoftware: Software{
+			Generation:    strings.Repeat("generation", 30),
+			KatlOSVersion: strings.Repeat("version", 30),
+		},
+		NextBootSoftware: Software{
+			Generation:    strings.Repeat("generation", 30),
+			KatlOSVersion: strings.Repeat("version", 30),
+		},
+		LiveSoftware: Software{
+			Generation:        strings.Repeat("generation", 30),
+			KatlOSVersion:     strings.Repeat("version", 30),
+			KubernetesVersion: strings.Repeat("v1.36.1👩‍💻", 30),
+		},
 	}
 	renderer.writeRuntimeStatus(&content, &snapshot)
 	divider := (content.bounds.Width - 1) / 2
@@ -985,16 +1128,16 @@ func assertGraphemesFit(t *testing.T, frame *Frame, bounds Rect) {
 
 func TestRendererBoundsArbitraryContentAtSupportedWidths(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:                   ModeRuntime,
-		State:                  installstatus.StateKubeadmReady,
-		Hostname:               "控制面-e\u0301-👩‍💻\x1b[31m-node",
-		Version:                strings.Repeat("version", 20),
-		Generation:             string([]byte{'g', 'e', 'n', 0xff}),
-		GenerationHealth:       "healthy",
-		KubernetesVersion:      strings.Repeat("v1.36.1", 20),
-		KubernetesBootstrapped: true,
-		SSHEnabled:             true,
-		ManagementAddress:      "10.1.2.254",
+		Mode:                 ModeRuntime,
+		State:                installstatus.StateKubeadmReady,
+		Hostname:             "控制面-e\u0301-👩‍💻\x1b[31m-node",
+		CurrentSoftware:      Software{Generation: string([]byte{'g', 'e', 'n', 0xff}), KatlOSVersion: strings.Repeat("version", 20)},
+		NextBootSoftware:     Software{Generation: string([]byte{'g', 'e', 'n', 0xff}), KatlOSVersion: strings.Repeat("version", 20)},
+		LiveSoftware:         Software{Generation: string([]byte{'g', 'e', 'n', 0xff}), KatlOSVersion: strings.Repeat("version", 20), KubernetesVersion: strings.Repeat("v1.36.1", 20)},
+		GenerationHealth:     "healthy",
+		KubernetesConfigured: true,
+		SSHEnabled:           true,
+		ManagementAddress:    "10.1.2.254",
 		DisplayInterfaces: []NetworkInterface{{
 			Name:      strings.Repeat("interface", 12),
 			Addresses: []string{"10.1.2.254/24", "fd00::254/64"},
