@@ -1,4 +1,5 @@
-version = 3
+version = 4
+disabled_plugins = ["io.containerd.internal.v1.opt"]
 
 [plugins.'io.containerd.cri.v1.runtime'.containerd]
   default_runtime_name = "crun"
