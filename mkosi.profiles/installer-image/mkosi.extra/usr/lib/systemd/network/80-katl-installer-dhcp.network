@@ -7,3 +7,7 @@ IPv6AcceptRA=yes
 
 [DHCPv4]
 ClientIdentifier=mac
+UseHostname=no
+
+[DHCPv6]
+UseHostname=no

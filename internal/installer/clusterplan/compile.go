@@ -19,7 +19,7 @@ import (
 
 const validationActivationPath = "/run/extensions/katl-kubernetes.raw"
 
-const defaultNetworkdFile = "[Match]\nType=ether\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nClientIdentifier=mac\n"
+const defaultNetworkdFile = "[Match]\nType=ether\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nClientIdentifier=mac\nUseHostname=no\n\n[DHCPv6]\nUseHostname=no\n"
 
 type selectedKubernetes struct {
 	version        string

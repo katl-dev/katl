@@ -17,3 +17,10 @@ spec:
             [Network]
             DHCP=yes
             Address=198.51.100.77/32
+
+            [DHCPv4]
+            ClientIdentifier=mac
+            UseHostname=no
+
+            [DHCPv6]
+            UseHostname=no

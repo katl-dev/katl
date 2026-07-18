@@ -1072,7 +1072,7 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 			"networkd": map[string]any{
 				"files": []map[string]any{{
 					"name":    "80-katl-vmtest-dhcp.network",
-					"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
+					"content": vmtestDHCPNetwork,
 				}},
 			},
 		},
@@ -1215,7 +1215,7 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 			"files": []map[string]any{
 				{
 					"name":    "80-katl-vmtest-dhcp.network",
-					"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
+					"content": vmtestDHCPNetwork,
 				},
 			},
 		},

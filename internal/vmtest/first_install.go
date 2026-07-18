@@ -50,6 +50,7 @@ const (
 	guestHandoffAcceptedSignal = "katlos-install handoff accepted manifest="
 	installerCompletedSignal   = "katlos-install completed manifest="
 	bundleCompletedSignal      = "katlos-install completed bundle="
+	vmtestDHCPNetwork          = "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nClientIdentifier=mac\nUseHostname=no\n\n[DHCPv6]\nUseHostname=no\n"
 )
 
 type handoffLog struct {
@@ -389,8 +390,7 @@ func writeGuestHandoffSeedMedia(ctx context.Context, result Result, config First
 	if err := os.MkdirAll(networkDir, 0o755); err != nil {
 		return preseedMedia{}, err
 	}
-	network := "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n"
-	if err := os.WriteFile(filepath.Join(networkDir, "80-katl-vmtest-installer-dhcp.network"), []byte(network), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(networkDir, "80-katl-vmtest-installer-dhcp.network"), []byte(vmtestDHCPNetwork), 0o644); err != nil {
 		return preseedMedia{}, err
 	}
 	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {

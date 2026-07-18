@@ -485,7 +485,8 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 		!strings.Contains(string(manifestData), `"configRef": "control-plane"`) ||
 		!strings.Contains(string(manifestData), `"name": "80-katl-vmtest-dhcp.network"`) ||
 		!strings.Contains(string(manifestData), `Name=en*`) ||
-		!strings.Contains(string(manifestData), `DHCP=yes`) {
+		!strings.Contains(string(manifestData), `DHCP=yes`) ||
+		!strings.Contains(string(manifestData), `UseHostname=no`) {
 		t.Fatalf("generated manifest = %s", manifestData)
 	}
 	manifestDir := filepath.Dir(run.Config.ManifestPath)
@@ -610,7 +611,7 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 				"networkd": map[string]any{
 					"files": []map[string]any{{
 						"name":    "80-katl-vmtest-dhcp.network",
-						"content": "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n",
+						"content": vmtestDHCPNetwork,
 					}},
 				},
 			},

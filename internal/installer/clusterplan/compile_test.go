@@ -154,7 +154,7 @@ func TestCompileDefaultDHCPUsesStableMACIdentity(t *testing.T) {
 	}
 	for _, node := range plan.Nodes {
 		files := node.InstallManifest.Node.Networkd.Files
-		if len(files) != 1 || !strings.Contains(files[0].Content, "[DHCPv4]\nClientIdentifier=mac") {
+		if len(files) != 1 || !strings.Contains(files[0].Content, "[DHCPv4]\nClientIdentifier=mac\nUseHostname=no") || !strings.Contains(files[0].Content, "[DHCPv6]\nUseHostname=no") {
 			t.Fatalf("%s default network = %#v", node.Name, files)
 		}
 	}
