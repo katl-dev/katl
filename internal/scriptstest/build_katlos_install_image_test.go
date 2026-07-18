@@ -68,6 +68,7 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"KATL_MKOSI_BUILD_DIR="+workDir,
 		"KATL_VERSION=0.1.0",
 		"KATL_ARCHITECTURE=x86_64",
 		"KATL_KATLOS_IMAGE="+output,

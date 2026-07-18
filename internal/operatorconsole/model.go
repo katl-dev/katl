@@ -20,6 +20,7 @@ type Snapshot struct {
 	State                  string
 	CurrentStep            string
 	Generation             string
+	NextGeneration         string
 	GenerationHealth       string
 	DestructiveMutation    bool
 	LastError              string

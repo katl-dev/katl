@@ -2,7 +2,10 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-build_dir="$repo_root/_build/mkosi"
+build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+if [[ "$build_dir" != /* ]]; then
+    build_dir="$repo_root/$build_dir"
+fi
 version="${KATL_VERSION:-0.0.0-dev}"
 build_id="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
 architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
@@ -26,10 +29,10 @@ need() {
     command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
-under_repo() {
+under_build_dir() {
     local label="$1"
     local path="$2"
-    [[ "$path" == "$repo_root"/* ]] || fail "$label must be under repository root: $path"
+    [[ "$path" == "$build_dir"/* ]] || fail "$label must be under mkosi build directory: $path"
 }
 
 mkosi_artifacts() {
@@ -52,9 +55,8 @@ case "$image_role" in
         fail "unsupported KatlOS image role: $image_role"
         ;;
 esac
-under_repo "KatlOS image output" "$output"
-under_repo "KatlOS image assembly root" "$work_root"
-[[ "$work_root" == "$build_dir"/* ]] || fail "KatlOS image assembly root must be under _build/mkosi: $work_root"
+under_build_dir "KatlOS image output" "$output"
+under_build_dir "KatlOS image assembly root" "$work_root"
 
 rm -rf -- "$work_root"
 mkdir -p \

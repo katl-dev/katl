@@ -197,6 +197,7 @@ func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
 	line.finish()
 	if remaining := render.contentRows - render.row; journal != nil && remaining > 0 {
 		render.journalState = NewJournalWriter(render.output.tail(remaining))
+		render.journalState.color = render.color
 		journal.WriteTail(&render.journalState)
 		render.output.position += render.journalState.output.position
 		render.row += render.journalState.rows
@@ -211,8 +212,8 @@ func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
 	footer.writeString("Ctrl+Alt+F2: console")
 	if snapshot.SSHEnabled {
 		if address := firstIPv4(snapshot.Network); address != "" {
-			if visibleWidth("Ctrl+Alt+F2: console | SSH: root@")+visibleWidth(address) <= render.output.width {
-				footer.writeString(" | SSH: root@")
+			if visibleWidth("Ctrl+Alt+F2: console | SSH: katl@")+visibleWidth(address) <= render.output.width {
+				footer.writeString(" | SSH: katl@")
 				footer.writeString(address)
 			} else {
 				footer.writeString(" | SSH enabled")
@@ -260,6 +261,7 @@ func (render *Renderer) writeRuntimeStatusPane(snapshot *Snapshot) {
 		{label: "Node", value: fallback(snapshot.Hostname, "Unknown")},
 		{label: "KatlOS", value: fallback(snapshot.Version, "Unknown")},
 		{label: "Generation", value: fallback(snapshot.Generation, "Unknown")},
+		{label: "Next boot", value: fallback(snapshot.NextGeneration, "-")},
 	}
 	rightFields := [...]paneField{
 		{label: "State", value: kubernetesState, style: kubernetesStyle},
@@ -473,6 +475,7 @@ func runtimeKubernetesState(snapshot *Snapshot) (string, string) {
 type JournalWriter struct {
 	output RenderTarget
 	rows   int
+	color  bool
 }
 
 // NewJournalWriter binds a bounded journal writer to a fixed render target. It
@@ -521,6 +524,7 @@ func (writer *JournalWriter) WriteLine(value []byte) bool {
 func (writer *JournalWriter) writeLine(value []byte) int {
 	remaining := writer.RowsRemaining()
 	line := newLine(&writer.output)
+	line.color = writer.color
 	rows := 0
 	wrote := false
 	for position := 0; position < len(value); {
@@ -536,6 +540,7 @@ func (writer *JournalWriter) writeLine(value []byte) int {
 				return rows
 			}
 			line = newLine(&writer.output)
+			line.color = writer.color
 			if r == '\n' {
 				continue
 			}
@@ -706,6 +711,12 @@ func (l *lineWriter) end() {
 		if l.color {
 			l.output.writeString(styleReset)
 		}
+	}
+	// A character in the terminal's final column leaves autowrap pending. A
+	// carriage return clears that state before the line feed, so one rendered
+	// row always consumes exactly one terminal row.
+	if l.color {
+		l.output.writeByte('\r')
 	}
 	l.output.writeByte('\n')
 }

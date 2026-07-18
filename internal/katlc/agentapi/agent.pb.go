@@ -1927,6 +1927,7 @@ type OperationStatus struct {
 	PreviousGenerationId    string                 `protobuf:"bytes,26,opt,name=previous_generation_id,json=previousGenerationId,proto3" json:"previous_generation_id,omitempty"`
 	ConfigApplyPhase        string                 `protobuf:"bytes,27,opt,name=config_apply_phase,json=configApplyPhase,proto3" json:"config_apply_phase,omitempty"`
 	ChangedDomains          []string               `protobuf:"bytes,28,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
+	ClientRequestId         string                 `protobuf:"bytes,29,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -2155,6 +2156,13 @@ func (x *OperationStatus) GetChangedDomains() []string {
 		return x.ChangedDomains
 	}
 	return nil
+}
+
+func (x *OperationStatus) GetClientRequestId() string {
+	if x != nil {
+		return x.ClientRequestId
+	}
+	return ""
 }
 
 type DiagnosticArtifact struct {
@@ -3375,7 +3383,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x16ListOperationsResponse\x12>\n" +
 	"\n" +
 	"operations\x18\x01 \x03(\v2\x1e.katl.agent.v1.OperationStatusR\n" +
-	"operations\"\xd8\t\n" +
+	"operations\"\x84\n" +
+	"\n" +
 	"\x0fOperationStatus\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
 	"\x0eoperation_kind\x18\x02 \x01(\tR\roperationKind\x12%\n" +
@@ -3408,7 +3417,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x10admin_kubeconfig\x18\x19 \x01(\tR\x0fadminKubeconfig\x124\n" +
 	"\x16previous_generation_id\x18\x1a \x01(\tR\x14previousGenerationId\x12,\n" +
 	"\x12config_apply_phase\x18\x1b \x01(\tR\x10configApplyPhase\x12'\n" +
-	"\x0fchanged_domains\x18\x1c \x03(\tR\x0echangedDomains\"\x9c\x01\n" +
+	"\x0fchanged_domains\x18\x1c \x03(\tR\x0echangedDomains\x12*\n" +
+	"\x11client_request_id\x18\x1d \x01(\tR\x0fclientRequestId\"\x9c\x01\n" +
 	"\x12DiagnosticArtifact\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12\x12\n" +

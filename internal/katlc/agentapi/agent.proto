@@ -253,6 +253,7 @@ message OperationStatus {
   string previous_generation_id = 26;
   string config_apply_phase = 27;
   repeated string changed_domains = 28;
+  string client_request_id = 29;
 }
 
 message DiagnosticArtifact {

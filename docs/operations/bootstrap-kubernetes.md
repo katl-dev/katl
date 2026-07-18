@@ -34,8 +34,7 @@ running kubeadm:
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
   --dry-run \
-  --init-node cp-1 \
-  --kubeconfig-out ./kubeconfig
+  --init-node cp-1
 ```
 
 No enrollment or management credential is required. Use `--node-address
@@ -52,19 +51,24 @@ Run the same command without `--dry-run`:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
-  --init-node cp-1 \
-  --kubeconfig-out ./kubeconfig \
-  --overwrite-kubeconfig
+  --init-node cp-1
 ```
 
 The normal sequence verifies and stages the Kubernetes sysext, initializes the
 first control plane, creates join material, joins remaining nodes, checks
 post-kubeadm health, commits generation 1, and writes the operator kubeconfig.
-Save the command output and resulting kubeconfig.
+By default the kubeconfig is written to `./kubeconfig`. Use
+`--kubeconfig-out` to choose another path, or `--overwrite-kubeconfig` when an
+existing file is intentionally being replaced.
+
+The command prints each node and operation phase as it changes. Add `--verbose`
+to include operation IDs and the agent's current recovery guidance.
 
 Bootstrap waits for its submitted operations, and their node-local records
-remain queryable afterward. If the workstation disconnects or a result is
-unclear, discover the affected node's current and recent operations:
+remain queryable afterward. Rerunning the same command with the same config
+resumes observation of matching in-flight bootstrap operations instead of
+submitting duplicates. If a result is unclear, discover the affected node's
+current and recent operations:
 
 ```sh
 katlctl operations list \
@@ -81,7 +85,6 @@ conditions:
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1 \
-  --kubeconfig-out ./kubeconfig \
   --bootstrap-manifest ./cni.yaml \
   --bootstrap-wait nodes-ready
 ```
@@ -110,8 +113,10 @@ endpoint, and node readiness matches the chosen CNI stage.
 
 ## Failure Boundary
 
-Do not assume rerunning bootstrap is safe. If kubeadm or API mutation began,
-host generation rollback does not erase it. Preserve the command result and follow
-[Troubleshoot KatlOS](troubleshoot.md). Kubernetes upgrades use the separate
+Rerunning the unchanged bootstrap command is the supported way to resume an
+interrupted invocation. Do not change cluster intent merely to bypass a failed
+operation: if kubeadm or API mutation began, host generation rollback does not
+erase it. Preserve the command result and follow [Troubleshoot
+KatlOS](troubleshoot.md). Kubernetes upgrades use the separate
 [Upgrade Kubernetes](upgrade-kubernetes.md) workflow. Additional-control-plane
 repair and general reconciliation remain unsupported alpha operations.

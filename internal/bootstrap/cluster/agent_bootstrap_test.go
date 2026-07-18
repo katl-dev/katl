@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
 )
@@ -210,7 +211,6 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	}, AgentBootstrapDependencies{
 		Connector:    connector,
 		Actor:        "test-actor",
-		Now:          func() time.Time { return time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC) },
 		WatchTimeout: time.Second,
 	})
 	if err != nil {
@@ -234,6 +234,67 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	}
 	if result.Kubeconfig.Path != out || result.Kubeconfig.Server != "https://api.katl.test:6443" {
 		t.Fatalf("kubeconfig result = %#v", result.Kubeconfig)
+	}
+}
+
+func TestRunAgentBootstrapResumesInterruptedInit(t *testing.T) {
+	inv := validSingleNodeInventory()
+	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := clientRequestID(plan.Nodes[0], plan, agentBootstrapInitKind)
+	status := &agentapi.OperationStatus{
+		OperationId:     "bootstrap-init-existing",
+		OperationKind:   agentBootstrapInitKind,
+		ClientRequestId: requestID,
+		RequestDigest:   strings.Repeat("a", 64),
+		Phase:           "kubeadm-init",
+		Terminal:        true,
+		Result:          operation.ResultSucceeded,
+	}
+	client := &fakeAgentClient{
+		status:       readyAgentStatus("machine-cp-1"),
+		listResponse: &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{status}},
+		getStatus: &agentapi.OperationStatus{
+			OperationId:     status.OperationId,
+			OperationKind:   status.OperationKind,
+			ClientRequestId: status.ClientRequestId,
+			RequestDigest:   status.RequestDigest,
+			Terminal:        true,
+			Result:          operation.ResultSucceeded,
+			AdminKubeconfig: adminKubeconfig(),
+		},
+	}
+	out := filepath.Join(t.TempDir(), "kubeconfig")
+	result, err := RunAgentBootstrap(context.Background(), Request{
+		Inventory:           inv,
+		KubeconfigOut:       out,
+		OverwriteKubeconfig: true,
+	}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})})
+	if err != nil {
+		t.Fatalf("RunAgentBootstrap() error = %v", err)
+	}
+	if len(client.submitRequests) != 0 {
+		t.Fatalf("resumed bootstrap submitted %d new operations", len(client.submitRequests))
+	}
+	if result.Kubeconfig.Path != out || result.Phases[len(result.Phases)-2].OperationID != status.OperationId {
+		t.Fatalf("resumed result = %+v", result)
+	}
+}
+
+func TestBootstrapRequestIdentityIgnoresTransportAddressOverride(t *testing.T) {
+	inv := validSingleNodeInventory()
+	before, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv, AddressOverride: map[string]string{"cp-1": "192.0.2.99"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := clientRequestID(after.Nodes[0], after, agentBootstrapInitKind), clientRequestID(before.Nodes[0], before, agentBootstrapInitKind); got != want {
+		t.Fatalf("request identity changed with transport address: %q != %q", got, want)
 	}
 }
 
@@ -493,6 +554,8 @@ type fakeAgentClient struct {
 	events                 []*agentapi.OperationEvent
 	getStatus              *agentapi.OperationStatus
 	getErr                 error
+	listResponse           *agentapi.ListOperationsResponse
+	listErr                error
 	watchErr               error
 }
 
@@ -551,6 +614,16 @@ func (c *fakeAgentClient) GetOperation(context.Context, *agentapi.GetOperationRe
 		return c.getStatus, nil
 	}
 	return &agentapi.OperationStatus{OperationId: "operation-1", Terminal: true, Result: "succeeded"}, nil
+}
+
+func (c *fakeAgentClient) ListOperations(context.Context, *agentapi.ListOperationsRequest, ...grpc.CallOption) (*agentapi.ListOperationsResponse, error) {
+	if c.listErr != nil {
+		return nil, c.listErr
+	}
+	if c.listResponse != nil {
+		return c.listResponse, nil
+	}
+	return &agentapi.ListOperationsResponse{}, nil
 }
 
 func (c *fakeAgentClient) WatchOperation(context.Context, *agentapi.WatchOperationRequest, ...grpc.CallOption) (agentapi.KatlcAgent_WatchOperationClient, error) {

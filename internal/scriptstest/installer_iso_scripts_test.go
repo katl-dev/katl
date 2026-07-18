@@ -158,6 +158,42 @@ func TestMkosiInstallerISOUsesBuilder(t *testing.T) {
 	}
 	katlosImage := writeArtifact(t, buildDir, "katlos-install-2026.7.0-dev.1-x86_64.squashfs", "katlos")
 	writeKatlosImageSidecars(t, katlosImage, "2026.7.0-dev.1")
+	runtimeRoot := writeArtifact(t, buildDir, "katl-runtime-root.squashfs", "runtime root")
+	runtimeRootSHA := fileSHA256(t, runtimeRoot)
+	writeJSONFile(t, runtimeRoot+".json", map[string]any{
+		"name":             "runtime-root",
+		"kind":             "runtime-root",
+		"format":           "squashfs",
+		"path":             filepath.Base(runtimeRoot),
+		"sizeBytes":        int64(len("runtime root")),
+		"sha256":           runtimeRootSHA,
+		"compression":      "zstd",
+		"generation":       "test-build",
+		"version":          "2026.7.0-dev.1",
+		"architecture":     "x86_64",
+		"runtimeInterface": "katl-runtime-1",
+		"compatibleBoot": map[string]any{
+			"kind":             "uki",
+			"runtimeInterface": "katl-runtime-1",
+		},
+	})
+	runtimeUKI := writeArtifact(t, buildDir, "katl-runtime.efi", "runtime uki")
+	writeJSONFile(t, runtimeUKI+".json", map[string]any{
+		"name":             "runtime-uki",
+		"kind":             "runtime-uki",
+		"format":           "uki",
+		"path":             filepath.Base(runtimeUKI),
+		"sizeBytes":        int64(len("runtime uki")),
+		"sha256":           fileSHA256(t, runtimeUKI),
+		"version":          "2026.7.0-dev.1",
+		"architecture":     "x86_64",
+		"runtimeInterface": "katl-runtime-1",
+		"compatibleRuntime": map[string]any{
+			"interface":      "katl-runtime-1",
+			"artifactPath":   filepath.Base(runtimeRoot),
+			"artifactSHA256": runtimeRootSHA,
+		},
+	})
 	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
 	seedInstallerRPMCache(t, repo)
 	podmanArgs := filepath.Join(tmp, "podman-args.txt")
@@ -172,6 +208,7 @@ fi
 printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 `)
 	writeFakeExecutable(t, bin, "rpm", "printf 'systemd\\t0:259.6-1.fc44.x86_64\\n'\n")
+	writeFakeExecutable(t, bin, "mksquashfs", "printf 'katlos image\\n' >\"$2\"\n")
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer-iso")
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
@@ -184,6 +221,9 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 	)
 	if result, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("scripts/mkosi build-installer-iso failed: %v\n%s", err, result)
+	}
+	if got := string(mustReadFile(t, katlosImage)); got != "katlos image\n" {
+		t.Fatalf("embedded KatlOS prerequisite was not rebuilt: %q", got)
 	}
 	args := readLinesForScripts(t, podmanArgs)
 	for _, want := range []string{

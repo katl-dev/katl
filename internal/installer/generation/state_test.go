@@ -45,6 +45,8 @@ WantedBy=local-fs.target
 		"d /var/lib/katl/cluster 0750 root root -",
 		"d /var/lib/katl/config-requests 0750 root root -",
 		"d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -",
+		"d /var/lib/katl/home 0755 root root -",
+		"d /var/lib/katl/home/katl 0700 katl katl -",
 		"d /var/lib/containerd 0755 root root -",
 		"d /var/lib/etcd 0755 root root -",
 		"d /var/lib/kubelet 0755 root root -",

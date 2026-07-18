@@ -313,6 +313,7 @@ func TestMetadataWriters(t *testing.T) {
 	sysext := writeTestFile(t, workDir, "katl-kubernetes.raw", "kubernetes sysext")
 	env := []string{
 		"KATL_BUILD_COMMIT=test-build",
+		"KATL_VERSION=0.1.0",
 		"KATL_ARCHITECTURE=x86_64",
 	}
 
@@ -325,6 +326,9 @@ func TestMetadataWriters(t *testing.T) {
 	readTestJSON(t, runtimeRoot+".json", &rootMetadata)
 	if rootMetadata.Name != "runtime-root" || rootMetadata.SHA256 != runtimeSHA || rootMetadata.Compression != "zstd" {
 		t.Fatalf("runtime root metadata = %#v, sha stdout %q", rootMetadata, runtimeSHA)
+	}
+	if rootMetadata.Version != "0.1.0" || rootMetadata.Generation != "test-build" {
+		t.Fatalf("runtime root identity = version %q generation %q", rootMetadata.Version, rootMetadata.Generation)
 	}
 	if rootMetadata.CompatibleBoot == nil || rootMetadata.CompatibleBoot.Kind != "uki" {
 		t.Fatalf("runtime root boot compatibility = %#v", rootMetadata.CompatibleBoot)
@@ -415,6 +419,9 @@ func TestMetadataWriters(t *testing.T) {
 	readTestJSON(t, indexPath, &index)
 	if index.Kind != "KatlOSImage" || len(index.Components) != 2 {
 		t.Fatalf("KatlOS index = %#v", index)
+	}
+	if index.Components[0].Version != "0.1.0" {
+		t.Fatalf("runtime component version = %q, want release version", index.Components[0].Version)
 	}
 	if index.Components[0].Compatibility.Boot == nil || index.Components[1].Compatibility.RuntimeRoot == nil {
 		t.Fatalf("KatlOS component compatibility = %#v", index.Components)

@@ -1008,6 +1008,7 @@ func operationStatus(record operation.OperationRecord, includeDiagnostics bool) 
 	return &agentapi.OperationStatus{
 		OperationId:             record.OperationID,
 		OperationKind:           record.OperationKind,
+		ClientRequestId:         record.ClientRequestID,
 		RequestDigest:           record.RequestDigest,
 		Phase:                   record.Phase,
 		PhaseIndex:              int32(record.PhaseIndex),

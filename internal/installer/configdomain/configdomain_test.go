@@ -55,9 +55,6 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 			t.Fatalf("files[%d].Path = %q, want %q", i, files[i].Path, path)
 		}
 		wantMode := os.FileMode(0o644)
-		if path == "/etc/ssh/authorized_keys/katl" {
-			wantMode = 0o600
-		}
 		if files[i].Mode != wantMode || files[i].UID != 0 || files[i].GID != 0 {
 			t.Fatalf("files[%d] mode/owner = %04o %d:%d", i, files[i].Mode, files[i].UID, files[i].GID)
 		}
@@ -80,7 +77,7 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	if kubernetes["payloadVersion"] != "v1.36.1" || kubernetes["activationPath"] != "/run/extensions/katl-kubernetes.raw" {
 		t.Fatalf("metadata kubernetes = %#v", kubernetes)
 	}
-	if files[3].Mode != 0o600 || !strings.Contains(files[3].Content, "ssh-ed25519") {
+	if files[3].Mode != 0o644 || !strings.Contains(files[3].Content, "ssh-ed25519") {
 		t.Fatalf("authorized keys file = %#v", files[3])
 	}
 	if !strings.Contains(files[4].Content, "net.ipv4.ip_forward = 1") {

@@ -31,11 +31,21 @@ const (
 type AgentBootstrapDependencies struct {
 	Connector       AgentConnector
 	Actor           string
-	Now             func() time.Time
 	WatchTimeout    time.Duration
 	PollInterval    time.Duration
 	OperationWait   time.Duration
 	BootstrapRunner BootstrapRunner
+	Progress        func(AgentBootstrapProgress)
+}
+
+type AgentBootstrapProgress struct {
+	Node        string
+	OperationID string
+	Kind        string
+	Phase       string
+	Terminal    bool
+	Result      string
+	NextAction  string
 }
 
 type AgentConnector interface {
@@ -53,6 +63,7 @@ type AgentClient interface {
 	SubmitOperation(context.Context, *agentapi.SubmitOperationRequest, ...grpc.CallOption) (*agentapi.OperationAccepted, error)
 	CreateWorkerJoinMaterial(context.Context, *agentapi.CreateWorkerJoinMaterialRequest, ...grpc.CallOption) (*agentapi.CreateWorkerJoinMaterialResponse, error)
 	GetOperation(context.Context, *agentapi.GetOperationRequest, ...grpc.CallOption) (*agentapi.OperationStatus, error)
+	ListOperations(context.Context, *agentapi.ListOperationsRequest, ...grpc.CallOption) (*agentapi.ListOperationsResponse, error)
 	WatchOperation(context.Context, *agentapi.WatchOperationRequest, ...grpc.CallOption) (agentapi.KatlcAgent_WatchOperationClient, error)
 }
 
@@ -107,6 +118,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		return Result{}, err
 	}
 	result := Result{Plan: plan, DryRun: request.DryRun}
+	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "planning"})
 	result.addPhase("plan", "", "", "passed")
 	bootstrap, err := prepareBootstrap(mergeBootstrap(planBootstrap(plan.Bootstrap), request.Bootstrap))
 	if err != nil {
@@ -121,6 +133,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	if deps.Connector == nil {
 		return result, errors.New("katlc agent connector is required")
 	}
+	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "checking-node-readiness"})
 	statuses, err := checkAgentReadiness(ctx, plan, deps.Connector)
 	if err != nil {
 		result.addPhase("readiness", "", "", "failed")
@@ -141,6 +154,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		return result, err
 	}
 	status := statuses[initNode.Name]
+	emitAgentProgress(deps, AgentBootstrapProgress{Node: initNode.Name, Kind: agentBootstrapInitKind, Phase: "submitting"})
 	initResult, err := submitAndWaitBootstrapInit(ctx, initNode, plan, status, deps)
 	if err != nil {
 		result.addOperationPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "failed", initResult.Operation)
@@ -148,6 +162,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	}
 	result.addOperationPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed", initResult.Operation)
 	for _, node := range controlPlaneJoinNodes(plan) {
+		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-control-plane", Phase: "creating-join-material"})
 		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, deps)
 		if err != nil {
 			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
@@ -161,6 +176,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		result.addOperationPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "passed", operationRef)
 	}
 	for _, node := range workerNodes(plan) {
+		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-worker", Phase: "creating-join-material"})
 		material, err := createWorkerJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, deps)
 		if err != nil {
 			result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "failed")
@@ -175,6 +191,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	}
 	stableEndpointReady := false
 	if bootstrap.enabled() {
+		emitAgentProgress(deps, AgentBootstrapProgress{Phase: "applying-bootstrap-manifests"})
 		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
 			Server:         bootstrapServer(initNode, plan),
 			StableEndpoint: bootstrap.StableEndpoint,
@@ -191,6 +208,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		stableEndpointReady = bootstrapResult.StableEndpointReady
 		result.addPhase("user-bootstrap", "", "", "passed")
 	}
+	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "writing-kubeconfig"})
 	kubeconfigResult, err := kubeconfig.Write(kubeconfig.Request{
 		Path:      request.KubeconfigOut,
 		Overwrite: request.OverwriteKubeconfig,
@@ -330,9 +348,6 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 			if required != "" && !contains(status.GetSupportedOperationKinds(), required) {
 				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: fmt.Sprintf("%s operation is not supported", required)})
 			}
-			if status.GetOperationLockHeld() {
-				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: fmt.Sprintf("operation lock is held by %s", strings.Join(status.GetActiveOperationIds(), ","))})
-			}
 			if strings.TrimSpace(status.GetMachineId()) == "" {
 				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "machine-id", Message: "node did not report a machine identity"})
 			}
@@ -367,12 +382,20 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	}
 	defer closeAgent(conn)
 	req := bootstrapInitRequest(node, plan, status, deps)
-	accepted, err := conn.Client.SubmitOperation(ctx, req)
+	accepted, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
+	if err != nil {
+		return bootstrapInitResult{}, err
+	}
+	if !resumed {
+		accepted, err = conn.Client.SubmitOperation(ctx, req)
+	} else {
+		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, OperationID: accepted.GetOperationId(), Kind: req.OperationKind, Phase: "resuming"})
+	}
 	if err != nil {
 		return bootstrapInitResult{}, fmt.Errorf("submit operation: %w", err)
 	}
 	result := bootstrapInitResult{Operation: operationReference{ID: accepted.GetOperationId()}}
-	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
+	final, err := waitOperationTerminal(ctx, node.Name, conn.Client, accepted, deps)
 	if err != nil {
 		return result, err
 	}
@@ -457,12 +480,20 @@ func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inv
 	req := bootstrapOperationRequest(node, plan, status, deps, kind)
 	req.Bootstrap.JoinMaterialRef = strings.TrimSpace(material.Ref)
 	req.Bootstrap.WorkerJoinMaterial = material.Material
-	accepted, err := conn.Client.SubmitOperation(ctx, req)
+	accepted, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
+	if err != nil {
+		return operationReference{}, err
+	}
+	if !resumed {
+		accepted, err = conn.Client.SubmitOperation(ctx, req)
+	} else {
+		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, OperationID: accepted.GetOperationId(), Kind: req.OperationKind, Phase: "resuming"})
+	}
 	if err != nil {
 		return operationReference{}, fmt.Errorf("submit operation: %w", err)
 	}
 	operationRef := operationReference{ID: accepted.GetOperationId()}
-	final, err := waitOperationTerminal(ctx, conn.Client, accepted, deps)
+	final, err := waitOperationTerminal(ctx, node.Name, conn.Client, accepted, deps)
 	if err != nil {
 		return operationRef, err
 	}
@@ -483,7 +514,7 @@ func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, 
 	return &agentapi.SubmitOperationRequest{
 		ApiVersion:                  agentAPIVersion,
 		Kind:                        agentSubmitOperationKind,
-		ClientRequestId:             clientRequestID(node, deps.now()),
+		ClientRequestId:             clientRequestID(node, plan, kind),
 		OperationKind:               kind,
 		Actor:                       valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
 		ExpectedMachineId:           strings.TrimSpace(status.GetMachineId()),
@@ -514,7 +545,7 @@ func requiredAgentOperationKind(action inventory.BootstrapAction) string {
 	}
 }
 
-func waitOperationTerminal(ctx context.Context, client AgentClient, accepted *agentapi.OperationAccepted, deps AgentBootstrapDependencies) (*agentapi.OperationStatus, error) {
+func waitOperationTerminal(ctx context.Context, node string, client AgentClient, accepted *agentapi.OperationAccepted, deps AgentBootstrapDependencies) (*agentapi.OperationStatus, error) {
 	if accepted == nil || strings.TrimSpace(accepted.GetOperationId()) == "" {
 		return nil, fmt.Errorf("agent did not return an operation id")
 	}
@@ -526,7 +557,28 @@ func waitOperationTerminal(ctx context.Context, client AgentClient, accepted *ag
 	}
 	status := accepted.GetInitialStatus()
 	seq := int32(0)
+	lastProgress := ""
+	emitStatus := func(status *agentapi.OperationStatus) {
+		if status == nil {
+			return
+		}
+		progress := strings.Join([]string{status.GetOperationId(), status.GetOperationKind(), status.GetPhase(), fmt.Sprint(status.GetTerminal()), status.GetResult()}, "\x00")
+		if progress == lastProgress {
+			return
+		}
+		lastProgress = progress
+		emitAgentProgress(deps, AgentBootstrapProgress{
+			Node:        node,
+			OperationID: status.GetOperationId(),
+			Kind:        status.GetOperationKind(),
+			Phase:       status.GetPhase(),
+			Terminal:    status.GetTerminal(),
+			Result:      status.GetResult(),
+			NextAction:  status.GetNextAction(),
+		})
+	}
 	if status != nil {
+		emitStatus(status)
 		seq = status.GetLatestJournalSeq()
 		if status.GetTerminal() {
 			return status, nil
@@ -553,6 +605,7 @@ func waitOperationTerminal(ctx context.Context, client AgentClient, accepted *ag
 			seq = event.GetJournalSeq()
 			if event.GetStatus() != nil {
 				status = event.GetStatus()
+				emitStatus(status)
 			}
 			if event.GetTerminal() {
 				if status == nil {
@@ -572,12 +625,19 @@ func waitOperationTerminal(ctx context.Context, client AgentClient, accepted *ag
 			return polled, nil
 		}
 		status = polled
+		emitStatus(status)
 		seq = polled.GetLatestJournalSeq()
 		select {
 		case <-waitCtx.Done():
 			return status, waitCtx.Err()
 		case <-time.After(valueOrDefaultDuration(deps.PollInterval, 250*time.Millisecond)):
 		}
+	}
+}
+
+func emitAgentProgress(deps AgentBootstrapDependencies, progress AgentBootstrapProgress) {
+	if deps.Progress != nil {
+		deps.Progress(progress)
 	}
 }
 
@@ -588,16 +648,39 @@ func closeAgent(conn AgentConnection) error {
 	return conn.Close()
 }
 
-func clientRequestID(node inventory.PlannedNode, now time.Time) string {
-	sum := sha256.Sum256([]byte(node.Name + "\x00" + node.Address + "\x00" + now.UTC().Format(time.RFC3339Nano)))
+func clientRequestID(node inventory.PlannedNode, plan inventory.Plan, kind string) string {
+	identity := strings.Join([]string{
+		node.Name,
+		kind,
+		string(node.SystemRole),
+		node.KubernetesVersion,
+		node.KubeadmConfig.Ref,
+		node.KubeadmConfig.Path,
+		plan.ControlPlaneEndpoint,
+		plan.KubernetesBundleSource,
+		plan.KubernetesBundleRef,
+	}, "\x00")
+	sum := sha256.Sum256([]byte(identity))
 	return "katlctl-" + node.Name + "-" + hex.EncodeToString(sum[:])[:12]
 }
 
-func (deps AgentBootstrapDependencies) now() time.Time {
-	if deps.Now != nil {
-		return deps.Now().UTC()
+func resumeBootstrapOperation(ctx context.Context, client AgentClient, clientRequestID, kind string) (*agentapi.OperationAccepted, bool, error) {
+	response, err := client.ListOperations(ctx, &agentapi.ListOperationsRequest{Limit: 100})
+	if err != nil {
+		return nil, false, fmt.Errorf("list operations before %s: %w", kind, err)
 	}
-	return time.Now().UTC()
+	for _, status := range response.GetOperations() {
+		if status.GetClientRequestId() != clientRequestID || status.GetOperationKind() != kind {
+			continue
+		}
+		return &agentapi.OperationAccepted{
+			OperationId:   status.GetOperationId(),
+			OperationKind: status.GetOperationKind(),
+			RequestDigest: status.GetRequestDigest(),
+			InitialStatus: status,
+		}, true, nil
+	}
+	return nil, false, nil
 }
 
 func bootstrapProfileRef(node inventory.PlannedNode) string {

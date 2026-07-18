@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,6 +31,11 @@ func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, spe
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	input := vmtest.DefaultFirstInstallWorldInputFromEnv(vmtest.FirstInstallWorldPreseed, katlctlEnvBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"))
+	_, authorizedKey, err := ensureWorldSSHKey(world)
+	if err != nil {
+		return err
+	}
+	input.SSHAuthorizedKey = authorizedKey
 	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")); value != "" {
 		image, err := kubernetesbundle.ParseImageReference(value)
 		if err != nil {
@@ -44,6 +50,26 @@ func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, spe
 		KVM:                        kvm,
 		RequireInstallerProvenance: true,
 	})
+}
+
+func ensureWorldSSHKey(world vmtest.World) (string, string, error) {
+	privateKey := filepath.Join(vmtest.WorldFixtureCacheDir(world), "ssh", "id_ed25519")
+	publicKey := privateKey + ".pub"
+	if data, err := os.ReadFile(publicKey); err == nil && strings.TrimSpace(string(data)) != "" {
+		return privateKey, strings.TrimSpace(string(data)), nil
+	}
+	if err := os.MkdirAll(filepath.Dir(privateKey), 0o700); err != nil {
+		return "", "", err
+	}
+	command := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "katl-vmtest", "-f", privateKey)
+	if output, err := command.CombinedOutput(); err != nil {
+		return "", "", fmt.Errorf("generate VM SSH key: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	data, err := os.ReadFile(publicKey)
+	if err != nil {
+		return "", "", err
+	}
+	return privateKey, strings.TrimSpace(string(data)), nil
 }
 
 func failWorldFixtureSetup(t *testing.T, world vmtest.World, scenarioName string, err error) {

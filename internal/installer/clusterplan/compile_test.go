@@ -55,7 +55,7 @@ func TestCompileClusterPlan(t *testing.T) {
 		t.Fatalf("hostname confext = %#v", hostname)
 	}
 	authorizedKeys := nativeFile(cp.NativeEtcFiles, "/etc/ssh/authorized_keys/katl")
-	if authorizedKeys == nil || authorizedKeys.Mode != 0o600 || authorizedKeys.Content != sshKey+"\n" {
+	if authorizedKeys == nil || authorizedKeys.Mode != 0o644 || authorizedKeys.Content != sshKey+"\n" {
 		t.Fatalf("authorized keys confext = %#v", authorizedKeys)
 	}
 	if len(cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys) != 1 {
@@ -141,6 +141,22 @@ func TestCompileAllowsMissingAddressAndAppliesOverride(t *testing.T) {
 	}
 	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Node != "worker-1" || plan.AddressOverrides[0].Address != "10.0.0.99" {
 		t.Fatalf("address overrides = %#v", plan.AddressOverrides)
+	}
+}
+
+func TestCompileDefaultDHCPUsesStableMACIdentity(t *testing.T) {
+	config := validConfig()
+	config.Spec.Defaults.Networkd.Files = nil
+	config.Spec.Nodes[0].Overrides.Networkd.Files = nil
+	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	for _, node := range plan.Nodes {
+		files := node.InstallManifest.Node.Networkd.Files
+		if len(files) != 1 || !strings.Contains(files[0].Content, "[DHCPv4]\nClientIdentifier=mac") {
+			t.Fatalf("%s default network = %#v", node.Name, files)
+		}
 	}
 }
 

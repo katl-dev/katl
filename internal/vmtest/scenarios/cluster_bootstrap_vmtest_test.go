@@ -86,6 +86,7 @@ type operationBackedSmokeInputs struct {
 	WorkerMAC              string
 	WorkerInstall          firstInstallProvenance
 	KubernetesVersion      string
+	SSHPrivateKey          string
 	WorldProvenance        multiNodeWorldProvenancePaths
 }
 
@@ -235,6 +236,7 @@ func planOperationBackedWorldSmokeRunNamed(world vmtest.World, repo, kubernetesV
 			WorkerMAC:              worker.Node.MACAddress,
 			WorkerInstall:          firstInstallProvenanceFromPublished(workerPublished),
 			KubernetesVersion:      firstString(kubernetesVersion, "v1.36.1"),
+			SSHPrivateKey:          filepath.Join(vmtest.WorldFixtureCacheDir(world), "ssh", "id_ed25519"),
 			WorldProvenance:        multiNodeWorldProvenanceForSpecs(world, repo, twoNodeWorldRuntimeSpecs()),
 		},
 	}, nil
@@ -425,6 +427,13 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			t.Fatalf("wait for %s katlc agent TCP endpoint: %v", endpoint.name, err)
 		}
 	}
+	for _, node := range nodes {
+		if err := assertOperatorSSH(ctx, inputs.SSHPrivateKey, node.Result.IPAddress); err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("%s operator SSH: %v", node.Name, err)
+		}
+	}
 	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, nodes, operationBackedArtifacts{
 		Inventory:            inventoryPath,
 		Kubeconfig:           kubeconfigPath,
@@ -574,8 +583,33 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatalf("kubectl nodes did not converge: %v\n%s", err, output)
 	}
 	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":6443")
+	for _, node := range []struct {
+		running    vmtest.RunningInstalledRuntimeNode
+		generation string
+	}{{cpNode, cpRecord.CandidateGenerationID}, {workerNode, workerRecord.CandidateGenerationID}} {
+		if err := rebootIntoGeneration(ctx, node.running, node.generation); err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("reboot %s into bootstrap generation: %v", node.running.Name, err)
+		}
+		if err := activateNodeCNIFixture(ctx, node.running, cniFixtures[node.running.Name]); err != nil {
+			t.Fatalf("reactivate %s CNI fixture after bootstrap reboot: %v", node.running.Name, err)
+		}
+		if err := waitForBootstrapRuntimeAfterReboot(ctx, node.running, node.generation); err != nil {
+			t.Fatalf("verify %s bootstrap runtime after reboot: %v", node.running.Name, err)
+		}
+		if err := assertOperatorSSH(ctx, inputs.SSHPrivateKey, node.running.Result.IPAddress); err != nil {
+			t.Fatalf("%s operator SSH after reboot: %v", node.running.Name, err)
+		}
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(result.RunDir, "kubectl-after-bootstrap-reboot.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("cluster did not return after bootstrap generation reboot: %v", err)
+	}
 	if proveUpgrade {
-		if err := runTwoNodeKubeadmUpgradeProof(t, ctx, smoke, cpNode, workerNode, cpAddress, workerAddress, cpRecord, workerRecord, cniFixtures, kubeconfigPath, evidenceDir); err != nil {
+		if err := runTwoNodeKubeadmUpgradeProof(t, ctx, smoke, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -589,22 +623,11 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
 }
 
-func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress string, cpBootstrap, workerBootstrap operation.OperationRecord, cniFixtures map[string]nodeCNIFixture, kubeconfigPath, evidenceDir string) error {
+func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string) error {
 	t.Helper()
 	const targetVersion = "v1.36.1"
 	if smoke.Inputs.KubernetesVersion != "v1.36.0" {
 		return fmt.Errorf("upgrade proof requires base v1.36.0, got %s", smoke.Inputs.KubernetesVersion)
-	}
-	for _, node := range []struct {
-		running    vmtest.RunningInstalledRuntimeNode
-		generation string
-	}{{cpNode, cpBootstrap.CandidateGenerationID}, {workerNode, workerBootstrap.CandidateGenerationID}} {
-		if err := rebootIntoGeneration(ctx, node.running, node.generation); err != nil {
-			return fmt.Errorf("reboot %s into bootstrap generation: %w", node.running.Name, err)
-		}
-		if err := activateNodeCNIFixture(ctx, node.running, cniFixtures[node.running.Name]); err != nil {
-			return fmt.Errorf("reactivate %s CNI fixture after bootstrap reboot: %w", node.running.Name, err)
-		}
 	}
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-before-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return fmt.Errorf("wait for cluster readiness after bootstrap generation reboot: %w", err)
@@ -971,6 +994,45 @@ func rebootIntoGeneration(ctx context.Context, node vmtest.RunningInstalledRunti
 		}
 	}
 	return fmt.Errorf("node %s did not boot generation %s", node.Name, generationID)
+}
+
+func waitForBootstrapRuntimeAfterReboot(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, generationID string) error {
+	deadline := time.Now().Add(3 * time.Minute)
+	var last string
+	for {
+		result, err := runNodeCommandWithRetry(ctx, node, []string{
+			"systemctl", "is-active", "kubelet.service", "containerd.service", "katlc-agent.service", "sshd.service",
+		}, 16<<10)
+		if err == nil && result.ExitStatus == 0 {
+			connector := cluster.TCPAgentConnector{DialTimeout: 5 * time.Second}
+			connection, connectErr := connector.Connect(ctx, inventory.PlannedNode{
+				Name: node.Name, Address: node.Result.IPAddress, Access: inventory.Access{Method: "agent"},
+			})
+			if connectErr == nil {
+				status, statusErr := connection.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+				_ = connection.Close()
+				if statusErr == nil && status.GetCurrentGenerationId() == generationID {
+					return nil
+				}
+				if statusErr != nil {
+					last = statusErr.Error()
+				} else {
+					last = fmt.Sprintf("current generation %q, want %q", status.GetCurrentGenerationId(), generationID)
+				}
+			}
+		} else if err != nil {
+			last = err.Error()
+		} else {
+			last = strings.TrimSpace(string(result.Stdout) + " " + string(result.Stderr))
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("Kubernetes services and generation did not become active: %s", last)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func operationBackedVMConfigForRun(run operationBackedSmokeRun, mac string, cid uint32) vmtest.VMConfig {
@@ -2490,6 +2552,43 @@ func bootstrapCommandError(err error, output string) error {
 		}
 	}
 	return nil
+}
+
+func assertOperatorSSH(ctx context.Context, privateKey, address string) error {
+	privateKey = strings.TrimSpace(privateKey)
+	address = strings.TrimSpace(address)
+	if privateKey == "" || address == "" {
+		return fmt.Errorf("SSH private key and node address are required")
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		command := exec.CommandContext(ctx, "ssh",
+			"-o", "BatchMode=yes",
+			"-o", "IdentitiesOnly=yes",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "ConnectTimeout=5",
+			"-i", privateKey,
+			"katl@"+address,
+			"test \"$(id -un)\" = katl && "+
+				"test \"$SHELL\" = /usr/bin/bash && test -x /usr/bin/bash && "+
+				"test \"$PWD\" = /var/lib/katl/home/katl && "+
+				"test \"$(stat -c %a /var/lib/katl/home)\" = 755 && "+
+				"test -r /etc/ssh/authorized_keys/katl && test ! -w /etc/ssh/authorized_keys/katl && "+
+				"touch .katl-ssh-test && rm .katl-ssh-test",
+		)
+		output, err := command.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("SSH login failed: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func readNodeFileWithRetry(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, maxBytes uint32, timeout time.Duration) ([]byte, error) {

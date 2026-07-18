@@ -92,7 +92,7 @@ func TestRebootPersistsStatusBeforeRequest(t *testing.T) {
 
 	want := []CommandCall{
 		{Name: "sync"},
-		{Name: "systemctl", Args: []string{"--no-block", "reboot"}},
+		{Name: "systemd-run", Args: []string{"--unit=katl-installer-reboot", "--on-active=2s", "systemctl", "--no-block", "reboot"}},
 	}
 	if !reflect.DeepEqual(commands.calls, want) {
 		t.Fatalf("command calls = %#v, want %#v", commands.calls, want)
@@ -387,7 +387,7 @@ func TestRunnerRecordsCheckpointsWithoutCommands(t *testing.T) {
 	if targetStatus.State != installstatus.StateRebootRequested || targetStatus.InstalledGeneration != "2026.06.04-000" || !targetStatus.WipeTargetAccepted {
 		t.Fatalf("target status = %#v", targetStatus)
 	}
-	if got := commandNames(commands.Calls); got != "sync systemctl" {
+	if got := commandNames(commands.Calls); got != "sync systemd-run" {
 		t.Fatalf("command calls = %q, want sync and reboot request", got)
 	}
 }
@@ -1642,7 +1642,7 @@ func (r *rebootCommandRunner) Run(_ context.Context, name string, args ...string
 	if len(r.store.Statuses) > 0 && name == "sync" {
 		r.statusAtSync = r.store.Statuses[len(r.store.Statuses)-1].State
 	}
-	if name != "systemctl" {
+	if name != "systemd-run" {
 		return nil
 	}
 	if len(r.store.Statuses) > 0 {

@@ -425,15 +425,16 @@ management endpoints, bootstrap directly from the same source:
 
 ```text
 katlctl cluster bootstrap --config ./cluster.yaml \
-  --init-node cp-1 \
-  --kubeconfig-out kubeconfig \
-  --overwrite-kubeconfig
+  --init-node cp-1
 ```
 
 Katl compiles the source internally to obtain the control-plane endpoint, node
 topology, roles, kubeadm references, Kubernetes version, and OCI bundle
 selection. `--node-address node=address` remains available for an
 operator-observed address that differs from the compiled source.
+Bootstrap reports phase changes while it runs and writes `./kubeconfig` by
+default. Rerun the unchanged command to resume observing an interrupted
+bootstrap; add `--verbose` for operation IDs and recovery details.
 
 The management API is intentionally credential-free on Katl's supported
 trusted home-lab network. Bootstrap requires no enrollment or token exchange.

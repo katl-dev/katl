@@ -2124,10 +2124,11 @@ type clusterBootstrapOptions struct {
 	bootstrapWaitValues                    stringList
 	bootstrapStableEndpoint                string
 	bootstrapStableEndpointBeforeManifests bool
+	verbose                                bool
 }
 
 func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := clusterBootstrapOptions{}
+	opts := clusterBootstrapOptions{kubeconfigOut: "kubeconfig"}
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Bootstrap Kubernetes from a ClusterConfig or config bundle",
@@ -2144,7 +2145,7 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	cmd.Flags().StringVar(&opts.joinWorker, "join-worker", "", "join one fresh worker to an already initialized cluster without rerunning kubeadm init")
 	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
 	cmd.Flags().StringVar(&opts.kubernetesBundle, "kubernetes-bundle", "", "Kubernetes OCI bundle image reference; an @sha256 manifest pin is optional")
-	cmd.Flags().StringVar(&opts.kubeconfigOut, "kubeconfig-out", "", "operator kubeconfig output path")
+	cmd.Flags().StringVar(&opts.kubeconfigOut, "kubeconfig-out", opts.kubeconfigOut, "operator kubeconfig output path")
 	cmd.Flags().BoolVar(&opts.overwriteKubeconfig, "overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "validate and print the bootstrap plan without running kubeadm")
 	cmd.Flags().StringVar(&opts.vmtestTranscriptDir, "vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
@@ -2157,6 +2158,7 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	cmd.Flags().Var(&opts.bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
 	cmd.Flags().StringVar(&opts.bootstrapStableEndpoint, "bootstrap-stable-endpoint", "", "stable API endpoint host:port to wait for before writing kubeconfig")
 	cmd.Flags().BoolVar(&opts.bootstrapStableEndpointBeforeManifests, "bootstrap-stable-endpoint-before-manifests", false, "wait for stable API endpoint before applying bootstrap manifests")
+	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "show operation IDs and recovery details with bootstrap progress")
 	return cmd
 }
 
@@ -2192,7 +2194,9 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
 			return fmt.Errorf("--join-worker requires katlc agent transport")
 		}
-		result, err := runAgentWorkerJoin(ctx, request, strings.TrimSpace(opts.joinWorker), agentBootstrapDependencies())
+		deps := agentBootstrapDependencies()
+		deps.Progress = bootstrapProgressWriter(stderr, opts.verbose)
+		result, err := runAgentWorkerJoin(ctx, request, strings.TrimSpace(opts.joinWorker), deps)
 		printBootstrapResult(stdout, result)
 		return err
 	}
@@ -2200,10 +2204,42 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 	if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
 		result, err = runBootstrap(ctx, request, bootstrapDependencies(opts.vmtestTranscriptDir))
 	} else {
-		result, err = runAgentBootstrap(ctx, request, agentBootstrapDependencies())
+		deps := agentBootstrapDependencies()
+		deps.Progress = bootstrapProgressWriter(stderr, opts.verbose)
+		result, err = runAgentBootstrap(ctx, request, deps)
 	}
 	printBootstrapResult(stdout, result)
 	return err
+}
+
+func bootstrapProgressWriter(stderr io.Writer, verbose bool) func(cluster.AgentBootstrapProgress) {
+	return func(progress cluster.AgentBootstrapProgress) {
+		fmt.Fprint(stderr, "katlctl cluster bootstrap")
+		if progress.Node != "" {
+			fmt.Fprintf(stderr, " node=%s", progress.Node)
+		}
+		if progress.Kind != "" {
+			fmt.Fprintf(stderr, " operation=%s", progress.Kind)
+		}
+		fmt.Fprintf(stderr, " phase=%s", progress.Phase)
+		if progress.Terminal {
+			fmt.Fprintf(stderr, " result=%s", fallbackText(progress.Result, "completed"))
+		}
+		if verbose && progress.OperationID != "" {
+			fmt.Fprintf(stderr, " operation-id=%s", progress.OperationID)
+		}
+		if verbose && progress.NextAction != "" {
+			fmt.Fprintf(stderr, " next=%q", progress.NextAction)
+		}
+		fmt.Fprintln(stderr)
+	}
+}
+
+func fallbackText(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, error) {

@@ -206,15 +206,14 @@ directly from the same cluster source:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
-  --init-node cp-1 \
-  --kubeconfig-out ./kubeconfig \
-  --overwrite-kubeconfig
+  --init-node cp-1
 ```
 
 The node agent fetches the selected Kubernetes OCI bundle, verifies its
 manifest and layer digests, stages the sysext, creates generation 1, and runs
-the bounded kubeadm operation. Katl then hands the Kubernetes API and
-kubeconfig to the operator.
+the bounded kubeadm operation. Katl reports phase changes and writes the
+operator kubeconfig to `./kubeconfig`; rerunning the unchanged command resumes
+an interrupted bootstrap.
 
 ## Configuration and upgrades
 
