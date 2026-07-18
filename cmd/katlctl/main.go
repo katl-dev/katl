@@ -563,6 +563,9 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		return printWipeClusterReport(stdout, report)
 	}
 	submitErr := submitWipeCluster(ctx, connector, &report, targets, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
+	if submitErr == nil {
+		report.NextAction = wipeNextAction(opts.noWait)
+	}
 	if printErr := printWipeClusterReport(stdout, report); printErr != nil {
 		return printErr
 	}
@@ -725,6 +728,9 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	}
 
 	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
+	if submitErr == nil {
+		report.NextAction = wipeNextAction(opts.noWait)
+	}
 	if printErr := printWipeNodeReport(stdout, report); printErr != nil {
 		return printErr
 	}
@@ -837,6 +843,7 @@ type wipeClusterReport struct {
 	NodeLocalOperations []wipeClusterNodeLocalOperation `json:"nodeLocalOperations"`
 	WipedState          []string                        `json:"wipedState"`
 	PreservedState      []string                        `json:"preservedState"`
+	NextAction          string                          `json:"nextAction,omitempty"`
 	Refusals            []string                        `json:"refusals,omitempty"`
 	Nodes               []wipeClusterNodeResult         `json:"nodes,omitempty"`
 }
@@ -1216,7 +1223,17 @@ func printWipeText(stdout io.Writer, report wipeClusterReport) error {
 			fmt.Fprintf(stdout, "%s: %s\n", node.Node, diagnostic)
 		}
 	}
+	if strings.TrimSpace(report.NextAction) != "" {
+		fmt.Fprintf(stdout, "Next: %s\n", report.NextAction)
+	}
 	return nil
+}
+
+func wipeNextAction(noWait bool) string {
+	if noWait {
+		return "wait for every destructive reset to succeed, then reboot each wiped node with installer media or PXE available"
+	}
+	return "reboot each wiped node with installer media or PXE available"
 }
 
 type wipeNodeCleanupResult struct {

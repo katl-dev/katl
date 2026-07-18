@@ -1823,6 +1823,21 @@ func TestWipeTextReportsSubmissionFailures(t *testing.T) {
 	}
 }
 
+func TestWipeTextReportsTheInstallerHandoffNextStep(t *testing.T) {
+	report := wipeClusterReport{
+		Targets:    []wipeClusterTarget{{Name: "cp-1", SystemRole: string(inventory.RoleControlPlane), Address: "192.0.2.11"}},
+		Nodes:      []wipeClusterNodeResult{{Node: "cp-1", Accepted: true, Terminal: true, Result: operation.ResultSucceeded}},
+		NextAction: wipeNextAction(false),
+	}
+	var stdout bytes.Buffer
+	if err := printWipeText(&stdout, report); err != nil {
+		t.Fatal(err)
+	}
+	if output := stdout.String(); !strings.Contains(output, "Next: reboot each wiped node with installer media or PXE available") {
+		t.Fatalf("stdout = %q", output)
+	}
+}
+
 func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 	root := t.TempDir()
 	writeConfigApplyFixture(t, root, configApplyFixture{
