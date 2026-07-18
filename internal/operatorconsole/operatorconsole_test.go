@@ -369,7 +369,7 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		CurrentStep:         "InstallRootSlot",
 		DestructiveMutation: true,
 		Handoff:             Handoff{URL: "http://192.0.2.10:8080/v1/config-bundle"},
-		ManagementAddress:   "192.0.2.10",
+		ManagementAddress:   "192.0.2.99",
 		DisplayInterfaces:   []NetworkInterface{{Name: "enp1s0", Addresses: []string{"192.0.2.10/24"}}},
 	}
 	journal := testJournal{[]byte("old line"), []byte("installing root\x1b[31m"), []byte("latest line")}
@@ -415,6 +415,33 @@ func TestRenderInstallerCommandUsesHandoffURLWithoutIPv4(t *testing.T) {
 	want := "Run:katlctlconfiginitcluster.yaml--installerhttp://[2001:db8::10]:8080"
 	if !containsIgnoringLayout(got, want) {
 		t.Fatalf("render missing %q:\n%s", want, got)
+	}
+}
+
+func TestRenderInstallerCommandPreservesCanonicalEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "https custom port", url: "https://192.0.2.50:8443/v1/config-bundle", want: "https://192.0.2.50:8443"},
+		{name: "http custom port", url: "http://192.0.2.50:9090/v1/config-bundle", want: "http://192.0.2.50:9090"},
+		{name: "hostname", url: "http://installer.example.test:8080/v1/config-bundle", want: "http://installer.example.test:8080"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := Snapshot{
+				Mode:              ModeInstaller,
+				State:             installstatus.StateWaitingForConfig,
+				ManagementAddress: "192.0.2.10",
+				Handoff:           Handoff{URL: test.url},
+			}
+			got := string(renderDashboard(&snapshot, nil, 100, 18, false))
+			want := "Run:katlctlconfiginitcluster.yaml--installer" + test.want
+			if !containsIgnoringLayout(got, want) {
+				t.Fatalf("render missing %q:\n%s", want, got)
+			}
+		})
 	}
 }
 

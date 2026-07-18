@@ -1,6 +1,8 @@
 package operatorconsole
 
 import (
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -125,7 +127,7 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 	}
 	if snapshot.Handoff.URL != "" {
 		writeField(&content, "Configure", snapshot.Handoff.URL, "")
-		writeField(&content, "Run", "katlctl config init cluster.yaml --installer "+installerCommandEndpoint(snapshot), "")
+		writeField(&content, "Run", "katlctl config init cluster.yaml --installer "+installerCommandEndpoint(snapshot.Handoff.URL), "")
 	}
 	writeOptionalField(&content, "Error", snapshot.LastError, styleBad)
 	writeOptionalField(&content, "Next action", snapshot.RetryHint, styleWarn)
@@ -524,11 +526,15 @@ func visibleWidth(value string) int {
 	return displayWidth(value)
 }
 
-func installerCommandEndpoint(snapshot *Snapshot) string {
-	if address := snapshot.ManagementAddress; address != "" {
-		return address
+func installerCommandEndpoint(value string) string {
+	baseURL := installerBaseURL(value)
+	parsed, err := url.Parse(baseURL)
+	if err == nil && parsed.Scheme == "http" && parsed.Port() == "8080" && parsed.User == nil && parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == "" {
+		if address := net.ParseIP(parsed.Hostname()); address != nil && address.To4() != nil {
+			return address.String()
+		}
 	}
-	return installerBaseURL(snapshot.Handoff.URL)
+	return baseURL
 }
 
 func installerBaseURL(value string) string {
