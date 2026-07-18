@@ -70,24 +70,118 @@ func TestCollectorReadsInstallerStateAndNetwork(t *testing.T) {
 			}
 			return nil, nil
 		},
+		DefaultRouteInterface: func() (string, error) { return "enp1s0", nil },
 	}
 	var snapshot Snapshot
 	collector.Collect(&snapshot)
 	if snapshot.State != installstatus.StateRunning || snapshot.CurrentStep != "InstallRootSlot" || !snapshot.DestructiveMutation {
 		t.Fatalf("snapshot status = %#v", snapshot)
 	}
-	if len(snapshot.Network) != 1 || strings.Join(snapshot.Network[0].Addresses, ",") != "192.0.2.10/24" {
-		t.Fatalf("snapshot network = %#v", snapshot.Network)
+	if snapshot.ManagementAddress != "192.0.2.10" || len(snapshot.DisplayInterfaces) != 1 || strings.Join(snapshot.DisplayInterfaces[0].Addresses, ",") != "192.0.2.10/24" {
+		t.Fatalf("snapshot network = %#v", snapshot.DisplayInterfaces)
 	}
 	if snapshot.Handoff.URL != "http://192.0.2.10:8080/v1/config-bundle" {
 		t.Fatalf("snapshot handoff = %#v", snapshot)
 	}
-	network := &snapshot.Network[0]
-	address := &snapshot.Network[0].Addresses[0]
+	network := &snapshot.DisplayInterfaces[0]
+	address := &snapshot.DisplayInterfaces[0].Addresses[0]
 	collector.Collect(&snapshot)
-	if &snapshot.Network[0] != network || &snapshot.Network[0].Addresses[0] != address {
+	if &snapshot.DisplayInterfaces[0] != network || &snapshot.DisplayInterfaces[0].Addresses[0] != address {
 		t.Fatal("Collect() did not reuse snapshot network storage")
 	}
+}
+
+func TestCollectorCuratesManagementNetwork(t *testing.T) {
+	interfaces := []net.Interface{
+		{Name: "cilium_host", Flags: net.FlagUp},
+		{Name: "veth1234", Flags: net.FlagUp},
+		{Name: "eno4", Flags: net.FlagUp},
+		{Name: "eno2", Flags: net.FlagUp},
+		{Name: "eno1", Flags: net.FlagUp},
+		{Name: "ens3", Flags: net.FlagUp},
+		{Name: "eno3", Flags: net.FlagUp},
+		{Name: "unused0", Flags: net.FlagUp},
+	}
+	addresses := map[string][]net.Addr{
+		"cilium_host": {testAddr("10.0.0.1/32")},
+		"veth1234":    {testAddr("10.0.0.2/32")},
+		"ens3":        {testAddr("192.0.2.10/24"), testAddr("2001:db8::10/64"), testAddr("2001:db8::11/64")},
+		"eno1":        {testAddr("192.0.2.11/24")},
+		"eno2":        {testAddr("192.0.2.12/24")},
+		"eno3":        {testAddr("192.0.2.13/24")},
+		"eno4":        {testAddr("192.0.2.14/24")},
+	}
+	collector := Collector{
+		Mode:       ModeRuntime,
+		Interfaces: func() ([]net.Interface, error) { return interfaces, nil },
+		Addrs:      func(iface net.Interface) ([]net.Addr, error) { return addresses[iface.Name], nil },
+		DefaultRouteInterface: func() (string, error) {
+			return "ens3", nil
+		},
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if snapshot.ManagementAddress != "192.0.2.10" {
+		t.Fatalf("management address = %q", snapshot.ManagementAddress)
+	}
+	if got := interfaceNames(snapshot.DisplayInterfaces); strings.Join(got, ",") != "ens3,eno1,eno2" {
+		t.Fatalf("display interfaces = %v", got)
+	}
+	if snapshot.AdditionalInterfaces != 2 || snapshot.DisplayInterfaces[0].AdditionalAddresses != 1 {
+		t.Fatalf("network omissions = interfaces %d, addresses %#v", snapshot.AdditionalInterfaces, snapshot.DisplayInterfaces[0])
+	}
+	rendered := string(renderDashboard(&snapshot, nil, 80, 24, false))
+	for _, want := range []string{"SSH:katl@192.0.2.10", "+1address", "+2interfaces"} {
+		if !containsIgnoringLayout(rendered, want) {
+			t.Fatalf("network render missing %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "cilium") || strings.Contains(rendered, "veth") {
+		t.Fatalf("network render exposed virtual interfaces:\n%s", rendered)
+	}
+}
+
+func TestCollectorPrefersKnownManagementAddress(t *testing.T) {
+	collector := Collector{
+		Mode:              ModeRuntime,
+		ManagementAddress: "192.0.2.99/24",
+		Interfaces: func() ([]net.Interface, error) {
+			return []net.Interface{{Name: "ens3", Flags: net.FlagUp}, {Name: "eno2", Flags: net.FlagUp}}, nil
+		},
+		Addrs: func(iface net.Interface) ([]net.Addr, error) {
+			if iface.Name == "eno2" {
+				return []net.Addr{testAddr("192.0.2.99/24")}, nil
+			}
+			return []net.Addr{testAddr("192.0.2.10/24")}, nil
+		},
+		DefaultRouteInterface: func() (string, error) { return "ens3", nil },
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if snapshot.ManagementAddress != "192.0.2.99" || snapshot.DisplayInterfaces[0].Name != "eno2" {
+		t.Fatalf("known management selection = %#v", snapshot)
+	}
+}
+
+func TestReadDefaultRouteInterface(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "route")
+	data := "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n" +
+		"eno2 00000000 010200C0 0003 0 0 200 00000000 0 0 0\n" +
+		"ens3 00000000 010200C0 0003 0 0 100 00000000 0 0 0\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readDefaultRouteInterface(path); err != nil || got != "ens3" {
+		t.Fatalf("default route = %q, %v", got, err)
+	}
+}
+
+func interfaceNames(interfaces []NetworkInterface) []string {
+	names := make([]string, len(interfaces))
+	for index := range interfaces {
+		names[index] = interfaces[index].Name
+	}
+	return names
 }
 
 func TestCollectorReadsInstalledVersionsFromBootedGeneration(t *testing.T) {
@@ -275,7 +369,8 @@ func TestRenderInstallerDashboard(t *testing.T) {
 		CurrentStep:         "InstallRootSlot",
 		DestructiveMutation: true,
 		Handoff:             Handoff{URL: "http://192.0.2.10:8080/v1/config-bundle"},
-		Network:             []NetworkInterface{{Name: "enp1s0", Addresses: []string{"192.0.2.10/24"}}},
+		ManagementAddress:   "192.0.2.10",
+		DisplayInterfaces:   []NetworkInterface{{Name: "enp1s0", Addresses: []string{"192.0.2.10/24"}}},
 	}
 	journal := testJournal{[]byte("old line"), []byte("installing root\x1b[31m"), []byte("latest line")}
 	got := string(renderDashboard(&snapshot, journal, 80, 25, false))
@@ -311,10 +406,10 @@ func TestRenderInstallerDashboard(t *testing.T) {
 
 func TestRenderInstallerCommandUsesHandoffURLWithoutIPv4(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:    ModeInstaller,
-		State:   installstatus.StateWaitingForConfig,
-		Handoff: Handoff{URL: "http://[2001:db8::10]:8080/v1/config-bundle"},
-		Network: []NetworkInterface{{Name: "enp1s0", Addresses: []string{"2001:db8::10/64"}}},
+		Mode:              ModeInstaller,
+		State:             installstatus.StateWaitingForConfig,
+		Handoff:           Handoff{URL: "http://[2001:db8::10]:8080/v1/config-bundle"},
+		DisplayInterfaces: []NetworkInterface{{Name: "enp1s0", Addresses: []string{"2001:db8::10/64"}}},
 	}
 	got := string(renderDashboard(&snapshot, nil, 100, 18, false))
 	want := "Run:katlctlconfiginitcluster.yaml--installerhttp://[2001:db8::10]:8080"
@@ -335,7 +430,8 @@ func TestRenderRuntimeFailure(t *testing.T) {
 		LastError:         "boot health check failed",
 		RetryHint:         "inspect the previous generation",
 		SSHEnabled:        true,
-		Network:           []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
+		ManagementAddress: "192.0.2.20",
+		DisplayInterfaces: []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
 	}
 	got := string(renderDashboard(&snapshot, nil, 80, 20, false))
 	for _, want := range []string{"Status", "Host", "Kubernetes", "Needsrepair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation:4", "Error:", "boothealthcheckfailed", "SSH:katl@192.0.2.20"} {
@@ -500,7 +596,7 @@ func TestRenderWrapsOperatorContentAtNarrowWidth(t *testing.T) {
 		State:     installstatus.StateWaitingForConfig,
 		LastError: "installer diagnostic has a deliberately-long-unbroken-value-with-tail-marker",
 		Handoff:   Handoff{URL: "http://[2001:db8:1234:5678::10]:8080/v1/config-bundle"},
-		Network: []NetworkInterface{{
+		DisplayInterfaces: []NetworkInterface{{
 			Name:      "enp1s0",
 			Addresses: []string{"2001:db8:1234:5678::10/64", "192.0.2.10/24"},
 		}},
@@ -524,9 +620,10 @@ func TestRenderWrapsOperatorContentAtNarrowWidth(t *testing.T) {
 
 func TestRenderUsesActualUndersizedTerminal(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:  ModeInstaller,
-		State: "starting-installer",
-		Network: []NetworkInterface{{
+		Mode:              ModeInstaller,
+		State:             "starting-installer",
+		ManagementAddress: "192.0.2.10",
+		DisplayInterfaces: []NetworkInterface{{
 			Name:      "enp1s0",
 			Addresses: []string{"192.0.2.10/24"},
 		}},
@@ -564,7 +661,7 @@ func TestTerminalRenderDoesNotScrollCompletedFrame(t *testing.T) {
 		Hostname:   "cp-with-a-long-name",
 		Version:    "2026.7.0-alpha.15",
 		Generation: "generation-with-a-long-identifier",
-		Network: []NetworkInterface{{
+		DisplayInterfaces: []NetworkInterface{{
 			Name:      "enp1s0",
 			Addresses: []string{"2001:db8:1234:5678::10/64", "192.0.2.10/24"},
 		}},
@@ -828,7 +925,8 @@ func TestRendererBoundsArbitraryContentAtSupportedWidths(t *testing.T) {
 		KubernetesVersion:      strings.Repeat("v1.36.1", 20),
 		KubernetesBootstrapped: true,
 		SSHEnabled:             true,
-		Network: []NetworkInterface{{
+		ManagementAddress:      "10.1.2.254",
+		DisplayInterfaces: []NetworkInterface{{
 			Name:      strings.Repeat("interface", 12),
 			Addresses: []string{"10.1.2.254/24", "fd00::254/64"},
 		}},

@@ -26,15 +26,18 @@ type Snapshot struct {
 	LastError              string
 	RetryHint              string
 	Handoff                Handoff
-	Network                []NetworkInterface
+	ManagementAddress      string
+	DisplayInterfaces      []NetworkInterface
+	AdditionalInterfaces   int
 	SSHEnabled             bool
 	UpdatedAt              time.Time
 	StatusError            string
 }
 
 type NetworkInterface struct {
-	Name      string
-	Addresses []string
+	Name                string
+	Addresses           []string
+	AdditionalAddresses int
 }
 
 type Handoff struct {

@@ -1,6 +1,7 @@
 package operatorconsole
 
 import (
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -92,7 +93,7 @@ func (render *Renderer) paintCompact(snapshot *Snapshot) {
 	content := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: max(render.frame.Height-1, 0)})
 	content.Write("KatlOS", WrapOptions{Style: styleTitle, WordWrap: true})
 	content.Write(stateLabel(snapshot.State), WrapOptions{Style: stateStyle(snapshot.State), WordWrap: true})
-	if address := firstIPv4(snapshot.Network); address != "" {
+	if address := snapshot.ManagementAddress; address != "" {
 		content.Write(address, WrapOptions{WordWrap: true})
 	}
 }
@@ -111,7 +112,7 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 	if snapshot.Mode == ModeRuntime {
 		writeHeading(&content, "Status")
 		render.writeRuntimeStatus(&content, snapshot)
-		writeNetwork(&content, snapshot.Network)
+		writeNetwork(&content, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces)
 	} else {
 		writeInstallerStatus(&content, snapshot)
 	}
@@ -149,7 +150,7 @@ func (render *Renderer) paintFooter(snapshot *Snapshot) {
 	if render.frame.Width < minimumWidth || render.frame.Height < minimumHeight {
 		footerText = "F2: console"
 	} else if snapshot.SSHEnabled {
-		if address := firstIPv4(snapshot.Network); address != "" && displayWidth(footerText+" | SSH: katl@"+address) <= render.frame.Width {
+		if address := snapshot.ManagementAddress; address != "" && displayWidth(footerText+" | SSH: katl@"+address) <= render.frame.Width {
 			footerText += " | SSH: katl@" + address
 		} else {
 			footerText += " | SSH enabled"
@@ -214,7 +215,7 @@ func writeInstallerStatus(content *Viewport, snapshot *Snapshot) {
 	if snapshot.Hostname != "" {
 		writeField(content, "Node", snapshot.Hostname, "")
 	}
-	writeNetwork(content, snapshot.Network)
+	writeNetwork(content, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces)
 	if snapshot.Version != "" {
 		writeField(content, "Media", snapshot.Version, "")
 	}
@@ -230,7 +231,7 @@ func writeInstallerStatus(content *Viewport, snapshot *Snapshot) {
 	}
 }
 
-func writeNetwork(content *Viewport, network []NetworkInterface) {
+func writeNetwork(content *Viewport, network []NetworkInterface, additional int) {
 	if len(network) == 0 {
 		writeField(content, "Network", "waiting for an active interface", "")
 		return
@@ -244,8 +245,22 @@ func writeNetwork(content *Viewport, network []NetworkInterface) {
 		if len(iface.Addresses) > 0 {
 			value = iface.Name + ": " + strings.Join(iface.Addresses, ", ")
 		}
+		if iface.AdditionalAddresses > 0 {
+			value += "  + " + pluralCount(iface.AdditionalAddresses, "address", "addresses")
+		}
 		writeField(content, label, value, "")
 	}
+	if additional > 0 {
+		writeField(content, "", "+ "+pluralCount(additional, "interface", "interfaces"), styleDim)
+	}
+}
+
+func pluralCount(count int, singular, plural string) string {
+	label := plural
+	if count == 1 {
+		label = singular
+	}
+	return strconv.Itoa(count) + " " + label
 }
 
 func writeHeading(viewport *Viewport, value string) {
@@ -509,23 +524,8 @@ func visibleWidth(value string) int {
 	return displayWidth(value)
 }
 
-func firstIPv4(network []NetworkInterface) string {
-	for _, iface := range network {
-		for _, address := range iface.Addresses {
-			if strings.IndexByte(address, '.') < 0 {
-				continue
-			}
-			if slash := strings.IndexByte(address, '/'); slash >= 0 {
-				return address[:slash]
-			}
-			return address
-		}
-	}
-	return ""
-}
-
 func installerCommandEndpoint(snapshot *Snapshot) string {
-	if address := firstIPv4(snapshot.Network); address != "" {
+	if address := snapshot.ManagementAddress; address != "" {
 		return address
 	}
 	return installerBaseURL(snapshot.Handoff.URL)
