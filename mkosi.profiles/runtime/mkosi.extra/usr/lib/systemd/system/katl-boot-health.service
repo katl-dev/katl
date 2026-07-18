@@ -4,7 +4,7 @@ Documentation=man:systemd.service(5)
 Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service
 After=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
-RequiresMountsFor=/var/lib/katl
+RequiresMountsFor=/efi /var/lib/katl
 
 [Service]
 Type=oneshot

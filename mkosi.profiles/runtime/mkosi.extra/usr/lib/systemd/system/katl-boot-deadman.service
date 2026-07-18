@@ -3,7 +3,7 @@ Description=Fail Katl boot health after deadline
 Documentation=man:systemd.service(5)
 Requires=var.mount
 After=var.mount
-RequiresMountsFor=/var/lib/katl
+RequiresMountsFor=/efi /var/lib/katl
 
 [Service]
 Type=oneshot

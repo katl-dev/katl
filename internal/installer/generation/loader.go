@@ -93,7 +93,8 @@ func entryOptions(record Record, machineID string, generationID string, rootSlot
 	machine := "systemd.machine_id=" + machineID
 	generation := "katl.generation=" + generationID
 	slot := "katl.root-slot=" + rootSlot
-	base := []string{root, "rootfstype=squashfs", "ro", machine, generation, slot}
+	gptAuto := "systemd.gpt_auto=no"
+	base := []string{root, "rootfstype=squashfs", "ro", "systemd.gpt_auto=no", machine, generation, slot}
 	extra := make([]string, 0, len(record.KernelCommandLine))
 	for _, option := range record.KernelCommandLine {
 		option, err := cleanOption(option)
@@ -115,6 +116,10 @@ func entryOptions(record Record, machineID string, generationID string, rootSlot
 		case option == "ro":
 		case option == "rw":
 			return nil, fmt.Errorf("loader option rw is unsupported")
+		case strings.HasPrefix(option, "systemd.gpt_auto="):
+			if option != gptAuto {
+				return nil, fmt.Errorf("loader systemd.gpt_auto option %q is unsupported", option)
+			}
 		case strings.HasPrefix(option, "systemd.machine_id="):
 			if option != machine {
 				return nil, fmt.Errorf("loader machine-id option does not match install machine-id")

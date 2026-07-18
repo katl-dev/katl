@@ -24,6 +24,7 @@ type KubernetesProjectionRequest struct {
 
 type StateAssets struct {
 	VarMount           string
+	EFIMount           string
 	EtcKubernetesMount string
 	GenerationActivate string
 	KubeadmActivate    string
@@ -72,6 +73,25 @@ func RenderState(request StateRequest) (StateAssets, error) {
 			"Where=/var",
 			"Type=auto",
 			"Options=rw",
+			"",
+			"[Install]",
+			"WantedBy=local-fs.target",
+			"",
+		}, "\n"),
+		EFIMount: strings.Join([]string{
+			"[Unit]",
+			"Description=Katl EFI system partition",
+			"Documentation=man:systemd.mount(5)",
+			"DefaultDependencies=no",
+			"Before=local-fs.target",
+			"Conflicts=umount.target",
+			"Before=umount.target",
+			"",
+			"[Mount]",
+			"What=/dev/disk/by-partlabel/KATL_ESP",
+			"Where=/efi",
+			"Type=vfat",
+			"Options=rw,umask=0077",
 			"",
 			"[Install]",
 			"WantedBy=local-fs.target",
@@ -204,7 +224,7 @@ func renderBootHealthService() string {
 		"Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service",
 		"After=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service",
 		"Before=katl-boot-complete.target",
-		"RequiresMountsFor=/var/lib/katl",
+		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
 		"[Service]",
 		"Type=oneshot",
@@ -225,7 +245,7 @@ func renderBootDeadmanService() string {
 		"Documentation=man:systemd.service(5)",
 		"Requires=var.mount",
 		"After=var.mount",
-		"RequiresMountsFor=/var/lib/katl",
+		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
 		"[Service]",
 		"Type=oneshot",
@@ -324,7 +344,7 @@ func renderAgentService() string {
 		"Wants=network-online.target",
 		"After=local-fs.target var.mount katl-generation-activate.service network-online.target",
 		"Before=katl-kubeadm-ready.target",
-		"RequiresMountsFor=/var/lib/katl",
+		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
 		"[Service]",
 		"Type=simple",
@@ -351,6 +371,12 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/var.mount", assets.VarMount, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/efi.mount", assets.EFIMount, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/local-fs.target.wants/efi.mount", "../efi.mount"); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/etc-kubernetes.mount", assets.EtcKubernetesMount, 0o644); err != nil {

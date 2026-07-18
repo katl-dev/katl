@@ -23,7 +23,7 @@ version 0.1.0
 sort-key katl
 machine-id 0123456789abcdef0123456789abcdef
 efi /EFI/Linux/katl-2026.06.01-001.efi
-options root=PARTUUID=11111111-2222-3333-4444-555555555555 rootfstype=squashfs ro systemd.machine_id=0123456789abcdef0123456789abcdef katl.generation=2026.06.01-001 katl.root-slot=root-a console=ttyS0,115200n8
+options root=PARTUUID=11111111-2222-3333-4444-555555555555 rootfstype=squashfs ro systemd.gpt_auto=no systemd.machine_id=0123456789abcdef0123456789abcdef katl.generation=2026.06.01-001 katl.root-slot=root-a console=ttyS0,115200n8
 `
 	if entry.Name != "katl-2026.06.01-001.conf" || entry.Content != want {
 		t.Fatalf("entry = %#v\nwant content:\n%s", entry, want)
@@ -42,7 +42,7 @@ version 0.2.0
 sort-key katl
 machine-id 0123456789abcdef0123456789abcdef
 efi /EFI/Linux/katl-2026.06.01-002.efi
-options root=PARTUUID=66666666-7777-8888-9999-000000000000 rootfstype=squashfs ro systemd.machine_id=0123456789abcdef0123456789abcdef katl.generation=2026.06.01-002 katl.root-slot=root-b
+options root=PARTUUID=66666666-7777-8888-9999-000000000000 rootfstype=squashfs ro systemd.gpt_auto=no systemd.machine_id=0123456789abcdef0123456789abcdef katl.generation=2026.06.01-002 katl.root-slot=root-b
 `
 	if entry.Content != want {
 		t.Fatalf("entry content:\n%s\nwant:\n%s", entry.Content, want)
@@ -56,6 +56,16 @@ func TestRenderEntryRejectsRoot(t *testing.T) {
 	_, err := RenderEntry(LoaderRequest{Record: record, MachineID: testMachineID})
 	if err == nil || !strings.Contains(err.Error(), "root option") {
 		t.Fatalf("RenderEntry() error = %v, want root option failure", err)
+	}
+}
+
+func TestRenderEntryRejectsGPTAutoDiscovery(t *testing.T) {
+	record := abRecord(t, "2026.06.01-003", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.34.8", time.Time{})
+	record.KernelCommandLine = []string{"systemd.gpt_auto=yes"}
+
+	_, err := RenderEntry(LoaderRequest{Record: record, MachineID: testMachineID})
+	if err == nil || !strings.Contains(err.Error(), "systemd.gpt_auto") {
+		t.Fatalf("RenderEntry() error = %v, want gpt-auto failure", err)
 	}
 }
 

@@ -35,6 +35,26 @@ WantedBy=local-fs.target
 	if assets.VarMount != wantMount {
 		t.Fatalf("var.mount:\n%s\nwant:\n%s", assets.VarMount, wantMount)
 	}
+	wantEFIMount := `[Unit]
+Description=Katl EFI system partition
+Documentation=man:systemd.mount(5)
+DefaultDependencies=no
+Before=local-fs.target
+Conflicts=umount.target
+Before=umount.target
+
+[Mount]
+What=/dev/disk/by-partlabel/KATL_ESP
+Where=/efi
+Type=vfat
+Options=rw,umask=0077
+
+[Install]
+WantedBy=local-fs.target
+`
+	if assets.EFIMount != wantEFIMount {
+		t.Fatalf("efi.mount:\n%s\nwant:\n%s", assets.EFIMount, wantEFIMount)
+	}
 	for _, want := range []string{
 		"d /var/lib/katl 0755 root root -",
 		"d /var/lib/katl/boot 0755 root root -",
@@ -249,7 +269,7 @@ Documentation=man:systemd.service(5)
 Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service
 After=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
-RequiresMountsFor=/var/lib/katl
+RequiresMountsFor=/efi /var/lib/katl
 
 [Service]
 Type=oneshot
@@ -268,7 +288,7 @@ Description=Fail Katl boot health after deadline
 Documentation=man:systemd.service(5)
 Requires=var.mount
 After=var.mount
-RequiresMountsFor=/var/lib/katl
+RequiresMountsFor=/efi /var/lib/katl
 
 [Service]
 Type=oneshot
@@ -307,7 +327,7 @@ Requires=var.mount katl-generation-activate.service
 Wants=network-online.target
 After=local-fs.target var.mount katl-generation-activate.service network-online.target
 Before=katl-kubeadm-ready.target
-RequiresMountsFor=/var/lib/katl
+RequiresMountsFor=/efi /var/lib/katl
 
 [Service]
 Type=simple
@@ -354,6 +374,8 @@ func TestWriteState(t *testing.T) {
 		t.Fatalf("WriteState() error = %v", err)
 	}
 	assertFile(t, filepath.Join(root, "etc/systemd/system/var.mount"), assets.VarMount)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/efi.mount"), assets.EFIMount)
+	assertSymlink(t, filepath.Join(root, "etc/systemd/system/local-fs.target.wants/efi.mount"), "../efi.mount")
 	assertFile(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-generation-activate.service"), assets.GenerationActivate)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-activate.service"), assets.KubeadmActivate)
@@ -409,6 +431,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	systemdRoot := filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system")
 
 	assertRepoFile(t, filepath.Join(systemdRoot, "var.mount"), strings.ReplaceAll(assets.VarMount, "PARTUUID="+statePartUUID, "/dev/disk/by-partlabel/KATL_STATE"))
+	assertRepoFile(t, filepath.Join(systemdRoot, "efi.mount"), assets.EFIMount)
 	assertRepoFile(t, filepath.Join(systemdRoot, "etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-generation-activate.service"), assets.GenerationActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-activate.service"), assets.KubeadmActivate)
@@ -425,6 +448,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/usr/lib/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
 
 	assertSymlink(t, filepath.Join(systemdRoot, "local-fs.target.wants/var.mount"), "../var.mount")
+	assertSymlink(t, filepath.Join(systemdRoot, "local-fs.target.wants/efi.mount"), "../efi.mount")
 	assertMissing(t, filepath.Join(systemdRoot, "local-fs.target.wants/etc-kubernetes.mount"))
 	assertMissing(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-kubeadm-ready.target"))
 	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-kubeadm-activate.service"), "../katl-kubeadm-activate.service")

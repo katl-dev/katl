@@ -1,0 +1,16 @@
+[Unit]
+Description=Katl EFI system partition
+Documentation=man:systemd.mount(5)
+DefaultDependencies=no
+Before=local-fs.target
+Conflicts=umount.target
+Before=umount.target
+
+[Mount]
+What=/dev/disk/by-partlabel/KATL_ESP
+Where=/efi
+Type=vfat
+Options=rw,umask=0077
+
+[Install]
+WantedBy=local-fs.target

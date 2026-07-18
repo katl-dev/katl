@@ -5,7 +5,7 @@ Requires=var.mount katl-generation-activate.service
 Wants=network-online.target
 After=local-fs.target var.mount katl-generation-activate.service network-online.target
 Before=katl-kubeadm-ready.target
-RequiresMountsFor=/var/lib/katl
+RequiresMountsFor=/efi /var/lib/katl
 
 [Service]
 Type=simple

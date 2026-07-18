@@ -338,7 +338,7 @@ func assertBootedGenerationIdentity(t *testing.T, ctx context.Context, guest *Gu
 			t.Fatalf("booted kernel command line is missing generation argument %q: %s", argument, cmdline)
 		}
 	}
-	guestCommand(t, ctx, guest, "mount-esp-for-generation-verification", "mount", "/dev/disk/by-label/KATLEFI", "/efi")
+	guestCommand(t, ctx, guest, "verify-automatic-efi-mount", "findmnt", "--mountpoint", "/efi")
 	assertGuestExists(t, ctx, guest, spec.Boot.UKIPath)
 }
 
