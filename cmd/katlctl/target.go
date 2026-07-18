@@ -113,6 +113,14 @@ func readManagementInventory(path string) (inventory.Inventory, error) {
 			}
 			inv.Nodes = append(inv.Nodes, inventory.Node{Name: name, Address: strings.TrimSpace(sourceNode.Bootstrap.Address), SystemRole: role})
 		}
+		if inv.ControlPlaneEndpoint == "" {
+			for _, node := range inv.Nodes {
+				if node.SystemRole == inventory.RoleControlPlane && strings.TrimSpace(node.Address) != "" {
+					inv.ControlPlaneEndpoint = net.JoinHostPort(strings.TrimSpace(node.Address), "6443")
+					break
+				}
+			}
+		}
 		return inv, nil
 	}
 	bundle, bundleErr := configbundle.ReadBundle(bytes.NewReader(data), "")
