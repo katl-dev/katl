@@ -94,12 +94,15 @@ func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
 func (render *Renderer) paintCompact(snapshot *Snapshot) {
 	content := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: max(render.frame.Height-1, 0)})
 	content.Write("KatlOS", WrapOptions{Style: styleTitle, WordWrap: true})
+	writeCompactAlerts(&content, activeAlerts(snapshot))
 	presentation := presentInstaller(snapshot)
 	if snapshot.Mode == ModeRuntime {
 		presentation = NewDashboardModel(snapshot).Host
 	}
-	content.Write(presentation.Label, WrapOptions{Style: presentationStyle(presentation.State), WordWrap: true})
-	if address := snapshot.ManagementAddress; address != "" {
+	if content.rowsRemaining() > 0 {
+		content.Write(presentation.Label, WrapOptions{Style: presentationStyle(presentation.State), WordWrap: true})
+	}
+	if address := snapshot.ManagementAddress; address != "" && content.rowsRemaining() > 0 {
 		content.Write(address, WrapOptions{WordWrap: true})
 	}
 }
@@ -209,6 +212,22 @@ func writeAlerts(viewport *Viewport, alerts []alertSpec) {
 		alertViewport := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: height})
 		writeField(&alertViewport, alert.label, alert.value, alert.style)
 		viewport.advance(max(alertViewport.rowsUsed(), 1))
+	}
+}
+
+func writeCompactAlerts(viewport *Viewport, alerts []alertSpec) {
+	for index, alert := range alerts {
+		if viewport.rowsRemaining() == 0 {
+			return
+		}
+		remainingAlerts := len(alerts) - index - 1
+		frame := Frame{Width: viewport.bounds.Width, Height: maximumHeight}
+		measure := NewViewport(&frame, Rect{Width: viewport.bounds.Width, Height: maximumHeight})
+		measure.Write(alert.label+": "+alert.value, WrapOptions{Style: alert.style, WordWrap: true})
+		height := min(max(measure.rowsUsed(), 1), max(viewport.rowsRemaining()-remainingAlerts, 1))
+		alertViewport := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: height})
+		result := alertViewport.Write(alert.label+": "+alert.value, WrapOptions{Style: alert.style, WordWrap: true})
+		viewport.advance(max(result.Rows, 1))
 	}
 }
 

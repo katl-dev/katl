@@ -857,6 +857,57 @@ func TestRenderUsesActualUndersizedTerminal(t *testing.T) {
 	}
 }
 
+func TestRenderCompactPrioritizesRecoveryGuidance(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "below minimum width", width: minimumWidth - 1, height: minimumHeight},
+		{name: "below minimum height", width: minimumWidth, height: minimumHeight - 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := Snapshot{
+				Mode:            ModeRuntime,
+				LastError:       "runtime failed",
+				RetryHint:       "boot recovery media",
+				StatusError:     "status unreadable",
+				StatusStale:     true,
+				HandoffError:    "handoff unreadable",
+				GenerationError: "generation unreadable",
+			}
+			got := string(renderDashboard(&snapshot, nil, test.width, test.height, false))
+			for _, want := range []string{
+				"Error:runtime failed",
+				"Next action:boot recovery media",
+				"Status read:status unreadable",
+				"Status stale:state has not updated",
+				"Handoff read:handoff unreadable",
+				"Generation read:generation unreadable",
+			} {
+				if !containsIgnoringLayout(got, want) {
+					t.Fatalf("compact render missing %q:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderVeryNarrowCompactShowsRecoveryText(t *testing.T) {
+	snapshot := Snapshot{
+		Mode:      ModeInstaller,
+		LastError: "disk write failed",
+		RetryHint: "boot recovery media",
+	}
+	got := string(renderDashboard(&snapshot, nil, 20, 8, false))
+	for _, want := range []string{"Error:disk write failed", "Next action:boot recovery media"} {
+		if !containsIgnoringLayout(got, want) {
+			t.Fatalf("very narrow compact render missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRenderDimensionsAreCapped(t *testing.T) {
 	if got, want := RenderCapacity(maximumWidth+1, maximumHeight+1), RenderCapacity(maximumWidth, maximumHeight); got != want {
 		t.Fatalf("oversized render capacity = %d, want %d", got, want)
