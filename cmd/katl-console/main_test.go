@@ -72,18 +72,22 @@ func TestJournalRingCompactsDateTimeTimestamps(t *testing.T) {
 	}
 }
 
-func TestJournalRingReusesPreallocatedLines(t *testing.T) {
+func TestJournalRingReusesBoundedSlots(t *testing.T) {
 	ring := newJournalRing(2)
 	line := []byte("2026-07-17T18:02:03.123456+01:00 " + strings.Repeat("x", journalLineCapacity-39))
 	storage := make([]byte, 4096)
-	allocations := testing.AllocsPerRun(1000, func() {
+	for range 1000 {
 		ring.Add(line)
 		writer := operatorconsole.NewJournalWriter(operatorconsole.NewRenderTarget(storage, 80, 2))
 		ring.WriteTail(&writer)
-		_ = writer.Bytes()
-	})
-	if allocations != 0 {
-		t.Fatalf("journal add/render allocations = %v, want 0", allocations)
+		if len(writer.Bytes()) == 0 {
+			t.Fatal("journal slot rendered empty content")
+		}
+	}
+	for index, slot := range ring.lines {
+		if cap(slot) > journalLineCapacity {
+			t.Fatalf("slot %d capacity = %d", index, cap(slot))
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/opencontainers/image-spec v1.1.1
+	github.com/rivo/uniseg v0.4.7
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.44.0
 	google.golang.org/grpc v1.81.0

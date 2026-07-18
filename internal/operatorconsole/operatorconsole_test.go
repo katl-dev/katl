@@ -205,8 +205,8 @@ func TestCollectorReportsLiveBootstrapCandidateBeforeReboot(t *testing.T) {
 		t.Fatalf("software state = KatlOS %q, Kubernetes %q, bootstrapped=%t", snapshot.Version, snapshot.KubernetesVersion, snapshot.KubernetesBootstrapped)
 	}
 	rendered := string(renderDashboard(&snapshot, nil, 80, 20, false))
-	for _, want := range []string{"Generation: 0", "Next boot:  bootstrap-init-candidate", "Version:    v1.36.1", "Bootstrapped"} {
-		if !strings.Contains(rendered, want) {
+	for _, want := range []string{"Generation:0", "Nextboot:bootstrap-init-candidate", "Version:v1.36.1", "Bootstrapped"} {
+		if !containsIgnoringLayout(rendered, want) {
 			t.Fatalf("render missing %q:\n%s", want, rendered)
 		}
 	}
@@ -281,17 +281,17 @@ func TestRenderInstallerDashboard(t *testing.T) {
 	got := string(renderDashboard(&snapshot, journal, 80, 25, false))
 	for _, want := range []string{
 		"KatlOS Installer",
-		"State:        Installing",
-		"Network:      enp1s0: 192.0.2.10/24",
-		"Media:        2026.7.0-alpha.9",
-		"Disk changes: started - do not power off",
-		"Configure:    http://192.0.2.10:8080/v1/config-bundle",
-		"Run:          katlctl config init cluster.yaml --installer 192.0.2.10",
+		"State:Installing",
+		"Network:enp1s0:192.0.2.10/24",
+		"Media:2026.7.0-alpha.9",
+		"Diskchanges:started-donotpoweroff",
+		"Configure:http://192.0.2.10:8080/v1/config-bundle",
+		"Run:katlctlconfiginitcluster.yaml--installer192.0.2.10",
 		"Journal",
 		"installing root",
-		"Ctrl+Alt+F2: console | SSH disabled",
+		"Ctrl+Alt+F2:console|SSHdisabled",
 	} {
-		if !strings.Contains(got, want) {
+		if !containsIgnoringLayout(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
 	}
@@ -317,8 +317,8 @@ func TestRenderInstallerCommandUsesHandoffURLWithoutIPv4(t *testing.T) {
 		Network: []NetworkInterface{{Name: "enp1s0", Addresses: []string{"2001:db8::10/64"}}},
 	}
 	got := string(renderDashboard(&snapshot, nil, 100, 18, false))
-	want := "Run:          katlctl config init cluster.yaml --installer http://[2001:db8::10]:8080"
-	if !strings.Contains(got, want) {
+	want := "Run:katlctlconfiginitcluster.yaml--installerhttp://[2001:db8::10]:8080"
+	if !containsIgnoringLayout(got, want) {
 		t.Fatalf("render missing %q:\n%s", want, got)
 	}
 }
@@ -338,8 +338,8 @@ func TestRenderRuntimeFailure(t *testing.T) {
 		Network:           []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
 	}
 	got := string(renderDashboard(&snapshot, nil, 80, 20, false))
-	for _, want := range []string{"Status", "Host", "Kubernetes", "Needs repair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation: 4", "Error:", "boot health check failed", "SSH: katl@192.0.2.20"} {
-		if !strings.Contains(got, want) {
+	for _, want := range []string{"Status", "Host", "Kubernetes", "Needsrepair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Generation:4", "Error:", "boothealthcheckfailed", "SSH:katl@192.0.2.20"} {
+		if !containsIgnoringLayout(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
 	}
@@ -354,8 +354,8 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 		CurrentStep:      "Reboot",
 	}
 	plain := string(renderDashboard(&snapshot, nil, 80, 15, false))
-	for _, want := range []string{"KatlOS\n", "Status\n", "State:      OK", "Generation: 0", "Journal"} {
-		if !strings.Contains(plain, want) {
+	for _, want := range []string{"KatlOS", "Status", "State:OK", "Generation:0", "Journal"} {
+		if !containsIgnoringLayout(plain, want) {
 			t.Fatalf("plain render missing %q:\n%s", want, plain)
 		}
 	}
@@ -393,11 +393,11 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 		t.Fatalf("split title row = %q", lines[splitRow])
 	}
 	stateRow := lines[splitRow+1]
-	if !strings.Contains(stateRow, "State:      OK") || !strings.Contains(stateRow, "│State:      Bootstrapped") {
+	if !containsIgnoringLayout(stateRow, "State:OK") || !containsIgnoringLayout(stateRow, "│State:Bootstrapped") {
 		t.Fatalf("split state row = %q", stateRow)
 	}
 	versionRow := lines[splitRow+2]
-	if !strings.Contains(versionRow, "Node:       cp-1") || !strings.Contains(versionRow, "│Version:    v1.36.1") {
+	if !containsIgnoringLayout(versionRow, "Node:cp-1") || !containsIgnoringLayout(versionRow, "│Version:v1.36.1") {
 		t.Fatalf("split version row = %q", versionRow)
 	}
 	if !strings.Contains(got, "latest journal event") {
@@ -405,7 +405,7 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 	}
 }
 
-func TestRenderRuntimeSubPanesWrapOverflowIndependently(t *testing.T) {
+func TestRenderRuntimeStacksPanesAtNarrowWidths(t *testing.T) {
 	hostname := "cp-with-a-deliberately-long-hostname.example.test"
 	version := "v1.36.1-with-a-deliberately-long-build-identifier"
 	generationID := "generation-with-a-deliberately-long-identifier"
@@ -419,11 +419,11 @@ func TestRenderRuntimeSubPanesWrapOverflowIndependently(t *testing.T) {
 		Generation:             generationID,
 		GenerationHealth:       "healthy",
 	}
-	plain := string(renderDashboard(&snapshot, nil, 40, 40, false))
-	colored := string(renderDashboard(&snapshot, nil, 40, 40, true))
+	plain := string(renderDashboard(&snapshot, nil, 40, 60, false))
+	colored := string(renderDashboard(&snapshot, nil, 40, 60, true))
 	for name, output := range map[string]string{"plain": plain, "colored": colored} {
-		if strings.Contains(output, "~") {
-			t.Fatalf("%s render truncated overflow:\n%s", name, output)
+		if strings.Contains(output, "│") || strings.Contains(output, "…") {
+			t.Fatalf("%s narrow render used split panes or truncated content:\n%s", name, output)
 		}
 		for number, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
 			if width := visibleWidth(line); width > 40 {
@@ -432,26 +432,27 @@ func TestRenderRuntimeSubPanesWrapOverflowIndependently(t *testing.T) {
 		}
 	}
 
-	lines := strings.Split(strings.TrimSuffix(plain, "\n"), "\n")
-	splitRow := lineIndexContaining(lines, "Host")
-	networkRow := lineIndexContaining(lines, "Network:")
-	journalRow := lineIndex(lines, "Journal")
-	if splitRow < 0 || networkRow <= splitRow || journalRow <= networkRow {
-		t.Fatalf("missing nested panes:\n%s", plain)
+	hostRow := strings.Index(plain, "Host")
+	kubernetesRow := strings.Index(plain, "Kubernetes")
+	networkRow := strings.Index(plain, "Network:")
+	journalRow := strings.Index(plain, "Journal")
+	if hostRow < 0 || kubernetesRow <= hostRow || networkRow <= kubernetesRow || journalRow <= networkRow {
+		t.Fatalf("unexpected stacked pane order:\n%s", plain)
 	}
-	var left, right strings.Builder
-	for _, line := range lines[splitRow:networkRow] {
-		divider := strings.IndexRune(line, '│')
-		if divider < 0 || len([]rune(line[:divider])) != 19 {
-			t.Fatalf("unstable divider in %q", line)
-		}
-		left.WriteString(strings.ReplaceAll(line[:divider], " ", ""))
-		right.WriteString(strings.ReplaceAll(line[divider+len("│"):], " ", ""))
-	}
-	for value, side := range map[string]string{hostname: left.String(), generationID: left.String(), version: right.String()} {
-		if !strings.Contains(side, value) {
+	for _, value := range []string{hostname, generationID, version} {
+		if !containsIgnoringLayout(plain, value) {
 			t.Fatalf("wrapped panes lost %q:\n%s", value, plain)
 		}
+	}
+}
+
+func TestRenderRuntimeUsesSplitPanesOnlyAtWideBreakpoint(t *testing.T) {
+	snapshot := Snapshot{Mode: ModeRuntime, State: installstatus.StateKubeadmReady}
+	if narrow := string(renderDashboard(&snapshot, nil, wideLayoutWidth-1, 24, false)); strings.Contains(narrow, "│") {
+		t.Fatalf("narrow render contains divider:\n%s", narrow)
+	}
+	if wide := string(renderDashboard(&snapshot, nil, wideLayoutWidth, 24, false)); !strings.Contains(wide, "│") {
+		t.Fatalf("wide render lacks divider:\n%s", wide)
 	}
 }
 
@@ -471,6 +472,14 @@ func lineIndexContaining(lines []string, value string) int {
 		}
 	}
 	return -1
+}
+
+func containsIgnoringLayout(value, want string) bool {
+	normalize := func(input string) string {
+		replacer := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "", "│", "")
+		return replacer.Replace(input)
+	}
+	return strings.Contains(normalize(value), normalize(want))
 }
 
 func TestRenderRebootHidesRedundantProgress(t *testing.T) {
@@ -590,7 +599,7 @@ func emulateTerminal(t *testing.T, data []byte, width, height int) terminalState
 	}
 	for position := 0; position < len(data); {
 		if data[position] == '\x1b' {
-			next := skipANSIBytes(data, position)
+			next := position + skipTerminalSequence(string(data[position:]))
 			sequence := string(data[position:next])
 			switch sequence {
 			case "\x1b[H":
@@ -653,8 +662,8 @@ func TestJournalLineWrapsAndStripsANSI(t *testing.T) {
 		t.Fatalf("JournalWriter.WriteLine() = %q, rows=%d", got, rows)
 	}
 	for number, line := range strings.Split(strings.TrimSuffix(string(got), "\n"), "\n") {
-		if len([]rune(line)) > 40 {
-			t.Fatalf("line %d width = %d: %q", number+1, len([]rune(line)), line)
+		if width := visibleWidth(line); width > 40 {
+			t.Fatalf("line %d width = %d: %q", number+1, width, line)
 		}
 	}
 	if joined := strings.ReplaceAll(string(got), "\n", ""); joined != strings.TrimSuffix(string(value), "\x1b[31m") {
@@ -662,44 +671,180 @@ func TestJournalLineWrapsAndStripsANSI(t *testing.T) {
 	}
 }
 
-func TestRendererReusesBuffer(t *testing.T) {
+func TestViewportMeasuresDisplayGraphemes(t *testing.T) {
+	value := "界e\u0301👩‍💻" + string([]byte{0xff})
+	if got, want := displayWidth(value), 6; got != want {
+		t.Fatalf("display width = %d, want %d", got, want)
+	}
+	frame := newFrame(5, 2)
+	viewport := NewViewport(&frame, Rect{Width: 5, Height: 2})
+	result := viewport.Write(value, WrapOptions{})
+	if result.Truncated || result.Rows != 2 {
+		t.Fatalf("write result = %#v", result)
+	}
+	if got := frameText(&frame, Rect{Width: 5, Height: 2}); got != "界é👩‍💻�" {
+		t.Fatalf("painted graphemes = %q", got)
+	}
+	assertGraphemesFit(t, &frame, Rect{Width: 5, Height: 2})
+}
+
+func TestViewportPreservesLongValuesAndMarksVerticalOverflow(t *testing.T) {
+	value := strings.Repeat("abcdefghij", 8)
+	frame := newFrame(7, 20)
+	viewport := NewViewport(&frame, Rect{Width: 7, Height: 20})
+	if result := viewport.Write(value, WrapOptions{WordWrap: true}); result.Truncated {
+		t.Fatalf("value unexpectedly truncated: %#v", result)
+	}
+	if got := frameText(&frame, Rect{Width: 7, Height: 20}); got != value {
+		t.Fatalf("painted value changed: %q", got)
+	}
+
+	shortFrame := newFrame(4, 1)
+	short := NewViewport(&shortFrame, Rect{Width: 4, Height: 1})
+	if result := short.Write("abcdefgh", WrapOptions{}); !result.Truncated {
+		t.Fatalf("overflow result = %#v", result)
+	}
+	if got := shortFrame.Cells[3].Glyph; got != "…" {
+		t.Fatalf("truncation cell = %q", got)
+	}
+}
+
+func TestFieldsPanesAndJournalShareCellWrapping(t *testing.T) {
+	value := strings.Repeat("界e\u0301👩‍💻", 12)
+	paintField := func() string {
+		frame := newFrame(12, 24)
+		viewport := NewViewport(&frame, Rect{Width: 12, Height: 24})
+		writeField(&viewport, "", value, "")
+		return frameText(&frame, Rect{Width: 12, Height: 24})
+	}
+	paintPane := func() string {
+		frame := newFrame(12, 24)
+		viewport := NewViewport(&frame, Rect{Width: 12, Height: 24})
+		writePane(&viewport, "", []paneField{{value: value}})
+		return frameText(&frame, Rect{Width: 12, Height: 24})
+	}
+	paintJournal := func() string {
+		frame := newFrame(12, 24)
+		viewport := NewViewport(&frame, Rect{Width: 12, Height: 24})
+		writer := newJournalWriter(viewport)
+		writer.WriteLine([]byte(value))
+		return frameText(&frame, Rect{Width: 12, Height: 24})
+	}
+	if field, pane, journal := paintField(), paintPane(), paintJournal(); field != value || pane != field || journal != field {
+		t.Fatalf("shared wrapping changed content: field=%q pane=%q journal=%q", field, pane, journal)
+	}
+}
+
+func TestWidePaneDividerIsPaintedAfterBoundedContent(t *testing.T) {
+	renderer := NewRenderer(NewRenderTarget(make([]byte, RenderCapacity(80, 40)), 80, 40), false)
+	content := NewViewport(&renderer.frame, Rect{Width: 80, Height: 38})
+	snapshot := Snapshot{
+		Mode:              ModeRuntime,
+		Hostname:          strings.Repeat("host界\x1b[31m", 30),
+		Version:           strings.Repeat("version", 30),
+		Generation:        strings.Repeat("generation", 30),
+		KubernetesVersion: strings.Repeat("v1.36.1👩‍💻", 30),
+	}
+	renderer.writeRuntimeStatus(&content, &snapshot)
+	divider := (content.bounds.Width - 1) / 2
+	for row := 0; row < content.rowsUsed(); row++ {
+		if got := renderer.frame.Cells[row*renderer.frame.Width+divider].Glyph; got != "│" {
+			t.Fatalf("divider row %d = %q", row, got)
+		}
+	}
+}
+
+func FuzzViewportBounds(f *testing.F) {
+	seeds := []string{
+		"plain text",
+		"界e\u0301👩‍💻",
+		"before\x1b[31mred\x1b[0mafter",
+		string([]byte{'a', 0xff, 'b'}),
+		strings.Repeat("x", 256),
+	}
+	for index, seed := range seeds {
+		for _, width := range []uint8{0, 39, 70, 71, 119} {
+			f.Add(seed, width, uint8(1+index))
+		}
+	}
+	f.Fuzz(func(t *testing.T, value string, widthSeed, heightSeed uint8) {
+		width := int(widthSeed%120) + 1
+		height := int(heightSeed%32) + 1
+		frame := newFrame(width+2, height+2)
+		for index := range frame.Cells {
+			frame.Cells[index] = Cell{Glyph: "#", span: 1}
+		}
+		bounds := Rect{X: 1, Y: 1, Width: width, Height: height}
+		viewport := NewViewport(&frame, bounds)
+		viewport.Write(value, WrapOptions{WordWrap: true})
+		for y := range frame.Height {
+			for x := range frame.Width {
+				inside := x >= bounds.X && x < bounds.X+bounds.Width && y >= bounds.Y && y < bounds.Y+bounds.Height
+				if !inside && frame.Cells[y*frame.Width+x].Glyph != "#" {
+					t.Fatalf("viewport modified sentinel at %d,%d", x, y)
+				}
+			}
+		}
+		assertGraphemesFit(t, &frame, bounds)
+	})
+}
+
+func frameText(frame *Frame, bounds Rect) string {
+	var text strings.Builder
+	for y := bounds.Y; y < bounds.Y+bounds.Height; y++ {
+		for x := bounds.X; x < bounds.X+bounds.Width; x++ {
+			cell := frame.Cells[y*frame.Width+x]
+			if !cell.continuation {
+				text.WriteString(cell.Glyph)
+			}
+		}
+	}
+	return text.String()
+}
+
+func assertGraphemesFit(t *testing.T, frame *Frame, bounds Rect) {
+	t.Helper()
+	for y := bounds.Y; y < bounds.Y+bounds.Height; y++ {
+		for x := bounds.X; x < bounds.X+bounds.Width; x++ {
+			cell := frame.Cells[y*frame.Width+x]
+			if cell.Glyph == "" || cell.continuation {
+				continue
+			}
+			if cell.span < 1 || x+cell.span > bounds.X+bounds.Width {
+				t.Fatalf("grapheme %q at %d,%d spans outside viewport", cell.Glyph, x, y)
+			}
+		}
+	}
+}
+
+func TestRendererBoundsArbitraryContentAtSupportedWidths(t *testing.T) {
 	snapshot := Snapshot{
 		Mode:                   ModeRuntime,
 		State:                  installstatus.StateKubeadmReady,
-		Hostname:               "cp-1",
-		Version:                "2026.7.0-alpha.15",
-		Generation:             "4",
+		Hostname:               "控制面-e\u0301-👩‍💻\x1b[31m-node",
+		Version:                strings.Repeat("version", 20),
+		Generation:             string([]byte{'g', 'e', 'n', 0xff}),
 		GenerationHealth:       "healthy",
-		KubernetesVersion:      "v1.36.1",
+		KubernetesVersion:      strings.Repeat("v1.36.1", 20),
 		KubernetesBootstrapped: true,
 		SSHEnabled:             true,
 		Network: []NetworkInterface{{
-			Name:      "enp1s0",
+			Name:      strings.Repeat("interface", 12),
 			Addresses: []string{"10.1.2.254/24", "fd00::254/64"},
 		}},
 	}
-	journal := testJournal{[]byte("journal line")}
-	for _, color := range []bool{false, true} {
-		name := "plain"
-		if color {
-			name = "color"
+	journal := testJournal{[]byte("日志 e\u0301 👩‍💻 \x1b[31m" + strings.Repeat("payload", 20))}
+	for width := 1; width <= 120; width++ {
+		got := string(renderDashboard(&snapshot, journal, width, 32, false))
+		lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+		if len(lines) != 32 {
+			t.Fatalf("width %d rendered %d rows", width, len(lines))
 		}
-		t.Run(name, func(t *testing.T) {
-			storage := make([]byte, RenderCapacity(80, 25))
-			renderer := NewRenderer(NewRenderTarget(storage, 80, 25), color)
-			buffer := renderer.Render(&snapshot, &journal)
-			start := &buffer[0]
-
-			allocations := testing.AllocsPerRun(1000, func() {
-				buffer = renderer.Render(&snapshot, &journal)
-			})
-			if allocations != 0 {
-				t.Fatalf("Renderer.Render() allocations = %v, want 0", allocations)
+		for row, line := range lines {
+			if gotWidth := visibleWidth(line); gotWidth > width {
+				t.Fatalf("width %d row %d occupies %d cells: %q", width, row, gotWidth, line)
 			}
-			if &buffer[0] != start {
-				t.Fatal("Renderer.Render() replaced owned storage")
-			}
-		})
+		}
 	}
 }
 

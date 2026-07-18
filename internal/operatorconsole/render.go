@@ -2,7 +2,6 @@ package operatorconsole
 
 import (
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -11,15 +10,15 @@ const (
 	minimumHeight   = 12
 	maximumWidth    = 512
 	maximumHeight   = 256
+	wideLayoutWidth = 72
 	fieldWidth      = 14
-	panelFieldWidth = 12
 
-	styleReset = "\x1b[0m"
-	styleTitle = "\x1b[1;36m"
-	styleGood  = "\x1b[1;32m"
-	styleWarn  = "\x1b[1;33m"
-	styleBad   = "\x1b[1;31m"
-	styleDim   = "\x1b[2m"
+	styleReset Style = "\x1b[0m"
+	styleTitle Style = "\x1b[1;36m"
+	styleGood  Style = "\x1b[1;32m"
+	styleWarn  Style = "\x1b[1;33m"
+	styleBad   Style = "\x1b[1;31m"
+	styleDim   Style = "\x1b[2m"
 )
 
 const clearScreen = "\x1b[H\x1b[2J"
@@ -30,442 +29,269 @@ type Journal interface {
 	WriteTail(*JournalWriter)
 }
 
-// RenderCapacity returns enough capacity for a complete render without growth.
-// UTFMax accounts for every terminal cell containing a four-byte UTF-8 rune.
+// RenderCapacity returns a useful initial serialization buffer size. Layout is
+// bounded by a cell Frame, so unusually long grapheme encodings may grow this
+// byte buffer without escaping the fixed terminal geometry.
 func RenderCapacity(width, height int) int {
 	width, height = renderDimensions(width, height)
 	return height * (width*utf8.UTFMax + 32)
 }
 
-// RenderTarget owns fixed storage and its terminal geometry. Writers start at
-// the top-left and may reset the cursor, but they never grow the storage.
+// RenderTarget supplies reusable serialization storage and physical geometry.
 type RenderTarget struct {
-	storage  []byte
-	width    int
-	rows     int
-	position int
+	storage []byte
+	width   int
+	rows    int
 }
 
-// NewRenderTarget binds fixed storage to a terminal-sized region.
+// NewRenderTarget binds storage to a terminal-sized region.
 func NewRenderTarget(storage []byte, width, rows int) RenderTarget {
 	return RenderTarget{storage: storage, width: width, rows: rows}
 }
 
-func (target *RenderTarget) reset() {
-	target.position = 0
-}
-
-func (target *RenderTarget) bytes() []byte {
-	return target.storage[:target.position]
-}
-
-func (target *RenderTarget) writeByte(value byte) {
-	if target.position >= len(target.storage) {
-		panic("operatorconsole: render capacity exhausted")
-	}
-	target.storage[target.position] = value
-	target.position++
-}
-
-func (target *RenderTarget) writeString(value string) {
-	if len(value) > len(target.storage)-target.position {
-		panic("operatorconsole: render capacity exhausted")
-	}
-	target.position += copy(target.storage[target.position:], value)
-}
-
-func (target *RenderTarget) writeRune(value rune) {
-	if value < utf8.RuneSelf {
-		target.writeByte(byte(value))
-		return
-	}
-	if utf8.RuneLen(value) > len(target.storage)-target.position {
-		panic("operatorconsole: render capacity exhausted")
-	}
-	target.position += utf8.EncodeRune(target.storage[target.position:], value)
-}
-
-func (target *RenderTarget) truncate(position int) {
-	target.position = position
-}
-
-func (target *RenderTarget) tail(rows int) RenderTarget {
-	return RenderTarget{
-		storage: target.storage[target.position:],
-		width:   target.width,
-		rows:    rows,
-	}
-}
-
-// Renderer owns fixed output storage, terminal geometry, cursor state and line
-// writers. Render always starts at the top-left of that storage and never grows
-// it; callers replace the renderer when the terminal dimensions change.
+// Renderer paints a bounded terminal-cell frame and serializes it only after
+// all content and defensive dividers have been placed.
 type Renderer struct {
-	output       RenderTarget
-	contentRows  int
-	row          int
-	color        bool
-	lineState    lineWriter
-	wrappedState wrappedWriter
-	journalState JournalWriter
+	frame  Frame
+	output []byte
+	color  bool
 }
 
-// NewRenderer binds a renderer to a fixed render target.
+// NewRenderer binds a reusable frame and serialization buffer to a target.
 func NewRenderer(target RenderTarget, color bool) Renderer {
-	target.width, target.rows = renderDimensions(target.width, target.rows)
-	required := RenderCapacity(target.width, target.rows)
-	if len(target.storage) < required {
-		panic("operatorconsole: renderer storage is smaller than RenderCapacity")
-	}
-	target.storage = target.storage[:required]
+	width, height := renderDimensions(target.width, target.rows)
 	return Renderer{
-		output:      target,
-		contentRows: target.rows - 1,
-		color:       color,
+		frame:  newFrame(width, height),
+		output: target.storage[:0],
+		color:  color,
 	}
 }
 
-// MatchesDimensions reports whether the renderer owns storage for the given
-// terminal geometry.
+// MatchesDimensions reports whether the renderer owns a frame for the given
+// physical terminal geometry.
 func (render *Renderer) MatchesDimensions(width, height int) bool {
 	width, height = renderDimensions(width, height)
-	return render.output.width == width && render.output.rows == height && len(render.output.storage) >= RenderCapacity(width, height)
+	return render.frame.Width == width && render.frame.Height == height
 }
 
-// Render writes a complete dashboard from the top-left of the owned storage.
-// Colour renderers include the terminal cursor-home and clear sequence.
+// Render paints a complete dashboard. Colour output ends with a carriage
+// return on the bottom row; plain snapshots retain their final newline.
 func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
-	render.output.reset()
-	render.row = 0
-	if render.color {
-		render.output.writeString(clearScreen)
-	}
-	if render.output.width < minimumWidth || render.output.rows < minimumHeight {
-		return render.renderCompact(snapshot)
-	}
-
-	line := render.line()
-	line.style(styleTitle)
-	line.writeString("KatlOS")
-	if snapshot.Mode == ModeInstaller {
-		line.writeString(" Installer")
-	}
-	line.resetStyle()
-	line.finish()
-
-	line = render.line()
-	line.style(styleDim)
-	for range min(render.output.width, 72) {
-		line.writeByte('=')
-	}
-	line.resetStyle()
-	line.finish()
-
-	if snapshot.Mode == ModeRuntime {
-		render.writePaneHeading("Status")
-		render.writeRuntimeStatusPane(snapshot)
-		render.writeNetwork(snapshot.Network)
+	render.frame.reset()
+	if render.frame.Width < minimumWidth || render.frame.Height < minimumHeight {
+		render.paintCompact(snapshot)
 	} else {
-		render.writeInstallerStatus(snapshot)
+		render.paintDashboard(snapshot, journal)
+	}
+	render.paintFooter(snapshot)
+	render.output = serializeFrame(render.output[:0], &render.frame, render.frame.Height, render.color, true)
+	return render.output
+}
+
+func (render *Renderer) paintCompact(snapshot *Snapshot) {
+	content := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: max(render.frame.Height-1, 0)})
+	content.Write("KatlOS", WrapOptions{Style: styleTitle, WordWrap: true})
+	content.Write(stateLabel(snapshot.State), WrapOptions{Style: stateStyle(snapshot.State), WordWrap: true})
+	if address := firstIPv4(snapshot.Network); address != "" {
+		content.Write(address, WrapOptions{WordWrap: true})
+	}
+}
+
+func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
+	title := "KatlOS"
+	if snapshot.Mode == ModeInstaller {
+		title += " Installer"
+	}
+	titleViewport := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: 1})
+	titleViewport.Write(title, WrapOptions{Style: styleTitle})
+	divider := NewViewport(&render.frame, Rect{Y: 1, Width: min(render.frame.Width, 72), Height: 1})
+	divider.Write(strings.Repeat("=", divider.bounds.Width), WrapOptions{Style: styleDim})
+
+	content := NewViewport(&render.frame, Rect{Y: 2, Width: render.frame.Width, Height: render.frame.Height - 3})
+	if snapshot.Mode == ModeRuntime {
+		writeHeading(&content, "Status")
+		render.writeRuntimeStatus(&content, snapshot)
+		writeNetwork(&content, snapshot.Network)
+	} else {
+		writeInstallerStatus(&content, snapshot)
 	}
 	if snapshot.Mode == ModeInstaller && snapshot.State == "running" {
-		field := render.wrappedField("Disk changes")
+		value, style := "not started", Style("")
 		if snapshot.DestructiveMutation {
-			field.style(styleWarn)
-			field.writeString("started - do not power off")
-			field.resetStyle()
-		} else {
-			field.writeString("not started")
+			value, style = "started - do not power off", styleWarn
 		}
-		field.finish()
+		writeField(&content, "Disk changes", value, style)
 	}
 	if snapshot.Handoff.URL != "" {
-		render.wrappedField("Configure").writeString(snapshot.Handoff.URL).finish()
-		field := render.wrappedField("Run")
-		field.writeString("katlctl config init cluster.yaml --installer ")
-		if address := firstIPv4(snapshot.Network); address != "" {
-			field.writeString(address)
-		} else {
-			field.writeString(installerBaseURL(snapshot.Handoff.URL))
-		}
-		field.finish()
+		writeField(&content, "Configure", snapshot.Handoff.URL, "")
+		writeField(&content, "Run", "katlctl config init cluster.yaml --installer "+installerCommandEndpoint(snapshot), "")
 	}
-	render.writeWrappedField("Error", snapshot.LastError, styleBad)
-	render.writeWrappedField("Next action", snapshot.RetryHint, styleWarn)
-	render.writeWrappedField("Status read", snapshot.StatusError, styleWarn)
+	writeOptionalField(&content, "Error", snapshot.LastError, styleBad)
+	writeOptionalField(&content, "Next action", snapshot.RetryHint, styleWarn)
+	writeOptionalField(&content, "Status read", snapshot.StatusError, styleWarn)
 
-	render.finishBlank()
-	line = render.line()
-	line.style(styleTitle)
-	line.writeString("Journal")
-	line.resetStyle()
-	line.finish()
-	if remaining := render.contentRows - render.row; journal != nil && remaining > 0 {
-		render.journalState = NewJournalWriter(render.output.tail(remaining))
-		render.journalState.color = render.color
-		journal.WriteTail(&render.journalState)
-		render.output.position += render.journalState.output.position
-		render.row += render.journalState.rows
+	if content.rowsRemaining() > 0 {
+		content.advance(1)
 	}
-	for render.row < render.contentRows {
-		render.finishBlank()
+	if content.rowsRemaining() > 0 {
+		writeHeading(&content, "Journal")
 	}
+	if journal != nil && content.rowsRemaining() > 0 {
+		journalViewport := content.sub(Rect{Y: content.y, Width: content.bounds.Width, Height: content.rowsRemaining()})
+		writer := newJournalWriter(journalViewport)
+		journal.WriteTail(&writer)
+		content.advance(writer.RowsWritten())
+	}
+}
 
-	footer := newLine(&render.output)
-	footer.color = render.color
-	footer.style(styleDim)
-	footer.writeString("Ctrl+Alt+F2: console")
-	if snapshot.SSHEnabled {
-		if address := firstIPv4(snapshot.Network); address != "" {
-			if visibleWidth("Ctrl+Alt+F2: console | SSH: katl@")+visibleWidth(address) <= render.output.width {
-				footer.writeString(" | SSH: katl@")
-				footer.writeString(address)
-			} else {
-				footer.writeString(" | SSH enabled")
-			}
+func (render *Renderer) paintFooter(snapshot *Snapshot) {
+	footerText := "Ctrl+Alt+F2: console"
+	if render.frame.Width < minimumWidth || render.frame.Height < minimumHeight {
+		footerText = "F2: console"
+	} else if snapshot.SSHEnabled {
+		if address := firstIPv4(snapshot.Network); address != "" && displayWidth(footerText+" | SSH: katl@"+address) <= render.frame.Width {
+			footerText += " | SSH: katl@" + address
 		} else {
-			footer.writeString(" | SSH enabled")
+			footerText += " | SSH enabled"
 		}
 	} else if snapshot.Mode == ModeInstaller {
-		footer.writeString(" | SSH disabled")
+		footerText += " | SSH disabled"
 	}
-	footer.resetStyle()
-	footer.endFrame()
-	return render.output.bytes()
-}
-
-func (render *Renderer) renderCompact(snapshot *Snapshot) []byte {
-	line := render.line()
-	line.style(styleTitle).writeString("KatlOS").resetStyle()
-	line.finish()
-
-	if render.row < render.contentRows {
-		line = render.line()
-		line.style(stateStyle(snapshot.State)).writeString(stateLabel(snapshot.State)).resetStyle()
-		line.finish()
-	}
-	if address := firstIPv4(snapshot.Network); address != "" && render.row < render.contentRows {
-		render.line().writeString(address).finish()
-	}
-	for render.row < render.contentRows {
-		render.finishBlank()
-	}
-
-	footer := newLine(&render.output)
-	footer.color = render.color
-	footer.style(styleDim).writeString("F2: console").resetStyle()
-	footer.endFrame()
-	return render.output.bytes()
-}
-
-type pane struct {
-	title  string
-	fields []paneField
+	footer := NewViewport(&render.frame, Rect{Y: render.frame.Height - 1, Width: render.frame.Width, Height: 1})
+	footer.Write(footerText, WrapOptions{Style: styleDim})
 }
 
 type paneField struct {
 	label string
 	value string
-	style string
+	style Style
 }
 
-type paneFieldState struct {
-	field    paneField
-	position int
-	first    bool
-	done     bool
-}
-
-func (render *Renderer) writePaneHeading(title string) {
-	line := render.line()
-	line.style(styleTitle).writeString(title).resetStyle()
-	line.finish()
-}
-
-func (render *Renderer) writeRuntimeStatusPane(snapshot *Snapshot) {
+func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot) {
 	hostState, hostStyle := runtimeHostState(snapshot)
 	kubernetesState, kubernetesStyle := runtimeKubernetesState(snapshot)
-	leftFields := [...]paneField{
+	host := []paneField{
 		{label: "State", value: hostState, style: hostStyle},
 		{label: "Node", value: fallback(snapshot.Hostname, "Unknown")},
 		{label: "KatlOS", value: fallback(snapshot.Version, "Unknown")},
 		{label: "Generation", value: fallback(snapshot.Generation, "Unknown")},
 		{label: "Next boot", value: fallback(snapshot.NextGeneration, "-")},
 	}
-	rightFields := [...]paneField{
+	kubernetes := []paneField{
 		{label: "State", value: kubernetesState, style: kubernetesStyle},
 		{label: "Version", value: fallback(snapshot.KubernetesVersion, "Not installed")},
 	}
-	render.writeSplitPanes(
-		pane{title: "Host", fields: leftFields[:]},
-		pane{title: "Kubernetes", fields: rightFields[:]},
-	)
+	if content.bounds.Width < wideLayoutWidth {
+		writePane(content, "Host", host)
+		writePane(content, "Kubernetes", kubernetes)
+		return
+	}
+
+	start := content.y
+	dividerX := (content.bounds.Width - 1) / 2
+	left := content.sub(Rect{Y: start, Width: dividerX, Height: content.rowsRemaining()})
+	right := content.sub(Rect{X: dividerX + 1, Y: start, Width: content.bounds.Width - dividerX - 1, Height: content.rowsRemaining()})
+	writePane(&left, "Host", host)
+	writePane(&right, "Kubernetes", kubernetes)
+	used := max(left.rowsUsed(), right.rowsUsed())
+	content.advance(used)
+	// Decorations are painted after pane content. Even malformed input cannot
+	// move them because each pane was clipped to its own viewport.
+	for offset := range used {
+		render.frame.setGlyph(content.bounds.X+dividerX, content.bounds.Y+start+offset, "│", 1, styleDim)
+	}
 }
 
-func (render *Renderer) writeInstallerStatus(snapshot *Snapshot) {
-	field := render.wrappedField("State")
-	field.style(stateStyle(snapshot.State))
-	field.writeString(stateLabel(snapshot.State))
-	field.resetStyle()
-	field.finish()
-	if snapshot.Hostname != "" {
-		render.wrappedField("Node").writeString(snapshot.Hostname).finish()
+func writePane(viewport *Viewport, title string, fields []paneField) {
+	writeHeading(viewport, title)
+	for _, field := range fields {
+		writeField(viewport, field.label, field.value, field.style)
 	}
-	render.writeNetwork(snapshot.Network)
+}
+
+func writeInstallerStatus(content *Viewport, snapshot *Snapshot) {
+	writeField(content, "State", stateLabel(snapshot.State), stateStyle(snapshot.State))
+	if snapshot.Hostname != "" {
+		writeField(content, "Node", snapshot.Hostname, "")
+	}
+	writeNetwork(content, snapshot.Network)
 	if snapshot.Version != "" {
-		render.wrappedField("Media").writeString(snapshot.Version).finish()
+		writeField(content, "Media", snapshot.Version, "")
 	}
 	if snapshot.State == "running" && snapshot.CurrentStep != "" {
-		render.wrappedField("Progress").writeString(snapshot.CurrentStep).finish()
+		writeField(content, "Progress", snapshot.CurrentStep, "")
 	}
-	if snapshot.Generation == "" {
-		return
-	}
-	field = render.wrappedField("Generation")
-	field.writeString(snapshot.Generation)
-	if health := healthLabel(snapshot.GenerationHealth); health != "" {
-		field.writeString("  health=")
-		field.style(healthStyle(health))
-		field.writeString(health)
-		field.resetStyle()
-	}
-	field.finish()
-}
-
-func (render *Renderer) writeSplitPanes(left, right pane) {
-	if render.row >= render.contentRows {
-		return
-	}
-	divider := (render.output.width - 1) / 2
-	line := render.line()
-	line.style(styleTitle)
-	line.writeUntil(left.title, divider)
-	line.resetStyle()
-	line.padTo(divider)
-	line.style(styleDim).writeRune('│').resetStyle()
-	line.style(styleTitle)
-	line.writeUntil(right.title, render.output.width)
-	line.resetStyle()
-	line.finish()
-
-	count := max(len(left.fields), len(right.fields))
-	for index := 0; index < count && render.row < render.contentRows; index++ {
-		leftState := paneFieldState{first: true, done: index >= len(left.fields)}
-		if !leftState.done {
-			leftState.field = left.fields[index]
+	if snapshot.Generation != "" {
+		value := snapshot.Generation
+		if health := healthLabel(snapshot.GenerationHealth); health != "" {
+			value += "  health=" + health
 		}
-		rightState := paneFieldState{first: true, done: index >= len(right.fields)}
-		if !rightState.done {
-			rightState.field = right.fields[index]
-		}
-		for (!leftState.done || !rightState.done) && render.row < render.contentRows {
-			line = render.line()
-			render.writePaneFieldSegment(line, &leftState, 0, divider)
-			line.padTo(divider)
-			line.style(styleDim).writeRune('│').resetStyle()
-			render.writePaneFieldSegment(line, &rightState, divider+1, render.output.width)
-			line.finish()
-		}
+		writeField(content, "Generation", value, healthStyle(healthLabel(snapshot.GenerationHealth)))
 	}
 }
 
-func (render *Renderer) writePaneFieldSegment(line *lineWriter, state *paneFieldState, start, end int) {
-	if state.done || end <= start {
+func writeNetwork(content *Viewport, network []NetworkInterface) {
+	if len(network) == 0 {
+		writeField(content, "Network", "waiting for an active interface", "")
 		return
 	}
-	line.padTo(start)
-	labelWidth := min(panelFieldWidth, end-start-1)
-	if labelWidth < 1 {
-		state.done = true
-		return
-	}
-	if state.first {
-		line.writeUntil(state.field.label, start+labelWidth-1)
-		if line.columns < start+labelWidth {
-			line.writeByte(':')
+	for index, iface := range network {
+		label := ""
+		if index == 0 {
+			label = "Network"
 		}
-		state.first = false
-	}
-	line.padTo(start + labelWidth)
-	if line.columns >= end {
-		return
-	}
-
-	state.position = skipVisibleSpace(state.field.value, state.position)
-	if state.position >= len(state.field.value) {
-		state.done = true
-		return
-	}
-	segmentEnd, next := paneSegment(state.field.value, state.position, end-line.columns)
-	if state.field.style != "" {
-		line.style(state.field.style)
-	}
-	line.writeString(state.field.value[state.position:segmentEnd])
-	if state.field.style != "" {
-		line.resetStyle()
-	}
-	state.position = next
-	state.done = skipVisibleSpace(state.field.value, state.position) >= len(state.field.value)
-}
-
-func paneSegment(value string, position, available int) (int, int) {
-	scan := position
-	end := position
-	lastSpace := -1
-	visible := 0
-	for scan < len(value) && visible < available {
-		r, next, ok := nextVisibleString(value, scan)
-		if !ok {
-			return len(value), len(value)
+		value := iface.Name + ": configuring"
+		if len(iface.Addresses) > 0 {
+			value = iface.Name + ": " + strings.Join(iface.Addresses, ", ")
 		}
-		if r == '\n' {
-			return scan, next
-		}
-		if unicode.IsSpace(r) {
-			lastSpace = scan
-		}
-		end = next
-		scan = next
-		visible++
-	}
-	if scan >= len(value) {
-		return end, end
-	}
-	if lastSpace > position {
-		return lastSpace, skipVisibleSpace(value, lastSpace)
-	}
-	return end, end
-}
-
-func skipVisibleSpace(value string, position int) int {
-	for position < len(value) {
-		r, next, ok := nextVisibleString(value, position)
-		if !ok || (!unicode.IsSpace(r) && r != '\n') {
-			return position
-		}
-		position = next
-	}
-	return position
-}
-
-func (line *lineWriter) padTo(column int) {
-	for line.columns < column {
-		line.writeByte(' ')
+		writeField(content, label, value, "")
 	}
 }
 
-func (line *lineWriter) writeUntil(value string, end int) {
-	for position := 0; position < len(value) && line.columns < end; {
-		r, next, ok := nextVisibleString(value, position)
-		position = next
-		if !ok || r == '\n' {
+func writeHeading(viewport *Viewport, value string) {
+	if viewport.rowsRemaining() == 0 {
+		return
+	}
+	heading := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: 1})
+	heading.Write(value, WrapOptions{Style: styleTitle})
+	viewport.advance(1)
+}
+
+func writeOptionalField(viewport *Viewport, label, value string, style Style) {
+	if strings.TrimSpace(value) != "" {
+		writeField(viewport, label, value, style)
+	}
+}
+
+func writeField(viewport *Viewport, label, value string, style Style) {
+	if viewport.rowsRemaining() == 0 {
+		return
+	}
+	if viewport.bounds.Width < 28 && label != "" {
+		labelView := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: 1})
+		labelView.Write(label, WrapOptions{Style: styleDim})
+		viewport.advance(1)
+		if viewport.rowsRemaining() == 0 {
 			return
 		}
-		line.writeRune(r)
+		valueView := viewport.sub(Rect{X: 2, Y: viewport.y, Width: max(viewport.bounds.Width-2, 0), Height: viewport.rowsRemaining()})
+		result := valueView.Write(value, WrapOptions{Style: style, WordWrap: true})
+		viewport.advance(max(result.Rows, 1))
+		return
 	}
+
+	labelWidth := 0
+	if label != "" {
+		labelWidth = min(fieldWidth, max(viewport.bounds.Width-1, 0))
+		labelView := viewport.sub(Rect{Y: viewport.y, Width: labelWidth, Height: 1})
+		labelView.Write(label+":", WrapOptions{})
+	}
+	valueView := viewport.sub(Rect{X: labelWidth, Y: viewport.y, Width: viewport.bounds.Width - labelWidth, Height: viewport.rowsRemaining()})
+	result := valueView.Write(value, WrapOptions{Style: style, WordWrap: true})
+	viewport.advance(max(result.Rows, 1))
 }
 
-func runtimeHostState(snapshot *Snapshot) (string, string) {
+func runtimeHostState(snapshot *Snapshot) (string, Style) {
 	if snapshot.State == "runtime-failed-needs-repair" {
 		return "Needs repair", styleBad
 	}
@@ -481,7 +307,7 @@ func runtimeHostState(snapshot *Snapshot) (string, string) {
 	return "Running", styleGood
 }
 
-func runtimeKubernetesState(snapshot *Snapshot) (string, string) {
+func runtimeKubernetesState(snapshot *Snapshot) (string, Style) {
 	if snapshot.KubernetesVersion == "" {
 		return "Not installed", styleWarn
 	}
@@ -499,482 +325,117 @@ func runtimeKubernetesState(snapshot *Snapshot) (string, string) {
 	}
 }
 
-// JournalWriter owns the bounded journal region within a dashboard render.
-// Journal implementations write logical lines without access to output storage.
+// JournalWriter renders logical journal entries through the same bounded
+// viewport and grapheme wrapper used by every dashboard field and pane.
 type JournalWriter struct {
-	output RenderTarget
-	rows   int
-	color  bool
+	frame      *Frame
+	viewport   Viewport
+	output     []byte
+	standalone bool
 }
 
-// NewJournalWriter binds a bounded journal writer to a fixed render target. It
-// is primarily useful for testing journal sources independently.
+// NewJournalWriter binds a journal writer to a standalone render target.
 func NewJournalWriter(target RenderTarget) JournalWriter {
-	target.width, target.rows = renderDimensions(target.width, target.rows)
-	target.reset()
-	return JournalWriter{output: target}
+	width, rows := renderDimensions(target.width, target.rows)
+	frame := newFrame(width, rows)
+	return JournalWriter{
+		frame:      &frame,
+		viewport:   NewViewport(&frame, Rect{Width: width, Height: rows}),
+		output:     target.storage[:0],
+		standalone: true,
+	}
 }
 
-// Bytes returns the journal output written into owned storage.
+func newJournalWriter(viewport Viewport) JournalWriter {
+	return JournalWriter{frame: viewport.frame, viewport: viewport}
+}
+
+// Bytes returns standalone journal output.
 func (writer *JournalWriter) Bytes() []byte {
-	return writer.output.bytes()
+	if !writer.standalone {
+		return nil
+	}
+	writer.output = serializeFrame(writer.output[:0], writer.frame, writer.RowsWritten(), false, false)
+	return writer.output
 }
 
-// RowsWritten reports the number of physical terminal rows written.
+// RowsWritten reports the number of physical rows consumed.
 func (writer *JournalWriter) RowsWritten() int {
-	return writer.rows
+	return writer.viewport.rowsUsed()
 }
 
-// RowsRemaining reports how many physical terminal rows remain available.
+// RowsRemaining reports how many physical rows remain.
 func (writer *JournalWriter) RowsRemaining() int {
-	return writer.output.rows - writer.rows
+	return writer.viewport.rowsRemaining()
 }
 
-// LineRows reports how many physical terminal rows a logical line needs in
-// this journal region.
+// LineRows measures a journal entry through the shared hard-wrap engine.
 func (writer *JournalWriter) LineRows(value []byte) int {
-	return journalLineRows(value, writer.output.width)
+	frame := Frame{Width: writer.viewport.bounds.Width, Height: maximumHeight}
+	measure := NewViewport(&frame, Rect{Width: frame.Width, Height: frame.Height})
+	return measure.Write(string(value), WrapOptions{}).Rows
 }
 
-// WriteLine sanitizes and wraps one logical journal line. It returns false
-// when the journal pane has no room for another line.
+// WriteLine sanitizes and hard-wraps one logical journal line.
 func (writer *JournalWriter) WriteLine(value []byte) bool {
-	if writer.RowsRemaining() <= 0 {
+	if writer.RowsRemaining() == 0 {
 		return false
 	}
-	written := writer.writeLine(value)
-	writer.rows += written
-	return true
+	return writer.viewport.Write(string(value), WrapOptions{}).Rows > 0
 }
 
-func (writer *JournalWriter) writeLine(value []byte) int {
-	remaining := writer.RowsRemaining()
-	line := newLine(&writer.output)
-	line.color = writer.color
-	rows := 0
-	wrote := false
-	for position := 0; position < len(value); {
-		r, next, ok := nextVisibleBytes(value, position)
-		position = next
-		if !ok {
-			break
-		}
-		if r == '\n' || line.columns == writer.output.width {
-			line.end()
-			rows++
-			if rows == remaining {
-				return rows
-			}
-			line = newLine(&writer.output)
-			line.color = writer.color
-			if r == '\n' {
-				continue
-			}
-		}
-		line.writeRune(r)
-		wrote = true
+func serializeFrame(output []byte, frame *Frame, rows int, color, clear bool) []byte {
+	rows = min(max(rows, 0), frame.Height)
+	if color && clear {
+		output = append(output, clearScreen...)
 	}
-	if wrote && rows < remaining {
-		line.end()
-		rows++
-	}
-	return rows
-}
-
-func journalLineRows(value []byte, width int) int {
-	width, _ = renderDimensions(width, 1)
-	columns := 0
-	rows := 0
-	wrote := false
-	for position := 0; position < len(value); {
-		r, next, ok := nextVisibleBytes(value, position)
-		position = next
-		if !ok {
-			break
-		}
-		if r == '\n' || columns == width {
-			rows++
-			columns = 0
-			if r == '\n' {
-				continue
-			}
-		}
-		columns++
-		wrote = true
-	}
-	if wrote {
-		rows++
-	}
-	return rows
-}
-
-func (r *Renderer) line() *lineWriter {
-	if r.row >= r.contentRows {
-		r.lineState = lineWriter{owner: r}
-		return &r.lineState
-	}
-	r.lineState = newLine(&r.output)
-	r.lineState.owner = r
-	r.lineState.color = r.color
-	return &r.lineState
-}
-
-func (r *Renderer) fieldLine(label string) *lineWriter {
-	line := r.line()
-	if !line.active {
-		return line
-	}
-	line.writeString(label)
-	if label != "" {
-		line.writeByte(':')
-	}
-	for line.columns < fieldWidth {
-		line.writeByte(' ')
-	}
-	return line
-}
-
-func (r *Renderer) continuationLine() *lineWriter {
-	line := r.line()
-	if !line.active {
-		return line
-	}
-	for range fieldWidth {
-		line.writeByte(' ')
-	}
-	return line
-}
-
-func (r *Renderer) finishLine(line *lineWriter) {
-	if r.row < r.contentRows {
-		line.end()
-	}
-	r.row++
-}
-
-func (r *Renderer) finishBlank() {
-	r.line().finish()
-}
-
-type lineWriter struct {
-	owner     *Renderer
-	output    *RenderTarget
-	lastRune  int
-	columns   int
-	truncated bool
-	active    bool
-	color     bool
-}
-
-func newLine(output *RenderTarget) lineWriter {
-	return lineWriter{output: output, lastRune: output.position, active: true}
-}
-
-func (l *lineWriter) style(value string) *lineWriter {
-	if l.active && l.color {
-		l.output.writeString(value)
-	}
-	return l
-}
-
-func (l *lineWriter) resetStyle() *lineWriter {
-	return l.style(styleReset)
-}
-
-func (l *lineWriter) writeByte(value byte) *lineWriter {
-	if !l.active || l.truncated {
-		return l
-	}
-	if l.columns == l.output.width {
-		l.truncated = true
-		return l
-	}
-	l.lastRune = l.output.position
-	l.output.writeByte(value)
-	l.columns++
-	return l
-}
-
-func (l *lineWriter) writeString(value string) *lineWriter {
-	for position := 0; position < len(value) && !l.truncated && l.active; {
-		r, next, ok := nextVisibleString(value, position)
-		position = next
-		if !ok {
-			break
-		}
-		if l.columns == l.output.width {
-			l.truncated = true
-			return l
-		}
-		l.writeRune(r)
-	}
-	return l
-}
-
-func (l *lineWriter) writeRune(r rune) *lineWriter {
-	if !l.active || l.truncated || l.columns == l.output.width {
-		return l
-	}
-	l.lastRune = l.output.position
-	l.output.writeRune(r)
-	l.columns++
-	return l
-}
-
-func (l *lineWriter) finish() {
-	l.owner.finishLine(l)
-}
-
-func (l *lineWriter) end() {
-	l.finishOutput()
-	// A character in the terminal's final column leaves autowrap pending. A
-	// carriage return clears that state before the line feed, so one rendered
-	// row always consumes exactly one terminal row.
-	if l.color {
-		l.output.writeByte('\r')
-	}
-	l.output.writeByte('\n')
-}
-
-func (l *lineWriter) endFrame() {
-	l.finishOutput()
-	if l.color {
-		// The footer occupies the terminal's bottom row. Leave the cursor on that
-		// row and clear pending autowrap without emitting a line feed that would
-		// scroll the completed frame.
-		l.output.writeByte('\r')
-		return
-	}
-	l.output.writeByte('\n')
-}
-
-func (l *lineWriter) finishOutput() {
-	if !l.active {
-		return
-	}
-	if l.truncated {
-		l.output.truncate(l.lastRune)
-		l.output.writeByte('~')
-		if l.color {
-			l.output.writeString(styleReset)
-		}
-	}
-}
-
-type wrappedWriter struct {
-	render       *Renderer
-	line         *lineWriter
-	activeStyle  string
-	pendingSpace int
-}
-
-func (r *Renderer) wrappedField(label string) *wrappedWriter {
-	r.wrappedState = wrappedWriter{render: r, line: r.fieldLine(label)}
-	return &r.wrappedState
-}
-
-func (w *wrappedWriter) writeString(value string) *wrappedWriter {
-	for position := 0; position < len(value); {
-		r, next, ok := nextVisibleString(value, position)
-		if !ok {
-			break
-		}
-		if r == '\n' {
-			position = next
-			w.pendingSpace = 0
-			w.continueLine()
-			continue
-		}
-		if unicode.IsSpace(r) {
-			position = next
-			w.pendingSpace++
-			continue
-		}
-
-		wordStart := position
-		wordEnd := position
-		wordWidth := 0
-		for scan := position; scan < len(value); {
-			wordRune, wordNext, wordOK := nextVisibleString(value, scan)
-			if !wordOK || wordRune == '\n' || unicode.IsSpace(wordRune) {
+	for row := range rows {
+		last := -1
+		for column := frame.Width - 1; column >= 0; column-- {
+			cell := frame.Cells[row*frame.Width+column]
+			if cell.Glyph != "" || cell.continuation {
+				last = column
 				break
 			}
-			wordWidth++
-			wordEnd = wordNext
-			scan = wordNext
 		}
-		if wordEnd == wordStart {
-			position = next
-			continue
-		}
-		w.writeWord(value[wordStart:wordEnd], wordWidth)
-		position = wordEnd
-	}
-	return w
-}
-
-func (w *wrappedWriter) writeWord(word string, wordWidth int) {
-	contentStart := fieldWidth
-	if w.line.columns > contentStart && w.pendingSpace > 0 && wordWidth <= w.render.output.width-contentStart && w.line.columns+w.pendingSpace+wordWidth > w.render.output.width {
-		w.continueLine()
-	}
-	if w.line.columns > contentStart {
-		for range w.pendingSpace {
-			if w.line.columns == w.render.output.width {
-				w.continueLine()
-				break
+		activeStyle := Style("")
+		for column := 0; column <= last; column++ {
+			cell := frame.Cells[row*frame.Width+column]
+			if cell.continuation {
+				continue
 			}
-			w.line.writeRune(' ')
-		}
-	}
-	w.pendingSpace = 0
-	for position := 0; position < len(word); {
-		r, next, ok := nextVisibleString(word, position)
-		position = next
-		if !ok {
-			break
-		}
-		if w.line.columns == w.render.output.width {
-			w.continueLine()
-		}
-		w.line.writeRune(r)
-	}
-}
-
-func (w *wrappedWriter) continueLine() {
-	w.line.finish()
-	w.line = w.render.continuationLine()
-	if w.activeStyle != "" {
-		w.line.style(w.activeStyle)
-	}
-}
-
-func (w *wrappedWriter) style(value string) *wrappedWriter {
-	w.activeStyle = value
-	w.line.style(value)
-	return w
-}
-
-func (w *wrappedWriter) resetStyle() *wrappedWriter {
-	w.line.resetStyle()
-	w.activeStyle = ""
-	return w
-}
-
-func (w *wrappedWriter) finish() {
-	w.line.finish()
-}
-
-func (render *Renderer) writeNetwork(network []NetworkInterface) {
-	if len(network) == 0 {
-		render.wrappedField("Network").writeString("waiting for an active interface").finish()
-		return
-	}
-	for index, iface := range network {
-		label := ""
-		if index == 0 {
-			label = "Network"
-		}
-		field := render.wrappedField(label)
-		field.writeString(iface.Name)
-		if len(iface.Addresses) == 0 {
-			field.writeString(": configuring")
-		} else {
-			field.writeString(": ")
-			for addressIndex, address := range iface.Addresses {
-				if addressIndex > 0 {
-					field.writeString(", ")
+			if cell.Glyph == "" {
+				if activeStyle != "" && color {
+					output = append(output, string(styleReset)...)
+					activeStyle = ""
 				}
-				field.writeString(address)
+				output = append(output, ' ')
+				continue
 			}
+			if color && cell.Style != activeStyle {
+				if activeStyle != "" {
+					output = append(output, string(styleReset)...)
+				}
+				if cell.Style != "" {
+					output = append(output, string(cell.Style)...)
+				}
+				activeStyle = cell.Style
+			}
+			output = append(output, cell.Glyph...)
 		}
-		field.finish()
-	}
-}
-
-func (render *Renderer) writeWrappedField(label, value, style string) {
-	if value == "" {
-		return
-	}
-	field := render.wrappedField(label)
-	if style != "" {
-		field.style(style)
-	}
-	field.writeString(value)
-	if style != "" {
-		field.resetStyle()
-	}
-	field.finish()
-}
-
-func nextVisibleString(value string, position int) (rune, int, bool) {
-	for position < len(value) {
-		if value[position] == '\x1b' {
-			position = skipANSIString(value, position)
-			continue
+		if activeStyle != "" && color {
+			output = append(output, string(styleReset)...)
 		}
-		r, size := utf8.DecodeRuneInString(value[position:])
-		position += size
-		if r == '\t' {
-			return ' ', position, true
-		}
-		if r == '\n' || !unicode.IsControl(r) {
-			return r, position, true
+		if color {
+			output = append(output, '\r')
+			if row < rows-1 {
+				output = append(output, '\n')
+			}
+		} else {
+			output = append(output, '\n')
 		}
 	}
-	return 0, position, false
-}
-
-func nextVisibleBytes(value []byte, position int) (rune, int, bool) {
-	for position < len(value) {
-		if value[position] == '\x1b' {
-			position = skipANSIBytes(value, position)
-			continue
-		}
-		r, size := utf8.DecodeRune(value[position:])
-		position += size
-		if r == '\t' {
-			return ' ', position, true
-		}
-		if r == '\n' || !unicode.IsControl(r) {
-			return r, position, true
-		}
-	}
-	return 0, position, false
-}
-
-func skipANSIString(value string, position int) int {
-	return skipANSI(value[position:], position)
-}
-
-func skipANSIBytes(value []byte, position int) int {
-	if len(value)-position < 2 {
-		return len(value)
-	}
-	if value[position+1] != '[' {
-		return position + 2
-	}
-	for index := position + 2; index < len(value); index++ {
-		if value[index] >= 0x40 && value[index] <= 0x7e {
-			return index + 1
-		}
-	}
-	return len(value)
-}
-
-func skipANSI(value string, offset int) int {
-	if len(value) < 2 {
-		return offset + len(value)
-	}
-	if value[1] != '[' {
-		return offset + 2
-	}
-	for index := 2; index < len(value); index++ {
-		if value[index] >= 0x40 && value[index] <= 0x7e {
-			return offset + index + 1
-		}
-	}
-	return offset + len(value)
+	return output
 }
 
 func stateLabel(state string) string {
@@ -1010,7 +471,7 @@ func stateLabel(state string) string {
 	}
 }
 
-func stateStyle(state string) string {
+func stateStyle(state string) Style {
 	switch state {
 	case "failed-before-mutation", "failed-after-mutation", "install-refused", "runtime-failed-needs-repair":
 		return styleBad
@@ -1034,7 +495,10 @@ func healthLabel(value string) string {
 	}
 }
 
-func healthStyle(value string) string {
+func healthStyle(value string) Style {
+	if value == "" {
+		return ""
+	}
 	if value == "OK" {
 		return styleGood
 	}
@@ -1042,18 +506,7 @@ func healthStyle(value string) string {
 }
 
 func visibleWidth(value string) int {
-	width := 0
-	for position := 0; position < len(value); {
-		r, next, ok := nextVisibleString(value, position)
-		position = next
-		if !ok {
-			break
-		}
-		if r != '\n' {
-			width++
-		}
-	}
-	return width
+	return displayWidth(value)
 }
 
 func firstIPv4(network []NetworkInterface) string {
@@ -1069,6 +522,13 @@ func firstIPv4(network []NetworkInterface) string {
 		}
 	}
 	return ""
+}
+
+func installerCommandEndpoint(snapshot *Snapshot) string {
+	if address := firstIPv4(snapshot.Network); address != "" {
+		return address
+	}
+	return installerBaseURL(snapshot.Handoff.URL)
 }
 
 func installerBaseURL(value string) string {
