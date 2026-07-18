@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -109,6 +110,36 @@ func TestFetchAndStageOCI(t *testing.T) {
 	}
 	if string(payload) != "kubernetes sysext 1.36.0" {
 		t.Fatalf("payload = %q", payload)
+	}
+}
+
+func TestFetchAndStageOCIStreamsSysextPayload(t *testing.T) {
+	fixture := writeFixture(t, "v1.36.0", strings.Repeat("k", 4<<20))
+	repository := &trackingOCIRepository{
+		ociRepository: writeOCIRepository(t, fixture, nil),
+		payloadDigest: fixture.indexEntry.SysextPayloadDigest,
+	}
+	parsedRef, err := parseRef(fixture.ref())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Source:           "https://ghcr.io/v2/katl-dev/kubernetes",
+		Ref:              fixture.ref(),
+		CacheDir:         t.TempDir(),
+		RuntimeInterface: "katl-runtime-1",
+		Architecture:     "x86_64",
+	}
+
+	tag := registryTagPrefix + strings.TrimPrefix(parsedRef.BundleDigest, "sha256:")
+	if _, err := fetchAndStageOCI(context.Background(), request, parsedRef, repository, tag, parsedRef.BundleDigest, "", ""); err != nil {
+		t.Fatalf("fetchAndStageOCI() error = %v", err)
+	}
+	if repository.payloadBytes != 4<<20 {
+		t.Fatalf("payload bytes read = %d, want %d", repository.payloadBytes, 4<<20)
+	}
+	if repository.maxPayloadRead > 64<<10 {
+		t.Fatalf("maximum payload read buffer = %d, want streaming-sized reads", repository.maxPayloadRead)
 	}
 }
 
@@ -371,6 +402,35 @@ type fixture struct {
 	root       string
 	staged     sysextcatalog.StagedArtifact
 	indexEntry IndexEntry
+}
+
+type trackingOCIRepository struct {
+	ociRepository
+	payloadDigest  string
+	payloadBytes   int
+	maxPayloadRead int
+}
+
+func (r *trackingOCIRepository) Fetch(ctx context.Context, descriptor ocispec.Descriptor) (io.ReadCloser, error) {
+	reader, err := r.ociRepository.Fetch(ctx, descriptor)
+	if err != nil || descriptor.Digest.String() != r.payloadDigest {
+		return reader, err
+	}
+	return &trackingReadCloser{ReadCloser: reader, repository: r}, nil
+}
+
+type trackingReadCloser struct {
+	io.ReadCloser
+	repository *trackingOCIRepository
+}
+
+func (r *trackingReadCloser) Read(p []byte) (int, error) {
+	if len(p) > r.repository.maxPayloadRead {
+		r.repository.maxPayloadRead = len(p)
+	}
+	n, err := r.ReadCloser.Read(p)
+	r.repository.payloadBytes += n
+	return n, err
 }
 
 func (f fixture) ref() string {

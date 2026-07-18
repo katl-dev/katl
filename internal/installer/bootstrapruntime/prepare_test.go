@@ -1,8 +1,10 @@
 package bootstrapruntime
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,38 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 )
+
+type trackingReader struct {
+	reader  io.Reader
+	maxRead int
+}
+
+type writerOnly struct {
+	io.Writer
+}
+
+func (r *trackingReader) Read(buffer []byte) (int, error) {
+	if len(buffer) > r.maxRead {
+		r.maxRead = len(buffer)
+	}
+	return r.reader.Read(buffer)
+}
+
+func TestCopySysextUsesBoundedReads(t *testing.T) {
+	payload := bytes.Repeat([]byte("k"), 4<<20)
+	reader := &trackingReader{reader: bytes.NewReader(payload)}
+	var target bytes.Buffer
+	written, err := copySysext(writerOnly{Writer: &target}, reader)
+	if err != nil {
+		t.Fatalf("copySysext() error = %v", err)
+	}
+	if written != int64(len(payload)) || !bytes.Equal(target.Bytes(), payload) {
+		t.Fatalf("copySysext() copied %d bytes, want %d", written, len(payload))
+	}
+	if reader.maxRead > 64<<10 {
+		t.Fatalf("copySysext() maximum read = %d, want at most %d", reader.maxRead, 64<<10)
+	}
+}
 
 func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	root := t.TempDir()

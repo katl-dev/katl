@@ -261,10 +261,6 @@ func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
 	if payload.Digest != entry.SysextPayloadDigest {
 		return Staged{}, fmt.Errorf("%w: bundle sysext digest does not match index entry", ErrInvalidBundle)
 	}
-	payloadBytes, err := fetchDescriptor(ctx, client, source, *payload, sysextMediaType)
-	if err != nil {
-		return Staged{}, err
-	}
 	metadata, err := descriptor(bundle.Metadata, metadataRole)
 	if err != nil {
 		return Staged{}, err
@@ -308,7 +304,9 @@ func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
 		return Staged{}, err
 	}
 
-	return stage(request, bundle, bundleBytes, payloadBytes, metadataBytes, provenanceBytes, catalogBytes, *payload)
+	return stage(request, bundle, bundleBytes, metadataBytes, provenanceBytes, catalogBytes, *payload, func(path string) error {
+		return fetchDescriptorToFile(ctx, client, source, *payload, sysextMediaType, path)
+	})
 }
 
 type ociRepository interface {
@@ -409,8 +407,15 @@ func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository 
 	if len(manifest.Layers) != len(expected) {
 		return Staged{}, fmt.Errorf("%w: OCI manifest has %d layers, want %d bundle descriptors", ErrInvalidBundle, len(manifest.Layers), len(expected))
 	}
-	fetched := make(map[string][]byte, len(expected))
+	payloadLayer, err := matchingOCILayer(manifest.Layers, *payload)
+	if err != nil {
+		return Staged{}, err
+	}
+	fetched := make(map[string][]byte, len(expected)-1)
 	for _, descriptor := range expected {
+		if descriptor.Role == sysextRole {
+			continue
+		}
 		layer, err := matchingOCILayer(manifest.Layers, descriptor)
 		if err != nil {
 			return Staged{}, err
@@ -430,7 +435,9 @@ func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository 
 	if err := validateCatalogFragment(fetched[catalogRole], bundle, entry, *payload); err != nil {
 		return Staged{}, err
 	}
-	return stage(request, bundle, bundleBytes, fetched[sysextRole], fetched[metadataRole], fetched[provenanceRole], fetched[catalogRole], *payload)
+	return stage(request, bundle, bundleBytes, fetched[metadataRole], fetched[provenanceRole], fetched[catalogRole], *payload, func(path string) error {
+		return fetchOCIContentToFile(ctx, repository, payloadLayer, path)
+	})
 }
 
 func fetchOCIContent(ctx context.Context, repository ociRepository, descriptor ocispec.Descriptor) ([]byte, error) {
@@ -449,6 +456,32 @@ func fetchOCIContent(ctx context.Context, repository ociRepository, descriptor o
 		return nil, err
 	}
 	return data, nil
+}
+
+func fetchOCIContentToFile(ctx context.Context, repository ociRepository, descriptor ocispec.Descriptor, path string) error {
+	reader, err := repository.Fetch(ctx, descriptor)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	verified := content.NewVerifyReader(reader, descriptor)
+	written, copyErr := io.Copy(file, verified)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if written != descriptor.Size {
+		return fmt.Errorf("OCI payload size got %d want %d", written, descriptor.Size)
+	}
+	return verified.Verify()
 }
 
 func ociPayloadDigest(bundle Bundle) string {
@@ -738,9 +771,55 @@ func fetchDescriptor(ctx context.Context, client *http.Client, source string, de
 	return data, nil
 }
 
-func stage(request Request, bundle Bundle, bundleBytes []byte, payloadBytes []byte, metadataBytes []byte, provenanceBytes []byte, catalogBytes []byte, payload Descriptor) (Staged, error) {
+func fetchDescriptorToFile(ctx context.Context, client *http.Client, source string, descriptor Descriptor, mediaType string, destination string) error {
+	if descriptor.MediaType != mediaType {
+		return fmt.Errorf("%w: descriptor %s media type got %q want %q", ErrInvalidBundle, descriptor.Role, descriptor.MediaType, mediaType)
+	}
+	if err := validateDigest(descriptor.Digest); err != nil {
+		return fmt.Errorf("%w: descriptor %s digest: %v", ErrInvalidBundle, descriptor.Role, err)
+	}
+	if descriptor.SizeBytes <= 0 {
+		return fmt.Errorf("%w: descriptor %s size must be positive", ErrInvalidBundle, descriptor.Role)
+	}
+	value := source + "/blobs/sha256/" + strings.TrimPrefix(descriptor.Digest, "sha256:")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, value, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch descriptor %s %s: %w", descriptor.Role, inventory.Redact(value), cleanFetchError(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch descriptor %s %s: HTTP %d", descriptor.Role, inventory.Redact(value), resp.StatusCode)
+	}
+	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	digest := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(file, digest), io.LimitReader(resp.Body, descriptor.SizeBytes+1))
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	got := "sha256:" + hex.EncodeToString(digest.Sum(nil))
+	if got != descriptor.Digest {
+		return fmt.Errorf("%w: descriptor %s digest got %s want %s", ErrInvalidBundle, descriptor.Role, got, descriptor.Digest)
+	}
+	if written != descriptor.SizeBytes {
+		return fmt.Errorf("%w: descriptor %s size got %d want %d", ErrInvalidBundle, descriptor.Role, written, descriptor.SizeBytes)
+	}
+	return nil
+}
+
+func stage(request Request, bundle Bundle, bundleBytes []byte, metadataBytes []byte, provenanceBytes []byte, catalogBytes []byte, payload Descriptor, writePayload func(string) error) (Staged, error) {
 	bundleDigest := sha256Digest(bundleBytes)
-	payloadDigest := sha256Digest(payloadBytes)
+	payloadDigest := payload.Digest
 	bundleDir := filepath.Join(request.CacheDir, "bundles", digestDir(bundleDigest))
 	sysextDir := filepath.Join(request.CacheDir, "sysext", digestDir(payloadDigest))
 	tmp := filepath.Join(request.CacheDir, ".tmp-"+strings.TrimPrefix(bundleDigest, "sha256:"))
@@ -768,7 +847,10 @@ func stage(request Request, bundle Bundle, bundleBytes []byte, payloadBytes []by
 	if err != nil {
 		return Staged{}, err
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "sysext", payloadName), payloadBytes, 0o644); err != nil {
+	if writePayload == nil {
+		return Staged{}, fmt.Errorf("stage sysext payload: writer is required")
+	}
+	if err := writePayload(filepath.Join(tmp, "sysext", payloadName)); err != nil {
 		return Staged{}, err
 	}
 	if err := os.WriteFile(filepath.Join(tmp, "sysext", "metadata.json"), metadataBytes, 0o644); err != nil {

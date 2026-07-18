@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -197,12 +198,29 @@ func materializeSysext(root string, candidate string, selected bootstrapplan.Sel
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return generation.ExtensionRef{}, fmt.Errorf("create bootstrap sysext directory: %w", err)
 	}
-	data, err := os.ReadFile(source)
+	in, err := os.Open(source)
 	if err != nil {
-		return generation.ExtensionRef{}, fmt.Errorf("read bundled Kubernetes sysext: %w", err)
+		return generation.ExtensionRef{}, fmt.Errorf("open bundled Kubernetes sysext: %w", err)
 	}
-	if err := os.WriteFile(target, data, 0o644); err != nil {
-		return generation.ExtensionRef{}, fmt.Errorf("write bootstrap sysext: %w", err)
+	defer in.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return generation.ExtensionRef{}, fmt.Errorf("create bootstrap sysext: %w", err)
+	}
+	digest := sha256.New()
+	written, copyErr := copySysext(io.MultiWriter(out, digest), in)
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(target)
+		return generation.ExtensionRef{}, fmt.Errorf("write bootstrap sysext: %w", errors.Join(copyErr, closeErr))
+	}
+	if selected.SizeBytes > 0 && uint64(written) != selected.SizeBytes {
+		_ = os.Remove(target)
+		return generation.ExtensionRef{}, fmt.Errorf("write bootstrap sysext: size %d does not match selected size %d", written, selected.SizeBytes)
+	}
+	if got := hex.EncodeToString(digest.Sum(nil)); !strings.EqualFold(got, selected.SHA256) {
+		_ = os.Remove(target)
+		return generation.ExtensionRef{}, fmt.Errorf("write bootstrap sysext: sha256 %s does not match selected digest %s", got, selected.SHA256)
 	}
 	artifactVersion := strings.TrimSpace(selected.ArtifactVersion)
 	if artifactVersion == "" {
@@ -220,6 +238,10 @@ func materializeSysext(root string, candidate string, selected bootstrapplan.Sel
 			RuntimeInterfaces: []string{selected.RuntimeInterface},
 		},
 	}, nil
+}
+
+func copySysext(dst io.Writer, src io.Reader) (int64, error) {
+	return io.CopyBuffer(dst, src, make([]byte, 64<<10))
 }
 
 func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile, error) {
