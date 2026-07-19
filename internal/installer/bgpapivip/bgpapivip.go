@@ -22,16 +22,17 @@ const (
 	AppID        = "bgp-api-vip"
 	BirdConfigID = "bird"
 
-	ConfigPath        = "/etc/katl/apps/bgp-api-vip/config.yaml"
-	BirdConfigPath    = "/etc/katl/apps/bird/bird.conf"
-	LiveStatusPath    = "/run/katl/apps/bgp-api-vip/status.json"
-	OperationStatus   = "/var/lib/katl/operations/<operation-id>/apps/bgp-api-vip/status.json"
-	AppDropInPath     = "/etc/systemd/system/katl-app-bgp-api-vip.service.d/10-katl-config.conf"
-	BirdDropInPath    = "/etc/systemd/system/katl-app-bird.service.d/20-katl-bgp-api-vip.conf"
-	KubeletDropInPath = "/etc/systemd/system/kubelet.service.d/20-katl-control-plane-endpoint.conf"
-	NetworkPath       = "/etc/systemd/network/05-katl-bgp-api-vip.network"
-	DummyNetDevPath   = "/etc/systemd/network/05-katl-bgp-api-vip.netdev"
-	defaultHealthPath = "/readyz"
+	ConfigPath               = "/etc/katl/apps/bgp-api-vip/config.yaml"
+	AdvertisementEnabledPath = "/etc/katl/apps/bgp-api-vip/advertisement-enabled"
+	BirdConfigPath           = "/etc/katl/apps/bird/bird.conf"
+	LiveStatusPath           = "/run/katl/apps/bgp-api-vip/status.json"
+	OperationStatus          = "/var/lib/katl/operations/<operation-id>/apps/bgp-api-vip/status.json"
+	AppDropInPath            = "/etc/systemd/system/katl-app-bgp-api-vip.service.d/10-katl-config.conf"
+	BirdDropInPath           = "/etc/systemd/system/katl-app-bird.service.d/20-katl-bgp-api-vip.conf"
+	KubeletDropInPath        = "/etc/systemd/system/kubelet.service.d/20-katl-control-plane-endpoint.conf"
+	NetworkPath              = "/etc/systemd/network/05-katl-bgp-api-vip.network"
+	DummyNetDevPath          = "/etc/systemd/network/05-katl-bgp-api-vip.netdev"
+	defaultHealthPath        = "/readyz"
 )
 
 var (
@@ -361,6 +362,13 @@ func RenderNativeEtcFiles(request RenderRequest) (Plan, error) {
 			Content: renderKubeletDropIn(),
 			Mode:    0o644,
 		},
+	}
+	if *config.Advertisement.Enabled {
+		files = append(files, confext.NativeEtcFile{
+			Path:    AdvertisementEnabledPath,
+			Content: "enabled\n",
+			Mode:    0o644,
+		})
 	}
 	if config.VIPInterface.Kind == "dummy" {
 		files = append(files, confext.NativeEtcFile{

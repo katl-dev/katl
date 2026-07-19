@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -18,6 +19,7 @@ import (
 
 func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "apply")
+	writeTestFile(t, filepath.Join(root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
 	var commands [][]string
 	executor := NewExecutor(root, store, "agent-test")
 	executor.Async = false
@@ -56,7 +58,16 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if completed.KubeadmUpgradeEvidence.TargetKubeadmAccessMode != kubeadmAccessOperationPrivate || completed.KubeadmUpgradeEvidence.KubeletGateState != "target-observed" || completed.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm {
 		t.Fatalf("upgrade evidence = %+v", completed.KubeadmUpgradeEvidence)
 	}
-	assertCommandOrder(t, commands, "kubeadm upgrade plan v1.36.2", "kubeadm upgrade apply --yes v1.36.2", "systemctl stop kubelet.service", "systemd-sysext refresh", "systemctl restart kubelet.service")
+	assertCommandOrder(t, commands,
+		"kubeadm upgrade plan v1.36.2",
+		"systemctl stop "+endpointAdvertiserUnit,
+		endpointAdvertiserCommand+" withdraw",
+		"kubeadm upgrade apply --yes v1.36.2",
+		"systemctl stop kubelet.service",
+		"systemd-sysext refresh",
+		"systemctl restart kubelet.service",
+		"systemctl start "+endpointAdvertiserUnit,
+	)
 	spec, status, err := generation.ReadGeneration(root, "gen1")
 	if err != nil {
 		t.Fatal(err)

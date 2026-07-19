@@ -124,15 +124,30 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		}); err != nil {
 			return err
 		}
-		retainToolView = true
+	}
+
+	endpointPaused := false
+	if request.UpgradeRole != "worker" {
+		endpointPaused, err = pauseManagedEndpoint(ctx, e.Root, e.toolRunner())
+		if err != nil {
+			return e.failKubeadmUpgrade(record, "endpoint-withdraw-running", err, false)
+		}
+		if endpointPaused {
+			defer func() {
+				if endpointPaused {
+					_ = resumeManagedEndpoint(context.Background(), e.Root, e.toolRunner())
+				}
+			}()
+		}
+	}
+
+	retainToolView = true
+	if request.UpgradeRole == "apply" {
 		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-apply-running", []string{targetKubeadm, "upgrade", "apply", "--yes", request.TargetPayloadVersion}, true); err != nil {
 			return err
 		}
-	} else {
-		retainToolView = true
-		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-node-running", []string{targetKubeadm, "upgrade", "node"}, true); err != nil {
-			return err
-		}
+	} else if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-node-running", []string{targetKubeadm, "upgrade", "node"}, true); err != nil {
+		return err
 	}
 
 	if _, err := e.Store.Update(record.OperationID, "stop-source-kubelet", "kubelet-stop-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -179,6 +194,12 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	}
 	if err := e.checkKubeadmUpgradeHealth(ctx, *request); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
+	}
+	if endpointPaused {
+		if err := resumeManagedEndpoint(ctx, e.Root, e.toolRunner()); err != nil {
+			return e.failKubeadmUpgrade(record, "endpoint-resume-running", err, true)
+		}
+		endpointPaused = false
 	}
 	if err := e.completeKubeadmUpgrade(ctx, record); err != nil {
 		return err

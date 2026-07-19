@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -86,6 +87,9 @@ func run(args []string, stderr io.Writer) error {
 			}
 			lastState = state
 		}
+		if runErr != nil {
+			return failClosed(runErr, client, bgpapivip.ExecRunner{})
+		}
 		select {
 		case <-ctx.Done():
 			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -95,6 +99,13 @@ func run(args []string, stderr io.Writer) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func failClosed(runErr error, client bgpapivip.BirdClient, runner bgpapivip.CommandRunner) error {
+	if runErr == nil {
+		return nil
+	}
+	return errors.Join(runErr, withdrawWith(context.Background(), client, runner))
 }
 
 func withdraw(parent context.Context) error {

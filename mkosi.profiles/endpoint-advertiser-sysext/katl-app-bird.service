@@ -4,6 +4,7 @@ Documentation=https://katl.dev
 Wants=network-online.target
 After=network-online.target
 ConditionPathExists=/etc/katl/apps/bird/bird.conf
+ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
 
 [Service]
 Type=simple

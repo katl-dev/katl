@@ -45,6 +45,23 @@ func TestWithdrawFailsWhenNeitherRouteNorDaemonCanBeStopped(t *testing.T) {
 	}
 }
 
+func TestControllerErrorFailsClosedBeforeSystemdRestart(t *testing.T) {
+	bird := &fakeBirdClient{}
+	runner := &fakeCommandRunner{}
+	runErr := errors.New("routing status unavailable")
+
+	err := failClosed(runErr, bird, runner)
+	if !errors.Is(err, runErr) {
+		t.Fatalf("failClosed() error = %v", err)
+	}
+	if !reflect.DeepEqual(bird.advertisements, []bool{false}) {
+		t.Fatalf("advertisements = %#v", bird.advertisements)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("fallback calls = %#v", runner.calls)
+	}
+}
+
 type fakeBirdClient struct {
 	setErr         error
 	advertisements []bool

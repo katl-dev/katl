@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -122,6 +123,68 @@ func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
 	}
 }
 
+func TestRebootWithdrawsManagedEndpointBeforeScheduling(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	var actions []string
+	server.RunEndpointLifecycle = func(_ context.Context, got []string, _ func(int)) ToolResult {
+		actions = append(actions, strings.Join(got, " "))
+		return ToolResult{}
+	}
+	server.RunReboot = func(_ context.Context, got []string, _ func(int)) ToolResult {
+		actions = append(actions, strings.Join(got, " "))
+		return ToolResult{}
+	}
+	machineID, err := server.machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.Reboot(context.Background(), &agentapi.RebootRequest{
+		ApiVersion: generation.APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: machineID, TargetGenerationId: "generation-0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"systemctl stop " + endpointAdvertiserUnit,
+		endpointAdvertiserCommand + " withdraw",
+		"systemd-run --unit=katl-reboot --collect --on-active=2s systemctl reboot",
+	}
+	if !reflect.DeepEqual(actions, want) {
+		t.Fatalf("reboot actions = %#v, want %#v", actions, want)
+	}
+}
+
+func TestRebootRefusesWhenManagedEndpointCannotWithdraw(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
+		return ToolResult{Err: errors.New("withdraw failed"), ExitStatus: 1}
+	}
+	rebootCalled := false
+	server.RunReboot = func(_ context.Context, _ []string, _ func(int)) ToolResult {
+		rebootCalled = true
+		return ToolResult{}
+	}
+	machineID, err := server.machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.Reboot(context.Background(), &agentapi.RebootRequest{
+		ApiVersion: generation.APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: machineID, TargetGenerationId: "generation-0",
+	})
+	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "prepare control-plane endpoint for reboot") {
+		t.Fatalf("Reboot() error = %v", err)
+	}
+	if rebootCalled {
+		t.Fatal("reboot was scheduled without withdrawing the managed endpoint")
+	}
+}
+
 func TestShutdownSchedulesPoweroff(t *testing.T) {
 	server := newTestServer(t)
 	var argv []string
@@ -146,6 +209,39 @@ func TestShutdownSchedulesPoweroff(t *testing.T) {
 	want := []string{"systemd-run", "--unit=katl-shutdown", "--collect", "--on-active=2s", "systemctl", "poweroff"}
 	if !reflect.DeepEqual(argv, want) {
 		t.Fatalf("shutdown argv = %#v, want %#v", argv, want)
+	}
+}
+
+func TestShutdownWithdrawsManagedEndpointBeforeScheduling(t *testing.T) {
+	server := newTestServer(t)
+	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	var actions []string
+	server.RunEndpointLifecycle = func(_ context.Context, got []string, _ func(int)) ToolResult {
+		actions = append(actions, strings.Join(got, " "))
+		return ToolResult{}
+	}
+	server.RunShutdown = func(_ context.Context, got []string, _ func(int)) ToolResult {
+		actions = append(actions, strings.Join(got, " "))
+		return ToolResult{}
+	}
+	machineID, err := server.machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.Shutdown(context.Background(), &agentapi.ShutdownRequest{
+		ApiVersion: generation.APIVersion, Kind: ShutdownRequestKind, Actor: "test",
+		ExpectedMachineId: machineID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"systemctl stop " + endpointAdvertiserUnit,
+		endpointAdvertiserCommand + " withdraw",
+		"systemd-run --unit=katl-shutdown --collect --on-active=2s systemctl poweroff",
+	}
+	if !reflect.DeepEqual(actions, want) {
+		t.Fatalf("shutdown actions = %#v, want %#v", actions, want)
 	}
 }
 

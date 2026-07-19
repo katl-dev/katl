@@ -224,6 +224,9 @@ Generated confext owns:
 /etc/katl/apps/bgp-api-vip/config.yaml
   normalized app input and validation digest
 
+/etc/katl/apps/bgp-api-vip/advertisement-enabled
+  generated activation marker, present only when advertisement.enabled is true
+
 /etc/katl/apps/bird/bird.conf
   deterministic BIRD config generated from this bounded app schema
 
@@ -352,7 +355,8 @@ Advertisement is explicit and fail-closed:
 
 ```text
 advertisement.enabled
-  false keeps the route withdrawn even when BIRD and health are otherwise ready
+  false keeps the route withdrawn and prevents BIRD and the endpoint controller
+  from starting
 
 advertisement.startWithdrawn
   must be true

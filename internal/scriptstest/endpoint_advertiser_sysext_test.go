@@ -21,6 +21,7 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 	birdUnit := read("mkosi.profiles/endpoint-advertiser-sysext/katl-app-bird.service")
 	for _, want := range []string{
 		"ConditionPathExists=/etc/katl/apps/bird/bird.conf",
+		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
 		"ExecStart=/usr/bin/bird ",
 		"RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX",
 	} {
@@ -36,6 +37,7 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 	for _, want := range []string{
 		"Requires=katl-app-bird.service",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml",
+		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
 		"RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX",
 	} {
 		if !strings.Contains(appUnit, want) {
@@ -49,6 +51,7 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 	activationUnit := read("mkosi.profiles/runtime/katl-endpoint-activate.service")
 	for _, want := range []string{
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml",
+		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
 		"ExecStart=/usr/bin/systemctl daemon-reload",
 		"start katl-app-bgp-api-vip.service",
 	} {

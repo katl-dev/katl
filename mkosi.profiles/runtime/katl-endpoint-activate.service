@@ -4,6 +4,7 @@ Documentation=https://katl.dev
 Wants=systemd-sysext.service systemd-confext.service
 After=systemd-sysext.service systemd-confext.service
 ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
+ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
 
 [Service]
 Type=oneshot

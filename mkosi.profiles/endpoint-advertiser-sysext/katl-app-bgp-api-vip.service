@@ -4,6 +4,7 @@ Documentation=https://katl.dev
 Requires=katl-app-bird.service
 After=katl-app-bird.service
 ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
+ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
 
 [Service]
 Type=simple

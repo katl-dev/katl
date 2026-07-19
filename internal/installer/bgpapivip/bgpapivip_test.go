@@ -116,6 +116,7 @@ func TestRenderNativeEtcFilesMinimalIPv4DummyVIP(t *testing.T) {
 		t.Fatalf("RenderNativeEtcFiles() error = %v", err)
 	}
 	assertFile(t, plan.Files, ConfigPath, "kind: BGPAPIEndpoint\n")
+	assertFile(t, plan.Files, AdvertisementEnabledPath, "enabled\n")
 	assertFile(t, plan.Files, DummyNetDevPath, "Name=katl-api0\nKind=dummy\n")
 	assertFile(t, plan.Files, NetworkPath, "Address=10.40.0.10/32\n")
 	if filepath.Base(NetworkPath) >= "10-lan.network" {
@@ -133,6 +134,23 @@ func TestRenderNativeEtcFilesMinimalIPv4DummyVIP(t *testing.T) {
 	if plan.Config.Health.Path != "/readyz" || plan.Config.Health.TLSServerName != "api.home.example" {
 		t.Fatalf("normalized health = %#v", plan.Config.Health)
 	}
+}
+
+func TestRenderDoesNotActivateRoutingWhenAdvertisementIsDisabled(t *testing.T) {
+	config := minimalConfig()
+	disabled := false
+	config.Advertisement.Enabled = &disabled
+
+	plan, err := RenderNativeEtcFiles(RenderRequest{
+		NodeRole: "control-plane",
+		Config:   config,
+	})
+	if err != nil {
+		t.Fatalf("RenderNativeEtcFiles() error = %v", err)
+	}
+
+	assertFile(t, plan.Files, ConfigPath, "enabled: false\n")
+	assertNoFile(t, plan.Files, AdvertisementEnabledPath)
 }
 
 func TestRenderMatchesMinimalIPv4Golden(t *testing.T) {

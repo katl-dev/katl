@@ -1,3 +1,5 @@
+--- /etc/katl/apps/bgp-api-vip/advertisement-enabled
+enabled
 --- /etc/katl/apps/bgp-api-vip/config.yaml
 apiVersion: apps.katl.dev/v1alpha1
 kind: BGPAPIEndpoint
