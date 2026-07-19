@@ -120,6 +120,29 @@ func TestCompileSelectsManagedEndpointOnlyForControlPlanes(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsNativeKubeadmConflictWithManagedEndpoint(t *testing.T) {
+	config := validConfig()
+	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{
+		Host: "api.katl.test",
+		Advertisement: &controlplaneendpoint.Advertisement{
+			VIP: "10.40.0.10",
+			BGP: &controlplaneendpoint.BGP{
+				LocalASN: 64512,
+				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
+			},
+		},
+	}
+	configs := validKubeadmConfigs("v1.36.1")
+	controlPlane := configs["control-plane"]
+	controlPlane.Config.Content = []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\napiServer:\n  extraArgs:\n    - name: bind-address\n      value: 10.0.0.11\n")
+	configs["control-plane"] = controlPlane
+
+	_, err := Compile(CompileRequest{Config: config, KubeadmConfigs: configs})
+	if err == nil || !strings.Contains(err.Error(), "does not accept the managed VIP") {
+		t.Fatalf("Compile() error = %v, want managed endpoint conflict", err)
+	}
+}
+
 func nativeFile(files []confext.NativeEtcFile, path string) *confext.NativeEtcFile {
 	for index := range files {
 		if files[index].Path == path {

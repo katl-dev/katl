@@ -66,6 +66,13 @@ func Compile(request CompileRequest) (Plan, error) {
 	if endpointPlan != nil {
 		controlPlaneEndpoint = endpointPlan.Endpoint
 	}
+	if endpointPlan != nil && endpointPlan.Config.Advertisement != nil {
+		for _, plan := range request.KubeadmConfigs {
+			if err := kubeadmconfig.ValidateManagedEndpoint(plan, endpointPlan.Config.Advertisement.VIP, endpointPlan.Config.Port); err != nil {
+				return Plan{}, err
+			}
+		}
+	}
 
 	nodes := append([]Node(nil), config.Spec.Nodes...)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
