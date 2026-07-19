@@ -32,6 +32,9 @@ func TestDomainClassificationMatrix(t *testing.T) {
 		{DomainArbitraryEtc, ClassificationRejected},
 		{DomainRootSelection, ClassificationOperationOnly},
 		{DomainSysextSelection, ClassificationOperationOnly},
+		{DomainControlPlaneEndpointBootstrap, ClassificationStagedOnly},
+		{DomainControlPlaneEndpointIdentity, ClassificationOperationOnly},
+		{DomainControlPlaneEndpointRouting, ClassificationOnlineApplicable},
 		{"unknown-domain", ClassificationRejected},
 	}
 	for _, tt := range tests {
@@ -100,6 +103,7 @@ func TestPlanTreatsStagedOnlyDomainsAsNextBoot(t *testing.T) {
 		DomainTmpfiles,
 		DomainNetworkd,
 		DomainBootstrapNodeMetadata,
+		DomainControlPlaneEndpointBootstrap,
 	} {
 		t.Run(domain, func(t *testing.T) {
 			live, err := Plan(generation.ApplyModeLive, []Change{{Domain: domain}})
@@ -123,11 +127,12 @@ func TestPlanTreatsStagedOnlyDomainsAsNextBoot(t *testing.T) {
 
 func TestPlanRejectsOperationOnlyAndUnsupportedMutations(t *testing.T) {
 	operationOnly := map[string]string{
-		DomainSystemRole:               "wipe-reinstall",
-		DomainSelectedKubernetesSysext: "kubernetes-upgrade",
-		DomainKubeletNodeIdentity:      "kubeadm-aware operation",
-		DomainRootSelection:            "host-upgrade",
-		DomainSysextSelection:          "host-upgrade",
+		DomainSystemRole:                   "wipe-reinstall",
+		DomainSelectedKubernetesSysext:     "kubernetes-upgrade",
+		DomainKubeletNodeIdentity:          "kubeadm-aware operation",
+		DomainRootSelection:                "host-upgrade",
+		DomainSysextSelection:              "host-upgrade",
+		DomainControlPlaneEndpointIdentity: "control-plane-endpoint-migration (not yet supported)",
 	}
 	for domain, required := range operationOnly {
 		t.Run(domain, func(t *testing.T) {
@@ -203,6 +208,8 @@ func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 		DomainModulesLoad,
 		DomainKubeadmConfig,
 		DomainSelectedKubeadmConfig,
+		DomainControlPlaneEndpointBootstrap,
+		DomainControlPlaneEndpointRouting,
 	}
 	for _, domain := range allowed {
 		t.Run("allowed-"+domain, func(t *testing.T) {
@@ -222,6 +229,7 @@ func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 		DomainArbitraryEtc,
 		DomainRootSelection,
 		DomainSysextSelection,
+		DomainControlPlaneEndpointIdentity,
 		"unknown-domain",
 	}
 	for _, domain := range rejected {

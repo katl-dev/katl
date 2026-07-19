@@ -8,26 +8,29 @@ import (
 )
 
 const (
-	DomainNodeIdentity             = "node-identity"
-	DomainNetworkd                 = "networkd"
-	DomainResolved                 = "resolved"
-	DomainSysctl                   = "sysctl"
-	DomainModulesLoad              = "modules-load"
-	DomainTmpfiles                 = "tmpfiles"
-	DomainMountUnits               = "mount-units"
-	DomainExtraDisks               = "extra-disks"
-	DomainKubeadmConfig            = "kubeadm-config"
-	DomainBootstrapNodeMetadata    = "bootstrap-node-metadata"
-	DomainSSHOperatorAccess        = "ssh-operator-access"
-	DomainSystemRole               = "system-role"
-	DomainSelectedKubeadmConfig    = "selected-kubeadm-config"
-	DomainSelectedKubernetesSysext = "selected-kubernetes-sysext"
-	DomainKubeletNodeIdentity      = "kubelet-node-identity"
-	DomainHostAccountPolicy        = "host-account-policy"
-	DomainEtcKubernetes            = "etc-kubernetes"
-	DomainArbitraryEtc             = "arbitrary-etc"
-	DomainRootSelection            = "root-selection"
-	DomainSysextSelection          = "sysext-selection"
+	DomainNodeIdentity                  = "node-identity"
+	DomainNetworkd                      = "networkd"
+	DomainResolved                      = "resolved"
+	DomainSysctl                        = "sysctl"
+	DomainModulesLoad                   = "modules-load"
+	DomainTmpfiles                      = "tmpfiles"
+	DomainMountUnits                    = "mount-units"
+	DomainExtraDisks                    = "extra-disks"
+	DomainKubeadmConfig                 = "kubeadm-config"
+	DomainBootstrapNodeMetadata         = "bootstrap-node-metadata"
+	DomainSSHOperatorAccess             = "ssh-operator-access"
+	DomainSystemRole                    = "system-role"
+	DomainSelectedKubeadmConfig         = "selected-kubeadm-config"
+	DomainSelectedKubernetesSysext      = "selected-kubernetes-sysext"
+	DomainKubeletNodeIdentity           = "kubelet-node-identity"
+	DomainHostAccountPolicy             = "host-account-policy"
+	DomainEtcKubernetes                 = "etc-kubernetes"
+	DomainArbitraryEtc                  = "arbitrary-etc"
+	DomainRootSelection                 = "root-selection"
+	DomainSysextSelection               = "sysext-selection"
+	DomainControlPlaneEndpointBootstrap = "control-plane-endpoint-bootstrap"
+	DomainControlPlaneEndpointIdentity  = "control-plane-endpoint-identity"
+	DomainControlPlaneEndpointRouting   = "control-plane-endpoint-routing"
 )
 
 const (
@@ -326,5 +329,18 @@ var domainPolicies = map[string]domainPolicy{
 		Classification:      ClassificationOperationOnly,
 		LiveRejectionReason: "sysext selection changes require an explicit update action",
 		RequiredOperation:   "host-upgrade",
+	},
+	DomainControlPlaneEndpointBootstrap: {
+		Classification:  ClassificationStagedOnly,
+		NextBootAllowed: true,
+	},
+	DomainControlPlaneEndpointIdentity: {
+		Classification:      ClassificationOperationOnly,
+		LiveRejectionReason: "initialized control-plane endpoint host, port, VIP, and ownership cannot change without a dedicated endpoint migration",
+		RequiredOperation:   "control-plane-endpoint-migration (not yet supported)",
+	},
+	DomainControlPlaneEndpointRouting: {
+		Classification:  ClassificationOnlineApplicable,
+		NextBootAllowed: true,
 	},
 }

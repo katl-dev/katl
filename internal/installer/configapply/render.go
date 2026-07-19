@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
@@ -38,10 +39,11 @@ type renderedNodeConfigurationChangeSpec struct {
 }
 
 type renderedNodeConfigurationOverlay struct {
-	Identity   renderedNodeIdentity       `yaml:"identity"`
-	SystemRole string                     `yaml:"systemRole,omitempty"`
-	Networkd   manifest.NetworkdConfig    `yaml:"networkd"`
-	Kubernetes *manifest.KubernetesConfig `yaml:"kubernetes,omitempty"`
+	Identity             renderedNodeIdentity        `yaml:"identity"`
+	SystemRole           string                      `yaml:"systemRole,omitempty"`
+	Networkd             manifest.NetworkdConfig     `yaml:"networkd"`
+	Kubernetes           *manifest.KubernetesConfig  `yaml:"kubernetes,omitempty"`
+	ControlPlaneEndpoint controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint"`
 }
 
 type renderedNodeIdentity struct {
@@ -88,9 +90,10 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 						Hostname:       node.Identity.Hostname,
 						AuthorizedKeys: append([]string{}, node.Identity.SSH.AuthorizedKeys...),
 					},
-					SystemRole: node.SystemRole,
-					Networkd:   node.Networkd,
-					Kubernetes: &node.Kubernetes,
+					SystemRole:           node.SystemRole,
+					Networkd:             node.Networkd,
+					Kubernetes:           &node.Kubernetes,
+					ControlPlaneEndpoint: renderedControlPlaneEndpoint(node.ControlPlaneEndpoint),
 				},
 			},
 		},
@@ -100,6 +103,10 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		return nil, fmt.Errorf("marshal node configuration change: %w", err)
 	}
 	return data, nil
+}
+
+func renderedControlPlaneEndpoint(config *controlplaneendpoint.Config) controlPlaneEndpointOverlay {
+	return controlPlaneEndpointOverlay{Managed: config != nil, Config: config}
 }
 
 func renderKubeadmConfigs(ref string, configs map[string]kubeadmconfig.Plan) (map[string]inlineKubeadmConfig, error) {

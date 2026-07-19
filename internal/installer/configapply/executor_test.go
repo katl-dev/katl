@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +226,55 @@ func TestExecutorRejectsNonLivePlans(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "accepted live plan") {
 		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestExecutorDoesNotRunBirdWithoutVIPAdvertisement(t *testing.T) {
+	root := t.TempDir()
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainControlPlaneEndpointRouting}})
+	activator := &fakeActivator{}
+	runner := &fakeCommandRunner{}
+
+	status, err := Executor{
+		Root:      root,
+		Runner:    runner,
+		Activator: activator,
+		Now:       fixedNow,
+	}.ExecuteLive(context.Background(), plan)
+	if err == nil || !strings.Contains(err.Error(), "VIP advertisement is not enabled") {
+		t.Fatalf("ExecuteLive() error = %v, want disabled advertisement diagnostic", err)
+	}
+	if status.Phase != generation.ConfigApplyPhaseFailed {
+		t.Fatalf("status phase = %q, want failed", status.Phase)
+	}
+	if activator.activated != "" || len(runner.commands) != 0 {
+		t.Fatalf("disabled advertisement reached activation or BIRD: activator=%#v commands=%#v", activator, runner.commands)
+	}
+}
+
+func TestExecutorRunsBirdWhenVIPAdvertisementIsEnabled(t *testing.T) {
+	root := t.TempDir()
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainControlPlaneEndpointRouting}})
+	marker := filepath.Join(root, strings.TrimPrefix(plan.GenerationRecord.Confexts[0].Path, "/"), "etc/katl/apps/bgp-api-vip/advertisement-enabled")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("enabled\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeCommandRunner{}
+
+	_, err := Executor{
+		Root:      root,
+		Runner:    runner,
+		Activator: &fakeActivator{},
+		Now:       fixedNow,
+	}.ExecuteLive(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("ExecuteLive() error = %v", err)
+	}
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
 	}
 }
 

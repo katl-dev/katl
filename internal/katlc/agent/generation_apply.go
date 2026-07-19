@@ -449,6 +449,7 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 			activator = generationActivator{root: e.Root}
 		}
 		decoded.Executor = &configapply.Executor{
+			Root:      e.Root,
 			Runner:    runner,
 			Activator: activator,
 			Now:       e.clock,
@@ -462,9 +463,16 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 			err = errorsJoin(err, splitErr)
 		}
 	}
-	if err == nil && result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot {
-		if commitErr := e.commitCandidateGeneration(ctx, record, completedAt, "next-boot runtime configuration apply staged by katlc agent executor"); commitErr != nil {
-			err = commitErr
+	if err == nil {
+		switch result.Plan.Decision.AcceptedMode {
+		case generation.ApplyModeLive:
+			if promoteErr := e.promoteCandidateGenerationLive(ctx, record, completedAt, "live runtime configuration apply completed successfully"); promoteErr != nil {
+				err = promoteErr
+			}
+		case generation.ApplyModeNextBoot:
+			if commitErr := e.commitCandidateGeneration(ctx, record, completedAt, "next-boot runtime configuration apply staged by katlc agent executor"); commitErr != nil {
+				err = commitErr
+			}
 		}
 	}
 	if err != nil {
@@ -480,9 +488,8 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		record.CandidateGenerationID = result.Plan.GenerationRecord.GenerationID
 		record.ConfigApplyPhase = result.Status.Phase
 		record.ChangedDomains = append([]string(nil), result.Status.ChangedDomains...)
-		record.GenerationCommitState = operation.GenerationCommitCandidate
+		record.GenerationCommitState = operation.GenerationCommitCommitted
 		if result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot {
-			record.GenerationCommitState = operation.GenerationCommitCommitted
 			record.BootHealthPending = true
 		}
 		record.ActivationState = configApplyActivationState(result.Status, false)
@@ -638,13 +645,16 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 		return configapply.TrustedBundleRequest{}, fmt.Errorf("read current generation: %w", err)
 	}
 	current := generation.RecordFromSplit(spec, status)
-	manifestPath := filepath.Join(filepath.Clean(root), "var/lib/katl/install/manifest.json")
-	manifestFile, err := os.Open(manifestPath)
-	if err != nil {
-		return configapply.TrustedBundleRequest{}, fmt.Errorf("open current install manifest: %w", err)
+	currentManifest, err := configapply.ReadGenerationManifest(root, currentID)
+	if errors.Is(err, os.ErrNotExist) {
+		manifestPath := filepath.Join(filepath.Clean(root), "var/lib/katl/install/manifest.json")
+		manifestFile, openErr := os.Open(manifestPath)
+		if openErr != nil {
+			return configapply.TrustedBundleRequest{}, fmt.Errorf("open current install manifest: %w", openErr)
+		}
+		defer manifestFile.Close()
+		currentManifest, err = manifest.Decode(manifestFile)
 	}
-	defer manifestFile.Close()
-	currentManifest, err := manifest.Decode(manifestFile)
 	if err != nil {
 		return configapply.TrustedBundleRequest{}, err
 	}
@@ -678,9 +688,19 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 		KubeadmConfigs:                  kubeadmConfigs,
 		RuntimeKubernetesVersion:        kubernetesVersion,
 		RuntimeKubernetesActivationPath: kubernetesActivationPath,
+		KubernetesInitialized:           controlPlaneKubernetesInitialized(root),
 		Chown:                           func(string, int, int) error { return nil },
 		Now:                             now,
 	}, nil
+}
+
+func controlPlaneKubernetesInitialized(root string) bool {
+	for _, path := range []string{"/etc/kubernetes/admin.conf", "/etc/kubernetes/manifests/kube-apiserver.yaml"} {
+		if info, err := os.Stat(rootedRuntimePath(root, path)); err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 func clusterIntentKubernetesActivationPath(intent installer.ClusterIntent) string {

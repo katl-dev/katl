@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
@@ -40,12 +41,18 @@ type inlineKubeadmConfig struct {
 }
 
 type nodeConfigurationOverlay struct {
-	Identity      *IdentityOverlay           `json:"identity,omitempty" yaml:"identity,omitempty"`
-	SystemRole    string                     `json:"systemRole,omitempty" yaml:"systemRole,omitempty"`
-	Networkd      *manifest.NetworkdConfig   `json:"networkd,omitempty" yaml:"networkd,omitempty"`
-	Sysctl        *manifest.SysctlConfig     `json:"sysctl,omitempty" yaml:"sysctl,omitempty"`
-	Kubernetes    *manifest.KubernetesConfig `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
-	LivePreflight map[string]bool            `json:"livePreflight,omitempty" yaml:"livePreflight,omitempty"`
+	Identity             *IdentityOverlay             `json:"identity,omitempty" yaml:"identity,omitempty"`
+	SystemRole           string                       `json:"systemRole,omitempty" yaml:"systemRole,omitempty"`
+	Networkd             *manifest.NetworkdConfig     `json:"networkd,omitempty" yaml:"networkd,omitempty"`
+	Sysctl               *manifest.SysctlConfig       `json:"sysctl,omitempty" yaml:"sysctl,omitempty"`
+	Kubernetes           *manifest.KubernetesConfig   `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
+	ControlPlaneEndpoint *controlPlaneEndpointOverlay `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
+	LivePreflight        map[string]bool              `json:"livePreflight,omitempty" yaml:"livePreflight,omitempty"`
+}
+
+type controlPlaneEndpointOverlay struct {
+	Managed bool                         `json:"managed" yaml:"managed"`
+	Config  *controlplaneendpoint.Config `json:"config,omitempty" yaml:"config,omitempty"`
 }
 
 func DecodeNodeConfigurationChange(reader io.Reader, base TrustedBundleRequest) (TrustedBundleRequest, error) {
@@ -65,6 +72,9 @@ func DecodeNodeConfigurationChange(reader io.Reader, base TrustedBundleRequest) 
 	if document.Kind != NodeConfigurationChangeKind {
 		return TrustedBundleRequest{}, fmt.Errorf("kind must be %s", NodeConfigurationChangeKind)
 	}
+	if err := validateEndpointOverlays(document.Spec); err != nil {
+		return TrustedBundleRequest{}, err
+	}
 
 	request := base
 	request.SourceID = document.Metadata.SourceID
@@ -79,6 +89,36 @@ func DecodeNodeConfigurationChange(reader io.Reader, base TrustedBundleRequest) 
 	request.SystemRoleOverrides = nodeOverlayMap(document.Spec.SystemRoleOverrides, changedKubeadmConfigs)
 	request.NodeOverrides = nodeOverlayMap(document.Spec.NodeOverrides, changedKubeadmConfigs)
 	return request, nil
+}
+
+func validateEndpointOverlays(spec nodeConfigurationChangeSpec) error {
+	validate := func(path string, overlay nodeConfigurationOverlay) error {
+		endpoint := overlay.ControlPlaneEndpoint
+		if endpoint == nil {
+			return nil
+		}
+		if endpoint.Managed && endpoint.Config == nil {
+			return fmt.Errorf("%s.controlPlaneEndpoint.config is required when managed is true", path)
+		}
+		if !endpoint.Managed && endpoint.Config != nil {
+			return fmt.Errorf("%s.controlPlaneEndpoint.config must be omitted when managed is false", path)
+		}
+		return nil
+	}
+	if err := validate("spec.clusterDefaults", spec.ClusterDefaults); err != nil {
+		return err
+	}
+	for name, overlay := range spec.SystemRoleOverrides {
+		if err := validate("spec.systemRoleOverrides."+name, overlay); err != nil {
+			return err
+		}
+	}
+	for name, overlay := range spec.NodeOverrides {
+		if err := validate("spec.nodeOverrides."+name, overlay); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ApplyNodeConfigurationChange(ctx context.Context, reader io.Reader, base TrustedBundleRequest) (TrustedBundleResult, error) {
@@ -105,7 +145,7 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 	if overlay.Kubernetes != nil {
 		_, kubeadmChanged = changedConfigs[strings.TrimSpace(overlay.Kubernetes.Kubeadm.ConfigRef)]
 	}
-	return NodeOverlay{
+	nodeOverlay := NodeOverlay{
 		Identity:       overlay.Identity,
 		SystemRole:     overlay.SystemRole,
 		Networkd:       overlay.Networkd,
@@ -114,6 +154,11 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 		KubeadmChanged: kubeadmChanged,
 		LivePreflight:  overlay.LivePreflight,
 	}
+	if overlay.ControlPlaneEndpoint != nil {
+		nodeOverlay.ControlPlaneEndpointSet = true
+		nodeOverlay.ControlPlaneEndpoint = overlay.ControlPlaneEndpoint.Config
+	}
+	return nodeOverlay
 }
 
 func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline map[string]inlineKubeadmConfig) (map[string]kubeadmconfig.Plan, map[string]struct{}, error) {

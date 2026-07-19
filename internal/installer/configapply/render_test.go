@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
@@ -25,7 +26,8 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 					Name:    "10-lan.network",
 					Content: "[Network]\nDHCP=yes\n",
 				}}},
-				Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
+				Kubernetes:           manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
+				ControlPlaneEndpoint: managedEndpoint("192.0.2.1"),
 			},
 		},
 		SourceID:       "lab",
@@ -52,8 +54,50 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	if overlay.SystemRole != "control-plane" || overlay.Kubernetes == nil || overlay.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
 		t.Fatalf("rendered operation fields = role %q kubernetes %#v", overlay.SystemRole, overlay.Kubernetes)
 	}
+	if !overlay.ControlPlaneEndpointSet || overlay.ControlPlaneEndpoint == nil || overlay.ControlPlaneEndpoint.Advertisement == nil {
+		t.Fatalf("rendered control-plane endpoint = %#v, set=%t", overlay.ControlPlaneEndpoint, overlay.ControlPlaneEndpointSet)
+	}
 	if strings.Contains(string(data), "install:") {
 		t.Fatalf("rendered change contains install fields:\n%s", data)
+	}
+}
+
+func TestRenderNodeConfigurationChangeCarriesExternalEndpointOwnership(t *testing.T) {
+	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
+		NodeName: "cp-1",
+		Manifest: manifest.Manifest{Node: manifest.NodeConfig{
+			Identity:             manifest.NodeIdentity{Hostname: "cp-1"},
+			ControlPlaneEndpoint: nil,
+		}},
+		SourceID:       "lab",
+		DesiredVersion: "2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := DecodeNodeConfigurationChange(strings.NewReader(string(data)), TrustedBundleRequest{})
+	if err != nil {
+		t.Fatalf("DecodeNodeConfigurationChange() error = %v\n%s", err, data)
+	}
+	overlay := request.NodeOverrides["cp-1"]
+	if !overlay.ControlPlaneEndpointSet || overlay.ControlPlaneEndpoint != nil {
+		t.Fatalf("external endpoint overlay = %#v, set=%t", overlay.ControlPlaneEndpoint, overlay.ControlPlaneEndpointSet)
+	}
+	if !strings.Contains(string(data), "controlPlaneEndpoint:\n                managed: false") {
+		t.Fatalf("rendered change omitted external endpoint ownership:\n%s", data)
+	}
+}
+
+func managedEndpoint(peer string) *controlplaneendpoint.Config {
+	return &controlplaneendpoint.Config{
+		Host: "192.0.2.10",
+		Advertisement: &controlplaneendpoint.Advertisement{
+			VIP: "192.0.2.10",
+			BGP: &controlplaneendpoint.BGP{
+				LocalASN: 64512,
+				Peers:    []controlplaneendpoint.Peer{{Address: peer, ASN: 64500}},
+			},
+		},
 	}
 }
 

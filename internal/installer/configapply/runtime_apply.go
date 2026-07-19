@@ -11,12 +11,14 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -49,20 +51,23 @@ type TrustedBundleRequest struct {
 	KubernetesActivationPath        string
 	RuntimeKubernetesVersion        string
 	RuntimeKubernetesActivationPath string
+	KubernetesInitialized           bool
 	Executor                        *Executor
 	Chown                           func(path string, uid int, gid int) error
 	Now                             func() time.Time
 }
 
 type NodeOverlay struct {
-	Identity       *IdentityOverlay
-	SystemRole     string
-	Networkd       *manifest.NetworkdConfig
-	Sysctl         *manifest.SysctlConfig
-	Kubernetes     *manifest.KubernetesConfig
-	UnsafeEtcFiles []confext.NativeEtcFile
-	KubeadmChanged bool
-	LivePreflight  map[string]bool
+	Identity                *IdentityOverlay
+	SystemRole              string
+	Networkd                *manifest.NetworkdConfig
+	Sysctl                  *manifest.SysctlConfig
+	Kubernetes              *manifest.KubernetesConfig
+	ControlPlaneEndpoint    *controlplaneendpoint.Config
+	ControlPlaneEndpointSet bool
+	UnsafeEtcFiles          []confext.NativeEtcFile
+	KubeadmChanged          bool
+	LivePreflight           map[string]bool
 }
 
 type IdentityOverlay struct {
@@ -203,6 +208,13 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
+	if err := WriteGenerationManifest(request.Root, request.GenerationID, merged); err != nil {
+		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		audit.CandidateGeneration = request.GenerationID
+		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
 	sysexts, err := materializeSysexts(request.Root, request.GenerationID, request.CurrentRecord.Sysexts)
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
@@ -264,6 +276,9 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 			return TrustedBundleResult{}, fmt.Errorf("live apply executor is required")
 		}
 		executor := *request.Executor
+		if strings.TrimSpace(executor.Root) == "" {
+			executor.Root = request.Root
+		}
 		executor.StatusPath = statusPath
 		status, err = executor.ExecuteLive(ctx, plan)
 		if err != nil {
@@ -401,18 +416,18 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 	if err := validateOverlay("clusterDefaults", request.ClusterDefaults); err != nil {
 		return manifest.Manifest{}, nil, nil, err
 	}
-	applyOverlay(&merged.Node, request.ClusterDefaults, &domains, &unsafeFiles)
+	applyOverlay(&merged.Node, request.ClusterDefaults, request.KubernetesInitialized, &domains, &unsafeFiles)
 	roleOverlay := request.SystemRoleOverrides[merged.Node.SystemRole]
 	if err := validateOverlay("systemRoleOverrides."+merged.Node.SystemRole, roleOverlay); err != nil {
 		return manifest.Manifest{}, nil, nil, err
 	}
-	applyOverlay(&merged.Node, roleOverlay, &domains, &unsafeFiles)
+	applyOverlay(&merged.Node, roleOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	nodeOverlay := request.NodeOverrides[request.NodeName]
 	if request.NodeName != "" {
 		if err := validateOverlay("nodeOverrides."+request.NodeName, nodeOverlay); err != nil {
 			return manifest.Manifest{}, nil, nil, err
 		}
-		applyOverlay(&merged.Node, nodeOverlay, &domains, &unsafeFiles)
+		applyOverlay(&merged.Node, nodeOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	}
 	if len(domains.domains) == 0 {
 		return merged, nil, nil, ErrNoChanges
@@ -427,7 +442,7 @@ func validateOverlay(path string, overlay NodeOverlay) error {
 	return nil
 }
 
-func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
+func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, kubernetesInitialized bool, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
 	if overlay.Identity != nil {
 		if overlay.Identity.Hostname != "" {
 			changed := node.Identity.Hostname != overlay.Identity.Hostname
@@ -475,12 +490,45 @@ func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, domains *domai
 			domains.add(DomainBootstrapNodeMetadata)
 		}
 	}
+	if overlay.ControlPlaneEndpointSet && !reflect.DeepEqual(node.ControlPlaneEndpoint, overlay.ControlPlaneEndpoint) {
+		classifyControlPlaneEndpointChange(node.ControlPlaneEndpoint, overlay.ControlPlaneEndpoint, kubernetesInitialized, domains)
+		node.ControlPlaneEndpoint = overlay.ControlPlaneEndpoint
+	}
 	if overlay.KubeadmChanged {
 		domains.add(DomainKubeadmConfig)
 	}
 	if len(overlay.UnsafeEtcFiles) > 0 {
 		*unsafeFiles = append(*unsafeFiles, overlay.UnsafeEtcFiles...)
 		domains.add(DomainArbitraryEtc)
+	}
+}
+
+func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.Config, kubernetesInitialized bool, domains *domainAccumulator) {
+	if current == nil || desired == nil {
+		if kubernetesInitialized {
+			domains.add(DomainControlPlaneEndpointIdentity)
+		} else {
+			domains.add(DomainControlPlaneEndpointBootstrap)
+		}
+		return
+	}
+	currentPlan, currentErr := controlplaneendpoint.Normalize(*current)
+	desiredPlan, desiredErr := controlplaneendpoint.Normalize(*desired)
+	if currentErr != nil || desiredErr != nil {
+		domains.add(DomainControlPlaneEndpointIdentity)
+		return
+	}
+	identityChanged := currentPlan.Config.Host != desiredPlan.Config.Host || currentPlan.Config.Port != desiredPlan.Config.Port || currentPlan.VIPPrefix != desiredPlan.VIPPrefix
+	if identityChanged {
+		if kubernetesInitialized {
+			domains.add(DomainControlPlaneEndpointIdentity)
+		} else {
+			domains.add(DomainControlPlaneEndpointBootstrap)
+		}
+		return
+	}
+	if !reflect.DeepEqual(currentPlan.Config, desiredPlan.Config) {
+		domains.add(DomainControlPlaneEndpointRouting)
 	}
 }
 
@@ -870,36 +918,38 @@ func cleanDesiredVersion(value string) (string, error) {
 
 func requestDigest(request TrustedBundleRequest) string {
 	type digestInput struct {
-		SourceID             string
-		DesiredVersion       string
-		NodeName             string
-		ApplyMode            string
-		GenerationID         string
-		CurrentManifest      manifest.Manifest
-		ClusterDefaults      NodeOverlay
-		SystemRoleOverrides  map[string]NodeOverlay
-		NodeOverrides        map[string]NodeOverlay
-		KubeadmConfigs       map[string]kubeadmconfig.Plan
-		KubernetesVersion    string
-		KubernetesActivation string
-		RuntimeVersion       string
-		RuntimeActivation    string
+		SourceID              string
+		DesiredVersion        string
+		NodeName              string
+		ApplyMode             string
+		GenerationID          string
+		CurrentManifest       manifest.Manifest
+		ClusterDefaults       NodeOverlay
+		SystemRoleOverrides   map[string]NodeOverlay
+		NodeOverrides         map[string]NodeOverlay
+		KubeadmConfigs        map[string]kubeadmconfig.Plan
+		KubernetesVersion     string
+		KubernetesActivation  string
+		RuntimeVersion        string
+		RuntimeActivation     string
+		KubernetesInitialized bool
 	}
 	data, _ := json.Marshal(digestInput{
-		SourceID:             request.SourceID,
-		DesiredVersion:       request.DesiredVersion,
-		NodeName:             request.NodeName,
-		ApplyMode:            request.ApplyMode,
-		GenerationID:         request.GenerationID,
-		CurrentManifest:      request.CurrentManifest,
-		ClusterDefaults:      request.ClusterDefaults,
-		SystemRoleOverrides:  request.SystemRoleOverrides,
-		NodeOverrides:        request.NodeOverrides,
-		KubeadmConfigs:       request.KubeadmConfigs,
-		KubernetesVersion:    request.KubernetesVersion,
-		KubernetesActivation: request.KubernetesActivationPath,
-		RuntimeVersion:       request.RuntimeKubernetesVersion,
-		RuntimeActivation:    request.RuntimeKubernetesActivationPath,
+		SourceID:              request.SourceID,
+		DesiredVersion:        request.DesiredVersion,
+		NodeName:              request.NodeName,
+		ApplyMode:             request.ApplyMode,
+		GenerationID:          request.GenerationID,
+		CurrentManifest:       request.CurrentManifest,
+		ClusterDefaults:       request.ClusterDefaults,
+		SystemRoleOverrides:   request.SystemRoleOverrides,
+		NodeOverrides:         request.NodeOverrides,
+		KubeadmConfigs:        request.KubeadmConfigs,
+		KubernetesVersion:     request.KubernetesVersion,
+		KubernetesActivation:  request.KubernetesActivationPath,
+		RuntimeVersion:        request.RuntimeKubernetesVersion,
+		RuntimeActivation:     request.RuntimeKubernetesActivationPath,
+		KubernetesInitialized: request.KubernetesInitialized,
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

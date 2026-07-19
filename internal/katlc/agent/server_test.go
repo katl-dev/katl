@@ -1186,6 +1186,7 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
+	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
@@ -1209,6 +1210,9 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if record.ActivationState != operation.ActivationStateActiveLive || record.ConfigApplyPhase != generation.ConfigApplyPhaseActive {
 		t.Fatalf("activation/config phase = %q/%q, want active-live/active", record.ActivationState, record.ConfigApplyPhase)
 	}
+	if record.GenerationCommitState != operation.GenerationCommitCommitted {
+		t.Fatalf("generation commit state = %q, want committed", record.GenerationCommitState)
+	}
 	if !contains(record.MutationScopes, "confext-activation") || !contains(record.MutationScopes, "config-domain:sysctl") {
 		t.Fatalf("mutation scopes = %v, want confext activation and sysctl domain", record.MutationScopes)
 	}
@@ -1217,6 +1221,27 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	}
 	if activator.activated == "" || runner.calls == 0 {
 		t.Fatalf("live dependencies activated=%q runner calls=%d, want both used", activator.activated, runner.calls)
+	}
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "generation-live" || selection.PendingHealthValidation {
+		t.Fatalf("boot selection = %#v, want live generation as durable default", selection)
+	}
+	candidateManifest, err := configapply.ReadGenerationManifest(server.Root, "generation-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidateManifest.Node.Sysctl.Settings["net.ipv4.ip_forward"] != "1" {
+		t.Fatalf("candidate manifest sysctl = %#v", candidateManifest.Node.Sysctl.Settings)
+	}
+	nextBase, err := configApplyBase(server.Root, "node-a", "generation-next", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextBase.CurrentRecord.GenerationID != "generation-live" || nextBase.CurrentManifest.Node.Sysctl.Settings["net.ipv4.ip_forward"] != "1" {
+		t.Fatalf("next config apply base = generation %q manifest %#v", nextBase.CurrentRecord.GenerationID, nextBase.CurrentManifest.Node.Sysctl.Settings)
 	}
 }
 
@@ -1281,6 +1306,7 @@ func TestSubmitOperationAutoConfigApplyRunsAcceptedLivePath(t *testing.T) {
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
+	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	accepted, err := server.SubmitOperation(context.Background(), &agentapi.SubmitOperationRequest{
@@ -1332,6 +1358,7 @@ func TestApplyGenerationLiveLoadsInstalledKubeadmInputs(t *testing.T) {
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
+	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{

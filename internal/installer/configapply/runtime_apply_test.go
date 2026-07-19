@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -34,6 +35,118 @@ func TestApplyTrustedBundleRejectsLiveNetworkdBeforeRender(t *testing.T) {
 		t.Fatalf("audit = %#v", result.Audit)
 	}
 	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestControlPlaneEndpointApplyClassification(t *testing.T) {
+	tests := []struct {
+		name        string
+		initialized bool
+		current     *controlplaneendpoint.Config
+		desired     *controlplaneendpoint.Config
+		wantDomain  string
+		wantMode    string
+		wantError   string
+	}{
+		{
+			name:       "routing changes apply live",
+			current:    managedEndpoint("192.0.2.1"),
+			desired:    managedEndpoint("192.0.2.2"),
+			wantDomain: DomainControlPlaneEndpointRouting,
+			wantMode:   generation.ApplyModeLive,
+		},
+		{
+			name:        "initialized host is immutable",
+			initialized: true,
+			current:     managedEndpoint("192.0.2.1"),
+			desired: func() *controlplaneendpoint.Config {
+				endpoint := managedEndpoint("192.0.2.1")
+				endpoint.Host = "192.0.2.11"
+				endpoint.Advertisement.VIP = "192.0.2.11"
+				return endpoint
+			}(),
+			wantDomain: DomainControlPlaneEndpointIdentity,
+			wantError:  "control-plane-endpoint-migration",
+		},
+		{
+			name:        "initialized ownership is immutable",
+			initialized: true,
+			current:     managedEndpoint("192.0.2.1"),
+			desired:     nil,
+			wantDomain:  DomainControlPlaneEndpointIdentity,
+			wantError:   "control-plane-endpoint-migration",
+		},
+		{
+			name:    "pre-bootstrap identity stages for next boot",
+			current: managedEndpoint("192.0.2.1"),
+			desired: func() *controlplaneendpoint.Config {
+				endpoint := managedEndpoint("192.0.2.1")
+				endpoint.Host = "192.0.2.11"
+				endpoint.Advertisement.VIP = "192.0.2.11"
+				return endpoint
+			}(),
+			wantDomain: DomainControlPlaneEndpointBootstrap,
+			wantMode:   generation.ApplyModeNextBoot,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current := baseManifest()
+			current.Node.ControlPlaneEndpoint = tt.current
+			request := trustedBundleRequest(t.TempDir(), TrustedBundleRequest{
+				ApplyMode:             generation.ApplyModeAuto,
+				CurrentManifest:       current,
+				KubernetesInitialized: tt.initialized,
+				NodeOverrides: map[string]NodeOverlay{
+					"cp-1": {ControlPlaneEndpointSet: true, ControlPlaneEndpoint: tt.desired},
+				},
+			})
+			_, changes, _, err := mergeRuntimeConfig(request)
+			if err != nil {
+				t.Fatalf("mergeRuntimeConfig() error = %v", err)
+			}
+			if len(changes) != 1 || changes[0].Domain != tt.wantDomain {
+				t.Fatalf("changes = %#v, want %q", changes, tt.wantDomain)
+			}
+			decision, err := Plan(request.ApplyMode, changes)
+			if tt.wantError != "" {
+				if err == nil || len(decision.Diagnostics) != 1 || !strings.Contains(decision.Diagnostics[0].RequiredOperation, tt.wantError) {
+					t.Fatalf("Plan() error = %v, decision = %#v", err, decision)
+				}
+				return
+			}
+			if err != nil || decision.AcceptedMode != tt.wantMode {
+				t.Fatalf("Plan() error = %v, decision = %#v, want mode %q", err, decision, tt.wantMode)
+			}
+		})
+	}
+}
+
+func TestApplyTrustedBundleReloadsEnabledEndpointRouting(t *testing.T) {
+	root := t.TempDir()
+	current := baseManifest()
+	current.Node.ControlPlaneEndpoint = managedEndpoint("192.0.2.1")
+	runner := &fakeCommandRunner{}
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:       generation.ApplyModeLive,
+		CurrentManifest: current,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {ControlPlaneEndpointSet: true, ControlPlaneEndpoint: managedEndpoint("192.0.2.2")},
+		},
+		Executor: &Executor{Runner: runner, Activator: &fakeActivator{}, Now: fixedNow},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive || !containsDomain(result.Plan.Decision.ChangedDomains, DomainControlPlaneEndpointRouting) {
+		t.Fatalf("decision = %#v", result.Plan.Decision)
+	}
+	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/katl/apps/bgp-api-vip/advertisement-enabled")); err != nil {
+		t.Fatalf("candidate advertisement marker: %v", err)
+	}
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
 }
 
 func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
@@ -755,6 +868,7 @@ func trustedBundleRequest(root string, override TrustedBundleRequest) TrustedBun
 	request.KubeadmConfigs = override.KubeadmConfigs
 	request.KubernetesVersion = override.KubernetesVersion
 	request.KubernetesActivationPath = override.KubernetesActivationPath
+	request.KubernetesInitialized = override.KubernetesInitialized
 	request.Executor = override.Executor
 	if override.Chown != nil {
 		request.Chown = override.Chown
