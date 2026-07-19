@@ -48,8 +48,20 @@ const (
 )
 
 type Change struct {
-	Domain          string
-	LivePreflightOK bool
+	Domain                string
+	LivePreflightOK       bool
+	EndpointRoutingImpact *EndpointRoutingImpact
+}
+
+// EndpointRoutingImpact is the bounded operator-facing effect of changing the
+// managed control-plane endpoint's routing attachment. It deliberately names
+// sessions and exported route unions rather than exposing generated BIRD
+// protocol identifiers or configuration paths.
+type EndpointRoutingImpact struct {
+	FabricSessionsReset        []string `json:"fabricSessionsReset,omitempty"`
+	RouteExchangeSessionsReset []string `json:"routeExchangeSessionsReset,omitempty"`
+	ChangedExportUnions        []string `json:"changedExportUnions,omitempty"`
+	MayLoseAllFabricPaths      bool     `json:"mayLoseAllFabricPaths"`
 }
 
 type Decision struct {
@@ -60,11 +72,12 @@ type Decision struct {
 }
 
 type Diagnostic struct {
-	Domain            string
-	Classification    string
-	Decision          string
-	RequiredOperation string
-	Message           string
+	Domain            string                 `json:"domain"`
+	Classification    string                 `json:"classification"`
+	Decision          string                 `json:"decision"`
+	RequiredOperation string                 `json:"requiredOperation,omitempty"`
+	Message           string                 `json:"message,omitempty"`
+	EndpointRouting   *EndpointRoutingImpact `json:"endpointRouting,omitempty"`
 }
 
 type domainPolicy struct {
@@ -110,6 +123,11 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 		diagnostic := diagnosticForChange(requestedMode, change, policy)
 		switch diagnostic.Decision {
 		case DecisionAccepted:
+			if change.EndpointRoutingImpact != nil {
+				diagnostic.EndpointRouting = change.EndpointRoutingImpact
+				diagnostic.Message = endpointRoutingImpactMessage(*change.EndpointRoutingImpact)
+				decision.Diagnostics = append(decision.Diagnostics, diagnostic)
+			}
 		case DecisionActionRequired:
 			needsNextBoot = true
 			decision.Diagnostics = append(decision.Diagnostics, diagnostic)
@@ -134,6 +152,23 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 		decision.AcceptedMode = generation.ApplyModeLive
 	}
 	return decision, nil
+}
+
+func endpointRoutingImpactMessage(impact EndpointRoutingImpact) string {
+	parts := make([]string, 0, 4)
+	if len(impact.FabricSessionsReset) > 0 {
+		parts = append(parts, "fabric sessions reset: "+strings.Join(impact.FabricSessionsReset, ", "))
+	}
+	if len(impact.RouteExchangeSessionsReset) > 0 {
+		parts = append(parts, "local route-exchange sessions reset: "+strings.Join(impact.RouteExchangeSessionsReset, ", "))
+	}
+	if len(impact.ChangedExportUnions) > 0 {
+		parts = append(parts, "exported route unions change: "+strings.Join(impact.ChangedExportUnions, ", "))
+	}
+	if impact.MayLoseAllFabricPaths {
+		parts = append(parts, "this node temporarily withdraws its API route while routing configuration activates; cluster reachability requires another healthy advertiser")
+	}
+	return strings.Join(parts, "; ")
 }
 
 func DomainClassification(domain string) string {

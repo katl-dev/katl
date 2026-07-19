@@ -120,7 +120,50 @@ func TestControlPlaneEndpointApplyClassification(t *testing.T) {
 			if err != nil || decision.AcceptedMode != tt.wantMode {
 				t.Fatalf("Plan() error = %v, decision = %#v, want mode %q", err, decision, tt.wantMode)
 			}
+			if tt.wantDomain == DomainControlPlaneEndpointRouting {
+				if len(decision.Diagnostics) != 1 || decision.Diagnostics[0].EndpointRouting == nil {
+					t.Fatalf("routing decision = %#v, want bounded impact", decision)
+				}
+				impact := decision.Diagnostics[0].EndpointRouting
+				if got, want := strings.Join(impact.FabricSessionsReset, ","), "192.0.2.1,192.0.2.2"; got != want {
+					t.Fatalf("fabric session resets = %q, want %q", got, want)
+				}
+				if !impact.MayLoseAllFabricPaths {
+					t.Fatal("routing plan did not disclose temporary local API route withdrawal")
+				}
+			}
 		})
+	}
+}
+
+func TestEndpointRoutingImpactNamesExchangeAndExportChanges(t *testing.T) {
+	before := managedEndpoint("192.0.2.1")
+	before.Advertisement.BGP.RouteExchange = []controlplaneendpoint.RouteExchange{{
+		Name: "cilium", ListenPort: 179, PeerASN: 64512,
+		ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{CIDR: "10.50.0.0/16"}},
+	}}
+	after := managedEndpoint("192.0.2.1")
+	after.Advertisement.BGP.RouteExchange = []controlplaneendpoint.RouteExchange{{
+		Name: "cilium", ListenPort: 1179, PeerASN: 64513,
+		ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{CIDR: "10.60.0.0/16"}},
+	}}
+	current, err := controlplaneendpoint.Normalize(*before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired, err := controlplaneendpoint.Normalize(*after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact := endpointRoutingImpact(current.Config, desired.Config)
+	if got, want := strings.Join(impact.RouteExchangeSessionsReset, ","), "cilium"; got != want {
+		t.Fatalf("route exchange resets = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(impact.ChangedExportUnions, ","), "cilium"; got != want {
+		t.Fatalf("changed export unions = %q, want %q", got, want)
+	}
+	if len(impact.FabricSessionsReset) != 0 {
+		t.Fatalf("unchanged fabric sessions reset = %#v", impact.FabricSessionsReset)
 	}
 }
 

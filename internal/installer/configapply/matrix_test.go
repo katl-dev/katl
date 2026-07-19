@@ -59,6 +59,34 @@ func TestPlanDefaultsOmittedModeToAutoAndAcceptsSysctlLive(t *testing.T) {
 	}
 }
 
+func TestPlanExplainsLiveEndpointRoutingImpact(t *testing.T) {
+	impact := &EndpointRoutingImpact{
+		FabricSessionsReset:        []string{"10.0.0.1", "10.0.0.2"},
+		RouteExchangeSessionsReset: []string{"cilium"},
+		ChangedExportUnions:        []string{"cilium"},
+		MayLoseAllFabricPaths:      true,
+	}
+	decision, err := Plan(generation.ApplyModeLive, []Change{{
+		Domain:                DomainControlPlaneEndpointRouting,
+		EndpointRoutingImpact: impact,
+	}})
+	if err != nil {
+		t.Fatalf("Plan() error = %v, diagnostics = %#v", err, decision.Diagnostics)
+	}
+	if decision.AcceptedMode != generation.ApplyModeLive || len(decision.Diagnostics) != 1 {
+		t.Fatalf("decision = %#v", decision)
+	}
+	diagnostic := decision.Diagnostics[0]
+	if diagnostic.Decision != DecisionAccepted || diagnostic.EndpointRouting != impact {
+		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+	for _, want := range []string{"fabric sessions reset: 10.0.0.1, 10.0.0.2", "local route-exchange sessions reset: cilium", "exported route unions change: cilium", "requires another healthy advertiser"} {
+		if !strings.Contains(diagnostic.Message, want) {
+			t.Fatalf("diagnostic message = %q, want %q", diagnostic.Message, want)
+		}
+	}
+}
+
 func TestPlanAutoFallsBackToNextBootForStagedDomains(t *testing.T) {
 	decision, err := Plan(generation.ApplyModeAuto, []Change{
 		{Domain: DomainSysctl},

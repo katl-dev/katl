@@ -560,13 +560,14 @@ func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.C
 		return
 	}
 	if !reflect.DeepEqual(currentPlan.Config, desiredPlan.Config) {
-		domains.add(DomainControlPlaneEndpointRouting)
+		domains.addEndpointRouting(endpointRoutingImpact(currentPlan.Config, desiredPlan.Config))
 	}
 }
 
 type domainAccumulator struct {
-	domains []string
-	seen    map[string]struct{}
+	domains               []string
+	seen                  map[string]struct{}
+	endpointRoutingImpact *EndpointRoutingImpact
 }
 
 func (a *domainAccumulator) add(domain string) {
@@ -580,6 +581,11 @@ func (a *domainAccumulator) add(domain string) {
 	a.domains = append(a.domains, domain)
 }
 
+func (a *domainAccumulator) addEndpointRouting(impact EndpointRoutingImpact) {
+	a.add(DomainControlPlaneEndpointRouting)
+	a.endpointRoutingImpact = &impact
+}
+
 func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 	preflight := map[string]bool{}
 	for _, overlay := range overlays {
@@ -591,9 +597,75 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 	}
 	changes := make([]Change, 0, len(a.domains))
 	for _, domain := range a.domains {
-		changes = append(changes, Change{Domain: domain, LivePreflightOK: preflight[domain]})
+		change := Change{Domain: domain, LivePreflightOK: preflight[domain]}
+		if domain == DomainControlPlaneEndpointRouting {
+			change.EndpointRoutingImpact = a.endpointRoutingImpact
+		}
+		changes = append(changes, change)
 	}
 	return changes
+}
+
+func endpointRoutingImpact(current, desired controlplaneendpoint.Config) EndpointRoutingImpact {
+	impact := EndpointRoutingImpact{MayLoseAllFabricPaths: true}
+	currentBGP := current.Advertisement.BGP
+	desiredBGP := desired.Advertisement.BGP
+
+	currentPeers := peerASNs(currentBGP.Peers)
+	desiredPeers := peerASNs(desiredBGP.Peers)
+	for _, address := range sortedStringUnion(currentPeers, desiredPeers) {
+		currentASN, currentOK := currentPeers[address]
+		desiredASN, desiredOK := desiredPeers[address]
+		if currentBGP.LocalASN != desiredBGP.LocalASN || currentOK != desiredOK || currentASN != desiredASN {
+			impact.FabricSessionsReset = append(impact.FabricSessionsReset, address)
+		}
+	}
+
+	currentExchanges := routeExchangesByName(currentBGP.RouteExchange)
+	desiredExchanges := routeExchangesByName(desiredBGP.RouteExchange)
+	for _, name := range sortedStringUnion(currentExchanges, desiredExchanges) {
+		before, beforeOK := currentExchanges[name]
+		after, afterOK := desiredExchanges[name]
+		if currentBGP.LocalASN != desiredBGP.LocalASN || beforeOK != afterOK || before.ListenPort != after.ListenPort || before.PeerASN != after.PeerASN {
+			impact.RouteExchangeSessionsReset = append(impact.RouteExchangeSessionsReset, name)
+		}
+		if beforeOK != afterOK || !reflect.DeepEqual(before.ExportToFabric, after.ExportToFabric) {
+			impact.ChangedExportUnions = append(impact.ChangedExportUnions, name)
+		}
+	}
+	return impact
+}
+
+func peerASNs(peers []controlplaneendpoint.Peer) map[string]uint32 {
+	out := make(map[string]uint32, len(peers))
+	for _, peer := range peers {
+		out[peer.Address] = peer.ASN
+	}
+	return out
+}
+
+func routeExchangesByName(exchanges []controlplaneendpoint.RouteExchange) map[string]controlplaneendpoint.RouteExchange {
+	out := make(map[string]controlplaneendpoint.RouteExchange, len(exchanges))
+	for _, exchange := range exchanges {
+		out[exchange.Name] = exchange
+	}
+	return out
+}
+
+func sortedStringUnion[A any](left, right map[string]A) []string {
+	set := make(map[string]struct{}, len(left)+len(right))
+	for value := range left {
+		set[value] = struct{}{}
+	}
+	for value := range right {
+		set[value] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func (request TrustedBundleRequest) kubeadmActionRequired(changes []Change) generation.KubeadmActionRequired {
