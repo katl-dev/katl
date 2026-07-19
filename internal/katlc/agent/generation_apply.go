@@ -667,6 +667,15 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 	}
 	kubernetesVersion := currentKubernetesPayloadVersion(current)
 	kubernetesActivationPath := currentKubernetesActivationPath(current)
+	var endpointAdvertiserSysext *generation.ExtensionRef
+	if currentManifest.Node.SystemRole == "control-plane" {
+		artifact, artifactErr := installer.ReadEndpointAdvertiserArtifact(root)
+		if artifactErr == nil {
+			endpointAdvertiserSysext = &artifact.Extension
+		} else if !errors.Is(artifactErr, os.ErrNotExist) {
+			return configapply.TrustedBundleRequest{}, artifactErr
+		}
+	}
 	if currentManifest.Node.Kubernetes.Kubeadm.ConfigRef != "" && (kubernetesVersion == "" || kubernetesActivationPath == "") {
 		intent, _, err := installer.ReadClusterIntent(root)
 		if err != nil {
@@ -689,6 +698,7 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 		RuntimeKubernetesVersion:        kubernetesVersion,
 		RuntimeKubernetesActivationPath: kubernetesActivationPath,
 		KubernetesInitialized:           controlPlaneKubernetesInitialized(root),
+		EndpointAdvertiserSysext:        endpointAdvertiserSysext,
 		Chown:                           func(string, int, int) error { return nil },
 		Now:                             now,
 	}, nil

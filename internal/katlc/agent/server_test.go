@@ -1245,6 +1245,19 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	}
 }
 
+func TestConfigApplyBaseLoadsRetainedEndpointAdvertiser(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	writeRetainedEndpointAdvertiserArtifact(t, server.Root)
+	base, err := configApplyBase(server.Root, "node-a", "generation-next", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.EndpointAdvertiserSysext == nil || base.EndpointAdvertiserSysext.Name != "endpoint-advertiser" || base.EndpointAdvertiserSysext.Path != installer.EndpointAdvertiserArtifactPath {
+		t.Fatalf("retained endpoint advertiser = %#v", base.EndpointAdvertiserSysext)
+	}
+}
+
 func TestSubmitOperationAutoConfigApplyRejectsOperationKindMismatch(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
@@ -2532,6 +2545,32 @@ func writeConfigApplyBaseState(t *testing.T, root string) {
 	if err := os.WriteFile(manifestPath, []byte(configApplyInstallManifestJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeRetainedEndpointAdvertiserArtifact(t *testing.T, root string) {
+	t.Helper()
+	content := []byte("endpoint advertiser sysext\n")
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	artifactPath := filepath.Join(root, strings.TrimPrefix(installer.EndpointAdvertiserArtifactPath, "/"))
+	writeTestFile(t, artifactPath, string(content))
+	metadata := fmt.Sprintf(`{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "EndpointAdvertiserArtifact",
+  "sizeBytes": %d,
+  "extension": {
+    "name": "endpoint-advertiser",
+    "path": %q,
+    "activationPath": "/run/extensions/katl-endpoint-advertiser.raw",
+    "sha256": %q,
+    "artifactVersion": "2026.7.0",
+    "payloadVersion": "2026.7.0",
+    "architecture": "x86_64",
+    "compatibility": {"runtimeInterfaces": ["katl-runtime-1"]}
+  }
+}
+`, len(content), installer.EndpointAdvertiserArtifactPath, digest)
+	writeTestFile(t, filepath.Join(root, strings.TrimPrefix(installer.EndpointAdvertiserArtifactMetadata, "/")), metadata)
 }
 
 func writeConfigApplyManifestWithKubeadmRef(t *testing.T, root string, ref string) {

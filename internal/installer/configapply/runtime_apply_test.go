@@ -2,6 +2,8 @@ package configapply
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,10 +128,13 @@ func TestApplyTrustedBundleReloadsEnabledEndpointRouting(t *testing.T) {
 	root := t.TempDir()
 	current := baseManifest()
 	current.Node.ControlPlaneEndpoint = managedEndpoint("192.0.2.1")
+	currentRecord := currentRecord()
+	selectEndpointAdvertiser(t, root, &currentRecord)
 	runner := &fakeCommandRunner{}
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:       generation.ApplyModeLive,
 		CurrentManifest: current,
+		CurrentRecord:   currentRecord,
 		NodeOverrides: map[string]NodeOverlay{
 			"cp-1": {ControlPlaneEndpointSet: true, ControlPlaneEndpoint: managedEndpoint("192.0.2.2")},
 		},
@@ -146,6 +151,78 @@ func TestApplyTrustedBundleReloadsEnabledEndpointRouting(t *testing.T) {
 	}
 	if got, want := strings.Join(runner.commandNames(), ","), "systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
+func TestApplyTrustedBundleRemovesEndpointAdvertiserBeforeBootstrap(t *testing.T) {
+	root := t.TempDir()
+	current := baseManifest()
+	current.Node.ControlPlaneEndpoint = managedEndpoint("192.0.2.1")
+	currentRecord := currentRecord()
+	selectEndpointAdvertiser(t, root, &currentRecord)
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:       generation.ApplyModeAuto,
+		CurrentManifest: current,
+		CurrentRecord:   currentRecord,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {ControlPlaneEndpointSet: true},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeNextBoot || !containsDomain(result.Plan.Decision.ChangedDomains, DomainControlPlaneEndpointBootstrap) {
+		t.Fatalf("decision = %#v", result.Plan.Decision)
+	}
+	for _, ref := range result.Plan.GenerationRecord.Sysexts {
+		if ref.Name == "endpoint-advertiser" {
+			t.Fatalf("candidate retained disabled endpoint advertiser: %#v", ref)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/katl/apps/bgp-api-vip/advertisement-enabled")); !os.IsNotExist(err) {
+		t.Fatalf("disabled endpoint advertisement marker = %v, want absent", err)
+	}
+}
+
+func TestApplyTrustedBundleStagesEndpointAdvertiserBeforeBootstrap(t *testing.T) {
+	root := t.TempDir()
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:                generation.ApplyModeAuto,
+		EndpointAdvertiserSysext: testEndpointAdvertiserArtifact(t, root),
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {ControlPlaneEndpointSet: true, ControlPlaneEndpoint: managedEndpoint("192.0.2.1")},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeNextBoot || !containsDomain(result.Plan.Decision.ChangedDomains, DomainControlPlaneEndpointBootstrap) {
+		t.Fatalf("decision = %#v", result.Plan.Decision)
+	}
+	var endpoint *generation.ExtensionRef
+	for i := range result.Plan.GenerationRecord.Sysexts {
+		if result.Plan.GenerationRecord.Sysexts[i].Name == "endpoint-advertiser" {
+			endpoint = &result.Plan.GenerationRecord.Sysexts[i]
+		}
+	}
+	if endpoint == nil {
+		t.Fatalf("candidate sysexts = %#v, want endpoint advertiser", result.Plan.GenerationRecord.Sysexts)
+	}
+	if _, err := os.Stat(filepath.Join(root, strings.TrimPrefix(endpoint.Path, "/"))); err != nil {
+		t.Fatalf("candidate endpoint advertiser sysext: %v", err)
+	}
+}
+
+func TestApplyTrustedBundleExplainsMissingPreBootstrapEndpointArtifact(t *testing.T) {
+	root := t.TempDir()
+	_, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode: generation.ApplyModeAuto,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {ControlPlaneEndpointSet: true, ControlPlaneEndpoint: managedEndpoint("192.0.2.1")},
+		},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "artifact retained during installation") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want retained artifact recovery guidance", err)
 	}
 }
 
@@ -869,6 +946,7 @@ func trustedBundleRequest(root string, override TrustedBundleRequest) TrustedBun
 	request.KubernetesVersion = override.KubernetesVersion
 	request.KubernetesActivationPath = override.KubernetesActivationPath
 	request.KubernetesInitialized = override.KubernetesInitialized
+	request.EndpointAdvertiserSysext = override.EndpointAdvertiserSysext
 	request.Executor = override.Executor
 	if override.Chown != nil {
 		request.Chown = override.Chown
@@ -883,6 +961,9 @@ func trustedBundleRequest(root string, override TrustedBundleRequest) TrustedBun
 func ensureTestSysext(root string, record generation.Record) {
 	for _, ref := range record.Sysexts {
 		path := filepath.Join(filepath.Clean(root), strings.TrimPrefix(ref.Path, "/"))
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			panic(err)
 		}
@@ -890,6 +971,50 @@ func ensureTestSysext(root string, record generation.Record) {
 			panic(err)
 		}
 	}
+}
+
+func testEndpointAdvertiserArtifact(t *testing.T, root string) *generation.ExtensionRef {
+	t.Helper()
+	content := []byte("endpoint advertiser sysext\n")
+	sum := sha256.Sum256(content)
+	path := "/var/lib/katl/artifacts/katlos-image/katl-endpoint-advertiser.raw"
+	fullPath := filepath.Join(root, strings.TrimPrefix(path, "/"))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return &generation.ExtensionRef{
+		Name:            "endpoint-advertiser",
+		Path:            path,
+		ActivationPath:  "/run/extensions/katl-endpoint-advertiser.raw",
+		SHA256:          hex.EncodeToString(sum[:]),
+		ArtifactVersion: "2026.7.0",
+		PayloadVersion:  "2026.7.0",
+		Architecture:    "x86_64",
+		Compatibility:   generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}},
+	}
+}
+
+func selectEndpointAdvertiser(t *testing.T, root string, record *generation.Record) {
+	t.Helper()
+	artifact := testEndpointAdvertiserArtifact(t, root)
+	source := filepath.Join(root, strings.TrimPrefix(artifact.Path, "/"))
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := *artifact
+	selected.Path = filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, record.GenerationID, "sysext", "endpoint-advertiser.raw"))
+	target := filepath.Join(root, strings.TrimPrefix(selected.Path, "/"))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record.Sysexts = append(record.Sysexts, selected)
 }
 
 func baseManifest() manifest.Manifest {

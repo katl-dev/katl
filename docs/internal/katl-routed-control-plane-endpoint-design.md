@@ -675,6 +675,13 @@ The extension is active only on control-plane nodes. Workers retain the stable
 endpoint in their kubeadm join configuration but do not receive the VIP,
 routing daemon or endpoint application.
 
+Control-plane installation retains the compatible endpoint-application payload
+in Katl's internal artifact cache even when the endpoint is externally owned.
+It is not selected or activated unless advertisement is enabled. This lets a
+pre-initialization generation adopt managed advertisement without requiring
+new installation media, while workers retain neither the payload nor the
+application.
+
 Native ordering must establish:
 
 ```text

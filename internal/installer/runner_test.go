@@ -803,6 +803,14 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-0.efi"), string(contents.boot))
 	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/sysext/katl-kubernetes.raw"))
 	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"))
+	assertText(t, filepath.Join(targetRoot, strings.TrimPrefix(EndpointAdvertiserArtifactPath, "/")), string(contents.endpoint))
+	artifact, err := ReadEndpointAdvertiserArtifact(targetRoot)
+	if err != nil {
+		t.Fatalf("read retained endpoint advertiser artifact: %v", err)
+	}
+	if artifact.Extension.Name != katlosimage.EndpointAdvertiserName || artifact.Extension.SHA256 != payload.EndpointAdvertiser.SHA256 {
+		t.Fatalf("retained endpoint advertiser artifact = %#v", artifact)
+	}
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/identity/machine-id"), "30313233343536373839616263646566\n")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/efi.mount"), "What=/dev/disk/by-partlabel/KATL_ESP")
@@ -920,6 +928,7 @@ func TestRunnerInstallsKatlosImageComponents(t *testing.T) {
 		Commands:    &NoopCommandRunner{},
 		Store:       store,
 		KatlosImage: &payload,
+		Manifest:    manifest.Manifest{Node: manifest.NodeConfig{SystemRole: "control-plane"}},
 		RootSlotPlan: &disk.RootSlotWritePlan{
 			Slot:              disk.RootSlotA,
 			TargetPartition:   disk.RootSlotTarget{GPTLabel: disk.GPTLabelRootA},
@@ -951,9 +960,29 @@ func TestRunnerInstallsKatlosImageComponents(t *testing.T) {
 	}
 	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-2026.06.06-001.efi"), string(contents.boot))
 	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.06-001/sysext/kubernetes.raw"))
+	assertText(t, filepath.Join(targetRoot, strings.TrimPrefix(EndpointAdvertiserArtifactPath, "/")), string(contents.endpoint))
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{InstallRootSlot, InstallBootArtifacts, InstallExtensions}) {
 		t.Fatalf("completed steps = %#v", got)
 	}
+}
+
+func TestInstallExtensionsKeepsEndpointAdvertiserOffWorkers(t *testing.T) {
+	payload, _ := writeInstallPayload(t)
+	targetRoot := t.TempDir()
+	install := &Context{
+		TargetRoot:  targetRoot,
+		KatlosImage: &payload,
+		Store:       &MemoryStateStore{},
+		Manifest:    manifest.Manifest{Node: manifest.NodeConfig{SystemRole: "worker"}},
+		LoaderRecord: &generation.Record{
+			GenerationID: "0",
+		},
+	}
+	if err := (installExtensionsStep{}).Run(context.Background(), install); err != nil {
+		t.Fatal(err)
+	}
+	assertMissing(t, filepath.Join(targetRoot, strings.TrimPrefix(EndpointAdvertiserArtifactPath, "/")))
+	assertMissing(t, filepath.Join(targetRoot, strings.TrimPrefix(EndpointAdvertiserArtifactMetadata, "/")))
 }
 
 func TestRunnerOpensRootSlotTarget(t *testing.T) {
@@ -1553,19 +1582,22 @@ func (s *sequenceDiscoverySource) Discover(ctx context.Context) (discovery.Hardw
 }
 
 type installPayloadContents struct {
-	runtime []byte
-	boot    []byte
+	runtime  []byte
+	boot     []byte
+	endpoint []byte
 }
 
 func writeInstallPayload(t *testing.T) (katlosimage.Payload, installPayloadContents) {
 	t.Helper()
 	root := t.TempDir()
 	contents := installPayloadContents{
-		runtime: []byte("runtime-root-payload"),
-		boot:    []byte("runtime-uki-payload"),
+		runtime:  []byte("runtime-root-payload"),
+		boot:     []byte("runtime-uki-payload"),
+		endpoint: []byte("endpoint-advertiser-sysext"),
 	}
 	writePayloadComponent(t, root, "components/runtime/root.squashfs", contents.runtime)
 	writePayloadComponent(t, root, "components/boot/katl.efi", contents.boot)
+	writePayloadComponent(t, root, "components/sysext/endpoint-advertiser.raw", contents.endpoint)
 	payload := katlosimage.Payload{
 		Root: root,
 		Index: katlosimage.Index{
@@ -1573,8 +1605,9 @@ func writeInstallPayload(t *testing.T) (katlosimage.Payload, installPayloadConte
 			Architecture:     "x86_64",
 			RuntimeInterface: "katl-runtime-1",
 		},
-		Runtime: payloadComponent("runtime-root", katlosimage.ComponentRuntimeRoot, "components/runtime/root.squashfs", contents.runtime),
-		Boot:    payloadComponent("runtime-uki", katlosimage.ComponentRuntimeUKI, "components/boot/katl.efi", contents.boot),
+		Runtime:            payloadComponent("runtime-root", katlosimage.ComponentRuntimeRoot, "components/runtime/root.squashfs", contents.runtime),
+		Boot:               payloadComponent("runtime-uki", katlosimage.ComponentRuntimeUKI, "components/boot/katl.efi", contents.boot),
+		EndpointAdvertiser: payloadComponent(katlosimage.EndpointAdvertiserName, katlosimage.ComponentEndpointAdvertiser, "components/sysext/endpoint-advertiser.raw", contents.endpoint),
 	}
 	return payload, contents
 }

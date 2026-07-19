@@ -384,21 +384,11 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 	}
 	var sysexts []generation.ExtensionRef
 	if request.EnableEndpointAdvertiser {
-		if p.EndpointAdvertiser.Role != ComponentEndpointAdvertiser {
-			return generation.FirstInstallRequest{}, fmt.Errorf("managed control-plane endpoint requires endpoint advertiser component")
+		ref, err := p.EndpointAdvertiserExtensionRef(filepath.Join("/var/lib/katl/generations", request.GenerationID, "sysext", EndpointAdvertiserName+".raw"))
+		if err != nil {
+			return generation.FirstInstallRequest{}, err
 		}
-		sysexts = append(sysexts, generation.ExtensionRef{
-			Name:            EndpointAdvertiserName,
-			Path:            filepath.Join("/var/lib/katl/generations", request.GenerationID, "sysext", EndpointAdvertiserName+".raw"),
-			ActivationPath:  "/run/extensions/katl-endpoint-advertiser.raw",
-			SHA256:          p.EndpointAdvertiser.SHA256,
-			ArtifactVersion: p.EndpointAdvertiser.Version,
-			PayloadVersion:  first(p.EndpointAdvertiser.PayloadVersion, p.EndpointAdvertiser.Version),
-			Architecture:    p.EndpointAdvertiser.Architecture,
-			Compatibility: generation.ExtensionCompatibility{
-				RuntimeInterfaces: []string{p.EndpointAdvertiser.Compatibility.RuntimeInterface},
-			},
-		})
+		sysexts = append(sysexts, ref)
 	}
 	return generation.FirstInstallRequest{
 		GenerationID:          request.GenerationID,
@@ -412,6 +402,27 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 		KernelCommandLine:     append([]string(nil), p.Boot.Compatibility.KernelCommandLine...),
 		Sysexts:               sysexts,
 		CreatedAt:             request.CreatedAt,
+	}, nil
+}
+
+func (p Payload) EndpointAdvertiserExtensionRef(artifactPath string) (generation.ExtensionRef, error) {
+	if p.EndpointAdvertiser.Role != ComponentEndpointAdvertiser {
+		return generation.ExtensionRef{}, fmt.Errorf("KatlOS image does not contain the endpoint advertiser component")
+	}
+	if strings.TrimSpace(artifactPath) == "" || !filepath.IsAbs(artifactPath) {
+		return generation.ExtensionRef{}, fmt.Errorf("endpoint advertiser artifact path must be absolute")
+	}
+	return generation.ExtensionRef{
+		Name:            EndpointAdvertiserName,
+		Path:            filepath.Clean(artifactPath),
+		ActivationPath:  "/run/extensions/katl-endpoint-advertiser.raw",
+		SHA256:          p.EndpointAdvertiser.SHA256,
+		ArtifactVersion: p.EndpointAdvertiser.Version,
+		PayloadVersion:  first(p.EndpointAdvertiser.PayloadVersion, p.EndpointAdvertiser.Version),
+		Architecture:    p.EndpointAdvertiser.Architecture,
+		Compatibility: generation.ExtensionCompatibility{
+			RuntimeInterfaces: []string{p.EndpointAdvertiser.Compatibility.RuntimeInterface},
+		},
 	}, nil
 }
 

@@ -597,13 +597,26 @@ func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
 	if install.LoaderRecord == nil {
 		return fmt.Errorf("loader generation record is required to install extensions")
 	}
+	if install.Manifest.Node.SystemRole != "control-plane" {
+		return recordStep(ctx, install, InstallExtensions)
+	}
+	artifact, err := endpointAdvertiserArtifact(*install.KatlosImage)
+	if err != nil {
+		return err
+	}
+	cacheTarget, err := targetPathForAbsolute(install.TargetRoot, artifact.Extension.Path)
+	if err != nil {
+		return err
+	}
+	if err := copyVerifiedComponent(install.KatlosImage.ComponentPath(install.KatlosImage.EndpointAdvertiser), cacheTarget, install.KatlosImage.EndpointAdvertiser); err != nil {
+		return err
+	}
+	if err := writeEndpointAdvertiserArtifact(install.TargetRoot, artifact); err != nil {
+		return err
+	}
 	for _, extension := range install.LoaderRecord.Sysexts {
 		if extension.Name != katlosimage.EndpointAdvertiserName {
 			continue
-		}
-		component := install.KatlosImage.EndpointAdvertiser
-		if component.Role != katlosimage.ComponentEndpointAdvertiser {
-			return fmt.Errorf("endpoint advertiser component is required by selected generation")
 		}
 		target, err := targetPathForAbsolute(install.TargetRoot, extension.Path)
 		if err != nil {
@@ -612,11 +625,49 @@ func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("create endpoint advertiser sysext directory: %w", err)
 		}
-		if err := copyVerifiedComponent(install.KatlosImage.ComponentPath(component), target, component); err != nil {
+		if err := linkOrCopyInstalledArtifact(cacheTarget, target); err != nil {
 			return err
 		}
 	}
 	return recordStep(ctx, install, InstallExtensions)
+}
+
+func linkOrCopyInstalledArtifact(source, target string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		return err
+	}
+	if targetInfo, err := os.Stat(target); err == nil {
+		if os.SameFile(sourceInfo, targetInfo) {
+			return nil
+		}
+		if err := os.Remove(target); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Link(source, target); err == nil {
+		return nil
+	}
+	sourceFile, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	targetFile, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(targetFile, sourceFile)
+	closeErr := targetFile.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func targetPathForAbsolute(root string, path string) (string, error) {

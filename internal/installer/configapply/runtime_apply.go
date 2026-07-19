@@ -52,6 +52,7 @@ type TrustedBundleRequest struct {
 	RuntimeKubernetesVersion        string
 	RuntimeKubernetesActivationPath string
 	KubernetesInitialized           bool
+	EndpointAdvertiserSysext        *generation.ExtensionRef
 	Executor                        *Executor
 	Chown                           func(path string, uid int, gid int) error
 	Now                             func() time.Time
@@ -215,7 +216,15 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
-	sysexts, err := materializeSysexts(request.Root, request.GenerationID, request.CurrentRecord.Sysexts)
+	desiredSysexts, err := endpointAdvertiserSysexts(request, merged)
+	if err != nil {
+		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		audit.CandidateGeneration = request.GenerationID
+		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
+	sysexts, err := materializeSysexts(request.Root, request.GenerationID, desiredSysexts)
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
 		audit.CandidateGeneration = request.GenerationID
@@ -310,6 +319,29 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		StatusPath:   statusPath,
 		AuditPath:    auditPath,
 	}, nil
+}
+
+func endpointAdvertiserSysexts(request TrustedBundleRequest, desired manifest.Manifest) ([]generation.ExtensionRef, error) {
+	refs := make([]generation.ExtensionRef, 0, len(request.CurrentRecord.Sysexts)+1)
+	var current *generation.ExtensionRef
+	for _, ref := range request.CurrentRecord.Sysexts {
+		if ref.Name == "endpoint-advertiser" {
+			candidate := ref
+			current = &candidate
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	if desired.Node.ControlPlaneEndpoint == nil {
+		return refs, nil
+	}
+	if current != nil {
+		return append(refs, *current), nil
+	}
+	if request.EndpointAdvertiserSysext == nil {
+		return nil, fmt.Errorf("managed control-plane endpoint requires the endpoint advertiser artifact retained during installation; reinstall this pre-bootstrap node with current KatlOS media")
+	}
+	return append(refs, *request.EndpointAdvertiserSysext), nil
 }
 
 func confextReleaseFromCurrent(record generation.Record) (confext.ExtensionRelease, error) {
@@ -933,6 +965,7 @@ func requestDigest(request TrustedBundleRequest) string {
 		RuntimeVersion        string
 		RuntimeActivation     string
 		KubernetesInitialized bool
+		EndpointAdvertiser    *generation.ExtensionRef
 	}
 	data, _ := json.Marshal(digestInput{
 		SourceID:              request.SourceID,
@@ -950,6 +983,7 @@ func requestDigest(request TrustedBundleRequest) string {
 		RuntimeVersion:        request.RuntimeKubernetesVersion,
 		RuntimeActivation:     request.RuntimeKubernetesActivationPath,
 		KubernetesInitialized: request.KubernetesInitialized,
+		EndpointAdvertiser:    request.EndpointAdvertiserSysext,
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
