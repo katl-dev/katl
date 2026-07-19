@@ -2,8 +2,15 @@ package scenarios
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,10 +21,13 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/nodeextensionbundle"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
+
+const routedEndpointProofVIP = "198.51.100.10"
 
 func TestBIRDAndBGPAPIVIPExtensionsVMProof(t *testing.T) {
 	if run, ok := bgpAPIVIPWorldRun(t); ok {
@@ -55,6 +65,10 @@ type bgpAPIVIPInputs struct {
 	WorkerMetadata         string                        `json:"workerMetadata"`
 	WorkerAddress          string                        `json:"workerAddress"`
 	WorkerMAC              string                        `json:"workerMAC"`
+	RouterAddress          string                        `json:"routerAddress"`
+	RouterMAC              string                        `json:"routerMAC"`
+	ClientAddress          string                        `json:"clientAddress"`
+	ClientMAC              string                        `json:"clientMAC"`
 	WorldProvenance        multiNodeWorldProvenancePaths `json:"worldProvenance"`
 }
 
@@ -136,6 +150,16 @@ func planBGPAPIVIPWorldRun(world vmtest.World, repo string, kvm vmtest.KVMPolicy
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
 	}
+	router, err := scenario.AddNode(vmtest.NodeSpec{Name: "fabric-router", Role: vmtest.ControlPlane})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	client, err := scenario.AddNode(vmtest.NodeSpec{Name: "external-client", Role: vmtest.Worker})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
 	options := vmtest.Options{
 		Enabled:   true,
 		StateRoot: filepath.Join(scenario.Dir, "vm-runs"),
@@ -172,6 +196,10 @@ func planBGPAPIVIPWorldRun(world vmtest.World, repo string, kvm vmtest.KVMPolicy
 			WorkerMetadata:         worker.Config.NodeMetadata,
 			WorkerAddress:          worker.Node.Address,
 			WorkerMAC:              worker.Node.MACAddress,
+			RouterAddress:          router.Address,
+			RouterMAC:              router.MACAddress,
+			ClientAddress:          client.Address,
+			ClientMAC:              client.MACAddress,
 			WorldProvenance:        multiNodeWorldProvenanceForSpecs(world, repo, []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}, {Name: "worker-1", Role: vmtest.Worker}}),
 		},
 	}, nil
@@ -227,6 +255,22 @@ func runBGPAPIVIPProof(t *testing.T, run bgpAPIVIPRun) {
 	}
 	defer stopNode(t, workerNode)
 
+	routerNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, bgpAPIVIPNodeConfig(run, "fabric-router", run.Inputs.ControlPlaneDisk, run.Inputs.ControlPlaneESP, run.Inputs.ControlPlaneFixture, run.Inputs.ControlPlaneMetadata, vmtest.DiskFormat(run.Inputs.ControlPlaneDiskFormat), run.Inputs.RouterMAC), vmtest.VMRunner{})
+	if err != nil {
+		collectTwoNodeDiagnostics("", cpNode, workerNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("start fabric-router VM: %v", err)
+	}
+	defer stopNode(t, routerNode)
+
+	clientNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, bgpAPIVIPNodeConfig(run, "external-client", run.Inputs.WorkerDisk, run.Inputs.WorkerESP, run.Inputs.WorkerFixture, run.Inputs.WorkerMetadata, vmtest.DiskFormat(run.Inputs.WorkerDiskFormat), run.Inputs.ClientMAC), vmtest.VMRunner{})
+	if err != nil {
+		collectTwoNodeDiagnostics("", cpNode, workerNode, routerNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("start external-client VM: %v", err)
+	}
+	defer stopNode(t, clientNode)
+
 	config := bgpAPIVIPConfigYAML(firstString(cpNode.Result.IPAddress, run.Inputs.ControlPlaneAddress))
 	configPath := filepath.Join(result.ManifestDir, "bgp-api-vip.yaml")
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
@@ -248,6 +292,11 @@ func runBGPAPIVIPProof(t *testing.T, run bgpAPIVIPRun) {
 		collectTwoNodeDiagnostics("", cpNode, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
+	}
+	if err := runRealRoutedEndpointProof(ctx, result, cpNode, workerNode, routerNode, clientNode, helper); err != nil {
+		collectTwoNodeDiagnostics("", cpNode, workerNode, routerNode, clientNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("real routed endpoint proof: %v", err)
 	}
 	if err := writeBGPAPIVIPProofManifest(result, run.Inputs, staged, helper, cpNode, workerNode, cpProof, workerProof); err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -449,6 +498,438 @@ func assertBGPAPIVIPGuestProofs(cpProofPath, workerProofPath string) error {
 		return fmt.Errorf("worker proof = %#v", worker)
 	}
 	return nil
+}
+
+type routedEndpointVMProof struct {
+	APIVersion               string   `json:"apiVersion"`
+	Kind                     string   `json:"kind"`
+	VIP                      string   `json:"vip"`
+	ControlPlane             string   `json:"controlPlane"`
+	FabricRouter             string   `json:"fabricRouter"`
+	ExternalClient           string   `json:"externalClient"`
+	Worker                   string   `json:"worker"`
+	InitialBirdInactive      bool     `json:"initialBirdInactive"`
+	WorkerArtifactAbsent     bool     `json:"workerArtifactAbsent"`
+	RouteAdvertised          bool     `json:"routeAdvertised"`
+	ExternalReadyzReachable  bool     `json:"externalReadyzReachable"`
+	APIFailureWithdrawn      bool     `json:"apiFailureWithdrawn"`
+	APIRecoveryReadvertised  bool     `json:"apiRecoveryReadvertised"`
+	ControllerKillWithdrawn  bool     `json:"controllerKillWithdrawn"`
+	RoutingDaemonKillRemoved bool     `json:"routingDaemonKillRemoved"`
+	Checks                   []string `json:"checks"`
+}
+
+func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, worker, router, client vmtest.RunningInstalledRuntimeNode, helper string) error {
+	proof := routedEndpointVMProof{
+		APIVersion:     "katl.dev/v1alpha1",
+		Kind:           "RoutedControlPlaneEndpointVMProof",
+		VIP:            routedEndpointProofVIP + "/32",
+		ControlPlane:   cp.Result.IPAddress,
+		FabricRouter:   router.Result.IPAddress,
+		ExternalClient: client.Result.IPAddress,
+		Worker:         worker.Result.IPAddress,
+	}
+	writeProof := func() {
+		data, _ := json.MarshalIndent(proof, "", "  ")
+		_ = os.WriteFile(filepath.Join(result.ManifestDir, "routed-control-plane-endpoint-proof.json"), append(data, '\n'), 0o644)
+	}
+	defer writeProof()
+
+	if err := assertGuestCommand(ctx, worker, []string{"test", "!", "-e", "/var/lib/katl/artifacts/katlos-image/katl-endpoint-advertiser.raw"}); err != nil {
+		return fmt.Errorf("worker retained endpoint advertiser artifact: %w", err)
+	}
+	proof.WorkerArtifactAbsent = true
+	proof.Checks = append(proof.Checks, "worker has no endpoint advertiser payload")
+
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, router} {
+		if err := activateRetainedEndpointSysext(ctx, node); err != nil {
+			return fmt.Errorf("activate endpoint sysext on %s: %w", node.Name, err)
+		}
+	}
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "start", "katl-app-bird.service"}); err != nil {
+		return fmt.Errorf("ask conditioned BIRD unit to start without config: %w", err)
+	}
+	if active, err := guestUnitActive(ctx, cp, "katl-app-bird.service"); err != nil {
+		return err
+	} else if active {
+		return fmt.Errorf("BIRD became active without managed VIP configuration")
+	}
+	proof.InitialBirdInactive = true
+	proof.Checks = append(proof.Checks, "BIRD remains inactive without the managed-advertisement marker")
+
+	if err := configureFabricRouter(ctx, router, []string{cp.Result.IPAddress}); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, router, []string{"sysctl", "-w", "net.ipv4.ip_forward=1"}); err != nil {
+		return fmt.Errorf("enable fabric router forwarding: %w", err)
+	}
+	if err := assertGuestCommand(ctx, client, []string{"ip", "route", "replace", routedEndpointProofVIP + "/32", "via", router.Result.IPAddress}); err != nil {
+		return fmt.Errorf("install external client VIP route: %w", err)
+	}
+
+	caPEM, certPEM, keyPEM, err := routedEndpointTLSFixture(net.ParseIP(routedEndpointProofVIP))
+	if err != nil {
+		return err
+	}
+	const fixtureRoot = "/var/lib/katl/test-artifacts/routed-endpoint"
+	for _, target := range []struct {
+		node vmtest.RunningInstalledRuntimeNode
+		path string
+		data []byte
+		mode uint32
+	}{
+		{cp, fixtureRoot + "/ca.crt", caPEM, 0o644},
+		{cp, fixtureRoot + "/server.crt", certPEM, 0o644},
+		{cp, fixtureRoot + "/server.key", keyPEM, 0o600},
+		{client, fixtureRoot + "/ca.crt", caPEM, 0o644},
+	} {
+		if err := writeNodeFile(ctx, target.node, target.path, target.data, target.mode, target.mode == 0o600); err != nil {
+			return err
+		}
+	}
+	if err := assertGuestCommand(ctx, cp, []string{
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/install", "-D", "-m", "0644", fixtureRoot + "/ca.crt", "/etc/kubernetes/pki/ca.crt",
+	}); err != nil {
+		return fmt.Errorf("install kubeadm-compatible API CA: %w", err)
+	}
+	helperData, err := os.ReadFile(helper)
+	if err != nil {
+		return err
+	}
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, client} {
+		if err := writeNodeFileChunked(ctx, node, fixtureRoot+"/bgp-api-vip-smoke", helperData, 0o755); err != nil {
+			return err
+		}
+	}
+
+	endpointPlan, err := controlPlaneEndpointVMFiles(router.Result.IPAddress)
+	if err != nil {
+		return err
+	}
+	if err := activateEndpointConfext(ctx, cp, fixtureRoot, endpointPlan); err != nil {
+		return err
+	}
+	if err := createGuestDummyVIP(ctx, cp); err != nil {
+		return err
+	}
+	if err := startReadyzFixture(ctx, cp, fixtureRoot); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = runNodeCommand(context.Background(), cp, []string{"systemctl", "stop", "katl-vmtest-readyz.service"}, 8<<10)
+	}()
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "daemon-reload"}); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "start", "katl-app-bgp-api-vip.service"}); err != nil {
+		return fmt.Errorf("start production endpoint controller: %w", err)
+	}
+
+	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, true, 30*time.Second); err != nil {
+		return err
+	}
+	proof.RouteAdvertised = true
+	proof.Checks = append(proof.Checks, "fabric router learned the healthy API /32 from production BIRD")
+	if err := probeReadyzFromClient(ctx, client, fixtureRoot); err != nil {
+		return err
+	}
+	proof.ExternalReadyzReachable = true
+	proof.Checks = append(proof.Checks, "external client reached TLS /readyz through the fabric router")
+
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "stop", "katl-vmtest-readyz.service"}); err != nil {
+		return fmt.Errorf("stop API readiness fixture: %w", err)
+	}
+	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, false, 20*time.Second); err != nil {
+		return fmt.Errorf("API failure did not withdraw route: %w", err)
+	}
+	proof.APIFailureWithdrawn = true
+	proof.Checks = append(proof.Checks, "local API failure withdrew only the API route")
+	if err := startReadyzFixture(ctx, cp, fixtureRoot); err != nil {
+		return err
+	}
+	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, true, 30*time.Second); err != nil {
+		return fmt.Errorf("API recovery did not readvertise route: %w", err)
+	}
+	proof.APIRecoveryReadvertised = true
+
+	if err := setVMTestRestartPolicy(ctx, cp, "katl-app-bgp-api-vip.service", "no"); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", "katl-app-bgp-api-vip.service"}); err != nil {
+		return fmt.Errorf("kill endpoint controller: %w", err)
+	}
+	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, false, 20*time.Second); err != nil {
+		return fmt.Errorf("ungraceful controller death did not withdraw route: %w", err)
+	}
+	proof.ControllerKillWithdrawn = true
+	proof.Checks = append(proof.Checks, "ungraceful controller death failed closed")
+	if err := setVMTestRestartPolicy(ctx, cp, "katl-app-bgp-api-vip.service", "always"); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "reset-failed", "katl-app-bgp-api-vip.service"}); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "start", "katl-app-bgp-api-vip.service"}); err != nil {
+		return err
+	}
+	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, true, 30*time.Second); err != nil {
+		return err
+	}
+
+	if err := setVMTestRestartPolicy(ctx, cp, "katl-app-bird.service", "no"); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", "katl-app-bird.service"}); err != nil {
+		return fmt.Errorf("kill routing daemon: %w", err)
+	}
+	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, false, 20*time.Second); err != nil {
+		return fmt.Errorf("routing daemon death did not remove route: %w", err)
+	}
+	proof.RoutingDaemonKillRemoved = true
+	proof.Checks = append(proof.Checks, "routing-daemon death removed the fabric route")
+	return nil
+}
+
+func activateRetainedEndpointSysext(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) error {
+	const artifact = "/var/lib/katl/artifacts/katlos-image/katl-endpoint-advertiser.raw"
+	if err := assertGuestCommand(ctx, node, []string{"test", "-f", artifact}); err != nil {
+		return fmt.Errorf("retained endpoint artifact is missing: %w", err)
+	}
+	for _, argv := range [][]string{
+		{"install", "-d", "/run/extensions"},
+		{"systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/ln", "-sf", artifact, "/run/extensions/katl-endpoint-advertiser.raw"},
+		{"systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/systemd-sysext", "refresh"},
+		{"systemctl", "daemon-reload"},
+	} {
+		if err := assertGuestCommand(ctx, node, argv); err != nil {
+			return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
+		}
+	}
+	return nil
+}
+
+func controlPlaneEndpointVMFiles(routerAddress string) (bgpapivip.Plan, error) {
+	intent, err := controlplaneendpoint.Normalize(controlplaneendpoint.Config{
+		Host: routedEndpointProofVIP,
+		Advertisement: &controlplaneendpoint.Advertisement{
+			VIP: routedEndpointProofVIP,
+			BGP: &controlplaneendpoint.BGP{
+				LocalASN: 64512,
+				Peers:    []controlplaneendpoint.Peer{{Address: routerAddress, ASN: 64500}},
+			},
+		},
+	})
+	if err != nil {
+		return bgpapivip.Plan{}, err
+	}
+	config, err := bgpapivip.FromControlPlaneEndpoint(intent)
+	if err != nil {
+		return bgpapivip.Plan{}, err
+	}
+	return bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{NodeRole: "control-plane", Config: config})
+}
+
+func configureFabricRouter(ctx context.Context, router vmtest.RunningInstalledRuntimeNode, peers []string) error {
+	var config strings.Builder
+	fmt.Fprintf(&config, "router id %s;\n\nprotocol device {}\n\n", router.Result.IPAddress)
+	config.WriteString("protocol kernel katl_kernel {\n  ipv4 { import none; export all; };\n  merge paths on limit 16;\n}\n\n")
+	for index, peer := range peers {
+		fmt.Fprintf(&config, "protocol bgp katl_cp_%d {\n  local as 64500;\n  neighbor %s as 64512;\n  ipv4 { import all; export none; };\n}\n\n", index+1, peer)
+	}
+	const path = "/var/lib/katl/test-artifacts/routed-endpoint/fabric-router.conf"
+	if err := writeNodeFile(ctx, router, path, []byte(config.String()), 0o644, false); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, router, []string{"install", "-d", "/run/katl-fabric-router"}); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, router, []string{
+		"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-fabric-router.service", "--property=Restart=on-failure",
+		"/usr/bin/bird", "-f", "-c", path, "-s", "/run/katl-fabric-router/bird.ctl",
+	}); err != nil {
+		return fmt.Errorf("start fabric BIRD: %w", err)
+	}
+	return nil
+}
+
+func installStagedNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, stagingRoot, target string, data []byte, mode uint32, sensitive bool) error {
+	staged := stagingRoot + "/privileged" + filepath.Clean(target)
+	if err := writeNodeFile(ctx, node, staged, data, mode, sensitive); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, node, []string{
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/install", "-D", "-m", fmt.Sprintf("%04o", mode), staged, target,
+	}); err != nil {
+		return fmt.Errorf("install %s: %w", target, err)
+	}
+	return nil
+}
+
+func activateEndpointConfext(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, stagingRoot string, plan bgpapivip.Plan) error {
+	const (
+		name = "katl-endpoint-vmtest"
+		root = "/run/confexts/" + name
+	)
+	for _, file := range plan.Files {
+		switch file.Path {
+		case bgpapivip.ConfigPath, bgpapivip.BirdConfigPath, bgpapivip.AdvertisementEnabledPath:
+			target := root + file.Path
+			if err := installStagedNodeFile(ctx, node, stagingRoot, target, []byte(file.Content), uint32(file.Mode.Perm()), false); err != nil {
+				return err
+			}
+		}
+	}
+	releasePath := root + "/etc/extension-release.d/extension-release." + name
+	if err := installStagedNodeFile(ctx, node, stagingRoot, releasePath, []byte("ID=katlos\nCONFEXT_LEVEL=1\n"), 0o644, false); err != nil {
+		return err
+	}
+	if err := assertGuestCommand(ctx, node, []string{
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/systemd-confext", "refresh",
+	}); err != nil {
+		return fmt.Errorf("activate endpoint confext: %w", err)
+	}
+	return nil
+}
+
+func createGuestDummyVIP(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) error {
+	for _, argv := range [][]string{
+		{"ip", "link", "add", "katl-api", "type", "dummy"},
+		{"ip", "address", "add", routedEndpointProofVIP + "/32", "dev", "katl-api"},
+		{"ip", "link", "set", "katl-api", "up"},
+	} {
+		if err := assertGuestCommand(ctx, node, argv); err != nil {
+			return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
+		}
+	}
+	return nil
+}
+
+func startReadyzFixture(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, root string) error {
+	_, _ = runNodeCommand(ctx, node, []string{"systemctl", "stop", "katl-vmtest-readyz.service"}, 8<<10)
+	return assertGuestCommand(ctx, node, []string{
+		"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-readyz.service",
+		root + "/bgp-api-vip-smoke", "serve-readyz",
+		"--listen", routedEndpointProofVIP + ":6443", "--cert", root + "/server.crt", "--key", root + "/server.key",
+	})
+}
+
+func probeReadyzFromClient(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, root string) error {
+	result, err := runNodeCommand(ctx, node, []string{
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		root + "/bgp-api-vip-smoke", "probe-readyz",
+		"--url", "https://" + routedEndpointProofVIP + ":6443/readyz", "--ca", root + "/ca.crt", "--server-name", routedEndpointProofVIP,
+	}, 16<<10)
+	if err != nil {
+		return err
+	}
+	if result.ExitStatus != 0 || strings.TrimSpace(string(result.Stdout)) != "ok" {
+		return fmt.Errorf("external readyz probe: %w", commandErrorDetail(result))
+	}
+	return nil
+}
+
+func waitForRouterRoute(ctx context.Context, router vmtest.RunningInstalledRuntimeNode, prefix string, present bool, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	var last string
+	for time.Now().Before(deadline) {
+		result, err := runNodeCommand(ctx, router, []string{
+			"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+			"/usr/bin/birdc", "-s", "/run/katl-fabric-router/bird.ctl", "show", "route", "for", prefix, "all",
+		}, 32<<10)
+		if err == nil {
+			last = string(result.Stdout) + string(result.Stderr)
+			hasRoute := result.ExitStatus == 0 && strings.Contains(last, prefix)
+			if hasRoute == present {
+				return last, nil
+			}
+		} else {
+			last = err.Error()
+		}
+		select {
+		case <-ctx.Done():
+			return last, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return last, fmt.Errorf("fabric route %s presence=%t not observed: %s", prefix, present, strings.TrimSpace(last))
+}
+
+func guestUnitActive(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, unit string) (bool, error) {
+	result, err := runNodeCommand(ctx, node, []string{"systemctl", "is-active", "--quiet", unit}, 8<<10)
+	if err != nil {
+		return false, err
+	}
+	return result.ExitStatus == 0, nil
+}
+
+func assertGuestCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string) error {
+	result, err := runNodeCommand(ctx, node, argv, 32<<10)
+	if err != nil {
+		return err
+	}
+	if result.ExitStatus != 0 {
+		return commandErrorDetail(result)
+	}
+	return nil
+}
+
+func setVMTestRestartPolicy(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, unit, restart string) error {
+	root := "/var/lib/katl/test-artifacts/routed-endpoint"
+	dropIn := root + "/" + strings.ReplaceAll(unit, ".", "-") + "-restart.conf"
+	if err := writeNodeFile(ctx, node, dropIn, []byte("[Service]\nRestart="+restart+"\n"), 0o644, false); err != nil {
+		return err
+	}
+	target := "/run/systemd/system/" + unit + ".d/90-vmtest-restart.conf"
+	if err := assertGuestCommand(ctx, node, []string{
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/install", "-D", "-m", "0644", dropIn, target,
+	}); err != nil {
+		return err
+	}
+	return assertGuestCommand(ctx, node, []string{"systemctl", "daemon-reload"})
+}
+
+func routedEndpointTLSFixture(vip net.IP) ([]byte, []byte, []byte, error) {
+	now := time.Now().UTC()
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	caTemplate := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "katl routed endpoint VM CA"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(24 * time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, &caTemplate, &caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	serverTemplate := x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: routedEndpointProofVIP},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{vip},
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, &serverTemplate, &caTemplate, &serverKey.PublicKey, caKey)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverKey)})
+	return caPEM, certPEM, keyPEM, nil
 }
 
 func readProofJSON(path string, out any) error {

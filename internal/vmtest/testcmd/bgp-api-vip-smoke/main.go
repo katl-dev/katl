@@ -2,14 +2,21 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
@@ -44,9 +51,102 @@ type fakeBird struct {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "serve-readyz":
+			if err := serveReadyz(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "probe-readyz":
+			if err := probeReadyz(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func serveReadyz(args []string) error {
+	flags := flag.NewFlagSet("serve-readyz", flag.ContinueOnError)
+	listen := flags.String("listen", "", "listen address")
+	cert := flags.String("cert", "", "TLS certificate")
+	key := flags.String("key", "", "TLS private key")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *listen == "" || *cert == "" || *key == "" {
+		return errors.New("--listen, --cert, and --key are required")
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "ok\n")
+	})
+	server := &http.Server{
+		Addr:              *listen,
+		Handler:           mux,
+		ReadHeaderTimeout: 2 * time.Second,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- server.ListenAndServeTLS(*cert, *key) }()
+	select {
+	case err := <-done:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
+	}
+}
+
+func probeReadyz(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("probe-readyz", flag.ContinueOnError)
+	target := flags.String("url", "", "readyz URL")
+	caPath := flags.String("ca", "", "CA certificate")
+	serverName := flags.String("server-name", "", "TLS server name")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	ca, err := os.ReadFile(*caPath)
+	if err != nil {
+		return err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(ca) {
+		return errors.New("CA certificate is invalid")
+	}
+	client := http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    roots,
+			ServerName: *serverName,
+		}},
+	}
+	response, err := client.Get(*target)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "ok" {
+		return fmt.Errorf("readyz returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	_, err = stdout.Write(body)
+	return err
 }
 
 func run() error {
