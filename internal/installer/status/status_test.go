@@ -164,8 +164,46 @@ func TestValidateCleanGenerationZeroAllowsRenderedKubeadmInput(t *testing.T) {
 	}
 }
 
+func TestValidateCleanGenerationZeroAllowsNonKubernetesSysext(t *testing.T) {
+	root := t.TempDir()
+	writeCleanGenerationZeroWithSysexts(t, root, []generation.ExtensionRef{{
+		Name:           "endpoint-advertiser",
+		ActivationPath: "/run/extensions/katl-endpoint-advertiser.raw",
+	}})
+
+	if err := ValidateCleanGenerationZero(root, "0"); err != nil {
+		t.Fatalf("ValidateCleanGenerationZero() error = %v, want endpoint advertiser allowed", err)
+	}
+}
+
+func TestValidateCleanGenerationZeroRejectsKubernetesSysext(t *testing.T) {
+	root := t.TempDir()
+	writeCleanGenerationZeroWithSysexts(t, root, []generation.ExtensionRef{{
+		Name:           "kubernetes",
+		ActivationPath: "/run/extensions/katl-kubernetes.raw",
+	}})
+
+	err := ValidateCleanGenerationZero(root, "0")
+	if err == nil || !strings.Contains(err.Error(), "selected Kubernetes sysexts are forbidden") {
+		t.Fatalf("ValidateCleanGenerationZero() error = %v, want Kubernetes sysext refusal", err)
+	}
+}
+
 func writeCleanGenerationZero(t *testing.T, root string) {
 	t.Helper()
+	writeCleanGenerationZeroWithSysexts(t, root, nil)
+}
+
+func writeCleanGenerationZeroWithSysexts(t *testing.T, root string, sysexts []generation.ExtensionRef) {
+	t.Helper()
+	for i := range sysexts {
+		sysexts[i].Path = "/var/lib/katl/generations/0/sysext/" + sysexts[i].Name + ".raw"
+		sysexts[i].SHA256 = strings.Repeat("c", 64)
+		sysexts[i].ArtifactVersion = "0.1.0"
+		sysexts[i].PayloadVersion = "0.1.0"
+		sysexts[i].Architecture = "x86_64"
+		sysexts[i].Compatibility.RuntimeInterfaces = []string{"katl-runtime-1"}
+	}
 	record := generation.Record{
 		APIVersion:     generation.APIVersion,
 		Kind:           generation.Kind,
@@ -182,6 +220,7 @@ func writeCleanGenerationZero(t *testing.T, root string) {
 		Boot: generation.BootSelection{
 			UKIPath: "/efi/EFI/Linux/katl-0.efi",
 		},
+		Sysexts:   sysexts,
 		CreatedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 	spec := generation.SpecFromRecord(record)

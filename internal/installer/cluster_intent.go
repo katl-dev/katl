@@ -45,12 +45,13 @@ type ClusterIntentIdentity struct {
 }
 
 type ClusterIntentInventory struct {
-	ClusterName          string               `json:"clusterName,omitempty"`
-	NodeName             string               `json:"nodeName"`
-	NodeAddress          string               `json:"nodeAddress,omitempty"`
-	ControlPlaneEndpoint string               `json:"controlPlaneEndpoint,omitempty"`
-	Labels               map[string]string    `json:"labels,omitempty"`
-	Taints               []manifest.NodeTaint `json:"taints,omitempty"`
+	ClusterName             string               `json:"clusterName,omitempty"`
+	NodeName                string               `json:"nodeName"`
+	NodeAddress             string               `json:"nodeAddress,omitempty"`
+	ControlPlaneEndpoint    string               `json:"controlPlaneEndpoint,omitempty"`
+	ControlPlaneEndpointVIP string               `json:"controlPlaneEndpointVIP,omitempty"`
+	Labels                  map[string]string    `json:"labels,omitempty"`
+	Taints                  []manifest.NodeTaint `json:"taints,omitempty"`
 }
 
 type ClusterIntentKubernetes struct {
@@ -226,6 +227,9 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 		intent.Inventory.ControlPlaneEndpoint = strings.TrimSpace(bootstrap.ControlPlaneEndpoint)
 		intent.Inventory.Labels = copyBootstrapLabels(bootstrap.Labels)
 		intent.Inventory.Taints = append([]manifest.NodeTaint(nil), bootstrap.Taints...)
+	}
+	if endpoint := request.Manifest.Node.ControlPlaneEndpoint; endpoint != nil && endpoint.Advertisement != nil {
+		intent.Inventory.ControlPlaneEndpointVIP = strings.TrimSpace(endpoint.Advertisement.VIP)
 	}
 	if request.KubernetesSysext != nil {
 		intent.Kubernetes.SysextPath = strings.TrimSpace(request.KubernetesSysext.Path)

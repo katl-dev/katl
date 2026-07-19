@@ -1,0 +1,29 @@
+[Unit]
+Description=Katl routed control-plane endpoint
+Documentation=https://katl.dev
+Requires=katl-app-bird.service
+After=katl-app-bird.service
+ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
+
+[Service]
+Type=simple
+RuntimeDirectory=katl/apps/bgp-api-vip
+RuntimeDirectoryMode=0755
+ExecStart=/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser
+ExecStopPost=/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser withdraw
+Restart=always
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/run/katl/apps/bgp-api-vip
+RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

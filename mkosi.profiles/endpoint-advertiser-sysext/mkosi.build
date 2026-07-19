@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="${SRCDIR:-}"
+builddir="${BUILDDIR:-/tmp}"
+version="${KATL_VERSION:-0.0.0-dev}"
+
+if [[ ! -f "$repo/go.mod" && -f /work/go.mod ]]; then
+    repo=/work
+fi
+if [[ ! -f "$repo/go.mod" ]]; then
+    echo "error: could not find repository root for endpoint advertiser build" >&2
+    exit 1
+fi
+
+mkdir -p \
+    "$DESTDIR/usr/lib/katl/endpoint-advertiser" \
+    "$DESTDIR/usr/lib/systemd/system"
+
+cd "$repo"
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="${KATL_GOMODCACHE:-$repo/_build/go-mod}" \
+go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w -X main.version=$version" \
+    -o "$DESTDIR/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser" \
+    ./cmd/katl-endpoint-advertiser
+
+install -m 0644 \
+    "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-bird.service" \
+    "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.service" \
+    "$DESTDIR/usr/lib/systemd/system/"
+
+# The Fedora package ships a generic bird.service. Katl owns BIRD lifecycle
+# through the conditioned katl-app-bird.service, so prevent presets or manual
+# enablement from starting the daemon outside managed VIP configuration.
+ln -sf /dev/null "$DESTDIR/usr/lib/systemd/system/bird.service"

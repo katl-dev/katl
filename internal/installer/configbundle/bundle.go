@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +18,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	installer "github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/clusterplan"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
@@ -70,10 +70,10 @@ type Metadata struct {
 }
 
 type SourceSpec struct {
-	ControlPlaneEndpoint string                  `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
-	Kubernetes           SourceKubernetesCluster `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Defaults             SourceNodeLayer         `yaml:"defaults,omitempty" json:"defaults,omitempty"`
-	Nodes                []SourceNode            `yaml:"nodes" json:"nodes"`
+	ControlPlaneEndpoint *controlplaneendpoint.Config `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
+	Kubernetes           SourceKubernetesCluster      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Defaults             SourceNodeLayer              `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Nodes                []SourceNode                 `yaml:"nodes" json:"nodes"`
 }
 
 type SourceNode struct {
@@ -224,7 +224,10 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
-	source = defaultSource(source)
+	source, err = normalizeSource(source)
+	if err != nil {
+		return nil, Result{}, err
+	}
 	normalized, err := marshalCanonical(source)
 	if err != nil {
 		return nil, Result{}, err
@@ -341,7 +344,11 @@ func DecodeSource(reader io.Reader) (SourceConfig, error) {
 }
 
 func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Config, error) {
-	source = defaultSource(source)
+	var err error
+	source, err = normalizeSource(source)
+	if err != nil {
+		return clusterplan.Config{}, err
+	}
 	if len(source.Spec.Nodes) == 0 {
 		return clusterplan.Config{}, fmt.Errorf("spec.nodes must not be empty")
 	}
@@ -454,22 +461,36 @@ func selectedKubernetesVersion(source SourceConfig) string {
 func defaultSource(source SourceConfig) SourceConfig {
 	spec := source.Spec
 	spec.Nodes = append([]SourceNode(nil), spec.Nodes...)
-	if strings.TrimSpace(spec.ControlPlaneEndpoint) == "" {
-		for _, node := range spec.Nodes {
-			if node.ControlPlane {
-				if address := strings.TrimSpace(node.Bootstrap.Address); address != "" {
-					spec.ControlPlaneEndpoint = net.JoinHostPort(address, "6443")
-					break
-				}
-			}
-		}
-	}
 	version := strings.TrimSpace(spec.Kubernetes.Version)
 	if version == "" {
 		spec.Kubernetes.Version = DefaultKubernetesVersion
 	}
 	source.Spec = spec
 	return source
+}
+
+func normalizeSource(source SourceConfig) (SourceConfig, error) {
+	source = defaultSource(source)
+	if source.Spec.ControlPlaneEndpoint == nil {
+		return source, nil
+	}
+	plan, err := controlplaneendpoint.Normalize(*source.Spec.ControlPlaneEndpoint)
+	if err != nil {
+		return SourceConfig{}, err
+	}
+	source.Spec.ControlPlaneEndpoint = &plan.Config
+	return source, nil
+}
+
+func SourceControlPlaneEndpoint(source SourceConfig) string {
+	if source.Spec.ControlPlaneEndpoint == nil {
+		return ""
+	}
+	plan, err := controlplaneendpoint.Normalize(*source.Spec.ControlPlaneEndpoint)
+	if err != nil {
+		return ""
+	}
+	return plan.Endpoint
 }
 
 func defaultKubeadmInitConfig(version string) string {

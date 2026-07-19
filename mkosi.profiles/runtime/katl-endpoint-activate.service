@@ -1,0 +1,16 @@
+[Unit]
+Description=Activate the configured Katl control-plane endpoint
+Documentation=https://katl.dev
+Wants=systemd-sysext.service systemd-confext.service
+After=systemd-sysext.service systemd-confext.service
+ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl daemon-reload
+ExecStart=/usr/bin/systemctl start katl-app-bgp-api-vip.service
+ExecStop=/usr/bin/systemctl stop katl-app-bgp-api-vip.service
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

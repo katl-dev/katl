@@ -99,7 +99,7 @@ cache_input_matches_target() {
             ;;
         katlos-install-image)
             case "$path" in
-                scripts/build-katlos-install-image | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/*)
+                scripts/build-katlos-install-image | scripts/build-endpoint-advertiser-sysext | mkosi.profiles/endpoint-advertiser-sysext/* | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/*)
                     return 0
                     ;;
             esac
@@ -128,6 +128,7 @@ target_go_binaries() {
             ;;
         katlos-install-image)
             target_go_binaries runtime
+			printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser" "./cmd/katl-endpoint-advertiser" "versioned"
             printf '%s\t%s\t%s\n' "metadata-tool:build-katlos-install-image" "./cmd/katl-mkosi-artifacts" "plain"
             ;;
     esac
@@ -301,7 +302,10 @@ target_outputs() {
             printf '%s\n' \
                 "$image_output" \
                 "$image_output.json" \
-                "$image_output.sha256"
+                "$image_output.sha256" \
+                "$build_dir/katl-endpoint-advertiser.raw" \
+                "$build_dir/katl-endpoint-advertiser.raw.json" \
+                "$build_dir/katl-endpoint-advertiser.raw.sha256"
             ;;
     esac
 }
@@ -505,6 +509,7 @@ else
                 exit 0
             fi
             "$repo_root/scripts/mkosi" build-runtime
+			"$repo_root/scripts/build-endpoint-advertiser-sysext"
             "$repo_root/scripts/build-katlos-install-image" "$@"
             status=$?
             if [[ "$status" -eq 0 && $# -eq 0 ]]; then
@@ -515,6 +520,7 @@ else
 		build-katlos-upgrade-image)
 			shift
 			"$repo_root/scripts/mkosi" build-runtime
+			"$repo_root/scripts/build-endpoint-advertiser-sysext"
 			KATL_KATLOS_IMAGE_ROLE=upgrade \
 				KATL_VERSION="${KATL_UPGRADE_VERSION:-${KATL_VERSION:-0.0.0-dev.1}}" \
 				KATL_BUILD_COMMIT="$build_commit" \

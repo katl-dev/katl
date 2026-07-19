@@ -1,5 +1,12 @@
 {
   "controlPlaneEndpoint": "api.katl.test:6443",
+  "endpointPlan": {
+    "config": {
+      "host": "api.katl.test",
+      "port": 6443
+    },
+    "endpoint": "api.katl.test:6443"
+  },
   "kubernetesVersion": "v1.36.1",
   "katlosImage": {
     "url": "https://example.invalid/katlos-install-2026.06.04-x86_64.squashfs",

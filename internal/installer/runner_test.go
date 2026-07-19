@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -51,6 +52,39 @@ func TestDefaultPlanOrder(t *testing.T) {
 
 	if got := DefaultPlan().IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("DefaultPlan IDs = %#v, want %#v", got, want)
+	}
+}
+
+func TestFirstInstallSelectsEndpointAdvertiserOnlyForManagedVIP(t *testing.T) {
+	payload := planningPayload()
+	payload.EndpointAdvertiser = katlosimage.Component{
+		Name:           katlosimage.EndpointAdvertiserName,
+		Role:           katlosimage.ComponentEndpointAdvertiser,
+		Path:           "components/sysext/endpoint-advertiser.raw",
+		SHA256:         strings.Repeat("c", 64),
+		Version:        "2026.06.06",
+		PayloadVersion: "2026.06.06",
+		Architecture:   "x86_64",
+		Compatibility:  katlosimage.Compatibility{RuntimeInterface: "katl-runtime-1"},
+	}
+	rootPlan := disk.RootSlotWritePlan{Slot: disk.RootSlotA}
+	install := &Context{RootPartitionUUID: "11111111-2222-3333-4444-555555555555"}
+
+	external, err := firstInstallRecordFromImage(payload, rootPlan, install)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(external.Sysexts) != 0 {
+		t.Fatalf("external endpoint sysexts = %#v", external.Sysexts)
+	}
+
+	install.Manifest.Node.ControlPlaneEndpoint = &controlplaneendpoint.Config{}
+	managed, err := firstInstallRecordFromImage(payload, rootPlan, install)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(managed.Sysexts) != 1 || managed.Sysexts[0].Name != katlosimage.EndpointAdvertiserName {
+		t.Fatalf("managed endpoint sysexts = %#v", managed.Sysexts)
 	}
 }
 

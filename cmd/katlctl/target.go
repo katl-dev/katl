@@ -96,7 +96,7 @@ func readManagementInventory(path string) (inventory.Inventory, error) {
 		if len(source.Spec.Nodes) == 0 {
 			return inventory.Inventory{}, fmt.Errorf("read --config %s: spec.nodes must not be empty", path)
 		}
-		inv := inventory.Inventory{ControlPlaneEndpoint: strings.TrimSpace(source.Spec.ControlPlaneEndpoint)}
+		inv := inventory.Inventory{ControlPlaneEndpoint: configbundle.SourceControlPlaneEndpoint(source)}
 		seen := make(map[string]struct{}, len(source.Spec.Nodes))
 		for _, sourceNode := range source.Spec.Nodes {
 			name := strings.TrimSpace(sourceNode.Name)

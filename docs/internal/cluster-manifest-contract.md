@@ -50,7 +50,16 @@ metadata:
   name: homelab
 spec:
   # Optional; defaults to the first control-plane node address on port 6443.
-  controlPlaneEndpoint: api.home.arpa:6443
+  controlPlaneEndpoint:
+    host: api.home.arpa
+    # port: 6443
+    # advertisement:
+    #   vip: 10.40.0.10
+    #   bgp:
+    #     localASN: 64512
+    #     peers:
+    #       - address: 10.0.0.1
+    #         asn: 64500
 
   kubernetes:
     version: v1.36.1

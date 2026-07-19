@@ -134,7 +134,7 @@ func TestKubernetesUpgradePlanDoesNotExecute(t *testing.T) {
 
 func TestKubernetesUpgradeResolvesClusterConfigWithoutContext(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "cluster.yaml")
-	config := strings.Replace(configBundleSource(), "  controlPlaneEndpoint: api.katl.test:6443\n", "", 1)
+	config := strings.Replace(configBundleSource(), "  controlPlaneEndpoint:\n    host: api.katl.test\n    port: 6443\n", "", 1)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}

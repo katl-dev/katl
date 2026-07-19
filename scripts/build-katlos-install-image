@@ -20,6 +20,8 @@ runtime_root_checksum="${KATL_RUNTIME_CHECKSUM:-$runtime_root.sha256}"
 runtime_uki="${KATL_RUNTIME_UKI:-$build_dir/katl-runtime.efi}"
 runtime_uki_metadata="${KATL_RUNTIME_UKI_METADATA:-$runtime_uki.json}"
 runtime_uki_checksum="${KATL_RUNTIME_UKI_CHECKSUM:-$runtime_uki.sha256}"
+endpoint_advertiser="${KATL_ENDPOINT_ADVERTISER_SYSEXT:-$build_dir/katl-endpoint-advertiser.raw}"
+endpoint_advertiser_metadata="${KATL_ENDPOINT_ADVERTISER_METADATA:-$endpoint_advertiser.json}"
 fail() {
     echo "error: $*" >&2
     exit 1
@@ -63,12 +65,15 @@ mkdir -p \
     "$work_root/katlos" \
     "$work_root/components/runtime" \
     "$work_root/components/boot" \
+    "$work_root/components/sysext" \
     "$work_root/components/metadata"
 
 cp "$runtime_root" "$work_root/components/runtime/root.squashfs"
 cp "$runtime_uki" "$work_root/components/boot/katl.efi"
 cp "$runtime_root_metadata" "$work_root/components/metadata/runtime-root.json"
 cp "$runtime_uki_metadata" "$work_root/components/metadata/runtime-uki.json"
+cp "$endpoint_advertiser" "$work_root/components/sysext/endpoint-advertiser.raw"
+cp "$endpoint_advertiser_metadata" "$work_root/components/metadata/endpoint-advertiser.json"
 mkosi_artifacts write-katlos-index \
     --output "$work_root/katlos/image.json" \
     --image-role "$image_role" \
@@ -79,7 +84,9 @@ mkosi_artifacts write-katlos-index \
     --runtime-root "$runtime_root" \
     --runtime-root-metadata "$runtime_root_metadata" \
     --runtime-uki "$runtime_uki" \
-    --runtime-uki-metadata "$runtime_uki_metadata" >/dev/null
+    --runtime-uki-metadata "$runtime_uki_metadata" \
+    --endpoint-advertiser "$endpoint_advertiser" \
+    --endpoint-advertiser-metadata "$endpoint_advertiser_metadata" >/dev/null
 
 mkdir -p "$(dirname "$output")"
 rm -f -- "$output" "$output.sha256" "$output.json"

@@ -3,12 +3,109 @@ package bgpapivip
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 )
+
+func TestFromControlPlaneEndpointRendersManagedPolicy(t *testing.T) {
+	length := 32
+	endpoint, err := controlplaneendpoint.Normalize(controlplaneendpoint.Config{
+		Host: "api.home.example",
+		Advertisement: &controlplaneendpoint.Advertisement{
+			VIP: "10.40.0.10",
+			BGP: &controlplaneendpoint.BGP{
+				LocalASN: 64512,
+				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
+				RouteExchange: []controlplaneendpoint.RouteExchange{{
+					Name:       "cilium",
+					ListenPort: 179,
+					PeerASN:    64512,
+					ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{
+						CIDR: "10.50.0.0/16", PrefixLength: &length,
+					}},
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := FromControlPlaneEndpoint(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := RenderNativeEtcFiles(RenderRequest{NodeRole: "control-plane", Config: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bird := fileContent(t, plan.Files, BirdConfigPath)
+	for _, want := range []string{
+		"router id from \"*\";",
+		"protocol static katl_api {\n  disabled;",
+		"local 127.0.0.1 port 179 as 64512;",
+		"neighbor 127.0.0.1 as 64512;",
+		"if net ~ [ 10.50.0.0/16{32,32} ] then accept;",
+		"import none;",
+	} {
+		if !strings.Contains(bird, want) {
+			t.Fatalf("bird config missing %q:\n%s", want, bird)
+		}
+	}
+}
+
+func TestGeneratedConfigParsesWithPackagedBird(t *testing.T) {
+	bird := strings.TrimSpace(os.Getenv("KATL_TEST_BIRD_BINARY"))
+	if bird == "" {
+		t.Skip("KATL_TEST_BIRD_BINARY is not set")
+	}
+	loader := strings.TrimSpace(os.Getenv("KATL_TEST_BIRD_LOADER"))
+	libraryPath := strings.TrimSpace(os.Getenv("KATL_TEST_BIRD_LIBRARY_PATH"))
+
+	endpoint, err := controlplaneendpoint.Normalize(controlplaneendpoint.Config{
+		Host: "api.home.example",
+		Advertisement: &controlplaneendpoint.Advertisement{
+			VIP: "10.40.0.10",
+			BGP: &controlplaneendpoint.BGP{
+				LocalASN: 64512,
+				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
+				RouteExchange: []controlplaneendpoint.RouteExchange{{
+					Name: "cilium", ListenPort: 179, PeerASN: 64512,
+					ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{CIDR: "10.50.0.0/16"}},
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := FromControlPlaneEndpoint(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := RenderNativeEtcFiles(RenderRequest{NodeRole: "control-plane", Config: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "bird.conf")
+	if err := os.WriteFile(configPath, []byte(fileContent(t, plan.Files, BirdConfigPath)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := bird
+	args := []string{"-p", "-c", configPath}
+	if loader != "" {
+		command = loader
+		args = append([]string{"--library-path", libraryPath, bird}, args...)
+	}
+	output, err := exec.Command(command, args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("packaged BIRD rejected generated config: %v\n%s", err, output)
+	}
+}
 
 func TestRenderNativeEtcFilesMinimalIPv4DummyVIP(t *testing.T) {
 	plan, err := RenderNativeEtcFiles(RenderRequest{
@@ -21,11 +118,14 @@ func TestRenderNativeEtcFilesMinimalIPv4DummyVIP(t *testing.T) {
 	assertFile(t, plan.Files, ConfigPath, "kind: BGPAPIEndpoint\n")
 	assertFile(t, plan.Files, DummyNetDevPath, "Name=katl-api0\nKind=dummy\n")
 	assertFile(t, plan.Files, NetworkPath, "Address=10.40.0.10/32\n")
+	if filepath.Base(NetworkPath) >= "10-lan.network" {
+		t.Fatalf("managed VIP network file %q must take precedence over Katl's default DHCP match", NetworkPath)
+	}
 	assertFile(t, plan.Files, BirdConfigPath, "router id 10.0.0.11;\n")
 	assertFile(t, plan.Files, BirdConfigPath, "neighbor 10.0.0.1 as 64500;\n")
 	assertFile(t, plan.Files, BirdConfigPath, "source address 10.0.0.11;\n")
-	assertFile(t, plan.Files, AppDropInPath, "KATL_BGP_API_VIP_STATUS=/run/katl/apps/bgp-api-vip/status.json\n")
-	assertFile(t, plan.Files, ConfigPath, "liveStatusPath: /run/katl/apps/bgp-api-vip/status.json\n")
+	assertFile(t, plan.Files, AppDropInPath, "KATL_BGP_API_VIP_STATUS="+LiveStatusPath+"\n")
+	assertFile(t, plan.Files, ConfigPath, "liveStatusPath: "+LiveStatusPath+"\n")
 	assertFile(t, plan.Files, ConfigPath, "operationStatusPath: /var/lib/katl/operations/<operation-id>/apps/bgp-api-vip/status.json\n")
 	if plan.Config.Endpoint.Port != 6443 || plan.Config.Endpoint.AddressFamily != "ipv4" {
 		t.Fatalf("normalized endpoint = %#v", plan.Config.Endpoint)
@@ -62,7 +162,7 @@ func TestRenderStartsWithdrawnByDefault(t *testing.T) {
 		t.Fatalf("RenderNativeEtcFiles() error = %v", err)
 	}
 	bird := fileContent(t, plan.Files, BirdConfigPath)
-	if !strings.Contains(bird, "filter katl_export_katl_fabric_router_a {\n  reject;\n}\n") {
+	if !strings.Contains(bird, "protocol static katl_api {\n  disabled;\n") {
 		t.Fatalf("bird.conf did not start withdrawn:\n%s", bird)
 	}
 	if !*plan.Config.Advertisement.StartWithdrawn || !*plan.Config.Advertisement.AdvertiseAfterHealthy || !*plan.Config.Advertisement.WithdrawOnFailure {

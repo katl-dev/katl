@@ -35,12 +35,13 @@ const (
 )
 
 type Inventory struct {
-	ControlPlaneEndpoint   string     `json:"controlPlaneEndpoint"`
-	KubernetesVersion      string     `json:"kubernetesVersion"`
-	KubernetesBundleSource string     `json:"kubernetesBundleSource,omitempty"`
-	KubernetesBundleRef    string     `json:"kubernetesBundleRef,omitempty"`
-	Bootstrap              *Bootstrap `json:"bootstrap,omitempty" yaml:"bootstrap"`
-	Nodes                  []Node     `json:"nodes"`
+	ControlPlaneEndpoint        string     `json:"controlPlaneEndpoint"`
+	ControlPlaneEndpointManaged bool       `json:"controlPlaneEndpointManaged,omitempty"`
+	KubernetesVersion           string     `json:"kubernetesVersion"`
+	KubernetesBundleSource      string     `json:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef         string     `json:"kubernetesBundleRef,omitempty"`
+	Bootstrap                   *Bootstrap `json:"bootstrap,omitempty" yaml:"bootstrap"`
+	Nodes                       []Node     `json:"nodes"`
 }
 
 type Bootstrap struct {
@@ -90,14 +91,15 @@ type PlanRequest struct {
 }
 
 type Plan struct {
-	InitNode               string            `json:"initNode"`
-	ControlPlaneEndpoint   string            `json:"controlPlaneEndpoint"`
-	KubernetesVersion      string            `json:"kubernetesVersion"`
-	KubernetesBundleSource string            `json:"kubernetesBundleSource,omitempty"`
-	KubernetesBundleRef    string            `json:"kubernetesBundleRef,omitempty"`
-	Bootstrap              *Bootstrap        `json:"bootstrap,omitempty"`
-	Nodes                  []PlannedNode     `json:"nodes"`
-	AddressOverrides       []AddressOverride `json:"addressOverrides,omitempty"`
+	InitNode                    string            `json:"initNode"`
+	ControlPlaneEndpoint        string            `json:"controlPlaneEndpoint"`
+	ControlPlaneEndpointManaged bool              `json:"controlPlaneEndpointManaged,omitempty"`
+	KubernetesVersion           string            `json:"kubernetesVersion"`
+	KubernetesBundleSource      string            `json:"kubernetesBundleSource,omitempty"`
+	KubernetesBundleRef         string            `json:"kubernetesBundleRef,omitempty"`
+	Bootstrap                   *Bootstrap        `json:"bootstrap,omitempty"`
+	Nodes                       []PlannedNode     `json:"nodes"`
+	AddressOverrides            []AddressOverride `json:"addressOverrides,omitempty"`
 }
 
 type PlannedNode struct {
@@ -215,14 +217,15 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 		}
 	}
 	return Plan{
-		InitNode:               initNode,
-		ControlPlaneEndpoint:   controlPlaneEndpoint,
-		KubernetesVersion:      version,
-		KubernetesBundleSource: bundleSource,
-		KubernetesBundleRef:    bundleRef,
-		Bootstrap:              request.Inventory.Bootstrap,
-		Nodes:                  nodes,
-		AddressOverrides:       overrides,
+		InitNode:                    initNode,
+		ControlPlaneEndpoint:        controlPlaneEndpoint,
+		ControlPlaneEndpointManaged: request.Inventory.ControlPlaneEndpointManaged,
+		KubernetesVersion:           version,
+		KubernetesBundleSource:      bundleSource,
+		KubernetesBundleRef:         bundleRef,
+		Bootstrap:                   request.Inventory.Bootstrap,
+		Nodes:                       nodes,
+		AddressOverrides:            overrides,
 	}, nil
 }
 

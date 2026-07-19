@@ -2809,7 +2809,9 @@ kind: ClusterConfig
 metadata:
   name: lab
 spec:
-  controlPlaneEndpoint: api.katl.test:6443
+  controlPlaneEndpoint:
+    host: api.katl.test
+    port: 6443
   kubernetes:
     version: v1.36.1
   defaults:

@@ -203,6 +203,23 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 		return result, fmt.Errorf("wait for API readiness on %s: %s", initNode.Name, inventory.Redact(err.Error()))
 	}
 	result.addPhase("api-ready", initNode.Name, "", "passed")
+	stableEndpointReady := false
+	if plan.ControlPlaneEndpointManaged {
+		if deps.BootstrapRunner == nil {
+			return result, errors.New("managed control-plane endpoint reachability checker is required")
+		}
+		endpointResult, err := verifyManagedControlPlaneEndpoint(ctx, deps.BootstrapRunner, initNode, plan, credentials)
+		if err != nil {
+			result.addPhase("stable-endpoint", "", "", "failed")
+			return result, fmt.Errorf("wait for managed control-plane endpoint: %s", inventory.Redact(err.Error()))
+		}
+		if !endpointResult.StableEndpointReady {
+			result.addPhase("stable-endpoint", "", "", "failed")
+			return result, errors.New("managed control-plane endpoint check completed without confirming readiness")
+		}
+		stableEndpointReady = true
+		result.addPhase("stable-endpoint", "", "", "passed")
+	}
 
 	controlPlanes := controlPlaneJoinNodes(plan)
 	if len(controlPlanes) > 0 {
@@ -253,7 +270,6 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	}
 	result.addPhase("api-ready-after-join", initNode.Name, "", "passed")
 
-	stableEndpointReady := false
 	if bootstrap.enabled() {
 		if deps.BootstrapRunner == nil {
 			return result, errors.New("bootstrap handoff runner is required")
@@ -271,7 +287,7 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 			return result, fmt.Errorf("user bootstrap handoff: %s", inventory.Redact(err.Error()))
 		}
 		result.Bootstrap = bootstrapResult
-		stableEndpointReady = bootstrapResult.StableEndpointReady
+		stableEndpointReady = stableEndpointReady || bootstrapResult.StableEndpointReady
 		result.addPhase("user-bootstrap", "", "", "passed")
 	}
 
@@ -299,6 +315,19 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	result.NextStep = kubeconfigResult.NextStep()
 	result.addPhase("kubeconfig", "", "", "passed")
 	return result, nil
+}
+
+func verifyManagedControlPlaneEndpoint(ctx context.Context, runner BootstrapRunner, initNode inventory.PlannedNode, plan inventory.Plan, credentials AdminCredentials) (BootstrapResult, error) {
+	endpoint := strings.TrimSpace(plan.ControlPlaneEndpoint)
+	if endpoint == "" {
+		return BootstrapResult{}, errors.New("managed control-plane endpoint is empty")
+	}
+	return runner.RunUserBootstrap(ctx, BootstrapRequest{
+		Server:         endpointForNode(initNode),
+		StableEndpoint: endpoint,
+		Credentials:    credentials,
+		PreWaits:       []BootstrapWait{{Kind: BootstrapWaitStableEndpoint, Name: endpoint}},
+	})
 }
 
 func prepareBootstrap(bootstrap UserBootstrap) (UserBootstrap, error) {
@@ -1159,7 +1188,7 @@ func (r TransportRunner) writeJoinConfig(ctx context.Context, node inventory.Pla
 	return target, nil
 }
 
-func RenderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) {
+func RenderInitConfig(base []byte, controlPlaneEndpoint string, additionalSANs ...string) ([]byte, error) {
 	endpoint := strings.TrimSpace(controlPlaneEndpoint)
 	if endpoint == "" {
 		return base, nil
@@ -1178,12 +1207,20 @@ func RenderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) 
 			continue
 		}
 		found = true
+		if configured := strings.TrimSpace(fmt.Sprint(doc["controlPlaneEndpoint"])); configured != "" && configured != "<nil>" && configured != endpoint {
+			return nil, fmt.Errorf("kubeadm ClusterConfiguration controlPlaneEndpoint %q conflicts with cluster endpoint %q", configured, endpoint)
+		}
 		doc["controlPlaneEndpoint"] = endpoint
 		apiServer, _ := doc["apiServer"].(map[string]any)
 		if apiServer == nil {
 			apiServer = map[string]any{}
 		}
 		apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], host)
+		for _, san := range additionalSANs {
+			if san = strings.TrimSpace(san); san != "" {
+				apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], san)
+			}
+		}
 		doc["apiServer"] = apiServer
 	}
 	if !found {

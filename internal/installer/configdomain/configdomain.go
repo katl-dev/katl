@@ -7,7 +7,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -31,6 +33,24 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 		UID:     0,
 		GID:     0,
 	})
+	if endpoint := request.Manifest.Node.ControlPlaneEndpoint; endpoint != nil {
+		endpointPlan, err := controlplaneendpoint.Normalize(*endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("node.controlPlaneEndpoint: %w", err)
+		}
+		config, err := bgpapivip.FromControlPlaneEndpoint(endpointPlan)
+		if err != nil {
+			return nil, err
+		}
+		app, err := bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{
+			Config:   config,
+			NodeRole: request.Manifest.Node.SystemRole,
+		})
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, app.NativeEtcFiles()...)
+	}
 	identity, err := generation.RenderSSH(request.Manifest.Node.Identity.SSH.AuthorizedKeys)
 	if err != nil {
 		return nil, err

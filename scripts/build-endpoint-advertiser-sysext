@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+artifact="$build_dir/katl-endpoint-advertiser.raw"
+runtime_artifact="$build_dir/katl-runtime-root.squashfs"
+runtime_metadata="$runtime_artifact.json"
+stamp="$build_dir/.katl-stamps/endpoint-advertiser-sysext.sha256"
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+cd "$repo_root"
+
+fingerprint() {
+    {
+        printf 'version=%s\n' "${KATL_VERSION:-0.0.0-dev}"
+        printf 'build=%s\n' "${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
+        find \
+            "$repo_root/cmd/katl-endpoint-advertiser" \
+            "$repo_root/internal/installer/bgpapivip" \
+            "$repo_root/mkosi.profiles/endpoint-advertiser-sysext" \
+            -type f -print0 | sort -z | xargs -0 sha256sum
+        sha256sum \
+            "$repo_root/go.mod" \
+            "$repo_root/go.sum" \
+            "$repo_root/scripts/build-endpoint-advertiser-sysext" \
+            "$runtime_metadata"
+    } | sha256sum | awk '{print $1}'
+}
+
+artifact_valid() {
+    [[ -f "$artifact" && -f "$artifact.json" && -f "$artifact.sha256" ]] || return 1
+    (cd "$build_dir" && sha256sum --status -c "$(basename "$artifact.sha256")")
+}
+
+if [[ -f "$stamp" ]] && artifact_valid && [[ "$(<"$stamp")" == "$(fingerprint)" ]]; then
+    echo "sysext cache hit: endpoint advertiser artifacts match the current inputs" >&2
+    exit 0
+fi
+
+[[ -f "$runtime_artifact" && -f "$runtime_metadata" ]] || {
+    echo "error: build the KatlOS runtime before the endpoint advertiser sysext" >&2
+    exit 1
+}
+
+rm -f "$artifact" "$artifact.json" "$artifact.sha256"
+set +e
+"$repo_root/scripts/mkosi" --profile endpoint-advertiser-sysext -f build 2>&1 | tee "$log"
+statuses=("${PIPESTATUS[@]}")
+set -e
+if [[ "${statuses[0]}" -ne 0 || "${statuses[1]}" -ne 0 ]]; then
+    exit 1
+fi
+[[ -f "$artifact" ]] || {
+    echo "error: endpoint advertiser sysext artifact not found: $artifact" >&2
+    exit 1
+}
+
+KATL_BUILD_COMMIT="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}" \
+    go run ./cmd/katl-mkosi-artifacts write-endpoint-advertiser-sysext \
+    --artifact "$artifact" \
+    --log "$log" \
+    --runtime-artifact "$runtime_artifact" \
+    --runtime-metadata "$runtime_metadata" >/dev/null
+
+mkdir -p "$(dirname "$stamp")"
+fingerprint >"$stamp"

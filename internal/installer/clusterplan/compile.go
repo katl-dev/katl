@@ -10,6 +10,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
@@ -57,7 +58,14 @@ func Compile(request CompileRequest) (Plan, error) {
 	if len(config.Spec.Nodes) == 0 {
 		return Plan{}, fmt.Errorf("spec.nodes must not be empty")
 	}
-	controlPlaneEndpoint := strings.TrimSpace(config.Spec.ControlPlaneEndpoint)
+	endpointPlan, err := resolveControlPlaneEndpoint(config, request.AddressOverrides)
+	if err != nil {
+		return Plan{}, err
+	}
+	controlPlaneEndpoint := ""
+	if endpointPlan != nil {
+		controlPlaneEndpoint = endpointPlan.Endpoint
+	}
 
 	nodes := append([]Node(nil), config.Spec.Nodes...)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
@@ -91,7 +99,7 @@ func Compile(request CompileRequest) (Plan, error) {
 			layer.Networkd.Files = []manifest.NetworkdFile{{Name: "10-lan.network", Content: defaultNetworkdFile}}
 		}
 		layer = applyTargetDiskDefaults(layer)
-		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, controlPlaneEndpoint)
+		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, endpointPlan)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -127,17 +135,19 @@ func Compile(request CompileRequest) (Plan, error) {
 		return addressOverrides[i].Node < addressOverrides[j].Node
 	})
 	bootstrapInventory := inventory.Inventory{
-		ControlPlaneEndpoint:   controlPlaneEndpoint,
-		KubernetesVersion:      kubernetes.version,
-		KubernetesBundleSource: kubernetes.bundleSource,
-		KubernetesBundleRef:    kubernetes.bundleRef,
-		Nodes:                  inventoryNodes,
+		ControlPlaneEndpoint:        controlPlaneEndpoint,
+		ControlPlaneEndpointManaged: endpointPlan != nil && endpointPlan.Config.Advertisement != nil,
+		KubernetesVersion:           kubernetes.version,
+		KubernetesBundleSource:      kubernetes.bundleSource,
+		KubernetesBundleRef:         kubernetes.bundleRef,
+		Nodes:                       inventoryNodes,
 	}
 	if err := validateBootstrapInventory(bootstrapInventory); err != nil {
 		return Plan{}, err
 	}
 	return Plan{
 		ControlPlaneEndpoint:   bootstrapInventory.ControlPlaneEndpoint,
+		EndpointPlan:           endpointPlan,
 		KubernetesVersion:      kubernetes.version,
 		KubernetesCatalogRef:   kubernetes.catalogRef,
 		KubernetesBundleSource: kubernetes.bundleSource,
@@ -150,7 +160,49 @@ func Compile(request CompileRequest) (Plan, error) {
 	}, nil
 }
 
-func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, controlPlaneEndpoint string) (NodeMaterial, inventory.Node, error) {
+func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]string) (*controlplaneendpoint.Plan, error) {
+	controlPlanes := 0
+	controlPlaneName := ""
+	controlPlaneAddress := ""
+	for _, node := range config.Spec.Nodes {
+		if inventory.SystemRole(strings.TrimSpace(string(node.SystemRole))) != inventory.RoleControlPlane {
+			continue
+		}
+		controlPlanes++
+		controlPlaneName = strings.TrimSpace(node.Name)
+		layer, err := mergedLayer(config.Spec.Defaults, node.Overrides)
+		if err != nil {
+			return nil, fmt.Errorf("node %q: %w", controlPlaneName, err)
+		}
+		controlPlaneAddress = strings.TrimSpace(layer.Bootstrap.Address)
+		if override, ok := addressOverrides[controlPlaneName]; ok {
+			controlPlaneAddress = strings.TrimSpace(override)
+		}
+	}
+	if controlPlanes == 0 {
+		if config.Spec.ControlPlaneEndpoint != nil && controlplaneendpoint.Managed(*config.Spec.ControlPlaneEndpoint) {
+			return nil, fmt.Errorf("managed controlPlaneEndpoint requires at least one control-plane node")
+		}
+		return nil, nil
+	}
+	endpoint := config.Spec.ControlPlaneEndpoint
+	if endpoint == nil {
+		if controlPlanes > 1 {
+			return nil, fmt.Errorf("spec.controlPlaneEndpoint is required for a cluster with more than one control-plane node")
+		}
+		if controlPlaneAddress == "" {
+			return nil, fmt.Errorf("spec.controlPlaneEndpoint is required when control-plane node %q has no bootstrap address", controlPlaneName)
+		}
+		endpoint = &controlplaneendpoint.Config{Host: controlPlaneAddress}
+	}
+	plan, err := controlplaneendpoint.Normalize(*endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return &plan, nil
+}
+
+func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, endpointPlan *controlplaneendpoint.Plan) (NodeMaterial, inventory.Node, error) {
 	hostname := strings.TrimSpace(layer.Hostname)
 	if hostname == "" {
 		hostname = name
@@ -167,6 +219,15 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	if _, err := kubernetesbundle.ParseImageReference(kubernetes.bundleRef); err == nil {
 		publicBundle = kubernetes.bundleRef
 	}
+	controlPlaneEndpoint := ""
+	var managedEndpoint *controlplaneendpoint.Config
+	if endpointPlan != nil {
+		controlPlaneEndpoint = endpointPlan.Endpoint
+		if role == inventory.RoleControlPlane && endpointPlan.Config.Advertisement != nil {
+			config := endpointPlan.Config
+			managedEndpoint = &config
+		}
+	}
 	installManifest := manifest.Manifest{
 		APIVersion: manifest.APIVersion,
 		Kind:       manifest.Kind,
@@ -175,8 +236,9 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 				Hostname: hostname,
 				SSH:      layer.SSH,
 			},
-			SystemRole: string(role),
-			Networkd:   layer.Networkd,
+			SystemRole:           string(role),
+			Networkd:             layer.Networkd,
+			ControlPlaneEndpoint: managedEndpoint,
 			Kubernetes: manifest.KubernetesConfig{
 				Kubeadm: manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
 			},

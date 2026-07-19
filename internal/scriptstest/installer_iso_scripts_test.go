@@ -205,6 +205,13 @@ if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
   echo fake-builder-image-id
   exit 0
 fi
+for arg in "$@"; do
+  if [[ "$arg" == "endpoint-advertiser-sysext" ]]; then
+    printf 'endpoint advertiser\n' >"$KATL_MKOSI_BUILD_DIR/katl-endpoint-advertiser.raw"
+    printf 'bird x 2.17.1-1.fc44 fedora\n'
+    exit 0
+  fi
+done
 printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 `)
 	writeFakeExecutable(t, bin, "rpm", "printf 'systemd\\t0:259.6-1.fc44.x86_64\\n'\n")

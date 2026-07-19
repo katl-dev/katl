@@ -332,11 +332,12 @@ func planInstall(install *Context) error {
 func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.RootSlotWritePlan, install *Context) (generation.Record, error) {
 	generationID := "0"
 	request, err := payload.FirstInstallRequest(katlosimage.FirstInstallRequest{
-		GenerationID:      generationID,
-		RootSlot:          string(rootPlan.Slot),
-		RootPartitionUUID: install.RootPartitionUUID,
-		UKIPath:           "/efi/EFI/Linux/katl-" + generationID + ".efi",
-		CreatedAt:         timeNow(),
+		GenerationID:             generationID,
+		RootSlot:                 string(rootPlan.Slot),
+		RootPartitionUUID:        install.RootPartitionUUID,
+		UKIPath:                  "/efi/EFI/Linux/katl-" + generationID + ".efi",
+		CreatedAt:                timeNow(),
+		EnableEndpointAdvertiser: install.Manifest.Node.ControlPlaneEndpoint != nil,
 	})
 	if err != nil {
 		return generation.Record{}, err
@@ -595,6 +596,25 @@ func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
 	}
 	if install.LoaderRecord == nil {
 		return fmt.Errorf("loader generation record is required to install extensions")
+	}
+	for _, extension := range install.LoaderRecord.Sysexts {
+		if extension.Name != katlosimage.EndpointAdvertiserName {
+			continue
+		}
+		component := install.KatlosImage.EndpointAdvertiser
+		if component.Role != katlosimage.ComponentEndpointAdvertiser {
+			return fmt.Errorf("endpoint advertiser component is required by selected generation")
+		}
+		target, err := targetPathForAbsolute(install.TargetRoot, extension.Path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create endpoint advertiser sysext directory: %w", err)
+		}
+		if err := copyVerifiedComponent(install.KatlosImage.ComponentPath(component), target, component); err != nil {
+			return err
+		}
 	}
 	return recordStep(ctx, install, InstallExtensions)
 }

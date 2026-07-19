@@ -87,6 +87,7 @@ func writeKatlOSImageCheckFixture(t *testing.T, commandLine []string) (string, s
 		"katlos",
 		"components/runtime",
 		"components/boot",
+		"components/sysext",
 		"components/metadata",
 	} {
 		if err := os.MkdirAll(filepath.Join(squashfsRoot, path), 0o755); err != nil {
@@ -95,8 +96,10 @@ func writeKatlOSImageCheckFixture(t *testing.T, commandLine []string) (string, s
 	}
 	runtimeRoot := writeArtifact(t, filepath.Join(squashfsRoot, "components", "runtime"), "root.squashfs", "runtime root")
 	runtimeUKI := writeArtifact(t, filepath.Join(squashfsRoot, "components", "boot"), "katl.efi", "runtime uki")
+	endpointAdvertiser := writeArtifact(t, filepath.Join(squashfsRoot, "components", "sysext"), "endpoint-advertiser.raw", "endpoint advertiser")
 	writeJSONFile(t, filepath.Join(squashfsRoot, "components", "metadata", "runtime-root.json"), map[string]any{"kind": "runtime-root"})
 	writeJSONFile(t, filepath.Join(squashfsRoot, "components", "metadata", "runtime-uki.json"), map[string]any{"kind": "runtime-uki"})
+	writeJSONFile(t, filepath.Join(squashfsRoot, "components", "metadata", "endpoint-advertiser.json"), map[string]any{"kind": "sysext"})
 	writeArtifact(t, filepath.Join(squashfsRoot, "components", "metadata"), "runtime-root.sha256", fileSHA256(t, runtimeRoot)+"  ../runtime/root.squashfs")
 	writeArtifact(t, filepath.Join(squashfsRoot, "components", "metadata"), "runtime-uki.sha256", fileSHA256(t, runtimeUKI)+"  ../boot/katl.efi")
 	writeJSONFile(t, filepath.Join(squashfsRoot, "katlos", "image.json"), map[string]any{
@@ -130,6 +133,19 @@ func writeKatlOSImageCheckFixture(t *testing.T, commandLine []string) (string, s
 				},
 				"installTarget": map[string]any{
 					"kind": "esp-or-xbootldr",
+				},
+			},
+			{
+				"role":      "endpoint-advertiser-sysext",
+				"path":      "components/sysext/endpoint-advertiser.raw",
+				"sizeBytes": int64(len("endpoint advertiser")),
+				"sha256":    fileSHA256(t, endpointAdvertiser),
+				"compatibility": map[string]any{
+					"runtimeInterface": "katl-runtime-1",
+				},
+				"installTarget": map[string]any{
+					"kind": "generation-sysext",
+					"name": "endpoint-advertiser",
 				},
 			},
 		},

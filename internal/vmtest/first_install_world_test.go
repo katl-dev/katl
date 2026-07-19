@@ -598,7 +598,10 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 			"name": "katl-shared",
 		},
 		"spec": map[string]any{
-			"controlPlaneEndpoint": "api.katl.test:6443",
+			"controlPlaneEndpoint": map[string]any{
+				"host": "api.katl.test",
+				"port": 6443,
+			},
 			"kubernetes": map[string]any{
 				"version": "v1.36.1",
 			},

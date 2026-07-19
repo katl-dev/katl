@@ -69,6 +69,11 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
+	sysexts, err := rehomePreservedSysexts(root, candidate, plan.Previous)
+	if err != nil {
+		return Result{}, err
+	}
+	sysexts = append(sysexts, sysext)
 	// Installed runtimes already carry the baseline units in /usr/lib; live
 	// operation preparation may run with immutable /etc.
 	if _, err := generation.WriteState(root, generation.StateRequest{PartitionUUID: plan.Previous.Root.PartitionUUID}); err != nil && !errors.Is(err, syscall.EROFS) {
@@ -103,7 +108,7 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 		GenerationID:       candidate,
 		Previous:           generation.RecordFromSplit(plan.Previous, plan.PreviousState),
 		SourceDigest:       record.RequestDigest,
-		Sysexts:            []generation.ExtensionRef{sysext},
+		Sysexts:            sysexts,
 		GeneratedConfext:   generated,
 		ChangedDomains:     []string{"bootstrap-runtime", "kubeadm-input", "kubernetes-sysext"},
 		RequestedApplyMode: generation.ApplyModeLive,
@@ -150,6 +155,44 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 		ActivationPlan: activation,
 		KubeadmPath:    plan.RuntimeInputs.KubeadmInput.Path,
 	}, nil
+}
+
+func rehomePreservedSysexts(root string, candidate string, previous generation.GenerationSpec) ([]generation.ExtensionRef, error) {
+	var preserved []generation.ExtensionRef
+	for _, ref := range previous.Sysexts {
+		if ref.Name == "kubernetes" {
+			continue
+		}
+		source := filepath.Join(filepath.Clean(root), strings.TrimPrefix(filepath.Clean(ref.Path), string(filepath.Separator)))
+		targetRuntime := filepath.Join("/var/lib/katl/generations", candidate, "sysext", filepath.Base(ref.Path))
+		target := filepath.Join(filepath.Clean(root), strings.TrimPrefix(targetRuntime, string(filepath.Separator)))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return nil, fmt.Errorf("create preserved sysext directory: %w", err)
+		}
+		in, err := os.Open(source)
+		if err != nil {
+			return nil, fmt.Errorf("open preserved sysext %s: %w", ref.Name, err)
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			_ = in.Close()
+			return nil, fmt.Errorf("create preserved sysext %s: %w", ref.Name, err)
+		}
+		digest := sha256.New()
+		_, copyErr := copySysext(io.MultiWriter(out, digest), in)
+		closeErr := errors.Join(in.Close(), out.Close())
+		if copyErr != nil || closeErr != nil {
+			_ = os.Remove(target)
+			return nil, fmt.Errorf("copy preserved sysext %s: %w", ref.Name, errors.Join(copyErr, closeErr))
+		}
+		if got := hex.EncodeToString(digest.Sum(nil)); !strings.EqualFold(got, ref.SHA256) {
+			_ = os.Remove(target)
+			return nil, fmt.Errorf("preserved sysext %s sha256 %s does not match %s", ref.Name, got, ref.SHA256)
+		}
+		ref.Path = filepath.ToSlash(targetRuntime)
+		preserved = append(preserved, ref)
+	}
+	return preserved, nil
 }
 
 func writeLiveActivationOverride(root string, candidate string) error {
@@ -259,7 +302,7 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 	for _, input := range inputs {
 		content := input.Content
 		if plan.Operation.OperationKind == bootstrapplan.OperationKindInit && input.RenderPath == plan.RuntimeInputs.KubeadmInput.Path {
-			rendered, err := cluster.RenderInitConfig(input.Content, plan.RuntimeInputs.HostConfig.ControlPlaneEndpoint)
+			rendered, err := cluster.RenderInitConfig(input.Content, plan.RuntimeInputs.HostConfig.ControlPlaneEndpoint, plan.RuntimeInputs.HostConfig.ControlPlaneEndpointVIP)
 			if err != nil {
 				return nil, err
 			}

@@ -149,7 +149,9 @@ metadata:
   name: katl-lab
 spec:
   # Stable Kubernetes API endpoint for multi-control-plane clusters.
-  # controlPlaneEndpoint: api.home.arpa:6443
+  # controlPlaneEndpoint:
+  #   host: api.home.arpa
+  #   # port: 6443
   # Set controlPlane: true on nodes that join the Kubernetes control plane.
   # Omission means worker.
   # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.
@@ -179,6 +181,27 @@ spec:
 The release ISO supplies the KatlOS image. ClusterConfig never contains image
 URLs, bundle references, credentials, named kubeadm profiles, node classes, or
 other compiler mechanisms.
+
+For a routed endpoint advertised by Katl, add the VIP and fabric peers. Katl
+then installs and runs the endpoint advertiser only on control-plane nodes;
+external endpoints and workers do not run BIRD:
+
+```yaml
+spec:
+  controlPlaneEndpoint:
+    host: api.home.arpa
+    advertisement:
+      vip: 10.40.0.10
+      bgp:
+        localASN: 64512
+        peers:
+          - address: 10.0.0.1
+            asn: 64500
+```
+
+The API port defaults to `6443`. The router must be configured to peer with
+each control-plane node. Katl starts the VIP route withdrawn and advertises it
+only after that node's kube-apiserver is ready.
 
 Advanced users can keep native kubeadm settings without waiting for Katl to add
 a typed field for each upstream option:

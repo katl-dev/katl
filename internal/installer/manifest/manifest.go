@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"gopkg.in/yaml.v3"
 )
@@ -38,12 +39,13 @@ type Manifest struct {
 }
 
 type NodeConfig struct {
-	Identity   NodeIdentity     `json:"identity" yaml:"identity"`
-	SystemRole string           `json:"systemRole" yaml:"systemRole"`
-	Networkd   NetworkdConfig   `json:"networkd,omitempty" yaml:"networkd,omitempty"`
-	Sysctl     SysctlConfig     `json:"sysctl,omitempty,omitzero" yaml:"sysctl,omitempty"`
-	Kubernetes KubernetesConfig `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
-	Bootstrap  *BootstrapIntent `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
+	Identity             NodeIdentity                 `json:"identity" yaml:"identity"`
+	SystemRole           string                       `json:"systemRole" yaml:"systemRole"`
+	Networkd             NetworkdConfig               `json:"networkd,omitempty" yaml:"networkd,omitempty"`
+	Sysctl               SysctlConfig                 `json:"sysctl,omitempty,omitzero" yaml:"sysctl,omitempty"`
+	Kubernetes           KubernetesConfig             `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
+	ControlPlaneEndpoint *controlplaneendpoint.Config `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
+	Bootstrap            *BootstrapIntent             `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
 }
 
 type NodeIdentity struct {
@@ -230,6 +232,18 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	}
 	if err := validateSystemRole(manifest.Node.SystemRole); err != nil {
 		return err
+	}
+	if endpoint := manifest.Node.ControlPlaneEndpoint; endpoint != nil {
+		plan, err := controlplaneendpoint.Normalize(*endpoint)
+		if err != nil {
+			return fmt.Errorf("node.controlPlaneEndpoint: %w", err)
+		}
+		if plan.Config.Advertisement == nil {
+			return fmt.Errorf("node.controlPlaneEndpoint must contain managed advertisement intent")
+		}
+		if manifest.Node.SystemRole != "control-plane" {
+			return fmt.Errorf("node.controlPlaneEndpoint is supported only on control-plane nodes")
+		}
 	}
 	if len(manifest.Node.Identity.SSH.AuthorizedKeys) == 0 {
 		return fmt.Errorf("node.identity.ssh.authorizedKeys must not be empty")

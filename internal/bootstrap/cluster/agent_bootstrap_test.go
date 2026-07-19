@@ -351,6 +351,50 @@ func TestRunAgentBootstrapRunsUserBootstrapWithReturnedKubeconfig(t *testing.T) 
 	}
 }
 
+func TestRunAgentBootstrapVerifiesManagedEndpointAfterInit(t *testing.T) {
+	client := &fakeAgentClient{
+		status: readyAgentStatus("machine-cp-1"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "bootstrap-init-1",
+			RequestDigest: "digest-1",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-1"},
+		},
+		events: []*agentapi.OperationEvent{{
+			OperationId: "bootstrap-init-1",
+			JournalSeq:  1,
+			Terminal:    true,
+			Status:      &agentapi.OperationStatus{OperationId: "bootstrap-init-1", Terminal: true, Result: "succeeded"},
+		}},
+		getStatus: &agentapi.OperationStatus{
+			OperationId:     "bootstrap-init-1",
+			Terminal:        true,
+			Result:          "succeeded",
+			AdminKubeconfig: adminKubeconfig(),
+		},
+	}
+	inv := validSingleNodeInventory()
+	inv.ControlPlaneEndpoint = "api.katl.test:6443"
+	inv.ControlPlaneEndpointManaged = true
+	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
+	result, err := RunAgentBootstrap(context.Background(), Request{
+		Inventory:           inv,
+		KubeconfigOut:       filepath.Join(t.TempDir(), "operator.conf"),
+		OverwriteKubeconfig: true,
+	}, AgentBootstrapDependencies{
+		Connector:       newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client}),
+		BootstrapRunner: bootstrapRunner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "stable-endpoint", "kubeconfig"}) {
+		t.Fatalf("phases = %#v", got)
+	}
+	if len(bootstrapRunner.requests) != 1 || bootstrapRunner.requests[0].StableEndpoint != "api.katl.test:6443" {
+		t.Fatalf("endpoint checks = %#v", bootstrapRunner.requests)
+	}
+}
+
 func TestRunAgentBootstrapStopsAfterUserBootstrapFailure(t *testing.T) {
 	client := &fakeAgentClient{
 		status: readyAgentStatus("machine-cp-1"),

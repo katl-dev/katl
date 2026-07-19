@@ -103,7 +103,7 @@ jq -e --arg role "$image_role" \
       and .imageRole == $role
       and .format == "squashfs"
       and .runtimeInterface == "katl-runtime-1"
-      and ([.components[].role] | sort) == ["runtime-root","runtime-uki"]' "$index" >/dev/null ||
+      and ([.components[].role] | sort) == ["endpoint-advertiser-sysext","runtime-root","runtime-uki"]' "$index" >/dev/null ||
     fail "embedded KatlOS image index is invalid"
 
 while read -r path; do
@@ -113,6 +113,7 @@ done < <(jq -r '.components[].path' "$index")
 for path in \
     components/metadata/runtime-root.json \
     components/metadata/runtime-root.sha256 \
+    components/metadata/endpoint-advertiser.json \
     components/metadata/runtime-uki.json \
     components/metadata/runtime-uki.sha256
 do
@@ -122,6 +123,7 @@ done
 
 for path in \
     components/metadata/runtime-root.json \
+    components/metadata/endpoint-advertiser.json \
     components/metadata/runtime-uki.json
 do
     metadata_file="$tmpdir/$(basename "$path")"
@@ -164,4 +166,10 @@ jq -e '
     ][]; . as $required | $cmdline | index($required) != null)) and
   .installTarget.kind == "esp-or-xbootldr"' "$index" >/dev/null ||
     fail "runtime UKI component metadata is incomplete"
+jq -e '
+  .components[] | select(.role == "endpoint-advertiser-sysext") |
+  .compatibility.runtimeInterface == "katl-runtime-1" and
+  .installTarget.kind == "generation-sysext" and
+  .installTarget.name == "endpoint-advertiser"' "$index" >/dev/null ||
+    fail "endpoint advertiser component metadata is incomplete"
 echo "ok: $artifact"

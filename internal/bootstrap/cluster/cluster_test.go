@@ -80,6 +80,48 @@ func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
 	}
 }
 
+func TestRunVerifiesManagedEndpointBeforeCreatingJoinMaterial(t *testing.T) {
+	inv := validInventory()
+	inv.ControlPlaneEndpointManaged = true
+	var events []string
+	nodeRunner := &fakeNodeRunner{
+		events: &events,
+		credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+	}
+	bootstrapRunner := &fakeBootstrapRunner{
+		events: &events,
+		result: BootstrapResult{StableEndpointReady: true},
+	}
+	result, err := Run(context.Background(), Request{
+		Inventory:           inv,
+		KubeconfigOut:       filepath.Join(t.TempDir(), "operator.conf"),
+		OverwriteKubeconfig: true,
+	}, Dependencies{ReadinessChecker: readyChecker{}, NodeRunner: nodeRunner, BootstrapRunner: bootstrapRunner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := events[:3], []string{"init:cp-1", "ready:cp-1", "bootstrap"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events before joins = %#v, want %#v", got, want)
+	}
+	if got := phaseNames(result.Phases); !containsString(got, "stable-endpoint") {
+		t.Fatalf("phases = %#v, want stable endpoint proof", got)
+	}
+	if len(bootstrapRunner.requests) != 1 {
+		t.Fatalf("endpoint checks = %d, want 1", len(bootstrapRunner.requests))
+	}
+	request := bootstrapRunner.requests[0]
+	if request.Server != "10.0.0.11:6443" || request.StableEndpoint != "api.katl.test:6443" {
+		t.Fatalf("endpoint check request = %#v", request)
+	}
+	if len(request.PreWaits) != 1 || request.PreWaits[0].Kind != BootstrapWaitStableEndpoint {
+		t.Fatalf("endpoint pre-waits = %#v", request.PreWaits)
+	}
+}
+
 func TestRunAppliesUserBootstrapAfterAPIReadinessAndUsesStableEndpoint(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	manifestOne := writeBootstrapManifest(t, "01-cni.yaml", "cni")
@@ -669,15 +711,17 @@ func TestTransportRunnerRunKubeadmInitWritesEndpointConfig(t *testing.T) {
 	transport.files[adminKubeconfigPath] = []byte(adminKubeconfig())
 	transport.commands[commandKey("kubeadm", "init", "--config", initConfigPath)] = readiness.CommandResult{ExitStatus: 0}
 
-	_, err := (TransportRunner{Transport: transport}).RunKubeadmInit(context.Background(), node, "192.0.2.10:6443")
+	base := transport.files["/etc/katl/kubeadm/control-plane/config.yaml"]
+	rendered, err := RenderInitConfig(base, "api.katl.test:6443", "192.0.2.10")
 	if err != nil {
-		t.Fatalf("RunKubeadmInit() error = %v", err)
+		t.Fatalf("RenderInitConfig() error = %v", err)
 	}
-	uploaded := string(transport.writes[initConfigPath])
+	uploaded := string(rendered)
 	for _, want := range []string{
 		"kind: InitConfiguration",
 		"kind: ClusterConfiguration",
-		"controlPlaneEndpoint: 192.0.2.10:6443",
+		"controlPlaneEndpoint: api.katl.test:6443",
+		"- api.katl.test",
 		"- 192.0.2.10",
 	} {
 		if !strings.Contains(uploaded, want) {

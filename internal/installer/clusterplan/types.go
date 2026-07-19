@@ -3,6 +3,7 @@ package clusterplan
 import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -26,12 +27,12 @@ type Metadata struct {
 }
 
 type Spec struct {
-	ControlPlaneEndpoint string               `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
-	Kubernetes           KubernetesSelection  `yaml:"kubernetes" json:"kubernetes"`
-	KatlosImage          manifest.KatlosImage `yaml:"katlosImage" json:"katlosImage"`
-	WipeTarget           bool                 `yaml:"wipeTarget" json:"wipeTarget"`
-	Defaults             NodeLayer            `yaml:"defaults,omitempty" json:"defaults,omitempty"`
-	Nodes                []Node               `yaml:"nodes" json:"nodes"`
+	ControlPlaneEndpoint *controlplaneendpoint.Config `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
+	Kubernetes           KubernetesSelection          `yaml:"kubernetes" json:"kubernetes"`
+	KatlosImage          manifest.KatlosImage         `yaml:"katlosImage" json:"katlosImage"`
+	WipeTarget           bool                         `yaml:"wipeTarget" json:"wipeTarget"`
+	Defaults             NodeLayer                    `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Nodes                []Node                       `yaml:"nodes" json:"nodes"`
 }
 
 type KubernetesSelection struct {
@@ -84,6 +85,7 @@ type CompileRequest struct {
 
 type Plan struct {
 	ControlPlaneEndpoint   string                      `json:"controlPlaneEndpoint,omitempty"`
+	EndpointPlan           *controlplaneendpoint.Plan  `json:"endpointPlan,omitempty"`
 	KubernetesVersion      string                      `json:"kubernetesVersion,omitempty"`
 	KubernetesCatalogRef   string                      `json:"kubernetesCatalogRef,omitempty"`
 	KubernetesBundleSource string                      `json:"kubernetesBundleSource,omitempty"`

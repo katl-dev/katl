@@ -215,10 +215,10 @@ interfaces.
 Generated confext owns:
 
 ```text
-/etc/systemd/network/20-katl-bgp-api-vip.netdev
+/etc/systemd/network/05-katl-bgp-api-vip.netdev
   dummy netdev, only when vipInterface.kind is dummy
 
-/etc/systemd/network/20-katl-bgp-api-vip.network
+/etc/systemd/network/05-katl-bgp-api-vip.network
   address assignment for endpoint.vip
 
 /etc/katl/apps/bgp-api-vip/config.yaml

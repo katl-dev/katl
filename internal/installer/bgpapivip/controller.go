@@ -3,6 +3,8 @@ package bgpapivip
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -181,9 +183,6 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 		health.CheckedAt = now
 	}
 	c.lastHealth = health.CheckedAt.UTC()
-	if health.Error != "" && failure == "" {
-		failure = inventory.Redact(health.Error)
-	}
 
 	dependenciesReady := bird.ProcessActive && bird.ControlSocketReady && interfaceReady
 	if health.Healthy && dependenciesReady {
@@ -265,15 +264,31 @@ func (c *Controller) Stop(ctx context.Context) (Status, error) {
 func (h HTTPHealthChecker) Check(ctx context.Context, health Health) HealthResult {
 	client := h.Client
 	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
+		ca, err := os.ReadFile("/etc/kubernetes/pki/ca.crt")
+		if err != nil {
+			return HealthResult{Healthy: false, Error: "waiting for kubeadm API CA", CheckedAt: time.Now().UTC()}
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(ca) {
+			return HealthResult{Healthy: false, Error: "kubeadm API CA is invalid", CheckedAt: time.Now().UTC()}
+		}
+		timeout, err := time.ParseDuration(health.Timeout)
+		if err != nil || timeout <= 0 {
+			timeout = 1 * time.Second
+		}
+		client = &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				RootCAs:    roots,
+				ServerName: health.TLSServerName,
+			}},
+		}
 	}
 	target := healthTarget(health)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return HealthResult{Healthy: false, Error: err.Error(), CheckedAt: time.Now().UTC()}
-	}
-	if health.TLSServerName != "" {
-		req.Host = health.TLSServerName
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -334,7 +349,7 @@ func (c *Controller) status(config Config, health HealthResult, bird BirdRuntime
 		withdrawReason = ""
 	}
 	if bird.ControlSocketPath == "" {
-		bird.ControlSocketPath = "/run/katl/apps/bird/bird.ctl"
+		bird.ControlSocketPath = BirdControlSocketPath
 	}
 	return Status{
 		APIVersion:                  StatusAPIVersion,

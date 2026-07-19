@@ -306,7 +306,7 @@ func validateCleanGenerationZero(root string, generationID string, allowedOperat
 	if err != nil {
 		return fmt.Errorf("read generation 0 records: %w", err)
 	}
-	if len(spec.Sysexts) > 0 {
+	if hasKubernetesSysext(spec.Sysexts) {
 		return fmt.Errorf("generation 0 is not clean: selected Kubernetes sysexts are forbidden")
 	}
 	if err := validateKubernetesProjectionUnit(root); err != nil {
@@ -354,6 +354,15 @@ func validateCleanGenerationZero(root string, generationID string, allowedOperat
 		return err
 	}
 	return nil
+}
+
+func hasKubernetesSysext(refs []generation.ExtensionRef) bool {
+	for _, ref := range refs {
+		if ref.Name == "kubernetes" || filepath.Base(ref.ActivationPath) == "katl-kubernetes.raw" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateKubernetesProjectionUnit(root string) error {

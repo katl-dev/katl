@@ -124,7 +124,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	if err != nil {
 		return result, err
 	}
-	if bootstrap.enabled() && deps.BootstrapRunner == nil {
+	if (bootstrap.enabled() || plan.ControlPlaneEndpointManaged) && deps.BootstrapRunner == nil {
 		return result, errors.New("bootstrap handoff runner is required")
 	}
 	if err := validateAgentPlan(plan); err != nil {
@@ -161,6 +161,21 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		return result, fmt.Errorf("bootstrap-init operation on %s: %s", initNode.Name, inventory.Redact(err.Error()))
 	}
 	result.addOperationPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed", initResult.Operation)
+	stableEndpointReady := false
+	if plan.ControlPlaneEndpointManaged {
+		emitAgentProgress(deps, AgentBootstrapProgress{Phase: "checking-stable-endpoint"})
+		endpointResult, err := verifyManagedControlPlaneEndpoint(ctx, deps.BootstrapRunner, initNode, plan, initResult.Credentials)
+		if err != nil {
+			result.addPhase("stable-endpoint", "", "", "failed")
+			return result, fmt.Errorf("wait for managed control-plane endpoint: %s", inventory.Redact(err.Error()))
+		}
+		if !endpointResult.StableEndpointReady {
+			result.addPhase("stable-endpoint", "", "", "failed")
+			return result, errors.New("managed control-plane endpoint check completed without confirming readiness")
+		}
+		stableEndpointReady = true
+		result.addPhase("stable-endpoint", "", "", "passed")
+	}
 	for _, node := range controlPlaneJoinNodes(plan) {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-control-plane", Phase: "creating-join-material"})
 		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, deps)
@@ -189,7 +204,6 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		}
 		result.addOperationPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "passed", operationRef)
 	}
-	stableEndpointReady := false
 	if bootstrap.enabled() {
 		emitAgentProgress(deps, AgentBootstrapProgress{Phase: "applying-bootstrap-manifests"})
 		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
@@ -205,7 +219,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 			return result, fmt.Errorf("user bootstrap handoff: %s", inventory.Redact(err.Error()))
 		}
 		result.Bootstrap = bootstrapResult
-		stableEndpointReady = bootstrapResult.StableEndpointReady
+		stableEndpointReady = stableEndpointReady || bootstrapResult.StableEndpointReady
 		result.addPhase("user-bootstrap", "", "", "passed")
 	}
 	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "writing-kubeconfig"})

@@ -107,6 +107,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		return runWriteKubernetesSysext(args, stdout, stderr, cfg)
 	case "write-kubernetes-sysext-from-log":
 		return runWriteKubernetesSysextFromLog(args, stdout, stderr, cfg)
+	case "write-endpoint-advertiser-sysext":
+		return runWriteEndpointAdvertiserSysext(args, stdout, stderr, cfg)
 	case "write-katlos-index":
 		return runWriteKatlOSIndex(args, stdout, stderr, cfg)
 	case "write-katlos-artifact":
@@ -129,6 +131,7 @@ const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts write-runtime-uki --artifact PATH --runtime-artifact PATH --runtime-sha256 SHA --kernel-version VERSION
        katl-mkosi-artifacts write-kubernetes-sysext --artifact PATH --payload-version VERSION --kubeadm-version VERSION --kubelet-version VERSION --kubectl-version VERSION --cri-tools-version VERSION --ethtool-version VERSION --socat-version VERSION
        katl-mkosi-artifacts write-kubernetes-sysext-from-log --artifact PATH --log PATH --repo-id ID --repo-base-url URL --repo-minor MINOR
+       katl-mkosi-artifacts write-endpoint-advertiser-sysext --artifact PATH --log PATH --runtime-artifact PATH --runtime-metadata PATH
        katl-mkosi-artifacts write-katlos-index --output PATH --runtime-root PATH --runtime-root-metadata PATH --runtime-uki PATH --runtime-uki-metadata PATH
        katl-mkosi-artifacts write-katlos-artifact --artifact PATH
        katl-mkosi-artifacts bind-install-manifest-image --template PATH --output PATH
@@ -648,6 +651,83 @@ func writeKubernetesSysextMetadata(req kubernetesSysextRequest, cfg config) (str
 	return digest, nil
 }
 
+func runWriteEndpointAdvertiserSysext(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts write-endpoint-advertiser-sysext", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	artifact := flags.String("artifact", filepath.Join("_build", "mkosi", "katl-endpoint-advertiser.raw"), "endpoint advertiser sysext artifact")
+	logPath := flags.String("log", "", "mkosi output log containing the resolved BIRD package")
+	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
+	runtimeMetadata := flags.String("runtime-metadata", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs.json"), "compatible runtime root metadata")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*logPath) == "" {
+		return fmt.Errorf("--log is required")
+	}
+	birdVersion, err := resolvedPackageVersion(*logPath, "bird")
+	if err != nil {
+		return err
+	}
+	runtimeSHA, err := resolveRuntimeSHA(cfg.RepoRoot, "", absPath(cfg.RepoRoot, *runtimeMetadata))
+	if err != nil {
+		return err
+	}
+	artifactPath := absPath(cfg.RepoRoot, *artifact)
+	size, digest, err := fileInfo(artifactPath)
+	if err != nil {
+		return err
+	}
+	if err := writeChecksum(artifactPath); err != nil {
+		return err
+	}
+	metadata := localMetadata{
+		Name:             "endpoint-advertiser",
+		Kind:             "sysext",
+		Format:           "sysext",
+		Path:             filepath.Base(artifactPath),
+		SizeBytes:        size,
+		SHA256:           digest,
+		Version:          cfg.Generation,
+		PayloadVersion:   firstNonEmpty(cfg.Version, cfg.Generation),
+		Architecture:     cfg.Architecture,
+		PackageVersions:  map[string]string{"bird": birdVersion},
+		RuntimeInterface: "katl-runtime-1",
+		CompatibleRuntime: &runtimeCompat{
+			Interface:      "katl-runtime-1",
+			ArtifactPath:   filepath.Base(absPath(cfg.RepoRoot, *runtimeArtifact)),
+			ArtifactSHA256: runtimeSHA,
+		},
+		Created: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, digest)
+	return nil
+}
+
+func resolvedPackageVersion(logPath string, packageName string) (string, error) {
+	file, err := os.Open(logPath)
+	if err != nil {
+		return "", fmt.Errorf("open mkosi log %s: %w", logPath, err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 3 && fields[0] == packageName {
+			return fields[2], nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("read mkosi log %s: %w", logPath, err)
+	}
+	return "", fmt.Errorf("could not determine resolved version for %s", packageName)
+}
+
 func resolveKubernetesPackages(logPath, repoID string) (map[string]string, error) {
 	file, err := os.Open(logPath)
 	if err != nil {
@@ -737,6 +817,8 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	runtimeRootMetadata := flags.String("runtime-root-metadata", cfg.RuntimeMetadata, "runtime root metadata")
 	runtimeUKI := flags.String("runtime-uki", cfg.RuntimeUKI, "runtime UKI artifact")
 	runtimeUKIMetadata := flags.String("runtime-uki-metadata", cfg.RuntimeUKIMetadata, "runtime UKI metadata")
+	endpointAdvertiser := flags.String("endpoint-advertiser", "", "optional endpoint advertiser sysext artifact")
+	endpointAdvertiserMetadata := flags.String("endpoint-advertiser-metadata", "", "optional endpoint advertiser sysext metadata")
 	rootPath := flags.String("root-path", "components/runtime/root.squashfs", "embedded runtime root component path")
 	ukiPath := flags.String("uki-path", "components/boot/katl.efi", "embedded runtime UKI component path")
 	if err := flags.Parse(args); err != nil {
@@ -751,6 +833,9 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	if strings.TrimSpace(*runtimeInterface) == "" {
 		return fmt.Errorf("--runtime-interface is required")
 	}
+	if (*endpointAdvertiser == "") != (*endpointAdvertiserMetadata == "") {
+		return fmt.Errorf("--endpoint-advertiser and --endpoint-advertiser-metadata must be supplied together")
+	}
 
 	rootArtifact := absPath(cfg.RepoRoot, *runtimeRoot)
 	ukiArtifact := absPath(cfg.RepoRoot, *runtimeUKI)
@@ -764,6 +849,16 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	}
 	if err := validateKatlOSComponents(rootMeta, ukiMeta, *architecture, *runtimeInterface); err != nil {
 		return err
+	}
+	var endpointMeta localMetadata
+	if *endpointAdvertiser != "" {
+		endpointMeta, err = readAndValidateLocalMetadata("endpoint advertiser", absPath(cfg.RepoRoot, *endpointAdvertiserMetadata), absPath(cfg.RepoRoot, *endpointAdvertiser))
+		if err != nil {
+			return err
+		}
+		if endpointMeta.Kind != "sysext" || endpointMeta.Name != "endpoint-advertiser" || endpointMeta.RuntimeInterface != *runtimeInterface || endpointMeta.Architecture != *architecture {
+			return fmt.Errorf("endpoint advertiser metadata is incompatible with KatlOS image")
+		}
 	}
 
 	if err := writeComponentChecksum(filepath.Join(filepath.Dir(filepath.Dir(absPath(cfg.RepoRoot, *output))), "components", "metadata", "runtime-root.sha256"), rootMeta.SHA256, "../runtime/root.squashfs"); err != nil {
@@ -823,6 +918,27 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 				},
 			},
 		},
+	}
+	if *endpointAdvertiser != "" {
+		index.Components = append(index.Components, katlosComponent{
+			Name:            "endpoint-advertiser",
+			Role:            "endpoint-advertiser-sysext",
+			Path:            "components/sysext/endpoint-advertiser.raw",
+			Format:          endpointMeta.Format,
+			SizeBytes:       endpointMeta.SizeBytes,
+			SHA256:          endpointMeta.SHA256,
+			Version:         endpointMeta.Version,
+			PayloadVersion:  endpointMeta.PayloadVersion,
+			Architecture:    endpointMeta.Architecture,
+			PackageVersions: endpointMeta.PackageVersions,
+			Compatibility: katlosCompatibility{
+				RuntimeInterface: endpointMeta.RuntimeInterface,
+			},
+			InstallTarget: installTarget{
+				Kind: "generation-sysext",
+				Name: "endpoint-advertiser",
+			},
+		})
 	}
 	if err := writeJSON(absPath(cfg.RepoRoot, *output), index, cfg.RepoRoot); err != nil {
 		return err

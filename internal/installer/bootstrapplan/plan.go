@@ -70,10 +70,11 @@ type SelectedKubernetesSysext struct {
 }
 
 type HostConfig struct {
-	NodeName             string `json:"nodeName"`
-	SystemRole           string `json:"systemRole"`
-	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
-	NodeMetadataPath     string `json:"nodeMetadataPath"`
+	NodeName                string `json:"nodeName"`
+	SystemRole              string `json:"systemRole"`
+	ControlPlaneEndpoint    string `json:"controlPlaneEndpoint,omitempty"`
+	ControlPlaneEndpointVIP string `json:"controlPlaneEndpointVIP,omitempty"`
+	NodeMetadataPath        string `json:"nodeMetadataPath"`
 }
 
 type KubeadmInput struct {
@@ -343,10 +344,11 @@ func runtimeInputs(root string, previous generation.GenerationSpec, intent insta
 	return RuntimeInputs{
 		SelectedKubernetesSysext: selected,
 		HostConfig: HostConfig{
-			NodeName:             request.InventoryNodeName,
-			SystemRole:           request.SystemRole,
-			ControlPlaneEndpoint: firstNonEmpty(request.ControlPlaneEndpoint, intent.Inventory.ControlPlaneEndpoint),
-			NodeMetadataPath:     "/etc/katl/node.json",
+			NodeName:                request.InventoryNodeName,
+			SystemRole:              request.SystemRole,
+			ControlPlaneEndpoint:    firstNonEmpty(request.ControlPlaneEndpoint, intent.Inventory.ControlPlaneEndpoint),
+			ControlPlaneEndpointVIP: intent.Inventory.ControlPlaneEndpointVIP,
+			NodeMetadataPath:        "/etc/katl/node.json",
 		},
 		KubeadmInput: KubeadmInput{
 			ConfigRef: intent.Kubeadm.ConfigRef,

@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/spf13/cobra"
@@ -136,13 +138,17 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	if !hasControlPlane {
 		return fmt.Errorf("at least one control-plane --node is required")
 	}
+	controlPlaneEndpoint, err := configInitControlPlaneEndpoint(opts.controlPlane)
+	if err != nil {
+		return err
+	}
 
 	source := configbundle.SourceConfig{
 		APIVersion: configbundle.APIVersion,
 		Kind:       configbundle.Kind,
 		Metadata:   configbundle.Metadata{Name: strings.TrimSpace(opts.clusterName)},
 		Spec: configbundle.SourceSpec{
-			ControlPlaneEndpoint: strings.TrimSpace(opts.controlPlane),
+			ControlPlaneEndpoint: controlPlaneEndpoint,
 			Kubernetes: configbundle.SourceKubernetesCluster{
 				Version: strings.TrimSpace(opts.kubernetesVersion),
 			},
@@ -201,7 +207,10 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 	comments := "spec:\n" +
 		"    # Stable Kubernetes API endpoint for multi-control-plane clusters.\n" +
-		"    # controlPlaneEndpoint: api.home.arpa:6443\n" +
+		"    # controlPlaneEndpoint:\n" +
+		"    #     host: api.home.arpa\n" +
+		"    #     # port: 6443\n" +
+		"    #     # To let Katl advertise a routed endpoint, add advertisement.vip and bgp peers.\n" +
 		"    # Set controlPlane: true on nodes that join the Kubernetes control plane.\n" +
 		"    # Omission means worker.\n" +
 		"    # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.\n"
@@ -215,6 +224,27 @@ func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 	}
 	comments += "\n"
 	return []byte(strings.Replace(string(data), "spec:\n", comments, 1))
+}
+
+func configInitControlPlaneEndpoint(value string) (*controlplaneendpoint.Config, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	host, portText, err := net.SplitHostPort(value)
+	if err != nil {
+		return nil, fmt.Errorf("--control-plane-endpoint must be host:port: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return nil, fmt.Errorf("--control-plane-endpoint port must be a number")
+	}
+	config := controlplaneendpoint.Config{Host: host, Port: port}
+	plan, err := controlplaneendpoint.Normalize(config)
+	if err != nil {
+		return nil, fmt.Errorf("--control-plane-endpoint: %w", err)
+	}
+	return &plan.Config, nil
 }
 
 func initNodesFromInstallers(ctx context.Context, addresses []string, timeout time.Duration) (initNodeSpecs, error) {

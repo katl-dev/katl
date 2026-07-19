@@ -1059,7 +1059,10 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 		sshAuthorizedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
 	}
 	sourceSpec := map[string]any{
-		"controlPlaneEndpoint": "api.katl.test:6443",
+		"controlPlaneEndpoint": map[string]any{
+			"host": "api.katl.test",
+			"port": 6443,
+		},
 		"kubernetes": map[string]any{
 			"version": kubernetesVersion,
 		},

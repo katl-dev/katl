@@ -23,22 +23,25 @@ const (
 	APIVersion = "katl.dev/v1alpha1"
 	Kind       = "KatlOSImage"
 
-	RoleInstall          = "install"
-	RoleUpgrade          = "upgrade"
-	FormatSquashFS       = "squashfs"
-	ComponentRuntimeRoot = "runtime-root"
-	ComponentRuntimeUKI  = "runtime-uki"
-	ComponentKubernetes  = "kubernetes-sysext"
+	RoleInstall                 = "install"
+	RoleUpgrade                 = "upgrade"
+	FormatSquashFS              = "squashfs"
+	ComponentRuntimeRoot        = "runtime-root"
+	ComponentRuntimeUKI         = "runtime-uki"
+	ComponentKubernetes         = "kubernetes-sysext"
+	ComponentEndpointAdvertiser = "endpoint-advertiser-sysext"
+	EndpointAdvertiserName      = "endpoint-advertiser"
 )
 
 type Payload struct {
-	Root           string
-	ImageSHA256    string
-	ImageSizeBytes uint64
-	Index          Index
-	Runtime        Component
-	Boot           Component
-	Kubernetes     Component
+	Root               string
+	ImageSHA256        string
+	ImageSizeBytes     uint64
+	Index              Index
+	Runtime            Component
+	Boot               Component
+	Kubernetes         Component
+	EndpointAdvertiser Component
 }
 
 type DirectoryResolver struct {
@@ -379,6 +382,24 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 	if strings.TrimSpace(request.UKIPath) == "" {
 		return generation.FirstInstallRequest{}, fmt.Errorf("UKI path is required")
 	}
+	var sysexts []generation.ExtensionRef
+	if request.EnableEndpointAdvertiser {
+		if p.EndpointAdvertiser.Role != ComponentEndpointAdvertiser {
+			return generation.FirstInstallRequest{}, fmt.Errorf("managed control-plane endpoint requires endpoint advertiser component")
+		}
+		sysexts = append(sysexts, generation.ExtensionRef{
+			Name:            EndpointAdvertiserName,
+			Path:            filepath.Join("/var/lib/katl/generations", request.GenerationID, "sysext", EndpointAdvertiserName+".raw"),
+			ActivationPath:  "/run/extensions/katl-endpoint-advertiser.raw",
+			SHA256:          p.EndpointAdvertiser.SHA256,
+			ArtifactVersion: p.EndpointAdvertiser.Version,
+			PayloadVersion:  first(p.EndpointAdvertiser.PayloadVersion, p.EndpointAdvertiser.Version),
+			Architecture:    p.EndpointAdvertiser.Architecture,
+			Compatibility: generation.ExtensionCompatibility{
+				RuntimeInterfaces: []string{p.EndpointAdvertiser.Compatibility.RuntimeInterface},
+			},
+		})
+	}
 	return generation.FirstInstallRequest{
 		GenerationID:          request.GenerationID,
 		RuntimeVersion:        first(p.Runtime.Version, p.Index.Version),
@@ -389,16 +410,18 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 		RuntimeArtifactSHA256: p.Runtime.SHA256,
 		UKIPath:               request.UKIPath,
 		KernelCommandLine:     append([]string(nil), p.Boot.Compatibility.KernelCommandLine...),
+		Sysexts:               sysexts,
 		CreatedAt:             request.CreatedAt,
 	}, nil
 }
 
 type FirstInstallRequest struct {
-	GenerationID      string
-	RootSlot          string
-	RootPartitionUUID string
-	UKIPath           string
-	CreatedAt         time.Time
+	GenerationID             string
+	RootSlot                 string
+	RootPartitionUUID        string
+	UKIPath                  string
+	CreatedAt                time.Time
+	EnableEndpointAdvertiser bool
 }
 
 func readIndex(path string) (Index, error) {
@@ -452,14 +475,16 @@ func validate(ctx context.Context, root string, index Index, expected manifest.K
 	if kubernetes := byRole[ComponentKubernetes]; kubernetes.Name != "" {
 		return Payload{}, fmt.Errorf("KatlOS image must not include Kubernetes sysext component %q", kubernetes.Name)
 	}
+	endpointAdvertiser := byRole[ComponentEndpointAdvertiser]
 	if len(boot.Compatibility.KernelCommandLine) == 0 {
 		return Payload{}, fmt.Errorf("runtime UKI kernel command line is required")
 	}
 	return Payload{
-		Root:    root,
-		Index:   index,
-		Runtime: runtime,
-		Boot:    boot,
+		Root:               root,
+		Index:              index,
+		Runtime:            runtime,
+		Boot:               boot,
+		EndpointAdvertiser: endpointAdvertiser,
 	}, nil
 }
 
@@ -547,6 +572,13 @@ func validateComponentRole(component Component, index Index) error {
 		}
 	case ComponentKubernetes:
 		return fmt.Errorf("KatlOS image must not include Kubernetes sysext component %q", component.Name)
+	case ComponentEndpointAdvertiser:
+		if component.InstallTarget.Kind != "generation-sysext" {
+			return fmt.Errorf("endpoint advertiser install target must be generation-sysext")
+		}
+		if component.InstallTarget.Name != EndpointAdvertiserName {
+			return fmt.Errorf("endpoint advertiser install target name must be %s", EndpointAdvertiserName)
+		}
 	default:
 		return fmt.Errorf("KatlOS image component %q role %q is unsupported", component.Name, component.Role)
 	}

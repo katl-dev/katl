@@ -52,6 +52,19 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 		"kernelVersion":     "6.12.0",
 		"kernelCommandLine": []string{"rootfstype=squashfs", "ro"},
 	})
+	endpointAdvertiser := writeArtifact(t, workDir, "katl-endpoint-advertiser.raw", "endpoint advertiser")
+	writeJSONFile(t, endpointAdvertiser+".json", map[string]any{
+		"name":             "endpoint-advertiser",
+		"kind":             "sysext",
+		"format":           "sysext",
+		"path":             filepath.Base(endpointAdvertiser),
+		"sizeBytes":        int64(len("endpoint advertiser")),
+		"sha256":           fileSHA256(t, endpointAdvertiser),
+		"version":          "test-build",
+		"payloadVersion":   "0.1.0",
+		"architecture":     "x86_64",
+		"runtimeInterface": "katl-runtime-1",
+	})
 
 	fakeBin := filepath.Join(workDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
@@ -90,7 +103,7 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 		} `json:"components"`
 	}
 	readJSONFile(t, filepath.Join(root, "katlos", "image.json"), &imageIndex)
-	if imageIndex.Kind != "KatlOSImage" || len(imageIndex.Components) != 2 {
+	if imageIndex.Kind != "KatlOSImage" || len(imageIndex.Components) != 3 {
 		t.Fatalf("image index = %#v", imageIndex)
 	}
 	assertFileEquals(t, filepath.Join(root, "components", "metadata", "runtime-root.sha256"), runtimeRootSHA+"  ../runtime/root.squashfs\n")

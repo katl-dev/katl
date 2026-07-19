@@ -30,7 +30,7 @@ func TestSingleImageProofReportsInstallComponents(t *testing.T) {
 	if report.Kind != "KatlOSSingleImageProof" || report.EmbeddedIndex.ImageRole != RoleInstall {
 		t.Fatalf("report = %#v", report)
 	}
-	if !hasComponentProof(report, ComponentRuntimeRoot) || !hasComponentProof(report, ComponentRuntimeUKI) || hasComponentProof(report, ComponentKubernetes) {
+	if !hasComponentProof(report, ComponentRuntimeRoot) || !hasComponentProof(report, ComponentRuntimeUKI) || !hasComponentProof(report, ComponentEndpointAdvertiser) || hasComponentProof(report, ComponentKubernetes) {
 		t.Fatalf("component proofs = %#v", report.Components)
 	}
 	if report.ImageSHA256 != sha256Bytes([]byte("install image")) || report.ImageSizeBytes != uint64(len("install image")) {
@@ -52,7 +52,7 @@ func TestSingleImageProofReportsInstallComponents(t *testing.T) {
 	if err := json.Unmarshal(data, &roundTrip); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, data)
 	}
-	if roundTrip.ImagePath != report.ImagePath || len(roundTrip.Components) != 2 {
+	if roundTrip.ImagePath != report.ImagePath || len(roundTrip.Components) != 3 {
 		t.Fatalf("roundTrip = %#v", roundTrip)
 	}
 }

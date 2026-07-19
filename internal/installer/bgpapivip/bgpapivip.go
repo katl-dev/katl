@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,8 +28,9 @@ const (
 	OperationStatus   = "/var/lib/katl/operations/<operation-id>/apps/bgp-api-vip/status.json"
 	AppDropInPath     = "/etc/systemd/system/katl-app-bgp-api-vip.service.d/10-katl-config.conf"
 	BirdDropInPath    = "/etc/systemd/system/katl-app-bird.service.d/20-katl-bgp-api-vip.conf"
-	NetworkPath       = "/etc/systemd/network/20-katl-bgp-api-vip.network"
-	DummyNetDevPath   = "/etc/systemd/network/20-katl-bgp-api-vip.netdev"
+	KubeletDropInPath = "/etc/systemd/system/kubelet.service.d/20-katl-control-plane-endpoint.conf"
+	NetworkPath       = "/etc/systemd/network/05-katl-bgp-api-vip.network"
+	DummyNetDevPath   = "/etc/systemd/network/05-katl-bgp-api-vip.netdev"
 	defaultHealthPath = "/readyz"
 )
 
@@ -45,15 +47,23 @@ type Object struct {
 }
 
 type Config struct {
-	Endpoint      Endpoint      `yaml:"endpoint" json:"endpoint"`
-	VIPInterface  VIPInterface  `yaml:"vipInterface" json:"vipInterface"`
-	Routing       Routing       `yaml:"routing" json:"routing"`
-	AdvertiseOn   AdvertiseOn   `yaml:"advertiseOn" json:"advertiseOn"`
-	FabricPeers   []Peer        `yaml:"fabricPeers,omitempty" json:"fabricPeers,omitempty"`
-	DevHostPeers  []Peer        `yaml:"devHostPeers,omitempty" json:"devHostPeers,omitempty"`
-	Advertisement Advertisement `yaml:"advertisement" json:"advertisement"`
-	Health        Health        `yaml:"health" json:"health"`
-	Status        StatusConfig  `yaml:"status,omitempty" json:"status,omitempty"`
+	Endpoint      Endpoint        `yaml:"endpoint" json:"endpoint"`
+	VIPInterface  VIPInterface    `yaml:"vipInterface" json:"vipInterface"`
+	Routing       Routing         `yaml:"routing" json:"routing"`
+	AdvertiseOn   AdvertiseOn     `yaml:"advertiseOn" json:"advertiseOn"`
+	FabricPeers   []Peer          `yaml:"fabricPeers,omitempty" json:"fabricPeers,omitempty"`
+	DevHostPeers  []Peer          `yaml:"devHostPeers,omitempty" json:"devHostPeers,omitempty"`
+	RouteExchange []RouteExchange `yaml:"routeExchange,omitempty" json:"routeExchange,omitempty"`
+	Advertisement Advertisement   `yaml:"advertisement" json:"advertisement"`
+	Health        Health          `yaml:"health" json:"health"`
+	Status        StatusConfig    `yaml:"status,omitempty" json:"status,omitempty"`
+}
+
+type RouteExchange struct {
+	Name           string                                `yaml:"name" json:"name"`
+	ListenPort     int                                   `yaml:"listenPort" json:"listenPort"`
+	PeerASN        uint32                                `yaml:"peerASN" json:"peerASN"`
+	ExportToFabric []controlplaneendpoint.PrefixEnvelope `yaml:"exportToFabric,omitempty" json:"exportToFabric,omitempty"`
 }
 
 type Endpoint struct {
@@ -143,6 +153,52 @@ type RenderRequest struct {
 type Plan struct {
 	Config Config
 	Files  []confext.NativeEtcFile
+}
+
+// FromControlPlaneEndpoint lowers normalized cluster intent into the complete,
+// Katl-owned endpoint-advertiser configuration. BIRD, interface and health
+// details deliberately remain absent from ClusterConfig.
+func FromControlPlaneEndpoint(plan controlplaneendpoint.Plan) (Config, error) {
+	if plan.Config.Advertisement == nil || plan.Config.Advertisement.BGP == nil {
+		return Config{}, fmt.Errorf("managed control-plane endpoint BGP intent is required")
+	}
+	bgp := plan.Config.Advertisement.BGP
+	config := Config{
+		Endpoint: Endpoint{
+			Host:          plan.Config.Host,
+			Port:          plan.Config.Port,
+			VIP:           plan.VIPPrefix,
+			AddressFamily: "ipv4",
+			TLSServerName: plan.Config.Host,
+			Provenance:    "platform-host",
+		},
+		VIPInterface: VIPInterface{Kind: "dummy", Name: "katl-api"},
+		Routing:      Routing{LocalASN: bgp.LocalASN},
+		AdvertiseOn:  AdvertiseOn{Roles: []string{"control-plane"}},
+		Advertisement: Advertisement{
+			Enabled:               boolPtr(true),
+			StartWithdrawn:        boolPtr(true),
+			AdvertiseAfterHealthy: boolPtr(true),
+			WithdrawOnFailure:     boolPtr(true),
+		},
+	}
+	for index, peer := range bgp.Peers {
+		config.FabricPeers = append(config.FabricPeers, Peer{
+			Name:                  fmt.Sprintf("fabric-%d", index+1),
+			Address:               peer.Address,
+			ASN:                   peer.ASN,
+			AllowedExportPrefixes: []string{plan.VIPPrefix},
+		})
+	}
+	for _, exchange := range bgp.RouteExchange {
+		config.RouteExchange = append(config.RouteExchange, RouteExchange{
+			Name:           exchange.Name,
+			ListenPort:     exchange.ListenPort,
+			PeerASN:        exchange.PeerASN,
+			ExportToFabric: append([]controlplaneendpoint.PrefixEnvelope(nil), exchange.ExportToFabric...),
+		})
+	}
+	return Normalize(config)
 }
 
 func (p Plan) NativeEtcFiles() []confext.NativeEtcFile {
@@ -288,7 +344,7 @@ func RenderNativeEtcFiles(request RenderRequest) (Plan, error) {
 		{
 			Path:    BirdConfigPath,
 			Content: renderBirdConfig(config),
-			Mode:    0o640,
+			Mode:    0o644,
 		},
 		{
 			Path:    AppDropInPath,
@@ -298,6 +354,11 @@ func RenderNativeEtcFiles(request RenderRequest) (Plan, error) {
 		{
 			Path:    BirdDropInPath,
 			Content: renderBirdDropIn(),
+			Mode:    0o644,
+		},
+		{
+			Path:    KubeletDropInPath,
+			Content: renderKubeletDropIn(),
 			Mode:    0o644,
 		},
 	}
@@ -409,14 +470,14 @@ func normalizeRouting(routing *Routing, vip netip.Prefix) error {
 	if routing.ProtocolBoundary != "bgp" {
 		return fmt.Errorf("routing.protocolBoundary must be bgp")
 	}
-	if _, err := netip.ParseAddr(strings.TrimSpace(routing.RouterID)); err != nil {
-		return fmt.Errorf("routing.routerID must be an IPv4 address")
+	routing.RouterID = strings.TrimSpace(routing.RouterID)
+	if routing.RouterID != "" {
+		routerID, err := netip.ParseAddr(routing.RouterID)
+		if err != nil || !routerID.Is4() || routerID.IsUnspecified() || routerID.IsMulticast() {
+			return fmt.Errorf("routing.routerID must be an IPv4 address")
+		}
+		routing.RouterID = routerID.String()
 	}
-	routerID := netip.MustParseAddr(strings.TrimSpace(routing.RouterID))
-	if !routerID.Is4() || routerID.IsUnspecified() || routerID.IsMulticast() {
-		return fmt.Errorf("routing.routerID must be an IPv4 address")
-	}
-	routing.RouterID = routerID.String()
 	if err := validateASN("routing.localASN", routing.LocalASN); err != nil {
 		return err
 	}
@@ -691,11 +752,27 @@ func renderBirdConfig(config Config) string {
 	}
 	var b strings.Builder
 	b.WriteString("# Generated by Katl bgp-api-vip. Do not edit.\n")
-	b.WriteString("router id " + config.Routing.RouterID + ";\n\n")
+	if config.Routing.RouterID == "" {
+		b.WriteString("router id from \"*\";\n\n")
+	} else {
+		b.WriteString("router id " + config.Routing.RouterID + ";\n\n")
+	}
+	b.WriteString(family + " table katl_fabric;\n")
+	for _, exchange := range config.RouteExchange {
+		b.WriteString(family + " table katl_exchange_" + safeSymbol(exchange.Name) + "_table;\n")
+	}
+	b.WriteByte('\n')
 	b.WriteString("protocol device katl_device {}\n\n")
-	b.WriteString("filter katl_import_deny {\n  reject;\n}\n\n")
-	b.WriteString("filter katl_export_withdrawn {\n  reject;\n}\n\n")
-	for _, peer := range allPeers(config) {
+	b.WriteString("protocol static katl_api {\n")
+	b.WriteString("  disabled;\n")
+	b.WriteString("  " + family + " { table katl_fabric; };\n")
+	b.WriteString("  route " + config.Endpoint.VIP + " blackhole;\n")
+	b.WriteString("}\n\n")
+	for _, exchange := range config.RouteExchange {
+		b.WriteString(renderRouteExchange(config, exchange))
+		b.WriteByte('\n')
+	}
+	for _, peer := range config.FabricPeers {
 		b.WriteString(renderPeerFilter(config, peer))
 		b.WriteByte('\n')
 		b.WriteString(renderBGPPeer(config, family, peer))
@@ -707,12 +784,12 @@ func renderBirdConfig(config Config) string {
 func renderPeerFilter(config Config, peer Peer) string {
 	name := protocolName(peer)
 	filterName := "katl_export_" + name
-	if !*config.Advertisement.Enabled || *config.Advertisement.StartWithdrawn {
-		return "filter " + filterName + " {\n  reject;\n}\n"
-	}
 	var b strings.Builder
 	b.WriteString("filter " + filterName + " {\n")
-	b.WriteString("  if net = " + config.Endpoint.VIP + " then accept;\n")
+	b.WriteString("  if source = RTS_STATIC && net = " + config.Endpoint.VIP + " then accept;\n")
+	if len(config.RouteExchange) > 0 {
+		b.WriteString("  if source = RTS_BGP then accept;\n")
+	}
 	b.WriteString("  reject;\n")
 	b.WriteString("}\n")
 	return b.String()
@@ -731,11 +808,50 @@ func renderBGPPeer(config Config, family string, peer Peer) string {
 		b.WriteString("  # authRef configured and redacted by Katl\n")
 	}
 	b.WriteString("  " + family + " {\n")
-	b.WriteString("    import filter katl_import_deny;\n")
+	b.WriteString("    table katl_fabric;\n")
+	b.WriteString("    import none;\n")
 	b.WriteString("    export filter katl_export_" + name + ";\n")
 	b.WriteString("  };\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+func renderRouteExchange(config Config, exchange RouteExchange) string {
+	name := safeSymbol(exchange.Name)
+	var b strings.Builder
+	b.WriteString("filter katl_exchange_" + name + "_export {\n")
+	for _, envelope := range exchange.ExportToFabric {
+		b.WriteString("  if net ~ [ " + birdPrefixPattern(envelope) + " ] then accept;\n")
+	}
+	b.WriteString("  reject;\n}\n\n")
+	b.WriteString("protocol bgp katl_exchange_" + name + " {\n")
+	b.WriteString("  passive on;\n")
+	b.WriteString("  local 127.0.0.1 port " + strconv.Itoa(exchange.ListenPort) + " as " + strconv.FormatUint(uint64(config.Routing.LocalASN), 10) + ";\n")
+	b.WriteString("  neighbor 127.0.0.1 as " + strconv.FormatUint(uint64(exchange.PeerASN), 10) + ";\n")
+	b.WriteString("  ipv4 {\n")
+	b.WriteString("    table katl_exchange_" + name + "_table;\n")
+	b.WriteString("    import all;\n")
+	b.WriteString("    export none;\n")
+	b.WriteString("  };\n")
+	b.WriteString("}\n\n")
+	b.WriteString("protocol pipe katl_exchange_" + name + "_to_fabric {\n")
+	b.WriteString("  table katl_exchange_" + name + "_table;\n")
+	b.WriteString("  peer table katl_fabric;\n")
+	b.WriteString("  export filter katl_exchange_" + name + "_export;\n")
+	b.WriteString("  import none;\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func birdPrefixPattern(envelope controlplaneendpoint.PrefixEnvelope) string {
+	if envelope.PrefixLength == nil {
+		return envelope.CIDR + "+"
+	}
+	return envelope.CIDR + "{" + strconv.Itoa(*envelope.PrefixLength) + "," + strconv.Itoa(*envelope.PrefixLength) + "}"
+}
+
+func safeSymbol(value string) string {
+	return strings.ReplaceAll(value, "-", "_")
 }
 
 func renderAppDropIn() string {
@@ -746,10 +862,15 @@ func renderAppDropIn() string {
 
 func renderBirdDropIn() string {
 	return "[Unit]\n" +
-		"Wants=katl-app-bgp-api-vip.service\n" +
 		"After=network-online.target\n\n" +
 		"[Service]\n" +
 		"Environment=KATL_BIRD_CONFIG=" + BirdConfigPath + "\n"
+}
+
+func renderKubeletDropIn() string {
+	return "[Unit]\n" +
+		"Wants=katl-app-bgp-api-vip.service\n" +
+		"After=katl-app-bgp-api-vip.service\n"
 }
 
 func allPeers(config Config) []Peer {

@@ -54,13 +54,13 @@ func TestControllerWithdrawsAfterHealthFailure(t *testing.T) {
 		t.Fatalf("second healthy RunOnce() error = %v", err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := controller.RunOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "[REDACTED]") {
-			t.Fatalf("unhealthy RunOnce(%d) error = %v, want redacted failure", i, err)
+		if _, err := controller.RunOnce(context.Background()); err != nil {
+			t.Fatalf("unhealthy RunOnce(%d) error = %v", i, err)
 		}
 	}
 	status, err := controller.RunOnce(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "[REDACTED]") {
-		t.Fatalf("unhealthy RunOnce() error = %v, want redacted failure", err)
+	if err != nil {
+		t.Fatalf("unhealthy RunOnce() error = %v", err)
 	}
 	if got, want := bird.advertisements, []bool{false, true, false}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("advertisements = %#v, want %#v", got, want)
@@ -70,6 +70,21 @@ func TestControllerWithdrawsAfterHealthFailure(t *testing.T) {
 	}
 	if strings.Contains(status.HealthFailure, "secret-token") || !strings.Contains(status.HealthFailure, "[REDACTED]") {
 		t.Fatalf("status leaked health failure: %#v", status.HealthFailure)
+	}
+}
+
+func TestControllerReportsUnavailableAPIAsHealthStateNotRuntimeFailure(t *testing.T) {
+	bird := &fakeBird{status: readyBirdStatus()}
+	controller := testController(bird, fakeHealth{result: HealthResult{Error: "waiting for kubeadm API CA"}})
+	status, err := controller.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if status.HealthState != HealthUnhealthy || status.HealthFailure != "waiting for kubeadm API CA" {
+		t.Fatalf("health status = %#v", status)
+	}
+	if status.RecoveryRequired || status.FailureReason != "" {
+		t.Fatalf("API readiness was reported as a controller failure: %#v", status)
 	}
 }
 

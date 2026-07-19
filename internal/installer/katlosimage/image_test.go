@@ -28,7 +28,7 @@ func TestResolveDirectoryAcceptsInstallImage(t *testing.T) {
 		t.Fatalf("ResolveDirectory() error = %v", err)
 	}
 
-	if payload.Runtime.Role != ComponentRuntimeRoot || payload.Boot.Role != ComponentRuntimeUKI || payload.Kubernetes.Name != "" {
+	if payload.Runtime.Role != ComponentRuntimeRoot || payload.Boot.Role != ComponentRuntimeUKI || payload.Kubernetes.Name != "" || payload.EndpointAdvertiser.Role != ComponentEndpointAdvertiser {
 		t.Fatalf("resolved components = %#v %#v %#v", payload.Runtime, payload.Boot, payload.Kubernetes)
 	}
 
@@ -48,6 +48,19 @@ func TestResolveDirectoryAcceptsInstallImage(t *testing.T) {
 	}
 	if len(request.Sysexts) != 0 {
 		t.Fatalf("generation 0 request selected sysexts = %#v", request.Sysexts)
+	}
+	managed, err := payload.FirstInstallRequest(FirstInstallRequest{
+		GenerationID:             "0",
+		RootSlot:                 "root-a",
+		RootPartitionUUID:        "11111111-2222-3333-4444-555555555555",
+		UKIPath:                  "/efi/EFI/Linux/katl-0.efi",
+		EnableEndpointAdvertiser: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(managed.Sysexts) != 1 || managed.Sysexts[0].Name != EndpointAdvertiserName {
+		t.Fatalf("managed endpoint sysexts = %#v", managed.Sysexts)
 	}
 	if request.RuntimeInterface != "katl-runtime-1" || request.RuntimeArchitecture != "x86_64" {
 		t.Fatalf("generation runtime fields = %#v", request)
@@ -567,9 +580,10 @@ func writeImagePayload(t *testing.T, edit func(*Index)) (string, Index) {
 func writeImagePayloadAt(t *testing.T, root string, edit func(*Index)) Index {
 	t.Helper()
 	files := map[string][]byte{
-		"components/runtime/root.squashfs": []byte("runtime root"),
-		"components/boot/katl.efi":         []byte("runtime uki"),
-		"components/sysext/kubernetes.raw": []byte("kubernetes sysext"),
+		"components/runtime/root.squashfs":          []byte("runtime root"),
+		"components/boot/katl.efi":                  []byte("runtime uki"),
+		"components/sysext/kubernetes.raw":          []byte("kubernetes sysext"),
+		"components/sysext/endpoint-advertiser.raw": []byte("endpoint advertiser sysext"),
 	}
 	digests := make(map[string]string, len(files))
 	sizes := make(map[string]int64, len(files))
@@ -636,6 +650,24 @@ func writeImagePayloadAt(t *testing.T, root string, edit func(*Index)) Index {
 				InstallTarget: InstallTarget{
 					Kind:     "esp-or-xbootldr",
 					Filename: "katl.efi",
+				},
+			},
+			{
+				Name:           "endpoint-advertiser",
+				Role:           ComponentEndpointAdvertiser,
+				Path:           "components/sysext/endpoint-advertiser.raw",
+				Format:         "sysext",
+				SizeBytes:      sizes["components/sysext/endpoint-advertiser.raw"],
+				SHA256:         digests["components/sysext/endpoint-advertiser.raw"],
+				Version:        "2026.06.06",
+				PayloadVersion: "2026.06.06",
+				Architecture:   "x86_64",
+				Compatibility: Compatibility{
+					RuntimeInterface: "katl-runtime-1",
+				},
+				InstallTarget: InstallTarget{
+					Kind: "generation-sysext",
+					Name: EndpointAdvertiserName,
 				},
 			},
 		},

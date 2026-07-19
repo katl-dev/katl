@@ -10,6 +10,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
@@ -61,6 +62,12 @@ func TestCompileClusterPlan(t *testing.T) {
 	if len(cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys) != 1 {
 		t.Fatalf("ssh keys were not de-duplicated: %#v", cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys)
 	}
+	if cp.InstallManifest.Node.ControlPlaneEndpoint != nil {
+		t.Fatalf("external endpoint selected managed advertisement: %#v", cp.InstallManifest.Node.ControlPlaneEndpoint)
+	}
+	if nativeFile(cp.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") != nil {
+		t.Fatal("external endpoint generated BIRD config")
+	}
 	worker := plan.Nodes[1]
 	if worker.Name != "worker-1" || worker.KubeadmConfig.Intent != inventory.IntentWorker {
 		t.Fatalf("worker material = %#v", worker)
@@ -78,6 +85,38 @@ func TestCompileClusterPlan(t *testing.T) {
 	}
 	if string(data) != string(want) {
 		t.Fatalf("compiled plan mismatch\nwant:\n%s\ngot:\n%s", want, data)
+	}
+}
+
+func TestCompileSelectsManagedEndpointOnlyForControlPlanes(t *testing.T) {
+	config := validConfig()
+	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{
+		Host: "api.katl.test",
+		Advertisement: &controlplaneendpoint.Advertisement{
+			VIP: "10.40.0.10",
+			BGP: &controlplaneendpoint.BGP{
+				LocalASN: 64512,
+				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
+			},
+		},
+	}
+	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := plan.Nodes[0]
+	worker := plan.Nodes[1]
+	if cp.InstallManifest.Node.ControlPlaneEndpoint == nil {
+		t.Fatal("control-plane managed endpoint intent is nil")
+	}
+	if worker.InstallManifest.Node.ControlPlaneEndpoint != nil {
+		t.Fatalf("worker managed endpoint intent = %#v", worker.InstallManifest.Node.ControlPlaneEndpoint)
+	}
+	if nativeFile(cp.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") == nil {
+		t.Fatal("control-plane BIRD config is missing")
+	}
+	if nativeFile(worker.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") != nil {
+		t.Fatal("worker received BIRD config")
 	}
 }
 
@@ -234,7 +273,9 @@ kind: ClusterPlan
 metadata:
   name: lab
 spec:
-  controlPlaneEndpoint: api.katl.test:6443
+  controlPlaneEndpoint:
+    host: api.katl.test
+    port: 6443
   kubernetes:
     payloadVersion: v1.36.1
   katlosImage:
@@ -317,11 +358,12 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "spec.wipeTarget",
 		},
 		{
-			name: "missing endpoint",
+			name: "missing multi-control-plane endpoint",
 			mut: func(config *Config) {
-				config.Spec.ControlPlaneEndpoint = ""
+				config.Spec.ControlPlaneEndpoint = nil
+				config.Spec.Nodes[1].SystemRole = inventory.RoleControlPlane
 			},
-			want: "control-plane endpoint is required",
+			want: "spec.controlPlaneEndpoint is required",
 		},
 		{
 			name: "unknown address override",
@@ -546,7 +588,7 @@ func validConfig() Config {
 		Kind:       Kind,
 		Metadata:   Metadata{Name: "lab"},
 		Spec: Spec{
-			ControlPlaneEndpoint: "api.katl.test:6443",
+			ControlPlaneEndpoint: &controlplaneendpoint.Config{Host: "api.katl.test", Port: 6443},
 			Kubernetes:           KubernetesSelection{PayloadVersion: "v1.36.1"},
 			KatlosImage:          validImage(),
 			WipeTarget:           true,

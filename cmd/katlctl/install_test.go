@@ -100,7 +100,7 @@ func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeSource() error = %v\n%s", err, data)
 	}
-	if source.Metadata.Name != "homelab" || source.Spec.ControlPlaneEndpoint != "" || source.Spec.Kubernetes.Version != configbundle.DefaultKubernetesVersion || len(source.Spec.Nodes) != 2 {
+	if source.Metadata.Name != "homelab" || configbundle.SourceControlPlaneEndpoint(source) != "" || source.Spec.Kubernetes.Version != configbundle.DefaultKubernetesVersion || len(source.Spec.Nodes) != 2 {
 		t.Fatalf("generated source = %#v", source)
 	}
 	if keys := source.Spec.Defaults.Identity.SSH.AuthorizedKeys; len(keys) != 1 || keys[0] != uxTestSSHKey {
