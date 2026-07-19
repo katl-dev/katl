@@ -137,6 +137,10 @@ jobs:
               scripts/check-runtime-boot-asset
             '
 
+      - name: Build endpoint advertiser sysext
+        shell: bash
+        run: scripts/build-endpoint-advertiser-sysext
+
       - name: Package install and upgrade images concurrently
         shell: bash
         run: |
