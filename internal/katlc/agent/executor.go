@@ -223,9 +223,10 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		return markErr
 	}
 	endpointSuspended := false
+	var managedRoute *managedJoinRoute
 	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane {
 		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		endpointSuspended, err = suspendManagedEndpointForJoin(lifecycleCtx, e.Root, e.endpointLifecycleRunner())
+		endpointSuspended, managedRoute, err = suspendManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
 		lifecycleCancel()
 		if err != nil {
 			_, markErr := e.failRecordPhase(record.OperationID, "managed-endpoint-suspend-failed", "managed-endpoint-lifecycle", "suspend-managed-endpoint", "repair the managed endpoint lifecycle before retrying the control-plane join", err)
@@ -309,6 +310,17 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 			startMu.Unlock()
 		}
 	})
+	if managedRoute != nil {
+		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		routeErr := removeManagedJoinRoute(lifecycleCtx, managedRoute, e.endpointLifecycleRunner())
+		lifecycleCancel()
+		if routeErr != nil {
+			result.Err = errors.Join(result.Err, routeErr)
+			if result.ExitStatus == 0 {
+				result.ExitStatus = -1
+			}
+		}
+	}
 	if errors.Is(toolCtx.Err(), context.DeadlineExceeded) && result.Err == nil {
 		result.Err = toolCtx.Err()
 		result.ExitStatus = -1
@@ -1021,6 +1033,17 @@ func cleanupTemporaryJoinConfig(root string, record operation.OperationRecord) {
 	_ = os.Remove(filepath.Join(filepath.Dir(target), "discovery.conf"))
 	_ = os.Remove(target)
 	_ = os.Remove(filepath.Dir(target))
+}
+
+func joinDiscoveryConfigPath(record operation.OperationRecord) string {
+	if record.BootstrapRequest == nil {
+		return ""
+	}
+	path := strings.TrimSpace(record.BootstrapRequest.TemporaryJoinConfigPath)
+	if !strings.HasPrefix(path, "/run/katl/bootstrap-join/") || strings.Contains(path, "\x00") {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(path), "discovery.conf")
 }
 
 func expiredJoinMaterial(record operation.OperationRecord, now time.Time) string {

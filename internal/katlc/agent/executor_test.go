@@ -632,7 +632,14 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 		return ToolResult{}
 	}
 	executor.RunEndpointLifecycle = func(_ context.Context, argv []string, _ func(int)) ToolResult {
-		sequence = append(sequence, strings.Join(argv, " "))
+		command := strings.Join(argv, " ")
+		if len(argv) > 0 && argv[0] == managedEndpointKubectl {
+			command = managedEndpointKubectl + " probe-stable-endpoint"
+		}
+		sequence = append(sequence, command)
+		if reflect.DeepEqual(argv, []string{managedEndpointIP, "-json", "route", "get", "10.0.0.11"}) {
+			return ToolResult{Stdout: []byte(`[{"dst":"10.0.0.11","dev":"enp1s0"}]`)}
+		}
 		return ToolResult{}
 	}
 	executor.RunTool = func(_ context.Context, _ []string, started func(int)) ToolResult {
@@ -642,6 +649,9 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 			endpointAdvertiserCommand + " withdraw",
 			managedEndpointInterface + " down katl-api0",
 			managedEndpointIP + " address flush dev katl-api0 to 10.40.0.10/32",
+			managedEndpointIP + " -json route get 10.0.0.11",
+			managedEndpointIP + " route add 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
+			managedEndpointKubectl + " probe-stable-endpoint",
 		}
 		if !reflect.DeepEqual(sequence, wantPrefix) {
 			t.Fatalf("sequence before kubeadm = %#v, want %#v", sequence, wantPrefix)
@@ -660,7 +670,7 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 	setSubmitRequestBundle(req, source, ref)
 	req.OperationKind = "bootstrap-join-control-plane"
 	req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
-	req.Bootstrap.WorkerJoinMaterial.DiscoveryKubeconfig = []byte("ephemeral discovery credentials\n")
+	req.Bootstrap.WorkerJoinMaterial.DiscoveryKubeconfig = []byte("apiVersion: v1\nkind: Config\nclusters:\n  - name: katl-discovery\n    cluster:\n      server: https://10.0.0.11:6443\nusers:\n  - name: katl-bootstrap\n    user:\n      token: ephemeral\n")
 	accepted, err := server.SubmitOperation(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -671,7 +681,11 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 		endpointAdvertiserCommand + " withdraw",
 		managedEndpointInterface + " down katl-api0",
 		managedEndpointIP + " address flush dev katl-api0 to 10.40.0.10/32",
+		managedEndpointIP + " -json route get 10.0.0.11",
+		managedEndpointIP + " route add 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
+		managedEndpointKubectl + " probe-stable-endpoint",
 		"kubeadm",
+		managedEndpointIP + " route del 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
 		managedEndpointInterface + " up katl-api0",
 		managedEndpointIP + " address replace 10.40.0.10/32 dev katl-api0",
 		"systemctl start " + endpointAdvertiserUnit,

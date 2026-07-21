@@ -50,15 +50,22 @@ func TestManagedEndpointLifecycleFollowsGeneratedEnablement(t *testing.T) {
 func TestManagedEndpointJoinLifecycleRemovesAndRestoresLocalVIP(t *testing.T) {
 	root := t.TempDir()
 	writeManagedEndpointTestConfig(t, root)
+	discoveryPath := writeJoinDiscoveryTestConfig(t, root, "10.0.0.10")
 	var calls [][]string
 	run := func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		calls = append(calls, append([]string(nil), argv...))
+		if reflect.DeepEqual(argv, []string{managedEndpointIP, "-json", "route", "get", "10.0.0.10"}) {
+			return ToolResult{Stdout: []byte(`[{"dst":"10.0.0.10","dev":"enp1s0"}]`)}
+		}
 		return ToolResult{}
 	}
 
-	suspended, err := suspendManagedEndpointForJoin(context.Background(), root, run)
+	suspended, route, err := suspendManagedEndpointForJoin(context.Background(), root, discoveryPath, run)
 	if err != nil || !suspended {
 		t.Fatalf("suspendManagedEndpointForJoin() = %v, %v", suspended, err)
+	}
+	if err := removeManagedJoinRoute(context.Background(), route, run); err != nil {
+		t.Fatalf("removeManagedJoinRoute(): %v", err)
 	}
 	if err := resumeManagedEndpointAfterJoin(context.Background(), root, run); err != nil {
 		t.Fatalf("resumeManagedEndpointAfterJoin(): %v", err)
@@ -68,6 +75,10 @@ func TestManagedEndpointJoinLifecycleRemovesAndRestoresLocalVIP(t *testing.T) {
 		{endpointAdvertiserCommand, "withdraw"},
 		{managedEndpointInterface, "down", "katl-api0"},
 		{managedEndpointIP, "address", "flush", "dev", "katl-api0", "to", "10.40.0.10/32"},
+		{managedEndpointIP, "-json", "route", "get", "10.0.0.10"},
+		{managedEndpointIP, "route", "add", "10.40.0.10/32", "via", "10.0.0.10", "dev", "enp1s0"},
+		{managedEndpointKubectl, "--kubeconfig", filepath.Join(root, discoveryPath), "--server", "https://api.home.example:6443", "--request-timeout=10s", "get", "--raw=/version"},
+		{managedEndpointIP, "route", "del", "10.40.0.10/32", "via", "10.0.0.10", "dev", "enp1s0"},
 		{managedEndpointInterface, "up", "katl-api0"},
 		{managedEndpointIP, "address", "replace", "10.40.0.10/32", "dev", "katl-api0"},
 		{"systemctl", "start", endpointAdvertiserUnit},
@@ -80,6 +91,7 @@ func TestManagedEndpointJoinLifecycleRemovesAndRestoresLocalVIP(t *testing.T) {
 func TestManagedEndpointJoinLifecycleFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	writeManagedEndpointTestConfig(t, root)
+	discoveryPath := writeJoinDiscoveryTestConfig(t, root, "10.0.0.10")
 	var calls int
 	run := func(_ context.Context, _ []string, _ func(int)) ToolResult {
 		calls++
@@ -89,13 +101,74 @@ func TestManagedEndpointJoinLifecycleFailsClosed(t *testing.T) {
 		return ToolResult{}
 	}
 
-	suspended, err := suspendManagedEndpointForJoin(context.Background(), root, run)
+	suspended, route, err := suspendManagedEndpointForJoin(context.Background(), root, discoveryPath, run)
 	if err == nil || suspended {
 		t.Fatalf("suspendManagedEndpointForJoin() = %v, %v", suspended, err)
+	}
+	if route != nil {
+		t.Fatalf("route = %#v, want nil", route)
 	}
 	if calls != 3 {
 		t.Fatalf("commands after interface failure = %d, want 3", calls)
 	}
+}
+
+func TestManagedEndpointJoinUsesExistingFabricRouteForOffLinkInit(t *testing.T) {
+	root := t.TempDir()
+	writeManagedEndpointTestConfig(t, root)
+	discoveryPath := writeJoinDiscoveryTestConfig(t, root, "10.50.0.10")
+	var calls [][]string
+	run := func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		calls = append(calls, append([]string(nil), argv...))
+		if reflect.DeepEqual(argv, []string{managedEndpointIP, "-json", "route", "get", "10.50.0.10"}) {
+			return ToolResult{Stdout: []byte(`[{"dst":"10.50.0.10","gateway":"10.0.0.1","dev":"enp1s0"}]`)}
+		}
+		return ToolResult{}
+	}
+
+	suspended, route, err := suspendManagedEndpointForJoin(context.Background(), root, discoveryPath, run)
+	if err != nil || !suspended || route != nil {
+		t.Fatalf("suspendManagedEndpointForJoin() = %v, %#v, %v", suspended, route, err)
+	}
+	for _, call := range calls {
+		if len(call) > 2 && call[0] == managedEndpointIP && call[1] == "route" && call[2] == "add" {
+			t.Fatalf("off-link init installed a direct route: %#v", call)
+		}
+	}
+}
+
+func TestManagedEndpointJoinProbeFailureRemovesTemporaryRoute(t *testing.T) {
+	root := t.TempDir()
+	writeManagedEndpointTestConfig(t, root)
+	discoveryPath := writeJoinDiscoveryTestConfig(t, root, "10.0.0.10")
+	var calls [][]string
+	run := func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		calls = append(calls, append([]string(nil), argv...))
+		switch {
+		case reflect.DeepEqual(argv, []string{managedEndpointIP, "-json", "route", "get", "10.0.0.10"}):
+			return ToolResult{Stdout: []byte(`[{"dst":"10.0.0.10","dev":"enp1s0"}]`)}
+		case len(argv) > 0 && argv[0] == managedEndpointKubectl:
+			return ToolResult{Err: errors.New("API request timed out"), ExitStatus: 1}
+		default:
+			return ToolResult{}
+		}
+	}
+
+	suspended, route, err := suspendManagedEndpointForJoin(context.Background(), root, discoveryPath, run)
+	if err == nil || suspended || route != nil {
+		t.Fatalf("suspendManagedEndpointForJoin() = %v, %#v, %v", suspended, route, err)
+	}
+	wantLast := []string{managedEndpointIP, "route", "del", "10.40.0.10/32", "via", "10.0.0.10", "dev", "enp1s0"}
+	if !reflect.DeepEqual(calls[len(calls)-1], wantLast) {
+		t.Fatalf("last command = %#v, want route cleanup %#v", calls[len(calls)-1], wantLast)
+	}
+}
+
+func writeJoinDiscoveryTestConfig(t *testing.T, root, host string) string {
+	t.Helper()
+	path := "/run/katl/bootstrap-join/test/discovery.conf"
+	writeTestFile(t, filepath.Join(root, path), "apiVersion: v1\nkind: Config\nclusters:\n  - name: katl-discovery\n    cluster:\n      server: https://"+host+":6443\n")
+	return path
 }
 
 func TestManagedEndpointPauseFailsClosed(t *testing.T) {
