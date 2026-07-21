@@ -57,6 +57,7 @@ type Executor struct {
 	RunTool              ToolRunner
 	RunReadiness         ToolRunner
 	RunPostHealth        ToolRunner
+	RunEndpointLifecycle ToolRunner
 	MountBootRoot        BootRootMounter
 	SetBootOneshot       BootEntrySetter
 	SetBootDefault       BootEntrySetter
@@ -77,18 +78,19 @@ type toolPlan = operation.ExecutorPlan
 func NewExecutor(root string, store operation.Store, agentStartID string) *Executor {
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	executor := &Executor{
-		Root:          strings.TrimSpace(root),
-		Store:         store,
-		AgentStartID:  strings.TrimSpace(agentStartID),
-		Now:           func() time.Time { return time.Now().UTC() },
-		RunTool:       runChildProcess,
-		RunReadiness:  runReadinessCommand,
-		RunPostHealth: runPostKubeadmHealthCommand,
-		MountBootRoot: mountRuntimeBootRoot,
-		BundleClient:  http.DefaultClient,
-		Async:         true,
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
+		Root:                 strings.TrimSpace(root),
+		Store:                store,
+		AgentStartID:         strings.TrimSpace(agentStartID),
+		Now:                  func() time.Time { return time.Now().UTC() },
+		RunTool:              runChildProcess,
+		RunReadiness:         runReadinessCommand,
+		RunPostHealth:        runPostKubeadmHealthCommand,
+		RunEndpointLifecycle: runChildProcess,
+		MountBootRoot:        mountRuntimeBootRoot,
+		BundleClient:         http.DefaultClient,
+		Async:                true,
+		workerCtx:            workerCtx,
+		workerCancel:         workerCancel,
 	}
 	if runtimeRoot(executor.Root) == "/" {
 		executor.SetBootOneshot = setBootOneshot
@@ -219,6 +221,30 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if expired := expiredJoinMaterial(record, e.clock()); expired != "" {
 		_, markErr := e.failRecordPhase(record.OperationID, "join-material-expired", "bootstrap-runtime-ready", "bootstrap-runtime-ready", "submit a new worker join operation with unexpired join material", fmt.Errorf("%s", expired))
 		return markErr
+	}
+	endpointSuspended := false
+	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane {
+		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		endpointSuspended, err = suspendManagedEndpointForJoin(lifecycleCtx, e.Root, e.endpointLifecycleRunner())
+		lifecycleCancel()
+		if err != nil {
+			_, markErr := e.failRecordPhase(record.OperationID, "managed-endpoint-suspend-failed", "managed-endpoint-lifecycle", "suspend-managed-endpoint", "repair the managed endpoint lifecycle before retrying the control-plane join", err)
+			return errors.Join(err, markErr)
+		}
+		if endpointSuspended {
+			updatedAt := e.clock()
+			record, err = e.Store.Update(record.OperationID, "managed-endpoint-suspended", "managed-endpoint-lifecycle", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+				record.Phase = "suspend-managed-endpoint"
+				record.CompletedPhases = appendMissing(record.CompletedPhases, "suspend-managed-endpoint")
+				record.PhaseIndex = len(record.CompletedPhases)
+				record.NextAction = "run control-plane join while the managed endpoint is off the local path"
+				record.UpdatedAt = updatedAt
+				return record, nil
+			})
+			if err != nil {
+				return err
+			}
+		}
 	}
 	markerID := strings.TrimSpace(plan.MarkerID)
 	if markerID == "" {
@@ -369,6 +395,26 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	}
 	if result.ExitStatus != 0 {
 		return fmt.Errorf("run %s: exit status %d", plan.Argv[0], result.ExitStatus)
+	}
+	if endpointSuspended {
+		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := resumeManagedEndpointAfterJoin(lifecycleCtx, e.Root, e.endpointLifecycleRunner())
+		lifecycleCancel()
+		if err != nil {
+			_, markErr := e.failRecordPhase(record.OperationID, "managed-endpoint-restore-failed", "managed-endpoint-lifecycle", "restore-managed-endpoint", "repair the managed endpoint interface after kubeadm joined the control plane", err)
+			return errors.Join(err, markErr)
+		}
+		updatedAt := e.clock()
+		if _, err := e.Store.Update(record.OperationID, "managed-endpoint-restored", "managed-endpoint-lifecycle", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+			record.Phase = "restore-managed-endpoint"
+			record.CompletedPhases = appendMissing(record.CompletedPhases, "restore-managed-endpoint")
+			record.PhaseIndex = len(record.CompletedPhases)
+			record.NextAction = "run bounded post-kubeadm health checks"
+			record.UpdatedAt = updatedAt
+			return record, nil
+		}); err != nil {
+			return err
+		}
 	}
 	if err := e.finalizeSuccessfulOperation(ctx, record.OperationID); err != nil {
 		return err
@@ -789,6 +835,13 @@ func (e *Executor) postHealthRunner() ToolRunner {
 		return e.RunPostHealth
 	}
 	return runPostKubeadmHealthCommand
+}
+
+func (e *Executor) endpointLifecycleRunner() ToolRunner {
+	if e.RunEndpointLifecycle != nil {
+		return e.RunEndpointLifecycle
+	}
+	return runChildProcess
 }
 
 func requiresBootstrapRuntime(record operation.OperationRecord) bool {

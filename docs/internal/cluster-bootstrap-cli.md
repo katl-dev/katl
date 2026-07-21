@@ -422,9 +422,16 @@ That endpoint is locally assigned on every managed-VIP control-plane node, so a
 joining node would capture the request before its API server exists. Katl
 therefore derives an ephemeral authenticated file-discovery kubeconfig from the
 init operation's CA and bootstrap token, points it at the already initialized
-node, and supplies it only to managed-VIP control-plane joins. The uploaded
-kubeadm `ClusterConfiguration`, ordinary worker discovery, and final operator
-kubeconfig retain the declared stable endpoint.
+node, and supplies it only to managed-VIP control-plane joins. Because later
+kubeadm phases intentionally return to the durable `controlPlaneEndpoint`, the
+joining node also withdraws its route and takes its Katl-owned dummy VIP
+interface off the local path before running kubeadm. Stable-endpoint traffic
+then follows the fabric route to an existing healthy control plane. After
+kubeadm has started the joining node's local API, the agent restores the VIP
+interface and resumes health-gated advertisement. A failed join leaves the VIP
+off the local path so the broken node cannot capture endpoint traffic. The
+uploaded kubeadm `ClusterConfiguration`, ordinary worker discovery, and final
+operator kubeconfig retain the declared stable endpoint throughout.
 
 When managed advertisement is configured, Katl's endpoint application owns the
 VIP and BIRD lifecycle and this command waits for the resulting stable endpoint.
