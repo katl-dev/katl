@@ -1597,6 +1597,7 @@ func TestSubmitOperationRecordsWorkerJoinMaterializationFailureBeforeDispatch(t 
 	req.OperationKind = "bootstrap-join-worker"
 	req.Bootstrap.SystemRole = "worker"
 	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+	req.Bootstrap.WorkerJoinMaterial.DiscoveryKubeconfig = []byte("token: discovery-secret-must-not-persist\n")
 
 	accepted, err := server.SubmitOperation(context.Background(), req)
 	if err != nil {
@@ -1646,8 +1647,8 @@ func TestSubmitOperationDoesNotPersistRawWorkerJoinMaterial(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(data), "abcdef.0123456789abcdef") {
-			return fmt.Errorf("%s contains raw bootstrap token", path)
+		if strings.Contains(string(data), "abcdef.0123456789abcdef") || strings.Contains(string(data), "discovery-secret-must-not-persist") {
+			return fmt.Errorf("%s contains raw join credentials", path)
 		}
 		return nil
 	})

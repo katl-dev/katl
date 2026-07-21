@@ -1298,24 +1298,36 @@ func (s *Server) materializeJoinConfig(req *agentapi.SubmitOperationRequest, ope
 	if err != nil {
 		return workerJoinMetadata{}, fmt.Errorf("read stored kubeadm config: %w", err)
 	}
+	runtimePath := temporaryJoinConfigPath(operationID)
+	discoveryPath := ""
+	if len(material.DiscoveryKubeconfig) > 0 {
+		discoveryPath = temporaryJoinDiscoveryPath(operationID)
+	}
 	var rendered []byte
 	switch req.OperationKind {
 	case "bootstrap-join-control-plane":
-		rendered, err = cluster.RenderControlPlaneJoinConfig(base, material)
+		rendered, err = cluster.RenderControlPlaneJoinConfig(base, material, discoveryPath)
 	case "bootstrap-join-worker":
-		rendered, err = cluster.RenderWorkerJoinConfig(base, material)
+		rendered, err = cluster.RenderWorkerJoinConfig(base, material, discoveryPath)
 	default:
 		return workerJoinMetadata{}, fmt.Errorf("operationKind %q is not a join operation", req.OperationKind)
 	}
 	if err != nil {
 		return workerJoinMetadata{}, err
 	}
-	runtimePath := temporaryJoinConfigPath(operationID)
 	target := filepath.Join(filepath.Clean(s.Root), strings.TrimPrefix(runtimePath, "/"))
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return workerJoinMetadata{}, fmt.Errorf("create temporary join config directory: %w", err)
 	}
+	if discoveryPath != "" {
+		discoveryTarget := filepath.Join(filepath.Clean(s.Root), strings.TrimPrefix(discoveryPath, "/"))
+		if err := os.WriteFile(discoveryTarget, material.DiscoveryKubeconfig, 0o600); err != nil {
+			cleanupTemporaryJoinConfig(s.Root, operation.OperationRecord{BootstrapRequest: &operation.BootstrapRequest{TemporaryJoinConfigPath: runtimePath}})
+			return workerJoinMetadata{}, fmt.Errorf("write temporary join discovery kubeconfig: %w", err)
+		}
+	}
 	if err := os.WriteFile(target, rendered, 0o600); err != nil {
+		cleanupTemporaryJoinConfig(s.Root, operation.OperationRecord{BootstrapRequest: &operation.BootstrapRequest{TemporaryJoinConfigPath: runtimePath}})
 		return workerJoinMetadata{}, fmt.Errorf("write temporary join config: %w", err)
 	}
 	return workerJoinMetadata{
@@ -1327,6 +1339,10 @@ func (s *Server) materializeJoinConfig(req *agentapi.SubmitOperationRequest, ope
 
 func temporaryJoinConfigPath(operationID string) string {
 	return "/run/katl/bootstrap-join/" + operationID + "/config.yaml"
+}
+
+func temporaryJoinDiscoveryPath(operationID string) string {
+	return "/run/katl/bootstrap-join/" + operationID + "/discovery.conf"
 }
 
 func joinMaterial(material *agentapi.WorkerJoinMaterial) (cluster.JoinMaterial, error) {
@@ -1341,7 +1357,12 @@ func joinMaterial(material *agentapi.WorkerJoinMaterial) (cluster.JoinMaterial, 
 		}
 		argv = append(argv, arg)
 	}
-	return cluster.ParseJoinMaterial(strings.Join(argv, " "))
+	parsed, err := cluster.ParseJoinMaterial(strings.Join(argv, " "))
+	if err != nil {
+		return cluster.JoinMaterial{}, err
+	}
+	parsed.DiscoveryKubeconfig = append([]byte(nil), material.GetDiscoveryKubeconfig()...)
+	return parsed, nil
 }
 
 func validateWorkerJoinMaterial(material cluster.JoinMaterial) error {
@@ -1447,12 +1468,19 @@ func workerJoinTTL(value string) (time.Duration, error) {
 }
 
 func workerJoinMaterialDigest(material *agentapi.WorkerJoinMaterial) string {
+	discoveryDigest := ""
+	if len(material.GetDiscoveryKubeconfig()) > 0 {
+		sum := sha256.Sum256(material.GetDiscoveryKubeconfig())
+		discoveryDigest = hex.EncodeToString(sum[:])
+	}
 	payload := struct {
-		JoinArgv  []string `json:"joinArgv"`
-		ExpiresAt string   `json:"expiresAt"`
+		JoinArgv              []string `json:"joinArgv"`
+		ExpiresAt             string   `json:"expiresAt"`
+		DiscoveryConfigSHA256 string   `json:"discoveryConfigSHA256,omitempty"`
 	}{
-		JoinArgv:  append([]string(nil), material.GetJoinArgv()...),
-		ExpiresAt: strings.TrimSpace(material.GetExpiresAt()),
+		JoinArgv:              append([]string(nil), material.GetJoinArgv()...),
+		ExpiresAt:             strings.TrimSpace(material.GetExpiresAt()),
+		DiscoveryConfigSHA256: discoveryDigest,
 	}
 	data, _ := json.Marshal(payload)
 	sum := sha256.Sum256(data)

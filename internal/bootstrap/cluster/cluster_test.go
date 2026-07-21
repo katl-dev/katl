@@ -1588,6 +1588,42 @@ patches:
 	}
 }
 
+func TestRenderControlPlaneJoinUsesEphemeralFileDiscovery(t *testing.T) {
+	base := []byte(`apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+`)
+	material := JoinMaterial{
+		Argv: []string{
+			"kubeadm", "join", "10.0.0.11:6443",
+			"--token", "abcdef.0123456789abcdef",
+			"--discovery-token-ca-cert-hash", testDiscoveryHash,
+			"--control-plane",
+			"--certificate-key", strings.Repeat("a", 64),
+		},
+		DiscoveryKubeconfig: []byte("ephemeral discovery credentials"),
+	}
+	rendered, err := RenderControlPlaneJoinConfig(base, material, "/run/katl/bootstrap-join/op/discovery.conf")
+	if err != nil {
+		t.Fatalf("RenderControlPlaneJoinConfig() error = %v", err)
+	}
+	text := string(rendered)
+	for _, want := range []string{
+		"file:",
+		"kubeConfigPath: /run/katl/bootstrap-join/op/discovery.conf",
+		"tlsBootstrapToken: abcdef.0123456789abcdef",
+		"certificateKey: " + strings.Repeat("a", 64),
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("rendered join config = %q, want %q", text, want)
+		}
+	}
+	if strings.Contains(text, "bootstrapToken:") || strings.Contains(text, "caCertHashes:") {
+		t.Fatalf("rendered join config retained mutually exclusive token discovery:\n%s", rendered)
+	}
+}
+
 func adminKubeconfig() string {
 	return `apiVersion: v1
 kind: Config

@@ -558,6 +558,16 @@ func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 			t.Fatalf("temporary join config mode = %#o, want 0600", info.Mode().Perm())
 		}
 		assertFileContains(t, configPath, "abcdef.0123456789abcdef")
+		discoveryPath := filepath.Join(filepath.Dir(configPath), "discovery.conf")
+		discoveryInfo, err := os.Stat(discoveryPath)
+		if err != nil {
+			t.Fatalf("temporary discovery kubeconfig was not materialized: %v", err)
+		}
+		if discoveryInfo.Mode().Perm() != 0o600 {
+			t.Fatalf("temporary discovery kubeconfig mode = %#o, want 0600", discoveryInfo.Mode().Perm())
+		}
+		assertFileContains(t, configPath, "kubeConfigPath: /run/katl/bootstrap-join/bootstrap-join-worker-01/discovery.conf")
+		assertFileContains(t, discoveryPath, "ephemeral discovery credentials")
 		started(456)
 		return ToolResult{
 			Stdout:     []byte("joined node using token abcdef.0123456789abcdef\n"),
@@ -578,6 +588,7 @@ func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 	req.OperationKind = "bootstrap-join-worker"
 	req.Bootstrap.SystemRole = "worker"
 	req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+	req.Bootstrap.WorkerJoinMaterial.DiscoveryKubeconfig = []byte("ephemeral discovery credentials\n")
 	accepted, err := server.SubmitOperation(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -601,6 +612,9 @@ func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(server.Root, "run/katl/bootstrap-join/bootstrap-join-worker-01/config.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("temporary join config was not deleted after kubeadm: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(server.Root, "run/katl/bootstrap-join/bootstrap-join-worker-01/discovery.conf")); !os.IsNotExist(err) {
+		t.Fatalf("temporary discovery kubeconfig was not deleted after kubeadm: %v", err)
 	}
 }
 

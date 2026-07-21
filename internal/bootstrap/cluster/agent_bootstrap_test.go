@@ -47,6 +47,7 @@ func TestRunAgentBootstrapDryRunContactsAgentAndPropagatesOverride(t *testing.T)
 func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	inv := validSingleNodeInventory()
 	inv.ControlPlaneEndpoint = "api.katl.test:6443"
+	inv.ControlPlaneEndpointManaged = true
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-2",
 		Address:           "10.0.0.12",
@@ -105,14 +106,18 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 		InitNode:            "cp-1",
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
-	}, AgentBootstrapDependencies{Connector: connector, Actor: "test-actor"})
+	}, AgentBootstrapDependencies{
+		Connector:       connector,
+		Actor:           "test-actor",
+		BootstrapRunner: &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}},
+	})
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "control-plane-join", "kubeconfig"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "stable-endpoint", "control-plane-join", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
 	}
-	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[3].OperationID != "bootstrap-join-control-plane-1" {
+	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[4].OperationID != "bootstrap-join-control-plane-1" {
 		t.Fatalf("operation phases = %#v", result.Phases)
 	}
 	if len(cpClient.createMaterialRequests) != 1 {
@@ -133,6 +138,12 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	}
 	if got := cp2Req.Bootstrap.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.0.0.11:6443" {
 		t.Fatalf("control-plane join discovery endpoint = %q, want init-node endpoint", got)
+	}
+	discovery := string(cp2Req.Bootstrap.WorkerJoinMaterial.GetDiscoveryKubeconfig())
+	for _, want := range []string{"server: https://10.0.0.11:6443", "certificate-authority-data: " + testCA, "token: abcdef.0123456789abcdef"} {
+		if !strings.Contains(discovery, want) {
+			t.Fatalf("control-plane discovery kubeconfig = %q, want %q", discovery, want)
+		}
 	}
 	if got := cp2Req.Bootstrap.ControlPlaneEndpoint; got != "api.katl.test:6443" {
 		t.Fatalf("control-plane endpoint = %q, want stable cluster endpoint", got)
@@ -535,8 +546,11 @@ func TestRunAgentBootstrapMintsWorkerJoinMaterialAndSubmitsWorkerJoin(t *testing
 	if workerReq.Bootstrap.WorkerJoinMaterial == nil || workerReq.Bootstrap.WorkerJoinMaterial.ExpiresAt != "2026-06-16T13:00:00Z" {
 		t.Fatalf("worker join material = %#v", workerReq.Bootstrap.WorkerJoinMaterial)
 	}
-	if got := workerReq.Bootstrap.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.0.0.11:6443" {
-		t.Fatalf("worker join discovery endpoint = %q, want init-node endpoint", got)
+	if got := workerReq.Bootstrap.WorkerJoinMaterial.GetJoinArgv()[2]; got != "api.katl.test:6443" {
+		t.Fatalf("worker join discovery endpoint = %q, want stable endpoint", got)
+	}
+	if len(workerReq.Bootstrap.WorkerJoinMaterial.GetDiscoveryKubeconfig()) != 0 {
+		t.Fatalf("worker join unexpectedly received file discovery material")
 	}
 }
 
