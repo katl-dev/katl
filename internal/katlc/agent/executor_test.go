@@ -618,6 +618,82 @@ func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 	}
 }
 
+func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t *testing.T) {
+	server := newTestServer(t)
+	seedBootstrapRuntimeRootForRole(t, server.Root, "control-plane")
+	writeManagedEndpointTestConfig(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "control-plane join Kubernetes sysext")
+	var sequence []string
+	executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult {
+		sequence = append(sequence, "readiness")
+		return ToolResult{}
+	}
+	executor.RunEndpointLifecycle = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		sequence = append(sequence, strings.Join(argv, " "))
+		return ToolResult{}
+	}
+	executor.RunTool = func(_ context.Context, _ []string, started func(int)) ToolResult {
+		wantPrefix := []string{
+			"readiness",
+			"systemctl stop " + endpointAdvertiserUnit,
+			endpointAdvertiserCommand + " withdraw",
+			managedEndpointInterface + " down katl-api0",
+			managedEndpointIP + " address flush dev katl-api0 to 10.40.0.10/32",
+		}
+		if !reflect.DeepEqual(sequence, wantPrefix) {
+			t.Fatalf("sequence before kubeadm = %#v, want %#v", sequence, wantPrefix)
+		}
+		sequence = append(sequence, "kubeadm")
+		started(456)
+		return ToolResult{ExitStatus: 0, PID: 456}
+	}
+	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult {
+		sequence = append(sequence, "post-health")
+		return ToolResult{}
+	}
+	server.Dispatcher = executor
+
+	req := submitRequest("req-control-plane-managed-endpoint")
+	setSubmitRequestBundle(req, source, ref)
+	req.OperationKind = "bootstrap-join-control-plane"
+	req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
+	req.Bootstrap.WorkerJoinMaterial.DiscoveryKubeconfig = []byte("ephemeral discovery credentials\n")
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"readiness",
+		"systemctl stop " + endpointAdvertiserUnit,
+		endpointAdvertiserCommand + " withdraw",
+		managedEndpointInterface + " down katl-api0",
+		managedEndpointIP + " address flush dev katl-api0 to 10.40.0.10/32",
+		"kubeadm",
+		managedEndpointInterface + " up katl-api0",
+		managedEndpointIP + " address replace 10.40.0.10/32 dev katl-api0",
+		"systemctl start " + endpointAdvertiserUnit,
+		"post-health",
+	}
+	if !reflect.DeepEqual(sequence, want) {
+		t.Fatalf("control-plane join sequence = %#v, want %#v", sequence, want)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded {
+		t.Fatalf("record = %+v, want successful managed endpoint join", record)
+	}
+	for _, phase := range []string{"suspend-managed-endpoint", "kubeadm-join-control-plane", "restore-managed-endpoint", "post-kubeadm-health"} {
+		if !contains(record.CompletedPhases, phase) {
+			t.Fatalf("completed phases = %v, missing %s", record.CompletedPhases, phase)
+		}
+	}
+}
+
 func TestSubmitOperationRejectsExpiredWorkerJoinMaterialBeforeMutation(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
