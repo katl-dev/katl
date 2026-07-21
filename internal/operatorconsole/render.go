@@ -122,9 +122,7 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 	reservedAlerts := min(measureAlertRows(contentRect.Width, alerts), max(contentRect.Height-1, 0))
 	normal := NewViewport(&render.frame, Rect{Y: contentRect.Y, Width: contentRect.Width, Height: contentRect.Height - reservedAlerts})
 	if snapshot.Mode == ModeRuntime {
-		writeHeading(&normal, "Status")
 		render.writeRuntimeStatus(&normal, snapshot)
-		writeNetwork(&normal, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces)
 	} else {
 		writeInstallerStatus(&normal, snapshot)
 	}
@@ -256,20 +254,27 @@ type paneField struct {
 
 func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot) {
 	model := NewDashboardModel(snapshot)
-	host := []paneField{
-		{label: "State", value: model.Host.Label, style: presentationStyle(model.Host.State)},
-		{label: "Node", value: fallback(snapshot.Hostname, "Unknown")},
-		{label: "Current", value: softwareLabel(model.Current)},
-		{label: "Next boot", value: softwareLabel(model.NextBoot)},
-		{label: "Live selected", value: softwareLabel(model.Live)},
-	}
-	kubernetes := []paneField{
-		{label: "State", value: model.Kubernetes.Label, style: presentationStyle(model.Kubernetes.State)},
-		{label: "Version", value: fallback(model.Live.KubernetesVersion, "Not installed")},
-		{label: "Live generation", value: fallback(model.Live.Generation, "Unknown")},
+	var hostStorage [3 + maxDisplayInterfaces + 1]paneField
+	host := hostStorage[:0]
+	host = append(host,
+		paneField{label: "State", value: model.Host.Label, style: presentationStyle(model.Host.State)},
+		paneField{label: "Node", value: fallback(snapshot.Hostname, "Unknown")},
+		paneField{label: "KatlOS", value: fallback(snapshot.CurrentSoftware.KatlOSVersion, "Unknown")},
+	)
+	host = appendNetworkPaneFields(host, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces)
+	var kubernetesStorage [2 + 1 + controlPlanePodCount]paneField
+	kubernetes := append(kubernetesStorage[:0],
+		paneField{label: "State", value: model.Kubernetes.Label, style: presentationStyle(model.Kubernetes.State)},
+		paneField{label: "Kubelet", value: fallback(snapshot.LiveSoftware.KubernetesVersion, "Not installed")},
+	)
+	if snapshot.ControlPlane {
+		kubernetes = append(kubernetes, paneField{label: "Control plane", value: fallback(snapshot.ControlPlaneEndpoint, "Local")})
+		for _, pod := range snapshot.ControlPlanePods {
+			kubernetes = append(kubernetes, paneField{label: controlPlanePodLabel(pod.Name), value: fallback(pod.State, KubernetesPodUnknown), style: kubernetesPodStyle(pod.State)})
+		}
 	}
 	if content.bounds.Width < wideLayoutWidth {
-		writePane(content, "Host", host)
+		writePane(content, "Node", host)
 		writePane(content, "Kubernetes", kubernetes)
 		return
 	}
@@ -278,7 +283,7 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	dividerX := (content.bounds.Width - 1) / 2
 	left := content.sub(Rect{Y: start, Width: dividerX, Height: content.rowsRemaining()})
 	right := content.sub(Rect{X: dividerX + 1, Y: start, Width: content.bounds.Width - dividerX - 1, Height: content.rowsRemaining()})
-	writePane(&left, "Host", host)
+	writePane(&left, "Node", host)
 	writePane(&right, "Kubernetes", kubernetes)
 	used := max(left.rowsUsed(), right.rowsUsed())
 	content.advance(used)
@@ -289,18 +294,56 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	}
 }
 
-func softwareLabel(software Software) string {
-	parts := make([]string, 0, 2)
-	if software.Generation != "" {
-		parts = append(parts, "generation "+software.Generation)
+func appendNetworkPaneFields(fields []paneField, network []NetworkInterface, additional int) []paneField {
+	if len(network) == 0 {
+		return append(fields, paneField{label: "Network", value: "Waiting for an active interface"})
 	}
-	if software.KatlOSVersion != "" {
-		parts = append(parts, "KatlOS "+software.KatlOSVersion)
+	for index, iface := range network {
+		label := ""
+		if index == 0 {
+			label = "Network"
+		}
+		value := iface.Name + ": configuring"
+		if len(iface.Addresses) > 0 {
+			value = iface.Name + ": " + strings.Join(iface.Addresses, ", ")
+		}
+		if iface.AdditionalAddresses > 0 {
+			value += "  + " + pluralCount(iface.AdditionalAddresses, "address", "addresses")
+		}
+		fields = append(fields, paneField{label: label, value: value})
 	}
-	if len(parts) == 0 {
-		return "Unknown"
+	if additional > 0 {
+		fields = append(fields, paneField{value: "+ " + pluralCount(additional, "interface", "interfaces"), style: styleDim})
 	}
-	return strings.Join(parts, ", ")
+	return fields
+}
+
+func controlPlanePodLabel(name string) string {
+	switch name {
+	case "kube-apiserver":
+		return "API server"
+	case "kube-controller-manager":
+		return "Controller"
+	case "kube-scheduler":
+		return "Scheduler"
+	case "etcd":
+		return "etcd"
+	default:
+		return fallback(name, "Pod")
+	}
+}
+
+func kubernetesPodStyle(state string) Style {
+	switch state {
+	case KubernetesPodRunning:
+		return styleGood
+	case KubernetesPodNotRunning:
+		return styleBad
+	case KubernetesPodStarting, KubernetesPodNotStarted:
+		return styleWarn
+	default:
+		return styleDim
+	}
 }
 
 func writePane(viewport *Viewport, title string, fields []paneField) {

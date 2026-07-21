@@ -2,6 +2,7 @@ package operatorconsole
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -449,9 +450,116 @@ func TestCollectorReportsLiveBootstrapCandidateBeforeReboot(t *testing.T) {
 		t.Fatalf("software state = current %#v, live %#v, configured=%t", snapshot.CurrentSoftware, snapshot.LiveSoftware, snapshot.KubernetesConfigured)
 	}
 	rendered := string(renderDashboard(&snapshot, nil, 80, 20, false))
-	for _, want := range []string{"Current:generation0", "Nextboot:generationbootstrap-init-candidate", "Liveselected:generationbootstrap-init-candidate", "Version:v1.36.1", "Configured"} {
+	for _, want := range []string{"KatlOS:2026.7.0-alpha.16", "Kubelet:v1.36.1", "Configured"} {
 		if !containsIgnoringLayout(rendered, want) {
 			t.Fatalf("render missing %q:\n%s", want, rendered)
+		}
+	}
+	for _, unwanted := range []string{"Current:", "Next boot:", "Live selected:", "Live generation:"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Fatalf("render contains internal generation field %q:\n%s", unwanted, rendered)
+		}
+	}
+}
+
+func TestCollectorPresentsControlPlaneStateWithoutInternalInterface(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{
+		filepath.Join(root, "etc", "kubernetes"),
+		filepath.Join(root, "var", "lib", "katl", "cluster"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc", "kubernetes", "kubelet.conf"), []byte("configured\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	intent := `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "ClusterIntent",
+  "generationID": "0",
+  "systemRole": "control-plane",
+  "identity": {"hostname": "cp-1"},
+  "inventory": {
+    "nodeName": "cp-1",
+    "controlPlaneEndpoint": "172.31.250.1:6443",
+    "controlPlaneEndpointVIP": "172.31.250.1"
+  },
+  "kubernetes": {},
+  "source": {}
+}`
+	if err := os.WriteFile(filepath.Join(root, "var", "lib", "katl", "cluster", "intent.json"), []byte(intent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	probes := 0
+	pods := initialControlPlanePods(KubernetesPodRunning)
+	pods[2].State = KubernetesPodNotRunning
+	collector := Collector{
+		Mode: ModeRuntime,
+		Root: root,
+		Interfaces: func() ([]net.Interface, error) {
+			return []net.Interface{
+				{Name: "eno1", Flags: net.FlagUp},
+				{Name: "katl-api0", Flags: net.FlagUp},
+			}, nil
+		},
+		Addrs: func(iface net.Interface) ([]net.Addr, error) {
+			if iface.Name == "katl-api0" {
+				return []net.Addr{testAddr("172.31.250.1/32")}, nil
+			}
+			return []net.Addr{testAddr("10.1.1.110/24")}, nil
+		},
+		DefaultRouteInterface: func() (string, error) { return "eno1", nil },
+		ProbeControlPlanePods: func(context.Context) (ControlPlanePodStatuses, error) {
+			probes++
+			return pods, nil
+		},
+		Now: func() time.Time { return now },
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if !snapshot.ControlPlane || snapshot.ControlPlaneEndpoint != "172.31.250.1:6443" {
+		t.Fatalf("control plane = %t endpoint = %q", snapshot.ControlPlane, snapshot.ControlPlaneEndpoint)
+	}
+	if probes != 1 || snapshot.ControlPlanePods[2].State != KubernetesPodNotRunning {
+		t.Fatalf("probe count = %d pods = %#v", probes, snapshot.ControlPlanePods)
+	}
+	if got := interfaceNames(snapshot.DisplayInterfaces); len(got) != 1 || got[0] != "eno1" {
+		t.Fatalf("host interfaces = %#v, want only eno1", got)
+	}
+
+	now = now.Add(4 * time.Second)
+	collector.Collect(&snapshot)
+	if probes != 1 {
+		t.Fatalf("cached control-plane probe count = %d", probes)
+	}
+	now = now.Add(2 * time.Second)
+	collector.Collect(&snapshot)
+	if probes != 2 {
+		t.Fatalf("refreshed control-plane probe count = %d", probes)
+	}
+}
+
+func TestDecodeControlPlanePodsReportsRuntimeState(t *testing.T) {
+	pods, err := decodeControlPlanePods([]byte(`{
+  "containers": [
+    {"metadata":{"name":"kube-apiserver"},"state":"CONTAINER_EXITED","createdAt":1},
+    {"metadata":{"name":"kube-apiserver"},"state":"CONTAINER_RUNNING","createdAt":2},
+    {"metadata":{"name":"kube-controller-manager"},"state":"CONTAINER_EXITED","createdAt":3},
+    {"metadata":{"name":"kube-scheduler"},"state":"CONTAINER_CREATED","createdAt":4},
+    {"metadata":{"name":"coredns"},"state":"CONTAINER_RUNNING","createdAt":5}
+  ]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{KubernetesPodRunning, KubernetesPodNotRunning, KubernetesPodStarting, KubernetesPodNotStarted}
+	for index, state := range want {
+		if pods[index].State != state {
+			t.Fatalf("pod %s state = %q, want %q", pods[index].Name, pods[index].State, state)
 		}
 	}
 }
@@ -612,7 +720,7 @@ func TestRenderRuntimeFailure(t *testing.T) {
 		DisplayInterfaces:    []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
 	}
 	got := string(renderDashboard(&snapshot, nil, 80, 20, false))
-	for _, want := range []string{"Status", "Host", "Kubernetes", "Needsrepair", "Unavailable", "2026.7.0-alpha.9", "v1.36.1", "Current:generation4", "Error:", "boothealthcheckfailed", "SSH:katl@192.0.2.20"} {
+	for _, want := range []string{"Node", "Kubernetes", "Needsrepair", "Unavailable", "KatlOS:2026.7.0-alpha.9", "Kubelet:v1.36.1", "Error:", "boothealthcheckfailed", "SSH:katl@192.0.2.20"} {
 		if !containsIgnoringLayout(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
@@ -664,14 +772,14 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 	snapshot := Snapshot{
 		Mode:             ModeRuntime,
 		State:            installstatus.StateKubeadmReady,
-		CurrentSoftware:  Software{Generation: "0"},
+		CurrentSoftware:  Software{Generation: "0", KatlOSVersion: "2026.7.0-beta.4"},
 		NextBootSoftware: Software{Generation: "0"},
 		LiveSoftware:     Software{Generation: "0"},
 		GenerationHealth: "healthy",
 		CurrentStep:      "Reboot",
 	}
 	plain := string(renderDashboard(&snapshot, nil, 80, 15, false))
-	for _, want := range []string{"KatlOS", "Status", "State:Healthy", "Current:generation0", "Journal"} {
+	for _, want := range []string{"KatlOS", "Node", "State:Healthy", "KatlOS:2026.7.0-beta.4", "Journal"} {
 		if !containsIgnoringLayout(plain, want) {
 			t.Fatalf("plain render missing %q:\n%s", want, plain)
 		}
@@ -697,25 +805,32 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 		Hostname:             "cp-1",
 		State:                installstatus.StateWaitingForClusterBootstrap,
 		GenerationHealth:     "healthy",
+		ControlPlane:         true,
+		ControlPlaneEndpoint: "172.31.250.1:6443",
+		ControlPlanePods:     initialControlPlanePods(KubernetesPodRunning),
 	}
 	got := string(renderDashboard(&snapshot, testJournal{[]byte("latest journal event")}, 80, 18, false))
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
-	statusRow := lineIndex(lines, "Status")
-	splitRow := lineIndexContaining(lines, "Host")
+	splitRow := lineIndexContaining(lines, "Node")
 	journalRow := lineIndex(lines, "Journal")
-	if statusRow < 0 || splitRow <= statusRow || journalRow <= splitRow {
-		t.Fatalf("pane order = status %d, split %d, journal %d:\n%s", statusRow, splitRow, journalRow, got)
+	if splitRow < 0 || journalRow <= splitRow {
+		t.Fatalf("pane order = split %d, journal %d:\n%s", splitRow, journalRow, got)
 	}
 	if !strings.Contains(lines[splitRow], "│Kubernetes") {
-		t.Fatalf("split title row = %q", lines[splitRow])
+		t.Fatalf("Node and Kubernetes titles are not aligned = %q", lines[splitRow])
 	}
 	stateRow := lines[splitRow+1]
-	if !containsIgnoringLayout(stateRow, "State:Healthy") || !containsIgnoringLayout(stateRow, "│State:Configured") {
+	if !containsIgnoringLayout(stateRow, "State:Healthy") || !containsIgnoringLayout(stateRow, "│State:Controlplanehealthy") {
 		t.Fatalf("split state row = %q", stateRow)
 	}
 	versionRow := lines[splitRow+2]
-	if !containsIgnoringLayout(versionRow, "Node:cp-1") || !containsIgnoringLayout(versionRow, "│Version:v1.36.1") {
+	if !containsIgnoringLayout(versionRow, "Node:cp-1") || !containsIgnoringLayout(versionRow, "│Kubelet:v1.36.1") {
 		t.Fatalf("split version row = %q", versionRow)
+	}
+	for _, want := range []string{"Controlplane:172.31.250.1:6443", "APIserver:Running", "Controller:Running", "Scheduler:Running", "etcd:Running"} {
+		if !containsIgnoringLayout(got, want) {
+			t.Fatalf("control-plane pane missing %q:\n%s", want, got)
+		}
 	}
 	if !strings.Contains(got, "latest journal event") {
 		t.Fatalf("journal pane missing content:\n%s", got)
@@ -749,14 +864,14 @@ func TestRenderRuntimeStacksPanesAtNarrowWidths(t *testing.T) {
 		}
 	}
 
-	hostRow := strings.Index(plain, "Host")
+	hostRow := strings.Index(plain, "Node")
 	kubernetesRow := strings.Index(plain, "Kubernetes")
 	networkRow := strings.Index(plain, "Network:")
 	journalRow := strings.Index(plain, "Journal")
-	if hostRow < 0 || kubernetesRow <= hostRow || networkRow <= kubernetesRow || journalRow <= networkRow {
+	if hostRow < 0 || networkRow <= hostRow || kubernetesRow <= networkRow || journalRow <= kubernetesRow {
 		t.Fatalf("unexpected stacked pane order:\n%s", plain)
 	}
-	for _, value := range []string{hostname, generationID, version} {
+	for _, value := range []string{hostname, "2026.7.0-alpha.12-with-a-long-build-identifier", version} {
 		if !containsIgnoringLayout(plain, value) {
 			t.Fatalf("wrapped panes lost %q:\n%s", value, plain)
 		}
@@ -1124,6 +1239,9 @@ func TestWidePaneDividerIsPaintedAfterBoundedContent(t *testing.T) {
 			KatlOSVersion:     strings.Repeat("version", 30),
 			KubernetesVersion: strings.Repeat("v1.36.1👩‍💻", 30),
 		},
+		ControlPlane:         true,
+		ControlPlaneEndpoint: strings.Repeat("api.control-plane.example.test:", 12) + "6443",
+		ControlPlanePods:     initialControlPlanePods(KubernetesPodRunning),
 	}
 	renderer.writeRuntimeStatus(&content, &snapshot)
 	divider := (content.bounds.Width - 1) / 2
@@ -1207,6 +1325,9 @@ func TestRendererBoundsArbitraryContentAtSupportedWidths(t *testing.T) {
 		LiveSoftware:         Software{Generation: string([]byte{'g', 'e', 'n', 0xff}), KatlOSVersion: strings.Repeat("version", 20), KubernetesVersion: strings.Repeat("v1.36.1", 20)},
 		GenerationHealth:     "healthy",
 		KubernetesConfigured: true,
+		ControlPlane:         true,
+		ControlPlaneEndpoint: strings.Repeat("api.control-plane.example.test:", 12) + "6443",
+		ControlPlanePods:     initialControlPlanePods(KubernetesPodRunning),
 		SSHEnabled:           true,
 		ManagementAddress:    "10.1.2.254",
 		DisplayInterfaces: []NetworkInterface{{

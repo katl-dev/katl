@@ -13,9 +13,6 @@ func NewDashboardModel(snapshot *Snapshot) DashboardModel {
 	return DashboardModel{
 		Host:       presentHost(snapshot),
 		Kubernetes: presentKubernetes(snapshot),
-		Current:    snapshot.CurrentSoftware,
-		NextBoot:   snapshot.NextBootSoftware,
-		Live:       snapshot.LiveSoftware,
 	}
 }
 
@@ -90,6 +87,9 @@ func presentKubernetes(snapshot *Snapshot) Presentation {
 		return Presentation{State: PresentationUnknown, Label: "Not installed"}
 	}
 	if snapshot.KubernetesConfigured {
+		if snapshot.ControlPlane {
+			return presentControlPlane(snapshot.ControlPlanePods)
+		}
 		return Presentation{State: PresentationProgressing, Label: "Configured"}
 	}
 	switch snapshot.State {
@@ -100,6 +100,32 @@ func presentKubernetes(snapshot *Snapshot) Presentation {
 	default:
 		return Presentation{State: PresentationUnknown, Label: "Unknown"}
 	}
+}
+
+func presentControlPlane(pods ControlPlanePodStatuses) Presentation {
+	running := 0
+	starting := false
+	failed := false
+	for _, pod := range pods {
+		switch pod.State {
+		case KubernetesPodRunning:
+			running++
+		case KubernetesPodNotRunning:
+			failed = true
+		case KubernetesPodStarting, KubernetesPodNotStarted:
+			starting = true
+		}
+	}
+	if running == len(pods) {
+		return Presentation{State: PresentationHealthy, Label: "Control plane healthy"}
+	}
+	if failed {
+		return Presentation{State: PresentationDegraded, Label: "Control plane degraded"}
+	}
+	if starting || running > 0 {
+		return Presentation{State: PresentationProgressing, Label: "Control plane starting"}
+	}
+	return Presentation{State: PresentationUnknown, Label: "Control plane unknown"}
 }
 
 func presentationStyle(state PresentationState) Style {

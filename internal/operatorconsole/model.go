@@ -23,6 +23,10 @@ type Snapshot struct {
 	NextBootSoftware     Software
 	LiveSoftware         Software
 	KubernetesConfigured bool
+	ControlPlane         bool
+	ControlPlaneEndpoint string
+	ControlPlanePods     ControlPlanePodStatuses
+	KubernetesStatusAt   time.Time
 	DestructiveMutation  bool
 	LastError            string
 	RetryHint            string
@@ -62,10 +66,24 @@ type Presentation struct {
 type DashboardModel struct {
 	Host       Presentation
 	Kubernetes Presentation
-	Current    Software
-	NextBoot   Software
-	Live       Software
 }
+
+type KubernetesPodStatus struct {
+	Name  string
+	State string
+}
+
+const controlPlanePodCount = 4
+
+type ControlPlanePodStatuses [controlPlanePodCount]KubernetesPodStatus
+
+const (
+	KubernetesPodRunning    = "Running"
+	KubernetesPodStarting   = "Starting"
+	KubernetesPodNotRunning = "Not running"
+	KubernetesPodNotStarted = "Not started"
+	KubernetesPodUnknown    = "Unknown"
+)
 
 type NetworkInterface struct {
 	Name                string

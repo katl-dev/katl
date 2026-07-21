@@ -1,6 +1,7 @@
 package operatorconsole
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
@@ -24,19 +26,25 @@ type Collector struct {
 	Interfaces            func() ([]net.Interface, error)
 	Addrs                 func(net.Interface) ([]net.Addr, error)
 	DefaultRouteInterface func() (string, error)
+	ProbeControlPlanePods func(context.Context) (ControlPlanePodStatuses, error)
 	Now                   func() time.Time
 }
 
 const (
-	maxDisplayInterfaces = 3
-	maxDisplayAddresses  = 2
+	maxDisplayInterfaces  = 3
+	maxDisplayAddresses   = 2
+	kubernetesProbePeriod = 5 * time.Second
 )
 
 func (c Collector) Collect(snapshot *Snapshot) {
 	interfaces := snapshot.DisplayInterfaces
+	controlPlanePods := snapshot.ControlPlanePods
+	kubernetesStatusAt := snapshot.KubernetesStatusAt
 	*snapshot = Snapshot{
-		Mode:              c.Mode,
-		DisplayInterfaces: interfaces[:0],
+		Mode:               c.Mode,
+		DisplayInterfaces:  interfaces[:0],
+		ControlPlanePods:   controlPlanePods,
+		KubernetesStatusAt: kubernetesStatusAt,
 	}
 	if c.Mode == ModeInstaller {
 		snapshot.Version = strings.TrimSpace(c.Version)
@@ -58,6 +66,7 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	if c.Now == nil {
 		c.Now = time.Now
 	}
+	now := c.Now()
 	if hostname, err := c.Hostname(); err == nil {
 		snapshot.Hostname = hostname
 	}
@@ -86,7 +95,7 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		snapshot.StatusError = err.Error()
 	}
-	if statusCanBecomeStale(snapshot.State) && !snapshot.UpdatedAt.IsZero() && c.Now().Sub(snapshot.UpdatedAt) > 10*time.Minute {
+	if statusCanBecomeStale(snapshot.State) && !snapshot.UpdatedAt.IsZero() && now.Sub(snapshot.UpdatedAt) > 10*time.Minute {
 		snapshot.StatusStale = true
 	}
 	if snapshot.State == "" {
@@ -112,6 +121,7 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	} else {
 		snapshot.KubernetesConfigured = fileExists(rooted(c.Root, "/etc/kubernetes/kubelet.conf"))
 		c.collectGeneration(snapshot)
+		c.collectKubernetes(snapshot, now)
 	}
 }
 
@@ -212,12 +222,53 @@ func normalizeManagementAddress(value string) string {
 
 func virtualInterface(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	for _, prefix := range []string{"cilium", "lxc", "veth", "docker", "br-", "virbr", "flannel", "cali", "dummy", "kube", "tun", "tap"} {
+	for _, prefix := range []string{"katl-api", "cilium", "lxc", "veth", "docker", "br-", "virbr", "flannel", "cali", "dummy", "kube", "tun", "tap"} {
 		if strings.HasPrefix(name, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+func (c Collector) collectKubernetes(snapshot *Snapshot, now time.Time) {
+	root := cleanRoot(c.Root)
+	intentAvailable := false
+	if intent, _, err := installer.ReadClusterIntent(root); err == nil {
+		intentAvailable = true
+		snapshot.ControlPlane = strings.TrimSpace(intent.SystemRole) == "control-plane"
+		snapshot.ControlPlaneEndpoint = strings.TrimSpace(intent.Inventory.ControlPlaneEndpoint)
+		if snapshot.ControlPlaneEndpoint == "" {
+			snapshot.ControlPlaneEndpoint = strings.TrimSpace(intent.Inventory.ControlPlaneEndpointVIP)
+		}
+	}
+	if !intentAvailable && fileExists(rooted(c.Root, "/etc/kubernetes/manifests/kube-apiserver.yaml")) {
+		snapshot.ControlPlane = true
+	}
+	if !snapshot.ControlPlane {
+		snapshot.ControlPlanePods = ControlPlanePodStatuses{}
+		snapshot.KubernetesStatusAt = time.Time{}
+		return
+	}
+	if !snapshot.KubernetesConfigured {
+		snapshot.ControlPlanePods = initialControlPlanePods(KubernetesPodNotStarted)
+		snapshot.KubernetesStatusAt = now
+		return
+	}
+	if !snapshot.KubernetesStatusAt.IsZero() && now.Sub(snapshot.KubernetesStatusAt) < kubernetesProbePeriod {
+		return
+	}
+	probe := c.ProbeControlPlanePods
+	if probe == nil {
+		probe = probeControlPlanePods
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	pods, err := probe(ctx)
+	if err != nil {
+		pods = initialControlPlanePods(KubernetesPodUnknown)
+	}
+	snapshot.ControlPlanePods = pods
+	snapshot.KubernetesStatusAt = now
 }
 
 func readDefaultRouteInterface(path string) (string, error) {
