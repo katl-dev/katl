@@ -105,6 +105,7 @@ message BootstrapOperationRequest {
 message WorkerJoinMaterial {
   repeated string join_argv = 1;
   string expires_at = 2;
+  bytes discovery_kubeconfig = 3;
 }
 
 message ValidateConfigRequest {

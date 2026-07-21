@@ -965,6 +965,7 @@ func cleanupTemporaryJoinConfig(root string, record operation.OperationRecord) {
 		root = "/"
 	}
 	target := filepath.Join(filepath.Clean(root), strings.TrimPrefix(path, "/"))
+	_ = os.Remove(filepath.Join(filepath.Dir(target), "discovery.conf"))
 	_ = os.Remove(target)
 	_ = os.Remove(filepath.Dir(target))
 }

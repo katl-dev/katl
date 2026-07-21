@@ -17,6 +17,7 @@ import (
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -178,7 +179,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	}
 	for _, node := range controlPlaneJoinNodes(plan) {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-control-plane", Phase: "creating-join-material"})
-		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, deps)
+		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, initResult.Credentials, plan.ControlPlaneEndpointManaged, deps)
 		if err != nil {
 			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
 			return result, fmt.Errorf("control-plane join material for %s: %s", node.Name, inventory.Redact(err.Error()))
@@ -435,15 +436,25 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	return result, nil
 }
 
-func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
-	return createJoinMaterial(ctx, initNode, controlPlane, status, initOperationID, deps, "control-plane")
+func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, credentials AdminCredentials, managedEndpoint bool, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
+	discovery := joinDiscoveryOverride{}
+	if managedEndpoint {
+		discovery.Endpoint = endpointForNode(initNode)
+		discovery.CertificateAuthorityData = credentials.CertificateAuthorityData
+	}
+	return createJoinMaterial(ctx, initNode, controlPlane, status, initOperationID, deps, "control-plane", discovery)
 }
 
 func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
-	return createJoinMaterial(ctx, initNode, worker, status, initOperationID, deps, "worker")
+	return createJoinMaterial(ctx, initNode, worker, status, initOperationID, deps, "worker", joinDiscoveryOverride{})
 }
 
-func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies, role string) (workerJoinMaterial, error) {
+type joinDiscoveryOverride struct {
+	Endpoint                 string
+	CertificateAuthorityData string
+}
+
+func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies, role string, discovery joinDiscoveryOverride) (workerJoinMaterial, error) {
 	conn, err := deps.Connector.Connect(ctx, initNode)
 	if err != nil {
 		return workerJoinMaterial{}, fmt.Errorf("connect to katlc agent: %w", err)
@@ -470,9 +481,11 @@ func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.Planne
 	if strings.TrimSpace(material.GetExpiresAt()) == "" {
 		return workerJoinMaterial{}, fmt.Errorf("agent returned %s join material without expiry", role)
 	}
-	material, err = joinMaterialWithDiscoveryEndpoint(material, endpointForNode(initNode))
-	if err != nil {
-		return workerJoinMaterial{}, fmt.Errorf("prepare %s join material: %w", role, err)
+	if strings.TrimSpace(discovery.Endpoint) != "" {
+		material, err = joinMaterialWithDiscoveryEndpoint(material, discovery.Endpoint, discovery.CertificateAuthorityData)
+		if err != nil {
+			return workerJoinMaterial{}, fmt.Errorf("prepare %s join material: %w", role, err)
+		}
 	}
 	ref := strings.TrimSpace(response.GetMaterialRef())
 	if ref == "" {
@@ -481,7 +494,7 @@ func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.Planne
 	return workerJoinMaterial{Ref: ref, Material: material}, nil
 }
 
-func joinMaterialWithDiscoveryEndpoint(material *agentapi.WorkerJoinMaterial, endpoint string) (*agentapi.WorkerJoinMaterial, error) {
+func joinMaterialWithDiscoveryEndpoint(material *agentapi.WorkerJoinMaterial, endpoint, certificateAuthorityData string) (*agentapi.WorkerJoinMaterial, error) {
 	argv := append([]string(nil), material.GetJoinArgv()...)
 	if len(argv) < 3 || argv[0] != "kubeadm" || argv[1] != "join" {
 		return nil, errors.New("join material must start with kubeadm join and an API endpoint")
@@ -490,10 +503,45 @@ func joinMaterialWithDiscoveryEndpoint(material *agentapi.WorkerJoinMaterial, en
 	if err := validateEndpointLike(endpoint); err != nil {
 		return nil, fmt.Errorf("init-node discovery endpoint: %w", err)
 	}
+	token := strings.TrimSpace(flagValue(argv, "--token"))
+	if token == "" {
+		return nil, errors.New("join material is missing bootstrap token")
+	}
+	certificateAuthorityData = strings.TrimSpace(certificateAuthorityData)
+	if certificateAuthorityData == "" {
+		return nil, errors.New("join discovery is missing certificate authority data")
+	}
 	argv[2] = endpoint
+	discoveryKubeconfig, err := yaml.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Config",
+		"clusters": []any{map[string]any{
+			"name": "katl-discovery",
+			"cluster": map[string]any{
+				"certificate-authority-data": certificateAuthorityData,
+				"server":                     "https://" + endpoint,
+			},
+		}},
+		"contexts": []any{map[string]any{
+			"name": "katl-discovery",
+			"context": map[string]any{
+				"cluster": "katl-discovery",
+				"user":    "katl-bootstrap",
+			},
+		}},
+		"current-context": "katl-discovery",
+		"users": []any{map[string]any{
+			"name": "katl-bootstrap",
+			"user": map[string]any{"token": token},
+		}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("render join discovery kubeconfig: %w", err)
+	}
 	return &agentapi.WorkerJoinMaterial{
-		JoinArgv:  argv,
-		ExpiresAt: material.GetExpiresAt(),
+		JoinArgv:            argv,
+		ExpiresAt:           material.GetExpiresAt(),
+		DiscoveryKubeconfig: discoveryKubeconfig,
 	}, nil
 }
 

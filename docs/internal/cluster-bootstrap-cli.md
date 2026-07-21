@@ -377,9 +377,10 @@ fixtures.
 
 When join material is needed on a node, `katlctl` supplies it through the
 operation request or transport. Node-local `katlc` materializes any temporary
-restricted join configuration needed to run kubeadm. Any temporary file is mode
-`0600`, lives outside `/etc/katl`, is deleted on a best-effort basis after use,
-and is never copied into the normal `OperationRecord` or invocation summary.
+restricted join configuration and discovery kubeconfig needed to run kubeadm.
+Those temporary files are mode `0600`, live outside `/etc/katl`, are deleted on
+a best-effort basis after use, and are never copied into the normal
+`OperationRecord` or invocation summary.
 
 Normal output redacts:
 
@@ -403,7 +404,9 @@ The command supports two endpoint shapes:
 
 ```text
 initial kubeadm endpoint
-  join discovery uses the selected init node address
+  managed-VIP control-plane joins discover through the selected init node
+  worker and externally managed endpoint joins use ordinary kubeadm token
+    discovery through the cluster endpoint
   multi-node bootstrap requires an explicit --control-plane-endpoint or an
   equivalent endpoint from the compiled plan for ClusterConfiguration
 
@@ -413,16 +416,21 @@ stable endpoint verification
 ```
 
 The discovery endpoint and the cluster control-plane endpoint deliberately have
-different jobs. Katl rewrites the short-lived join material to discover through
-the already initialized node. The uploaded kubeadm `ClusterConfiguration` and
-the final operator kubeconfig retain the declared stable endpoint. This avoids
-capturing discovery traffic on a joining control-plane node which has already
-configured the managed VIP but does not yet run a local API server.
+different jobs for a Katl-managed VIP. Kubeadm token discovery trusts the
+signed `cluster-info` kubeconfig, whose server is the durable cluster endpoint.
+That endpoint is locally assigned on every managed-VIP control-plane node, so a
+joining node would capture the request before its API server exists. Katl
+therefore derives an ephemeral authenticated file-discovery kubeconfig from the
+init operation's CA and bootstrap token, points it at the already initialized
+node, and supplies it only to managed-VIP control-plane joins. The uploaded
+kubeadm `ClusterConfiguration`, ordinary worker discovery, and final operator
+kubeconfig retain the declared stable endpoint.
 
-Katl does not own BIRD, VIP, kube-vip, ingress, load balancer, or DNS lifecycle
-as part of this command. The command may verify a declared stable endpoint before
-exporting kubeconfig output that uses it. It does not apply the user resources
-that might later advertise or replace that endpoint.
+When managed advertisement is configured, Katl's endpoint application owns the
+VIP and BIRD lifecycle and this command waits for the resulting stable endpoint.
+For an externally managed endpoint, the command only verifies reachability; it
+does not own kube-vip, ingress, load balancer, or DNS lifecycle, or apply user
+resources that advertise or replace that endpoint.
 
 Do not add kubePrism as an initial requirement.
 

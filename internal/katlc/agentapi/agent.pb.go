@@ -770,11 +770,12 @@ func (x *BootstrapOperationRequest) GetKubernetesBundleRef() string {
 }
 
 type WorkerJoinMaterial struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JoinArgv      []string               `protobuf:"bytes,1,rep,name=join_argv,json=joinArgv,proto3" json:"join_argv,omitempty"`
-	ExpiresAt     string                 `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	JoinArgv            []string               `protobuf:"bytes,1,rep,name=join_argv,json=joinArgv,proto3" json:"join_argv,omitempty"`
+	ExpiresAt           string                 `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	DiscoveryKubeconfig []byte                 `protobuf:"bytes,3,opt,name=discovery_kubeconfig,json=discoveryKubeconfig,proto3" json:"discovery_kubeconfig,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *WorkerJoinMaterial) Reset() {
@@ -819,6 +820,13 @@ func (x *WorkerJoinMaterial) GetExpiresAt() string {
 		return x.ExpiresAt
 	}
 	return ""
+}
+
+func (x *WorkerJoinMaterial) GetDiscoveryKubeconfig() []byte {
+	if x != nil {
+		return x.DiscoveryKubeconfig
+	}
+	return nil
 }
 
 type ValidateConfigRequest struct {
@@ -3680,11 +3688,12 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x14worker_join_material\x18\n" +
 	" \x01(\v2!.katl.agent.v1.WorkerJoinMaterialR\x12workerJoinMaterial\x128\n" +
 	"\x18kubernetes_bundle_source\x18\v \x01(\tR\x16kubernetesBundleSource\x122\n" +
-	"\x15kubernetes_bundle_ref\x18\f \x01(\tR\x13kubernetesBundleRef\"P\n" +
+	"\x15kubernetes_bundle_ref\x18\f \x01(\tR\x13kubernetesBundleRef\"\x83\x01\n" +
 	"\x12WorkerJoinMaterial\x12\x1b\n" +
 	"\tjoin_argv\x18\x01 \x03(\tR\bjoinArgv\x12\x1d\n" +
 	"\n" +
-	"expires_at\x18\x02 \x01(\tR\texpiresAt\"\xc5\x03\n" +
+	"expires_at\x18\x02 \x01(\tR\texpiresAt\x121\n" +
+	"\x14discovery_kubeconfig\x18\x03 \x01(\fR\x13discoveryKubeconfig\"\xc5\x03\n" +
 	"\x15ValidateConfigRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +

@@ -117,7 +117,8 @@ type AdminCredentials struct {
 }
 
 type JoinMaterial struct {
-	Argv []string
+	Argv                []string
+	DiscoveryKubeconfig []byte
 }
 
 type Result struct {
@@ -1233,7 +1234,7 @@ func renderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) 
 	return RenderInitConfig(base, controlPlaneEndpoint)
 }
 
-func renderJoinConfig(base []byte, material JoinMaterial, controlPlane bool) ([]byte, error) {
+func renderJoinConfig(base []byte, material JoinMaterial, controlPlane bool, discoveryKubeconfigPath ...string) ([]byte, error) {
 	endpoint, token, hashes, err := joinDiscovery(material)
 	if err != nil {
 		return nil, err
@@ -1258,13 +1259,29 @@ func renderJoinConfig(base []byte, material JoinMaterial, controlPlane bool) ([]
 	if len(joinDocs) == 0 {
 		return nil, errors.New("kubeadm join config did not contain JoinConfiguration")
 	}
+	discoveryPath := ""
+	if len(material.DiscoveryKubeconfig) > 0 {
+		if len(discoveryKubeconfigPath) != 1 || strings.TrimSpace(discoveryKubeconfigPath[0]) == "" {
+			return nil, errors.New("join discovery kubeconfig path is required")
+		}
+		discoveryPath = strings.TrimSpace(discoveryKubeconfigPath[0])
+	}
 	for _, doc := range joinDocs {
-		doc["discovery"] = map[string]any{
-			"bootstrapToken": map[string]any{
-				"apiServerEndpoint": endpoint,
-				"token":             token,
-				"caCertHashes":      hashes,
-			},
+		if discoveryPath != "" {
+			doc["discovery"] = map[string]any{
+				"file": map[string]any{
+					"kubeConfigPath": discoveryPath,
+				},
+				"tlsBootstrapToken": token,
+			}
+		} else {
+			doc["discovery"] = map[string]any{
+				"bootstrapToken": map[string]any{
+					"apiServerEndpoint": endpoint,
+					"token":             token,
+					"caCertHashes":      hashes,
+				},
+			}
 		}
 		if controlPlane {
 			cp, _ := doc["controlPlane"].(map[string]any)
@@ -1278,7 +1295,7 @@ func renderJoinConfig(base []byte, material JoinMaterial, controlPlane bool) ([]
 	return encodeYAMLDocuments(joinDocs)
 }
 
-func RenderWorkerJoinConfig(base []byte, material JoinMaterial) ([]byte, error) {
+func RenderWorkerJoinConfig(base []byte, material JoinMaterial, discoveryKubeconfigPath ...string) ([]byte, error) {
 	if len(material.Argv) == 0 {
 		return nil, errors.New("worker join material is required")
 	}
@@ -1288,10 +1305,10 @@ func RenderWorkerJoinConfig(base []byte, material JoinMaterial) ([]byte, error) 
 	if flagValue(material.Argv, "--certificate-key") != "" {
 		return nil, errors.New("worker join material must not include --certificate-key")
 	}
-	return renderJoinConfig(base, material, false)
+	return renderJoinConfig(base, material, false, discoveryKubeconfigPath...)
 }
 
-func RenderControlPlaneJoinConfig(base []byte, material JoinMaterial) ([]byte, error) {
+func RenderControlPlaneJoinConfig(base []byte, material JoinMaterial, discoveryKubeconfigPath ...string) ([]byte, error) {
 	if len(material.Argv) == 0 {
 		return nil, errors.New("control-plane join material is required")
 	}
@@ -1301,7 +1318,7 @@ func RenderControlPlaneJoinConfig(base []byte, material JoinMaterial) ([]byte, e
 	if flagValue(material.Argv, "--certificate-key") == "" {
 		return nil, errors.New("control-plane join material must include --certificate-key")
 	}
-	return renderJoinConfig(base, material, true)
+	return renderJoinConfig(base, material, true, discoveryKubeconfigPath...)
 }
 
 func ControlPlaneJoinMaterial(output string, certificateKey string) (JoinMaterial, error) {
