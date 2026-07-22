@@ -27,6 +27,7 @@ type Snapshot struct {
 	ControlPlaneEndpoint string
 	ControlPlanePods     ControlPlanePodStatuses
 	KubernetesStatusAt   time.Time
+	KubernetesError      string
 	DestructiveMutation  bool
 	LastError            string
 	RetryHint            string

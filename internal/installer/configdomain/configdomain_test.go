@@ -44,6 +44,7 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		"/etc/katl/kubeadm/control-plane/config.yaml",
 		"/etc/katl/node.json",
 		"/etc/ssh/authorized_keys/katl",
+		"/etc/ssh/authorized_keys/root",
 		"/etc/sysctl.d/90-katl.conf",
 		"/etc/systemd/network/10-lan.network",
 	}
@@ -80,8 +81,11 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	if files[3].Mode != 0o644 || !strings.Contains(files[3].Content, "ssh-ed25519") {
 		t.Fatalf("authorized keys file = %#v", files[3])
 	}
-	if !strings.Contains(files[4].Content, "net.ipv4.ip_forward = 1") {
-		t.Fatalf("sysctl content = %q", files[4].Content)
+	if files[4].Content != files[3].Content {
+		t.Fatalf("root authorized keys = %q, want operator keys %q", files[4].Content, files[3].Content)
+	}
+	if !strings.Contains(files[5].Content, "net.ipv4.ip_forward = 1") {
+		t.Fatalf("sysctl content = %q", files[5].Content)
 	}
 }
 

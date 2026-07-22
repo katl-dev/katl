@@ -55,16 +55,18 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	files = append(files, confext.NativeEtcFile{
-		Path:    "/etc/ssh/authorized_keys/katl",
-		Content: identity.AuthorizedKeys,
-		// sshd reads AuthorizedKeysFile after dropping to the target user on
-		// Fedora. Public keys are not secrets; keep the root-owned file
-		// immutable to katl while allowing the account to read it.
-		Mode: 0o644,
-		UID:  0,
-		GID:  0,
-	})
+	for _, account := range []string{"katl", "root"} {
+		files = append(files, confext.NativeEtcFile{
+			Path:    "/etc/ssh/authorized_keys/" + account,
+			Content: identity.AuthorizedKeys,
+			// Public keys are not secrets. Keep the Katl-owned files immutable
+			// to both accounts while allowing sshd to read them after dropping
+			// privileges for the unprivileged operator account.
+			Mode: 0o644,
+			UID:  0,
+			GID:  0,
+		})
+	}
 	ref := request.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
 	var kubeadm *kubeadmconfig.Plan
 	if ref != "" {

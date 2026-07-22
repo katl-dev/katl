@@ -3,6 +3,7 @@ package operatorconsole
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -153,7 +154,7 @@ func TestCollectorCuratesManagementNetwork(t *testing.T) {
 		t.Fatalf("network omissions = interfaces %d, addresses %#v", snapshot.AdditionalInterfaces, snapshot.DisplayInterfaces[0])
 	}
 	rendered := string(renderDashboard(&snapshot, nil, 80, 24, false))
-	for _, want := range []string{"SSH:katl@192.0.2.10", "+1address", "+2interfaces"} {
+	for _, want := range []string{"SSH:root@192.0.2.10", "+1address", "+2interfaces"} {
 		if !containsIgnoringLayout(rendered, want) {
 			t.Fatalf("network render missing %q:\n%s", want, rendered)
 		}
@@ -546,10 +547,10 @@ func TestCollectorPresentsControlPlaneStateWithoutInternalInterface(t *testing.T
 func TestDecodeControlPlanePodsReportsRuntimeState(t *testing.T) {
 	pods, err := decodeControlPlanePods([]byte(`{
   "containers": [
-    {"metadata":{"name":"kube-apiserver"},"state":"CONTAINER_EXITED","createdAt":1},
-    {"metadata":{"name":"kube-apiserver"},"state":"CONTAINER_RUNNING","createdAt":2},
-    {"metadata":{"name":"kube-controller-manager"},"state":"CONTAINER_EXITED","createdAt":3},
-    {"metadata":{"name":"kube-scheduler"},"state":"CONTAINER_CREATED","createdAt":4},
+    {"metadata":{"name":"kube-apiserver"},"state":"CONTAINER_EXITED","createdAt":"1784753646368933051"},
+    {"metadata":{"name":"kube-apiserver"},"state":"CONTAINER_RUNNING","createdAt":"1784753646368933052"},
+    {"metadata":{"name":"kube-controller-manager"},"state":"CONTAINER_EXITED","createdAt":"1784753646379663291"},
+    {"metadata":{"name":"kube-scheduler"},"state":"CONTAINER_CREATED","createdAt":"1784753646394230177"},
     {"metadata":{"name":"coredns"},"state":"CONTAINER_RUNNING","createdAt":5}
   ]
 }`))
@@ -561,6 +562,42 @@ func TestDecodeControlPlanePodsReportsRuntimeState(t *testing.T) {
 		if pods[index].State != state {
 			t.Fatalf("pod %s state = %q, want %q", pods[index].Name, pods[index].State, state)
 		}
+	}
+}
+
+func TestCollectorExposesControlPlaneProbeFailure(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{
+		filepath.Join(root, "etc", "kubernetes"),
+		filepath.Join(root, "etc", "kubernetes", "manifests"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc", "kubernetes", "kubelet.conf"), []byte("configured\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc", "kubernetes", "manifests", "kube-apiserver.yaml"), []byte("static pod\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector := Collector{
+		Mode:       ModeRuntime,
+		Root:       root,
+		Interfaces: func() ([]net.Interface, error) { return nil, nil },
+		ProbeControlPlanePods: func(context.Context) (ControlPlanePodStatuses, error) {
+			return ControlPlanePodStatuses{}, fmt.Errorf("exit status 1: %s", strings.Repeat("runtime unavailable ", 30))
+		},
+		Now: func() time.Time { return time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC) },
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	if snapshot.KubernetesError == "" || len([]rune(snapshot.KubernetesError)) > 240 {
+		t.Fatalf("Kubernetes error = %q", snapshot.KubernetesError)
+	}
+	rendered := string(renderDashboard(&snapshot, nil, 80, 24, false))
+	if !containsIgnoringLayout(rendered, "Kubernetes status:exit status 1") {
+		t.Fatalf("render does not expose probe failure:\n%s", rendered)
 	}
 }
 
@@ -720,7 +757,7 @@ func TestRenderRuntimeFailure(t *testing.T) {
 		DisplayInterfaces:    []NetworkInterface{{Name: "eno1", Addresses: []string{"192.0.2.20/24"}}},
 	}
 	got := string(renderDashboard(&snapshot, nil, 80, 20, false))
-	for _, want := range []string{"Node", "Kubernetes", "Needsrepair", "Unavailable", "KatlOS:2026.7.0-alpha.9", "Kubelet:v1.36.1", "Error:", "boothealthcheckfailed", "SSH:katl@192.0.2.20"} {
+	for _, want := range []string{"Node", "Kubernetes", "Needsrepair", "Unavailable", "KatlOS:2026.7.0-alpha.9", "Kubelet:v1.36.1", "Error:", "boothealthcheckfailed", "SSH:root@192.0.2.20"} {
 		if !containsIgnoringLayout(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}

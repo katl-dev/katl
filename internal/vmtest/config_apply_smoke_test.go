@@ -344,11 +344,13 @@ func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestCont
 	guestCommand(t, ctx, guest, "sshd-active", "systemctl", "is-active", "--quiet", "sshd.service")
 	guestCommand(t, ctx, guest, "persistent-ssh-host-key", "test", "-s", "/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key")
 	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/ssh/authorized_keys/katl", installedRuntimeSSHKey)
+	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/ssh/authorized_keys/root", installedRuntimeSSHKey)
 	effective := strings.ToLower(guestCommandOutput(t, ctx, guest, "sshd-effective-config", "sshd", "-T"))
 	for _, want := range []string{
 		"authorizedkeysfile /etc/ssh/authorized_keys/%u",
 		"hostkey /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
-		"allowusers katl",
+		"permitrootlogin without-password",
+		"allowusers root katl",
 	} {
 		if !strings.Contains(effective, want) {
 			t.Fatalf("effective sshd configuration missing %q:\n%s", want, effective)

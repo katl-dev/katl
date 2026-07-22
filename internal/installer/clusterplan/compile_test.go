@@ -59,6 +59,10 @@ func TestCompileClusterPlan(t *testing.T) {
 	if authorizedKeys == nil || authorizedKeys.Mode != 0o644 || authorizedKeys.Content != sshKey+"\n" {
 		t.Fatalf("authorized keys confext = %#v", authorizedKeys)
 	}
+	rootAuthorizedKeys := nativeFile(cp.NativeEtcFiles, "/etc/ssh/authorized_keys/root")
+	if rootAuthorizedKeys == nil || rootAuthorizedKeys.Content != authorizedKeys.Content {
+		t.Fatalf("root authorized keys confext = %#v", rootAuthorizedKeys)
+	}
 	if len(cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys) != 1 {
 		t.Fatalf("ssh keys were not de-duplicated: %#v", cp.InstallManifest.Node.Identity.SSH.AuthorizedKeys)
 	}

@@ -162,7 +162,7 @@ type alertSpec struct {
 }
 
 func activeAlerts(snapshot *Snapshot) []alertSpec {
-	alerts := make([]alertSpec, 0, 6)
+	alerts := make([]alertSpec, 0, 7)
 	if strings.TrimSpace(snapshot.LastError) != "" {
 		alerts = append(alerts, alertSpec{label: "Error", value: snapshot.LastError, style: styleBad})
 	}
@@ -180,6 +180,9 @@ func activeAlerts(snapshot *Snapshot) []alertSpec {
 	}
 	if snapshot.GenerationError != "" {
 		alerts = append(alerts, alertSpec{label: "Generation read", value: snapshot.GenerationError, style: styleWarn})
+	}
+	if snapshot.KubernetesError != "" {
+		alerts = append(alerts, alertSpec{label: "Kubernetes status", value: snapshot.KubernetesError, style: styleWarn})
 	}
 	return alerts
 }
@@ -234,8 +237,8 @@ func (render *Renderer) paintFooter(snapshot *Snapshot) {
 	if render.frame.Width < minimumWidth || render.frame.Height < minimumHeight {
 		footerText = "F2: console"
 	} else if snapshot.SSHEnabled {
-		if address := snapshot.ManagementAddress; address != "" && displayWidth(footerText+" | SSH: katl@"+address) <= render.frame.Width {
-			footerText += " | SSH: katl@" + address
+		if address := snapshot.ManagementAddress; address != "" && displayWidth(footerText+" | SSH: root@"+address) <= render.frame.Width {
+			footerText += " | SSH: root@" + address
 		} else {
 			footerText += " | SSH enabled"
 		}

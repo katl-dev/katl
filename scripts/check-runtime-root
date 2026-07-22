@@ -184,6 +184,7 @@ for path in \
     /usr/lib/systemd/system/sshd.service.d/10-katl-host-keys.conf \
     /usr/lib/systemd/system/sshd-keygen@.service.d/10-katl-persistent-host-key.conf \
     /usr/lib/sysusers.d/10-katl-users.conf \
+    /etc/crictl.yaml \
     /etc/containerd/config.toml \
     /usr/lib/systemd/system/containerd.service.d/10-katl-runtime.conf \
     /usr/lib/systemd/system/kubelet.service.d/10-katl-runtime.conf \

@@ -591,6 +591,11 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("Kubernetes node OS identity: %v", err)
 	}
+	if err := assertControlPlaneDashboard(ctx, inputs.SSHPrivateKey, cpAddress); err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("control-plane dashboard: %v", err)
+	}
 	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":6443")
 	for _, node := range []struct {
 		running    vmtest.RunningInstalledRuntimeNode
@@ -2578,13 +2583,12 @@ func assertOperatorSSH(ctx context.Context, privateKey, address string) error {
 			"-o", "UserKnownHostsFile=/dev/null",
 			"-o", "ConnectTimeout=5",
 			"-i", privateKey,
-			"katl@"+address,
-			"test \"$(id -un)\" = katl && "+
-				"test \"$SHELL\" = /usr/bin/bash && test -x /usr/bin/bash && "+
-				"test \"$PWD\" = /var/lib/katl/home/katl && "+
-				"test \"$(stat -c %a /var/lib/katl/home)\" = 755 && "+
-				"test -r /etc/ssh/authorized_keys/katl && test ! -w /etc/ssh/authorized_keys/katl && "+
-				"touch .katl-ssh-test && rm .katl-ssh-test",
+			"root@"+address,
+			"test \"$(id -u)\" = 0 && "+
+				"test -r /etc/ssh/authorized_keys/root && test ! -w /etc/ssh/authorized_keys/root && "+
+				"grep -Fxq 'runtime-endpoint: unix:///run/containerd/containerd.sock' /etc/crictl.yaml && "+
+				"journalctl --list-boots --quiet >/dev/null && "+
+				"systemctl is-active --quiet katlc-agent.service",
 		)
 		output, err := command.CombinedOutput()
 		if err == nil {
@@ -2595,6 +2599,42 @@ func assertOperatorSSH(ctx context.Context, privateKey, address string) error {
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("SSH login failed: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func assertControlPlaneDashboard(ctx context.Context, privateKey, address string) error {
+	privateKey = strings.TrimSpace(privateKey)
+	address = strings.TrimSpace(address)
+	if privateKey == "" || address == "" {
+		return fmt.Errorf("SSH private key and control-plane address are required")
+	}
+	deadline := time.Now().Add(time.Minute)
+	var lastOutput []byte
+	for {
+		command := exec.CommandContext(ctx, "ssh",
+			"-o", "BatchMode=yes",
+			"-o", "IdentitiesOnly=yes",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "ConnectTimeout=5",
+			"-i", privateKey,
+			"root@"+address,
+			"crictl ps --all --namespace '^kube-system$' --output json >/dev/null && "+
+				"dashboard=$(tr -d ' \\r' </run/katl/console/rendered.txt) && "+
+				"case \"$dashboard\" in *'State:Controlplanehealthy'*'APIserver:Running'*'Controller:Running'*'Scheduler:Running'*'etcd:Running'*) exit 0;; *) printf '%s\\n' \"$dashboard\"; exit 1;; esac",
+		)
+		output, err := command.CombinedOutput()
+		lastOutput = output
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("dashboard did not report healthy control-plane containers: %w: %s", err, strings.TrimSpace(string(lastOutput)))
 		}
 		time.Sleep(time.Second)
 	}

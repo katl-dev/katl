@@ -2,10 +2,12 @@ package operatorconsole
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 var controlPlanePodNames = [controlPlanePodCount]string{
@@ -24,45 +26,48 @@ func initialControlPlanePods(state string) ControlPlanePodStatuses {
 }
 
 func probeControlPlanePods(ctx context.Context) (ControlPlanePodStatuses, error) {
-	output, err := exec.CommandContext(
+	command := exec.CommandContext(
 		ctx,
 		"/usr/bin/crictl",
 		"ps",
 		"--all",
 		"--namespace", "^kube-system$",
 		"--output", "json",
-	).Output()
+	)
+	output, err := command.Output()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return initialControlPlanePods(KubernetesPodUnknown), fmt.Errorf("query control-plane containers: %w", ctxErr)
+		}
+		detail := ""
+		if exitError, ok := err.(*exec.ExitError); ok {
+			detail = strings.Join(strings.Fields(string(exitError.Stderr)), " ")
+		}
+		if detail != "" {
+			return initialControlPlanePods(KubernetesPodUnknown), fmt.Errorf("query control-plane containers: %w: %s", err, detail)
+		}
 		return initialControlPlanePods(KubernetesPodUnknown), fmt.Errorf("query control-plane containers: %w", err)
 	}
 	return decodeControlPlanePods(output)
 }
 
 func decodeControlPlanePods(data []byte) (ControlPlanePodStatuses, error) {
-	type container struct {
-		Metadata struct {
-			Name string `json:"name"`
-		} `json:"metadata"`
-		State     string `json:"state"`
-		CreatedAt int64  `json:"createdAt"`
-	}
-	var response struct {
-		Containers []container `json:"containers"`
-	}
-	if err := json.Unmarshal(data, &response); err != nil {
+	var response runtimeapi.ListContainersResponse
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, &response); err != nil {
 		return initialControlPlanePods(KubernetesPodUnknown), fmt.Errorf("decode control-plane containers: %w", err)
 	}
 	pods := initialControlPlanePods(KubernetesPodNotStarted)
 	var newest [controlPlanePodCount]int64
-	for _, candidate := range response.Containers {
-		index := controlPlanePodIndex(candidate.Metadata.Name)
+	for _, candidate := range response.GetContainers() {
+		index := controlPlanePodIndex(candidate.GetMetadata().GetName())
 		if index < 0 {
 			continue
 		}
-		state := criContainerState(candidate.State)
-		if state == KubernetesPodRunning || (pods[index].State != KubernetesPodRunning && candidate.CreatedAt >= newest[index]) {
+		state := criContainerState(candidate.GetState())
+		createdAt := candidate.GetCreatedAt()
+		if state == KubernetesPodRunning || (pods[index].State != KubernetesPodRunning && createdAt >= newest[index]) {
 			pods[index].State = state
-			newest[index] = candidate.CreatedAt
+			newest[index] = createdAt
 		}
 	}
 	return pods, nil
@@ -78,13 +83,13 @@ func controlPlanePodIndex(name string) int {
 	return -1
 }
 
-func criContainerState(state string) string {
-	switch strings.ToUpper(strings.TrimSpace(state)) {
-	case "CONTAINER_RUNNING", "RUNNING":
+func criContainerState(state runtimeapi.ContainerState) string {
+	switch state {
+	case runtimeapi.ContainerState_CONTAINER_RUNNING:
 		return KubernetesPodRunning
-	case "CONTAINER_CREATED", "CREATED":
+	case runtimeapi.ContainerState_CONTAINER_CREATED:
 		return KubernetesPodStarting
-	case "CONTAINER_EXITED", "EXITED":
+	case runtimeapi.ContainerState_CONTAINER_EXITED:
 		return KubernetesPodNotRunning
 	default:
 		return KubernetesPodUnknown

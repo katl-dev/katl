@@ -1181,6 +1181,7 @@ func TestRunnerInstallsIdentity(t *testing.T) {
 	machineID := "30313233343536373839616263646566"
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/identity/machine-id"), machineID+"\n")
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/ssh/authorized_keys/katl"), sshKey+"\n")
+	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/ssh/authorized_keys/root"), sshKey+"\n")
 	assertContains(t, filepath.Join(bootRoot, "loader/entries/katl-2026.06.01-005.conf"), "systemd.machine_id="+machineID)
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katlos\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
 }

@@ -40,11 +40,13 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	interfaces := snapshot.DisplayInterfaces
 	controlPlanePods := snapshot.ControlPlanePods
 	kubernetesStatusAt := snapshot.KubernetesStatusAt
+	kubernetesError := snapshot.KubernetesError
 	*snapshot = Snapshot{
 		Mode:               c.Mode,
 		DisplayInterfaces:  interfaces[:0],
 		ControlPlanePods:   controlPlanePods,
 		KubernetesStatusAt: kubernetesStatusAt,
+		KubernetesError:    kubernetesError,
 	}
 	if c.Mode == ModeInstaller {
 		snapshot.Version = strings.TrimSpace(c.Version)
@@ -247,11 +249,13 @@ func (c Collector) collectKubernetes(snapshot *Snapshot, now time.Time) {
 	if !snapshot.ControlPlane {
 		snapshot.ControlPlanePods = ControlPlanePodStatuses{}
 		snapshot.KubernetesStatusAt = time.Time{}
+		snapshot.KubernetesError = ""
 		return
 	}
 	if !snapshot.KubernetesConfigured {
 		snapshot.ControlPlanePods = initialControlPlanePods(KubernetesPodNotStarted)
 		snapshot.KubernetesStatusAt = now
+		snapshot.KubernetesError = ""
 		return
 	}
 	if !snapshot.KubernetesStatusAt.IsZero() && now.Sub(snapshot.KubernetesStatusAt) < kubernetesProbePeriod {
@@ -266,9 +270,25 @@ func (c Collector) collectKubernetes(snapshot *Snapshot, now time.Time) {
 	pods, err := probe(ctx)
 	if err != nil {
 		pods = initialControlPlanePods(KubernetesPodUnknown)
+		snapshot.KubernetesError = boundedKubernetesError(err)
+	} else {
+		snapshot.KubernetesError = ""
 	}
 	snapshot.ControlPlanePods = pods
 	snapshot.KubernetesStatusAt = now
+}
+
+func boundedKubernetesError(err error) string {
+	if err == nil {
+		return ""
+	}
+	const limit = 240
+	value := strings.Join(strings.Fields(err.Error()), " ")
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-1]) + "…"
 }
 
 func readDefaultRouteInterface(path string) (string, error) {
