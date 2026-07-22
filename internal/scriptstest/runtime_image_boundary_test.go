@@ -35,6 +35,8 @@ func TestRuntimeKubernetesSysctlsSupportCNIs(t *testing.T) {
 		"net.ipv4.ip_forward=1",
 		"net.ipv4.conf.all.rp_filter=0",
 		"net.ipv4.conf.default.rp_filter=0",
+		"net.ipv4.conf.lxc*.rp_filter=0",
+		"net.ipv4.conf.cilium_*.rp_filter=0",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("runtime Kubernetes sysctls missing %q", want)

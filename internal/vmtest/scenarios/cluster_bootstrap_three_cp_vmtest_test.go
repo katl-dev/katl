@@ -405,10 +405,31 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 }
 
 func assertCNISysctls(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) error {
+	const testInterface = "lxc_katltest"
+	created, err := runNodeCommandWithRetry(ctx, node, []string{
+		"ip", "link", "add", testInterface, "type", "dummy",
+	}, 16<<10)
+	if err != nil {
+		return err
+	}
+	if created.ExitStatus != 0 {
+		return commandErrorDetail(created)
+	}
+	defer func() {
+		_, _ = runNodeCommandWithRetry(ctx, node, []string{"ip", "link", "delete", testInterface}, 16<<10)
+	}()
+	settled, err := runNodeCommandWithRetry(ctx, node, []string{"udevadm", "settle"}, 16<<10)
+	if err != nil {
+		return err
+	}
+	if settled.ExitStatus != 0 {
+		return commandErrorDetail(settled)
+	}
 	result, err := runNodeCommandWithRetry(ctx, node, []string{
 		"sysctl", "-n",
 		"net.ipv4.conf.all.rp_filter",
 		"net.ipv4.conf.default.rp_filter",
+		"net.ipv4.conf." + testInterface + ".rp_filter",
 	}, 16<<10)
 	if err != nil {
 		return err
@@ -416,7 +437,7 @@ func assertCNISysctls(ctx context.Context, node vmtest.RunningInstalledRuntimeNo
 	if result.ExitStatus != 0 {
 		return commandErrorDetail(result)
 	}
-	if got, want := strings.Fields(string(result.Stdout)), []string{"0", "0"}; !reflect.DeepEqual(got, want) {
+	if got, want := strings.Fields(string(result.Stdout)), []string{"0", "0", "0"}; !reflect.DeepEqual(got, want) {
 		return fmt.Errorf("reverse-path filtering values = %v, want %v", got, want)
 	}
 	return nil

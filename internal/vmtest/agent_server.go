@@ -493,6 +493,7 @@ func defaultAgentCommands() map[string]bool {
 		"systemd-sysupdate": true,
 		"test":              true,
 		"true":              true,
+		"udevadm":           true,
 		"uname":             true,
 	}
 }
