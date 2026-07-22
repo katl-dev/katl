@@ -384,7 +384,14 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("apply cluster config on %s: %w", node.Name, err)
 		}
-		result[node.Name] = generationID
+		activatedGeneration := strings.TrimSpace(terminal.GetCandidateGenerationId())
+		if activatedGeneration == "" {
+			activatedGeneration = generationID
+			if terminal.GetGenerationCommitState() == operation.GenerationCommitAbandoned {
+				activatedGeneration = input.currentGeneration
+			}
+		}
+		result[node.Name] = activatedGeneration
 	}
 	return activatedClusterConfig{generations: result, components: components}, nil
 }

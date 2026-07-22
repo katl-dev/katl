@@ -441,7 +441,7 @@ func TestExecuteKubeProxyConfigUpdatesAddonOnline(t *testing.T) {
 	}
 	want := [][]string{
 		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "get", "configmap", "kube-proxy", "-o", "jsonpath={.data.config\\.conf}"},
-		{"/usr/bin/kubeadm", "init", "phase", "addon", "kube-proxy", "--config", "/etc/katl/kubeadm/control-plane/config.yaml", "--dry-run"},
+		{"/usr/bin/kubeadm", "config", "validate", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"},
 		{"/usr/bin/kubeadm", "init", "phase", "addon", "kube-proxy", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"},
 		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "get", "configmap", "kube-proxy", "-o", "jsonpath={.data.config\\.conf}"},
 		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "rollout", "status", "daemonset/kube-proxy", "--timeout=5m"},

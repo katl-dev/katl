@@ -105,6 +105,73 @@ spec:
 	}
 }
 
+func TestValidateNodeConfigurationChangeAcceptsControlPlaneEndpointOwnership(t *testing.T) {
+	tests := map[string]string{
+		"external": `
+      controlPlaneEndpoint:
+        managed: false`,
+		"managed": `
+      controlPlaneEndpoint:
+        managed: true
+        config:
+          host: 192.0.2.10
+          advertisement:
+            vip: 192.0.2.10
+            bgp:
+              localASN: 64512
+              peers:
+                - address: 192.0.2.1
+                  asn: 64512`,
+	}
+	for name, overlay := range tests {
+		t.Run(name, func(t *testing.T) {
+			input := `
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "2"
+apply:
+  mode: auto
+spec:
+  nodeOverrides:
+    cp-1:` + overlay + "\n"
+			result := ValidateNodeConfigurationChange(input, Options{})
+			if !result.Accepted() {
+				t.Fatalf("diagnostics = %#v, want accepted", result.Strings())
+			}
+		})
+	}
+}
+
+func TestValidateNodeConfigurationChangeRejectsInvalidControlPlaneEndpointOwnership(t *testing.T) {
+	input := `
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "2"
+apply:
+  mode: auto
+spec:
+  nodeOverrides:
+    cp-1:
+      controlPlaneEndpoint:
+        managed: false
+        config:
+          host: 192.0.2.10
+        internal: true
+`
+	result := ValidateNodeConfigurationChange(input, Options{})
+	want := []string{
+		`invalid-field: spec.nodeOverrides.cp-1.controlPlaneEndpoint.config: config must be omitted when managed is false`,
+		`unsupported-field: spec.nodeOverrides.cp-1.controlPlaneEndpoint.internal: controlPlaneEndpoint field is not supported`,
+	}
+	if got := result.Strings(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("diagnostics = %#v, want %#v", got, want)
+	}
+}
+
 func TestValidateNodeConfigurationChangeAcceptsInlineKubeadmRef(t *testing.T) {
 	input := `
 apiVersion: katl.dev/v1alpha1

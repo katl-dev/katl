@@ -889,6 +889,46 @@ func TestValidateConfigAcceptsDesiredStateThatAlreadyMatches(t *testing.T) {
 	}
 }
 
+func TestSubmittedConfigApplyCompletesAsNoopWhenDesiredStateAlreadyMatches(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	server.Dispatcher = executor
+
+	accepted, err := server.SubmitOperation(context.Background(), &agentapi.SubmitOperationRequest{
+		ApiVersion:      APIVersion,
+		Kind:            RequestKind,
+		ClientRequestId: "req-no-change-submit",
+		OperationKind:   OperationKindGenerationApply,
+		Actor:           "test-actor",
+		ConfigApply: &agentapi.ConfigApplyOperationRequest{
+			CandidateGenerationId: "generation-no-change-submit",
+			ApplyMode:             generation.ApplyModeAuto,
+			ConfigYaml:            configApplyNoChangesYAML(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded || record.Phase != configApplyNoopPhase || record.RecoveryRequired {
+		t.Fatalf("record = %+v, want terminal successful no-op", record)
+	}
+	if record.CandidateGenerationID != "" || record.GenerationCommitState != operation.GenerationCommitAbandoned || record.ExternalMutationStarted {
+		t.Fatalf("record lifecycle = %+v, want abandoned candidate without mutation", record)
+	}
+	if record.FailureReason != "" || !strings.Contains(record.NextAction, "already matches") {
+		t.Fatalf("record guidance = failure %q next %q", record.FailureReason, record.NextAction)
+	}
+	if _, err := os.Stat(filepath.Join(server.Root, "var/lib/katl/generations/generation-no-change-submit")); !os.IsNotExist(err) {
+		t.Fatalf("no-op candidate generation exists: %v", err)
+	}
+}
+
 func TestValidateConfigRejectsMissingKubeadmConfigRefWithoutRecord(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
@@ -2739,6 +2779,26 @@ func configApplyYAML(mode string) string {
 		"            Name=ens3",
 		"            [Network]",
 		"            DHCP=yes",
+		"",
+	}, "\n")
+}
+
+func configApplyNoChangesYAML() string {
+	return strings.Join([]string{
+		"apiVersion: katl.dev/v1alpha1",
+		"kind: NodeConfigurationChange",
+		"metadata:",
+		"  sourceID: operator",
+		"  desiredVersion: \"4\"",
+		"apply:",
+		"  mode: auto",
+		"spec:",
+		"  clusterDefaults:",
+		"    identity:",
+		"      hostname: node-a",
+		"      authorizedKeys:",
+		"        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl",
+		"    systemRole: control-plane",
 		"",
 	}, "\n")
 }

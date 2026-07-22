@@ -256,6 +256,37 @@ func TestActivateClusterConfigUsesOneLiveWholeNodeGeneration(t *testing.T) {
 	}
 }
 
+func TestActivateClusterConfigKeepsCurrentGenerationAfterLateNoop(t *testing.T) {
+	configPath := writeClusterConfig(t)
+	client := &fakeKatlcAgentClient{
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-current"},
+		validateResult:  &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live"},
+		submitAccepted:  &agentapi.OperationAccepted{OperationId: "stage-cp-1", RequestDigest: strings.Repeat("e", 64)},
+		operationStatus: &agentapi.OperationStatus{OperationId: "stage-cp-1", Phase: "desired-state-current", Terminal: true, Result: operation.ResultSucceeded, GenerationCommitState: operation.GenerationCommitAbandoned},
+	}
+	previousDial := dialKatlcAgent
+	previousNow := kubeadmConfigNow
+	defer func() {
+		dialKatlcAgent = previousDial
+		kubeadmConfigNow = previousNow
+	}()
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
+	inv, err := kubeadmConfigInventory(kubeadmControlPlaneConfigOptions{configPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := activated.generations["cp-1"]; got != "generation-current" {
+		t.Fatalf("activated generation = %q, want current generation", got)
+	}
+}
+
 func TestOrderControlPlanesRejectsUnknownCoordinator(t *testing.T) {
 	_, err := orderControlPlanes([]inventory.Node{{Name: "cp-1"}, {Name: "cp-2"}, {Name: "cp-3"}}, "cp-4")
 	if err == nil {

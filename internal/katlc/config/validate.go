@@ -218,11 +218,43 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 			validateSysctl(pair.value, pair.path, result)
 		case "kubernetes":
 			validateKubernetes(pair.value, pair.path, options, result)
+		case "controlPlaneEndpoint":
+			validateControlPlaneEndpoint(pair.value, pair.path, result)
 		case "livePreflight":
 			// The apply matrix validates the domain names and requested mode.
 		default:
 			result.add(unsupportedCode(pair.key), pair.path, "configuration domain is not supported")
 		}
+	}
+}
+
+func validateControlPlaneEndpoint(node *yaml.Node, path string, result *Result) {
+	if node.Kind != yaml.MappingNode {
+		result.add("invalid-field", path, "controlPlaneEndpoint must be a mapping")
+		return
+	}
+	for _, pair := range mappingPairsWithPath(node, path) {
+		switch pair.key {
+		case "managed", "config":
+		default:
+			result.add("unsupported-field", pair.path, "controlPlaneEndpoint field is not supported")
+		}
+	}
+	managed := mappingValue(node, "managed")
+	if managed == nil {
+		result.add("missing-field", path+".managed", "managed is required")
+		return
+	}
+	if managed.Kind != yaml.ScalarNode || managed.Tag != "!!bool" {
+		result.add("invalid-field", path+".managed", "managed must be true or false")
+		return
+	}
+	config := mappingValue(node, "config")
+	if managed.Value == "true" && config == nil {
+		result.add("missing-field", path+".config", "config is required when managed is true")
+	}
+	if managed.Value == "false" && config != nil {
+		result.add("invalid-field", path+".config", "config must be omitted when managed is false")
 	}
 }
 

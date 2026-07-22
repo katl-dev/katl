@@ -470,7 +470,7 @@ func (e *Executor) executeKubeProxyConfig(ctx context.Context, record operation.
 		return nil
 	}
 	argv := []string{"/usr/bin/kubeadm", "init", "phase", "addon", "kube-proxy", "--config", request.ConfigPath}
-	if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-kube-proxy-dry-run", append(append([]string{}, argv...), "--dry-run"), false); err != nil {
+	if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-kube-proxy-config-validate", []string{"/usr/bin/kubeadm", "config", "validate", "--config", request.ConfigPath}, false); err != nil {
 		return err
 	}
 	if _, err := e.Store.Update(record.OperationID, "preflight-complete", "preflight-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {

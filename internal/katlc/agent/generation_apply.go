@@ -30,6 +30,7 @@ const (
 
 	OperationKindGenerationApply = "generation-apply"
 	OperationKindGenerationStage = "generation-stage"
+	configApplyNoopPhase         = "desired-state-current"
 )
 
 func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfigRequest) (*agentapi.ConfigValidationResult, error) {
@@ -428,6 +429,9 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	decoded.GenerationID = record.ConfigApplyRequest.CandidateGenerationID
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err != nil {
+		if errors.Is(err, configapply.ErrNoChanges) {
+			return e.completeConfigApplyNoop(record, e.clock())
+		}
 		cause := err
 		if diagnostics := strings.TrimSpace(strings.Join(configApplyDiagnostics(plan.Plan.Decision), "\n")); diagnostics != "" {
 			_, artifactErr := e.Store.AddDiagnosticArtifact(record.OperationID, "config-apply-plan-diagnostics", []byte(inventory.Redact(diagnostics)+"\n"), e.clock())
@@ -505,6 +509,26 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		return record, nil
 	})
 	return updateErr
+}
+
+func (e *Executor) completeConfigApplyNoop(record operation.OperationRecord, now time.Time) error {
+	_, err := e.Store.Update(record.OperationID, "operation-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		record.Phase = configApplyNoopPhase
+		record.PhasePlan = []string{"accepted", "render-generation", configApplyNoopPhase}
+		record.CompletedPhases = appendMissing(record.CompletedPhases, "render-generation", configApplyNoopPhase)
+		record.PhaseIndex = len(record.CompletedPhases)
+		record.CandidateGenerationID = ""
+		record.GenerationCommitState = operation.GenerationCommitAbandoned
+		record.Terminal = true
+		record.Result = operation.ResultSucceeded
+		record.RecoveryRequired = false
+		record.FailureReason = ""
+		record.NextAction = "desired runtime configuration already matches; no generation changes were required"
+		record.CompletedAt = &now
+		record.UpdatedAt = now
+		return record, nil
+	})
+	return err
 }
 
 func (e *Executor) markLiveConfigApplyStarted(operationID string, result configapply.TrustedBundleResult, now time.Time) error {
