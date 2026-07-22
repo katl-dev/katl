@@ -59,13 +59,13 @@ type kubernetesUpgradeReport struct {
 }
 
 type kubernetesUpgradeTarget struct {
-	node       workstation.TopologyNode
-	role       string
-	conn       katlcAgentConnection
-	machineID  string
-	generation string
-	source     string
-	candidate  string
+	node        workstation.TopologyNode
+	upgradeRole string
+	conn        katlcAgentConnection
+	machineID   string
+	generation  string
+	source      string
+	candidate   string
 }
 
 var kubernetesUpgradeNow = func() time.Time { return time.Now().UTC() }
@@ -172,7 +172,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		if accepted.InitialStatus == nil || accepted.InitialStatus.Phase != "accepted" && accepted.InitialStatus.Phase != "dry-run" {
 			return fmt.Errorf("node %s did not accept the Kubernetes upgrade plan", target.node.Name)
 		}
-		report.Nodes = append(report.Nodes, kubernetesUpgradeNodeReport{Name: target.node.Name, Role: target.role, SourceVersion: target.source, TargetVersion: image.PayloadVersion, Result: "planned"})
+		report.Nodes = append(report.Nodes, kubernetesUpgradeNodeReport{Name: target.node.Name, Role: string(target.node.SystemRole), SourceVersion: target.source, TargetVersion: image.PayloadVersion, Result: "planned"})
 	}
 	if opts.plan {
 		return writeKubernetesUpgradeReport(stdout, opts.output, report)
@@ -193,7 +193,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 }
 
 func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.ResolvedTopology, opts kubernetesUpgradeOptions, target kubernetesUpgradeTarget, image kubernetesbundle.ImageReference, stderr io.Writer) (nodeReport kubernetesUpgradeNodeReport, resultErr error) {
-	nodeReport = kubernetesUpgradeNodeReport{Name: target.node.Name, Role: target.role, SourceVersion: target.source, TargetVersion: image.PayloadVersion}
+	nodeReport = kubernetesUpgradeNodeReport{Name: target.node.Name, Role: string(target.node.SystemRole), SourceVersion: target.source, TargetVersion: image.PayloadVersion}
 	cordoned := false
 	if opts.cordon {
 		if err := setKubernetesNodeCordon(ctx, opts.kubeconfig, target.node.Name, true); err != nil {
@@ -463,11 +463,11 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 			_ = target.conn.Close()
 			continue
 		}
-		target.role = "worker"
+		target.upgradeRole = "worker"
 		if target.node.SystemRole == inventory.RoleControlPlane {
-			target.role = "control-plane"
+			target.upgradeRole = "control-plane"
 			if !applySelected {
-				target.role = "apply"
+				target.upgradeRole = "apply"
 				applySelected = true
 			}
 		}
@@ -479,7 +479,7 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 func kubernetesUpgradeBody(target kubernetesUpgradeTarget, image kubernetesbundle.ImageReference) *agentapi.KubernetesSysextUpdateOperationRequest {
 	return &agentapi.KubernetesSysextUpdateOperationRequest{
 		TargetPayloadVersion: targetVersion(image), CandidateGenerationId: target.candidate,
-		UpgradeRole: target.role, SourcePayloadVersion: target.source,
+		UpgradeRole: target.upgradeRole, SourcePayloadVersion: target.source,
 		KubernetesBundleSource: image.Source, KubernetesBundleRef: image.Value,
 	}
 }

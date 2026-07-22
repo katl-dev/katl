@@ -73,9 +73,10 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 	if report.SourceVersion != "v1.36.0" || report.TargetVersion != "v1.36.1" || len(report.Nodes) != 3 || !strings.Contains(report.NextAction, "complete") {
 		t.Fatalf("report = %#v", report)
 	}
-	roles := []string{"apply", "control-plane", "worker"}
+	upgradeRoles := []string{"apply", "control-plane", "worker"}
+	reportRoles := []string{"control-plane", "control-plane", "worker"}
 	for i, name := range []string{"cp-1", "cp-2", "worker-1"} {
-		if report.Nodes[i].Name != name || report.Nodes[i].Result != operation.ResultSucceeded || report.Nodes[i].Phase != "healthy" {
+		if report.Nodes[i].Name != name || report.Nodes[i].Role != reportRoles[i] || report.Nodes[i].Result != operation.ResultSucceeded || report.Nodes[i].Phase != "healthy" {
 			t.Fatalf("node report %d = %#v", i, report.Nodes[i])
 		}
 		requests := clients[name].submitRequests
@@ -83,7 +84,7 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 			t.Fatalf("%s requests = %#v", name, requests)
 		}
 		body := requests[len(requests)-1].KubernetesSysextUpdate
-		if body.UpgradeRole != roles[i] || body.SourcePayloadVersion != "v1.36.0" || body.TargetPayloadVersion != "v1.36.1" {
+		if body.UpgradeRole != upgradeRoles[i] || body.SourcePayloadVersion != "v1.36.0" || body.TargetPayloadVersion != "v1.36.1" {
 			t.Fatalf("%s body = %#v", name, body)
 		}
 		if body.TargetSysextPath != "" || body.TargetSysextSha256 != "" || body.SnapshotDigest != "" || body.CandidateGenerationId == "" {
@@ -127,7 +128,7 @@ func TestKubernetesUpgradePlanDoesNotExecute(t *testing.T) {
 	if err := run(context.Background(), []string{"kubernetes", "upgrade", "v1.36.1", "--inventory", inv, "--plan", "--timeout", "1m", "--output", "json"}, &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.submitRequests) != 1 || !client.submitRequests[0].DryRun || !strings.Contains(stdout.String(), `"result": "planned"`) {
+	if len(client.submitRequests) != 1 || !client.submitRequests[0].DryRun || !strings.Contains(stdout.String(), `"role": "control-plane"`) || strings.Contains(stdout.String(), `"role": "apply"`) || !strings.Contains(stdout.String(), `"result": "planned"`) {
 		t.Fatalf("requests=%#v output=%s", client.submitRequests, stdout.String())
 	}
 }
@@ -168,7 +169,7 @@ func TestKubernetesUpgradeCordonIsExplicitAndNonDraining(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, err := runKubernetesUpgradeTarget(context.Background(), workstation.ResolvedTopology{}, kubernetesUpgradeOptions{cordon: true, kubeconfig: "/tmp/admin.conf", timeout: time.Minute}, kubernetesUpgradeTarget{
-		node: workstation.TopologyNode{Name: "worker-1", SystemRole: "worker"}, role: "worker", conn: katlcAgentConnection{Client: client}, machineID: "machine-worker-1", generation: "gen0", source: "v1.36.0", candidate: "gen1",
+		node: workstation.TopologyNode{Name: "worker-1", SystemRole: "worker"}, upgradeRole: "worker", conn: katlcAgentConnection{Client: client}, machineID: "machine-worker-1", generation: "gen0", source: "v1.36.0", candidate: "gen1",
 	}, image, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
