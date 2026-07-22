@@ -133,11 +133,28 @@ installer. It needs no destructive confirmation because it can only address
 the checkout-scoped development VM. Pass `--no-build` only when deliberately
 reusing the existing `_build/mkosi/katl-installer.iso`.
 
-Build current artifacts through the supported container wrapper:
+Build and verify the current checkout's self-contained installer ISO through
+the discoverable development command:
 
 ```sh
-nix develop --command scripts/mkosi build-installer
+nix develop --command katldev build iso
 ```
+
+The command composes the existing source-fingerprinted `scripts/mkosi`
+pipeline, runs the full ISO verifier, and prints absolute paths for the ISO,
+metadata, and checksum together with the digest and byte size. Set the existing
+`KATL_VERSION` environment variable when the installed development image needs
+a particular KatlOS identity:
+
+```sh
+KATL_VERSION=2026.7.0-dev.12 nix develop --command katldev build iso
+```
+
+Copy the reported ISO to a hypervisor under a versioned name and independently
+compare the reported digest after transfer. Published images should continue
+through `katlctl node upgrade` where possible; use the ISO path for clean
+installation, wipe/reinstall recovery, and current-checkout changes which do
+not yet have a published upgrade source.
 
 The development shell includes the complete supported VM test toolchain. It
 does not configure host libvirt, `/dev/kvm`, `/dev/net/tun`, networks, storage

@@ -28,6 +28,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	root.SetOut(stdout)
 	root.SetErr(stderr)
+	root.AddCommand(newBuildCommand(ctx, stdout, stderr))
 	root.AddCommand(newInstallerCommand(ctx, stdout, stderr))
 	root.SetArgs(args)
 	return root.Execute()

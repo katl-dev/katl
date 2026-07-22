@@ -3,7 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +20,8 @@ func TestRootAndInstallerCommandsShowHelpWithoutArguments(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{want: []string{"installer"}},
+		{want: []string{"build", "installer"}},
+		{args: []string{"build"}, want: []string{"iso"}},
 		{args: []string{"installer"}, want: []string{"start", "reset", "status", "console", "stop"}},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -27,6 +34,77 @@ func TestRootAndInstallerCommandsShowHelpWithoutArguments(t *testing.T) {
 				t.Fatalf("run(%v) help missing %q:\n%s", test.args, want, help)
 			}
 		}
+	}
+}
+
+func TestBuildInstallerISOComposesSupportedPipeline(t *testing.T) {
+	repo := t.TempDir()
+	iso := filepath.Join(repo, "_build", "mkosi", "katl-installer.iso")
+	contents := []byte("current checkout installer ISO")
+	type call struct {
+		dir  string
+		name string
+		args []string
+	}
+	var calls []call
+	runner := func(_ context.Context, dir, name string, args []string, _, _ io.Writer) error {
+		calls = append(calls, call{dir: dir, name: name, args: append([]string(nil), args...)})
+		if filepath.Base(name) == "mkosi" {
+			if err := os.MkdirAll(filepath.Dir(iso), 0o755); err != nil {
+				return err
+			}
+			for path, data := range map[string][]byte{iso: contents, iso + ".json": []byte("{}\n"), iso + ".sha256": []byte("checksum\n")} {
+				if err := os.WriteFile(path, data, 0o644); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	var stdout, stderr bytes.Buffer
+	artifact, err := buildInstallerISO(context.Background(), repo, &stderr, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []call{
+		{dir: repo, name: filepath.Join(repo, "scripts", "mkosi"), args: []string{"build-installer-iso"}},
+		{dir: repo, name: filepath.Join(repo, "scripts", "check-installer-iso"), args: []string{iso}},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("build calls = %#v, want %#v", calls, wantCalls)
+	}
+	digest := sha256.Sum256(contents)
+	if artifact.Path != iso || artifact.Metadata != iso+".json" || artifact.Checksum != iso+".sha256" || artifact.SHA256 != hex.EncodeToString(digest[:]) || artifact.SizeBytes != int64(len(contents)) {
+		t.Fatalf("artifact = %#v", artifact)
+	}
+	if err := writeInstallerISOArtifact(&stdout, artifact); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Installer ISO ready.", "ISO: " + iso, "Metadata: " + iso + ".json", "Checksum: " + iso + ".sha256", "SHA256: " + artifact.SHA256, "Size: 30 bytes"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+	for _, want := range []string{"building the current checkout", "verifying the completed installer ISO"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("progress missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestBuildInstallerISOStopsAfterBuildFailure(t *testing.T) {
+	wantErr := errors.New("builder failed")
+	calls := 0
+	runner := func(context.Context, string, string, []string, io.Writer, io.Writer) error {
+		calls++
+		return wantErr
+	}
+	_, err := buildInstallerISO(context.Background(), t.TempDir(), io.Discard, runner)
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "build installer ISO") {
+		t.Fatalf("buildInstallerISO() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", calls)
 	}
 }
 
