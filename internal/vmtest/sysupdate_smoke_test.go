@@ -116,28 +116,12 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		conn.Close()
 		t.Fatalf("read node status before host upgrade: %v", err)
 	}
-	accepted, err := katlc.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
-		ApiVersion:                  operation.APIVersion,
-		Kind:                        agent.RequestKind,
-		ClientRequestId:             "vmtest-host-upgrade-" + candidateGeneration,
-		OperationKind:               agent.OperationKindHostUpgrade,
-		Actor:                       "installed runtime host upgrade vmtest",
-		ExpectedMachineId:           nodeStatus.GetMachineId(),
-		ExpectedCurrentGenerationId: previousGeneration,
-		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
-			ImageLocalRef:         localRef,
-			CandidateGenerationId: candidateGeneration,
-		},
-	})
 	conn.Close()
-	if err != nil {
-		t.Fatalf("submit host upgrade operation: %v", err)
-	}
-	status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.GetOperationId())
+	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef)
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
 		t.Fatalf("host upgrade operation status = %+v", status)
 	}
-	recordData := readGuestFile(t, ctx, guest, "/var/lib/katl/operations/"+accepted.GetOperationId()+"/record.json")
+	recordData := readGuestFile(t, ctx, guest, "/var/lib/katl/operations/"+operationID+"/record.json")
 	envelope, err := persistedrecord.DecodeEnvelope([]byte(recordData))
 	if err != nil {
 		t.Fatalf("decode host upgrade operation envelope: %v", err)
@@ -191,9 +175,22 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	if previousSpec.RuntimeVersion == candidateSpec.RuntimeVersion || previousSpec.Boot.UKIPath == candidateSpec.Boot.UKIPath || previousSpec.Root.Slot == candidateSpec.Root.Slot {
 		t.Fatalf("upgrade did not produce distinct version, root slot, and UKI identities: previous=%#v candidate=%#v", previousSpec, candidateSpec)
 	}
+	repeatedGeneration := candidateGeneration + "-repeat"
+	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef)
+	if repeatedStatus.GetResult() != operation.ResultSucceeded || !repeatedStatus.GetBootHealthPending() || repeatedStatus.GetCandidateGenerationId() != repeatedGeneration {
+		t.Fatalf("repeated host upgrade operation status = %+v", repeatedStatus)
+	}
+	repeatedSpec := generationFromGuest(t, ctx, guest, repeatedGeneration)
+	if repeatedSpec.Root.Slot != candidateSpec.Root.Slot || repeatedSpec.Root.PartitionUUID != candidateSpec.Root.PartitionUUID {
+		t.Fatalf("repeated host upgrade root = %#v, want previously upgraded peer %#v", repeatedSpec.Root, candidateSpec.Root)
+	}
+	repeatedTrial := bootSelectionFromGuest(t, ctx, guest)
+	if repeatedTrial.TrialGenerationID != repeatedGeneration || repeatedTrial.PreviousKnownGoodGenerationID != previousGeneration || !repeatedTrial.PendingHealthValidation {
+		t.Fatalf("repeated host upgrade trial selection = %#v", repeatedTrial)
+	}
 	guestCommand(t, ctx, guest, "boot-health-evidence", "systemctl", "show", "katl-boot-health.service", "--property=Result,ExecMainStatus")
 	guestCommand(t, ctx, guest, "boot-complete-evidence", "systemctl", "is-active", "katl-boot-complete.target")
-	t.Log("host upgrade and rollback are serialized per node in v0.1; multi-node rollout orchestration remains operator-controlled")
+	t.Log("host upgrade, rollback, and repeated upgrade staging are serialized per node in v0.1; multi-node rollout orchestration remains operator-controlled")
 	powerOffGuestForCleanSuccess(t, ctx, &node, guest, client)
 	client = nil
 
@@ -206,6 +203,29 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 			t.Fatalf("write world scenario result: %v", err)
 		}
 	}
+}
+
+func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machineID, currentGeneration, candidateGeneration, localRef string) (string, *agentapi.OperationStatus) {
+	t.Helper()
+	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	accepted, err := katlc.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
+		ApiVersion:                  operation.APIVersion,
+		Kind:                        agent.RequestKind,
+		ClientRequestId:             "vmtest-host-upgrade-" + candidateGeneration,
+		OperationKind:               agent.OperationKindHostUpgrade,
+		Actor:                       "installed runtime host upgrade vmtest",
+		ExpectedMachineId:           machineID,
+		ExpectedCurrentGenerationId: currentGeneration,
+		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
+			ImageLocalRef:         localRef,
+			CandidateGenerationId: candidateGeneration,
+		},
+	})
+	conn.Close()
+	if err != nil {
+		t.Fatalf("submit host upgrade operation: %v", err)
+	}
+	return accepted.GetOperationId(), waitKatlcOperationTerminal(t, ctx, endpoint, accepted.GetOperationId())
 }
 
 type builtUpgradeImage struct {
