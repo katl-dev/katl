@@ -2,10 +2,29 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
+git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+shared_repo_root="$repo_root"
+if [[ "$(basename "$git_common_dir")" == .git ]]; then
+    shared_repo_root="$(dirname "$git_common_dir")"
+fi
 image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
 build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+if [[ -n "${KATL_MKOSI_CACHE_DIR:-}" ]]; then
+    cache_dir="$KATL_MKOSI_CACHE_DIR"
+elif [[ -n "${KATL_MKOSI_BUILD_DIR:-}" ]]; then
+    cache_dir="$build_dir/cache"
+else
+    cache_dir="$shared_repo_root/_build/mkosi/cache"
+fi
+if [[ -n "${KATL_MKOSI_PACKAGE_CACHE_DIR:-}" ]]; then
+    package_cache_dir="$KATL_MKOSI_PACKAGE_CACHE_DIR"
+elif [[ -n "${KATL_MKOSI_BUILD_DIR:-}" ]]; then
+    package_cache_dir="$build_dir/package-cache"
+else
+    package_cache_dir="$shared_repo_root/_build/mkosi/package-cache"
+fi
 stamp_dir="$build_dir/.katl-stamps"
 go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"
 go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"
@@ -30,15 +49,15 @@ mkosi_installer_package_set=""
 container_mkosi_storage_args=(
     --output-directory /mkosi-build
     --workspace-directory /mkosi-build/workspace
-    --cache-directory /mkosi-build/cache
-    --package-cache-directory /mkosi-build/package-cache
+    --cache-directory /mkosi-cache
+    --package-cache-directory /mkosi-package-cache
     --build-directory /mkosi-build/builddir
 )
 
 prepare_build_dirs() {
     mkdir -p \
-        "$build_dir/cache" \
-        "$build_dir/package-cache" \
+        "$cache_dir" \
+        "$package_cache_dir" \
         "$build_dir/builddir" \
         "$build_dir/workspace" \
         "$build_dir/workspace/installer" \
@@ -596,8 +615,8 @@ if [[ "$runtime" == direct ]]; then
     mkdir -p "$direct_workspace"
     direct_mkosi_storage_args=(
         --workspace-directory "$direct_workspace"
-        --cache-directory "$build_dir/cache"
-        --package-cache-directory "$build_dir/package-cache"
+        --cache-directory "$cache_dir"
+        --package-cache-directory "$package_cache_dir"
         --build-directory "$build_dir/builddir"
     )
     export GOCACHE="${GOCACHE:-$go_build_cache}"
@@ -627,6 +646,8 @@ fi
 
 prepare_build_dirs
 run_flags+=(--volume "$build_dir:/mkosi-build")
+run_flags+=(--volume "$cache_dir:/mkosi-cache")
+run_flags+=(--volume "$package_cache_dir:/mkosi-package-cache")
 
 if [[ -n "$installer_package_set" ]]; then
     mkosi_installer_package_set="/work/$installer_package_set"
@@ -663,8 +684,8 @@ set +e
         /work/_build/mkosi/workspace \
         /work/_build/mkosi/workspace/installer \
         /work/_build/mkosi/workspace/runtime \
-        /mkosi-build/cache \
-        /mkosi-build/package-cache \
+        /mkosi-cache \
+        /mkosi-package-cache \
         /mkosi-build/builddir \
         /mkosi-build/workspace
     export GOCACHE=/work/_build/go-cache
@@ -679,7 +700,7 @@ set +e
         go run ./cmd/katl-mkosi-artifacts "$@"
     }
     if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
-        installer_cache_root=/mkosi-build/cache/fedora~44~x86-64~main.cache
+        installer_cache_root=/mkosi-cache/fedora~44~x86-64~main.cache
         if [[ ! -d "$installer_cache_root/usr/lib/sysimage/rpm" ]]; then
             echo "error: installer RPM database not found: $installer_cache_root/usr/lib/sysimage/rpm" >&2
             status=1
@@ -850,7 +871,7 @@ set +e
     if [[ "${KATL_CHOWN_BUILD:-1}" == 1 && -d _build ]]; then
         chown -R "$HOST_UID:$HOST_GID" _build || true
     elif [[ -d _build/mkosi ]]; then
-        find _build/mkosi/cache _build/mkosi/package-cache _build/mkosi/builddir _build/mkosi/workspace -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+        find /mkosi-cache /mkosi-package-cache _build/mkosi/builddir _build/mkosi/workspace -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
         chown -h "$HOST_UID:$HOST_GID" \
             _build/mkosi/artifacts.json \
             _build/mkosi/katl-* \
