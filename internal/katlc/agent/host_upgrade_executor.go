@@ -54,11 +54,11 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("read current generation: %w", err))
 	}
-	inactiveSlot, inactiveLabel, activeLabel, err := inactiveRoot(previousSpec.Root.Slot)
+	inactiveSlot, err := inactiveRoot(previousSpec.Root.Slot)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
-	slots, err := e.inspectRootSlots(ctx, activeLabel, inactiveLabel)
+	slots, err := e.inspectRootSlots(ctx, previousSpec.Root.PartitionUUID)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
@@ -262,18 +262,44 @@ type rootSlots struct {
 	InactivePartUUID string
 }
 
-func (e *Executor) inspectRootSlots(ctx context.Context, activeLabel, inactiveLabel string) (rootSlots, error) {
-	active, err := e.toolOutput(ctx, "blkid", "-t", "PARTLABEL="+activeLabel, "-o", "device")
+func (e *Executor) inspectRootSlots(ctx context.Context, activePartUUID string) (rootSlots, error) {
+	active, err := e.toolOutput(ctx, "blkid", "-t", "PARTUUID="+activePartUUID, "-o", "device")
 	if err != nil {
 		return rootSlots{}, fmt.Errorf("find active root slot: %w", err)
-	}
-	inactive, err := e.toolOutput(ctx, "blkid", "-t", "PARTLABEL="+inactiveLabel, "-o", "device")
-	if err != nil {
-		return rootSlots{}, fmt.Errorf("find inactive root slot: %w", err)
 	}
 	activeDisk, activePart, err := e.partitionIdentity(ctx, active)
 	if err != nil {
 		return rootSlots{}, err
+	}
+	activeType, err := e.toolOutput(ctx, "lsblk", "-no", "PARTTYPE", active)
+	if err != nil {
+		return rootSlots{}, fmt.Errorf("inspect active root partition type: %w", err)
+	}
+	partitionTable, err := e.toolOutput(ctx, "lsblk", "-rno", "PATH,PARTTYPE", activeDisk)
+	if err != nil {
+		return rootSlots{}, fmt.Errorf("inspect root partitions on %s: %w", activeDisk, err)
+	}
+	rootDevices := make([]string, 0, 2)
+	for _, line := range strings.Split(partitionTable, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.EqualFold(fields[1], activeType) {
+			rootDevices = append(rootDevices, fields[0])
+		}
+	}
+	if len(rootDevices) != 2 {
+		return rootSlots{}, fmt.Errorf("find inactive root slot: found %d root partitions with type %q on %s, want 2", len(rootDevices), activeType, activeDisk)
+	}
+	inactive := ""
+	activeFound := false
+	for _, device := range rootDevices {
+		if device == active {
+			activeFound = true
+			continue
+		}
+		inactive = device
+	}
+	if !activeFound || inactive == "" {
+		return rootSlots{}, fmt.Errorf("find inactive root slot: active device %s is not one of %v", active, rootDevices)
 	}
 	inactiveDisk, inactivePart, err := e.partitionIdentity(ctx, inactive)
 	if err != nil {
@@ -339,14 +365,14 @@ func (e *Executor) failHostUpgrade(record operation.OperationRecord, phase strin
 	return errors.Join(cause, err)
 }
 
-func inactiveRoot(current string) (string, string, string, error) {
+func inactiveRoot(current string) (string, error) {
 	switch current {
 	case string(disk.RootSlotA):
-		return string(disk.RootSlotB), disk.GPTLabelRootB, disk.GPTLabelRootA, nil
+		return string(disk.RootSlotB), nil
 	case string(disk.RootSlotB):
-		return string(disk.RootSlotA), disk.GPTLabelRootA, disk.GPTLabelRootB, nil
+		return string(disk.RootSlotA), nil
 	default:
-		return "", "", "", fmt.Errorf("current generation root slot %q is unsupported", current)
+		return "", fmt.Errorf("current generation root slot %q is unsupported", current)
 	}
 }
 
