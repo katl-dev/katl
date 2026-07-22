@@ -48,6 +48,7 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	inv := validSingleNodeInventory()
 	inv.ControlPlaneEndpoint = "api.katl.test:6443"
 	inv.ControlPlaneEndpointManaged = true
+	inv.Nodes[0].Labels = map[string]string{"topology.kubernetes.io/zone": "rack-a"}
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-2",
 		Address:           "10.0.0.12",
@@ -100,6 +101,7 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 		"cp-1": cpClient,
 		"cp-2": cp2Client,
 	})
+	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	result, err := RunAgentBootstrap(context.Background(), Request{
 		Inventory:           inv,
@@ -109,12 +111,12 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	}, AgentBootstrapDependencies{
 		Connector:       connector,
 		Actor:           "test-actor",
-		BootstrapRunner: &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}},
+		BootstrapRunner: bootstrapRunner,
 	})
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "stable-endpoint", "control-plane-join", "kubeconfig"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "stable-endpoint", "control-plane-join", "user-bootstrap", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
 	}
 	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[4].OperationID != "bootstrap-join-control-plane-1" {
@@ -150,6 +152,19 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	}
 	if got := cpClient.createMaterial.GetWorkerJoinMaterial().GetJoinArgv()[2]; got != "api.katl.test:6443" {
 		t.Fatalf("source join material endpoint = %q, want unmodified agent response", got)
+	}
+	if len(bootstrapRunner.requests) != 2 {
+		t.Fatalf("bootstrap requests = %d, want stable endpoint check and node labels", len(bootstrapRunner.requests))
+	}
+	labelRequest := bootstrapRunner.requests[1]
+	if len(labelRequest.Manifests) != 1 {
+		t.Fatalf("node label manifests = %#v", labelRequest.Manifests)
+	}
+	manifest := string(labelRequest.Manifests[0].Content)
+	for _, want := range []string{"kind: Node", "name: cp-1", "topology.kubernetes.io/zone: rack-a"} {
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("node label manifest = %q, want %q", manifest, want)
+		}
 	}
 }
 

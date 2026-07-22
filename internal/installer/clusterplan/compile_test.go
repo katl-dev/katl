@@ -29,6 +29,9 @@ func TestCompileClusterPlan(t *testing.T) {
 	if got := plan.BootstrapInventory.Nodes[0].Name; got != "cp-1" {
 		t.Fatalf("first inventory node = %q", got)
 	}
+	if got := plan.BootstrapInventory.Nodes[0].Labels["katl.dev/zone"]; got != "rack-a" {
+		t.Fatalf("first inventory node zone = %q", got)
+	}
 	cp := plan.Nodes[0]
 	if cp.Name != "cp-1" || cp.SystemRole != inventory.RoleControlPlane || cp.BootstrapAddress != "10.0.0.11" {
 		t.Fatalf("control-plane material = %#v", cp)

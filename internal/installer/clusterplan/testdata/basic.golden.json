@@ -283,7 +283,11 @@
           "path": "/etc/katl/kubeadm/control-plane/config.yaml",
           "intent": "control-plane"
         },
-        "kubernetesVersion": "v1.36.1"
+        "kubernetesVersion": "v1.36.1",
+        "labels": {
+          "katl.dev/zone": "rack-a",
+          "node-role.kubernetes.io/control-plane": ""
+        }
       },
       {
         "name": "worker-1",
@@ -298,7 +302,10 @@
           "path": "/etc/katl/kubeadm/worker/config.yaml",
           "intent": "worker"
         },
-        "kubernetesVersion": "v1.36.1"
+        "kubernetesVersion": "v1.36.1",
+        "labels": {
+          "katl.dev/pool": "workers"
+        }
       }
     ]
   }

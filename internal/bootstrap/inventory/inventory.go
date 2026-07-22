@@ -64,12 +64,13 @@ type BootstrapWait struct {
 }
 
 type Node struct {
-	Name              string        `json:"name"`
-	Address           string        `json:"address,omitempty"`
-	SystemRole        SystemRole    `json:"systemRole"`
-	Access            Access        `json:"access"`
-	KubeadmConfig     KubeadmConfig `json:"kubeadmConfig"`
-	KubernetesVersion string        `json:"kubernetesVersion"`
+	Name              string            `json:"name"`
+	Address           string            `json:"address,omitempty"`
+	SystemRole        SystemRole        `json:"systemRole"`
+	Access            Access            `json:"access"`
+	KubeadmConfig     KubeadmConfig     `json:"kubeadmConfig"`
+	KubernetesVersion string            `json:"kubernetesVersion"`
+	Labels            map[string]string `json:"labels,omitempty"`
 }
 
 type Access struct {
@@ -103,13 +104,14 @@ type Plan struct {
 }
 
 type PlannedNode struct {
-	Name              string          `json:"name"`
-	Address           string          `json:"address"`
-	SystemRole        SystemRole      `json:"systemRole"`
-	Action            BootstrapAction `json:"action"`
-	Access            Access          `json:"access"`
-	KubeadmConfig     KubeadmConfig   `json:"kubeadmConfig"`
-	KubernetesVersion string          `json:"kubernetesVersion"`
+	Name              string            `json:"name"`
+	Address           string            `json:"address"`
+	SystemRole        SystemRole        `json:"systemRole"`
+	Action            BootstrapAction   `json:"action"`
+	Access            Access            `json:"access"`
+	KubeadmConfig     KubeadmConfig     `json:"kubeadmConfig"`
+	KubernetesVersion string            `json:"kubernetesVersion"`
+	Labels            map[string]string `json:"labels,omitempty"`
 }
 
 type AddressOverride struct {
@@ -314,7 +316,19 @@ func normalizeNode(node Node, inventoryVersion string) (PlannedNode, error) {
 		Access:            access,
 		KubeadmConfig:     config,
 		KubernetesVersion: version,
+		Labels:            copyLabels(node.Labels),
 	}, nil
+}
+
+func copyLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(labels))
+	for key, value := range labels {
+		out[key] = value
+	}
+	return out
 }
 
 func normalizeAccess(node string, access Access) (Access, error) {
