@@ -1606,6 +1606,51 @@ func TestWipeNodePlanPrintsUnknownKubernetesCleanupWithoutKubeconfig(t *testing.
 	}
 }
 
+func TestWipeNodeAllowsNotConfiguredControlPlaneFromMultiControlPlaneConfig(t *testing.T) {
+	configPath := writeMultiControlPlaneClusterConfig(t)
+	client := readyWipeClusterClient("cp-machine")
+	client.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{State: "not-configured"}
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{"cp-1": client})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func() cluster.AgentConnector { return connector }
+	oldKubectl := operatorKubectlRunner
+	kubectl := &fakeKubectlRunner{}
+	operatorKubectlRunner = kubectl
+	t.Cleanup(func() {
+		newWipeClusterConnector = oldConnector
+		operatorKubectlRunner = oldKubectl
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"node", "wipe", "cp-1",
+		"--output", "json",
+		"--config", configPath,
+		"--client-request-id", "wipe-pre-bootstrap-cp",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeNodeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.KubernetesCleanup != "not-needed" || len(report.Targets) != 1 || report.Targets[0].SystemRole != string(inventory.RoleControlPlane) {
+		t.Fatalf("report = %#v", report)
+	}
+	if len(kubectl.calls) != 0 {
+		t.Fatalf("kubectl calls = %#v, want no Kubernetes cleanup before bootstrap", kubectl.calls)
+	}
+	request := client.submitRequest
+	if request == nil || request.ClientRequestId != "wipe-pre-bootstrap-cp" {
+		t.Fatalf("submit request = %+v", request)
+	}
+	reset := request.GetDestructiveReset()
+	if reset == nil || reset.ResetScope != "node" || reset.InventoryNodeName != "cp-1" {
+		t.Fatalf("destructive reset = %+v", reset)
+	}
+}
+
 func TestWipeNodeUsesEnrolledContextWithoutClusterSource(t *testing.T) {
 	configPath := writeKatlctlConfig(t, `currentContext: lab
 contexts:
@@ -1755,8 +1800,10 @@ func TestWipeNodeReportsRecoveryRequiredBeforeLocalReset(t *testing.T) {
 
 func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
 	inventoryPath := writeInventory(t)
+	client := readyWipeClusterClient("cp-machine")
+	client.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{State: "ready", Role: "control-plane"}
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
-		"cp-1": readyWipeClusterClient("cp-machine"),
+		"cp-1": client,
 	})
 	oldConnector := newWipeClusterConnector
 	newWipeClusterConnector = func() cluster.AgentConnector {
@@ -3065,6 +3112,31 @@ func writeClusterConfig(t *testing.T) string {
 	t.Helper()
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
 	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return sourcePath
+}
+
+func writeMultiControlPlaneClusterConfig(t *testing.T) string {
+	t.Helper()
+	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
+	source := strings.Replace(configBundleSource(), `
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/ata-cp-root
+`, `
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/ata-cp-root
+    - name: cp-2
+      controlPlane: true
+      bootstrap:
+        address: 10.0.0.12
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/ata-cp-2-root
+`, 1)
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return sourcePath
