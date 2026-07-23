@@ -219,8 +219,8 @@ spec:
 	if selected.NodeMaterial.KubeadmConfig.Ref != "control-plane" || selected.KubeadmConfigs["control-plane"].Config.RenderPath == "" {
 		t.Fatalf("defaulted kubeadm = material %#v configs %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
 	}
-	if config := string(selected.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(config, "volumePluginDir: /var/lib/kubelet/plugins/volume/exec") || !strings.Contains(config, "taints: []") || !strings.Contains(config, "podSubnet: 10.244.0.0/16") {
-		t.Fatalf("defaulted kubeadm does not keep plugins on writable state, allow control-plane scheduling, and allocate Pod CIDRs:\n%s", config)
+	if config := string(selected.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(config, "volumePluginDir: /var/lib/kubelet/plugins/volume/exec") || !strings.Contains(config, "taints: []") || !strings.Contains(config, "podSubnet: 10.244.0.0/16") || !strings.Contains(config, "serviceSubnet: 10.96.0.0/12") {
+		t.Fatalf("defaulted kubeadm does not keep plugins on writable state, allow control-plane scheduling, and declare the Pod and Service networks:\n%s", config)
 	}
 }
 
@@ -246,7 +246,7 @@ clusterName: operator-cluster
 	if !strings.Contains(config, "clusterName: operator-cluster") {
 		t.Fatalf("control-plane kubeadm input lost operator ClusterConfiguration:\n%s", config)
 	}
-	if strings.Contains(config, "podSubnet:") {
+	if strings.Contains(config, "podSubnet:") || strings.Contains(config, "serviceSubnet:") {
 		t.Fatalf("control-plane kubeadm input silently supplemented operator ClusterConfiguration:\n%s", config)
 	}
 }

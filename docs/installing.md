@@ -180,9 +180,9 @@ spec:
 
 When no native kubeadm file is supplied, Katl's generated kubeadm profile keeps
 kube-proxy enabled, allows workloads on control-plane nodes, and assigns Node
-Pod CIDRs from `10.244.0.0/16`. Supply `spec.kubernetes.kubeadm.configFile` to
-own the native `ClusterConfiguration`, including a different or intentionally
-absent Pod subnet.
+Pod CIDRs from `10.244.0.0/16` and Service IPs from `10.96.0.0/12`. Supply
+`spec.kubernetes.kubeadm.configFile` to own the native `ClusterConfiguration`,
+including different or intentionally absent Pod and Service subnets.
 
 The release ISO supplies the KatlOS image. ClusterConfig never contains image
 URLs, bundle references, credentials, named kubeadm profiles, node classes, or

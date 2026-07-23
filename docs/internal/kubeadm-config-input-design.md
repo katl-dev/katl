@@ -105,8 +105,9 @@ generated confext staging and generation selection
 ```
 
 The complete default keeps kube-proxy enabled, permits scheduling on
-control-plane nodes, and configures `10.244.0.0/16` as the Pod subnet so a
-Kubernetes-IPAM CNI can bring a newly bootstrapped cluster into service. An
+control-plane nodes, configures `10.244.0.0/16` as the Pod subnet so a
+Kubernetes-IPAM CNI can bring a newly bootstrapped cluster into service, and
+declares kubeadm's conventional `10.96.0.0/12` Service subnet. An
 operator-supplied `ClusterConfiguration` replaces that default document rather
 than being silently supplemented with Katl policy.
 

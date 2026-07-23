@@ -494,7 +494,7 @@ func SourceControlPlaneEndpoint(source SourceConfig) string {
 }
 
 func defaultKubeadmInitConfig(version string) string {
-	config := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n  taints: []\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nnetworking:\n  podSubnet: 10.244.0.0/16\n"
+	config := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n  taints: []\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nnetworking:\n  podSubnet: 10.244.0.0/16\n  serviceSubnet: 10.96.0.0/12\n"
 	if version != "" {
 		config += "kubernetesVersion: " + version + "\n"
 	}
