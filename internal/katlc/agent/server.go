@@ -145,15 +145,15 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	if s.RunReboot == nil {
 		return nil, status.Error(codes.FailedPrecondition, "node reboot runner is not configured")
 	}
-	endpointPaused, err := pauseManagedEndpoint(ctx, s.Root, s.RunEndpointLifecycle)
+	routingPaused, err := pauseManagedRoutingForPowerTransition(ctx, s.Root, s.RunEndpointLifecycle)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "prepare control-plane endpoint for reboot: %s", inventory.Redact(err.Error()))
+		return nil, status.Errorf(codes.Internal, "prepare node routing for reboot: %s", inventory.Redact(err.Error()))
 	}
 	result := s.RunReboot(ctx, []string{"systemd-run", "--unit=katl-reboot", "--collect", "--on-active=2s", "systemctl", "reboot"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		var resumeErr error
-		if endpointPaused {
-			resumeErr = resumeManagedEndpoint(context.Background(), s.Root, s.RunEndpointLifecycle)
+		if routingPaused {
+			resumeErr = resumeManagedRoutingAfterFailedPowerTransition(context.Background(), s.Root, s.RunEndpointLifecycle)
 		}
 		return nil, status.Errorf(codes.Internal, "schedule reboot: %s", inventory.Redact(errors.Join(errors.New(toolFailure(result)), resumeErr).Error()))
 	}
@@ -190,15 +190,15 @@ func (s *Server) Shutdown(ctx context.Context, req *agentapi.ShutdownRequest) (*
 	if s.RunShutdown == nil {
 		return nil, status.Error(codes.FailedPrecondition, "node shutdown runner is not configured")
 	}
-	endpointPaused, err := pauseManagedEndpoint(ctx, s.Root, s.RunEndpointLifecycle)
+	routingPaused, err := pauseManagedRoutingForPowerTransition(ctx, s.Root, s.RunEndpointLifecycle)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "prepare control-plane endpoint for shutdown: %s", inventory.Redact(err.Error()))
+		return nil, status.Errorf(codes.Internal, "prepare node routing for shutdown: %s", inventory.Redact(err.Error()))
 	}
 	result := s.RunShutdown(ctx, []string{"systemd-run", "--unit=katl-shutdown", "--collect", "--on-active=2s", "systemctl", "poweroff"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		var resumeErr error
-		if endpointPaused {
-			resumeErr = resumeManagedEndpoint(context.Background(), s.Root, s.RunEndpointLifecycle)
+		if routingPaused {
+			resumeErr = resumeManagedRoutingAfterFailedPowerTransition(context.Background(), s.Root, s.RunEndpointLifecycle)
 		}
 		return nil, status.Errorf(codes.Internal, "schedule shutdown: %s", inventory.Redact(errors.Join(errors.New(toolFailure(result)), resumeErr).Error()))
 	}

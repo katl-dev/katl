@@ -19,11 +19,44 @@ import (
 
 const (
 	endpointAdvertiserUnit    = "katl-app-bgp-api-vip.service"
+	endpointRoutingUnit       = "katl-app-bird.service"
 	endpointAdvertiserCommand = "/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser"
 	managedEndpointInterface  = "/usr/bin/networkctl"
 	managedEndpointIP         = "/usr/bin/ip"
 	managedEndpointKubectl    = "/usr/bin/kubectl"
 )
+
+// pauseManagedRoutingForPowerTransition withdraws both the API VIP and routes
+// learned from local route-exchange peers before the node loses power. Stopping
+// only the endpoint advertiser leaves BIRD's fabric session established, so a
+// router can retain a dead ECMP path to workload VIPs while the node reboots.
+func pauseManagedRoutingForPowerTransition(ctx context.Context, root string, run ToolRunner) (bool, error) {
+	paused, err := pauseManagedEndpoint(ctx, root, run)
+	if err != nil || !paused {
+		return paused, err
+	}
+	result := run(ctx, []string{"systemctl", "stop", endpointRoutingUnit}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		resumeErr := resumeManagedRoutingAfterFailedPowerTransition(context.Background(), root, run)
+		return false, errors.Join(fmt.Errorf("stop managed route exports: %s", toolFailure(result)), resumeErr)
+	}
+	return true, nil
+}
+
+func resumeManagedRoutingAfterFailedPowerTransition(ctx context.Context, root string, run ToolRunner) error {
+	configured, err := managedEndpointConfigured(root)
+	if err != nil || !configured {
+		return err
+	}
+	if run == nil {
+		return fmt.Errorf("endpoint lifecycle runner is not configured")
+	}
+	result := run(ctx, []string{"systemctl", "start", endpointRoutingUnit}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("resume managed route exports: %s", toolFailure(result))
+	}
+	return resumeManagedEndpoint(ctx, root, run)
+}
 
 type managedJoinEndpoint struct {
 	VIP       string

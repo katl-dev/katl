@@ -219,8 +219,17 @@ func TestVMTestRunHonorsPackageParallelismOverride(t *testing.T) {
 		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
 	}
 	goArgs := readLines(t, goArgsPath)
-	joined := "\n" + strings.Join(goArgs, "\n") + "\n"
-	if strings.Count(joined, "-p") != 1 || !strings.Contains(joined, "\n-p=3\n") {
+	parallelismArgs := 0
+	foundOverride := false
+	for _, arg := range goArgs {
+		if arg == "-p" || strings.HasPrefix(arg, "-p=") {
+			parallelismArgs++
+		}
+		if arg == "-p=3" {
+			foundOverride = true
+		}
+	}
+	if parallelismArgs != 1 || !foundOverride {
 		t.Fatalf("go args do not preserve the sole caller parallelism override: %#v", goArgs)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
@@ -44,6 +45,59 @@ func TestManagedEndpointLifecycleFollowsGeneratedEnablement(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("endpoint lifecycle commands = %#v, want %#v", calls, want)
+	}
+}
+
+func TestPowerTransitionLifecycleWithdrawsAndRestoresAllManagedRoutes(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	var calls [][]string
+	run := func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		calls = append(calls, append([]string(nil), argv...))
+		return ToolResult{}
+	}
+
+	paused, err := pauseManagedRoutingForPowerTransition(context.Background(), root, run)
+	if err != nil || !paused {
+		t.Fatalf("pause managed routing = %v, %v", paused, err)
+	}
+	if err := resumeManagedRoutingAfterFailedPowerTransition(context.Background(), root, run); err != nil {
+		t.Fatalf("resume managed routing: %v", err)
+	}
+	want := [][]string{
+		{"systemctl", "stop", endpointAdvertiserUnit},
+		{endpointAdvertiserCommand, "withdraw"},
+		{"systemctl", "stop", endpointRoutingUnit},
+		{"systemctl", "start", endpointRoutingUnit},
+		{"systemctl", "start", endpointAdvertiserUnit},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("power transition lifecycle commands = %#v, want %#v", calls, want)
+	}
+}
+
+func TestPowerTransitionPauseRestoresRoutingWhenFabricWithdrawalFails(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	var calls [][]string
+	run := func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		calls = append(calls, append([]string(nil), argv...))
+		if reflect.DeepEqual(argv, []string{"systemctl", "stop", endpointRoutingUnit}) {
+			return ToolResult{Err: errors.New("bird stop failed"), ExitStatus: 1}
+		}
+		return ToolResult{}
+	}
+
+	paused, err := pauseManagedRoutingForPowerTransition(context.Background(), root, run)
+	if err == nil || paused || !strings.Contains(err.Error(), "stop managed route exports") {
+		t.Fatalf("pause managed routing = %v, %v", paused, err)
+	}
+	wantTail := [][]string{
+		{"systemctl", "start", endpointRoutingUnit},
+		{"systemctl", "start", endpointAdvertiserUnit},
+	}
+	if !reflect.DeepEqual(calls[len(calls)-2:], wantTail) {
+		t.Fatalf("routing restore commands = %#v, want tail %#v", calls, wantTail)
 	}
 }
 
