@@ -56,6 +56,10 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 }
 
+type outputCommandRunner interface {
+	Output(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
 type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
@@ -362,6 +366,11 @@ func mountImageFile(ctx context.Context, imagePath string, digest string, workDi
 	mountPoint := filepath.Join(workDir, "mounts", digest)
 	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
 		return "", fmt.Errorf("create KatlOS image mountpoint: %w", err)
+	}
+	if output, ok := commands.(outputCommandRunner); ok {
+		if _, err := output.Output(ctx, "findmnt", "--noheadings", "--mountpoint", mountPoint); err == nil {
+			return mountPoint, nil
+		}
 	}
 	if err := commands.Run(ctx, "mount", "-o", "ro,loop", imagePath, mountPoint); err != nil {
 		return "", fmt.Errorf("mount KatlOS image: %w", err)

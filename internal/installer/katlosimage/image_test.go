@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -429,6 +430,47 @@ func TestLocalResolverMountsFileRef(t *testing.T) {
 	}
 	if payload.ImageSHA256 != hex.EncodeToString(sum[:]) || payload.ImageSizeBytes != uint64(len(imageBytes)) {
 		t.Fatalf("derived image identity = %s/%d", payload.ImageSHA256, payload.ImageSizeBytes)
+	}
+}
+
+func TestLocalResolverReusesMountedFileRef(t *testing.T) {
+	mediaRoot := t.TempDir()
+	imagePath := filepath.Join(mediaRoot, "payloads", "katlos-install.squashfs")
+	imageBytes := []byte("squashfs image bytes")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("mkdir image dir: %v", err)
+	}
+	if err := os.WriteFile(imagePath, imageBytes, 0o600); err != nil {
+		t.Fatalf("write image file: %v", err)
+	}
+	expected := expectedImage()
+	expected.SHA256 = ""
+	expected.SizeBytes = 0
+	mounter := &fixtureReusableMountRunner{populate: func(root string) {
+		writeImagePayloadAt(t, root, func(*Index) {})
+	}}
+	resolver := LocalResolver{
+		MediaRoot: mediaRoot,
+		WorkDir:   filepath.Join(t.TempDir(), "mounts"),
+		Commands:  mounter,
+	}
+
+	first, err := resolver.ResolveKatlosImage(context.Background(), expected)
+	if err != nil {
+		t.Fatalf("first ResolveKatlosImage() error = %v", err)
+	}
+	second, err := resolver.ResolveKatlosImage(context.Background(), expected)
+	if err != nil {
+		t.Fatalf("second ResolveKatlosImage() error = %v", err)
+	}
+	if mounter.mounts != 1 {
+		t.Fatalf("mount calls = %d, want 1", mounter.mounts)
+	}
+	if mounter.lookups != 2 {
+		t.Fatalf("mountpoint lookups = %d, want 2", mounter.lookups)
+	}
+	if first.Root != second.Root {
+		t.Fatalf("payload roots = %q and %q, want reused mount", first.Root, second.Root)
 	}
 }
 
@@ -868,6 +910,36 @@ func (r *fixtureMountRunner) Run(_ context.Context, name string, args ...string)
 		r.populate(args[3])
 	}
 	return nil
+}
+
+type fixtureReusableMountRunner struct {
+	mounted  bool
+	mounts   int
+	lookups  int
+	populate func(root string)
+}
+
+func (r *fixtureReusableMountRunner) Run(_ context.Context, name string, args ...string) error {
+	if name != "mount" || len(args) != 4 {
+		return nil
+	}
+	r.mounts++
+	r.mounted = true
+	if r.populate != nil {
+		r.populate(args[3])
+	}
+	return nil
+}
+
+func (r *fixtureReusableMountRunner) Output(_ context.Context, name string, _ ...string) ([]byte, error) {
+	if name != "findmnt" {
+		return nil, nil
+	}
+	r.lookups++
+	if !r.mounted {
+		return nil, errors.New("not mounted")
+	}
+	return []byte("mounted"), nil
 }
 
 type fixtureHTTPClient struct {
