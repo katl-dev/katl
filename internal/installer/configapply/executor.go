@@ -14,9 +14,10 @@ import (
 )
 
 type Command struct {
-	Name    string
-	Argv    []string
-	Timeout time.Duration
+	Name                string
+	Argv                []string
+	Timeout             time.Duration
+	SuccessExitStatuses []int
 }
 
 type CommandResult struct {
@@ -182,7 +183,7 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 				_ = e.writeStatus(*status)
 				return fmt.Errorf("%s: %w", command.Name, err)
 			}
-			if result.ExitStatus != 0 {
+			if !commandSucceeded(command, result) {
 				err := commandFailure(command, result)
 				action.Status = generation.ConfigApplyActionFailed
 				action.Diagnostic = generation.RedactConfigApplyMessage(err.Error())
@@ -253,7 +254,11 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	}}
 	switch domain {
 	case DomainKubeadmConfig, DomainSelectedKubeadmConfig:
-		commands = []Command{{Name: "kubelet-config-watcher-rebind", Argv: []string{"systemctl", "try-restart", "kubelet.service"}}}
+		commands = []Command{{
+			Name:                "kubelet-config-watcher-rebind",
+			Argv:                []string{"systemctl", "try-restart", "kubelet.service"},
+			SuccessExitStatuses: []int{5},
+		}}
 	case DomainResolved:
 		commands = append(commands, Command{Name: "systemd-resolved-reload", Argv: []string{"systemctl", "reload-or-restart", "systemd-resolved.service"}})
 	case DomainSysctl:
@@ -330,7 +335,7 @@ func (e Executor) replayRollbackActions(ctx context.Context, actions []generatio
 			if err != nil {
 				return fmt.Errorf("rollback %s: %w", command.Name, err)
 			}
-			if result.ExitStatus != 0 {
+			if !commandSucceeded(command, result) {
 				return fmt.Errorf("rollback %w", commandFailure(command, result))
 			}
 		}
@@ -416,6 +421,18 @@ func commandFailure(command Command, result CommandResult) error {
 		output = fmt.Sprintf("exit status %d", result.ExitStatus)
 	}
 	return fmt.Errorf("%s exited %d: %s", command.Name, result.ExitStatus, generation.RedactConfigApplyMessage(output))
+}
+
+func commandSucceeded(command Command, result CommandResult) bool {
+	if result.ExitStatus == 0 {
+		return true
+	}
+	for _, status := range command.SuccessExitStatuses {
+		if result.ExitStatus == status {
+			return true
+		}
+	}
+	return false
 }
 
 var forbiddenPrograms = map[string]bool{

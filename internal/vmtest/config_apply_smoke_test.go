@@ -284,11 +284,22 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if beforeSysext != "" {
 		assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/spec.json", `"name": "kubernetes"`)
 	}
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/status.json", `"commitState": "candidate"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/status.json",
+		`"commitState": "committed"`,
+		`"bootState": "good"`,
+		`"healthState": "healthy"`,
+		`"committedByOperationID": "`+liveAccepted.OperationId+`"`,
+	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json", `"phase": "active"`, `"requestedApplyMode": "auto"`, `"acceptedApplyMode": "live"`)
 	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf", "kernel.panic = 137")
 	assertGuestSysctl(t, ctx, guest, "kernel.panic", "137")
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json",
+		`"defaultGenerationID": "`+liveGeneration+`"`,
+		`"bootedGenerationID": "`+liveGeneration+`"`,
+		`"previousKnownGoodGenerationID": "`+currentGeneration+`"`,
+		`"pendingHealthValidation": false`,
+	)
 
 	liveConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	assertGuestNonLoopbackLink(t, ctx, guest)
@@ -301,11 +312,11 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if stagedGenerationStatus.GetConfigApply().GetPhase() != "next-boot" || stagedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
 		t.Fatalf("staged katlctl generation status = %+v, want next-boot config apply", stagedGenerationStatus.GetConfigApply())
 	}
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json", `"generationID": "`+stagedGeneration+`"`, `"previousGenerationID": "`+currentGeneration+`"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json", `"generationID": "`+stagedGeneration+`"`, `"previousGenerationID": "`+liveGeneration+`"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "trying"`, `"committedByOperationID": "`+stagedAccepted.OperationId+`"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json", `"phase": "next-boot"`, `"acceptedApplyMode": "next-boot"`, `"domain": "networkd"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+currentGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+liveGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", liveConfext)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
@@ -349,8 +360,9 @@ func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestCont
 	for _, want := range []string{
 		"authorizedkeysfile /etc/ssh/authorized_keys/%u",
 		"hostkey /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
-		"permitrootlogin without-password",
-		"allowusers root katl",
+		"permitrootlogin prohibit-password",
+		"allowusers root",
+		"allowusers katl",
 	} {
 		if !strings.Contains(effective, want) {
 			t.Fatalf("effective sshd configuration missing %q:\n%s", want, effective)

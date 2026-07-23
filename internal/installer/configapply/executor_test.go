@@ -81,6 +81,34 @@ func TestExecutorRebindsKubeletWatcherOnceForKubeadmInput(t *testing.T) {
 	}
 }
 
+func TestExecutorAllowsKubeadmInputBeforeKubeletUnitExists(t *testing.T) {
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainKubeadmConfig}})
+	runner := &fakeCommandRunner{
+		results: map[string]CommandResult{
+			"kubelet-config-watcher-rebind": {
+				ExitStatus: 5,
+				Stderr:     "Failed to try-restart kubelet.service: Unit kubelet.service not found.",
+			},
+		},
+	}
+	activator := &fakeActivator{}
+
+	status, err := Executor{
+		Runner:    runner,
+		Activator: activator,
+		Now:       fixedNow,
+	}.ExecuteLive(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("ExecuteLive() error = %v", err)
+	}
+	if status.Phase != generation.ConfigApplyPhaseActive || status.DomainActions[0].Status != generation.ConfigApplyActionPassed {
+		t.Fatalf("status = %#v, want active kubeadm input", status)
+	}
+	if activator.rollbackTarget != "" {
+		t.Fatalf("rollback target = %q, want no rollback", activator.rollbackTarget)
+	}
+}
+
 func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
 	statusPath := executorStatusPath(t, plan)
