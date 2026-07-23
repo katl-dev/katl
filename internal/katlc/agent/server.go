@@ -543,7 +543,7 @@ func (s *Server) acceptDestructiveResetOperation(req *agentapi.SubmitOperationRe
 		ExpectedClusterIntentDigest: req.ExpectedClusterIntentDigest,
 		RequestDigest:               digest,
 		Phase:                       "accepted",
-		PhasePlan:                   []string{"accepted", "preflight-destructive-reset", "destructive-reset", operation.HostBookkeepingCompletionPhase},
+		PhasePlan:                   []string{"accepted", "preflight-destructive-reset", "destructive-reset", "schedule-poweroff", operation.HostBookkeepingCompletionPhase},
 		DestructiveResetRequest:     &resetRequest,
 		ResourceLocks:               locks,
 		NextAction:                  "queued for katlc agent executor",

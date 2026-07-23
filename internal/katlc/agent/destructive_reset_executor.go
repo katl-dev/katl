@@ -29,6 +29,15 @@ var destructiveResetBootArtifactPaths = []string{
 	"EFI/systemd/systemd-bootx64.EFI",
 }
 
+var destructiveResetPoweroffArgv = []string{
+	"systemd-run",
+	"--unit=katl-destructive-reset-poweroff",
+	"--collect",
+	"--on-active=10s",
+	"systemctl",
+	"poweroff",
+}
+
 func (e *Executor) executeDestructiveReset(ctx context.Context, record operation.OperationRecord) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -73,17 +82,33 @@ func (e *Executor) executeDestructiveReset(ctx context.Context, record operation
 		return errors.Join(err, markErr)
 	}
 
+	routingPaused, err := pauseManagedRoutingForPowerTransition(ctx, e.Root, e.endpointLifecycleRunner())
+	if err != nil {
+		_, markErr := e.failRecordPhase(record.OperationID, "destructive-reset-routing-pause-failed", "schedule-poweroff", "destructive-reset", "power off the node manually after repairing managed routing withdrawal", err)
+		return errors.Join(err, markErr)
+	}
+	result := e.poweroffRunner()(ctx, destructiveResetPoweroffArgv, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		var resumeErr error
+		if routingPaused {
+			resumeErr = resumeManagedRoutingAfterFailedPowerTransition(context.Background(), e.Root, e.endpointLifecycleRunner())
+		}
+		err := errors.Join(fmt.Errorf("schedule poweroff: %s", toolFailure(result)), resumeErr)
+		_, markErr := e.failRecordPhase(record.OperationID, "destructive-reset-poweroff-schedule-failed", "schedule-poweroff", "destructive-reset", "power off the node manually; Katl disk boot artifacts have already been removed", err)
+		return errors.Join(err, markErr)
+	}
+
 	completedAt := e.clock()
 	_, err = e.Store.Update(record.OperationID, "destructive-reset-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = operation.HostBookkeepingCompletionPhase
-		record.CompletedPhases = appendMissing(record.CompletedPhases, "accepted", "preflight-destructive-reset", "destructive-reset", operation.HostBookkeepingCompletionPhase)
+		record.CompletedPhases = appendMissing(record.CompletedPhases, "accepted", "preflight-destructive-reset", "destructive-reset", "schedule-poweroff", operation.HostBookkeepingCompletionPhase)
 		record.PhaseIndex = len(record.CompletedPhases)
 		record.MutatingToolRan = true
-		record.MutatingToolInvocations = appendMissing(record.MutatingToolInvocations, "katlc destructive-reset")
+		record.MutatingToolInvocations = appendMissing(record.MutatingToolInvocations, "katlc destructive-reset", "systemd-run katl-destructive-reset-poweroff")
 		record.CompletedAt = &completedAt
 		record.Terminal = true
 		record.Result = operation.ResultSucceeded
-		record.NextAction = "reboot node with installer media or PXE available; Katl disk boot artifacts have been removed"
+		record.NextAction = "node is powering off; select installer media or PXE, then start it to reinstall"
 		record.UpdatedAt = completedAt
 		return record, nil
 	})

@@ -465,7 +465,7 @@ func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
 	if !reflect.DeepEqual(record.ResourceLocks, []string{"generation-state.lock", "kubeadm-state.lock", "destructive-reset.lock"}) {
 		t.Fatalf("resource locks = %#v", record.ResourceLocks)
 	}
-	if !reflect.DeepEqual(record.PhasePlan, []string{"accepted", "preflight-destructive-reset", "destructive-reset", operation.HostBookkeepingCompletionPhase}) {
+	if !reflect.DeepEqual(record.PhasePlan, []string{"accepted", "preflight-destructive-reset", "destructive-reset", "schedule-poweroff", operation.HostBookkeepingCompletionPhase}) {
 		t.Fatalf("phase plan = %#v", record.PhasePlan)
 	}
 }

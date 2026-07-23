@@ -176,6 +176,33 @@ func TestInstalledRuntimeNodeStopFailureRewritesDebugResult(t *testing.T) {
 	}
 }
 
+func TestInstalledRuntimeNodeWaitForPoweroff(t *testing.T) {
+	t.Run("clean poweroff", func(t *testing.T) {
+		done := make(chan struct{})
+		close(done)
+		node := RunningInstalledRuntimeNode{
+			Name:   "cp-1",
+			handle: &VMHandle{done: done},
+		}
+		if err := node.WaitForPoweroff(context.Background()); err != nil {
+			t.Fatalf("WaitForPoweroff() error = %v", err)
+		}
+	})
+
+	t.Run("context expires", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		node := RunningInstalledRuntimeNode{
+			Name:   "cp-1",
+			handle: &VMHandle{done: make(chan struct{})},
+		}
+		err := node.WaitForPoweroff(ctx)
+		if err == nil || !strings.Contains(err.Error(), `wait for installed runtime node "cp-1" to power off`) {
+			t.Fatalf("WaitForPoweroff() error = %v", err)
+		}
+	})
+}
+
 func TestStartInstalledRuntimeNodeWritesFailureResult(t *testing.T) {
 	root := t.TempDir()
 	disk := filepath.Join(root, "installed.raw")

@@ -1400,9 +1400,9 @@ func printWipeText(stdout io.Writer, report wipeClusterReport) error {
 
 func wipeNextAction(noWait bool) string {
 	if noWait {
-		return "wait for every destructive reset to succeed, then reboot each wiped node with installer media or PXE available"
+		return "wait for every destructive reset to succeed and power off its node, then select installer media or PXE and start each node"
 	}
-	return "reboot each wiped node with installer media or PXE available"
+	return "each wiped node is powering off; select installer media or PXE, then start it to reinstall"
 }
 
 type wipeNodeCleanupResult struct {

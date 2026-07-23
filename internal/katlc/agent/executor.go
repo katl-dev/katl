@@ -58,6 +58,7 @@ type Executor struct {
 	RunReadiness         ToolRunner
 	RunPostHealth        ToolRunner
 	RunEndpointLifecycle ToolRunner
+	RunPoweroff          ToolRunner
 	MountBootRoot        BootRootMounter
 	SetBootOneshot       BootEntrySetter
 	SetBootDefault       BootEntrySetter
@@ -86,6 +87,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		RunReadiness:         runReadinessCommand,
 		RunPostHealth:        runPostKubeadmHealthCommand,
 		RunEndpointLifecycle: runChildProcess,
+		RunPoweroff:          runChildProcess,
 		MountBootRoot:        mountRuntimeBootRoot,
 		BundleClient:         http.DefaultClient,
 		Async:                true,
@@ -852,6 +854,13 @@ func (e *Executor) postHealthRunner() ToolRunner {
 func (e *Executor) endpointLifecycleRunner() ToolRunner {
 	if e.RunEndpointLifecycle != nil {
 		return e.RunEndpointLifecycle
+	}
+	return runChildProcess
+}
+
+func (e *Executor) poweroffRunner() ToolRunner {
+	if e.RunPoweroff != nil {
+		return e.RunPoweroff
 	}
 	return runChildProcess
 }

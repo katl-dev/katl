@@ -143,12 +143,7 @@ type wipeClusterEvidence struct {
 	Stdout                 string            `json:"stdout,omitempty"`
 	Stderr                 string            `json:"stderr,omitempty"`
 	Report                 string            `json:"report,omitempty"`
-	OperationRecords       map[string]string `json:"operationRecords,omitempty"`
-	OperationJournals      map[string]string `json:"operationJournals,omitempty"`
-	NodeStatus             map[string]string `json:"nodeStatus,omitempty"`
-	BootArtifacts          map[string]string `json:"bootArtifacts,omitempty"`
-	PreservedState         map[string]string `json:"preservedState,omitempty"`
-	BootSelectionsAfter    map[string]string `json:"bootSelectionsAfter,omitempty"`
+	Poweroffs              map[string]string `json:"poweroffs,omitempty"`
 	InstalledRuntimeInputs map[string]string `json:"installedRuntimeInputs,omitempty"`
 	VSockTranscripts       map[string]string `json:"vsockTranscripts,omitempty"`
 	Diagnostics            map[string]string `json:"diagnostics,omitempty"`
@@ -389,19 +384,26 @@ func runWipeNodeHandoff(t *testing.T, ctx context.Context, result vmtest.Result,
 	var report struct {
 		Kind              string `json:"kind"`
 		KubernetesCleanup string `json:"kubernetesCleanup"`
+		NextAction        string `json:"nextAction"`
+		Nodes             []struct {
+			Node     string `json:"node"`
+			Terminal bool   `json:"terminal"`
+			Result   string `json:"result"`
+		} `json:"nodes"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		return err
 	}
-	if report.Kind != "WipeNodeReport" || report.KubernetesCleanup != "succeeded" {
+	if report.Kind != "WipeNodeReport" || report.KubernetesCleanup != "succeeded" ||
+		len(report.Nodes) != 1 || report.Nodes[0].Node != "worker-1" ||
+		!report.Nodes[0].Terminal || report.Nodes[0].Result != operation.ResultSucceeded ||
+		!strings.Contains(report.NextAction, "powering off") {
 		return fmt.Errorf("wipe node report = %#v", report)
 	}
-	if _, record, err := waitForDestructiveResetEvidence(ctx, worker, filepath.Join(dir, "evidence", "worker-1")); err != nil {
+	if err := worker.WaitForPoweroff(ctx); err != nil {
 		return err
-	} else {
-		assertDestructiveResetRecord(t, record)
 	}
-	if _, err := collectWipeClusterBootArtifactEvidence(ctx, worker, filepath.Join(dir, "evidence", "worker-1")); err != nil {
+	if _, err := writeWipePoweroffEvidence(filepath.Join(dir, "evidence", "worker-1", "poweroff.json"), worker); err != nil {
 		return err
 	}
 	if output, err := kubectlOutput(ctx, initial.Kubeconfig, "get", "node", "worker-1"); err == nil {
@@ -438,52 +440,22 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 	if err := assertWipeClusterReport(stdout.Bytes()); err != nil {
 		return wipeClusterEvidence{}, err
 	}
-	records := map[string]string{}
-	journals := map[string]string{}
-	nodeStatus := map[string]string{}
-	bootArtifacts := map[string]string{}
-	preserved := map[string]string{}
-	selections := map[string]string{}
+	poweroffs := map[string]string{}
 	for _, node := range nodes {
-		nodeEvidenceDir := filepath.Join(evidenceDir, node.Name)
-		recordPath, record, err := waitForDestructiveResetEvidence(ctx, node, nodeEvidenceDir)
-		if err != nil {
+		if err := node.WaitForPoweroff(ctx); err != nil {
 			return wipeClusterEvidence{}, err
 		}
-		assertDestructiveResetRecord(t, record)
-		records[node.Name] = recordPath
-		journals[node.Name] = filepath.Join(nodeEvidenceDir, "operation-journal-files.txt")
-		statusPath, err := collectNodeLocalStatusEvidence(ctx, node, nodeEvidenceDir)
-		if err != nil {
+		poweroffPath := filepath.Join(evidenceDir, node.Name, "poweroff.json")
+		if _, err := writeWipePoweroffEvidence(poweroffPath, node); err != nil {
 			return wipeClusterEvidence{}, err
 		}
-		nodeStatus[node.Name] = statusPath
-		artifactPath, err := collectWipeClusterBootArtifactEvidence(ctx, node, nodeEvidenceDir)
-		if err != nil {
-			return wipeClusterEvidence{}, err
-		}
-		bootArtifacts[node.Name] = artifactPath
-		preservedPath, err := collectWipeClusterPreservedStateEvidence(ctx, node, nodeEvidenceDir)
-		if err != nil {
-			return wipeClusterEvidence{}, err
-		}
-		preserved[node.Name] = preservedPath
-		selectionPath, _, err := collectBootSelectionEvidence(ctx, node, nodeEvidenceDir)
-		if err != nil {
-			return wipeClusterEvidence{}, err
-		}
-		selections[node.Name] = selectionPath
+		poweroffs[node.Name] = poweroffPath
 	}
 	return wipeClusterEvidence{
 		Stdout:                 stdoutPath,
 		Stderr:                 stderrPath,
 		Report:                 reportPath,
-		OperationRecords:       records,
-		OperationJournals:      journals,
-		NodeStatus:             nodeStatus,
-		BootArtifacts:          bootArtifacts,
-		PreservedState:         preserved,
-		BootSelectionsAfter:    selections,
+		Poweroffs:              poweroffs,
 		InstalledRuntimeInputs: installedRuntimeInputPaths(nodes),
 		VSockTranscripts:       vsockTranscriptPaths(nodes),
 		Diagnostics:            diagnosticSummaryPaths(nodes),
@@ -492,10 +464,11 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 
 func assertWipeClusterReport(data []byte) error {
 	var report struct {
-		Kind      string   `json:"kind"`
-		Wiped     []string `json:"wipedState"`
-		Preserved []string `json:"preservedState"`
-		Nodes     []struct {
+		Kind       string   `json:"kind"`
+		Wiped      []string `json:"wipedState"`
+		Preserved  []string `json:"preservedState"`
+		NextAction string   `json:"nextAction"`
+		Nodes      []struct {
 			Node          string `json:"node"`
 			Accepted      bool   `json:"accepted"`
 			OperationKind string `json:"operationKind"`
@@ -519,6 +492,9 @@ func assertWipeClusterReport(data []byte) error {
 	if len(report.Nodes) != 2 {
 		return fmt.Errorf("cluster wipe report nodes = %#v", report.Nodes)
 	}
+	if !strings.Contains(report.NextAction, "powering off") {
+		return fmt.Errorf("cluster wipe nextAction = %q", report.NextAction)
+	}
 	for _, node := range report.Nodes {
 		if !node.Accepted || node.OperationKind != "destructive-reset" || strings.TrimSpace(node.OperationID) != "" || !node.Terminal || node.Result != operation.ResultSucceeded {
 			return fmt.Errorf("cluster wipe report node = %#v", node)
@@ -527,111 +503,19 @@ func assertWipeClusterReport(data []byte) error {
 	return nil
 }
 
-func waitForDestructiveResetEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, operation.OperationRecord, error) {
-	deadline := time.Now().Add(2 * time.Minute)
-	var lastErr error
-	for {
-		path, record, err := collectOperationEvidence(ctx, node, evidenceDir, "destructive-reset")
-		if err == nil && record.Terminal {
-			return path, record, nil
-		}
-		if err != nil {
-			lastErr = err
-		} else {
-			lastErr = fmt.Errorf("%s destructive reset not terminal: phase=%s result=%s", node.Name, record.Phase, record.Result)
-		}
-		if ctx.Err() != nil {
-			return "", operation.OperationRecord{}, ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return "", operation.OperationRecord{}, lastErr
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-}
-
-func assertDestructiveResetRecord(t *testing.T, record operation.OperationRecord) {
-	t.Helper()
-	if record.OperationKind != "destructive-reset" || !record.Terminal || record.Result != operation.ResultSucceeded {
-		t.Fatalf("destructive reset record = %+v", record)
-	}
-	if record.DestructiveResetRequest == nil || record.DestructiveResetRequest.TargetGenerationID != "" || !record.DestructiveResetRequest.DiscardClusterIdentity {
-		t.Fatalf("destructive reset request = %+v", record.DestructiveResetRequest)
-	}
-	if !containsAllStrings(record.MutationScopes, "katlos-boot-artifacts", "disk-boot-path") {
-		t.Fatalf("destructive reset mutation scopes = %#v", record.MutationScopes)
-	}
-	for _, forbidden := range []string{"kubernetes", "kubelet-state", "etcd-state", "cni-state", "generation-state", "operation-history", "node-identity"} {
-		if containsAllStrings(record.MutationScopes, forbidden) {
-			t.Fatalf("destructive reset mutation scopes = %#v, unexpectedly include %s", record.MutationScopes, forbidden)
-		}
-	}
-}
-
-func collectWipeClusterBootArtifactEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, error) {
-	result, err := runNodeCommand(ctx, node, []string{"find", "/efi", "-maxdepth", "4", "-type", "f", "-print"}, 256<<10)
-	if err != nil {
-		return "", err
-	}
+func writeWipePoweroffEvidence(path string, node vmtest.RunningInstalledRuntimeNode) (string, error) {
 	evidence := struct {
-		Node       string   `json:"node"`
-		Argv       []string `json:"argv"`
-		ExitStatus int32    `json:"exitStatus"`
-		Stdout     string   `json:"stdout,omitempty"`
-		Stderr     string   `json:"stderr,omitempty"`
+		Node       string    `json:"node"`
+		Domain     string    `json:"domain"`
+		PoweredOff bool      `json:"poweredOff"`
+		ObservedAt time.Time `json:"observedAt"`
 	}{
 		Node:       node.Name,
-		Argv:       []string{"find", "/efi", "-maxdepth", "4", "-type", "f", "-print"},
-		ExitStatus: result.ExitStatus,
-		Stdout:     string(result.Stdout),
-		Stderr:     string(result.Stderr),
+		Domain:     node.Result.DomainName,
+		PoweredOff: true,
+		ObservedAt: time.Now().UTC(),
 	}
-	if result.ExitStatus != 0 {
-		return "", fmt.Errorf("%s ESP artifact scan failed: %s", node.Name, strings.TrimSpace(string(result.Stderr)))
-	}
-	for _, forbidden := range []string{
-		"/efi/loader/entries/katl-",
-		"/efi/EFI/Linux/katl",
-		"/efi/EFI/BOOT/BOOTX64.",
-		"/efi/EFI/systemd/systemd-bootx64.",
-	} {
-		if strings.Contains(evidence.Stdout, forbidden) {
-			return "", fmt.Errorf("%s ESP artifacts still include %s:\n%s", node.Name, forbidden, evidence.Stdout)
-		}
-	}
-	hostPath := filepath.Join(evidenceDir, "wipe-boot-artifacts.json")
-	return hostPath, writeTwoNodeDiagnosticJSON(hostPath, evidence)
-}
-
-func collectWipeClusterPreservedStateEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, error) {
-	checks := map[string][]string{
-		"kubelet-config":     {"test", "-s", "/var/lib/kubelet/config.yaml"},
-		"machine-id":         {"test", "-s", "/var/lib/katl/identity/machine-id"},
-		"kubernetes-state":   {"test", "-d", "/var/lib/katl/kubernetes/etc-kubernetes"},
-		"operation-records":  {"test", "-d", "/var/lib/katl/operations"},
-		"generation-records": {"test", "-d", "/var/lib/katl/generations"},
-	}
-	evidence := nodeLocalStatusEvidence{
-		Node:    node.Name,
-		Results: make(map[string]nodeCommandEvidence, len(checks)),
-	}
-	for name, argv := range checks {
-		result, err := runNodeCommand(ctx, node, argv, 16<<10)
-		if err != nil {
-			return "", fmt.Errorf("%s preserved state check %s: %w", node.Name, name, err)
-		}
-		evidence.Results[name] = nodeCommandEvidence{
-			Argv:       argv,
-			ExitStatus: result.ExitStatus,
-			Stdout:     string(result.Stdout),
-			Stderr:     string(result.Stderr),
-		}
-		if result.ExitStatus != 0 {
-			return "", fmt.Errorf("%s preserved state check %s failed: %s", node.Name, name, strings.TrimSpace(string(result.Stderr)))
-		}
-	}
-	hostPath := filepath.Join(evidenceDir, "wipe-preserved-state.json")
-	return hostPath, writeTwoNodeDiagnosticJSON(hostPath, evidence)
+	return path, writeTwoNodeDiagnosticJSON(path, evidence)
 }
 
 func startOperationBackedNodes(ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, cpDisk, cpFormat, cpESP, cpFixture, cpMetadata, cpMAC, workerDisk, workerFormat, workerESP, workerFixture, workerMetadata, workerMAC string) ([]vmtest.RunningInstalledRuntimeNode, error) {

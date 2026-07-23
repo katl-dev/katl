@@ -40,11 +40,12 @@ Execute only when the cluster is intentionally being discarded:
 katlctl cluster wipe --config ./cluster.yaml --all
 ```
 
-The command follows every node-local destructive reset and reports each
-terminal result.
+The command follows every node-local destructive reset, reports each terminal
+result, and leaves every successfully wiped node powered off.
 
 Do not proceed to reinstall until every intended reset reports `terminal: true`
-and `result: succeeded`. Treat `recoveryRequired: true` as a stop condition.
+and `result: succeeded`, then confirm the nodes are off. Treat
+`recoveryRequired: true` as a stop condition.
 
 ## Plan One Worker Replacement
 
@@ -68,9 +69,9 @@ coordination is not implemented as a supported operation.
 
 ## Reinstall
 
-After every selected wipe operation succeeds:
+After every selected wipe operation succeeds and powers off its node:
 
-1. boot the verified installer ISO or PXE path;
+1. select the verified installer ISO or PXE path and start the node;
 2. apply the intended `ClusterConfig` source and node selection;
 3. inspect the target disk again before authorizing installer wipe;
 4. complete generation 0 handoff; and
