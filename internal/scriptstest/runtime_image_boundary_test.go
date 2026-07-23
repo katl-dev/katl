@@ -17,10 +17,34 @@ func TestRuntimeInitrdIncludesLibseccomp(t *testing.T) {
 	for _, want := range []string{
 		`"$root/usr/lib64/libseccomp.so.2"`,
 		"cpio --null --create --append --format=newc",
-		`zstd -q --ultra -22 -f "$initrd_raw" -o "$initrd"`,
+		`zstd -q --ultra -22 -f "$initrd_raw" -o "$runtime_initrd"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("runtime artifact packaging does not append libseccomp to the initrd: missing %q", want)
+		}
+	}
+}
+
+func TestRuntimeBootInputsArePublishedBeforeInitrdPackaging(t *testing.T) {
+	wrapper, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "mkosi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(wrapper)
+	publish := `cp --reflink=auto "$kernel_source" "$runtime_kernel"`
+	packageInitrd := `zstd -q -d -c "$runtime_initrd"`
+	publishAt := strings.Index(text, publish)
+	packageAt := strings.Index(text, packageInitrd)
+	if publishAt < 0 || packageAt < 0 || publishAt >= packageAt {
+		t.Fatalf("runtime boot inputs must be copied to durable artifacts before initrd packaging")
+	}
+	for _, want := range []string{
+		`cp --reflink=auto "$initrd_source" "$runtime_initrd"`,
+		`--linux "$runtime_kernel"`,
+		`--initrd "$runtime_initrd"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runtime UKI packaging does not use published boot input %q", want)
 		}
 	}
 }

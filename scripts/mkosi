@@ -736,15 +736,19 @@ set +e
                 echo "error: runtime kernel not found under $root/boot" >&2
                 status=1
             else
-                kernel="$kernel_dir/linux"
-                initrd="$kernel_dir/initrd"
+                kernel_source="$kernel_dir/linux"
+                initrd_source="$kernel_dir/initrd"
                 kernel_version="$(basename "$kernel_dir")"
                 os_release="$root/usr/lib/os-release"
-                if [[ ! -f "$initrd" ]]; then
-                    echo "error: runtime initrd not found: $initrd" >&2
+                if [[ ! -f "$initrd_source" ]]; then
+                    echo "error: runtime initrd not found: $initrd_source" >&2
                     status=1
                 elif [[ ! -f "$os_release" ]]; then
                     echo "error: runtime os-release not found: $os_release" >&2
+                    status=1
+                elif ! cp --reflink=auto "$kernel_source" "$runtime_kernel" \
+                    || ! cp --reflink=auto "$initrd_source" "$runtime_initrd"; then
+                    echo "error: publish runtime direct-boot kernel and initrd" >&2
                     status=1
                 else
                     initrd_overlay=$(mktemp -d)
@@ -756,7 +760,7 @@ set +e
                         "$initrd_overlay/usr/lib64/"; then
                         echo "error: stage runtime initrd libseccomp overlay" >&2
                         status=1
-                    elif ! zstd -q -d -c "$initrd" >"$initrd_raw"; then
+                    elif ! zstd -q -d -c "$runtime_initrd" >"$initrd_raw"; then
                         echo "error: decompress runtime initrd" >&2
                         status=1
                     elif ! (
@@ -767,19 +771,15 @@ set +e
                     ); then
                         echo "error: append runtime initrd libseccomp overlay" >&2
                         status=1
-                    elif ! zstd -q --ultra -22 -f "$initrd_raw" -o "$initrd"; then
+                    elif ! zstd -q --ultra -22 -f "$initrd_raw" -o "$runtime_initrd"; then
                         echo "error: recompress runtime initrd" >&2
                         status=1
                     fi
                     rm -rf "$initrd_overlay" "$initrd_raw"
-                    if [[ "$status" -eq 0 ]] && { ! cp --reflink=auto "$kernel" "$runtime_kernel" || ! cp --reflink=auto "$initrd" "$runtime_initrd"; }; then
-                        echo "error: publish runtime direct-boot kernel and initrd" >&2
-                        status=1
-                    fi
                     ukify_args=(
                         build
-                        --linux "$kernel"
-                        --initrd "$initrd"
+                        --linux "$runtime_kernel"
+                        --initrd "$runtime_initrd"
                         --os-release "@$os_release"
                         --cmdline "rootfstype=squashfs ro"
                         --uname "$kernel_version"
