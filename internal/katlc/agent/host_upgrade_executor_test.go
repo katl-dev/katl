@@ -53,6 +53,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	endpointAdvertiserBytes := []byte("endpoint advertiser sysext")
 	previous := generation.GenerationSpec{
 		APIVersion:     generation.APIVersion,
 		Kind:           generation.SpecKind,
@@ -70,6 +71,18 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 			UKIPath:         "/efi/EFI/Linux/katl_gen0.efi",
 			LoaderEntryPath: "loader/entries/katl-gen0.conf",
 		},
+		Sysexts: []generation.ExtensionRef{{
+			Name:            katlosimage.EndpointAdvertiserName,
+			Path:            "/var/lib/katl/generations/gen0/sysext/katl-endpoint-advertiser.raw",
+			ActivationPath:  "/run/extensions/katl-endpoint-advertiser.raw",
+			SHA256:          testSHA(endpointAdvertiserBytes),
+			ArtifactVersion: "2026.7.0-dev.0",
+			PayloadVersion:  "2026.7.0-dev.0",
+			Architecture:    "x86_64",
+			Compatibility: generation.ExtensionCompatibility{
+				RuntimeInterfaces: []string{"katl-runtime-1"},
+			},
+		}},
 		CreatedAt: now.Add(-time.Hour),
 	}
 	previousStatus, err := generation.NewGenerationStatus(previous, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, previous.CreatedAt)
@@ -77,6 +90,13 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := generation.WriteGeneration(root, previous, previousStatus); err != nil {
+		t.Fatal(err)
+	}
+	endpointAdvertiserPath := filepath.Join(root, "var/lib/katl/generations/gen0/sysext/katl-endpoint-advertiser.raw")
+	if err := os.MkdirAll(filepath.Dir(endpointAdvertiserPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(endpointAdvertiserPath, endpointAdvertiserBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
@@ -228,6 +248,9 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	}
 	if spec.Root.Slot != "root-b" || spec.Root.PartitionUUID != "bbbbbbbb-1111-2222-3333-444444444444" || status.BootState != generation.BootStateTrying {
 		t.Fatalf("candidate generation = spec %+v status %+v", spec, status)
+	}
+	if len(spec.Sysexts) != 1 || spec.Sysexts[0].Name != katlosimage.EndpointAdvertiserName || spec.Sysexts[0].Path != "/var/lib/katl/generations/gen1/sysext/katl-endpoint-advertiser.raw" {
+		t.Fatalf("candidate sysexts = %+v, want preserved endpoint advertiser", spec.Sysexts)
 	}
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {

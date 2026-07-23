@@ -211,20 +211,13 @@ func StagePreservedAssets(root string, plan HostUpgradePlan) error {
 
 func upgradeSysexts(previous generation.GenerationSpec, generationID string, root generation.RootSelection, _ Component, bootstrapped bool) ([]generation.ExtensionRef, []PreservedAsset, error) {
 	previousKubernetes, hasPreviousKubernetes := selectedKubernetes(previous.Sysexts)
-	if bootstrapped {
-		if !hasPreviousKubernetes {
-			return nil, nil, fmt.Errorf("bootstrapped node current generation has no Kubernetes sysext to preserve")
-		}
+	if bootstrapped && !hasPreviousKubernetes {
+		return nil, nil, fmt.Errorf("bootstrapped node current generation has no Kubernetes sysext to preserve")
+	}
+	if hasPreviousKubernetes {
 		if err := generation.ValidatePair(root, previousKubernetes); err != nil {
 			return nil, nil, fmt.Errorf("preserved Kubernetes sysext is incompatible with upgraded runtime: %w", err)
 		}
-		return rehomeSysexts(previous, generationID)
-	}
-	if !hasPreviousKubernetes {
-		return nil, nil, nil
-	}
-	if err := generation.ValidatePair(root, previousKubernetes); err != nil {
-		return nil, nil, fmt.Errorf("preserved Kubernetes sysext is incompatible with upgraded runtime: %w", err)
 	}
 	return rehomeSysexts(previous, generationID)
 }

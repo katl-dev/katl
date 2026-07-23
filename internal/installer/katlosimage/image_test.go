@@ -288,6 +288,53 @@ func TestHostUpgradePlanPreservesKubernetesOnBootstrappedNode(t *testing.T) {
 	}
 }
 
+func TestHostUpgradePlanPreservesNonKubernetesSysextBeforeBootstrap(t *testing.T) {
+	payload := upgradePayload(t, nil)
+	previousSpec, _ := knownGoodGeneration(t, "gen0", strings.Repeat("b", sha256.Size*2), "v1.35.0")
+	previousSpec.Sysexts = []generation.ExtensionRef{{
+		Name:            EndpointAdvertiserName,
+		Path:            "/var/lib/katl/generations/gen0/sysext/katl-endpoint-advertiser.raw",
+		ActivationPath:  "/run/extensions/katl-endpoint-advertiser.raw",
+		SHA256:          strings.Repeat("d", sha256.Size*2),
+		ArtifactVersion: "2026.06.06",
+		PayloadVersion:  "2026.06.06",
+		Architecture:    "x86_64",
+		Compatibility: generation.ExtensionCompatibility{
+			RuntimeInterfaces: []string{"katl-runtime-1"},
+		},
+	}}
+	previousStatus, err := generation.NewGenerationStatus(previousSpec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, previousSpec.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validHostUpgradeRequest(previousSpec, previousStatus)
+	request.Bootstrapped = false
+
+	plan, err := payload.HostUpgradePlan(request)
+	if err != nil {
+		t.Fatalf("HostUpgradePlan() error = %v", err)
+	}
+	if len(plan.Spec.Sysexts) != 1 || plan.Spec.Sysexts[0].Name != EndpointAdvertiserName || plan.Spec.Sysexts[0].Path != "/var/lib/katl/generations/gen1/sysext/katl-endpoint-advertiser.raw" {
+		t.Fatalf("candidate sysexts = %#v, want preserved endpoint advertiser", plan.Spec.Sysexts)
+	}
+}
+
+func TestHostUpgradePlanRejectsBootstrappedNodeWithoutKubernetesSysext(t *testing.T) {
+	payload := upgradePayload(t, nil)
+	previousSpec, _ := knownGoodGeneration(t, "gen0", strings.Repeat("b", sha256.Size*2), "v1.35.0")
+	previousSpec.Sysexts = nil
+	previousStatus, err := generation.NewGenerationStatus(previousSpec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, previousSpec.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validHostUpgradeRequest(previousSpec, previousStatus)
+
+	_, err = payload.HostUpgradePlan(request)
+	if err == nil || !strings.Contains(err.Error(), "bootstrapped node current generation has no Kubernetes sysext") {
+		t.Fatalf("HostUpgradePlan() error = %v, want missing Kubernetes sysext refusal", err)
+	}
+}
+
 func TestHostUpgradePlanRejectsNonUpgradePayload(t *testing.T) {
 	payload := upgradePayload(t, nil)
 	payload.Index.ImageRole = RoleInstall

@@ -65,6 +65,10 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
+	kubernetesState, err := inspectKubernetesNodeState(e.Root, e.Store)
+	if err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("inspect Kubernetes node state: %w", err))
+	}
 	candidate := record.HostUpgradeRequest.CandidateGenerationID
 	ukiPath := "/efi/EFI/Linux/katl_" + payload.Index.Version + ".efi"
 	entry := "loader/entries/katl-" + candidate + ".conf"
@@ -77,7 +81,7 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		UKIPath:           ukiPath,
 		LoaderEntryPath:   entry,
 		OperationID:       record.OperationID,
-		Bootstrapped:      len(previousSpec.Sysexts) > 0,
+		Bootstrapped:      kubernetesState.bootstrapped,
 		CreatedAt:         e.clock(),
 	})
 	if err != nil {

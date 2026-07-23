@@ -382,13 +382,17 @@ type kubernetesNodeState struct {
 }
 
 func (s *Server) kubernetesNodeState() (kubernetesNodeState, error) {
+	return inspectKubernetesNodeState(s.Root, s.Store)
+}
+
+func inspectKubernetesNodeState(root string, store operation.Store) (kubernetesNodeState, error) {
 	state := kubernetesNodeState{}
-	ids, err := s.Store.OperationIDs()
+	ids, err := store.OperationIDs()
 	if err != nil {
 		return state, err
 	}
 	for _, id := range ids {
-		record, err := s.Store.Read(id)
+		record, err := store.Read(id)
 		if err != nil {
 			return state, err
 		}
@@ -415,7 +419,7 @@ func (s *Server) kubernetesNodeState() (kubernetesNodeState, error) {
 		{path: "/var/lib/kubelet/config.yaml", message: "kubelet config exists"},
 		{path: "/var/lib/etcd/member", message: "stacked etcd member data exists"},
 	} {
-		ok, err := pathExists(s.Root, check.path)
+		ok, err := pathExists(root, check.path)
 		if err != nil {
 			return state, err
 		}
