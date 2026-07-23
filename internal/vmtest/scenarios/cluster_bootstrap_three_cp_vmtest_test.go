@@ -343,6 +343,12 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("wait for kubectl nodes failed: %v\n%s", err, output)
 	}
+	if err := waitForAgentKubernetesReady(ctx, nodes, addresses, 3*time.Minute); err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("wait for agent Kubernetes readiness failed: %v", err)
+	}
 	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 	for _, node := range nodes {
 		if _, err := collectKubernetesVersionEvidence(ctx, node, filepath.Join(versionEvidenceDir, node.Name), kubernetesBundle.PayloadVersion); err != nil {
@@ -400,6 +406,45 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		}
 	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func waitForAgentKubernetesReady(ctx context.Context, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, timeout time.Duration) error {
+	for _, node := range nodes {
+		deadline := time.Now().Add(timeout)
+		last := "Kubernetes status was not reported"
+		for {
+			connector := cluster.TCPAgentConnector{DialTimeout: 5 * time.Second}
+			connection, err := connector.Connect(ctx, inventory.PlannedNode{
+				Name: node.Name, Address: addresses[node.Name], Access: inventory.Access{Method: "agent"},
+			})
+			if err == nil {
+				status, statusErr := connection.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+				_ = connection.Close()
+				if statusErr == nil {
+					kubernetes := status.GetKubernetes()
+					if kubernetes != nil && kubernetes.GetState() == "ready" && kubernetes.GetKubeletActive() && kubernetes.GetNodeReady() && kubernetes.GetControlPlaneComponentsReady() {
+						break
+					}
+					if kubernetes != nil {
+						last = firstString(kubernetes.GetFailureReason(), kubernetes.GetState())
+					}
+				} else {
+					last = statusErr.Error()
+				}
+			} else {
+				last = err.Error()
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("%s did not report ready Kubernetes state: %s", node.Name, last)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+	return nil
 }
 
 func assertCNISysctls(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) error {

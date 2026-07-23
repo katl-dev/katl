@@ -28,6 +28,10 @@ clusters:
 	fake.nodeStatus.OperationLockHeld = true
 	fake.nodeStatus.ActiveOperationIds = []string{"operation-secret"}
 	fake.nodeStatus.BootTargetGenerationId = "generation-staged"
+	fake.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{
+		State: "waiting-for-node", Role: "control-plane", NodeName: "cp-1", KubeletActive: true,
+		FailureReason: "Kubernetes node cp-1 is not Ready",
+	}
 	fake.nodeStatus.ControlPlaneEndpoint = &agentapi.ControlPlaneEndpointStatus{
 		Endpoint: "api.home.example:6443", Vip: "10.40.0.10/32", State: "failed", FailureReason: "endpoint routing control socket unavailable",
 		Peers: []*agentapi.ControlPlaneEndpointPeerStatus{{Address: "10.0.0.1", Asn: 64500, State: "established", RouteExported: true}},
@@ -44,7 +48,7 @@ clusters:
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	output := stdout.String()
-	for _, want := range []string{"NODE", "HEALTH", "KATLOS", "GENERATION", "NEXT BOOT", "ACTIVITY", "cp-1", "OK", "2026.7.0-alpha.10", "generation-0", "generation-staged", "busy", "CONTROL PLANE ENDPOINT", "api.home.example:6443", "10.40.0.10/32", "failed", "1/1", "endpoint routing control socket unavailable"} {
+	for _, want := range []string{"NODE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "NEXT BOOT", "ACTIVITY", "cp-1", "OK", "waiting-for-node", "Kubernetes node cp-1 is not Ready", "2026.7.0-alpha.10", "generation-0", "generation-staged", "busy", "CONTROL PLANE ENDPOINT", "api.home.example:6443", "10.40.0.10/32", "failed", "1/1", "endpoint routing control socket unavailable"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
@@ -212,6 +216,7 @@ func healthyHostClient(machineID, agentStartID, generationID string) *fakeKatlcA
 			MachineId:           machineID,
 			AgentStartId:        agentStartID,
 			CurrentGenerationId: generationID,
+			Kubernetes:          &agentapi.KubernetesStatus{State: "not-configured"},
 		},
 		generation: &agentapi.Generation{
 			GenerationId: generationID,

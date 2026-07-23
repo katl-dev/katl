@@ -29,7 +29,10 @@ clusters:
     systemRole: worker
 `)
 	client := &fakeKatlcAgentClient{
-		nodeStatus: &agentapi.NodeStatus{CurrentGenerationId: "generation-1"},
+		nodeStatus: &agentapi.NodeStatus{
+			CurrentGenerationId: "generation-1",
+			Kubernetes:          &agentapi.KubernetesStatus{State: "ready", Role: "control-plane", NodeName: "cp-1", KubeletActive: true, NodeReady: true, ControlPlaneComponentsReady: true},
+		},
 		generation: &agentapi.Generation{GenerationId: "generation-1", RuntimeVersion: "2026.7.0-alpha.15", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy},
 	}
 	oldDial := dialKatlcAgent
@@ -51,6 +54,9 @@ clusters:
 	}
 	if len(report.Nodes) != 2 || !report.Nodes[0].Reachable || report.Nodes[0].Health != "OK" || report.Nodes[1].Reachable || !strings.Contains(report.Nodes[1].Error, "connection refused") {
 		t.Fatalf("report = %#v", report)
+	}
+	if report.Nodes[0].Kubernetes == nil || report.Nodes[0].Kubernetes.State != "ready" || !report.Nodes[0].Kubernetes.NodeReady {
+		t.Fatalf("Kubernetes report = %#v", report.Nodes[0].Kubernetes)
 	}
 }
 

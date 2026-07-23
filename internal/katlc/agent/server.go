@@ -72,6 +72,7 @@ type Server struct {
 	Dispatcher              Dispatcher
 	RunJoinMaterial         ToolRunner
 	RunEndpointLifecycle    ToolRunner
+	RunKubernetesStatus     ToolRunner
 	RunReboot               ToolRunner
 	RunShutdown             ToolRunner
 	Now                     func() time.Time
@@ -90,6 +91,7 @@ func NewServer(root string, store operation.Store) *Server {
 		SupportedOperationKinds: append([]string(nil), bootstrapOperationKinds...),
 		RunJoinMaterial:         runChildProcess,
 		RunEndpointLifecycle:    runChildProcess,
+		RunKubernetesStatus:     runChildProcess,
 		RunReboot:               runChildProcess,
 		RunShutdown:             runChildProcess,
 		Now:                     func() time.Time { return time.Now().UTC() },
@@ -222,6 +224,10 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read control-plane endpoint status: %v", err)
 	}
+	kubernetesStatus, err := nodeKubernetesStatus(ctx, s.Root, s.RunKubernetesStatus)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read Kubernetes status: %v", err)
+	}
 	bootTargetGenerationID := currentGenerationID
 	if selection, selectionErr := generation.ReadBootSelection(s.Root); selectionErr == nil {
 		if target := strings.TrimSpace(selection.TargetBootGenerationID); target != "" {
@@ -242,6 +248,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		CurrentGenerationId:     currentGenerationID,
 		BootTargetGenerationId:  bootTargetGenerationID,
 		ControlPlaneEndpoint:    endpointStatus,
+		Kubernetes:              kubernetesStatus,
 	}, nil
 }
 

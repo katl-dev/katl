@@ -1940,7 +1940,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 
 func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	fake := &fakeKatlcAgentClient{
-		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-a", AgentStartId: "before", CurrentGenerationId: "generation-current"},
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-a", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		generation:      &agentapi.Generation{GenerationId: "generation-current", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", Architecture: "x86_64"}}},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
@@ -2092,7 +2092,7 @@ func TestHostUpgradeLocalArtifactRejectsRedundantVersion(t *testing.T) {
 
 func readyHostUpgradeClient() *fakeKatlcAgentClient {
 	fake := &fakeKatlcAgentClient{
-		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-a", AgentStartId: "before", CurrentGenerationId: "generation-current"},
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-a", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		generation:      &agentapi.Generation{GenerationId: "generation-current", RuntimeArchitecture: "x86_64"},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
@@ -2507,6 +2507,7 @@ type fakeKatlcAgentClient struct {
 	submitAccepted          *agentapi.OperationAccepted
 	nodeStatus              *agentapi.NodeStatus
 	nodeStatusErr           error
+	onGetNodeStatus         func()
 	generation              *agentapi.Generation
 	generationRequest       *agentapi.GetGenerationRequest
 	operationStatus         *agentapi.OperationStatus
@@ -2589,6 +2590,9 @@ func readyWipeClusterClient(machineID string) *fakeKatlcAgentClient {
 }
 
 func (c *fakeKatlcAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error) {
+	if c.onGetNodeStatus != nil {
+		c.onGetNodeStatus()
+	}
 	return c.nodeStatus, c.nodeStatusErr
 }
 

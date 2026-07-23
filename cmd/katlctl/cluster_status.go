@@ -36,6 +36,7 @@ type clusterNodeStatus struct {
 	Generation           string                      `json:"generation,omitempty"`
 	Activity             string                      `json:"activity,omitempty"`
 	Error                string                      `json:"error,omitempty"`
+	Kubernetes           *kubernetesStatusReport     `json:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
 }
 
@@ -125,6 +126,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result.KatlOSVersion = host.KatlOSVersion
 			result.Generation = host.Generation
 			result.Activity = host.Activity
+			result.Kubernetes = host.Kubernetes
 			result.ControlPlaneEndpoint = host.ControlPlaneEndpoint
 			report.Nodes[i] = result
 		}(i, node)
@@ -143,17 +145,23 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		}
 		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w, "NODE\tROLE\tREACHABLE\tHEALTH\tKATLOS\tGENERATION\tACTIVITY")
+	fmt.Fprintln(w, "NODE\tROLE\tREACHABLE\tHEALTH\tKUBERNETES\tKATLOS\tGENERATION\tACTIVITY")
 	for _, node := range report.Nodes {
 		reachable := "no"
-		health, version, generation, activity := "-", "-", "-", "-"
+		health, kubernetes, version, generation, activity := "-", "-", "-", "-", "-"
 		if node.Reachable {
 			reachable = "yes"
 			health, version, generation, activity = node.Health, node.KatlOSVersion, node.Generation, node.Activity
+			if node.Kubernetes != nil {
+				kubernetes = firstNonEmpty(strings.TrimSpace(node.Kubernetes.State), "unknown")
+			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", node.Node, node.Role, reachable, health, version, generation, activity)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", node.Node, node.Role, reachable, health, kubernetes, version, generation, activity)
 		if node.Error != "" {
 			fmt.Fprintf(w, "\t\t\t%s\n", node.Error)
+		}
+		if node.Kubernetes != nil && node.Kubernetes.FailureReason != "" {
+			fmt.Fprintf(w, "\t\t\t\t%s\n", node.Kubernetes.FailureReason)
 		}
 		if node.ControlPlaneEndpoint != nil && node.ControlPlaneEndpoint.FailureReason != "" {
 			fmt.Fprintf(w, "\t\t\tcontrol-plane endpoint: %s\n", node.ControlPlaneEndpoint.FailureReason)

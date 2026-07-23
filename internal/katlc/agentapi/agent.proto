@@ -35,6 +35,17 @@ message NodeStatus {
   string current_generation_id = 9;
   string boot_target_generation_id = 10;
   ControlPlaneEndpointStatus control_plane_endpoint = 11;
+  KubernetesStatus kubernetes = 12;
+}
+
+message KubernetesStatus {
+  string state = 1;
+  string role = 2;
+  string node_name = 3;
+  bool kubelet_active = 4;
+  bool node_ready = 5;
+  bool control_plane_components_ready = 6;
+  string failure_reason = 7;
 }
 
 message ControlPlaneEndpointStatus {

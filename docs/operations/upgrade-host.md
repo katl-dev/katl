@@ -2,8 +2,9 @@
 
 KatlOS host upgrades are one-node-at-a-time operations. The normal command
 resolves a release, stages its root and UKI into the inactive slot, reboots into
-a bounded trial, and waits for boot health. It does not upgrade Kubernetes or
-orchestrate availability across several hosts.
+a bounded trial, and waits for both boot health and recovery of any existing
+Kubernetes role. It does not upgrade Kubernetes, drain the node, or orchestrate
+availability across several hosts.
 
 ## Preconditions
 
@@ -41,11 +42,13 @@ For repeated day-two commands, `katlctl context save --config ./cluster.yaml`
 can save this topology locally. That context is optional; it is not a second
 cluster configuration operators must maintain.
 
-`katlctl` follows staging progress, asks the node agent to reboot,
-waits for the agent to restart, and requires the selected generation to be
-committed, booted, and healthy. The default result is concise text; use
-`--output json` when automation needs the structured `rebooted` and
-`bootHealth` fields. Check workload availability before upgrading another host.
+`katlctl` follows staging progress, asks the node agent to reboot, waits for the
+agent to restart, and requires the selected generation to be committed, booted,
+and healthy. On a bootstrapped node it also waits for kubelet, Node Ready, local
+control-plane components where applicable, and the managed API and route
+exchange paths. The default result is concise text; use `--output json` when
+automation needs the structured `rebooted`, `bootHealth`, and `kubernetes`
+fields. Check workload availability before upgrading another host.
 
 During the reboot, the console may show a containerd stop-job
 countdown after the containerd daemon has exited. Containerd deliberately keeps
@@ -62,3 +65,6 @@ reports that rollback and stops. It does not
 undo Kubernetes, etcd, workload, or external-infrastructure changes. If the
 operation record says `recoveryRequired: true`, or the node fails to return,
 stop the rollout and collect the evidence in [Troubleshoot KatlOS](troubleshoot.md).
+If KatlOS returns but Kubernetes does not recover before the timeout, do not
+schedule workloads on that node. `katlctl node status` reports whether kubelet,
+Node Ready, local control-plane components, or managed routing is still waiting.

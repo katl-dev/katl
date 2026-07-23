@@ -46,7 +46,18 @@ type hostStatusReport struct {
 	KatlOSVersion        string                      `json:"katlosVersion,omitempty"`
 	NextBoot             string                      `json:"nextBoot,omitempty"`
 	Activity             string                      `json:"activity"`
+	Kubernetes           *kubernetesStatusReport     `json:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
+}
+
+type kubernetesStatusReport struct {
+	State                       string `json:"state"`
+	Role                        string `json:"role"`
+	NodeName                    string `json:"nodeName"`
+	KubeletActive               bool   `json:"kubeletActive"`
+	NodeReady                   bool   `json:"nodeReady"`
+	ControlPlaneComponentsReady bool   `json:"controlPlaneComponentsReady,omitempty"`
+	FailureReason               string `json:"failureReason,omitempty"`
 }
 
 type controlPlaneEndpointReport struct {
@@ -356,12 +367,28 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 		Generation:           current.GetGenerationId(),
 		KatlOSVersion:        strings.TrimSpace(current.GetRuntimeVersion()),
 		Activity:             activity,
+		Kubernetes:           newKubernetesStatusReport(status.GetKubernetes()),
 		ControlPlaneEndpoint: newControlPlaneEndpointReport(status.GetControlPlaneEndpoint()),
 	}
 	if target := strings.TrimSpace(status.GetBootTargetGenerationId()); target != "" && target != current.GetGenerationId() {
 		report.NextBoot = target
 	}
 	return report
+}
+
+func newKubernetesStatusReport(status *agentapi.KubernetesStatus) *kubernetesStatusReport {
+	if status == nil {
+		return nil
+	}
+	return &kubernetesStatusReport{
+		State:                       status.GetState(),
+		Role:                        status.GetRole(),
+		NodeName:                    status.GetNodeName(),
+		KubeletActive:               status.GetKubeletActive(),
+		NodeReady:                   status.GetNodeReady(),
+		ControlPlaneComponentsReady: status.GetControlPlaneComponentsReady(),
+		FailureReason:               status.GetFailureReason(),
+	}
 }
 
 func newControlPlaneEndpointReport(status *agentapi.ControlPlaneEndpointStatus) *controlPlaneEndpointReport {
@@ -407,7 +434,7 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 		return writeJSON(stdout, report)
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NODE\tHEALTH\tKATLOS\tGENERATION\tNEXT BOOT\tACTIVITY"); err != nil {
+	if _, err := fmt.Fprintln(w, "NODE\tHEALTH\tKUBERNETES\tKATLOS\tGENERATION\tNEXT BOOT\tACTIVITY"); err != nil {
 		return err
 	}
 	version := report.KatlOSVersion
@@ -418,8 +445,17 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	if nextBoot == "" {
 		nextBoot = "-"
 	}
-	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", report.Node, report.Health, version, report.Generation, nextBoot, report.Activity); err != nil {
+	kubernetes := "-"
+	if report.Kubernetes != nil {
+		kubernetes = firstNonEmpty(strings.TrimSpace(report.Kubernetes.State), "unknown")
+	}
+	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", report.Node, report.Health, kubernetes, version, report.Generation, nextBoot, report.Activity); err != nil {
 		return err
+	}
+	if report.Kubernetes != nil && report.Kubernetes.FailureReason != "" {
+		if _, err := fmt.Fprintf(w, "\t\t%s\n", report.Kubernetes.FailureReason); err != nil {
+			return err
+		}
 	}
 	if err := w.Flush(); err != nil {
 		return err

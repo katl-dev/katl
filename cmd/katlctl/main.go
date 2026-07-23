@@ -259,6 +259,7 @@ type hostUpgradeReport struct {
 	Result     string `json:"result"`
 	Rebooted   bool   `json:"rebooted"`
 	BootHealth string `json:"bootHealth"`
+	Kubernetes string `json:"kubernetes,omitempty"`
 }
 
 type hostUpgradeArtifact struct {
@@ -276,7 +277,7 @@ func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd := &cobra.Command{
 		Use:   "upgrade [VERSION] [NODE]",
 		Short: "Upgrade one KatlOS node and verify its next boot",
-		Long: `Upgrade one KatlOS node to a published KatlOS release or a locally built image, reboot it, and verify that it returns healthy.
+		Long: `Upgrade one KatlOS node to a published KatlOS release or a locally built image, reboot it, and verify that KatlOS and any existing Kubernetes role return healthy.
 
 Use the same ClusterConfig used to install the node. --artifact accepts an upgrade image and its generated .json metadata without requiring a published release. --endpoint can override the node's recorded address when DHCP or local routing changed. A saved katlctl context is optional shorthand for repeated commands.`,
 		Args: cobra.MaximumNArgs(2),
@@ -388,7 +389,18 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		if node == "" {
 			node = target.endpoint
 		}
-		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy})
+		recovery := nodeUpgradeRecovery(status)
+		if !recovery.Ready {
+			recoveryCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
+			recoveryConn, recoveredStatus, recoveryErr := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, stderr)
+			cancel()
+			if recoveryErr != nil {
+				return recoveryErr
+			}
+			recovery = nodeUpgradeRecovery(recoveredStatus)
+			_ = recoveryConn.Close()
+		}
+		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
 	}
 	if localArtifact != nil && !opts.plan {
 		localRef, err := stageHostUpgradeArtifact(ctx, conn.Client, strings.TrimSpace(opts.actor), status.GetMachineId(), *localArtifact, target.nodeName, stderr)
@@ -446,7 +458,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	}
 	_ = conn.Close()
 	bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-	verifiedConn, _, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, stderr)
+	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, stderr)
 	cancel()
 	if err != nil {
 		report.Result = "failed"
@@ -455,10 +467,12 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return err
 	}
+	recovery := nodeUpgradeRecovery(verified.Status)
 	_ = verifiedConn.Close()
 	report.Result = operation.ResultSucceeded
 	report.Rebooted = true
 	report.BootHealth = generation.HealthStateHealthy
+	report.Kubernetes = recovery.State
 	return writeHostUpgradeReport(stdout, opts.output, report)
 }
 
@@ -471,7 +485,11 @@ func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeR
 		return err
 	}
 	if report.Result == operation.ResultSucceeded {
-		_, err := fmt.Fprintf(stdout, "%s runs KatlOS %s; health %s\n", report.Node, report.Version, report.BootHealth)
+		kubernetes := ""
+		if report.Kubernetes != "" {
+			kubernetes = "; Kubernetes " + report.Kubernetes
+		}
+		_, err := fmt.Fprintf(stdout, "%s runs KatlOS %s; health %s%s\n", report.Node, report.Version, report.BootHealth, kubernetes)
 		return err
 	}
 	_, err := fmt.Fprintf(stdout, "%s KatlOS %s upgrade result: %s\n", report.Node, report.Version, report.Result)
