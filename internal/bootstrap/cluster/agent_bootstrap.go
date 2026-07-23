@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
-	"github.com/katl-dev/katl/internal/bootstrap/kubeconfig"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
@@ -210,6 +209,16 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		}
 		result.addOperationPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "passed", operationRef)
 	}
+	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "writing-kubeconfig"})
+	kubeconfigResult, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, initResult.Credentials, stableEndpointReady, request.OverwriteKubeconfig)
+	if err != nil {
+		result.addPhase("kubeconfig", "", "", "failed")
+		return result, err
+	}
+	result.Kubeconfig = kubeconfigResult
+	result.NextStep = kubeconfigResult.NextStep()
+	result.addPhase("kubeconfig", "", "", "passed")
+
 	if bootstrap.enabled() {
 		emitAgentProgress(deps, AgentBootstrapProgress{Phase: "applying-bootstrap-manifests"})
 		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
@@ -225,33 +234,18 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 			return result, fmt.Errorf("user bootstrap handoff: %s", inventory.Redact(err.Error()))
 		}
 		result.Bootstrap = bootstrapResult
+		wasStableEndpointReady := stableEndpointReady
 		stableEndpointReady = stableEndpointReady || bootstrapResult.StableEndpointReady
 		result.addPhase("user-bootstrap", "", "", "passed")
+		if !wasStableEndpointReady && stableEndpointReady {
+			refreshed, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, initResult.Credentials, stableEndpointReady, true)
+			if err != nil {
+				return result, fmt.Errorf("refresh kubeconfig for stable endpoint: %w", err)
+			}
+			result.Kubeconfig = refreshed
+			result.NextStep = refreshed.NextStep()
+		}
 	}
-	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "writing-kubeconfig"})
-	kubeconfigResult, err := kubeconfig.Write(kubeconfig.Request{
-		Path:      request.KubeconfigOut,
-		Overwrite: request.OverwriteKubeconfig,
-		Endpoint: kubeconfig.EndpointSelection{
-			InitialEndpoint:      endpointForNode(initNode),
-			ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
-			StableEndpoint:       bootstrap.StableEndpoint,
-			StableEndpointReady:  stableEndpointReady,
-		},
-		ClusterName:              valueOrDefault(request.ClusterName, "katl"),
-		ContextName:              valueOrDefault(request.ContextName, "katl"),
-		UserName:                 valueOrDefault(request.UserName, "katl-admin"),
-		CertificateAuthorityData: initResult.Credentials.CertificateAuthorityData,
-		ClientCertificateData:    initResult.Credentials.ClientCertificateData,
-		ClientKeyData:            initResult.Credentials.ClientKeyData,
-	})
-	if err != nil {
-		result.addPhase("kubeconfig", "", "", "failed")
-		return result, err
-	}
-	result.Kubeconfig = kubeconfigResult
-	result.NextStep = kubeconfigResult.NextStep()
-	result.addPhase("kubeconfig", "", "", "passed")
 	return result, nil
 }
 

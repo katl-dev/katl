@@ -169,7 +169,7 @@ func TestRunAppliesUserBootstrapAfterAPIReadinessAndUsesStableEndpoint(t *testin
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	wantPhases := []string{"plan", "readiness", "kubeadm-init", "api-ready", "api-ready-after-join", "user-bootstrap", "kubeconfig"}
+	wantPhases := []string{"plan", "readiness", "kubeadm-init", "api-ready", "api-ready-after-join", "kubeconfig", "user-bootstrap"}
 	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, wantPhases) {
 		t.Fatalf("phases = %#v, want %#v", got, wantPhases)
 	}
@@ -362,8 +362,11 @@ func TestRunStopsAfterPreManifestStableEndpointFailureAndRedactsSecret(t *testin
 	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("error = %q, want redacted token", err.Error())
 	}
-	if got := phaseNames(result.Phases); containsString(got, "kubeconfig") {
-		t.Fatalf("phases = %#v, kubeconfig should not run after pre wait failure", got)
+	if got := phaseNames(result.Phases); !containsString(got, "kubeconfig") {
+		t.Fatalf("phases = %#v, want recovery kubeconfig before pre-wait failure", got)
+	}
+	if _, statErr := os.Stat(out); statErr != nil {
+		t.Fatalf("kubeconfig output stat error = %v, want recovery kubeconfig", statErr)
 	}
 }
 
@@ -386,6 +389,29 @@ func TestRunRejectsInvalidBootstrapYAMLBeforeKubeadm(t *testing.T) {
 	}
 	if len(nodeRunner.calls) != 0 || len(bootstrapRunner.requests) != 0 {
 		t.Fatalf("execution happened after invalid YAML: node=%#v bootstrap=%#v", nodeRunner.calls, bootstrapRunner.requests)
+	}
+}
+
+func TestRunRejectsNonKubernetesBootstrapDocumentBeforeKubeadm(t *testing.T) {
+	nodeRunner := &fakeNodeRunner{}
+	bootstrapRunner := &fakeBootstrapRunner{}
+	_, err := Run(context.Background(), Request{
+		Inventory: validSingleNodeInventory(),
+		Bootstrap: UserBootstrap{Manifests: []BootstrapManifest{{
+			Path: "rendered/cilium.yaml",
+			Content: []byte("Pulled: quay.io/cilium/charts/cilium:1.19.6\nDigest: sha256:abc\n---\n" +
+				validBootstrapManifest("cni")),
+		}}},
+	}, Dependencies{
+		ReadinessChecker: readyChecker{},
+		NodeRunner:       nodeRunner,
+		BootstrapRunner:  bootstrapRunner,
+	})
+	if err == nil || !strings.Contains(err.Error(), "rendered/cilium.yaml") || !strings.Contains(err.Error(), "must have a non-empty apiVersion") {
+		t.Fatalf("Run() error = %v, want source-path Kubernetes object validation failure", err)
+	}
+	if len(nodeRunner.calls) != 0 || len(bootstrapRunner.requests) != 0 {
+		t.Fatalf("execution happened after non-Kubernetes YAML: node=%#v bootstrap=%#v", nodeRunner.calls, bootstrapRunner.requests)
 	}
 }
 
@@ -438,18 +464,20 @@ func TestRunStopsAfterUserBootstrapServerFailureAndRedactsSecret(t *testing.T) {
 	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("error = %q, want redacted token", err.Error())
 	}
-	if got := phaseNames(result.Phases); containsString(got, "kubeconfig") {
-		t.Fatalf("phases = %#v, kubeconfig should not run after bootstrap failure", got)
+	if got := phaseNames(result.Phases); !containsString(got, "kubeconfig") {
+		t.Fatalf("phases = %#v, want recovery kubeconfig before bootstrap failure", got)
 	}
-	if _, statErr := os.Stat(out); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("kubeconfig output stat error = %v, want not exist", statErr)
+	if _, statErr := os.Stat(out); statErr != nil {
+		t.Fatalf("kubeconfig output stat error = %v, want recovery kubeconfig", statErr)
 	}
 }
 
 func TestRunStopsAfterUserBootstrapWaitFailure(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "operator.conf")
 	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("wait condition deployment/cilium failed")}
 	result, err := Run(context.Background(), Request{
-		Inventory: validSingleNodeInventory(),
+		Inventory:     validSingleNodeInventory(),
+		KubeconfigOut: out,
 		Bootstrap: UserBootstrap{
 			Waits: []BootstrapWait{{
 				Kind:      BootstrapWaitCondition,
@@ -470,8 +498,11 @@ func TestRunStopsAfterUserBootstrapWaitFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "wait condition") {
 		t.Fatalf("Run() error = %v, want wait failure", err)
 	}
-	if got := phaseNames(result.Phases); containsString(got, "kubeconfig") {
-		t.Fatalf("phases = %#v, kubeconfig should not run after wait failure", got)
+	if got := phaseNames(result.Phases); !containsString(got, "kubeconfig") {
+		t.Fatalf("phases = %#v, want recovery kubeconfig before wait failure", got)
+	}
+	if _, statErr := os.Stat(out); statErr != nil {
+		t.Fatalf("kubeconfig output stat error = %v, want recovery kubeconfig", statErr)
 	}
 }
 
@@ -1046,6 +1077,30 @@ func TestKubectlBootstrapRunnerAppliesManifestsAndWaits(t *testing.T) {
 	stableKubeconfig := readFileString(t, commands.calls[7][2])
 	if !strings.Contains(stableKubeconfig, "server: https://api.stable.test:6443") {
 		t.Fatalf("stable bootstrap kubeconfig did not normalize server:\n%s", stableKubeconfig)
+	}
+}
+
+func TestKubectlBootstrapRunnerReportsSourceManifestPath(t *testing.T) {
+	commands := &fakeKubectlCommandRunner{
+		defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "server rejected object"},
+	}
+	_, err := (KubectlBootstrapRunner{
+		CommandRunner: commands,
+		TempDir:       t.TempDir(),
+	}).RunUserBootstrap(context.Background(), BootstrapRequest{
+		Server: "10.0.0.11:6443",
+		Credentials: AdminCredentials{
+			CertificateAuthorityData: testCA,
+			ClientCertificateData:    testCert,
+			ClientKeyData:            testKey,
+		},
+		Manifests: []BootstrapManifest{{
+			Path:    "rendered/cilium.yaml",
+			Content: []byte(validBootstrapManifest("cni")),
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "apply bootstrap manifest rendered/cilium.yaml") {
+		t.Fatalf("RunUserBootstrap() error = %v, want original manifest path", err)
 	}
 }
 

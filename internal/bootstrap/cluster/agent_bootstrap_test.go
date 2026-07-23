@@ -116,7 +116,7 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "stable-endpoint", "control-plane-join", "user-bootstrap", "kubeconfig"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "stable-endpoint", "control-plane-join", "kubeconfig", "user-bootstrap"}) {
 		t.Fatalf("phases = %#v", got)
 	}
 	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[4].OperationID != "bootstrap-join-control-plane-1" {
@@ -374,7 +374,7 @@ func TestRunAgentBootstrapRunsUserBootstrapWithReturnedKubeconfig(t *testing.T) 
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "user-bootstrap", "kubeconfig"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "kubeconfig", "user-bootstrap"}) {
 		t.Fatalf("phases = %#v", got)
 	}
 	if len(bootstrapRunner.requests) != 1 {
@@ -469,14 +469,14 @@ func TestRunAgentBootstrapStopsAfterUserBootstrapFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "rollout timed out") {
 		t.Fatalf("RunAgentBootstrap() error = %v, want user bootstrap failure", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "user-bootstrap"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "kubeconfig", "user-bootstrap"}) {
 		t.Fatalf("phases = %#v", got)
 	}
 	if result.Phases[len(result.Phases)-1].Status != "failed" {
 		t.Fatalf("user-bootstrap phase = %#v, want failed", result.Phases[len(result.Phases)-1])
 	}
-	if _, statErr := os.Stat(out); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("kubeconfig output stat error = %v, want not exist", statErr)
+	if _, statErr := os.Stat(out); statErr != nil {
+		t.Fatalf("kubeconfig output stat error = %v, want recovery kubeconfig", statErr)
 	}
 }
 

@@ -277,6 +277,15 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	}
 	result.addPhase("api-ready-after-join", initNode.Name, "", "passed")
 
+	kubeconfigResult, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, credentials, stableEndpointReady, request.OverwriteKubeconfig)
+	if err != nil {
+		result.addPhase("kubeconfig", "", "", "failed")
+		return result, err
+	}
+	result.Kubeconfig = kubeconfigResult
+	result.NextStep = kubeconfigResult.NextStep()
+	result.addPhase("kubeconfig", "", "", "passed")
+
 	if bootstrap.enabled() {
 		if deps.BootstrapRunner == nil {
 			return result, errors.New("bootstrap handoff runner is required")
@@ -294,13 +303,25 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 			return result, fmt.Errorf("user bootstrap handoff: %s", inventory.Redact(err.Error()))
 		}
 		result.Bootstrap = bootstrapResult
+		wasStableEndpointReady := stableEndpointReady
 		stableEndpointReady = stableEndpointReady || bootstrapResult.StableEndpointReady
 		result.addPhase("user-bootstrap", "", "", "passed")
+		if !wasStableEndpointReady && stableEndpointReady {
+			refreshed, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, credentials, stableEndpointReady, true)
+			if err != nil {
+				return result, fmt.Errorf("refresh kubeconfig for stable endpoint: %w", err)
+			}
+			result.Kubeconfig = refreshed
+			result.NextStep = refreshed.NextStep()
+		}
 	}
+	return result, nil
+}
 
-	kubeconfigResult, err := kubeconfig.Write(kubeconfig.Request{
+func writeOperatorKubeconfig(request Request, initNode inventory.PlannedNode, plan inventory.Plan, bootstrap UserBootstrap, credentials AdminCredentials, stableEndpointReady, overwrite bool) (kubeconfig.Result, error) {
+	return kubeconfig.Write(kubeconfig.Request{
 		Path:      request.KubeconfigOut,
-		Overwrite: request.OverwriteKubeconfig,
+		Overwrite: overwrite,
 		Endpoint: kubeconfig.EndpointSelection{
 			InitialEndpoint:      endpointForNode(initNode),
 			ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
@@ -314,14 +335,6 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 		ClientCertificateData:    credentials.ClientCertificateData,
 		ClientKeyData:            credentials.ClientKeyData,
 	})
-	if err != nil {
-		result.addPhase("kubeconfig", "", "", "failed")
-		return result, err
-	}
-	result.Kubeconfig = kubeconfigResult
-	result.NextStep = kubeconfigResult.NextStep()
-	result.addPhase("kubeconfig", "", "", "passed")
-	return result, nil
 }
 
 func verifyManagedControlPlaneEndpoint(ctx context.Context, runner BootstrapRunner, initNode inventory.PlannedNode, plan inventory.Plan, credentials AdminCredentials) (BootstrapResult, error) {
@@ -462,8 +475,9 @@ func loadBootstrapManifest(manifest BootstrapManifest) (BootstrapManifest, error
 func validateBootstrapYAML(data []byte) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	seen := false
+	documentIndex := 0
 	for {
-		var doc any
+		var doc map[string]any
 		err := decoder.Decode(&doc)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -471,8 +485,17 @@ func validateBootstrapYAML(data []byte) error {
 			}
 			return fmt.Errorf("decode YAML: %w", err)
 		}
-		if doc == nil {
+		if len(doc) == 0 {
 			continue
+		}
+		documentIndex++
+		apiVersion, apiVersionOK := doc["apiVersion"].(string)
+		if !apiVersionOK || strings.TrimSpace(apiVersion) == "" {
+			return fmt.Errorf("Kubernetes YAML document %d must have a non-empty apiVersion", documentIndex)
+		}
+		kind, kindOK := doc["kind"].(string)
+		if !kindOK || strings.TrimSpace(kind) == "" {
+			return fmt.Errorf("Kubernetes YAML document %d must have a non-empty kind", documentIndex)
 		}
 		seen = true
 	}
@@ -772,7 +795,7 @@ func (r KubectlBootstrapRunner) RunUserBootstrap(ctx context.Context, request Bo
 			return result, err
 		}
 		if err := r.runKubectl(ctx, []string{"--kubeconfig", kubeconfigPath, "--context", "katl-bootstrap", "apply", "-f", path}); err != nil {
-			return result, err
+			return result, fmt.Errorf("apply bootstrap manifest %s: %w", valueOrDefault(manifest.Path, "<inline>"), err)
 		}
 		result.AppliedManifests = append(result.AppliedManifests, manifest)
 	}
