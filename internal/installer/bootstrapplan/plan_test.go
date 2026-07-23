@@ -88,6 +88,84 @@ func TestCreateAcceptsBootstrapInitFromStoredIntent(t *testing.T) {
 	assertNoKubeadmMutation(t, root)
 }
 
+func TestCreateInheritsUpgradedPreBootstrapGeneration(t *testing.T) {
+	root := cleanRoot(t, "control-plane")
+	currentGeneration := "katlos-2026.7.0-dev.25"
+	base, _, err := generation.ReadGeneration(root, "0")
+	if err != nil {
+		t.Fatalf("ReadGeneration(0) error = %v", err)
+	}
+	base.GenerationID = currentGeneration
+	base.PreviousGenerationID = "0"
+	base.RuntimeVersion = "2026.7.0-dev.25"
+	base.Root.RuntimeVersion = base.RuntimeVersion
+	base.Boot.UKIPath = "/efi/EFI/Linux/katl_2026.7.0-dev.25.efi"
+	base.Boot.LoaderEntryPath = "loader/entries/katl-" + currentGeneration + ".conf"
+	base.CreatedAt = base.CreatedAt.Add(time.Hour)
+	currentStatus, err := generation.NewGenerationStatus(base, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, base.CreatedAt)
+	if err != nil {
+		t.Fatalf("NewGenerationStatus() error = %v", err)
+	}
+	if err := generation.WriteGeneration(root, base, currentStatus); err != nil {
+		t.Fatalf("WriteGeneration(%s) error = %v", currentGeneration, err)
+	}
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	hostUpgradeCompletedAt := base.CreatedAt
+	_, err = store.Create(operation.OperationRecord{
+		OperationID:             "host-upgrade-1",
+		OperationKind:           "host-upgrade",
+		Scope:                   "host-generation",
+		RequestDigest:           strings.Repeat("e", 64),
+		ExternalMutationStarted: true,
+		MutationScopes:          []string{"runtime-root", "runtime-uki", "boot-selection"},
+		HostUpgradeRequest: &operation.HostUpgrade{
+			ImageLocalRef:         "host-upgrade.squashfs",
+			CandidateGenerationID: currentGeneration,
+		},
+		Terminal:    true,
+		Result:      operation.ResultSucceeded,
+		CompletedAt: &hostUpgradeCompletedAt,
+	}, "accepted", base.CreatedAt)
+	if err != nil {
+		t.Fatalf("create host upgrade operation: %v", err)
+	}
+	source, ref, client := serveKubernetesBundleFixture(t, "v1.36.1", "upgraded pre-bootstrap payload")
+	bootstrap := controlPlaneRequest()
+	bootstrap.CandidateGenerationID = "bootstrap-current"
+	bootstrap.KubernetesBundleSource = source
+	bootstrap.KubernetesBundleRef = ref
+	plan, err := Create(Request{
+		Root:                        root,
+		OperationID:                 "bootstrap-upgraded",
+		Kind:                        OperationKindInit,
+		ExpectedCurrentGenerationID: currentGeneration,
+		Bootstrap:                   bootstrap,
+		BundleClient:                client,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if plan.Previous.GenerationID != currentGeneration || plan.Previous.RuntimeVersion != "2026.7.0-dev.25" {
+		t.Fatalf("previous generation = %#v", plan.Previous)
+	}
+	if plan.Operation.ExpectedCurrentGenerationID != currentGeneration ||
+		plan.Operation.PreviousGenerationID != currentGeneration ||
+		plan.Operation.HostRollback != currentGeneration {
+		t.Fatalf("operation generation contract = %#v", plan.Operation)
+	}
+	reloaded, err := FromOperationWithBundleClient(root, plan.Operation, client)
+	if err != nil {
+		t.Fatalf("FromOperationWithBundleClient() error = %v", err)
+	}
+	if reloaded.Previous.GenerationID != currentGeneration ||
+		reloaded.Previous.Root.RuntimeVersion != "2026.7.0-dev.25" {
+		t.Fatalf("reloaded previous generation = %#v", reloaded.Previous)
+	}
+}
+
 func TestCreateAcceptsWorkerJoinFromStoredIntent(t *testing.T) {
 	root := cleanRoot(t, "worker")
 	editIntent(t, root, func(intent *installer.ClusterIntent) {

@@ -21,12 +21,11 @@ import (
 )
 
 const (
-	defaultAgentPort           = "9443"
-	agentAPIVersion            = operation.APIVersion
-	agentSubmitOperationKind   = "SubmitOperationRequest"
-	agentJoinMaterialKind      = "CreateWorkerJoinMaterialRequest"
-	agentBootstrapInitKind     = "bootstrap-init"
-	agentExpectedGeneration0ID = "0"
+	defaultAgentPort         = "9443"
+	agentAPIVersion          = operation.APIVersion
+	agentSubmitOperationKind = "SubmitOperationRequest"
+	agentJoinMaterialKind    = "CreateWorkerJoinMaterialRequest"
+	agentBootstrapInitKind   = "bootstrap-init"
 )
 
 type AgentBootstrapDependencies struct {
@@ -372,6 +371,9 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 			if strings.TrimSpace(status.GetMachineId()) == "" {
 				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "machine-id", Message: "node did not report a machine identity"})
 			}
+			if strings.TrimSpace(status.GetCurrentGenerationId()) == "" {
+				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "current-generation", Message: "node did not report its current generation"})
+			}
 		}
 		nodeReport.Ready = len(nodeReport.Diagnostics) == 0
 		if !nodeReport.Ready {
@@ -606,7 +608,7 @@ func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, 
 		OperationKind:               kind,
 		Actor:                       valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
 		ExpectedMachineId:           strings.TrimSpace(status.GetMachineId()),
-		ExpectedCurrentGenerationId: agentExpectedGeneration0ID,
+		ExpectedCurrentGenerationId: strings.TrimSpace(status.GetCurrentGenerationId()),
 		DryRun:                      false,
 		Bootstrap: &agentapi.BootstrapOperationRequest{
 			InventoryNodeName:        node.Name,

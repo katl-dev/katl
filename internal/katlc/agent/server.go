@@ -496,6 +496,7 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		RequestDigest:               digest,
 		Phase:                       "accepted",
 		PhasePlan:                   []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", plan.Phase, "post-kubeadm-health", operation.HostBookkeepingCompletionPhase},
+		PreviousGenerationID:        req.ExpectedCurrentGenerationId,
 		CandidateGenerationID:       candidateID,
 		BootstrapRequest:            &bootstrapRequest,
 		ActivationMode:              operation.ActivationModeLive,
@@ -503,6 +504,7 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		GenerationCommitState:       operation.GenerationCommitCandidate,
 		PostKubeadmHealthState:      operation.PostKubeadmHealthNotRun,
 		ResourceLocks:               locks,
+		HostRollback:                req.ExpectedCurrentGenerationId,
 		ExecutorPlan:                &plan,
 		NextAction:                  "queued for katlc agent executor",
 	}

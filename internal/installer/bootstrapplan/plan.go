@@ -29,15 +29,16 @@ const (
 )
 
 type Request struct {
-	Root         string
-	StoreRoot    string
-	OperationID  string
-	Kind         string
-	Actor        string
-	ClientID     string
-	Now          time.Time
-	Bootstrap    operation.BootstrapRequest
-	BundleClient *http.Client
+	Root                        string
+	StoreRoot                   string
+	OperationID                 string
+	Kind                        string
+	Actor                       string
+	ClientID                    string
+	ExpectedCurrentGenerationID string
+	Now                         time.Time
+	Bootstrap                   operation.BootstrapRequest
+	BundleClient                *http.Client
 }
 
 type Plan struct {
@@ -101,7 +102,8 @@ func Create(request Request) (Plan, error) {
 	if kind != OperationKindInit && kind != OperationKindJoinWorker && kind != OperationKindJoinControlPlane {
 		return Plan{}, fmt.Errorf("unsupported bootstrap operation kind %q", kind)
 	}
-	if err := installstatus.ValidateCleanGenerationZero(root, defaultGenerationID); err != nil {
+	currentGenerationID := valueOrDefault(request.ExpectedCurrentGenerationID, defaultGenerationID)
+	if err := installstatus.ValidateCleanPreBootstrapGeneration(root, currentGenerationID); err != nil {
 		return Plan{}, err
 	}
 	intent, intentDigest, err := installer.ReadClusterIntent(root)
@@ -115,9 +117,9 @@ func Create(request Request) (Plan, error) {
 	if err := validateRequest(kind, intent, bootstrap); err != nil {
 		return Plan{}, err
 	}
-	previous, previousState, err := generation.ReadGeneration(root, defaultGenerationID)
+	previous, previousState, err := generation.ReadGeneration(root, currentGenerationID)
 	if err != nil {
-		return Plan{}, fmt.Errorf("read generation 0 records: %w", err)
+		return Plan{}, fmt.Errorf("read current generation %s records: %w", currentGenerationID, err)
 	}
 	inputs, err := runtimeInputs(root, previous, intent, bootstrap, request.BundleClient)
 	if err != nil {
@@ -144,11 +146,11 @@ func Create(request Request) (Plan, error) {
 		Scope:                       operationScope,
 		ClientRequestID:             strings.TrimSpace(request.ClientID),
 		Actor:                       strings.TrimSpace(request.Actor),
-		ExpectedCurrentGenerationID: defaultGenerationID,
+		ExpectedCurrentGenerationID: currentGenerationID,
 		ExpectedClusterIntentDigest: intentDigest,
 		RequestDigest:               requestDigest(kind, bootstrap),
 		PhasePlan:                   phasePlan(kind),
-		PreviousGenerationID:        defaultGenerationID,
+		PreviousGenerationID:        currentGenerationID,
 		CandidateGenerationID:       bootstrap.CandidateGenerationID,
 		BootstrapRequest:            &bootstrap,
 		ActivationMode:              operation.ActivationModeLive,
@@ -156,8 +158,8 @@ func Create(request Request) (Plan, error) {
 		GenerationCommitState:       operation.GenerationCommitCandidate,
 		PostKubeadmHealthState:      operation.PostKubeadmHealthNotRun,
 		Phase:                       "accepted",
-		ResourceLocks:               []string{"generation:0", "kubeadm-state"},
-		HostRollback:                "generation-0",
+		ResourceLocks:               []string{"generation:" + currentGenerationID, "kubeadm-state"},
+		HostRollback:                currentGenerationID,
 		PostMutationRollbackAllowed: false,
 	}
 	created, err := store.Create(record, "accepted", now)
@@ -180,12 +182,21 @@ func FromOperationWithBundleClient(root string, record operation.OperationRecord
 	return fromOperation(root, record, client)
 }
 
+func valueOrDefault(value, fallback string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallback)
+}
+
 func fromOperation(root string, record operation.OperationRecord, client *http.Client) (Plan, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return Plan{}, fmt.Errorf("runtime root is required")
 	}
-	if err := installstatus.ValidateCleanGenerationZeroForOperation(root, defaultGenerationID, record.OperationID); err != nil {
+	currentGenerationID := valueOrDefault(record.ExpectedCurrentGenerationID, record.PreviousGenerationID)
+	currentGenerationID = valueOrDefault(currentGenerationID, defaultGenerationID)
+	if err := installstatus.ValidateCleanPreBootstrapGenerationForOperation(root, currentGenerationID, record.OperationID); err != nil {
 		return Plan{}, err
 	}
 	if record.OperationKind != OperationKindInit && record.OperationKind != OperationKindJoinWorker && record.OperationKind != OperationKindJoinControlPlane {
@@ -208,15 +219,18 @@ func fromOperation(root string, record operation.OperationRecord, client *http.C
 	if err := validateRequest(record.OperationKind, intent, bootstrap); err != nil {
 		return Plan{}, err
 	}
-	previous, previousState, err := generation.ReadGeneration(root, defaultGenerationID)
+	previous, previousState, err := generation.ReadGeneration(root, currentGenerationID)
 	if err != nil {
-		return Plan{}, fmt.Errorf("read generation 0 records: %w", err)
+		return Plan{}, fmt.Errorf("read current generation %s records: %w", currentGenerationID, err)
 	}
 	inputs, err := runtimeInputs(root, previous, intent, bootstrap, client)
 	if err != nil {
 		return Plan{}, err
 	}
 	record.BootstrapRequest = &bootstrap
+	record.ExpectedCurrentGenerationID = currentGenerationID
+	record.PreviousGenerationID = currentGenerationID
+	record.HostRollback = currentGenerationID
 	if strings.TrimSpace(record.CandidateGenerationID) == "" {
 		record.CandidateGenerationID = bootstrap.CandidateGenerationID
 	}

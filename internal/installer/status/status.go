@@ -298,18 +298,35 @@ func ValidateCleanGenerationZeroForOperation(root string, generationID string, o
 	return validateCleanGenerationZero(root, generationID, operationID)
 }
 
+func ValidateCleanPreBootstrapGeneration(root string, generationID string) error {
+	return validateCleanPreBootstrapGeneration(root, generationID, "", false)
+}
+
+func ValidateCleanPreBootstrapGenerationForOperation(root string, generationID string, operationID string) error {
+	return validateCleanPreBootstrapGeneration(root, generationID, operationID, false)
+}
+
 func validateCleanGenerationZero(root string, generationID string, allowedOperationID string) error {
 	if strings.TrimSpace(generationID) != "0" {
 		return nil
 	}
+	return validateCleanPreBootstrapGeneration(root, generationID, allowedOperationID, true)
+}
+
+func validateCleanPreBootstrapGeneration(root string, generationID string, allowedOperationID string, rejectAllMutationEvidence bool) error {
+	generationID = strings.TrimSpace(generationID)
+	if generationID == "" {
+		return fmt.Errorf("current generation id is required")
+	}
+	generationLabel := "generation " + generationID
 	spec, _, err := generation.ReadGeneration(root, generationID)
 	if err != nil {
-		return fmt.Errorf("read generation 0 records: %w", err)
+		return fmt.Errorf("read %s records: %w", generationLabel, err)
 	}
 	if hasKubernetesSysext(spec.Sysexts) {
-		return fmt.Errorf("generation 0 is not clean: selected Kubernetes sysexts are forbidden")
+		return fmt.Errorf("%s is not clean: selected Kubernetes sysexts are forbidden", generationLabel)
 	}
-	if err := validateKubernetesProjectionUnit(root); err != nil {
+	if err := validateKubernetesProjectionUnit(root, generationLabel); err != nil {
 		return err
 	}
 	checks := []struct {
@@ -333,7 +350,7 @@ func validateCleanGenerationZero(root string, generationID string, allowedOperat
 			return err
 		}
 		if dirty {
-			return fmt.Errorf("generation 0 is not clean: %s at %s", check.message, check.path)
+			return fmt.Errorf("%s is not clean: %s at %s", generationLabel, check.message, check.path)
 		}
 	}
 	kubeconfigs, err := filepath.Glob(filepath.Join(filepath.Clean(root), "var/lib/katl/kubernetes/etc-kubernetes", "*.conf"))
@@ -341,16 +358,16 @@ func validateCleanGenerationZero(root string, generationID string, allowedOperat
 		return fmt.Errorf("scan kubeadm kubeconfigs: %w", err)
 	}
 	if len(kubeconfigs) > 0 {
-		return fmt.Errorf("generation 0 is not clean: kubeadm kubeconfigs exist under /var/lib/katl/kubernetes/etc-kubernetes")
+		return fmt.Errorf("%s is not clean: kubeadm kubeconfigs exist under /var/lib/katl/kubernetes/etc-kubernetes", generationLabel)
 	}
 	links, err := filepath.Glob(filepath.Join(filepath.Clean(root), "run/extensions", "*kubernetes*"))
 	if err != nil {
 		return fmt.Errorf("scan active Kubernetes sysext links: %w", err)
 	}
 	if len(links) > 0 {
-		return fmt.Errorf("generation 0 is not clean: active Kubernetes sysext links exist")
+		return fmt.Errorf("%s is not clean: active Kubernetes sysext links exist", generationLabel)
 	}
-	if err := validateNoDirtyGenerationZeroOperations(root, allowedOperationID); err != nil {
+	if err := validateNoDirtyPreBootstrapOperations(root, generationLabel, allowedOperationID, rejectAllMutationEvidence); err != nil {
 		return err
 	}
 	return nil
@@ -365,7 +382,7 @@ func hasKubernetesSysext(refs []generation.ExtensionRef) bool {
 	return false
 }
 
-func validateKubernetesProjectionUnit(root string) error {
+func validateKubernetesProjectionUnit(root string, generationLabel string) error {
 	path := filepath.Join(filepath.Clean(root), "etc/systemd/system/etc-kubernetes.mount")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -383,12 +400,12 @@ func validateKubernetesProjectionUnit(root string) error {
 		values[key] = value
 	}
 	if values["What"] != generation.KubernetesSource || values["Where"] != generation.KubernetesTarget {
-		return fmt.Errorf("generation 0 is not clean: /etc/kubernetes projection points at %q -> %q, want %q -> %q", values["What"], values["Where"], generation.KubernetesSource, generation.KubernetesTarget)
+		return fmt.Errorf("%s is not clean: /etc/kubernetes projection points at %q -> %q, want %q -> %q", generationLabel, values["What"], values["Where"], generation.KubernetesSource, generation.KubernetesTarget)
 	}
 	return nil
 }
 
-func validateNoDirtyGenerationZeroOperations(root string, allowedOperationID string) error {
+func validateNoDirtyPreBootstrapOperations(root string, generationLabel string, allowedOperationID string, rejectAllMutationEvidence bool) error {
 	store, err := operation.NewStore(filepath.Join(filepath.Clean(root), "var/lib/katl/operations"))
 	if err != nil {
 		return err
@@ -402,18 +419,40 @@ func validateNoDirtyGenerationZeroOperations(root string, allowedOperationID str
 		if err != nil {
 			return fmt.Errorf("read operation %s: %w", id, err)
 		}
+		if !rejectAllMutationEvidence && !kubeadmStateOperation(record.OperationKind) && !containsKubeadmMutationScope(record.MutationScopes) {
+			continue
+		}
 		if record.ExternalMutationStarted || record.MutatingToolRan || len(record.PreExecMutationMarkers) > 0 || len(record.MutationScopes) > 0 {
-			return fmt.Errorf("generation 0 is not clean: operation %s has mutation evidence", id)
+			return fmt.Errorf("%s is not clean: operation %s has mutation evidence", generationLabel, id)
 		}
 		if record.OperationID == allowedOperationID && record.Phase == "accepted" && record.PhaseIndex == 0 && len(record.CompletedPhases) == 0 {
 			continue
 		}
 		class := operation.ClassifyStale(record)
 		if class == operation.StalePostMutation || class == operation.StaleAmbiguous {
-			return fmt.Errorf("generation 0 is not clean: operation %s has stale mutation evidence (%s)", id, class)
+			return fmt.Errorf("%s is not clean: operation %s has stale mutation evidence (%s)", generationLabel, id, class)
 		}
 	}
 	return nil
+}
+
+func kubeadmStateOperation(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "bootstrap-init", "bootstrap-join-worker", "bootstrap-join-control-plane", "kubeadm-upgrade":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsKubeadmMutationScope(scopes []string) bool {
+	for _, scope := range scopes {
+		switch strings.TrimSpace(scope) {
+		case "etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects", "kubeadm-state":
+			return true
+		}
+	}
+	return false
 }
 
 func dirtyPath(root string, absolutePath string, nonEmpty bool) (bool, error) {

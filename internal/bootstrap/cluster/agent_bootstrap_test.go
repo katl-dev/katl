@@ -208,6 +208,7 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	bundleRef := "v1.36.1@sha256:" + strings.Repeat("b", 64)
 	inv.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
 	inv.KubernetesBundleRef = bundleRef
+	currentGeneration := "katlos-2026.7.0-dev.25"
 	client := &fakeAgentClient{
 		status: readyAgentStatus("machine-cp-1"),
 		accepted: &agentapi.OperationAccepted{
@@ -236,6 +237,7 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 			AdminKubeconfig: adminKubeconfig(),
 		},
 	}
+	client.status.CurrentGenerationId = currentGeneration
 	connector := newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	result, err := RunAgentBootstrap(context.Background(), Request{
@@ -258,7 +260,7 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 		t.Fatalf("SubmitOperation requests = %d, want 1", len(client.submitRequests))
 	}
 	req := client.submitRequests[0]
-	if req.OperationKind != "bootstrap-init" || req.Actor != "test-actor" || req.ExpectedMachineId != "machine-cp-1" || req.ExpectedCurrentGenerationId != "0" {
+	if req.OperationKind != "bootstrap-init" || req.Actor != "test-actor" || req.ExpectedMachineId != "machine-cp-1" || req.ExpectedCurrentGenerationId != currentGeneration {
 		t.Fatalf("submit request = %#v", req)
 	}
 	if req.Bootstrap.InventoryNodeName != "cp-1" || req.Bootstrap.ControlPlaneEndpoint != "api.katl.test:6443" || req.Bootstrap.BootstrapProfileRef != "control-plane" {
@@ -741,5 +743,6 @@ func readyAgentStatusWithKinds(machineID string, kinds ...string) *agentapi.Node
 		ApiVersion:              agentAPIVersion,
 		MachineId:               machineID,
 		SupportedOperationKinds: kinds,
+		CurrentGenerationId:     "0",
 	}
 }

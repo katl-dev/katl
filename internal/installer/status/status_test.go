@@ -189,6 +189,56 @@ func TestValidateCleanGenerationZeroRejectsKubernetesSysext(t *testing.T) {
 	}
 }
 
+func TestValidateCleanPreBootstrapGenerationAllowsHostUpgradeButRejectsKubeadmMutation(t *testing.T) {
+	root := t.TempDir()
+	currentGeneration := "katlos-2026.7.0-dev.25"
+	writeCleanGeneration(t, root, currentGeneration, []generation.ExtensionRef{{
+		Name:           "endpoint-advertiser",
+		ActivationPath: "/run/extensions/katl-endpoint-advertiser.raw",
+	}})
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	hostUpgradeCompletedAt := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	_, err = store.Create(operation.OperationRecord{
+		OperationID:             "host-upgrade-1",
+		OperationKind:           "host-upgrade",
+		Scope:                   "host-generation",
+		RequestDigest:           strings.Repeat("1", 64),
+		ExternalMutationStarted: true,
+		MutationScopes:          []string{"runtime-root", "runtime-uki", "boot-selection"},
+		HostUpgradeRequest: &operation.HostUpgrade{
+			ImageLocalRef:         "host-upgrade.squashfs",
+			CandidateGenerationID: currentGeneration,
+		},
+		Terminal:    true,
+		Result:      operation.ResultSucceeded,
+		CompletedAt: &hostUpgradeCompletedAt,
+	}, "accepted", hostUpgradeCompletedAt)
+	if err != nil {
+		t.Fatalf("create host upgrade operation: %v", err)
+	}
+	if err := ValidateCleanPreBootstrapGeneration(root, currentGeneration); err != nil {
+		t.Fatalf("ValidateCleanPreBootstrapGeneration() error = %v, want host upgrade allowed", err)
+	}
+	_, err = store.Create(operation.OperationRecord{
+		OperationID:             "bootstrap-failed",
+		OperationKind:           "bootstrap-init",
+		Scope:                   "kubeadm-state",
+		RequestDigest:           strings.Repeat("2", 64),
+		ExternalMutationStarted: true,
+		MutationScopes:          []string{"etc-kubernetes"},
+	}, "accepted", time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("create bootstrap operation: %v", err)
+	}
+	err = ValidateCleanPreBootstrapGeneration(root, currentGeneration)
+	if err == nil || !strings.Contains(err.Error(), "bootstrap-failed has mutation evidence") {
+		t.Fatalf("ValidateCleanPreBootstrapGeneration() error = %v, want kubeadm mutation refusal", err)
+	}
+}
+
 func writeCleanGenerationZero(t *testing.T, root string) {
 	t.Helper()
 	writeCleanGenerationZeroWithSysexts(t, root, nil)
@@ -196,8 +246,13 @@ func writeCleanGenerationZero(t *testing.T, root string) {
 
 func writeCleanGenerationZeroWithSysexts(t *testing.T, root string, sysexts []generation.ExtensionRef) {
 	t.Helper()
+	writeCleanGeneration(t, root, "0", sysexts)
+}
+
+func writeCleanGeneration(t *testing.T, root string, generationID string, sysexts []generation.ExtensionRef) {
+	t.Helper()
 	for i := range sysexts {
-		sysexts[i].Path = "/var/lib/katl/generations/0/sysext/" + sysexts[i].Name + ".raw"
+		sysexts[i].Path = "/var/lib/katl/generations/" + generationID + "/sysext/" + sysexts[i].Name + ".raw"
 		sysexts[i].SHA256 = strings.Repeat("c", 64)
 		sysexts[i].ArtifactVersion = "0.1.0"
 		sysexts[i].PayloadVersion = "0.1.0"
@@ -207,7 +262,7 @@ func writeCleanGenerationZeroWithSysexts(t *testing.T, root string, sysexts []ge
 	record := generation.Record{
 		APIVersion:     generation.APIVersion,
 		Kind:           generation.Kind,
-		GenerationID:   "0",
+		GenerationID:   generationID,
 		RuntimeVersion: "0.1.0",
 		Root: generation.RootSelection{
 			Slot:                  "root-a",

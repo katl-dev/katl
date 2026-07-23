@@ -2210,7 +2210,11 @@ func TestSubmitOperationAcceptsExpectedGenerationAndIntentConstraints(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.ExpectedCurrentGenerationID != "generation-0" || record.ExpectedClusterIntentDigest != req.ExpectedClusterIntentDigest || record.CandidateGenerationID != "generation-1" {
+	if record.ExpectedCurrentGenerationID != "generation-0" ||
+		record.PreviousGenerationID != "generation-0" ||
+		record.HostRollback != "generation-0" ||
+		record.ExpectedClusterIntentDigest != req.ExpectedClusterIntentDigest ||
+		record.CandidateGenerationID != "generation-1" {
 		t.Fatalf("record constraints = %+v", record)
 	}
 
