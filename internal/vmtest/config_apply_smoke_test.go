@@ -354,6 +354,7 @@ func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestCont
 	t.Helper()
 	guestCommand(t, ctx, guest, "sshd-active", "systemctl", "is-active", "--quiet", "sshd.service")
 	guestCommand(t, ctx, guest, "persistent-ssh-host-key", "test", "-s", "/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key")
+	guestCommand(t, ctx, guest, "valid-persistent-ssh-host-key", "sshd", "-t")
 	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/ssh/authorized_keys/katl", installedRuntimeSSHKey)
 	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/ssh/authorized_keys/root", installedRuntimeSSHKey)
 	effective := strings.ToLower(guestCommandOutput(t, ctx, guest, "sshd-effective-config", "sshd", "-T"))

@@ -104,6 +104,9 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	previousSpec, _ := generationRecordsFromGuest(t, ctx, guest, previousGeneration)
 	stateMarker := "/var/lib/katl/test-artifacts/host-upgrade-state-marker"
 	writeGuestFile(t, ctx, guest, stateMarker, []byte("state-survives-host-upgrade-and-rollback\n"), 0o600)
+	hostKeyPath := "/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key"
+	originalHostKeyDigest := guestFileSHA256(t, ctx, guest, "original-ssh-host-key", hostKeyPath)
+	guestCommand(t, ctx, guest, "corrupt-ssh-host-key", "dd", "if=/etc/os-release", "of="+hostKeyPath, "bs=4096", "count=1", "conv=fsync")
 
 	upgrade := discoverBuiltUpgradeImage(t, previousSpec.RuntimeVersion)
 	endpoint := katlcEndpoint(t, node, "")
@@ -146,6 +149,11 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitGenerationPromotion(t, ctx, guest, candidateGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, candidateSpec)
+	assertInstalledSSHReady(t, ctx, guest)
+	repairedHostKeyDigest := guestFileSHA256(t, ctx, guest, "repaired-ssh-host-key", hostKeyPath)
+	if repairedHostKeyDigest == originalHostKeyDigest {
+		t.Fatalf("repaired SSH host key was not replaced: %s", repairedHostKeyDigest)
+	}
 	assertGuestFileContains(t, ctx, guest, stateMarker, "state-survives-host-upgrade-and-rollback")
 	promoted := bootSelectionFromGuest(t, ctx, guest)
 	if promoted.DefaultGenerationID != candidateGeneration || promoted.PreviousKnownGoodGenerationID != previousGeneration || promoted.PendingHealthValidation {
@@ -204,6 +212,15 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 			t.Fatalf("write world scenario result: %v", err)
 		}
 	}
+}
+
+func guestFileSHA256(t *testing.T, ctx context.Context, guest *GuestControl, name, path string) string {
+	t.Helper()
+	fields := strings.Fields(guestCommandOutput(t, ctx, guest, name, "sha256sum", path))
+	if len(fields) != 2 || len(fields[0]) != sha256.Size*2 {
+		t.Fatalf("%s returned invalid sha256sum output: %q", name, strings.Join(fields, " "))
+	}
+	return fields[0]
 }
 
 func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage) (string, *agentapi.OperationStatus) {

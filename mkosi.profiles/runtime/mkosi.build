@@ -157,3 +157,15 @@ go build \
     -ldflags="-s -w" \
     -o "$DESTDIR/usr/lib/katl/runtime/katl-boot-health" \
     ./cmd/katl-boot-health
+
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="$gomodcache" \
+go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w" \
+    -o "$DESTDIR/usr/lib/katl/runtime/katl-ssh-host-keys" \
+    ./cmd/katl-ssh-host-keys

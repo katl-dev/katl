@@ -146,6 +146,7 @@ target_go_binaries() {
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-runtime-status" "./cmd/katl-runtime-status" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-generation-activate" "./cmd/katl-generation-activate" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-boot-health" "./cmd/katl-boot-health" "plain"
+            printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-ssh-host-keys" "./cmd/katl-ssh-host-keys" "plain"
             printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
             ;;
         katlos-install-image)

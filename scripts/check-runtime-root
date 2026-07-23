@@ -165,6 +165,7 @@ for path in \
     /usr/bin/katl-console \
     /usr/bin/mount.nfs \
     /usr/lib/katl/runtime/katl-boot-health \
+    /usr/lib/katl/runtime/katl-ssh-host-keys \
     /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
     /usr/lib/systemd/system/var.mount \
