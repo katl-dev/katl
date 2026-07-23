@@ -2057,7 +2057,8 @@ func TestHostUpgradeLocalArtifactPlanValidatesWithoutUploading(t *testing.T) {
 func TestHostUpgradeLocalArtifactExplainsAgentUpgradeRequirement(t *testing.T) {
 	artifact, _, _ := writeHostUpgradeArtifact(t, "2026.7.0-dev.14", "x86_64", 1024)
 	fake := readyHostUpgradeClient()
-	fake.stageArtifactErr = grpcstatus.Error(codes.Unimplemented, "unknown method")
+	fake.stageArtifactSendErr = io.EOF
+	fake.stageArtifactCloseErr = grpcstatus.Error(codes.Unimplemented, "unknown method")
 	installKatlcDial(t, func(endpoint string) {
 		if endpoint != "10.0.0.11:9443" {
 			t.Fatalf("dial endpoint = %q", endpoint)
@@ -2067,6 +2068,9 @@ func TestHostUpgradeLocalArtifactExplainsAgentUpgradeRequirement(t *testing.T) {
 	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--artifact", artifact, "--config", writeClusterConfig(t)}, io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "upgrade it once from a published release, then retry --artifact") {
 		t.Fatalf("run() error = %v", err)
+	}
+	if fake.stageArtifactCloseCalls != 1 {
+		t.Fatalf("CloseAndRecv() calls = %d, want status recovery after Send EOF", fake.stageArtifactCloseCalls)
 	}
 }
 
@@ -2484,30 +2488,33 @@ type configApplyFixture struct {
 }
 
 type fakeKatlcAgentClient struct {
-	stageAccepted     *agentapi.OperationAccepted
-	stageRequest      *agentapi.GenerationApplyRequest
-	applyRequest      *agentapi.GenerationApplyRequest
-	validateResult    *agentapi.ConfigValidationResult
-	validateRequest   *agentapi.ValidateConfigRequest
-	submitRequest     *agentapi.SubmitOperationRequest
-	submitRequests    []*agentapi.SubmitOperationRequest
-	submitAccepted    *agentapi.OperationAccepted
-	nodeStatus        *agentapi.NodeStatus
-	nodeStatusErr     error
-	generation        *agentapi.Generation
-	generationRequest *agentapi.GetGenerationRequest
-	operationStatus   *agentapi.OperationStatus
-	operationRequest  *agentapi.GetOperationRequest
-	operations        *agentapi.ListOperationsResponse
-	operationLists    []*agentapi.ListOperationsResponse
-	operationsRequest *agentapi.ListOperationsRequest
-	onSubmit          func(*agentapi.SubmitOperationRequest)
-	rebootRequests    []*agentapi.RebootRequest
-	onReboot          func(*agentapi.RebootRequest)
-	shutdownRequests  []*agentapi.ShutdownRequest
-	onShutdown        func(*agentapi.ShutdownRequest)
-	stageArtifact     []*agentapi.StageHostUpgradeArtifactRequest
-	stageArtifactErr  error
+	stageAccepted           *agentapi.OperationAccepted
+	stageRequest            *agentapi.GenerationApplyRequest
+	applyRequest            *agentapi.GenerationApplyRequest
+	validateResult          *agentapi.ConfigValidationResult
+	validateRequest         *agentapi.ValidateConfigRequest
+	submitRequest           *agentapi.SubmitOperationRequest
+	submitRequests          []*agentapi.SubmitOperationRequest
+	submitAccepted          *agentapi.OperationAccepted
+	nodeStatus              *agentapi.NodeStatus
+	nodeStatusErr           error
+	generation              *agentapi.Generation
+	generationRequest       *agentapi.GetGenerationRequest
+	operationStatus         *agentapi.OperationStatus
+	operationRequest        *agentapi.GetOperationRequest
+	operations              *agentapi.ListOperationsResponse
+	operationLists          []*agentapi.ListOperationsResponse
+	operationsRequest       *agentapi.ListOperationsRequest
+	onSubmit                func(*agentapi.SubmitOperationRequest)
+	rebootRequests          []*agentapi.RebootRequest
+	onReboot                func(*agentapi.RebootRequest)
+	shutdownRequests        []*agentapi.ShutdownRequest
+	onShutdown              func(*agentapi.ShutdownRequest)
+	stageArtifact           []*agentapi.StageHostUpgradeArtifactRequest
+	stageArtifactErr        error
+	stageArtifactSendErr    error
+	stageArtifactCloseErr   error
+	stageArtifactCloseCalls int
 }
 
 type fakeHostUpgradeArtifactClient struct {
@@ -2615,10 +2622,17 @@ func (s *fakeHostUpgradeArtifactClient) Send(request *agentapi.StageHostUpgradeA
 	copyRequest := *request
 	copyRequest.Chunk = append([]byte(nil), request.Chunk...)
 	s.client.stageArtifact = append(s.client.stageArtifact, &copyRequest)
+	if s.client.stageArtifactSendErr != nil {
+		return s.client.stageArtifactSendErr
+	}
 	return s.client.stageArtifactErr
 }
 
 func (s *fakeHostUpgradeArtifactClient) CloseAndRecv() (*agentapi.HostUpgradeArtifactStaged, error) {
+	s.client.stageArtifactCloseCalls++
+	if s.client.stageArtifactCloseErr != nil {
+		return nil, s.client.stageArtifactCloseErr
+	}
 	if s.client.stageArtifactErr != nil {
 		return nil, s.client.stageArtifactErr
 	}

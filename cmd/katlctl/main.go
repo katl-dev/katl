@@ -588,6 +588,11 @@ func stageHostUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentCli
 				first = false
 			}
 			if err := stream.Send(request); err != nil {
+				if errors.Is(err, io.EOF) {
+					if _, closeErr := stream.CloseAndRecv(); closeErr != nil {
+						return "", localArtifactStageError(closeErr)
+					}
+				}
 				return "", localArtifactStageError(err)
 			}
 			sent += uint64(n)
