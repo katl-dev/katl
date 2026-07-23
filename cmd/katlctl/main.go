@@ -739,7 +739,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	if connector == nil {
 		return fmt.Errorf("katlc agent connector is required")
 	}
-	if err := preflightWipeCluster(ctx, connector, &report, targets); err != nil {
+	if _, err := preflightWipeCluster(ctx, connector, &report, targets); err != nil {
 		if printErr := printWipeClusterReport(stdout, report); printErr != nil {
 			return printErr
 		}
@@ -793,7 +793,7 @@ func resolveWipeClusterTargets(opts wipeClusterOptions) ([]inventory.PlannedNode
 	if err != nil {
 		return nil, false, err
 	}
-	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
+	plan, err := planWipeInventory(inv)
 	if err != nil {
 		return nil, false, err
 	}
@@ -820,7 +820,7 @@ func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandNa
 	cmd := &cobra.Command{
 		Use:   "wipe NODE",
 		Short: "Remove one node and reset it for installer-media reinstall",
-		Long:  "Remove one worker from Kubernetes and erase its KatlOS boot artifacts. The node must boot installer media or PXE before it can be used again.",
+		Long:  "Remove one node from Kubernetes and erase its KatlOS boot artifacts. A control-plane node can be wiped before bootstrap; an enrolled control-plane requires etcd membership coordination. The node must boot installer media or PXE before it can be used again.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -854,9 +854,6 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	if len(opts.selectedNodes.values) != 1 {
 		return fmt.Errorf("exactly one --node is required")
 	}
-	if !opts.planOnly && strings.TrimSpace(opts.kubeconfigPath) == "" {
-		return fmt.Errorf("--kubeconfig is required")
-	}
 	requestID, err := clientRequestID(opts.clientRequestID)
 	if err != nil {
 		return err
@@ -876,42 +873,58 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	report := newWipeNodeReport(opts.planOnly, partial, target)
 	report.Output = opts.output
 	report.Command = opts.command
-	if target.SystemRole == inventory.RoleControlPlane {
-		report.KubernetesCleanup = "refused"
-		report.Nodes = append(report.Nodes, wipeClusterNodeResult{Node: target.Name, Result: "refused"})
-		report.Refusals = append(report.Refusals, "single control-plane wipe requires etcd membership coordination before node-local reset")
-		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
-			return printErr
-		}
-		return fmt.Errorf("single control-plane wipe requires etcd membership coordination")
-	}
 
 	connector := newWipeClusterConnector()
 	if connector == nil {
 		return fmt.Errorf("katlc agent connector is required")
 	}
-	if err := preflightWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}); err != nil {
+	statuses, err := preflightWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target})
+	if err != nil {
 		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
 			return printErr
 		}
 		return err
 	}
+	notConfigured := strings.TrimSpace(statuses[target.Name].GetKubernetes().GetState()) == "not-configured"
+	if target.SystemRole == inventory.RoleControlPlane && !notConfigured {
+		report.KubernetesCleanup = "refused"
+		report.Nodes = append(report.Nodes, wipeClusterNodeResult{Node: target.Name, Result: "refused"})
+		report.Refusals = append(report.Refusals, "single enrolled control-plane wipe requires etcd membership coordination before node-local reset")
+		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+			return printErr
+		}
+		return fmt.Errorf("single enrolled control-plane wipe requires etcd membership coordination")
+	}
 	if opts.planOnly {
-		if strings.TrimSpace(opts.kubeconfigPath) == "" {
+		if notConfigured {
+			report.KubernetesCleanup = "not-needed"
+		} else if strings.TrimSpace(opts.kubeconfigPath) == "" {
 			report.KubernetesCleanup = "unknown"
 		}
 		report.NodeLocalOperations = []wipeClusterNodeLocalOperation{wipeNodeOperation(target)}
 		return printWipeNodeReport(stdout, report)
 	}
 
-	cleanup := cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
-	report.KubernetesCleanup = cleanup.Status
-	report.KubernetesDiagnostics = cleanup.Diagnostics
-	if cleanup.Status == "recovery-required" {
-		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
-			return printErr
+	if notConfigured {
+		report.KubernetesCleanup = "not-needed"
+	} else {
+		if strings.TrimSpace(opts.kubeconfigPath) == "" {
+			report.KubernetesCleanup = "refused"
+			report.Refusals = append(report.Refusals, "Kubernetes cleanup requires --kubeconfig")
+			if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+				return printErr
+			}
+			return fmt.Errorf("--kubeconfig is required for an enrolled node")
 		}
-		return fmt.Errorf("Kubernetes cleanup failed before node-local wipe")
+		cleanup := cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
+		report.KubernetesCleanup = cleanup.Status
+		report.KubernetesDiagnostics = cleanup.Diagnostics
+		if cleanup.Status == "recovery-required" {
+			if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+				return printErr
+			}
+			return fmt.Errorf("Kubernetes cleanup failed before node-local wipe")
+		}
 	}
 
 	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
@@ -960,7 +973,7 @@ func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, e
 	if err != nil {
 		return inventory.PlannedNode{}, false, err
 	}
-	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
+	plan, err := planWipeInventory(inv)
 	if err != nil {
 		return inventory.PlannedNode{}, false, err
 	}
@@ -1141,8 +1154,20 @@ func wipeClusterTargets(plan inventory.Plan, all bool, selected []string) ([]inv
 	return targets, len(targets) != len(plan.Nodes), nil
 }
 
-func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode) error {
+func planWipeInventory(inv inventory.Inventory) (inventory.Plan, error) {
+	initNode := ""
+	for _, node := range inv.Nodes {
+		if node.SystemRole == inventory.RoleControlPlane {
+			initNode = node.Name
+			break
+		}
+	}
+	return inventory.PlanInventory(inventory.PlanRequest{Inventory: inv, InitNode: initNode})
+}
+
+func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode) (map[string]*agentapi.NodeStatus, error) {
 	var failures []string
+	statuses := make(map[string]*agentapi.NodeStatus, len(targets))
 	for _, node := range targets {
 		result := wipeClusterNodeResult{Node: node.Name}
 		if strings.TrimSpace(node.Address) == "" {
@@ -1173,6 +1198,7 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 		if err != nil {
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
 		} else {
+			statuses[node.Name] = status
 			result.Diagnostics = append(result.Diagnostics, wipeClusterStatusDiagnostics(status)...)
 		}
 		if closeErr != nil {
@@ -1186,10 +1212,10 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 	}
 	if len(failures) > 0 {
 		report.Refusals = append(report.Refusals, "node-local preflight failed for: "+strings.Join(failures, ","))
-		return fmt.Errorf("node-local preflight failed for: %s", strings.Join(failures, ","))
+		return statuses, fmt.Errorf("node-local preflight failed for: %s", strings.Join(failures, ","))
 	}
 	report.Nodes = nil
-	return nil
+	return statuses, nil
 }
 
 func wipeClusterStatusDiagnostics(status *agentapi.NodeStatus) []string {
