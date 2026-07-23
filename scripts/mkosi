@@ -32,6 +32,9 @@ mkosi_env=(--environment "KATL_BUILD_COMMIT=$build_commit")
 if [[ -n "${KATL_VERSION:-}" ]]; then
     mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
 fi
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+    mkosi_env+=(--environment "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH")
+fi
 vmtest_image_support="${KATL_VMTEST_IMAGE_SUPPORT:-0}"
 case "$vmtest_image_support" in
     0|1) ;;
@@ -229,6 +232,7 @@ cache_fingerprint() {
             printf 'builder-image=%s\n' "$image"
             printf 'builder-image-identity=%s\n' "$(builder_image_identity)"
             printf 'KATL_BUILD_COMMIT=%s\n' "$build_commit"
+            printf 'SOURCE_DATE_EPOCH=%s\n' "${SOURCE_DATE_EPOCH:-}"
             printf 'KATL_VERSION=%s\n' "${KATL_VERSION:-}"
             printf 'KATL_ARCHITECTURE=%s\n' "${KATL_ARCHITECTURE:-$(uname -m)}"
             printf 'KATL_KATLOS_IMAGE_ROLE=%s\n' "${KATL_KATLOS_IMAGE_ROLE:-install}"
@@ -561,6 +565,17 @@ else
     esac
 fi
 
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+    seed_hex="$(
+        printf 'katl-mkosi-v1\0%s\0%s\0' "$build_commit" "$*" |
+            sha256sum
+    )"
+    seed_hex="${seed_hex%% *}"
+    seed_hex="${seed_hex:0:12}5${seed_hex:13:3}8${seed_hex:17:15}"
+    mkosi_seed="${seed_hex:0:8}-${seed_hex:8:4}-${seed_hex:12:4}-${seed_hex:16:4}-${seed_hex:20:12}"
+    mkosi_env+=(--seed "$mkosi_seed")
+fi
+
 run_flags=(
     run
     --rm
@@ -575,6 +590,9 @@ run_flags=(
     --env "KATL_EMIT_INSTALLER_ISO=$emit_installer_iso"
     --env "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support"
 )
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+    run_flags+=(--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH")
+fi
 chown_build=1
 
 direct_tool_search_path() {

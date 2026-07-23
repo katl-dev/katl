@@ -110,6 +110,7 @@ cache_fingerprint() {
         printf 'builder-image=%s\n' "${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
         printf 'builder-image-identity=%s\n' "$(builder_image_identity)"
         printf 'KATL_BUILD_COMMIT=%s\n' "$build_commit"
+        printf 'SOURCE_DATE_EPOCH=%s\n' "${SOURCE_DATE_EPOCH:-}"
         printf 'KATL_VERSION=%s\n' "${KATL_VERSION:-}"
         printf 'KATL_ARCHITECTURE=%s\n' "$architecture"
         printf 'KATL_KUBERNETES_MINOR=%s\n' "$KATL_KUBERNETES_MINOR"

@@ -1,29 +1,32 @@
 package kubernetesrelease
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
-var recipeInputs = []string{
+var recipeRoots = []string{
 	".github/workflows/kubernetes-bundles.yml",
 	"Containerfile.mkosi",
+	"cmd/katl-boot-health",
+	"cmd/katl-console",
+	"cmd/katl-generation-activate",
 	"cmd/katl-kubernetes-release",
 	"cmd/katl-mkosi-artifacts",
 	"cmd/katl-publish-kubernetes-sysext",
+	"cmd/katl-runtime-status",
+	"cmd/katlc",
 	"containers-policy.json",
 	"go.mod",
 	"go.sum",
-	"internal/installer/artifact",
-	"internal/installer/kubernetesbundle",
-	"internal/installer/manifest",
-	"internal/installer/sysextcatalog",
+	"internal",
 	"mkosi.conf",
 	"mkosi.profiles/kubernetes-sysext",
 	"mkosi.profiles/runtime",
@@ -32,16 +35,9 @@ var recipeInputs = []string{
 	"scripts/mkosi",
 }
 
-var recipeDirectories = map[string]bool{
-	"cmd/katl-kubernetes-release":         true,
-	"cmd/katl-mkosi-artifacts":            true,
-	"cmd/katl-publish-kubernetes-sysext":  true,
-	"internal/installer/artifact":         true,
-	"internal/installer/kubernetesbundle": true,
-	"internal/installer/manifest":         true,
-	"internal/installer/sysextcatalog":    true,
-	"mkosi.profiles/kubernetes-sysext":    true,
-	"mkosi.profiles/runtime":              true,
+var recipeExcludedPaths = map[string]bool{
+	"internal/installer/kubernetescompat/catalog.json":   true,
+	"internal/kubernetesrelease/supported-versions.json": true,
 }
 
 func RecipeDigest(root string) (string, error) {
@@ -50,28 +46,21 @@ func RecipeDigest(root string) (string, error) {
 		return "", err
 	}
 	digest := sha256.New()
-	for _, path := range paths {
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return "", fmt.Errorf("resolve Kubernetes bundle recipe path %s: %w", path, err)
-		}
-		if _, err := io.WriteString(digest, filepath.ToSlash(relative)); err != nil {
+	for _, file := range paths {
+		if _, err := io.WriteString(digest, file.mode); err != nil {
 			return "", err
 		}
 		if _, err := digest.Write([]byte{0}); err != nil {
 			return "", err
 		}
-		file, err := os.Open(path)
-		if err != nil {
-			return "", fmt.Errorf("open Kubernetes bundle recipe input %s: %w", path, err)
+		if _, err := io.WriteString(digest, file.path); err != nil {
+			return "", err
 		}
-		_, copyErr := io.Copy(digest, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			return "", fmt.Errorf("hash Kubernetes bundle recipe input %s: %w", path, copyErr)
+		if _, err := digest.Write([]byte{0}); err != nil {
+			return "", err
 		}
-		if closeErr != nil {
-			return "", fmt.Errorf("close Kubernetes bundle recipe input %s: %w", path, closeErr)
+		if _, err := digest.Write(file.content); err != nil {
+			return "", err
 		}
 		if _, err := digest.Write([]byte{0}); err != nil {
 			return "", err
@@ -99,34 +88,76 @@ func RefreshRecipe(root string, supported SupportedVersions) (SupportedVersions,
 	return supported, true, nil
 }
 
-func recipeFiles(root string) ([]string, error) {
-	var paths []string
-	for _, input := range recipeInputs {
-		path := filepath.Join(root, filepath.FromSlash(input))
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, fmt.Errorf("inspect Kubernetes bundle recipe input %s: %w", input, err)
-		}
-		if !info.IsDir() {
-			paths = append(paths, path)
+type recipeFile struct {
+	path    string
+	mode    string
+	content []byte
+}
+
+func recipeFiles(root string) ([]recipeFile, error) {
+	args := append([]string{"-C", root, "ls-files", "-z", "--"}, recipeRoots...)
+	output, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("list tracked Kubernetes bundle recipe inputs: %w", err)
+	}
+	var files []recipeFile
+	for _, rawPath := range bytes.Split(output, []byte{0}) {
+		if len(rawPath) == 0 {
 			continue
 		}
-		if err := filepath.WalkDir(path, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
+		relative := filepath.ToSlash(string(rawPath))
+		if recipePathExcluded(relative) {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(relative))
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect Kubernetes bundle recipe input %s: %w", relative, err)
+		}
+		file := recipeFile{path: relative}
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			file.mode = "120000"
+			target, err := os.Readlink(path)
+			if err != nil {
+				return nil, fmt.Errorf("read Kubernetes bundle recipe symlink %s: %w", relative, err)
 			}
-			if entry.IsDir() {
-				return nil
+			file.content = []byte(target)
+		case info.Mode().IsRegular():
+			file.mode = "100644"
+			if info.Mode().Perm()&0o111 != 0 {
+				file.mode = "100755"
 			}
-			if !entry.Type().IsRegular() || strings.HasSuffix(entry.Name(), "_test.go") {
-				return nil
+			file.content, err = os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read Kubernetes bundle recipe input %s: %w", relative, err)
 			}
-			paths = append(paths, path)
-			return nil
-		}); err != nil {
-			return nil, fmt.Errorf("walk Kubernetes bundle recipe input %s: %w", input, err)
+		default:
+			return nil, fmt.Errorf("unsupported Kubernetes bundle recipe input type %s", relative)
+		}
+		files = append(files, file)
+	}
+	sort.Slice(files, func(left, right int) bool {
+		return files[left].path < files[right].path
+	})
+	if len(files) == 0 {
+		return nil, fmt.Errorf("Kubernetes bundle recipe has no tracked inputs")
+	}
+	return files, nil
+}
+
+func recipePathExcluded(path string) bool {
+	if recipeExcludedPaths[path] || strings.HasSuffix(path, "_test.go") {
+		return true
+	}
+	for _, excluded := range []string{
+		"/testdata/",
+		"internal/resourcetest/",
+		"internal/vmtest/",
+	} {
+		if strings.Contains(path, excluded) || strings.HasPrefix(path, strings.TrimPrefix(excluded, "/")) {
+			return true
 		}
 	}
-	sort.Strings(paths)
-	return paths, nil
+	return false
 }

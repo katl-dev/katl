@@ -7,23 +7,31 @@ on:
     paths:
       - .github/workflows/kubernetes-bundles.yml
       - Containerfile.mkosi
+      - cmd/katl-boot-health/**
+      - "!cmd/katl-boot-health/**/*_test.go"
+      - cmd/katl-console/**
+      - "!cmd/katl-console/**/*_test.go"
+      - cmd/katl-generation-activate/**
+      - "!cmd/katl-generation-activate/**/*_test.go"
       - cmd/katl-kubernetes-release/**
       - "!cmd/katl-kubernetes-release/**/*_test.go"
       - cmd/katl-mkosi-artifacts/**
       - "!cmd/katl-mkosi-artifacts/**/*_test.go"
       - cmd/katl-publish-kubernetes-sysext/**
       - "!cmd/katl-publish-kubernetes-sysext/**/*_test.go"
+      - cmd/katl-runtime-status/**
+      - "!cmd/katl-runtime-status/**/*_test.go"
+      - cmd/katlc/**
+      - "!cmd/katlc/**/*_test.go"
       - containers-policy.json
       - go.mod
       - go.sum
-      - internal/installer/artifact/**
-      - "!internal/installer/artifact/**/*_test.go"
-      - internal/installer/kubernetesbundle/**
-      - "!internal/installer/kubernetesbundle/**/*_test.go"
-      - internal/installer/manifest/**
-      - "!internal/installer/manifest/**/*_test.go"
-      - internal/installer/sysextcatalog/**
-      - "!internal/installer/sysextcatalog/**/*_test.go"
+      - internal/**
+      - "!internal/**/*_test.go"
+      - "!internal/**/testdata/**"
+      - "!internal/installer/kubernetescompat/catalog.json"
+      - "!internal/resourcetest/**"
+      - "!internal/vmtest/**"
       - internal/kubernetesrelease/supported-versions.json
       - mkosi.conf
       - mkosi.profiles/kubernetes-sysext/**
@@ -37,10 +45,6 @@ on:
         description: Exact supported Kubernetes payload; empty builds every supported version
         required: false
         type: string
-      artifact_version:
-        description: Optional immutable Katl build identity for a single selected payload
-        required: false
-        type: string
       publish:
         description: Publish verified OCI artifacts to ghcr.io/katl-dev/kubernetes
         required: true
@@ -51,7 +55,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.artifact_version || github.ref }}-x86_64
+  group: ${{ github.workflow }}-${{ github.ref }}-x86_64
   cancel-in-progress: false
 
 jobs:
@@ -64,7 +68,6 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       publish: ${{ steps.plan.outputs.publish }}
     env:
-      DISPATCH_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
       DISPATCH_PAYLOAD_VERSION: ${{ inputs.payload_version }}
       DISPATCH_PUBLISH: ${{ inputs.publish }}
       GOTOOLCHAIN: auto
@@ -72,7 +75,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -93,24 +96,33 @@ jobs:
           fi
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             previous="$RUNNER_TEMP/previous-supported-versions.json"
-            if git show "${{ github.event.before }}:internal/kubernetesrelease/supported-versions.json" > "$previous" &&
-              jq -e '.recipeDigest and (.versions | type == "array")' "$previous" >/dev/null; then
-              args+=(--previous-supported-versions "$previous")
+            previous_commit="${{ github.event.before }}"
+            previous_ref="${previous_commit}:internal/kubernetesrelease/supported-versions.json"
+            if ! git cat-file -e "${previous_commit}^{commit}"; then
+              echo "error: previous main commit is unavailable: $previous_commit" >&2
+              exit 1
+            fi
+            if git cat-file -e "$previous_ref"; then
+              git show "$previous_ref" > "$previous"
+              if jq -e '
+                .apiVersion == "katl.dev/v1alpha1" and
+                .kind == "KubernetesSupportedVersions" and
+                (.recipeDigest | type == "string") and
+                (.versions | type == "array")
+              ' "$previous" >/dev/null; then
+                args+=(--previous-supported-versions "$previous")
+              elif ! jq -e '
+                .apiVersion == "katl.dev/v1alpha1" and
+                .kind == "KubernetesSupportedVersions" and
+                (.versions | type == "array") and
+                all(.versions[]; type == "string")
+              ' "$previous" >/dev/null; then
+                echo "error: previous supported-version policy is malformed" >&2
+                exit 1
+              fi
             fi
           fi
           matrix="$(go run ./cmd/katl-kubernetes-release "${args[@]}")"
-
-          if [[ -n "$DISPATCH_ARTIFACT_VERSION" ]]; then
-            if [[ -z "$DISPATCH_PAYLOAD_VERSION" ]]; then
-              echo "error: artifact_version requires payload_version" >&2
-              exit 1
-            fi
-            if [[ ! "$DISPATCH_ARTIFACT_VERSION" =~ ^${DISPATCH_PAYLOAD_VERSION}-katl\.[0-9]+$ ]]; then
-              echo "error: artifact_version must look like ${DISPATCH_PAYLOAD_VERSION}-katl.1" >&2
-              exit 1
-            fi
-            matrix="$(jq -c --arg artifact "$DISPATCH_ARTIFACT_VERSION" '.include[0].artifactVersion = $artifact' <<<"$matrix")"
-          fi
 
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             publish=true
@@ -175,6 +187,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Set reproducible build timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_ENV"
 
       - name: Set up ORAS
         shell: bash
@@ -295,6 +311,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate OCI artifact layout
+        id: oci-layout
         shell: bash
         env:
           BUNDLE_DIR: ${{ steps.bundle.outputs.bundle-dir }}
@@ -311,6 +328,7 @@ jobs:
             --annotation "org.opencontainers.image.documentation=https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/installing.md" \
             --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --annotation "org.opencontainers.image.version=${ARTIFACT_VERSION}" \
+            --annotation "dev.katl.bundle.kind=kubernetes" \
             "${RAW}:application/vnd.katl.sysext.raw.v1" \
             "${BUNDLE_DIR}/metadata.json:application/vnd.katl.kubernetes.sysext.metadata.v1+json" \
             "${BUNDLE_DIR}/package-provenance.json:application/vnd.katl.package-provenance.v1+json" \
@@ -327,6 +345,12 @@ jobs:
             .annotations["org.opencontainers.image.licenses"] == $licenses and
             .annotations["org.opencontainers.image.source"] == $source
           ' _build/oci-manifest.json >/dev/null
+          manifest_digest="$(oras resolve --oci-layout "_build/oci-layout:${VERSION_TAG}")"
+          if [[ ! "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "error: invalid local OCI manifest digest: $manifest_digest" >&2
+            exit 1
+          fi
+          echo "manifest-digest=$manifest_digest" >> "$GITHUB_OUTPUT"
 
       - name: Upload inspected bundle artifact
         uses: actions/upload-artifact@v7
@@ -351,44 +375,71 @@ jobs:
         env:
           BUNDLE_DIR: ${{ steps.bundle.outputs.bundle-dir }}
           DIGEST_TAG: ${{ steps.bundle.outputs.digest-tag }}
+          LOCAL_MANIFEST_DIGEST: ${{ steps.oci-layout.outputs.manifest-digest }}
           RAW: ${{ steps.bundle.outputs.raw }}
           VERSION_TAG: ${{ steps.bundle.outputs.version-tag }}
         run: |
-          for tag in "$VERSION_TAG" "$DIGEST_TAG"; do
+          resolve_remote_tag() {
+            local tag="$1"
+            local error_file
+            local digest
             error_file="$(mktemp)"
-            if oras manifest fetch "${OCI_REPOSITORY}:${tag}" >/dev/null 2>"$error_file"; then
-              echo "error: immutable OCI tag already exists: ${OCI_REPOSITORY}:${tag}" >&2
-              exit 1
+            if digest="$(oras resolve "${OCI_REPOSITORY}:${tag}" 2>"$error_file")"; then
+              rm -f "$error_file"
+              printf '%s\n' "$digest"
+              return
             fi
             if ! grep -Eqi 'MANIFEST_UNKNOWN|NAME_UNKNOWN|not found|status code: 404' "$error_file"; then
-              echo "error: could not prove immutable OCI tag is absent: ${OCI_REPOSITORY}:${tag}" >&2
+              echo "error: could not resolve immutable OCI tag ${OCI_REPOSITORY}:${tag}" >&2
               cat "$error_file" >&2
+              rm -f "$error_file"
               exit 1
             fi
             rm -f "$error_file"
+          }
+
+          version_digest="$(resolve_remote_tag "$VERSION_TAG")"
+          bundle_digest="$(resolve_remote_tag "$DIGEST_TAG")"
+          for existing_digest in "$version_digest" "$bundle_digest"; do
+            if [[ -n "$existing_digest" && "$existing_digest" != "$LOCAL_MANIFEST_DIGEST" ]]; then
+              echo "error: immutable OCI tag resolves to $existing_digest, want $LOCAL_MANIFEST_DIGEST" >&2
+              exit 1
+            fi
           done
 
-          oras push "${OCI_REPOSITORY}:${VERSION_TAG},${DIGEST_TAG}" \
-            --artifact-type application/vnd.katl.kubernetes.payload.bundle.v1 \
-            --config "${BUNDLE_DIR}/bundle.json:application/vnd.katl.kubernetes.payload.bundle.v1+json" \
-            --annotation "org.opencontainers.image.title=${OCI_TITLE}" \
-            --annotation "org.opencontainers.image.description=${OCI_DESCRIPTION}" \
-            --annotation "org.opencontainers.image.licenses=${OCI_LICENSES}" \
-            --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --annotation "org.opencontainers.image.documentation=https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/installing.md" \
-            --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --annotation "org.opencontainers.image.version=${ARTIFACT_VERSION}" \
-            --annotation "dev.katl.bundle.kind=kubernetes" \
-            "${RAW}:application/vnd.katl.sysext.raw.v1" \
-            "${BUNDLE_DIR}/metadata.json:application/vnd.katl.kubernetes.sysext.metadata.v1+json" \
-            "${BUNDLE_DIR}/package-provenance.json:application/vnd.katl.package-provenance.v1+json" \
-            "${BUNDLE_DIR}/catalog-entry.json:application/vnd.katl.kubernetes.catalog.entry.v1+json" \
-            --format json > _build/oras-push.json
+          if [[ -n "$version_digest" || -n "$bundle_digest" ]]; then
+            manifest_digest="$LOCAL_MANIFEST_DIGEST"
+            missing_tags=()
+            [[ -n "$version_digest" ]] || missing_tags+=("$VERSION_TAG")
+            [[ -n "$bundle_digest" ]] || missing_tags+=("$DIGEST_TAG")
+            if [[ "${#missing_tags[@]}" -gt 0 ]]; then
+              oras tag "${OCI_REPOSITORY}@${manifest_digest}" "${missing_tags[@]}"
+            fi
+            publication="Reused"
+          else
+            oras push "${OCI_REPOSITORY}:${VERSION_TAG},${DIGEST_TAG}" \
+              --artifact-type application/vnd.katl.kubernetes.payload.bundle.v1 \
+              --config "${BUNDLE_DIR}/bundle.json:application/vnd.katl.kubernetes.payload.bundle.v1+json" \
+              --annotation "org.opencontainers.image.title=${OCI_TITLE}" \
+              --annotation "org.opencontainers.image.description=${OCI_DESCRIPTION}" \
+              --annotation "org.opencontainers.image.licenses=${OCI_LICENSES}" \
+              --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --annotation "org.opencontainers.image.documentation=https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/installing.md" \
+              --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --annotation "org.opencontainers.image.version=${ARTIFACT_VERSION}" \
+              --annotation "dev.katl.bundle.kind=kubernetes" \
+              "${RAW}:application/vnd.katl.sysext.raw.v1" \
+              "${BUNDLE_DIR}/metadata.json:application/vnd.katl.kubernetes.sysext.metadata.v1+json" \
+              "${BUNDLE_DIR}/package-provenance.json:application/vnd.katl.package-provenance.v1+json" \
+              "${BUNDLE_DIR}/catalog-entry.json:application/vnd.katl.kubernetes.catalog.entry.v1+json" \
+              --format json > _build/oras-push.json
 
-          manifest_digest="$(jq -r '.digest' _build/oras-push.json)"
-          if [[ ! "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "error: ORAS returned invalid manifest digest: $manifest_digest" >&2
-            exit 1
+            manifest_digest="$(jq -r '.digest' _build/oras-push.json)"
+            if [[ "$manifest_digest" != "$LOCAL_MANIFEST_DIGEST" ]]; then
+              echo "error: published OCI manifest digest $manifest_digest does not match local digest $LOCAL_MANIFEST_DIGEST" >&2
+              exit 1
+            fi
+            publication="Published"
           fi
           oras manifest fetch --output _build/remote-manifest.json "${OCI_REPOSITORY}@${manifest_digest}"
           oras manifest fetch-config --output _build/remote-bundle.json "${OCI_REPOSITORY}@${manifest_digest}"
@@ -404,7 +455,7 @@ jobs:
 
           echo "manifest-digest=$manifest_digest" >> "$GITHUB_OUTPUT"
           {
-            echo "### Published Kubernetes bundle"
+            echo "### ${publication} Kubernetes bundle"
             echo
             echo "- OCI: \`${OCI_REPOSITORY}@${manifest_digest}\`"
             echo "- Kubernetes bundle: \`${OCI_REPOSITORY}:${VERSION_TAG}@${manifest_digest}\`"

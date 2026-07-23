@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,7 +45,10 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	if err != nil {
 		return err
 	}
-	cfg := configFromEnv(envMap(environ), repoRoot)
+	cfg, err := configFromEnv(envMap(environ), repoRoot)
+	if err != nil {
+		return err
+	}
 
 	switch command {
 	case "write":
@@ -170,12 +174,17 @@ type config struct {
 	Version              string
 	Architecture         string
 	InstallerInterface   string
+	CreatedAt            string
 }
 
-func configFromEnv(env map[string]string, repo string) config {
+func configFromEnv(env map[string]string, repo string) (config, error) {
 	buildDir := filepath.Join(repo, "_build", "mkosi")
 	version := envDefault(env, "KATL_VERSION", defaultVersion)
 	architecture := envDefaultFunc(env, "KATL_ARCHITECTURE", hostArchitecture)
+	createdAt, err := buildTimestamp(env)
+	if err != nil {
+		return config{}, err
+	}
 	katlosDefault := filepath.Join(buildDir, "katlos-install-"+version+"-"+architecture+".squashfs")
 	installerISO, installerISOExplicit := envPathExplicit(env, repo, "KATL_INSTALLER_ISO", filepath.Join(buildDir, "katl-installer.iso"))
 	runtimeUKI := envPath(env, repo, "KATL_RUNTIME_UKI", filepath.Join(buildDir, "katl-runtime.efi"))
@@ -204,7 +213,20 @@ func configFromEnv(env map[string]string, repo string) config {
 		Version:              version,
 		Architecture:         architecture,
 		InstallerInterface:   envDefault(env, "KATL_INSTALLER_INTERFACE", defaultInstallerInterface),
+		CreatedAt:            createdAt,
+	}, nil
+}
+
+func buildTimestamp(env map[string]string) (string, error) {
+	value := strings.TrimSpace(env["SOURCE_DATE_EPOCH"])
+	if value == "" {
+		return time.Now().UTC().Format(time.RFC3339), nil
 	}
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || seconds < 0 {
+		return "", fmt.Errorf("SOURCE_DATE_EPOCH must be a non-negative Unix timestamp")
+	}
+	return time.Unix(seconds, 0).UTC().Format(time.RFC3339), nil
 }
 
 type artifactIndex struct {
@@ -379,7 +401,7 @@ func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) er
 			RuntimeInterface:  "katl-runtime-1",
 			KernelCommandLine: runtimeKernelCommandLine(),
 		},
-		Created: time.Now().UTC().Format(time.RFC3339),
+		Created: cfg.CreatedAt,
 	}
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
 		return err
@@ -434,7 +456,7 @@ func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) err
 		},
 		KernelVersion:     *kernelVersion,
 		KernelCommandLine: runtimeKernelCommandLine(),
-		Created:           time.Now().UTC().Format(time.RFC3339),
+		Created:           cfg.CreatedAt,
 	}
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
 		return err
@@ -643,7 +665,7 @@ func writeKubernetesSysextMetadata(req kubernetesSysextRequest, cfg config) (str
 			ArtifactPath:   filepath.Base(req.RuntimePath),
 			ArtifactSHA256: sha,
 		},
-		Created: time.Now().UTC().Format(time.RFC3339),
+		Created: cfg.CreatedAt,
 	}
 	if err := writeJSON(metadataPath(req.ArtifactPath), metadata, cfg.RepoRoot); err != nil {
 		return "", err
@@ -700,7 +722,7 @@ func runWriteEndpointAdvertiserSysext(args []string, stdout, stderr io.Writer, c
 			ArtifactPath:   filepath.Base(absPath(cfg.RepoRoot, *runtimeArtifact)),
 			ArtifactSHA256: runtimeSHA,
 		},
-		Created: time.Now().UTC().Format(time.RFC3339),
+		Created: cfg.CreatedAt,
 	}
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
 		return err
@@ -877,7 +899,7 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 		BuildID:          *buildID,
 		Architecture:     *architecture,
 		RuntimeInterface: *runtimeInterface,
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:        cfg.CreatedAt,
 		Components: []katlosComponent{
 			{
 				Name:         "runtime-root",
@@ -988,7 +1010,7 @@ func runWriteKatlOSArtifact(args []string, stdout, stderr io.Writer, cfg config)
 		SHA256:            digest,
 		ChecksumPath:      filepath.Base(artifactPath) + ".sha256",
 		EmbeddedIndexPath: *embeddedIndexPath,
-		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:         cfg.CreatedAt,
 	}
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
 		return err
@@ -1138,7 +1160,7 @@ func writeIndex(indexPath string, cfg config) error {
 		return err
 	}
 
-	created := time.Now().UTC().Format(time.RFC3339)
+	created := cfg.CreatedAt
 	entries := []artifactEntry{}
 	indexedArtifacts := []struct {
 		kind     string
@@ -1220,7 +1242,7 @@ func writeInstallerArtifacts(cfg config) error {
 			return err
 		}
 	}
-	created := time.Now().UTC().Format(time.RFC3339)
+	created := cfg.CreatedAt
 	for _, artifact := range artifacts {
 		if err := writeChecksum(artifact.path); err != nil {
 			return err
@@ -1282,7 +1304,7 @@ func writeRuntimeIndex(indexPath string, cfg config) error {
 			entries = append(entries, entry)
 		}
 	}
-	index.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	index.GeneratedAt = cfg.CreatedAt
 	index.Generation = cfg.Generation
 	index.Artifacts = append(entries, runtimeEntries...)
 	return writeJSON(indexPath, index, cfg.RepoRoot)

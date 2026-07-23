@@ -1,7 +1,7 @@
 {
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "KubernetesSupportedVersions",
-  "recipeDigest": "sha256:05fefc5c231545cd2d3bc47b8a748ce256024c7f7619a2c1672805d76a2ab6c0",
+  "recipeDigest": "sha256:d08e76f58eb9246b30e66193b8b2684516b84dc62b5b9508c6f5dd7e03b8dba9",
   "versions": [
     {
       "payloadVersion": "v1.36.0",
