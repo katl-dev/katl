@@ -487,6 +487,7 @@ func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
 		if statusRequests.Add(1) > 1 {
 			state = installTestStatus(handoff.HandoffAccepted, installstatus.StateFailedBeforeMutation, "Validate")
 			state.InstallStatus.LastError = "target disk was not found"
+			state.InstallStatus.RetryHint = "fix the target disk selector and rerun"
 		}
 		_ = json.NewEncoder(w).Encode(state)
 	})
@@ -501,7 +502,7 @@ func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
 		"install", "apply", "--config", sourcePath, "--endpoint", ts.URL,
 		"--node", "cp-1", "--timeout", "5s",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "failed-before-mutation") || !strings.Contains(err.Error(), "target disk was not found") {
+	if err == nil || !strings.Contains(err.Error(), "failed-before-mutation") || !strings.Contains(err.Error(), "target disk was not found") || !strings.Contains(err.Error(), "fix the target disk selector and rerun") {
 		t.Fatalf("run() error = %v", err)
 	}
 	if stdout.Len() == 0 {

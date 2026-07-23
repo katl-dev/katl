@@ -400,10 +400,16 @@ func installFailed(state string) bool {
 }
 
 func installFailure(status installstatus.Record) string {
-	for _, value := range []string{status.RefusalReason, status.LastError, status.RetryHint} {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
+	primary := firstNonEmpty(status.RefusalReason, status.LastError)
+	hint := strings.TrimSpace(status.RetryHint)
+	if primary != "" && hint != "" && hint != primary {
+		return primary + "; " + hint
+	}
+	if primary != "" {
+		return primary
+	}
+	if hint != "" {
+		return hint
 	}
 	return "inspect installer status and console"
 }

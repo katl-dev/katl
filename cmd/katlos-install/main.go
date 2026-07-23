@@ -619,6 +619,9 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted bundle=%s node=%s\n", bundlePath, bundle.NodeName)
 			err := runBundle(ctx, bundlePath, bundle.NodeName, "", filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, bundlePath, stdout)
+			if prepareHandoffRetry(server, runDir, err, stdout) {
+				continue
+			}
 			waitForHandoffStatusObservation(ctx)
 			return err
 		}
@@ -636,6 +639,9 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted manifest=%s\n", manifestPath)
 			err := runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath, stdout)
+			if prepareHandoffRetry(server, runDir, err, stdout) {
+				continue
+			}
 			waitForHandoffStatusObservation(ctx)
 			return err
 		}
@@ -647,6 +653,18 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 		case <-ticker.C:
 		}
 	}
+}
+
+func prepareHandoffRetry(server *handoff.HandoffServer, runDir string, installErr error, stdout io.Writer) bool {
+	if installErr == nil {
+		return false
+	}
+	status, err := installstatus.ReadFile(filepath.Join(runDir, "state", "status.json"))
+	if err != nil || !server.PrepareRetry(status) {
+		return false
+	}
+	reportInstallerProgress(stdout, "install failed before disk mutation; waiting for corrected configuration", false)
+	return true
 }
 
 func writeConsoleInstallStatus(runDir string, status installstatus.Record, stdout io.Writer) {
