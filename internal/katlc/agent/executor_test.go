@@ -181,6 +181,24 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
+	var poweroffArgv []string
+	executor.RunPoweroff = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		poweroffArgv = append([]string(nil), argv...)
+		records, err := server.Store.List()
+		if err != nil {
+			t.Fatalf("list operations before poweroff scheduling: %v", err)
+		}
+		for _, current := range records {
+			if current.OperationKind == OperationKindDestructiveReset {
+				if current.Terminal {
+					t.Fatalf("destructive reset became terminal before delayed poweroff was scheduled: %+v", current)
+				}
+				return ToolResult{ExitStatus: 0}
+			}
+		}
+		t.Fatal("destructive reset record missing before poweroff scheduling")
+		return ToolResult{ExitStatus: 1}
+	}
 	server.Dispatcher = executor
 
 	accepted, err := server.SubmitOperation(context.Background(), destructiveResetRequest("req-reset-execute"))
@@ -199,6 +217,15 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	}
 	if !record.ExternalMutationStarted || !record.MutatingToolRan {
 		t.Fatalf("mutation state = started %v ran %v", record.ExternalMutationStarted, record.MutatingToolRan)
+	}
+	if !reflect.DeepEqual(poweroffArgv, destructiveResetPoweroffArgv) {
+		t.Fatalf("poweroff argv = %#v, want %#v", poweroffArgv, destructiveResetPoweroffArgv)
+	}
+	if !contains(record.CompletedPhases, "schedule-poweroff") || !contains(record.MutatingToolInvocations, "systemd-run katl-destructive-reset-poweroff") {
+		t.Fatalf("poweroff completion evidence = phases %#v invocations %#v", record.CompletedPhases, record.MutatingToolInvocations)
+	}
+	if record.NextAction != "node is powering off; select installer media or PXE, then start it to reinstall" {
+		t.Fatalf("next action = %q", record.NextAction)
 	}
 	for _, path := range []string{
 		"efi/loader/entries/katl-0.conf",
@@ -245,6 +272,38 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(server.Root, "var/lib/katl/operations", accepted.OperationId, "record.json")); err != nil {
 		t.Fatalf("current reset operation record missing: %v", err)
+	}
+}
+
+func TestDestructiveResetRequiresPoweroffToBeScheduled(t *testing.T) {
+	server := newTestServer(t)
+	writeResetGenerationZero(t, server.Root)
+	writeTestFile(t, filepath.Join(server.Root, "efi/loader/entries/katl-0.conf"), "title Katl 0")
+
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	executor.RunPoweroff = func(context.Context, []string, func(int)) ToolResult {
+		return ToolResult{ExitStatus: 1, Err: errors.New("systemd-run failed")}
+	}
+	server.Dispatcher = executor
+
+	accepted, err := server.SubmitOperation(context.Background(), destructiveResetRequest("req-reset-poweroff-fails"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultFailedNeedsRepair || !record.RecoveryRequired {
+		t.Fatalf("record = %+v, want terminal recovery-required poweroff failure", record)
+	}
+	if record.Phase != "destructive-reset" || !strings.Contains(record.NextAction, "power off the node manually") {
+		t.Fatalf("failure handoff = phase %q next action %q", record.Phase, record.NextAction)
+	}
+	if _, err := os.Stat(filepath.Join(server.Root, "efi/loader/entries/katl-0.conf")); !os.IsNotExist(err) {
+		t.Fatalf("Katl boot entry still exists after poweroff scheduling failed: %v", err)
 	}
 }
 

@@ -153,15 +153,18 @@ Node-local wipe trigger:
 - The node-local operation removes Katl disk boot artifacts and returns the
   machine to installer-media handoff. It does not select generation 0 or clean
   Kubernetes state in place.
-- The command waits for node-local evidence that Katl disk boot artifacts were
-  removed. A later reinstall from installer media or PXE is responsible for
-  disk partitioning and state cleanup.
+- The node-local operation schedules a delayed orderly poweroff, then persists
+  successful terminal evidence before the timer fires. The command must observe
+  success before the expected agent disappearance and must not require a
+  separate shutdown.
+- A later start from selected installer media or PXE is responsible for disk
+  partitioning and state cleanup.
 
 Result:
 
-- Success leaves the wiped node ready for first install/bootstrap again and
-  leaves the remaining cluster without that Kubernetes Node and, for a
-  control-plane target, without that etcd member.
+- Success leaves the wiped node powered off and ready for first
+  install/bootstrap again, and leaves the remaining cluster without that
+  Kubernetes Node and, for a control-plane target, without that etcd member.
 - The command does not automatically bootstrap the wiped node back into the
   cluster. Rejoin is a later explicit install/bootstrap action.
 
@@ -198,14 +201,16 @@ Node-local wipe trigger:
 - Ordering is best-effort parallel for worker nodes and conservative for control
   planes: requests may be submitted to all selected control planes without etcd
   quorum checks because the cluster identity is being discarded.
-- The command waits until every reachable selected node reports installer-media
-  handoff. Unreachable accepted nodes are reported as unknown and make the
+- The command waits until every reachable selected node reports successful
+  installer-media handoff and scheduled poweroff. Unreachable accepted nodes
+  that did not report terminal success are reported as unknown and make the
   aggregate command fail.
 
 Result:
 
-- Success leaves selected nodes ready for a fresh `katlctl cluster bootstrap`
-  that creates a new cluster identity.
+- Success leaves selected nodes powered off and ready to start from installer
+  media or PXE before a fresh `katlctl cluster bootstrap` creates a new cluster
+  identity.
 - The command never attempts to repair or merge the old cluster.
 
 ## VM Gates
@@ -229,6 +234,7 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios -run TestI
 ```
 
 The gate must start from a bootstrapped Kubernetes cluster, run
-`katlctl cluster wipe`, prove selected nodes return to installer-media handoff
-without depending on graceful Kubernetes or etcd coordination, then bootstrap a
-new usable cluster identity and prove remote kubectl/workload health.
+`katlctl cluster wipe`, prove selected nodes report successful
+installer-media handoff and power off without depending on graceful Kubernetes
+or etcd coordination, then start them through reinstall, bootstrap a new usable
+cluster identity, and prove remote kubectl/workload health.

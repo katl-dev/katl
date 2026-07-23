@@ -1841,8 +1841,17 @@ func TestWipeTextReportsTheInstallerHandoffNextStep(t *testing.T) {
 	if err := printWipeText(&stdout, report); err != nil {
 		t.Fatal(err)
 	}
-	if output := stdout.String(); !strings.Contains(output, "Next: reboot each wiped node with installer media or PXE available") {
+	if output := stdout.String(); !strings.Contains(output, "Next: each wiped node is powering off; select installer media or PXE, then start it to reinstall") {
 		t.Fatalf("stdout = %q", output)
+	}
+}
+
+func TestWipeNoWaitNextActionDescribesAutomaticPoweroff(t *testing.T) {
+	next := wipeNextAction(true)
+	if !strings.Contains(next, "destructive reset to succeed and power off its node") ||
+		!strings.Contains(next, "select installer media or PXE and start each node") ||
+		strings.Contains(next, "reboot") {
+		t.Fatalf("no-wait next action = %q", next)
 	}
 }
 

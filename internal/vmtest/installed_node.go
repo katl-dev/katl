@@ -177,6 +177,18 @@ func (n RunningInstalledRuntimeNode) StopFailure(failure string) error {
 	return err
 }
 
+func (n RunningInstalledRuntimeNode) WaitForPoweroff(ctx context.Context) error {
+	if n.handle == nil || n.handle.done == nil {
+		return nil
+	}
+	select {
+	case <-n.handle.done:
+		return n.handle.Wait()
+	case <-ctx.Done():
+		return fmt.Errorf("wait for installed runtime node %q to power off: %w", n.Name, ctx.Err())
+	}
+}
+
 func nodeResult(parent Result, name string) Result {
 	runDir := filepath.Join(parent.RunDir, "nodes", name)
 	result := parent
