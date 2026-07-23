@@ -13,6 +13,19 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
+func TestBuildTimestamp(t *testing.T) {
+	got, err := buildTimestamp(map[string]string{"SOURCE_DATE_EPOCH": "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "1970-01-01T00:00:00Z" {
+		t.Fatalf("buildTimestamp() = %q", got)
+	}
+	if _, err := buildTimestamp(map[string]string{"SOURCE_DATE_EPOCH": "invalid"}); err == nil {
+		t.Fatal("buildTimestamp() accepted invalid SOURCE_DATE_EPOCH")
+	}
+}
+
 func TestWriteAndPath(t *testing.T) {
 	repo := testRepoRoot(t)
 	workDir := testWorkDir(t, repo)
@@ -288,7 +301,11 @@ func TestKubernetesSysextFromLog(t *testing.T) {
 		"--repo-minor", "v1.36",
 		"--expected-payload-version", "v1.36.0",
 		"--expected-kubeadm-version", "1.36.0-1",
-	}, &stdout, &bytes.Buffer{}, []string{"KATL_BUILD_COMMIT=test-build", "KATL_ARCHITECTURE=x86_64"})
+	}, &stdout, &bytes.Buffer{}, []string{
+		"KATL_BUILD_COMMIT=test-build",
+		"KATL_ARCHITECTURE=x86_64",
+		"SOURCE_DATE_EPOCH=0",
+	})
 	if err != nil {
 		t.Fatalf("write-kubernetes-sysext-from-log error = %v", err)
 	}
@@ -296,6 +313,9 @@ func TestKubernetesSysextFromLog(t *testing.T) {
 	readTestJSON(t, sysext+".json", &metadata)
 	if metadata.PayloadVersion != "v1.36.0" || metadata.PackageVersions["kubeadm"] != "1.36.0-1" {
 		t.Fatalf("metadata = %#v", metadata)
+	}
+	if metadata.Created != "1970-01-01T00:00:00Z" {
+		t.Fatalf("metadata created = %q", metadata.Created)
 	}
 	if metadata.PackageVersions["ethtool"] != "2:7.0-1.fc44" || metadata.PackageVersions["socat"] != "0:1.8.1.1-1.fc44" {
 		t.Fatalf("helper packageVersions = %#v", metadata.PackageVersions)

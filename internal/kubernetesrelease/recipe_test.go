@@ -2,6 +2,7 @@ package kubernetesrelease
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,9 +30,6 @@ func TestRecipeDigestChangesWithProductionInput(t *testing.T) {
 func TestRecipeDigestIgnoresTests(t *testing.T) {
 	root := writeRecipeFixture(t)
 	path := filepath.Join(root, "cmd", "katl-mkosi-artifacts", "main_test.go")
-	if err := os.WriteFile(path, []byte("first"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	first, err := RecipeDigest(root)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +43,74 @@ func TestRecipeDigestIgnoresTests(t *testing.T) {
 	}
 	if first != second {
 		t.Fatal("test-only change affected recipe digest")
+	}
+}
+
+func TestRecipeDigestTracksControllerAndRuntimeSources(t *testing.T) {
+	for _, relative := range []string{
+		"internal/kubernetesrelease/input.go",
+		"internal/operatorconsole/input.go",
+		"cmd/katlc/input.go",
+	} {
+		t.Run(relative, func(t *testing.T) {
+			root := writeRecipeFixture(t)
+			first, err := RecipeDigest(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, filepath.FromSlash(relative))
+			if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			second, err := RecipeDigest(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first == second {
+				t.Fatalf("%s did not affect recipe digest", relative)
+			}
+		})
+	}
+}
+
+func TestRecipeDigestTracksSymlinkTarget(t *testing.T) {
+	root := writeRecipeFixture(t)
+	path := filepath.Join(root, "mkosi.profiles", "runtime", "input.link")
+	first, err := RecipeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target-b", path); err != nil {
+		t.Fatal(err)
+	}
+	second, err := RecipeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("symlink target did not affect recipe digest")
+	}
+}
+
+func TestRecipeDigestTracksExecutableMode(t *testing.T) {
+	root := writeRecipeFixture(t)
+	path := filepath.Join(root, "scripts", "mkosi")
+	first, err := RecipeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	second, err := RecipeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("executable mode did not affect recipe digest")
 	}
 }
 
@@ -107,13 +173,26 @@ func testSupportedVersion(payload string, revision int) SupportedVersion {
 func writeRecipeFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	for _, input := range recipeInputs {
+	directories := map[string]bool{
+		"cmd/katl-boot-health":               true,
+		"cmd/katl-console":                   true,
+		"cmd/katl-generation-activate":       true,
+		"cmd/katl-kubernetes-release":        true,
+		"cmd/katl-mkosi-artifacts":           true,
+		"cmd/katl-publish-kubernetes-sysext": true,
+		"cmd/katl-runtime-status":            true,
+		"cmd/katlc":                          true,
+		"internal":                           true,
+		"mkosi.profiles/kubernetes-sysext":   true,
+		"mkosi.profiles/runtime":             true,
+	}
+	for _, input := range recipeRoots {
 		path := filepath.Join(root, filepath.FromSlash(input))
-		if recipeDirectories[input] {
+		if directories[input] {
 			if err := os.MkdirAll(path, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(path, "input"), []byte(input), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(path, "input.go"), []byte(input), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			continue
@@ -125,5 +204,32 @@ func writeRecipeFixture(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	for relative, content := range map[string]string{
+		"cmd/katl-mkosi-artifacts/main_test.go": "test",
+		"internal/kubernetesrelease/input.go":   "controller",
+		"internal/operatorconsole/input.go":     "runtime",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(root, "mkosi.profiles", "runtime", "input.link")
+	if err := os.Symlink("target-a", link); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "init", "--quiet")
+	runGit(t, root, "add", ".")
 	return root
+}
+
+func runGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
 }

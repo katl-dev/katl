@@ -366,13 +366,15 @@ advance existing artifact revisions.
 
 Manual dispatch remains the explicit dry-run path. Dispatch it with empty
 version inputs to build the whole supported matrix, or select one supported
-payload. Keep `publish: false` for build-only verification; an explicit
-artifact identity can be supplied only with one selected payload.
+payload. Keep `publish: false` for build-only verification. Published artifact
+identities always come directly from the reviewed supported-version policy.
 
-Set `publish: true` only for a reviewed bundle identity. The workflow refuses
-to replace either immutable GHCR tag, publishes the Katl custom bundle manifest
-as the OCI config with the sysext and metadata as layers, pulls the config back
-for byte verification, and creates a GitHub build-provenance attestation. It
+Set `publish: true` only for a reviewed bundle identity. The workflow reuses an
+existing tag only when it resolves to the byte-identical OCI manifest produced
+from the same commit, making interrupted publication safe to retry. It
+publishes the Katl custom bundle manifest as the OCI config with the sysext and
+metadata as layers, pulls the config back for byte verification, and creates a
+GitHub build-provenance attestation. It
 then records the exact version, manifest digest, architecture, and runtime
 interfaces in the embedded compatibility catalog through a ready auto-merged
 pull request. Install and upgrade clients consume that mapping; they never

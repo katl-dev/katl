@@ -24,7 +24,10 @@ const (
 	defaultSupportedVersions    = "internal/kubernetesrelease/supported-versions.json"
 )
 
-var payloadPattern = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
+var (
+	payloadPattern  = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
+	artifactPattern = regexp.MustCompile(`^(v[0-9]+\.[0-9]+\.[0-9]+)-katl\.([1-9][0-9]*)$`)
+)
 
 type releaseIdentity struct {
 	PayloadVersion  string `json:"payloadVersion"`
@@ -245,9 +248,11 @@ func runRecordCompatibility(args []string, stdout, stderr io.Writer) error {
 	if payloadPattern.FindStringSubmatch(strings.TrimSpace(*payload)) == nil {
 		return fmt.Errorf("--payload-version must look like v1.36.1")
 	}
-	wantArtifactPrefix := strings.TrimSpace(*payload) + "-katl."
-	if !strings.HasPrefix(strings.TrimSpace(*artifact), wantArtifactPrefix) {
-		return fmt.Errorf("--artifact-version must look like %s1", wantArtifactPrefix)
+	payloadVersion := strings.TrimSpace(*payload)
+	artifactVersion := strings.TrimSpace(*artifact)
+	artifactMatch := artifactPattern.FindStringSubmatch(artifactVersion)
+	if artifactMatch == nil || artifactMatch[1] != payloadVersion {
+		return fmt.Errorf("--artifact-version must look like %s-katl.1", payloadVersion)
 	}
 	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(strings.TrimSpace(*manifestDigest)) {
 		return fmt.Errorf("--manifest-digest must be a sha256 OCI manifest digest")
@@ -265,8 +270,8 @@ func runRecordCompatibility(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	entry := kubernetescompat.Entry{
-		KubernetesVersion: strings.TrimSpace(*payload),
-		Bundle:            "ghcr.io/katl-dev/kubernetes:" + strings.TrimSpace(*artifact) + "@" + strings.TrimSpace(*manifestDigest),
+		KubernetesVersion: payloadVersion,
+		Bundle:            "ghcr.io/katl-dev/kubernetes:" + artifactVersion + "@" + strings.TrimSpace(*manifestDigest),
 		Architectures:     []string{strings.TrimSpace(*architecture)},
 		RuntimeInterfaces: interfaces,
 	}

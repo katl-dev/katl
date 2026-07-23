@@ -258,6 +258,39 @@ func TestRecordCompatibility(t *testing.T) {
 	}
 }
 
+func TestRecordCompatibilityRejectsMalformedArtifactVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog.json")
+	if err := os.WriteFile(path, []byte(`{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "KubernetesCompatibilityCatalog",
+  "entries": []
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range []string{
+		"v1x36x3-katl.2",
+		"v1.36.3-katl.0",
+		"v1.36.3-katl.one",
+		"v1.36.3-katl.2-extra",
+		"v1.36.4-katl.2",
+	} {
+		t.Run(artifact, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run([]string{
+				"record-compatibility",
+				"--catalog", path,
+				"--payload-version", "v1.36.3",
+				"--artifact-version", artifact,
+				"--manifest-digest", "sha256:" + strings.Repeat("a", 64),
+			}, &stdout, &stderr, nil)
+			if err == nil || !strings.Contains(err.Error(), "artifact-version") {
+				t.Fatalf("run() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestPrepareRejectsPackageMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kubernetes.env")
 	if err := os.WriteFile(path, []byte(testManifest), 0o644); err != nil {
