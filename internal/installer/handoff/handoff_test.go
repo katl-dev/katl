@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/discovery"
@@ -92,6 +93,27 @@ func TestHandoffStatusUsesDurableInstallerState(t *testing.T) {
 	}
 }
 
+func TestHandoffStatusDoesNotRegressNewAttemptToOlderDurableState(t *testing.T) {
+	server := newTestHandoffServer(t)
+	durable := installstatus.New(installstatus.StateFailedBeforeMutation, time.Now().Add(-time.Hour))
+	durable.LastError = "old failure"
+	server.SetStatusReader(func() (installstatus.Record, error) {
+		return durable, nil
+	})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp := postManifest(t, ts.URL, validManifestJSON())
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200", resp.StatusCode)
+	}
+	status := server.Status()
+	if status.InstallStatus.State != installstatus.StateRunning || status.InstallStatus.LastError != "" {
+		t.Fatalf("accepted status regressed to old durable state = %#v", status.InstallStatus)
+	}
+}
+
 func TestHandoffServerAcceptsOneManifest(t *testing.T) {
 	server := newTestHandoffServer(t)
 	ts := httptest.NewServer(server.Handler())
@@ -118,6 +140,58 @@ func TestHandoffServerAcceptsOneManifest(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("second POST status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestHandoffServerAllowsRetryOnlyBeforeMutation(t *testing.T) {
+	server := newTestHandoffServer(t)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp := postManifest(t, ts.URL, validManifestJSON())
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first POST status = %d, want 200", resp.StatusCode)
+	}
+
+	failure := installstatus.New(installstatus.StateFailedBeforeMutation, time.Now().Add(time.Second))
+	failure.CurrentStep = "PlanInstall"
+	failure.LastError = "target disk selector matched no disks"
+	if !server.PrepareRetry(failure) {
+		t.Fatal("PrepareRetry() = false for failed-before-mutation")
+	}
+	status := server.Status()
+	if status.State != HandoffWaiting || status.ManifestAccepted || status.BundleAccepted || status.SelectedNode != "" {
+		t.Fatalf("retry status = %#v", status)
+	}
+	if status.InstallStatus.State != installstatus.StateFailedBeforeMutation || status.InstallStatus.LastError != failure.LastError {
+		t.Fatalf("retry install status = %#v", status.InstallStatus)
+	}
+
+	resp = postManifest(t, ts.URL, validManifestJSON())
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("retry POST status = %d, want 200", resp.StatusCode)
+	}
+
+	refused := installstatus.New(installstatus.StateInstallRefused, time.Now().Add(2*time.Second))
+	refused.RefusalReason = "existing signatures require explicit approval"
+	if !server.PrepareRetry(refused) {
+		t.Fatal("PrepareRetry() = false for install refusal before mutation")
+	}
+	resp = postManifest(t, ts.URL, validManifestJSON())
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post-refusal retry status = %d, want 200", resp.StatusCode)
+	}
+
+	unsafe := installstatus.New(installstatus.StateFailedAfterMutation, time.Now().Add(2*time.Second))
+	unsafe.DestructiveMutation = true
+	if server.PrepareRetry(unsafe) {
+		t.Fatal("PrepareRetry() = true after destructive mutation")
+	}
+	if status := server.Status(); status.State != HandoffAccepted || !status.ManifestAccepted {
+		t.Fatalf("unsafe retry changed accepted handoff = %#v", status)
 	}
 }
 

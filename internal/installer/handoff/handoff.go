@@ -118,10 +118,38 @@ func (s *HandoffServer) Status() HandoffStatus {
 
 	if reader != nil {
 		if durable, err := reader(); err == nil {
-			status.InstallStatus = durable
+			if !durable.UpdatedAt.Before(status.InstallStatus.UpdatedAt) {
+				status.InstallStatus = durable
+			}
 		}
 	}
 	return status
+}
+
+// PrepareRetry returns the handoff server to its waiting state after an
+// installer attempt failed without mutating the target disk. The failure
+// remains visible through Status until another request is accepted.
+func (s *HandoffServer) PrepareRetry(status installstatus.Record) bool {
+	if status.DestructiveMutation {
+		return false
+	}
+	switch status.State {
+	case installstatus.StateFailedBeforeMutation, installstatus.StateInstallRefused:
+	default:
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != HandoffAccepted {
+		return false
+	}
+	s.state = HandoffWaiting
+	s.manifest = nil
+	s.bundle = nil
+	s.nodeName = ""
+	s.status = status
+	return true
 }
 
 func (s *HandoffServer) SetHardwareFacts(facts discovery.HardwareFacts) {
