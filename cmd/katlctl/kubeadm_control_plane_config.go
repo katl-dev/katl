@@ -24,13 +24,14 @@ import (
 type kubeadmControlPlaneConfigOptions struct {
 	configPath, inventoryPath, coordinator, generationID, configName string
 	rolloutID, component                                             string
+	progress                                                         io.Writer
 }
 
 var kubeadmConfigNow = func() time.Time { return time.Now().UTC() }
 
 func newClusterApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := kubeadmControlPlaneConfigOptions{}
-	cmd := &cobra.Command{Use: "apply", Short: "Apply the complete ClusterConfig to a running cluster", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return runClusterApply(ctx, opts, stdout) }}
+	cmd := &cobra.Command{Use: "apply", Short: "Apply the complete ClusterConfig to a running cluster", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return runClusterApply(ctx, opts, stdout, stderr) }}
 	f := cmd.Flags()
 	f.StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	f.StringVar(&opts.inventoryPath, "inventory", "", "advanced cluster inventory")
@@ -41,13 +42,16 @@ func newClusterApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id"} {
 		cmd.Flags().Lookup(name).Hidden = true
 	}
-	_ = stderr
 	return cmd
 }
 
-func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout io.Writer) error {
+func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout, stderr io.Writer) error {
+	opts.progress = stderr
 	inv, err := kubeadmConfigInventory(opts)
 	if err != nil {
+		return err
+	}
+	if err := clusterApplyProgress(opts.progress, "phase=configuration status=started nodes=%d", len(inv.Nodes)); err != nil {
 		return err
 	}
 	if strings.TrimSpace(opts.rolloutID) == "" {
@@ -78,11 +82,17 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		componentOpts := opts
 		componentOpts.component = component
 		componentOpts.rolloutID = opts.rolloutID + "-" + component
+		if err := clusterApplyProgress(opts.progress, "component=%s status=started", component); err != nil {
+			return err
+		}
 		summary, err := runKubeadmConfigComponent(ctx, componentOpts, inv, generations)
 		if err != nil {
 			return err
 		}
 		results[component] = summary
+		if err := clusterApplyProgress(opts.progress, "component=%s status=succeeded", component); err != nil {
+			return err
+		}
 	}
 	return json.NewEncoder(stdout).Encode(map[string]any{
 		"nodes":      len(inv.Nodes),
@@ -220,18 +230,27 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 			return nil, fmt.Errorf("node %s did not confirm kubeadm rollout dry-run", t.node.Name)
 		}
 	}
+	if err := clusterApplyProgress(opts.progress, "component=%s phase=preflight status=succeeded nodes=%d", opts.component, len(targets)); err != nil {
+		return nil, err
+	}
 	for i, t := range targets {
 		body := kubeadmControlPlaneConfigBody(opts, t.node, t.generation, uint32(i+1), uint32(len(targets)))
+		if err := clusterApplyProgress(opts.progress, "component=%s node=%s phase=apply status=started", opts.component, t.node.Name); err != nil {
+			return nil, err
+		}
 		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl cluster apply", ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: t.generation, KubeadmControlPlaneConfig: body})
 		if err != nil {
 			return nil, fmt.Errorf("submit %s: %w", t.node.Name, err)
 		}
-		terminal, err := waitKubeadmControlPlaneConfig(ctx, t.conn.Client, accepted.OperationId)
+		terminal, err := waitKubeadmControlPlaneConfig(ctx, t.conn.Client, accepted.OperationId, opts.component, t.node.Name, opts.progress)
 		if err != nil {
 			return nil, fmt.Errorf("node %s: %w", t.node.Name, err)
 		}
 		if terminal.Result != operation.ResultSucceeded {
 			return nil, fmt.Errorf("node %s stopped rollout: %s: %s", t.node.Name, terminal.Phase, terminal.FailureReason)
+		}
+		if err := clusterApplyProgress(opts.progress, "component=%s node=%s phase=%s status=succeeded", opts.component, t.node.Name, firstNonEmpty(terminal.Phase, "complete")); err != nil {
+			return nil, err
 		}
 		summary = append(summary, map[string]string{"node": t.node.Name, "result": terminal.Result})
 	}
@@ -292,6 +311,9 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	prepared := make([]preparedInput, 0, len(nodes))
 	components := map[string]bool{}
 	for _, node := range nodes {
+		if err := clusterApplyProgress(opts.progress, "phase=config-validation node=%s status=started", node.Name); err != nil {
+			return activatedClusterConfig{}, err
+		}
 		selected, err := configbundle.ReadSelectedNode(bytes.NewReader(loaded.Archive), configbundle.ReadOptions{NodeName: node.Name, AllowMissingKatlosImage: true})
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("select cluster config for %s: %w", node.Name, err)
@@ -345,12 +367,19 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			_ = conn.Close()
 			return activatedClusterConfig{}, fmt.Errorf("node %s rejected cluster config: %s", node.Name, firstNonEmpty(validation.FailureReason, strings.Join(validation.Diagnostics, "; ")))
 		}
+		if err := clusterApplyProgress(opts.progress, "phase=config-validation node=%s status=succeeded", node.Name); err != nil {
+			_ = conn.Close()
+			return activatedClusterConfig{}, err
+		}
 		input.machineID = status.MachineId
 		input.currentGeneration = status.CurrentGenerationId
 		input.noChanges = validation.NoChanges
 		_ = conn.Close()
 		if validation.NoChanges {
 			result[node.Name] = status.CurrentGenerationId
+			if err := clusterApplyProgress(opts.progress, "phase=node-config node=%s status=unchanged", node.Name); err != nil {
+				return activatedClusterConfig{}, err
+			}
 			continue
 		}
 		if validation.AcceptedApplyMode != generation.ApplyModeLive {
@@ -367,6 +396,10 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("connect %s to apply cluster config: %w", node.Name, err)
 		}
+		if err := clusterApplyProgress(opts.progress, "phase=node-config node=%s status=started", node.Name); err != nil {
+			_ = conn.Close()
+			return activatedClusterConfig{}, err
+		}
 		accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
 			OperationKind: "generation-apply", Actor: "katlctl cluster apply", ExpectedMachineId: input.machineID, ExpectedCurrentGenerationId: input.currentGeneration,
@@ -376,13 +409,16 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			_ = conn.Close()
 			return activatedClusterConfig{}, fmt.Errorf("apply cluster config on %s: %w", node.Name, err)
 		}
-		terminal, err := waitAcceptedOperationStatus(ctx, conn.Client, accepted, 30*time.Minute, io.Discard)
+		terminal, err := waitClusterApplyNodeConfig(ctx, conn.Client, accepted, node.Name, opts.progress)
 		if err == nil {
 			err = operationResultError(terminal)
 		}
 		_ = conn.Close()
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("apply cluster config on %s: %w", node.Name, err)
+		}
+		if err := clusterApplyProgress(opts.progress, "phase=node-config node=%s status=succeeded", node.Name); err != nil {
+			return activatedClusterConfig{}, err
 		}
 		activatedGeneration := strings.TrimSpace(terminal.GetCandidateGenerationId())
 		if activatedGeneration == "" {
@@ -394,6 +430,51 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		result[node.Name] = activatedGeneration
 	}
 	return activatedClusterConfig{generations: result, components: components}, nil
+}
+
+func clusterApplyProgress(w io.Writer, format string, args ...any) error {
+	if w == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "cluster apply "+format+"\n", args...)
+	return err
+}
+
+func waitClusterApplyNodeConfig(ctx context.Context, client agentapi.KatlcAgentClient, accepted *agentapi.OperationAccepted, node string, progress io.Writer) (*agentapi.OperationStatus, error) {
+	if accepted == nil || strings.TrimSpace(accepted.OperationId) == "" {
+		return nil, fmt.Errorf("agent returned an empty operation acceptance")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	status := accepted.InitialStatus
+	lastPhase := ""
+	for {
+		if status == nil {
+			var err error
+			status, err = client.GetOperation(waitCtx, &agentapi.GetOperationRequest{OperationId: accepted.OperationId, IncludeDiagnostics: "normal"})
+			if err != nil {
+				return nil, err
+			}
+		}
+		phase := firstNonEmpty(status.Phase, "pending")
+		if phase != lastPhase {
+			if err := clusterApplyProgress(progress, "phase=node-config node=%s step=%s status=running", node, phase); err != nil {
+				return nil, err
+			}
+			lastPhase = phase
+		}
+		if status.Terminal {
+			return status, nil
+		}
+		status = nil
+		select {
+		case <-waitCtx.Done():
+			return nil, waitCtx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func orderControlPlanes(nodes []inventory.Node, coordinator string) ([]inventory.Node, error) {
@@ -430,13 +511,21 @@ func orderKubeletNodes(nodes, controlPlanes []inventory.Node, coordinator string
 	return append([]inventory.Node{coordinatorNode}, remaining...), nil
 }
 
-func waitKubeadmControlPlaneConfig(ctx context.Context, client agentapi.KatlcAgentClient, id string) (*agentapi.OperationStatus, error) {
+func waitKubeadmControlPlaneConfig(ctx context.Context, client agentapi.KatlcAgentClient, id, component, node string, progress io.Writer) (*agentapi.OperationStatus, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	lastPhase := ""
 	for {
 		status, err := client.GetOperation(ctx, &agentapi.GetOperationRequest{OperationId: id, IncludeDiagnostics: "normal"})
 		if err != nil {
 			return nil, err
+		}
+		phase := firstNonEmpty(status.Phase, "pending")
+		if phase != lastPhase {
+			if err := clusterApplyProgress(progress, "component=%s node=%s phase=%s status=running", component, node, phase); err != nil {
+				return nil, err
+			}
+			lastPhase = phase
 		}
 		if status.Terminal {
 			return status, nil

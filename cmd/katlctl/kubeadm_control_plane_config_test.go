@@ -74,6 +74,7 @@ func TestRunKubeadmControlPlaneConfigSubmitsSerialCoordinatorLast(t *testing.T) 
 
 func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testing.T) {
 	configPath := writeClusterConfig(t)
+	var stdout, stderr bytes.Buffer
 	client := &fakeKatlcAgentClient{
 		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-1"},
 		validateResult:  &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live"},
@@ -86,6 +87,22 @@ func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testi
 			ConfigApply:  &agentapi.ConfigApplyStatus{SelectedKubeadmConfigName: "control-plane"},
 			Sysexts:      []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1", Sha256: strings.Repeat("c", 64)}},
 		},
+	}
+	client.onSubmit = func(request *agentapi.SubmitOperationRequest) {
+		if request.DryRun {
+			return
+		}
+		var required string
+		switch request.OperationKind {
+		case "generation-apply":
+			required = "phase=node-config node=cp-1 status=started"
+		case "kubeadm-control-plane-config":
+			component := strings.TrimPrefix(request.KubeadmControlPlaneConfig.SupportedFieldDelta[0], "component/")
+			required = "component=" + component + " node=cp-1 phase=apply status=started"
+		}
+		if required != "" && !strings.Contains(stderr.String(), required) {
+			t.Fatalf("progress before %s submission = %q, missing %q", request.OperationKind, stderr.String(), required)
+		}
 	}
 	previousDial := dialKatlcAgent
 	previousNow := kubeadmConfigNow
@@ -101,14 +118,32 @@ func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testi
 	}
 	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
 
-	var stdout bytes.Buffer
-	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath}, &stdout); err != nil {
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	for _, required := range []string{`"result":"succeeded"`, `"control-plane"`, `"kubelet"`} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("stdout = %s, missing %s", stdout.String(), required)
 		}
+	}
+	for _, required := range []string{
+		"phase=configuration status=started nodes=1",
+		"phase=config-validation node=cp-1 status=succeeded",
+		"phase=node-config node=cp-1 step=pending status=running",
+		"phase=node-config node=cp-1 status=succeeded",
+		"component=control-plane phase=preflight status=succeeded nodes=1",
+		"component=control-plane node=cp-1 phase=pending status=running",
+		"component=kubelet node=cp-1 phase=complete status=succeeded",
+	} {
+		if !strings.Contains(stderr.String(), required) {
+			t.Fatalf("stderr = %s, missing %s", stderr.String(), required)
+		}
+	}
+	if strings.Contains(stdout.String(), "cluster apply ") {
+		t.Fatalf("structured stdout contains progress output: %s", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "operation kind=") || strings.Contains(stderr.String(), "operation-id") {
+		t.Fatalf("progress exposed internal operation bookkeeping: %s", stderr.String())
 	}
 	if client.validateRequest == nil || !strings.Contains(client.validateRequest.ConfigYaml, "identity:") || !strings.Contains(client.validateRequest.ConfigYaml, "kubeadmConfigs:") {
 		t.Fatalf("cluster validation did not receive the whole node config: %#v", client.validateRequest)
