@@ -468,7 +468,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	if err != nil {
 		return fmt.Errorf("collect live kubelet config: %w", err)
 	}
-	desiredKubeletConfig, err := kubeletMaxPodsConfig(liveKubeletConfig, 120)
+	desiredKubeletConfig, err := kubeletOperationConfig(liveKubeletConfig, 120)
 	if err != nil {
 		return err
 	}
@@ -563,7 +563,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	return nil
 }
 
-func kubeletMaxPodsConfig(live []byte, maxPods int) ([]byte, error) {
+func kubeletOperationConfig(live []byte, maxPods int) ([]byte, error) {
 	var document yaml.Node
 	if err := yaml.Unmarshal(live, &document); err != nil {
 		return nil, err
@@ -572,14 +572,22 @@ func kubeletMaxPodsConfig(live []byte, maxPods int) ([]byte, error) {
 		return nil, errors.New("live KubeletConfiguration must be one YAML mapping")
 	}
 	root := document.Content[0]
-	value := yamlMappingValue(root, "maxPods")
-	if value == nil {
-		value = &yaml.Node{}
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "maxPods"}, value)
+	for _, field := range []struct {
+		name, tag, value string
+	}{
+		{name: "maxPods", tag: "!!int", value: strconv.Itoa(maxPods)},
+		{name: "shutdownGracePeriod", tag: "!!str", value: "60s"},
+		{name: "shutdownGracePeriodCriticalPods", tag: "!!str", value: "20s"},
+	} {
+		value := yamlMappingValue(root, field.name)
+		if value == nil {
+			value = &yaml.Node{}
+			root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: field.name}, value)
+		}
+		value.Kind = yaml.ScalarNode
+		value.Tag = field.tag
+		value.Value = field.value
 	}
-	value.Kind = yaml.ScalarNode
-	value.Tag = "!!int"
-	value.Value = strconv.Itoa(maxPods)
 	return yaml.Marshal(&document)
 }
 

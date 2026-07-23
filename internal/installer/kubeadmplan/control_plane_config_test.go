@@ -61,6 +61,31 @@ func TestKubeletConfigurationContainsAllowsDefaultedLiveFields(t *testing.T) {
 	}
 }
 
+func TestKubeletConfigurationCanonicalizesDurations(t *testing.T) {
+	desired := []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nshutdownGracePeriod: 60s\nshutdownGracePeriodCriticalPods: 20s\n")
+	canonicalized := []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nshutdownGracePeriod: 1m0s\nshutdownGracePeriodCriticalPods: 20s\n")
+
+	desiredDigest, err := CanonicalKubeletConfigurationSHA256(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalDigest, err := CanonicalKubeletConfigurationSHA256(canonicalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desiredDigest != canonicalDigest {
+		t.Fatalf("canonical kubelet digests differ: desired=%s live=%s", desiredDigest, canonicalDigest)
+	}
+	if err := KubeletConfigurationContains(canonicalized, desired); err != nil {
+		t.Fatalf("KubeletConfigurationContains() rejected equivalent durations: %v", err)
+	}
+
+	different := []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nshutdownGracePeriod: 61s\nshutdownGracePeriodCriticalPods: 20s\n")
+	if err := KubeletConfigurationContains(different, desired); err == nil {
+		t.Fatal("KubeletConfigurationContains() accepted a different shutdown grace period")
+	}
+}
+
 func TestSupportedControlPlaneProfilingDelta(t *testing.T) {
 	live := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\n")
 	desired := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\napiServer:\n  extraArgs:\n    - name: profiling\n      value: \"false\"\nscheduler:\n  extraArgs:\n    - name: profiling\n      value: \"false\"\n")

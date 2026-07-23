@@ -9,6 +9,7 @@ import (
 	"io"
 	"reflect"
 	"sort"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,7 +19,17 @@ func CanonicalClusterConfigurationSHA256(data []byte) (string, error) {
 }
 
 func CanonicalKubeletConfigurationSHA256(data []byte) (string, error) {
-	return CanonicalDocumentSHA256(data, "kubelet.config.k8s.io/v1beta1", "KubeletConfiguration")
+	config, err := configurationDocument(data, "kubelet.config.k8s.io/v1beta1", "KubeletConfiguration")
+	if err != nil {
+		return "", err
+	}
+	normalizeKubeletDurationValues(config)
+	canonical, err := json.Marshal(config)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func CanonicalKubeProxyConfigurationSHA256(data []byte) (string, error) {
@@ -60,10 +71,30 @@ func KubeletConfigurationContains(actual, desired []byte) error {
 		delete(actualConfig, "containerRuntimeEndpoint")
 		delete(desiredConfig, "containerRuntimeEndpoint")
 	}
+	normalizeKubeletDurationValues(actualConfig)
+	normalizeKubeletDurationValues(desiredConfig)
 	if !containsValue(actualConfig, desiredConfig) {
 		return fmt.Errorf("live KubeletConfiguration does not contain the desired fields")
 	}
 	return nil
+}
+
+func normalizeKubeletDurationValues(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			typed[key] = normalizeKubeletDurationValues(child)
+		}
+	case []any:
+		for i, child := range typed {
+			typed[i] = normalizeKubeletDurationValues(child)
+		}
+	case string:
+		if duration, err := time.ParseDuration(typed); err == nil {
+			return duration.String()
+		}
+	}
+	return value
 }
 
 func KubeProxyConfigurationContains(actual, desired []byte) error {
