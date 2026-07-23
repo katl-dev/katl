@@ -131,7 +131,10 @@ func TestRenderNativeEtcFilesMinimalIPv4DummyVIP(t *testing.T) {
 	if plan.Config.Endpoint.Port != 6443 || plan.Config.Endpoint.AddressFamily != "ipv4" {
 		t.Fatalf("normalized endpoint = %#v", plan.Config.Endpoint)
 	}
-	if plan.Config.Health.Path != "/readyz" || plan.Config.Health.TLSServerName != "api.home.example" {
+	if plan.Config.Health.Path != "/readyz" ||
+		plan.Config.Health.Timeout != defaultHealthTimeout ||
+		plan.Config.Health.FailureThreshold != 3 ||
+		plan.Config.Health.TLSServerName != "api.home.example" {
 		t.Fatalf("normalized health = %#v", plan.Config.Health)
 	}
 }

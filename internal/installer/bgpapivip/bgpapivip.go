@@ -33,6 +33,7 @@ const (
 	NetworkPath              = "/etc/systemd/network/05-katl-bgp-api-vip.network"
 	DummyNetDevPath          = "/etc/systemd/network/05-katl-bgp-api-vip.netdev"
 	defaultHealthPath        = "/readyz"
+	defaultHealthTimeout     = "5s"
 )
 
 var (
@@ -522,7 +523,7 @@ func normalizeHealth(health Health, endpoint Endpoint, vip netip.Prefix) (Health
 	health.Host = defaultString(health.Host, vip.Addr().String())
 	health.Path = defaultString(health.Path, defaultHealthPath)
 	health.Interval = defaultString(health.Interval, "2s")
-	health.Timeout = defaultString(health.Timeout, "1s")
+	health.Timeout = defaultString(health.Timeout, defaultHealthTimeout)
 	health.CARef = defaultString(health.CARef, "kube-apiserver-ca")
 	health.TLSServerName = defaultString(health.TLSServerName, endpoint.TLSServerName)
 	if health.Port == 0 {

@@ -74,6 +74,32 @@ func TestControllerWithdrawsAfterHealthFailure(t *testing.T) {
 	}
 }
 
+func TestControllerKeepsAdvertisingThroughTransientHealthFailures(t *testing.T) {
+	bird := &fakeBird{status: readyBirdStatus()}
+	health := &sequenceHealth{results: []HealthResult{
+		{Healthy: true, StatusCode: 200},
+		{Healthy: true, StatusCode: 200},
+		{Healthy: false, Error: "request timed out"},
+		{Healthy: false, Error: "request timed out"},
+		{Healthy: true, StatusCode: 200},
+	}}
+	controller := testController(bird, health)
+	var status Status
+	for range health.results {
+		var err error
+		status, err = controller.RunOnce(context.Background())
+		if err != nil {
+			t.Fatalf("RunOnce() error = %v", err)
+		}
+	}
+	if got, want := bird.advertisements, []bool{false, true}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("advertisements = %#v, want %#v", got, want)
+	}
+	if status.AdvertisementState != AdvertisementAdvertised || status.Withdrawn {
+		t.Fatalf("status advertisement = %#v", status)
+	}
+}
+
 func TestControllerReportsUnavailableAPIAsHealthStateNotRuntimeFailure(t *testing.T) {
 	bird := &fakeBird{status: readyBirdStatus()}
 	controller := testController(bird, fakeHealth{result: HealthResult{Error: "waiting for kubeadm API CA"}})

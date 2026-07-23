@@ -51,7 +51,7 @@ spec:
         port: 6443
         path: /readyz
         interval: 2s
-        timeout: 1s
+        timeout: 5s
         successThreshold: 2
         failureThreshold: 3
         caRef: kube-apiserver-ca
