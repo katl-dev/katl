@@ -900,6 +900,12 @@ catalog entry. A successful `v1.36.1` publication does not replace `v1.36.0`;
 both remain addressable by exact payload version and digest until retention
 policy removes or deprecates them.
 
+`internal/kubernetesrelease/supported-versions.json` declares the exact
+upstream Kubernetes releases that Katl intends to build and maintain. Support
+intent is separate from artifact availability: a version becomes installable
+only after its immutable bundle is published and recorded in the compatibility
+catalog. The initial policy lists the GA releases `v1.36.0` through `v1.36.3`.
+
 The checked-in release lock carries an artifact revision in addition to the
 payload and exact RPM NEVRAs. A Renovate patch update resets that revision to
 `1`. A reviewed rebuild of unchanged Kubernetes package inputs increments the

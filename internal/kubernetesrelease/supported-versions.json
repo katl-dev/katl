@@ -1,0 +1,10 @@
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "KubernetesSupportedVersions",
+  "versions": [
+    "v1.36.0",
+    "v1.36.1",
+    "v1.36.2",
+    "v1.36.3"
+  ]
+}
