@@ -219,8 +219,35 @@ spec:
 	if selected.NodeMaterial.KubeadmConfig.Ref != "control-plane" || selected.KubeadmConfigs["control-plane"].Config.RenderPath == "" {
 		t.Fatalf("defaulted kubeadm = material %#v configs %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
 	}
-	if config := string(selected.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(config, "volumePluginDir: /var/lib/kubelet/plugins/volume/exec") || !strings.Contains(config, "taints: []") {
-		t.Fatalf("defaulted kubeadm does not keep plugins on writable state and allow control-plane scheduling:\n%s", config)
+	if config := string(selected.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(config, "volumePluginDir: /var/lib/kubelet/plugins/volume/exec") || !strings.Contains(config, "taints: []") || !strings.Contains(config, "podSubnet: 10.244.0.0/16") {
+		t.Fatalf("defaulted kubeadm does not keep plugins on writable state, allow control-plane scheduling, and allocate Pod CIDRs:\n%s", config)
+	}
+}
+
+func TestBuildArchiveKeepsOperatorClusterConfigurationAuthoritative(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "kubeadm.yaml"), `apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: operator-cluster
+`)
+	source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml", 1)
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	writeFile(t, sourcePath, source)
+
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode() error = %v", err)
+	}
+	config := string(selected.KubeadmConfigs["control-plane"].Config.Content)
+	if !strings.Contains(config, "clusterName: operator-cluster") {
+		t.Fatalf("control-plane kubeadm input lost operator ClusterConfiguration:\n%s", config)
+	}
+	if strings.Contains(config, "podSubnet:") {
+		t.Fatalf("control-plane kubeadm input silently supplemented operator ClusterConfiguration:\n%s", config)
 	}
 }
 
