@@ -5,7 +5,7 @@
   "versions": [
     {
       "payloadVersion": "v1.36.0",
-      "artifactRevision": 25,
+      "artifactRevision": 26,
       "packages": {
         "kubeadm": "0:1.36.0-150500.1.1",
         "kubelet": "0:1.36.0-150500.1.1",
@@ -15,7 +15,7 @@
     },
     {
       "payloadVersion": "v1.36.1",
-      "artifactRevision": 23,
+      "artifactRevision": 24,
       "packages": {
         "kubeadm": "0:1.36.1-150500.1.1",
         "kubelet": "0:1.36.1-150500.1.1",
@@ -25,7 +25,7 @@
     },
     {
       "payloadVersion": "v1.36.2",
-      "artifactRevision": 22,
+      "artifactRevision": 23,
       "packages": {
         "kubeadm": "0:1.36.2-150500.2.1",
         "kubelet": "0:1.36.2-150500.2.1",
@@ -35,7 +35,7 @@
     },
     {
       "payloadVersion": "v1.36.3",
-      "artifactRevision": 22,
+      "artifactRevision": 23,
       "packages": {
         "kubeadm": "0:1.36.3-150500.1.1",
         "kubelet": "0:1.36.3-150500.1.1",

@@ -147,7 +147,7 @@ func endpointProductState(config bgpapivip.Config, live bgpapivip.Status, peers 
 			return "waiting-for-peer"
 		}
 	}
-	if live.AdvertisementState == bgpapivip.AdvertisementAdvertised && !live.LocalVIPOwned {
+	if live.AdvertisementState == bgpapivip.AdvertisementAdvertised && live.LocalVIPOwnedReported && !live.LocalVIPOwned {
 		return "failed"
 	}
 	if live.AdvertisementState == bgpapivip.AdvertisementAdvertised {

@@ -93,6 +93,50 @@ func TestControlPlaneEndpointStatusDistinguishesStartupStates(t *testing.T) {
 	}
 }
 
+func TestControlPlaneEndpointStatusDistinguishesLegacyMissingVIPOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		omitOwned bool
+		want      string
+	}{
+		{name: "legacy field omitted", omitOwned: true, want: "advertised"},
+		{name: "current field explicitly false", want: "failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeManagedEndpointConfig(t, root, true)
+			live := bgpapivip.Status{
+				APIVersion:             bgpapivip.StatusAPIVersion,
+				Kind:                   bgpapivip.StatusKind,
+				VIPInterfaceReady:      true,
+				HealthState:            bgpapivip.HealthHealthy,
+				AdvertisementState:     bgpapivip.AdvertisementAdvertised,
+				BirdProcessActive:      true,
+				BirdControlSocketReady: true,
+				PeerSummary: []bgpapivip.PeerRuntimeStatus{{
+					Name: "10.0.0.1", Kind: "fabric", SessionState: "established",
+				}},
+			}
+			data, err := bgpapivip.MarshalStatus(live)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.omitOwned {
+				data = []byte(strings.Replace(string(data), "  \"localVIPOwned\": false,\n", "", 1))
+			}
+			writeTestFile(t, filepath.Join(root, bgpapivip.LiveStatusPath), string(data))
+
+			status, err := controlPlaneEndpointStatus(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.GetState() != test.want {
+				t.Fatalf("state = %q, want %q; status = %#v", status.GetState(), test.want, status)
+			}
+		})
+	}
+}
+
 func TestControlPlaneEndpointStatusIsAbsentForExternalEndpointNode(t *testing.T) {
 	status, err := controlPlaneEndpointStatus(t.TempDir())
 	if err != nil || status != nil {
