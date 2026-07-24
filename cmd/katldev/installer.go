@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/vmtest"
 	"github.com/spf13/cobra"
 )
@@ -26,14 +27,16 @@ const (
 	installerStateKind       = "KatlDevInstallerVM"
 	installerDomainMetadata  = "katl/katldev-installer"
 	vmtestMetadataURI        = "https://katlos.io/xmlns/vmtest/1"
+	katldevTargetDisk        = "/dev/disk/by-id/virtio-katl-root"
 )
 
 type installerOptions struct {
-	MemoryMiB int
-	CPUs      int
-	DiskSize  string
-	Timeout   time.Duration
-	NoBuild   bool
+	MemoryMiB   int
+	CPUs        int
+	DiskSize    string
+	Timeout     time.Duration
+	NoBuild     bool
+	ForceConfig bool
 }
 
 type installerState struct {
@@ -64,6 +67,7 @@ type installerManager struct {
 	stdout   io.Writer
 	stderr   io.Writer
 	client   *http.Client
+	run      buildCommandRunner
 }
 
 func newInstallerCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -107,6 +111,7 @@ func newInstallerStartCommand(ctx context.Context, stdout, stderr io.Writer, res
 	cmd.Flags().StringVar(&opts.DiskSize, "disk-size", opts.DiskSize, "fresh target disk size")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "installer DHCP and readiness timeout")
 	cmd.Flags().BoolVar(&opts.NoBuild, "no-build", false, "use the existing installer ISO without checking the current checkout")
+	cmd.Flags().BoolVar(&opts.ForceConfig, "force-config", false, "replace the generated katldev ClusterConfig")
 	return cmd
 }
 
@@ -165,6 +170,7 @@ func loadInstallerManager(stdout, stderr io.Writer) (installerManager, error) {
 		stdout:   stdout,
 		stderr:   stderr,
 		client:   &http.Client{Timeout: 2 * time.Second},
+		run:      runBuildCommand,
 	}, nil
 }
 
@@ -197,7 +203,7 @@ func (manager installerManager) start(ctx context.Context, opts installerOptions
 			if err := manager.requireOwnedDomain(ctx, state.LibvirtURI, state.DomainName); err != nil {
 				return err
 			}
-			return manager.resume(ctx, state, opts.Timeout)
+			return manager.resume(ctx, state, opts)
 		}
 		fmt.Fprintln(manager.stderr, "katldev installer: recorded domain is missing; recreating it")
 	}
@@ -221,7 +227,7 @@ func (manager installerManager) start(ctx context.Context, opts installerOptions
 	if err != nil {
 		return err
 	}
-	return manager.printReady(state)
+	return manager.ready(ctx, state, opts.ForceConfig)
 }
 
 func validateInstallerOptions(opts installerOptions) error {
@@ -347,7 +353,7 @@ func (manager installerManager) create(ctx context.Context, opts installerOption
 	return state, nil
 }
 
-func (manager installerManager) resume(ctx context.Context, state installerState, timeout time.Duration) error {
+func (manager installerManager) resume(ctx context.Context, state installerState, opts installerOptions) error {
 	domainState, err := manager.domainState(ctx, state.LibvirtURI, state.DomainName)
 	if err != nil {
 		return err
@@ -356,14 +362,14 @@ func (manager installerManager) resume(ctx context.Context, state installerState
 	case "running", "idle", "in shutdown":
 		if status, statusErr := manager.installerStatus(ctx, state.Endpoint); statusErr == nil {
 			if installerAcceptingConfig(status) {
-				return manager.printReady(state)
+				return manager.ready(ctx, state, opts.ForceConfig)
 			}
 			return manager.printCurrent(ctx, state, domainState)
 		}
 		if state.IPAddress != "" && tcpReachable(ctx, net.JoinHostPort(state.IPAddress, "9443"), 500*time.Millisecond) {
 			return manager.printCurrent(ctx, state, domainState)
 		}
-		return manager.waitResumed(ctx, state, timeout)
+		return manager.waitResumed(ctx, state, opts)
 	case "paused":
 		if _, err := manager.virsh(ctx, state.LibvirtURI, "resume", state.DomainName); err != nil {
 			return err
@@ -375,11 +381,11 @@ func (manager installerManager) resume(ctx context.Context, state installerState
 	default:
 		return fmt.Errorf("installer VM %s is in unsupported state %q", state.DomainName, domainState)
 	}
-	return manager.waitResumed(ctx, state, timeout)
+	return manager.waitResumed(ctx, state, opts)
 }
 
-func (manager installerManager) waitResumed(ctx context.Context, state installerState, timeout time.Duration) error {
-	readyCtx, cancel := context.WithTimeout(ctx, timeout)
+func (manager installerManager) waitResumed(ctx context.Context, state installerState, opts installerOptions) error {
+	readyCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -396,7 +402,7 @@ func (manager installerManager) waitResumed(ctx context.Context, state installer
 					return err
 				}
 				if installerAcceptingConfig(status) {
-					return manager.printReady(state)
+					return manager.ready(ctx, state, opts.ForceConfig)
 				}
 				return manager.printCurrent(readyCtx, state, "running")
 			}
@@ -411,7 +417,7 @@ func (manager installerManager) waitResumed(ctx context.Context, state installer
 		}
 		select {
 		case <-readyCtx.Done():
-			return fmt.Errorf("VM is running%s but neither the installer nor KatlOS management API became reachable within %s; inspect %s or run katldev installer console", addressDetail(lastAddress), timeout, state.SerialLog)
+			return fmt.Errorf("VM is running%s but neither the installer nor KatlOS management API became reachable within %s; inspect %s or run katldev installer console", addressDetail(lastAddress), opts.Timeout, state.SerialLog)
 		case <-ticker.C:
 		}
 	}
@@ -550,15 +556,80 @@ func (manager installerManager) printCurrent(ctx context.Context, state installe
 	return nil
 }
 
-func (manager installerManager) printReady(state installerState) error {
+func (manager installerManager) ready(ctx context.Context, state installerState, forceConfig bool) error {
+	configPath, created, err := manager.ensureClusterConfig(ctx, state, forceConfig)
+	if err != nil {
+		return err
+	}
+	return manager.printReady(state, configPath, created)
+}
+
+func (manager installerManager) ensureClusterConfig(ctx context.Context, state installerState, force bool) (string, bool, error) {
 	configPath := filepath.Join(manager.repoRoot, "_build", "katldev", "cluster.yaml")
+	if !force {
+		err := matchingKatldevConfig(configPath, state)
+		switch {
+		case err == nil:
+			return configPath, false, nil
+		case errors.Is(err, os.ErrNotExist):
+		default:
+			return "", false, fmt.Errorf("waiting installer is ready, but existing ClusterConfig %s does not match it: %w; rerun with --force-config to replace the generated config", configPath, err)
+		}
+	}
+	run := manager.run
+	if run == nil {
+		run = runBuildCommand
+	}
+	args := []string{"config", "init", configPath, "--installer", state.Endpoint}
+	if force {
+		args = append(args, "--force")
+	}
+	if err := run(ctx, manager.repoRoot, "katlctl", args, nil, manager.stdout, manager.stderr); err != nil {
+		return "", false, fmt.Errorf("generate ClusterConfig for waiting installer: %w", err)
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		return "", false, fmt.Errorf("katlctl did not create ClusterConfig %s: %w", configPath, err)
+	}
+	return configPath, true, nil
+}
+
+func matchingKatldevConfig(path string, state installerState) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	source, err := configbundle.DecodeSource(file)
+	if err != nil {
+		return fmt.Errorf("decode config: %w", err)
+	}
+	for _, node := range source.Spec.Nodes {
+		if !node.ControlPlane || node.Bootstrap.Address != state.IPAddress {
+			continue
+		}
+		targetDisk := source.Spec.Defaults.Install.TargetDisk
+		if node.Install.TargetDisk != nil {
+			targetDisk = node.Install.TargetDisk
+		}
+		if targetDisk != nil && targetDisk.ByID == katldevTargetDisk {
+			return nil
+		}
+	}
+	return fmt.Errorf("no control-plane node uses address %s and target disk %s", state.IPAddress, katldevTargetDisk)
+}
+
+func (manager installerManager) printReady(state installerState, configPath string, configCreated bool) error {
+	configState := "existing"
+	if configCreated {
+		configState = "created"
+	}
 	fmt.Fprintln(manager.stdout, "KatlOS installer VM is ready.")
 	fmt.Fprintf(manager.stdout, "VM: %s\n", state.DomainName)
 	fmt.Fprintf(manager.stdout, "Endpoint: %s\n", state.Endpoint)
-	fmt.Fprintf(manager.stdout, "Target disk: /dev/disk/by-id/virtio-katl-root\n")
+	fmt.Fprintf(manager.stdout, "Target disk: %s\n", katldevTargetDisk)
+	fmt.Fprintf(manager.stdout, "Cluster config: %s (%s)\n", configPath, configState)
 	fmt.Fprintln(manager.stdout)
-	fmt.Fprintln(manager.stdout, "Try the operator flow:")
-	fmt.Fprintf(manager.stdout, "  katlctl config init %s --installer %s\n", configPath, state.Endpoint)
+	fmt.Fprintln(manager.stdout, "Install the VM:")
 	fmt.Fprintf(manager.stdout, "  katlctl install apply --config %s --endpoint %s\n", configPath, state.Endpoint)
 	fmt.Fprintln(manager.stdout)
 	fmt.Fprintln(manager.stdout, "Console: katldev installer console")

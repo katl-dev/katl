@@ -113,9 +113,13 @@ katldev installer start
 ```
 
 The command cache-checks and builds the self-contained installer ISO, waits for
-the installer API, and prints its address plus matching `katlctl config init`
-and `install apply` commands. The VM and its 32 GiB target disk live under
-`_build/katldev`; they are not owned or cleaned up by automated vmtest runs.
+the installer API, and creates `_build/katldev/cluster.yaml` from the waiting
+VM's discovered address and target disk. Its output leads directly to
+`katlctl install apply`. A matching existing config is retained so it can be
+edited for repeated user journeys. If it describes a different VM, Katldev
+fails with recovery guidance; pass `--force-config` only when replacing it is
+intentional. The VM and its 32 GiB target disk live under `_build/katldev`;
+they are not owned or cleaned up by automated vmtest runs.
 
 Use the same VM for repeated manual install and management checks:
 
