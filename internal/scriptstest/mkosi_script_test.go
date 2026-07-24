@@ -23,7 +23,7 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 	mkosiEnv := filepath.Join(tmp, "mkosi-env.txt")
 	goArgs := filepath.Join(tmp, "go-args.txt")
 	goEnv := filepath.Join(tmp, "go-env.txt")
-writeFakeExecutable(t, bin, "mkosi", `printf '%s\n' "$@" > "$KATL_FAKE_MKOSI_ARGS"
+	writeFakeExecutable(t, bin, "mkosi", `printf '%s\n' "$@" > "$KATL_FAKE_MKOSI_ARGS"
 cat > "$KATL_FAKE_INSTALLER_MANIFEST" <<'EOF'
 {"packages":[{"type":"rpm","name":"systemd","version":"0:259.6-1.fc44","architecture":"x86_64"}]}
 EOF
