@@ -1,10 +1,15 @@
 # ADR-002: Runtime configuration prefers online apply with next-boot fallback
 
-Status: accepted.
+Status: accepted; amended by ADR-011.
 
 Date: 2026-06-05.
 
 Updated: 2026-06-18.
+
+ADR-011 adds native host configuration file sets. Their diffs use the same
+request-wide `auto`, `live`, and `next-boot` contract, with built-in activation
+adapters, bounded systemd notifications, or conservative next-boot fallback.
+References below to supported domains include that bounded file-set contract.
 
 This ADR defines how later Katl runtime configuration changes choose between
 online in-place application, staging for the next boot, explicit operation-only

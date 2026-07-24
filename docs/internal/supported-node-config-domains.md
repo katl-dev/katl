@@ -1,6 +1,15 @@
 # Supported Node Configuration Domains
 
-Status: current decision.
+Status: current decision; amended by ADR-011.
+
+ADR-011 adds bounded operator-authored native host configuration file sets.
+Typed domains below remain the contract for Katl-owned product intent, but
+operators may also provide validated regular files beneath `/etc` when they do
+not collide with Katl-owned or protected paths. Such files use built-in live
+adapters, bounded systemd notifications, or conservative next-boot fallback.
+References below to arbitrary `/etc` patching and general systemd passthrough
+continue to reject unbounded mutation, raw commands, service enablement, and
+protected paths; they do not reject the ADR-011 file-set contract.
 
 This document defines the initial Katl-owned node configuration domains for
 install-time materialization and later runtime configuration changes. It narrows

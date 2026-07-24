@@ -1,8 +1,13 @@
 # ADR-003: Runtime configuration changes use trusted operator input
 
-Status: accepted.
+Status: accepted; amended by ADR-011.
 
 Date: 2026-06-05.
+
+ADR-011 permits authenticated runtime requests to contain validated native host
+configuration file sets beneath `/etc`. References below to rejecting arbitrary
+`/etc` paths mean unbounded paths, protected paths, and paths outside that
+accepted contract; raw confext artifacts and activation paths remain rejected.
 
 This ADR defines how an installed Katl node accepts changed user-supplied
 configuration for generated confext updates. It builds on

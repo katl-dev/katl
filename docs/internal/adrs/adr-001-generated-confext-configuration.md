@@ -1,8 +1,13 @@
 # ADR-001: Katl-native configuration becomes generated confext
 
-Status: accepted.
+Status: accepted; amended by ADR-011.
 
 Date: 2026-05-31.
+
+ADR-011 permits bounded operator-authored native host files beneath `/etc` and
+supersedes this document's statements that all arbitrary paths must belong to a
+typed Katl domain. Users still do not provide raw confext artifacts, activation
+paths, or files that collide with Katl-owned or protected paths.
 
 This ADR records the accepted configuration model: Katl-native input is rendered
 by Katl into generated confext. The rejected bootstrap option is documented only
