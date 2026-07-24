@@ -117,8 +117,8 @@ func TestKubernetesBundleWorkflowRetiresSupersededCompatibilityPRs(t *testing.T)
 	if !ok {
 		t.Fatal("Kubernetes bundle workflow has no compatibility job")
 	}
-	if got := compatibility.Permissions["actions"]; got != "read" {
-		t.Fatalf("compatibility actions permission = %q, want read", got)
+	if got := compatibility.Permissions["actions"]; got != "write" {
+		t.Fatalf("compatibility actions permission = %q, want write", got)
 	}
 
 	var script string
@@ -139,6 +139,11 @@ func TestKubernetesBundleWorkflowRetiresSupersededCompatibilityPRs(t *testing.T)
 		"github.rest.issues.createComment",
 		"github.rest.pulls.update",
 		`state: "closed"`,
+		"github.rest.actions.listWorkflowRuns",
+		`run.head_sha === process.env.HEAD_SHA`,
+		`validationRun.conclusion === "action_required"`,
+		`/actions/runs/{run_id}/approve`,
+		"run_id: validationRun.id",
 	} {
 		if !strings.Contains(script, contract) {
 			t.Errorf("compatibility pull request step does not enforce %q", contract)
