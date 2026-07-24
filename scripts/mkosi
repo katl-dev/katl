@@ -826,6 +826,9 @@ set +e
                 fi
             fi
             if [[ "$status" -eq 0 ]]; then
+                # Keep the RPM database in the unpacked build tree so mkosi can
+                # resolve sysext packages against the runtime base. Exclude it
+                # from the immutable runtime artifact below.
                 rm -rf \
                     "$root/boot" \
                     "$root/buildroot" \
@@ -835,7 +838,6 @@ set +e
                     "$root/usr/bin/dracut" \
                     "$root/usr/bin/lsinitrd" \
                     "$root/usr/lib/dracut" \
-                    "$root/usr/lib/sysimage/rpm" \
                     "$root/var/lib/rpm-state"
                 rm -f \
                     "$root/usr/lib/systemd/system"/dracut-*.service \
@@ -850,7 +852,8 @@ set +e
                     -all-root \
                     -comp zstd \
                     -b 1M \
-                    -Xcompression-level 22; then
+                    -Xcompression-level 22 \
+                    -e usr/lib/sysimage/rpm; then
                     status=1
                 elif ! sha256=$(mkosi_artifacts write-runtime-root --artifact "$artifact"); then
                     status=1

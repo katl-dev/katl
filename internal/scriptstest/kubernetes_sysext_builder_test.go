@@ -16,7 +16,8 @@ func TestKubernetesSysextBuilderOwnsProfileAndOutputSelection(t *testing.T) {
 	repoFile := filepath.Join(profileDir, "mkosi.sandbox", "etc", "yum.repos.d", "kubernetes.repo")
 	profile := filepath.Join(profileDir, "mkosi.conf")
 	manifest := filepath.Join(profileDir, "kubernetes.env")
-	for _, dir := range []string{filepath.Join(repo, "scripts"), filepath.Dir(repoFile), buildDir} {
+	runtimePackageDB := filepath.Join(buildDir, "katl-runtime-root", "usr", "lib", "sysimage", "rpm")
+	for _, dir := range []string{filepath.Join(repo, "scripts"), filepath.Dir(repoFile), buildDir, runtimePackageDB} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -132,5 +133,19 @@ printf '{"sha256":"%s","sizeBytes":%s}\n' "$digest" "$size" > "$artifact.json"
 	}
 	if got := strings.Join(readLinesForScripts(t, goArgs), " "); !strings.Contains(got, "--artifact "+filepath.Join(buildDir, "katl-kubernetes-upgrade.raw")) {
 		t.Fatalf("metadata command did not receive the explicit output: %s", got)
+	}
+
+	if err := os.RemoveAll(runtimePackageDB); err != nil {
+		t.Fatalf("remove runtime package database: %v", err)
+	}
+	missingDB := exec.Command(filepath.Join(repo, "scripts", "build-kubernetes-sysext"), "--output", "katl-kubernetes-upgrade", "--no-cache")
+	missingDB.Dir = repo
+	missingDB.Env = cmd.Env
+	output, err = missingDB.CombinedOutput()
+	if err == nil {
+		t.Fatalf("build-kubernetes-sysext without the runtime package database unexpectedly passed:\n%s", output)
+	}
+	if !strings.Contains(string(output), "rebuild the runtime with scripts/mkosi build-runtime") {
+		t.Fatalf("missing package database error is not actionable:\n%s", output)
 	}
 }
