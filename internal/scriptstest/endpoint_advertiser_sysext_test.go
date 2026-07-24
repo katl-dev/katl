@@ -36,7 +36,7 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 
 	appUnit := read("mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.service")
 	for _, want := range []string{
-		"Requires=katl-app-bird.service",
+		"Wants=katl-app-bird.service",
 		"After=katl-app-bird.service",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",

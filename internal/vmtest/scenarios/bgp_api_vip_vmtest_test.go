@@ -699,8 +699,11 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, c
 	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp2.Result.IPAddress, true, 20*time.Second); err != nil {
 		return fmt.Errorf("healthy peer route was disrupted: %w", err)
 	}
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "is-active", "--quiet", "katl-app-bird.service"}); err != nil {
+		return fmt.Errorf("local API failure disrupted the node routing daemon: %w", err)
+	}
 	proof.APIFailureWithdrawn = true
-	proof.Checks = append(proof.Checks, "local API failure withdrew only the failed control plane path")
+	proof.Checks = append(proof.Checks, "local API failure withdrew only the failed control plane path and retained BIRD")
 	status, err := waitForEndpointStatus(ctx, cp, func(status bgpapivip.Status) bool {
 		return status.HealthState == bgpapivip.HealthUnhealthy &&
 			!status.LocalVIPOwned &&
@@ -743,8 +746,11 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, c
 	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp.Result.IPAddress, false, 20*time.Second); err != nil {
 		return fmt.Errorf("ungraceful controller death did not withdraw route: %w", err)
 	}
+	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "is-active", "--quiet", "katl-app-bird.service"}); err != nil {
+		return fmt.Errorf("endpoint-controller death disrupted the node routing daemon: %w", err)
+	}
 	proof.ControllerKillWithdrawn = true
-	proof.Checks = append(proof.Checks, "ungraceful controller death failed closed")
+	proof.Checks = append(proof.Checks, "ungraceful controller death failed closed without stopping BIRD")
 	if err := setVMTestRestartPolicy(ctx, cp, "katl-app-bgp-api-vip.service", "always"); err != nil {
 		return err
 	}
@@ -767,8 +773,15 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, c
 	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp.Result.IPAddress, false, 20*time.Second); err != nil {
 		return fmt.Errorf("routing daemon death did not remove route: %w", err)
 	}
+	if _, err := waitForEndpointStatus(ctx, cp, func(status bgpapivip.Status) bool {
+		return status.HealthState == bgpapivip.HealthHealthy &&
+			status.LocalVIPOwned &&
+			!status.BirdProcessActive
+	}, 20*time.Second); err != nil {
+		return fmt.Errorf("routing daemon death disrupted healthy VIP ownership: %w", err)
+	}
 	proof.RoutingDaemonKillRemoved = true
-	proof.Checks = append(proof.Checks, "routing-daemon death removed the fabric route")
+	proof.Checks = append(proof.Checks, "routing-daemon death removed the fabric route without changing healthy VIP ownership")
 	return nil
 }
 

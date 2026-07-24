@@ -325,12 +325,12 @@ node role is not selected.
 
 ## Health Gate
 
-The default health target is local kube-apiserver `/readyz` reached through the
-same endpoint path that will be advertised:
+The default health target is local kube-apiserver `/readyz` reached through
+loopback:
 
 ```text
 scheme: https
-host: <endpoint.vip address>
+host: 127.0.0.1 for IPv4, ::1 for IPv6
 port: <endpoint.port>
 path: /readyz
 interval: 2s
@@ -368,15 +368,18 @@ advertisement.withdrawOnFailure
   must be true
 ```
 
-The app starts with the API VIP route withheld from all BGP export filters. When
-the VIP interface exists, generic BIRD is ready, peers are configured, and the
-local `/readyz` health gate satisfies `successThreshold`, the app enables export
-of exactly `endpoint.vip` to peers whose `allowedExportPrefixes[]` include it.
+The app starts without the API VIP address. When the VIP interface exists and
+the local `/readyz` health gate satisfies `successThreshold`, the app adds
+exactly `endpoint.vip` to that interface. BIRD observes the resulting direct
+route and exports it only to peers whose `allowedExportPrefixes[]` include it.
+Routing-daemon readiness and peer state remain diagnostics; they do not own the
+local VIP address lifecycle.
 
-If health fails for `failureThreshold`, BIRD reload fails, the selected
-generation is deactivated, or the app is stopped, the app withdraws the route.
-If withdrawal cannot be proven, status must report a recovery-required state and
-the next boot must prefer the last selected safe generation.
+If health fails for `failureThreshold`, the selected generation is deactivated,
+or the app is stopped, the app removes only its exact VIP address. It never
+stops BIRD or takes down a persistent operator routing interface. If address
+removal cannot be proven, status must report a recovery-required state and the
+next boot must prefer the last selected safe generation.
 
 ## Anycast Stance
 

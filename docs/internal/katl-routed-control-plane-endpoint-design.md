@@ -526,16 +526,15 @@ attributes without exposing the generated BIRD syntax.
 
 ## Data plane
 
-Each control-plane node owns the VIP on a Katl-generated dummy interface. The
-address exists before kubeadm so that the first local API server can accept
-connections for it. The interface alone does not cause external advertisement.
+Each control-plane node has a Katl-generated dummy interface dedicated to the
+API endpoint. The interface exists before kubeadm, but the VIP address is absent
+until the local API health gate succeeds.
 
-The routing daemon has a dedicated static route source for the VIP. It starts
-administratively disabled. Without local route exchange, its fabric export
-rule is:
+The routing daemon has a dedicated direct route source for the VIP interface.
+Without local route exchange, its fabric export rule is:
 
 ```text
-accept the exact configured VIP prefix from the Katl API route source
+accept the exact configured VIP prefix learned from the Katl API interface
 reject everything else
 ```
 
@@ -579,17 +578,18 @@ question: whether this node's kube-apiserver should receive traffic.
 The controller waits for kubeadm's API CA, then probes:
 
 ```text
-https://<vip>:<port>/readyz
+https://127.0.0.1:<port>/readyz for IPv4
+https://[::1]:<port>/readyz for IPv6
 TLS server name: controlPlaneEndpoint.host
 trust root: /etc/kubernetes/pki/ca.crt
 ```
 
 The endpoint host may be either an IP literal or a DNS name. Katl does not use
 DNS resolution as an advertisement health signal: a transient or deliberately
-external DNS view must not withdraw an otherwise healthy route. Probing the VIP
-verifies local address delivery, API listening, TLS identity, etcd-dependent
-API readiness and the endpoint port. A `200` response is healthy. Probe timing
-and thresholds are Katl-owned constants and are not configuration fields.
+external DNS view must not withdraw an otherwise healthy route. Probing
+loopback proves that this node's API is listening, presents the endpoint TLS
+identity and passes etcd-dependent readiness without following a routed VIP to
+another control plane. A `200` response is healthy.
 
 State transitions are:
 
@@ -598,16 +598,16 @@ starting -> withdrawn
 withdrawn + success threshold -> advertised
 advertised + failure threshold -> withdrawn
 maintenance requested -> withdrawn
-controller or daemon failure -> withdrawn
+controller failure -> withdrawn
+routing-daemon failure -> local VIP retained, fabric route unavailable
 ```
 
 Controller failure must fail closed. The controller's systemd unit uses an
 `ExecStopPost` withdrawal helper for clean stops and unexpected process exits.
-If the helper cannot confirm that the route source is disabled, it stops the
-dedicated routing-daemon unit so that the fabric peer sessions fall and the
-route is withdrawn. Restart always starts the route source disabled and must
-pass the health threshold again. An earlier `enable` operation can therefore
-never survive loss of the controller. VM tests must prove this after an
+The helper removes only the Katl-owned VIP address and never stops the routing
+daemon. If removal cannot be confirmed, it reports recovery-required rather
+than disrupting unrelated routing sessions. Restart removes any stale VIP
+before passing the health threshold again. VM tests must prove this after an
 ungraceful controller termination.
 
 The API VIP must not use BGP graceful restart or long-lived stale-route
@@ -688,10 +688,11 @@ Native ordering must establish:
 
 ```text
 confext and sysext activation
-  -> systemd-networkd creates the VIP
-  -> routing daemon starts withdrawn and establishes peers
+  -> systemd-networkd creates the VIP interface
+  -> routing daemon starts and establishes peers
   -> kubelet and kubeadm may start the local API
-  -> controller health gates route origination
+  -> controller health gates VIP address ownership
+  -> routing daemon observes and exports the direct VIP route
 ```
 
 Shutdown and maintenance ordering must withdraw before kubelet terminates the
@@ -853,7 +854,8 @@ Prove:
    remains reachable through another node.
 7. Losing etcd readiness withdraws the affected node.
 8. Killing the controller ungracefully withdraws the route.
-9. Killing the routing daemon removes the fabric route.
+9. Killing the routing daemon removes the fabric route without changing healthy
+   local VIP ownership.
 10. Reboot starts withdrawn and does not expose the API early.
 11. Planned maintenance withdraws before kubelet stops the API.
 12. Peer loss and peer recovery produce bounded, accurate status.
