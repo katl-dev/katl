@@ -9,8 +9,11 @@ ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/systemctl daemon-reload
-ExecStart=/usr/bin/systemctl start katl-app-bgp-api-vip.path
-ExecStop=/usr/bin/systemctl stop katl-app-bgp-api-vip.path
+ExecStart=/usr/bin/systemctl start katl-app-bgp-api-vip.service
+# Older endpoint extensions predate the path watcher. Starting a missing unit
+# must not reject an otherwise compatible KatlOS upgrade generation.
+ExecStart=-/usr/bin/systemctl start katl-app-bgp-api-vip.path
+ExecStop=-/usr/bin/systemctl stop katl-app-bgp-api-vip.path
 ExecStop=/usr/bin/systemctl stop katl-app-bgp-api-vip.service
 RemainAfterExit=yes
 
