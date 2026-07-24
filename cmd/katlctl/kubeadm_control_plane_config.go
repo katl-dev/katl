@@ -256,7 +256,6 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		conn           katlcAgentConnection
 		machine        string
 		payloadVersion string
-		payloadSHA256  string
 		generation     string
 	}
 	targets := make([]target, 0, len(nodes))
@@ -294,21 +293,19 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		}
 		node.KubeadmConfig.Ref = configName
 		payloadVersion := ""
-		payloadSHA256 := ""
 		for _, ref := range gen.Sysexts {
 			if ref.Name == "kubernetes" && ref.PayloadVersion != "" && ref.Sha256 != "" {
 				payloadVersion = ref.PayloadVersion
-				payloadSHA256 = ref.Sha256
 				break
 			}
 		}
 		if payloadVersion == "" {
 			return nil, fmt.Errorf("node %s generation %s has no active Kubernetes payload", node.Name, generationID)
 		}
-		if len(targets) > 0 && (payloadVersion != targets[0].payloadVersion || payloadSHA256 != targets[0].payloadSHA256) {
-			return nil, fmt.Errorf("node %s active Kubernetes payload does not match %s", node.Name, targets[0].node.Name)
+		if len(targets) > 0 && payloadVersion != targets[0].payloadVersion {
+			return nil, fmt.Errorf("node %s active Kubernetes payload version does not match %s", node.Name, targets[0].node.Name)
 		}
-		targets = append(targets, target{node: node, conn: conn, machine: status.MachineId, payloadVersion: payloadVersion, payloadSHA256: payloadSHA256, generation: generationID})
+		targets = append(targets, target{node: node, conn: conn, machine: status.MachineId, payloadVersion: payloadVersion, generation: generationID})
 	}
 	var summary []map[string]string
 	for i, t := range targets {
