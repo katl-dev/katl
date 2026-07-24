@@ -4,7 +4,7 @@
   "entries": [
     {
       "kubernetesVersion": "v1.36.0",
-      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.0-katl.17@sha256:5eb05419faaaf9ed132101a44bfeedb3645aec5495f26d6c26be698cf9e3f945",
+      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.0-katl.19@sha256:f89c541ecbf799453ff816b806d8731d600b22525ebc3551020a71f28d3f2fc3",
       "architectures": [
         "x86_64"
       ],
@@ -14,7 +14,7 @@
     },
     {
       "kubernetesVersion": "v1.36.1",
-      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.15@sha256:59d8f2ca62e394e49902c7fc58f65207d445cb136acf3476bc0796002b1c89fd",
+      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.17@sha256:0cd33cbadec560d6bcef020d1457684b1b8fac5bcc6fc522be0d3172758c1593",
       "architectures": [
         "x86_64"
       ],
@@ -24,7 +24,7 @@
     },
     {
       "kubernetesVersion": "v1.36.2",
-      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.2-katl.14@sha256:a6c497f5649586495d21d170949f9e7c4f2516f917a9ccc6ebe02fc915b70a8e",
+      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.2-katl.16@sha256:606ffbb3ba14b7ceddd2d7a32b07edb480875ff2ec5c9fa12d8924f70002de7f",
       "architectures": [
         "x86_64"
       ],
@@ -34,7 +34,7 @@
     },
     {
       "kubernetesVersion": "v1.36.3",
-      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.3-katl.14@sha256:54cfcbc6f7d59c83a844b4d681594b852c7d5c704c04a8550acda2650f78b339",
+      "bundle": "ghcr.io/katl-dev/kubernetes:v1.36.3-katl.16@sha256:220e74d73127bdf174f123ac1d7de1dd8347195fbc09698d0958b3445f50cab9",
       "architectures": [
         "x86_64"
       ],
