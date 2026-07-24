@@ -44,7 +44,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		case strings.Contains(joined, "/usr/bin/kubeadm version"):
 			return ToolResult{Stdout: []byte("v1.36.2\n")}
 		case strings.Contains(joined, "get endpoints kubernetes"):
-			return ToolResult{Stdout: []byte("10.0.0.1 10.0.0.2\n")}
+			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
 		case strings.Contains(joined, "kubelet --version"):
 			return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
 		default:
@@ -70,17 +70,25 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if completed.KubeadmUpgradeEvidence.TargetKubeadmAccessMode != kubeadmAccessOperationPrivate || completed.KubeadmUpgradeEvidence.KubeletGateState != "target-observed" || completed.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm {
 		t.Fatalf("upgrade evidence = %+v", completed.KubeadmUpgradeEvidence)
 	}
+	if completed.KubeadmUpgradeEvidence.AlternateAPIEndpoint != "10.0.0.2:6443" {
+		t.Fatalf("alternate API endpoint = %q", completed.KubeadmUpgradeEvidence.AlternateAPIEndpoint)
+	}
 	assertCommandOrder(t, commands,
 		"kubeadm upgrade plan v1.36.2",
 		"systemctl stop "+endpointAdvertiserUnit,
 		endpointAdvertiserCommand+" withdraw",
+		"--server https://10.0.0.2:6443 --request-timeout=10s get --raw=/readyz",
+		"--kubeconfig /var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf --request-timeout=10s get --raw=/readyz",
 		"/usr/bin/killall -s SIGTERM kube-apiserver",
-		"kubeadm upgrade apply --yes v1.36.2",
+		"kubeadm upgrade apply --yes v1.36.2 --kubeconfig /var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf",
 		"systemctl stop kubelet.service",
 		"systemd-sysext refresh",
 		"systemctl restart kubelet.service",
 		"systemctl start "+endpointAdvertiserUnit,
 	)
+	if _, err := os.Stat(filepath.Join(root, "var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary peer kubeconfig still exists: %v", err)
+	}
 	spec, status, err := generation.ReadGeneration(root, "gen1")
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +205,7 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 					return ToolResult{Stdout: []byte("v1.36.2\n")}
 				}
 				if strings.Contains(joined, "get endpoints kubernetes") {
-					return ToolResult{Stdout: []byte("10.0.0.1 10.0.0.2\n")}
+					return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
 				}
 				if strings.Contains(joined, "/usr/bin/killall") {
 					return ToolResult{ExitStatus: 1, Stderr: []byte("no process found")}
@@ -213,7 +221,7 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 					return ToolResult{Stdout: []byte("v1.36.2\n")}
 				}
 				if strings.Contains(strings.Join(argv, " "), "get endpoints kubernetes") {
-					return ToolResult{Stdout: []byte("10.0.0.1 10.0.0.2\n")}
+					return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
 				}
 				return ToolResult{}
 			},
@@ -272,7 +280,7 @@ func TestExecutorKeepsSingleControlPlaneAvailableForKubeadm(t *testing.T) {
 		case strings.Contains(joined, "/usr/bin/kubeadm version"):
 			return ToolResult{Stdout: []byte("v1.36.2\n")}
 		case strings.Contains(joined, "get endpoints kubernetes"):
-			return ToolResult{Stdout: []byte("10.0.0.1\n")}
+			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1")}
 		case strings.Contains(joined, "kubelet --version"):
 			return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
 		default:
@@ -286,6 +294,82 @@ func TestExecutorKeepsSingleControlPlaneAvailableForKubeadm(t *testing.T) {
 		if strings.Contains(strings.Join(command, " "), "/usr/bin/killall") {
 			t.Fatalf("single control plane was terminated before kubeadm: %v", command)
 		}
+	}
+}
+
+func TestExecutorKeepsLocalAPIServerWhenNoPeerIsReady(t *testing.T) {
+	root, store, record, now := kubeadmUpgradeFixture(t, "control-plane")
+	executor := NewExecutor(root, store, "agent-test")
+	executor.Async = false
+	executor.Now = func() time.Time { return now.Add(time.Minute) }
+	killed := false
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/usr/bin/kubeadm version"):
+			return ToolResult{Stdout: []byte("v1.36.2\n")}
+		case strings.Contains(joined, "get endpoints kubernetes"):
+			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
+		case strings.Contains(joined, "--server https://10.0.0.2:6443"):
+			return ToolResult{ExitStatus: 1, Stderr: []byte("peer unavailable")}
+		case strings.Contains(joined, "/usr/bin/killall"):
+			killed = true
+		}
+		return ToolResult{}
+	}
+	err := executor.Execute(context.Background(), record)
+	if err == nil || !strings.Contains(err.Error(), "no alternate Kubernetes API endpoint passed authenticated readiness") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if killed {
+		t.Fatal("local kube-apiserver was terminated without a ready peer")
+	}
+	failed, err := store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !failed.Terminal || failed.RecoveryRequired || failed.ExternalMutationStarted || failed.Result != "failed" {
+		t.Fatalf("failed operation = %+v", failed)
+	}
+}
+
+func TestWriteKubeadmPeerConfigPreservesCredentials(t *testing.T) {
+	root := t.TempDir()
+	source := "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://172.31.250.1:6443\ncontexts:\n  - name: admin\n    context:\n      cluster: kubernetes\n      user: admin\ncurrent-context: admin\nusers:\n  - name: admin\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n"
+	writeTestFile(t, filepath.Join(root, "etc/kubernetes/admin.conf"), source)
+	if err := os.MkdirAll(filepath.Join(root, "var/lib/katl/operations/upgrade-1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logicalPath, err := writeKubeadmPeerConfig(root, "upgrade-1", "https://10.1.1.111:6443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostPath := rootedRuntimePath(root, logicalPath)
+	data, err := os.ReadFile(hostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"server: https://10.1.1.111:6443", "certificate-authority-data: Y2E=", "client-certificate-data: Y2VydA==", "client-key-data: a2V5"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("peer kubeconfig missing %q:\n%s", want, data)
+		}
+	}
+	info, err := os.Stat(hostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("peer kubeconfig mode = %#o, want 0600", info.Mode().Perm())
+	}
+	if err := os.WriteFile(hostPath, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeKubeadmPeerConfig(root, "upgrade-1", "https://10.1.1.112:6443"); err != nil {
+		t.Fatalf("replace stale peer kubeconfig: %v", err)
+	}
+	data, err = os.ReadFile(hostPath)
+	if err != nil || !strings.Contains(string(data), "server: https://10.1.1.112:6443") {
+		t.Fatalf("replaced peer kubeconfig = %q, %v", data, err)
 	}
 }
 
@@ -548,6 +632,8 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	if err := os.WriteFile(filepath.Join(root, "etc/machine-id"), []byte("0123456789abcdef0123456789abcdef\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestFile(t, filepath.Join(root, "etc/kubernetes/admin.conf"), "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://10.0.0.100:6443\ncontexts:\n  - name: kubernetes-admin@kubernetes\n    context:\n      cluster: kubernetes\n      user: kubernetes-admin\ncurrent-context: kubernetes-admin@kubernetes\nusers:\n  - name: kubernetes-admin\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n")
+	writeTestFile(t, filepath.Join(root, "etc/kubernetes/manifests/kube-apiserver.yaml"), "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: kube-apiserver\n      command:\n        - kube-apiserver\n        - --advertise-address=10.0.0.1\n")
 	target := []byte("target Kubernetes sysext")
 	targetDigest := sha256.Sum256(target)
 	targetSHA := hex.EncodeToString(targetDigest[:])
@@ -606,6 +692,14 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 		t.Fatal(err)
 	}
 	return root, store, record, now
+}
+
+func testKubeAPIServerEndpoints(addresses ...string) []byte {
+	var entries []string
+	for _, address := range addresses {
+		entries = append(entries, `{"ip":"`+address+`"}`)
+	}
+	return []byte(`{"subsets":[{"addresses":[` + strings.Join(entries, ",") + `],"ports":[{"name":"https","port":6443,"protocol":"TCP"}]}]}`)
 }
 
 func assertCommandOrder(t *testing.T, commands [][]string, needles ...string) {

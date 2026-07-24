@@ -12,12 +12,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/kubernetesrelease"
 )
 
 func TestRootAndInstallerCommandsShowHelpWithoutArguments(t *testing.T) {
@@ -266,14 +268,23 @@ func TestBuildKubernetesUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	supported, err := kubernetesrelease.DefaultSupportedVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := supported.Select(version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := strconv.Itoa(selected[0].ArtifactRevision)
 	runtimeEnvironment := []string{
 		"KATL_ARCHITECTURE=" + architecture,
-		"KATL_BUILD_COMMIT=v1.36.2-katl.8",
+		"KATL_BUILD_COMMIT=" + selected[0].ArtifactVersion(),
 	}
 	environment := append(append([]string(nil), runtimeEnvironment...),
 		"KATL_KUBERNETES_MINOR=v1.36",
 		"KATL_KUBERNETES_PAYLOAD_VERSION=v1.36.2",
-		"KATL_KUBERNETES_ARTIFACT_REVISION=8",
+		"KATL_KUBERNETES_ARTIFACT_REVISION="+revision,
 		"KATL_KUBERNETES_KUBEADM_VERSION=0:1.36.2-150500.2.1",
 		"KATL_KUBERNETES_KUBELET_VERSION=0:1.36.2-150500.2.1",
 		"KATL_KUBERNETES_KUBECTL_VERSION=0:1.36.2-150500.2.1",
