@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
@@ -383,6 +385,44 @@ func TestActivateClusterConfigUsesOneLiveWholeNodeGeneration(t *testing.T) {
 		}
 	}
 	if client.submitRequest == nil || client.submitRequest.OperationKind != "generation-apply" || client.submitRequest.ConfigApply == nil {
+		t.Fatalf("submit request = %#v", client.submitRequest)
+	}
+}
+
+func TestActivateClusterConfigStagesNextBootHostConfiguration(t *testing.T) {
+	configPath := writeClusterConfig(t)
+	client := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-1"},
+		validateResult: &agentapi.ConfigValidationResult{
+			Accepted:          true,
+			AcceptedApplyMode: generation.ApplyModeNextBoot,
+			ChangedDomains:    []string{configapply.DomainHostConfiguration},
+		},
+		submitAccepted:  &agentapi.OperationAccepted{OperationId: "stage-cp-1", RequestDigest: strings.Repeat("e", 64)},
+		operationStatus: &agentapi.OperationStatus{OperationId: "stage-cp-1", CandidateGenerationId: "cluster-config-42", Terminal: true, Result: operation.ResultSucceeded},
+	}
+	previousDial := dialKatlcAgent
+	previousNow := kubeadmConfigNow
+	defer func() {
+		dialKatlcAgent = previousDial
+		kubeadmConfigNow = previousNow
+	}()
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
+	inv, err := kubeadmConfigInventory(kubeadmControlPlaneConfigOptions{configPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(activated.stagedNodes, []string{"cp-1"}) {
+		t.Fatalf("staged nodes = %#v", activated.stagedNodes)
+	}
+	if client.submitRequest == nil || client.submitRequest.OperationKind != "generation-stage" {
 		t.Fatalf("submit request = %#v", client.submitRequest)
 	}
 }

@@ -27,6 +27,8 @@ type StateAssets struct {
 	EFIMount           string
 	EtcKubernetesMount string
 	GenerationActivate string
+	HostConfigPrepare  string
+	HostConfigVerify   string
 	KubeadmActivate    string
 	KubeadmReadyTarget string
 	BootCompleteTarget string
@@ -99,6 +101,8 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		}, "\n"),
 		EtcKubernetesMount: kubernetesMount,
 		GenerationActivate: renderGenerationActivateService(),
+		HostConfigPrepare:  renderHostConfigPrepareService(),
+		HostConfigVerify:   renderHostConfigVerifyService(),
 		KubeadmActivate:    renderKubeadmActivateService(),
 		KubeadmReadyTarget: renderKubeadmReadyTarget(),
 		BootCompleteTarget: renderBootCompleteTarget(),
@@ -165,6 +169,43 @@ func renderGenerationActivateService() string {
 	}, "\n")
 }
 
+func renderHostConfigPrepareService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Prepare selected Katl native host configuration",
+		"Documentation=man:systemd-confext(8) man:sysctl.d(5) man:modules-load.d(5) man:udev(7)",
+		"DefaultDependencies=no",
+		"Requires=systemd-confext.service",
+		"After=systemd-confext.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-host-config-prepare",
+		"ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=prepare",
+		"",
+	}, "\n")
+}
+
+func renderHostConfigVerifyService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Verify selected Katl native host configuration",
+		"Documentation=man:sysctl.d(5) man:modules-load.d(5)",
+		"DefaultDependencies=no",
+		"Requires=katl-host-config-prepare.service",
+		"After=katl-host-config-prepare.service",
+		"Before=katl-boot-health.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-host-config-verify",
+		"ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=verify",
+		"",
+	}, "\n")
+}
+
 func renderKubeadmReadyTarget() string {
 	return strings.Join([]string{
 		"[Unit]",
@@ -221,8 +262,8 @@ func renderBootHealthService() string {
 		"[Unit]",
 		"Description=Record successful Katl boot health",
 		"Documentation=man:systemd.service(5)",
-		"Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service",
-		"After=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service",
+		"Requires=katl-runtime-handoff-status.service katl-host-config-verify.service katlc-agent.service systemd-networkd.service sshd.service",
+		"After=katl-runtime-handoff-status.service katl-host-config-verify.service katlc-agent.service systemd-networkd.service sshd.service",
 		"Before=katl-boot-complete.target",
 		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
@@ -387,6 +428,12 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-generation-activate.service", assets.GenerationActivate, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-host-config-prepare.service", assets.HostConfigPrepare, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-host-config-verify.service", assets.HostConfigVerify, 0o644); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-kubeadm-activate.service", assets.KubeadmActivate, 0o644); err != nil {

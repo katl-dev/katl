@@ -63,6 +63,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		"kubelet":       true,
 	}
 	preBootstrap := false
+	var stagedNodes []string
 	if strings.TrimSpace(opts.configPath) != "" {
 		var activated activatedClusterConfig
 		activated, err = activateClusterConfig(ctx, opts, inv.Nodes)
@@ -72,6 +73,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		generations = activated.generations
 		components = activated.components
 		preBootstrap = activated.preBootstrap
+		stagedNodes = activated.stagedNodes
 	} else if strings.TrimSpace(opts.generationID) == "" {
 		return fmt.Errorf("--generation is required with --inventory")
 	}
@@ -79,6 +81,17 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	results := map[string]any{}
 	for _, component := range []string{"control-plane", "kubelet", "kube-proxy"} {
 		if !components[component] {
+			continue
+		}
+		if len(stagedNodes) > 0 {
+			if err := clusterApplyProgress(opts.progress, "component=%s status=skipped reason=node-config-reboot-required", component); err != nil {
+				return err
+			}
+			results[component] = map[string]string{
+				"component": component,
+				"reason":    "node-config-reboot-required",
+				"result":    "skipped",
+			}
 			continue
 		}
 		if preBootstrap {
@@ -107,11 +120,16 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 			return err
 		}
 	}
-	return json.NewEncoder(stdout).Encode(map[string]any{
+	report := map[string]any{
 		"nodes":      len(inv.Nodes),
 		"kubernetes": results,
 		"result":     "succeeded",
-	})
+	}
+	if len(stagedNodes) > 0 {
+		report["rebootRequired"] = true
+		report["stagedNodes"] = stagedNodes
+	}
+	return json.NewEncoder(stdout).Encode(report)
 }
 
 func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout io.Writer) error {
@@ -132,6 +150,9 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 			return err
 		}
 		generations = activated.generations
+		if len(activated.stagedNodes) > 0 {
+			return fmt.Errorf("node configuration staged for next boot on %s; reboot and wait for healthy promotion before applying Kubernetes configuration", strings.Join(activated.stagedNodes, ", "))
+		}
 	}
 	summary, err := runKubeadmConfigComponent(ctx, opts, inv, generations)
 	if err != nil {
@@ -302,6 +323,7 @@ type activatedClusterConfig struct {
 	generations  map[string]string
 	components   map[string]bool
 	preBootstrap bool
+	stagedNodes  []string
 }
 
 func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, nodes []inventory.Node) (activatedClusterConfig, error) {
@@ -322,6 +344,8 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		currentGeneration string
 		kubernetesState   string
 		noChanges         bool
+		acceptedApplyMode string
+		changedDomains    []string
 	}
 	prepared := make([]preparedInput, 0, len(nodes))
 	components := map[string]bool{}
@@ -390,16 +414,24 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		input.currentGeneration = status.CurrentGenerationId
 		input.kubernetesState = strings.TrimSpace(status.GetKubernetes().GetState())
 		input.noChanges = validation.NoChanges
+		input.acceptedApplyMode = validation.AcceptedApplyMode
+		input.changedDomains = append([]string(nil), validation.ChangedDomains...)
 		_ = conn.Close()
 		if validation.NoChanges {
+			if len(validation.Diagnostics) > 0 {
+				return activatedClusterConfig{}, fmt.Errorf("node %s configuration files match, but runtime state is not current: %s", node.Name, strings.Join(validation.Diagnostics, "; "))
+			}
 			result[node.Name] = status.CurrentGenerationId
 			if err := clusterApplyProgress(opts.progress, "phase=node-config node=%s status=unchanged", node.Name); err != nil {
 				return activatedClusterConfig{}, err
 			}
 			continue
 		}
-		if validation.AcceptedApplyMode != generation.ApplyModeLive {
-			return activatedClusterConfig{}, fmt.Errorf("node %s cannot apply Kubernetes configuration online (accepted mode %s)", node.Name, validation.AcceptedApplyMode)
+		if validation.AcceptedApplyMode == generation.ApplyModeNextBoot && containsKubernetesConfigDomain(validation.ChangedDomains) {
+			return activatedClusterConfig{}, fmt.Errorf("node %s requires next-boot mode for a change that also includes Kubernetes configuration; stage host configuration separately before applying Kubernetes configuration online", node.Name)
+		}
+		if validation.AcceptedApplyMode != generation.ApplyModeLive && validation.AcceptedApplyMode != generation.ApplyModeNextBoot {
+			return activatedClusterConfig{}, fmt.Errorf("node %s returned unsupported apply mode %s", node.Name, validation.AcceptedApplyMode)
 		}
 	}
 
@@ -432,9 +464,14 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			_ = conn.Close()
 			return activatedClusterConfig{}, err
 		}
+		operationKind, err := configApplyOperationKind(input.acceptedApplyMode)
+		if err != nil {
+			_ = conn.Close()
+			return activatedClusterConfig{}, fmt.Errorf("apply cluster config on %s: %w", node.Name, err)
+		}
 		accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
-			OperationKind: "generation-apply", Actor: "katlctl cluster apply", ExpectedMachineId: input.machineID, ExpectedCurrentGenerationId: input.currentGeneration,
+			OperationKind: operationKind, Actor: "katlctl cluster apply", ExpectedMachineId: input.machineID, ExpectedCurrentGenerationId: input.currentGeneration,
 			ConfigApply: &agentapi.ConfigApplyOperationRequest{CandidateGenerationId: generationID, ApplyMode: generation.ApplyModeAuto, NodeName: node.Name, ConfigYaml: string(input.configYAML)},
 		})
 		if err != nil {
@@ -449,7 +486,11 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("apply cluster config on %s: %w", node.Name, err)
 		}
-		if err := clusterApplyProgress(opts.progress, "phase=node-config node=%s status=succeeded", node.Name); err != nil {
+		nodeStatus := "succeeded"
+		if input.acceptedApplyMode == generation.ApplyModeNextBoot {
+			nodeStatus = "staged-next-boot reboot-required"
+		}
+		if err := clusterApplyProgress(opts.progress, "phase=node-config node=%s status=%s", node.Name, nodeStatus); err != nil {
 			return activatedClusterConfig{}, err
 		}
 		activatedGeneration := strings.TrimSpace(terminal.GetCandidateGenerationId())
@@ -461,7 +502,24 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 		result[node.Name] = activatedGeneration
 	}
-	return activatedClusterConfig{generations: result, components: components, preBootstrap: preBootstrap}, nil
+	var stagedNodes []string
+	for _, input := range prepared {
+		if input.acceptedApplyMode == generation.ApplyModeNextBoot {
+			stagedNodes = append(stagedNodes, input.node.Name)
+		}
+	}
+	sort.Strings(stagedNodes)
+	return activatedClusterConfig{generations: result, components: components, preBootstrap: preBootstrap, stagedNodes: stagedNodes}, nil
+}
+
+func containsKubernetesConfigDomain(domains []string) bool {
+	for _, domain := range domains {
+		switch domain {
+		case configapply.DomainKubeadmConfig, configapply.DomainSelectedKubeadmConfig:
+			return true
+		}
+	}
+	return false
 }
 
 func clusterApplyProgress(w io.Writer, format string, args ...any) error {

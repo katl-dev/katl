@@ -168,6 +168,7 @@ for path in \
     /usr/lib/katl/runtime/katl-ssh-host-keys \
     /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
+    /usr/lib/katl/runtime/katl-host-config-activate \
     /usr/lib/systemd/system/var.mount \
     /usr/lib/systemd/system/etc-kubernetes.mount \
     /usr/lib/systemd/system/katl-generation-activate.service \

@@ -18,6 +18,7 @@ var recipeRoots = []string{
 	"cmd/katl-boot-health",
 	"cmd/katl-console",
 	"cmd/katl-generation-activate",
+	"cmd/katl-host-config-activate",
 	"cmd/katl-kubernetes-release",
 	"cmd/katl-mkosi-artifacts",
 	"cmd/katl-publish-kubernetes-sysext",

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
@@ -15,6 +16,7 @@ type HostConfigurationChangePlan struct {
 	Live              bool
 	Sets              []string
 	Paths             []string
+	Effects           []generation.ConfigApplyEffect
 	Message           string
 	Commands          []Command
 	SysctlAssignments []HostSysctlAssignment
@@ -62,21 +64,41 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 				if stagedReason == "" {
 					stagedReason = "kernel module configuration is next-boot-only"
 				}
+				if strings.HasPrefix(filePath, "/etc/modules-load.d/") {
+					if file, exists := afterFiles[filePath]; exists && file.Content != nil {
+						for _, module := range parseModulesLoad(*file.Content) {
+							plan.Effects = append(plan.Effects, plannedEffect("load-and-verify", "module "+module))
+						}
+					}
+				}
 			case strings.HasPrefix(filePath, "/etc/sysctl.d/") && strings.HasSuffix(filePath, ".conf"):
 				assignments, ok := liveSysctlDiff(beforeFiles[filePath], afterFiles[filePath])
 				if !ok {
+					if file, exists := afterFiles[filePath]; exists && file.Content != nil {
+						if values, concrete := parseConcreteSysctl(*file.Content); concrete {
+							for key := range values {
+								plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+key))
+							}
+						}
+					}
 					if stagedReason == "" {
 						stagedReason = "sysctl additions, removals, ambiguous assignments, and key-set changes require next boot"
 					}
 					continue
 				}
 				plan.SysctlAssignments = append(plan.SysctlAssignments, assignments...)
+				for _, assignment := range assignments {
+					plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+assignment.Key))
+				}
 			case strings.HasPrefix(filePath, "/etc/udev/rules.d/") && strings.HasSuffix(filePath, ".rules"):
 				udevReload = true
 				if _, exists := afterFiles[filePath]; exists {
+					plan.Effects = append(plan.Effects, plannedEffect("verify", "udev rules "+filePath))
 					plan.Commands = append(plan.Commands, Command{
-						Name: "udev-rules-verify",
-						Argv: []string{"/usr/bin/udevadm", "verify", activeHostConfigurationPath(filePath)},
+						Name:         "udev-rules-verify",
+						EffectAction: "verify",
+						EffectTarget: "udev rules " + filePath,
+						Argv:         []string{"/usr/bin/udevadm", "verify", activeHostConfigurationPath(filePath)},
 					})
 				}
 			default:
@@ -113,22 +135,11 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	sort.Slice(plan.SysctlAssignments, func(i, j int) bool {
 		return plan.SysctlAssignments[i].Key < plan.SysctlAssignments[j].Key
 	})
-	if stagedReason != "" {
-		plan.Live = false
-		plan.Message = stagedReason
-		return plan
-	}
 	if udevReload {
-		plan.Commands = append(plan.Commands, Command{
-			Name: "udev-rules-reload",
-			Argv: []string{"/usr/bin/udevadm", "control", "--reload"},
-		})
+		plan.Effects = append(plan.Effects, plannedEffect("reload", "udev rules"))
 	}
 	if systemdReload {
-		plan.Commands = append(plan.Commands, Command{
-			Name: "systemd-daemon-reload",
-			Argv: []string{"systemctl", "daemon-reload"},
-		})
+		plan.Effects = append(plan.Effects, plannedEffect("reload", "systemd manager"))
 	}
 	units := make([]string, 0, len(notifications))
 	for unit := range notifications {
@@ -136,26 +147,88 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	}
 	sort.Strings(units)
 	for _, unit := range units {
-		action := notifications[unit]
+		plan.Effects = append(plan.Effects, plannedEffect(notifications[unit], "systemd unit "+unit))
+	}
+	sort.SliceStable(plan.Effects, func(i, j int) bool {
+		if plan.Effects[i].Target == plan.Effects[j].Target {
+			return plan.Effects[i].Action < plan.Effects[j].Action
+		}
+		return plan.Effects[i].Target < plan.Effects[j].Target
+	})
+	if stagedReason != "" {
+		plan.Live = false
+		plan.Message = hostConfigurationMessage(stagedReason, plan.Effects)
+		return plan
+	}
+	if udevReload {
 		plan.Commands = append(plan.Commands, Command{
-			Name: "systemd-notify-" + unit,
-			Argv: []string{"systemctl", action, unit},
+			Name:         "udev-rules-reload",
+			EffectAction: "reload",
+			EffectTarget: "udev rules",
+			Argv:         []string{"/usr/bin/udevadm", "control", "--reload"},
 		})
 	}
-	switch {
-	case udevReload && len(plan.SysctlAssignments) > 0:
-		plan.Message = "sysctl values will be verified and udev rules reloaded; existing devices will not be retriggered"
-	case udevReload:
-		plan.Message = "udev rules will be reloaded; existing devices will not be retriggered"
-	case len(plan.SysctlAssignments) > 0:
-		plan.Message = fmt.Sprintf("%d concrete sysctl assignment(s) will be applied and verified", len(plan.SysctlAssignments))
-	case len(notifications) > 0:
-		plan.Message = fmt.Sprintf("%d systemd unit notification(s) will run", len(notifications))
-	default:
+	if systemdReload {
+		plan.Commands = append(plan.Commands, Command{
+			Name:         "systemd-daemon-reload",
+			EffectAction: "reload",
+			EffectTarget: "systemd manager",
+			Argv:         []string{"systemctl", "daemon-reload"},
+		})
+	}
+	for _, unit := range units {
+		action := notifications[unit]
+		plan.Commands = append(plan.Commands, Command{
+			Name:         "systemd-notify-" + unit,
+			EffectAction: action,
+			EffectTarget: "systemd unit " + unit,
+			Argv:         []string{"systemctl", action, unit},
+		})
+	}
+	if len(plan.Effects) == 0 {
 		plan.Live = false
 		plan.Message = "changed host configuration has no live action"
+	} else {
+		plan.Message = hostConfigurationMessage("", plan.Effects)
+		if udevReload {
+			plan.Message += "; existing devices will not be retriggered"
+		}
 	}
 	return plan
+}
+
+func plannedEffect(action, target string) generation.ConfigApplyEffect {
+	return generation.ConfigApplyEffect{Action: action, Target: target, Status: generation.ConfigApplyActionPlanned}
+}
+
+func hostConfigurationMessage(prefix string, effects []generation.ConfigApplyEffect) string {
+	parts := make([]string, 0, len(effects)+1)
+	if strings.TrimSpace(prefix) != "" {
+		parts = append(parts, prefix)
+	}
+	for _, effect := range effects {
+		parts = append(parts, effect.Action+" "+effect.Target)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func parseModulesLoad(content string) []string {
+	var modules []string
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if comment := strings.IndexAny(line, "#;"); comment >= 0 {
+			line = strings.TrimSpace(line[:comment])
+		}
+		if fields := strings.Fields(line); len(fields) == 1 {
+			modules = append(modules, fields[0])
+		}
+	}
+	sort.Strings(modules)
+	return compactStrings(modules)
 }
 
 func liveSysctlDiff(before manifest.HostConfigurationFile, after manifest.HostConfigurationFile) ([]HostSysctlAssignment, bool) {

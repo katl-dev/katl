@@ -32,6 +32,7 @@ const (
 	RecordTypeJournal     = "katl.operation.journal-event"
 
 	ResultTimedOut          = "timed-out"
+	ResultFailedRolledBack  = "failed-rolled-back"
 	ResultFailedNeedsRepair = "failed-needs-repair"
 	ResultSucceeded         = "succeeded"
 

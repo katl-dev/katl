@@ -370,6 +370,18 @@ func writeOperationStatus(stdout io.Writer, output string, status *agentapi.Oper
 		if _, err := fmt.Fprintf(stdout, "%s %s: phase=%s result=%s\n", publicStatus.GetOperationId(), publicStatus.GetOperationKind(), publicStatus.GetPhase(), result); err != nil {
 			return err
 		}
+		if apply := publicStatus.GetConfigApply(); apply != nil {
+			for _, action := range apply.GetDomainActions() {
+				if _, err := fmt.Fprintf(stdout, "%s: action=%s status=%s\n", action.GetDomain(), action.GetAction(), action.GetStatus()); err != nil {
+					return err
+				}
+				for _, effect := range action.GetEffects() {
+					if _, err := fmt.Fprintf(stdout, "  %s %s: %s\n", effect.GetAction(), effect.GetTarget(), effect.GetStatus()); err != nil {
+						return err
+					}
+				}
+			}
+		}
 		if next := strings.TrimSpace(publicStatus.GetNextAction()); next != "" {
 			_, err := fmt.Fprintf(stdout, "Next action: %s\n", next)
 			return err
@@ -466,8 +478,11 @@ func operationResultError(status *agentapi.OperationStatus) error {
 		return nil
 	}
 	detail := strings.TrimSpace(status.GetFailureReason())
-	if detail == "" {
-		detail = strings.TrimSpace(status.GetNextAction())
+	nextAction := strings.TrimSpace(status.GetNextAction())
+	if detail != "" && nextAction != "" {
+		detail += "; next action: " + nextAction
+	} else if detail == "" {
+		detail = nextAction
 	}
 	if detail == "" {
 		detail = "inspect operation status and diagnostics"

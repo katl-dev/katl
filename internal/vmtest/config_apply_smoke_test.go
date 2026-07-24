@@ -344,9 +344,10 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+stagedGeneration+`"`, `"bootedGenerationID": "`+stagedGeneration+`"`, `"pendingHealthValidation": false`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json", `"phase": "active"`, `"acceptedApplyMode": "next-boot"`)
 	bootedGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, "status-booted-networkd", stagedGeneration)
-	if bootedGenerationStatus.GetConfigApply().GetPhase() != "next-boot" || bootedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
-		t.Fatalf("booted networkd katlctl generation status = %+v, want next-boot config apply", bootedGenerationStatus.GetConfigApply())
+	if bootedGenerationStatus.GetConfigApply().GetPhase() != "active" || bootedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
+		t.Fatalf("booted networkd katlctl generation status = %+v, want active next-boot config apply", bootedGenerationStatus.GetConfigApply())
 	}
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
 	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)

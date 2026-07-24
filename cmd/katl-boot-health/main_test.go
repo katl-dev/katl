@@ -62,6 +62,25 @@ func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
 	writeCommandGeneration(t, root, "gen0", now.Add(-2*time.Hour))
 	writeCommandGeneration(t, root, "gen1", now.Add(-time.Hour))
 	markCommandGenerationHealthy(t, root, "gen0", now.Add(-90*time.Minute))
+	configStatus, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{
+		GenerationID: "gen1", PreviousGeneration: "gen0",
+		RequestedApplyMode: generation.ApplyModeAuto, AcceptedApplyMode: generation.ApplyModeNextBoot,
+		ChangedDomains: []string{"host-configuration"}, HealthState: generation.HealthStateUnknown, UpdatedAt: now.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStatus, err = generation.MarkConfigApplyPhase(configStatus, generation.ConfigApplyPhaseNextBoot, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStatusPath, err := generation.ConfigApplyStatusPath(root, "gen1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteConfigApplyStatus(configStatusPath, configStatus); err != nil {
+		t.Fatal(err)
+	}
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
 		APIVersion:             generation.APIVersion,
 		Kind:                   generation.BootSelectionKind,
@@ -99,6 +118,13 @@ func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "generation=gen1") || !strings.Contains(stdout.String(), "promoted=true") {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+	configStatus, err = generation.ReadConfigApplyStatus(configStatusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configStatus.Phase != generation.ConfigApplyPhaseActive || configStatus.HealthState != generation.HealthStateHealthy {
+		t.Fatalf("config status = %#v", configStatus)
 	}
 }
 

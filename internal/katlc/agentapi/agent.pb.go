@@ -2496,6 +2496,7 @@ type OperationStatus struct {
 	ConfigApplyPhase        string                 `protobuf:"bytes,27,opt,name=config_apply_phase,json=configApplyPhase,proto3" json:"config_apply_phase,omitempty"`
 	ChangedDomains          []string               `protobuf:"bytes,28,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
 	ClientRequestId         string                 `protobuf:"bytes,29,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
+	ConfigApply             *ConfigApplyStatus     `protobuf:"bytes,30,opt,name=config_apply,json=configApply,proto3" json:"config_apply,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -2731,6 +2732,13 @@ func (x *OperationStatus) GetClientRequestId() string {
 		return x.ClientRequestId
 	}
 	return ""
+}
+
+func (x *OperationStatus) GetConfigApply() *ConfigApplyStatus {
+	if x != nil {
+		return x.ConfigApply
+	}
+	return nil
 }
 
 type DiagnosticArtifact struct {
@@ -3526,17 +3534,21 @@ func (x *GeneratedConfext) GetSha256() string {
 }
 
 type ConfigApplyStatus struct {
-	state                     protoimpl.MessageState `protogen:"open.v1"`
-	Phase                     string                 `protobuf:"bytes,1,opt,name=phase,proto3" json:"phase,omitempty"`
-	RequestedApplyMode        string                 `protobuf:"bytes,2,opt,name=requested_apply_mode,json=requestedApplyMode,proto3" json:"requested_apply_mode,omitempty"`
-	AcceptedApplyMode         string                 `protobuf:"bytes,3,opt,name=accepted_apply_mode,json=acceptedApplyMode,proto3" json:"accepted_apply_mode,omitempty"`
-	ChangedDomains            []string               `protobuf:"bytes,4,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
-	FailureReason             string                 `protobuf:"bytes,5,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
-	KubeadmActionRequired     bool                   `protobuf:"varint,6,opt,name=kubeadm_action_required,json=kubeadmActionRequired,proto3" json:"kubeadm_action_required,omitempty"`
-	PreviousKubeadmConfigName string                 `protobuf:"bytes,7,opt,name=previous_kubeadm_config_name,json=previousKubeadmConfigName,proto3" json:"previous_kubeadm_config_name,omitempty"`
-	SelectedKubeadmConfigName string                 `protobuf:"bytes,8,opt,name=selected_kubeadm_config_name,json=selectedKubeadmConfigName,proto3" json:"selected_kubeadm_config_name,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	state                      protoimpl.MessageState     `protogen:"open.v1"`
+	Phase                      string                     `protobuf:"bytes,1,opt,name=phase,proto3" json:"phase,omitempty"`
+	RequestedApplyMode         string                     `protobuf:"bytes,2,opt,name=requested_apply_mode,json=requestedApplyMode,proto3" json:"requested_apply_mode,omitempty"`
+	AcceptedApplyMode          string                     `protobuf:"bytes,3,opt,name=accepted_apply_mode,json=acceptedApplyMode,proto3" json:"accepted_apply_mode,omitempty"`
+	ChangedDomains             []string                   `protobuf:"bytes,4,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
+	FailureReason              string                     `protobuf:"bytes,5,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	KubeadmActionRequired      bool                       `protobuf:"varint,6,opt,name=kubeadm_action_required,json=kubeadmActionRequired,proto3" json:"kubeadm_action_required,omitempty"`
+	PreviousKubeadmConfigName  string                     `protobuf:"bytes,7,opt,name=previous_kubeadm_config_name,json=previousKubeadmConfigName,proto3" json:"previous_kubeadm_config_name,omitempty"`
+	SelectedKubeadmConfigName  string                     `protobuf:"bytes,8,opt,name=selected_kubeadm_config_name,json=selectedKubeadmConfigName,proto3" json:"selected_kubeadm_config_name,omitempty"`
+	DomainActions              []*ConfigApplyDomainAction `protobuf:"bytes,9,rep,name=domain_actions,json=domainActions,proto3" json:"domain_actions,omitempty"`
+	RollbackTargetGenerationId string                     `protobuf:"bytes,10,opt,name=rollback_target_generation_id,json=rollbackTargetGenerationId,proto3" json:"rollback_target_generation_id,omitempty"`
+	RollbackResult             string                     `protobuf:"bytes,11,opt,name=rollback_result,json=rollbackResult,proto3" json:"rollback_result,omitempty"`
+	RollbackReason             string                     `protobuf:"bytes,12,opt,name=rollback_reason,json=rollbackReason,proto3" json:"rollback_reason,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *ConfigApplyStatus) Reset() {
@@ -3625,6 +3637,194 @@ func (x *ConfigApplyStatus) GetSelectedKubeadmConfigName() string {
 	return ""
 }
 
+func (x *ConfigApplyStatus) GetDomainActions() []*ConfigApplyDomainAction {
+	if x != nil {
+		return x.DomainActions
+	}
+	return nil
+}
+
+func (x *ConfigApplyStatus) GetRollbackTargetGenerationId() string {
+	if x != nil {
+		return x.RollbackTargetGenerationId
+	}
+	return ""
+}
+
+func (x *ConfigApplyStatus) GetRollbackResult() string {
+	if x != nil {
+		return x.RollbackResult
+	}
+	return ""
+}
+
+func (x *ConfigApplyStatus) GetRollbackReason() string {
+	if x != nil {
+		return x.RollbackReason
+	}
+	return ""
+}
+
+type ConfigApplyDomainAction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Domain        string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
+	Action        string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	Sets          []string               `protobuf:"bytes,4,rep,name=sets,proto3" json:"sets,omitempty"`
+	Paths         []string               `protobuf:"bytes,5,rep,name=paths,proto3" json:"paths,omitempty"`
+	Effects       []*ConfigApplyEffect   `protobuf:"bytes,6,rep,name=effects,proto3" json:"effects,omitempty"`
+	Diagnostic    string                 `protobuf:"bytes,7,opt,name=diagnostic,proto3" json:"diagnostic,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigApplyDomainAction) Reset() {
+	*x = ConfigApplyDomainAction{}
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigApplyDomainAction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigApplyDomainAction) ProtoMessage() {}
+
+func (x *ConfigApplyDomainAction) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigApplyDomainAction.ProtoReflect.Descriptor instead.
+func (*ConfigApplyDomainAction) Descriptor() ([]byte, []int) {
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ConfigApplyDomainAction) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
+}
+
+func (x *ConfigApplyDomainAction) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *ConfigApplyDomainAction) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ConfigApplyDomainAction) GetSets() []string {
+	if x != nil {
+		return x.Sets
+	}
+	return nil
+}
+
+func (x *ConfigApplyDomainAction) GetPaths() []string {
+	if x != nil {
+		return x.Paths
+	}
+	return nil
+}
+
+func (x *ConfigApplyDomainAction) GetEffects() []*ConfigApplyEffect {
+	if x != nil {
+		return x.Effects
+	}
+	return nil
+}
+
+func (x *ConfigApplyDomainAction) GetDiagnostic() string {
+	if x != nil {
+		return x.Diagnostic
+	}
+	return ""
+}
+
+type ConfigApplyEffect struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Action        string                 `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"`
+	Target        string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	Diagnostic    string                 `protobuf:"bytes,4,opt,name=diagnostic,proto3" json:"diagnostic,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigApplyEffect) Reset() {
+	*x = ConfigApplyEffect{}
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigApplyEffect) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigApplyEffect) ProtoMessage() {}
+
+func (x *ConfigApplyEffect) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigApplyEffect.ProtoReflect.Descriptor instead.
+func (*ConfigApplyEffect) Descriptor() ([]byte, []int) {
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ConfigApplyEffect) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *ConfigApplyEffect) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *ConfigApplyEffect) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ConfigApplyEffect) GetDiagnostic() string {
+	if x != nil {
+		return x.Diagnostic
+	}
+	return ""
+}
+
 type RebootRequest struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	ApiVersion         string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
@@ -3638,7 +3838,7 @@ type RebootRequest struct {
 
 func (x *RebootRequest) Reset() {
 	*x = RebootRequest{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[37]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3650,7 +3850,7 @@ func (x *RebootRequest) String() string {
 func (*RebootRequest) ProtoMessage() {}
 
 func (x *RebootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[37]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3663,7 +3863,7 @@ func (x *RebootRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebootRequest.ProtoReflect.Descriptor instead.
 func (*RebootRequest) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{37}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RebootRequest) GetApiVersion() string {
@@ -3711,7 +3911,7 @@ type RebootAccepted struct {
 
 func (x *RebootAccepted) Reset() {
 	*x = RebootAccepted{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[38]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3723,7 +3923,7 @@ func (x *RebootAccepted) String() string {
 func (*RebootAccepted) ProtoMessage() {}
 
 func (x *RebootAccepted) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[38]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3736,7 +3936,7 @@ func (x *RebootAccepted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebootAccepted.ProtoReflect.Descriptor instead.
 func (*RebootAccepted) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{38}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *RebootAccepted) GetScheduled() bool {
@@ -3765,7 +3965,7 @@ type ShutdownRequest struct {
 
 func (x *ShutdownRequest) Reset() {
 	*x = ShutdownRequest{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[39]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3777,7 +3977,7 @@ func (x *ShutdownRequest) String() string {
 func (*ShutdownRequest) ProtoMessage() {}
 
 func (x *ShutdownRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[39]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3790,7 +3990,7 @@ func (x *ShutdownRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShutdownRequest.ProtoReflect.Descriptor instead.
 func (*ShutdownRequest) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{39}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ShutdownRequest) GetApiVersion() string {
@@ -3830,7 +4030,7 @@ type ShutdownAccepted struct {
 
 func (x *ShutdownAccepted) Reset() {
 	*x = ShutdownAccepted{}
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[40]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3842,7 +4042,7 @@ func (x *ShutdownAccepted) String() string {
 func (*ShutdownAccepted) ProtoMessage() {}
 
 func (x *ShutdownAccepted) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[40]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3855,7 +4055,7 @@ func (x *ShutdownAccepted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShutdownAccepted.ProtoReflect.Descriptor instead.
 func (*ShutdownAccepted) Descriptor() ([]byte, []int) {
-	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{40}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ShutdownAccepted) GetScheduled() bool {
@@ -4130,7 +4330,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x16ListOperationsResponse\x12>\n" +
 	"\n" +
 	"operations\x18\x01 \x03(\v2\x1e.katl.agent.v1.OperationStatusR\n" +
-	"operations\"\x84\n" +
+	"operations\"\xc9\n" +
 	"\n" +
 	"\x0fOperationStatus\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
@@ -4165,7 +4365,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x16previous_generation_id\x18\x1a \x01(\tR\x14previousGenerationId\x12,\n" +
 	"\x12config_apply_phase\x18\x1b \x01(\tR\x10configApplyPhase\x12'\n" +
 	"\x0fchanged_domains\x18\x1c \x03(\tR\x0echangedDomains\x12*\n" +
-	"\x11client_request_id\x18\x1d \x01(\tR\x0fclientRequestId\"\x9c\x01\n" +
+	"\x11client_request_id\x18\x1d \x01(\tR\x0fclientRequestId\x12C\n" +
+	"\fconfig_apply\x18\x1e \x01(\v2 .katl.agent.v1.ConfigApplyStatusR\vconfigApply\"\x9c\x01\n" +
 	"\x12DiagnosticArtifact\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12\x12\n" +
@@ -4241,7 +4442,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12'\n" +
 	"\x0factivation_path\x18\x03 \x01(\tR\x0eactivationPath\x12\x16\n" +
-	"\x06sha256\x18\x04 \x01(\tR\x06sha256\"\x95\x03\n" +
+	"\x06sha256\x18\x04 \x01(\tR\x06sha256\"\xf9\x04\n" +
 	"\x11ConfigApplyStatus\x12\x14\n" +
 	"\x05phase\x18\x01 \x01(\tR\x05phase\x120\n" +
 	"\x14requested_apply_mode\x18\x02 \x01(\tR\x12requestedApplyMode\x12.\n" +
@@ -4250,7 +4451,29 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x0efailure_reason\x18\x05 \x01(\tR\rfailureReason\x126\n" +
 	"\x17kubeadm_action_required\x18\x06 \x01(\bR\x15kubeadmActionRequired\x12?\n" +
 	"\x1cprevious_kubeadm_config_name\x18\a \x01(\tR\x19previousKubeadmConfigName\x12?\n" +
-	"\x1cselected_kubeadm_config_name\x18\b \x01(\tR\x19selectedKubeadmConfigName\"\xbc\x01\n" +
+	"\x1cselected_kubeadm_config_name\x18\b \x01(\tR\x19selectedKubeadmConfigName\x12M\n" +
+	"\x0edomain_actions\x18\t \x03(\v2&.katl.agent.v1.ConfigApplyDomainActionR\rdomainActions\x12A\n" +
+	"\x1drollback_target_generation_id\x18\n" +
+	" \x01(\tR\x1arollbackTargetGenerationId\x12'\n" +
+	"\x0frollback_result\x18\v \x01(\tR\x0erollbackResult\x12'\n" +
+	"\x0frollback_reason\x18\f \x01(\tR\x0erollbackReason\"\xe7\x01\n" +
+	"\x17ConfigApplyDomainAction\x12\x16\n" +
+	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x16\n" +
+	"\x06action\x18\x02 \x01(\tR\x06action\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x12\n" +
+	"\x04sets\x18\x04 \x03(\tR\x04sets\x12\x14\n" +
+	"\x05paths\x18\x05 \x03(\tR\x05paths\x12:\n" +
+	"\aeffects\x18\x06 \x03(\v2 .katl.agent.v1.ConfigApplyEffectR\aeffects\x12\x1e\n" +
+	"\n" +
+	"diagnostic\x18\a \x01(\tR\n" +
+	"diagnostic\"{\n" +
+	"\x11ConfigApplyEffect\x12\x16\n" +
+	"\x06action\x18\x01 \x01(\tR\x06action\x12\x16\n" +
+	"\x06target\x18\x02 \x01(\tR\x06target\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x1e\n" +
+	"\n" +
+	"diagnostic\x18\x04 \x01(\tR\n" +
+	"diagnostic\"\xbc\x01\n" +
 	"\rRebootRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -4299,7 +4522,7 @@ func file_internal_katlc_agentapi_agent_proto_rawDescGZIP() []byte {
 	return file_internal_katlc_agentapi_agent_proto_rawDescData
 }
 
-var file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_internal_katlc_agentapi_agent_proto_goTypes = []any{
 	(*GetNodeStatusRequest)(nil),                      // 0: katl.agent.v1.GetNodeStatusRequest
 	(*NodeStatus)(nil),                                // 1: katl.agent.v1.NodeStatus
@@ -4338,10 +4561,12 @@ var file_internal_katlc_agentapi_agent_proto_goTypes = []any{
 	(*ExtensionRef)(nil),                              // 34: katl.agent.v1.ExtensionRef
 	(*GeneratedConfext)(nil),                          // 35: katl.agent.v1.GeneratedConfext
 	(*ConfigApplyStatus)(nil),                         // 36: katl.agent.v1.ConfigApplyStatus
-	(*RebootRequest)(nil),                             // 37: katl.agent.v1.RebootRequest
-	(*RebootAccepted)(nil),                            // 38: katl.agent.v1.RebootAccepted
-	(*ShutdownRequest)(nil),                           // 39: katl.agent.v1.ShutdownRequest
-	(*ShutdownAccepted)(nil),                          // 40: katl.agent.v1.ShutdownAccepted
+	(*ConfigApplyDomainAction)(nil),                   // 37: katl.agent.v1.ConfigApplyDomainAction
+	(*ConfigApplyEffect)(nil),                         // 38: katl.agent.v1.ConfigApplyEffect
+	(*RebootRequest)(nil),                             // 39: katl.agent.v1.RebootRequest
+	(*RebootAccepted)(nil),                            // 40: katl.agent.v1.RebootAccepted
+	(*ShutdownRequest)(nil),                           // 41: katl.agent.v1.ShutdownRequest
+	(*ShutdownAccepted)(nil),                          // 42: katl.agent.v1.ShutdownAccepted
 }
 var file_internal_katlc_agentapi_agent_proto_depIdxs = []int32{
 	3,  // 0: katl.agent.v1.NodeStatus.control_plane_endpoint:type_name -> katl.agent.v1.ControlPlaneEndpointStatus
@@ -4360,45 +4585,48 @@ var file_internal_katlc_agentapi_agent_proto_depIdxs = []int32{
 	25, // 13: katl.agent.v1.ListOperationsResponse.operations:type_name -> katl.agent.v1.OperationStatus
 	26, // 14: katl.agent.v1.OperationStatus.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
 	27, // 15: katl.agent.v1.OperationStatus.invocations:type_name -> katl.agent.v1.OperationInvocation
-	25, // 16: katl.agent.v1.OperationEvent.status:type_name -> katl.agent.v1.OperationStatus
-	26, // 17: katl.agent.v1.OperationEvent.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
-	33, // 18: katl.agent.v1.ListGenerationsResponse.generations:type_name -> katl.agent.v1.Generation
-	34, // 19: katl.agent.v1.Generation.sysexts:type_name -> katl.agent.v1.ExtensionRef
-	35, // 20: katl.agent.v1.Generation.confexts:type_name -> katl.agent.v1.GeneratedConfext
-	36, // 21: katl.agent.v1.Generation.config_apply:type_name -> katl.agent.v1.ConfigApplyStatus
-	0,  // 22: katl.agent.v1.KatlcAgent.GetNodeStatus:input_type -> katl.agent.v1.GetNodeStatusRequest
-	37, // 23: katl.agent.v1.KatlcAgent.Reboot:input_type -> katl.agent.v1.RebootRequest
-	39, // 24: katl.agent.v1.KatlcAgent.Shutdown:input_type -> katl.agent.v1.ShutdownRequest
-	9,  // 25: katl.agent.v1.KatlcAgent.ValidateConfig:input_type -> katl.agent.v1.ValidateConfigRequest
-	11, // 26: katl.agent.v1.KatlcAgent.ApplyGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
-	11, // 27: katl.agent.v1.KatlcAgent.StageGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
-	17, // 28: katl.agent.v1.KatlcAgent.StageHostUpgradeArtifact:input_type -> katl.agent.v1.StageHostUpgradeArtifactRequest
-	6,  // 29: katl.agent.v1.KatlcAgent.SubmitOperation:input_type -> katl.agent.v1.SubmitOperationRequest
-	19, // 30: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:input_type -> katl.agent.v1.CreateWorkerJoinMaterialRequest
-	22, // 31: katl.agent.v1.KatlcAgent.GetOperation:input_type -> katl.agent.v1.GetOperationRequest
-	23, // 32: katl.agent.v1.KatlcAgent.ListOperations:input_type -> katl.agent.v1.ListOperationsRequest
-	28, // 33: katl.agent.v1.KatlcAgent.WatchOperation:input_type -> katl.agent.v1.WatchOperationRequest
-	30, // 34: katl.agent.v1.KatlcAgent.ListGenerations:input_type -> katl.agent.v1.ListGenerationsRequest
-	32, // 35: katl.agent.v1.KatlcAgent.GetGeneration:input_type -> katl.agent.v1.GetGenerationRequest
-	1,  // 36: katl.agent.v1.KatlcAgent.GetNodeStatus:output_type -> katl.agent.v1.NodeStatus
-	38, // 37: katl.agent.v1.KatlcAgent.Reboot:output_type -> katl.agent.v1.RebootAccepted
-	40, // 38: katl.agent.v1.KatlcAgent.Shutdown:output_type -> katl.agent.v1.ShutdownAccepted
-	10, // 39: katl.agent.v1.KatlcAgent.ValidateConfig:output_type -> katl.agent.v1.ConfigValidationResult
-	21, // 40: katl.agent.v1.KatlcAgent.ApplyGeneration:output_type -> katl.agent.v1.OperationAccepted
-	21, // 41: katl.agent.v1.KatlcAgent.StageGeneration:output_type -> katl.agent.v1.OperationAccepted
-	18, // 42: katl.agent.v1.KatlcAgent.StageHostUpgradeArtifact:output_type -> katl.agent.v1.HostUpgradeArtifactStaged
-	21, // 43: katl.agent.v1.KatlcAgent.SubmitOperation:output_type -> katl.agent.v1.OperationAccepted
-	20, // 44: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:output_type -> katl.agent.v1.CreateWorkerJoinMaterialResponse
-	25, // 45: katl.agent.v1.KatlcAgent.GetOperation:output_type -> katl.agent.v1.OperationStatus
-	24, // 46: katl.agent.v1.KatlcAgent.ListOperations:output_type -> katl.agent.v1.ListOperationsResponse
-	29, // 47: katl.agent.v1.KatlcAgent.WatchOperation:output_type -> katl.agent.v1.OperationEvent
-	31, // 48: katl.agent.v1.KatlcAgent.ListGenerations:output_type -> katl.agent.v1.ListGenerationsResponse
-	33, // 49: katl.agent.v1.KatlcAgent.GetGeneration:output_type -> katl.agent.v1.Generation
-	36, // [36:50] is the sub-list for method output_type
-	22, // [22:36] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	36, // 16: katl.agent.v1.OperationStatus.config_apply:type_name -> katl.agent.v1.ConfigApplyStatus
+	25, // 17: katl.agent.v1.OperationEvent.status:type_name -> katl.agent.v1.OperationStatus
+	26, // 18: katl.agent.v1.OperationEvent.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
+	33, // 19: katl.agent.v1.ListGenerationsResponse.generations:type_name -> katl.agent.v1.Generation
+	34, // 20: katl.agent.v1.Generation.sysexts:type_name -> katl.agent.v1.ExtensionRef
+	35, // 21: katl.agent.v1.Generation.confexts:type_name -> katl.agent.v1.GeneratedConfext
+	36, // 22: katl.agent.v1.Generation.config_apply:type_name -> katl.agent.v1.ConfigApplyStatus
+	37, // 23: katl.agent.v1.ConfigApplyStatus.domain_actions:type_name -> katl.agent.v1.ConfigApplyDomainAction
+	38, // 24: katl.agent.v1.ConfigApplyDomainAction.effects:type_name -> katl.agent.v1.ConfigApplyEffect
+	0,  // 25: katl.agent.v1.KatlcAgent.GetNodeStatus:input_type -> katl.agent.v1.GetNodeStatusRequest
+	39, // 26: katl.agent.v1.KatlcAgent.Reboot:input_type -> katl.agent.v1.RebootRequest
+	41, // 27: katl.agent.v1.KatlcAgent.Shutdown:input_type -> katl.agent.v1.ShutdownRequest
+	9,  // 28: katl.agent.v1.KatlcAgent.ValidateConfig:input_type -> katl.agent.v1.ValidateConfigRequest
+	11, // 29: katl.agent.v1.KatlcAgent.ApplyGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
+	11, // 30: katl.agent.v1.KatlcAgent.StageGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
+	17, // 31: katl.agent.v1.KatlcAgent.StageHostUpgradeArtifact:input_type -> katl.agent.v1.StageHostUpgradeArtifactRequest
+	6,  // 32: katl.agent.v1.KatlcAgent.SubmitOperation:input_type -> katl.agent.v1.SubmitOperationRequest
+	19, // 33: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:input_type -> katl.agent.v1.CreateWorkerJoinMaterialRequest
+	22, // 34: katl.agent.v1.KatlcAgent.GetOperation:input_type -> katl.agent.v1.GetOperationRequest
+	23, // 35: katl.agent.v1.KatlcAgent.ListOperations:input_type -> katl.agent.v1.ListOperationsRequest
+	28, // 36: katl.agent.v1.KatlcAgent.WatchOperation:input_type -> katl.agent.v1.WatchOperationRequest
+	30, // 37: katl.agent.v1.KatlcAgent.ListGenerations:input_type -> katl.agent.v1.ListGenerationsRequest
+	32, // 38: katl.agent.v1.KatlcAgent.GetGeneration:input_type -> katl.agent.v1.GetGenerationRequest
+	1,  // 39: katl.agent.v1.KatlcAgent.GetNodeStatus:output_type -> katl.agent.v1.NodeStatus
+	40, // 40: katl.agent.v1.KatlcAgent.Reboot:output_type -> katl.agent.v1.RebootAccepted
+	42, // 41: katl.agent.v1.KatlcAgent.Shutdown:output_type -> katl.agent.v1.ShutdownAccepted
+	10, // 42: katl.agent.v1.KatlcAgent.ValidateConfig:output_type -> katl.agent.v1.ConfigValidationResult
+	21, // 43: katl.agent.v1.KatlcAgent.ApplyGeneration:output_type -> katl.agent.v1.OperationAccepted
+	21, // 44: katl.agent.v1.KatlcAgent.StageGeneration:output_type -> katl.agent.v1.OperationAccepted
+	18, // 45: katl.agent.v1.KatlcAgent.StageHostUpgradeArtifact:output_type -> katl.agent.v1.HostUpgradeArtifactStaged
+	21, // 46: katl.agent.v1.KatlcAgent.SubmitOperation:output_type -> katl.agent.v1.OperationAccepted
+	20, // 47: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:output_type -> katl.agent.v1.CreateWorkerJoinMaterialResponse
+	25, // 48: katl.agent.v1.KatlcAgent.GetOperation:output_type -> katl.agent.v1.OperationStatus
+	24, // 49: katl.agent.v1.KatlcAgent.ListOperations:output_type -> katl.agent.v1.ListOperationsResponse
+	29, // 50: katl.agent.v1.KatlcAgent.WatchOperation:output_type -> katl.agent.v1.OperationEvent
+	31, // 51: katl.agent.v1.KatlcAgent.ListGenerations:output_type -> katl.agent.v1.ListGenerationsResponse
+	33, // 52: katl.agent.v1.KatlcAgent.GetGeneration:output_type -> katl.agent.v1.Generation
+	39, // [39:53] is the sub-list for method output_type
+	25, // [25:39] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_internal_katlc_agentapi_agent_proto_init() }
@@ -4412,7 +4640,7 @@ func file_internal_katlc_agentapi_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_katlc_agentapi_agent_proto_rawDesc), len(file_internal_katlc_agentapi_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   41,
+			NumMessages:   43,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

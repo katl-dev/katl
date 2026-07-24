@@ -199,10 +199,28 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 			return nil, nil, fmt.Errorf("spec.kubeadmConfigs.%s: %w", name, err)
 		}
 		previous, exists := installed[name]
-		if !exists || !reflect.DeepEqual(previous.NativeEtcFiles(), plan.NativeEtcFiles()) {
+		if !exists || !equivalentKubeadmPlans(previous, plan) {
 			changed[name] = struct{}{}
 		}
 		configs[name] = plan
 	}
 	return configs, changed, nil
+}
+
+func equivalentKubeadmPlans(previous, desired kubeadmconfig.Plan) bool {
+	previousFiles := previous.NativeEtcFiles()
+	desiredFiles := desired.NativeEtcFiles()
+	if len(previousFiles) != len(desiredFiles) {
+		return false
+	}
+	for i := range previousFiles {
+		previousContent := strings.TrimSuffix(previousFiles[i].Content, "\n")
+		desiredContent := strings.TrimSuffix(desiredFiles[i].Content, "\n")
+		previousFiles[i].Content = ""
+		desiredFiles[i].Content = ""
+		if previousContent != desiredContent || !reflect.DeepEqual(previousFiles[i], desiredFiles[i]) {
+			return false
+		}
+	}
+	return true
 }

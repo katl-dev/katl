@@ -1,8 +1,8 @@
 [Unit]
 Description=Record successful Katl boot health
 Documentation=man:systemd.service(5)
-Requires=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service
-After=katl-runtime-handoff-status.service katlc-agent.service systemd-networkd.service sshd.service
+Requires=katl-runtime-handoff-status.service katl-host-config-verify.service katlc-agent.service systemd-networkd.service sshd.service
+After=katl-runtime-handoff-status.service katl-host-config-verify.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
 RequiresMountsFor=/efi /var/lib/katl
 

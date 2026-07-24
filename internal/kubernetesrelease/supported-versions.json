@@ -1,11 +1,11 @@
 {
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "KubernetesSupportedVersions",
-  "recipeDigest": "sha256:54e9c78d8ec45538aa03284154da76217eab881132538a7d88ffe9df5e8ead18",
+  "recipeDigest": "sha256:92338e4758b0b5348787dac3e50493f5aabd06c9dee113d718370c9b379cdbae",
   "versions": [
     {
       "payloadVersion": "v1.36.0",
-      "artifactRevision": 29,
+      "artifactRevision": 30,
       "packages": {
         "kubeadm": "0:1.36.0-150500.1.1",
         "kubelet": "0:1.36.0-150500.1.1",
@@ -15,7 +15,7 @@
     },
     {
       "payloadVersion": "v1.36.1",
-      "artifactRevision": 27,
+      "artifactRevision": 28,
       "packages": {
         "kubeadm": "0:1.36.1-150500.1.1",
         "kubelet": "0:1.36.1-150500.1.1",
@@ -25,7 +25,7 @@
     },
     {
       "payloadVersion": "v1.36.2",
-      "artifactRevision": 26,
+      "artifactRevision": 27,
       "packages": {
         "kubeadm": "0:1.36.2-150500.2.1",
         "kubelet": "0:1.36.2-150500.2.1",
@@ -35,7 +35,7 @@
     },
     {
       "payloadVersion": "v1.36.3",
-      "artifactRevision": 26,
+      "artifactRevision": 27,
       "packages": {
         "kubeadm": "0:1.36.3-150500.1.1",
         "kubelet": "0:1.36.3-150500.1.1",

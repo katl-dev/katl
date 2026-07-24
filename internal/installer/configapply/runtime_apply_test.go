@@ -426,7 +426,10 @@ func TestApplyTrustedBundleStagesStrictNextBootSysctl(t *testing.T) {
 	if result.Plan.Decision.AcceptedMode != generation.ApplyModeNextBoot || result.Status.Phase != generation.ConfigApplyPhaseNextBoot {
 		t.Fatalf("plan/status = %#v %#v", result.Plan.Decision, result.Status)
 	}
-	if len(result.Status.DomainActions) != 1 || result.Status.DomainActions[0].Action != "stage-next-boot" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionSkipped {
+	if len(result.Status.DomainActions) != 1 ||
+		result.Status.DomainActions[0].Action != "native-host-configuration-boot-apply" ||
+		result.Status.DomainActions[0].Status != generation.ConfigApplyActionPlanned ||
+		len(result.Status.DomainActions[0].Effects) != 1 {
 		t.Fatalf("domain actions = %#v", result.Status.DomainActions)
 	}
 	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/sysctl.d/80-forwarding.conf")); err != nil {
