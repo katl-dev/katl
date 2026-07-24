@@ -431,7 +431,7 @@ func TestHostUpgradeRollbackMetadataRestoresPreviousKnownGood(t *testing.T) {
 		t.Fatalf("ReadBootSelection() error = %v", err)
 	}
 	if selection.DefaultGenerationID != "gen0" ||
-		selection.BootedGenerationID != "gen0" ||
+		selection.BootedGenerationID != "gen1" ||
 		selection.FailedBootGenerationID != "gen1" ||
 		selection.TrialGenerationID != "" ||
 		selection.PendingHealthValidation ||

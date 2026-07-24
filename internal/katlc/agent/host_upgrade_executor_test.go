@@ -112,6 +112,12 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "etc/machine-id"), []byte("0123456789abcdef0123456789abcdef\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "proc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "proc/cmdline"), []byte("root=PARTUUID=aaaaaaaa-1111-2222-3333-444444444444 rootfstype=squashfs ro katl.generation=gen0 katl.root-slot=root-a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	endpointAdvertiserBytes := []byte("endpoint advertiser sysext")
 	previous := generation.GenerationSpec{

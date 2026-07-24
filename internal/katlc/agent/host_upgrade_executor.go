@@ -58,6 +58,9 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("read current generation: %w", err))
 	}
+	if err := validateHostUpgradeBootEvidence(e.Root, currentID, previousSpec); err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", err)
+	}
 	inactiveSlot, err := inactiveRoot(previousSpec.Root.Slot)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)

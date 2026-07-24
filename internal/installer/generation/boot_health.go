@@ -215,8 +215,6 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		if strings.TrimSpace(selection.PreviousKnownGoodBootEntry) != "" {
 			selection.DefaultBootEntry = selection.PreviousKnownGoodBootEntry
 		}
-		selection.BootedGenerationID = previousID
-		selection.BootedBootEntry = selection.DefaultBootEntry
 	} else {
 		selection.RecoveryRequired = true
 	}
@@ -243,23 +241,29 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 }
 
 func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) BootSelectionRecord {
-	if !selection.PendingHealthValidation {
-		return selection
-	}
 	cmdlineGeneration, err := SelectedGenerationFromCommandLine(commandLine)
 	if err != nil || cmdlineGeneration != generationID {
 		return selection
 	}
-	trialID := strings.TrimSpace(selection.TrialGenerationID)
-	targetID := strings.TrimSpace(selection.TargetBootGenerationID)
-	if generationID != trialID && generationID != targetID {
-		return selection
+	if selection.PendingHealthValidation {
+		trialID := strings.TrimSpace(selection.TrialGenerationID)
+		targetID := strings.TrimSpace(selection.TargetBootGenerationID)
+		if generationID != trialID && generationID != targetID {
+			return selection
+		}
+	} else {
+		failedID := strings.TrimSpace(selection.FailedBootGenerationID)
+		if failedID == "" ||
+			generationID != strings.TrimSpace(selection.DefaultGenerationID) ||
+			strings.TrimSpace(selection.BootedGenerationID) != failedID {
+			return selection
+		}
 	}
 	selection.BootedGenerationID = generationID
 	switch {
-	case generationID == trialID && strings.TrimSpace(selection.TrialBootEntry) != "":
+	case generationID == strings.TrimSpace(selection.TrialGenerationID) && strings.TrimSpace(selection.TrialBootEntry) != "":
 		selection.BootedBootEntry = strings.TrimSpace(selection.TrialBootEntry)
-	case generationID == targetID && strings.TrimSpace(selection.TargetBootEntry) != "":
+	case generationID == strings.TrimSpace(selection.TargetBootGenerationID) && strings.TrimSpace(selection.TargetBootEntry) != "":
 		selection.BootedBootEntry = strings.TrimSpace(selection.TargetBootEntry)
 	default:
 		selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
@@ -288,7 +292,7 @@ func validateBootedSelection(selection BootSelectionRecord, spec GenerationSpec,
 	if cmdlineGeneration != generationID {
 		return fmt.Errorf("kernel command line generation %s does not match selected generation %s", cmdlineGeneration, generationID)
 	}
-	rootUUID, err := rootPartUUIDFromCommandLine(commandLine)
+	rootUUID, err := SelectedRootPartUUIDFromCommandLine(commandLine)
 	if err != nil {
 		return err
 	}
@@ -325,7 +329,7 @@ func validRollbackTarget(root string, generationID string) bool {
 	return IsKnownGood(status)
 }
 
-func rootPartUUIDFromCommandLine(commandLine string) (string, error) {
+func SelectedRootPartUUIDFromCommandLine(commandLine string) (string, error) {
 	for _, field := range strings.Fields(commandLine) {
 		value, ok := strings.CutPrefix(field, "root=PARTUUID=")
 		if !ok {
