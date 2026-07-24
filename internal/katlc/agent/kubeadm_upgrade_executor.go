@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -138,6 +143,7 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	}
 
 	endpointPaused := false
+	kubeadmPeerConfig := ""
 	if request.UpgradeRole != "worker" {
 		endpointPaused, err = pauseManagedEndpoint(ctx, e.Root, e.toolRunner())
 		if err != nil {
@@ -150,18 +156,32 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 				}
 			}()
 		}
-		if err := e.drainKubeAPIServerConnections(ctx, record); err != nil {
+		kubeadmPeerConfig, err = e.drainKubeAPIServerConnections(ctx, record)
+		if err != nil {
 			return err
+		}
+		if kubeadmPeerConfig != "" {
+			defer os.Remove(rootedRuntimePath(e.Root, kubeadmPeerConfig))
 		}
 	}
 
 	retainToolView = true
 	if request.UpgradeRole == "apply" {
-		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-apply-running", []string{targetKubeadm, "upgrade", "apply", "--yes", request.TargetPayloadVersion}, true); err != nil {
+		argv := []string{targetKubeadm, "upgrade", "apply", "--yes", request.TargetPayloadVersion}
+		if kubeadmPeerConfig != "" {
+			argv = append(argv, "--kubeconfig", kubeadmPeerConfig)
+		}
+		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-apply-running", argv, true); err != nil {
 			return err
 		}
-	} else if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-node-running", []string{targetKubeadm, "upgrade", "node"}, true); err != nil {
-		return err
+	} else {
+		argv := []string{targetKubeadm, "upgrade", "node"}
+		if kubeadmPeerConfig != "" {
+			argv = append(argv, "--kubeconfig", kubeadmPeerConfig)
+		}
+		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-node-running", argv, true); err != nil {
+			return err
+		}
 	}
 
 	if _, err := e.Store.Update(record.OperationID, "stop-source-kubelet", "kubelet-stop-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -238,45 +258,235 @@ func cleanupManagedKubernetesUpgradeArtifact(root string, request operation.Kube
 	return nil
 }
 
-func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record operation.OperationRecord) error {
+type kubeAPIServerEndpoint struct {
+	Address netip.Addr
+	Port    uint16
+}
+
+func (e kubeAPIServerEndpoint) String() string {
+	return net.JoinHostPort(e.Address.String(), fmt.Sprintf("%d", e.Port))
+}
+
+func (e kubeAPIServerEndpoint) URL() string {
+	return "https://" + e.String()
+}
+
+func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record operation.OperationRecord) (string, error) {
 	if _, err := e.Store.Update(record.OperationID, "apiserver-drain-start", "apiserver-drain-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "apiserver-drain-running"
 		current.UpdatedAt = e.clock()
 		current.NextAction = "inspect API endpoints before restarting stacked etcd"
 		return current, nil
 	}); err != nil {
-		return err
+		return "", err
 	}
-	endpoints := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "default", "get", "endpoints", "kubernetes", "-o", "jsonpath={.subsets[*].addresses[*].ip}"}, nil)
-	if endpoints.Err != nil || endpoints.ExitStatus != 0 {
-		return e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %s", toolFailure(endpoints)), false)
-	}
-	unique := map[string]struct{}{}
-	for _, endpoint := range strings.Fields(string(endpoints.Stdout)) {
-		unique[endpoint] = struct{}{}
-	}
-	if len(unique) < 2 {
-		return e.completeKubeAPIServerDrain(record, "run kubeadm without draining the only API endpoint")
-	}
-	result := e.toolRunner()(ctx, []string{"/usr/bin/killall", "-s", "SIGTERM", "kube-apiserver"}, nil)
+	result := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "default", "get", "endpoints", "kubernetes", "-o", "json"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
-		return e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("gracefully terminate kube-apiserver: %s", toolFailure(result)), false)
+		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %s", toolFailure(result)), false)
+	}
+	endpoints, err := parseKubeAPIServerEndpoints(result.Stdout)
+	if err != nil {
+		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %w", err), false)
+	}
+	if len(endpoints) < 2 {
+		return "", e.completeKubeAPIServerDrain(record, "run kubeadm without draining the only API endpoint", "")
+	}
+	localAddress, err := localKubeAPIServerAddress(e.Root)
+	if err != nil {
+		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("identify local Kubernetes API endpoint: %w", err), false)
+	}
+	var peer *kubeAPIServerEndpoint
+	for i := range endpoints {
+		if endpoints[i].Address == localAddress {
+			continue
+		}
+		probe := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--server", endpoints[i].URL(), "--request-timeout=10s", "get", "--raw=/readyz"}, nil)
+		if probe.Err == nil && probe.ExitStatus == 0 {
+			peer = &endpoints[i]
+			break
+		}
+	}
+	if peer == nil {
+		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("no alternate Kubernetes API endpoint passed authenticated readiness; keep the local API server available and retry after restoring another control plane"), false)
+	}
+	kubeconfigPath, err := writeKubeadmPeerConfig(e.Root, record.OperationID, peer.URL())
+	if err != nil {
+		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("prepare alternate Kubernetes API access: %w", err), false)
+	}
+	keepKubeconfig := false
+	defer func() {
+		if !keepKubeconfig {
+			_ = os.Remove(rootedRuntimePath(e.Root, kubeconfigPath))
+		}
+	}()
+	probe := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", kubeconfigPath, "--request-timeout=10s", "get", "--raw=/readyz"}, nil)
+	if probe.Err != nil || probe.ExitStatus != 0 {
+		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("verify alternate Kubernetes API access: %s", toolFailure(probe)), false)
+	}
+	result = e.toolRunner()(ctx, []string{"/usr/bin/killall", "-s", "SIGTERM", "kube-apiserver"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("gracefully terminate kube-apiserver: %s", toolFailure(result)), false)
 	}
 	wait := e.WaitBeforeKubeadm
 	if wait == nil {
 		wait = waitForContext
 	}
 	if err := wait(ctx, kubeAPIServerDrainDelay); err != nil {
-		return e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("wait for kube-apiserver connections to drain: %w", err), false)
+		return "", e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("wait for kube-apiserver connections to drain: %w", err), false)
 	}
-	return e.completeKubeAPIServerDrain(record, "run kubeadm after in-flight API connections have closed")
+	if err := e.completeKubeAPIServerDrain(record, "run kubeadm through alternate API endpoint "+peer.String()+" after local connections have closed", peer.String()); err != nil {
+		return "", err
+	}
+	keepKubeconfig = true
+	return kubeconfigPath, nil
 }
 
-func (e *Executor) completeKubeAPIServerDrain(record operation.OperationRecord, nextAction string) error {
+func parseKubeAPIServerEndpoints(data []byte) ([]kubeAPIServerEndpoint, error) {
+	var object struct {
+		Subsets []struct {
+			Addresses []struct {
+				IP string `json:"ip"`
+			} `json:"addresses"`
+			Ports []struct {
+				Name     string `json:"name"`
+				Port     int    `json:"port"`
+				Protocol string `json:"protocol"`
+			} `json:"ports"`
+		} `json:"subsets"`
+	}
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, fmt.Errorf("decode endpoints: %w", err)
+	}
+	unique := map[string]kubeAPIServerEndpoint{}
+	for _, subset := range object.Subsets {
+		for _, port := range subset.Ports {
+			if port.Port < 1 || port.Port > 65535 || (port.Protocol != "" && port.Protocol != "TCP") || (len(subset.Ports) > 1 && port.Name != "https") {
+				continue
+			}
+			for _, address := range subset.Addresses {
+				ip, err := netip.ParseAddr(strings.TrimSpace(address.IP))
+				if err != nil {
+					return nil, fmt.Errorf("invalid endpoint address %q", address.IP)
+				}
+				endpoint := kubeAPIServerEndpoint{Address: ip.Unmap(), Port: uint16(port.Port)}
+				unique[endpoint.String()] = endpoint
+			}
+		}
+	}
+	endpoints := make([]kubeAPIServerEndpoint, 0, len(unique))
+	for _, endpoint := range unique {
+		endpoints = append(endpoints, endpoint)
+	}
+	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].String() < endpoints[j].String() })
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("no ready HTTPS endpoint addresses")
+	}
+	return endpoints, nil
+}
+
+func localKubeAPIServerAddress(root string) (netip.Addr, error) {
+	data, err := os.ReadFile(rootedRuntimePath(root, "/etc/kubernetes/manifests/kube-apiserver.yaml"))
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	var pod struct {
+		Spec struct {
+			Containers []struct {
+				Name    string   `yaml:"name"`
+				Command []string `yaml:"command"`
+			} `yaml:"containers"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(data, &pod); err != nil {
+		return netip.Addr{}, fmt.Errorf("decode static pod manifest: %w", err)
+	}
+	for _, container := range pod.Spec.Containers {
+		if container.Name != "kube-apiserver" {
+			continue
+		}
+		for _, arg := range container.Command {
+			value, found := strings.CutPrefix(arg, "--advertise-address=")
+			if !found {
+				continue
+			}
+			address, err := netip.ParseAddr(strings.TrimSpace(value))
+			if err != nil {
+				return netip.Addr{}, fmt.Errorf("invalid --advertise-address %q", value)
+			}
+			return address.Unmap(), nil
+		}
+	}
+	return netip.Addr{}, fmt.Errorf("kube-apiserver static pod has no --advertise-address")
+}
+
+func writeKubeadmPeerConfig(root, operationID, server string) (string, error) {
+	data, err := os.ReadFile(rootedRuntimePath(root, "/etc/kubernetes/admin.conf"))
+	if err != nil {
+		return "", err
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return "", fmt.Errorf("decode admin kubeconfig: %w", err)
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return "", fmt.Errorf("admin kubeconfig is not a YAML mapping")
+	}
+	clusters := kubeconfigMappingValue(document.Content[0], "clusters")
+	if clusters == nil || clusters.Kind != yaml.SequenceNode || len(clusters.Content) != 1 {
+		return "", fmt.Errorf("admin kubeconfig must contain exactly one cluster")
+	}
+	cluster := kubeconfigMappingValue(clusters.Content[0], "cluster")
+	serverNode := kubeconfigMappingValue(cluster, "server")
+	if cluster == nil || cluster.Kind != yaml.MappingNode || serverNode == nil || serverNode.Kind != yaml.ScalarNode {
+		return "", fmt.Errorf("admin kubeconfig cluster has no server")
+	}
+	serverNode.Value = server
+	serverNode.Tag = "!!str"
+	output, err := yaml.Marshal(&document)
+	if err != nil {
+		return "", fmt.Errorf("encode alternate kubeconfig: %w", err)
+	}
+	logicalPath := filepath.ToSlash(filepath.Join("/var/lib/katl/operations", operationID, "kubeadm-peer.conf"))
+	hostPath := rootedRuntimePath(root, logicalPath)
+	if err := os.Remove(hostPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	file, err := os.OpenFile(hostPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := file.Write(output); err != nil {
+		_ = file.Close()
+		_ = os.Remove(hostPath)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(hostPath)
+		return "", err
+	}
+	return logicalPath, nil
+}
+
+func kubeconfigMappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func (e *Executor) completeKubeAPIServerDrain(record operation.OperationRecord, nextAction, alternateEndpoint string) error {
 	_, err := e.Store.Update(record.OperationID, "apiserver-drain-complete", "apiserver-drain-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "apiserver-drain-complete"
 		current.CompletedPhases = appendMissing(current.CompletedPhases, "apiserver-drain-running", "apiserver-drain-complete")
 		current.PhaseIndex = len(current.CompletedPhases)
+		if current.KubeadmUpgradeEvidence != nil {
+			current.KubeadmUpgradeEvidence.AlternateAPIEndpoint = alternateEndpoint
+		}
 		current.UpdatedAt = e.clock()
 		current.NextAction = nextAction
 		return current, nil

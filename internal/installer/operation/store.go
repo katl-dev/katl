@@ -226,6 +226,7 @@ type KubeadmUpgradeEvidence struct {
 	KubeletGateEnforcementUnit      string `json:"kubeletGateEnforcementUnit,omitempty"`
 	SourceKubeletPolicy             string `json:"sourceKubeletPolicy"`
 	GlobalTargetActiveBeforeKubeadm bool   `json:"globalTargetSysextActiveBeforeKubeadmMutation"`
+	AlternateAPIEndpoint            string `json:"alternateAPIEndpoint,omitempty"`
 }
 
 type DestructiveReset struct {
