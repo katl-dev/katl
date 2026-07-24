@@ -47,7 +47,7 @@ resolved and host DNS
   rendered under /etc/systemd/resolved.conf.d/ or bounded Katl-owned files
 
 sysctl
-  kernel parameters needed for Kubernetes and node operation
+  Katl-owned kernel parameters needed for Kubernetes and node operation
   rendered under /etc/sysctl.d/
 
 modules-load
@@ -162,8 +162,8 @@ resolved and host DNS
   golden tests cover generated resolved drop-ins
 
 sysctl
-  validate key syntax and reject duplicate keys with conflicting values
-  golden tests cover Kubernetes-required defaults and user overrides
+  public operator settings use ADR-011 native sysctl.d file sets
+  internal Katl defaults remain bounded product policy
 
 modules-load
   validate module names as plain identifiers or kernel module path segments

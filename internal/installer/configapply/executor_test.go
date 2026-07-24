@@ -13,7 +13,7 @@ import (
 )
 
 func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainBootstrapNodeMetadata}})
 	statusPath := executorStatusPath(t, plan)
 	activator := &fakeActivator{}
 	runner := &fakeCommandRunner{}
@@ -38,11 +38,11 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 			t.Fatalf("action = %#v, want passed", action)
 		}
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,node-metadata-refresh"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
-	if got, want := runner.commands[2].Argv, []string{"/usr/lib/systemd/systemd-sysctl", "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf"}; strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("systemd-sysctl argv = %#v, want %#v", got, want)
+	if got, want := runner.commands[2].Argv, []string{"systemctl", "try-reload-or-restart", "katl-runtime-handoff-status.service"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("node-metadata-refresh argv = %#v, want %#v", got, want)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(statusPath)
 	if err != nil {
@@ -110,13 +110,13 @@ func TestExecutorAllowsKubeadmInputBeforeKubeletUnitExists(t *testing.T) {
 }
 
 func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainBootstrapNodeMetadata}})
 	statusPath := executorStatusPath(t, plan)
 	activator := &fakeActivator{}
 	secret := "abcdef.0123456789abcdef"
 	runner := &fakeCommandRunner{
 		results: map[string]CommandResult{
-			"systemd-sysctl": {ExitStatus: 1, Stderr: "failed with token " + secret},
+			"node-metadata-refresh": {ExitStatus: 1, Stderr: "failed with token " + secret},
 		},
 	}
 
@@ -141,7 +141,7 @@ func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
 	if !strings.Contains(status.FailureReason, "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("failure reason = %q, want redacted token marker", status.FailureReason)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl,systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,node-metadata-refresh,systemd-confext-refresh,systemd-daemon-reload,node-metadata-refresh"; got != want {
 		t.Fatalf("commands = %q, want failed apply followed by rollback replay %q", got, want)
 	}
 	data, err := os.ReadFile(statusPath)
@@ -163,11 +163,11 @@ func executorStatusPath(t *testing.T, plan Result) string {
 }
 
 func TestExecutorRecordsRollbackFailure(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainBootstrapNodeMetadata}})
 	activator := &fakeActivator{rollbackErr: errors.New("rollback failed with Bearer secret-token")}
 	runner := &fakeCommandRunner{
 		results: map[string]CommandResult{
-			"systemd-sysctl": {ExitStatus: 1, Stderr: "sysctl failed"},
+			"node-metadata-refresh": {ExitStatus: 1, Stderr: "sysctl failed"},
 		},
 	}
 
@@ -188,10 +188,10 @@ func TestExecutorRecordsRollbackFailure(t *testing.T) {
 }
 
 func TestExecutorRecordsRollbackReplayFailure(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainBootstrapNodeMetadata}})
 	runner := &fakeCommandRunner{
 		results: map[string]CommandResult{
-			"systemd-sysctl": {ExitStatus: 1, Stderr: "sysctl failed"},
+			"node-metadata-refresh": {ExitStatus: 1, Stderr: "sysctl failed"},
 		},
 		errs: map[string]error{
 			"systemd-daemon-reload": errors.New("daemon reload failed with Bearer secret-token"),
@@ -232,14 +232,14 @@ func TestExecutorRefusesForbiddenLiveActionsBeforeActivation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan := liveExecutorPlan(t, []Change{{Domain: DomainSysctl}})
+			plan := liveExecutorPlan(t, []Change{{Domain: DomainBootstrapNodeMetadata}})
 			activator := &fakeActivator{}
 			runner := &fakeCommandRunner{}
 			status, err := Executor{
 				Runner:    runner,
 				Activator: activator,
 				ActionCommands: map[string][]Command{
-					DomainSysctl: {{Name: tt.name, Argv: tt.argv}},
+					DomainBootstrapNodeMetadata: {{Name: tt.name, Argv: tt.argv}},
 				},
 				Now: fixedNow,
 			}.ExecuteLive(context.Background(), plan)
@@ -373,6 +373,7 @@ type fakeCommandRunner struct {
 	commands []Command
 	results  map[string]CommandResult
 	errs     map[string]error
+	sysctls  map[string]string
 }
 
 func (r *fakeCommandRunner) Run(_ context.Context, command Command) (CommandResult, error) {
@@ -383,6 +384,25 @@ func (r *fakeCommandRunner) Run(_ context.Context, command Command) (CommandResu
 	if result, ok := r.results[command.Name]; ok {
 		delete(r.results, command.Name)
 		return result, nil
+	}
+	if len(command.Argv) >= 3 && command.Argv[0] == "/usr/sbin/sysctl" {
+		if r.sysctls == nil {
+			r.sysctls = map[string]string{}
+		}
+		switch command.Argv[1] {
+		case "-n":
+			value := r.sysctls[command.Argv[2]]
+			if value == "" {
+				value = "0"
+			}
+			return CommandResult{ExitStatus: 0, Stdout: value + "\n"}, nil
+		case "-w":
+			key, value, ok := strings.Cut(command.Argv[2], "=")
+			if ok {
+				r.sysctls[key] = value
+			}
+			return CommandResult{ExitStatus: 0, Stdout: command.Argv[2] + "\n"}, nil
+		}
 	}
 	return CommandResult{ExitStatus: 0}, nil
 }

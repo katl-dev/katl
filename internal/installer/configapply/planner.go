@@ -95,7 +95,7 @@ func PlanChange(current generation.Record, request NodeConfigurationChange) (Res
 	if err != nil {
 		return Result{Decision: decision}, err
 	}
-	status.DomainActions = domainActions(decision.AcceptedMode, decision.ChangedDomains)
+	status.DomainActions = domainActions(decision.AcceptedMode, decision.ChangedDomains, request.Changes...)
 	if err := generation.ValidateConfigApplyStatus(status); err != nil {
 		return Result{Decision: decision}, err
 	}
@@ -157,11 +157,20 @@ func changedDomainsWith(changes []Change, domain string) []string {
 	return out
 }
 
-func domainActions(acceptedMode string, domains []string) []generation.ConfigApplyDomainAction {
+func domainActions(acceptedMode string, domains []string, changes ...Change) []generation.ConfigApplyDomainAction {
+	details := make(map[string]Change, len(changes))
+	for _, change := range changes {
+		details[change.Domain] = change
+	}
 	actions := make([]generation.ConfigApplyDomainAction, 0, len(domains))
 	for _, domain := range domains {
 		action := generation.ConfigApplyDomainAction{
 			Domain: domain,
+		}
+		if change, ok := details[domain]; ok {
+			action.Sets = append([]string(nil), change.Sets...)
+			action.Paths = append([]string(nil), change.Paths...)
+			action.Diagnostic = change.Message
 		}
 		if domain == DomainKubeadmConfig || domain == DomainSelectedKubeadmConfig {
 			if acceptedMode == generation.ApplyModeLive {
@@ -175,7 +184,9 @@ func domainActions(acceptedMode string, domains []string) []generation.ConfigApp
 			}
 		} else if acceptedMode == generation.ApplyModeNextBoot {
 			action.Action = "stage-next-boot"
-			action.Diagnostic = "domain staged into next boot generation"
+			if action.Diagnostic == "" {
+				action.Diagnostic = "domain staged into next boot generation"
+			}
 			action.Status = generation.ConfigApplyActionSkipped
 		} else {
 			action.Action = liveAction(domain)
@@ -190,14 +201,14 @@ func liveAction(domain string) string {
 	switch domain {
 	case DomainResolved:
 		return "systemd-resolved-reload"
-	case DomainSysctl:
-		return "systemd-sysctl"
 	case DomainTmpfiles:
 		return "systemd-tmpfiles"
 	case DomainNetworkd:
 		return "networkctl-reload"
 	case DomainBootstrapNodeMetadata:
 		return "node-metadata-refresh"
+	case DomainHostConfiguration:
+		return "native-host-configuration-apply"
 	default:
 		return "none"
 	}

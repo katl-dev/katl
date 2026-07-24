@@ -43,6 +43,7 @@ type renderedNodeConfigurationOverlay struct {
 	Identity             *renderedNodeIdentity        `yaml:"identity,omitempty"`
 	SystemRole           string                       `yaml:"systemRole,omitempty"`
 	Networkd             *manifest.NetworkdConfig     `yaml:"networkd,omitempty"`
+	HostConfiguration    *manifest.HostConfiguration  `yaml:"hostConfiguration,omitempty"`
 	Kubernetes           *manifest.KubernetesConfig   `yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint,omitempty"`
 }
@@ -82,6 +83,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		},
 		SystemRole:           node.SystemRole,
 		Networkd:             &node.Networkd,
+		HostConfiguration:    &node.HostConfiguration,
 		Kubernetes:           &node.Kubernetes,
 		ControlPlaneEndpoint: renderedControlPlaneEndpoint(node.ControlPlaneEndpoint),
 	}

@@ -17,9 +17,13 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"}
 				]
 			},
-			"sysctl": {
-				"settings": {
-					"net.ipv4.ip_forward": "1"
+			"hostConfiguration": {
+				"sets": {
+					"forwarding": {
+						"files": [
+							{"path": "/etc/sysctl.d/80-forwarding.conf", "content": "net.ipv4.ip_forward = 1\n"}
+						]
+					}
 				}
 			},
 			"kubernetes": {
@@ -45,7 +49,7 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 		"/etc/katl/node.json",
 		"/etc/ssh/authorized_keys/katl",
 		"/etc/ssh/authorized_keys/root",
-		"/etc/sysctl.d/90-katl.conf",
+		"/etc/sysctl.d/80-forwarding.conf",
 		"/etc/systemd/network/10-lan.network",
 	}
 	if len(files) != len(want) {
@@ -122,6 +126,31 @@ func TestNativeEtcFilesRendersWorkerNodeMetadata(t *testing.T) {
 	kubeadm := metadata["kubeadm"].(map[string]any)
 	if kubeadm["intent"] != "worker" || kubeadm["configRef"] != "worker" {
 		t.Fatalf("metadata kubeadm = %#v", kubeadm)
+	}
+}
+
+func TestNativeEtcFilesRejectsHostConfigurationCollisionWithKatlOutput(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON(`,
+			"networkd": {
+				"files": [
+					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"}
+				]
+			}`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	content := "[Match]\nName=enp2s0\n"
+	installManifest.Node.HostConfiguration = manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"network-takeover": {
+			Files: []manifest.HostConfigurationFile{{
+				Path:    "/etc/systemd/network/10-lan.network",
+				Content: &content,
+			}},
+		},
+	}}
+	_, err = NativeEtcFiles(RenderRequest{Manifest: installManifest})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("NativeEtcFiles() error = %v, want Katl output collision", err)
 	}
 }
 

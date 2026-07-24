@@ -10,7 +10,8 @@ The normal source is the same `ClusterConfig` used for installation. The current
 renderer carries:
 
 - SSH authorized keys;
-- systemd-networkd files; and
+- systemd-networkd files;
+- native host configuration file sets; and
 - operation-only system role and role-dependent Kubernetes bootstrap state.
 
 Runtime-safe fields apply normally. Katl coordinates affected node generations
@@ -21,6 +22,71 @@ If `spec.kubernetes.kubeadm` changes, cluster apply validates every node before
 mutation and then reconciles every affected Kubernetes component online. A
 Kubernetes configuration change never falls back to next-boot application or
 requires a host reboot.
+
+## Configure Native Linux Facilities
+
+Use `hostConfiguration.sets` for file-based Linux and systemd configuration.
+Katl validates ownership and carries the files in the node's generation; the
+operator does not build or activate a confext.
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      sets:
+        forwarding:
+          files:
+            - path: /etc/sysctl.d/80-home-lab-forwarding.conf
+              content: |
+                net.ipv4.ip_forward = 1
+
+        ups-device:
+          files:
+            - path: /etc/udev/rules.d/80-home-lab-ups.rules
+              source: files/80-home-lab-ups.rules
+
+        storage-modules:
+          files:
+            - path: /etc/modules-load.d/80-home-lab-storage.conf
+              content: |
+                br_netfilter
+                vfio_pci
+```
+
+`source` is relative to the ClusterConfig directory and is embedded when
+`katlctl` builds the self-contained configuration bundle. Use `content` or
+`source`, never both. Files default to mode `0644`; `0600` and `0640` are also
+accepted.
+
+Defaults and concrete nodes use the same named-set model. A node set replaces a
+default set with the same name. To remove an inherited set on one node:
+
+```yaml
+spec:
+  nodes:
+    - name: worker-1
+      hostConfiguration:
+        sets:
+          storage-modules:
+            state: absent
+```
+
+Sysctl files with a reversible concrete-key change can apply live. Udev rules
+can reload live, but Katl does not retrigger existing devices. Module load and
+modprobe files are next-boot-only. Other permitted files are next-boot unless
+their set declares a bounded notification for an unprotected existing unit:
+
+```yaml
+notify:
+  systemd:
+    - unit: systemd-journald.service
+      action: try-reload-or-restart
+```
+
+The accepted actions are `reload`, `try-reload-or-restart`, and `try-restart`.
+Katl rejects protected paths, duplicate path ownership, executable or writable
+modes, and attempts to notify release-critical units before rendering a
+candidate generation.
 
 ## Apply The Cluster
 

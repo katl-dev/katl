@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -273,13 +274,14 @@ func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
 	root := t.TempDir()
 	activator := &fakeActivator{}
 	runner := &fakeCommandRunner{}
+	current := baseManifest()
+	current.Node.HostConfiguration = hostSysctlConfiguration("0")
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
-		ApplyMode:    generation.ApplyModeLive,
-		GenerationID: "2026.06.05-002",
+		ApplyMode:       generation.ApplyModeLive,
+		GenerationID:    "2026.06.05-002",
+		CurrentManifest: current,
 		ClusterDefaults: NodeOverlay{
-			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
-				"net.ipv4.ip_forward": "1",
-			}},
+			HostConfiguration: hostConfigurationPointer(hostSysctlConfiguration("1")),
 		},
 		Executor: &Executor{Runner: runner, Activator: activator, Now: fixedNow},
 	}))
@@ -289,10 +291,15 @@ func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
 	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive || result.Status.Phase != generation.ConfigApplyPhaseActive {
 		t.Fatalf("plan/status = %#v %#v", result.Plan.Decision, result.Status)
 	}
+	if len(result.Status.DomainActions) != 1 ||
+		!slices.Equal(result.Status.DomainActions[0].Sets, []string{"forwarding"}) ||
+		!slices.Equal(result.Status.DomainActions[0].Paths, []string{"/etc/sysctl.d/80-forwarding.conf"}) {
+		t.Fatalf("host configuration status detail = %#v", result.Status.DomainActions)
+	}
 	if activator.activated != "2026.06.05-002" {
 		t.Fatalf("activated generation = %q", activator.activated)
 	}
-	sysctlPath := filepath.Join(result.Tree.ConfextDir, "etc/sysctl.d/90-katl.conf")
+	sysctlPath := filepath.Join(result.Tree.ConfextDir, "etc/sysctl.d/80-forwarding.conf")
 	data, err := os.ReadFile(sysctlPath)
 	if err != nil {
 		t.Fatalf("read sysctl file: %v", err)
@@ -300,7 +307,7 @@ func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
 	if !strings.Contains(string(data), "net.ipv4.ip_forward = 1") {
 		t.Fatalf("sysctl content = %q", data)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "sysctl-snapshot-net.ipv4.ip_forward,systemd-confext-refresh,sysctl-apply-net.ipv4.ip_forward,sysctl-verify-net.ipv4.ip_forward"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
@@ -318,12 +325,13 @@ func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
 func TestApplyTrustedBundleDefaultsAutoToLiveForSysctl(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeCommandRunner{}
+	current := baseManifest()
+	current.Node.HostConfiguration = hostSysctlConfiguration("0")
 	request := trustedBundleRequest(root, TrustedBundleRequest{
-		GenerationID: "2026.06.05-002",
+		GenerationID:    "2026.06.05-002",
+		CurrentManifest: current,
 		ClusterDefaults: NodeOverlay{
-			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
-				"net.ipv4.ip_forward": "1",
-			}},
+			HostConfiguration: hostConfigurationPointer(hostSysctlConfiguration("1")),
 		},
 		Executor: &Executor{Runner: runner, Activator: &fakeActivator{}, Now: fixedNow},
 	})
@@ -335,7 +343,7 @@ func TestApplyTrustedBundleDefaultsAutoToLiveForSysctl(t *testing.T) {
 	if result.Plan.Decision.RequestedMode != generation.ApplyModeAuto || result.Plan.Decision.AcceptedMode != generation.ApplyModeLive {
 		t.Fatalf("decision = %#v", result.Plan.Decision)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,systemd-sysctl"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "sysctl-snapshot-net.ipv4.ip_forward,systemd-confext-refresh,sysctl-apply-net.ipv4.ip_forward,sysctl-verify-net.ipv4.ip_forward"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 	persisted, err := generation.ReadConfigApplyStatus(result.StatusPath)
@@ -353,9 +361,7 @@ func TestApplyTrustedBundleStagesStrictNextBootSysctl(t *testing.T) {
 		ApplyMode:    generation.ApplyModeNextBoot,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
-				"net.ipv4.ip_forward": "1",
-			}},
+			HostConfiguration: hostConfigurationPointer(hostSysctlConfiguration("1")),
 		},
 	}))
 	if err != nil {
@@ -367,7 +373,7 @@ func TestApplyTrustedBundleStagesStrictNextBootSysctl(t *testing.T) {
 	if len(result.Status.DomainActions) != 1 || result.Status.DomainActions[0].Action != "stage-next-boot" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionSkipped {
 		t.Fatalf("domain actions = %#v", result.Status.DomainActions)
 	}
-	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/sysctl.d/90-katl.conf")); err != nil {
+	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/sysctl.d/80-forwarding.conf")); err != nil {
 		t.Fatalf("stat sysctl file: %v", err)
 	}
 }
@@ -811,39 +817,44 @@ func TestApplyTrustedBundleRejectsUnsupportedKnownDomainFieldsBeforeRender(t *te
 	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
-func TestApplyTrustedBundleRejectsUnsafeSysctlBeforeRender(t *testing.T) {
+func TestApplyTrustedBundleRejectsProtectedHostConfigurationBeforeRender(t *testing.T) {
 	root := t.TempDir()
+	content := "not-cp-1\n"
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeLive,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
-				"net.ipv4.conf.all.forwarding": "1",
+			HostConfiguration: &manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+				"identity-takeover": {Files: []manifest.HostConfigurationFile{{Path: "/etc/hostname", Content: &content}}},
 			}},
 		},
 		Executor: &Executor{Runner: &fakeCommandRunner{}, Activator: &fakeActivator{}, Now: fixedNow},
 	}))
-	if err == nil || !strings.Contains(err.Error(), "is not supported") {
-		t.Fatalf("ApplyTrustedBundle() error = %v, want unsupported sysctl key; result = %#v", err, result)
+	if err == nil || !strings.Contains(err.Error(), "owned by KatlOS") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want protected path rejection; result = %#v", err, result)
 	}
-	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainSysctl) {
+	if result.Audit.Decision != DecisionRejected {
 		t.Fatalf("audit = %#v", result.Audit)
 	}
 	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
-func TestApplyTrustedBundleRejectsEmptySysctlOverlayBeforeRender(t *testing.T) {
+func TestApplyTrustedBundleRejectsDuplicateHostConfigurationOwnershipBeforeRender(t *testing.T) {
 	root := t.TempDir()
+	content := "net.ipv4.ip_forward = 1\n"
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeLive,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Sysctl: &manifest.SysctlConfig{},
+			HostConfiguration: &manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+				"first":  {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/80-forwarding.conf", Content: &content}}},
+				"second": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/80-forwarding.conf", Content: &content}}},
+			}},
 		},
 		Executor: &Executor{Runner: &fakeCommandRunner{}, Activator: &fakeActivator{}, Now: fixedNow},
 	}))
-	if err == nil || !strings.Contains(err.Error(), "sysctl.settings must contain at least one setting") {
-		t.Fatalf("ApplyTrustedBundle() error = %v, want empty sysctl rejection; result = %#v", err, result)
+	if err == nil || !strings.Contains(err.Error(), "already owned by set") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want duplicate ownership rejection; result = %#v", err, result)
 	}
 	if result.Audit.Decision != DecisionRejected || len(result.Audit.ChangedDomains) != 0 {
 		t.Fatalf("audit = %#v", result.Audit)
@@ -920,13 +931,14 @@ func TestApplyTrustedBundleRejectsUnsafeEtcPathsBeforeRender(t *testing.T) {
 func TestApplyTrustedBundleRecordsRollbackStatusOnActivationFailure(t *testing.T) {
 	root := t.TempDir()
 	activator := &fakeActivator{activateErr: os.ErrPermission}
+	current := baseManifest()
+	current.Node.HostConfiguration = hostSysctlConfiguration("0")
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
-		ApplyMode:    generation.ApplyModeLive,
-		GenerationID: "2026.06.05-002",
+		ApplyMode:       generation.ApplyModeLive,
+		GenerationID:    "2026.06.05-002",
+		CurrentManifest: current,
 		ClusterDefaults: NodeOverlay{
-			Sysctl: &manifest.SysctlConfig{Settings: map[string]string{
-				"net.ipv4.ip_forward": "1",
-			}},
+			HostConfiguration: hostConfigurationPointer(hostSysctlConfiguration("1")),
 		},
 		Executor: &Executor{Runner: &fakeCommandRunner{}, Activator: activator, Now: fixedNow},
 	}))
@@ -1086,6 +1098,24 @@ func baseManifest() manifest.Manifest {
 			Role:         "install",
 		},
 	}
+}
+
+func hostSysctlConfiguration(value string) manifest.HostConfiguration {
+	content := "net.ipv4.ip_forward = " + value + "\n"
+	return manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"forwarding": {
+			State: manifest.HostConfigurationPresent,
+			Files: []manifest.HostConfigurationFile{{
+				Path:    "/etc/sysctl.d/80-forwarding.conf",
+				Content: &content,
+				Mode:    0o644,
+			}},
+		},
+	}}
+}
+
+func hostConfigurationPointer(config manifest.HostConfiguration) *manifest.HostConfiguration {
+	return &config
 }
 
 func manifestWithKubeadm() manifest.Manifest {

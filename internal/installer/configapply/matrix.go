@@ -11,7 +11,6 @@ const (
 	DomainNodeIdentity                  = "node-identity"
 	DomainNetworkd                      = "networkd"
 	DomainResolved                      = "resolved"
-	DomainSysctl                        = "sysctl"
 	DomainModulesLoad                   = "modules-load"
 	DomainTmpfiles                      = "tmpfiles"
 	DomainMountUnits                    = "mount-units"
@@ -31,6 +30,7 @@ const (
 	DomainControlPlaneEndpointBootstrap = "control-plane-endpoint-bootstrap"
 	DomainControlPlaneEndpointIdentity  = "control-plane-endpoint-identity"
 	DomainControlPlaneEndpointRouting   = "control-plane-endpoint-routing"
+	DomainHostConfiguration             = "host-configuration"
 )
 
 const (
@@ -51,6 +51,9 @@ type Change struct {
 	Domain                string
 	LivePreflightOK       bool
 	EndpointRoutingImpact *EndpointRoutingImpact
+	Sets                  []string
+	Paths                 []string
+	Message               string
 }
 
 // EndpointRoutingImpact is the bounded operator-facing effect of changing the
@@ -78,6 +81,8 @@ type Diagnostic struct {
 	RequiredOperation string                 `json:"requiredOperation,omitempty"`
 	Message           string                 `json:"message,omitempty"`
 	EndpointRouting   *EndpointRoutingImpact `json:"endpointRouting,omitempty"`
+	Sets              []string               `json:"sets,omitempty"`
+	Paths             []string               `json:"paths,omitempty"`
 }
 
 type domainPolicy struct {
@@ -121,11 +126,18 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 			continue
 		}
 		diagnostic := diagnosticForChange(requestedMode, change, policy)
+		diagnostic.Sets = append([]string(nil), change.Sets...)
+		diagnostic.Paths = append([]string(nil), change.Paths...)
+		if change.Message != "" && diagnostic.Message == "" {
+			diagnostic.Message = change.Message
+		}
 		switch diagnostic.Decision {
 		case DecisionAccepted:
 			if change.EndpointRoutingImpact != nil {
 				diagnostic.EndpointRouting = change.EndpointRoutingImpact
 				diagnostic.Message = endpointRoutingImpactMessage(*change.EndpointRoutingImpact)
+				decision.Diagnostics = append(decision.Diagnostics, diagnostic)
+			} else if change.Message != "" || len(change.Sets) != 0 || len(change.Paths) != 0 {
 				decision.Diagnostics = append(decision.Diagnostics, diagnostic)
 			}
 		case DecisionActionRequired:
@@ -215,11 +227,15 @@ func diagnosticForChange(requestedMode string, change Change, policy domainPolic
 		if !policy.LivePreflight || change.LivePreflightOK {
 			return Diagnostic{Domain: domain, Classification: policy.Classification, Decision: DecisionAccepted}
 		}
+		message := strings.TrimSpace(change.Message)
+		if message == "" {
+			message = "live preflight is required before this domain can apply online"
+		}
 		return Diagnostic{
 			Domain:         domain,
 			Classification: policy.Classification,
 			Decision:       DecisionStagedRequired,
-			Message:        "live preflight is required before this domain can apply online",
+			Message:        message,
 		}
 	case ClassificationStagedOnly:
 		return Diagnostic{
@@ -280,8 +296,9 @@ var domainPolicies = map[string]domainPolicy{
 		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},
-	DomainSysctl: {
+	DomainHostConfiguration: {
 		Classification:  ClassificationOnlineApplicable,
+		LivePreflight:   true,
 		NextBootAllowed: true,
 	},
 	DomainTmpfiles: {

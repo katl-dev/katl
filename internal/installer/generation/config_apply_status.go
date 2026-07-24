@@ -70,10 +70,12 @@ type ConfigApplyStatusRequest struct {
 }
 
 type ConfigApplyDomainAction struct {
-	Domain     string `json:"domain"`
-	Action     string `json:"action"`
-	Status     string `json:"status"`
-	Diagnostic string `json:"diagnostic,omitempty"`
+	Domain     string   `json:"domain"`
+	Action     string   `json:"action"`
+	Status     string   `json:"status"`
+	Sets       []string `json:"sets,omitempty"`
+	Paths      []string `json:"paths,omitempty"`
+	Diagnostic string   `json:"diagnostic,omitempty"`
 }
 
 type DiagnosticArtifact struct {

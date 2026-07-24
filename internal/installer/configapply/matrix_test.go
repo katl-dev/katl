@@ -13,7 +13,7 @@ func TestDomainClassificationMatrix(t *testing.T) {
 		want   string
 	}{
 		{DomainResolved, ClassificationStagedOnly},
-		{DomainSysctl, ClassificationOnlineApplicable},
+		{DomainHostConfiguration, ClassificationOnlineApplicable},
 		{DomainTmpfiles, ClassificationStagedOnly},
 		{DomainNetworkd, ClassificationStagedOnly},
 		{DomainBootstrapNodeMetadata, ClassificationOnlineApplicable},
@@ -46,15 +46,15 @@ func TestDomainClassificationMatrix(t *testing.T) {
 	}
 }
 
-func TestPlanDefaultsOmittedModeToAutoAndAcceptsSysctlLive(t *testing.T) {
-	decision, err := Plan("", []Change{{Domain: DomainSysctl}})
+func TestPlanDefaultsOmittedModeToAutoAndAcceptsHostConfigurationLive(t *testing.T) {
+	decision, err := Plan("", []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
 	if err != nil {
 		t.Fatalf("Plan() error = %v, diagnostics = %#v", err, decision.Diagnostics)
 	}
 	if decision.RequestedMode != generation.ApplyModeAuto || decision.AcceptedMode != generation.ApplyModeLive || len(decision.Diagnostics) != 0 {
 		t.Fatalf("decision = %#v", decision)
 	}
-	if got, want := strings.Join(decision.ChangedDomains, ","), "sysctl"; got != want {
+	if got, want := strings.Join(decision.ChangedDomains, ","), "host-configuration"; got != want {
 		t.Fatalf("changed domains = %q, want %q", got, want)
 	}
 }
@@ -89,7 +89,7 @@ func TestPlanExplainsLiveEndpointRoutingImpact(t *testing.T) {
 
 func TestPlanAutoFallsBackToNextBootForStagedDomains(t *testing.T) {
 	decision, err := Plan(generation.ApplyModeAuto, []Change{
-		{Domain: DomainSysctl},
+		{Domain: DomainHostConfiguration, LivePreflightOK: true},
 		{Domain: DomainNetworkd},
 	})
 	if err != nil {
@@ -98,7 +98,7 @@ func TestPlanAutoFallsBackToNextBootForStagedDomains(t *testing.T) {
 	if decision.RequestedMode != generation.ApplyModeAuto || decision.AcceptedMode != generation.ApplyModeNextBoot || len(decision.Diagnostics) != 0 {
 		t.Fatalf("decision = %#v", decision)
 	}
-	if got, want := strings.Join(decision.ChangedDomains, ","), "sysctl,networkd"; got != want {
+	if got, want := strings.Join(decision.ChangedDomains, ","), "host-configuration,networkd"; got != want {
 		t.Fatalf("changed domains = %q, want %q", got, want)
 	}
 }
@@ -239,7 +239,7 @@ func TestPlanActivatesSelectedKubeadmConfigAndNodeMetadataLive(t *testing.T) {
 
 func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 	allowed := []string{
-		DomainSysctl,
+		DomainHostConfiguration,
 		DomainNetworkd,
 		DomainNodeIdentity,
 		DomainModulesLoad,
@@ -284,7 +284,7 @@ func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 
 func TestPlanMixedLiveRequestFailsAtomically(t *testing.T) {
 	decision, err := Plan(generation.ApplyModeLive, []Change{
-		{Domain: DomainSysctl},
+		{Domain: DomainHostConfiguration, LivePreflightOK: true},
 		{Domain: DomainNetworkd},
 		{Domain: DomainKubeadmConfig},
 		{Domain: DomainEtcKubernetes},
@@ -304,7 +304,7 @@ func TestPlanMixedLiveRequestFailsAtomically(t *testing.T) {
 	if decision.Diagnostics[1].Domain != DomainEtcKubernetes || decision.Diagnostics[1].Decision != DecisionRejected {
 		t.Fatalf("second diagnostic = %#v", decision.Diagnostics[1])
 	}
-	if got, want := strings.Join(decision.ChangedDomains, ","), "sysctl,networkd,kubeadm-config,etc-kubernetes"; got != want {
+	if got, want := strings.Join(decision.ChangedDomains, ","), "host-configuration,networkd,kubeadm-config,etc-kubernetes"; got != want {
 		t.Fatalf("changed domains = %q, want %q", got, want)
 	}
 }

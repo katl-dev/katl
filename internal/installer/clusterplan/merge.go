@@ -34,6 +34,10 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 		return NodeLayer{}, err
 	}
 	out.Networkd = networkd
+	out.HostConfiguration, err = mergeHostConfiguration(out.HostConfiguration, next.HostConfiguration)
+	if err != nil {
+		return NodeLayer{}, err
+	}
 	if next.Install.TargetDisk != nil {
 		disk := *next.Install.TargetDisk
 		out.Install.TargetDisk = &disk
@@ -66,6 +70,50 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 	}
 	out.Bootstrap.Access = mergeAccess(out.Bootstrap.Access, next.Bootstrap.Access)
 	return out, nil
+}
+
+func mergeHostConfiguration(base, next manifest.HostConfiguration) (manifest.HostConfiguration, error) {
+	if len(base.Sets) == 0 && len(next.Sets) == 0 {
+		return manifest.HostConfiguration{}, nil
+	}
+	sets := make(map[string]manifest.HostConfigurationSet, len(base.Sets)+len(next.Sets))
+	for name, set := range base.Sets {
+		if strings.TrimSpace(set.State) == manifest.HostConfigurationAbsent {
+			continue
+		}
+		sets[name] = normalizeHostConfigurationSet(set)
+	}
+	for name, set := range next.Sets {
+		if strings.TrimSpace(set.State) == manifest.HostConfigurationAbsent {
+			delete(sets, name)
+			continue
+		}
+		sets[name] = normalizeHostConfigurationSet(set)
+	}
+	out := manifest.HostConfiguration{Sets: sets}
+	if err := manifest.ValidateHostConfiguration(out, false); err != nil {
+		return manifest.HostConfiguration{}, fmt.Errorf("hostConfiguration: %w", err)
+	}
+	return out, nil
+}
+
+func normalizeHostConfigurationSet(set manifest.HostConfigurationSet) manifest.HostConfigurationSet {
+	set.State = manifest.HostConfigurationPresent
+	set.Files = append([]manifest.HostConfigurationFile(nil), set.Files...)
+	for i := range set.Files {
+		if set.Files[i].Mode == 0 {
+			set.Files[i].Mode = 0o644
+		}
+	}
+	sort.Slice(set.Files, func(i, j int) bool { return set.Files[i].Path < set.Files[j].Path })
+	set.Notify.Systemd = append([]manifest.HostConfigurationSystemdNotification(nil), set.Notify.Systemd...)
+	sort.Slice(set.Notify.Systemd, func(i, j int) bool {
+		if set.Notify.Systemd[i].Unit != set.Notify.Systemd[j].Unit {
+			return set.Notify.Systemd[i].Unit < set.Notify.Systemd[j].Unit
+		}
+		return set.Notify.Systemd[i].Action < set.Notify.Systemd[j].Action
+	})
+	return set
 }
 
 func mergeTargetDiskDefaults(base, next *manifest.DiskSelector) (*manifest.DiskSelector, error) {

@@ -65,6 +65,9 @@
         "networkd": {
           "$ref": "#/$defs/networkdConfig"
         },
+        "hostConfiguration": {
+          "$ref": "#/$defs/hostConfiguration"
+        },
         "kubernetes": {
           "$ref": "#/$defs/kubernetesConfig"
         },
@@ -420,6 +423,100 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S"
+        }
+      }
+    },
+    "hostConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sets": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/hostConfigurationSet"
+          }
+        }
+      }
+    },
+    "hostConfigurationSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "present",
+            "absent"
+          ],
+          "default": "present"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hostConfigurationFile"
+          }
+        },
+        "notify": {
+          "$ref": "#/$defs/hostConfigurationNotifications"
+        }
+      }
+    },
+    "hostConfigurationFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "content"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/etc/.+"
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "mode": {
+          "enum": [
+            384,
+            416,
+            420
+          ],
+          "default": 420
+        }
+      }
+    },
+    "hostConfigurationNotifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "systemd": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hostConfigurationSystemdNotification"
+          }
+        }
+      }
+    },
+    "hostConfigurationSystemdNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unit",
+        "action"
+      ],
+      "properties": {
+        "unit": {
+          "type": "string",
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:_.@-]*\\.(service|socket|target|timer|path|mount|automount|slice|scope|device|swap)$"
+        },
+        "action": {
+          "enum": [
+            "reload",
+            "try-reload-or-restart",
+            "try-restart"
+          ]
         }
       }
     },
