@@ -55,11 +55,18 @@ profile="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.conf"
 repo_file="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.sandbox/etc/yum.repos.d/kubernetes.repo"
 runtime_artifact="$build_dir/katl-runtime-root.squashfs"
 runtime_metadata="$runtime_artifact.json"
+runtime_package_db="$build_dir/katl-runtime-root/usr/lib/sysimage/rpm"
 base_artifact="$build_dir/katl-kubernetes.raw"
 artifact="$build_dir/$output_name.raw"
 stamp="$build_dir/.katl-stamps/kubernetes-sysext-$output_name.sha256"
 build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
 architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
+
+if [[ ! -d "$runtime_package_db" ]]; then
+    echo "error: runtime build package database not found: $runtime_package_db" >&2
+    echo "rebuild the runtime with scripts/mkosi build-runtime before building a Kubernetes sysext" >&2
+    exit 1
+fi
 
 builder_image_identity() {
     local runtime="${KATL_CONTAINER_RUNTIME:-}"
