@@ -80,8 +80,12 @@ func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testi
 	configPath := writeClusterConfig(t)
 	var stdout, stderr bytes.Buffer
 	client := &fakeKatlcAgentClient{
-		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-1"},
-		validateResult:  &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live"},
+		nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-1"},
+		validateResult: &agentapi.ConfigValidationResult{
+			Accepted:          true,
+			AcceptedApplyMode: "live",
+			ChangedDomains:    []string{configapply.DomainKubeadmConfig},
+		},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "operation-1", RequestDigest: strings.Repeat("e", 64)},
 		operationStatus: &agentapi.OperationStatus{OperationId: "operation-1", Terminal: true, Result: operation.ResultSucceeded},
 		generation: &agentapi.Generation{
@@ -208,6 +212,69 @@ func TestRunClusterApplySkipsKubernetesComponentsBeforeBootstrap(t *testing.T) {
 	}
 	if len(client.submitRequests) != 0 {
 		t.Fatalf("pre-bootstrap no-op submitted mutations: %#v", client.submitRequests)
+	}
+}
+
+func TestRunClusterApplyStagesPostBootstrapHostOnlyChangeAndRepeatsWithoutKubeadm(t *testing.T) {
+	configPath := writeClusterConfig(t)
+	client := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{
+			MachineId:           "machine-cp-1",
+			CurrentGenerationId: "generation-1",
+			Kubernetes:          &agentapi.KubernetesStatus{State: "ready"},
+		},
+		validateResult: &agentapi.ConfigValidationResult{
+			Accepted:          true,
+			AcceptedApplyMode: generation.ApplyModeNextBoot,
+			ChangedDomains:    []string{configapply.DomainHostConfiguration},
+		},
+		submitAccepted: &agentapi.OperationAccepted{OperationId: "stage-cp-1", RequestDigest: strings.Repeat("e", 64)},
+		operationStatus: &agentapi.OperationStatus{
+			OperationId:           "stage-cp-1",
+			CandidateGenerationId: "cluster-config-42",
+			Terminal:              true,
+			Result:                operation.ResultSucceeded,
+		},
+	}
+	previousDial := dialKatlcAgent
+	previousNow := kubeadmConfigNow
+	defer func() {
+		dialKatlcAgent = previousDial
+		kubeadmConfigNow = previousNow
+	}()
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
+
+	var stdout, stderr bytes.Buffer
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{`"rebootRequired":true`, `"stagedNodes":["cp-1"]`, `"kubernetes":{}`} {
+		if !strings.Contains(stdout.String(), required) {
+			t.Fatalf("staged stdout = %s, missing %s", stdout.String(), required)
+		}
+	}
+	if len(client.submitRequests) != 1 || client.submitRequests[0].OperationKind != "generation-stage" {
+		t.Fatalf("staged submit requests = %#v, want one generation-stage", client.submitRequests)
+	}
+	if client.generationRequest != nil || strings.Contains(stderr.String(), "component=control-plane status=started") || strings.Contains(stderr.String(), "component=kubelet status=started") {
+		t.Fatalf("host-only stage reconciled Kubernetes: generation=%#v progress=%s", client.generationRequest, stderr.String())
+	}
+
+	client.nodeStatus.CurrentGenerationId = "cluster-config-42"
+	client.validateResult = &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: generation.ApplyModeLive, NoChanges: true}
+	stdout.Reset()
+	stderr.Reset()
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"kubernetes":{}`) || strings.Contains(stdout.String(), `"rebootRequired"`) {
+		t.Fatalf("repeat stdout = %s", stdout.String())
+	}
+	if len(client.submitRequests) != 1 || client.generationRequest != nil {
+		t.Fatalf("repeat apply mutated state: submits=%#v generation=%#v", client.submitRequests, client.generationRequest)
 	}
 }
 
@@ -410,8 +477,14 @@ func TestActivateClusterConfigDiscoversKubeProxyPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := &fakeKatlcAgentClient{
-		nodeStatus:     &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-1"},
-		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", NoChanges: true},
+		nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-1"},
+		validateResult: &agentapi.ConfigValidationResult{
+			Accepted:          true,
+			AcceptedApplyMode: "live",
+			ChangedDomains:    []string{configapply.DomainKubeadmConfig},
+		},
+		submitAccepted:  &agentapi.OperationAccepted{OperationId: "stage-cp-1", RequestDigest: strings.Repeat("e", 64)},
+		operationStatus: &agentapi.OperationStatus{OperationId: "stage-cp-1", Terminal: true, Result: operation.ResultSucceeded},
 	}
 	previousDial := dialKatlcAgent
 	defer func() { dialKatlcAgent = previousDial }()
