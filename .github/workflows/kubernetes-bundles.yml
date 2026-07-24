@@ -190,7 +190,12 @@ jobs:
 
       - name: Set reproducible build timestamp
         shell: bash
-        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_ENV"
+        run: |
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          {
+            echo "SOURCE_DATE_EPOCH=$source_date_epoch"
+            echo "OCI_CREATED=$(date --utc --date="@${source_date_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_ENV"
 
       - name: Set up ORAS
         shell: bash
@@ -322,6 +327,7 @@ jobs:
             --artifact-type application/vnd.katl.kubernetes.payload.bundle.v1 \
             --config "${BUNDLE_DIR}/bundle.json:application/vnd.katl.kubernetes.payload.bundle.v1+json" \
             --annotation "org.opencontainers.image.title=${OCI_TITLE}" \
+            --annotation "org.opencontainers.image.created=${OCI_CREATED}" \
             --annotation "org.opencontainers.image.description=${OCI_DESCRIPTION}" \
             --annotation "org.opencontainers.image.licenses=${OCI_LICENSES}" \
             --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
@@ -376,7 +382,6 @@ jobs:
           BUNDLE_DIR: ${{ steps.bundle.outputs.bundle-dir }}
           DIGEST_TAG: ${{ steps.bundle.outputs.digest-tag }}
           LOCAL_MANIFEST_DIGEST: ${{ steps.oci-layout.outputs.manifest-digest }}
-          RAW: ${{ steps.bundle.outputs.raw }}
           VERSION_TAG: ${{ steps.bundle.outputs.version-tag }}
         run: |
           resolve_remote_tag() {
@@ -417,24 +422,10 @@ jobs:
             fi
             publication="Reused"
           else
-            oras push "${OCI_REPOSITORY}:${VERSION_TAG},${DIGEST_TAG}" \
-              --artifact-type application/vnd.katl.kubernetes.payload.bundle.v1 \
-              --config "${BUNDLE_DIR}/bundle.json:application/vnd.katl.kubernetes.payload.bundle.v1+json" \
-              --annotation "org.opencontainers.image.title=${OCI_TITLE}" \
-              --annotation "org.opencontainers.image.description=${OCI_DESCRIPTION}" \
-              --annotation "org.opencontainers.image.licenses=${OCI_LICENSES}" \
-              --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-              --annotation "org.opencontainers.image.documentation=https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/installing.md" \
-              --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
-              --annotation "org.opencontainers.image.version=${ARTIFACT_VERSION}" \
-              --annotation "dev.katl.bundle.kind=kubernetes" \
-              "${RAW}:application/vnd.katl.sysext.raw.v1" \
-              "${BUNDLE_DIR}/metadata.json:application/vnd.katl.kubernetes.sysext.metadata.v1+json" \
-              "${BUNDLE_DIR}/package-provenance.json:application/vnd.katl.package-provenance.v1+json" \
-              "${BUNDLE_DIR}/catalog-entry.json:application/vnd.katl.kubernetes.catalog.entry.v1+json" \
-              --format json > _build/oras-push.json
-
-            manifest_digest="$(jq -r '.digest' _build/oras-push.json)"
+            oras cp --from-oci-layout \
+              "_build/oci-layout:${VERSION_TAG}" \
+              "${OCI_REPOSITORY}:${VERSION_TAG},${DIGEST_TAG}"
+            manifest_digest="$(oras resolve "${OCI_REPOSITORY}:${VERSION_TAG}")"
             if [[ "$manifest_digest" != "$LOCAL_MANIFEST_DIGEST" ]]; then
               echo "error: published OCI manifest digest $manifest_digest does not match local digest $LOCAL_MANIFEST_DIGEST" >&2
               exit 1
