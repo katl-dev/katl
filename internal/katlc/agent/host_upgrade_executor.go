@@ -59,7 +59,7 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("read current generation: %w", err))
 	}
-	previousManifest, err := configapply.ReadGenerationManifest(e.Root, currentID)
+	previousManifest, _, err := configapply.ReadEffectiveGenerationManifest(e.Root, currentID)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("read current generation configuration: %w", err))
 	}
