@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
@@ -57,6 +58,10 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	previousSpec, previousStatus, err := generation.ReadGeneration(e.Root, currentID)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("read current generation: %w", err))
+	}
+	previousManifest, _, err := configapply.ReadEffectiveGenerationManifest(e.Root, currentID)
+	if err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("read current generation configuration: %w", err))
 	}
 	if err := validateHostUpgradeBootEvidence(e.Root, currentID, previousSpec); err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
@@ -122,6 +127,9 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	}
 	if err := generation.WriteGeneration(e.Root, plan.Spec, plan.Status); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", err)
+	}
+	if err := configapply.WriteGenerationManifest(e.Root, candidate, previousManifest); err != nil {
+		return e.failHostUpgrade(record, "write-candidate-generation", fmt.Errorf("preserve current generation configuration: %w", err))
 	}
 	machineID, err := os.ReadFile(filepath.Join(runtimeRoot(e.Root), "etc/machine-id"))
 	if err != nil {

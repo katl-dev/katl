@@ -135,6 +135,9 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	if cp2Req.OperationKind != "bootstrap-join-control-plane" || cp2Req.ExpectedMachineId != "machine-cp-2" {
 		t.Fatalf("control-plane submit request = %#v", cp2Req)
 	}
+	if cp2Req.Bootstrap.GetExistingClusterJoin() {
+		t.Fatalf("initial control-plane join was marked as an existing-cluster replacement")
+	}
 	if cp2Req.Bootstrap.JoinMaterialRef != "operation:bootstrap-init-1/control-plane:cp-2" {
 		t.Fatalf("join material ref = %q", cp2Req.Bootstrap.JoinMaterialRef)
 	}
@@ -165,6 +168,101 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 		if !strings.Contains(manifest, want) {
 			t.Fatalf("node label manifest = %q, want %q", manifest, want)
 		}
+	}
+}
+
+func TestRunAgentNodeJoinAddsControlPlaneWithoutRerunningInit(t *testing.T) {
+	inv := validSingleNodeInventory()
+	inv.ControlPlaneEndpoint = "api.katl.test:6443"
+	inv.Nodes = append(inv.Nodes, inventory.Node{
+		Name:              "cp-2",
+		Address:           "10.0.0.12",
+		SystemRole:        inventory.RoleControlPlane,
+		Access:            inventory.Access{Method: "agent"},
+		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
+		KubernetesVersion: "v1.36.1",
+	})
+	cp1 := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-cp-1", "bootstrap-init"),
+		createMaterial: &agentapi.CreateWorkerJoinMaterialResponse{
+			MaterialRef: "operation:existing-cluster/control-plane:cp-2",
+			WorkerJoinMaterial: &agentapi.WorkerJoinMaterial{
+				JoinArgv: []string{
+					"kubeadm", "join", "api.katl.test:6443",
+					"--token", "abcdef.0123456789abcdef",
+					"--discovery-token-ca-cert-hash", "sha256:" + strings.Repeat("a", 64),
+					"--control-plane", "--certificate-key", strings.Repeat("b", 64),
+				},
+				ExpiresAt: "2026-06-16T13:00:00Z",
+				DiscoveryKubeconfig: []byte(`apiVersion: v1
+kind: Config
+clusters:
+  - name: katl-discovery
+    cluster:
+      certificate-authority-data: ca-data
+      server: https://api.katl.test:6443
+contexts:
+  - name: katl-discovery
+    context:
+      cluster: katl-discovery
+      user: katl-bootstrap
+current-context: katl-discovery
+users:
+  - name: katl-bootstrap
+    user:
+      token: abcdef.0123456789abcdef
+`),
+			},
+		},
+	}
+	cp2 := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-cp-2", "bootstrap-join-control-plane"),
+		accepted: &agentapi.OperationAccepted{
+			OperationId:   "replace-cp-2",
+			RequestDigest: "digest-cp-2",
+			InitialStatus: &agentapi.OperationStatus{OperationId: "replace-cp-2", Terminal: true, Result: operation.ResultSucceeded},
+		},
+	}
+	result, err := RunAgentNodeJoin(context.Background(), Request{
+		Inventory: inv,
+		InitNode:  "cp-1",
+	}, "cp-2", AgentBootstrapDependencies{
+		Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": cp1, "cp-2": cp2}),
+		Actor:     "katlctl cluster apply",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "control-plane-join"}) {
+		t.Fatalf("phases = %#v", got)
+	}
+	if len(cp1.submitRequests) != 0 {
+		t.Fatalf("coordinator submitted bootstrap init: %#v", cp1.submitRequests)
+	}
+	if len(cp1.createMaterialRequests) != 1 || cp1.createMaterialRequests[0].RequestRef != "operation:existing-cluster/control-plane:cp-2" {
+		t.Fatalf("join material requests = %#v", cp1.createMaterialRequests)
+	}
+	if len(cp2.submitRequests) != 1 || cp2.submitRequests[0].OperationKind != "bootstrap-join-control-plane" || !cp2.submitRequests[0].Bootstrap.GetExistingClusterJoin() {
+		t.Fatalf("replacement submit requests = %#v", cp2.submitRequests)
+	}
+	replacement := cp2.submitRequests[0].Bootstrap
+	if got := replacement.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.0.0.11:6443" {
+		t.Fatalf("replacement discovery endpoint = %q, want coordinator endpoint", got)
+	}
+	discovery := string(replacement.WorkerJoinMaterial.GetDiscoveryKubeconfig())
+	for _, want := range []string{"server: https://10.0.0.11:6443", "certificate-authority-data: ca-data", "token: abcdef.0123456789abcdef"} {
+		if !strings.Contains(discovery, want) {
+			t.Fatalf("replacement discovery kubeconfig = %q, want %q", discovery, want)
+		}
+	}
+	if got := replacement.ControlPlaneEndpoint; got != "api.katl.test:6443" {
+		t.Fatalf("replacement control-plane endpoint = %q, want stable cluster endpoint", got)
+	}
+	if got := cp1.createMaterial.GetWorkerJoinMaterial().GetJoinArgv()[2]; got != "api.katl.test:6443" {
+		t.Fatalf("source join material endpoint = %q, want unmodified agent response", got)
+	}
+	if !strings.Contains(string(cp1.createMaterial.GetWorkerJoinMaterial().GetDiscoveryKubeconfig()), "server: https://api.katl.test:6443") {
+		t.Fatalf("source discovery kubeconfig was modified")
 	}
 }
 

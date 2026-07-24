@@ -42,7 +42,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	value, err := configapply.ReadGenerationManifest(*root, selected)
+	value, _, err := configapply.ReadEffectiveGenerationManifest(*root, selected)
 	if err != nil {
 		return err
 	}

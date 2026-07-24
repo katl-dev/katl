@@ -1442,6 +1442,48 @@ func joinDiscovery(material JoinMaterial) (string, string, []string, error) {
 	return endpoint, token, []string{hash}, nil
 }
 
+func RenderJoinDiscoveryKubeconfig(material JoinMaterial, endpoint, certificateAuthorityData string) ([]byte, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if err := validateEndpointLike(endpoint); err != nil {
+		return nil, fmt.Errorf("join discovery endpoint: %w", err)
+	}
+	_, token, _, err := joinDiscovery(material)
+	if err != nil {
+		return nil, err
+	}
+	certificateAuthorityData = strings.TrimSpace(certificateAuthorityData)
+	if certificateAuthorityData == "" {
+		return nil, errors.New("join discovery is missing certificate authority data")
+	}
+	rendered, err := yaml.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Config",
+		"clusters": []any{map[string]any{
+			"name": "katl-discovery",
+			"cluster": map[string]any{
+				"certificate-authority-data": certificateAuthorityData,
+				"server":                     "https://" + endpoint,
+			},
+		}},
+		"contexts": []any{map[string]any{
+			"name": "katl-discovery",
+			"context": map[string]any{
+				"cluster": "katl-discovery",
+				"user":    "katl-bootstrap",
+			},
+		}},
+		"current-context": "katl-discovery",
+		"users": []any{map[string]any{
+			"name": "katl-bootstrap",
+			"user": map[string]any{"token": token},
+		}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("render join discovery kubeconfig: %w", err)
+	}
+	return rendered, nil
+}
+
 func decodeYAMLDocuments(data []byte) ([]map[string]any, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var docs []map[string]any

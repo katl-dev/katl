@@ -31,6 +31,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/kubeadmplan"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
@@ -40,6 +41,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
@@ -70,16 +72,31 @@ func TestInstalledRuntimeThreeControlPlaneV01WorkloadProof(t *testing.T) {
 	_ = vmtest.RequireWorld(t)
 }
 
+func TestInstalledRuntimeThreeControlPlaneReplacementSmoke(t *testing.T) {
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-replacement", false); ok {
+		run.ReplacementProof = true
+		runThreeControlPlaneStackedEtcdSmoke(t, run)
+		return
+	}
+
+	options := vmtest.DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run three-control-plane replacement smoke")
+	}
+	_ = vmtest.RequireWorld(t)
+}
+
 type threeControlPlaneSmokeRun struct {
-	WorldScenario *vmtest.WorldScenario
-	Options       vmtest.Options
-	Runner        vmtest.Runner
-	Scenario      vmtest.Scenario
-	Result        vmtest.Result
-	Inputs        threeControlPlaneSmokeInputs
-	LibvirtURI    string
-	Network       string
-	WorkloadProof bool
+	WorldScenario    *vmtest.WorldScenario
+	Options          vmtest.Options
+	Runner           vmtest.Runner
+	Scenario         vmtest.Scenario
+	Result           vmtest.Result
+	Inputs           threeControlPlaneSmokeInputs
+	LibvirtURI       string
+	Network          string
+	WorkloadProof    bool
+	ReplacementProof bool
 }
 
 func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadProof bool) (threeControlPlaneSmokeRun, bool) {
@@ -116,8 +133,18 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 		return threeControlPlaneSmokeRun{}, err
 	}
 	run := threeControlPlaneSmokeRun{WorldScenario: scenario}
+	_, sshAuthorizedKey, err := ensureWorldSSHKey(world)
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
 	nodes := make(map[string]vmtest.InstalledRuntimeWorldNode, 3)
 	buildRoots := publishedRuntimeBuildRoots(world, repo)
+	cp3Published, err := vmtest.FindPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots, vmtest.NodeSpec{Name: "cp-3", Role: vmtest.ControlPlane})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
 		node, err := vmtest.AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, vmtest.NodeSpec{Name: name, Role: vmtest.ControlPlane})
 		if err != nil {
@@ -172,6 +199,8 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 			CP3Metadata:       nodes["cp-3"].Config.NodeMetadata,
 			CP3Address:        nodes["cp-3"].Node.Address,
 			CP3MAC:            nodes["cp-3"].Node.MACAddress,
+			CP3Install:        firstInstallProvenanceFromPublished(cp3Published),
+			SSHAuthorizedKey:  sshAuthorizedKey,
 			KubernetesVersion: firstString(kubernetesVersion, "v1.36.1"),
 			WorldProvenance:   multiNodeWorldProvenanceForSpecs(world, repo, threeControlPlaneWorldRuntimeSpecs()),
 		},
@@ -405,7 +434,336 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 			t.Fatal(err)
 		}
 	}
+	if smoke.ReplacementProof {
+		replacedNodes, err := runThreeControlPlaneReplacementProof(t, ctx, smoke, result, nodes, addresses, kubeconfigPath, kubernetesBundle, etcdReport)
+		if err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("control-plane replacement proof failed: %v", err)
+		}
+		nodes = replacedNodes
+		defer stopNode(t, nodeByName(replacedNodes, "cp-3"))
+	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
+}
+
+func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smoke threeControlPlaneSmokeRun, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, before threeControlPlaneEtcdReport) ([]vmtest.RunningInstalledRuntimeNode, error) {
+	t.Helper()
+	dir := filepath.Join(result.RunDir, "control-plane-replacement")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nodes, err
+	}
+	configPath := filepath.Join(dir, "cluster.katlcfg")
+	if err := writeThreeControlPlaneReplacementConfig(filepath.Join(dir, "cluster.yaml"), configPath, addresses, smoke.Inputs.SSHAuthorizedKey, smoke.Inputs.KubernetesVersion, bundle.Ref); err != nil {
+		return nodes, err
+	}
+	cp1 := nodeByName(nodes, "cp-1")
+	cp2 := nodeByName(nodes, "cp-2")
+	cp3 := nodeByName(nodes, "cp-3")
+	if cp1.Name == "" || cp2.Name == "" || cp3.Name == "" {
+		return nodes, errors.New("replacement proof requires cp-1, cp-2, and cp-3")
+	}
+	beforeStatus, err := readLiveEtcdStatus(ctx, "cp-1", addresses["cp-1"])
+	if err != nil {
+		return nodes, fmt.Errorf("inspect etcd before replacement: %w", err)
+	}
+	oldMember := etcdStatusMember(beforeStatus, "cp-3")
+	if oldMember == nil {
+		return nodes, errors.New("cp-3 etcd member is missing before replacement")
+	}
+	oldMachineID, err := readNodeFileWithRetry(ctx, cp3, "/var/lib/katl/identity/machine-id", 4<<10, time.Minute)
+	if err != nil {
+		return nodes, fmt.Errorf("read cp-3 machine identity before replacement: %w", err)
+	}
+	cp3Overlay, err := bootOverlayPath(cp3)
+	if err != nil {
+		return nodes, err
+	}
+
+	var wipeStdout, wipeStderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{
+		"node", "wipe", "cp-3",
+		"--config", configPath,
+		"--kubeconfig", kubeconfigPath,
+		"--timeout", "10m",
+		"--output", "json",
+	}, &wipeStdout, &wipeStderr)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-wipe.stdout"), wipeStdout.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-wipe.stderr"), wipeStderr.Bytes(), 0o600)
+	if err != nil {
+		return nodes, fmt.Errorf("wipe cp-3: %w: %s", err, wipeStderr.String())
+	}
+	var wipeReport struct {
+		KubernetesCleanup string `json:"kubernetesCleanup"`
+		EtcdCleanup       string `json:"etcdCleanup"`
+		EtcdCoordinator   string `json:"etcdCoordinator"`
+		EtcdMember        string `json:"etcdMemberID"`
+		Nodes             []struct {
+			Node     string `json:"node"`
+			Terminal bool   `json:"terminal"`
+			Result   string `json:"result"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(wipeStdout.Bytes(), &wipeReport); err != nil {
+		return nodes, fmt.Errorf("decode cp-3 wipe report: %w", err)
+	}
+	if wipeReport.KubernetesCleanup != "succeeded" || wipeReport.EtcdCleanup != "succeeded" ||
+		wipeReport.EtcdCoordinator == "" || !strings.EqualFold(wipeReport.EtcdMember, oldMember.GetId()) ||
+		len(wipeReport.Nodes) != 1 || wipeReport.Nodes[0].Node != "cp-3" ||
+		!wipeReport.Nodes[0].Terminal || wipeReport.Nodes[0].Result != operation.ResultSucceeded {
+		return nodes, fmt.Errorf("cp-3 wipe report is incomplete: %#v", wipeReport)
+	}
+	if err := cp3.WaitForPoweroff(ctx); err != nil {
+		return nodes, fmt.Errorf("wait for wiped cp-3 poweroff: %w", err)
+	}
+	afterRemoval, err := readLiveEtcdStatus(ctx, "cp-1", addresses["cp-1"])
+	if err != nil {
+		return nodes, fmt.Errorf("inspect etcd after cp-3 removal: %w", err)
+	}
+	if afterRemoval.GetClusterId() != beforeStatus.GetClusterId() || len(afterRemoval.GetMembers()) != 2 || etcdStatusMember(afterRemoval, "cp-3") != nil {
+		return nodes, fmt.Errorf("etcd did not converge to two surviving members: %s", afterRemoval.String())
+	}
+	if output, err := kubectlOutput(ctx, kubeconfigPath, "get", "node", "cp-3"); err == nil {
+		return nodes, fmt.Errorf("cp-3 Kubernetes Node still exists after wipe: %s", output)
+	}
+	stopNode(t, cp3)
+
+	reinstallRunner := vmtest.NewRunner(vmtest.Options{
+		Enabled:   true,
+		StateRoot: filepath.Join(dir, "reinstall-vm-runs"),
+		Keep:      vmtest.KeepAlways,
+		KVM:       smoke.Options.KVM,
+		Missing:   vmtest.MissingFails,
+	})
+	reinstallRun := operationBackedSmokeRun{
+		Options:    smoke.Options,
+		LibvirtURI: smoke.LibvirtURI,
+		Network:    smoke.Network,
+	}
+	reinstallResult, err := runWipeReinstallNode(ctx, reinstallRun, reinstallRunner, "cp-3", cp3Overlay, smoke.Inputs.CP3Install, smoke.Inputs.CP3MAC)
+	if err != nil {
+		return nodes, fmt.Errorf("reinstall cp-3: %w", err)
+	}
+	reinstalledDisk, err := firstInstallResultDisk(reinstallResult)
+	if err != nil {
+		return nodes, err
+	}
+	postRunner := vmtest.NewRunner(vmtest.Options{
+		Enabled:   true,
+		StateRoot: filepath.Join(dir, "post-reinstall-vm-runs"),
+		Keep:      vmtest.KeepFailed,
+		KVM:       smoke.Options.KVM,
+		Missing:   vmtest.MissingFails,
+	})
+	postResult, err := postRunner.Plan(vmtest.Scenario{Name: "post-control-plane-replacement"})
+	if err != nil {
+		return nodes, err
+	}
+	postResult.Started = time.Now().UTC()
+	reinstalledCP3, err := vmtest.StartInstalledRuntimeNode(ctx, postResult, threeControlPlaneNodeConfigForRun(
+		smoke, "cp-3", reinstalledDisk, reinstallResult.Artifacts.InstalledESP, "", smoke.Inputs.CP3Metadata, vmtest.DiskQCOW2, smoke.Inputs.CP3MAC, 0,
+	), vmtest.VMRunner{})
+	if err != nil {
+		return nodes, fmt.Errorf("start reinstalled cp-3: %w", err)
+	}
+	keepReinstalled := false
+	defer func() {
+		if !keepReinstalled {
+			stopNode(t, reinstalledCP3)
+		}
+	}()
+	newMachineID, err := readNodeFileWithRetry(ctx, reinstalledCP3, "/var/lib/katl/identity/machine-id", 4<<10, time.Minute)
+	if err != nil {
+		return nodes, fmt.Errorf("read reinstalled cp-3 machine identity: %w", err)
+	}
+	if strings.TrimSpace(string(newMachineID)) == strings.TrimSpace(string(oldMachineID)) {
+		return nodes, errors.New("reinstalled cp-3 preserved the old machine identity")
+	}
+	if err := assertNoRunIdentity(ctx, reinstalledCP3); err != nil {
+		return nodes, fmt.Errorf("reinstalled cp-3 retained runtime identity: %w", err)
+	}
+	status, err := readAgentNodeStatus(ctx, "cp-3", addresses["cp-3"])
+	if err != nil {
+		return nodes, fmt.Errorf("read reinstalled cp-3 status: %w", err)
+	}
+	if got := status.GetKubernetes().GetState(); got != "not-configured" {
+		return nodes, fmt.Errorf("reinstalled cp-3 Kubernetes state = %q, want not-configured", got)
+	}
+	replacedNodes := []vmtest.RunningInstalledRuntimeNode{cp1, cp2, reinstalledCP3}
+	if err := installKubernetesBundleCA(ctx, reinstalledCP3, bundle); err != nil {
+		return nodes, fmt.Errorf("install Kubernetes bundle CA on reinstalled cp-3: %w", err)
+	}
+	if _, err := stageThreeControlPlaneCNIFixtures(ctx, katlRepoRoot(t), replacedNodes, addresses); err != nil {
+		return nodes, fmt.Errorf("stage replacement CNI fixtures: %w", err)
+	}
+	if _, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), smoke.Inputs.KubernetesVersion, reinstalledCP3); err != nil {
+		return nodes, fmt.Errorf("stage replacement Kubernetes images: %w", err)
+	}
+
+	var applyStdout, applyStderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "apply", "--config", configPath}, &applyStdout, &applyStderr)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-cluster-apply.stdout"), applyStdout.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-cluster-apply.stderr"), applyStderr.Bytes(), 0o600)
+	if err != nil {
+		return nodes, fmt.Errorf("apply cluster config to replacement: %w: %s", err, applyStderr.String())
+	}
+	var applyReport struct {
+		Joined []string `json:"joined"`
+		Result string   `json:"result"`
+	}
+	if err := json.Unmarshal(applyStdout.Bytes(), &applyReport); err != nil {
+		return nodes, fmt.Errorf("decode replacement apply report: %w", err)
+	}
+	if applyReport.Result != operation.ResultSucceeded || !reflect.DeepEqual(applyReport.Joined, []string{"cp-3"}) {
+		return nodes, fmt.Errorf("replacement apply report = %#v", applyReport)
+	}
+	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(dir, "kubectl-after-replacement.txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
+		return nodes, fmt.Errorf("wait for replacement Kubernetes node: %w", err)
+	}
+	if err := waitForAgentKubernetesReady(ctx, replacedNodes, addresses, 3*time.Minute); err != nil {
+		return nodes, err
+	}
+	afterJoin, err := readLiveEtcdStatus(ctx, "cp-1", addresses["cp-1"])
+	if err != nil {
+		return nodes, fmt.Errorf("inspect etcd after replacement join: %w", err)
+	}
+	newMember := etcdStatusMember(afterJoin, "cp-3")
+	if afterJoin.GetClusterId() != beforeStatus.GetClusterId() || len(afterJoin.GetMembers()) != 3 ||
+		newMember == nil || strings.EqualFold(newMember.GetId(), oldMember.GetId()) ||
+		afterJoin.GetHealthyMembers() != 3 {
+		return nodes, fmt.Errorf("replacement etcd membership is invalid: before=%s after=%s", beforeStatus.String(), afterJoin.String())
+	}
+	_, joinRecord, err := collectOperationEvidence(ctx, reinstalledCP3, filepath.Join(dir, "cp-3-operation"), "bootstrap-join-control-plane")
+	if err != nil {
+		return nodes, fmt.Errorf("collect replacement join evidence: %w", err)
+	}
+	if joinRecord.BootstrapRequest == nil || !joinRecord.BootstrapRequest.ExistingClusterJoin {
+		return nodes, fmt.Errorf("replacement join did not record existing-cluster intent: %#v", joinRecord.BootstrapRequest)
+	}
+	postReport, err := verifyThreeControlPlaneEtcdAt(ctx, filepath.Join(dir, "etcd-transcripts"), replacedNodes, "/var/lib/etcd/katl-snapshots/after-control-plane-replacement.db")
+	if err != nil {
+		return nodes, fmt.Errorf("verify etcd after replacement: %w", err)
+	}
+	if postReport.Health.Quorum != before.Health.Quorum {
+		return nodes, fmt.Errorf("replacement etcd quorum = %d, want %d", postReport.Health.Quorum, before.Health.Quorum)
+	}
+
+	var repeatStdout, repeatStderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "apply", "--config", configPath}, &repeatStdout, &repeatStderr)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-cluster-apply-repeat.stdout"), repeatStdout.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-cluster-apply-repeat.stderr"), repeatStderr.Bytes(), 0o600)
+	if err != nil {
+		return nodes, fmt.Errorf("repeat cluster apply after replacement: %w: %s", err, repeatStderr.String())
+	}
+	applyReport = struct {
+		Joined []string `json:"joined"`
+		Result string   `json:"result"`
+	}{}
+	if err := json.Unmarshal(repeatStdout.Bytes(), &applyReport); err != nil {
+		return nodes, fmt.Errorf("decode repeated apply report: %w", err)
+	}
+	if applyReport.Result != operation.ResultSucceeded || len(applyReport.Joined) != 0 {
+		return nodes, fmt.Errorf("repeated apply report = %#v", applyReport)
+	}
+	keepReinstalled = true
+	return replacedNodes, nil
+}
+
+func writeThreeControlPlaneReplacementConfig(sourcePath, bundlePath string, addresses map[string]string, sshAuthorizedKey, kubernetesVersion, kubernetesBundle string) error {
+	source := `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: replacement-vmtest
+spec:
+  controlPlaneEndpoint:
+    host: ` + addresses["cp-1"] + `
+    port: 6443
+  kubernetes:
+    version: ` + kubernetesVersion + `
+  defaults:
+    identity:
+      ssh:
+        authorizedKeys:
+          - ` + sshAuthorizedKey + `
+    networkd:
+      files:
+        - name: 80-katl-vmtest-dhcp.network
+          content: |
+            [Match]
+            Name=en*
+
+            [Network]
+            DHCP=yes
+
+            [DHCPv4]
+            ClientIdentifier=mac
+            UseHostname=no
+
+            [DHCPv6]
+            UseHostname=no
+  nodes:
+`
+	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
+		source += `    - name: ` + name + `
+      controlPlane: true
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/virtio-katl-root
+      bootstrap:
+        address: ` + addresses[name] + `
+`
+	}
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		return err
+	}
+	_, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{
+		SourcePath:     sourcePath,
+		KatlctlVersion: "vmtest",
+		KatlctlCommit:  "vmtest",
+		CreatedBy:      "three-control-plane replacement vmtest",
+		Planning:       configbundle.PlanningInputs{KubernetesBundle: kubernetesBundle},
+	})
+	return err
+}
+
+func readAgentNodeStatus(ctx context.Context, name, address string) (*agentapi.NodeStatus, error) {
+	connector := cluster.TCPAgentConnector{DialTimeout: 5 * time.Second}
+	conn, err := connector.Connect(ctx, inventory.PlannedNode{
+		Name: name, Address: address, Access: inventory.Access{Method: "agent"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	return conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+}
+
+func readLiveEtcdStatus(ctx context.Context, name, address string) (*agentapi.EtcdStatus, error) {
+	connector := cluster.TCPAgentConnector{DialTimeout: 5 * time.Second}
+	conn, err := connector.Connect(ctx, inventory.PlannedNode{
+		Name: name, Address: address, Access: inventory.Access{Method: "agent"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	client, ok := conn.Client.(interface {
+		GetEtcdStatus(context.Context, *agentapi.GetEtcdStatusRequest, ...grpc.CallOption) (*agentapi.EtcdStatus, error)
+	})
+	if !ok {
+		return nil, errors.New("katlc agent does not support etcd status")
+	}
+	return client.GetEtcdStatus(ctx, &agentapi.GetEtcdStatusRequest{})
+}
+
+func etcdStatusMember(status *agentapi.EtcdStatus, name string) *agentapi.EtcdMember {
+	for _, member := range status.GetMembers() {
+		if member.GetName() == name {
+			return member
+		}
+	}
+	return nil
 }
 
 func waitForAgentKubernetesReady(ctx context.Context, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, timeout time.Duration) error {
@@ -806,6 +1164,8 @@ type threeControlPlaneSmokeInputs struct {
 	CP3Metadata       string
 	CP3Address        string
 	CP3MAC            string
+	CP3Install        firstInstallProvenance
+	SSHAuthorizedKey  string
 	KubernetesVersion string
 	WorldProvenance   multiNodeWorldProvenancePaths
 }
@@ -850,8 +1210,8 @@ func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk
 
 func stageThreeControlPlaneKubernetesPayloadBundles(repo string, result vmtest.Result, selectedVersion string) (threeControlPlaneKubernetesPayloadBundle, error) {
 	selectedVersion = firstString(strings.TrimSpace(selectedVersion), "v1.36.1")
-	if selectedVersion != "v1.36.0" && selectedVersion != "v1.36.1" {
-		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("three-control-plane bundle proof supports v1.36.0 or v1.36.1, got %q", selectedVersion)
+	if _, err := kubernetesImageReferences(selectedVersion); err != nil {
+		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("three-control-plane bundle proof does not support %q: %w", selectedVersion, err)
 	}
 	artifactPath := filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw")
 	baseMetadataPath := filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw.json")

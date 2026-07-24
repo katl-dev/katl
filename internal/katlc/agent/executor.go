@@ -202,6 +202,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if record.KubernetesSysextUpdate != nil {
 		return e.executeKubeadmUpgrade(ctx, record)
 	}
+	if record.EtcdMemberRemoveRequest != nil {
+		return e.executeEtcdMemberRemove(ctx, record)
+	}
 	plan, err := executorPlan(record)
 	if err != nil {
 		_, markErr := e.failRecord(record.OperationID, "executor-plan-refused", "executor-plan-refused", "agent executor could not read operation tool plan", err)
@@ -242,10 +245,14 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	var managedRoute *managedJoinRoute
 	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane {
 		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		endpointSuspended, managedRoute, err = suspendManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
+		if record.BootstrapRequest != nil && record.BootstrapRequest.ExistingClusterJoin {
+			managedRoute, err = pinManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
+		} else {
+			endpointSuspended, managedRoute, err = suspendManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
+		}
 		lifecycleCancel()
 		if err != nil {
-			_, markErr := e.failRecordPhase(record.OperationID, "managed-endpoint-suspend-failed", "managed-endpoint-lifecycle", "suspend-managed-endpoint", "repair the managed endpoint lifecycle before retrying the control-plane join", err)
+			_, markErr := e.failRecordPhase(record.OperationID, "managed-endpoint-join-path-failed", "managed-endpoint-lifecycle", "prepare-managed-endpoint", "repair the managed endpoint join path before retrying the control-plane join", err)
 			return errors.Join(err, markErr)
 		}
 		if endpointSuspended {

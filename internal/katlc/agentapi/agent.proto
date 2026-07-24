@@ -6,6 +6,7 @@ option go_package = "github.com/katl-dev/katl/internal/katlc/agentapi;agentapi";
 
 service KatlcAgent {
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+  rpc GetEtcdStatus(GetEtcdStatusRequest) returns (EtcdStatus);
   rpc Reboot(RebootRequest) returns (RebootAccepted);
   rpc Shutdown(ShutdownRequest) returns (ShutdownAccepted);
   rpc ValidateConfig(ValidateConfigRequest) returns (ConfigValidationResult);
@@ -98,6 +99,7 @@ message SubmitOperationRequest {
   DestructiveResetOperationRequest destructive_reset = 15;
   HostUpgradeOperationRequest host_upgrade = 16;
   KubeadmControlPlaneConfigOperationRequest kubeadm_control_plane_config = 17;
+  EtcdMemberRemoveOperationRequest etcd_member_remove = 18;
 }
 
 message BootstrapOperationRequest {
@@ -113,12 +115,42 @@ message BootstrapOperationRequest {
   WorkerJoinMaterial worker_join_material = 10;
   string kubernetes_bundle_source = 11;
   string kubernetes_bundle_ref = 12;
+  bool existing_cluster_join = 13;
 }
 
 message WorkerJoinMaterial {
   repeated string join_argv = 1;
   string expires_at = 2;
   bytes discovery_kubeconfig = 3;
+}
+
+message GetEtcdStatusRequest {}
+
+message EtcdStatus {
+  string cluster_id = 1;
+  string local_member_id = 2;
+  string leader_id = 3;
+  repeated EtcdMember members = 4;
+  uint32 quorum = 5;
+  uint32 healthy_members = 6;
+}
+
+message EtcdMember {
+  string id = 1;
+  string name = 2;
+  repeated string peer_urls = 3;
+  repeated string client_urls = 4;
+  bool healthy = 5;
+  bool leader = 6;
+  string health_error = 7;
+}
+
+message EtcdMemberRemoveOperationRequest {
+  string target_node_name = 1;
+  string target_member_id = 2;
+  string target_peer_url = 3;
+  string expected_cluster_id = 4;
+  uint32 expected_member_count = 5;
 }
 
 message ValidateConfigRequest {

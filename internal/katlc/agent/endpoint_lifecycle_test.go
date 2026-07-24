@@ -158,9 +158,13 @@ func TestManagedEndpointJoinProbeFailureRemovesTemporaryRoute(t *testing.T) {
 	if err == nil || suspended || route != nil {
 		t.Fatalf("suspendManagedEndpointForJoin() = %v, %#v, %v", suspended, route, err)
 	}
-	wantLast := []string{managedEndpointIP, "route", "del", "10.40.0.10/32", "via", "10.0.0.10", "dev", "enp1s0"}
-	if !reflect.DeepEqual(calls[len(calls)-1], wantLast) {
-		t.Fatalf("last command = %#v, want route cleanup %#v", calls[len(calls)-1], wantLast)
+	wantTail := [][]string{
+		{managedEndpointIP, "route", "del", "10.40.0.10/32", "via", "10.0.0.10", "dev", "enp1s0"},
+		{"systemctl", "start", endpointAdvertiserPathUnit},
+		{"systemctl", "start", endpointAdvertiserUnit},
+	}
+	if !reflect.DeepEqual(calls[len(calls)-len(wantTail):], wantTail) {
+		t.Fatalf("command tail = %#v, want route cleanup and endpoint resume %#v", calls[len(calls)-len(wantTail):], wantTail)
 	}
 }
 

@@ -2258,6 +2258,7 @@ func validControlPlaneJoinMaterial() *agentapi.WorkerJoinMaterial {
 
 func TestCreateWorkerJoinMaterialRunsKubeadmTokenCreate(t *testing.T) {
 	server := newTestServer(t)
+	writeJoinMaterialAdminKubeconfig(t, server)
 	var calls [][]string
 	server.RunJoinMaterial = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		calls = append(calls, append([]string(nil), argv...))
@@ -2292,6 +2293,17 @@ func TestCreateWorkerJoinMaterialRunsKubeadmTokenCreate(t *testing.T) {
 	}) {
 		t.Fatalf("join argv = %#v", material.GetJoinArgv())
 	}
+	discovery := string(material.GetDiscoveryKubeconfig())
+	for _, want := range []string{"server: https://api.katl.test:6443", "certificate-authority-data: ca-data", "token: abcdef.0123456789abcdef"} {
+		if !strings.Contains(discovery, want) {
+			t.Fatalf("discovery kubeconfig = %q, want %q", discovery, want)
+		}
+	}
+	for _, secret := range []string{"client-certificate-data", "client-key-data"} {
+		if strings.Contains(discovery, secret) {
+			t.Fatalf("discovery kubeconfig exposed %s", secret)
+		}
+	}
 }
 
 func TestCreateWorkerJoinMaterialRejectsActiveOperationLock(t *testing.T) {
@@ -2310,6 +2322,7 @@ func TestCreateWorkerJoinMaterialRejectsActiveOperationLock(t *testing.T) {
 
 func TestCreateWorkerJoinMaterialSerializesWithSubmitOperation(t *testing.T) {
 	server := newTestServer(t)
+	writeJoinMaterialAdminKubeconfig(t, server)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2354,6 +2367,29 @@ func TestCreateWorkerJoinMaterialSerializesWithSubmitOperation(t *testing.T) {
 	if err := <-submitDone; err != nil {
 		t.Fatalf("SubmitOperation error after material minting finished = %v", err)
 	}
+}
+
+func writeJoinMaterialAdminKubeconfig(t *testing.T, server *Server) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(server.Root, "etc/kubernetes/admin.conf"), `apiVersion: v1
+kind: Config
+clusters:
+  - name: kubernetes
+    cluster:
+      certificate-authority-data: ca-data
+      server: https://api.katl.test:6443
+contexts:
+  - name: admin
+    context:
+      cluster: kubernetes
+      user: admin
+current-context: admin
+users:
+  - name: admin
+    user:
+      client-certificate-data: cert-data
+      client-key-data: key-data
+`)
 }
 
 func TestCreateWorkerJoinMaterialRedactsKubeadmFailure(t *testing.T) {
