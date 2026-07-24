@@ -359,17 +359,20 @@ payload patch, selects the newest compatible cri-tools patch, and starts a new
 payload at artifact revision `1`. Review the policy diff and submit it as a
 normal ready pull request.
 
-Changes to bundle-producing code, profiles, or workflows must rebuild every
-supported payload. Refresh the recipe fingerprint and advance all immutable
-artifact revisions in the same pull request:
+Changes to the Kubernetes sysext profile, package or base-runtime ABI inputs,
+bundle metadata or catalog producers, or publication workflow must rebuild
+every supported payload. Refresh the recipe fingerprint and advance all
+immutable artifact revisions in the same pull request:
 
 ```sh
 go run ./cmd/katl-kubernetes-release refresh-rebuilds
 ```
 
 The Go baseline rejects a changed bundle recipe until this command has updated
-the supported-version policy. Changes that only add a supported payload do not
-advance existing artifact revisions.
+the supported-version policy. KatlOS runtime binaries, agents, installer policy,
+VM infrastructure, documentation, and other product code are outside this
+recipe boundary and must not advance Kubernetes artifact revisions. Changes
+that only add a supported payload do not advance existing artifact revisions.
 
 Manual dispatch remains the explicit dry-run path. Dispatch it with empty
 version inputs to build the whole supported matrix, or select one supported

@@ -19,6 +19,9 @@ func TestDefaultSupportedVersions(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("versions = %v, want %v", got, want)
 	}
+	if supported.RecipeScope != CurrentRecipeScope {
+		t.Fatalf("recipe scope = %q, want %q", supported.RecipeScope, CurrentRecipeScope)
+	}
 }
 
 func TestSupportedVersionArtifactVersion(t *testing.T) {
@@ -82,6 +85,39 @@ func TestSupportedVersionsChangedSinceRequiresRevision(t *testing.T) {
 	}
 }
 
+func TestSupportedVersionsChangedSinceRequiresRevisionForRecipeChange(t *testing.T) {
+	supported, err := DefaultSupportedVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := supported
+	previous.Versions = copyVersions(supported.Versions)
+	previous.RecipeDigest = "sha256:" + strings.Repeat("a", 64)
+
+	if _, err := supported.ChangedSince(previous); err == nil || !strings.Contains(err.Error(), "recipe changed without advancing") {
+		t.Fatalf("ChangedSince() error = %v", err)
+	}
+}
+
+func TestSupportedVersionsChangedSinceAllowsRecipeRescopeWithoutRebuild(t *testing.T) {
+	supported, err := DefaultSupportedVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := supported
+	previous.Versions = copyVersions(supported.Versions)
+	previous.RecipeScope = ""
+	previous.RecipeDigest = "sha256:" + strings.Repeat("a", 64)
+
+	changed, err := supported.ChangedSince(previous)
+	if err != nil {
+		t.Fatalf("ChangedSince() error = %v", err)
+	}
+	if len(changed) != 0 {
+		t.Fatalf("changed = %#v, want no artifact rebuilds", changed)
+	}
+}
+
 func TestDecodeSupportedVersionsRejectsInvalidPolicy(t *testing.T) {
 	validVersion := `{
 		"payloadVersion": "v1.36.0",
@@ -108,6 +144,7 @@ func TestDecodeSupportedVersionsRejectsInvalidPolicy(t *testing.T) {
 		{name: "zero revision", versions: strings.Replace(validVersion, `"artifactRevision": 1`, `"artifactRevision": 0`, 1), want: "at least 1"},
 		{name: "package mismatch", versions: strings.Replace(validVersion, `"kubeadm": "0:1.36.0-1"`, `"kubeadm": "0:1.36.1-1"`, 1), want: "does not match its payload"},
 		{name: "bad digest", versions: validVersion, digest: "sha256:nope", want: "recipeDigest"},
+		{name: "bad scope", versions: validVersion, extra: `, "recipeScope": "Kubernetes Bundle"`, want: "recipeScope"},
 		{name: "unknown field", versions: validVersion, extra: `, "unknown": true`, want: "unknown field"},
 	}
 	for _, test := range tests {

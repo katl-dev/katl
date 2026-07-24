@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	APIVersion = "katl.dev/v1alpha1"
-	Kind       = "KubernetesSupportedVersions"
+	APIVersion         = "katl.dev/v1alpha1"
+	Kind               = "KubernetesSupportedVersions"
+	CurrentRecipeScope = "kubernetes-bundle-v1"
 )
 
 //go:embed supported-versions.json
@@ -23,11 +24,13 @@ var (
 	versionPattern = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
 	packagePattern = regexp.MustCompile(`^0:([0-9]+)\.([0-9]+)\.([0-9]+)-[A-Za-z0-9._+~-]+$`)
 	digestPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	scopePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
 )
 
 type SupportedVersions struct {
 	APIVersion   string             `json:"apiVersion"`
 	Kind         string             `json:"kind"`
+	RecipeScope  string             `json:"recipeScope,omitempty"`
 	RecipeDigest string             `json:"recipeDigest"`
 	Versions     []SupportedVersion `json:"versions"`
 }
@@ -94,6 +97,8 @@ func (supported SupportedVersions) Select(payloadVersion string) ([]SupportedVer
 }
 
 func (supported SupportedVersions) ChangedSince(previous SupportedVersions) ([]SupportedVersion, error) {
+	recipeChanged := supported.RecipeDigest != previous.RecipeDigest
+	scopeChangedWithoutRebuild := previous.RecipeScope == "" && supported.RecipeScope == CurrentRecipeScope
 	previousByPayload := make(map[string]SupportedVersion, len(previous.Versions))
 	for _, version := range previous.Versions {
 		previousByPayload[version.PayloadVersion] = version
@@ -106,7 +111,7 @@ func (supported SupportedVersions) ChangedSince(previous SupportedVersions) ([]S
 			continue
 		}
 		if old == version {
-			if supported.RecipeDigest != previous.RecipeDigest {
+			if recipeChanged && !scopeChangedWithoutRebuild {
 				return nil, fmt.Errorf("Kubernetes bundle recipe changed without advancing %s artifactRevision", version.PayloadVersion)
 			}
 			continue
@@ -164,6 +169,9 @@ func validateSupportedVersions(supported SupportedVersions) error {
 	}
 	if supported.Kind != Kind {
 		return fmt.Errorf("supported Kubernetes versions kind must be %s", Kind)
+	}
+	if supported.RecipeScope != "" && !scopePattern.MatchString(supported.RecipeScope) {
+		return fmt.Errorf("supported Kubernetes versions recipeScope must be a lowercase recipe scope")
 	}
 	if !digestPattern.MatchString(supported.RecipeDigest) {
 		return fmt.Errorf("supported Kubernetes versions recipeDigest must be a sha256 digest")

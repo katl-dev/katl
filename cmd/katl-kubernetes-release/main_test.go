@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/kubernetesrelease"
 )
 
 const testManifest = `: "${KATL_KUBERNETES_MINOR:=v1.36}"
@@ -16,6 +18,69 @@ KATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT=4
 : "${KATL_KUBERNETES_KUBECTL_VERSION:=0:1.36.0-1}"
 : "${KATL_KUBERNETES_CRITOOLS_VERSION:=0:1.36.0-1}"
 `
+
+func TestRefreshRebuildsRescopesWithoutAdvancingArtifacts(t *testing.T) {
+	supported, err := kubernetesrelease.DefaultSupportedVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	supported.RecipeScope = ""
+	supported.RecipeDigest = "sha256:" + strings.Repeat("a", 64)
+	before := append([]kubernetesrelease.SupportedVersion(nil), supported.Versions...)
+	data, err := kubernetesrelease.MarshalSupportedVersions(supported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "supported-versions.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{
+		"refresh-rebuilds",
+		"--supported-versions", path,
+		"--repo-root", filepath.Join("..", ".."),
+	}, &stdout, &stderr, nil); err != nil {
+		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
+	}
+	updatedData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := kubernetesrelease.DecodeSupportedVersions(updatedData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RecipeScope != kubernetesrelease.CurrentRecipeScope {
+		t.Fatalf("recipe scope = %q", updated.RecipeScope)
+	}
+	if len(updated.Versions) != len(before) {
+		t.Fatalf("versions = %#v, want %#v", updated.Versions, before)
+	}
+	for index := range before {
+		if updated.Versions[index].ArtifactRevision != before[index].ArtifactRevision {
+			t.Fatalf("artifact revision %s = %d, want %d", updated.Versions[index].PayloadVersion, updated.Versions[index].ArtifactRevision, before[index].ArtifactRevision)
+		}
+	}
+	if !strings.Contains(stdout.String(), "without advancing artifact revisions") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestVerifyRecipeAcceptsScopedRepositoryManifest(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{
+		"verify-recipe",
+		"--supported-versions", filepath.Join("..", "..", "internal", "kubernetesrelease", "supported-versions.json"),
+		"--repo-root", filepath.Join("..", ".."),
+	}, &stdout, &stderr, nil); err != nil {
+		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "Kubernetes bundle recipe is current" {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
 
 func TestPrepare(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kubernetes.env")

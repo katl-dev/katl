@@ -14,7 +14,7 @@ func TestRecipeDigestChangesWithProductionInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecipeDigest() error = %v", err)
 	}
-	path := filepath.Join(root, "scripts", "mkosi")
+	path := filepath.Join(root, "scripts", "build-kubernetes-sysext")
 	if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -46,11 +46,17 @@ func TestRecipeDigestIgnoresTests(t *testing.T) {
 	}
 }
 
-func TestRecipeDigestTracksControllerAndRuntimeSources(t *testing.T) {
+func TestRecipeDigestTracksBundleProducerSources(t *testing.T) {
 	for _, relative := range []string{
 		"internal/kubernetesrelease/input.go",
-		"internal/operatorconsole/input.go",
-		"cmd/katlc/input.go",
+		"internal/installer/artifact/artifact.go",
+		"internal/installer/artifact/local.go",
+		"internal/installer/sysextcatalog/catalog.go",
+		"internal/installer/sysextcatalog/stage.go",
+		"cmd/katl-mkosi-artifacts/input.go",
+		"cmd/katl-publish-kubernetes-sysext/input.go",
+		"mkosi.profiles/kubernetes-sysext/input.go",
+		"mkosi.profiles/runtime/mkosi.conf",
 	} {
 		t.Run(relative, func(t *testing.T) {
 			root := writeRecipeFixture(t)
@@ -59,6 +65,9 @@ func TestRecipeDigestTracksControllerAndRuntimeSources(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(root, filepath.FromSlash(relative))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -73,9 +82,47 @@ func TestRecipeDigestTracksControllerAndRuntimeSources(t *testing.T) {
 	}
 }
 
+func TestRecipeDigestIgnoresUnrelatedProductAndRuntimeSources(t *testing.T) {
+	for _, relative := range []string{
+		"cmd/katl-boot-health/main.go",
+		"cmd/katlc/input.go",
+		"internal/installer/configapply/input.go",
+		"internal/installer/generation/input.go",
+		"internal/installer/manifest/manifest.go",
+		"internal/operatorconsole/input.go",
+		"internal/installer/sysextcatalog/select.go",
+		"mkosi.profiles/runtime/mkosi.build",
+		"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-example.service",
+		"scripts/mkosi",
+		"docs/input.md",
+	} {
+		t.Run(relative, func(t *testing.T) {
+			root := writeRecipeFixture(t)
+			first, err := RecipeDigest(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, filepath.FromSlash(relative))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			second, err := RecipeDigest(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first != second {
+				t.Fatalf("%s affected Kubernetes bundle recipe digest", relative)
+			}
+		})
+	}
+}
+
 func TestRecipeDigestTracksSymlinkTarget(t *testing.T) {
 	root := writeRecipeFixture(t)
-	path := filepath.Join(root, "mkosi.profiles", "runtime", "input.link")
+	path := filepath.Join(root, "mkosi.profiles", "kubernetes-sysext", "input.link")
 	first, err := RecipeDigest(root)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +144,7 @@ func TestRecipeDigestTracksSymlinkTarget(t *testing.T) {
 
 func TestRecipeDigestTracksExecutableMode(t *testing.T) {
 	root := writeRecipeFixture(t)
-	path := filepath.Join(root, "scripts", "mkosi")
+	path := filepath.Join(root, "scripts", "build-kubernetes-sysext")
 	first, err := RecipeDigest(root)
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +166,7 @@ func TestRefreshRecipeAdvancesEverySupportedArtifact(t *testing.T) {
 	supported := SupportedVersions{
 		APIVersion:   APIVersion,
 		Kind:         Kind,
+		RecipeScope:  CurrentRecipeScope,
 		RecipeDigest: "sha256:" + strings.Repeat("a", 64),
 		Versions: []SupportedVersion{
 			testSupportedVersion("v1.35.9", 2),
@@ -141,6 +189,28 @@ func TestRefreshRecipeAdvancesEverySupportedArtifact(t *testing.T) {
 	}
 }
 
+func TestRefreshRecipeChangesScopeWithoutAdvancingArtifacts(t *testing.T) {
+	root := writeRecipeFixture(t)
+	supported := SupportedVersions{
+		APIVersion:   APIVersion,
+		Kind:         Kind,
+		RecipeDigest: "sha256:" + strings.Repeat("a", 64),
+		Versions: []SupportedVersion{
+			testSupportedVersion("v1.35.9", 2),
+			testSupportedVersion("v1.36.3", 1),
+		},
+	}
+	updated, changed, err := RefreshRecipe(root, supported)
+	if err != nil {
+		t.Fatalf("RefreshRecipe() error = %v", err)
+	}
+	if !changed || updated.RecipeScope != CurrentRecipeScope ||
+		updated.Versions[0].ArtifactRevision != 2 ||
+		updated.Versions[1].ArtifactRevision != 1 {
+		t.Fatalf("updated = %#v, changed = %t", updated, changed)
+	}
+}
+
 func TestDefaultRecipeDigestMatchesRepository(t *testing.T) {
 	supported, err := DefaultSupportedVersions()
 	if err != nil {
@@ -152,6 +222,51 @@ func TestDefaultRecipeDigestMatchesRepository(t *testing.T) {
 	}
 	if supported.RecipeDigest != digest {
 		t.Fatalf("recipe digest = %s, want %s; run go run ./cmd/katl-kubernetes-release refresh-rebuilds", supported.RecipeDigest, digest)
+	}
+}
+
+func TestKubernetesBundleWorkflowUsesRecipeBoundary(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "kubernetes-bundles.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	for _, required := range []string{
+		".github/workflows/kubernetes-bundles.yml",
+		"Containerfile.mkosi",
+		"cmd/katl-kubernetes-release/**",
+		"cmd/katl-mkosi-artifacts/**",
+		"cmd/katl-publish-kubernetes-sysext/**",
+		"containers-policy.json",
+		"go.mod",
+		"go.sum",
+		"internal/installer/artifact/artifact.go",
+		"internal/installer/artifact/local.go",
+		"internal/installer/sysextcatalog/catalog.go",
+		"internal/installer/sysextcatalog/stage.go",
+		"internal/kubernetesrelease/**",
+		"mkosi.conf",
+		"mkosi.profiles/kubernetes-sysext/**",
+		"mkosi.profiles/runtime/mkosi.conf",
+		"mkosi.profiles/runtime/os-release.in",
+		"scripts/build-kubernetes-sysext",
+		"scripts/check-kubernetes-sysext",
+	} {
+		if !strings.Contains(workflow, "\n      - "+required+"\n") {
+			t.Fatalf("Kubernetes bundle workflow does not track recipe input %q", required)
+		}
+	}
+	for _, unrelated := range []string{
+		"cmd/katlc/**",
+		"internal/**",
+		"internal/installer/manifest/**",
+		"internal/installer/sysextcatalog/**",
+		"mkosi.profiles/runtime/**",
+		"scripts/mkosi",
+	} {
+		if strings.Contains(workflow, "\n      - "+unrelated+"\n") {
+			t.Fatalf("Kubernetes bundle workflow tracks unrelated product input %q", unrelated)
+		}
 	}
 }
 
@@ -174,18 +289,11 @@ func writeRecipeFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	directories := map[string]bool{
-		"cmd/katl-boot-health":               true,
-		"cmd/katl-console":                   true,
-		"cmd/katl-generation-activate":       true,
-		"cmd/katl-host-config-activate":      true,
 		"cmd/katl-kubernetes-release":        true,
 		"cmd/katl-mkosi-artifacts":           true,
 		"cmd/katl-publish-kubernetes-sysext": true,
-		"cmd/katl-runtime-status":            true,
-		"cmd/katlc":                          true,
-		"internal":                           true,
+		"internal/kubernetesrelease":         true,
 		"mkosi.profiles/kubernetes-sysext":   true,
-		"mkosi.profiles/runtime":             true,
 	}
 	for _, input := range recipeRoots {
 		path := filepath.Join(root, filepath.FromSlash(input))
@@ -207,8 +315,11 @@ func writeRecipeFixture(t *testing.T) string {
 	}
 	for relative, content := range map[string]string{
 		"cmd/katl-mkosi-artifacts/main_test.go": "test",
-		"internal/kubernetesrelease/input.go":   "controller",
+		"cmd/katlc/input.go":                    "agent",
+		"docs/input.md":                         "documentation",
 		"internal/operatorconsole/input.go":     "runtime",
+		"mkosi.profiles/runtime/mkosi.build":    "runtime build",
+		"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-example.service": "runtime unit",
 	} {
 		path := filepath.Join(root, filepath.FromSlash(relative))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -218,7 +329,7 @@ func writeRecipeFixture(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	link := filepath.Join(root, "mkosi.profiles", "runtime", "input.link")
+	link := filepath.Join(root, "mkosi.profiles", "kubernetes-sysext", "input.link")
 	if err := os.Symlink("target-a", link); err != nil {
 		t.Fatal(err)
 	}
