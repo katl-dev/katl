@@ -77,20 +77,22 @@ type SourceSpec struct {
 }
 
 type SourceNode struct {
-	Name         string                  `yaml:"name" json:"name"`
-	ControlPlane bool                    `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
-	Identity     SourceIdentity          `yaml:"identity,omitempty" json:"identity,omitempty"`
-	Networkd     manifest.NetworkdConfig `yaml:"networkd,omitempty" json:"networkd,omitempty"`
-	Install      SourceInstallLayer      `yaml:"install,omitempty" json:"install,omitempty"`
-	Kubernetes   SourceKubernetesLayer   `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Bootstrap    SourceBootstrapLayer    `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
+	Name              string                     `yaml:"name" json:"name"`
+	ControlPlane      bool                       `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
+	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
+	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	Install           SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
+	Kubernetes        SourceKubernetesLayer      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Bootstrap         SourceBootstrapLayer       `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
 }
 
 type SourceNodeLayer struct {
-	Identity   SourceIdentity          `yaml:"identity,omitempty" json:"identity,omitempty"`
-	Networkd   manifest.NetworkdConfig `yaml:"networkd,omitempty" json:"networkd,omitempty"`
-	Install    SourceInstallLayer      `yaml:"install,omitempty" json:"install,omitempty"`
-	Kubernetes SourceKubernetesLayer   `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
+	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	Install           SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
+	Kubernetes        SourceKubernetesLayer      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
 }
 
 type SourceBootstrapLayer struct {
@@ -225,6 +227,10 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 		return nil, Result{}, err
 	}
 	source, err = normalizeSource(source)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	source, err = resolveHostConfigurationSources(filepath.Dir(sourcePath), source)
 	if err != nil {
 		return nil, Result{}, err
 	}
@@ -413,8 +419,9 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 
 func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 	return clusterplan.NodeLayer{
-		SSH:      layer.Identity.SSH,
-		Networkd: layer.Networkd,
+		SSH:               layer.Identity.SSH,
+		Networkd:          layer.Networkd,
+		HostConfiguration: layer.HostConfiguration,
 		Install: clusterplan.InstallLayer{
 			TargetDisk:         layer.Install.TargetDisk,
 			TargetDiskDefaults: layer.Install.TargetDiskDefaults,
@@ -429,10 +436,11 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 
 func sourceNodeLayer(node SourceNode) SourceNodeLayer {
 	return SourceNodeLayer{
-		Identity:   node.Identity,
-		Networkd:   node.Networkd,
-		Install:    node.Install,
-		Kubernetes: node.Kubernetes,
+		Identity:          node.Identity,
+		Networkd:          node.Networkd,
+		HostConfiguration: node.HostConfiguration,
+		Install:           node.Install,
+		Kubernetes:        node.Kubernetes,
 	}
 }
 
@@ -471,6 +479,14 @@ func defaultSource(source SourceConfig) SourceConfig {
 
 func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	source = defaultSource(source)
+	if err := manifest.ValidateHostConfiguration(source.Spec.Defaults.HostConfiguration, true); err != nil {
+		return SourceConfig{}, fmt.Errorf("spec.defaults.hostConfiguration: %w", err)
+	}
+	for i := range source.Spec.Nodes {
+		if err := manifest.ValidateHostConfiguration(source.Spec.Nodes[i].HostConfiguration, true); err != nil {
+			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].hostConfiguration: %w", i, err)
+		}
+	}
 	if source.Spec.ControlPlaneEndpoint == nil {
 		return source, nil
 	}
@@ -480,6 +496,88 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	}
 	source.Spec.ControlPlaneEndpoint = &plan.Config
 	return source, nil
+}
+
+func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (SourceConfig, error) {
+	root, err := filepath.EvalSymlinks(sourceRoot)
+	if err != nil {
+		return SourceConfig{}, fmt.Errorf("resolve ClusterConfig source root: %w", err)
+	}
+	resolve := func(field string, config *manifest.HostConfiguration) error {
+		setNames := make([]string, 0, len(config.Sets))
+		for name := range config.Sets {
+			setNames = append(setNames, name)
+		}
+		sort.Strings(setNames)
+		for _, setName := range setNames {
+			set := config.Sets[setName]
+			for i := range set.Files {
+				file := &set.Files[i]
+				if strings.TrimSpace(file.Source) == "" {
+					continue
+				}
+				data, err := readHostConfigurationSource(root, file.Source)
+				if err != nil {
+					return fmt.Errorf("%s.sets[%q].files[%d].source: %w", field, setName, i, err)
+				}
+				content := string(data)
+				file.Content = &content
+				file.Source = ""
+			}
+			config.Sets[setName] = set
+		}
+		return nil
+	}
+	if err := resolve("spec.defaults.hostConfiguration", &source.Spec.Defaults.HostConfiguration); err != nil {
+		return SourceConfig{}, err
+	}
+	for i := range source.Spec.Nodes {
+		if err := resolve(fmt.Sprintf("spec.nodes[%d].hostConfiguration", i), &source.Spec.Nodes[i].HostConfiguration); err != nil {
+			return SourceConfig{}, err
+		}
+	}
+	return source, nil
+}
+
+func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {
+	if filepath.IsAbs(source) {
+		return nil, fmt.Errorf("%q must be relative to the ClusterConfig source root", source)
+	}
+	cleaned := filepath.Clean(source)
+	if source != cleaned || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("%q must be a normalized, non-escaping relative path", source)
+	}
+	candidate := filepath.Join(sourceRoot, cleaned)
+	relative, err := filepath.Rel(sourceRoot, candidate)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("%q escapes the ClusterConfig source root", source)
+	}
+	current := sourceRoot
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return nil, fmt.Errorf("inspect %q: %w", source, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%q must not traverse a symbolic link", source)
+		}
+	}
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return nil, fmt.Errorf("inspect %q: %w", source, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q must be a regular file", source)
+	}
+	if info.Size() > manifest.MaxHostConfigurationFileBytes {
+		return nil, fmt.Errorf("%q exceeds %d bytes", source, manifest.MaxHostConfigurationFileBytes)
+	}
+	data, err := os.ReadFile(candidate)
+	if err != nil {
+		return nil, fmt.Errorf("read %q: %w", source, err)
+	}
+	return data, nil
 }
 
 func SourceControlPlaneEndpoint(source SourceConfig) string {

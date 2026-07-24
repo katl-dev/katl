@@ -25,6 +25,15 @@ node:
 
           [Network]
           DHCP=yes
+  hostConfiguration:
+    sets:
+      storage-modules:
+        state: present
+        files:
+          - path: /etc/modules-load.d/80-home-lab-storage.conf
+            content: |
+              br_netfilter
+            mode: 420
 install:
   wipeTarget: true
   targetDisk:

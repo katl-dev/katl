@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
-	"strconv"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/disk"
@@ -42,7 +44,7 @@ type NodeConfig struct {
 	Identity             NodeIdentity                 `json:"identity" yaml:"identity"`
 	SystemRole           string                       `json:"systemRole" yaml:"systemRole"`
 	Networkd             NetworkdConfig               `json:"networkd,omitempty" yaml:"networkd,omitempty"`
-	Sysctl               SysctlConfig                 `json:"sysctl,omitempty,omitzero" yaml:"sysctl,omitempty"`
+	HostConfiguration    HostConfiguration            `json:"hostConfiguration,omitempty,omitzero" yaml:"hostConfiguration,omitempty"`
 	Kubernetes           KubernetesConfig             `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlplaneendpoint.Config `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
 	Bootstrap            *BootstrapIntent             `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
@@ -66,12 +68,43 @@ type NetworkdFile struct {
 	Content string `json:"content" yaml:"content"`
 }
 
-type SysctlConfig struct {
-	Settings map[string]string `json:"settings,omitempty" yaml:"settings,omitempty"`
+const (
+	HostConfigurationPresent = "present"
+	HostConfigurationAbsent  = "absent"
+)
+
+type HostConfiguration struct {
+	Sets map[string]HostConfigurationSet `json:"sets,omitempty" yaml:"sets,omitempty"`
 }
 
-func (config SysctlConfig) IsZero() bool {
-	return len(config.Settings) == 0
+func (config HostConfiguration) IsZero() bool {
+	return len(config.Sets) == 0
+}
+
+type HostConfigurationSet struct {
+	State  string                         `json:"state,omitempty" yaml:"state,omitempty"`
+	Files  []HostConfigurationFile        `json:"files,omitempty" yaml:"files,omitempty"`
+	Notify HostConfigurationNotifications `json:"notify,omitempty,omitzero" yaml:"notify,omitempty"`
+}
+
+type HostConfigurationFile struct {
+	Path    string  `json:"path" yaml:"path"`
+	Content *string `json:"content,omitempty" yaml:"content,omitempty"`
+	Source  string  `json:"source,omitempty" yaml:"source,omitempty"`
+	Mode    uint32  `json:"mode,omitempty" yaml:"mode,omitempty"`
+}
+
+type HostConfigurationNotifications struct {
+	Systemd []HostConfigurationSystemdNotification `json:"systemd,omitempty" yaml:"systemd,omitempty"`
+}
+
+func (notifications HostConfigurationNotifications) IsZero() bool {
+	return len(notifications.Systemd) == 0
+}
+
+type HostConfigurationSystemdNotification struct {
+	Unit   string `json:"unit" yaml:"unit"`
+	Action string `json:"action" yaml:"action"`
 }
 
 type KubernetesConfig struct {
@@ -256,8 +289,8 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	if err := validateNetworkd(manifest.Node.Networkd); err != nil {
 		return err
 	}
-	if err := validateSysctl(manifest.Node.Sysctl); err != nil {
-		return err
+	if err := ValidateHostConfiguration(manifest.Node.HostConfiguration, false); err != nil {
+		return fmt.Errorf("node.hostConfiguration: %w", err)
 	}
 	if err := validateNameRef("node.kubernetes.kubeadm.configRef", manifest.Node.Kubernetes.Kubeadm.ConfigRef); err != nil {
 		return err
@@ -516,74 +549,215 @@ func validateNetworkd(config NetworkdConfig) error {
 	return nil
 }
 
-func validateSysctl(config SysctlConfig) error {
-	for key, value := range config.Settings {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("node.sysctl.settings contains an empty key")
+const (
+	MaxHostConfigurationFileBytes  = 1 << 20
+	MaxHostConfigurationTotalBytes = 4 << 20
+)
+
+var protectedHostConfigurationPaths = []string{
+	"/etc/extension-release.d",
+	"/etc/katl",
+	"/etc/kubernetes",
+	"/etc/pam.d",
+	"/etc/security",
+	"/etc/ssh/authorized_keys",
+	"/etc/ssh/sshd_config.d",
+	"/etc/sudoers.d",
+	"/etc/sysusers.d",
+}
+
+var protectedHostConfigurationExactPaths = map[string]struct{}{
+	"/etc/fstab":           {},
+	"/etc/group":           {},
+	"/etc/gshadow":         {},
+	"/etc/hostname":        {},
+	"/etc/passwd":          {},
+	"/etc/shadow":          {},
+	"/etc/ssh/sshd_config": {},
+	"/etc/subgid":          {},
+	"/etc/subuid":          {},
+	"/etc/sudoers":         {},
+}
+
+// ValidateHostConfiguration validates the native-file ownership boundary.
+// allowSource is used only while compiling ClusterConfig; installed manifests
+// must contain embedded content and never retain authoring-time file paths.
+func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error {
+	setNames := make([]string, 0, len(config.Sets))
+	for name := range config.Sets {
+		setNames = append(setNames, name)
+	}
+	sort.Strings(setNames)
+	paths := make(map[string]string)
+	systemdNotifications := make(map[string]string)
+	totalBytes := 0
+	for _, name := range setNames {
+		if err := validateHostConfigurationSetName(name); err != nil {
+			return err
 		}
-		if key != strings.TrimSpace(key) {
-			return fmt.Errorf("node.sysctl.settings[%q] key must not contain leading or trailing whitespace", key)
+		set := config.Sets[name]
+		state := strings.TrimSpace(set.State)
+		if state == "" {
+			state = HostConfigurationPresent
 		}
-		if !ValidSysctlKey(key) {
-			return fmt.Errorf("node.sysctl.settings[%q] is not supported", key)
+		switch state {
+		case HostConfigurationPresent:
+			if len(set.Files) == 0 {
+				return fmt.Errorf("sets[%q].files must not be empty", name)
+			}
+		case HostConfigurationAbsent:
+			if len(set.Files) != 0 || len(set.Notify.Systemd) != 0 {
+				return fmt.Errorf("sets[%q] with state absent must not declare files or notifications", name)
+			}
+			continue
+		default:
+			return fmt.Errorf("sets[%q].state %q is unsupported", name, set.State)
 		}
-		if value != strings.TrimSpace(value) || strings.ContainsAny(value, "\x00\n\r") {
-			return fmt.Errorf("node.sysctl.settings[%q] value is unsafe", key)
+		for i, file := range set.Files {
+			field := fmt.Sprintf("sets[%q].files[%d]", name, i)
+			cleaned, err := validateHostConfigurationPath(file.Path)
+			if err != nil {
+				return fmt.Errorf("%s.path: %w", field, err)
+			}
+			if owner, exists := paths[cleaned]; exists {
+				return fmt.Errorf("%s.path %q is already owned by set %q", field, cleaned, owner)
+			}
+			paths[cleaned] = name
+			hasContent := file.Content != nil
+			hasSource := strings.TrimSpace(file.Source) != ""
+			if hasContent == hasSource {
+				return fmt.Errorf("%s must declare exactly one of content or source", field)
+			}
+			if hasSource && !allowSource {
+				return fmt.Errorf("%s.source must be resolved before installation", field)
+			}
+			if hasContent {
+				if !utf8.ValidString(*file.Content) {
+					return fmt.Errorf("%s.content must be valid UTF-8", field)
+				}
+				if strings.ContainsRune(*file.Content, '\x00') {
+					return fmt.Errorf("%s.content must not contain NUL bytes", field)
+				}
+				if len(*file.Content) > MaxHostConfigurationFileBytes {
+					return fmt.Errorf("%s.content exceeds %d bytes", field, MaxHostConfigurationFileBytes)
+				}
+				totalBytes += len(*file.Content)
+			}
+			switch file.Mode {
+			case 0, 0o600, 0o640, 0o644:
+			default:
+				return fmt.Errorf("%s.mode %#o is unsupported; use 0600, 0640, or 0644", field, file.Mode)
+			}
 		}
-		if !ValidSysctlValue(key, value) {
-			return fmt.Errorf("node.sysctl.settings[%q] value %q is invalid; %s", key, value, SysctlValueHint(key))
+		if err := validateHostConfigurationNotifications(name, set.Notify); err != nil {
+			return err
 		}
+		for _, notification := range set.Notify.Systemd {
+			if action, exists := systemdNotifications[notification.Unit]; exists && action != notification.Action {
+				return fmt.Errorf("sets[%q].notify.systemd conflicts with action %q declared by another set for %q", name, action, notification.Unit)
+			}
+			systemdNotifications[notification.Unit] = notification.Action
+		}
+	}
+	if totalBytes > MaxHostConfigurationTotalBytes {
+		return fmt.Errorf("file content exceeds the %d-byte host configuration limit", MaxHostConfigurationTotalBytes)
 	}
 	return nil
 }
 
-func ValidSysctlKey(key string) bool {
-	switch key {
-	case "net.ipv4.ip_forward",
-		"net.bridge.bridge-nf-call-iptables",
-		"net.bridge.bridge-nf-call-ip6tables",
-		"vm.max_map_count",
-		"kernel.panic",
-		"kernel.panic_on_oops":
+func validateHostConfigurationSetName(name string) error {
+	if name == "" || name != strings.TrimSpace(name) {
+		return fmt.Errorf("host configuration set name %q must not be empty or contain surrounding whitespace", name)
+	}
+	if len(name) > 63 || !labelDNSPattern.MatchString(name) {
+		return fmt.Errorf("host configuration set name %q must be a lowercase DNS label of 63 characters or fewer", name)
+	}
+	return nil
+}
+
+func validateHostConfigurationPath(value string) (string, error) {
+	if strings.ContainsRune(value, '\x00') {
+		return "", fmt.Errorf("must not contain NUL bytes")
+	}
+	if !strings.HasPrefix(value, "/") {
+		return "", fmt.Errorf("%q must be absolute", value)
+	}
+	cleaned := path.Clean(value)
+	if value != cleaned {
+		return "", fmt.Errorf("%q must be normalized as %q", value, cleaned)
+	}
+	if cleaned == "/etc" || !strings.HasPrefix(cleaned, "/etc/") {
+		return "", fmt.Errorf("%q must name a regular file below /etc", value)
+	}
+	if _, protected := protectedHostConfigurationExactPaths[cleaned]; protected {
+		return "", fmt.Errorf("%q is owned by KatlOS", value)
+	}
+	for _, prefix := range protectedHostConfigurationPaths {
+		if cleaned == prefix || strings.HasPrefix(cleaned, prefix+"/") {
+			return "", fmt.Errorf("%q is below KatlOS-owned prefix %q", value, prefix)
+		}
+	}
+	if protectedSystemdPath(cleaned) {
+		return "", fmt.Errorf("%q is protected systemd configuration", value)
+	}
+	return cleaned, nil
+}
+
+func protectedSystemdPath(value string) bool {
+	const prefix = "/etc/systemd/system/"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	relative := strings.TrimPrefix(value, prefix)
+	unit := strings.Split(relative, "/")[0]
+	if strings.HasSuffix(unit, ".wants") || strings.HasSuffix(unit, ".requires") {
+		return true
+	}
+	unit = strings.TrimSuffix(unit, ".d")
+	return protectedSystemdUnit(unit)
+}
+
+func protectedSystemdUnit(unit string) bool {
+	if strings.HasPrefix(unit, "katl") {
+		return true
+	}
+	switch unit {
+	case "containerd.service", "efi.mount", "etc-kubernetes.mount", "kubelet.service",
+		"sshd.service", "systemd-boot-check-no-failures.service",
+		"systemd-boot-system-token.service", "systemd-confext.service",
+		"systemd-hostnamed.service", "systemd-networkd.service",
+		"systemd-resolved.service", "systemd-sysext.service", "var.mount":
 		return true
 	default:
 		return false
 	}
 }
 
-func ValidSysctlValue(key string, value string) bool {
-	switch key {
-	case "net.ipv4.ip_forward",
-		"net.bridge.bridge-nf-call-iptables",
-		"net.bridge.bridge-nf-call-ip6tables",
-		"kernel.panic_on_oops":
-		return value == "0" || value == "1"
-	case "vm.max_map_count":
-		parsed, err := strconv.ParseUint(value, 10, 63)
-		return err == nil && parsed > 0
-	case "kernel.panic":
-		_, err := strconv.ParseUint(value, 10, 63)
-		return err == nil
-	default:
-		return false
+func validateHostConfigurationNotifications(setName string, notifications HostConfigurationNotifications) error {
+	seen := make(map[string]string)
+	for i, notification := range notifications.Systemd {
+		field := fmt.Sprintf("sets[%q].notify.systemd[%d]", setName, i)
+		unit := strings.TrimSpace(notification.Unit)
+		if unit == "" || len(unit) > 255 || unit != notification.Unit || !systemdNotificationUnitPattern.MatchString(unit) {
+			return fmt.Errorf("%s.unit %q must be a single systemd unit name", field, notification.Unit)
+		}
+		if protectedSystemdUnit(unit) {
+			return fmt.Errorf("%s.unit %q is release-critical and cannot be notified", field, unit)
+		}
+		switch notification.Action {
+		case "reload", "try-reload-or-restart", "try-restart":
+		default:
+			return fmt.Errorf("%s.action %q is unsupported", field, notification.Action)
+		}
+		if action, exists := seen[unit]; exists && action != notification.Action {
+			return fmt.Errorf("%s conflicts with action %q already declared for %q", field, action, unit)
+		}
+		seen[unit] = notification.Action
 	}
+	return nil
 }
 
-func SysctlValueHint(key string) string {
-	switch key {
-	case "net.ipv4.ip_forward",
-		"net.bridge.bridge-nf-call-iptables",
-		"net.bridge.bridge-nf-call-ip6tables",
-		"kernel.panic_on_oops":
-		return "expected 0 or 1"
-	case "vm.max_map_count":
-		return "expected a positive base-10 integer"
-	case "kernel.panic":
-		return "expected a non-negative base-10 integer"
-	default:
-		return "unsupported sysctl key"
-	}
-}
+var systemdNotificationUnitPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]*\.(?:service|socket|target|timer|path|mount|automount|slice|scope|device|swap)$`)
 
 func validateNameRef(field string, value string) error {
 	if value == "" {

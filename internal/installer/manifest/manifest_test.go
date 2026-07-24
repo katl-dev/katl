@@ -75,9 +75,13 @@ node:
 
           [Network]
           DHCP=yes
-  sysctl:
-    settings:
-      net.ipv4.ip_forward: "1"
+  hostConfiguration:
+    sets:
+      forwarding:
+        files:
+          - path: /etc/sysctl.d/80-forwarding.conf
+            content: |
+              net.ipv4.ip_forward = 1
   kubernetes:
     kubeadm:
       configRef: control-plane
@@ -111,8 +115,9 @@ katlosImage:
 	if len(manifest.Node.Networkd.Files) != 1 || !strings.Contains(manifest.Node.Networkd.Files[0].Content, "DHCP=yes") {
 		t.Fatalf("networkd files = %#v", manifest.Node.Networkd.Files)
 	}
-	if manifest.Node.Sysctl.Settings["net.ipv4.ip_forward"] != "1" {
-		t.Fatalf("sysctl settings = %#v", manifest.Node.Sysctl.Settings)
+	hostFile := manifest.Node.HostConfiguration.Sets["forwarding"].Files[0]
+	if hostFile.Content == nil || !strings.Contains(*hostFile.Content, "net.ipv4.ip_forward = 1") {
+		t.Fatalf("host configuration = %#v", manifest.Node.HostConfiguration)
 	}
 	if manifest.Node.Bootstrap == nil || manifest.Node.Bootstrap.KubernetesCatalogRef != "v1.36.1" {
 		t.Fatalf("bootstrap = %#v", manifest.Node.Bootstrap)
@@ -150,40 +155,10 @@ func TestDecodeRejectsLegacyDestructiveAcknowledgementFields(t *testing.T) {
 	}
 }
 
-func TestDecodeRejectsUnsafeSysctl(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want string
-	}{
-		{
-			name: "unsupported key",
-			body: manifestWithNode(`"sysctl": {"settings": {"kernel.hostname": "bad"}}`),
-			want: "kernel.hostname",
-		},
-		{
-			name: "unsafe value",
-			body: manifestWithNode(`"sysctl": {"settings": {"net.ipv4.ip_forward": " 1"}}`),
-			want: "value is unsafe",
-		},
-		{
-			name: "invalid boolean",
-			body: manifestWithNode(`"sysctl": {"settings": {"net.ipv4.ip_forward": "true"}}`),
-			want: "expected 0 or 1",
-		},
-		{
-			name: "invalid positive integer",
-			body: manifestWithNode(`"sysctl": {"settings": {"vm.max_map_count": "0"}}`),
-			want: "positive base-10 integer",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Decode(strings.NewReader(tt.body))
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Decode() error = %v, want %q", err, tt.want)
-			}
-		})
+func TestDecodeRejectsRemovedTypedSysctl(t *testing.T) {
+	_, err := Decode(strings.NewReader(manifestWithNode(`"sysctl": {"settings": {"net.ipv4.ip_forward": "1"}}`)))
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("Decode() error = %v, want removed sysctl field rejection", err)
 	}
 }
 

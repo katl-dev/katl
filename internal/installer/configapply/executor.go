@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,13 +37,14 @@ type ConfextActivator interface {
 }
 
 type Executor struct {
-	Root           string
-	Runner         CommandRunner
-	Activator      ConfextActivator
-	StatusPath     string
-	ActionCommands map[string][]Command
-	Timeout        time.Duration
-	Now            func() time.Time
+	Root              string
+	Runner            CommandRunner
+	Activator         ConfextActivator
+	StatusPath        string
+	ActionCommands    map[string][]Command
+	HostConfiguration *HostConfigurationChangePlan
+	Timeout           time.Duration
+	Now               func() time.Time
 }
 
 func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.ConfigApplyStatus, error) {
@@ -70,6 +72,10 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 		_ = e.writeStatus(status)
 		return status, err
 	}
+	sysctlSnapshot, err := e.snapshotHostSysctls(ctx, status.DomainActions)
+	if err != nil {
+		return e.failBeforeActivation(status, err)
+	}
 	if containsDomainAction(status.DomainActions, DomainControlPlaneEndpointRouting) {
 		enabled, err := e.endpointAdvertisementEnabled(plan.GenerationRecord)
 		if err != nil {
@@ -80,7 +86,6 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 		}
 	}
 
-	var err error
 	status, err = generation.MarkConfigApplyPhase(status, generation.ConfigApplyPhaseActivating, e.now())
 	if err != nil {
 		return status, err
@@ -90,14 +95,14 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 	}
 
 	if err := e.Activator.Activate(ctx, plan.GenerationRecord); err != nil {
-		return e.failAndRollback(ctx, status, plan, fmt.Errorf("activate selected confext: %w", err), false)
+		return e.failAndRollback(ctx, status, plan, fmt.Errorf("activate selected confext: %w", err), false, sysctlSnapshot)
 	}
 	if err := e.refreshConfext(ctx); err != nil {
-		return e.failAndRollback(ctx, status, plan, err, false)
+		return e.failAndRollback(ctx, status, plan, err, false, sysctlSnapshot)
 	}
 
 	if err := e.runActions(ctx, &status); err != nil {
-		return e.failAndRollback(ctx, status, plan, err, true)
+		return e.failAndRollback(ctx, status, plan, err, true, sysctlSnapshot)
 	}
 
 	status, err = generation.MarkConfigApplyPhase(status, generation.ConfigApplyPhaseActive, e.now())
@@ -168,6 +173,14 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 			}
 			continue
 		}
+		if action.Domain == DomainHostConfiguration {
+			if err := e.applyHostSysctls(ctx); err != nil {
+				action.Status = generation.ConfigApplyActionFailed
+				action.Diagnostic = generation.RedactConfigApplyMessage(err.Error())
+				_ = e.writeStatus(*status)
+				return err
+			}
+		}
 		commands, err := e.commandsForDomain(action.Domain)
 		if err != nil {
 			action.Status = generation.ConfigApplyActionFailed
@@ -195,7 +208,9 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 			kubeletRebound = true
 		}
 		action.Status = generation.ConfigApplyActionPassed
-		action.Diagnostic = ""
+		if action.Domain != DomainHostConfiguration {
+			action.Diagnostic = ""
+		}
 		if err := e.writeStatus(*status); err != nil {
 			return err
 		}
@@ -248,6 +263,9 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	if commands, ok := e.ActionCommands[domain]; ok {
 		return withDefaults(commands, e.timeout()), nil
 	}
+	if domain == DomainHostConfiguration && e.HostConfiguration != nil {
+		return withDefaults(e.HostConfiguration.Commands, e.timeout()), nil
+	}
 	commands := []Command{{
 		Name: "systemd-daemon-reload",
 		Argv: []string{"systemctl", "daemon-reload"},
@@ -261,8 +279,6 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		}}
 	case DomainResolved:
 		commands = append(commands, Command{Name: "systemd-resolved-reload", Argv: []string{"systemctl", "reload-or-restart", "systemd-resolved.service"}})
-	case DomainSysctl:
-		commands = append(commands, Command{Name: "systemd-sysctl", Argv: []string{"/usr/lib/systemd/systemd-sysctl", "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf"}})
 	case DomainTmpfiles:
 		commands = append(commands, Command{Name: "systemd-tmpfiles", Argv: []string{"systemd-tmpfiles", "--create", "--remove"}})
 	case DomainNetworkd:
@@ -283,7 +299,99 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	return withDefaults(commands, e.timeout()), nil
 }
 
-func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigApplyStatus, plan Result, cause error, replayActions bool) (generation.ConfigApplyStatus, error) {
+func (e Executor) snapshotHostSysctls(ctx context.Context, actions []generation.ConfigApplyDomainAction) (map[string]string, error) {
+	if !containsDomainAction(actions, DomainHostConfiguration) || e.HostConfiguration == nil || len(e.HostConfiguration.SysctlAssignments) == 0 {
+		return nil, nil
+	}
+	snapshot := make(map[string]string, len(e.HostConfiguration.SysctlAssignments))
+	for _, assignment := range e.HostConfiguration.SysctlAssignments {
+		command := Command{
+			Name:    "sysctl-snapshot-" + assignment.Key,
+			Argv:    []string{"/usr/sbin/sysctl", "-n", assignment.Key},
+			Timeout: e.timeout(),
+		}
+		if err := validateBoundedCommand(command); err != nil {
+			return nil, err
+		}
+		result, err := e.Runner.Run(ctx, command)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", command.Name, err)
+		}
+		if !commandSucceeded(command, result) {
+			return nil, commandFailure(command, result)
+		}
+		value := strings.TrimSpace(result.Stdout)
+		if value == "" || strings.ContainsAny(value, "\x00\r\n") {
+			return nil, fmt.Errorf("sysctl %q returned an unsafe runtime value", assignment.Key)
+		}
+		snapshot[assignment.Key] = value
+	}
+	return snapshot, nil
+}
+
+func (e Executor) applyHostSysctls(ctx context.Context) error {
+	if e.HostConfiguration == nil {
+		return nil
+	}
+	for _, assignment := range e.HostConfiguration.SysctlAssignments {
+		apply := Command{
+			Name:    "sysctl-apply-" + assignment.Key,
+			Argv:    []string{"/usr/sbin/sysctl", "-w", assignment.Key + "=" + assignment.Value},
+			Timeout: e.timeout(),
+		}
+		result, err := e.Runner.Run(ctx, apply)
+		if err != nil {
+			return fmt.Errorf("%s: %w", apply.Name, err)
+		}
+		if !commandSucceeded(apply, result) {
+			return commandFailure(apply, result)
+		}
+		verify := Command{
+			Name:    "sysctl-verify-" + assignment.Key,
+			Argv:    []string{"/usr/sbin/sysctl", "-n", assignment.Key},
+			Timeout: e.timeout(),
+		}
+		result, err = e.Runner.Run(ctx, verify)
+		if err != nil {
+			return fmt.Errorf("%s: %w", verify.Name, err)
+		}
+		if !commandSucceeded(verify, result) {
+			return commandFailure(verify, result)
+		}
+		if strings.TrimSpace(result.Stdout) != assignment.Value {
+			return fmt.Errorf("sysctl %q verification returned %q, want %q", assignment.Key, strings.TrimSpace(result.Stdout), assignment.Value)
+		}
+	}
+	return nil
+}
+
+func (e Executor) restoreHostSysctls(ctx context.Context, snapshot map[string]string) error {
+	if len(snapshot) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(snapshot))
+	for key := range snapshot {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		command := Command{
+			Name:    "sysctl-restore-" + key,
+			Argv:    []string{"/usr/sbin/sysctl", "-w", key + "=" + snapshot[key]},
+			Timeout: e.timeout(),
+		}
+		result, err := e.Runner.Run(ctx, command)
+		if err != nil {
+			return fmt.Errorf("%s: %w", command.Name, err)
+		}
+		if !commandSucceeded(command, result) {
+			return commandFailure(command, result)
+		}
+	}
+	return nil
+}
+
+func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigApplyStatus, plan Result, cause error, replayActions bool, sysctlSnapshot map[string]string) (generation.ConfigApplyStatus, error) {
 	status, err := generation.MarkConfigApplyFailed(status, cause, e.now())
 	if err != nil {
 		return status, err
@@ -304,7 +412,7 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 		return e.markRollbackFailed(status, target, cause, refreshErr)
 	}
 	if replayActions {
-		if replayErr := e.replayRollbackActions(ctx, status.DomainActions); replayErr != nil {
+		if replayErr := e.replayRollbackActions(ctx, status.DomainActions, sysctlSnapshot); replayErr != nil {
 			return e.markRollbackFailed(status, target, cause, replayErr)
 		}
 	}
@@ -318,7 +426,7 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 	return status, cause
 }
 
-func (e Executor) replayRollbackActions(ctx context.Context, actions []generation.ConfigApplyDomainAction) error {
+func (e Executor) replayRollbackActions(ctx context.Context, actions []generation.ConfigApplyDomainAction, sysctlSnapshot map[string]string) error {
 	kubeletRebound := false
 	for _, action := range actions {
 		if action.Status == generation.ConfigApplyActionSkipped {
@@ -326,6 +434,11 @@ func (e Executor) replayRollbackActions(ctx context.Context, actions []generatio
 		}
 		if kubeadmInputDomain(action.Domain) && kubeletRebound {
 			continue
+		}
+		if action.Domain == DomainHostConfiguration {
+			if err := e.restoreHostSysctls(ctx, sysctlSnapshot); err != nil {
+				return err
+			}
 		}
 		commands, err := e.commandsForDomain(action.Domain)
 		if err != nil {

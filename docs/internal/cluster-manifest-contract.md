@@ -82,6 +82,13 @@ spec:
 
             [Network]
             DHCP=yes
+    hostConfiguration:
+      sets:
+        storage-modules:
+          files:
+            - path: /etc/modules-load.d/80-home-lab-storage.conf
+              content: |
+                br_netfilter
     install:
       targetDiskDefaults:
         minSizeMiB: 32768

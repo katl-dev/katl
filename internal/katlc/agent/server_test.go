@@ -1492,8 +1492,8 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if record.GenerationCommitState != operation.GenerationCommitCommitted {
 		t.Fatalf("generation commit state = %q, want committed", record.GenerationCommitState)
 	}
-	if !contains(record.MutationScopes, "confext-activation") || !contains(record.MutationScopes, "config-domain:sysctl") {
-		t.Fatalf("mutation scopes = %v, want confext activation and sysctl domain", record.MutationScopes)
+	if !contains(record.MutationScopes, "confext-activation") || !contains(record.MutationScopes, "config-domain:host-configuration") {
+		t.Fatalf("mutation scopes = %v, want confext activation and host configuration domain", record.MutationScopes)
 	}
 	if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != operation.ResultSucceeded {
 		t.Fatalf("invocations = %+v, want completed live config apply invocation", record.Invocations)
@@ -1512,15 +1512,17 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidateManifest.Node.Sysctl.Settings["net.ipv4.ip_forward"] != "1" {
-		t.Fatalf("candidate manifest sysctl = %#v", candidateManifest.Node.Sysctl.Settings)
+	candidateFile := candidateManifest.Node.HostConfiguration.Sets["forwarding"].Files[0]
+	if candidateFile.Content == nil || !strings.Contains(*candidateFile.Content, "net.ipv4.ip_forward = 1") {
+		t.Fatalf("candidate manifest host configuration = %#v", candidateManifest.Node.HostConfiguration)
 	}
 	nextBase, err := configApplyBase(server.Root, "node-a", "generation-next", time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nextBase.CurrentRecord.GenerationID != "generation-live" || nextBase.CurrentManifest.Node.Sysctl.Settings["net.ipv4.ip_forward"] != "1" {
-		t.Fatalf("next config apply base = generation %q manifest %#v", nextBase.CurrentRecord.GenerationID, nextBase.CurrentManifest.Node.Sysctl.Settings)
+	nextFile := nextBase.CurrentManifest.Node.HostConfiguration.Sets["forwarding"].Files[0]
+	if nextBase.CurrentRecord.GenerationID != "generation-live" || nextFile.Content == nil || !strings.Contains(*nextFile.Content, "net.ipv4.ip_forward = 1") {
+		t.Fatalf("next config apply base = generation %q manifest %#v", nextBase.CurrentRecord.GenerationID, nextBase.CurrentManifest.Node.HostConfiguration)
 	}
 }
 
@@ -1731,7 +1733,11 @@ func TestApplyGenerationLiveFailureRecordsRollbackState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &fakeConfigApplyRunner{exitStatus: 1, stderr: "sysctl apply failed"}
+	runner := &fakeConfigApplyRunner{
+		exitStatus: 1,
+		stderr:     "sysctl apply failed",
+		failName:   "sysctl-apply-net.ipv4.ip_forward",
+	}
 	activator := &fakeConfigApplyActivator{}
 	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
@@ -2892,8 +2898,8 @@ func writeConfigApplyManifestWithKubeadmRef(t *testing.T, root string, ref strin
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := strings.Replace(configApplyInstallManifestJSON, `"systemRole": "control-plane"`, `"systemRole": "control-plane",
-    "kubernetes": {"kubeadm": {"configRef": "`+ref+`"}}`, 1)
+	data := strings.Replace(configApplyInstallManifestJSON, `"systemRole": "control-plane",`, `"systemRole": "control-plane",
+    "kubernetes": {"kubeadm": {"configRef": "`+ref+`"}},`, 1)
 	if err := os.WriteFile(manifestPath, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -3057,9 +3063,13 @@ func configApplyLiveYAML() string {
 		"  mode: live",
 		"spec:",
 		"  clusterDefaults:",
-		"    sysctl:",
-		"      settings:",
-		"        net.ipv4.ip_forward: \"1\"",
+		"    hostConfiguration:",
+		"      sets:",
+		"        forwarding:",
+		"          files:",
+		"            - path: /etc/sysctl.d/80-forwarding.conf",
+		"              content: |",
+		"                net.ipv4.ip_forward = 1",
 		"",
 	}, "\n")
 }
@@ -3070,11 +3080,33 @@ type fakeConfigApplyRunner struct {
 	stdout     string
 	stderr     string
 	err        error
+	sysctls    map[string]string
+	failName   string
 }
 
 func (r *fakeConfigApplyRunner) Run(ctx context.Context, command configapply.Command) (configapply.CommandResult, error) {
 	r.calls++
-	if r.exitStatus == 0 && r.err == nil && r.stderr == "" {
+	shouldFail := (r.exitStatus != 0 || r.err != nil || r.stderr != "") && (r.failName == "" || r.failName == command.Name)
+	if len(command.Argv) >= 3 && command.Argv[0] == "/usr/sbin/sysctl" && !shouldFail {
+		if r.sysctls == nil {
+			r.sysctls = map[string]string{}
+		}
+		switch command.Argv[1] {
+		case "-n":
+			value := r.sysctls[command.Argv[2]]
+			if value == "" {
+				value = "0"
+			}
+			return configapply.CommandResult{ExitStatus: 0, Stdout: value + "\n"}, nil
+		case "-w":
+			key, value, ok := strings.Cut(command.Argv[2], "=")
+			if ok {
+				r.sysctls[key] = value
+			}
+			return configapply.CommandResult{ExitStatus: 0, Stdout: command.Argv[2] + "\n"}, nil
+		}
+	}
+	if !shouldFail {
 		return configapply.CommandResult{ExitStatus: 0, Stdout: r.stdout}, nil
 	}
 	result := configapply.CommandResult{ExitStatus: r.exitStatus, Stdout: r.stdout, Stderr: r.stderr}
@@ -3082,6 +3114,7 @@ func (r *fakeConfigApplyRunner) Run(ctx context.Context, command configapply.Com
 	r.exitStatus = 0
 	r.stderr = ""
 	r.err = nil
+	r.failName = ""
 	return result, err
 }
 
@@ -3115,7 +3148,21 @@ const configApplyInstallManifestJSON = `{
         "authorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl"]
       }
     },
-    "systemRole": "control-plane"
+    "systemRole": "control-plane",
+    "hostConfiguration": {
+      "sets": {
+        "forwarding": {
+          "state": "present",
+          "files": [
+            {
+              "path": "/etc/sysctl.d/80-forwarding.conf",
+              "content": "net.ipv4.ip_forward = 0\n",
+              "mode": 420
+            }
+          ]
+        }
+      }
+    }
   },
   "install": {
     "wipeTarget": true,

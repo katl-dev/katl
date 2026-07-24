@@ -44,7 +44,7 @@ type nodeConfigurationOverlay struct {
 	Identity             *IdentityOverlay             `json:"identity,omitempty" yaml:"identity,omitempty"`
 	SystemRole           string                       `json:"systemRole,omitempty" yaml:"systemRole,omitempty"`
 	Networkd             *manifest.NetworkdConfig     `json:"networkd,omitempty" yaml:"networkd,omitempty"`
-	Sysctl               *manifest.SysctlConfig       `json:"sysctl,omitempty" yaml:"sysctl,omitempty"`
+	HostConfiguration    *manifest.HostConfiguration  `json:"hostConfiguration,omitempty" yaml:"hostConfiguration,omitempty"`
 	Kubernetes           *manifest.KubernetesConfig   `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
 	LivePreflight        map[string]bool              `json:"livePreflight,omitempty" yaml:"livePreflight,omitempty"`
@@ -146,13 +146,13 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 		_, kubeadmChanged = changedConfigs[strings.TrimSpace(overlay.Kubernetes.Kubeadm.ConfigRef)]
 	}
 	nodeOverlay := NodeOverlay{
-		Identity:       overlay.Identity,
-		SystemRole:     overlay.SystemRole,
-		Networkd:       overlay.Networkd,
-		Sysctl:         overlay.Sysctl,
-		Kubernetes:     overlay.Kubernetes,
-		KubeadmChanged: kubeadmChanged,
-		LivePreflight:  overlay.LivePreflight,
+		Identity:          overlay.Identity,
+		SystemRole:        overlay.SystemRole,
+		Networkd:          overlay.Networkd,
+		HostConfiguration: overlay.HostConfiguration,
+		Kubernetes:        overlay.Kubernetes,
+		KubeadmChanged:    kubeadmChanged,
+		LivePreflight:     overlay.LivePreflight,
 	}
 	if overlay.ControlPlaneEndpoint != nil {
 		nodeOverlay.ControlPlaneEndpointSet = true

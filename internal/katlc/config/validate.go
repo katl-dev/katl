@@ -214,8 +214,8 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 			validateSystemRole(pair.value, pair.path, result)
 		case "networkd":
 			validateNetworkd(pair.value, pair.path, result)
-		case "sysctl":
-			validateSysctl(pair.value, pair.path, result)
+		case "hostConfiguration":
+			validateHostConfiguration(pair.value, pair.path, result)
 		case "kubernetes":
 			validateKubernetes(pair.value, pair.path, options, result)
 		case "controlPlaneEndpoint":
@@ -352,46 +352,23 @@ func validateNetworkdFiles(node *yaml.Node, path string, result *Result) {
 	}
 }
 
-func validateSysctl(node *yaml.Node, path string, result *Result) {
+func validateHostConfiguration(node *yaml.Node, path string, result *Result) {
 	if node.Kind != yaml.MappingNode {
-		result.add("invalid-field", path, "sysctl must be a mapping")
+		result.add("invalid-field", path, "hostConfiguration must be a mapping")
 		return
 	}
 	for _, pair := range mappingPairsWithPath(node, path) {
-		switch pair.key {
-		case "settings":
-			validateSysctlSettings(pair.value, pair.path, result)
-		default:
-			result.add("unsupported-field", pair.path, "sysctl field is not supported")
+		if pair.key != "sets" {
+			result.add("unsupported-field", pair.path, "hostConfiguration field is not supported")
 		}
 	}
-}
-
-func validateSysctlSettings(node *yaml.Node, path string, result *Result) {
-	if node.Kind != yaml.MappingNode {
-		result.add("invalid-field", path, "sysctl settings must be a mapping")
+	var config manifest.HostConfiguration
+	if err := node.Decode(&config); err != nil {
+		result.add("invalid-field", path, err.Error())
 		return
 	}
-	for _, pair := range mappingPairsWithPath(node, path) {
-		key := pair.key
-		if key == "" {
-			result.add("unsupported-sysctl-key", pair.path, "sysctl key is required")
-			continue
-		}
-		if key != strings.TrimSpace(key) {
-			result.add("unsupported-sysctl-key", pair.path, "sysctl key must not contain leading or trailing whitespace")
-		}
-		if !manifest.ValidSysctlKey(key) {
-			result.add("unsupported-sysctl-key", pair.path, "sysctl key is not supported")
-		}
-		value := scalarValue(pair.value)
-		if value != strings.TrimSpace(value) || strings.ContainsAny(value, "\x00\n\r") {
-			result.add("unsafe-sysctl-value", pair.path, "sysctl value is unsafe")
-			continue
-		}
-		if manifest.ValidSysctlKey(key) && !manifest.ValidSysctlValue(key, value) {
-			result.add("invalid-sysctl-value", pair.path, manifest.SysctlValueHint(key))
-		}
+	if err := manifest.ValidateHostConfiguration(config, false); err != nil {
+		result.add("invalid-host-configuration", path, err.Error())
 	}
 }
 

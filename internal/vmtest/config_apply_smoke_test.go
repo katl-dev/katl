@@ -227,10 +227,6 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
 	beforeConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	beforeBootSelection := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json")
-	beforeKernelPanic := guestSysctl(t, ctx, guest, "kernel.panic")
-	if beforeKernelPanic == "137" {
-		t.Fatalf("guest kernel.panic is already 137 before live apply; choose a distinct smoke test value")
-	}
 	rejectedGeneration := "2026.06.06-vmtest-rejected"
 	liveGeneration := "2026.06.06-vmtest-live"
 	stagedGeneration := "2026.06.06-vmtest-networkd"
@@ -271,7 +267,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
 	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "staged-only")
 
-	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-sysctl.yaml"), false)
+	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-udev.yaml"), false)
 	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, liveAccepted.OperationId)
 	if liveStatus.Result != operation.ResultSucceeded || liveStatus.ConfigApplyPhase != "active" {
 		t.Fatalf("live operation status = %+v, want succeeded active config apply", liveStatus)
@@ -290,9 +286,16 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"healthState": "healthy"`,
 		`"committedByOperationID": "`+liveAccepted.OperationId+`"`,
 	)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json", `"phase": "active"`, `"requestedApplyMode": "auto"`, `"acceptedApplyMode": "live"`)
-	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/sysctl.d/90-katl.conf", "kernel.panic = 137")
-	assertGuestSysctl(t, ctx, guest, "kernel.panic", "137")
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json",
+		`"phase": "active"`,
+		`"requestedApplyMode": "auto"`,
+		`"acceptedApplyMode": "live"`,
+		`"domain": "host-configuration"`,
+		`"sets": [`,
+		`"vmtest-udev"`,
+		`existing devices will not be retriggered`,
+	)
+	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/udev/rules.d/80-katl-vmtest.rules", `SUBSYSTEM=="katl-vmtest"`)
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json",
 		`"defaultGenerationID": "`+liveGeneration+`"`,
@@ -844,25 +847,6 @@ func readGuestFile(t *testing.T, ctx context.Context, guest *GuestControl, path 
 		t.Fatalf("read guest file %s: %v", path, err)
 	}
 	return readFile(t, record.Artifact)
-}
-
-func guestSysctl(t *testing.T, ctx context.Context, guest *GuestControl, key string) string {
-	t.Helper()
-	record, err := guest.RunCommand(ctx, GuestCommandRequest{
-		Name: "sysctl-" + strings.ReplaceAll(key, ".", "-"),
-		Argv: []string{"sysctl", "-n", key},
-	})
-	if err != nil {
-		t.Fatalf("read sysctl %s: %v", key, err)
-	}
-	return strings.TrimSpace(readFile(t, record.Stdout))
-}
-
-func assertGuestSysctl(t *testing.T, ctx context.Context, guest *GuestControl, key, want string) {
-	t.Helper()
-	if got := guestSysctl(t, ctx, guest, key); got != want {
-		t.Fatalf("sysctl %s = %q, want %q", key, got, want)
-	}
 }
 
 func assertGuestNonLoopbackLink(t *testing.T, ctx context.Context, guest *GuestControl) {

@@ -49,12 +49,13 @@ type Node struct {
 }
 
 type NodeLayer struct {
-	Hostname   string                  `yaml:"hostname,omitempty" json:"hostname,omitempty"`
-	SSH        manifest.SSHIdentity    `yaml:"ssh,omitempty" json:"ssh,omitempty"`
-	Networkd   manifest.NetworkdConfig `yaml:"networkd,omitempty" json:"networkd,omitempty"`
-	Install    InstallLayer            `yaml:"install,omitempty" json:"install,omitempty"`
-	Kubernetes KubernetesLayer         `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Bootstrap  BootstrapLayer          `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
+	Hostname          string                     `yaml:"hostname,omitempty" json:"hostname,omitempty"`
+	SSH               manifest.SSHIdentity       `yaml:"ssh,omitempty" json:"ssh,omitempty"`
+	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
+	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	Install           InstallLayer               `yaml:"install,omitempty" json:"install,omitempty"`
+	Kubernetes        KubernetesLayer            `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Bootstrap         BootstrapLayer             `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
 }
 
 type InstallLayer struct {

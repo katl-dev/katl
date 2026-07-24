@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -62,7 +61,7 @@ type NodeOverlay struct {
 	Identity                *IdentityOverlay
 	SystemRole              string
 	Networkd                *manifest.NetworkdConfig
-	Sysctl                  *manifest.SysctlConfig
+	HostConfiguration       *manifest.HostConfiguration
 	Kubernetes              *manifest.KubernetesConfig
 	ControlPlaneEndpoint    *controlplaneendpoint.Config
 	ControlPlaneEndpointSet bool
@@ -289,6 +288,10 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 			executor.Root = request.Root
 		}
 		executor.StatusPath = statusPath
+		if containsChangeDomain(changes, DomainHostConfiguration) {
+			hostPlan := planHostConfigurationChange(request.CurrentManifest.Node.HostConfiguration, merged.Node.HostConfiguration)
+			executor.HostConfiguration = &hostPlan
+		}
 		status, err = executor.ExecuteLive(ctx, plan)
 		if err != nil {
 			audit := request.audit(sourceID, desiredVersion, generation.ConfigApplyActionFailed, changes, nil, err, now)
@@ -426,7 +429,7 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 	if err != nil {
 		return TrustedBundleResult{Manifest: merged, Files: files}, err
 	}
-	status.DomainActions = domainActions(matrixDecision.AcceptedMode, matrixDecision.ChangedDomains)
+	status.DomainActions = domainActions(matrixDecision.AcceptedMode, matrixDecision.ChangedDomains, changes...)
 	if err := generation.ValidateConfigApplyStatus(status); err != nil {
 		return TrustedBundleResult{Manifest: merged, Files: files}, err
 	}
@@ -443,6 +446,7 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 
 func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Change, []confext.NativeEtcFile, error) {
 	merged := request.CurrentManifest
+	currentHostConfiguration := request.CurrentManifest.Node.HostConfiguration
 	domains := domainAccumulator{}
 	var unsafeFiles []confext.NativeEtcFile
 	if err := validateOverlay("clusterDefaults", request.ClusterDefaults); err != nil {
@@ -464,12 +468,18 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 	if len(domains.domains) == 0 {
 		return merged, nil, nil, ErrNoChanges
 	}
+	if _, changed := domains.seen[DomainHostConfiguration]; changed {
+		hostPlan := planHostConfigurationChange(currentHostConfiguration, merged.Node.HostConfiguration)
+		domains.hostConfiguration = &hostPlan
+	}
 	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), unsafeFiles, nil
 }
 
 func validateOverlay(path string, overlay NodeOverlay) error {
-	if overlay.Sysctl != nil && len(overlay.Sysctl.Settings) == 0 {
-		return fmt.Errorf("%s.sysctl.settings must contain at least one setting", path)
+	if overlay.HostConfiguration != nil {
+		if err := manifest.ValidateHostConfiguration(*overlay.HostConfiguration, false); err != nil {
+			return fmt.Errorf("%s.hostConfiguration: %w", path, err)
+		}
 	}
 	return nil
 }
@@ -507,11 +517,12 @@ func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, kubernetesInit
 			domains.add(DomainNetworkd)
 		}
 	}
-	if overlay.Sysctl != nil {
-		changed := !maps.Equal(node.Sysctl.Settings, overlay.Sysctl.Settings)
-		node.Sysctl = *overlay.Sysctl
+	if overlay.HostConfiguration != nil {
+		current := node.HostConfiguration
+		changed := !reflect.DeepEqual(current, *overlay.HostConfiguration)
+		node.HostConfiguration = *overlay.HostConfiguration
 		if changed {
-			domains.add(DomainSysctl)
+			domains.addHostConfiguration(planHostConfigurationChange(current, *overlay.HostConfiguration))
 		}
 	}
 	if overlay.Kubernetes != nil {
@@ -568,6 +579,7 @@ type domainAccumulator struct {
 	domains               []string
 	seen                  map[string]struct{}
 	endpointRoutingImpact *EndpointRoutingImpact
+	hostConfiguration     *HostConfigurationChangePlan
 }
 
 func (a *domainAccumulator) add(domain string) {
@@ -586,6 +598,11 @@ func (a *domainAccumulator) addEndpointRouting(impact EndpointRoutingImpact) {
 	a.endpointRoutingImpact = &impact
 }
 
+func (a *domainAccumulator) addHostConfiguration(plan HostConfigurationChangePlan) {
+	a.add(DomainHostConfiguration)
+	a.hostConfiguration = &plan
+}
+
 func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 	preflight := map[string]bool{}
 	for _, overlay := range overlays {
@@ -601,9 +618,24 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 		if domain == DomainControlPlaneEndpointRouting {
 			change.EndpointRoutingImpact = a.endpointRoutingImpact
 		}
+		if domain == DomainHostConfiguration && a.hostConfiguration != nil {
+			change.LivePreflightOK = a.hostConfiguration.Live
+			change.Sets = append([]string(nil), a.hostConfiguration.Sets...)
+			change.Paths = append([]string(nil), a.hostConfiguration.Paths...)
+			change.Message = a.hostConfiguration.Message
+		}
 		changes = append(changes, change)
 	}
 	return changes
+}
+
+func containsChangeDomain(changes []Change, domain string) bool {
+	for _, change := range changes {
+		if change.Domain == domain {
+			return true
+		}
+	}
+	return false
 }
 
 func endpointRoutingImpact(current, desired controlplaneendpoint.Config) EndpointRoutingImpact {

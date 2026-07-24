@@ -17,7 +17,7 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 		SourceDigest: strings.Repeat("d", 64),
 		Apply:        Apply{},
 		Changes: []Change{
-			{Domain: DomainSysctl},
+			{Domain: DomainHostConfiguration, LivePreflightOK: true},
 		},
 		GeneratedConfext: candidateConfext("2026.06.05-002"),
 		RequestedAt:      time.Date(2026, 6, 5, 16, 0, 0, 0, time.UTC),
@@ -38,7 +38,7 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 	if metadata.RequestedApplyMode != generation.ApplyModeAuto || metadata.AcceptedApplyMode != generation.ApplyModeLive {
 		t.Fatalf("config apply modes = %#v", metadata)
 	}
-	if got, want := strings.Join(metadata.ChangedDomains, ","), "sysctl"; got != want {
+	if got, want := strings.Join(metadata.ChangedDomains, ","), "host-configuration"; got != want {
 		t.Fatalf("metadata changed domains = %q, want %q", got, want)
 	}
 	if result.GenerationRecord.Root != current.Root || result.GenerationRecord.Boot.UKIPath != current.Boot.UKIPath || result.GenerationRecord.Boot.LoaderEntryPath != "loader/entries/katl-2026.06.05-002.conf" || result.GenerationRecord.Sysexts[0].Path != current.Sysexts[0].Path {
@@ -47,7 +47,7 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 	if result.Status.GenerationID != "2026.06.05-002" || result.Status.Phase != generation.ConfigApplyPhasePlanned {
 		t.Fatalf("status = %#v", result.Status)
 	}
-	if len(result.Status.DomainActions) != 1 || result.Status.DomainActions[0].Action != "systemd-sysctl" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionPlanned {
+	if len(result.Status.DomainActions) != 1 || result.Status.DomainActions[0].Action != "native-host-configuration-apply" || result.Status.DomainActions[0].Status != generation.ConfigApplyActionPlanned {
 		t.Fatalf("domain actions = %#v", result.Status.DomainActions)
 	}
 }

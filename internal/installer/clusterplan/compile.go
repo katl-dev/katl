@@ -245,6 +245,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			},
 			SystemRole:           string(role),
 			Networkd:             layer.Networkd,
+			HostConfiguration:    layer.HostConfiguration,
 			ControlPlaneEndpoint: managedEndpoint,
 			Kubernetes: manifest.KubernetesConfig{
 				Kubeadm: manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
