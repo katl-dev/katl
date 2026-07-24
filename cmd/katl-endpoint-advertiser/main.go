@@ -78,7 +78,7 @@ func run(args []string, stderr io.Writer) error {
 			lastState = state
 		}
 		if runErr != nil {
-			return failClosed(runErr, owner, config, bgpapivip.ExecRunner{})
+			return failClosed(runErr, owner, config)
 		}
 		select {
 		case <-ctx.Done():
@@ -111,11 +111,11 @@ func loadConfig(path string) (bgpapivip.Config, error) {
 	return config, nil
 }
 
-func failClosed(runErr error, owner bgpapivip.VIPOwner, config bgpapivip.Config, runner bgpapivip.CommandRunner) error {
+func failClosed(runErr error, owner bgpapivip.VIPOwner, config bgpapivip.Config) error {
 	if runErr == nil {
 		return nil
 	}
-	return errors.Join(runErr, withdrawWith(context.Background(), owner, config, runner))
+	return errors.Join(runErr, withdrawWith(context.Background(), owner, config))
 }
 
 func withdraw(parent context.Context, configPath string) error {
@@ -123,19 +123,14 @@ func withdraw(parent context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	return withdrawWith(parent, bgpapivip.NetlinkVIPOwner{}, config, bgpapivip.ExecRunner{})
+	return withdrawWith(parent, bgpapivip.NetlinkVIPOwner{}, config)
 }
 
-func withdrawWith(parent context.Context, owner bgpapivip.VIPOwner, config bgpapivip.Config, runner bgpapivip.CommandRunner) error {
+func withdrawWith(parent context.Context, owner bgpapivip.VIPOwner, config bgpapivip.Config) error {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
-	releaseErr := owner.SetOwned(ctx, config, false)
-	if releaseErr == nil {
-		return nil
+	if err := owner.SetOwned(ctx, config, false); err != nil {
+		return fmt.Errorf("release local endpoint address: %w", err)
 	}
-	output, stopErr := runner.Output(ctx, "systemctl", "stop", "katl-app-bird.service")
-	if stopErr != nil {
-		stopErr = fmt.Errorf("stop routing daemon after local endpoint release failed: %s", string(output))
-	}
-	return errors.Join(fmt.Errorf("release local endpoint address: %w", releaseErr), stopErr)
+	return nil
 }

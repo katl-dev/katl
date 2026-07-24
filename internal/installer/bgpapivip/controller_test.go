@@ -121,6 +121,23 @@ func TestControllerReportsUnavailableAPIAsHealthStateNotRuntimeFailure(t *testin
 	}
 }
 
+func TestControllerOwnsVIPWithoutRoutingObserver(t *testing.T) {
+	controller := testController(nil, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
+	controller.Bird = nil
+	controller.Config.Health.SuccessThreshold = 1
+
+	status, err := controller.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if !status.LocalVIPOwned || status.AdvertisementState != AdvertisementWithdrawn || status.WithdrawReason != "waiting-for-route-advertisement" {
+		t.Fatalf("status = %#v", status)
+	}
+	if status.RecoveryRequired || status.FailureReason != "" {
+		t.Fatalf("missing optional routing observer required recovery: %#v", status)
+	}
+}
+
 func TestControllerRestartStartsWithdrawnBeforeAdvertising(t *testing.T) {
 	bird := &fakeBird{status: readyBirdStatus()}
 	bird.status.RouteOriginated = true
@@ -175,7 +192,24 @@ func TestControllerStopWithdrawsAndWritesDurableStatus(t *testing.T) {
 	}
 }
 
-func TestControllerStatusRedactsBirdFailuresAndPeerState(t *testing.T) {
+func TestControllerStopReleasesVIPWhenBirdIsUnavailable(t *testing.T) {
+	bird := &fakeBird{statusErr: errors.New("bird control socket unavailable")}
+	controller := testController(bird, fakeHealth{})
+	controller.Owner.(*fakeVIPOwner).owned = true
+
+	status, err := controller.Stop(context.Background())
+	if err != nil {
+		t.Fatalf("Stop() error = %v, want routing observation failure to remain non-fatal", err)
+	}
+	if status.LocalVIPOwned {
+		t.Fatalf("Stop() retained local VIP: %#v", status)
+	}
+	if !status.RecoveryRequired || !strings.Contains(status.FailureReason, "control socket unavailable") {
+		t.Fatalf("Stop() did not report routing observation failure: %#v", status)
+	}
+}
+
+func TestControllerKeepsHealthyVIPWhileReportingRedactedBirdFailure(t *testing.T) {
 	bird := &fakeBird{
 		status: BirdRuntimeStatus{
 			ProcessActive:      true,
@@ -196,11 +230,14 @@ func TestControllerStatusRedactsBirdFailuresAndPeerState(t *testing.T) {
 	controller := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
 	controller.Config.Health.SuccessThreshold = 1
 	status, err := controller.RunOnce(context.Background())
-	if err == nil || strings.Contains(err.Error(), "top-secret") {
-		t.Fatalf("RunOnce() error = %v, want redacted bird failure", err)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v, want routing failure reported without disrupting VIP lifecycle", err)
 	}
 	if strings.Contains(status.FailureReason, "top-secret") || !strings.Contains(status.FailureReason, "[REDACTED]") {
 		t.Fatalf("status leaked failure: %#v", status.FailureReason)
+	}
+	if !status.LocalVIPOwned {
+		t.Fatalf("routing observation failure withdrew healthy local VIP: %#v", status)
 	}
 	if len(status.PeerSummary) != 1 || strings.Contains(status.PeerSummary[0].FailureCategory, "peer-secret") {
 		t.Fatalf("peer summary leaked secret: %#v", status.PeerSummary)
@@ -221,7 +258,7 @@ func TestControllerReturnsVIPAcquisitionFailureAndKeepsWithdrawn(t *testing.T) {
 	}
 }
 
-func TestControllerRetriesWhileBirdControlSocketStarts(t *testing.T) {
+func TestControllerOwnsHealthyVIPWhileBirdControlSocketStarts(t *testing.T) {
 	bird := &fakeBird{
 		status: BirdRuntimeStatus{
 			ReadinessState: "not-ready",
@@ -234,15 +271,18 @@ func TestControllerRetriesWhileBirdControlSocketStarts(t *testing.T) {
 
 	status, err := controller.RunOnce(context.Background())
 	if err != nil {
-		t.Fatalf("startup RunOnce() error = %v, want dependency wait", err)
+		t.Fatalf("startup RunOnce() error = %v, want routing observation reported without disrupting VIP lifecycle", err)
 	}
-	if status.AdvertisementState != AdvertisementWithdrawn || status.WithdrawReason != "dependency-not-ready" {
+	if status.AdvertisementState != AdvertisementWithdrawn || status.WithdrawReason != "waiting-for-route-advertisement" {
 		t.Fatalf("startup status = %#v", status)
 	}
 	if status.RecoveryRequired || status.FailureReason != "" {
-		t.Fatalf("startup socket wait requires recovery: %#v", status)
+		t.Fatalf("startup socket wait required manual recovery: %#v", status)
 	}
-	if got, want := bird.advertisements, []bool{false}; !reflect.DeepEqual(got, want) {
+	if !status.LocalVIPOwned {
+		t.Fatalf("startup socket wait withdrew healthy local VIP: %#v", status)
+	}
+	if got, want := bird.advertisements, []bool{false, true}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("startup advertisements = %#v, want %#v", got, want)
 	}
 
@@ -394,12 +434,17 @@ type fakeBird struct {
 }
 
 func (b *fakeBird) Status(context.Context) (BirdRuntimeStatus, error) {
+	if b.status.ProcessActive && b.status.ControlSocketReady && b.status.FailureReason == "" && len(b.advertisements) > 0 {
+		b.status.RouteOriginated = b.advertisements[len(b.advertisements)-1]
+	}
 	return b.status, b.statusErr
 }
 
 func (b *fakeBird) observeVIP(enabled bool) {
 	b.advertisements = append(b.advertisements, enabled)
-	b.status.RouteOriginated = enabled
+	if !enabled || (b.status.ProcessActive && b.status.ControlSocketReady && b.status.FailureReason == "") {
+		b.status.RouteOriginated = enabled
+	}
 	if b.events != nil {
 		event := "route-withdraw"
 		if enabled {

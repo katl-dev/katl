@@ -163,9 +163,6 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	c.Config = config
-	if c.Bird == nil {
-		return Status{}, fmt.Errorf("bird client is required")
-	}
 	if c.Owner == nil {
 		return Status{}, fmt.Errorf("VIP owner is required")
 	}
@@ -182,16 +179,21 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 		c.started = true
 	}
 
-	bird, birdErr := c.Bird.Status(ctx)
-	birdReady := bird.ProcessActive && bird.ControlSocketReady
+	var bird BirdRuntimeStatus
+	var birdErr error
+	if c.Bird != nil {
+		bird, birdErr = c.Bird.Status(ctx)
+	}
 	if startReleaseFailure != "" && failure == "" {
 		failure = startReleaseFailure
 	}
-	if birdErr != nil && (bird.RouteOriginated || birdReady) && failure == "" {
-		failure = inventory.Redact(birdErr.Error())
+	var routingFailure string
+	birdReady := bird.ProcessActive && bird.ControlSocketReady
+	if birdErr != nil && (bird.RouteOriginated || birdReady) {
+		routingFailure = inventory.Redact(birdErr.Error())
 	}
-	if bird.FailureReason != "" && (bird.RouteOriginated || birdReady) && failure == "" {
-		failure = inventory.Redact(bird.FailureReason)
+	if bird.FailureReason != "" && (bird.RouteOriginated || birdReady) && routingFailure == "" {
+		routingFailure = inventory.Redact(bird.FailureReason)
 	}
 	interfaceReady := true
 	if c.Interface != nil {
@@ -212,7 +214,7 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 	}
 	c.lastHealth = health.CheckedAt.UTC()
 
-	dependenciesReady := birdErr == nil && bird.FailureReason == "" && bird.ProcessActive && bird.ControlSocketReady && interfaceReady && ownerReady
+	dependenciesReady := startReleaseFailure == "" && interfaceReady && ownerReady
 	if health.Healthy && dependenciesReady {
 		c.successCount++
 		c.failureCount = 0
@@ -246,13 +248,17 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 			}
 		} else {
 			localVIPOwned = desiredOwned
-			refreshed, refreshErr := c.Bird.Status(ctx)
-			if refreshErr != nil {
-				if failure == "" {
-					failure = inventory.Redact(refreshErr.Error())
-				}
-			} else {
+			if c.Bird != nil {
+				refreshed, refreshErr := c.Bird.Status(ctx)
 				bird = refreshed
+				refreshedReady := refreshed.ProcessActive && refreshed.ControlSocketReady
+				if refreshErr != nil && (refreshed.RouteOriginated || refreshedReady) {
+					if routingFailure == "" {
+						routingFailure = inventory.Redact(refreshErr.Error())
+					}
+				} else if refreshed.FailureReason != "" && (refreshed.RouteOriginated || refreshedReady) && routingFailure == "" {
+					routingFailure = inventory.Redact(refreshed.FailureReason)
+				}
 			}
 		}
 	}
@@ -260,7 +266,11 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 	if localVIPOwned && !bird.RouteOriginated && withdrawReason == "" {
 		withdrawReason = "waiting-for-route-advertisement"
 	}
-	status := c.status(config, health, bird, interfaceReady, localVIPOwned, withdrawReason, failure, now)
+	statusFailure := failure
+	if statusFailure == "" {
+		statusFailure = routingFailure
+	}
+	status := c.status(config, health, bird, interfaceReady, localVIPOwned, withdrawReason, statusFailure, now)
 	if err := c.write(ctx, status); err != nil {
 		return status, err
 	}
@@ -276,40 +286,46 @@ func (c *Controller) Stop(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	c.Config = config
-	if c.Bird == nil {
-		return Status{}, fmt.Errorf("bird client is required")
-	}
 	if c.Owner == nil {
 		return Status{}, fmt.Errorf("VIP owner is required")
 	}
 	now := c.now()
-	failure := ""
+	var lifecycleFailure string
 	c.started = true
 	localVIPOwned, ownerErr := c.Owner.Owned(ctx, config)
-	if ownerErr != nil && failure == "" {
-		failure = inventory.Redact(ownerErr.Error())
+	if ownerErr != nil {
+		lifecycleFailure = inventory.Redact(ownerErr.Error())
 	}
 	if localVIPOwned {
 		if err := c.Owner.SetOwned(ctx, config, false); err != nil {
-			if failure == "" {
-				failure = inventory.Redact(err.Error())
+			if lifecycleFailure == "" {
+				lifecycleFailure = inventory.Redact(err.Error())
 			}
 		} else {
 			localVIPOwned = false
 		}
 	}
-	bird, err := c.Bird.Status(ctx)
-	if err != nil && failure == "" {
-		failure = inventory.Redact(err.Error())
+	var bird BirdRuntimeStatus
+	var routingFailure string
+	if c.Bird != nil {
+		var err error
+		bird, err = c.Bird.Status(ctx)
+		if err != nil {
+			routingFailure = inventory.Redact(err.Error())
+		}
 	}
 	c.observeRouteTransition(bird.RouteOriginated, now)
 	health := HealthResult{Healthy: false, CheckedAt: now}
-	status := c.status(config, health, bird, true, localVIPOwned, "service-stop", failure, now)
+	statusFailure := lifecycleFailure
+	if statusFailure == "" {
+		statusFailure = routingFailure
+	}
+	status := c.status(config, health, bird, true, localVIPOwned, "service-stop", statusFailure, now)
 	if err := c.write(ctx, status); err != nil {
 		return status, err
 	}
-	if failure != "" {
-		return status, fmt.Errorf("%s", failure)
+	if lifecycleFailure != "" {
+		return status, fmt.Errorf("%s", lifecycleFailure)
 	}
 	return status, nil
 }
