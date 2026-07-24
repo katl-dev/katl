@@ -226,7 +226,7 @@ func TestBuildKubernetesUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T
 	meta := artifact.LocalMeta{
 		Name: "kubernetes", Kind: artifact.ArtifactSysext, Format: "sysext",
 		Path: filepath.Base(image), SizeBytes: int64(len(contents)), SHA256: hex.EncodeToString(digest[:]),
-		Generation: version + "-katl.8", Version: version + "-katl.8", PayloadVersion: version, Architecture: architecture,
+		Generation: "checkout-build", Version: "checkout-build", PayloadVersion: version, Architecture: architecture,
 		SourceRepo: &artifact.SourceRepo{ID: "kubernetes", BaseURL: "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/", Minor: "v1.36"},
 		PackageVersions: map[string]string{
 			"kubeadm": "0:1.36.2-150500.2.1", "kubelet": "0:1.36.2-150500.2.1",
@@ -271,7 +271,6 @@ func TestBuildKubernetesUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T
 		"KATL_BUILD_COMMIT=v1.36.2-katl.8",
 	}
 	environment := append(append([]string(nil), runtimeEnvironment...),
-		"KATL_VERSION=v1.36.2-katl.8",
 		"KATL_KUBERNETES_MINOR=v1.36",
 		"KATL_KUBERNETES_PAYLOAD_VERSION=v1.36.2",
 		"KATL_KUBERNETES_ARTIFACT_REVISION=8",

@@ -265,7 +265,6 @@ func buildKubernetesUpgrade(ctx context.Context, repoRoot, version string, stder
 		"KATL_BUILD_COMMIT=" + buildID,
 	}
 	environment := append(append([]string(nil), runtimeEnvironment...),
-		"KATL_VERSION="+release.ArtifactVersion(),
 		"KATL_KUBERNETES_MINOR="+minor,
 		"KATL_KUBERNETES_PAYLOAD_VERSION="+version,
 		"KATL_KUBERNETES_ARTIFACT_REVISION="+strconv.Itoa(release.ArtifactRevision),
@@ -299,8 +298,8 @@ func buildKubernetesUpgrade(ctx context.Context, repoRoot, version string, stder
 	if err := sysextcatalog.ValidateForRuntime(entry, sysextcatalog.Runtime{Interface: "katl-runtime-1", Architecture: architecture}); err != nil {
 		return kubernetesBuildArtifact{}, fmt.Errorf("verify Kubernetes upgrade compatibility: %w", err)
 	}
-	if meta.Name != sysextcatalog.KubernetesName || meta.PayloadVersion != version || meta.Version != release.ArtifactVersion() {
-		return kubernetesBuildArtifact{}, fmt.Errorf("Kubernetes upgrade metadata identifies %s %s (%s), want Kubernetes %s (%s)", meta.Name, meta.PayloadVersion, meta.Version, version, release.ArtifactVersion())
+	if meta.Name != sysextcatalog.KubernetesName || meta.PayloadVersion != version {
+		return kubernetesBuildArtifact{}, fmt.Errorf("Kubernetes upgrade metadata identifies %s %s, want Kubernetes %s", meta.Name, meta.PayloadVersion, version)
 	}
 	wantPackages := map[string]string{
 		"kubeadm": release.Packages.Kubeadm, "kubelet": release.Packages.Kubelet,
