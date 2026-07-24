@@ -90,3 +90,61 @@ func TestPublicKubernetesBundleCheckRequiresUpstreamRelease(t *testing.T) {
 		}
 	}
 }
+
+func TestKubernetesBundleWorkflowRetiresSupersededCompatibilityPRs(t *testing.T) {
+	repo := repoRoot(t)
+	contents, err := os.ReadFile(filepath.Join(repo, ".github", "workflows", "kubernetes-bundles.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Permissions map[string]string `yaml:"permissions"`
+			Steps       []struct {
+				Name string `yaml:"name"`
+				Uses string `yaml:"uses"`
+				With struct {
+					Script string `yaml:"script"`
+				} `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(contents, &workflow); err != nil {
+		t.Fatalf("parse Kubernetes bundle workflow: %v", err)
+	}
+
+	compatibility, ok := workflow.Jobs["compatibility"]
+	if !ok {
+		t.Fatal("Kubernetes bundle workflow has no compatibility job")
+	}
+	if got := compatibility.Permissions["actions"]; got != "read" {
+		t.Fatalf("compatibility actions permission = %q, want read", got)
+	}
+
+	var script string
+	for _, step := range compatibility.Steps {
+		if step.Name == "Open compatibility pull request" {
+			script = step.With.Script
+			break
+		}
+	}
+	if script == "" {
+		t.Fatal("Kubernetes bundle workflow has no compatibility pull request step")
+	}
+	for _, contract := range []string{
+		"github.paginate(github.rest.pulls.list",
+		`candidate.head.ref.startsWith(branchPrefix)`,
+		`candidate.head.repo?.full_name === repository`,
+		`candidate.number !== pull.number`,
+		"github.rest.issues.createComment",
+		"github.rest.pulls.update",
+		`state: "closed"`,
+	} {
+		if !strings.Contains(script, contract) {
+			t.Errorf("compatibility pull request step does not enforce %q", contract)
+		}
+	}
+	if strings.Contains(script, "createWorkflowDispatch") {
+		t.Error("compatibility pull request step still dispatches a duplicate Fast Checks run")
+	}
+}
