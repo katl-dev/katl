@@ -110,10 +110,14 @@ func TestKubernetesUpgradeBundleUsesReleaseCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kubernetesUpgradeBundle() error = %v", err)
 	}
-	if !strings.Contains(bundle, "v1.36.1-katl.1@sha256:") {
-		t.Fatalf("bundle = %q", bundle)
+	image, err := kubernetesbundle.ParseImageReference(bundle)
+	if err != nil {
+		t.Fatalf("ParseImageReference() error = %v", err)
 	}
-	if _, err := kubernetesUpgradeBundle("v1.36.2", ""); err == nil || !strings.Contains(err.Error(), "not available") {
+	if image.PayloadVersion != "v1.36.1" || image.ArtifactVersion == "" || image.ManifestDigest == "" {
+		t.Fatalf("image = %#v", image)
+	}
+	if _, err := kubernetesUpgradeBundle("v9.99.9", ""); err == nil || !strings.Contains(err.Error(), "not available") {
 		t.Fatalf("unavailable version error = %v", err)
 	}
 }
