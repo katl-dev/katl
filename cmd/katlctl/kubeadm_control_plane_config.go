@@ -62,6 +62,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		"control-plane": true,
 		"kubelet":       true,
 	}
+	preBootstrap := false
 	if strings.TrimSpace(opts.configPath) != "" {
 		var activated activatedClusterConfig
 		activated, err = activateClusterConfig(ctx, opts, inv.Nodes)
@@ -70,6 +71,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		}
 		generations = activated.generations
 		components = activated.components
+		preBootstrap = activated.preBootstrap
 	} else if strings.TrimSpace(opts.generationID) == "" {
 		return fmt.Errorf("--generation is required with --inventory")
 	}
@@ -77,6 +79,17 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	results := map[string]any{}
 	for _, component := range []string{"control-plane", "kubelet", "kube-proxy"} {
 		if !components[component] {
+			continue
+		}
+		if preBootstrap {
+			if err := clusterApplyProgress(opts.progress, "component=%s status=skipped reason=kubernetes-not-configured", component); err != nil {
+				return err
+			}
+			results[component] = map[string]string{
+				"component": component,
+				"reason":    "kubernetes-not-configured",
+				"result":    "skipped",
+			}
 			continue
 		}
 		componentOpts := opts
@@ -286,8 +299,9 @@ func kubeadmConfigInventory(opts kubeadmControlPlaneConfigOptions) (inventory.In
 }
 
 type activatedClusterConfig struct {
-	generations map[string]string
-	components  map[string]bool
+	generations  map[string]string
+	components   map[string]bool
+	preBootstrap bool
 }
 
 func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, nodes []inventory.Node) (activatedClusterConfig, error) {
@@ -306,6 +320,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		configYAML        []byte
 		machineID         string
 		currentGeneration string
+		kubernetesState   string
 		noChanges         bool
 	}
 	prepared := make([]preparedInput, 0, len(nodes))
@@ -373,6 +388,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 		input.machineID = status.MachineId
 		input.currentGeneration = status.CurrentGenerationId
+		input.kubernetesState = strings.TrimSpace(status.GetKubernetes().GetState())
 		input.noChanges = validation.NoChanges
 		_ = conn.Close()
 		if validation.NoChanges {
@@ -385,6 +401,22 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if validation.AcceptedApplyMode != generation.ApplyModeLive {
 			return activatedClusterConfig{}, fmt.Errorf("node %s cannot apply Kubernetes configuration online (accepted mode %s)", node.Name, validation.AcceptedApplyMode)
 		}
+	}
+
+	notConfigured := 0
+	var kubernetesStates []string
+	for _, input := range prepared {
+		if input.kubernetesState == "not-configured" {
+			notConfigured++
+		}
+		kubernetesStates = append(kubernetesStates, input.node.Name+"="+firstNonEmpty(input.kubernetesState, "unknown"))
+	}
+	preBootstrap := len(prepared) > 0 && notConfigured == len(prepared)
+	if notConfigured > 0 && !preBootstrap {
+		return activatedClusterConfig{}, fmt.Errorf(
+			"cluster has mixed Kubernetes lifecycle state (%s); recover or wipe the inconsistent nodes before applying cluster config",
+			strings.Join(kubernetesStates, ", "),
+		)
 	}
 
 	for _, input := range prepared {
@@ -429,7 +461,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 		result[node.Name] = activatedGeneration
 	}
-	return activatedClusterConfig{generations: result, components: components}, nil
+	return activatedClusterConfig{generations: result, components: components, preBootstrap: preBootstrap}, nil
 }
 
 func clusterApplyProgress(w io.Writer, format string, args ...any) error {
