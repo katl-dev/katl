@@ -13,6 +13,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 )
@@ -138,6 +139,13 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "InitConfiguration")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "controlPlaneEndpoint: api.katl.test:6443")
+	desiredKubeadm, sourceGeneration, err := configapply.ReadEffectiveGenerationKubeadmConfig(root, "1", "control-plane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceGeneration != "1" || strings.Contains(string(desiredKubeadm.Config.Content), "controlPlaneEndpoint:") {
+		t.Fatalf("desired kubeadm input = source %q content:\n%s", sourceGeneration, desiredKubeadm.Config.Content)
+	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katlos")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/systemd/network/80-katl-vmtest-dhcp.network"), "DHCP=yes")

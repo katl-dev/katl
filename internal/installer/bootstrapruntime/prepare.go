@@ -20,7 +20,9 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 )
 
 type Result struct {
@@ -140,6 +142,26 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	}
 	if err := generation.WriteRecord(metadataPath, next); err != nil {
 		return Result{}, err
+	}
+	desiredFiles, _, err := readStoredKubeadmInput(root, plan.RuntimeInputs.KubeadmInput)
+	if err != nil {
+		return Result{}, err
+	}
+	kubeadmFiles := make([]kubeadmconfig.File, 0, len(desiredFiles))
+	for _, input := range desiredFiles {
+		kubeadmFiles = append(kubeadmFiles, kubeadmconfig.File{
+			RenderPath: input.RenderPath,
+			Content:    input.Content,
+			Mode:       input.Mode,
+		})
+	}
+	kubeadmRef := strings.TrimSpace(plan.RuntimeInputs.KubeadmInput.ConfigRef)
+	kubeadmPlan, err := kubeadmconfig.PlanFromRenderedFiles(kubeadmRef, kubeadmFiles)
+	if err != nil {
+		return Result{}, fmt.Errorf("preserve desired kubeadm input: %w", err)
+	}
+	if err := configapply.WriteGenerationKubeadmConfig(root, candidate, kubeadmRef, kubeadmPlan); err != nil {
+		return Result{}, fmt.Errorf("preserve desired kubeadm input: %w", err)
 	}
 	if err := writeLiveActivationOverride(root, candidate); err != nil {
 		return Result{}, err

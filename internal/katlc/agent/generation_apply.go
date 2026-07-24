@@ -916,6 +916,11 @@ func activeGenerationKubeadmConfigs(root string, currentGenerationID string, cur
 	if ref == "" {
 		return nil, nil
 	}
+	if plan, _, err := configapply.ReadEffectiveGenerationKubeadmConfig(root, currentGenerationID, ref); err == nil {
+		return map[string]kubeadmconfig.Plan{ref: plan}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	generationDir, err := generation.GenerationDir(root, currentGenerationID)
 	if err != nil {
 		return nil, err

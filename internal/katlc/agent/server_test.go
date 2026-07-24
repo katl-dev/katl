@@ -22,6 +22,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -1640,6 +1641,43 @@ func TestActiveGenerationKubeadmConfigsPreferActiveConfext(t *testing.T) {
 	}
 	if got := string(configs[ref].Config.Content); got != active {
 		t.Fatalf("active config = %q, want %q", got, active)
+	}
+}
+
+func TestActiveGenerationKubeadmConfigsPreferDesiredInputOverBootstrapRuntime(t *testing.T) {
+	root := t.TempDir()
+	writeConfigApplyBaseState(t, root)
+	const ref = "control-plane"
+	currentManifest := manifest.Manifest{Node: manifest.NodeConfig{
+		Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: ref}},
+	}}
+	confextDir := filepath.Join(root, "var/lib/katl/generations/generation-0/confext/etc/katl/kubeadm", ref)
+	if err := os.MkdirAll(confextDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	runtimeRendered := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\ncontrolPlaneEndpoint: api.katl.test:6443\n"
+	if err := os.WriteFile(filepath.Join(confextDir, "config.yaml"), []byte(runtimeRendered), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	desired := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n"
+	plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, []kubeadmconfig.File{{
+		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+		Content:    []byte(desired),
+		Mode:       0o644,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configapply.WriteGenerationKubeadmConfig(root, "generation-0", ref, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, err := activeGenerationKubeadmConfigs(root, "generation-0", currentManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(configs[ref].Config.Content); got != desired {
+		t.Fatalf("active desired config = %q, want %q", got, desired)
 	}
 }
 

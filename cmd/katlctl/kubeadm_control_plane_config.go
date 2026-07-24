@@ -402,6 +402,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		noChanges         bool
 		acceptedApplyMode string
 		changedDomains    []string
+		components        []string
 	}
 	prepared := make([]preparedInput, 0, len(nodes))
 	components := map[string]bool{}
@@ -417,14 +418,15 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if !ok {
 			return activatedClusterConfig{}, fmt.Errorf("selected kubeadm input %q for %s is missing", node.KubeadmConfig.Ref, node.Name)
 		}
+		var nodeComponents []string
 		for _, document := range plan.Documents {
 			switch document.Kind {
 			case "ClusterConfiguration":
-				components["control-plane"] = true
+				nodeComponents = append(nodeComponents, "control-plane")
 			case "KubeletConfiguration":
-				components["kubelet"] = true
+				nodeComponents = append(nodeComponents, "kubelet")
 			case "KubeProxyConfiguration":
-				components["kube-proxy"] = true
+				nodeComponents = append(nodeComponents, "kube-proxy")
 			}
 		}
 		configYAML, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
@@ -434,7 +436,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("render cluster config for %s: %w", node.Name, err)
 		}
-		prepared = append(prepared, preparedInput{node: node, configYAML: configYAML})
+		prepared = append(prepared, preparedInput{node: node, configYAML: configYAML, components: nodeComponents})
 	}
 	result := make(map[string]string, len(nodes))
 	for i := range prepared {
@@ -473,6 +475,11 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		input.acceptedApplyMode = validation.AcceptedApplyMode
 		input.changedDomains = append([]string(nil), validation.ChangedDomains...)
 		_ = conn.Close()
+		if containsKubernetesConfigDomain(validation.ChangedDomains) {
+			for _, component := range input.components {
+				components[component] = true
+			}
+		}
 		if validation.NoChanges {
 			if len(validation.Diagnostics) > 0 {
 				return activatedClusterConfig{}, fmt.Errorf("node %s configuration files match, but runtime state is not current: %s", node.Name, strings.Join(validation.Diagnostics, "; "))
@@ -501,6 +508,13 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	}
 	preBootstrap := len(prepared) > 0 && notConfigured == len(prepared)
 	joinCoordinator := ""
+	if preBootstrap {
+		for _, input := range prepared {
+			for _, component := range input.components {
+				components[component] = true
+			}
+		}
+	}
 	if notConfigured > 0 && !preBootstrap {
 		if notConfigured != 1 {
 			return activatedClusterConfig{}, fmt.Errorf(
@@ -535,6 +549,14 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 				"cluster has one fresh node but no ready control plane can coordinate its join (%s)",
 				strings.Join(kubernetesStates, ", "),
 			)
+		}
+		for _, input := range prepared {
+			if input.kubernetesState != "not-configured" {
+				continue
+			}
+			for _, component := range input.components {
+				components[component] = true
+			}
 		}
 	}
 

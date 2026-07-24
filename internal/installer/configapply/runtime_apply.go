@@ -216,6 +216,25 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
+	kubeadmRef := strings.TrimSpace(merged.Node.Kubernetes.Kubeadm.ConfigRef)
+	if kubeadmRef != "" {
+		kubeadmPlan, ok := request.KubeadmConfigs[kubeadmRef]
+		if !ok {
+			err := fmt.Errorf("selected kubeadm config %q is missing", kubeadmRef)
+			audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+			audit.CandidateGeneration = request.GenerationID
+			audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+			auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+			return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+		}
+		if err := WriteGenerationKubeadmConfig(request.Root, request.GenerationID, kubeadmRef, kubeadmPlan); err != nil {
+			audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+			audit.CandidateGeneration = request.GenerationID
+			audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+			auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+			return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+		}
+	}
 	desiredSysexts, err := endpointAdvertiserSysexts(request, merged)
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
