@@ -175,6 +175,7 @@ jobs:
       OCI_DESCRIPTION: Kubernetes system extension bundle for KatlOS nodes
       OCI_LICENSES: MIT
       OCI_TITLE: KatlOS Kubernetes system extension
+      KUBERNETES_RELEASE_URL: https://github.com/kubernetes/kubernetes/releases/tag/${{ matrix.release.payloadVersion }}
       PAYLOAD_VERSION: ${{ matrix.release.payloadVersion }}
       PUBLISH: ${{ needs.plan.outputs.publish }}
 
@@ -331,10 +332,12 @@ jobs:
             --annotation "org.opencontainers.image.description=${OCI_DESCRIPTION}" \
             --annotation "org.opencontainers.image.licenses=${OCI_LICENSES}" \
             --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.url=${KUBERNETES_RELEASE_URL}" \
             --annotation "org.opencontainers.image.documentation=https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/installing.md" \
             --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --annotation "org.opencontainers.image.version=${ARTIFACT_VERSION}" \
             --annotation "dev.katl.bundle.kind=kubernetes" \
+            --annotation "dev.katl.kubernetes.payload.version=${PAYLOAD_VERSION}" \
             "${RAW}:application/vnd.katl.sysext.raw.v1" \
             "${BUNDLE_DIR}/metadata.json:application/vnd.katl.kubernetes.sysext.metadata.v1+json" \
             "${BUNDLE_DIR}/package-provenance.json:application/vnd.katl.package-provenance.v1+json" \
@@ -343,13 +346,17 @@ jobs:
           jq -e \
             --arg description "$OCI_DESCRIPTION" \
             --arg licenses "$OCI_LICENSES" \
-            --arg source "https://github.com/${GITHUB_REPOSITORY}" '
+            --arg payload_version "$PAYLOAD_VERSION" \
+            --arg source "https://github.com/${GITHUB_REPOSITORY}" \
+            --arg upstream_release "$KUBERNETES_RELEASE_URL" '
             .artifactType == "application/vnd.katl.kubernetes.payload.bundle.v1" and
             .config.mediaType == "application/vnd.katl.kubernetes.payload.bundle.v1+json" and
             (.layers | length) == 4 and
             .annotations["org.opencontainers.image.description"] == $description and
             .annotations["org.opencontainers.image.licenses"] == $licenses and
-            .annotations["org.opencontainers.image.source"] == $source
+            .annotations["org.opencontainers.image.source"] == $source and
+            .annotations["org.opencontainers.image.url"] == $upstream_release and
+            .annotations["dev.katl.kubernetes.payload.version"] == $payload_version
           ' _build/oci-manifest.json >/dev/null
           manifest_digest="$(oras resolve --oci-layout "_build/oci-layout:${VERSION_TAG}")"
           if [[ ! "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -438,10 +445,14 @@ jobs:
           jq -e \
             --arg description "$OCI_DESCRIPTION" \
             --arg licenses "$OCI_LICENSES" \
-            --arg source "https://github.com/${GITHUB_REPOSITORY}" '
+            --arg payload_version "$PAYLOAD_VERSION" \
+            --arg source "https://github.com/${GITHUB_REPOSITORY}" \
+            --arg upstream_release "$KUBERNETES_RELEASE_URL" '
             .annotations["org.opencontainers.image.description"] == $description and
             .annotations["org.opencontainers.image.licenses"] == $licenses and
-            .annotations["org.opencontainers.image.source"] == $source
+            .annotations["org.opencontainers.image.source"] == $source and
+            .annotations["org.opencontainers.image.url"] == $upstream_release and
+            .annotations["dev.katl.kubernetes.payload.version"] == $payload_version
           ' _build/remote-manifest.json >/dev/null
 
           echo "manifest-digest=$manifest_digest" >> "$GITHUB_OUTPUT"
