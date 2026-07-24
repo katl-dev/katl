@@ -513,7 +513,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      actions: write
+      actions: read
       contents: write
       pull-requests: write
     steps:
@@ -592,12 +592,36 @@ jobs:
               body: "Records the newly published immutable bundles for every supported Kubernetes payload built by the producer.",
               draft: false,
             });
-            await github.rest.actions.createWorkflowDispatch({
+
+            const openPulls = await github.paginate(github.rest.pulls.list, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: "fast-checks.yml",
-              ref: process.env.HEAD_BRANCH,
+              base: "main",
+              state: "open",
+              per_page: 100,
             });
+            const branchPrefix = "automation/kubernetes-compatibility-";
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            const superseded = openPulls.filter(candidate =>
+              candidate.number !== pull.number &&
+              candidate.head.repo?.full_name === repository &&
+              candidate.head.ref.startsWith(branchPrefix)
+            );
+            for (const candidate of superseded) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: candidate.number,
+                body: `Superseded by #${pull.number}, which records newer successfully published Kubernetes bundles. Closing this stale catalog update to prevent older bundle references from being merged.`,
+              });
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: candidate.number,
+                state: "closed",
+              });
+            }
+
             await github.graphql(`
               mutation($pullRequestId: ID!) {
                 enablePullRequestAutoMerge(input: {
