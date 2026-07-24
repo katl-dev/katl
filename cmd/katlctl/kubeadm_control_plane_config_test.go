@@ -220,6 +220,13 @@ func TestActivateClusterConfigPlansOneFreshReplacementNode(t *testing.T) {
       install:
         targetDisk:
           byID: /dev/disk/by-id/ata-cp-2-root
+    - name: cp-3
+      controlPlane: true
+      bootstrap:
+        address: 10.0.0.13
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/ata-cp-3-root
 `
 	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -240,25 +247,34 @@ func TestActivateClusterConfigPlansOneFreshReplacementNode(t *testing.T) {
 		},
 		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", NoChanges: true},
 	}
+	third := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{
+			MachineId:           "machine-cp-3",
+			CurrentGenerationId: "generation-1",
+			Kubernetes:          &agentapi.KubernetesStatus{State: "ready"},
+		},
+		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", NoChanges: true},
+	}
 	previousDial := dialKatlcAgent
 	defer func() { dialKatlcAgent = previousDial }()
 	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
-		clients := map[string]*fakeKatlcAgentClient{"10.0.0.11:9443": first, "10.0.0.12:9443": second}
+		clients := map[string]*fakeKatlcAgentClient{"10.0.0.11:9443": first, "10.0.0.12:9443": second, "10.0.0.13:9443": third}
 		return katlcAgentConnection{Client: clients[endpoint], Close: func() error { return nil }}, nil
 	}
 
-	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, []inventory.Node{
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1", coordinator: "cp-3"}, []inventory.Node{
 		{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 		{Name: "cp-2", Address: "10.0.0.12", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-3", Address: "10.0.0.13", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(activated.joinNodes, []string{"cp-1"}) || activated.joinCoordinator != "cp-2" {
+	if !reflect.DeepEqual(activated.joinNodes, []string{"cp-1"}) || activated.joinCoordinator != "cp-3" {
 		t.Fatalf("replacement plan = nodes %#v coordinator %q", activated.joinNodes, activated.joinCoordinator)
 	}
-	if len(first.submitRequests) != 0 || len(second.submitRequests) != 0 {
-		t.Fatalf("no-op config unexpectedly mutated nodes: first=%#v second=%#v", first.submitRequests, second.submitRequests)
+	if len(first.submitRequests) != 0 || len(second.submitRequests) != 0 || len(third.submitRequests) != 0 {
+		t.Fatalf("no-op config unexpectedly mutated nodes: first=%#v second=%#v third=%#v", first.submitRequests, second.submitRequests, third.submitRequests)
 	}
 }
 

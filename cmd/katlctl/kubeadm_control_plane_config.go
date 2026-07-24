@@ -35,7 +35,7 @@ func newClusterApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	f := cmd.Flags()
 	f.StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	f.StringVar(&opts.inventoryPath, "inventory", "", "advanced cluster inventory")
-	f.StringVar(&opts.coordinator, "coordinator", "", "coordinator control-plane node changed last")
+	f.StringVar(&opts.coordinator, "coordinator", "", "control-plane coordinator used for joins and changed last")
 	f.StringVar(&opts.generationID, "generation", "", "active desired generation ID")
 	f.StringVar(&opts.configName, "config-name", "", "selected KubeadmConfig name")
 	f.StringVar(&opts.rolloutID, "rollout-id", "", "rollout identity")
@@ -511,6 +511,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 				strings.Join(kubernetesStates, ", "),
 			)
 		}
+		requestedCoordinator := strings.TrimSpace(opts.coordinator)
 		for _, input := range prepared {
 			if input.kubernetesState == "not-configured" {
 				continue
@@ -519,7 +520,18 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 				if strings.TrimSpace(joinCoordinator) == "" {
 					joinCoordinator = input.node.Name
 				}
+				if input.node.Name == requestedCoordinator {
+					joinCoordinator = input.node.Name
+					break
+				}
 			}
+		}
+		if requestedCoordinator != "" && joinCoordinator != requestedCoordinator {
+			return activatedClusterConfig{}, fmt.Errorf(
+				"coordinator %q cannot coordinate the replacement join: it must be an existing ready control-plane node (%s)",
+				requestedCoordinator,
+				strings.Join(kubernetesStates, ", "),
+			)
 		}
 		if joinCoordinator == "" {
 			return activatedClusterConfig{}, fmt.Errorf(
