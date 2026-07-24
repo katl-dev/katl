@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -156,6 +157,15 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := generation.WriteGeneration(root, previous, previousStatus); err != nil {
+		t.Fatal(err)
+	}
+	previousManifest := bootstrapRuntimeManifest("control-plane")
+	previousManifest.Node.Identity.SSH.AuthorizedKeys = []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"}
+	previousManifest.Install.TargetDisk.ByID = "/dev/disk/by-id/test-root"
+	previousManifest.Install.WipeTarget = true
+	previousManifest.KatlosImage.URL = "https://example.test/katlos-install.squashfs"
+	previousManifest.KatlosImage.SizeBytes = 1
+	if err := configapply.WriteGenerationManifest(root, previous.GenerationID, previousManifest); err != nil {
 		t.Fatal(err)
 	}
 	endpointAdvertiserPath := filepath.Join(root, "var/lib/katl/generations/gen0/sysext/katl-endpoint-advertiser.raw")
@@ -330,6 +340,14 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	}
 	if len(spec.Sysexts) != 1 || spec.Sysexts[0].Name != katlosimage.EndpointAdvertiserName || spec.Sysexts[0].Path != "/var/lib/katl/generations/gen1/sysext/endpoint-advertiser.raw" || spec.Sysexts[0].SHA256 != testSHA(nextEndpointAdvertiserBytes) {
 		t.Fatalf("candidate sysexts = %+v, want bundled endpoint advertiser replacement", spec.Sysexts)
+	}
+	candidateManifest, err := configapply.ReadGenerationManifest(root, "gen1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidateManifest.Node.Identity.Hostname != previousManifest.Node.Identity.Hostname ||
+		candidateManifest.Node.SystemRole != previousManifest.Node.SystemRole {
+		t.Fatalf("candidate manifest node = %+v, want current configuration %+v", candidateManifest.Node, previousManifest.Node)
 	}
 	stagedEndpointAdvertiser, err := os.ReadFile(filepath.Join(root, strings.TrimPrefix(spec.Sysexts[0].Path, "/")))
 	if err != nil {
