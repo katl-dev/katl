@@ -173,6 +173,7 @@ func runRefreshRebuilds(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	scopeChanged := supported.RecipeScope != kubernetesrelease.CurrentRecipeScope
 	updated, changed, err := kubernetesrelease.RefreshRecipe(*root, supported)
 	if err != nil {
 		return err
@@ -187,6 +188,10 @@ func runRefreshRebuilds(args []string, stdout, stderr io.Writer) error {
 	}
 	if err := writeAtomic(*path, data); err != nil {
 		return err
+	}
+	if scopeChanged {
+		fmt.Fprintf(stdout, "updated Kubernetes bundle recipe scope to %s and fingerprint to %s without advancing artifact revisions\n", updated.RecipeScope, updated.RecipeDigest)
+		return nil
 	}
 	fmt.Fprintf(stdout, "updated Kubernetes bundle recipe to %s and advanced %d artifact revisions\n", updated.RecipeDigest, len(updated.Versions))
 	return nil
@@ -210,6 +215,9 @@ func runVerifyRecipe(args []string, stdout, stderr io.Writer) error {
 	digest, err := kubernetesrelease.RecipeDigest(*root)
 	if err != nil {
 		return err
+	}
+	if supported.RecipeScope != kubernetesrelease.CurrentRecipeScope {
+		return fmt.Errorf("Kubernetes bundle recipe scope is %q, want %q; run `go run ./cmd/katl-kubernetes-release refresh-rebuilds`", supported.RecipeScope, kubernetesrelease.CurrentRecipeScope)
 	}
 	if supported.RecipeDigest != digest {
 		return fmt.Errorf("Kubernetes bundle recipe changed: manifest has %s, current inputs are %s; run `go run ./cmd/katl-kubernetes-release refresh-rebuilds`", supported.RecipeDigest, digest)

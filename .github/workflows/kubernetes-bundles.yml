@@ -7,38 +7,28 @@ on:
     paths:
       - .github/workflows/kubernetes-bundles.yml
       - Containerfile.mkosi
-      - cmd/katl-boot-health/**
-      - "!cmd/katl-boot-health/**/*_test.go"
-      - cmd/katl-console/**
-      - "!cmd/katl-console/**/*_test.go"
-      - cmd/katl-generation-activate/**
-      - "!cmd/katl-generation-activate/**/*_test.go"
       - cmd/katl-kubernetes-release/**
       - "!cmd/katl-kubernetes-release/**/*_test.go"
       - cmd/katl-mkosi-artifacts/**
       - "!cmd/katl-mkosi-artifacts/**/*_test.go"
       - cmd/katl-publish-kubernetes-sysext/**
       - "!cmd/katl-publish-kubernetes-sysext/**/*_test.go"
-      - cmd/katl-runtime-status/**
-      - "!cmd/katl-runtime-status/**/*_test.go"
-      - cmd/katlc/**
-      - "!cmd/katlc/**/*_test.go"
       - containers-policy.json
       - go.mod
       - go.sum
-      - internal/**
-      - "!internal/**/*_test.go"
-      - "!internal/**/testdata/**"
-      - "!internal/installer/kubernetescompat/catalog.json"
-      - "!internal/resourcetest/**"
-      - "!internal/vmtest/**"
+      - internal/installer/artifact/artifact.go
+      - internal/installer/artifact/local.go
+      - internal/installer/sysextcatalog/catalog.go
+      - internal/installer/sysextcatalog/stage.go
+      - internal/kubernetesrelease/**
+      - "!internal/kubernetesrelease/**/*_test.go"
       - internal/kubernetesrelease/supported-versions.json
       - mkosi.conf
       - mkosi.profiles/kubernetes-sysext/**
-      - mkosi.profiles/runtime/**
+      - mkosi.profiles/runtime/mkosi.conf
+      - mkosi.profiles/runtime/os-release.in
       - scripts/build-kubernetes-sysext
       - scripts/check-kubernetes-sysext
-      - scripts/mkosi
   workflow_dispatch:
     inputs:
       payload_version:

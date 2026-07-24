@@ -900,13 +900,20 @@ separate from artifact availability: a version becomes installable only after
 its immutable bundle is published and recorded in the compatibility catalog.
 The initial policy lists the GA releases `v1.36.0` through `v1.36.3`.
 
-Adding a payload starts its artifact revision at `1`. The policy also records a
-fingerprint of every bundle-producing input. A change to those inputs must
-refresh the fingerprint and increment every supported payload's revision, so
-the main-branch producer rebuilds the entire supported matrix without replacing
-an immutable tag. Package changes for an existing payload increment only that
-payload's revision. A successful rebuild updates the catalog mapping but does
-not remove older exact artifact identities or digests.
+Adding a payload starts its artifact revision at `1`. The policy also records
+the named recipe scope and a fingerprint of every bundle-producing input. The
+scope covers the Kubernetes sysext and package policy, the runtime ABI and base
+package inputs used to construct the overlay, the metadata and catalog
+producers, and the publication workflow. It does not cover KatlOS runtime
+binaries, agents, installer policy, VM infrastructure, or unrelated product
+code. A change to a fingerprinted producer input must refresh the fingerprint
+and increment every supported payload's revision, so the main-branch producer
+rebuilds the entire supported matrix without replacing an immutable tag.
+Changing only the definition of the fingerprint scope records the new scope and
+digest without minting payload revisions. Package changes for an existing
+payload increment only that payload's revision. A successful rebuild updates
+the catalog mapping but does not remove older exact artifact identities or
+digests.
 
 Minor updates, such as `v1.36` to `v1.37`, require the same artifact production
 mechanics plus Kubernetes version-skew policy review. Katl should continue to

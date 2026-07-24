@@ -15,29 +15,26 @@ import (
 var recipeRoots = []string{
 	".github/workflows/kubernetes-bundles.yml",
 	"Containerfile.mkosi",
-	"cmd/katl-boot-health",
-	"cmd/katl-console",
-	"cmd/katl-generation-activate",
-	"cmd/katl-host-config-activate",
 	"cmd/katl-kubernetes-release",
 	"cmd/katl-mkosi-artifacts",
 	"cmd/katl-publish-kubernetes-sysext",
-	"cmd/katl-runtime-status",
-	"cmd/katlc",
 	"containers-policy.json",
 	"go.mod",
 	"go.sum",
-	"internal",
+	"internal/installer/artifact/artifact.go",
+	"internal/installer/artifact/local.go",
+	"internal/installer/sysextcatalog/catalog.go",
+	"internal/installer/sysextcatalog/stage.go",
+	"internal/kubernetesrelease",
 	"mkosi.conf",
 	"mkosi.profiles/kubernetes-sysext",
-	"mkosi.profiles/runtime",
+	"mkosi.profiles/runtime/mkosi.conf",
+	"mkosi.profiles/runtime/os-release.in",
 	"scripts/build-kubernetes-sysext",
 	"scripts/check-kubernetes-sysext",
-	"scripts/mkosi",
 }
 
 var recipeExcludedPaths = map[string]bool{
-	"internal/installer/kubernetescompat/catalog.json":   true,
 	"internal/kubernetesrelease/supported-versions.json": true,
 }
 
@@ -75,10 +72,21 @@ func RefreshRecipe(root string, supported SupportedVersions) (SupportedVersions,
 	if err != nil {
 		return SupportedVersions{}, false, err
 	}
-	if supported.RecipeDigest == digest {
+	if supported.RecipeScope == CurrentRecipeScope && supported.RecipeDigest == digest {
 		return supported, false, nil
 	}
 	supported.Versions = copyVersions(supported.Versions)
+	if supported.RecipeScope == "" {
+		supported.RecipeScope = CurrentRecipeScope
+		supported.RecipeDigest = digest
+		if err := validateSupportedVersions(supported); err != nil {
+			return SupportedVersions{}, false, err
+		}
+		return supported, true, nil
+	}
+	if supported.RecipeScope != CurrentRecipeScope {
+		return SupportedVersions{}, false, fmt.Errorf("unsupported Kubernetes bundle recipe scope %q", supported.RecipeScope)
+	}
 	supported.RecipeDigest = digest
 	for index := range supported.Versions {
 		supported.Versions[index].ArtifactRevision++
