@@ -292,8 +292,8 @@ func TestRecordBootHealthTimeoutRestoresPreviousAndRequestsReboot(t *testing.T) 
 	if selection.DefaultGenerationID != "gen0" || selection.FailedBootGenerationID != "gen1" || selection.RecoveryRequired {
 		t.Fatalf("selection after timeout = %#v", selection)
 	}
-	if selection.BootedGenerationID != "gen0" || selection.BootedBootEntry != "loader/entries/katl-gen0.conf" {
-		t.Fatalf("rollback boot evidence = %#v, want gen0 evidence", selection)
+	if selection.BootedGenerationID != "gen1" || selection.BootedBootEntry != "loader/entries/katl-gen1.conf" {
+		t.Fatalf("failed trial boot evidence = %#v, want gen1 until the rollback boot occurs", selection)
 	}
 	if _, err := RecordBootHealth(BootHealthRequest{Root: root, GenerationID: "gen0", CommandLine: bootHealthCommandLine("gen0"), Result: BootHealthSuccess, Now: now.Add(time.Minute)}); err != nil {
 		t.Fatalf("RecordBootHealth(recovered gen0 success) error = %v", err)

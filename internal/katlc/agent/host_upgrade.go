@@ -2,6 +2,8 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -48,12 +50,38 @@ func (s *Server) validateHostUpgradePlan(req *agentapi.HostUpgradeOperationReque
 	if err != nil {
 		return fmt.Errorf("read current generation %q: %w", currentID, err)
 	}
+	if err := validateHostUpgradeBootEvidence(s.Root, currentID, previousSpec); err != nil {
+		return err
+	}
 	kubernetesState, err := s.kubernetesNodeState()
 	if err != nil {
 		return fmt.Errorf("inspect Kubernetes node state: %w", err)
 	}
 	if err := katlosimage.ValidateHostUpgradeSource(previousSpec, previousStatus, kubernetesState.bootstrapped); err != nil {
 		return fmt.Errorf("%w; inspect the current generation, then recover it or wipe and reinstall this node before retrying the upgrade", err)
+	}
+	return nil
+}
+
+func validateHostUpgradeBootEvidence(root, currentID string, current generation.GenerationSpec) error {
+	data, err := os.ReadFile(filepath.Join(runtimeRoot(root), "proc/cmdline"))
+	if err != nil {
+		return fmt.Errorf("read running kernel command line: %w", err)
+	}
+	commandLine := string(data)
+	bootedID, err := generation.SelectedGenerationFromCommandLine(commandLine)
+	if err != nil {
+		return fmt.Errorf("read running generation from kernel command line: %w", err)
+	}
+	if bootedID != currentID {
+		return fmt.Errorf("running kernel selected generation %q but durable state identifies %q as current; reboot into the selected known-good generation before retrying the upgrade", bootedID, currentID)
+	}
+	rootPartUUID, err := generation.SelectedRootPartUUIDFromCommandLine(commandLine)
+	if err != nil {
+		return fmt.Errorf("read running root from kernel command line: %w", err)
+	}
+	if !strings.EqualFold(rootPartUUID, strings.TrimSpace(current.Root.PartitionUUID)) {
+		return fmt.Errorf("running root PARTUUID %q does not match current generation %q root PARTUUID %q; reboot into the selected known-good generation before retrying the upgrade", rootPartUUID, currentID, current.Root.PartitionUUID)
 	}
 	return nil
 }

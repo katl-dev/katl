@@ -62,6 +62,9 @@ func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentSt
 							if current := status.GetCurrentGenerationId(); current != "" && current != targetGeneration {
 								return katlcAgentConnection{}, verifiedNodeBoot{}, fmt.Errorf("node %s rejected generation %s during boot health and returned on generation %s", nodeName, targetGeneration, current)
 							}
+							if rollback := strings.TrimSpace(status.GetBootTargetGenerationId()); rollback != "" && rollback != targetGeneration {
+								return katlcAgentConnection{}, verifiedNodeBoot{}, fmt.Errorf("node %s rejected generation %s during boot health; rollback generation %s is selected for next boot, so reboot the node before retrying the upgrade", nodeName, targetGeneration, rollback)
+							}
 							return katlcAgentConnection{}, verifiedNodeBoot{}, fmt.Errorf("node %s reported generation %s unhealthy after reboot", nodeName, targetGeneration)
 						}
 						if status.GetCurrentGenerationId() == targetGeneration && candidate.GetCommitState() == generation.CommitStateCommitted && candidate.GetBootState() == generation.BootStateGood && candidate.GetHealthState() == generation.HealthStateHealthy {

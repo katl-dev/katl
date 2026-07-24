@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,32 @@ func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 	}
 	if output := progress.String(); !strings.Contains(output, "waiting-for-kubernetes state=waiting-for-node") || !strings.Contains(output, "Kubernetes node cp-1 is not Ready") {
 		t.Fatalf("progress = %q", output)
+	}
+}
+
+func TestWaitNodeBootHealthRequiresRollbackRebootAfterRejectedTrial(t *testing.T) {
+	fake := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{
+			AgentStartId:           "after",
+			CurrentGenerationId:    "katlos-next",
+			BootTargetGenerationId: "katlos-previous",
+		},
+		generation: &agentapi.Generation{
+			GenerationId: "katlos-next",
+			CommitState:  generation.CommitStateCommitted,
+			BootState:    generation.BootStateFailed,
+			HealthState:  generation.HealthStateUnhealthy,
+		},
+	}
+	installKatlcDial(t, nil, fake)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", io.Discard)
+	if err == nil ||
+		!strings.Contains(err.Error(), "rollback generation katlos-previous is selected for next boot") ||
+		!strings.Contains(err.Error(), "reboot the node before retrying") {
+		t.Fatalf("waitNodeBootHealth() error = %v, want actionable rollback reboot", err)
 	}
 }
 

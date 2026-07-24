@@ -142,12 +142,13 @@ nix develop --command katldev build iso
 
 The command composes the existing source-fingerprinted `scripts/mkosi`
 pipeline, runs the full ISO verifier, and prints absolute paths for the ISO,
-metadata, and checksum together with the digest and byte size. Set the existing
-`KATL_VERSION` environment variable when the installed development image needs
-a particular KatlOS identity:
+metadata, and checksum together with the digest and byte size. By default it
+derives a checkout-scoped identity such as `2026.7.0-local.1a2b3c4` from the
+nearest KatlOS release line and the current commit. Use `--version` when the
+installed development image needs a particular KatlOS identity:
 
 ```sh
-KATL_VERSION=2026.7.0-dev.12 nix develop --command katldev build iso
+nix develop --command katldev build iso --version 2026.7.0-dev.12
 ```
 
 Copy the reported ISO to a hypervisor under a versioned name and independently
@@ -155,6 +156,12 @@ compare the reported digest after transfer. Published images should continue
 through `katlctl node upgrade` where possible; use the ISO path for clean
 installation, wipe/reinstall recovery, and current-checkout changes which do
 not yet have a published upgrade source.
+
+Build the matching local upgrade image without repeating the derived version:
+
+```sh
+nix develop --command katldev build upgrade
+```
 
 The development shell includes the complete supported VM test toolchain. It
 does not configure host libvirt, `/dev/kvm`, `/dev/net/tun`, networks, storage

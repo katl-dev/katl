@@ -582,6 +582,28 @@ func TestHostUpgradeDryRunAllowsHealthySourceBeforeBootstrap(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeRejectsDurableRollbackBeforeReboot(t *testing.T) {
+	server := newTestServer(t)
+	writeKnownGoodHostUpgradeSource(t, server.Root)
+	writeProcCmdline(t, server.Root, "root=PARTUUID=22222222-2222-2222-2222-222222222222 rootfstype=squashfs ro katl.generation=failed-trial katl.root-slot=root-b")
+	req := hostUpgradeSubmitRequest("req-host-upgrade-before-rollback-reboot")
+	req.DryRun = true
+
+	_, err := server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.FailedPrecondition ||
+		!strings.Contains(err.Error(), `running kernel selected generation "failed-trial"`) ||
+		!strings.Contains(err.Error(), "reboot into the selected known-good generation") {
+		t.Fatalf("SubmitOperation() error = %v, want actionable boot-evidence refusal", err)
+	}
+	ids, listErr := server.Store.OperationIDs()
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("operation ids = %v, want no record for unsafe retry", ids)
+	}
+}
+
 func TestSubmitOperationRejectsUnsafeHostUpgradeReference(t *testing.T) {
 	server := newTestServer(t)
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
@@ -620,6 +642,7 @@ func hostUpgradeSubmitRequest(clientRequestID string) *agentapi.SubmitOperationR
 func writeKnownGoodHostUpgradeSource(t *testing.T, root string) {
 	t.Helper()
 	writeCleanGenerationZeroState(t, root)
+	writeProcCmdline(t, root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 rootfstype=squashfs ro katl.generation=generation-0 katl.root-slot=root-a")
 	spec, _, err := generation.ReadGeneration(root, "generation-0")
 	if err != nil {
 		t.Fatal(err)

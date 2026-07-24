@@ -288,7 +288,8 @@ func TestHostUpgradePlanPreservesKubernetesOnBootstrappedNode(t *testing.T) {
 	}
 }
 
-func TestHostUpgradePlanPreservesNonKubernetesSysextBeforeBootstrap(t *testing.T) {
+func TestHostUpgradePlanReplacesBundledEndpointAdvertiserBeforeBootstrap(t *testing.T) {
+	root := t.TempDir()
 	payload := upgradePayload(t, nil)
 	previousSpec, _ := knownGoodGeneration(t, "gen0", strings.Repeat("b", sha256.Size*2), "v1.35.0")
 	previousSpec.Sysexts = []generation.ExtensionRef{{
@@ -314,8 +315,28 @@ func TestHostUpgradePlanPreservesNonKubernetesSysextBeforeBootstrap(t *testing.T
 	if err != nil {
 		t.Fatalf("HostUpgradePlan() error = %v", err)
 	}
-	if len(plan.Spec.Sysexts) != 1 || plan.Spec.Sysexts[0].Name != EndpointAdvertiserName || plan.Spec.Sysexts[0].Path != "/var/lib/katl/generations/gen1/sysext/katl-endpoint-advertiser.raw" {
-		t.Fatalf("candidate sysexts = %#v, want preserved endpoint advertiser", plan.Spec.Sysexts)
+	if len(plan.Spec.Sysexts) != 1 || plan.Spec.Sysexts[0].Name != EndpointAdvertiserName || plan.Spec.Sysexts[0].Path != "/var/lib/katl/generations/gen1/sysext/endpoint-advertiser.raw" {
+		t.Fatalf("candidate sysexts = %#v, want bundled endpoint advertiser replacement", plan.Spec.Sysexts)
+	}
+	if got := plan.Spec.Sysexts[0]; got.SHA256 != payload.EndpointAdvertiser.SHA256 || got.ArtifactVersion != payload.EndpointAdvertiser.Version {
+		t.Fatalf("candidate endpoint advertiser = %#v, want payload component %#v", got, payload.EndpointAdvertiser)
+	}
+	if len(plan.BundledAssets) != 1 || plan.BundledAssets[0].Name != EndpointAdvertiserName {
+		t.Fatalf("bundled assets = %#v", plan.BundledAssets)
+	}
+	if err := StageBundledAssets(root, plan); err != nil {
+		t.Fatalf("StageBundledAssets() error = %v", err)
+	}
+	staged, err := os.ReadFile(filepath.Join(root, strings.TrimPrefix(plan.Spec.Sysexts[0].Path, "/")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(payload.ComponentPath(payload.EndpointAdvertiser))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(staged, source) {
+		t.Fatal("staged endpoint advertiser differs from bundled component")
 	}
 }
 
@@ -410,7 +431,7 @@ func TestHostUpgradeRollbackMetadataRestoresPreviousKnownGood(t *testing.T) {
 		t.Fatalf("ReadBootSelection() error = %v", err)
 	}
 	if selection.DefaultGenerationID != "gen0" ||
-		selection.BootedGenerationID != "gen0" ||
+		selection.BootedGenerationID != "gen1" ||
 		selection.FailedBootGenerationID != "gen1" ||
 		selection.TrialGenerationID != "" ||
 		selection.PendingHealthValidation ||

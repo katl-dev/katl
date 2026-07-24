@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
@@ -92,10 +93,76 @@ func TestControlPlaneEndpointStatusDistinguishesStartupStates(t *testing.T) {
 	}
 }
 
+func TestControlPlaneEndpointStatusDistinguishesLegacyMissingVIPOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		omitOwned bool
+		want      string
+	}{
+		{name: "legacy field omitted", omitOwned: true, want: "advertised"},
+		{name: "current field explicitly false", want: "failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeManagedEndpointConfig(t, root, true)
+			live := bgpapivip.Status{
+				APIVersion:             bgpapivip.StatusAPIVersion,
+				Kind:                   bgpapivip.StatusKind,
+				VIPInterfaceReady:      true,
+				HealthState:            bgpapivip.HealthHealthy,
+				AdvertisementState:     bgpapivip.AdvertisementAdvertised,
+				BirdProcessActive:      true,
+				BirdControlSocketReady: true,
+				PeerSummary: []bgpapivip.PeerRuntimeStatus{{
+					Name: "10.0.0.1", Kind: "fabric", SessionState: "established",
+				}},
+			}
+			data, err := bgpapivip.MarshalStatus(live)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.omitOwned {
+				data = []byte(strings.Replace(string(data), "  \"localVIPOwned\": false,\n", "", 1))
+			}
+			writeTestFile(t, filepath.Join(root, bgpapivip.LiveStatusPath), string(data))
+
+			status, err := controlPlaneEndpointStatus(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.GetState() != test.want {
+				t.Fatalf("state = %q, want %q; status = %#v", status.GetState(), test.want, status)
+			}
+		})
+	}
+}
+
 func TestControlPlaneEndpointStatusIsAbsentForExternalEndpointNode(t *testing.T) {
 	status, err := controlPlaneEndpointStatus(t.TempDir())
 	if err != nil || status != nil {
 		t.Fatalf("external endpoint status = %#v, %v", status, err)
+	}
+}
+
+func TestControlPlaneEndpointStatusAcceptsPersistedVIPHealthTarget(t *testing.T) {
+	root := t.TempDir()
+	writeManagedEndpointConfig(t, root, true)
+	path := filepath.Join(root, bgpapivip.ConfigPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), "  health: {}\n", "  health:\n    host: 10.40.0.10\n", 1))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := controlPlaneEndpointStatus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.GetEndpoint() != "api.home.example:6443" || status.GetState() != "starting" {
+		t.Fatalf("endpoint status = %#v", status)
 	}
 }
 

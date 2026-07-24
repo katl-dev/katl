@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
@@ -466,6 +467,15 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		applyOverlay(&merged.Node, nodeOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	}
 	if len(domains.domains) == 0 {
+		endpointDrifted, err := endpointRenderingDrifted(request, merged)
+		if err != nil {
+			return manifest.Manifest{}, nil, nil, err
+		}
+		if endpointDrifted {
+			domains.addEndpointRouting(EndpointRoutingImpact{MayLoseAllFabricPaths: true})
+		}
+	}
+	if len(domains.domains) == 0 {
 		return merged, nil, nil, ErrNoChanges
 	}
 	if _, changed := domains.seen[DomainHostConfiguration]; changed {
@@ -473,6 +483,73 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		domains.hostConfiguration = &hostPlan
 	}
 	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), unsafeFiles, nil
+}
+
+func endpointRenderingDrifted(request TrustedBundleRequest, desired manifest.Manifest) (bool, error) {
+	if desired.Node.ControlPlaneEndpoint == nil {
+		return false, nil
+	}
+	endpoint, err := controlplaneendpoint.Normalize(*desired.Node.ControlPlaneEndpoint)
+	if err != nil {
+		return false, fmt.Errorf("normalize desired control-plane endpoint: %w", err)
+	}
+	config, err := bgpapivip.FromControlPlaneEndpoint(endpoint)
+	if err != nil {
+		return false, fmt.Errorf("lower desired control-plane endpoint: %w", err)
+	}
+	rendered, err := bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{
+		Config:   config,
+		NodeRole: desired.Node.SystemRole,
+	})
+	if err != nil {
+		return false, fmt.Errorf("render desired control-plane endpoint: %w", err)
+	}
+	confextRoot, err := currentNodeConfextRoot(request.Root, request.CurrentRecord)
+	if err != nil {
+		return false, err
+	}
+	for _, file := range rendered.NativeEtcFiles() {
+		path := filepath.Join(confextRoot, strings.TrimPrefix(filepath.Clean(file.Path), string(filepath.Separator)))
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("read current rendered endpoint file %s: %w", file.Path, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return false, fmt.Errorf("stat current rendered endpoint file %s: %w", file.Path, err)
+		}
+		mode := file.Mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		if string(data) != file.Content || info.Mode().Perm() != mode.Perm() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func currentNodeConfextRoot(root string, record generation.Record) (string, error) {
+	for _, ref := range record.Confexts {
+		if strings.TrimSpace(ref.Name) != "katl-node" {
+			continue
+		}
+		path := filepath.Clean(ref.Path)
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("current katl-node confext path must be absolute")
+		}
+		base := filepath.Clean(root)
+		full := filepath.Join(base, strings.TrimPrefix(path, string(filepath.Separator)))
+		relative, err := filepath.Rel(base, full)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("current katl-node confext path escapes runtime root")
+		}
+		return full, nil
+	}
+	return "", fmt.Errorf("current katl-node confext is required to compare generated endpoint configuration")
 }
 
 func validateOverlay(path string, overlay NodeOverlay) error {

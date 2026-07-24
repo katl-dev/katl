@@ -1,6 +1,7 @@
 package bgpapivip
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -117,6 +118,7 @@ type Status struct {
 	VIPInterfaceKind            string              `json:"vipInterfaceKind"`
 	VIPInterfaceReady           bool                `json:"vipInterfaceReady"`
 	LocalVIPOwned               bool                `json:"localVIPOwned"`
+	LocalVIPOwnedReported       bool                `json:"-"`
 	NodeRoleSelected            bool                `json:"nodeRoleSelected"`
 	AdvertiseOnRoles            []string            `json:"advertiseOnRoles"`
 	HealthState                 string              `json:"healthState"`
@@ -396,7 +398,11 @@ func MarshalStatus(status Status) ([]byte, error) {
 }
 
 func DecodeStatus(reader io.Reader) (Status, error) {
-	decoder := json.NewDecoder(reader)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return Status{}, fmt.Errorf("read BGP API VIP status: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var status Status
 	if err := decoder.Decode(&status); err != nil {
@@ -414,6 +420,13 @@ func DecodeStatus(reader io.Reader) (Status, error) {
 	if status.Kind != StatusKind {
 		return Status{}, fmt.Errorf("status kind must be %s", StatusKind)
 	}
+	var presence struct {
+		LocalVIPOwned *bool `json:"localVIPOwned"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil {
+		return Status{}, fmt.Errorf("decode BGP API VIP status field presence: %w", err)
+	}
+	status.LocalVIPOwnedReported = presence.LocalVIPOwned != nil
 	return status, nil
 }
 
