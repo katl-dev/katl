@@ -9,6 +9,7 @@ if [[ ! "$image" =~ ^ghcr\.io/katl-dev/kubernetes:([A-Za-z0-9._-]+)$ ]]; then
 fi
 tag="${BASH_REMATCH[1]}"
 payload_version="${tag%-katl.*}"
+upstream_release="https://github.com/kubernetes/kubernetes/releases/tag/${payload_version}"
 if [[ -n "$expected_digest" && ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "error: expected OCI manifest digest must be sha256 followed by 64 lowercase hex characters" >&2
     exit 2
@@ -49,7 +50,10 @@ if ! cmp --silent "$work/tag.json" "$work/digest.json"; then
     exit 1
 fi
 
-if ! jq -e --arg tag "$tag" '
+if ! jq -e \
+    --arg payload_version "$payload_version" \
+    --arg tag "$tag" \
+    --arg upstream_release "$upstream_release" '
     .schemaVersion == 2 and
     .mediaType == "application/vnd.oci.image.manifest.v1+json" and
     .artifactType == "application/vnd.katl.kubernetes.payload.bundle.v1" and
@@ -57,6 +61,8 @@ if ! jq -e --arg tag "$tag" '
     (.layers | length) == 4 and
     .annotations["org.opencontainers.image.version"] == $tag and
     .annotations["org.opencontainers.image.source"] == "https://github.com/katl-dev/katl" and
+    .annotations["org.opencontainers.image.url"] == $upstream_release and
+    .annotations["dev.katl.kubernetes.payload.version"] == $payload_version and
     .annotations["org.opencontainers.image.licenses"] == "MIT"
 ' "$work/tag.json" >/dev/null; then
     echo "error: OCI manifest metadata does not match the public Kubernetes bundle contract" >&2
