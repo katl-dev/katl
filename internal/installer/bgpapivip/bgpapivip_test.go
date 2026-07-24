@@ -214,6 +214,39 @@ func TestRenderIPv6LoopbackVIP(t *testing.T) {
 	}
 }
 
+func TestNormalizeMigratesPersistedVIPHealthTargetToLoopback(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		vip        string
+		family     string
+		healthHost string
+		want       string
+	}{
+		{name: "IPv4", vip: "10.40.0.10/32", family: "ipv4", healthHost: "10.40.0.10", want: "127.0.0.1"},
+		{name: "IPv6", vip: "2001:db8:40::10/128", family: "ipv6", healthHost: "2001:db8:40::10", want: "::1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := minimalConfig()
+			config.Endpoint.VIP = test.vip
+			config.Endpoint.AddressFamily = test.family
+			config.Health.Host = test.healthHost
+			if test.family == "ipv6" {
+				config.VIPInterface = VIPInterface{Kind: "loopback", Name: "lo"}
+				config.Routing.SourceAddress = "2001:db8:1::11"
+				config.FabricPeers[0].Address = "2001:db8:1::1"
+				config.FabricPeers[0].AllowedExportPrefixes = []string{test.vip}
+			}
+			got, err := Normalize(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Health.Host != test.want {
+				t.Fatalf("health host = %q, want %q", got.Health.Host, test.want)
+			}
+		})
+	}
+}
+
 func TestRenderAllowsMultipleControlPlanesToAdvertiseSameVIP(t *testing.T) {
 	cp1 := minimalConfig()
 	cp2 := minimalConfig()
@@ -322,7 +355,7 @@ func TestNormalizeRejectsUnsafeInputs(t *testing.T) {
 		{
 			name: "VIP health target",
 			mutate: func(config *Config) {
-				config.Health.Host = "10.40.0.10"
+				config.Health.Host = "10.40.0.20"
 			},
 			want: "health.host must be the local loopback address",
 		},

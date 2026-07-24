@@ -32,6 +32,7 @@ type HostUpgradePlan struct {
 	Status          generation.GenerationStatus
 	BootSelection   generation.BootSelectionRecord
 	PreservedAssets []PreservedAsset
+	BundledAssets   []BundledAsset
 }
 
 type PreservedAsset struct {
@@ -40,6 +41,14 @@ type PreservedAsset struct {
 	SourcePath string
 	TargetPath string
 	Directory  bool
+	SHA256     string
+}
+
+type BundledAsset struct {
+	Kind       string
+	Name       string
+	SourcePath string
+	TargetPath string
 	SHA256     string
 }
 
@@ -95,7 +104,7 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		Architecture:          p.Index.Architecture,
 		RuntimeArtifactSHA256: p.Runtime.SHA256,
 	}
-	sysexts, sysextAssets, err := upgradeSysexts(request.PreviousSpec, generationID, root, p.Kubernetes, request.Bootstrapped)
+	sysexts, sysextAssets, bundledAssets, err := upgradeSysexts(p, request.PreviousSpec, generationID, root, request.Bootstrapped)
 	if err != nil {
 		return HostUpgradePlan{}, err
 	}
@@ -148,6 +157,7 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		Status:          status,
 		BootSelection:   selection,
 		PreservedAssets: append(sysextAssets, confextAssets...),
+		BundledAssets:   bundledAssets,
 	}, nil
 }
 
@@ -221,32 +231,74 @@ func StagePreservedAssets(root string, plan HostUpgradePlan) error {
 	return nil
 }
 
-func upgradeSysexts(previous generation.GenerationSpec, generationID string, root generation.RootSelection, _ Component, bootstrapped bool) ([]generation.ExtensionRef, []PreservedAsset, error) {
+func StageBundledAssets(root string, plan HostUpgradePlan) error {
+	for _, asset := range plan.BundledAssets {
+		if !filepath.IsAbs(asset.SourcePath) {
+			return fmt.Errorf("bundled %s %q source path must be absolute", asset.Kind, asset.Name)
+		}
+		target, err := rootedPath(root, asset.TargetPath)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("clear bundled %s %q target: %w", asset.Kind, asset.Name, err)
+		}
+		if err := copyFile(filepath.Clean(asset.SourcePath), target); err != nil {
+			return fmt.Errorf("stage bundled %s %q: %w", asset.Kind, asset.Name, err)
+		}
+		if err := verifyFileSHA256(target, asset.SHA256); err != nil {
+			return fmt.Errorf("verify bundled %s %q: %w", asset.Kind, asset.Name, err)
+		}
+	}
+	return nil
+}
+
+func upgradeSysexts(payload Payload, previous generation.GenerationSpec, generationID string, root generation.RootSelection, bootstrapped bool) ([]generation.ExtensionRef, []PreservedAsset, []BundledAsset, error) {
 	previousKubernetes, hasPreviousKubernetes := selectedKubernetes(previous.Sysexts)
 	if bootstrapped && !hasPreviousKubernetes {
-		return nil, nil, fmt.Errorf("bootstrapped node current generation has no Kubernetes sysext to preserve")
+		return nil, nil, nil, fmt.Errorf("bootstrapped node current generation has no Kubernetes sysext to preserve")
 	}
 	if hasPreviousKubernetes {
 		if err := generation.ValidatePair(root, previousKubernetes); err != nil {
-			return nil, nil, fmt.Errorf("preserved Kubernetes sysext is incompatible with upgraded runtime: %w", err)
+			return nil, nil, nil, fmt.Errorf("preserved Kubernetes sysext is incompatible with upgraded runtime: %w", err)
 		}
 	}
-	return rehomeSysexts(previous, generationID)
-}
 
-func rehomeSysexts(previous generation.GenerationSpec, generationID string) ([]generation.ExtensionRef, []PreservedAsset, error) {
 	refs := make([]generation.ExtensionRef, 0, len(previous.Sysexts))
 	assets := make([]PreservedAsset, 0, len(previous.Sysexts))
+	bundled := make([]BundledAsset, 0, 1)
 	for _, ref := range previous.Sysexts {
+		if ref.Name == EndpointAdvertiserName {
+			if len(bundled) != 0 {
+				return nil, nil, nil, fmt.Errorf("current generation contains multiple %s sysexts", EndpointAdvertiserName)
+			}
+			target := filepath.Join(generation.GenerationRecordsDir, generationID, "sysext", EndpointAdvertiserName+".raw")
+			replacement, err := payload.EndpointAdvertiserExtensionRef(target)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("replace bundled %s sysext: %w", EndpointAdvertiserName, err)
+			}
+			if err := generation.ValidatePair(root, replacement); err != nil {
+				return nil, nil, nil, fmt.Errorf("bundled %s sysext is incompatible with upgraded runtime: %w", EndpointAdvertiserName, err)
+			}
+			refs = append(refs, replacement)
+			bundled = append(bundled, BundledAsset{
+				Kind:       "sysext",
+				Name:       EndpointAdvertiserName,
+				SourcePath: payload.ComponentPath(payload.EndpointAdvertiser),
+				TargetPath: replacement.Path,
+				SHA256:     replacement.SHA256,
+			})
+			continue
+		}
 		path, err := rehomeGenerationPath(previous.GenerationID, generationID, ref.Path, "sysext")
 		if err != nil {
-			return nil, nil, fmt.Errorf("preserve sysext %q: %w", ref.Name, err)
+			return nil, nil, nil, fmt.Errorf("preserve sysext %q: %w", ref.Name, err)
 		}
 		assets = append(assets, PreservedAsset{Kind: "sysext", Name: ref.Name, SourcePath: ref.Path, TargetPath: path, SHA256: ref.SHA256})
 		ref.Path = path
 		refs = append(refs, ref)
 	}
-	return refs, assets, nil
+	return refs, assets, bundled, nil
 }
 
 func rehomeConfexts(previous generation.GenerationSpec, generationID string) ([]generation.GeneratedConfext, []PreservedAsset, error) {

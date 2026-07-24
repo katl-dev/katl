@@ -114,6 +114,9 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err := katlosimage.StagePreservedAssets(runtimeRoot(e.Root), plan); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", err)
 	}
+	if err := katlosimage.StageBundledAssets(runtimeRoot(e.Root), plan); err != nil {
+		return e.failHostUpgrade(record, "write-candidate-generation", err)
+	}
 	if err := generation.WriteGeneration(e.Root, plan.Spec, plan.Status); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", err)
 	}

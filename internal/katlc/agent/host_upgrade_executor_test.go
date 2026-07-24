@@ -170,6 +170,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 
 	runtimeBytes := []byte("next runtime root")
 	ukiBytes := []byte("next runtime uki")
+	nextEndpointAdvertiserBytes := []byte("next endpoint advertiser sysext")
 	payloadRoot := filepath.Join(root, "payload")
 	if err := os.MkdirAll(filepath.Join(payloadRoot, "components/runtime"), 0o755); err != nil {
 		t.Fatal(err)
@@ -177,10 +178,16 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(payloadRoot, "components/boot"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(payloadRoot, "components/sysext"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(payloadRoot, "components/runtime/root.squashfs"), runtimeBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(payloadRoot, "components/boot/katl.efi"), ukiBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(payloadRoot, "components/sysext/endpoint-advertiser.raw"), nextEndpointAdvertiserBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	payload := katlosimage.Payload{
@@ -190,6 +197,12 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		Index:          katlosimage.Index{ImageRole: katlosimage.RoleUpgrade, Version: "2026.7.0-dev.1", Architecture: "x86_64", RuntimeInterface: "katl-runtime-1"},
 		Runtime:        katlosimage.Component{Name: "runtime-root", Role: katlosimage.ComponentRuntimeRoot, Path: "components/runtime/root.squashfs", SizeBytes: int64(len(runtimeBytes)), SHA256: testSHA(runtimeBytes), Version: "2026.7.0-dev.1", Architecture: "x86_64"},
 		Boot:           katlosimage.Component{Name: "runtime-uki", Role: katlosimage.ComponentRuntimeUKI, Path: "components/boot/katl.efi", SizeBytes: int64(len(ukiBytes)), SHA256: testSHA(ukiBytes), Version: "2026.7.0-dev.1", Architecture: "x86_64"},
+		EndpointAdvertiser: katlosimage.Component{
+			Name: "endpoint-advertiser", Role: katlosimage.ComponentEndpointAdvertiser, Path: "components/sysext/endpoint-advertiser.raw",
+			SizeBytes: int64(len(nextEndpointAdvertiserBytes)), SHA256: testSHA(nextEndpointAdvertiserBytes), Version: "2026.7.0-dev.1",
+			PayloadVersion: "2026.7.0-dev.1", Architecture: "x86_64",
+			Compatibility: katlosimage.Compatibility{RuntimeInterface: "katl-runtime-1"},
+		},
 	}
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
 	if err != nil {
@@ -309,8 +322,15 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if spec.Root.Slot != "root-b" || spec.Root.PartitionUUID != "bbbbbbbb-1111-2222-3333-444444444444" || status.BootState != generation.BootStateTrying {
 		t.Fatalf("candidate generation = spec %+v status %+v", spec, status)
 	}
-	if len(spec.Sysexts) != 1 || spec.Sysexts[0].Name != katlosimage.EndpointAdvertiserName || spec.Sysexts[0].Path != "/var/lib/katl/generations/gen1/sysext/katl-endpoint-advertiser.raw" {
-		t.Fatalf("candidate sysexts = %+v, want preserved endpoint advertiser", spec.Sysexts)
+	if len(spec.Sysexts) != 1 || spec.Sysexts[0].Name != katlosimage.EndpointAdvertiserName || spec.Sysexts[0].Path != "/var/lib/katl/generations/gen1/sysext/endpoint-advertiser.raw" || spec.Sysexts[0].SHA256 != testSHA(nextEndpointAdvertiserBytes) {
+		t.Fatalf("candidate sysexts = %+v, want bundled endpoint advertiser replacement", spec.Sysexts)
+	}
+	stagedEndpointAdvertiser, err := os.ReadFile(filepath.Join(root, strings.TrimPrefix(spec.Sysexts[0].Path, "/")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stagedEndpointAdvertiser, nextEndpointAdvertiserBytes) {
+		t.Fatalf("staged endpoint advertiser = %q", stagedEndpointAdvertiser)
 	}
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {

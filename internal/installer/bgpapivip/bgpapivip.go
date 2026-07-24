@@ -525,6 +525,13 @@ func normalizeHealth(health Health, endpoint Endpoint, vip netip.Prefix) (Health
 		localHost = "::1"
 	}
 	health.Host = defaultString(health.Host, localHost)
+	// Configurations rendered before routed VIP failover used the VIP itself
+	// as the local readiness target. Normalize that exact persisted form to
+	// the loopback probe so a KatlOS upgrade can start the new controller and
+	// the next cluster apply can render the current files.
+	if health.Host == vip.Addr().String() {
+		health.Host = localHost
+	}
 	health.Path = defaultString(health.Path, defaultHealthPath)
 	health.Interval = defaultString(health.Interval, "2s")
 	health.Timeout = defaultString(health.Timeout, defaultHealthTimeout)

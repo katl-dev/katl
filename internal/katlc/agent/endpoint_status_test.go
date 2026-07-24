@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
@@ -96,6 +97,28 @@ func TestControlPlaneEndpointStatusIsAbsentForExternalEndpointNode(t *testing.T)
 	status, err := controlPlaneEndpointStatus(t.TempDir())
 	if err != nil || status != nil {
 		t.Fatalf("external endpoint status = %#v, %v", status, err)
+	}
+}
+
+func TestControlPlaneEndpointStatusAcceptsPersistedVIPHealthTarget(t *testing.T) {
+	root := t.TempDir()
+	writeManagedEndpointConfig(t, root, true)
+	path := filepath.Join(root, bgpapivip.ConfigPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), "  health: {}\n", "  health:\n    host: 10.40.0.10\n", 1))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := controlPlaneEndpointStatus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.GetEndpoint() != "api.home.example:6443" || status.GetState() != "starting" {
+		t.Fatalf("endpoint status = %#v", status)
 	}
 }
 
