@@ -202,6 +202,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if record.KubernetesSysextUpdate != nil {
 		return e.executeKubeadmUpgrade(ctx, record)
 	}
+	if record.EtcdMemberRemoveRequest != nil {
+		return e.executeEtcdMemberRemove(ctx, record)
+	}
 	plan, err := executorPlan(record)
 	if err != nil {
 		_, markErr := e.failRecord(record.OperationID, "executor-plan-refused", "executor-plan-refused", "agent executor could not read operation tool plan", err)
@@ -240,7 +243,7 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	}
 	endpointSuspended := false
 	var managedRoute *managedJoinRoute
-	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane {
+	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane && (record.BootstrapRequest == nil || !record.BootstrapRequest.ExistingClusterJoin) {
 		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		endpointSuspended, managedRoute, err = suspendManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
 		lifecycleCancel()

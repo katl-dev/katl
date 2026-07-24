@@ -54,6 +54,7 @@ var bootstrapOperationKinds = []string{
 	OperationKindKubeadmControlPlaneConfig,
 	OperationKindDestructiveReset,
 	OperationKindHostUpgrade,
+	OperationKindEtcdMemberRemove,
 }
 
 type Dispatcher interface {
@@ -73,6 +74,7 @@ type Server struct {
 	RunJoinMaterial         ToolRunner
 	RunEndpointLifecycle    ToolRunner
 	RunKubernetesStatus     ToolRunner
+	RunEtcd                 ToolRunner
 	RunReboot               ToolRunner
 	RunShutdown             ToolRunner
 	Now                     func() time.Time
@@ -92,6 +94,7 @@ func NewServer(root string, store operation.Store) *Server {
 		RunJoinMaterial:         runChildProcess,
 		RunEndpointLifecycle:    runChildProcess,
 		RunKubernetesStatus:     runChildProcess,
+		RunEtcd:                 runChildProcess,
 		RunReboot:               runChildProcess,
 		RunShutdown:             runChildProcess,
 		Now:                     func() time.Time { return time.Now().UTC() },
@@ -452,6 +455,9 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 	if req.GetHostUpgrade() != nil {
 		return s.acceptHostUpgradeOperation(req, digest, id, locks, now)
 	}
+	if req.GetEtcdMemberRemove() != nil {
+		return s.acceptEtcdMemberRemoveOperation(req, digest, id, locks, now)
+	}
 	bootstrapRequest := bootstrapRequestFromProto(req.GetBootstrap())
 	candidateID := strings.TrimSpace(bootstrapRequest.CandidateGenerationID)
 	if candidateID == "" {
@@ -545,6 +551,29 @@ func (s *Server) acceptDestructiveResetOperation(req *agentapi.SubmitOperationRe
 		DestructiveResetRequest:     &resetRequest,
 		ResourceLocks:               locks,
 		NextAction:                  "queued for katlc agent executor",
+	}
+	created, err := s.Store.Create(record, "accepted", now)
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "create operation record: %v", err)
+	}
+	return created, nil, nil
+}
+
+func (s *Server) acceptEtcdMemberRemoveOperation(req *agentapi.SubmitOperationRequest, digest, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
+	remove := etcdMemberRemoveFromProto(req.GetEtcdMemberRemove())
+	record := operation.OperationRecord{
+		OperationID:             id,
+		OperationKind:           req.OperationKind,
+		Scope:                   operationScope(req.OperationKind),
+		ClientRequestID:         req.ClientRequestId,
+		Actor:                   req.Actor,
+		ExpectedMachineID:       req.ExpectedMachineId,
+		RequestDigest:           digest,
+		Phase:                   "accepted",
+		PhasePlan:               []string{"accepted", "preflight-etcd-member-remove", "remove-etcd-member", "verify-etcd-member-remove", operation.HostBookkeepingCompletionPhase},
+		EtcdMemberRemoveRequest: &remove,
+		ResourceLocks:           locks,
+		NextAction:              "queued for katlc agent executor",
 	}
 	created, err := s.Store.Create(record, "accepted", now)
 	if err != nil {
@@ -708,6 +737,9 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if req.GetKubeadmControlPlaneConfig() != nil {
 		bodyCount++
 	}
+	if req.GetEtcdMemberRemove() != nil {
+		bodyCount++
+	}
 	if bodyCount != 1 {
 		return status.Error(codes.InvalidArgument, "exactly one operation request body is required")
 	}
@@ -730,6 +762,10 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	} else if req.GetHostUpgrade() != nil {
 		if err := validateHostUpgradeRequest(req.OperationKind, req.GetHostUpgrade()); err != nil {
 			return status.Errorf(codes.InvalidArgument, "host upgrade request: %v", err)
+		}
+	} else if req.GetEtcdMemberRemove() != nil {
+		if err := validateEtcdMemberRemoveRequest(req.OperationKind, req.GetEtcdMemberRemove()); err != nil {
+			return status.Errorf(codes.InvalidArgument, "etcd member remove request: %v", err)
 		}
 	} else {
 		if err := validateBootstrapRequest(req.OperationKind, req.GetBootstrap()); err != nil {
@@ -1153,6 +1189,8 @@ func resourceLocks(kind string) []string {
 		return []string{"generation-state.lock", "kubeadm-state.lock", "destructive-reset.lock"}
 	case OperationKindHostUpgrade:
 		return []string{"generation-state.lock", "sysupdate.lock"}
+	case OperationKindEtcdMemberRemove:
+		return []string{"etcd-state.lock"}
 	default:
 		return nil
 	}
@@ -1172,6 +1210,8 @@ func operationScope(kind string) string {
 		return "destructive-reset"
 	case OperationKindHostUpgrade:
 		return "host-generation"
+	case OperationKindEtcdMemberRemove:
+		return "etcd-state"
 	default:
 		return "host-generation"
 	}
@@ -1297,6 +1337,7 @@ func bootstrapRequestFromProto(request *agentapi.BootstrapOperationRequest) oper
 		CandidateGenerationID:    strings.TrimSpace(request.CandidateGenerationId),
 		KubeadmInputDigest:       strings.TrimSpace(request.KubeadmInputDigest),
 		JoinMaterialRef:          strings.TrimSpace(request.JoinMaterialRef),
+		ExistingClusterJoin:      request.GetExistingClusterJoin(),
 	}
 }
 

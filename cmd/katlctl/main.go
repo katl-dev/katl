@@ -51,6 +51,7 @@ var (
 var runBootstrap = cluster.Run
 var runAgentBootstrap = cluster.RunAgentBootstrap
 var runAgentWorkerJoin = cluster.RunAgentWorkerJoin
+var runAgentNodeJoin = cluster.RunAgentNodeJoin
 var dialVMTestAgent = vmtest.DialAgent
 var dialKatlcAgent = dialKatlcAgentTCP
 var operatorKubectlRunner cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
@@ -112,6 +113,7 @@ Start with "katlctl install discover" for a waiting installer or
 	clusterCmd.AddCommand(newClusterStatusCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newClusterBootstrapCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newClusterApplyCommand(ctx, stdout, stderr))
+	clusterCmd.AddCommand(newEtcdCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newWipeClusterCommand(ctx, stdout, stderr, "katlctl cluster wipe"))
 	cmd.AddCommand(clusterCmd)
 
@@ -192,44 +194,47 @@ func rejectUnknownSubcommand(command *cobra.Command, args []string) error {
 
 func setMinimumInvocationExamples(root *cobra.Command) {
 	examples := map[string]string{
-		"katlctl":                     "katlctl install discover",
-		"katlctl version":             "katlctl version",
-		"katlctl cluster":             "katlctl cluster bootstrap --config cluster.yaml",
-		"katlctl cluster status":      "katlctl cluster status --config cluster.yaml",
-		"katlctl cluster apply":       "katlctl cluster apply --config cluster.yaml",
-		"katlctl context save":        "katlctl context save --config cluster.yaml",
-		"katlctl cluster bootstrap":   "katlctl cluster bootstrap --config cluster.yaml",
-		"katlctl cluster wipe":        "katlctl cluster wipe --config cluster.yaml --all",
-		"katlctl kubernetes":          "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
-		"katlctl kubernetes upgrade":  "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
-		"katlctl config":              "katlctl config validate cluster.yaml",
-		"katlctl config init":         "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
-		"katlctl config validate":     "katlctl config validate cluster.yaml",
-		"katlctl config schema":       "katlctl config schema",
-		"katlctl config bundle":       "katlctl config bundle cluster.yaml --output cluster.katlcfg",
-		"katlctl config render-node":  "katlctl config render-node --config cluster.yaml --node cp-1 --desired-version 1",
-		"katlctl context":             "katlctl context show",
-		"katlctl context path":        "katlctl context path",
-		"katlctl context list":        "katlctl context list",
-		"katlctl context current":     "katlctl context current",
-		"katlctl context use":         "katlctl context use homelab",
-		"katlctl context show":        "katlctl context show",
-		"katlctl install":             "katlctl install discover",
-		"katlctl install discover":    "katlctl install discover",
-		"katlctl install apply":       "katlctl install apply --config cluster.yaml",
-		"katlctl install status":      "katlctl install status",
-		"katlctl operations":          "katlctl operations list --config cluster.yaml --node cp-1",
-		"katlctl operations status":   "katlctl operations status OPERATION_ID --config cluster.yaml --node cp-1",
-		"katlctl operations list":     "katlctl operations list --config cluster.yaml --node cp-1",
-		"katlctl node":                "katlctl node status cp-1 --config cluster.yaml",
-		"katlctl node status":         "katlctl node status cp-1 --config cluster.yaml",
-		"katlctl node reboot":         "katlctl node reboot cp-1 --config cluster.yaml",
-		"katlctl node shutdown":       "katlctl node shutdown cp-1 --config cluster.yaml",
-		"katlctl node upgrade":        "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml",
-		"katlctl node apply":          "katlctl node apply cp-1 --config cluster.yaml",
-		"katlctl node apply validate": "katlctl node apply validate --config cluster.yaml --node cp-1",
-		"katlctl node apply status":   "katlctl node apply status --node cp-1",
-		"katlctl node wipe":           "katlctl node wipe worker-1 --config cluster.yaml --kubeconfig kubeconfig",
+		"katlctl":                      "katlctl install discover",
+		"katlctl version":              "katlctl version",
+		"katlctl cluster":              "katlctl cluster bootstrap --config cluster.yaml",
+		"katlctl cluster status":       "katlctl cluster status --config cluster.yaml",
+		"katlctl cluster apply":        "katlctl cluster apply --config cluster.yaml",
+		"katlctl cluster etcd":         "katlctl cluster etcd members --config cluster.yaml",
+		"katlctl cluster etcd members": "katlctl cluster etcd members --config cluster.yaml",
+		"katlctl cluster etcd remove":  "katlctl cluster etcd remove cp-3 --member-id MEMBER_ID --config cluster.yaml",
+		"katlctl context save":         "katlctl context save --config cluster.yaml",
+		"katlctl cluster bootstrap":    "katlctl cluster bootstrap --config cluster.yaml",
+		"katlctl cluster wipe":         "katlctl cluster wipe --config cluster.yaml --all",
+		"katlctl kubernetes":           "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
+		"katlctl kubernetes upgrade":   "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
+		"katlctl config":               "katlctl config validate cluster.yaml",
+		"katlctl config init":          "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
+		"katlctl config validate":      "katlctl config validate cluster.yaml",
+		"katlctl config schema":        "katlctl config schema",
+		"katlctl config bundle":        "katlctl config bundle cluster.yaml --output cluster.katlcfg",
+		"katlctl config render-node":   "katlctl config render-node --config cluster.yaml --node cp-1 --desired-version 1",
+		"katlctl context":              "katlctl context show",
+		"katlctl context path":         "katlctl context path",
+		"katlctl context list":         "katlctl context list",
+		"katlctl context current":      "katlctl context current",
+		"katlctl context use":          "katlctl context use homelab",
+		"katlctl context show":         "katlctl context show",
+		"katlctl install":              "katlctl install discover",
+		"katlctl install discover":     "katlctl install discover",
+		"katlctl install apply":        "katlctl install apply --config cluster.yaml",
+		"katlctl install status":       "katlctl install status",
+		"katlctl operations":           "katlctl operations list --config cluster.yaml --node cp-1",
+		"katlctl operations status":    "katlctl operations status OPERATION_ID --config cluster.yaml --node cp-1",
+		"katlctl operations list":      "katlctl operations list --config cluster.yaml --node cp-1",
+		"katlctl node":                 "katlctl node status cp-1 --config cluster.yaml",
+		"katlctl node status":          "katlctl node status cp-1 --config cluster.yaml",
+		"katlctl node reboot":          "katlctl node reboot cp-1 --config cluster.yaml",
+		"katlctl node shutdown":        "katlctl node shutdown cp-1 --config cluster.yaml",
+		"katlctl node upgrade":         "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml",
+		"katlctl node apply":           "katlctl node apply cp-1 --config cluster.yaml",
+		"katlctl node apply validate":  "katlctl node apply validate --config cluster.yaml --node cp-1",
+		"katlctl node apply status":    "katlctl node apply status --node cp-1",
+		"katlctl node wipe":            "katlctl node wipe worker-1 --config cluster.yaml --kubeconfig kubeconfig",
 	}
 	var visit func(*cobra.Command)
 	visit = func(command *cobra.Command) {
@@ -911,14 +916,25 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return err
 	}
 	notConfigured := strings.TrimSpace(statuses[target.Name].GetKubernetes().GetState()) == "not-configured"
+	var etcdPlan etcdRemovalPlan
 	if target.SystemRole == inventory.RoleControlPlane && !notConfigured {
-		report.KubernetesCleanup = "refused"
-		report.Nodes = append(report.Nodes, wipeClusterNodeResult{Node: target.Name, Result: "refused"})
-		report.Refusals = append(report.Refusals, "single enrolled control-plane wipe requires etcd membership coordination before node-local reset")
-		if printErr := printWipeNodeReport(stdout, report); printErr != nil {
-			return printErr
+		fullInventory, inventoryErr := wipeNodeInventory(opts)
+		if inventoryErr != nil {
+			return inventoryErr
 		}
-		return fmt.Errorf("single enrolled control-plane wipe requires etcd membership coordination")
+		etcdPlan, err = planEtcdRemoval(ctx, fullInventory, target.Name, "", "")
+		if err != nil {
+			report.EtcdCleanup = "refused"
+			report.Nodes = append(report.Nodes, wipeClusterNodeResult{Node: target.Name, Result: "refused"})
+			report.Refusals = append(report.Refusals, inventory.Redact(err.Error()))
+			if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+				return printErr
+			}
+			return fmt.Errorf("control-plane etcd cleanup preflight: %w", err)
+		}
+		report.EtcdCleanup = "planned"
+		report.EtcdCoordinator = etcdPlan.Coordinator.Name
+		report.EtcdMemberID = etcdPlan.Member.GetId()
 	}
 	if opts.planOnly {
 		if notConfigured {
@@ -941,7 +957,28 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 			}
 			return fmt.Errorf("--kubeconfig is required for an enrolled node")
 		}
-		cleanup := cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
+		cleanup := wipeNodeCleanupResult{Status: "succeeded"}
+		if target.SystemRole == inventory.RoleControlPlane {
+			cleanup = prepareWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
+			if err := submitEtcdRemoval(ctx, etcdPlan, waitTimeout, stderr, "katlctl node wipe"); err != nil {
+				report.EtcdCleanup = "recovery-required"
+				report.KubernetesCleanup = cleanup.Status
+				report.KubernetesDiagnostics = cleanup.Diagnostics
+				report.Refusals = append(report.Refusals, inventory.Redact(err.Error()))
+				if printErr := printWipeNodeReport(stdout, report); printErr != nil {
+					return printErr
+				}
+				return fmt.Errorf("control-plane etcd cleanup failed before node-local wipe: %w", err)
+			}
+			report.EtcdCleanup = "succeeded"
+			deleted := deleteWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target)
+			cleanup.Diagnostics = append(cleanup.Diagnostics, deleted.Diagnostics...)
+			if deleted.Status == "recovery-required" {
+				cleanup.Status = deleted.Status
+			}
+		} else {
+			cleanup = cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
+		}
 		report.KubernetesCleanup = cleanup.Status
 		report.KubernetesDiagnostics = cleanup.Diagnostics
 		if cleanup.Status == "recovery-required" {
@@ -960,6 +997,34 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return printErr
 	}
 	return submitErr
+}
+
+func wipeNodeInventory(opts wipeNodeOptions) (inventory.Inventory, error) {
+	if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != "" {
+		inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath)
+		if err != nil {
+			return inventory.Inventory{}, err
+		}
+		return overlayWipeContext(inv, opts.workstationConfig, opts.contextName)
+	}
+	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
+		ConfigPath:  strings.TrimSpace(opts.workstationConfig),
+		ContextName: strings.TrimSpace(opts.contextName),
+	})
+	if err != nil {
+		return inventory.Inventory{}, fmt.Errorf("resolve cluster from workstation context: %w", err)
+	}
+	inv := inventory.Inventory{}
+	for _, node := range topology.Nodes {
+		host, _, err := net.SplitHostPort(node.ManagementEndpoint)
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
+		}
+		inv.Nodes = append(inv.Nodes, inventory.Node{
+			Name: node.Name, Address: host, SystemRole: node.SystemRole, Access: inventory.Access{Method: "agent"},
+		})
+	}
+	return inv, nil
 }
 
 func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, error) {
@@ -1076,6 +1141,9 @@ type wipeClusterReport struct {
 type wipeNodeReport struct {
 	wipeClusterReport
 	KubernetesDiagnostics []string `json:"kubernetesDiagnostics,omitempty"`
+	EtcdCleanup           string   `json:"etcdCleanup,omitempty"`
+	EtcdCoordinator       string   `json:"etcdCoordinator,omitempty"`
+	EtcdMemberID          string   `json:"etcdMemberID,omitempty"`
 }
 
 type wipeClusterTarget struct {
@@ -1406,7 +1474,13 @@ func printWipeClusterReport(stdout io.Writer, report wipeClusterReport) error {
 
 func printWipeNodeReport(stdout io.Writer, report wipeNodeReport) error {
 	if report.Output == "text" {
-		return printWipeText(stdout, report.wipeClusterReport)
+		if err := printWipeText(stdout, report.wipeClusterReport); err != nil {
+			return err
+		}
+		if strings.TrimSpace(report.EtcdCleanup) != "" {
+			fmt.Fprintf(stdout, "etcd cleanup=%s coordinator=%s member=%s\n", report.EtcdCleanup, report.EtcdCoordinator, report.EtcdMemberID)
+		}
+		return nil
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -1510,6 +1584,42 @@ func cleanupWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node 
 	}
 	if len(result.Diagnostics) > 0 {
 		result.Status = "best-effort"
+	}
+	return result
+}
+
+func prepareWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node inventory.PlannedNode, timeout string) wipeNodeCleanupResult {
+	result := wipeNodeCleanupResult{Status: "succeeded"}
+	run := func(name string, args ...string) {
+		argv := append([]string{"kubectl", "--kubeconfig", kubeconfigPath}, args...)
+		output, err := operatorKubectlRunner.Run(ctx, argv)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, inventory.Redact(fmt.Sprintf("%s failed: %v", name, err)))
+		} else if output.ExitStatus != 0 {
+			result.Diagnostics = append(result.Diagnostics, inventory.Redact(fmt.Sprintf("%s failed: %s", name, strings.TrimSpace(output.Stderr))))
+		}
+	}
+	run("cordon node", "cordon", node.Name)
+	if strings.TrimSpace(timeout) == "" {
+		timeout = "10m"
+	}
+	run("drain node", "drain", node.Name, "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--timeout="+timeout)
+	if len(result.Diagnostics) > 0 {
+		result.Status = "best-effort"
+	}
+	return result
+}
+
+func deleteWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node inventory.PlannedNode) wipeNodeCleanupResult {
+	result := wipeNodeCleanupResult{Status: "succeeded"}
+	argv := []string{"kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", node.Name, "--ignore-not-found=true"}
+	output, err := operatorKubectlRunner.Run(ctx, argv)
+	if err != nil {
+		result.Status = "recovery-required"
+		result.Diagnostics = append(result.Diagnostics, inventory.Redact(fmt.Sprintf("delete node failed: %v", err)))
+	} else if output.ExitStatus != 0 {
+		result.Status = "recovery-required"
+		result.Diagnostics = append(result.Diagnostics, inventory.Redact(fmt.Sprintf("delete node failed: %s", strings.TrimSpace(output.Stderr))))
 	}
 	return result
 }

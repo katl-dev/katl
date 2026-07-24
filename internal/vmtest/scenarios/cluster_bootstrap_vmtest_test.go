@@ -29,6 +29,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/kubernetesrelease"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
@@ -2128,10 +2129,12 @@ func ensureKubernetesImageFixture(ctx context.Context, repo, kubernetesVersion s
 }
 
 func kubernetesImageReferences(kubernetesVersion string) ([]string, error) {
-	switch kubernetesVersion {
-	case "v1.36.0", "v1.36.1":
-	default:
-		return nil, fmt.Errorf("Kubernetes VM image fixtures do not define kubeadm images for %s", kubernetesVersion)
+	supported, err := kubernetesrelease.DefaultSupportedVersions()
+	if err != nil {
+		return nil, fmt.Errorf("load supported Kubernetes versions: %w", err)
+	}
+	if _, err := supported.Select(kubernetesVersion); err != nil {
+		return nil, fmt.Errorf("Kubernetes VM image fixtures do not define kubeadm images for %s: %w", kubernetesVersion, err)
 	}
 	return []string{
 		"registry.k8s.io/kube-apiserver:" + kubernetesVersion,
@@ -4365,7 +4368,12 @@ func TestTwoNodeHostToolPrereqsUseSelectedKubectl(t *testing.T) {
 }
 
 func TestKubernetesImageReferencesMatchSupportedKubeadmVersions(t *testing.T) {
-	for _, version := range []string{"v1.36.0", "v1.36.1"} {
+	supported, err := kubernetesrelease.DefaultSupportedVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, selected := range supported.Versions {
+		version := selected.PayloadVersion
 		images, err := kubernetesImageReferences(version)
 		if err != nil {
 			t.Fatalf("kubernetesImageReferences(%q) error = %v", version, err)

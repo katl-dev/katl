@@ -141,13 +141,18 @@ Graceful Kubernetes cleanup:
 - `katlctl` first attempts to cordon the Kubernetes Node.
 - It then attempts a bounded drain that evicts ordinary workload pods and ignores
   DaemonSet-managed pods. Mirror/static pods are not deleted through the API.
-- It deletes the Kubernetes Node object after drain attempts complete or time
-  out.
+- For a worker, it deletes the Kubernetes Node object after drain attempts
+  complete or time out.
 - A pre-bootstrap control-plane node can be reset without choosing an inventory
   init node, even when the topology contains multiple control planes.
-- A single enrolled control-plane wipe is refused before mutation because
-  stacked-etcd membership coordination is not yet implemented. Discarding the
-  whole cluster belongs to `katlctl cluster wipe`.
+- For an enrolled control plane, it selects a different healthy control plane,
+  captures the current cluster ID and membership, and requires the target name,
+  member ID, and configured peer URL to identify one member.
+- It refuses removal unless current quorum is healthy and the remaining healthy
+  members satisfy the resulting quorum. The coordinator cannot remove itself.
+- It drains first, executes the typed `etcd-member-remove` operation on the
+  coordinator, verifies the expected member disappeared from the same cluster,
+  and only then deletes the Kubernetes Node and triggers node-local reset.
 
 Node-local wipe trigger:
 
@@ -166,11 +171,12 @@ Node-local wipe trigger:
 
 Result:
 
-- Success leaves the wiped node powered off and ready for first
-  install/bootstrap again. Enrolled worker replacement also leaves the
-  remaining cluster without that Kubernetes Node.
-- The command does not automatically bootstrap the wiped node back into the
-  cluster. Rejoin is a later explicit install/bootstrap action.
+- Success leaves the wiped node powered off and ready for install again. The
+  remaining cluster has neither the Kubernetes Node nor, for a control plane,
+  the old etcd member.
+- Reinstall is followed by the normal whole-cluster `katlctl cluster apply`.
+  One fresh node is joined to the existing cluster without rerunning cluster
+  bootstrap.
 
 ## `katlctl cluster wipe`
 

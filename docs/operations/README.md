@@ -21,6 +21,7 @@ networks.
 | Installed node | Inspect or reboot one host | [Access installed nodes](access.md#routine-host-management) |
 | Installed or bootstrapped node | Change supported runtime configuration | [Apply node configuration](configure-nodes.md) |
 | Healthy installed node | Stage a new KatlOS release | [Upgrade a KatlOS host](upgrade-host.md) |
+| One control plane is being replaced | Preserve the healthy cluster and rejoin one fresh node | [Wipe and reinstall](wipe-reinstall.md#plan-one-node-replacement) |
 | Cluster is intentionally being discarded | Reset boot state and reinstall | [Wipe and reinstall](wipe-reinstall.md) |
 | A step failed or its state is unclear | Collect evidence and classify the failure | [Troubleshoot KatlOS](troubleshoot.md) |
 
@@ -79,6 +80,6 @@ the planner so they produce an explicit lifecycle action instead of being
 silently ignored. Disk policy and Kubernetes version selection use their named
 install or upgrade workflows.
 
-There is no supported beta workflow for automatic host fleet rollout, etcd
-disaster recovery, failed control-plane replacement, agent-token rotation, or
+There is no supported beta workflow for automatic host fleet rollout, loss of
+etcd quorum, snapshot-based etcd disaster recovery, agent-token rotation, or
 general cluster reconciliation.

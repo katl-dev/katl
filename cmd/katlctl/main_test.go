@@ -220,23 +220,25 @@ func TestPublicHelpHidesInternalOperationAndTestInputs(t *testing.T) {
 
 func TestConfigInputFlagsUseOneName(t *testing.T) {
 	want := map[string]bool{
-		"katlctl cluster apply":       true,
-		"katlctl cluster status":      true,
-		"katlctl context save":        true,
-		"katlctl cluster bootstrap":   true,
-		"katlctl cluster wipe":        true,
-		"katlctl config render-node":  true,
-		"katlctl install apply":       true,
-		"katlctl kubernetes upgrade":  true,
-		"katlctl operations list":     true,
-		"katlctl operations status":   true,
-		"katlctl node apply":          true,
-		"katlctl node apply validate": true,
-		"katlctl node reboot":         true,
-		"katlctl node shutdown":       true,
-		"katlctl node status":         true,
-		"katlctl node upgrade":        true,
-		"katlctl node wipe":           true,
+		"katlctl cluster apply":        true,
+		"katlctl cluster etcd members": true,
+		"katlctl cluster etcd remove":  true,
+		"katlctl cluster status":       true,
+		"katlctl context save":         true,
+		"katlctl cluster bootstrap":    true,
+		"katlctl cluster wipe":         true,
+		"katlctl config render-node":   true,
+		"katlctl install apply":        true,
+		"katlctl kubernetes upgrade":   true,
+		"katlctl operations list":      true,
+		"katlctl operations status":    true,
+		"katlctl node apply":           true,
+		"katlctl node apply validate":  true,
+		"katlctl node reboot":          true,
+		"katlctl node shutdown":        true,
+		"katlctl node status":          true,
+		"katlctl node upgrade":         true,
+		"katlctl node wipe":            true,
 	}
 	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
 	var visit func(*cobra.Command)
@@ -1798,7 +1800,7 @@ func TestWipeNodeReportsRecoveryRequiredBeforeLocalReset(t *testing.T) {
 	}
 }
 
-func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
+func TestWipeNodeRefusesControlPlaneWithoutSurvivingCoordinator(t *testing.T) {
 	inventoryPath := writeInventory(t)
 	client := readyWipeClusterClient("cp-machine")
 	client.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{State: "ready", Role: "control-plane"}
@@ -1825,14 +1827,14 @@ func TestWipeNodeRefusesControlPlaneBeforeMutation(t *testing.T) {
 		"--kubeconfig", "admin.conf",
 		"--client-request-id", "wipe-node-req",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "etcd membership coordination") {
-		t.Fatalf("run() error = %v, want etcd coordinator refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "no surviving control-plane") {
+		t.Fatalf("run() error = %v, want surviving coordinator refusal", err)
 	}
 	var report wipeNodeReport
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, stdout.String())
 	}
-	if report.KubernetesCleanup != "refused" || len(report.Refusals) != 1 {
+	if report.EtcdCleanup != "refused" || len(report.Refusals) != 1 {
 		t.Fatalf("report = %#v", report)
 	}
 	if len(kubectl.calls) != 0 {
@@ -2554,6 +2556,8 @@ type fakeKatlcAgentClient struct {
 	submitAccepted          *agentapi.OperationAccepted
 	nodeStatus              *agentapi.NodeStatus
 	nodeStatusErr           error
+	etcdStatus              *agentapi.EtcdStatus
+	etcdStatusErr           error
 	onGetNodeStatus         func()
 	generation              *agentapi.Generation
 	generationRequest       *agentapi.GetGenerationRequest
@@ -2641,6 +2645,10 @@ func (c *fakeKatlcAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeS
 		c.onGetNodeStatus()
 	}
 	return c.nodeStatus, c.nodeStatusErr
+}
+
+func (c *fakeKatlcAgentClient) GetEtcdStatus(context.Context, *agentapi.GetEtcdStatusRequest, ...grpc.CallOption) (*agentapi.EtcdStatus, error) {
+	return c.etcdStatus, c.etcdStatusErr
 }
 
 func (c *fakeKatlcAgentClient) Reboot(_ context.Context, req *agentapi.RebootRequest, _ ...grpc.CallOption) (*agentapi.RebootAccepted, error) {

@@ -68,17 +68,32 @@ Kubernetes Node first. If Kubernetes cleanup fails, Katl reports recovery
 required and refuses the node-local wipe.
 
 A control-plane node that has not joined Kubernetes can be reset without a
-kubeconfig or an init-node choice, including from a configuration containing
-multiple control planes:
+kubeconfig. For an enrolled control plane, Katl first drains the node, validates
+its exact stacked-etcd member against a healthy surviving control plane, proves
+that removal preserves quorum, removes and verifies the member, then deletes
+the Kubernetes Node before the node-local reset:
 
 ```sh
-katlctl node wipe cp-1 --config ./cluster.yaml --plan
-katlctl node wipe cp-1 --config ./cluster.yaml
+katlctl node wipe cp-3 --config ./cluster.yaml --plan
+katlctl node wipe cp-3 --config ./cluster.yaml \
+  --kubeconfig ./kubeconfig
 ```
 
-The report identifies the single control-plane target and says
-`kubernetesCleanup: not-needed`. A single enrolled control-plane wipe remains
-refused because supported etcd membership coordination is not implemented.
+The plan reports the coordinator and observed member ID. Katl refuses a missing
+or ambiguous member, a coordinator that would remove itself, changed cluster or
+member identity, or insufficient healthy quorum.
+
+If the node failed before a clean wipe, inspect membership from a survivor and
+explicitly confirm the stale member ID:
+
+```sh
+katlctl cluster etcd members --config ./cluster.yaml
+katlctl cluster etcd remove cp-3 --member-id MEMBER_ID \
+  --config ./cluster.yaml
+```
+
+This recovery command only removes etcd membership. Delete a remaining
+Kubernetes Node object if necessary, then reinstall the failed machine.
 
 ## Reinstall
 
@@ -87,9 +102,12 @@ After every selected wipe operation succeeds and powers off its node:
 1. select the verified installer ISO or PXE path and start the node;
 2. apply the intended `ClusterConfig` source and node selection;
 3. inspect the target disk again before authorizing installer wipe;
-4. complete generation 0 handoff; and
-5. treat the result as a new cluster identity unless a future supported
-   recovery operation explicitly says otherwise.
+4. wait for generation 0 handoff; and
+5. run `katlctl cluster apply --config ./cluster.yaml`.
 
-Do not claim preserved `/var/lib/etcd`, kubelet state, or Katl operation records
-as recovered merely because they remained on disk between reset and reinstall.
+For a single replacement in a healthy existing cluster, `cluster apply`
+recognizes the one fresh node, uses a ready surviving control plane to mint
+short-lived join material, joins the replacement without rerunning `kubeadm
+init`, and then reconciles the complete cluster config online. Repeating the
+unchanged apply after success is a no-op. Do not run `cluster bootstrap` again
+on the provisioned cluster.

@@ -96,6 +96,7 @@ type OperationRecord struct {
 	KubeadmUpgradeEvidence      *KubeadmUpgradeEvidence    `json:"kubeadmUpgradeEvidence,omitempty"`
 	DestructiveResetRequest     *DestructiveReset          `json:"destructiveResetRequest,omitempty"`
 	HostUpgradeRequest          *HostUpgrade               `json:"hostUpgradeRequest,omitempty"`
+	EtcdMemberRemoveRequest     *EtcdMemberRemove          `json:"etcdMemberRemoveRequest,omitempty"`
 	ActivationMode              string                     `json:"activationMode,omitempty"`
 	ActivationState             string                     `json:"activationState,omitempty"`
 	GenerationCommitState       string                     `json:"generationCommitState,omitempty"`
@@ -153,6 +154,7 @@ type BootstrapRequest struct {
 	JoinMaterialDigest             string `json:"joinMaterialDigest,omitempty"`
 	JoinMaterialExpiresAt          string `json:"joinMaterialExpiresAt,omitempty"`
 	TemporaryJoinConfigPath        string `json:"temporaryJoinConfigPath,omitempty"`
+	ExistingClusterJoin            bool   `json:"existingClusterJoin,omitempty"`
 }
 
 type ConfigApplyRequest struct {
@@ -244,6 +246,14 @@ type HostUpgrade struct {
 	ImageSHA256           string `json:"imageSHA256"`
 	ImageSizeBytes        uint64 `json:"imageSizeBytes,omitempty"`
 	CandidateGenerationID string `json:"candidateGenerationID"`
+}
+
+type EtcdMemberRemove struct {
+	TargetNodeName      string `json:"targetNodeName"`
+	TargetMemberID      string `json:"targetMemberID"`
+	TargetPeerURL       string `json:"targetPeerURL"`
+	ExpectedClusterID   string `json:"expectedClusterID"`
+	ExpectedMemberCount uint32 `json:"expectedMemberCount"`
 }
 
 type InvocationRecord struct {
@@ -817,6 +827,11 @@ func ValidateRecord(record OperationRecord) error {
 			return err
 		}
 	}
+	if record.EtcdMemberRemoveRequest != nil {
+		if err := ValidateEtcdMemberRemove(*record.EtcdMemberRemoveRequest); err != nil {
+			return err
+		}
+	}
 	if err := validateRequestBodyConsistency(record); err != nil {
 		return err
 	}
@@ -879,6 +894,9 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	if record.HostUpgradeRequest != nil {
 		bodyCount++
 	}
+	if record.EtcdMemberRemoveRequest != nil {
+		bodyCount++
+	}
 	if bodyCount > 1 {
 		return fmt.Errorf("operation record has multiple request bodies")
 	}
@@ -905,6 +923,12 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	}
 	if record.OperationKind == "host-upgrade" && record.HostUpgradeRequest == nil {
 		return fmt.Errorf("host-upgrade operation requires hostUpgradeRequest")
+	}
+	if record.EtcdMemberRemoveRequest != nil && record.OperationKind != "etcd-member-remove" {
+		return fmt.Errorf("operation kind %q cannot include etcdMemberRemoveRequest", record.OperationKind)
+	}
+	if record.OperationKind == "etcd-member-remove" && record.EtcdMemberRemoveRequest == nil {
+		return fmt.Errorf("etcd-member-remove operation requires etcdMemberRemoveRequest")
 	}
 	return nil
 }
@@ -977,6 +1001,9 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	}
 	if !hostUpgradeTransitionAllowed(previous.HostUpgradeRequest, next.HostUpgradeRequest) {
 		return fmt.Errorf("operation hostUpgradeRequest is immutable")
+	}
+	if !reflect.DeepEqual(next.EtcdMemberRemoveRequest, previous.EtcdMemberRemoveRequest) {
+		return fmt.Errorf("operation etcdMemberRemoveRequest is immutable")
 	}
 	return nil
 }
@@ -1161,6 +1188,10 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	if record.HostUpgradeRequest != nil {
 		request := *record.HostUpgradeRequest
 		record.HostUpgradeRequest = &request
+	}
+	if record.EtcdMemberRemoveRequest != nil {
+		request := *record.EtcdMemberRemoveRequest
+		record.EtcdMemberRemoveRequest = &request
 	}
 	if record.ExecutorPlan != nil {
 		plan := *record.ExecutorPlan
@@ -1962,6 +1993,32 @@ func ValidateHostUpgrade(request HostUpgrade) error {
 	}
 	if _, err := cleanSegment("hostUpgradeRequest candidateGenerationID", request.CandidateGenerationID); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ValidateEtcdMemberRemove(request EtcdMemberRemove) error {
+	if strings.TrimSpace(request.TargetNodeName) == "" {
+		return fmt.Errorf("etcdMemberRemoveRequest targetNodeName is required")
+	}
+	for name, value := range map[string]string{
+		"targetMemberID":    request.TargetMemberID,
+		"expectedClusterID": request.ExpectedClusterID,
+	} {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return fmt.Errorf("etcdMemberRemoveRequest %s is required", name)
+		}
+		if _, err := strconv.ParseUint(value, 16, 64); err != nil {
+			return fmt.Errorf("etcdMemberRemoveRequest %s must be a hexadecimal etcd ID", name)
+		}
+	}
+	peer, err := url.Parse(strings.TrimSpace(request.TargetPeerURL))
+	if err != nil || peer.Scheme != "https" || peer.Host == "" || peer.Path != "" || peer.RawQuery != "" || peer.Fragment != "" {
+		return fmt.Errorf("etcdMemberRemoveRequest targetPeerURL must be an HTTPS origin")
+	}
+	if request.ExpectedMemberCount < 2 {
+		return fmt.Errorf("etcdMemberRemoveRequest expectedMemberCount must be at least 2")
 	}
 	return nil
 }

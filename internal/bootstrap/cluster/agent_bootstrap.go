@@ -28,13 +28,14 @@ const (
 )
 
 type AgentBootstrapDependencies struct {
-	Connector       AgentConnector
-	Actor           string
-	WatchTimeout    time.Duration
-	PollInterval    time.Duration
-	OperationWait   time.Duration
-	BootstrapRunner BootstrapRunner
-	Progress        func(AgentBootstrapProgress)
+	Connector           AgentConnector
+	Actor               string
+	ExistingClusterJoin bool
+	WatchTimeout        time.Duration
+	PollInterval        time.Duration
+	OperationWait       time.Duration
+	BootstrapRunner     BootstrapRunner
+	Progress            func(AgentBootstrapProgress)
 }
 
 type AgentBootstrapProgress struct {
@@ -249,9 +250,10 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	return result, nil
 }
 
-// RunAgentWorkerJoin joins one fresh worker to an already initialized cluster.
+// RunAgentNodeJoin joins one fresh node to an already initialized cluster.
 // It deliberately does not run bootstrap-init or rewrite operator kubeconfig.
-func RunAgentWorkerJoin(ctx context.Context, request Request, workerName string, deps AgentBootstrapDependencies) (Result, error) {
+func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, deps AgentBootstrapDependencies) (Result, error) {
+	deps.ExistingClusterJoin = true
 	inv := request.Inventory
 	if strings.TrimSpace(request.ControlPlaneEndpoint) != "" {
 		inv.ControlPlaneEndpoint = strings.TrimSpace(request.ControlPlaneEndpoint)
@@ -287,28 +289,51 @@ func RunAgentWorkerJoin(ctx context.Context, request Request, workerName string,
 	if err != nil {
 		return result, err
 	}
-	var worker inventory.PlannedNode
-	for _, candidate := range workerNodes(plan) {
-		if candidate.Name == strings.TrimSpace(workerName) {
-			worker = candidate
+	var target inventory.PlannedNode
+	for _, candidate := range plan.Nodes {
+		if candidate.Name == strings.TrimSpace(nodeName) && candidate.Name != initNode.Name {
+			target = candidate
 			break
 		}
 	}
-	if worker.Name == "" {
-		return result, fmt.Errorf("worker %q is not a worker join target", workerName)
+	if target.Name == "" {
+		return result, fmt.Errorf("node %q is not a join target", nodeName)
 	}
-	material, err := createWorkerJoinMaterial(ctx, initNode, worker, statuses[initNode.Name], "existing-cluster", deps)
-	if err != nil {
-		result.addPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "failed")
-		return result, fmt.Errorf("worker join material for %s: %s", worker.Name, inventory.Redact(err.Error()))
+	switch target.Action {
+	case inventory.ActionControlPlaneJoin:
+		material, err := createJoinMaterial(ctx, initNode, target, statuses[initNode.Name], "existing-cluster", deps, "control-plane", joinDiscoveryOverride{})
+		if err != nil {
+			result.addPhase("control-plane-join", target.Name, target.Action, "failed")
+			return result, fmt.Errorf("control-plane join material for %s: %s", target.Name, inventory.Redact(err.Error()))
+		}
+		operationRef, err := submitAndWaitControlPlaneJoin(ctx, target, plan, statuses[target.Name], material, deps)
+		if err != nil {
+			result.addOperationPhase("control-plane-join", target.Name, target.Action, "failed", operationRef)
+			return result, fmt.Errorf("control-plane join operation on %s: %s", target.Name, inventory.Redact(err.Error()))
+		}
+		result.addOperationPhase("control-plane-join", target.Name, target.Action, "passed", operationRef)
+	case inventory.ActionWorkerJoin:
+		material, err := createWorkerJoinMaterial(ctx, initNode, target, statuses[initNode.Name], "existing-cluster", deps)
+		if err != nil {
+			result.addPhase("worker-join", target.Name, target.Action, "failed")
+			return result, fmt.Errorf("worker join material for %s: %s", target.Name, inventory.Redact(err.Error()))
+		}
+		operationRef, err := submitAndWaitWorkerJoin(ctx, target, plan, statuses[target.Name], material, deps)
+		if err != nil {
+			result.addOperationPhase("worker-join", target.Name, target.Action, "failed", operationRef)
+			return result, fmt.Errorf("worker join operation on %s: %s", target.Name, inventory.Redact(err.Error()))
+		}
+		result.addOperationPhase("worker-join", target.Name, target.Action, "passed", operationRef)
+	default:
+		return result, fmt.Errorf("node %q has unsupported join action %q", target.Name, target.Action)
 	}
-	operationRef, err := submitAndWaitWorkerJoin(ctx, worker, plan, statuses[worker.Name], material, deps)
-	if err != nil {
-		result.addOperationPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "failed", operationRef)
-		return result, fmt.Errorf("worker join operation on %s: %s", worker.Name, inventory.Redact(err.Error()))
-	}
-	result.addOperationPhase("worker-join", worker.Name, inventory.ActionWorkerJoin, "passed", operationRef)
 	return result, nil
+}
+
+// RunAgentWorkerJoin is retained for the hidden compatibility path used by
+// existing VM journeys. New lifecycle coordination uses RunAgentNodeJoin.
+func RunAgentWorkerJoin(ctx context.Context, request Request, workerName string, deps AgentBootstrapDependencies) (Result, error) {
+	return RunAgentNodeJoin(ctx, request, workerName, deps)
 }
 
 func validateAgentPlan(plan inventory.Plan) error {
@@ -612,6 +637,7 @@ func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, 
 			KubernetesBundleRef:      plan.KubernetesBundleRef,
 			BootstrapProfileRef:      bootstrapProfileRef(node),
 			ControlPlaneEndpoint:     plan.ControlPlaneEndpoint,
+			ExistingClusterJoin:      deps.ExistingClusterJoin,
 		},
 	}
 }

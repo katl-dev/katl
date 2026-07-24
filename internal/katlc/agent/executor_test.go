@@ -792,6 +792,46 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 	}
 }
 
+func TestExistingClusterControlPlaneJoinUsesHealthyStableEndpoint(t *testing.T) {
+	server := newTestServer(t)
+	seedBootstrapRuntimeRootForRole(t, server.Root, "control-plane")
+	writeManagedEndpointTestConfig(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "replacement control-plane Kubernetes sysext")
+	executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+	executor.RunEndpointLifecycle = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("existing-cluster join unexpectedly changed the healthy endpoint path")
+		return ToolResult{}
+	}
+	executor.RunTool = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+	server.Dispatcher = executor
+
+	req := submitRequest("req-existing-cluster-control-plane")
+	setSubmitRequestBundle(req, source, ref)
+	req.OperationKind = "bootstrap-join-control-plane"
+	req.Bootstrap.ExistingClusterJoin = true
+	req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != operation.ResultSucceeded || record.BootstrapRequest == nil || !record.BootstrapRequest.ExistingClusterJoin {
+		t.Fatalf("record = %+v, want successful existing-cluster join", record)
+	}
+	for _, phase := range []string{"suspend-managed-endpoint", "restore-managed-endpoint"} {
+		if contains(record.CompletedPhases, phase) {
+			t.Fatalf("existing-cluster completed phases = %v, unexpectedly includes %s", record.CompletedPhases, phase)
+		}
+	}
+}
+
 func TestSubmitOperationRejectsExpiredWorkerJoinMaterialBeforeMutation(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
