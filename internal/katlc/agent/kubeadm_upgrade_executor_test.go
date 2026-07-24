@@ -43,6 +43,8 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "/usr/bin/kubeadm version"):
 			return ToolResult{Stdout: []byte("v1.36.2\n")}
+		case strings.Contains(joined, "get endpoints kubernetes"):
+			return ToolResult{Stdout: []byte("10.0.0.1 10.0.0.2\n")}
 		case strings.Contains(joined, "kubelet --version"):
 			return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
 		default:
@@ -194,6 +196,9 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 				if strings.Contains(joined, "/usr/bin/kubeadm version") {
 					return ToolResult{Stdout: []byte("v1.36.2\n")}
 				}
+				if strings.Contains(joined, "get endpoints kubernetes") {
+					return ToolResult{Stdout: []byte("10.0.0.1 10.0.0.2\n")}
+				}
 				if strings.Contains(joined, "/usr/bin/killall") {
 					return ToolResult{ExitStatus: 1, Stderr: []byte("no process found")}
 				}
@@ -206,6 +211,9 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 			run: func(_ context.Context, argv []string, _ func(int)) ToolResult {
 				if strings.Contains(strings.Join(argv, " "), "/usr/bin/kubeadm version") {
 					return ToolResult{Stdout: []byte("v1.36.2\n")}
+				}
+				if strings.Contains(strings.Join(argv, " "), "get endpoints kubernetes") {
+					return ToolResult{Stdout: []byte("10.0.0.1 10.0.0.2\n")}
 				}
 				return ToolResult{}
 			},
@@ -243,6 +251,41 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExecutorKeepsSingleControlPlaneAvailableForKubeadm(t *testing.T) {
+	root, store, record, now := kubeadmUpgradeFixture(t, "control-plane")
+	executor := NewExecutor(root, store, "agent-test")
+	executor.Async = false
+	executor.Now = func() time.Time { return now.Add(time.Minute) }
+	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.WaitBeforeKubeadm = func(context.Context, time.Duration) error {
+		t.Fatal("single control plane waited for API connection drain")
+		return nil
+	}
+	var commands [][]string
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		commands = append(commands, append([]string(nil), argv...))
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/usr/bin/kubeadm version"):
+			return ToolResult{Stdout: []byte("v1.36.2\n")}
+		case strings.Contains(joined, "get endpoints kubernetes"):
+			return ToolResult{Stdout: []byte("10.0.0.1\n")}
+		case strings.Contains(joined, "kubelet --version"):
+			return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
+		default:
+			return ToolResult{}
+		}
+	}
+	if err := executor.Execute(context.Background(), record); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, command := range commands {
+		if strings.Contains(strings.Join(command, " "), "/usr/bin/killall") {
+			t.Fatalf("single control plane was terminated before kubeadm: %v", command)
+		}
 	}
 }
 

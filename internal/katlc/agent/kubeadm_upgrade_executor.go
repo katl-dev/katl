@@ -221,10 +221,21 @@ func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record ope
 	if _, err := e.Store.Update(record.OperationID, "apiserver-drain-start", "apiserver-drain-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "apiserver-drain-running"
 		current.UpdatedAt = e.clock()
-		current.NextAction = "gracefully close in-flight API connections before restarting stacked etcd"
+		current.NextAction = "inspect API endpoints before restarting stacked etcd"
 		return current, nil
 	}); err != nil {
 		return err
+	}
+	endpoints := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "default", "get", "endpoints", "kubernetes", "-o", "jsonpath={.subsets[*].addresses[*].ip}"}, nil)
+	if endpoints.Err != nil || endpoints.ExitStatus != 0 {
+		return e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %s", toolFailure(endpoints)), false)
+	}
+	unique := map[string]struct{}{}
+	for _, endpoint := range strings.Fields(string(endpoints.Stdout)) {
+		unique[endpoint] = struct{}{}
+	}
+	if len(unique) < 2 {
+		return e.completeKubeAPIServerDrain(record, "run kubeadm without draining the only API endpoint")
 	}
 	result := e.toolRunner()(ctx, []string{"/usr/bin/killall", "-s", "SIGTERM", "kube-apiserver"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
@@ -237,12 +248,16 @@ func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record ope
 	if err := wait(ctx, kubeAPIServerDrainDelay); err != nil {
 		return e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("wait for kube-apiserver connections to drain: %w", err), false)
 	}
+	return e.completeKubeAPIServerDrain(record, "run kubeadm after in-flight API connections have closed")
+}
+
+func (e *Executor) completeKubeAPIServerDrain(record operation.OperationRecord, nextAction string) error {
 	_, err := e.Store.Update(record.OperationID, "apiserver-drain-complete", "apiserver-drain-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "apiserver-drain-complete"
 		current.CompletedPhases = appendMissing(current.CompletedPhases, "apiserver-drain-running", "apiserver-drain-complete")
 		current.PhaseIndex = len(current.CompletedPhases)
 		current.UpdatedAt = e.clock()
-		current.NextAction = "run kubeadm after in-flight API connections have closed"
+		current.NextAction = nextAction
 		return current, nil
 	})
 	return err
