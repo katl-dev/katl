@@ -792,7 +792,7 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 	}
 }
 
-func TestExistingClusterControlPlaneJoinUsesHealthyStableEndpoint(t *testing.T) {
+func TestExistingClusterControlPlaneJoinPinsStableEndpointToCoordinator(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRootForRole(t, server.Root, "control-plane")
 	writeManagedEndpointTestConfig(t, server.Root)
@@ -800,13 +800,27 @@ func TestExistingClusterControlPlaneJoinUsesHealthyStableEndpoint(t *testing.T) 
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "replacement control-plane Kubernetes sysext")
+	var sequence []string
 	executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
-	executor.RunEndpointLifecycle = func(context.Context, []string, func(int)) ToolResult {
-		t.Fatal("existing-cluster join unexpectedly changed the healthy endpoint path")
+	executor.RunEndpointLifecycle = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		command := strings.Join(argv, " ")
+		if len(argv) > 0 && argv[0] == managedEndpointKubectl {
+			command = managedEndpointKubectl + " probe-stable-endpoint"
+		}
+		sequence = append(sequence, command)
+		if reflect.DeepEqual(argv, []string{managedEndpointIP, "-json", "route", "get", "10.0.0.11"}) {
+			return ToolResult{Stdout: []byte(`[{"dst":"10.0.0.11","dev":"enp1s0"}]`)}
+		}
 		return ToolResult{}
 	}
-	executor.RunTool = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
-	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+	executor.RunTool = func(context.Context, []string, func(int)) ToolResult {
+		sequence = append(sequence, "kubeadm")
+		return ToolResult{}
+	}
+	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult {
+		sequence = append(sequence, "post-health")
+		return ToolResult{}
+	}
 	server.Dispatcher = executor
 
 	req := submitRequest("req-existing-cluster-control-plane")
@@ -814,6 +828,7 @@ func TestExistingClusterControlPlaneJoinUsesHealthyStableEndpoint(t *testing.T) 
 	req.OperationKind = "bootstrap-join-control-plane"
 	req.Bootstrap.ExistingClusterJoin = true
 	req.Bootstrap.WorkerJoinMaterial = validControlPlaneJoinMaterial()
+	req.Bootstrap.WorkerJoinMaterial.DiscoveryKubeconfig = []byte("apiVersion: v1\nkind: Config\nclusters:\n  - name: katl-discovery\n    cluster:\n      server: https://10.0.0.11:6443\nusers:\n  - name: katl-bootstrap\n    user:\n      token: ephemeral\n")
 	accepted, err := server.SubmitOperation(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -824,6 +839,17 @@ func TestExistingClusterControlPlaneJoinUsesHealthyStableEndpoint(t *testing.T) 
 	}
 	if !record.Terminal || record.Result != operation.ResultSucceeded || record.BootstrapRequest == nil || !record.BootstrapRequest.ExistingClusterJoin {
 		t.Fatalf("record = %+v, want successful existing-cluster join", record)
+	}
+	want := []string{
+		managedEndpointIP + " -json route get 10.0.0.11",
+		managedEndpointIP + " route add 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
+		managedEndpointKubectl + " probe-stable-endpoint",
+		"kubeadm",
+		managedEndpointIP + " route del 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
+		"post-health",
+	}
+	if !reflect.DeepEqual(sequence, want) {
+		t.Fatalf("existing-cluster join sequence = %#v, want %#v", sequence, want)
 	}
 	for _, phase := range []string{"suspend-managed-endpoint", "restore-managed-endpoint"} {
 		if contains(record.CompletedPhases, phase) {

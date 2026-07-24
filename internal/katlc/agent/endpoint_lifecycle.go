@@ -82,19 +82,33 @@ func resumeManagedEndpoint(ctx context.Context, root string, run ToolRunner) err
 // suspendManagedEndpointForJoin keeps a joining control-plane node from
 // capturing stable-endpoint traffic before its local API server exists.
 func suspendManagedEndpointForJoin(ctx context.Context, root, discoveryPath string, run ToolRunner) (bool, *managedJoinRoute, error) {
-	endpoint, configured, err := managedJoinEndpointConfig(root)
+	configured, err := managedEndpointConfigured(root)
 	if err != nil || !configured {
 		return false, nil, err
-	}
-	if run == nil {
-		return false, nil, fmt.Errorf("endpoint lifecycle runner is not configured")
 	}
 	if _, err := pauseManagedEndpoint(ctx, root, run); err != nil {
 		return false, nil, err
 	}
+	route, err := pinManagedEndpointForJoin(ctx, root, discoveryPath, run)
+	if err != nil {
+		return false, nil, errors.Join(err, resumeManagedEndpoint(ctx, root, run))
+	}
+	return true, route, nil
+}
+
+// pinManagedEndpointForJoin keeps kubeadm's use of the stable endpoint on the
+// selected coordinator until the joining control plane has a healthy local API.
+func pinManagedEndpointForJoin(ctx context.Context, root, discoveryPath string, run ToolRunner) (*managedJoinRoute, error) {
+	endpoint, configured, err := managedJoinEndpointConfig(root)
+	if err != nil || !configured {
+		return nil, err
+	}
+	if run == nil {
+		return nil, fmt.Errorf("endpoint lifecycle runner is not configured")
+	}
 	route, err := installManagedJoinRoute(ctx, root, discoveryPath, endpoint, run)
 	if err != nil {
-		return false, nil, err
+		return nil, err
 	}
 	result := run(ctx, []string{
 		managedEndpointKubectl,
@@ -105,9 +119,9 @@ func suspendManagedEndpointForJoin(ctx context.Context, root, discoveryPath stri
 	}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		cleanupErr := removeManagedJoinRoute(ctx, route, run)
-		return false, nil, errors.Join(fmt.Errorf("verify managed control-plane endpoint through the join path: %s", toolFailure(result)), cleanupErr)
+		return nil, errors.Join(fmt.Errorf("verify managed control-plane endpoint through the join path: %s", toolFailure(result)), cleanupErr)
 	}
-	return true, route, nil
+	return route, nil
 }
 
 func installManagedJoinRoute(ctx context.Context, root, discoveryPath string, endpoint managedJoinEndpoint, run ToolRunner) (*managedJoinRoute, error) {
