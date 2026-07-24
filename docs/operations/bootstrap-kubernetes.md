@@ -92,6 +92,11 @@ katlctl cluster bootstrap --config ./cluster.yaml \
 Do not treat an arbitrary downloaded manifest as trusted merely because
 `katlctl` can apply it.
 
+Cilium requires one KatlOS-specific upstream Helm value because `/etc` belongs
+to the immutable host generation. Follow [Run Cilium on
+KatlOS](cilium.md) and set `sysctlfix.enabled=false`; do not make
+`/etc/sysctl.d` writable for its default init container.
+
 ## Verify Handoff
 
 ```sh
