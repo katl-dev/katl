@@ -53,7 +53,7 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 			status: &agentapi.NodeStatus{
 				Kubernetes: readyKubernetes,
 				ControlPlaneEndpoint: &agentapi.ControlPlaneEndpointStatus{
-					State: "advertised", LocalApiReady: true, RouteOriginated: true,
+					State: "advertised", LocalApiReady: true, LocalVipOwned: true, RouteOriginated: true,
 					RouteExchange: []*agentapi.ControlPlaneEndpointRouteExchangeStatus{{Name: "cilium", State: "passive"}},
 				},
 			},
@@ -64,7 +64,7 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 			status: &agentapi.NodeStatus{
 				Kubernetes: readyKubernetes,
 				ControlPlaneEndpoint: &agentapi.ControlPlaneEndpointStatus{
-					State: "advertised", LocalApiReady: true, RouteOriginated: true,
+					State: "advertised", LocalApiReady: true, LocalVipOwned: true, RouteOriginated: true,
 					RouteExchange: []*agentapi.ControlPlaneEndpointRouteExchangeStatus{{Name: "cilium", State: "established"}},
 				},
 			},
@@ -116,7 +116,7 @@ func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 			ControlPlaneComponentsReady: true,
 		}
 		fake.nodeStatus.ControlPlaneEndpoint = &agentapi.ControlPlaneEndpointStatus{
-			State: "advertised", LocalApiReady: true, RouteOriginated: true,
+			State: "advertised", LocalApiReady: true, LocalVipOwned: true, RouteOriginated: true,
 			RouteExchange: []*agentapi.ControlPlaneEndpointRouteExchangeStatus{{Name: "cilium", State: "established"}},
 		}
 	}

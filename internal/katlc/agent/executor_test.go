@@ -17,6 +17,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -524,6 +525,20 @@ func TestBootstrapReadinessReloadsSystemdAfterExtensionRefresh(t *testing.T) {
 	)
 }
 
+func TestPostKubeadmHealthRetriesControlPlaneKubectl(t *testing.T) {
+	tests := map[string]bool{
+		bootstrapplan.OperationKindInit:             true,
+		bootstrapplan.OperationKindJoinControlPlane: true,
+		OperationKindKubeadmControlPlaneConfig:      true,
+		bootstrapplan.OperationKindJoinWorker:       false,
+	}
+	for kind, want := range tests {
+		if got := retryPostKubeadmKubectl(kind); got != want {
+			t.Errorf("retryPostKubeadmKubectl(%q) = %t, want %t", kind, got, want)
+		}
+	}
+}
+
 func TestExecutorPostKubeadmHealthFailureRequiresRepair(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRoot(t, server.Root)
@@ -717,10 +732,9 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 	executor.RunTool = func(_ context.Context, _ []string, started func(int)) ToolResult {
 		wantPrefix := []string{
 			"readiness",
+			"systemctl stop " + endpointAdvertiserPathUnit,
 			"systemctl stop " + endpointAdvertiserUnit,
 			endpointAdvertiserCommand + " withdraw",
-			managedEndpointInterface + " down katl-api0",
-			managedEndpointIP + " address flush dev katl-api0 to 10.40.0.10/32",
 			managedEndpointIP + " -json route get 10.0.0.11",
 			managedEndpointIP + " route add 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
 			managedEndpointKubectl + " probe-stable-endpoint",
@@ -749,17 +763,15 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 	}
 	want := []string{
 		"readiness",
+		"systemctl stop " + endpointAdvertiserPathUnit,
 		"systemctl stop " + endpointAdvertiserUnit,
 		endpointAdvertiserCommand + " withdraw",
-		managedEndpointInterface + " down katl-api0",
-		managedEndpointIP + " address flush dev katl-api0 to 10.40.0.10/32",
 		managedEndpointIP + " -json route get 10.0.0.11",
 		managedEndpointIP + " route add 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
 		managedEndpointKubectl + " probe-stable-endpoint",
 		"kubeadm",
 		managedEndpointIP + " route del 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
-		managedEndpointInterface + " up katl-api0",
-		managedEndpointIP + " address replace 10.40.0.10/32 dev katl-api0",
+		"systemctl start " + endpointAdvertiserPathUnit,
 		"systemctl start " + endpointAdvertiserUnit,
 		"post-health",
 	}

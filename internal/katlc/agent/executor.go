@@ -978,7 +978,7 @@ func bootstrapReadinessCommands(candidate, configPath string) [][]string {
 
 func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started func(int)) ToolResult {
 	commands := postKubeadmHealthCommands(argv...)
-	retryKubectl := len(argv) > 0 && argv[0] == OperationKindKubeadmControlPlaneConfig
+	retryKubectl := len(argv) > 0 && retryPostKubeadmKubectl(argv[0])
 	var stdout, stderr bytes.Buffer
 	for _, argv := range commands {
 		result := runChildProcess(ctx, argv, started)
@@ -1001,6 +1001,17 @@ func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started fun
 		}
 	}
 	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
+}
+
+func retryPostKubeadmKubectl(kind string) bool {
+	switch kind {
+	case bootstrapplan.OperationKindInit,
+		bootstrapplan.OperationKindJoinControlPlane,
+		OperationKindKubeadmControlPlaneConfig:
+		return true
+	default:
+		return false
+	}
 }
 
 func postKubeadmHealthCommands(args ...string) [][]string {

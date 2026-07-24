@@ -17,11 +17,16 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
 	}
 	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
+	installerManifest := filepath.Join(repo, "_build", "mkosi", "katl-installer.manifest")
+	preserveFile(t, installerManifest)
 	mkosiArgs := filepath.Join(tmp, "mkosi-args.txt")
 	mkosiEnv := filepath.Join(tmp, "mkosi-env.txt")
 	goArgs := filepath.Join(tmp, "go-args.txt")
 	goEnv := filepath.Join(tmp, "go-env.txt")
-	writeFakeExecutable(t, bin, "mkosi", `printf '%s\n' "$@" > "$KATL_FAKE_MKOSI_ARGS"
+writeFakeExecutable(t, bin, "mkosi", `printf '%s\n' "$@" > "$KATL_FAKE_MKOSI_ARGS"
+cat > "$KATL_FAKE_INSTALLER_MANIFEST" <<'EOF'
+{"packages":[{"type":"rpm","name":"systemd","version":"0:259.6-1.fc44","architecture":"x86_64"}]}
+EOF
 {
   printf 'MKOSI_DNF=%s\n' "${MKOSI_DNF:-}"
   printf 'TMPDIR=%s\n' "${TMPDIR:-}"
@@ -34,15 +39,12 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
   printf 'GOMODCACHE=%s\n' "${GOMODCACHE:-}"
 } > "$KATL_FAKE_GO_ENV"
 `)
-	writeFakeExecutable(t, bin, "rpm", "printf 'systemd\\t0:259.6-1.fc44.x86_64\\n'\n")
 	for _, tool := range []string{"dnf5", "ukify", "xargs"} {
 		writeFakeExecutable(t, bin, tool, "exit 0\n")
 	}
 	for _, name := range []string{"katl-installer.iso", "katl-installer.iso.json", "katl-installer.iso.sha256"} {
 		preserveFile(t, filepath.Join(repo, "_build", "mkosi", name))
 	}
-	seedInstallerRPMCache(t, repo)
-
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer")
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
@@ -50,6 +52,7 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 		"KATL_CONTAINER_RUNTIME=direct",
 		"KATL_FAKE_MKOSI_ARGS="+mkosiArgs,
 		"KATL_FAKE_MKOSI_ENV="+mkosiEnv,
+		"KATL_FAKE_INSTALLER_MANIFEST="+installerManifest,
 		"KATL_FAKE_GO_ARGS="+goArgs,
 		"KATL_FAKE_GO_ENV="+goEnv,
 		"GOCACHE="+filepath.Join(tmp, "go-cache"),
@@ -68,7 +71,7 @@ func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
 		t.Fatalf("extra search path %q does not include fake tool dir %q", args[1], bin)
 	}
 	installerPackageSet := "KATL_INSTALLER_PACKAGE_SET=" + filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv")
-	for _, want := range []string{"--profile", "installer-image", "-f", "build", "--environment", installerPackageSet} {
+	for _, want := range []string{"--profile", "installer-image", "-f", "build", "--environment", installerPackageSet, "--manifest-format", "json"} {
 		if !containsString(args, want) {
 			t.Fatalf("mkosi args missing %q: %#v", want, args)
 		}

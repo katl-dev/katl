@@ -33,8 +33,11 @@ func TestControllerStartsWithdrawnThenAdvertisesAfterHealthy(t *testing.T) {
 	if status.AdvertisementState != AdvertisementAdvertised || status.Withdrawn {
 		t.Fatalf("status advertisement = %#v", status)
 	}
-	if status.HealthState != HealthHealthy || status.HealthTarget != "https://10.40.0.10:6443/readyz" {
+	if status.HealthState != HealthHealthy || status.HealthTarget != "https://127.0.0.1:6443/readyz" {
 		t.Fatalf("status health = %#v", status)
+	}
+	if !status.LocalVIPOwned {
+		t.Fatalf("advertised endpoint does not own its VIP: %#v", status)
 	}
 }
 
@@ -68,6 +71,9 @@ func TestControllerWithdrawsAfterHealthFailure(t *testing.T) {
 	}
 	if status.AdvertisementState != AdvertisementWithdrawn || !status.Withdrawn || status.WithdrawReason != "local-health-failed" {
 		t.Fatalf("status advertisement = %#v", status)
+	}
+	if status.LocalVIPOwned {
+		t.Fatalf("withdrawn endpoint still owns its VIP: %#v", status)
 	}
 	if strings.Contains(status.HealthFailure, "secret-token") || !strings.Contains(status.HealthFailure, "[REDACTED]") {
 		t.Fatalf("status leaked health failure: %#v", status.HealthFailure)
@@ -117,9 +123,7 @@ func TestControllerReportsUnavailableAPIAsHealthStateNotRuntimeFailure(t *testin
 
 func TestControllerRestartStartsWithdrawnBeforeAdvertising(t *testing.T) {
 	bird := &fakeBird{status: readyBirdStatus()}
-	controller := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
-	controller.started = true
-	controller.advertised = true
+	bird.status.RouteOriginated = true
 
 	restarted := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
 	if _, err := restarted.RunOnce(context.Background()); err != nil {
@@ -149,6 +153,9 @@ func TestControllerStopWithdrawsAndWritesDurableStatus(t *testing.T) {
 	}
 	if status.AdvertisementState != AdvertisementWithdrawn || status.WithdrawReason != "service-stop" {
 		t.Fatalf("stop status = %#v", status)
+	}
+	if status.LocalVIPOwned {
+		t.Fatalf("stopped endpoint still owns its VIP: %#v", status)
 	}
 	for _, path := range []string{live, operation} {
 		data, err := os.ReadFile(path)
@@ -200,13 +207,14 @@ func TestControllerStatusRedactsBirdFailuresAndPeerState(t *testing.T) {
 	}
 }
 
-func TestControllerReturnsAdvertisementFailureAndKeepsWithdrawn(t *testing.T) {
-	bird := &fakeBird{status: readyBirdStatus(), setErr: errors.New("birdc configure failed")}
+func TestControllerReturnsVIPAcquisitionFailureAndKeepsWithdrawn(t *testing.T) {
+	bird := &fakeBird{status: readyBirdStatus()}
 	controller := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
+	controller.Owner.(*fakeVIPOwner).acquireErr = errors.New("netlink acquire failed")
 	controller.Config.Health.SuccessThreshold = 1
 	status, err := controller.RunOnce(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "birdc configure failed") {
-		t.Fatalf("RunOnce() error = %v, want bird failure", err)
+	if err == nil || !strings.Contains(err.Error(), "netlink acquire failed") {
+		t.Fatalf("RunOnce() error = %v, want netlink failure", err)
 	}
 	if status.AdvertisementState != AdvertisementWithdrawn || !status.RecoveryRequired {
 		t.Fatalf("status = %#v", status)
@@ -220,7 +228,6 @@ func TestControllerRetriesWhileBirdControlSocketStarts(t *testing.T) {
 			FailureReason:  "dial /run/katl-bird/bird.ctl: no such file or directory",
 		},
 		statusErr: errors.New("query endpoint routing status: control socket unavailable"),
-		setErr:    errors.New("disable endpoint route: control socket unavailable"),
 	}
 	controller := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
 	controller.Config.Health.SuccessThreshold = 1
@@ -241,7 +248,6 @@ func TestControllerRetriesWhileBirdControlSocketStarts(t *testing.T) {
 
 	bird.status = readyBirdStatus()
 	bird.statusErr = nil
-	bird.setErr = nil
 	status, err = controller.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("ready RunOnce() error = %v", err)
@@ -254,7 +260,7 @@ func TestControllerRetriesWhileBirdControlSocketStarts(t *testing.T) {
 	}
 }
 
-func TestControllerFailsWhenAdvertisedRouteCannotBeWithdrawn(t *testing.T) {
+func TestControllerFailsWhenLocalVIPCannotBeReleased(t *testing.T) {
 	bird := &fakeBird{status: readyBirdStatus()}
 	controller := testController(bird, fakeHealth{result: HealthResult{Healthy: true, StatusCode: 200}})
 	controller.Config.Health.SuccessThreshold = 1
@@ -262,20 +268,17 @@ func TestControllerFailsWhenAdvertisedRouteCannotBeWithdrawn(t *testing.T) {
 		t.Fatalf("advertise RunOnce() error = %v", err)
 	}
 
-	bird.status = BirdRuntimeStatus{
-		ReadinessState: "not-ready",
-		FailureReason:  "dial /run/katl-bird/bird.ctl: connection refused",
-	}
-	bird.statusErr = errors.New("query endpoint routing status: control socket unavailable")
-	bird.setErr = errors.New("disable endpoint route: control socket unavailable")
+	controller.Owner.(*fakeVIPOwner).releaseErr = errors.New("netlink release failed")
+	controller.Health = fakeHealth{result: HealthResult{Healthy: false}}
+	controller.Config.Health.FailureThreshold = 1
 	status, err := controller.RunOnce(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "control socket unavailable") {
+	if err == nil || !strings.Contains(err.Error(), "netlink release failed") {
 		t.Fatalf("withdraw RunOnce() error = %v", err)
 	}
 	if !status.RecoveryRequired || status.FailureReason == "" {
 		t.Fatalf("withdraw status = %#v", status)
 	}
-	if got, want := bird.advertisements, []bool{false, true, false}; !reflect.DeepEqual(got, want) {
+	if got, want := bird.advertisements, []bool{false, true}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("withdraw advertisements = %#v, want %#v", got, want)
 	}
 }
@@ -297,6 +300,41 @@ func TestControllerWithdrawsWhenDependencyNotReady(t *testing.T) {
 	}
 	if status.VIPInterfaceReady || status.WithdrawReason != "dependency-not-ready" {
 		t.Fatalf("status = %#v", status)
+	}
+	if status.LocalVIPOwned {
+		t.Fatalf("dependency withdrawal retained local VIP: %#v", status)
+	}
+}
+
+func TestControllerRouteAdvertisementFollowsVIPOwnership(t *testing.T) {
+	var events []string
+	bird := &fakeBird{status: readyBirdStatus(), events: &events}
+	owner := &fakeVIPOwner{events: &events, bird: bird}
+	health := &sequenceHealth{results: []HealthResult{
+		{Healthy: true, StatusCode: 200},
+		{Healthy: true, StatusCode: 200},
+		{Healthy: false},
+	}}
+	controller := testController(bird, health)
+	controller.Owner = owner
+	controller.Config.Health.SuccessThreshold = 2
+	controller.Config.Health.FailureThreshold = 1
+
+	for range health.results {
+		if _, err := controller.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce() error = %v", err)
+		}
+	}
+	want := []string{
+		"vip-release",
+		"route-withdraw",
+		"vip-acquire",
+		"route-advertise",
+		"vip-release",
+		"route-withdraw",
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
 	}
 }
 
@@ -323,6 +361,7 @@ func testController(bird *fakeBird, health HealthChecker) *Controller {
 		AppPayloadVersion: "bgp-api-vip-v0.1.0",
 		Bird:              bird,
 		Health:            health,
+		Owner:             &fakeVIPOwner{bird: bird},
 		Clock: func() time.Time {
 			return time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
 		},
@@ -350,17 +389,24 @@ func readyBirdStatus() BirdRuntimeStatus {
 type fakeBird struct {
 	status         BirdRuntimeStatus
 	statusErr      error
-	setErr         error
 	advertisements []bool
+	events         *[]string
 }
 
 func (b *fakeBird) Status(context.Context) (BirdRuntimeStatus, error) {
 	return b.status, b.statusErr
 }
 
-func (b *fakeBird) SetAdvertisement(_ context.Context, enabled bool) error {
+func (b *fakeBird) observeVIP(enabled bool) {
 	b.advertisements = append(b.advertisements, enabled)
-	return b.setErr
+	b.status.RouteOriginated = enabled
+	if b.events != nil {
+		event := "route-withdraw"
+		if enabled {
+			event = "route-advertise"
+		}
+		*b.events = append(*b.events, event)
+	}
 }
 
 type fakeHealth struct {
@@ -388,6 +434,40 @@ func (h *sequenceHealth) Check(context.Context, Health) HealthResult {
 type fakeInterface struct {
 	ready bool
 	err   error
+}
+
+type fakeVIPOwner struct {
+	owned      bool
+	err        error
+	acquireErr error
+	releaseErr error
+	events     *[]string
+	bird       *fakeBird
+}
+
+func (o *fakeVIPOwner) Owned(context.Context, Config) (bool, error) {
+	return o.owned, o.err
+}
+
+func (o *fakeVIPOwner) SetOwned(_ context.Context, _ Config, owned bool) error {
+	if o.events != nil {
+		event := "vip-release"
+		if owned {
+			event = "vip-acquire"
+		}
+		*o.events = append(*o.events, event)
+	}
+	if owned && o.acquireErr != nil {
+		return o.acquireErr
+	}
+	if !owned && o.releaseErr != nil {
+		return o.releaseErr
+	}
+	o.owned = owned
+	if o.bird != nil {
+		o.bird.observeVIP(owned)
+	}
+	return nil
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

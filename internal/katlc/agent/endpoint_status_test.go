@@ -18,6 +18,7 @@ func TestControlPlaneEndpointStatusReportsBoundedProductState(t *testing.T) {
 		EndpointPort:                6443,
 		VIPPrefix:                   "10.40.0.10/32",
 		VIPInterfaceReady:           true,
+		LocalVIPOwned:               true,
 		HealthState:                 bgpapivip.HealthHealthy,
 		AdvertisementState:          bgpapivip.AdvertisementAdvertised,
 		BirdProcessActive:           true,
@@ -39,7 +40,7 @@ func TestControlPlaneEndpointStatusReportsBoundedProductState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.GetEndpoint() != "api.home.example:6443" || status.GetVip() != "10.40.0.10/32" || status.GetState() != "advertised" || !status.GetLocalApiReady() || !status.GetRouteOriginated() {
+	if status.GetEndpoint() != "api.home.example:6443" || status.GetVip() != "10.40.0.10/32" || status.GetState() != "advertised" || !status.GetLocalApiReady() || !status.GetLocalVipOwned() || !status.GetRouteOriginated() {
 		t.Fatalf("endpoint status = %#v", status)
 	}
 	if status.GetSelectedSourceAddress() != "10.0.0.11" || status.GetRouterId() != "10.0.0.11" || status.GetLastTransitionTime() != "2026-07-19T12:00:00Z" {

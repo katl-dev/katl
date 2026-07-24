@@ -46,7 +46,9 @@ func TestFromControlPlaneEndpointRendersManagedPolicy(t *testing.T) {
 	bird := fileContent(t, plan.Files, BirdConfigPath)
 	for _, want := range []string{
 		"router id from \"*\";",
-		"protocol static katl_api {\n  disabled;",
+		"protocol direct katl_api {",
+		"interface \"katl-api\";",
+		"if source = RTS_DEVICE && net = 10.40.0.10/32 then accept;",
 		"local 127.0.0.1 port 179 as 64512;",
 		"neighbor 127.0.0.1 as 64512;",
 		"if net ~ [ 10.50.0.0/16{32,32} ] then accept;",
@@ -118,7 +120,8 @@ func TestRenderNativeEtcFilesMinimalIPv4DummyVIP(t *testing.T) {
 	assertFile(t, plan.Files, ConfigPath, "kind: BGPAPIEndpoint\n")
 	assertFile(t, plan.Files, AdvertisementEnabledPath, "enabled\n")
 	assertFile(t, plan.Files, DummyNetDevPath, "Name=katl-api0\nKind=dummy\n")
-	assertFile(t, plan.Files, NetworkPath, "Address=10.40.0.10/32\n")
+	assertFile(t, plan.Files, NetworkPath, "[Network]\nMTUBytes=1500\n")
+	assertFileAbsent(t, plan.Files, NetworkPath, "Address=")
 	if filepath.Base(NetworkPath) >= "10-lan.network" {
 		t.Fatalf("managed VIP network file %q must take precedence over Katl's default DHCP match", NetworkPath)
 	}
@@ -132,6 +135,7 @@ func TestRenderNativeEtcFilesMinimalIPv4DummyVIP(t *testing.T) {
 		t.Fatalf("normalized endpoint = %#v", plan.Config.Endpoint)
 	}
 	if plan.Config.Health.Path != "/readyz" ||
+		plan.Config.Health.Host != "127.0.0.1" ||
 		plan.Config.Health.Timeout != defaultHealthTimeout ||
 		plan.Config.Health.FailureThreshold != 3 ||
 		plan.Config.Health.TLSServerName != "api.home.example" {
@@ -182,10 +186,8 @@ func TestRenderStartsWithdrawnByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNativeEtcFiles() error = %v", err)
 	}
-	bird := fileContent(t, plan.Files, BirdConfigPath)
-	if !strings.Contains(bird, "protocol static katl_api {\n  disabled;\n") {
-		t.Fatalf("bird.conf did not start withdrawn:\n%s", bird)
-	}
+	assertFileAbsent(t, plan.Files, NetworkPath, "Address=")
+	assertFile(t, plan.Files, BirdConfigPath, "protocol direct katl_api {\n")
 	if !*plan.Config.Advertisement.StartWithdrawn || !*plan.Config.Advertisement.AdvertiseAfterHealthy || !*plan.Config.Advertisement.WithdrawOnFailure {
 		t.Fatalf("advertisement defaults = %#v", plan.Config.Advertisement)
 	}
@@ -207,6 +209,9 @@ func TestRenderIPv6LoopbackVIP(t *testing.T) {
 	assertNoFile(t, plan.Files, DummyNetDevPath)
 	assertFile(t, plan.Files, NetworkPath, "Name=lo\n")
 	assertFile(t, plan.Files, BirdConfigPath, "  ipv6 {\n")
+	if plan.Config.Health.Host != "::1" || healthTarget(plan.Config.Health) != "https://[::1]:6443/readyz" {
+		t.Fatalf("IPv6 local health = %#v target=%q", plan.Config.Health, healthTarget(plan.Config.Health))
+	}
 }
 
 func TestRenderAllowsMultipleControlPlanesToAdvertiseSameVIP(t *testing.T) {
@@ -315,6 +320,13 @@ func TestNormalizeRejectsUnsafeInputs(t *testing.T) {
 			want: "advertiseOn.roles[0] must be control-plane",
 		},
 		{
+			name: "VIP health target",
+			mutate: func(config *Config) {
+				config.Health.Host = "10.40.0.10"
+			},
+			want: "health.host must be the local loopback address",
+		},
+		{
 			name: "vip as source",
 			mutate: func(config *Config) {
 				config.Routing.SourceAddress = "10.40.0.10"
@@ -384,6 +396,14 @@ func assertFile(t *testing.T, files []confext.NativeEtcFile, path, contains stri
 	content := fileContent(t, files, path)
 	if !strings.Contains(content, contains) {
 		t.Fatalf("%s missing %q:\n%s", path, contains, content)
+	}
+}
+
+func assertFileAbsent(t *testing.T, files []confext.NativeEtcFile, path, contains string) {
+	t.Helper()
+	content := fileContent(t, files, path)
+	if strings.Contains(content, contains) {
+		t.Fatalf("%s unexpectedly contains %q:\n%s", path, contains, content)
 	}
 }
 

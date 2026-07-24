@@ -60,6 +60,7 @@ message ControlPlaneEndpointStatus {
   repeated ControlPlaneEndpointRouteExchangeStatus route_exchange = 9;
   string last_transition_time = 10;
   string failure_reason = 11;
+  bool local_vip_owned = 12;
 }
 
 message ControlPlaneEndpointPeerStatus {

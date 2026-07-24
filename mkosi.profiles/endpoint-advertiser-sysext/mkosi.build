@@ -32,6 +32,7 @@ go build \
 
 install -m 0644 \
     "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-bird.service" \
+    "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.path" \
     "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.service" \
     "$DESTDIR/usr/lib/systemd/system/"
 

@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +34,6 @@ const (
 
 type BirdClient interface {
 	Status(context.Context) (BirdRuntimeStatus, error)
-	SetAdvertisement(context.Context, bool) error
 }
 
 type HealthChecker interface {
@@ -41,6 +42,11 @@ type HealthChecker interface {
 
 type InterfaceChecker interface {
 	Ready(context.Context, Config) (bool, error)
+}
+
+type VIPOwner interface {
+	Owned(context.Context, Config) (bool, error)
+	SetOwned(context.Context, Config, bool) error
 }
 
 type StatusWriter interface {
@@ -54,11 +60,13 @@ type Controller struct {
 	Bird              BirdClient
 	Health            HealthChecker
 	Interface         InterfaceChecker
+	Owner             VIPOwner
 	Writer            StatusWriter
 	Clock             func() time.Time
 
 	started           bool
-	advertised        bool
+	routeOriginated   bool
+	routeInitialized  bool
 	lastAdvertisement time.Time
 	lastHealth        time.Time
 	successCount      int
@@ -73,6 +81,7 @@ type BirdRuntimeStatus struct {
 	RouterID           string
 	Peers              []PeerRuntimeStatus
 	FailureReason      string
+	RouteOriginated    bool
 }
 
 type PeerRuntimeStatus struct {
@@ -107,6 +116,7 @@ type Status struct {
 	VIPInterfaceName            string              `json:"vipInterfaceName"`
 	VIPInterfaceKind            string              `json:"vipInterfaceKind"`
 	VIPInterfaceReady           bool                `json:"vipInterfaceReady"`
+	LocalVIPOwned               bool                `json:"localVIPOwned"`
 	NodeRoleSelected            bool                `json:"nodeRoleSelected"`
 	AdvertiseOnRoles            []string            `json:"advertiseOnRoles"`
 	HealthState                 string              `json:"healthState"`
@@ -154,34 +164,31 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 	if c.Bird == nil {
 		return Status{}, fmt.Errorf("bird client is required")
 	}
+	if c.Owner == nil {
+		return Status{}, fmt.Errorf("VIP owner is required")
+	}
 	if c.Health == nil {
 		c.Health = HTTPHealthChecker{}
 	}
 	now := c.now()
 	var failure string
-	var startWithdrawFailure string
+	var startReleaseFailure string
 	if !c.started {
-		if err := c.Bird.SetAdvertisement(ctx, false); err != nil {
-			startWithdrawFailure = "start withdrawn: " + inventory.Redact(err.Error())
+		if err := c.Owner.SetOwned(ctx, config, false); err != nil {
+			startReleaseFailure = "start without local VIP: " + inventory.Redact(err.Error())
 		}
 		c.started = true
-		c.advertised = false
-		c.lastAdvertisement = now
 	}
 
-	bird, err := c.Bird.Status(ctx)
+	bird, birdErr := c.Bird.Status(ctx)
 	birdReady := bird.ProcessActive && bird.ControlSocketReady
-	// The generated BIRD configuration starts the API route disabled. While the
-	// controller has never advertised it, an unavailable startup socket is a
-	// safe dependency-wait state that can be retried. Once BIRD is ready, a
-	// failed explicit withdrawal is a real controller failure.
-	if startWithdrawFailure != "" && birdReady {
-		failure = startWithdrawFailure
+	if startReleaseFailure != "" && failure == "" {
+		failure = startReleaseFailure
 	}
-	if err != nil && (c.advertised || birdReady) && failure == "" {
-		failure = inventory.Redact(err.Error())
+	if birdErr != nil && (bird.RouteOriginated || birdReady) && failure == "" {
+		failure = inventory.Redact(birdErr.Error())
 	}
-	if bird.FailureReason != "" && (c.advertised || birdReady) && failure == "" {
+	if bird.FailureReason != "" && (bird.RouteOriginated || birdReady) && failure == "" {
 		failure = inventory.Redact(bird.FailureReason)
 	}
 	interfaceReady := true
@@ -192,13 +199,18 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 			failure = inventory.Redact(err.Error())
 		}
 	}
+	localVIPOwned, ownerErr := c.Owner.Owned(ctx, config)
+	ownerReady := ownerErr == nil
+	if ownerErr != nil && failure == "" {
+		failure = inventory.Redact(ownerErr.Error())
+	}
 	health := c.Health.Check(ctx, config.Health)
 	if health.CheckedAt.IsZero() {
 		health.CheckedAt = now
 	}
 	c.lastHealth = health.CheckedAt.UTC()
 
-	dependenciesReady := bird.ProcessActive && bird.ControlSocketReady && interfaceReady
+	dependenciesReady := birdErr == nil && bird.FailureReason == "" && bird.ProcessActive && bird.ControlSocketReady && interfaceReady && ownerReady
 	if health.Healthy && dependenciesReady {
 		c.successCount++
 		c.failureCount = 0
@@ -208,32 +220,45 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 	}
 	healthAllowsAdvertise := c.successCount >= config.Health.SuccessThreshold
 	healthRequiresWithdraw := c.failureCount >= config.Health.FailureThreshold
-	desiredAdvertised := c.advertised
+	desiredOwned := localVIPOwned
 	withdrawReason := ""
 	switch {
 	case !dependenciesReady:
-		desiredAdvertised = false
+		desiredOwned = false
 		withdrawReason = "dependency-not-ready"
 	case !*config.Advertisement.Enabled:
-		desiredAdvertised = false
+		desiredOwned = false
 		withdrawReason = "advertisement-disabled"
 	case healthAllowsAdvertise:
-		desiredAdvertised = true
+		desiredOwned = true
 	case healthRequiresWithdraw:
-		desiredAdvertised = false
+		desiredOwned = false
 		withdrawReason = "local-health-failed"
-	case !c.advertised:
+	case !localVIPOwned:
 		withdrawReason = "waiting-for-health-threshold"
 	}
-	if desiredAdvertised != c.advertised {
-		if err := c.Bird.SetAdvertisement(ctx, desiredAdvertised); err != nil {
-			failure = inventory.Redact(err.Error())
+	if desiredOwned != localVIPOwned {
+		if err := c.Owner.SetOwned(ctx, config, desiredOwned); err != nil {
+			if failure == "" {
+				failure = inventory.Redact(err.Error())
+			}
 		} else {
-			c.advertised = desiredAdvertised
-			c.lastAdvertisement = now
+			localVIPOwned = desiredOwned
+			refreshed, refreshErr := c.Bird.Status(ctx)
+			if refreshErr != nil {
+				if failure == "" {
+					failure = inventory.Redact(refreshErr.Error())
+				}
+			} else {
+				bird = refreshed
+			}
 		}
 	}
-	status := c.status(config, health, bird, interfaceReady, withdrawReason, failure, now)
+	c.observeRouteTransition(bird.RouteOriginated, now)
+	if localVIPOwned && !bird.RouteOriginated && withdrawReason == "" {
+		withdrawReason = "waiting-for-route-advertisement"
+	}
+	status := c.status(config, health, bird, interfaceReady, localVIPOwned, withdrawReason, failure, now)
 	if err := c.write(ctx, status); err != nil {
 		return status, err
 	}
@@ -252,20 +277,32 @@ func (c *Controller) Stop(ctx context.Context) (Status, error) {
 	if c.Bird == nil {
 		return Status{}, fmt.Errorf("bird client is required")
 	}
+	if c.Owner == nil {
+		return Status{}, fmt.Errorf("VIP owner is required")
+	}
 	now := c.now()
 	failure := ""
-	if err := c.Bird.SetAdvertisement(ctx, false); err != nil {
-		failure = inventory.Redact(err.Error())
-	}
 	c.started = true
-	c.advertised = false
-	c.lastAdvertisement = now
+	localVIPOwned, ownerErr := c.Owner.Owned(ctx, config)
+	if ownerErr != nil && failure == "" {
+		failure = inventory.Redact(ownerErr.Error())
+	}
+	if localVIPOwned {
+		if err := c.Owner.SetOwned(ctx, config, false); err != nil {
+			if failure == "" {
+				failure = inventory.Redact(err.Error())
+			}
+		} else {
+			localVIPOwned = false
+		}
+	}
 	bird, err := c.Bird.Status(ctx)
 	if err != nil && failure == "" {
 		failure = inventory.Redact(err.Error())
 	}
+	c.observeRouteTransition(bird.RouteOriginated, now)
 	health := HealthResult{Healthy: false, CheckedAt: now}
-	status := c.status(config, health, bird, true, "service-stop", failure, now)
+	status := c.status(config, health, bird, true, localVIPOwned, "service-stop", failure, now)
 	if err := c.write(ctx, status); err != nil {
 		return status, err
 	}
@@ -273,6 +310,14 @@ func (c *Controller) Stop(ctx context.Context) (Status, error) {
 		return status, fmt.Errorf("%s", failure)
 	}
 	return status, nil
+}
+
+func (c *Controller) observeRouteTransition(originated bool, now time.Time) {
+	if !c.routeInitialized || c.routeOriginated != originated {
+		c.routeOriginated = originated
+		c.routeInitialized = true
+		c.lastAdvertisement = now
+	}
 }
 
 func (h HTTPHealthChecker) Check(ctx context.Context, health Health) HealthResult {
@@ -372,7 +417,7 @@ func DecodeStatus(reader io.Reader) (Status, error) {
 	return status, nil
 }
 
-func (c *Controller) status(config Config, health HealthResult, bird BirdRuntimeStatus, interfaceReady bool, withdrawReason string, failure string, now time.Time) Status {
+func (c *Controller) status(config Config, health HealthResult, bird BirdRuntimeStatus, interfaceReady bool, localVIPOwned bool, withdrawReason string, failure string, now time.Time) Status {
 	healthState := HealthUnhealthy
 	if health.Healthy {
 		healthState = HealthHealthy
@@ -380,7 +425,7 @@ func (c *Controller) status(config Config, health HealthResult, bird BirdRuntime
 		healthState = HealthUnknown
 	}
 	advertisement := AdvertisementWithdrawn
-	if c.advertised {
+	if bird.RouteOriginated {
 		advertisement = AdvertisementAdvertised
 		withdrawReason = ""
 	}
@@ -397,6 +442,7 @@ func (c *Controller) status(config Config, health HealthResult, bird BirdRuntime
 		VIPInterfaceName:            config.VIPInterface.Name,
 		VIPInterfaceKind:            config.VIPInterface.Kind,
 		VIPInterfaceReady:           interfaceReady,
+		LocalVIPOwned:               localVIPOwned,
 		NodeRoleSelected:            true,
 		AdvertiseOnRoles:            append([]string(nil), config.AdvertiseOn.Roles...),
 		HealthState:                 healthState,
@@ -405,7 +451,7 @@ func (c *Controller) status(config Config, health HealthResult, bird BirdRuntime
 		HealthFailure:               inventory.Redact(health.Error),
 		LastHealthTransition:        formatTime(c.lastHealth),
 		AdvertisementState:          advertisement,
-		Withdrawn:                   !c.advertised,
+		Withdrawn:                   !bird.RouteOriginated,
 		WithdrawReason:              withdrawReason,
 		LastAdvertisementTransition: formatTime(c.lastAdvertisement),
 		BirdProcessActive:           bird.ProcessActive,
@@ -449,7 +495,7 @@ func redactPeers(peers []PeerRuntimeStatus) []PeerRuntimeStatus {
 }
 
 func healthTarget(health Health) string {
-	return fmt.Sprintf("%s://%s:%d%s", health.Scheme, health.Host, health.Port, health.Path)
+	return fmt.Sprintf("%s://%s%s", health.Scheme, net.JoinHostPort(health.Host, strconv.Itoa(health.Port)), health.Path)
 }
 
 func digestString(value string) string {

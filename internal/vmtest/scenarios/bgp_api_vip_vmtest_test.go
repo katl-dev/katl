@@ -58,6 +58,12 @@ type bgpAPIVIPInputs struct {
 	ControlPlaneMetadata   string                        `json:"controlPlaneMetadata"`
 	ControlPlaneAddress    string                        `json:"controlPlaneAddress"`
 	ControlPlaneMAC        string                        `json:"controlPlaneMAC"`
+	ControlPlane2Disk      string                        `json:"controlPlane2Disk"`
+	ControlPlane2ESP       string                        `json:"controlPlane2ESP"`
+	ControlPlane2Fixture   string                        `json:"controlPlane2Fixture"`
+	ControlPlane2Metadata  string                        `json:"controlPlane2Metadata"`
+	ControlPlane2Address   string                        `json:"controlPlane2Address"`
+	ControlPlane2MAC       string                        `json:"controlPlane2MAC"`
 	WorkerDisk             string                        `json:"workerDisk"`
 	WorkerDiskFormat       string                        `json:"workerDiskFormat"`
 	WorkerESP              string                        `json:"workerESP"`
@@ -121,6 +127,7 @@ func bgpAPIVIPWorldRun(t *testing.T) (bgpAPIVIPRun, bool) {
 	kvm := vmtest.DefaultOptions().KVM
 	specs := []vmtest.NodeSpec{
 		{Name: "cp-1", Role: vmtest.ControlPlane},
+		{Name: "cp-2", Role: vmtest.ControlPlane},
 		{Name: "worker-1", Role: vmtest.Worker},
 	}
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
@@ -141,6 +148,11 @@ func planBGPAPIVIPWorldRun(world vmtest.World, repo string, kvm vmtest.KVMPolicy
 	run := bgpAPIVIPRun{WorldScenario: scenario}
 	buildRoots := publishedRuntimeBuildRoots(world, repo)
 	cp, err := vmtest.AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, vmtest.NodeSpec{Name: "cp-1", Role: vmtest.ControlPlane})
+	if err != nil {
+		_ = scenario.WriteSetupFailure(err)
+		return run, err
+	}
+	cp2, err := vmtest.AddPublishedInstalledRuntimeNodeFromBuildRoots(scenario, buildRoots, vmtest.NodeSpec{Name: "cp-2", Role: vmtest.ControlPlane})
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
@@ -189,6 +201,12 @@ func planBGPAPIVIPWorldRun(world vmtest.World, repo string, kvm vmtest.KVMPolicy
 			ControlPlaneMetadata:   cp.Config.NodeMetadata,
 			ControlPlaneAddress:    cp.Node.Address,
 			ControlPlaneMAC:        cp.Node.MACAddress,
+			ControlPlane2Disk:      cp2.Config.Disk,
+			ControlPlane2ESP:       cp2.Config.ESPArtifacts,
+			ControlPlane2Fixture:   cp2.Config.FixtureManifest,
+			ControlPlane2Metadata:  cp2.Config.NodeMetadata,
+			ControlPlane2Address:   cp2.Node.Address,
+			ControlPlane2MAC:       cp2.Node.MACAddress,
 			WorkerDisk:             worker.Config.Disk,
 			WorkerDiskFormat:       string(worker.Config.DiskFormat),
 			WorkerESP:              worker.Config.ESPArtifacts,
@@ -200,7 +218,11 @@ func planBGPAPIVIPWorldRun(world vmtest.World, repo string, kvm vmtest.KVMPolicy
 			RouterMAC:              router.MACAddress,
 			ClientAddress:          client.Address,
 			ClientMAC:              client.MACAddress,
-			WorldProvenance:        multiNodeWorldProvenanceForSpecs(world, repo, []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}, {Name: "worker-1", Role: vmtest.Worker}}),
+			WorldProvenance: multiNodeWorldProvenanceForSpecs(world, repo, []vmtest.NodeSpec{
+				{Name: "cp-1", Role: vmtest.ControlPlane},
+				{Name: "cp-2", Role: vmtest.ControlPlane},
+				{Name: "worker-1", Role: vmtest.Worker},
+			}),
 		},
 	}, nil
 }
@@ -247,9 +269,17 @@ func runBGPAPIVIPProof(t *testing.T, run bgpAPIVIPRun) {
 	}
 	defer stopNode(t, cpNode)
 
-	workerNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, bgpAPIVIPNodeConfig(run, "worker-1", run.Inputs.WorkerDisk, run.Inputs.WorkerESP, run.Inputs.WorkerFixture, run.Inputs.WorkerMetadata, vmtest.DiskFormat(run.Inputs.WorkerDiskFormat), run.Inputs.WorkerMAC), vmtest.VMRunner{})
+	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, bgpAPIVIPNodeConfig(run, "cp-2", run.Inputs.ControlPlane2Disk, run.Inputs.ControlPlane2ESP, run.Inputs.ControlPlane2Fixture, run.Inputs.ControlPlane2Metadata, vmtest.DiskFormat(run.Inputs.ControlPlaneDiskFormat), run.Inputs.ControlPlane2MAC), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics("", cpNode)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("start cp-2 VM: %v", err)
+	}
+	defer stopNode(t, cp2Node)
+
+	workerNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, bgpAPIVIPNodeConfig(run, "worker-1", run.Inputs.WorkerDisk, run.Inputs.WorkerESP, run.Inputs.WorkerFixture, run.Inputs.WorkerMetadata, vmtest.DiskFormat(run.Inputs.WorkerDiskFormat), run.Inputs.WorkerMAC), vmtest.VMRunner{})
+	if err != nil {
+		collectTwoNodeDiagnostics("", cpNode, cp2Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start worker-1 VM: %v", err)
 	}
@@ -257,7 +287,7 @@ func runBGPAPIVIPProof(t *testing.T, run bgpAPIVIPRun) {
 
 	routerNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, bgpAPIVIPNodeConfig(run, "fabric-router", run.Inputs.ControlPlaneDisk, run.Inputs.ControlPlaneESP, run.Inputs.ControlPlaneFixture, run.Inputs.ControlPlaneMetadata, vmtest.DiskFormat(run.Inputs.ControlPlaneDiskFormat), run.Inputs.RouterMAC), vmtest.VMRunner{})
 	if err != nil {
-		collectTwoNodeDiagnostics("", cpNode, workerNode)
+		collectTwoNodeDiagnostics("", cpNode, cp2Node, workerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start fabric-router VM: %v", err)
 	}
@@ -265,7 +295,7 @@ func runBGPAPIVIPProof(t *testing.T, run bgpAPIVIPRun) {
 
 	clientNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, bgpAPIVIPNodeConfig(run, "external-client", run.Inputs.WorkerDisk, run.Inputs.WorkerESP, run.Inputs.WorkerFixture, run.Inputs.WorkerMetadata, vmtest.DiskFormat(run.Inputs.WorkerDiskFormat), run.Inputs.ClientMAC), vmtest.VMRunner{})
 	if err != nil {
-		collectTwoNodeDiagnostics("", cpNode, workerNode, routerNode)
+		collectTwoNodeDiagnostics("", cpNode, cp2Node, workerNode, routerNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start external-client VM: %v", err)
 	}
@@ -293,8 +323,8 @@ func runBGPAPIVIPProof(t *testing.T, run bgpAPIVIPRun) {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
 	}
-	if err := runRealRoutedEndpointProof(ctx, result, cpNode, workerNode, routerNode, clientNode, helper); err != nil {
-		collectTwoNodeDiagnostics("", cpNode, workerNode, routerNode, clientNode)
+	if err := runRealRoutedEndpointProof(ctx, result, cpNode, cp2Node, workerNode, routerNode, clientNode, helper); err != nil {
+		collectTwoNodeDiagnostics("", cpNode, cp2Node, workerNode, routerNode, clientNode)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("real routed endpoint proof: %v", err)
 	}
@@ -505,6 +535,7 @@ type routedEndpointVMProof struct {
 	Kind                     string   `json:"kind"`
 	VIP                      string   `json:"vip"`
 	ControlPlane             string   `json:"controlPlane"`
+	ControlPlanePeer         string   `json:"controlPlanePeer"`
 	FabricRouter             string   `json:"fabricRouter"`
 	ExternalClient           string   `json:"externalClient"`
 	Worker                   string   `json:"worker"`
@@ -513,21 +544,25 @@ type routedEndpointVMProof struct {
 	RouteAdvertised          bool     `json:"routeAdvertised"`
 	ExternalReadyzReachable  bool     `json:"externalReadyzReachable"`
 	APIFailureWithdrawn      bool     `json:"apiFailureWithdrawn"`
+	FailedNodeVIPReleased    bool     `json:"failedNodeVIPReleased"`
+	FailedNodeReachedPeerVIP bool     `json:"failedNodeReachedPeerVIP"`
+	RemoteAPIRejectedAsLocal bool     `json:"remoteAPIRejectedAsLocal"`
 	APIRecoveryReadvertised  bool     `json:"apiRecoveryReadvertised"`
 	ControllerKillWithdrawn  bool     `json:"controllerKillWithdrawn"`
 	RoutingDaemonKillRemoved bool     `json:"routingDaemonKillRemoved"`
 	Checks                   []string `json:"checks"`
 }
 
-func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, worker, router, client vmtest.RunningInstalledRuntimeNode, helper string) error {
+func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, cp2, worker, router, client vmtest.RunningInstalledRuntimeNode, helper string) error {
 	proof := routedEndpointVMProof{
-		APIVersion:     "katl.dev/v1alpha1",
-		Kind:           "RoutedControlPlaneEndpointVMProof",
-		VIP:            routedEndpointProofVIP + "/32",
-		ControlPlane:   cp.Result.IPAddress,
-		FabricRouter:   router.Result.IPAddress,
-		ExternalClient: client.Result.IPAddress,
-		Worker:         worker.Result.IPAddress,
+		APIVersion:       "katl.dev/v1alpha1",
+		Kind:             "RoutedControlPlaneEndpointVMProof",
+		VIP:              routedEndpointProofVIP + "/32",
+		ControlPlane:     cp.Result.IPAddress,
+		ControlPlanePeer: cp2.Result.IPAddress,
+		FabricRouter:     router.Result.IPAddress,
+		ExternalClient:   client.Result.IPAddress,
+		Worker:           worker.Result.IPAddress,
 	}
 	writeProof := func() {
 		data, _ := json.MarshalIndent(proof, "", "  ")
@@ -541,7 +576,7 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 	proof.WorkerArtifactAbsent = true
 	proof.Checks = append(proof.Checks, "worker has no endpoint advertiser payload")
 
-	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, router} {
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, cp2, router} {
 		if err := activateRetainedEndpointSysext(ctx, node); err != nil {
 			return fmt.Errorf("activate endpoint sysext on %s: %w", node.Name, err)
 		}
@@ -557,7 +592,7 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 	proof.InitialBirdInactive = true
 	proof.Checks = append(proof.Checks, "BIRD remains inactive without the managed-advertisement marker")
 
-	if err := configureFabricRouter(ctx, router, []string{cp.Result.IPAddress}); err != nil {
+	if err := configureFabricRouter(ctx, router, []string{cp.Result.IPAddress, cp2.Result.IPAddress}); err != nil {
 		return err
 	}
 	if err := assertGuestCommand(ctx, router, []string{"sysctl", "-w", "net.ipv4.ip_forward=1"}); err != nil {
@@ -565,6 +600,11 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 	}
 	if err := assertGuestCommand(ctx, client, []string{"ip", "route", "replace", routedEndpointProofVIP + "/32", "via", router.Result.IPAddress}); err != nil {
 		return fmt.Errorf("install external client VIP route: %w", err)
+	}
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, cp2} {
+		if err := assertGuestCommand(ctx, node, []string{"ip", "route", "replace", routedEndpointProofVIP + "/32", "via", router.Result.IPAddress}); err != nil {
+			return fmt.Errorf("install %s fallback VIP route: %w", node.Name, err)
+		}
 	}
 
 	caPEM, certPEM, keyPEM, err := routedEndpointTLSFixture(net.ParseIP(routedEndpointProofVIP))
@@ -581,23 +621,28 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 		{cp, fixtureRoot + "/ca.crt", caPEM, 0o644},
 		{cp, fixtureRoot + "/server.crt", certPEM, 0o644},
 		{cp, fixtureRoot + "/server.key", keyPEM, 0o600},
+		{cp2, fixtureRoot + "/ca.crt", caPEM, 0o644},
+		{cp2, fixtureRoot + "/server.crt", certPEM, 0o644},
+		{cp2, fixtureRoot + "/server.key", keyPEM, 0o600},
 		{client, fixtureRoot + "/ca.crt", caPEM, 0o644},
 	} {
 		if err := writeNodeFile(ctx, target.node, target.path, target.data, target.mode, target.mode == 0o600); err != nil {
 			return err
 		}
 	}
-	if err := assertGuestCommand(ctx, cp, []string{
-		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
-		"/usr/bin/install", "-D", "-m", "0644", fixtureRoot + "/ca.crt", "/etc/kubernetes/pki/ca.crt",
-	}); err != nil {
-		return fmt.Errorf("install kubeadm-compatible API CA: %w", err)
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, cp2} {
+		if err := assertGuestCommand(ctx, node, []string{
+			"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+			"/usr/bin/install", "-D", "-m", "0644", fixtureRoot + "/ca.crt", "/etc/kubernetes/pki/ca.crt",
+		}); err != nil {
+			return fmt.Errorf("install kubeadm-compatible API CA on %s: %w", node.Name, err)
+		}
 	}
 	helperData, err := os.ReadFile(helper)
 	if err != nil {
 		return err
 	}
-	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, client} {
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, cp2, client} {
 		if err := writeNodeFileChunked(ctx, node, fixtureRoot+"/bgp-api-vip-smoke", helperData, 0o755); err != nil {
 			return err
 		}
@@ -607,30 +652,38 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 	if err != nil {
 		return err
 	}
-	if err := activateEndpointConfext(ctx, cp, fixtureRoot, endpointPlan); err != nil {
-		return err
-	}
-	if err := createGuestDummyVIP(ctx, cp); err != nil {
-		return err
-	}
-	if err := startReadyzFixture(ctx, cp, fixtureRoot); err != nil {
-		return err
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, cp2} {
+		if err := activateEndpointConfext(ctx, node, fixtureRoot, endpointPlan); err != nil {
+			return err
+		}
+		if err := createGuestDummyVIP(ctx, node); err != nil {
+			return err
+		}
+		if err := startReadyzFixture(ctx, node, fixtureRoot); err != nil {
+			return err
+		}
 	}
 	defer func() {
 		_, _ = runNodeCommand(context.Background(), cp, []string{"systemctl", "stop", "katl-vmtest-readyz.service"}, 8<<10)
+		_, _ = runNodeCommand(context.Background(), cp2, []string{"systemctl", "stop", "katl-vmtest-readyz.service"}, 8<<10)
 	}()
-	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "daemon-reload"}); err != nil {
-		return err
-	}
-	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "start", "katl-app-bgp-api-vip.service"}); err != nil {
-		return fmt.Errorf("start production endpoint controller: %w", err)
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp, cp2} {
+		if err := assertGuestCommand(ctx, node, []string{"systemctl", "daemon-reload"}); err != nil {
+			return err
+		}
+		if err := assertGuestCommand(ctx, node, []string{"systemctl", "start", "katl-app-bgp-api-vip.service"}); err != nil {
+			return fmt.Errorf("start production endpoint controller on %s: %w", node.Name, err)
+		}
 	}
 
-	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, true, 30*time.Second); err != nil {
+	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp.Result.IPAddress, true, 30*time.Second); err != nil {
+		return err
+	}
+	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp2.Result.IPAddress, true, 30*time.Second); err != nil {
 		return err
 	}
 	proof.RouteAdvertised = true
-	proof.Checks = append(proof.Checks, "fabric router learned the healthy API /32 from production BIRD")
+	proof.Checks = append(proof.Checks, "fabric router learned the healthy API /32 from both control planes")
 	if err := probeReadyzFromClient(ctx, client, fixtureRoot); err != nil {
 		return err
 	}
@@ -640,16 +693,44 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "stop", "katl-vmtest-readyz.service"}); err != nil {
 		return fmt.Errorf("stop API readiness fixture: %w", err)
 	}
-	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, false, 20*time.Second); err != nil {
+	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp.Result.IPAddress, false, 20*time.Second); err != nil {
 		return fmt.Errorf("API failure did not withdraw route: %w", err)
 	}
+	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp2.Result.IPAddress, true, 20*time.Second); err != nil {
+		return fmt.Errorf("healthy peer route was disrupted: %w", err)
+	}
 	proof.APIFailureWithdrawn = true
-	proof.Checks = append(proof.Checks, "local API failure withdrew only the API route")
+	proof.Checks = append(proof.Checks, "local API failure withdrew only the failed control plane path")
+	status, err := waitForEndpointStatus(ctx, cp, func(status bgpapivip.Status) bool {
+		return status.HealthState == bgpapivip.HealthUnhealthy &&
+			!status.LocalVIPOwned &&
+			status.AdvertisementState == bgpapivip.AdvertisementWithdrawn
+	}, 20*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed control plane did not release local VIP: %w", err)
+	}
+	proof.FailedNodeVIPReleased = true
+	if err := probeReadyzFromClient(ctx, cp, fixtureRoot); err != nil {
+		return fmt.Errorf("failed control plane could not reach healthy peer through VIP: %w", err)
+	}
+	proof.FailedNodeReachedPeerVIP = true
+	if status.HealthState != bgpapivip.HealthUnhealthy {
+		return fmt.Errorf("remote API response changed local health state: %#v", status)
+	}
+	proof.RemoteAPIRejectedAsLocal = true
+	proof.Checks = append(proof.Checks, "failed node released local VIP, reached its peer through the VIP, and kept local health unhealthy")
 	if err := startReadyzFixture(ctx, cp, fixtureRoot); err != nil {
 		return err
 	}
-	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, true, 30*time.Second); err != nil {
+	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp.Result.IPAddress, true, 30*time.Second); err != nil {
 		return fmt.Errorf("API recovery did not readvertise route: %w", err)
+	}
+	if _, err := waitForEndpointStatus(ctx, cp, func(status bgpapivip.Status) bool {
+		return status.HealthState == bgpapivip.HealthHealthy &&
+			status.LocalVIPOwned &&
+			status.AdvertisementState == bgpapivip.AdvertisementAdvertised
+	}, 20*time.Second); err != nil {
+		return fmt.Errorf("API recovery did not restore local VIP: %w", err)
 	}
 	proof.APIRecoveryReadvertised = true
 
@@ -659,7 +740,7 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", "katl-app-bgp-api-vip.service"}); err != nil {
 		return fmt.Errorf("kill endpoint controller: %w", err)
 	}
-	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, false, 20*time.Second); err != nil {
+	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp.Result.IPAddress, false, 20*time.Second); err != nil {
 		return fmt.Errorf("ungraceful controller death did not withdraw route: %w", err)
 	}
 	proof.ControllerKillWithdrawn = true
@@ -673,7 +754,7 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "start", "katl-app-bgp-api-vip.service"}); err != nil {
 		return err
 	}
-	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, true, 30*time.Second); err != nil {
+	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp.Result.IPAddress, true, 30*time.Second); err != nil {
 		return err
 	}
 
@@ -683,7 +764,7 @@ func runRealRoutedEndpointProof(ctx context.Context, result vmtest.Result, cp, w
 	if err := assertGuestCommand(ctx, cp, []string{"systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", "katl-app-bird.service"}); err != nil {
 		return fmt.Errorf("kill routing daemon: %w", err)
 	}
-	if _, err := waitForRouterRoute(ctx, router, routedEndpointProofVIP, false, 20*time.Second); err != nil {
+	if _, err := waitForRouterRouteVia(ctx, router, routedEndpointProofVIP, cp.Result.IPAddress, false, 20*time.Second); err != nil {
 		return fmt.Errorf("routing daemon death did not remove route: %w", err)
 	}
 	proof.RoutingDaemonKillRemoved = true
@@ -796,7 +877,6 @@ func activateEndpointConfext(ctx context.Context, node vmtest.RunningInstalledRu
 func createGuestDummyVIP(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) error {
 	for _, argv := range [][]string{
 		{"ip", "link", "add", "katl-api", "type", "dummy"},
-		{"ip", "address", "add", routedEndpointProofVIP + "/32", "dev", "katl-api"},
 		{"ip", "link", "set", "katl-api", "up"},
 	} {
 		if err := assertGuestCommand(ctx, node, argv); err != nil {
@@ -811,7 +891,7 @@ func startReadyzFixture(ctx context.Context, node vmtest.RunningInstalledRuntime
 	return assertGuestCommand(ctx, node, []string{
 		"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-readyz.service",
 		root + "/bgp-api-vip-smoke", "serve-readyz",
-		"--listen", routedEndpointProofVIP + ":6443", "--cert", root + "/server.crt", "--key", root + "/server.key",
+		"--listen", "0.0.0.0:6443", "--cert", root + "/server.crt", "--key", root + "/server.key",
 	})
 }
 
@@ -830,7 +910,7 @@ func probeReadyzFromClient(ctx context.Context, node vmtest.RunningInstalledRunt
 	return nil
 }
 
-func waitForRouterRoute(ctx context.Context, router vmtest.RunningInstalledRuntimeNode, prefix string, present bool, timeout time.Duration) (string, error) {
+func waitForRouterRouteVia(ctx context.Context, router vmtest.RunningInstalledRuntimeNode, prefix, nextHop string, present bool, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	var last string
 	for time.Now().Before(deadline) {
@@ -840,8 +920,8 @@ func waitForRouterRoute(ctx context.Context, router vmtest.RunningInstalledRunti
 		}, 32<<10)
 		if err == nil {
 			last = string(result.Stdout) + string(result.Stderr)
-			hasRoute := result.ExitStatus == 0 && strings.Contains(last, prefix)
-			if hasRoute == present {
+			hasPath := result.ExitStatus == 0 && strings.Contains(last, prefix) && strings.Contains(last, "via "+nextHop)
+			if hasPath == present {
 				return last, nil
 			}
 		} else {
@@ -853,7 +933,38 @@ func waitForRouterRoute(ctx context.Context, router vmtest.RunningInstalledRunti
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	return last, fmt.Errorf("fabric route %s presence=%t not observed: %s", prefix, present, strings.TrimSpace(last))
+	return last, fmt.Errorf("fabric route %s via %s presence=%t not observed: %s", prefix, nextHop, present, strings.TrimSpace(last))
+}
+
+func waitForEndpointStatus(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, ready func(bgpapivip.Status) bool, timeout time.Duration) (bgpapivip.Status, error) {
+	deadline := time.Now().Add(timeout)
+	var last bgpapivip.Status
+	var lastErr error
+	for time.Now().Before(deadline) {
+		result, err := runNodeCommand(ctx, node, []string{
+			"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+			"/usr/bin/cat", bgpapivip.LiveStatusPath,
+		}, 32<<10)
+		if err == nil && result.ExitStatus == 0 {
+			status, decodeErr := bgpapivip.DecodeStatus(strings.NewReader(string(result.Stdout)))
+			if decodeErr == nil {
+				last = status
+				if ready(status) {
+					return status, nil
+				}
+			} else {
+				lastErr = decodeErr
+			}
+		} else if err != nil {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return last, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return last, fmt.Errorf("endpoint status condition not observed: last=%#v error=%v", last, lastErr)
 }
 
 func guestUnitActive(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, unit string) (bool, error) {

@@ -69,6 +69,7 @@ func endpointStatusFrom(config bgpapivip.Config, live *bgpapivip.Status) *agenta
 	if live != nil {
 		report.LocalApiReady = live.HealthState == bgpapivip.HealthHealthy
 		report.RouteOriginated = live.AdvertisementState == bgpapivip.AdvertisementAdvertised
+		report.LocalVipOwned = live.LocalVIPOwned
 		report.LastTransitionTime = firstNonEmpty(live.LastAdvertisementTransition, live.LastHealthTransition, live.UpdatedAt)
 		report.FailureReason = strings.TrimSpace(live.FailureReason)
 		for _, peer := range live.PeerSummary {
@@ -146,8 +147,14 @@ func endpointProductState(config bgpapivip.Config, live bgpapivip.Status, peers 
 			return "waiting-for-peer"
 		}
 	}
+	if live.AdvertisementState == bgpapivip.AdvertisementAdvertised && !live.LocalVIPOwned {
+		return "failed"
+	}
 	if live.AdvertisementState == bgpapivip.AdvertisementAdvertised {
 		return "advertised"
+	}
+	if live.LocalVIPOwned {
+		return "waiting-for-route"
 	}
 	return "withdrawn"
 }

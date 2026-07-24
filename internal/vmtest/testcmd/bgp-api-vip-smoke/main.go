@@ -222,6 +222,7 @@ func runControlPlane(outputDir string, config bgpapivip.Config) error {
 		Bird:              bird,
 		Health:            health,
 		Interface:         bgpapivip.AlwaysReadyInterface{},
+		Owner:             &fakeVIPOwner{bird: bird},
 		Writer: bgpapivip.FileStatusWriter{
 			LivePath:      filepath.Join(outputDir, "status-live.json"),
 			OperationPath: filepath.Join(outputDir, "status-operation.json"),
@@ -290,6 +291,7 @@ func (b *fakeBird) Status(context.Context) (bgpapivip.BirdRuntimeStatus, error) 
 		ControlSocketReady: true,
 		ControlSocketPath:  "/run/katl/apps/bird/bird.ctl",
 		ReadinessState:     "ready",
+		RouteOriginated:    len(b.routeTable) > 0,
 		Peers: []bgpapivip.PeerRuntimeStatus{{
 			Name:           "dev-host",
 			Kind:           "dev-host",
@@ -302,7 +304,7 @@ func (b *fakeBird) Status(context.Context) (bgpapivip.BirdRuntimeStatus, error) 
 	}, nil
 }
 
-func (b *fakeBird) SetAdvertisement(_ context.Context, enabled bool) error {
+func (b *fakeBird) observeOwnership(enabled bool) error {
 	b.advertisements = append(b.advertisements, enabled)
 	change := observedRouteChange{Peer: "dev-host"}
 	for _, peer := range append(append([]bgpapivip.Peer{}, b.config.FabricPeers...), b.config.DevHostPeers...) {
@@ -337,6 +339,23 @@ func (b *fakeBird) routes() []string {
 type sequenceHealth struct {
 	results []bgpapivip.HealthResult
 	next    int
+}
+
+type fakeVIPOwner struct {
+	owned bool
+	bird  *fakeBird
+}
+
+func (o *fakeVIPOwner) Owned(context.Context, bgpapivip.Config) (bool, error) {
+	return o.owned, nil
+}
+
+func (o *fakeVIPOwner) SetOwned(_ context.Context, _ bgpapivip.Config, owned bool) error {
+	o.owned = owned
+	if o.bird != nil {
+		return o.bird.observeOwnership(owned)
+	}
+	return nil
 }
 
 func (h *sequenceHealth) Check(context.Context, bgpapivip.Health) bgpapivip.HealthResult {

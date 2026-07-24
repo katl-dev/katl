@@ -273,6 +273,7 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		commands = append(commands,
 			Command{Name: "endpoint-routing-validate", Argv: []string{"/usr/bin/bird", "-p", "-c", bgpapivip.BirdConfigPath}},
 			Command{Name: "endpoint-withdraw", Argv: []string{"systemctl", "stop", "katl-app-bgp-api-vip.service"}},
+			Command{Name: "endpoint-link-reload", Argv: []string{"networkctl", "reload"}},
 			Command{Name: "endpoint-routing-reload", Argv: []string{"/usr/bin/birdc", "-s", bgpapivip.BirdControlSocketPath, "configure"}},
 			Command{Name: "endpoint-resume", Argv: []string{"systemctl", "start", "katl-app-bgp-api-vip.service"}},
 		)

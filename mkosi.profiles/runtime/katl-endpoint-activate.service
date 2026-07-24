@@ -9,7 +9,8 @@ ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/systemctl daemon-reload
-ExecStart=/usr/bin/systemctl start katl-app-bgp-api-vip.service
+ExecStart=/usr/bin/systemctl start katl-app-bgp-api-vip.path
+ExecStop=/usr/bin/systemctl stop katl-app-bgp-api-vip.path
 ExecStop=/usr/bin/systemctl stop katl-app-bgp-api-vip.service
 RemainAfterExit=yes
 

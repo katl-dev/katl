@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a bootstrapped Kubernetes control plane
+Documentation=https://katl.dev
+ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
+ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
+
+[Path]
+PathExists=/etc/kubernetes/pki/ca.crt
+Unit=katl-app-bgp-api-vip.service

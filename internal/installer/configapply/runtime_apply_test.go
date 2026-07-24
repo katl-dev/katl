@@ -192,7 +192,7 @@ func TestApplyTrustedBundleReloadsEnabledEndpointRouting(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/katl/apps/bgp-api-vip/advertisement-enabled")); err != nil {
 		t.Fatalf("candidate advertisement marker: %v", err)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-link-reload,endpoint-routing-reload,endpoint-resume"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 }

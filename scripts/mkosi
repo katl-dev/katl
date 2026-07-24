@@ -399,9 +399,23 @@ clear_installer_iso() {
 
 write_installer_package_set() {
     local output="$repo_root/_build/mkosi/katl-installer.packages.tsv"
+    local manifest="$build_dir/katl-installer.manifest"
     local cache_root="$repo_root/_build/mkosi/cache/fedora~44~x86-64~main.cache"
+    if [[ -f "$manifest" ]]; then
+        mkdir -p "$(dirname "$output")"
+        jq -r '
+            .packages[]
+            | select(.type == "rpm")
+            | [
+                .name,
+                (.version + (if .architecture == "" then "" else "." + .architecture end))
+            ]
+            | @tsv
+        ' "$manifest" | sort >"$output"
+        return
+    fi
     if [[ ! -d "$cache_root/usr/lib/sysimage/rpm" ]]; then
-        echo "error: installer RPM database not found: $cache_root/usr/lib/sysimage/rpm" >&2
+        echo "error: installer package manifest not found: $manifest" >&2
         return 1
     fi
     mkdir -p "$(dirname "$output")"
@@ -622,6 +636,7 @@ if [[ "$runtime" == direct ]]; then
     if [[ -n "$installer_package_set" ]]; then
         mkosi_installer_package_set="$repo_root/$installer_package_set"
         mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
+        mkosi_env+=(--manifest-format json)
     fi
     if [[ "$emit_runtime_artifact" == 1 || "$emit_installer_iso" == 1 ]]; then
         echo "error: KATL_CONTAINER_RUNTIME=direct currently supports installer-image builds only" >&2
@@ -671,6 +686,7 @@ run_flags+=(--volume "$package_cache_dir:/mkosi-package-cache")
 if [[ -n "$installer_package_set" ]]; then
     mkosi_installer_package_set="/work/$installer_package_set"
     mkosi_env+=(--environment "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
+    mkosi_env+=(--manifest-format json)
 fi
 
 if [[ "$runtime" == podman ]]; then
@@ -719,9 +735,23 @@ set +e
         go run ./cmd/katl-mkosi-artifacts "$@"
     }
     if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
+        installer_manifest=/mkosi-build/katl-installer.manifest
         installer_cache_root=/mkosi-cache/fedora~44~x86-64~main.cache
-        if [[ ! -d "$installer_cache_root/usr/lib/sysimage/rpm" ]]; then
-            echo "error: installer RPM database not found: $installer_cache_root/usr/lib/sysimage/rpm" >&2
+        if [[ -f "$installer_manifest" ]]; then
+            if ! jq -r '\''
+                .packages[]
+                | select(.type == "rpm")
+                | [
+                    .name,
+                    (.version + (if .architecture == "" then "" else "." + .architecture end))
+                ]
+                | @tsv
+            '\'' "$installer_manifest" | sort >"$KATL_INSTALLER_PACKAGE_SET"; then
+                echo "error: record installer package set from $installer_manifest" >&2
+                status=1
+            fi
+        elif [[ ! -d "$installer_cache_root/usr/lib/sysimage/rpm" ]]; then
+            echo "error: installer package manifest not found: $installer_manifest" >&2
             status=1
         elif ! rpm \
             --root "$installer_cache_root" \

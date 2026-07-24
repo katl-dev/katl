@@ -47,7 +47,7 @@ spec:
     health:
         probe: readyz
         scheme: https
-        host: 10.40.0.10
+        host: 127.0.0.1
         port: 6443
         path: /readyz
         interval: 2s
@@ -67,14 +67,13 @@ ipv4 table katl_fabric;
 
 protocol device katl_device {}
 
-protocol static katl_api {
-  disabled;
+protocol direct katl_api {
   ipv4 { table katl_fabric; };
-  route 10.40.0.10/32 blackhole;
+  interface "katl-api0";
 }
 
 filter katl_export_katl_fabric_router_a {
-  if source = RTS_STATIC && net = 10.40.0.10/32 then accept;
+  if source = RTS_DEVICE && net = 10.40.0.10/32 then accept;
   reject;
 }
 
@@ -98,7 +97,6 @@ Kind=dummy
 Name=katl-api0
 
 [Network]
-Address=10.40.0.10/32
 MTUBytes=1500
 --- /etc/systemd/system/katl-app-bgp-api-vip.service.d/10-katl-config.conf
 [Service]
@@ -112,5 +110,5 @@ After=network-online.target
 Environment=KATL_BIRD_CONFIG=/etc/katl/apps/bird/bird.conf
 --- /etc/systemd/system/kubelet.service.d/20-katl-control-plane-endpoint.conf
 [Unit]
-Wants=katl-app-bgp-api-vip.service
-After=katl-app-bgp-api-vip.service
+Wants=katl-app-bgp-api-vip.path
+After=katl-app-bgp-api-vip.path
