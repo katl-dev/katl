@@ -17,6 +17,34 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
+func TestOperationStatusTextReportsConfigApplyEffects(t *testing.T) {
+	status := &agentapi.OperationStatus{
+		OperationId:   "operation-1",
+		OperationKind: "generation-apply",
+		Phase:         "record-operation-complete",
+		Terminal:      true,
+		Result:        "succeeded",
+		ConfigApply: &agentapi.ConfigApplyStatus{DomainActions: []*agentapi.ConfigApplyDomainAction{{
+			Domain: "host-configuration",
+			Action: "apply",
+			Status: "passed",
+			Effects: []*agentapi.ConfigApplyEffect{{
+				Action: "reload",
+				Target: "udev rules",
+				Status: "passed",
+			}},
+		}}},
+	}
+	var stdout bytes.Buffer
+	if err := writeOperationStatus(&stdout, "text", status); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "host-configuration: action=apply status=passed") ||
+		!strings.Contains(got, "reload udev rules: passed") {
+		t.Fatalf("operation status text:\n%s", got)
+	}
+}
+
 func TestOperationStatusQueriesEveryOperationKind(t *testing.T) {
 	for _, kind := range []string{"host-upgrade", "bootstrap-init", "generation-apply", "destructive-reset"} {
 		t.Run(kind, func(t *testing.T) {

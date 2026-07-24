@@ -53,6 +53,7 @@ type Change struct {
 	EndpointRoutingImpact *EndpointRoutingImpact
 	Sets                  []string
 	Paths                 []string
+	Effects               []generation.ConfigApplyEffect
 	Message               string
 }
 

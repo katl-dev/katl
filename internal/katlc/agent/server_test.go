@@ -37,6 +37,58 @@ func (f dispatchFunc) Dispatch(ctx context.Context, record operation.OperationRe
 	return f(ctx, record)
 }
 
+func TestOperationStatusIncludesConfigApplyActions(t *testing.T) {
+	server := newTestServer(t)
+	status, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{
+		GenerationID:       "generation-1",
+		PreviousGeneration: "generation-0",
+		RequestedApplyMode: generation.ApplyModeAuto,
+		AcceptedApplyMode:  generation.ApplyModeNextBoot,
+		ChangedDomains:     []string{configapply.DomainHostConfiguration},
+		UpdatedAt:          time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.Phase = generation.ConfigApplyPhaseActive
+	status.DomainActions = []generation.ConfigApplyDomainAction{{
+		Domain: configapply.DomainHostConfiguration,
+		Action: "apply",
+		Status: generation.ConfigApplyActionPassed,
+		Effects: []generation.ConfigApplyEffect{{
+			Action: "reload",
+			Target: "udev rules",
+			Status: generation.ConfigApplyActionPassed,
+		}},
+	}}
+	statusPath, err := generation.ConfigApplyStatusPath(server.Root, status.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteConfigApplyStatus(statusPath, status); err != nil {
+		t.Fatal(err)
+	}
+
+	got := server.operationStatus(operation.OperationRecord{
+		CandidateGenerationID: status.GenerationID,
+		ConfigApplyPhase:      generation.ConfigApplyPhaseNextBoot,
+		ActivationState:       operation.ActivationStatePending,
+		BootHealthPending:     true,
+		NextAction:            "reboot into committed config apply generation for boot health validation",
+	}, false)
+	if got.GetConfigApply().GetPhase() != generation.ConfigApplyPhaseActive ||
+		len(got.GetConfigApply().GetDomainActions()) != 1 ||
+		len(got.GetConfigApply().GetDomainActions()[0].GetEffects()) != 1 {
+		t.Fatalf("operation status config apply = %+v", got.GetConfigApply())
+	}
+	if got.GetConfigApplyPhase() != generation.ConfigApplyPhaseActive ||
+		got.GetActivationState() != operation.ActivationStateActiveLive ||
+		got.GetBootHealthPending() ||
+		!strings.Contains(got.GetNextAction(), "active generation") {
+		t.Fatalf("operation status boot completion = %+v", got)
+	}
+}
+
 func TestStageHostUpgradeArtifactCommitsVerifiedContent(t *testing.T) {
 	server := newTestServer(t)
 	content := append(bytes.Repeat([]byte{'a'}, 1<<20), bytes.Repeat([]byte{'b'}, 31)...)
@@ -1750,14 +1802,17 @@ func TestApplyGenerationLiveFailureRecordsRollbackState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !record.Terminal || record.Result != operation.ResultFailedNeedsRepair || !record.ExternalMutationStarted {
-		t.Fatalf("record = %+v, want terminal failed with mutation started", record)
+	if !record.Terminal || record.Result != operation.ResultFailedRolledBack || record.RecoveryRequired || !record.ExternalMutationStarted {
+		t.Fatalf("record = %+v, want terminal rolled-back failure without repair required", record)
 	}
 	if record.ActivationState != operation.ActivationStateRolledBack || record.ConfigApplyPhase != generation.ConfigApplyPhaseRolledBack {
 		t.Fatalf("activation/config phase = %q/%q, want rolled-back/rolled-back", record.ActivationState, record.ConfigApplyPhase)
 	}
-	if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != operation.ResultFailedNeedsRepair {
-		t.Fatalf("invocations = %+v, want completed failed live config apply invocation", record.Invocations)
+	if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != operation.ResultFailedRolledBack {
+		t.Fatalf("invocations = %+v, want completed rolled-back live config apply invocation", record.Invocations)
+	}
+	if record.HostRollback != "generation-0" || !strings.Contains(record.NextAction, "correct the rejected configuration and retry") {
+		t.Fatalf("rollback/next action = %q/%q", record.HostRollback, record.NextAction)
 	}
 	if activator.rollbackTarget != "generation-0" {
 		t.Fatalf("rollback target = %q, want generation-0", activator.rollbackTarget)

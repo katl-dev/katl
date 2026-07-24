@@ -70,12 +70,20 @@ type ConfigApplyStatusRequest struct {
 }
 
 type ConfigApplyDomainAction struct {
-	Domain     string   `json:"domain"`
-	Action     string   `json:"action"`
-	Status     string   `json:"status"`
-	Sets       []string `json:"sets,omitempty"`
-	Paths      []string `json:"paths,omitempty"`
-	Diagnostic string   `json:"diagnostic,omitempty"`
+	Domain     string              `json:"domain"`
+	Action     string              `json:"action"`
+	Status     string              `json:"status"`
+	Sets       []string            `json:"sets,omitempty"`
+	Paths      []string            `json:"paths,omitempty"`
+	Effects    []ConfigApplyEffect `json:"effects,omitempty"`
+	Diagnostic string              `json:"diagnostic,omitempty"`
+}
+
+type ConfigApplyEffect struct {
+	Action     string `json:"action"`
+	Target     string `json:"target"`
+	Status     string `json:"status"`
+	Diagnostic string `json:"diagnostic,omitempty"`
 }
 
 type DiagnosticArtifact struct {
@@ -295,6 +303,14 @@ func ValidateConfigApplyStatus(status ConfigApplyStatus) error {
 		}
 		if err := validateActionStatus(action.Status); err != nil {
 			return err
+		}
+		for _, effect := range action.Effects {
+			if strings.TrimSpace(effect.Action) == "" || strings.TrimSpace(effect.Target) == "" || strings.TrimSpace(effect.Status) == "" {
+				return fmt.Errorf("config apply status effect requires action, target, and status")
+			}
+			if err := validateActionStatus(effect.Status); err != nil {
+				return err
+			}
 		}
 	}
 	for _, artifact := range status.DiagnosticArtifacts {

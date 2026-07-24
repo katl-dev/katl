@@ -177,6 +177,7 @@ func writeRecipeFixture(t *testing.T) string {
 		"cmd/katl-boot-health":               true,
 		"cmd/katl-console":                   true,
 		"cmd/katl-generation-activate":       true,
+		"cmd/katl-host-config-activate":      true,
 		"cmd/katl-kubernetes-release":        true,
 		"cmd/katl-mkosi-artifacts":           true,
 		"cmd/katl-publish-kubernetes-sysext": true,

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 )
 
 func TestApplyNodeConfigurationChangeAcceptsLocalFileEnvelope(t *testing.T) {
@@ -97,6 +98,20 @@ spec:
 	}
 	if same.ClusterDefaults.KubeadmChanged {
 		t.Fatalf("identical inline kubeadm config reported changed: %#v", same.ClusterDefaults)
+	}
+
+	withoutTerminalNewline := request.KubeadmConfigs["control-plane-profiled"]
+	withoutTerminalNewline.Config.Content = []byte(strings.TrimSuffix(string(withoutTerminalNewline.Config.Content), "\n"))
+	same, err = DecodeNodeConfigurationChange(strings.NewReader(document), TrustedBundleRequest{
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{
+			"control-plane-profiled": withoutTerminalNewline,
+		},
+	})
+	if err != nil {
+		t.Fatalf("DecodeNodeConfigurationChange() terminal newline error = %v", err)
+	}
+	if same.ClusterDefaults.KubeadmChanged {
+		t.Fatalf("optional terminal newline reported changed: %#v", same.ClusterDefaults)
 	}
 }
 

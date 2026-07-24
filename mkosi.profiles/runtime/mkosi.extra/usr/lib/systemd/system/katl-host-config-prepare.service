@@ -1,0 +1,12 @@
+[Unit]
+Description=Prepare selected Katl native host configuration
+Documentation=man:systemd-confext(8) man:sysctl.d(5) man:modules-load.d(5) man:udev(7)
+DefaultDependencies=no
+Requires=systemd-confext.service
+After=systemd-confext.service
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-host-config-prepare
+ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=prepare

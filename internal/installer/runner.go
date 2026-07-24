@@ -820,7 +820,7 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	install.LoaderRecord = &result.Record
-	if err := writeInstalledManifest(install.TargetRoot, install.Manifest); err != nil {
+	if err := writeInstalledManifest(install.TargetRoot, result.Record.GenerationID, install.Manifest); err != nil {
 		return err
 	}
 	if err := writeInitialBootSelection(install.TargetRoot, result.Record); err != nil {
@@ -841,17 +841,22 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 	return recordStep(ctx, install, WriteInstallRecord)
 }
 
-func writeInstalledManifest(targetRoot string, installManifest manifest.Manifest) error {
-	target := filepath.Join(filepath.Clean(targetRoot), "var/lib/katl/install/manifest.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return fmt.Errorf("create install manifest parent: %w", err)
-	}
+func writeInstalledManifest(targetRoot, generationID string, installManifest manifest.Manifest) error {
 	data, err := json.MarshalIndent(installManifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode install manifest: %w", err)
 	}
-	if err := os.WriteFile(target, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write install manifest: %w", err)
+	targets := []string{
+		filepath.Join(filepath.Clean(targetRoot), "var/lib/katl/install/manifest.json"),
+		filepath.Join(filepath.Clean(targetRoot), "var/lib/katl/generations", generationID, "manifest.json"),
+	}
+	for _, target := range targets {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create install manifest parent: %w", err)
+		}
+		if err := os.WriteFile(target, append(data, '\n'), 0o644); err != nil {
+			return fmt.Errorf("write install manifest: %w", err)
+		}
 	}
 	return nil
 }

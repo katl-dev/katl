@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -77,6 +78,11 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if requestedResult == generation.BootHealthSuccess {
+		if err := markConfigApplyBootActive(*root, selected, bootHealthClockValue); err != nil {
+			return err
+		}
+	}
 	if stdout != nil {
 		fmt.Fprintf(stdout, "katl-boot-health generation=%s result=%s default=%s promoted=%t failed=%t recoveryRequired=%t rebootRequested=%t\n",
 			record.GenerationID,
@@ -92,6 +98,29 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("systemd has failed units: %s", strings.Join(failedUnits, ", "))
 	}
 	return nil
+}
+
+func markConfigApplyBootActive(root, generationID string, now time.Time) error {
+	path, err := generation.ConfigApplyStatusPath(root, generationID)
+	if err != nil {
+		return err
+	}
+	status, err := generation.ReadConfigApplyStatus(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if status.Phase != generation.ConfigApplyPhaseNextBoot {
+		return nil
+	}
+	status, err = generation.MarkConfigApplyPhase(status, generation.ConfigApplyPhaseActive, now)
+	if err != nil {
+		return err
+	}
+	status.HealthState = generation.HealthStateHealthy
+	return generation.WriteConfigApplyStatus(path, status)
 }
 
 var systemdFailedUnits = func(ctx context.Context) ([]string, error) {

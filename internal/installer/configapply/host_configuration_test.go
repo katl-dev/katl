@@ -72,6 +72,44 @@ func TestPlanHostConfigurationUsesBoundedSystemdNotification(t *testing.T) {
 	}
 }
 
+func TestPlanHostConfigurationExposesEveryBoundedEffect(t *testing.T) {
+	sysctlBefore := "net.ipv4.ip_forward = 0\n"
+	sysctlAfter := "net.ipv4.ip_forward = 1\n"
+	rules := `SUBSYSTEM=="usb"` + "\n"
+	journal := "[Journal]\nSystemMaxUse=2G\n"
+	current := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"sysctl": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/80-forwarding.conf", Content: &sysctlBefore}}},
+	}}
+	desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"sysctl": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/80-forwarding.conf", Content: &sysctlAfter}}},
+		"udev":   {Files: []manifest.HostConfigurationFile{{Path: "/etc/udev/rules.d/80-ups.rules", Content: &rules}}},
+		"journal": {
+			Files: []manifest.HostConfigurationFile{{Path: "/etc/systemd/journald.conf.d/80-home-lab.conf", Content: &journal}},
+			Notify: manifest.HostConfigurationNotifications{Systemd: []manifest.HostConfigurationSystemdNotification{{
+				Unit: "systemd-journald.service", Action: "try-reload-or-restart",
+			}}},
+		},
+	}}
+	plan := planHostConfigurationChange(current, desired)
+	if !plan.Live {
+		t.Fatalf("plan = %#v", plan)
+	}
+	got := map[string]bool{}
+	for _, effect := range plan.Effects {
+		got[effect.Action+" "+effect.Target] = true
+	}
+	for _, want := range []string{
+		"apply-and-verify sysctl net.ipv4.ip_forward",
+		"verify udev rules /etc/udev/rules.d/80-ups.rules",
+		"reload udev rules",
+		"try-reload-or-restart systemd unit systemd-journald.service",
+	} {
+		if !got[want] || !strings.Contains(plan.Message, want) {
+			t.Fatalf("effects/message = %#v / %q, missing %q", plan.Effects, plan.Message, want)
+		}
+	}
+}
+
 func testHostConfiguration(setName, filePath, content string) manifest.HostConfiguration {
 	return manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
 		setName: {

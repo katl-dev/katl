@@ -623,6 +623,7 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 			change.Sets = append([]string(nil), a.hostConfiguration.Sets...)
 			change.Paths = append([]string(nil), a.hostConfiguration.Paths...)
 			change.Message = a.hostConfiguration.Message
+			change.Effects = append([]generation.ConfigApplyEffect(nil), a.hostConfiguration.Effects...)
 		}
 		changes = append(changes, change)
 	}

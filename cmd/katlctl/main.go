@@ -2101,6 +2101,9 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			return fmt.Errorf("config validation rejected: %s", strings.Join(result.Diagnostics, "; "))
 		}
 		if result.GetNoChanges() {
+			if len(result.Diagnostics) > 0 {
+				return fmt.Errorf("%s configuration files match, but runtime state is not current: %s", opts.nodeConfig.nodeName, strings.Join(result.Diagnostics, "; "))
+			}
 			if opts.output == "json" {
 				publicResult := proto.Clone(result).(*agentapi.ConfigValidationResult)
 				publicResult.RequestDigest = ""
@@ -2394,6 +2397,9 @@ func redactStatus(status generation.ConfigApplyStatus) generation.ConfigApplySta
 	status.Kubeadm = redactKubeadm(status.Kubeadm)
 	for i := range status.DomainActions {
 		status.DomainActions[i].Diagnostic = generation.RedactConfigApplyMessage(status.DomainActions[i].Diagnostic)
+		for j := range status.DomainActions[i].Effects {
+			status.DomainActions[i].Effects[j].Diagnostic = generation.RedactConfigApplyMessage(status.DomainActions[i].Effects[j].Diagnostic)
+		}
 	}
 	for i := range status.DiagnosticArtifacts {
 		status.DiagnosticArtifacts[i].Path = generation.RedactConfigApplyMessage(status.DiagnosticArtifacts[i].Path)

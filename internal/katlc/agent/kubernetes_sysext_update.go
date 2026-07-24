@@ -56,7 +56,7 @@ func (s *Server) dryRunKubernetesSysextUpdateOperation(req *agentapi.SubmitOpera
 		OperationKind: req.OperationKind,
 		RequestDigest: digest,
 		AcceptedAt:    formatTime(now),
-		InitialStatus: operationStatus(record, false),
+		InitialStatus: s.operationStatus(record, false),
 	}, nil
 }
 

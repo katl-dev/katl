@@ -129,6 +129,43 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err != nil {
 		if errors.Is(err, configapply.ErrNoChanges) {
+			if filepath.Clean(s.Root) == "/" {
+				drift := configapply.InspectHostConfiguration(ctx, base.CurrentManifest.Node.HostConfiguration, commandRunnerFunc(runConfigApplyCommand))
+				if len(drift) > 0 {
+					diagnostics := configApplyEffectDiagnostics(drift)
+					if configapply.HostConfigurationDriftIsLive(drift) {
+						submit = generationSubmitRequest(submitBase, OperationKindGenerationApply, applyMode)
+						if err := s.validateSubmit(submit); err != nil {
+							return nil, err
+						}
+						requestDigest, err = RequestDigest(submit)
+						if err != nil {
+							return nil, status.Errorf(codes.InvalidArgument, "request digest: %v", err)
+						}
+						return &agentapi.ConfigValidationResult{
+							ApiVersion:            APIVersion,
+							Kind:                  "ConfigValidationResult",
+							Accepted:              true,
+							RequestDigest:         requestDigest,
+							RequestedApplyMode:    applyMode,
+							AcceptedApplyMode:     generation.ApplyModeLive,
+							CandidateGenerationId: candidateID,
+							ChangedDomains:        []string{configapply.DomainHostConfiguration},
+							Diagnostics:           diagnostics,
+						}, nil
+					}
+					return &agentapi.ConfigValidationResult{
+						ApiVersion:            APIVersion,
+						Kind:                  "ConfigValidationResult",
+						Accepted:              true,
+						RequestDigest:         requestDigest,
+						RequestedApplyMode:    applyMode,
+						CandidateGenerationId: candidateID,
+						Diagnostics:           append([]string{"configuration files match, but runtime state is not current; reboot to reapply and verify the selected host configuration"}, diagnostics...),
+						NoChanges:             true,
+					}, nil
+				}
+			}
 			return &agentapi.ConfigValidationResult{
 				ApiVersion:            APIVersion,
 				Kind:                  "ConfigValidationResult",
@@ -320,21 +357,56 @@ func (s *Server) generationReadModel(id string, includeConfigApply bool) (*agent
 		}
 		statusRecord, err := generation.ReadConfigApplyStatus(statusPath)
 		if err == nil {
-			out.ConfigApply = &agentapi.ConfigApplyStatus{
-				Phase:                     statusRecord.Phase,
-				RequestedApplyMode:        statusRecord.RequestedApplyMode,
-				AcceptedApplyMode:         statusRecord.AcceptedApplyMode,
-				ChangedDomains:            append([]string(nil), statusRecord.ChangedDomains...),
-				FailureReason:             generation.RedactConfigApplyMessage(statusRecord.FailureReason),
-				KubeadmActionRequired:     statusRecord.Kubeadm.Required,
-				PreviousKubeadmConfigName: statusRecord.Kubeadm.PreviousConfigName,
-				SelectedKubeadmConfigName: statusRecord.Kubeadm.SelectedConfigName,
-			}
+			out.ConfigApply = configApplyStatusToProto(statusRecord)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 	}
 	return out, nil
+}
+
+func configApplyStatusToProto(status generation.ConfigApplyStatus) *agentapi.ConfigApplyStatus {
+	out := &agentapi.ConfigApplyStatus{
+		Phase:                     status.Phase,
+		RequestedApplyMode:        status.RequestedApplyMode,
+		AcceptedApplyMode:         status.AcceptedApplyMode,
+		ChangedDomains:            append([]string(nil), status.ChangedDomains...),
+		FailureReason:             generation.RedactConfigApplyMessage(status.FailureReason),
+		KubeadmActionRequired:     status.Kubeadm.Required,
+		PreviousKubeadmConfigName: status.Kubeadm.PreviousConfigName,
+		SelectedKubeadmConfigName: status.Kubeadm.SelectedConfigName,
+		DomainActions:             configApplyDomainActionsToProto(status.DomainActions),
+	}
+	if status.Rollback != nil {
+		out.RollbackTargetGenerationId = status.Rollback.TargetGenerationID
+		out.RollbackResult = status.Rollback.Result
+		out.RollbackReason = generation.RedactConfigApplyMessage(status.Rollback.Reason)
+	}
+	return out
+}
+
+func configApplyDomainActionsToProto(actions []generation.ConfigApplyDomainAction) []*agentapi.ConfigApplyDomainAction {
+	out := make([]*agentapi.ConfigApplyDomainAction, 0, len(actions))
+	for _, action := range actions {
+		item := &agentapi.ConfigApplyDomainAction{
+			Domain:     action.Domain,
+			Action:     action.Action,
+			Status:     action.Status,
+			Sets:       append([]string(nil), action.Sets...),
+			Paths:      append([]string(nil), action.Paths...),
+			Diagnostic: generation.RedactConfigApplyMessage(action.Diagnostic),
+		}
+		for _, effect := range action.Effects {
+			item.Effects = append(item.Effects, &agentapi.ConfigApplyEffect{
+				Action:     effect.Action,
+				Target:     effect.Target,
+				Status:     effect.Status,
+				Diagnostic: generation.RedactConfigApplyMessage(effect.Diagnostic),
+			})
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest, digest string, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
@@ -430,7 +502,7 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err != nil {
 		if errors.Is(err, configapply.ErrNoChanges) {
-			return e.completeConfigApplyNoop(record, e.clock())
+			return e.reconcileConfigApplyNoop(ctx, record, base.CurrentManifest.Node.HostConfiguration, e.clock())
 		}
 		cause := err
 		if diagnostics := strings.TrimSpace(strings.Join(configApplyDiagnostics(plan.Plan.Decision), "\n")); diagnostics != "" {
@@ -511,6 +583,68 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	return updateErr
 }
 
+func configApplyEffectDiagnostics(effects []generation.ConfigApplyEffect) []string {
+	out := make([]string, 0, len(effects))
+	for _, effect := range effects {
+		detail := strings.TrimSpace(effect.Diagnostic)
+		if detail == "" {
+			detail = "runtime verification failed"
+		}
+		out = append(out, effect.Action+" "+effect.Target+": "+detail)
+	}
+	return out
+}
+
+func (e *Executor) reconcileConfigApplyNoop(ctx context.Context, record operation.OperationRecord, config manifest.HostConfiguration, now time.Time) error {
+	if filepath.Clean(e.Root) != "/" {
+		return e.completeConfigApplyNoop(record, now)
+	}
+	runner := e.ConfigApplyRunner
+	if runner == nil {
+		runner = commandRunnerFunc(runConfigApplyCommand)
+	}
+	drift := configapply.InspectHostConfiguration(ctx, config, runner)
+	if len(drift) == 0 {
+		return e.completeConfigApplyNoop(record, now)
+	}
+	if !configapply.HostConfigurationDriftIsLive(drift) {
+		cause := fmt.Errorf("configuration files match, but runtime state is not current; reboot to reapply and verify the selected host configuration: %s", strings.Join(configApplyEffectDiagnostics(drift), "; "))
+		_, markErr := e.failRecordPhase(record.OperationID, "config-reconcile-refused", "config-reconcile", "config-reconcile", "reboot to reapply selected host configuration", cause)
+		return errorsJoin(cause, markErr)
+	}
+	if _, err := e.Store.Update(record.OperationID, "config-reconcile-start", "config-reconcile", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "config-reconcile"
+		current.ExternalMutationStarted = true
+		current.MutationScopes = appendMissing(current.MutationScopes, "config-domain:"+configapply.DomainHostConfiguration)
+		current.NextAction = "reconcile detectable host configuration runtime drift"
+		current.UpdatedAt = now
+		return current, nil
+	}); err != nil {
+		return err
+	}
+	plan := configapply.PlanHostSysctlReconciliation(config)
+	if err := configapply.ExecuteHostConfigurationActivation(ctx, plan, runner, nil); err != nil {
+		_, markErr := e.failRecordPhase(record.OperationID, "config-reconcile-failed", "config-reconcile", "config-reconcile", "inspect host configuration runtime state and retry", err)
+		return errorsJoin(err, markErr)
+	}
+	_, err := e.Store.Update(record.OperationID, "operation-complete", "operation-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "desired-state-reconciled"
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "render-generation", "config-reconcile", "desired-state-reconciled")
+		current.PhaseIndex = len(current.CompletedPhases)
+		current.CandidateGenerationID = ""
+		current.GenerationCommitState = operation.GenerationCommitAbandoned
+		current.Terminal = true
+		current.Result = operation.ResultSucceeded
+		current.RecoveryRequired = false
+		current.FailureReason = ""
+		current.NextAction = "desired configuration files already matched and detectable runtime drift was reconciled"
+		current.CompletedAt = &now
+		current.UpdatedAt = now
+		return current, nil
+	})
+	return err
+}
+
 func (e *Executor) completeConfigApplyNoop(record operation.OperationRecord, now time.Time) error {
 	_, err := e.Store.Update(record.OperationID, "operation-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = configApplyNoopPhase
@@ -556,6 +690,9 @@ func (e *Executor) markLiveConfigApplyStarted(operationID string, result configa
 
 func (e *Executor) failConfigApplyRecord(operationID string, result configapply.TrustedBundleResult, eventID string, eventType string, phase string, nextAction string, cause error, now time.Time) (operation.OperationRecord, error) {
 	return e.Store.Update(operationID, eventID, eventType, func(record operation.OperationRecord) (operation.OperationRecord, error) {
+		rolledBack := result.Status.Phase == generation.ConfigApplyPhaseRolledBack &&
+			result.Status.Rollback != nil &&
+			result.Status.Rollback.Result == generation.ConfigApplyActionPassed
 		record.Phase = phase
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true
@@ -570,7 +707,15 @@ func (e *Executor) failConfigApplyRecord(operationID string, result configapply.
 			record.ChangedDomains = append([]string(nil), result.Status.ChangedDomains...)
 		}
 		record.ActivationState = configApplyActivationState(result.Status, true)
-		completeConfigApplyInvocation(record.Invocations, liveConfigApplyInvocationID(operationID), now, operation.ResultFailedNeedsRepair)
+		if rolledBack {
+			record.Phase = generation.ConfigApplyPhaseRolledBack
+			record.Result = operation.ResultFailedRolledBack
+			record.RecoveryRequired = false
+			record.GenerationCommitState = operation.GenerationCommitAbandoned
+			record.HostRollback = result.Status.Rollback.TargetGenerationID
+			record.NextAction = fmt.Sprintf("previous generation %s and its runtime state were restored; correct the rejected configuration and retry", result.Status.Rollback.TargetGenerationID)
+		}
+		completeConfigApplyInvocation(record.Invocations, liveConfigApplyInvocationID(operationID), now, record.Result)
 		record.Terminal = true
 		record.UpdatedAt = now
 		record.CompletedAt = &now

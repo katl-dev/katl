@@ -16,7 +16,10 @@ import (
 
 type Command struct {
 	Name                string
+	EffectAction        string
+	EffectTarget        string
 	Argv                []string
+	ExpectedStdout      string
 	Timeout             time.Duration
 	SuccessExitStatuses []int
 }
@@ -174,7 +177,7 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 			continue
 		}
 		if action.Domain == DomainHostConfiguration {
-			if err := e.applyHostSysctls(ctx); err != nil {
+			if err := e.applyHostSysctls(ctx, action, status); err != nil {
 				action.Status = generation.ConfigApplyActionFailed
 				action.Diagnostic = generation.RedactConfigApplyMessage(err.Error())
 				_ = e.writeStatus(*status)
@@ -191,6 +194,7 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 		for _, command := range commands {
 			result, err := e.Runner.Run(ctx, command)
 			if err != nil {
+				markHostEffect(action, command, generation.ConfigApplyActionFailed, err)
 				action.Status = generation.ConfigApplyActionFailed
 				action.Diagnostic = generation.RedactConfigApplyMessage(err.Error())
 				_ = e.writeStatus(*status)
@@ -198,10 +202,17 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 			}
 			if !commandSucceeded(command, result) {
 				err := commandFailure(command, result)
+				markHostEffect(action, command, generation.ConfigApplyActionFailed, err)
 				action.Status = generation.ConfigApplyActionFailed
 				action.Diagnostic = generation.RedactConfigApplyMessage(err.Error())
 				_ = e.writeStatus(*status)
 				return err
+			}
+			markHostEffect(action, command, generation.ConfigApplyActionPassed, nil)
+			if action.Domain == DomainHostConfiguration {
+				if err := e.writeStatus(*status); err != nil {
+					return err
+				}
 			}
 		}
 		if kubeadmInputDomain(action.Domain) {
@@ -329,7 +340,7 @@ func (e Executor) snapshotHostSysctls(ctx context.Context, actions []generation.
 	return snapshot, nil
 }
 
-func (e Executor) applyHostSysctls(ctx context.Context) error {
+func (e Executor) applyHostSysctls(ctx context.Context, action *generation.ConfigApplyDomainAction, status *generation.ConfigApplyStatus) error {
 	if e.HostConfiguration == nil {
 		return nil
 	}
@@ -341,10 +352,13 @@ func (e Executor) applyHostSysctls(ctx context.Context) error {
 		}
 		result, err := e.Runner.Run(ctx, apply)
 		if err != nil {
+			markEffect(action, "apply-and-verify", "sysctl "+assignment.Key, generation.ConfigApplyActionFailed, err)
 			return fmt.Errorf("%s: %w", apply.Name, err)
 		}
 		if !commandSucceeded(apply, result) {
-			return commandFailure(apply, result)
+			err := commandFailure(apply, result)
+			markEffect(action, "apply-and-verify", "sysctl "+assignment.Key, generation.ConfigApplyActionFailed, err)
+			return err
 		}
 		verify := Command{
 			Name:    "sysctl-verify-" + assignment.Key,
@@ -353,16 +367,50 @@ func (e Executor) applyHostSysctls(ctx context.Context) error {
 		}
 		result, err = e.Runner.Run(ctx, verify)
 		if err != nil {
+			markEffect(action, "apply-and-verify", "sysctl "+assignment.Key, generation.ConfigApplyActionFailed, err)
 			return fmt.Errorf("%s: %w", verify.Name, err)
 		}
 		if !commandSucceeded(verify, result) {
-			return commandFailure(verify, result)
+			err := commandFailure(verify, result)
+			markEffect(action, "apply-and-verify", "sysctl "+assignment.Key, generation.ConfigApplyActionFailed, err)
+			return err
 		}
 		if strings.TrimSpace(result.Stdout) != assignment.Value {
-			return fmt.Errorf("sysctl %q verification returned %q, want %q", assignment.Key, strings.TrimSpace(result.Stdout), assignment.Value)
+			err := fmt.Errorf("sysctl %q verification returned %q, want %q", assignment.Key, strings.TrimSpace(result.Stdout), assignment.Value)
+			markEffect(action, "apply-and-verify", "sysctl "+assignment.Key, generation.ConfigApplyActionFailed, err)
+			return err
+		}
+		markEffect(action, "apply-and-verify", "sysctl "+assignment.Key, generation.ConfigApplyActionPassed, nil)
+		if err := e.writeStatus(*status); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func markHostEffect(action *generation.ConfigApplyDomainAction, command Command, result string, cause error) {
+	if action == nil || strings.TrimSpace(command.EffectAction) == "" || strings.TrimSpace(command.EffectTarget) == "" {
+		return
+	}
+	markEffect(action, command.EffectAction, command.EffectTarget, result, cause)
+}
+
+func markEffect(action *generation.ConfigApplyDomainAction, effectAction, target, result string, cause error) {
+	if action == nil {
+		return
+	}
+	for i := range action.Effects {
+		effect := &action.Effects[i]
+		if effect.Action != effectAction || effect.Target != target {
+			continue
+		}
+		effect.Status = result
+		effect.Diagnostic = ""
+		if cause != nil {
+			effect.Diagnostic = generation.RedactConfigApplyMessage(cause.Error())
+		}
+		return
+	}
 }
 
 func (e Executor) restoreHostSysctls(ctx context.Context, snapshot map[string]string) error {

@@ -170,6 +170,7 @@ func domainActions(acceptedMode string, domains []string, changes ...Change) []g
 		if change, ok := details[domain]; ok {
 			action.Sets = append([]string(nil), change.Sets...)
 			action.Paths = append([]string(nil), change.Paths...)
+			action.Effects = append([]generation.ConfigApplyEffect(nil), change.Effects...)
 			action.Diagnostic = change.Message
 		}
 		if domain == DomainKubeadmConfig || domain == DomainSelectedKubeadmConfig {
@@ -182,6 +183,9 @@ func domainActions(acceptedMode string, domains []string, changes ...Change) []g
 				action.Diagnostic = "desired kubeadm input activated; live state requires an explicit kubeadm-aware operation"
 				action.Status = generation.ConfigApplyActionSkipped
 			}
+		} else if acceptedMode == generation.ApplyModeNextBoot && domain == DomainHostConfiguration {
+			action.Action = "native-host-configuration-boot-apply"
+			action.Status = generation.ConfigApplyActionPlanned
 		} else if acceptedMode == generation.ApplyModeNextBoot {
 			action.Action = "stage-next-boot"
 			if action.Diagnostic == "" {

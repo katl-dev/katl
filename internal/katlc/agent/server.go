@@ -571,7 +571,7 @@ func (s *Server) GetOperation(ctx context.Context, req *agentapi.GetOperationReq
 	if err != nil {
 		return nil, err
 	}
-	status := operationStatus(record, options.Diagnostics)
+	status := s.operationStatus(record, options.Diagnostics)
 	if options.BootstrapOutput {
 		kubeconfig, err := s.adminKubeconfigOutput(record)
 		if err != nil {
@@ -609,7 +609,7 @@ func (s *Server) ListOperations(ctx context.Context, req *agentapi.ListOperation
 		if req.ActiveOnly && record.Terminal {
 			continue
 		}
-		response.Operations = append(response.Operations, operationStatus(record, options.Diagnostics))
+		response.Operations = append(response.Operations, s.operationStatus(record, options.Diagnostics))
 		if len(response.Operations) == limit {
 			break
 		}
@@ -654,7 +654,7 @@ func (s *Server) WatchOperation(req *agentapi.WatchOperationRequest, stream agen
 			return status.Errorf(codes.NotFound, "read operation: %v", err)
 		}
 		for _, event := range events {
-			if err := stream.Send(operationEvent(event, options.Diagnostics)); err != nil {
+			if err := stream.Send(s.operationEvent(event, options.Diagnostics)); err != nil {
 				return err
 			}
 			afterSeq = event.Sequence
@@ -828,7 +828,7 @@ func (s *Server) acceptedFromRecord(record operation.OperationRecord) *agentapi.
 		RequestDigest: record.RequestDigest,
 		RecordPath:    filepath.ToSlash(filepath.Join(s.operationStoreRoot(), record.OperationID, "record.json")),
 		AcceptedAt:    formatTime(record.CreatedAt),
-		InitialStatus: operationStatus(record, false),
+		InitialStatus: s.operationStatus(record, false),
 	}
 }
 
@@ -1047,7 +1047,7 @@ func (s *Server) adminKubeconfigOutput(record operation.OperationRecord) (string
 	return string(data), nil
 }
 
-func operationStatus(record operation.OperationRecord, includeDiagnostics bool) *agentapi.OperationStatus {
+func (s *Server) operationStatus(record operation.OperationRecord, includeDiagnostics bool) *agentapi.OperationStatus {
 	diagnostics := make([]*agentapi.DiagnosticArtifact, 0, len(record.DiagnosticArtifacts))
 	if includeDiagnostics {
 		diagnostics = diagnosticArtifacts(record)
@@ -1066,7 +1066,7 @@ func operationStatus(record operation.OperationRecord, includeDiagnostics bool) 
 			Result:            invocation.Result,
 		})
 	}
-	return &agentapi.OperationStatus{
+	out := &agentapi.OperationStatus{
 		OperationId:             record.OperationID,
 		OperationKind:           record.OperationKind,
 		ClientRequestId:         record.ClientRequestID,
@@ -1096,6 +1096,25 @@ func operationStatus(record operation.OperationRecord, includeDiagnostics bool) 
 		ConfigApplyPhase:        record.ConfigApplyPhase,
 		ChangedDomains:          append([]string(nil), record.ChangedDomains...),
 	}
+	if strings.TrimSpace(record.CandidateGenerationID) == "" {
+		return out
+	}
+	statusPath, err := generation.ConfigApplyStatusPath(s.Root, record.CandidateGenerationID)
+	if err != nil {
+		return out
+	}
+	statusRecord, err := generation.ReadConfigApplyStatus(statusPath)
+	if err != nil {
+		return out
+	}
+	out.ConfigApply = configApplyStatusToProto(statusRecord)
+	if record.ConfigApplyPhase == generation.ConfigApplyPhaseNextBoot && statusRecord.Phase == generation.ConfigApplyPhaseActive {
+		out.ConfigApplyPhase = generation.ConfigApplyPhaseActive
+		out.ActivationState = operation.ActivationStateActiveLive
+		out.BootHealthPending = false
+		out.NextAction = "continue managing the node through its active generation"
+	}
+	return out
 }
 
 func RequestDigest(req *agentapi.SubmitOperationRequest) (string, error) {
@@ -1497,14 +1516,14 @@ func workerJoinMaterialRef(requestRef string, material cluster.JoinMaterial, exp
 	return "worker-join:" + workerJoinMaterialDigest(&payload)[:12]
 }
 
-func operationEvent(event operation.JournalEvent, includeDiagnostics bool) *agentapi.OperationEvent {
+func (s *Server) operationEvent(event operation.JournalEvent, includeDiagnostics bool) *agentapi.OperationEvent {
 	return &agentapi.OperationEvent{
 		OperationId: event.Record.OperationID,
 		JournalSeq:  int32(event.Sequence),
 		EventType:   event.EventType,
 		Phase:       event.Record.Phase,
 		Terminal:    event.Record.Terminal,
-		Status:      operationStatus(event.Record, false),
+		Status:      s.operationStatus(event.Record, false),
 		Diagnostics: diagnosticArtifactsIf(event.Record, includeDiagnostics),
 	}
 }
