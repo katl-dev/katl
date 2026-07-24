@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -744,6 +745,13 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 		}
 		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.TargetPayloadVersion != targetVersion || record.KubeadmUpgradeEvidence == nil || record.KubeadmUpgradeEvidence.TargetKubeadmObservedVersion != targetVersion || record.KubeadmUpgradeEvidence.KubeletGateState != "target-observed" {
 			return fmt.Errorf("%s upgrade evidence incomplete: %+v", item.node.Name, record)
+		}
+		drainedAPI := slices.Contains(record.CompletedPhases, "apiserver-drain-complete")
+		if item.node.Name == cpNode.Name && !drainedAPI {
+			return fmt.Errorf("%s upgrade did not drain API connections before kubeadm", item.node.Name)
+		}
+		if item.node.Name == workerNode.Name && drainedAPI {
+			return fmt.Errorf("%s worker upgrade unexpectedly drained API connections", item.node.Name)
 		}
 		_, generationRecord, err := collectGenerationEvidence(ctx, item.node, dir, record.CandidateGenerationID)
 		if err != nil {

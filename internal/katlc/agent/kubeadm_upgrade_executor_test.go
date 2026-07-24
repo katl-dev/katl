@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,12 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	executor := NewExecutor(root, store, "agent-test")
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
+	executor.WaitBeforeKubeadm = func(_ context.Context, delay time.Duration) error {
+		if delay != kubeAPIServerDrainDelay {
+			t.Fatalf("API server drain delay = %s", delay)
+		}
+		return nil
+	}
 	executor.SetBootDefault = func(_ context.Context, _ string, entry string) error {
 		if entry != "loader/entries/katl-gen1.conf" {
 			t.Fatalf("boot default entry = %q", entry)
@@ -55,6 +62,9 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if !completed.ExternalMutationStarted || !completed.MutatingToolRan || len(completed.PreExecMutationMarkers) != 1 {
 		t.Fatalf("mutation evidence = external %v ran %v markers %+v", completed.ExternalMutationStarted, completed.MutatingToolRan, completed.PreExecMutationMarkers)
 	}
+	if !slices.Contains(completed.CompletedPhases, "apiserver-drain-complete") {
+		t.Fatalf("completed phases = %v", completed.CompletedPhases)
+	}
 	if completed.KubeadmUpgradeEvidence.TargetKubeadmAccessMode != kubeadmAccessOperationPrivate || completed.KubeadmUpgradeEvidence.KubeletGateState != "target-observed" || completed.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm {
 		t.Fatalf("upgrade evidence = %+v", completed.KubeadmUpgradeEvidence)
 	}
@@ -62,6 +72,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		"kubeadm upgrade plan v1.36.2",
 		"systemctl stop "+endpointAdvertiserUnit,
 		endpointAdvertiserCommand+" withdraw",
+		"/usr/bin/killall -s SIGTERM kube-apiserver",
 		"kubeadm upgrade apply --yes v1.36.2",
 		"systemctl stop kubelet.service",
 		"systemd-sysext refresh",
@@ -121,8 +132,12 @@ func TestExecutorKeepsRecoveryRequiredAfterKubeadmMutationFailure(t *testing.T) 
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	sawUnmount := false
+	sawAPIServerDrain := false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "/usr/bin/killall") {
+			sawAPIServerDrain = true
+		}
 		if strings.Contains(joined, "systemd-dissect --umount") {
 			sawUnmount = true
 		}
@@ -159,6 +174,75 @@ func TestExecutorKeepsRecoveryRequiredAfterKubeadmMutationFailure(t *testing.T) 
 	}
 	if sawUnmount {
 		t.Fatal("operation-private target kubeadm repair view was removed after mutation failure")
+	}
+	if sawAPIServerDrain {
+		t.Fatal("worker upgrade drained kube-apiserver")
+	}
+}
+
+func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  ToolRunner
+		wait ContextWaiter
+		want string
+	}{
+		{
+			name: "signal",
+			run: func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				joined := strings.Join(argv, " ")
+				if strings.Contains(joined, "/usr/bin/kubeadm version") {
+					return ToolResult{Stdout: []byte("v1.36.2\n")}
+				}
+				if strings.Contains(joined, "/usr/bin/killall") {
+					return ToolResult{ExitStatus: 1, Stderr: []byte("no process found")}
+				}
+				return ToolResult{}
+			},
+			want: "gracefully terminate kube-apiserver",
+		},
+		{
+			name: "wait",
+			run: func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				if strings.Contains(strings.Join(argv, " "), "/usr/bin/kubeadm version") {
+					return ToolResult{Stdout: []byte("v1.36.2\n")}
+				}
+				return ToolResult{}
+			},
+			wait: func(_ context.Context, delay time.Duration) error {
+				if delay != kubeAPIServerDrainDelay {
+					t.Fatalf("API server drain delay = %s", delay)
+				}
+				return context.Canceled
+			},
+			want: "wait for kube-apiserver connections to drain",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, store, record, now := kubeadmUpgradeFixture(t, "control-plane")
+			executor := NewExecutor(root, store, "agent-test")
+			executor.Async = false
+			executor.Now = func() time.Time { return now.Add(time.Minute) }
+			executor.RunTool = tc.run
+			if tc.wait != nil {
+				executor.WaitBeforeKubeadm = tc.wait
+			}
+			if err := executor.Execute(context.Background(), record); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Execute() error = %v, want %q", err, tc.want)
+			}
+			failed, err := store.Read(record.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !failed.Terminal || failed.RecoveryRequired || failed.ExternalMutationStarted || failed.Result != "failed" {
+				t.Fatalf("failed operation = %+v", failed)
+			}
+			for _, invocation := range failed.Invocations {
+				if strings.Contains(strings.Join(invocation.ChildProcess, " "), "kubeadm upgrade node") {
+					t.Fatalf("kubeadm ran after API server drain failure: %+v", invocation)
+				}
+			}
+		})
 	}
 }
 

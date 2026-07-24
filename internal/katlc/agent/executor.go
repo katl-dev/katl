@@ -48,6 +48,7 @@ type ToolRunner func(context.Context, []string, func(int)) ToolResult
 type BootRootMounter func(context.Context, string) error
 type BootEntrySetter func(context.Context, string, string) error
 type HostUpgradeResolver func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error)
+type ContextWaiter func(context.Context, time.Duration) error
 
 type Executor struct {
 	Root                 string
@@ -66,6 +67,7 @@ type Executor struct {
 	ConfigApplyActivator configapply.ConfextActivator
 	BundleClient         *http.Client
 	ResolveHostUpgrade   HostUpgradeResolver
+	WaitBeforeKubeadm    ContextWaiter
 	Async                bool
 	workerMu             sync.Mutex
 	workerWG             sync.WaitGroup
@@ -90,6 +92,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		RunPoweroff:          runChildProcess,
 		MountBootRoot:        mountRuntimeBootRoot,
 		BundleClient:         http.DefaultClient,
+		WaitBeforeKubeadm:    waitForContext,
 		Async:                true,
 		workerCtx:            workerCtx,
 		workerCancel:         workerCancel,
@@ -99,6 +102,17 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		executor.SetBootDefault = setBootDefault
 	}
 	return executor
+}
+
+func waitForContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func AuditStartup(store operation.Store, now time.Time) (operation.ReconcileReport, error) {

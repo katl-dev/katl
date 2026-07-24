@@ -278,7 +278,19 @@ func validateKubernetesSysextUpdateRequest(operationKind string, req *agentapi.K
 func kubeadmUpgradePhasePlan(role string) []string {
 	plan := []string{"accepted", "staged"}
 	if role == "apply" {
-		plan = append(plan, "kubeadm-plan-running", "kubeadm-plan-complete", "kubeadm-apply-running")
+		plan = append(plan,
+			"kubeadm-plan-running",
+			"kubeadm-plan-complete",
+			"apiserver-drain-running",
+			"apiserver-drain-complete",
+			"kubeadm-apply-running",
+		)
+	} else if role == "control-plane" {
+		plan = append(plan,
+			"apiserver-drain-running",
+			"apiserver-drain-complete",
+			"kubeadm-node-running",
+		)
 	} else {
 		plan = append(plan, "kubeadm-node-running")
 	}

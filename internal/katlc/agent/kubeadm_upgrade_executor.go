@@ -18,7 +18,13 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
-const kubeadmUpgradeTimeout = 30 * time.Minute
+const (
+	kubeadmUpgradeTimeout = 30 * time.Minute
+	// kubeadm keeps the API server running while its local stacked-etcd member
+	// restarts. Draining for the upstream-recommended interval closes existing
+	// client connections before they can stall against the unavailable member.
+	kubeAPIServerDrainDelay = 20 * time.Second
+)
 
 func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.OperationRecord) error {
 	var err error
@@ -139,6 +145,9 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 				}
 			}()
 		}
+		if err := e.drainKubeAPIServerConnections(ctx, record); err != nil {
+			return err
+		}
 	}
 
 	retainToolView = true
@@ -206,6 +215,37 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	}
 	retainToolView = false
 	return nil
+}
+
+func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record operation.OperationRecord) error {
+	if _, err := e.Store.Update(record.OperationID, "apiserver-drain-start", "apiserver-drain-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "apiserver-drain-running"
+		current.UpdatedAt = e.clock()
+		current.NextAction = "gracefully close in-flight API connections before restarting stacked etcd"
+		return current, nil
+	}); err != nil {
+		return err
+	}
+	result := e.toolRunner()(ctx, []string{"/usr/bin/killall", "-s", "SIGTERM", "kube-apiserver"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("gracefully terminate kube-apiserver: %s", toolFailure(result)), false)
+	}
+	wait := e.WaitBeforeKubeadm
+	if wait == nil {
+		wait = waitForContext
+	}
+	if err := wait(ctx, kubeAPIServerDrainDelay); err != nil {
+		return e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("wait for kube-apiserver connections to drain: %w", err), false)
+	}
+	_, err := e.Store.Update(record.OperationID, "apiserver-drain-complete", "apiserver-drain-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "apiserver-drain-complete"
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "apiserver-drain-running", "apiserver-drain-complete")
+		current.PhaseIndex = len(current.CompletedPhases)
+		current.UpdatedAt = e.clock()
+		current.NextAction = "run kubeadm after in-flight API connections have closed"
+		return current, nil
+	})
+	return err
 }
 
 func (e *Executor) resolveKubernetesUpgradePayload(ctx context.Context, record operation.OperationRecord) (operation.OperationRecord, error) {
