@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -195,6 +197,60 @@ func TestApplyTrustedBundleReloadsEnabledEndpointRouting(t *testing.T) {
 	}
 	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-link-reload,endpoint-routing-reload,endpoint-resume"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
+func TestPlanTrustedBundleRefreshesStaleRenderedEndpoint(t *testing.T) {
+	root := t.TempDir()
+	current := baseManifest()
+	current.Node.ControlPlaneEndpoint = managedEndpoint("192.0.2.1")
+	currentRecord := currentRecord()
+	selectEndpointAdvertiser(t, root, &currentRecord)
+	writeCurrentEndpointRendering(t, root, currentRecord, current)
+
+	birdPath := currentConfextFilePath(t, root, currentRecord, bgpapivip.BirdConfigPath)
+	if err := os.WriteFile(birdPath, []byte("protocol static katl_api { disabled; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:       generation.ApplyModeAuto,
+		CurrentManifest: current,
+		CurrentRecord:   currentRecord,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {ControlPlaneEndpointSet: true, ControlPlaneEndpoint: managedEndpoint("192.0.2.1")},
+		},
+	})
+	result, err := PlanTrustedBundle(request)
+	if err != nil {
+		t.Fatalf("PlanTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive ||
+		!containsDomain(result.Plan.Decision.ChangedDomains, DomainControlPlaneEndpointRouting) {
+		t.Fatalf("decision = %#v, want live rendered endpoint refresh", result.Plan.Decision)
+	}
+	if !nativeEtcFileContains(result.Files, bgpapivip.BirdConfigPath, "protocol direct katl_api") {
+		t.Fatalf("candidate BIRD config did not replace stale rendering")
+	}
+}
+
+func TestPlanTrustedBundleKeepsMatchingRenderedEndpointAsNoop(t *testing.T) {
+	root := t.TempDir()
+	current := baseManifest()
+	current.Node.ControlPlaneEndpoint = managedEndpoint("192.0.2.1")
+	currentRecord := currentRecord()
+	selectEndpointAdvertiser(t, root, &currentRecord)
+	writeCurrentEndpointRendering(t, root, currentRecord, current)
+
+	_, err := PlanTrustedBundle(trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:       generation.ApplyModeAuto,
+		CurrentManifest: current,
+		CurrentRecord:   currentRecord,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {ControlPlaneEndpointSet: true, ControlPlaneEndpoint: managedEndpoint("192.0.2.1")},
+		},
+	}))
+	if !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("PlanTrustedBundle() error = %v, want unchanged desired and rendered state", err)
 	}
 }
 
@@ -1073,6 +1129,58 @@ func selectEndpointAdvertiser(t *testing.T, root string, record *generation.Reco
 		t.Fatal(err)
 	}
 	record.Sysexts = append(record.Sysexts, selected)
+}
+
+func writeCurrentEndpointRendering(t *testing.T, root string, record generation.Record, current manifest.Manifest) {
+	t.Helper()
+	endpoint, err := controlplaneendpoint.Normalize(*current.Node.ControlPlaneEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := bgpapivip.FromControlPlaneEndpoint(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{
+		Config:   config,
+		NodeRole: current.Node.SystemRole,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range rendered.NativeEtcFiles() {
+		path := currentConfextFilePath(t, root, record, file.Path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mode := file.Mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		if err := os.WriteFile(path, []byte(file.Content), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func currentConfextFilePath(t *testing.T, root string, record generation.Record, path string) string {
+	t.Helper()
+	for _, ref := range record.Confexts {
+		if ref.Name == "katl-node" {
+			return filepath.Join(root, strings.TrimPrefix(ref.Path, "/"), strings.TrimPrefix(path, "/"))
+		}
+	}
+	t.Fatal("current record has no katl-node confext")
+	return ""
+}
+
+func nativeEtcFileContains(files []confext.NativeEtcFile, path, substring string) bool {
+	for _, file := range files {
+		if file.Path == path {
+			return strings.Contains(file.Content, substring)
+		}
+	}
+	return false
 }
 
 func baseManifest() manifest.Manifest {

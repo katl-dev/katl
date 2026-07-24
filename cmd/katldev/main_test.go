@@ -46,6 +46,11 @@ func TestRootAndInstallerCommandsShowHelpWithoutArguments(t *testing.T) {
 
 func TestBuildInstallerISOComposesSupportedPipeline(t *testing.T) {
 	repo := t.TempDir()
+	version := "2026.7.0-local.1a2b3c4"
+	architecture, err := developmentArtifactArchitecture(runtime.GOARCH)
+	if err != nil {
+		t.Skip(err)
+	}
 	iso := filepath.Join(repo, "_build", "mkosi", "katl-installer.iso")
 	contents := []byte("current checkout installer ISO")
 	type call struct {
@@ -70,13 +75,13 @@ func TestBuildInstallerISOComposesSupportedPipeline(t *testing.T) {
 		return nil
 	}
 	var stdout, stderr bytes.Buffer
-	artifact, err := buildInstallerISO(context.Background(), repo, &stderr, runner)
+	artifact, err := buildInstallerISO(context.Background(), repo, version, &stderr, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantCalls := []call{
-		{dir: repo, name: filepath.Join(repo, "scripts", "mkosi"), args: []string{"build-installer-iso"}},
-		{dir: repo, name: filepath.Join(repo, "scripts", "check-installer-iso"), args: []string{iso}},
+		{dir: repo, name: filepath.Join(repo, "scripts", "mkosi"), args: []string{"build-installer-iso"}, env: []string{"KATL_VERSION=" + version, "KATL_ARCHITECTURE=" + architecture, "KATL_BUILD_COMMIT=" + version}},
+		{dir: repo, name: filepath.Join(repo, "scripts", "check-installer-iso"), args: []string{iso}, env: []string{"KATL_VERSION=" + version, "KATL_ARCHITECTURE=" + architecture, "KATL_BUILD_COMMIT=" + version}},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("build calls = %#v, want %#v", calls, wantCalls)
@@ -93,7 +98,7 @@ func TestBuildInstallerISOComposesSupportedPipeline(t *testing.T) {
 			t.Fatalf("output missing %q:\n%s", want, stdout.String())
 		}
 	}
-	for _, want := range []string{"building the current checkout", "verifying the completed installer ISO"} {
+	for _, want := range []string{"building KatlOS " + version, "verifying the completed installer ISO"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("progress missing %q:\n%s", want, stderr.String())
 		}
@@ -107,12 +112,36 @@ func TestBuildInstallerISOStopsAfterBuildFailure(t *testing.T) {
 		calls++
 		return wantErr
 	}
-	_, err := buildInstallerISO(context.Background(), t.TempDir(), io.Discard, runner)
+	_, err := buildInstallerISO(context.Background(), t.TempDir(), "2026.7.0-local.1a2b3c4", io.Discard, runner)
 	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "build installer ISO") {
 		t.Fatalf("buildInstallerISO() error = %v", err)
 	}
 	if calls != 1 {
 		t.Fatalf("runner calls = %d, want 1", calls)
+	}
+}
+
+func TestLocalKatlOSBuildVersionUsesReleaseLineAndShortRevision(t *testing.T) {
+	got, err := localKatlOSBuildVersion("v2026.7.0-beta.13", "d3299ef89962")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "2026.7.0-local.d3299ef" {
+		t.Fatalf("localKatlOSBuildVersion() = %q", got)
+	}
+}
+
+func TestLocalKatlOSBuildVersionRejectsUnusableIdentity(t *testing.T) {
+	for _, test := range []struct {
+		tag      string
+		revision string
+	}{
+		{tag: "not-a-release", revision: "d3299ef89962"},
+		{tag: "v2026.7.0-beta.13", revision: "short"},
+	} {
+		if _, err := localKatlOSBuildVersion(test.tag, test.revision); err == nil {
+			t.Fatalf("localKatlOSBuildVersion(%q, %q) succeeded", test.tag, test.revision)
+		}
 	}
 }
 

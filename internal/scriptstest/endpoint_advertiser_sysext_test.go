@@ -72,7 +72,9 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
 		"ExecStart=/usr/bin/systemctl daemon-reload",
-		"start katl-app-bgp-api-vip.path",
+		"ExecStart=/usr/bin/systemctl start katl-app-bgp-api-vip.service",
+		"ExecStart=-/usr/bin/systemctl start katl-app-bgp-api-vip.path",
+		"ExecStop=-/usr/bin/systemctl stop katl-app-bgp-api-vip.path",
 	} {
 		if !strings.Contains(activationUnit, want) {
 			t.Fatalf("endpoint activation unit is missing %q", want)

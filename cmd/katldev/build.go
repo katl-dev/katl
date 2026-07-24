@@ -38,6 +38,7 @@ type kubernetesBuildArtifact struct {
 }
 
 var katlOSBuildVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
+var katlOSBaseVersionPattern = regexp.MustCompile(`^([0-9]{4}\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
 
 func newBuildCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
@@ -86,6 +87,10 @@ func newBuildUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 			if err != nil {
 				return err
 			}
+			version, err = resolveKatlOSBuildVersion(repoRoot, version)
+			if err != nil {
+				return err
+			}
 			artifact, err := buildKatlOSUpgrade(ctx, repoRoot, version, stderr, runBuildCommand)
 			if err != nil {
 				return err
@@ -93,12 +98,13 @@ func newBuildUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 			return writeKatlOSUpgradeArtifact(stdout, artifact)
 		},
 	}
-	cmd.Flags().StringVar(&version, "version", "", "KatlOS version to embed in the locally built image")
+	cmd.Flags().StringVar(&version, "version", "", "KatlOS version to embed (default local.<checkout commit>)")
 	return cmd
 }
 
 func newBuildISOCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	return &cobra.Command{
+	var version string
+	cmd := &cobra.Command{
 		Use:   "iso",
 		Short: "Build and verify the current checkout's installer ISO",
 		Args:  cobra.NoArgs,
@@ -107,26 +113,48 @@ func newBuildISOCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Co
 			if err != nil {
 				return err
 			}
-			artifact, err := buildInstallerISO(ctx, repoRoot, stderr, runBuildCommand)
+			version, err = resolveKatlOSBuildVersion(repoRoot, version)
+			if err != nil {
+				return err
+			}
+			artifact, err := buildInstallerISO(ctx, repoRoot, version, stderr, runBuildCommand)
 			if err != nil {
 				return err
 			}
 			return writeInstallerISOArtifact(stdout, artifact)
 		},
 	}
+	cmd.Flags().StringVar(&version, "version", "", "KatlOS version to embed (default local.<checkout commit>)")
+	return cmd
 }
 
-func buildInstallerISO(ctx context.Context, repoRoot string, stderr io.Writer, run buildCommandRunner) (installerISOArtifact, error) {
+func buildInstallerISO(ctx context.Context, repoRoot, version string, stderr io.Writer, run buildCommandRunner) (installerISOArtifact, error) {
 	if run == nil {
 		return installerISOArtifact{}, fmt.Errorf("build command runner is required")
 	}
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if !katlOSBuildVersionPattern.MatchString(version) {
+		return installerISOArtifact{}, fmt.Errorf("KatlOS build version %q must look like 2026.7.0-local.1a2b3c4", version)
+	}
+	architecture, err := developmentArtifactArchitecture(runtime.GOARCH)
+	if err != nil {
+		return installerISOArtifact{}, err
+	}
+	buildID := version
+	if revision, dirty := checkoutRevision(repoRoot); revision != "" {
+		buildID = revision
+		if dirty {
+			buildID += "-dirty"
+		}
+	}
+	environment := []string{"KATL_VERSION=" + version, "KATL_ARCHITECTURE=" + architecture, "KATL_BUILD_COMMIT=" + buildID}
 	iso := filepath.Join(repoRoot, "_build", "mkosi", "katl-installer.iso")
-	fmt.Fprintln(stderr, "katldev build: building the current checkout installer ISO")
-	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "mkosi"), []string{"build-installer-iso"}, nil, stderr, stderr); err != nil {
+	fmt.Fprintf(stderr, "katldev build: building KatlOS %s installer ISO from the current checkout\n", version)
+	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "mkosi"), []string{"build-installer-iso"}, environment, stderr, stderr); err != nil {
 		return installerISOArtifact{}, fmt.Errorf("build installer ISO: %w", err)
 	}
 	fmt.Fprintln(stderr, "katldev build: verifying the completed installer ISO")
-	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "check-installer-iso"), []string{iso}, nil, stderr, stderr); err != nil {
+	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "check-installer-iso"), []string{iso}, environment, stderr, stderr); err != nil {
 		return installerISOArtifact{}, fmt.Errorf("verify installer ISO: %w", err)
 	}
 	digest, err := sha256File(iso)
@@ -153,6 +181,43 @@ func buildInstallerISO(ctx context.Context, repoRoot string, stderr io.Writer, r
 		}
 	}
 	return artifact, nil
+}
+
+func resolveKatlOSBuildVersion(repoRoot, requested string) (string, error) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		requested = strings.TrimSpace(os.Getenv("KATL_VERSION"))
+	}
+	if requested != "" {
+		requested = strings.TrimPrefix(requested, "v")
+		if !katlOSBuildVersionPattern.MatchString(requested) {
+			return "", fmt.Errorf("KatlOS build version %q must look like 2026.7.0-local.1a2b3c4", requested)
+		}
+		return requested, nil
+	}
+
+	tagOutput, err := exec.Command("git", "-C", repoRoot, "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("derive local KatlOS version from the nearest release tag: %w; use --version to set one explicitly", err)
+	}
+	revision, _ := checkoutRevision(repoRoot)
+	if revision == "" {
+		return "", fmt.Errorf("derive local KatlOS version: current checkout has no commit; use --version to set one explicitly")
+	}
+	return localKatlOSBuildVersion(strings.TrimSpace(string(tagOutput)), revision)
+}
+
+func localKatlOSBuildVersion(tag, revision string) (string, error) {
+	tag = strings.TrimPrefix(strings.TrimSpace(tag), "v")
+	matches := katlOSBaseVersionPattern.FindStringSubmatch(tag)
+	if len(matches) != 2 {
+		return "", fmt.Errorf("nearest KatlOS tag %q is not a supported calendar version; use --version to set one explicitly", tag)
+	}
+	revision = strings.TrimSpace(revision)
+	if len(revision) < 7 {
+		return "", fmt.Errorf("checkout revision %q is too short to identify a local build", revision)
+	}
+	return matches[1] + "-local." + revision[:7], nil
 }
 
 func runBuildCommand(ctx context.Context, dir, name string, args, environment []string, stdout, stderr io.Writer) error {
