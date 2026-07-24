@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
+	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
@@ -57,12 +59,7 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 	if len(bundle.Nodes[0].KubeadmInputs) != 1 || bundle.Nodes[0].KubeadmInputs[0].Annotations["dev.katl.kubeadm.resolved-id"] != "control-plane" {
 		t.Fatalf("control-plane kubeadm inputs = %#v", bundle.Nodes[0].KubeadmInputs)
 	}
-	if bundle.Cluster.KubernetesPayloads[0].OCIManifestDigest != "sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537" || bundle.Cluster.KubernetesPayloads[0].ArtifactVersion != "v1.36.1-katl.1" {
-		t.Fatalf("kubernetes payloads = %#v", bundle.Cluster.KubernetesPayloads)
-	}
-	if payload := bundle.Cluster.KubernetesPayloads[0]; payload.ResolverVersion != "release-compatibility-v1" || payload.Architecture != "x86_64" || len(payload.SupportedRuntimeInterfaces) != 1 || payload.SupportedRuntimeInterfaces[0] != "katl-runtime-1" {
-		t.Fatalf("resolved Kubernetes compatibility = %#v", payload)
-	}
+	assertReleaseKubernetesPayload(t, bundle.Cluster.KubernetesPayloads, "v1.36.1")
 	if !hasDescriptor(bundle.Descriptors, "source-normalized", "source/cluster.normalized.yaml") ||
 		!hasDescriptor(bundle.Descriptors, "node-install-material", "nodes/cp-1/install/material.json") ||
 		!hasDescriptor(bundle.Descriptors, "node-native-config", "nodes/worker-1/config/native.json") {
@@ -73,6 +70,37 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 		if _, ok := files[blobPath]; !ok {
 			t.Fatalf("descriptor %s missing blob %s", desc.FileName, blobPath)
 		}
+	}
+}
+
+func assertReleaseKubernetesPayload(t *testing.T, payloads []KubernetesPayloadRecord, version string) {
+	t.Helper()
+	if len(payloads) != 1 {
+		t.Fatalf("Kubernetes payloads = %#v", payloads)
+	}
+	selection, err := kubernetescompat.Resolve(kubernetescompat.Request{
+		KubernetesVersion: version,
+		Architecture:      "x86_64",
+		RuntimeInterface:  "katl-runtime-1",
+	})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	image, err := kubernetesbundle.ParseImageReference(selection.Bundle)
+	if err != nil {
+		t.Fatalf("ParseImageReference() error = %v", err)
+	}
+	payload := payloads[0]
+	if payload.RequestedVersion != version ||
+		payload.ResolvedPayloadVersion != version ||
+		payload.Ref != selection.Bundle ||
+		payload.OCIManifestDigest != image.ManifestDigest ||
+		payload.ArtifactVersion != image.ArtifactVersion ||
+		payload.ResolverVersion != "release-compatibility-v1" ||
+		payload.Architecture != "x86_64" ||
+		len(payload.SupportedRuntimeInterfaces) != 1 ||
+		payload.SupportedRuntimeInterfaces[0] != "katl-runtime-1" {
+		t.Fatalf("Kubernetes payload = %#v", payload)
 	}
 }
 
@@ -203,9 +231,7 @@ spec:
 	if result.Manifest.Cluster.BootstrapInventory.ControlPlaneEndpoint != "192.0.2.11:6443" {
 		t.Fatalf("bootstrap inventory = %#v", result.Manifest.Cluster.BootstrapInventory)
 	}
-	if len(result.Manifest.Cluster.KubernetesPayloads) != 1 || !strings.Contains(result.Manifest.Cluster.KubernetesPayloads[0].Ref, "v1.36.1-katl.1@sha256:") {
-		t.Fatalf("Kubernetes payloads = %#v", result.Manifest.Cluster.KubernetesPayloads)
-	}
+	assertReleaseKubernetesPayload(t, result.Manifest.Cluster.KubernetesPayloads, "v1.36.1")
 	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
 	if err != nil {
 		t.Fatalf("ReadSelectedNode() error = %v", err)

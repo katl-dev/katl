@@ -3,6 +3,8 @@ package kubernetescompat
 import (
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 )
 
 func TestResolveReturnsImmutableCompatibleBundle(t *testing.T) {
@@ -14,8 +16,12 @@ func TestResolveReturnsImmutableCompatibleBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if !strings.Contains(entry.Bundle, "v1.36.1-katl.1@sha256:") {
-		t.Fatalf("bundle = %q", entry.Bundle)
+	image, err := kubernetesbundle.ParseImageReference(entry.Bundle)
+	if err != nil {
+		t.Fatalf("ParseImageReference() error = %v", err)
+	}
+	if image.PayloadVersion != "v1.36.1" || image.ArtifactVersion == "" || image.ManifestDigest == "" {
+		t.Fatalf("image = %#v", image)
 	}
 }
 
@@ -25,7 +31,7 @@ func TestResolveRejectsUnavailableOrIncompatibleSelection(t *testing.T) {
 		request Request
 		want    string
 	}{
-		{name: "version", request: Request{KubernetesVersion: "v1.36.2"}, want: "not available"},
+		{name: "version", request: Request{KubernetesVersion: "v9.99.9"}, want: "not available"},
 		{name: "architecture", request: Request{KubernetesVersion: "v1.36.1", Architecture: "aarch64"}, want: "not available for architecture"},
 		{name: "runtime", request: Request{KubernetesVersion: "v1.36.1", RuntimeInterface: "katl-runtime-2"}, want: "not compatible"},
 	}

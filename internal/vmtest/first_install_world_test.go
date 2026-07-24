@@ -529,10 +529,10 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	}
 
 	_, err = planFirstInstallWorldRun(world, "local mkosi unavailable kubernetes", repo, NodeSpec{Name: "cp-3", Role: ControlPlane}, firstInstallWorldInput{
-		KubernetesVersion: "v1.36.2",
+		KubernetesVersion: "v9.99.9",
 		TargetDiskSize:    "20G",
 	}, KVMOff)
-	if err == nil || !strings.Contains(err.Error(), `Kubernetes "v1.36.2" is not available`) {
+	if err == nil || !strings.Contains(err.Error(), `Kubernetes "v9.99.9" is not available`) {
 		t.Fatalf("explicit unavailable Kubernetes version error = %v", err)
 	}
 }
@@ -552,8 +552,8 @@ func TestResolveFirstInstallWorldKubernetesVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveFirstInstallWorldKubernetesVersion() error = %v", err)
 	}
-	if got != configbundle.DefaultKubernetesVersion {
-		t.Fatalf("implicit local Kubernetes version = %q, want supported default %q", got, configbundle.DefaultKubernetesVersion)
+	if got != "v1.36.2" {
+		t.Fatalf("implicit local Kubernetes version = %q, want compatible local version v1.36.2", got)
 	}
 
 	got, err = resolveFirstInstallWorldKubernetesVersion("v1.36.2", metadata, index)
