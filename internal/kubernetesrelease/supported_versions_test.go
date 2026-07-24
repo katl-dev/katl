@@ -19,7 +19,7 @@ func TestDefaultSupportedVersions(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("versions = %v, want %v", got, want)
 	}
-	if got := supported.Versions[3].ArtifactVersion(); got != "v1.36.3-katl.5" {
+	if got := supported.Versions[3].ArtifactVersion(); got != "v1.36.3-katl.6" {
 		t.Fatalf("artifact version = %q", got)
 	}
 }
