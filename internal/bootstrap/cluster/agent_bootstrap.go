@@ -301,7 +301,9 @@ func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, dep
 	}
 	switch target.Action {
 	case inventory.ActionControlPlaneJoin:
-		material, err := createJoinMaterial(ctx, initNode, target, statuses[initNode.Name], "existing-cluster", deps, "control-plane", joinDiscoveryOverride{})
+		material, err := createJoinMaterial(ctx, initNode, target, statuses[initNode.Name], "existing-cluster", deps, "control-plane", joinDiscoveryOverride{
+			Endpoint: endpointForNode(initNode),
+		})
 		if err != nil {
 			result.addPhase("control-plane-join", target.Name, target.Action, "failed")
 			return result, fmt.Errorf("control-plane join material for %s: %s", target.Name, inventory.Redact(err.Error()))
@@ -313,7 +315,9 @@ func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, dep
 		}
 		result.addOperationPhase("control-plane-join", target.Name, target.Action, "passed", operationRef)
 	case inventory.ActionWorkerJoin:
-		material, err := createWorkerJoinMaterial(ctx, initNode, target, statuses[initNode.Name], "existing-cluster", deps)
+		material, err := createJoinMaterial(ctx, initNode, target, statuses[initNode.Name], "existing-cluster", deps, "worker", joinDiscoveryOverride{
+			Endpoint: endpointForNode(initNode),
+		})
 		if err != nil {
 			result.addPhase("worker-join", target.Name, target.Action, "failed")
 			return result, fmt.Errorf("worker join material for %s: %s", target.Name, inventory.Redact(err.Error()))
@@ -530,6 +534,28 @@ func joinMaterialWithDiscoveryEndpoint(material *agentapi.WorkerJoinMaterial, en
 	if err := validateEndpointLike(endpoint); err != nil {
 		return nil, fmt.Errorf("init-node discovery endpoint: %w", err)
 	}
+	if certificateAuthorityData == "" {
+		if len(material.GetDiscoveryKubeconfig()) != 0 {
+			discoveryKubeconfig, err := rewriteJoinDiscoveryEndpoint(material.GetDiscoveryKubeconfig(), endpoint)
+			if err != nil {
+				return nil, err
+			}
+			argv[2] = endpoint
+			return &agentapi.WorkerJoinMaterial{
+				JoinArgv:            argv,
+				ExpiresAt:           material.GetExpiresAt(),
+				DiscoveryKubeconfig: discoveryKubeconfig,
+			}, nil
+		}
+		if _, _, _, err := joinDiscovery(JoinMaterial{Argv: argv}); err != nil {
+			return nil, err
+		}
+		argv[2] = endpoint
+		return &agentapi.WorkerJoinMaterial{
+			JoinArgv:  argv,
+			ExpiresAt: material.GetExpiresAt(),
+		}, nil
+	}
 	token := strings.TrimSpace(flagValue(argv, "--token"))
 	if token == "" {
 		return nil, errors.New("join material is missing bootstrap token")
@@ -539,37 +565,40 @@ func joinMaterialWithDiscoveryEndpoint(material *agentapi.WorkerJoinMaterial, en
 		return nil, errors.New("join discovery is missing certificate authority data")
 	}
 	argv[2] = endpoint
-	discoveryKubeconfig, err := yaml.Marshal(map[string]any{
-		"apiVersion": "v1",
-		"kind":       "Config",
-		"clusters": []any{map[string]any{
-			"name": "katl-discovery",
-			"cluster": map[string]any{
-				"certificate-authority-data": certificateAuthorityData,
-				"server":                     "https://" + endpoint,
-			},
-		}},
-		"contexts": []any{map[string]any{
-			"name": "katl-discovery",
-			"context": map[string]any{
-				"cluster": "katl-discovery",
-				"user":    "katl-bootstrap",
-			},
-		}},
-		"current-context": "katl-discovery",
-		"users": []any{map[string]any{
-			"name": "katl-bootstrap",
-			"user": map[string]any{"token": token},
-		}},
-	})
+	discoveryKubeconfig, err := RenderJoinDiscoveryKubeconfig(JoinMaterial{Argv: argv}, endpoint, certificateAuthorityData)
 	if err != nil {
-		return nil, fmt.Errorf("render join discovery kubeconfig: %w", err)
+		return nil, err
 	}
 	return &agentapi.WorkerJoinMaterial{
 		JoinArgv:            argv,
 		ExpiresAt:           material.GetExpiresAt(),
 		DiscoveryKubeconfig: discoveryKubeconfig,
 	}, nil
+}
+
+func rewriteJoinDiscoveryEndpoint(data []byte, endpoint string) ([]byte, error) {
+	var config map[string]any
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parse join discovery kubeconfig: %w", err)
+	}
+	clusters, ok := config["clusters"].([]any)
+	if !ok || len(clusters) != 1 {
+		return nil, errors.New("join discovery kubeconfig must contain exactly one cluster")
+	}
+	entry, ok := clusters[0].(map[string]any)
+	if !ok {
+		return nil, errors.New("join discovery kubeconfig cluster entry is invalid")
+	}
+	clusterConfig, ok := entry["cluster"].(map[string]any)
+	if !ok {
+		return nil, errors.New("join discovery kubeconfig cluster is invalid")
+	}
+	clusterConfig["server"] = "https://" + endpoint
+	rendered, err := yaml.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("render join discovery kubeconfig: %w", err)
+	}
+	return rendered, nil
 }
 
 func submitAndWaitControlPlaneJoin(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, material workerJoinMaterial, deps AgentBootstrapDependencies) (operationReference, error) {

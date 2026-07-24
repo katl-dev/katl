@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -368,15 +369,45 @@ func (s *Server) CreateWorkerJoinMaterial(ctx context.Context, req *agentapi.Cre
 		material = parsed
 	}
 	expiresAt := startedAt.Add(ttl).UTC()
+	discoveryKubeconfig, err := s.joinDiscoveryKubeconfig(material)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "create join discovery kubeconfig: %v", err)
+	}
 	response := &agentapi.CreateWorkerJoinMaterialResponse{
 		MaterialRef: workerJoinMaterialRef(req.RequestRef, material, expiresAt),
 		WorkerJoinMaterial: &agentapi.WorkerJoinMaterial{
-			JoinArgv:  append([]string(nil), material.Argv...),
-			ExpiresAt: expiresAt.Format(time.RFC3339),
+			JoinArgv:            append([]string(nil), material.Argv...),
+			ExpiresAt:           expiresAt.Format(time.RFC3339),
+			DiscoveryKubeconfig: discoveryKubeconfig,
 		},
 		CreatedAt: formatTime(startedAt),
 	}
 	return response, nil
+}
+
+func (s *Server) joinDiscoveryKubeconfig(material cluster.JoinMaterial) ([]byte, error) {
+	root := strings.TrimSpace(s.Root)
+	if root == "" {
+		root = "/"
+	}
+	data, err := os.ReadFile(filepath.Join(root, "etc/kubernetes/admin.conf"))
+	if err != nil {
+		return nil, fmt.Errorf("read admin kubeconfig: %w", err)
+	}
+	var config struct {
+		Clusters []struct {
+			Cluster struct {
+				CertificateAuthorityData string `yaml:"certificate-authority-data"`
+			} `yaml:"cluster"`
+		} `yaml:"clusters"`
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parse admin kubeconfig: %w", err)
+	}
+	if len(config.Clusters) != 1 {
+		return nil, errors.New("admin kubeconfig must contain exactly one cluster")
+	}
+	return cluster.RenderJoinDiscoveryKubeconfig(material, material.Argv[2], config.Clusters[0].Cluster.CertificateAuthorityData)
 }
 
 func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest string) (operation.OperationRecord, *agentapi.OperationAccepted, error) {

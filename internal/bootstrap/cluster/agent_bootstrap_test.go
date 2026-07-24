@@ -194,6 +194,24 @@ func TestRunAgentNodeJoinAddsControlPlaneWithoutRerunningInit(t *testing.T) {
 					"--control-plane", "--certificate-key", strings.Repeat("b", 64),
 				},
 				ExpiresAt: "2026-06-16T13:00:00Z",
+				DiscoveryKubeconfig: []byte(`apiVersion: v1
+kind: Config
+clusters:
+  - name: katl-discovery
+    cluster:
+      certificate-authority-data: ca-data
+      server: https://api.katl.test:6443
+contexts:
+  - name: katl-discovery
+    context:
+      cluster: katl-discovery
+      user: katl-bootstrap
+current-context: katl-discovery
+users:
+  - name: katl-bootstrap
+    user:
+      token: abcdef.0123456789abcdef
+`),
 			},
 		},
 	}
@@ -226,6 +244,25 @@ func TestRunAgentNodeJoinAddsControlPlaneWithoutRerunningInit(t *testing.T) {
 	}
 	if len(cp2.submitRequests) != 1 || cp2.submitRequests[0].OperationKind != "bootstrap-join-control-plane" || !cp2.submitRequests[0].Bootstrap.GetExistingClusterJoin() {
 		t.Fatalf("replacement submit requests = %#v", cp2.submitRequests)
+	}
+	replacement := cp2.submitRequests[0].Bootstrap
+	if got := replacement.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.0.0.11:6443" {
+		t.Fatalf("replacement discovery endpoint = %q, want coordinator endpoint", got)
+	}
+	discovery := string(replacement.WorkerJoinMaterial.GetDiscoveryKubeconfig())
+	for _, want := range []string{"server: https://10.0.0.11:6443", "certificate-authority-data: ca-data", "token: abcdef.0123456789abcdef"} {
+		if !strings.Contains(discovery, want) {
+			t.Fatalf("replacement discovery kubeconfig = %q, want %q", discovery, want)
+		}
+	}
+	if got := replacement.ControlPlaneEndpoint; got != "api.katl.test:6443" {
+		t.Fatalf("replacement control-plane endpoint = %q, want stable cluster endpoint", got)
+	}
+	if got := cp1.createMaterial.GetWorkerJoinMaterial().GetJoinArgv()[2]; got != "api.katl.test:6443" {
+		t.Fatalf("source join material endpoint = %q, want unmodified agent response", got)
+	}
+	if !strings.Contains(string(cp1.createMaterial.GetWorkerJoinMaterial().GetDiscoveryKubeconfig()), "server: https://api.katl.test:6443") {
+		t.Fatalf("source discovery kubeconfig was modified")
 	}
 }
 
