@@ -49,7 +49,7 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 			state: "waiting-for-managed-endpoint", reason: "managed API endpoint is waiting-for-apiserver",
 		},
 		{
-			name: "route exchange not ready",
+			name: "passive optional route exchange",
 			status: &agentapi.NodeStatus{
 				Kubernetes: readyKubernetes,
 				ControlPlaneEndpoint: &agentapi.ControlPlaneEndpointStatus{
@@ -57,7 +57,7 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 					RouteExchange: []*agentapi.ControlPlaneEndpointRouteExchangeStatus{{Name: "cilium", State: "passive"}},
 				},
 			},
-			state: "waiting-for-route-exchange", reason: "route exchange cilium is passive",
+			state: "ready", ready: true,
 		},
 		{
 			name: "ready",

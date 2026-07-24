@@ -176,13 +176,6 @@ func nodeUpgradeRecovery(status *agentapi.NodeStatus) nodeRecovery {
 			recovery.Reason = "managed API endpoint is " + firstNonEmpty(strings.TrimSpace(endpoint.GetState()), "not ready")
 			return recovery
 		}
-		for _, exchange := range endpoint.GetRouteExchange() {
-			if !strings.EqualFold(exchange.GetState(), "established") {
-				recovery.State = "waiting-for-route-exchange"
-				recovery.Reason = fmt.Sprintf("route exchange %s is %s", exchange.GetName(), firstNonEmpty(strings.TrimSpace(exchange.GetState()), "not established"))
-				return recovery
-			}
-		}
 	}
 	recovery.State = "ready"
 	recovery.Reason = ""
