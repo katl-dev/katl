@@ -294,6 +294,7 @@ type ControlPlaneEndpointStatus struct {
 	RouteExchange         []*ControlPlaneEndpointRouteExchangeStatus `protobuf:"bytes,9,rep,name=route_exchange,json=routeExchange,proto3" json:"route_exchange,omitempty"`
 	LastTransitionTime    string                                     `protobuf:"bytes,10,opt,name=last_transition_time,json=lastTransitionTime,proto3" json:"last_transition_time,omitempty"`
 	FailureReason         string                                     `protobuf:"bytes,11,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	LocalVipOwned         bool                                       `protobuf:"varint,12,opt,name=local_vip_owned,json=localVipOwned,proto3" json:"local_vip_owned,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -403,6 +404,13 @@ func (x *ControlPlaneEndpointStatus) GetFailureReason() string {
 		return x.FailureReason
 	}
 	return ""
+}
+
+func (x *ControlPlaneEndpointStatus) GetLocalVipOwned() bool {
+	if x != nil {
+		return x.LocalVipOwned
+	}
+	return false
 }
 
 type ControlPlaneEndpointPeerStatus struct {
@@ -3890,7 +3898,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\n" +
 	"node_ready\x18\x05 \x01(\bR\tnodeReady\x12C\n" +
 	"\x1econtrol_plane_components_ready\x18\x06 \x01(\bR\x1bcontrolPlaneComponentsReady\x12%\n" +
-	"\x0efailure_reason\x18\a \x01(\tR\rfailureReason\"\x85\x04\n" +
+	"\x0efailure_reason\x18\a \x01(\tR\rfailureReason\"\xad\x04\n" +
 	"\x1aControlPlaneEndpointStatus\x12\x1a\n" +
 	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x10\n" +
 	"\x03vip\x18\x02 \x01(\tR\x03vip\x12\x14\n" +
@@ -3903,7 +3911,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x0eroute_exchange\x18\t \x03(\v26.katl.agent.v1.ControlPlaneEndpointRouteExchangeStatusR\rrouteExchange\x120\n" +
 	"\x14last_transition_time\x18\n" +
 	" \x01(\tR\x12lastTransitionTime\x12%\n" +
-	"\x0efailure_reason\x18\v \x01(\tR\rfailureReason\"\x89\x01\n" +
+	"\x0efailure_reason\x18\v \x01(\tR\rfailureReason\x12&\n" +
+	"\x0flocal_vip_owned\x18\f \x01(\bR\rlocalVipOwned\"\x89\x01\n" +
 	"\x1eControlPlaneEndpointPeerStatus\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x10\n" +
 	"\x03asn\x18\x02 \x01(\rR\x03asn\x12\x14\n" +

@@ -520,7 +520,11 @@ func validateAdvertiseOn(advertiseOn AdvertiseOn) error {
 func normalizeHealth(health Health, endpoint Endpoint, vip netip.Prefix) (Health, error) {
 	health.Probe = defaultString(health.Probe, "readyz")
 	health.Scheme = defaultString(health.Scheme, "https")
-	health.Host = defaultString(health.Host, vip.Addr().String())
+	localHost := "127.0.0.1"
+	if vip.Addr().Is6() {
+		localHost = "::1"
+	}
+	health.Host = defaultString(health.Host, localHost)
 	health.Path = defaultString(health.Path, defaultHealthPath)
 	health.Interval = defaultString(health.Interval, "2s")
 	health.Timeout = defaultString(health.Timeout, defaultHealthTimeout)
@@ -541,8 +545,8 @@ func normalizeHealth(health Health, endpoint Endpoint, vip netip.Prefix) (Health
 	if health.Scheme != "https" {
 		return Health{}, fmt.Errorf("health.scheme must be https")
 	}
-	if health.Host != vip.Addr().String() {
-		return Health{}, fmt.Errorf("health.host must be endpoint.vip address")
+	if health.Host != localHost {
+		return Health{}, fmt.Errorf("health.host must be the local loopback address %s", localHost)
 	}
 	if health.Path != defaultHealthPath {
 		return Health{}, fmt.Errorf("health.path must be /readyz")
@@ -747,7 +751,6 @@ func renderNetwork(config Config) string {
 	b.WriteString("[Match]\n")
 	b.WriteString("Name=" + config.VIPInterface.Name + "\n\n")
 	b.WriteString("[Network]\n")
-	b.WriteString("Address=" + config.Endpoint.VIP + "\n")
 	if config.VIPInterface.MTU != 0 {
 		b.WriteString("MTUBytes=" + strconv.Itoa(config.VIPInterface.MTU) + "\n")
 	}
@@ -772,10 +775,9 @@ func renderBirdConfig(config Config) string {
 	}
 	b.WriteByte('\n')
 	b.WriteString("protocol device katl_device {}\n\n")
-	b.WriteString("protocol static katl_api {\n")
-	b.WriteString("  disabled;\n")
+	b.WriteString("protocol direct katl_api {\n")
 	b.WriteString("  " + family + " { table katl_fabric; };\n")
-	b.WriteString("  route " + config.Endpoint.VIP + " blackhole;\n")
+	b.WriteString("  interface \"" + config.VIPInterface.Name + "\";\n")
 	b.WriteString("}\n\n")
 	for _, exchange := range config.RouteExchange {
 		b.WriteString(renderRouteExchange(config, exchange))
@@ -795,7 +797,7 @@ func renderPeerFilter(config Config, peer Peer) string {
 	filterName := "katl_export_" + name
 	var b strings.Builder
 	b.WriteString("filter " + filterName + " {\n")
-	b.WriteString("  if source = RTS_STATIC && net = " + config.Endpoint.VIP + " then accept;\n")
+	b.WriteString("  if source = RTS_DEVICE && net = " + config.Endpoint.VIP + " then accept;\n")
 	if len(config.RouteExchange) > 0 {
 		b.WriteString("  if source = RTS_BGP then accept;\n")
 	}
@@ -878,8 +880,8 @@ func renderBirdDropIn() string {
 
 func renderKubeletDropIn() string {
 	return "[Unit]\n" +
-		"Wants=katl-app-bgp-api-vip.service\n" +
-		"After=katl-app-bgp-api-vip.service\n"
+		"Wants=katl-app-bgp-api-vip.path\n" +
+		"After=katl-app-bgp-api-vip.path\n"
 }
 
 func allPeers(config Config) []Peer {

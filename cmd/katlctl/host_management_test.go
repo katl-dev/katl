@@ -48,7 +48,7 @@ clusters:
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	output := stdout.String()
-	for _, want := range []string{"NODE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "NEXT BOOT", "ACTIVITY", "cp-1", "OK", "waiting-for-node", "Kubernetes node cp-1 is not Ready", "2026.7.0-alpha.10", "generation-0", "generation-staged", "busy", "CONTROL PLANE ENDPOINT", "api.home.example:6443", "10.40.0.10/32", "failed", "1/1", "endpoint routing control socket unavailable"} {
+	for _, want := range []string{"NODE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "NEXT BOOT", "ACTIVITY", "cp-1", "OK", "waiting-for-node", "Kubernetes node cp-1 is not Ready", "2026.7.0-alpha.10", "generation-0", "generation-staged", "busy", "CONTROL PLANE ENDPOINT", "LOCAL VIP", "api.home.example:6443", "10.40.0.10/32", "failed", "1/1", "endpoint routing control socket unavailable"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
@@ -63,7 +63,7 @@ clusters:
 func TestHostStatusJSON(t *testing.T) {
 	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
 	fake.nodeStatus.ControlPlaneEndpoint = &agentapi.ControlPlaneEndpointStatus{
-		Endpoint: "api.home.example:6443", Vip: "10.40.0.10/32", State: "advertised", LocalApiReady: true, RouteOriginated: true,
+		Endpoint: "api.home.example:6443", Vip: "10.40.0.10/32", State: "advertised", LocalApiReady: true, LocalVipOwned: true, RouteOriginated: true,
 		RouteExchange: []*agentapi.ControlPlaneEndpointRouteExchangeStatus{{Name: "cilium", ListenAddress: "127.0.0.1", ListenPort: 179, PeerAsn: 64512, State: "established", AcceptedRoutes: 3, ExportedRoutes: 3}},
 	}
 	installKatlcDial(t, nil, fake)
@@ -79,7 +79,7 @@ func TestHostStatusJSON(t *testing.T) {
 	if report.Node != "node-a" || report.Endpoint != "node-a.test:9443" || report.Health != "OK" || report.Generation != "generation-0" || report.Activity != "idle" {
 		t.Fatalf("report = %#v", report)
 	}
-	if report.ControlPlaneEndpoint == nil || report.ControlPlaneEndpoint.State != "advertised" || len(report.ControlPlaneEndpoint.RouteExchange) != 1 || report.ControlPlaneEndpoint.RouteExchange[0].ExportedRoutes != 3 {
+	if report.ControlPlaneEndpoint == nil || report.ControlPlaneEndpoint.State != "advertised" || !report.ControlPlaneEndpoint.LocalVIPOwned || len(report.ControlPlaneEndpoint.RouteExchange) != 1 || report.ControlPlaneEndpoint.RouteExchange[0].ExportedRoutes != 3 {
 		t.Fatalf("control-plane endpoint report = %#v", report.ControlPlaneEndpoint)
 	}
 }

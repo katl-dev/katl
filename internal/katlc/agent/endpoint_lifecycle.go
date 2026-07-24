@@ -18,50 +18,17 @@ import (
 )
 
 const (
-	endpointAdvertiserUnit    = "katl-app-bgp-api-vip.service"
-	endpointRoutingUnit       = "katl-app-bird.service"
-	endpointAdvertiserCommand = "/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser"
-	managedEndpointInterface  = "/usr/bin/networkctl"
-	managedEndpointIP         = "/usr/bin/ip"
-	managedEndpointKubectl    = "/usr/bin/kubectl"
+	endpointAdvertiserUnit     = "katl-app-bgp-api-vip.service"
+	endpointAdvertiserPathUnit = "katl-app-bgp-api-vip.path"
+	endpointRoutingUnit        = "katl-app-bird.service"
+	endpointAdvertiserCommand  = "/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser"
+	managedEndpointIP          = "/usr/bin/ip"
+	managedEndpointKubectl     = "/usr/bin/kubectl"
 )
 
-// pauseManagedRoutingForPowerTransition withdraws both the API VIP and routes
-// learned from local route-exchange peers before the node loses power. Stopping
-// only the endpoint advertiser leaves BIRD's fabric session established, so a
-// router can retain a dead ECMP path to workload VIPs while the node reboots.
-func pauseManagedRoutingForPowerTransition(ctx context.Context, root string, run ToolRunner) (bool, error) {
-	paused, err := pauseManagedEndpoint(ctx, root, run)
-	if err != nil || !paused {
-		return paused, err
-	}
-	result := run(ctx, []string{"systemctl", "stop", endpointRoutingUnit}, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		resumeErr := resumeManagedRoutingAfterFailedPowerTransition(context.Background(), root, run)
-		return false, errors.Join(fmt.Errorf("stop managed route exports: %s", toolFailure(result)), resumeErr)
-	}
-	return true, nil
-}
-
-func resumeManagedRoutingAfterFailedPowerTransition(ctx context.Context, root string, run ToolRunner) error {
-	configured, err := managedEndpointConfigured(root)
-	if err != nil || !configured {
-		return err
-	}
-	if run == nil {
-		return fmt.Errorf("endpoint lifecycle runner is not configured")
-	}
-	result := run(ctx, []string{"systemctl", "start", endpointRoutingUnit}, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		return fmt.Errorf("resume managed route exports: %s", toolFailure(result))
-	}
-	return resumeManagedEndpoint(ctx, root, run)
-}
-
 type managedJoinEndpoint struct {
-	VIP       string
-	Interface string
-	API       string
+	VIP string
+	API string
 }
 
 type managedJoinRoute struct {
@@ -78,7 +45,11 @@ func pauseManagedEndpoint(ctx context.Context, root string, run ToolRunner) (boo
 	if run == nil {
 		return false, fmt.Errorf("endpoint lifecycle runner is not configured")
 	}
-	result := run(ctx, []string{"systemctl", "stop", endpointAdvertiserUnit}, nil)
+	result := run(ctx, []string{"systemctl", "stop", endpointAdvertiserPathUnit}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return false, fmt.Errorf("stop managed control-plane endpoint watcher: %s", toolFailure(result))
+	}
+	result = run(ctx, []string{"systemctl", "stop", endpointAdvertiserUnit}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return false, fmt.Errorf("stop managed control-plane endpoint: %s", toolFailure(result))
 	}
@@ -97,7 +68,11 @@ func resumeManagedEndpoint(ctx context.Context, root string, run ToolRunner) err
 	if run == nil {
 		return fmt.Errorf("endpoint lifecycle runner is not configured")
 	}
-	result := run(ctx, []string{"systemctl", "start", endpointAdvertiserUnit}, nil)
+	result := run(ctx, []string{"systemctl", "start", endpointAdvertiserPathUnit}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("resume managed control-plane endpoint watcher: %s", toolFailure(result))
+	}
+	result = run(ctx, []string{"systemctl", "start", endpointAdvertiserUnit}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("resume managed control-plane endpoint: %s", toolFailure(result))
 	}
@@ -105,9 +80,7 @@ func resumeManagedEndpoint(ctx context.Context, root string, run ToolRunner) err
 }
 
 // suspendManagedEndpointForJoin keeps a joining control-plane node from
-// capturing stable-endpoint traffic before its local API server exists. The
-// generated endpoint uses a Katl-owned dummy device, so taking that device
-// offline does not disturb the node's management network.
+// capturing stable-endpoint traffic before its local API server exists.
 func suspendManagedEndpointForJoin(ctx context.Context, root, discoveryPath string, run ToolRunner) (bool, *managedJoinRoute, error) {
 	endpoint, configured, err := managedJoinEndpointConfig(root)
 	if err != nil || !configured {
@@ -119,19 +92,11 @@ func suspendManagedEndpointForJoin(ctx context.Context, root, discoveryPath stri
 	if _, err := pauseManagedEndpoint(ctx, root, run); err != nil {
 		return false, nil, err
 	}
-	result := run(ctx, []string{managedEndpointInterface, "down", endpoint.Interface}, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		return false, nil, fmt.Errorf("take managed control-plane endpoint off the local path: %s", toolFailure(result))
-	}
-	result = run(ctx, []string{managedEndpointIP, "address", "flush", "dev", endpoint.Interface, "to", endpoint.VIP}, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		return false, nil, fmt.Errorf("remove managed control-plane endpoint address from the local path: %s", toolFailure(result))
-	}
 	route, err := installManagedJoinRoute(ctx, root, discoveryPath, endpoint, run)
 	if err != nil {
 		return false, nil, err
 	}
-	result = run(ctx, []string{
+	result := run(ctx, []string{
 		managedEndpointKubectl,
 		"--kubeconfig", rootedRuntimePath(root, discoveryPath),
 		"--server", endpoint.API,
@@ -229,24 +194,6 @@ func joinDiscoveryHost(root, discoveryPath string) (string, error) {
 }
 
 func resumeManagedEndpointAfterJoin(ctx context.Context, root string, run ToolRunner) error {
-	endpoint, configured, err := managedJoinEndpointConfig(root)
-	if err != nil || !configured {
-		return err
-	}
-	if run == nil {
-		return fmt.Errorf("endpoint lifecycle runner is not configured")
-	}
-	result := run(ctx, []string{managedEndpointInterface, "up", endpoint.Interface}, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		return fmt.Errorf("restore managed control-plane endpoint interface: %s", toolFailure(result))
-	}
-	// networkctl applies the generated desired state asynchronously. Replace the
-	// exact generated host address as an idempotent, immediate handoff so the
-	// stable endpoint is usable for post-kubeadm health checks.
-	result = run(ctx, []string{managedEndpointIP, "address", "replace", endpoint.VIP, "dev", endpoint.Interface}, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		return fmt.Errorf("restore managed control-plane endpoint address: %s", toolFailure(result))
-	}
 	return resumeManagedEndpoint(ctx, root, run)
 }
 
@@ -272,9 +219,8 @@ func managedJoinEndpointConfig(root string) (managedJoinEndpoint, bool, error) {
 		return managedJoinEndpoint{}, false, fmt.Errorf("managed control-plane join requires a Katl-owned dummy VIP interface, got %q", config.VIPInterface.Kind)
 	}
 	return managedJoinEndpoint{
-		VIP:       strings.TrimSpace(config.Endpoint.VIP),
-		Interface: strings.TrimSpace(config.VIPInterface.Name),
-		API:       "https://" + net.JoinHostPort(config.Endpoint.Host, strconv.Itoa(config.Endpoint.Port)),
+		VIP: strings.TrimSpace(config.Endpoint.VIP),
+		API: "https://" + net.JoinHostPort(config.Endpoint.Host, strconv.Itoa(config.Endpoint.Port)),
 	}, true, nil
 }
 

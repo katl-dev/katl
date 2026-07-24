@@ -329,7 +329,7 @@ func TestExecutorRunsBirdWhenVIPAdvertisementIsEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteLive() error = %v", err)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-routing-reload,endpoint-resume"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-link-reload,endpoint-routing-reload,endpoint-resume"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 }

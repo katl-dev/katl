@@ -9,6 +9,7 @@ ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
 [Service]
 Type=simple
 DynamicUser=yes
+Group=katl
 RuntimeDirectory=katl-bird
 RuntimeDirectoryMode=0750
 ExecStart=/usr/bin/bird -f -c /etc/katl/apps/bird/bird.conf -s /run/katl-bird/bird.ctl

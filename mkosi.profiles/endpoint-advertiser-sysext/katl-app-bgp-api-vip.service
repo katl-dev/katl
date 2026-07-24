@@ -5,6 +5,7 @@ Requires=katl-app-bird.service
 After=katl-app-bird.service
 ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
 ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
+ConditionPathExists=/etc/kubernetes/pki/ca.crt
 
 [Service]
 Type=simple
@@ -14,6 +15,8 @@ ExecStart=/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser
 ExecStopPost=/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser withdraw
 Restart=always
 RestartSec=2s
+CapabilityBoundingSet=CAP_NET_ADMIN
+SupplementaryGroups=katl
 NoNewPrivileges=yes
 PrivateDevices=yes
 PrivateTmp=yes

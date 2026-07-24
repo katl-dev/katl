@@ -247,51 +247,17 @@ func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
 	}
 }
 
-func TestRebootWithdrawsManagedRoutesBeforeScheduling(t *testing.T) {
-	server := newTestServer(t)
-	writeCleanGenerationZeroState(t, server.Root)
-	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
-	var actions []string
-	server.RunEndpointLifecycle = func(_ context.Context, got []string, _ func(int)) ToolResult {
-		actions = append(actions, strings.Join(got, " "))
-		return ToolResult{}
-	}
-	server.RunReboot = func(_ context.Context, got []string, _ func(int)) ToolResult {
-		actions = append(actions, strings.Join(got, " "))
-		return ToolResult{}
-	}
-	machineID, err := server.machineID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = server.Reboot(context.Background(), &agentapi.RebootRequest{
-		ApiVersion: generation.APIVersion, Kind: RebootRequestKind, Actor: "test",
-		ExpectedMachineId: machineID, TargetGenerationId: "generation-0",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		"systemctl stop " + endpointAdvertiserUnit,
-		endpointAdvertiserCommand + " withdraw",
-		"systemctl stop " + endpointRoutingUnit,
-		"systemd-run --unit=katl-reboot --collect --on-active=2s systemctl reboot",
-	}
-	if !reflect.DeepEqual(actions, want) {
-		t.Fatalf("reboot actions = %#v, want %#v", actions, want)
-	}
-}
-
-func TestRebootRefusesWhenManagedEndpointCannotWithdraw(t *testing.T) {
+func TestRebootLeavesManagedRouteWithdrawalToSystemdShutdown(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
 	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
 	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
-		return ToolResult{Err: errors.New("withdraw failed"), ExitStatus: 1}
+		t.Fatal("reboot must leave service teardown to systemd")
+		return ToolResult{Err: errors.New("unexpected endpoint lifecycle call")}
 	}
-	rebootCalled := false
-	server.RunReboot = func(_ context.Context, _ []string, _ func(int)) ToolResult {
-		rebootCalled = true
+	var argv []string
+	server.RunReboot = func(_ context.Context, got []string, _ func(int)) ToolResult {
+		argv = append([]string(nil), got...)
 		return ToolResult{}
 	}
 	machineID, err := server.machineID()
@@ -302,25 +268,26 @@ func TestRebootRefusesWhenManagedEndpointCannotWithdraw(t *testing.T) {
 		ApiVersion: generation.APIVersion, Kind: RebootRequestKind, Actor: "test",
 		ExpectedMachineId: machineID, TargetGenerationId: "generation-0",
 	})
-	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "prepare node routing for reboot") {
-		t.Fatalf("Reboot() error = %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if rebootCalled {
-		t.Fatal("reboot was scheduled without withdrawing the managed endpoint")
+	want := []string{"systemd-run", "--unit=katl-reboot", "--collect", "--on-active=2s", "systemctl", "reboot"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("reboot argv = %#v, want %#v", argv, want)
 	}
 }
 
-func TestRebootRestoresManagedRoutingWhenSchedulingFails(t *testing.T) {
+func TestRebootSchedulingFailureDoesNotDisruptManagedRouting(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
 	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
-	var actions []string
-	server.RunEndpointLifecycle = func(_ context.Context, got []string, _ func(int)) ToolResult {
-		actions = append(actions, strings.Join(got, " "))
-		return ToolResult{}
+	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
+		t.Fatal("a failed reboot schedule must not disrupt endpoint services")
+		return ToolResult{Err: errors.New("unexpected endpoint lifecycle call")}
 	}
+	var argv []string
 	server.RunReboot = func(_ context.Context, got []string, _ func(int)) ToolResult {
-		actions = append(actions, strings.Join(got, " "))
+		argv = append([]string(nil), got...)
 		return ToolResult{Err: errors.New("systemd-run failed"), ExitStatus: 1}
 	}
 	machineID, err := server.machineID()
@@ -334,16 +301,9 @@ func TestRebootRestoresManagedRoutingWhenSchedulingFails(t *testing.T) {
 	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "schedule reboot") {
 		t.Fatalf("Reboot() error = %v", err)
 	}
-	want := []string{
-		"systemctl stop " + endpointAdvertiserUnit,
-		endpointAdvertiserCommand + " withdraw",
-		"systemctl stop " + endpointRoutingUnit,
-		"systemd-run --unit=katl-reboot --collect --on-active=2s systemctl reboot",
-		"systemctl start " + endpointRoutingUnit,
-		"systemctl start " + endpointAdvertiserUnit,
-	}
-	if !reflect.DeepEqual(actions, want) {
-		t.Fatalf("reboot recovery actions = %#v, want %#v", actions, want)
+	want := []string{"systemd-run", "--unit=katl-reboot", "--collect", "--on-active=2s", "systemctl", "reboot"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("reboot argv = %#v, want %#v", argv, want)
 	}
 }
 
@@ -374,16 +334,16 @@ func TestShutdownSchedulesPoweroff(t *testing.T) {
 	}
 }
 
-func TestShutdownWithdrawsManagedRoutesBeforeScheduling(t *testing.T) {
+func TestShutdownLeavesManagedRouteWithdrawalToSystemd(t *testing.T) {
 	server := newTestServer(t)
 	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
-	var actions []string
-	server.RunEndpointLifecycle = func(_ context.Context, got []string, _ func(int)) ToolResult {
-		actions = append(actions, strings.Join(got, " "))
-		return ToolResult{}
+	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
+		t.Fatal("shutdown must leave service teardown to systemd")
+		return ToolResult{Err: errors.New("unexpected endpoint lifecycle call")}
 	}
+	var argv []string
 	server.RunShutdown = func(_ context.Context, got []string, _ func(int)) ToolResult {
-		actions = append(actions, strings.Join(got, " "))
+		argv = append([]string(nil), got...)
 		return ToolResult{}
 	}
 	machineID, err := server.machineID()
@@ -397,14 +357,9 @@ func TestShutdownWithdrawsManagedRoutesBeforeScheduling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		"systemctl stop " + endpointAdvertiserUnit,
-		endpointAdvertiserCommand + " withdraw",
-		"systemctl stop " + endpointRoutingUnit,
-		"systemd-run --unit=katl-shutdown --collect --on-active=2s systemctl poweroff",
-	}
-	if !reflect.DeepEqual(actions, want) {
-		t.Fatalf("shutdown actions = %#v, want %#v", actions, want)
+	want := []string{"systemd-run", "--unit=katl-shutdown", "--collect", "--on-active=2s", "systemctl", "poweroff"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("shutdown argv = %#v, want %#v", argv, want)
 	}
 }
 

@@ -41,21 +41,9 @@ func run(args []string, stderr io.Writer) error {
 	}
 
 	if command == "withdraw" {
-		return withdraw(context.Background())
+		return withdraw(context.Background(), *configPath)
 	}
-	file, err := os.Open(*configPath)
-	if err != nil {
-		return fmt.Errorf("open generated config: %w", err)
-	}
-	object, err := bgpapivip.Decode(file)
-	closeErr := file.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	config, err := bgpapivip.Normalize(object.Spec)
+	config, err := loadConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -64,11 +52,13 @@ func run(args []string, stderr io.Writer) error {
 		return fmt.Errorf("invalid generated health interval %q", config.Health.Interval)
 	}
 	client := bgpapivip.CommandBirdClient{Config: config}
+	owner := bgpapivip.NetlinkVIPOwner{}
 	controller := bgpapivip.Controller{
 		Config:            config,
 		AppPayloadVersion: version,
 		Bird:              client,
 		Interface:         bgpapivip.LinuxInterfaceChecker{},
+		Owner:             owner,
 		Writer:            bgpapivip.FileStatusWriter{LivePath: *statusPath},
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -88,7 +78,7 @@ func run(args []string, stderr io.Writer) error {
 			lastState = state
 		}
 		if runErr != nil {
-			return failClosed(runErr, client, bgpapivip.ExecRunner{})
+			return failClosed(runErr, owner, config, bgpapivip.ExecRunner{})
 		}
 		select {
 		case <-ctx.Done():
@@ -101,26 +91,51 @@ func run(args []string, stderr io.Writer) error {
 	}
 }
 
-func failClosed(runErr error, client bgpapivip.BirdClient, runner bgpapivip.CommandRunner) error {
+func loadConfig(path string) (bgpapivip.Config, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return bgpapivip.Config{}, fmt.Errorf("open generated config: %w", err)
+	}
+	object, err := bgpapivip.Decode(file)
+	closeErr := file.Close()
+	if err != nil {
+		return bgpapivip.Config{}, err
+	}
+	if closeErr != nil {
+		return bgpapivip.Config{}, closeErr
+	}
+	config, err := bgpapivip.Normalize(object.Spec)
+	if err != nil {
+		return bgpapivip.Config{}, err
+	}
+	return config, nil
+}
+
+func failClosed(runErr error, owner bgpapivip.VIPOwner, config bgpapivip.Config, runner bgpapivip.CommandRunner) error {
 	if runErr == nil {
 		return nil
 	}
-	return errors.Join(runErr, withdrawWith(context.Background(), client, runner))
+	return errors.Join(runErr, withdrawWith(context.Background(), owner, config, runner))
 }
 
-func withdraw(parent context.Context) error {
-	return withdrawWith(parent, bgpapivip.CommandBirdClient{}, bgpapivip.ExecRunner{})
+func withdraw(parent context.Context, configPath string) error {
+	config, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	return withdrawWith(parent, bgpapivip.NetlinkVIPOwner{}, config, bgpapivip.ExecRunner{})
 }
 
-func withdrawWith(parent context.Context, client bgpapivip.BirdClient, runner bgpapivip.CommandRunner) error {
+func withdrawWith(parent context.Context, owner bgpapivip.VIPOwner, config bgpapivip.Config, runner bgpapivip.CommandRunner) error {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
-	if err := client.SetAdvertisement(ctx, false); err == nil {
+	releaseErr := owner.SetOwned(ctx, config, false)
+	if releaseErr == nil {
 		return nil
 	}
-	output, err := runner.Output(ctx, "systemctl", "stop", "katl-app-bird.service")
-	if err != nil {
-		return fmt.Errorf("withdraw route and stop routing daemon: %s", string(output))
+	output, stopErr := runner.Output(ctx, "systemctl", "stop", "katl-app-bird.service")
+	if stopErr != nil {
+		stopErr = fmt.Errorf("stop routing daemon after local endpoint release failed: %s", string(output))
 	}
-	return nil
+	return errors.Join(fmt.Errorf("release local endpoint address: %w", releaseErr), stopErr)
 }

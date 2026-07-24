@@ -82,18 +82,9 @@ func (e *Executor) executeDestructiveReset(ctx context.Context, record operation
 		return errors.Join(err, markErr)
 	}
 
-	routingPaused, err := pauseManagedRoutingForPowerTransition(ctx, e.Root, e.endpointLifecycleRunner())
-	if err != nil {
-		_, markErr := e.failRecordPhase(record.OperationID, "destructive-reset-routing-pause-failed", "schedule-poweroff", "destructive-reset", "power off the node manually after repairing managed routing withdrawal", err)
-		return errors.Join(err, markErr)
-	}
 	result := e.poweroffRunner()(ctx, destructiveResetPoweroffArgv, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
-		var resumeErr error
-		if routingPaused {
-			resumeErr = resumeManagedRoutingAfterFailedPowerTransition(context.Background(), e.Root, e.endpointLifecycleRunner())
-		}
-		err := errors.Join(fmt.Errorf("schedule poweroff: %s", toolFailure(result)), resumeErr)
+		err := fmt.Errorf("schedule poweroff: %s", toolFailure(result))
 		_, markErr := e.failRecordPhase(record.OperationID, "destructive-reset-poweroff-schedule-failed", "schedule-poweroff", "destructive-reset", "power off the node manually; Katl disk boot artifacts have already been removed", err)
 		return errors.Join(err, markErr)
 	}

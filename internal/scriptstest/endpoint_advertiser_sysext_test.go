@@ -22,6 +22,7 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 	for _, want := range []string{
 		"ConditionPathExists=/etc/katl/apps/bird/bird.conf",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
+		"Group=katl",
 		"ExecStart=/usr/bin/bird ",
 		"RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX",
 	} {
@@ -36,8 +37,13 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 	appUnit := read("mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.service")
 	for _, want := range []string{
 		"Requires=katl-app-bird.service",
+		"After=katl-app-bird.service",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
+		"ConditionPathExists=/etc/kubernetes/pki/ca.crt",
+		"ExecStopPost=/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser withdraw",
+		"CapabilityBoundingSet=CAP_NET_ADMIN",
+		"SupplementaryGroups=katl",
 		"RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX",
 	} {
 		if !strings.Contains(appUnit, want) {
@@ -47,13 +53,26 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 	if strings.Contains(appUnit, "WantedBy=") {
 		t.Fatal("endpoint advertiser unit must be selected by Katl rather than enabled globally")
 	}
+	if strings.Contains(appUnit, "DefaultDependencies=no") || strings.Contains(birdUnit, "DefaultDependencies=no") {
+		t.Fatal("endpoint services must retain systemd's default shutdown ordering")
+	}
+	pathUnit := read("mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.path")
+	for _, want := range []string{
+		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
+		"PathExists=/etc/kubernetes/pki/ca.crt",
+		"Unit=katl-app-bgp-api-vip.service",
+	} {
+		if !strings.Contains(pathUnit, want) {
+			t.Fatalf("endpoint bootstrap path unit is missing %q", want)
+		}
+	}
 
 	activationUnit := read("mkosi.profiles/runtime/katl-endpoint-activate.service")
 	for _, want := range []string{
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
 		"ExecStart=/usr/bin/systemctl daemon-reload",
-		"start katl-app-bgp-api-vip.service",
+		"start katl-app-bgp-api-vip.path",
 	} {
 		if !strings.Contains(activationUnit, want) {
 			t.Fatalf("endpoint activation unit is missing %q", want)
@@ -64,6 +83,12 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 	}
 
 	build := read("mkosi.profiles/endpoint-advertiser-sysext/mkosi.build")
+	if !strings.Contains(build, "katl-app-bgp-api-vip.path") {
+		t.Fatal("endpoint sysext must package the bootstrap path unit")
+	}
+	if strings.Contains(pathUnit, "DefaultDependencies=no") {
+		t.Fatal("endpoint path watcher must retain systemd's default shutdown ordering")
+	}
 	if !strings.Contains(build, `ln -sf /dev/null "$DESTDIR/usr/lib/systemd/system/bird.service"`) {
 		t.Fatal("endpoint sysext must mask Fedora's generic bird.service")
 	}

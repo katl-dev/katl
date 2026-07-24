@@ -171,7 +171,7 @@ func nodeUpgradeRecovery(status *agentapi.NodeStatus) nodeRecovery {
 		return recovery
 	}
 	if endpoint := status.GetControlPlaneEndpoint(); endpoint != nil {
-		if !endpoint.GetLocalApiReady() || !endpoint.GetRouteOriginated() || !strings.EqualFold(endpoint.GetState(), "advertised") {
+		if !endpoint.GetLocalApiReady() || !endpoint.GetLocalVipOwned() || !endpoint.GetRouteOriginated() || !strings.EqualFold(endpoint.GetState(), "advertised") {
 			recovery.State = "waiting-for-managed-endpoint"
 			recovery.Reason = "managed API endpoint is " + firstNonEmpty(strings.TrimSpace(endpoint.GetState()), "not ready")
 			return recovery
