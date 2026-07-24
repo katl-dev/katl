@@ -380,6 +380,7 @@ func TestInstallerStateRoundTripAndReadyGuidance(t *testing.T) {
 		Kind:       installerStateKind,
 		RepoRoot:   repo,
 		DomainName: "katl-dev-installer-test",
+		IPAddress:  "192.0.2.42",
 		Endpoint:   "http://192.0.2.42:8080",
 	}
 	if err := manager.writeState(state); err != nil {
@@ -392,19 +393,128 @@ func TestInstallerStateRoundTripAndReadyGuidance(t *testing.T) {
 	if loaded.DomainName != state.DomainName || loaded.Endpoint != state.Endpoint {
 		t.Fatalf("loaded state = %#v", loaded)
 	}
-	if err := manager.printReady(loaded); err != nil {
+	configPath := filepath.Join(repo, "_build", "katldev", "cluster.yaml")
+	if err := manager.printReady(loaded, configPath, false); err != nil {
 		t.Fatal(err)
 	}
-	configPath := filepath.Join(repo, "_build", "katldev", "cluster.yaml")
 	for _, want := range []string{
 		"KatlOS installer VM is ready.",
-		"katlctl config init " + configPath + " --installer http://192.0.2.42:8080",
+		"Cluster config: " + configPath + " (existing)",
 		"katlctl install apply --config " + configPath + " --endpoint http://192.0.2.42:8080",
 		"katldev installer reset",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("ready output missing %q:\n%s", want, stdout.String())
 		}
+	}
+}
+
+func TestInstallerReadyCreatesClusterConfigWithKatlctl(t *testing.T) {
+	repo := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	var gotName string
+	var gotArgs []string
+	manager := installerManager{
+		repoRoot: repo,
+		stdout:   &stdout,
+		stderr:   &stderr,
+		run: func(_ context.Context, dir, name string, args, _ []string, _, _ io.Writer) error {
+			if dir != repo {
+				t.Fatalf("command dir = %q, want %q", dir, repo)
+			}
+			gotName = name
+			gotArgs = append([]string(nil), args...)
+			writeKatldevClusterConfig(t, filepath.Join(repo, "_build", "katldev", "cluster.yaml"), "192.0.2.42")
+			return nil
+		},
+	}
+	state := installerState{IPAddress: "192.0.2.42", Endpoint: "http://192.0.2.42:8080"}
+	if err := manager.ready(context.Background(), state, false); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(repo, "_build", "katldev", "cluster.yaml")
+	if gotName != "katlctl" || !reflect.DeepEqual(gotArgs, []string{"config", "init", configPath, "--installer", state.Endpoint}) {
+		t.Fatalf("config command = %s %#v", gotName, gotArgs)
+	}
+	if !strings.Contains(stdout.String(), "Cluster config: "+configPath+" (created)") {
+		t.Fatalf("ready output did not identify created config:\n%s", stdout.String())
+	}
+}
+
+func TestInstallerReadyRetainsMatchingClusterConfig(t *testing.T) {
+	repo := t.TempDir()
+	configPath := filepath.Join(repo, "_build", "katldev", "cluster.yaml")
+	writeKatldevClusterConfig(t, configPath, "192.0.2.42")
+	manager := installerManager{
+		repoRoot: repo,
+		stdout:   io.Discard,
+		stderr:   io.Discard,
+		run: func(context.Context, string, string, []string, []string, io.Writer, io.Writer) error {
+			return errors.New("matching config must not be replaced")
+		},
+	}
+	path, created, err := manager.ensureClusterConfig(context.Background(), installerState{
+		IPAddress: "192.0.2.42",
+		Endpoint:  "http://192.0.2.42:8080",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != configPath || created {
+		t.Fatalf("config = %q, created=%t", path, created)
+	}
+}
+
+func TestInstallerReadyRequiresExplicitReplacementForMismatchedConfig(t *testing.T) {
+	repo := t.TempDir()
+	configPath := filepath.Join(repo, "_build", "katldev", "cluster.yaml")
+	writeKatldevClusterConfig(t, configPath, "192.0.2.99")
+	var gotArgs []string
+	manager := installerManager{
+		repoRoot: repo,
+		stdout:   io.Discard,
+		stderr:   io.Discard,
+		run: func(_ context.Context, _ string, _ string, args, _ []string, _, _ io.Writer) error {
+			gotArgs = append([]string(nil), args...)
+			writeKatldevClusterConfig(t, configPath, "192.0.2.42")
+			return nil
+		},
+	}
+	state := installerState{IPAddress: "192.0.2.42", Endpoint: "http://192.0.2.42:8080"}
+	if _, _, err := manager.ensureClusterConfig(context.Background(), state, false); err == nil || !strings.Contains(err.Error(), "--force-config") {
+		t.Fatalf("mismatched config error = %v", err)
+	}
+	if _, created, err := manager.ensureClusterConfig(context.Background(), state, true); err != nil || !created {
+		t.Fatalf("forced config: created=%t, error=%v", created, err)
+	}
+	if !reflect.DeepEqual(gotArgs, []string{"config", "init", configPath, "--installer", state.Endpoint, "--force"}) {
+		t.Fatalf("forced config args = %#v", gotArgs)
+	}
+}
+
+func writeKatldevClusterConfig(t *testing.T, path, address string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: katl-lab
+spec:
+  kubernetes:
+    version: v1.36.1
+  nodes:
+    - name: cp-1
+      controlPlane: true
+      install:
+        targetDisk:
+          byID: /dev/disk/by-id/virtio-katl-root
+      bootstrap:
+        address: ` + address + `
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
