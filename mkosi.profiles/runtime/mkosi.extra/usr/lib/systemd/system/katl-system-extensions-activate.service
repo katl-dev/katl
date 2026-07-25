@@ -1,0 +1,13 @@
+[Unit]
+Description=Activate configured system extension units
+Documentation=man:systemd.service(5)
+Requires=katl-system-extensions-reload.service katl-host-config-verify.service
+After=katl-system-extensions-reload.service katl-host-config-verify.service
+Before=katl-boot-health.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal+console
+SyslogIdentifier=katl-system-extensions-activate
+ExecStart=/usr/bin/true

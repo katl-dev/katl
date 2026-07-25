@@ -50,7 +50,10 @@ func Serve(ctx context.Context, config ServeConfig) error {
 		return err
 	}
 	defer listener.Close()
-	server := grpc.NewServer()
+	server := grpc.NewServer(
+		grpc.MaxRecvMsgSize(256<<20),
+		grpc.MaxSendMsgSize(256<<20),
+	)
 	agentServer := NewServer(root, store)
 	if _, err := AuditStartup(store, timeNow()); err != nil {
 		return err

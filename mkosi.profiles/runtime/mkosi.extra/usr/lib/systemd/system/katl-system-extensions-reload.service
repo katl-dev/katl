@@ -1,0 +1,13 @@
+[Unit]
+Description=Reload systemd after merging system extension configuration
+Documentation=man:systemd-sysext(8) man:systemd-confext(8)
+Requires=systemd-sysext.service systemd-confext.service
+After=systemd-sysext.service systemd-confext.service
+Before=katl-system-extensions-activate.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal+console
+SyslogIdentifier=katl-system-extensions-reload
+ExecStart=/usr/bin/systemctl daemon-reload

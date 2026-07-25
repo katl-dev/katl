@@ -262,8 +262,11 @@ func (c *Controller) RunOnce(ctx context.Context) (Status, error) {
 			}
 		}
 	}
+	if config.Routing.Mode == "vip-only" {
+		bird.RouteOriginated = localVIPOwned
+	}
 	c.observeRouteTransition(bird.RouteOriginated, now)
-	if localVIPOwned && !bird.RouteOriginated && withdrawReason == "" {
+	if config.Routing.Mode == "bgp" && localVIPOwned && !bird.RouteOriginated && withdrawReason == "" {
 		withdrawReason = "waiting-for-route-advertisement"
 	}
 	statusFailure := failure

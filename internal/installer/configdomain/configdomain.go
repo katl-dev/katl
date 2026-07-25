@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
@@ -107,26 +108,116 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 		return nil, err
 	}
 	files = append(files, hostFiles...)
+	extensionFiles, err := systemExtensionFiles(request.Manifest.Node.SystemExtensions)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, extensionFiles...)
 	plans, err := confext.ValidateNativeEtcBundle("", files)
 	if err != nil {
 		return nil, err
 	}
 
-	contentByPath := make(map[string]string, len(files))
+	fileByPath := make(map[string]confext.NativeEtcFile, len(files))
 	for _, file := range files {
-		contentByPath[filepath.Clean(file.Path)] = file.Content
+		fileByPath[filepath.Clean(file.Path)] = file
 	}
 	normalizedFiles := make([]confext.NativeEtcFile, 0, len(plans))
 	for _, plan := range plans {
+		source := fileByPath[plan.Path]
 		normalizedFiles = append(normalizedFiles, confext.NativeEtcFile{
 			Path:    plan.Path,
-			Content: contentByPath[plan.Path],
+			Content: source.Content,
+			Type:    source.Type,
 			Mode:    plan.Mode,
 			UID:     plan.UID,
 			GID:     plan.GID,
 		})
 	}
 	return normalizedFiles, nil
+}
+
+func systemExtensionFiles(extensions []manifest.SystemExtension) ([]confext.NativeEtcFile, error) {
+	if err := manifest.ValidateSystemExtensions(extensions, false); err != nil {
+		return nil, fmt.Errorf("node.systemExtensions: %w", err)
+	}
+	var files []confext.NativeEtcFile
+	var required []string
+	unitActivation := make(map[string]bool)
+	for _, extension := range extensions {
+		for _, file := range extension.Configuration.Files {
+			if file.Content == nil {
+				return nil, fmt.Errorf("node.systemExtensions %q path %q has no embedded content", extension.Name, file.Path)
+			}
+			mode := file.Mode
+			if mode == 0 {
+				mode = 0o644
+			}
+			files = append(files, confext.NativeEtcFile{
+				Path: file.Path, Content: *file.Content, Mode: fs.FileMode(mode), UID: 0, GID: 0,
+			})
+		}
+		for _, unit := range extension.Units {
+			if unit.Enable {
+				files = append(files, confext.NativeEtcFile{
+					Path:    filepath.ToSlash(filepath.Join("/etc/systemd/system/multi-user.target.wants", unit.Name)),
+					Content: "/usr/lib/systemd/system/" + unit.Name,
+					Type:    confext.NativeEtcSymlink,
+				})
+				if _, exists := unitActivation[unit.Name]; !exists {
+					unitActivation[unit.Name] = false
+				}
+			}
+			if unit.RequiredForBootHealth {
+				required = append(required, unit.Name)
+				unitActivation[unit.Name] = true
+			}
+			for _, dropIn := range unit.DropIns {
+				if dropIn.Content == nil {
+					return nil, fmt.Errorf("node.systemExtensions %q unit %q drop-in %q has no embedded content", extension.Name, unit.Name, dropIn.Name)
+				}
+				files = append(files, confext.NativeEtcFile{
+					Path:    filepath.ToSlash(filepath.Join("/etc/systemd/system", unit.Name+".d", dropIn.Name)),
+					Content: *dropIn.Content,
+					Mode:    0o644,
+					UID:     0,
+					GID:     0,
+				})
+			}
+		}
+	}
+	sort.Strings(required)
+	unitNames := make([]string, 0, len(unitActivation))
+	for name := range unitActivation {
+		unitNames = append(unitNames, name)
+	}
+	sort.Strings(unitNames)
+	if len(unitNames) > 0 {
+		var activation strings.Builder
+		activation.WriteString("[Service]\n")
+		for _, name := range unitNames {
+			activation.WriteString("ExecStart=")
+			if !unitActivation[name] {
+				activation.WriteByte('-')
+			}
+			activation.WriteString("/usr/bin/systemctl start ")
+			activation.WriteString(name)
+			activation.WriteByte('\n')
+		}
+		files = append(files, confext.NativeEtcFile{
+			Path:    "/etc/systemd/system/katl-system-extensions-activate.service.d/50-units.conf",
+			Content: activation.String(),
+			Mode:    0o644,
+		})
+	}
+	if len(required) > 0 {
+		files = append(files, confext.NativeEtcFile{
+			Path:    "/etc/systemd/system/katl-boot-health.service.d/50-system-extensions.conf",
+			Content: "[Unit]\nRequires=" + strings.Join(required, " ") + "\nAfter=" + strings.Join(required, " ") + "\n",
+			Mode:    0o644,
+		})
+	}
+	return files, nil
 }
 
 func hostConfigurationFiles(config manifest.HostConfiguration) ([]confext.NativeEtcFile, error) {

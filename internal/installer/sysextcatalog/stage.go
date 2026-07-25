@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 )
 
 type StageRequest struct {
@@ -184,14 +185,7 @@ type KubernetesPayloadBundle struct {
 	Signatures                        []BundleSignature   `json:"signatures,omitempty"`
 }
 
-type BundleDescriptor struct {
-	Role        string            `json:"role"`
-	MediaType   string            `json:"mediaType"`
-	Digest      string            `json:"digest"`
-	SizeBytes   int64             `json:"sizeBytes"`
-	FileName    string            `json:"fileName"`
-	Annotations map[string]string `json:"annotations,omitempty"`
-}
+type BundleDescriptor = payloadbundle.Descriptor
 
 type BundleSignature struct {
 	Type   string `json:"type"`

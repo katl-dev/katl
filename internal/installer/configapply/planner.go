@@ -20,6 +20,7 @@ type NodeConfigurationChange struct {
 	Apply            Apply
 	Changes          []Change
 	Sysexts          []generation.ExtensionRef
+	BundledConfexts  []generation.ExtensionRef
 	GeneratedConfext generation.GeneratedConfext
 	Kubeadm          generation.KubeadmActionRequired
 	RequestedAt      time.Time
@@ -72,6 +73,7 @@ func PlanChange(current generation.Record, request NodeConfigurationChange) (Res
 		Previous:           current,
 		SourceDigest:       request.SourceDigest,
 		Sysexts:            request.Sysexts,
+		BundledConfexts:    request.BundledConfexts,
 		GeneratedConfext:   request.GeneratedConfext,
 		ChangedDomains:     decision.ChangedDomains,
 		RequestedApplyMode: decision.RequestedMode,

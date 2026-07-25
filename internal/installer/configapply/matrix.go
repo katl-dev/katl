@@ -31,6 +31,7 @@ const (
 	DomainControlPlaneEndpointIdentity  = "control-plane-endpoint-identity"
 	DomainControlPlaneEndpointRouting   = "control-plane-endpoint-routing"
 	DomainHostConfiguration             = "host-configuration"
+	DomainSystemExtensions              = "system-extensions"
 )
 
 const (
@@ -300,6 +301,10 @@ var domainPolicies = map[string]domainPolicy{
 	DomainHostConfiguration: {
 		Classification:  ClassificationOnlineApplicable,
 		LivePreflight:   true,
+		NextBootAllowed: true,
+	},
+	DomainSystemExtensions: {
+		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},
 	DomainTmpfiles: {

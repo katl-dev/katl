@@ -278,8 +278,8 @@ WantedBy=multi-user.target
 	wantHealth := `[Unit]
 Description=Record successful Katl boot health
 Documentation=man:systemd.service(5)
-Requires=katl-runtime-handoff-status.service katl-host-config-verify.service katlc-agent.service systemd-networkd.service sshd.service
-After=katl-runtime-handoff-status.service katl-host-config-verify.service katlc-agent.service systemd-networkd.service sshd.service
+Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katlc-agent.service systemd-networkd.service sshd.service
+After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
 RequiresMountsFor=/efi /var/lib/katl
 
@@ -392,6 +392,8 @@ func TestWriteState(t *testing.T) {
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-generation-activate.service"), assets.GenerationActivate)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-host-config-prepare.service"), assets.HostConfigPrepare)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-host-config-verify.service"), assets.HostConfigVerify)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-system-extensions-reload.service"), assets.ExtensionReload)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-system-extensions-activate.service"), assets.ExtensionActivate)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-activate.service"), assets.KubeadmActivate)
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-activate.service"), "../katl-kubeadm-activate.service")
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
@@ -450,6 +452,8 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-generation-activate.service"), assets.GenerationActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-prepare.service"), assets.HostConfigPrepare)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-verify.service"), assets.HostConfigVerify)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-reload.service"), assets.ExtensionReload)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-activate.service"), assets.ExtensionActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-activate.service"), assets.KubeadmActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-complete.target"), assets.BootCompleteTarget)
@@ -553,8 +557,9 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-runtime-status", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/katlc", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/printf", "#!/bin/sh\nexit 0\n")
+	writeUnit(t, root, "usr/bin/systemctl", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/true", "#!/bin/sh\nexit 0\n")
-	for _, fixture := range []string{"usr/bin/katlc", "usr/bin/printf", "usr/bin/true", "usr/lib/katl/runtime/katl-generation-activate", "usr/lib/katl/runtime/katl-host-config-activate", "usr/lib/katl/runtime/katl-boot-health", "usr/lib/katl/runtime/katl-runtime-status"} {
+	for _, fixture := range []string{"usr/bin/katlc", "usr/bin/printf", "usr/bin/systemctl", "usr/bin/true", "usr/lib/katl/runtime/katl-generation-activate", "usr/lib/katl/runtime/katl-host-config-activate", "usr/lib/katl/runtime/katl-boot-health", "usr/lib/katl/runtime/katl-runtime-status"} {
 		if err := os.Chmod(filepath.Join(root, filepath.FromSlash(fixture)), 0o755); err != nil {
 			t.Fatalf("chmod %s fixture: %v", fixture, err)
 		}
@@ -578,6 +583,8 @@ func stateVerifyUnits() []string {
 		"/etc/systemd/system/katl-generation-activate.service",
 		"/etc/systemd/system/katl-host-config-prepare.service",
 		"/etc/systemd/system/katl-host-config-verify.service",
+		"/etc/systemd/system/katl-system-extensions-reload.service",
+		"/etc/systemd/system/katl-system-extensions-activate.service",
 		"/etc/systemd/system/katl-kubeadm-ready.target",
 		"/etc/systemd/system/katl-boot-complete.target",
 		"/etc/systemd/system/katl-boot-health.service",

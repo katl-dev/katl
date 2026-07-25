@@ -112,6 +112,10 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 	if err != nil {
 		return HostUpgradePlan{}, err
 	}
+	bundledConfexts, bundledConfextAssets, err := rehomeBundledConfexts(request.PreviousSpec, generationID, root)
+	if err != nil {
+		return HostUpgradePlan{}, err
+	}
 	spec := generation.GenerationSpec{
 		APIVersion:           generation.APIVersion,
 		Kind:                 generation.SpecKind,
@@ -124,6 +128,7 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 			LoaderEntryPath: strings.TrimSpace(request.LoaderEntryPath),
 		},
 		Sysexts:           sysexts,
+		BundledConfexts:   bundledConfexts,
 		Confexts:          confexts,
 		KernelCommandLine: mergeKernelCommandLine(request.PreviousSpec.KernelCommandLine, p.Boot.Compatibility.KernelCommandLine),
 		CreatedAt:         createdAt.UTC(),
@@ -156,9 +161,27 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		Spec:            spec,
 		Status:          status,
 		BootSelection:   selection,
-		PreservedAssets: append(sysextAssets, confextAssets...),
+		PreservedAssets: append(append(sysextAssets, bundledConfextAssets...), confextAssets...),
 		BundledAssets:   bundledAssets,
 	}, nil
+}
+
+func rehomeBundledConfexts(previous generation.GenerationSpec, generationID string, root generation.RootSelection) ([]generation.ExtensionRef, []PreservedAsset, error) {
+	refs := make([]generation.ExtensionRef, 0, len(previous.BundledConfexts))
+	assets := make([]PreservedAsset, 0, len(previous.BundledConfexts))
+	for _, ref := range previous.BundledConfexts {
+		if err := generation.ValidatePair(root, ref); err != nil {
+			return nil, nil, fmt.Errorf("preserved bundled confext %q is incompatible with upgraded runtime: %w", ref.Name, err)
+		}
+		nextPath, err := rehomeGenerationPath(previous.GenerationID, generationID, ref.Path, "bundled-confext")
+		if err != nil {
+			return nil, nil, fmt.Errorf("preserve bundled confext %q: %w", ref.Name, err)
+		}
+		assets = append(assets, PreservedAsset{Kind: "bundled-confext", Name: ref.Name, SourcePath: ref.Path, TargetPath: nextPath, SHA256: ref.SHA256})
+		ref.Path = nextPath
+		refs = append(refs, ref)
+	}
+	return refs, assets, nil
 }
 
 func ValidateHostUpgradeSource(previousSpec generation.GenerationSpec, previousStatus generation.GenerationStatus, bootstrapped bool) error {
@@ -381,6 +404,19 @@ func copyDirectory(source string, target string) error {
 		}
 		if dirent.IsDir() {
 			return os.MkdirAll(targetPath, info.Mode().Perm())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return err
+			}
+			if err := os.Symlink(linkTarget, targetPath); err != nil {
+				return err
+			}
+			return nil
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("%s is not a regular file", path)

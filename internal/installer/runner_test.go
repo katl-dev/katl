@@ -797,7 +797,7 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	if len(install.LoaderRecord.Sysexts) != 0 {
 		t.Fatalf("generation 0 selected sysexts = %#v", install.LoaderRecord.Sysexts)
 	}
-	if len(install.LoaderRecord.Confexts) != 1 || install.LoaderRecord.Confexts[0].Name != "katl-node" {
+	if len(install.LoaderRecord.Confexts) != 1 || install.LoaderRecord.Confexts[0].Name != generation.GeneratedConfextName {
 		t.Fatalf("confext metadata = %#v", install.LoaderRecord.Confexts)
 	}
 	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-0.efi"), string(contents.boot))
@@ -1184,7 +1184,7 @@ func TestRunnerInstallsIdentity(t *testing.T) {
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/ssh/authorized_keys/katl"), sshKey+"\n")
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/ssh/authorized_keys/root"), sshKey+"\n")
 	assertContains(t, filepath.Join(bootRoot, "loader/entries/katl-2026.06.01-005.conf"), "systemd.machine_id="+machineID)
-	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katlos\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
+	assertText(t, filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.01-005/confext/etc/extension-release.d/extension-release."+generation.GeneratedConfextName), "ID=katlos\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
 }
 
 func TestRunnerInstallsMountUnits(t *testing.T) {
@@ -1294,7 +1294,7 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 	confextDir := filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.04-001/confext")
 	assertText(t, filepath.Join(confextDir, "etc/systemd/network/10-lan.network"), "[Match]\nName=enp1s0\n")
 	assertMissing(t, filepath.Join(confextDir, "etc/katl/kubeadm/control-plane/config.yaml"))
-	assertText(t, filepath.Join(confextDir, "etc/extension-release.d/extension-release.katl-node"), "ID=katlos\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
+	assertText(t, filepath.Join(confextDir, "etc/extension-release.d/extension-release."+generation.GeneratedConfextName), "ID=katlos\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n")
 	assertText(t, filepath.Join(confextDir, "etc/katl/node.json"), `{
   "apiVersion": "katl.dev/v1alpha1",
   "kind": "NodeMetadata",
@@ -1333,13 +1333,13 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 	if len(decoded.Confexts) != 1 || decoded.Confexts[0].Path != "/var/lib/katl/generations/2026.06.04-001/confext" {
 		t.Fatalf("confext metadata = %#v", decoded.Confexts)
 	}
-	if decoded.Confexts[0].ActivationPath != "/run/confexts/katl-node" || decoded.Confexts[0].SHA256 != digest {
+	if decoded.Confexts[0].ActivationPath != "/run/confexts/"+generation.GeneratedConfextName || decoded.Confexts[0].SHA256 != digest {
 		t.Fatalf("confext activation/digest = %#v, digest %s", decoded.Confexts[0], digest)
 	}
 	if decoded.Confexts[0].Compatibility.ID != "katlos" || decoded.Confexts[0].Compatibility.ConfextLevel != 1 {
 		t.Fatalf("confext compatibility = %#v", decoded.Confexts[0].Compatibility)
 	}
-	if decoded.Confexts[0].Name != "katl-node" || decoded.Confexts[0].Compatibility.VersionID != "0.1.0" {
+	if decoded.Confexts[0].Name != generation.GeneratedConfextName || decoded.Confexts[0].Compatibility.VersionID != "0.1.0" {
 		t.Fatalf("stale confext metadata was reused: %#v", decoded.Confexts[0])
 	}
 }

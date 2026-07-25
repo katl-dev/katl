@@ -23,7 +23,7 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 		"ConditionPathExists=/etc/katl/apps/bird/bird.conf",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
 		"Group=katl",
-		"ExecStart=/usr/bin/bird ",
+		"ExecStart=/usr/lib/katl/endpoint-routing/bird ",
 		"RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX",
 	} {
 		if !strings.Contains(birdUnit, want) {
@@ -36,8 +36,6 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 
 	appUnit := read("mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.service")
 	for _, want := range []string{
-		"Wants=katl-app-bird.service",
-		"After=katl-app-bird.service",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml",
 		"ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled",
 		"ConditionPathExists=/etc/kubernetes/pki/ca.crt",
@@ -49,6 +47,9 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 		if !strings.Contains(appUnit, want) {
 			t.Fatalf("endpoint advertiser unit is missing %q", want)
 		}
+	}
+	if strings.Contains(appUnit, "katl-app-bird.service") {
+		t.Fatal("endpoint advertiser base unit must leave BIRD activation to the BGP-only generated drop-in")
 	}
 	if strings.Contains(appUnit, "WantedBy=") {
 		t.Fatal("endpoint advertiser unit must be selected by Katl rather than enabled globally")
@@ -91,8 +92,11 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 	if strings.Contains(pathUnit, "DefaultDependencies=no") {
 		t.Fatal("endpoint path watcher must retain systemd's default shutdown ordering")
 	}
-	if !strings.Contains(build, `ln -sf /dev/null "$DESTDIR/usr/lib/systemd/system/bird.service"`) {
-		t.Fatal("endpoint sysext must mask Fedora's generic bird.service")
+	if !strings.Contains(build, `install -m 0755 "$source" "$DESTDIR/usr/lib/katl/endpoint-routing/$executable"`) {
+		t.Fatal("endpoint sysext must keep its BIRD executables private")
+	}
+	if strings.Contains(build, `ln -sf /dev/null "$DESTDIR/usr/lib/systemd/system/bird.service"`) {
+		t.Fatal("endpoint sysext must not mask a user-owned generic bird.service")
 	}
 	profile := read("mkosi.profiles/endpoint-advertiser-sysext/mkosi.conf")
 	for _, path := range []string{"usr/lib/sysusers.d/bird.conf", "usr/lib/tmpfiles.d/bird.conf"} {

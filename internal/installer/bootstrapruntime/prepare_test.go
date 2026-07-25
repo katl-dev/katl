@@ -53,6 +53,13 @@ func TestCopySysextUsesBoundedReads(t *testing.T) {
 func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 	root := t.TempDir()
 	previous, previousStatus := writeGenerationZero(t, root)
+	enablement := filepath.Join(root, "var/lib/katl/generations/0/confext/etc/systemd/system/multi-user.target.wants/bird.service")
+	if err := os.MkdirAll(filepath.Dir(enablement), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/lib/systemd/system/bird.service", enablement); err != nil {
+		t.Fatal(err)
+	}
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
 		APIVersion:          generation.APIVersion,
 		Kind:                generation.BootSelectionKind,
@@ -147,8 +154,9 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 		t.Fatalf("desired kubeadm input = source %q content:\n%s", sourceGeneration, desiredKubeadm.Config.Content)
 	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
-	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katlos")
+	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release."+generation.GeneratedConfextName), "ID=katlos")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/systemd/network/80-katl-vmtest-dhcp.network"), "DHCP=yes")
+	assertSymlink(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/systemd/system/multi-user.target.wants/bird.service"), "/usr/lib/systemd/system/bird.service")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), "What=/var/lib/katl/kubernetes/etc-kubernetes")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount")
 	assertContains(t, filepath.Join(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf"), "RequiresMountsFor=/var/lib/containerd")

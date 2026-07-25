@@ -232,6 +232,10 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 	if err := StagePreservedAssets(root, plan); err != nil {
 		t.Fatalf("StagePreservedAssets() error = %v", err)
 	}
+	assertSymlinkTarget(t,
+		filepath.Join(root, "var/lib/katl/generations/gen1/confext/etc/systemd/system/multi-user.target.wants/bird.service"),
+		"/usr/lib/systemd/system/bird.service",
+	)
 	if _, err := generation.ApplyActivation(root, generation.RecordFromSplit(plan.Spec, plan.Status)); err != nil {
 		t.Fatalf("ApplyActivation(candidate) error = %v", err)
 	}
@@ -936,6 +940,13 @@ func writePreservedGenerationAssets(t *testing.T, root string, spec generation.G
 	if err := os.WriteFile(filepath.Join(confextPath, "etc", "katl.conf"), []byte("node config\n"), 0o600); err != nil {
 		t.Fatalf("write confext: %v", err)
 	}
+	enablement := filepath.Join(confextPath, "etc", "systemd", "system", "multi-user.target.wants", "bird.service")
+	if err := os.MkdirAll(filepath.Dir(enablement), 0o755); err != nil {
+		t.Fatalf("mkdir enablement: %v", err)
+	}
+	if err := os.Symlink("/usr/lib/systemd/system/bird.service", enablement); err != nil {
+		t.Fatalf("write enablement: %v", err)
+	}
 	digest, err := generation.DigestDirectory(confextPath)
 	if err != nil {
 		t.Fatalf("DigestDirectory(confext) error = %v", err)
@@ -946,6 +957,17 @@ func writePreservedGenerationAssets(t *testing.T, root string, spec generation.G
 		t.Fatalf("NewGenerationStatus() error = %v", err)
 	}
 	return spec, status
+}
+
+func assertSymlinkTarget(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.Readlink(path)
+	if err != nil {
+		t.Fatalf("readlink %s: %v", path, err)
+	}
+	if got != want {
+		t.Fatalf("symlink %s target = %q, want %q", path, got, want)
+	}
 }
 
 func validHostUpgradeRequest(previousSpec generation.GenerationSpec, previousStatus generation.GenerationStatus) HostUpgradeRequest {

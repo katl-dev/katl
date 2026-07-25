@@ -25,16 +25,22 @@ type ReadOptions struct {
 }
 
 type SelectedNodeMaterial struct {
-	BundleManifest        BundleManifest
-	Node                  NodeRecord
-	NodeMaterial          clusterplan.NodeMaterial
-	InstallManifest       manifest.Manifest
-	KubeadmConfigs        map[string]kubeadmconfig.Plan
-	BundleDigest          string
-	SourceDigest          string
-	NodeMaterialDigest    string
-	InstallMaterialDigest string
-	KatlosImageFromMedia  bool
+	BundleManifest          BundleManifest
+	Node                    NodeRecord
+	NodeMaterial            clusterplan.NodeMaterial
+	InstallManifest         manifest.Manifest
+	KubeadmConfigs          map[string]kubeadmconfig.Plan
+	SystemExtensionPayloads []SystemExtensionPayload
+	BundleDigest            string
+	SourceDigest            string
+	NodeMaterialDigest      string
+	InstallMaterialDigest   string
+	KatlosImageFromMedia    bool
+}
+
+type SystemExtensionPayload struct {
+	Ref  manifest.SystemExtensionPayloadRef
+	Data []byte
 }
 
 type Bundle struct {
@@ -135,18 +141,50 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 		return SelectedNodeMaterial{}, err
 	}
 
+	systemExtensionPayloads, err := selectedSystemExtensionPayloads(archive, node, installManifest.Node.SystemExtensions)
+	if err != nil {
+		return SelectedNodeMaterial{}, err
+	}
+
 	return SelectedNodeMaterial{
-		BundleManifest:        bundle,
-		Node:                  node,
-		NodeMaterial:          nodeMaterial,
-		InstallManifest:       installManifest,
-		KubeadmConfigs:        kubeadmConfigs,
-		BundleDigest:          bundleDigest,
-		SourceDigest:          bundle.Source.SourceDigest,
-		NodeMaterialDigest:    node.NodeMaterial.Digest,
-		InstallMaterialDigest: node.InstallMaterial.Digest,
-		KatlosImageFromMedia:  defaulted || (!manifest.KatlosImageEmpty(options.DefaultKatlosImage) && installManifest.KatlosImage == options.DefaultKatlosImage),
+		BundleManifest:          bundle,
+		Node:                    node,
+		NodeMaterial:            nodeMaterial,
+		InstallManifest:         installManifest,
+		KubeadmConfigs:          kubeadmConfigs,
+		SystemExtensionPayloads: systemExtensionPayloads,
+		BundleDigest:            bundleDigest,
+		SourceDigest:            bundle.Source.SourceDigest,
+		NodeMaterialDigest:      node.NodeMaterial.Digest,
+		InstallMaterialDigest:   node.InstallMaterial.Digest,
+		KatlosImageFromMedia:    defaulted || (!manifest.KatlosImageEmpty(options.DefaultKatlosImage) && installManifest.KatlosImage == options.DefaultKatlosImage),
 	}, nil
+}
+
+func selectedSystemExtensionPayloads(archive ociArchive, node NodeRecord, extensions []manifest.SystemExtension) ([]SystemExtensionPayload, error) {
+	refs := make(map[string]manifest.SystemExtensionPayloadRef)
+	for _, extension := range extensions {
+		for _, payload := range extension.Payloads {
+			refs[payload.Digest] = payload
+		}
+	}
+	out := make([]SystemExtensionPayload, 0, len(node.SystemExtensionPayloads))
+	for _, descriptor := range node.SystemExtensionPayloads {
+		ref, ok := refs[descriptor.Digest]
+		if !ok {
+			return nil, fmt.Errorf("selected node system extension payload %s is not declared by desired state", descriptor.Digest)
+		}
+		data, err := archive.descriptorData(descriptor)
+		if err != nil {
+			return nil, fmt.Errorf("read selected system extension payload %s: %w", descriptor.Digest, err)
+		}
+		if ref.SizeBytes != int64(len(data)) || ref.MediaType != descriptor.MediaType {
+			return nil, fmt.Errorf("selected system extension payload %s descriptor does not match desired state", descriptor.Digest)
+		}
+		out = append(out, SystemExtensionPayload{Ref: ref, Data: data})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Ref.Digest < out[j].Ref.Digest })
+	return out, nil
 }
 
 type ociArchive struct {

@@ -3,6 +3,7 @@ package configbundle
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 )
 
 func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
@@ -70,6 +72,80 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 		if _, ok := files[blobPath]; !ok {
 			t.Fatalf("descriptor %s missing blob %s", desc.FileName, blobPath)
 		}
+	}
+}
+
+func TestBuildArchiveResolvesAndVendorsSystemExtensionOnce(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "  defaults:\n", `  defaults:
+    systemExtensions:
+      - name: bird
+        bundle: registry.example/katl-dev/bird:v3.1.2-katl.1
+        configuration:
+          files:
+            - path: /etc/bird.conf
+              content: |
+                router id from "bird0";
+        units:
+          - name: bird.service
+            enable: true
+            requiredForBootHealth: true
+            dropIns:
+              - name: 10-site.conf
+                content: |
+                  [Service]
+                  RestartSec=2s
+`, 1)
+	payloadData := []byte("verified sysext bytes")
+	payloadDigest := digestBytes(payloadData)
+	customManifest := []byte(`{"apiVersion":"payload.katl.dev/v1alpha1","kind":"SystemExtensionBundle"}`)
+	customDigest := digestBytes(customManifest)
+	resolveCalls := 0
+	archive, result, err := BuildArchive(BuildRequest{
+		SourcePath: writeSource(t, source),
+		Planning:   PlanningInputs{KatlosImage: testKatlosImage()},
+		ResolveSystemExtension: func(_ context.Context, request systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error) {
+			resolveCalls++
+			if request.Reference != "registry.example/katl-dev/bird:v3.1.2-katl.1" ||
+				request.Architecture != "x86_64" || request.RuntimeInterface != "katl-runtime-1" {
+				t.Fatalf("resolve request = %#v", request)
+			}
+			return systemextensionbundle.Resolved{
+				Reference:            request.Reference,
+				OCIManifestDigest:    "sha256:" + strings.Repeat("a", 64),
+				BundleManifestDigest: customDigest,
+				BundleManifest:       customManifest,
+				Bundle: systemextensionbundle.Bundle{
+					ArtifactVersion: "v3.1.2-katl.1", PayloadVersion: "v3.1.2",
+					Architecture: "x86_64", SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
+				},
+				Payloads: []systemextensionbundle.Payload{{
+					Descriptor: systemextensionbundle.Descriptor{
+						Role: systemextensionbundle.SysextRole, MediaType: systemextensionbundle.SysextMediaType,
+						Digest: payloadDigest, SizeBytes: int64(len(payloadData)), FileName: "katl-bird.raw",
+					},
+					Data: payloadData,
+				}},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	if resolveCalls != 1 {
+		t.Fatalf("resolver calls = %d, want one for shared defaults", resolveCalls)
+	}
+	if len(result.Manifest.Cluster.SystemExtensions) != 1 {
+		t.Fatalf("bundle records = %#v", result.Manifest.Cluster.SystemExtensions)
+	}
+	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected.InstallManifest.Node.SystemExtensions) != 1 ||
+		selected.InstallManifest.Node.SystemExtensions[0].OCIManifestDigest != "sha256:"+strings.Repeat("a", 64) ||
+		len(selected.SystemExtensionPayloads) != 1 ||
+		!bytes.Equal(selected.SystemExtensionPayloads[0].Data, payloadData) {
+		t.Fatalf("selected system extension material = %#v / %#v", selected.InstallManifest.Node.SystemExtensions, selected.SystemExtensionPayloads)
 	}
 }
 

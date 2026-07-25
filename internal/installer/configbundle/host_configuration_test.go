@@ -105,3 +105,15 @@ func TestReadHostConfigurationSourceRejectsEscapesAndSymlinks(t *testing.T) {
 		})
 	}
 }
+
+func TestReadHostConfigurationSourceAcceptsExplicitCurrentDirectory(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "routing.conf"), "router id 192.0.2.1;\n")
+	data, err := readHostConfigurationSource(root, "./routing.conf")
+	if err != nil {
+		t.Fatalf("readHostConfigurationSource() error = %v", err)
+	}
+	if string(data) != "router id 192.0.2.1;\n" {
+		t.Fatalf("content = %q", data)
+	}
+}

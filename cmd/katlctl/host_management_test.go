@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,17 @@ func TestHostStatusJSON(t *testing.T) {
 	}
 	if report.ControlPlaneEndpoint == nil || report.ControlPlaneEndpoint.State != "advertised" || !report.ControlPlaneEndpoint.LocalVIPOwned || len(report.ControlPlaneEndpoint.RouteExchange) != 1 || report.ControlPlaneEndpoint.RouteExchange[0].ExportedRoutes != 3 {
 		t.Fatalf("control-plane endpoint report = %#v", report.ControlPlaneEndpoint)
+	}
+}
+
+func TestHostRebootDefaultAllowsBootDeadmanRecovery(t *testing.T) {
+	cmd := newHostRebootCommand(context.Background(), io.Discard, io.Discard)
+	timeout, err := cmd.Flags().GetDuration("timeout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeout != 15*time.Minute {
+		t.Fatalf("reboot timeout = %s, want 15m", timeout)
 	}
 }
 

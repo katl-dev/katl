@@ -53,6 +53,7 @@ type TrustedBundleRequest struct {
 	RuntimeKubernetesActivationPath string
 	KubernetesInitialized           bool
 	EndpointAdvertiserSysext        *generation.ExtensionRef
+	SystemExtensionPayloads         []SystemExtensionPayload
 	Executor                        *Executor
 	Chown                           func(path string, uid int, gid int) error
 	Now                             func() time.Time
@@ -63,6 +64,7 @@ type NodeOverlay struct {
 	SystemRole              string
 	Networkd                *manifest.NetworkdConfig
 	HostConfiguration       *manifest.HostConfiguration
+	SystemExtensions        *[]manifest.SystemExtension
 	Kubernetes              *manifest.KubernetesConfig
 	ControlPlaneEndpoint    *controlplaneendpoint.Config
 	ControlPlaneEndpointSet bool
@@ -154,6 +156,11 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
+	if err := ValidateSystemExtensionMaterials(request.CurrentRecord.Root, merged.Node.SystemExtensions, request.SystemExtensionPayloads); err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
 	matrixDecision, err := Plan(request.ApplyMode, changes)
 	if err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", changes, matrixDecision.Diagnostics, err, now)
@@ -235,6 +242,14 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 			return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 		}
 	}
+	userSysexts, bundledConfexts, err := MaterializeSystemExtensions(request.Root, request.GenerationID, request.CurrentRecord.Root, merged.Node.SystemExtensions, request.SystemExtensionPayloads)
+	if err != nil {
+		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		audit.CandidateGeneration = request.GenerationID
+		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
 	desiredSysexts, err := endpointAdvertiserSysexts(request, merged)
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
@@ -243,6 +258,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
+	desiredSysexts = append(desiredSysexts, userSysexts...)
 	sysexts, err := materializeSysexts(request.Root, request.GenerationID, desiredSysexts)
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
@@ -252,13 +268,14 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	plan, err := PlanChange(request.CurrentRecord, NodeConfigurationChange{
-		APIVersion:   NodeConfigurationChangeAPIVersion,
-		Kind:         NodeConfigurationChangeKind,
-		GenerationID: request.GenerationID,
-		SourceDigest: requestDigest(request),
-		Apply:        Apply{Mode: request.ApplyMode},
-		Changes:      changes,
-		Sysexts:      sysexts,
+		APIVersion:      NodeConfigurationChangeAPIVersion,
+		Kind:            NodeConfigurationChangeKind,
+		GenerationID:    request.GenerationID,
+		SourceDigest:    requestDigest(request),
+		Apply:           Apply{Mode: request.ApplyMode},
+		Changes:         changes,
+		Sysexts:         sysexts,
+		BundledConfexts: bundledConfexts,
 		GeneratedConfext: generation.GeneratedConfext{
 			Name:           release.Name,
 			Path:           filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, request.GenerationID, "confext")),
@@ -348,6 +365,9 @@ func endpointAdvertiserSysexts(request TrustedBundleRequest, desired manifest.Ma
 	refs := make([]generation.ExtensionRef, 0, len(request.CurrentRecord.Sysexts)+1)
 	var current *generation.ExtensionRef
 	for _, ref := range request.CurrentRecord.Sysexts {
+		if userSystemExtensionRef(request.CurrentManifest.Node.SystemExtensions, ref) {
+			continue
+		}
 		if ref.Name == "endpoint-advertiser" {
 			candidate := ref
 			current = &candidate
@@ -367,9 +387,20 @@ func endpointAdvertiserSysexts(request TrustedBundleRequest, desired manifest.Ma
 	return append(refs, *request.EndpointAdvertiserSysext), nil
 }
 
+func userSystemExtensionRef(extensions []manifest.SystemExtension, ref generation.ExtensionRef) bool {
+	for _, extension := range extensions {
+		for _, payload := range extension.Payloads {
+			if payload.Role == "systemd-sysext" && ref.ActivationPath == generation.DefaultExtensionsActivationDir+"/"+payload.Name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func confextReleaseFromCurrent(record generation.Record) (confext.ExtensionRelease, error) {
 	for _, ref := range record.Confexts {
-		if strings.TrimSpace(ref.Name) != "katl-node" {
+		if !generation.IsGeneratedConfextName(ref.Name) {
 			continue
 		}
 		release := confext.ExtensionRelease{
@@ -417,6 +448,9 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 		return TrustedBundleResult{Manifest: merged}, err
 	}
 	if err := manifest.Validate(merged); err != nil {
+		return TrustedBundleResult{Manifest: merged}, err
+	}
+	if err := ValidateSystemExtensionMaterials(request.CurrentRecord.Root, merged.Node.SystemExtensions, request.SystemExtensionPayloads); err != nil {
 		return TrustedBundleResult{Manifest: merged}, err
 	}
 	matrixDecision, err := Plan(request.ApplyMode, changes)
@@ -553,7 +587,7 @@ func endpointRenderingDrifted(request TrustedBundleRequest, desired manifest.Man
 
 func currentNodeConfextRoot(root string, record generation.Record) (string, error) {
 	for _, ref := range record.Confexts {
-		if strings.TrimSpace(ref.Name) != "katl-node" {
+		if !generation.IsGeneratedConfextName(ref.Name) {
 			continue
 		}
 		path := filepath.Clean(ref.Path)
@@ -575,6 +609,11 @@ func validateOverlay(path string, overlay NodeOverlay) error {
 	if overlay.HostConfiguration != nil {
 		if err := manifest.ValidateHostConfiguration(*overlay.HostConfiguration, false); err != nil {
 			return fmt.Errorf("%s.hostConfiguration: %w", path, err)
+		}
+	}
+	if overlay.SystemExtensions != nil {
+		if err := manifest.ValidateSystemExtensions(*overlay.SystemExtensions, false); err != nil {
+			return fmt.Errorf("%s.systemExtensions: %w", path, err)
 		}
 	}
 	return nil
@@ -619,6 +658,14 @@ func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, kubernetesInit
 		node.HostConfiguration = *overlay.HostConfiguration
 		if changed {
 			domains.addHostConfiguration(planHostConfigurationChange(current, *overlay.HostConfiguration))
+		}
+	}
+	if overlay.SystemExtensions != nil {
+		current := node.SystemExtensions
+		changed := !(len(current) == 0 && len(*overlay.SystemExtensions) == 0) && !reflect.DeepEqual(current, *overlay.SystemExtensions)
+		node.SystemExtensions = append([]manifest.SystemExtension(nil), (*overlay.SystemExtensions)...)
+		if changed {
+			domains.add(DomainSystemExtensions)
 		}
 	}
 	if overlay.Kubernetes != nil {
@@ -737,8 +784,8 @@ func containsChangeDomain(changes []Change, domain string) bool {
 
 func endpointRoutingImpact(current, desired controlplaneendpoint.Config) EndpointRoutingImpact {
 	impact := EndpointRoutingImpact{MayLoseAllFabricPaths: true}
-	currentBGP := current.Advertisement.BGP
-	desiredBGP := desired.Advertisement.BGP
+	currentBGP := endpointBGP(current)
+	desiredBGP := endpointBGP(desired)
 
 	currentPeers := peerASNs(currentBGP.Peers)
 	desiredPeers := peerASNs(desiredBGP.Peers)
@@ -763,6 +810,13 @@ func endpointRoutingImpact(current, desired controlplaneendpoint.Config) Endpoin
 		}
 	}
 	return impact
+}
+
+func endpointBGP(config controlplaneendpoint.Config) controlplaneendpoint.BGP {
+	if config.Advertisement == nil || config.Advertisement.BGP == nil {
+		return controlplaneendpoint.BGP{}
+	}
+	return *config.Advertisement.BGP
 }
 
 func peerASNs(peers []controlplaneendpoint.Peer) map[string]uint32 {
@@ -1151,40 +1205,42 @@ func cleanDesiredVersion(value string) (string, error) {
 
 func requestDigest(request TrustedBundleRequest) string {
 	type digestInput struct {
-		SourceID              string
-		DesiredVersion        string
-		NodeName              string
-		ApplyMode             string
-		GenerationID          string
-		CurrentManifest       manifest.Manifest
-		ClusterDefaults       NodeOverlay
-		SystemRoleOverrides   map[string]NodeOverlay
-		NodeOverrides         map[string]NodeOverlay
-		KubeadmConfigs        map[string]kubeadmconfig.Plan
-		KubernetesVersion     string
-		KubernetesActivation  string
-		RuntimeVersion        string
-		RuntimeActivation     string
-		KubernetesInitialized bool
-		EndpointAdvertiser    *generation.ExtensionRef
+		SourceID                string
+		DesiredVersion          string
+		NodeName                string
+		ApplyMode               string
+		GenerationID            string
+		CurrentManifest         manifest.Manifest
+		ClusterDefaults         NodeOverlay
+		SystemRoleOverrides     map[string]NodeOverlay
+		NodeOverrides           map[string]NodeOverlay
+		KubeadmConfigs          map[string]kubeadmconfig.Plan
+		KubernetesVersion       string
+		KubernetesActivation    string
+		RuntimeVersion          string
+		RuntimeActivation       string
+		KubernetesInitialized   bool
+		EndpointAdvertiser      *generation.ExtensionRef
+		SystemExtensionPayloads []SystemExtensionPayload
 	}
 	data, _ := json.Marshal(digestInput{
-		SourceID:              request.SourceID,
-		DesiredVersion:        request.DesiredVersion,
-		NodeName:              request.NodeName,
-		ApplyMode:             request.ApplyMode,
-		GenerationID:          request.GenerationID,
-		CurrentManifest:       request.CurrentManifest,
-		ClusterDefaults:       request.ClusterDefaults,
-		SystemRoleOverrides:   request.SystemRoleOverrides,
-		NodeOverrides:         request.NodeOverrides,
-		KubeadmConfigs:        request.KubeadmConfigs,
-		KubernetesVersion:     request.KubernetesVersion,
-		KubernetesActivation:  request.KubernetesActivationPath,
-		RuntimeVersion:        request.RuntimeKubernetesVersion,
-		RuntimeActivation:     request.RuntimeKubernetesActivationPath,
-		KubernetesInitialized: request.KubernetesInitialized,
-		EndpointAdvertiser:    request.EndpointAdvertiserSysext,
+		SourceID:                request.SourceID,
+		DesiredVersion:          request.DesiredVersion,
+		NodeName:                request.NodeName,
+		ApplyMode:               request.ApplyMode,
+		GenerationID:            request.GenerationID,
+		CurrentManifest:         request.CurrentManifest,
+		ClusterDefaults:         request.ClusterDefaults,
+		SystemRoleOverrides:     request.SystemRoleOverrides,
+		NodeOverrides:           request.NodeOverrides,
+		KubeadmConfigs:          request.KubeadmConfigs,
+		KubernetesVersion:       request.KubernetesVersion,
+		KubernetesActivation:    request.KubernetesActivationPath,
+		RuntimeVersion:          request.RuntimeKubernetesVersion,
+		RuntimeActivation:       request.RuntimeKubernetesActivationPath,
+		KubernetesInitialized:   request.KubernetesInitialized,
+		EndpointAdvertiser:      request.EndpointAdvertiserSysext,
+		SystemExtensionPayloads: request.SystemExtensionPayloads,
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

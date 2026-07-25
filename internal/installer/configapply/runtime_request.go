@@ -29,10 +29,16 @@ type nodeConfigurationChangeMetadata struct {
 }
 
 type nodeConfigurationChangeSpec struct {
-	ClusterDefaults     nodeConfigurationOverlay            `json:"clusterDefaults,omitempty" yaml:"clusterDefaults,omitempty"`
-	SystemRoleOverrides map[string]nodeConfigurationOverlay `json:"systemRoleOverrides,omitempty" yaml:"systemRoleOverrides,omitempty"`
-	NodeOverrides       map[string]nodeConfigurationOverlay `json:"nodeOverrides,omitempty" yaml:"nodeOverrides,omitempty"`
-	KubeadmConfigs      map[string]inlineKubeadmConfig      `json:"kubeadmConfigs,omitempty" yaml:"kubeadmConfigs,omitempty"`
+	ClusterDefaults         nodeConfigurationOverlay            `json:"clusterDefaults,omitempty" yaml:"clusterDefaults,omitempty"`
+	SystemRoleOverrides     map[string]nodeConfigurationOverlay `json:"systemRoleOverrides,omitempty" yaml:"systemRoleOverrides,omitempty"`
+	NodeOverrides           map[string]nodeConfigurationOverlay `json:"nodeOverrides,omitempty" yaml:"nodeOverrides,omitempty"`
+	KubeadmConfigs          map[string]inlineKubeadmConfig      `json:"kubeadmConfigs,omitempty" yaml:"kubeadmConfigs,omitempty"`
+	SystemExtensionPayloads []SystemExtensionPayload            `json:"systemExtensionPayloads,omitempty" yaml:"systemExtensionPayloads,omitempty"`
+}
+
+type SystemExtensionPayload struct {
+	Ref  manifest.SystemExtensionPayloadRef `json:"ref" yaml:"ref"`
+	Data []byte                             `json:"data" yaml:"data"`
 }
 
 type inlineKubeadmConfig struct {
@@ -45,6 +51,7 @@ type nodeConfigurationOverlay struct {
 	SystemRole           string                       `json:"systemRole,omitempty" yaml:"systemRole,omitempty"`
 	Networkd             *manifest.NetworkdConfig     `json:"networkd,omitempty" yaml:"networkd,omitempty"`
 	HostConfiguration    *manifest.HostConfiguration  `json:"hostConfiguration,omitempty" yaml:"hostConfiguration,omitempty"`
+	SystemExtensions     *[]manifest.SystemExtension  `json:"systemExtensions,omitempty" yaml:"systemExtensions,omitempty"`
 	Kubernetes           *manifest.KubernetesConfig   `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
 	LivePreflight        map[string]bool              `json:"livePreflight,omitempty" yaml:"livePreflight,omitempty"`
@@ -85,6 +92,7 @@ func DecodeNodeConfigurationChange(reader io.Reader, base TrustedBundleRequest) 
 		return TrustedBundleRequest{}, err
 	}
 	request.KubeadmConfigs = kubeadmConfigs
+	request.SystemExtensionPayloads = append([]SystemExtensionPayload(nil), document.Spec.SystemExtensionPayloads...)
 	request.ClusterDefaults = document.Spec.ClusterDefaults.nodeOverlay(changedKubeadmConfigs)
 	request.SystemRoleOverrides = nodeOverlayMap(document.Spec.SystemRoleOverrides, changedKubeadmConfigs)
 	request.NodeOverrides = nodeOverlayMap(document.Spec.NodeOverrides, changedKubeadmConfigs)
@@ -150,6 +158,7 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 		SystemRole:        overlay.SystemRole,
 		Networkd:          overlay.Networkd,
 		HostConfiguration: overlay.HostConfiguration,
+		SystemExtensions:  overlay.SystemExtensions,
 		Kubernetes:        overlay.Kubernetes,
 		KubeadmChanged:    kubeadmChanged,
 		LivePreflight:     overlay.LivePreflight,

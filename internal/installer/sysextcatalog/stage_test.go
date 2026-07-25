@@ -1,6 +1,7 @@
 package sysextcatalog
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,13 @@ func TestStageKubernetesSysext(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("StageKubernetesSysext() error = %v", err)
+	}
+	packed, err := PackStaged(context.Background(), staged, map[string]string{"dev.katl.bundle.kind": "kubernetes"})
+	if err != nil {
+		t.Fatalf("PackStaged() error = %v", err)
+	}
+	if !strings.HasPrefix(packed.ManifestDigest, "sha256:") {
+		t.Fatalf("packed manifest digest = %q", packed.ManifestDigest)
 	}
 
 	wantName := "katl-kubernetes-v1.36.1-x86_64.sysext.raw"

@@ -97,7 +97,9 @@ func Normalize(input Config) (Plan, error) {
 		return Plan{}, fmt.Errorf("controlPlaneEndpoint.host IP %q must equal advertisement.vip %q", hostIP, vip)
 	}
 	if advertisement.BGP == nil {
-		return Plan{}, fmt.Errorf("controlPlaneEndpoint.advertisement.bgp is required")
+		config.Advertisement = &advertisement
+		plan.Config = config
+		return plan, nil
 	}
 	bgp, warnings, err := normalizeBGP(*advertisement.BGP, vip)
 	if err != nil {

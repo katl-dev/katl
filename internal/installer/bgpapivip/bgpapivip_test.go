@@ -60,6 +60,38 @@ func TestFromControlPlaneEndpointRendersManagedPolicy(t *testing.T) {
 	}
 }
 
+func TestFromControlPlaneEndpointRendersVIPOnlyPolicy(t *testing.T) {
+	endpoint, err := controlplaneendpoint.Normalize(controlplaneendpoint.Config{
+		Host:          "api.home.example",
+		Advertisement: &controlplaneendpoint.Advertisement{VIP: "10.40.0.10"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := FromControlPlaneEndpoint(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := RenderNativeEtcFiles(RenderRequest{NodeRole: "control-plane", Config: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Routing.Mode != "vip-only" {
+		t.Fatalf("routing mode = %q", config.Routing.Mode)
+	}
+	for _, forbidden := range []string{BirdConfigPath, BirdDropInPath} {
+		for _, file := range plan.Files {
+			if file.Path == forbidden {
+				t.Fatalf("VIP-only plan unexpectedly owns %s", forbidden)
+			}
+		}
+	}
+	app := fileContent(t, plan.Files, AppDropInPath)
+	if strings.Contains(app, "katl-app-bird.service") {
+		t.Fatalf("VIP-only app drop-in starts internal BIRD:\n%s", app)
+	}
+}
+
 func TestGeneratedConfigParsesWithPackagedBird(t *testing.T) {
 	bird := strings.TrimSpace(os.Getenv("KATL_TEST_BIRD_BINARY"))
 	if bird == "" {

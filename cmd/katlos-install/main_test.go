@@ -393,6 +393,13 @@ func TestManifestRunnerContextConfiguresImageResolver(t *testing.T) {
 	if install.Chown == nil {
 		t.Fatal("Chown is nil")
 	}
+	dangling := filepath.Join(root, "enablement")
+	if err := os.Symlink("/usr/lib/systemd/system/example.service", dangling); err != nil {
+		t.Fatal(err)
+	}
+	if err := install.Chown(dangling, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatalf("Chown followed generated enablement symlink: %v", err)
+	}
 }
 
 func TestManifestRunnerContextLoadsKubeadmConfigs(t *testing.T) {

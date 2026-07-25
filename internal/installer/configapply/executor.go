@@ -140,7 +140,7 @@ func containsDomainAction(actions []generation.ConfigApplyDomainAction, domain s
 
 func (e Executor) endpointAdvertisementEnabled(record generation.Record) (bool, error) {
 	for _, candidate := range record.Confexts {
-		if candidate.Name != "katl-node" {
+		if !generation.IsGeneratedConfextName(candidate.Name) {
 			continue
 		}
 		root := filepath.Clean(e.Root)
@@ -298,10 +298,10 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		commands = append(commands, Command{Name: "node-metadata-refresh", Argv: []string{"systemctl", "try-reload-or-restart", "katl-runtime-handoff-status.service"}})
 	case DomainControlPlaneEndpointRouting:
 		commands = append(commands,
-			Command{Name: "endpoint-routing-validate", Argv: []string{"/usr/bin/bird", "-p", "-c", bgpapivip.BirdConfigPath}},
+			Command{Name: "endpoint-routing-validate", Argv: []string{bgpapivip.BirdExecutablePath, "-p", "-c", bgpapivip.BirdConfigPath}},
 			Command{Name: "endpoint-withdraw", Argv: []string{"systemctl", "stop", "katl-app-bgp-api-vip.service"}},
 			Command{Name: "endpoint-link-reload", Argv: []string{"networkctl", "reload"}},
-			Command{Name: "endpoint-routing-reload", Argv: []string{"/usr/bin/birdc", "-s", bgpapivip.BirdControlSocketPath, "configure"}},
+			Command{Name: "endpoint-routing-reload", Argv: []string{bgpapivip.BirdClientPath, "-s", bgpapivip.BirdControlSocketPath, "configure"}},
 			Command{Name: "endpoint-resume", Argv: []string{"systemctl", "start", "katl-app-bgp-api-vip.service"}},
 		)
 	default:

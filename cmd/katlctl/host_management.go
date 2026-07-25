@@ -126,7 +126,7 @@ func newHostStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 }
 
 func newHostRebootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := hostRebootOptions{timeout: 10 * time.Minute, output: hostOutputText}
+	opts := hostRebootOptions{timeout: 15 * time.Minute, output: hostOutputText}
 	cmd := &cobra.Command{
 		Use:   "reboot [NODE]",
 		Short: "Reboot one KatlOS node and wait for it to return healthy",

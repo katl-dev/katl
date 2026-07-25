@@ -12,7 +12,11 @@ import (
 	"time"
 )
 
-const BirdControlSocketPath = "/run/katl-bird/bird.ctl"
+const (
+	BirdControlSocketPath = "/run/katl-bird/bird.ctl"
+	BirdExecutablePath    = "/usr/lib/katl/endpoint-routing/bird"
+	BirdClientPath        = "/usr/lib/katl/endpoint-routing/birdc"
+)
 
 type CommandRunner interface {
 	Output(context.Context, string, ...string) ([]byte, error)
@@ -72,7 +76,7 @@ func (c CommandBirdClient) run(ctx context.Context, args ...string) ([]byte, err
 	}
 	birdc := strings.TrimSpace(c.Birdc)
 	if birdc == "" {
-		birdc = "birdc"
+		birdc = BirdClientPath
 	}
 	command := []string{"-s", c.socket()}
 	command = append(command, args...)

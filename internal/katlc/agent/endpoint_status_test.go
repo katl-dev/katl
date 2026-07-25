@@ -93,6 +93,26 @@ func TestControlPlaneEndpointStatusDistinguishesStartupStates(t *testing.T) {
 	}
 }
 
+func TestEndpointProductStateDoesNotRequireInternalBirdInVIPOnlyMode(t *testing.T) {
+	enabled := true
+	config := bgpapivip.Config{
+		Routing:       bgpapivip.Routing{Mode: "vip-only"},
+		Advertisement: bgpapivip.Advertisement{Enabled: &enabled},
+	}
+	live := bgpapivip.Status{
+		VIPInterfaceReady:      true,
+		LocalVIPOwned:          true,
+		LocalVIPOwnedReported:  true,
+		HealthState:            bgpapivip.HealthHealthy,
+		AdvertisementState:     bgpapivip.AdvertisementAdvertised,
+		BirdProcessActive:      false,
+		BirdControlSocketReady: false,
+	}
+	if got := endpointProductState(config, live, nil); got != "advertised" {
+		t.Fatalf("VIP-only endpoint state = %q, want advertised", got)
+	}
+}
+
 func TestControlPlaneEndpointStatusDistinguishesLegacyMissingVIPOwnership(t *testing.T) {
 	for _, test := range []struct {
 		name      string

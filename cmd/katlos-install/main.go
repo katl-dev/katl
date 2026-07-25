@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
@@ -105,7 +106,7 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 		Discovery:          discovery.NewCommandDiscoverySource(commands),
 		RootSlotOpener:     disk.FileRootSlotDeviceOpener{},
 		IdentityRandom:     rand.Reader,
-		Chown:              os.Chown,
+		Chown:              os.Lchown,
 		KubeadmConfigs:     kubeadmConfigs,
 		InputMode:          inputMode,
 		InputSource:        inputSource,
@@ -179,20 +180,29 @@ func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSou
 			WorkDir:   filepath.Join(stateDir, "katlos-image"),
 			Commands:  commands,
 		},
-		DefaultKatlosImage:    media.Image,
-		KatlosImageFromMedia:  selected.KatlosImageFromMedia,
-		Discovery:             discovery.NewCommandDiscoverySource(commands),
-		RootSlotOpener:        disk.FileRootSlotDeviceOpener{},
-		IdentityRandom:        rand.Reader,
-		Chown:                 os.Chown,
-		KubeadmConfigs:        selected.KubeadmConfigs,
-		InputMode:             inputMode,
-		InputSource:           inputSource,
-		BundleDigest:          selected.BundleDigest,
-		SourceDigest:          selected.SourceDigest,
-		NodeMaterialDigest:    selected.NodeMaterialDigest,
-		InstallMaterialDigest: selected.InstallMaterialDigest,
+		DefaultKatlosImage:      media.Image,
+		KatlosImageFromMedia:    selected.KatlosImageFromMedia,
+		Discovery:               discovery.NewCommandDiscoverySource(commands),
+		RootSlotOpener:          disk.FileRootSlotDeviceOpener{},
+		IdentityRandom:          rand.Reader,
+		Chown:                   os.Lchown,
+		KubeadmConfigs:          selected.KubeadmConfigs,
+		SystemExtensionPayloads: installSystemExtensionPayloads(selected.SystemExtensionPayloads),
+		InputMode:               inputMode,
+		InputSource:             inputSource,
+		BundleDigest:            selected.BundleDigest,
+		SourceDigest:            selected.SourceDigest,
+		NodeMaterialDigest:      selected.NodeMaterialDigest,
+		InstallMaterialDigest:   selected.InstallMaterialDigest,
 	}, nil
+}
+
+func installSystemExtensionPayloads(payloads []configbundle.SystemExtensionPayload) []configapply.SystemExtensionPayload {
+	out := make([]configapply.SystemExtensionPayload, 0, len(payloads))
+	for _, payload := range payloads {
+		out = append(out, configapply.SystemExtensionPayload{Ref: payload.Ref, Data: append([]byte(nil), payload.Data...)})
+	}
+	return out
 }
 
 func writeBundleInstallManifest(stateDir string, installManifest any) (string, error) {

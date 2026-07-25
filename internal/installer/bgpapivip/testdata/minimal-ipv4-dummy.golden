@@ -16,6 +16,7 @@ spec:
         name: katl-api0
         mtu: 1500
     routing:
+        mode: bgp
         daemon: bird
         protocolBoundary: bgp
         routerID: 10.0.0.11
@@ -99,6 +100,10 @@ Name=katl-api0
 [Network]
 MTUBytes=1500
 --- /etc/systemd/system/katl-app-bgp-api-vip.service.d/10-katl-config.conf
+[Unit]
+Wants=katl-app-bird.service
+After=katl-app-bird.service
+
 [Service]
 Environment=KATL_BGP_API_VIP_CONFIG=/etc/katl/apps/bgp-api-vip/config.yaml
 Environment=KATL_BGP_API_VIP_STATUS=/run/katl/apps/bgp-api-vip/status.json

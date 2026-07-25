@@ -3,6 +3,7 @@ package configbundle
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,11 +39,13 @@ const (
 )
 
 type BuildRequest struct {
-	SourcePath     string
-	KatlctlVersion string
-	KatlctlCommit  string
-	CreatedBy      string
-	Planning       PlanningInputs
+	Context                context.Context
+	ResolveSystemExtension func(context.Context, systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error)
+	SourcePath             string
+	KatlctlVersion         string
+	KatlctlCommit          string
+	CreatedBy              string
+	Planning               PlanningInputs
 }
 
 // PlanningInputs are operation-scoped mechanisms supplied by Katl, not
@@ -82,6 +86,7 @@ type SourceNode struct {
 	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
 	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
 	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
 	Install           SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
 	Kubernetes        SourceKubernetesLayer      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
 	Bootstrap         SourceBootstrapLayer       `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
@@ -91,6 +96,7 @@ type SourceNodeLayer struct {
 	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
 	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
 	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
 	Install           SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
 	Kubernetes        SourceKubernetesLayer      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
 }
@@ -156,9 +162,23 @@ type SourceRecord struct {
 }
 
 type ClusterRecord struct {
-	ResolvedPlan       Descriptor                `json:"resolvedPlan"`
-	BootstrapInventory inventory.Inventory       `json:"bootstrapInventory"`
-	KubernetesPayloads []KubernetesPayloadRecord `json:"kubernetesPayloads"`
+	ResolvedPlan       Descriptor                    `json:"resolvedPlan"`
+	BootstrapInventory inventory.Inventory           `json:"bootstrapInventory"`
+	KubernetesPayloads []KubernetesPayloadRecord     `json:"kubernetesPayloads"`
+	SystemExtensions   []SystemExtensionBundleRecord `json:"systemExtensions,omitempty"`
+}
+
+type SystemExtensionBundleRecord struct {
+	Reference                  string       `json:"reference"`
+	OCIManifestDigest          string       `json:"ociManifestDigest"`
+	BundleManifestDigest       string       `json:"bundleManifestDigest"`
+	ArtifactVersion            string       `json:"artifactVersion"`
+	PayloadVersion             string       `json:"payloadVersion"`
+	Architecture               string       `json:"architecture"`
+	SupportedRuntimeInterfaces []string     `json:"supportedRuntimeInterfaces"`
+	BundleManifest             Descriptor   `json:"bundleManifest"`
+	Payloads                   []Descriptor `json:"payloads"`
+	Metadata                   []Descriptor `json:"metadata,omitempty"`
 }
 
 type KubernetesPayloadRecord struct {
@@ -175,14 +195,15 @@ type KubernetesPayloadRecord struct {
 }
 
 type NodeRecord struct {
-	Name            string       `json:"name"`
-	SystemRole      string       `json:"systemRole"`
-	Architecture    string       `json:"architecture,omitempty"`
-	NodeMaterial    Descriptor   `json:"nodeMaterial"`
-	InstallMaterial Descriptor   `json:"installMaterial"`
-	NativeConfig    Descriptor   `json:"nativeConfig"`
-	KubeadmInputs   []Descriptor `json:"kubeadmInputs,omitempty"`
-	ResolvedDigests []Descriptor `json:"resolvedDigests,omitempty"`
+	Name                    string       `json:"name"`
+	SystemRole              string       `json:"systemRole"`
+	Architecture            string       `json:"architecture,omitempty"`
+	NodeMaterial            Descriptor   `json:"nodeMaterial"`
+	InstallMaterial         Descriptor   `json:"installMaterial"`
+	NativeConfig            Descriptor   `json:"nativeConfig"`
+	KubeadmInputs           []Descriptor `json:"kubeadmInputs,omitempty"`
+	SystemExtensionPayloads []Descriptor `json:"systemExtensionPayloads,omitempty"`
+	ResolvedDigests         []Descriptor `json:"resolvedDigests,omitempty"`
 }
 
 type Descriptor struct {
@@ -230,7 +251,18 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
+	if err := validateAuthoringSystemExtensions(source); err != nil {
+		return nil, Result{}, err
+	}
 	source, err = resolveHostConfigurationSources(filepath.Dir(sourcePath), source)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	buildContext := request.Context
+	if buildContext == nil {
+		buildContext = context.Background()
+	}
+	source, extensionBundles, err := resolveSystemExtensionBundles(buildContext, source, request.Planning.KatlosImage, request.ResolveSystemExtension)
 	if err != nil {
 		return nil, Result{}, err
 	}
@@ -266,7 +298,7 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
-	members, manifest, err := buildMembers(source, normalized, sourceDigest, plan, kubeadmConfigs, request)
+	members, manifest, err := buildMembers(source, normalized, sourceDigest, plan, kubeadmConfigs, extensionBundles, request)
 	if err != nil {
 		return nil, Result{}, err
 	}
@@ -422,6 +454,7 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 		SSH:               layer.Identity.SSH,
 		Networkd:          layer.Networkd,
 		HostConfiguration: layer.HostConfiguration,
+		SystemExtensions:  append([]manifest.SystemExtension(nil), layer.SystemExtensions...),
 		Install: clusterplan.InstallLayer{
 			TargetDisk:         layer.Install.TargetDisk,
 			TargetDiskDefaults: layer.Install.TargetDiskDefaults,
@@ -439,6 +472,7 @@ func sourceNodeLayer(node SourceNode) SourceNodeLayer {
 		Identity:          node.Identity,
 		Networkd:          node.Networkd,
 		HostConfiguration: node.HostConfiguration,
+		SystemExtensions:  append([]manifest.SystemExtension(nil), node.SystemExtensions...),
 		Install:           node.Install,
 		Kubernetes:        node.Kubernetes,
 	}
@@ -485,6 +519,14 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	for i := range source.Spec.Nodes {
 		if err := manifest.ValidateHostConfiguration(source.Spec.Nodes[i].HostConfiguration, true); err != nil {
 			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].hostConfiguration: %w", i, err)
+		}
+	}
+	if err := manifest.ValidateSystemExtensions(source.Spec.Defaults.SystemExtensions, true); err != nil {
+		return SourceConfig{}, fmt.Errorf("spec.defaults.systemExtensions: %w", err)
+	}
+	for i := range source.Spec.Nodes {
+		if err := manifest.ValidateSystemExtensions(source.Spec.Nodes[i].SystemExtensions, true); err != nil {
+			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].systemExtensions: %w", i, err)
 		}
 	}
 	if source.Spec.ControlPlaneEndpoint == nil {
@@ -536,6 +578,48 @@ func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (So
 			return SourceConfig{}, err
 		}
 	}
+	resolveExtensions := func(field string, extensions []manifest.SystemExtension) error {
+		for i := range extensions {
+			extension := &extensions[i]
+			for j := range extension.Configuration.Files {
+				file := &extension.Configuration.Files[j]
+				if strings.TrimSpace(file.Source) == "" {
+					continue
+				}
+				data, err := readHostConfigurationSource(root, file.Source)
+				if err != nil {
+					return fmt.Errorf("%s[%d].configuration.files[%d].source: %w", field, i, j, err)
+				}
+				content := string(data)
+				file.Content = &content
+				file.Source = ""
+			}
+			for j := range extension.Units {
+				for k := range extension.Units[j].DropIns {
+					dropIn := &extension.Units[j].DropIns[k]
+					if strings.TrimSpace(dropIn.Source) == "" {
+						continue
+					}
+					data, err := readHostConfigurationSource(root, dropIn.Source)
+					if err != nil {
+						return fmt.Errorf("%s[%d].units[%d].dropIns[%d].source: %w", field, i, j, k, err)
+					}
+					content := string(data)
+					dropIn.Content = &content
+					dropIn.Source = ""
+				}
+			}
+		}
+		return nil
+	}
+	if err := resolveExtensions("spec.defaults.systemExtensions", source.Spec.Defaults.SystemExtensions); err != nil {
+		return SourceConfig{}, err
+	}
+	for i := range source.Spec.Nodes {
+		if err := resolveExtensions(fmt.Sprintf("spec.nodes[%d].systemExtensions", i), source.Spec.Nodes[i].SystemExtensions); err != nil {
+			return SourceConfig{}, err
+		}
+	}
 	return source, nil
 }
 
@@ -544,7 +628,11 @@ func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {
 		return nil, fmt.Errorf("%q must be relative to the ClusterConfig source root", source)
 	}
 	cleaned := filepath.Clean(source)
-	if source != cleaned || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+	normalizedSource := source
+	if strings.HasPrefix(normalizedSource, "."+string(filepath.Separator)) {
+		normalizedSource = strings.TrimPrefix(normalizedSource, "."+string(filepath.Separator))
+	}
+	if normalizedSource != cleaned || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return nil, fmt.Errorf("%q must be a normalized, non-escaping relative path", source)
 	}
 	candidate := filepath.Join(sourceRoot, cleaned)
@@ -627,7 +715,7 @@ func defaultKubeadmConfigs(kubernetesVersion string) (map[string]kubeadmconfig.P
 	return configs, nil
 }
 
-func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, plan clusterplan.Plan, kubeadmConfigs map[string]kubeadmconfig.Plan, request BuildRequest) ([]member, BundleManifest, error) {
+func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, plan clusterplan.Plan, kubeadmConfigs map[string]kubeadmconfig.Plan, extensionBundles map[string]systemextensionbundle.Resolved, request BuildRequest) ([]member, BundleManifest, error) {
 	var members []member
 	descriptors := []Descriptor{}
 	add := func(role, node, mediaType, fileName string, value any, annotations map[string]string) (Descriptor, error) {
@@ -637,8 +725,12 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 		}
 		return addBytes(&members, &descriptors, role, node, mediaType, fileName, data, annotations), nil
 	}
+	extensionRecords, extensionDescriptors, err := addSystemExtensionBundles(&members, &descriptors, extensionBundles)
+	if err != nil {
+		return nil, BundleManifest{}, err
+	}
 	sourceDesc := addBytes(&members, &descriptors, "source-normalized", "", "application/vnd.katl.cluster-config.v1+yaml", "source/cluster.normalized.yaml", normalized, nil)
-	_, err := add("source-provenance", "", "application/vnd.katl.source-provenance.v1+json", "source/provenance.json", map[string]string{"sourceDigest": sourceDigest}, nil)
+	_, err = add("source-provenance", "", "application/vnd.katl.source-provenance.v1+json", "source/provenance.json", map[string]string{"sourceDigest": sourceDigest}, nil)
 	if err != nil {
 		return nil, BundleManifest{}, err
 	}
@@ -694,21 +786,27 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 		if err != nil {
 			return nil, BundleManifest{}, err
 		}
+		systemExtensionDescs, err := selectedSystemExtensionDescriptors(node.InstallManifest.Node.SystemExtensions, extensionDescriptors)
+		if err != nil {
+			return nil, BundleManifest{}, fmt.Errorf("node %s: %w", node.Name, err)
+		}
 		digests := []Descriptor{materialDesc, installDesc, intentDesc, nativeDesc}
 		digests = append(digests, kubeadmDescs...)
+		digests = append(digests, systemExtensionDescs...)
 		digestDesc, err := add("node-digests", node.Name, "application/vnd.katl.node-digests.v1+json", "nodes/"+node.Name+"/digests.json", digests, nil)
 		if err != nil {
 			return nil, BundleManifest{}, err
 		}
 		nodeRecords = append(nodeRecords, NodeRecord{
-			Name:            node.Name,
-			SystemRole:      string(node.SystemRole),
-			Architecture:    plan.KatlosImage.Architecture,
-			NodeMaterial:    materialDesc,
-			InstallMaterial: installDesc,
-			NativeConfig:    nativeDesc,
-			KubeadmInputs:   kubeadmDescs,
-			ResolvedDigests: append(digests, digestDesc),
+			Name:                    node.Name,
+			SystemRole:              string(node.SystemRole),
+			Architecture:            plan.KatlosImage.Architecture,
+			NodeMaterial:            materialDesc,
+			InstallMaterial:         installDesc,
+			NativeConfig:            nativeDesc,
+			KubeadmInputs:           kubeadmDescs,
+			SystemExtensionPayloads: systemExtensionDescs,
+			ResolvedDigests:         append(digests, digestDesc),
 		})
 	}
 	manifest := BundleManifest{
@@ -734,6 +832,7 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 			ResolvedPlan:       planDesc,
 			BootstrapInventory: plan.BootstrapInventory,
 			KubernetesPayloads: payloads,
+			SystemExtensions:   extensionRecords,
 		},
 		Nodes:       nodeRecords,
 		Descriptors: descriptors,
@@ -776,6 +875,89 @@ func addNodeKubeadmInputs(members *[]member, descriptors *[]Descriptor, node clu
 		})
 		out = append(out, desc)
 	}
+	return out, nil
+}
+
+func addSystemExtensionBundles(members *[]member, descriptors *[]Descriptor, bundles map[string]systemextensionbundle.Resolved) ([]SystemExtensionBundleRecord, map[string]Descriptor, error) {
+	refs := make([]string, 0, len(bundles))
+	for ref := range bundles {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	byDigest := make(map[string]Descriptor)
+	records := make([]SystemExtensionBundleRecord, 0, len(refs))
+	for _, ref := range refs {
+		resolved := bundles[ref]
+		if got := digestBytes(resolved.BundleManifest); got != resolved.BundleManifestDigest {
+			return nil, nil, fmt.Errorf("system extension bundle %q custom manifest digest got %s want %s", ref, got, resolved.BundleManifestDigest)
+		}
+		custom := addBytes(members, descriptors,
+			"system-extension-bundle-manifest", "",
+			systemextensionbundle.ConfigMediaType,
+			"extensions/bundles/"+strings.TrimPrefix(resolved.BundleManifestDigest, "sha256:")+".json",
+			resolved.BundleManifest,
+			map[string]string{"dev.katl.system-extension.reference": ref, "dev.katl.oci.manifest.digest": resolved.OCIManifestDigest},
+		)
+		record := SystemExtensionBundleRecord{
+			Reference:                  ref,
+			OCIManifestDigest:          resolved.OCIManifestDigest,
+			BundleManifestDigest:       resolved.BundleManifestDigest,
+			ArtifactVersion:            resolved.Bundle.ArtifactVersion,
+			PayloadVersion:             resolved.Bundle.PayloadVersion,
+			Architecture:               resolved.Bundle.Architecture,
+			SupportedRuntimeInterfaces: append([]string(nil), resolved.Bundle.SupportedRuntimeInterfaces...),
+			BundleManifest:             custom,
+		}
+		addContent := func(role string, payload systemextensionbundle.Payload) Descriptor {
+			if existing, ok := byDigest[payload.Descriptor.Digest]; ok {
+				return existing
+			}
+			desc := addBytes(members, descriptors,
+				role, "", payload.Descriptor.MediaType,
+				"extensions/blobs/sha256/"+strings.TrimPrefix(payload.Descriptor.Digest, "sha256:"),
+				payload.Data,
+				map[string]string{
+					"dev.katl.payload.role":     payload.Descriptor.Role,
+					"dev.katl.payload.fileName": payload.Descriptor.FileName,
+				},
+			)
+			byDigest[payload.Descriptor.Digest] = desc
+			return desc
+		}
+		for _, payload := range resolved.Payloads {
+			if got := digestBytes(payload.Data); got != payload.Descriptor.Digest || len(payload.Data) != int(payload.Descriptor.SizeBytes) {
+				return nil, nil, fmt.Errorf("system extension bundle %q payload %q bytes do not match its descriptor", ref, payload.Descriptor.FileName)
+			}
+			record.Payloads = append(record.Payloads, addContent("system-extension-payload", payload))
+		}
+		for _, metadata := range resolved.Metadata {
+			if got := digestBytes(metadata.Data); got != metadata.Descriptor.Digest || len(metadata.Data) != int(metadata.Descriptor.SizeBytes) {
+				return nil, nil, fmt.Errorf("system extension bundle %q metadata %q bytes do not match its descriptor", ref, metadata.Descriptor.FileName)
+			}
+			record.Metadata = append(record.Metadata, addContent("system-extension-metadata", metadata))
+		}
+		records = append(records, record)
+	}
+	return records, byDigest, nil
+}
+
+func selectedSystemExtensionDescriptors(extensions []manifest.SystemExtension, byDigest map[string]Descriptor) ([]Descriptor, error) {
+	var out []Descriptor
+	seen := make(map[string]struct{})
+	for _, extension := range extensions {
+		for _, payload := range extension.Payloads {
+			if _, ok := seen[payload.Digest]; ok {
+				continue
+			}
+			desc, ok := byDigest[payload.Digest]
+			if !ok {
+				return nil, fmt.Errorf("system extension %q payload %s was not embedded", extension.Name, payload.Digest)
+			}
+			seen[payload.Digest] = struct{}{}
+			out = append(out, desc)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Digest < out[j].Digest })
 	return out, nil
 }
 

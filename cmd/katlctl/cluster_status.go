@@ -27,17 +27,27 @@ type clusterStatusOptions struct {
 }
 
 type clusterNodeStatus struct {
-	Node                 string                      `json:"node"`
-	Role                 string                      `json:"role"`
-	Endpoint             string                      `json:"endpoint"`
-	Reachable            bool                        `json:"reachable"`
-	Health               string                      `json:"health,omitempty"`
-	KatlOSVersion        string                      `json:"katlosVersion,omitempty"`
-	Generation           string                      `json:"generation,omitempty"`
-	Activity             string                      `json:"activity,omitempty"`
-	Error                string                      `json:"error,omitempty"`
-	Kubernetes           *kubernetesStatusReport     `json:"kubernetes,omitempty"`
-	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
+	Node                 string                         `json:"node"`
+	Role                 string                         `json:"role"`
+	Endpoint             string                         `json:"endpoint"`
+	Reachable            bool                           `json:"reachable"`
+	Health               string                         `json:"health,omitempty"`
+	KatlOSVersion        string                         `json:"katlosVersion,omitempty"`
+	Generation           string                         `json:"generation,omitempty"`
+	Activity             string                         `json:"activity,omitempty"`
+	Error                string                         `json:"error,omitempty"`
+	Kubernetes           *kubernetesStatusReport        `json:"kubernetes,omitempty"`
+	ControlPlaneEndpoint *controlPlaneEndpointReport    `json:"controlPlaneEndpoint,omitempty"`
+	SystemExtensions     []clusterSystemExtensionStatus `json:"systemExtensions,omitempty"`
+}
+
+type clusterSystemExtensionStatus struct {
+	Name       string `json:"name"`
+	Desired    string `json:"desired"`
+	Staging    string `json:"staging"`
+	Activation string `json:"activation"`
+	Generation string `json:"generation"`
+	Reboot     bool   `json:"rebootRequired"`
 }
 
 type clusterStatusReport struct {
@@ -128,6 +138,12 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result.Activity = host.Activity
 			result.Kubernetes = host.Kubernetes
 			result.ControlPlaneEndpoint = host.ControlPlaneEndpoint
+			for _, extension := range status.GetSystemExtensions() {
+				result.SystemExtensions = append(result.SystemExtensions, clusterSystemExtensionStatus{
+					Name: extension.GetName(), Desired: extension.GetDesiredState(), Staging: extension.GetStagingState(),
+					Activation: extension.GetActivationState(), Generation: extension.GetDesiredGenerationId(), Reboot: extension.GetRebootRequired(),
+				})
+			}
 			report.Nodes[i] = result
 		}(i, node)
 	}
@@ -165,6 +181,10 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		}
 		if node.ControlPlaneEndpoint != nil && node.ControlPlaneEndpoint.FailureReason != "" {
 			fmt.Fprintf(w, "\t\t\tcontrol-plane endpoint: %s\n", node.ControlPlaneEndpoint.FailureReason)
+		}
+		for _, extension := range node.SystemExtensions {
+			fmt.Fprintf(w, "\t\t\textension %s: desired=%s staged=%s active=%s generation=%s reboot=%s\n",
+				extension.Name, extension.Desired, extension.Staging, extension.Activation, extension.Generation, yesNo(extension.Reboot))
 		}
 	}
 	return w.Flush()

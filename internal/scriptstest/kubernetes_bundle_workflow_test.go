@@ -37,39 +37,45 @@ func TestKubernetesBundleWorkflowLinksUpstreamRelease(t *testing.T) {
 		t.Fatalf("KUBERNETES_RELEASE_URL = %q, want %q", got, releaseURL)
 	}
 
-	var layoutStep, publishStep string
+	var packStep, publishStep string
 	for _, step := range build.Steps {
 		switch step.Name {
-		case "Validate OCI artifact layout":
-			layoutStep = step.Run
+		case "Stage Kubernetes payload bundle":
+			packStep = step.Run
 		case "Publish immutable OCI bundle":
 			publishStep = step.Run
 		}
 	}
-	if layoutStep == "" {
-		t.Fatal("Kubernetes bundle workflow has no local OCI layout validation")
+	if packStep == "" {
+		t.Fatal("Kubernetes bundle workflow has no common OCI pack validation")
 	}
 	if publishStep == "" {
 		t.Fatal("Kubernetes bundle workflow has no immutable OCI publication step")
 	}
 
 	for _, contract := range []string{
+		`go run ./cmd/katl-publish-kubernetes-sysext`,
+		`oci-manifest-digest:`,
 		`--annotation "org.opencontainers.image.url=${KUBERNETES_RELEASE_URL}"`,
 		`--annotation "dev.katl.kubernetes.payload.version=${PAYLOAD_VERSION}"`,
-		`.annotations["org.opencontainers.image.url"] == $upstream_release`,
-		`.annotations["dev.katl.kubernetes.payload.version"] == $payload_version`,
 	} {
-		if !strings.Contains(layoutStep, contract) {
-			t.Errorf("local OCI layout step does not enforce %q", contract)
+		if !strings.Contains(packStep, contract) {
+			t.Errorf("common OCI pack step does not enforce %q", contract)
 		}
 	}
 	for _, contract := range []string{
-		`.annotations["org.opencontainers.image.url"] == $upstream_release`,
-		`.annotations["dev.katl.kubernetes.payload.version"] == $payload_version`,
+		`go run ./cmd/katl-publish-kubernetes-sysext`,
+		`--publish-ref "${OCI_REPOSITORY}:${VERSION_TAG}"`,
+		`--publish-ref "${OCI_REPOSITORY}:${DIGEST_TAG}"`,
+		`--annotation "org.opencontainers.image.url=${KUBERNETES_RELEASE_URL}"`,
+		`--annotation "dev.katl.kubernetes.payload.version=${PAYLOAD_VERSION}"`,
 	} {
 		if !strings.Contains(publishStep, contract) {
 			t.Errorf("OCI publication step does not enforce %q", contract)
 		}
+	}
+	if strings.Contains(string(contents), "oras push") || strings.Contains(string(contents), "oras cp") {
+		t.Fatal("Kubernetes workflow must not assemble or publish through a second OCI implementation")
 	}
 }
 

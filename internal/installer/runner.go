@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -49,43 +50,44 @@ const (
 )
 
 type Context struct {
-	ManifestPath          string
-	StateDir              string
-	TargetRoot            string
-	BootRoot              string
-	Commands              CommandRunner
-	Store                 StateStore
-	Manifest              manifest.Manifest
-	LoaderRecord          *generation.Record
-	KatlosImage           *katlosimage.Payload
-	KatlosResolver        KatlosImageResolver
-	MediaKatlosResolver   KatlosImageResolver
-	DefaultKatlosImage    manifest.KatlosImage
-	KatlosImageFromMedia  bool
-	Discovery             discovery.DiscoverySource
-	HardwareFacts         discovery.HardwareFacts
-	RootProfile           manifest.RootDiskProfile
-	DiskLayout            *disk.DiskLayoutPlan
-	RootSlotPlan          *disk.RootSlotWritePlan
-	RootSlotTarget        disk.RootSlotDevice
-	RootSlotOpener        disk.RootSlotDeviceOpener
-	RootSlotInstaller     disk.RootSlotInstaller
-	CurrentRootSlot       disk.RootSlot
-	RootPartitionUUID     string
-	GenerationID          string
-	KubeadmConfigs        map[string]kubeadmconfig.Plan
-	IdentityRandom        io.Reader
-	Completed             []StepID
-	Chown                 func(path string, uid int, gid int) error
-	InputMode             string
-	InputSource           string
-	RequestDigest         string
-	BundleDigest          string
-	SourceDigest          string
-	NodeMaterialDigest    string
-	InstallMaterialDigest string
-	PreviousStatus        *installstatus.Record
-	ReportStep            func(StepID)
+	ManifestPath            string
+	StateDir                string
+	TargetRoot              string
+	BootRoot                string
+	Commands                CommandRunner
+	Store                   StateStore
+	Manifest                manifest.Manifest
+	LoaderRecord            *generation.Record
+	KatlosImage             *katlosimage.Payload
+	KatlosResolver          KatlosImageResolver
+	MediaKatlosResolver     KatlosImageResolver
+	DefaultKatlosImage      manifest.KatlosImage
+	KatlosImageFromMedia    bool
+	Discovery               discovery.DiscoverySource
+	HardwareFacts           discovery.HardwareFacts
+	RootProfile             manifest.RootDiskProfile
+	DiskLayout              *disk.DiskLayoutPlan
+	RootSlotPlan            *disk.RootSlotWritePlan
+	RootSlotTarget          disk.RootSlotDevice
+	RootSlotOpener          disk.RootSlotDeviceOpener
+	RootSlotInstaller       disk.RootSlotInstaller
+	CurrentRootSlot         disk.RootSlot
+	RootPartitionUUID       string
+	GenerationID            string
+	KubeadmConfigs          map[string]kubeadmconfig.Plan
+	SystemExtensionPayloads []configapply.SystemExtensionPayload
+	IdentityRandom          io.Reader
+	Completed               []StepID
+	Chown                   func(path string, uid int, gid int) error
+	InputMode               string
+	InputSource             string
+	RequestDigest           string
+	BundleDigest            string
+	SourceDigest            string
+	NodeMaterialDigest      string
+	InstallMaterialDigest   string
+	PreviousStatus          *installstatus.Record
+	ReportStep              func(StepID)
 }
 
 type Step interface {
@@ -591,43 +593,54 @@ func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
 		return ctx.Err()
 	default:
 	}
-	if install.KatlosImage == nil {
-		return recordStep(ctx, install, InstallExtensions)
-	}
 	if install.LoaderRecord == nil {
 		return fmt.Errorf("loader generation record is required to install extensions")
 	}
-	if install.Manifest.Node.SystemRole != "control-plane" {
-		return recordStep(ctx, install, InstallExtensions)
-	}
-	artifact, err := endpointAdvertiserArtifact(*install.KatlosImage)
-	if err != nil {
-		return err
-	}
-	cacheTarget, err := targetPathForAbsolute(install.TargetRoot, artifact.Extension.Path)
-	if err != nil {
-		return err
-	}
-	if err := copyVerifiedComponent(install.KatlosImage.ComponentPath(install.KatlosImage.EndpointAdvertiser), cacheTarget, install.KatlosImage.EndpointAdvertiser); err != nil {
-		return err
-	}
-	if err := writeEndpointAdvertiserArtifact(install.TargetRoot, artifact); err != nil {
-		return err
-	}
-	for _, extension := range install.LoaderRecord.Sysexts {
-		if extension.Name != katlosimage.EndpointAdvertiserName {
-			continue
-		}
-		target, err := targetPathForAbsolute(install.TargetRoot, extension.Path)
+	if install.KatlosImage != nil && install.Manifest.Node.SystemRole == "control-plane" {
+		artifact, err := endpointAdvertiserArtifact(*install.KatlosImage)
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("create endpoint advertiser sysext directory: %w", err)
-		}
-		if err := linkOrCopyInstalledArtifact(cacheTarget, target); err != nil {
+		cacheTarget, err := targetPathForAbsolute(install.TargetRoot, artifact.Extension.Path)
+		if err != nil {
 			return err
 		}
+		if err := copyVerifiedComponent(install.KatlosImage.ComponentPath(install.KatlosImage.EndpointAdvertiser), cacheTarget, install.KatlosImage.EndpointAdvertiser); err != nil {
+			return err
+		}
+		if err := writeEndpointAdvertiserArtifact(install.TargetRoot, artifact); err != nil {
+			return err
+		}
+		for _, extension := range install.LoaderRecord.Sysexts {
+			if extension.Name != katlosimage.EndpointAdvertiserName {
+				continue
+			}
+			target, err := targetPathForAbsolute(install.TargetRoot, extension.Path)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf("create endpoint advertiser sysext directory: %w", err)
+			}
+			if err := linkOrCopyInstalledArtifact(cacheTarget, target); err != nil {
+				return err
+			}
+		}
+	}
+	userSysexts, bundledConfexts, err := configapply.MaterializeSystemExtensions(
+		install.TargetRoot,
+		install.LoaderRecord.GenerationID,
+		install.LoaderRecord.Root,
+		install.Manifest.Node.SystemExtensions,
+		install.SystemExtensionPayloads,
+	)
+	if err != nil {
+		return err
+	}
+	install.LoaderRecord.Sysexts = append(install.LoaderRecord.Sysexts, userSysexts...)
+	install.LoaderRecord.BundledConfexts = bundledConfexts
+	if err := generation.ValidateRecord(*install.LoaderRecord); err != nil {
+		return err
 	}
 	return recordStep(ctx, install, InstallExtensions)
 }

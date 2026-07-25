@@ -37,6 +37,56 @@ message NodeStatus {
   string boot_target_generation_id = 10;
   ControlPlaneEndpointStatus control_plane_endpoint = 11;
   KubernetesStatus kubernetes = 12;
+  repeated SystemExtensionStatus system_extensions = 13;
+}
+
+message SystemExtensionStatus {
+  string name = 1;
+  string desired_state = 2;
+  string submitted_reference = 3;
+  string oci_manifest_digest = 4;
+  string bundle_manifest_digest = 5;
+  string artifact_version = 6;
+  string payload_version = 7;
+  string architecture = 8;
+  repeated string supported_runtime_interfaces = 9;
+  string compatibility = 10;
+  string desired_generation_id = 11;
+  string observed_generation_id = 12;
+  string staging_state = 13;
+  string activation_state = 14;
+  bool reboot_required = 15;
+  repeated SystemExtensionPayloadStatus payloads = 16;
+  repeated SystemExtensionFileStatus files = 17;
+  repeated SystemExtensionUnitStatus units = 18;
+}
+
+message SystemExtensionPayloadStatus {
+  string name = 1;
+  string role = 2;
+  string digest = 3;
+  int64 size_bytes = 4;
+  string activation_path = 5;
+  bool selected = 6;
+  bool active = 7;
+}
+
+message SystemExtensionFileStatus {
+  string path = 1;
+  string sha256 = 2;
+  uint32 mode = 3;
+}
+
+message SystemExtensionUnitStatus {
+  string name = 1;
+  bool enable = 2;
+  bool required_for_boot_health = 3;
+  string load_state = 4;
+  string active_state = 5;
+  string sub_state = 6;
+  string result = 7;
+  string state_change_timestamp = 8;
+  string failure_diagnostic = 9;
 }
 
 message KubernetesStatus {

@@ -76,6 +76,10 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 		return Result{}, err
 	}
 	sysexts = append(sysexts, sysext)
+	bundledConfexts, err := rehomePreservedBundledConfexts(root, candidate, plan.Previous)
+	if err != nil {
+		return Result{}, err
+	}
 	// Installed runtimes already carry the baseline units in /usr/lib; live
 	// operation preparation may run with immutable /etc.
 	if _, err := generation.WriteState(root, generation.StateRequest{PartitionUUID: plan.Previous.Root.PartitionUUID}); err != nil && !errors.Is(err, syscall.EROFS) {
@@ -96,9 +100,9 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 		return Result{}, fmt.Errorf("digest bootstrap runtime confext: %w", err)
 	}
 	generated := generation.GeneratedConfext{
-		Name:           "katl-node",
+		Name:           generation.GeneratedConfextName,
 		Path:           "/var/lib/katl/generations/" + candidate + "/confext",
-		ActivationPath: "/run/confexts/katl-node",
+		ActivationPath: "/run/confexts/" + generation.GeneratedConfextName,
 		SHA256:         confextDigest,
 		Compatibility: generation.ConfextCompatibility{
 			ID:           release.ID,
@@ -111,6 +115,7 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 		Previous:           generation.RecordFromSplit(plan.Previous, plan.PreviousState),
 		SourceDigest:       record.RequestDigest,
 		Sysexts:            sysexts,
+		BundledConfexts:    bundledConfexts,
 		GeneratedConfext:   generated,
 		ChangedDomains:     []string{"bootstrap-runtime", "kubeadm-input", "kubernetes-sysext"},
 		RequestedApplyMode: generation.ApplyModeLive,
@@ -179,6 +184,41 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	}, nil
 }
 
+func rehomePreservedBundledConfexts(root string, candidate string, previous generation.GenerationSpec) ([]generation.ExtensionRef, error) {
+	var preserved []generation.ExtensionRef
+	for _, ref := range previous.BundledConfexts {
+		source := filepath.Join(filepath.Clean(root), strings.TrimPrefix(filepath.Clean(ref.Path), string(filepath.Separator)))
+		targetRuntime := filepath.Join("/var/lib/katl/generations", candidate, "bundled-confext", filepath.Base(ref.Path))
+		target := filepath.Join(filepath.Clean(root), strings.TrimPrefix(targetRuntime, string(filepath.Separator)))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return nil, fmt.Errorf("create preserved bundled confext directory: %w", err)
+		}
+		in, err := os.Open(source)
+		if err != nil {
+			return nil, fmt.Errorf("open preserved bundled confext %s: %w", ref.Name, err)
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			_ = in.Close()
+			return nil, fmt.Errorf("create preserved bundled confext %s: %w", ref.Name, err)
+		}
+		digest := sha256.New()
+		_, copyErr := copySysext(io.MultiWriter(out, digest), in)
+		closeErr := errors.Join(in.Close(), out.Close())
+		if copyErr != nil || closeErr != nil {
+			_ = os.Remove(target)
+			return nil, fmt.Errorf("copy preserved bundled confext %s: %w", ref.Name, errors.Join(copyErr, closeErr))
+		}
+		if got := hex.EncodeToString(digest.Sum(nil)); !strings.EqualFold(got, ref.SHA256) {
+			_ = os.Remove(target)
+			return nil, fmt.Errorf("preserved bundled confext %s sha256 %s does not match %s", ref.Name, got, ref.SHA256)
+		}
+		ref.Path = filepath.ToSlash(targetRuntime)
+		preserved = append(preserved, ref)
+	}
+	return preserved, nil
+}
+
 func rehomePreservedSysexts(root string, candidate string, previous generation.GenerationSpec) ([]generation.ExtensionRef, error) {
 	var preserved []generation.ExtensionRef
 	for _, ref := range previous.Sysexts {
@@ -239,10 +279,10 @@ func writeLiveActivationOverride(root string, candidate string) error {
 
 func confextRelease(previous generation.GenerationSpec) (confext.ExtensionRelease, error) {
 	for _, ref := range previous.Confexts {
-		if ref.Name == "katl-node" {
+		if generation.IsGeneratedConfextName(ref.Name) {
 			compat := ref.Compatibility
 			return confext.ExtensionRelease{
-				Name:         "katl-node",
+				Name:         generation.GeneratedConfextName,
 				ID:           compat.ID,
 				VersionID:    compat.VersionID,
 				ConfextLevel: compat.ConfextLevel,
@@ -373,6 +413,18 @@ func inheritedConfextFiles(root string, previous generation.GenerationSpec) ([]c
 		info, err := entry.Info()
 		if err != nil {
 			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			files = append(files, confext.NativeEtcFile{
+				Path:    "/etc/" + filepath.ToSlash(rel),
+				Content: target,
+				Type:    confext.NativeEtcSymlink,
+			})
+			return nil
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("previous confext entry %s is not a regular file", path)
