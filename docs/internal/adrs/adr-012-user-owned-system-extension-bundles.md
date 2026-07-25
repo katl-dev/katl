@@ -510,13 +510,12 @@ my BIRD configuration.
 
 A generic BIRD extension bundle contains a sysext with BIRD, `birdc` and
 `bird.service`. It contains no API VIP policy or generated BIRD configuration.
-The producer may be Katl, another project or me; Katl consumes the same OCI
-bundle format in every case.
+Katl may publish this generic bundle from its in-tree extension producer, or I
+may publish a compatible replacement; Katl consumes the same OCI bundle format
+in either case.
 
-I can use mkosi, systemd-repart or another tool to build the compatible
-sysext, then publish it in the common Katl OCI bundle envelope. My
-ClusterConfig selects the OCI bundle and ties native configuration and a
-service drop-in to it:
+I select Katl's published generic BIRD bundle and tie native configuration and
+a service drop-in to it:
 
 ```yaml
 apiVersion: config.katl.dev/v1alpha1
@@ -533,7 +532,7 @@ spec:
   defaults:
     systemExtensions:
       - name: bird
-        bundle: ghcr.io/example/katlos-bird:v3.1.2
+        bundle: ghcr.io/katl-dev/katl/extensions/bird:v3.1.2-katl.1
         configuration:
           files:
             - path: /etc/bird.conf
@@ -656,6 +655,67 @@ remote stable-endpoint reachability through the normal bootstrap or lifecycle
 journey. It does not parse BIRD protocols or claim that a specific route was
 advertised.
 
+## Katl-Provided Extension Producer
+
+Definitions for extensions published by the Katl project live in this
+repository under:
+
+```text
+extensions/<name>/
+```
+
+Each directory owns the reproducible build recipe, locked package or source
+inputs, supplied native systemd units and defaults, bundle metadata inputs and
+focused content tests for one extension. `name` is a safe lowercase OCI
+repository path segment. In-tree ownership lets a change to the KatlOS runtime
+interface, common bundle tooling or an extension recipe be reviewed and tested
+together.
+
+The shared `.github/workflows/system-extensions.yml` GitHub Actions workflow
+builds these definitions. Pull requests build and validate affected extensions
+without publishing them. Trusted CI after merge or an explicitly authorized
+release dispatch:
+
+```text
+builds the sysext and any bundled confext
+verifies native extension metadata, contents, units and runtime compatibility
+creates the common Katl custom manifest and OCI descriptor set
+records source and build-input provenance
+publishes the immutable OCI artifact
+verifies the registry manifest digest against the locally produced manifest
+```
+
+The workflow invokes the common payload-bundle producer and publisher factored
+from Kubernetes delivery. An extension directory supplies payload build and
+metadata inputs; it does not implement its own OCI layout, digest rules or
+registry client.
+
+Official artifacts use:
+
+```text
+ghcr.io/katl-dev/katl/extensions/<name>:<artifactVersion>
+ghcr.io/katl-dev/katl/extensions/<name>:<artifactVersion>@sha256:<OCI-manifest-digest>
+```
+
+For example:
+
+```text
+ghcr.io/katl-dev/katl/extensions/bird:v3.1.2-katl.1
+```
+
+The readable tag is immutable. Any source, package, recipe or bundle-metadata
+change produces a new `artifactVersion`; CI must not replace an existing tag
+with different bytes. CI is the only publisher to the official namespace.
+Developers use the same producer entrypoint locally for build and validation
+but do not need official registry credentials.
+
+Katl-provided bundles use the same `SystemExtensionBundle` manifest, media
+types, digest hierarchy and consumer path as any user-published bundle. The
+official namespace provides a reviewed producer and compatibility promise; it
+does not create ClusterConfig shorthand, a built-in extension catalog or
+application-specific behavior in Katl. The operator-selected
+`systemExtensions[].name` remains independent of the OCI repository name.
+
 ## Trust And Distribution
 
 Every selected extension is published as OCI, including extensions produced
@@ -691,8 +751,8 @@ and writes the same OCI custom-manifest and layer shape used by Kubernetes
 delivery; local files never become a ClusterConfig acquisition source.
 
 Katl does not need to build arbitrary user software. Documentation may provide
-a small mkosi BIRD example and publication recipe, while users remain free to
-use any compatible builder.
+the in-tree producer as an example, while users remain free to use any
+compatible builder and publish to any public OCI repository they control.
 
 ## Apply, Upgrade And Rollback
 
@@ -792,9 +852,12 @@ sysext, confext and metadata content uses common media types.
 
 The accepted generic BIRD extension contract describes a Katl-supported BIRD
 capability and explicitly rejects raw operator configuration. It is not the
-contract for the opaque user-owned BIRD journey in this ADR. Katl's simple
-routed endpoint remains self-contained; a user-owned BIRD sysext uses this ADR
-and native BIRD configuration.
+contract for the opaque operator-configured BIRD journey in this ADR. Publishing
+a generic BIRD bundle from the in-tree producer makes Katl responsible for its
+build, runtime compatibility and artifact integrity, not for the semantics of
+the operator's BIRD configuration. Katl's simple routed endpoint remains
+self-contained; an operator-configured BIRD sysext uses this ADR and native
+BIRD configuration.
 
 ## Non-Goals
 
@@ -824,6 +887,9 @@ rejection of loose file, local bundle and catalog source shapes
 OCI resolution to exact embedded content
 shared Kubernetes/system-extension manifest and descriptor verification
 sysext and confext compatibility validation
+in-tree extension recipe and producer input validation
+official OCI namespace, immutable tag and post-publication digest verification
+non-publishing pull-request workflow behavior
 operator configuration override of bundled confext content
 protected Katl path rejection without application-specific inspection
 deterministic non-Katl confext collision reporting
@@ -839,8 +905,9 @@ target-runtime incompatibility during host upgrade
 The VM journey must use public `katlctl` interfaces to:
 
 ```text
-build a custom BIRD sysext and publish it in the common OCI bundle envelope
-select that bundle only through its OCI reference
+build the in-tree generic BIRD definition through the shared producer entrypoint
+publish the fixture in the common OCI bundle envelope
+select the bundle only through its OCI reference
 install three routed control-plane nodes with per-node /31 links
 configure distinct bird0 router-identity /32 addresses
 select the BIRD extension, native /etc/bird.conf and bird.service drop-in
@@ -869,6 +936,11 @@ operator-owned.
 Configuration stays tied to the extension which consumes it, and a bundled
 confext can make a third-party extension self-contained without forcing
 site-specific values into an image.
+
+Katl accepts build, compatibility-test and CI publication responsibility for
+the finite set of project-provided extension recipes in `extensions/`. That
+does not make arbitrary third-party software part of Katl's release or support
+surface.
 
 Katl must generalize the Kubernetes OCI bundle resolver, verifier, cache and
 staging code for system extension payloads, then add generic configuration,
