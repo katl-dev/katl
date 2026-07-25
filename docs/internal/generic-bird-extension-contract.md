@@ -3,6 +3,10 @@
 Status: accepted app-specific contract for the generic BIRD node extension.
 Concrete packaging, renderer, operation, and VM proof remain follow-up work.
 
+This contract applies only to a Katl-supported BIRD capability. It is not
+required for an opaque user-owned BIRD sysext and native configuration selected
+through the ADR-012 `systemExtensions` contract.
+
 The generic BIRD extension is a reusable Katl node application sysext that
 provides a routing daemon capability to higher-level Katl apps. It builds on
 `docs/internal/node-app-sysext-contract.md` and

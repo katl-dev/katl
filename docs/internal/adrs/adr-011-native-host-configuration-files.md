@@ -1,6 +1,7 @@
 # ADR-011: Native host configuration is carried as managed file sets
 
-Status: accepted.
+Status: accepted; amended by ADR-012 for confext payloads coupled to
+user-owned system extension bundles.
 
 Date: 2026-07-24.
 
