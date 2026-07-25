@@ -45,6 +45,23 @@ func TestPackUsesTheSameVerifiedEnvelopeAsPublish(t *testing.T) {
 	}
 }
 
+func TestPackAcceptsPayloadLargerThanORASReadAllLimit(t *testing.T) {
+	data := make([]byte, 32*1024*1024+1)
+	data[len(data)-1] = 1
+	blob := DescribeBytes(data, "systemd-sysext", "application/vnd.katl.sysext.raw.v1", "kubernetes.raw")
+
+	packed, err := Pack(context.Background(), PackRequest{
+		ArtifactType: "application/vnd.katl.test.bundle.v1", ConfigMediaType: "application/vnd.katl.test.bundle.v1+json",
+		Config: []byte(`{"kind":"LargeTestBundle"}`), Blobs: []Blob{blob},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !validDigest(packed.ManifestDigest) {
+		t.Fatalf("manifest digest = %q", packed.ManifestDigest)
+	}
+}
+
 func TestVerifyDescriptorsRequiresExactLayerSet(t *testing.T) {
 	data := []byte("payload")
 	blob := DescribeBytes(data, "systemd-sysext", "application/vnd.katl.sysext.raw.v1", "routing.raw")

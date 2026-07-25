@@ -19,7 +19,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/content/memory"
+	"oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
@@ -140,10 +140,11 @@ type Published struct {
 // registry. Producers use this in presubmit checks so the bytes validated in
 // CI are packed by the same implementation that publishes them.
 func Pack(ctx context.Context, request PackRequest) (Packed, error) {
-	store, manifestDescriptor, err := pack(ctx, request, "bundle")
+	store, manifestDescriptor, cleanup, err := pack(ctx, request, "bundle")
 	if err != nil {
 		return Packed{}, err
 	}
+	defer cleanup()
 	manifest, err := ReadContent(ctx, store, manifestDescriptor)
 	if err != nil {
 		return Packed{}, fmt.Errorf("read packed OCI manifest: %w", err)
@@ -208,10 +209,11 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 		ArtifactType: request.ArtifactType, ConfigMediaType: request.ConfigMediaType,
 		Config: request.Config, Blobs: request.Blobs, Annotations: request.Annotations,
 	}
-	store, manifestDescriptor, err := pack(ctx, packRequest, ref.Tag)
+	store, manifestDescriptor, cleanup, err := pack(ctx, packRequest, ref.Tag)
 	if err != nil {
 		return Published{}, err
 	}
+	defer cleanup()
 
 	repository, err := remote.NewRepository(ref.Repository)
 	if err != nil {
@@ -257,55 +259,71 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 	return Published{Reference: ref, ManifestDigest: manifestDescriptor.Digest.String()}, nil
 }
 
-func pack(ctx context.Context, request PackRequest, tag string) (*memory.Store, ocispec.Descriptor, error) {
+func pack(ctx context.Context, request PackRequest, tag string) (store oras.Target, manifestDescriptor ocispec.Descriptor, cleanup func(), err error) {
 	if strings.TrimSpace(request.ArtifactType) == "" || strings.TrimSpace(request.ConfigMediaType) == "" {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("OCI artifact and config media types are required")
+		return nil, ocispec.Descriptor{}, nil, fmt.Errorf("OCI artifact and config media types are required")
 	}
 	if len(request.Config) == 0 || len(request.Blobs) == 0 {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("OCI config and at least one payload blob are required")
+		return nil, ocispec.Descriptor{}, nil, fmt.Errorf("OCI config and at least one payload blob are required")
 	}
 
-	store := memory.New()
+	storeDir, err := os.MkdirTemp("", "katl-payload-bundle-*")
+	if err != nil {
+		return nil, ocispec.Descriptor{}, nil, fmt.Errorf("create temporary OCI payload store: %w", err)
+	}
+	cleanup = func() {
+		_ = os.RemoveAll(storeDir)
+	}
+	defer func() {
+		if err != nil {
+			cleanup()
+			cleanup = nil
+		}
+	}()
+	store, err = oci.New(storeDir)
+	if err != nil {
+		return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("open temporary OCI payload store: %w", err)
+	}
 	configDescriptor, err := oras.PushBytes(ctx, store, request.ConfigMediaType, request.Config)
 	if err != nil {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("stage OCI config: %w", err)
+		return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("stage OCI config: %w", err)
 	}
 	layers := make([]ocispec.Descriptor, 0, len(request.Blobs))
 	for _, blob := range request.Blobs {
 		if digest.FromBytes(blob.Data).String() != blob.Descriptor.Digest || int64(len(blob.Data)) != blob.Descriptor.SizeBytes {
-			return nil, ocispec.Descriptor{}, fmt.Errorf("payload %q bytes do not match its descriptor", blob.Descriptor.FileName)
+			return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("payload %q bytes do not match its descriptor", blob.Descriptor.FileName)
 		}
 		layer, err := oras.PushBytes(ctx, store, blob.Descriptor.MediaType, blob.Data)
 		if err != nil {
-			return nil, ocispec.Descriptor{}, fmt.Errorf("stage OCI payload %q: %w", blob.Descriptor.FileName, err)
+			return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("stage OCI payload %q: %w", blob.Descriptor.FileName, err)
 		}
 		layer.Annotations = cloneAnnotations(blob.Descriptor.Annotations)
 		layers = append(layers, layer)
 	}
-	manifestDescriptor, err := oras.PackManifest(ctx, store, oras.PackManifestVersion1_1, request.ArtifactType, oras.PackManifestOptions{
+	manifestDescriptor, err = oras.PackManifest(ctx, store, oras.PackManifestVersion1_1, request.ArtifactType, oras.PackManifestOptions{
 		ConfigDescriptor:    &configDescriptor,
 		Layers:              layers,
 		ManifestAnnotations: cloneAnnotations(request.Annotations),
 	})
 	if err != nil {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("pack OCI payload bundle: %w", err)
+		return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("pack OCI payload bundle: %w", err)
 	}
 	if err := store.Tag(ctx, manifestDescriptor, tag); err != nil {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("tag staged OCI payload bundle: %w", err)
+		return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("tag staged OCI payload bundle: %w", err)
 	}
 	ref := Reference{Value: tag, Tag: tag}
 	local, err := FetchTarget(ctx, store, tag, ref, request.ArtifactType, request.ConfigMediaType)
 	if err != nil {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("verify staged OCI payload bundle: %w", err)
+		return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("verify staged OCI payload bundle: %w", err)
 	}
 	descriptors := make([]Descriptor, 0, len(request.Blobs))
 	for _, blob := range request.Blobs {
 		descriptors = append(descriptors, blob.Descriptor)
 	}
 	if err := VerifyDescriptors(local.Manifest, descriptors); err != nil {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("verify staged OCI payload descriptors: %w", err)
+		return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("verify staged OCI payload descriptors: %w", err)
 	}
-	return store, manifestDescriptor, nil
+	return store, manifestDescriptor, cleanup, nil
 }
 
 func Fetch(ctx context.Context, request FetchRequest) (Fetched, error) {
