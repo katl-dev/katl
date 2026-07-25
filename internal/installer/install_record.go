@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	generatedConfextName = "katl-node"
+	generatedConfextName = generation.GeneratedConfextName
 	generatedConfextID   = "katlos"
 )
 

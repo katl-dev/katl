@@ -31,6 +31,8 @@ type NativeEtcFile struct {
 type NativeEtcFilePlan struct {
 	Path        string
 	ConfextPath string
+	Type        NativeEtcFileType
+	Target      string
 	Mode        fs.FileMode
 	UID         int
 	GID         int
@@ -83,16 +85,32 @@ func ValidateNativeEtcBundle(confextRoot string, files []NativeEtcFile) ([]Nativ
 		if fileType == "" {
 			fileType = NativeEtcRegularFile
 		}
-		if fileType != NativeEtcRegularFile {
+		if fileType != NativeEtcRegularFile && fileType != NativeEtcSymlink {
 			return nil, fmt.Errorf("%s entries are not allowed in generated confext input: %q", fileType, file.Path)
 		}
 
 		mode := file.Mode
-		if mode == 0 {
+		if fileType == NativeEtcSymlink {
+			mode = 0
+			if err := validateSystemdEnablementSymlink(normalizedPath, file.Content); err != nil {
+				return nil, err
+			}
+		} else if mode == 0 {
 			mode = 0o644
 		}
-		if err := validateNativeEtcMode(file.Path, mode); err != nil {
-			return nil, err
+		if fileType == NativeEtcRegularFile {
+			if err := validateNativeEtcMode(file.Path, mode); err != nil {
+				return nil, err
+			}
+		}
+		if fileType == NativeEtcSymlink && file.Mode != 0 {
+			return nil, fmt.Errorf("native /etc symlink %q must not declare a mode", file.Path)
+		}
+		if fileType == NativeEtcRegularFile {
+			mode = mode.Perm()
+		}
+		if fileType == NativeEtcSymlink && strings.ContainsRune(file.Content, '\x00') {
+			return nil, fmt.Errorf("native /etc symlink %q target contains a NUL byte", file.Path)
 		}
 		if file.UID != 0 || file.GID != 0 {
 			return nil, fmt.Errorf("native /etc file %q must be owned by root:root", file.Path)
@@ -109,7 +127,9 @@ func ValidateNativeEtcBundle(confextRoot string, files []NativeEtcFile) ([]Nativ
 		plans = append(plans, NativeEtcFilePlan{
 			Path:        normalizedPath,
 			ConfextPath: confextPath,
-			Mode:        mode.Perm(),
+			Type:        fileType,
+			Target:      file.Content,
+			Mode:        mode,
 			UID:         file.UID,
 			GID:         file.GID,
 		})
@@ -164,8 +184,15 @@ func RenderGenerationTree(request GenerationTreeRequest) (GenerationTree, error)
 	}
 
 	for _, plan := range plans {
-		if err := writeConfextRegularFile(confextDir, plan.ConfextPath, []byte(contentByPath[plan.Path]), plan.Mode); err != nil {
-			return GenerationTree{}, fmt.Errorf("write %s: %w", plan.Path, err)
+		switch plan.Type {
+		case NativeEtcRegularFile:
+			if err := writeConfextRegularFile(confextDir, plan.ConfextPath, []byte(contentByPath[plan.Path]), plan.Mode); err != nil {
+				return GenerationTree{}, fmt.Errorf("write %s: %w", plan.Path, err)
+			}
+		case NativeEtcSymlink:
+			if err := writeConfextSymlink(confextDir, plan.ConfextPath, plan.Target); err != nil {
+				return GenerationTree{}, fmt.Errorf("write %s: %w", plan.Path, err)
+			}
 		}
 		if err := chown(plan.ConfextPath, plan.UID, plan.GID); err != nil {
 			return GenerationTree{}, fmt.Errorf("chown %s: %w", plan.Path, err)
@@ -186,6 +213,34 @@ func RenderGenerationTree(request GenerationTreeRequest) (GenerationTree, error)
 		ExtensionReleasePath: extensionPath,
 		Files:                plans,
 	}, nil
+}
+
+func validateSystemdEnablementSymlink(path, target string) error {
+	const wantsPrefix = "/etc/systemd/system/multi-user.target.wants/"
+	if !strings.HasPrefix(path, wantsPrefix) || strings.TrimPrefix(path, wantsPrefix) == "" {
+		return fmt.Errorf("native /etc symlink %q is outside generated systemd enablement", path)
+	}
+	unit := strings.TrimPrefix(path, wantsPrefix)
+	wantTarget := "/usr/lib/systemd/system/" + unit
+	if target != wantTarget {
+		return fmt.Errorf("native /etc symlink %q target must be %q", path, wantTarget)
+	}
+	return nil
+}
+
+func writeConfextSymlink(root, destination, target string) error {
+	if !pathWithinRoot(root, destination) {
+		return fmt.Errorf("refusing to write outside generated confext root: %s", destination)
+	}
+	if err := mkdirAllNoSymlink(root, filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(destination); err == nil {
+		return fmt.Errorf("refusing to replace existing generated confext path: %s", destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink(target, destination)
 }
 
 func normalizeNativeEtcPath(path string) (string, error) {

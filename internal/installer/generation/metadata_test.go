@@ -275,6 +275,34 @@ func TestDigestDirectoryIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestDigestDirectoryHashesSymlinkWithoutFollowingIt(t *testing.T) {
+	root := t.TempDir()
+	link := filepath.Join(root, "etc", "systemd", "system", "example.service")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/lib/systemd/system/example.service", link); err != nil {
+		t.Fatal(err)
+	}
+	first, err := DigestDirectory(root)
+	if err != nil {
+		t.Fatalf("DigestDirectory() dangling symlink error = %v", err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/lib/systemd/system/other.service", link); err != nil {
+		t.Fatal(err)
+	}
+	second, err := DigestDirectory(root)
+	if err != nil {
+		t.Fatalf("DigestDirectory() changed symlink error = %v", err)
+	}
+	if first == second {
+		t.Fatal("digest did not change with symlink target")
+	}
+}
+
 func TestRuntimeConfigRecordRejectsInvalidMetadata(t *testing.T) {
 	previous := abRecord(t, "2026.06.05-001", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC))
 	tests := []struct {

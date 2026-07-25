@@ -12,13 +12,14 @@ import (
 )
 
 type RenderNodeRequest struct {
-	NodeName       string
-	Manifest       manifest.Manifest
-	KubeadmConfigs map[string]kubeadmconfig.Plan
-	SourceID       string
-	DesiredVersion string
-	ApplyMode      string
-	KubeadmOnly    bool
+	NodeName                string
+	Manifest                manifest.Manifest
+	KubeadmConfigs          map[string]kubeadmconfig.Plan
+	SourceID                string
+	DesiredVersion          string
+	ApplyMode               string
+	KubeadmOnly             bool
+	SystemExtensionPayloads []SystemExtensionPayload
 }
 
 type renderedNodeConfigurationChange struct {
@@ -35,8 +36,9 @@ type renderedNodeConfigurationMetadata struct {
 }
 
 type renderedNodeConfigurationChangeSpec struct {
-	NodeOverrides  map[string]renderedNodeConfigurationOverlay `yaml:"nodeOverrides"`
-	KubeadmConfigs map[string]inlineKubeadmConfig              `yaml:"kubeadmConfigs,omitempty"`
+	NodeOverrides           map[string]renderedNodeConfigurationOverlay `yaml:"nodeOverrides"`
+	KubeadmConfigs          map[string]inlineKubeadmConfig              `yaml:"kubeadmConfigs,omitempty"`
+	SystemExtensionPayloads []SystemExtensionPayload                    `yaml:"systemExtensionPayloads,omitempty"`
 }
 
 type renderedNodeConfigurationOverlay struct {
@@ -44,6 +46,7 @@ type renderedNodeConfigurationOverlay struct {
 	SystemRole           string                       `yaml:"systemRole,omitempty"`
 	Networkd             *manifest.NetworkdConfig     `yaml:"networkd,omitempty"`
 	HostConfiguration    *manifest.HostConfiguration  `yaml:"hostConfiguration,omitempty"`
+	SystemExtensions     *[]manifest.SystemExtension  `yaml:"systemExtensions,omitempty"`
 	Kubernetes           *manifest.KubernetesConfig   `yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint,omitempty"`
 }
@@ -72,6 +75,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	}
 
 	node := request.Manifest.Node
+	systemExtensions := append([]manifest.SystemExtension(nil), node.SystemExtensions...)
 	kubeadmConfigs, err := renderKubeadmConfigs(node.Kubernetes.Kubeadm.ConfigRef, request.KubeadmConfigs)
 	if err != nil {
 		return nil, err
@@ -84,6 +88,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		SystemRole:           node.SystemRole,
 		Networkd:             &node.Networkd,
 		HostConfiguration:    &node.HostConfiguration,
+		SystemExtensions:     &systemExtensions,
 		Kubernetes:           &node.Kubernetes,
 		ControlPlaneEndpoint: renderedControlPlaneEndpoint(node.ControlPlaneEndpoint),
 	}
@@ -99,7 +104,8 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		},
 		Apply: Apply{Mode: applyMode},
 		Spec: renderedNodeConfigurationChangeSpec{
-			KubeadmConfigs: kubeadmConfigs,
+			KubeadmConfigs:          kubeadmConfigs,
+			SystemExtensionPayloads: append([]SystemExtensionPayload(nil), request.SystemExtensionPayloads...),
 			NodeOverrides: map[string]renderedNodeConfigurationOverlay{
 				nodeName: overlay,
 			},

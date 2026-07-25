@@ -40,8 +40,8 @@ katl_exchange_cilium_to_fabric Pipe katl_exchange_cilium_table up 12:00:00
 		t.Fatalf("route exchange status = %#v", status.Peers[1:])
 	}
 	want := [][]string{
-		{"birdc", "-s", BirdControlSocketPath, "show", "protocols", "all"},
-		{"birdc", "-s", BirdControlSocketPath, "show", "route", "table", "katl_fabric", "for", "10.40.0.10/32", "protocol", "katl_api"},
+		{BirdClientPath, "-s", BirdControlSocketPath, "show", "protocols", "all"},
+		{BirdClientPath, "-s", BirdControlSocketPath, "show", "route", "table", "katl_fabric", "for", "10.40.0.10/32", "protocol", "katl_api"},
 	}
 	if !reflect.DeepEqual(runner.commands, want) {
 		t.Fatalf("commands = %#v, want %#v", runner.commands, want)

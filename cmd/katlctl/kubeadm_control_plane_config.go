@@ -432,6 +432,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		configYAML, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
 			NodeName: selected.Node.Name, Manifest: selected.InstallManifest, KubeadmConfigs: selected.KubeadmConfigs,
 			SourceID: selected.BundleManifest.ClusterName, DesiredVersion: desiredVersion, ApplyMode: generation.ApplyModeAuto,
+			SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
 		})
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("render cluster config for %s: %w", node.Name, err)

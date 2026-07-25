@@ -184,9 +184,11 @@ Pod CIDRs from `10.244.0.0/16` and Service IPs from `10.96.0.0/12`. Supply
 `spec.kubernetes.kubeadm.configFile` to own the native `ClusterConfiguration`,
 including different or intentionally absent Pod and Service subnets.
 
-The release ISO supplies the KatlOS image. ClusterConfig never contains image
-URLs, bundle references, credentials, named kubeadm profiles, node classes, or
-other compiler mechanisms.
+The release ISO supplies the KatlOS image, and Katl resolves the selected
+Kubernetes version itself. ClusterConfig does not expose KatlOS or Kubernetes
+image URLs, credentials, named kubeadm profiles, node classes, or other
+compiler mechanisms. An advanced `systemExtensions` entry may select an
+operator-owned native software bundle by OCI reference as described below.
 
 For a routed endpoint advertised by Katl, add the VIP and fabric peers. Katl
 then installs and runs the endpoint advertiser only on control-plane nodes;
@@ -208,6 +210,54 @@ spec:
 The API port defaults to `6443`. The router must be configured to peer with
 each control-plane node. Katl starts the VIP route withdrawn and advertises it
 only after that node's kube-apiserver is ready.
+
+Advanced operators may instead let Katl own only the health-gated local VIP
+and use arbitrary native routing software:
+
+```yaml
+spec:
+  controlPlaneEndpoint:
+    host: api.home.arpa
+    advertisement:
+      vip: 10.40.0.10
+  defaults:
+    systemExtensions:
+      - name: bird
+        bundle: registry.example/katl/extensions/bird:v3.3.1-katl.4
+        configuration:
+          files:
+            - path: /etc/bird.conf
+              source: ./bird/bird.conf
+        units:
+          - name: bird.service
+            enable: true
+            requiredForBootHealth: true
+            dropIns:
+              - name: 10-site.conf
+                content: |
+                  [Service]
+                  ExecStartPre=/usr/bin/bird -p -c /etc/bird.conf
+                  AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+                  CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+```
+
+Katl creates the stable `katl-api` dummy interface and adds the VIP only while
+the local kube-apiserver is healthy. It does not interpret BIRD configuration
+or infer that an extension is related to the VIP. The typed
+`systemExtensions` list is generic: Katl resolves the OCI bundle to immutable
+bytes while compiling, carries it in the self-contained config bundle, installs
+its sysext and optional confext in the selected generation, and applies native
+files and unit drop-ins from that same entry. Configuration source paths are
+relative to `cluster.yaml`.
+
+Every list item has an operator-selected unique `name`. Defaults merge into
+nodes by name; a node item replaces the complete default item, and
+`state: absent` removes an inherited item. Changes and removal select a
+next-boot generation. Use `katlctl system-extension inspect` or `validate` for
+an OCI bundle and `katlctl system-extension status --node NODE [NAME]` after
+apply. Registry credentials, when needed during workstation compilation, come
+from the normal Docker credential store and are never embedded in config or
+node state.
 
 Advanced users can keep native kubeadm settings without waiting for Katl to add
 a typed field for each upstream option:

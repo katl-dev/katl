@@ -129,7 +129,7 @@ func TestValidateNativeEtcBundleRejectsUnsafeEntries(t *testing.T) {
 		{
 			name: "symlink",
 			file: NativeEtcFile{Path: "/etc/hostname", Type: NativeEtcSymlink},
-			want: "symlink entries are not allowed",
+			want: "outside generated systemd enablement",
 		},
 		{
 			name: "device node",
@@ -201,6 +201,7 @@ func TestRenderGenerationTreeWritesFilesAndMetadata(t *testing.T) {
 		GenerationID:    "2026.05.31-001",
 		Files: []NativeEtcFile{
 			{Path: "/etc/systemd/network/10-lan.network", Content: "[Match]\nName=enp1s0\n", Mode: 0o644},
+			{Path: "/etc/systemd/system/multi-user.target.wants/bird.service", Content: "/usr/lib/systemd/system/bird.service", Type: NativeEtcSymlink},
 			{Path: "/etc/katl/node.yaml", Content: "node: lab-node-01\n", Mode: 0o640},
 		},
 		Extension: ExtensionRelease{
@@ -224,6 +225,7 @@ func TestRenderGenerationTreeWritesFilesAndMetadata(t *testing.T) {
 	wantFiles := []string{
 		"/etc/katl/node.yaml",
 		"/etc/systemd/network/10-lan.network",
+		"/etc/systemd/system/multi-user.target.wants/bird.service",
 	}
 	var gotFiles []string
 	for _, file := range tree.Files {
@@ -238,11 +240,15 @@ func TestRenderGenerationTreeWritesFilesAndMetadata(t *testing.T) {
 
 	assertFile(t, filepath.Join(tree.ConfextDir, "etc", "katl", "node.yaml"), "node: lab-node-01\n", 0o640)
 	assertFile(t, filepath.Join(tree.ConfextDir, "etc", "systemd", "network", "10-lan.network"), "[Match]\nName=enp1s0\n", 0o644)
+	if target, err := os.Readlink(filepath.Join(tree.ConfextDir, "etc", "systemd", "system", "multi-user.target.wants", "bird.service")); err != nil || target != "/usr/lib/systemd/system/bird.service" {
+		t.Fatalf("enablement symlink = %q, %v", target, err)
+	}
 	assertFile(t, tree.ExtensionReleasePath, "ID=katlos\nVERSION_ID=0.1.0\nCONFEXT_LEVEL=1\n", 0o644)
 
 	wantChowns := []string{
 		"node.yaml:0:0",
 		"10-lan.network:0:0",
+		"bird.service:0:0",
 		"extension-release.katl-node:0:0",
 	}
 	if !reflect.DeepEqual(chowns, wantChowns) {

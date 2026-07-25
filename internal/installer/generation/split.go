@@ -40,6 +40,7 @@ type GenerationSpec struct {
 	Root                 RootSelection      `json:"root"`
 	Boot                 BootSelection      `json:"boot"`
 	Sysexts              []ExtensionRef     `json:"sysexts"`
+	BundledConfexts      []ExtensionRef     `json:"bundledConfexts,omitempty"`
 	Confexts             []GeneratedConfext `json:"confexts"`
 	KernelCommandLine    []string           `json:"kernelCommandLine"`
 	KubernetesUpgrade    *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
@@ -86,6 +87,7 @@ func SpecFromRecord(record Record) GenerationSpec {
 		Root:                 record.Root,
 		Boot:                 record.Boot,
 		Sysexts:              append([]ExtensionRef{}, record.Sysexts...),
+		BundledConfexts:      append([]ExtensionRef{}, record.BundledConfexts...),
 		Confexts:             append([]GeneratedConfext{}, record.Confexts...),
 		KernelCommandLine:    append([]string{}, record.KernelCommandLine...),
 		KubernetesUpgrade:    record.KubernetesUpgrade,
@@ -132,6 +134,7 @@ func RecordFromSplit(spec GenerationSpec, status GenerationStatus) Record {
 		Root:                 spec.Root,
 		Boot:                 spec.Boot,
 		Sysexts:              append([]ExtensionRef(nil), spec.Sysexts...),
+		BundledConfexts:      append([]ExtensionRef(nil), spec.BundledConfexts...),
 		Confexts:             append([]GeneratedConfext(nil), spec.Confexts...),
 		KernelCommandLine:    append([]string(nil), spec.KernelCommandLine...),
 		KubernetesUpgrade:    spec.KubernetesUpgrade,
@@ -419,6 +422,11 @@ func ValidateGenerationSpec(spec GenerationSpec) error {
 	for _, sysext := range spec.Sysexts {
 		if err := ValidatePair(spec.Root, sysext); err != nil {
 			return err
+		}
+	}
+	for _, confext := range spec.BundledConfexts {
+		if err := ValidatePair(spec.Root, confext); err != nil {
+			return fmt.Errorf("bundled confext: %w", err)
 		}
 	}
 	for _, confext := range spec.Confexts {

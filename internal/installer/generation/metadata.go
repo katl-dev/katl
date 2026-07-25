@@ -15,9 +15,15 @@ import (
 )
 
 const (
-	APIVersion = "katl.dev/v1alpha1"
-	Kind       = "GenerationRecord"
+	APIVersion           = "katl.dev/v1alpha1"
+	GeneratedConfextName = "zzzz-katl-node"
+	Kind                 = "GenerationRecord"
 )
+
+func IsGeneratedConfextName(name string) bool {
+	name = strings.TrimSpace(name)
+	return name == GeneratedConfextName || name == "katl-node"
+}
 
 type Record struct {
 	APIVersion           string             `json:"apiVersion"`
@@ -28,6 +34,7 @@ type Record struct {
 	Root                 RootSelection      `json:"root"`
 	Boot                 BootSelection      `json:"boot"`
 	Sysexts              []ExtensionRef     `json:"sysexts"`
+	BundledConfexts      []ExtensionRef     `json:"bundledConfexts,omitempty"`
 	Confexts             []GeneratedConfext `json:"confexts"`
 	KernelCommandLine    []string           `json:"kernelCommandLine"`
 	ConfigApply          *ConfigApplyRecord `json:"configApply,omitempty"`
@@ -96,6 +103,7 @@ type FirstInstallRequest struct {
 	RuntimeArtifactSHA256 string
 	UKIPath               string
 	Sysexts               []ExtensionRef
+	BundledConfexts       []ExtensionRef
 	GeneratedConfext      GeneratedConfext
 	KernelCommandLine     []string
 	CreatedAt             time.Time
@@ -106,6 +114,7 @@ type RuntimeConfigRequest struct {
 	Previous           Record
 	SourceDigest       string
 	Sysexts            []ExtensionRef
+	BundledConfexts    []ExtensionRef
 	GeneratedConfext   GeneratedConfext
 	ChangedDomains     []string
 	RequestedApplyMode string
@@ -152,6 +161,10 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	bundledConfexts, err := cleanExtsNamed("bundled confext", request.BundledConfexts)
+	if err != nil {
+		return Record{}, err
+	}
 	confext, err := normalizeGeneratedConfext(request.GeneratedConfext)
 	if err != nil {
 		return Record{}, err
@@ -177,6 +190,7 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 		},
 		Boot:              BootSelection{UKIPath: request.UKIPath},
 		Sysexts:           sysexts,
+		BundledConfexts:   bundledConfexts,
 		Confexts:          []GeneratedConfext{confext},
 		KernelCommandLine: append([]string(nil), request.KernelCommandLine...),
 		CreatedAt:         createdAt.UTC(),
@@ -230,6 +244,14 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	bundledConfexts := request.BundledConfexts
+	if len(bundledConfexts) == 0 {
+		bundledConfexts = request.Previous.BundledConfexts
+	}
+	bundledConfexts, err = cleanExtsNamed("bundled confext", bundledConfexts)
+	if err != nil {
+		return Record{}, err
+	}
 	confext, err := normalizeGeneratedConfext(request.GeneratedConfext)
 	if err != nil {
 		return Record{}, err
@@ -251,6 +273,7 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 			LoaderEntryPath: filepath.ToSlash(filepath.Join("loader/entries", "katl-"+generationID+".conf")),
 		},
 		Sysexts:           sysexts,
+		BundledConfexts:   bundledConfexts,
 		Confexts:          []GeneratedConfext{confext},
 		KernelCommandLine: append([]string(nil), request.Previous.KernelCommandLine...),
 		ConfigApply: &ConfigApplyRecord{
@@ -309,8 +332,8 @@ func DigestDirectory(root string) (string, error) {
 		if err != nil {
 			return err
 		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("digest input %s is not a regular file", path)
+		if !info.Mode().IsRegular() && info.Mode()&fs.ModeSymlink == 0 {
+			return fmt.Errorf("digest input %s is neither a regular file nor a symbolic link", path)
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
@@ -326,9 +349,17 @@ func DigestDirectory(root string) (string, error) {
 	hash := sha256.New()
 	for _, rel := range entries {
 		path := filepath.Join(root, filepath.FromSlash(rel))
-		info, err := os.Stat(path)
+		info, err := os.Lstat(path)
 		if err != nil {
 			return "", err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintf(hash, "path=%s symlink-target=%q\n", rel, target)
+			continue
 		}
 		fmt.Fprintf(hash, "path=%s mode=%04o\n", rel, info.Mode().Perm())
 		file, err := os.Open(path)
@@ -350,7 +381,7 @@ func DigestDirectory(root string) (string, error) {
 
 func normalizeGeneratedConfext(confext GeneratedConfext) (GeneratedConfext, error) {
 	if strings.TrimSpace(confext.Name) == "" {
-		confext.Name = "katl-node"
+		confext.Name = GeneratedConfextName
 	}
 	if strings.TrimSpace(confext.Path) == "" {
 		return GeneratedConfext{}, fmt.Errorf("generated confext path is required")
@@ -395,6 +426,11 @@ func ValidateRecord(record Record) error {
 			return err
 		}
 	}
+	for _, confext := range record.BundledConfexts {
+		if err := ValidatePair(record.Root, confext); err != nil {
+			return fmt.Errorf("bundled confext: %w", err)
+		}
+	}
 	if record.ConfigApply != nil {
 		if err := validateConfigApplyRecord(*record.ConfigApply); err != nil {
 			return err
@@ -423,24 +459,28 @@ func validateConfigApplyRecord(config ConfigApplyRecord) error {
 }
 
 func cleanExts(refs []ExtensionRef) ([]ExtensionRef, error) {
+	return cleanExtsNamed("sysext", refs)
+}
+
+func cleanExtsNamed(kind string, refs []ExtensionRef) ([]ExtensionRef, error) {
 	cleaned := make([]ExtensionRef, 0, len(refs))
 	seen := make(map[string]struct{}, len(refs))
 	for _, ref := range refs {
 		if strings.TrimSpace(ref.Name) == "" || strings.TrimSpace(ref.Path) == "" || strings.TrimSpace(ref.ActivationPath) == "" {
-			return nil, fmt.Errorf("sysext name, path, and activation path are required")
+			return nil, fmt.Errorf("%s name, path, and activation path are required", kind)
 		}
 		if _, ok := seen[ref.Name]; ok {
-			return nil, fmt.Errorf("duplicate sysext %q", ref.Name)
+			return nil, fmt.Errorf("duplicate %s %q", kind, ref.Name)
 		}
 		seen[ref.Name] = struct{}{}
-		if err := validateSHA256("sysext "+ref.Name, ref.SHA256); err != nil {
+		if err := validateSHA256(kind+" "+ref.Name, ref.SHA256); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(ref.ArtifactVersion) == "" || strings.TrimSpace(ref.PayloadVersion) == "" || strings.TrimSpace(ref.Architecture) == "" {
-			return nil, fmt.Errorf("sysext %q version and architecture metadata is required", ref.Name)
+			return nil, fmt.Errorf("%s %q version and architecture metadata is required", kind, ref.Name)
 		}
 		if len(ref.Compatibility.RuntimeInterfaces) == 0 {
-			return nil, fmt.Errorf("sysext %q runtime compatibility metadata is required", ref.Name)
+			return nil, fmt.Errorf("%s %q runtime compatibility metadata is required", kind, ref.Name)
 		}
 		ref.SHA256 = strings.ToLower(ref.SHA256)
 		cleaned = append(cleaned, ref)

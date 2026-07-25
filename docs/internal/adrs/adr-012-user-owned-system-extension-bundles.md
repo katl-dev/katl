@@ -485,9 +485,9 @@ mechanically:
 
 ```text
 /usr/lib/katl/endpoint-routing/
-/etc/katl/endpoint-routing/
-/run/katl/endpoint-routing/
-katl-endpoint-routing.service
+/etc/katl/apps/bird/
+/run/katl-bird/
+katl-app-bird.service
 ```
 
 It must not claim generic paths such as `/usr/bin/bird`, `/etc/bird.conf` or
@@ -532,7 +532,7 @@ spec:
   defaults:
     systemExtensions:
       - name: bird
-        bundle: ghcr.io/katl-dev/katl/extensions/bird:v3.1.2-katl.1
+        bundle: ghcr.io/katl-dev/katl/extensions/bird:v3.3.1-katl.4
         configuration:
           files:
             - path: /etc/bird.conf
@@ -545,7 +545,7 @@ spec:
               - name: 10-site.conf
                 content: |
                   [Service]
-                  ExecStartPre=/usr/sbin/bird -p -c /etc/bird.conf
+                  ExecStartPre=/usr/bin/bird -p -c /etc/bird.conf
                   AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
                   CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 
@@ -700,7 +700,7 @@ ghcr.io/katl-dev/katl/extensions/<name>:<artifactVersion>@sha256:<OCI-manifest-d
 For example:
 
 ```text
-ghcr.io/katl-dev/katl/extensions/bird:v3.1.2-katl.1
+ghcr.io/katl-dev/katl/extensions/bird:v3.3.1-katl.4
 ```
 
 The readable tag is immutable. Any source, package, recipe or bundle-metadata
@@ -725,10 +725,10 @@ descriptors. A tag remains convenient authoring input, while the compiled
 bundle and generation record only resolved immutable identities.
 
 Registry authentication follows the same policy and implementation as
-Kubernetes bundle acquisition. The first implementation accepts unauthenticated
-public HTTPS registries. Private-registry credentials require a separate
-redaction and credential-input contract. Credentials are never embedded in
-ClusterConfig or generation metadata.
+Kubernetes bundle acquisition. The first implementation uses ambient Docker
+credentials on the compiling workstation and never accepts credentials in
+ClusterConfig. Credentials are not embedded in the compiled bundle or
+generation metadata.
 
 Signature or provenance verification remains optional policy for operators
 with a stricter threat model. Katl always verifies the resolved OCI manifest,

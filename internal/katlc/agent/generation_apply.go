@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -19,6 +21,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	katlconfig "github.com/katl-dev/katl/internal/katlc/config"
 	"google.golang.org/grpc/codes"
@@ -440,6 +443,13 @@ func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest
 			return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operationKind %q does not match accepted applyMode %q", req.OperationKind, plan.Plan.Decision.AcceptedMode)
 		}
 	}
+	configPath, configSHA256, err := persistConfigApplyRequest(s.Root, []byte(configReq.ConfigYAML))
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "persist config apply input: %v", err)
+	}
+	configReq.ConfigYAML = ""
+	configReq.ConfigYAMLPath = configPath
+	configReq.ConfigYAMLSHA256 = configSHA256
 	record := operation.OperationRecord{
 		OperationID:                 id,
 		OperationKind:               req.OperationKind,
@@ -492,7 +502,12 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply base state could not be loaded", err)
 		return errorsJoin(err, markErr)
 	}
-	decoded, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(record.ConfigApplyRequest.ConfigYAML), base)
+	configYAML, err := readConfigApplyRequest(e.Root, *record.ConfigApplyRequest)
+	if err != nil {
+		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "persisted config apply request could not be loaded", err)
+		return errorsJoin(err, markErr)
+	}
+	decoded, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(configYAML), base)
 	if err != nil {
 		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply request failed validation", err)
 		return errorsJoin(err, markErr)
@@ -581,6 +596,40 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		return record, nil
 	})
 	return updateErr
+}
+
+func persistConfigApplyRequest(root string, data []byte) (string, string, error) {
+	sum := sha256.Sum256(data)
+	digest := hex.EncodeToString(sum[:])
+	logicalPath := "/var/lib/katl/artifacts/config-apply/sha256-" + digest + ".yaml"
+	path := rootedRuntimePath(root, logicalPath)
+	if existing, err := os.ReadFile(path); err == nil {
+		existingSum := sha256.Sum256(existing)
+		if hex.EncodeToString(existingSum[:]) == digest {
+			return logicalPath, digest, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
+	if err := persistedrecord.WriteFileAtomic(path, data, 0o600); err != nil {
+		return "", "", err
+	}
+	return logicalPath, digest, nil
+}
+
+func readConfigApplyRequest(root string, request operation.ConfigApplyRequest) (string, error) {
+	if strings.TrimSpace(request.ConfigYAML) != "" {
+		return request.ConfigYAML, nil
+	}
+	data, err := os.ReadFile(rootedRuntimePath(root, request.ConfigYAMLPath))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != request.ConfigYAMLSHA256 {
+		return "", fmt.Errorf("config apply input sha256 %s, want %s", got, request.ConfigYAMLSHA256)
+	}
+	return string(data), nil
 }
 
 func configApplyEffectDiagnostics(effects []generation.ConfigApplyEffect) []string {

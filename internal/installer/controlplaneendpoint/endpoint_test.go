@@ -66,6 +66,19 @@ func TestNormalizeManagedEndpoint(t *testing.T) {
 	}
 }
 
+func TestNormalizeVIPOnlyEndpoint(t *testing.T) {
+	plan, err := Normalize(Config{
+		Host:          "api.home.example",
+		Advertisement: &Advertisement{VIP: "10.40.0.10"},
+	})
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	if plan.VIPPrefix != "10.40.0.10/32" || plan.Config.Advertisement == nil || plan.Config.Advertisement.BGP != nil {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
 func TestNormalizeWarnsWhenRouteExchangeIncludesVIP(t *testing.T) {
 	plan, err := Normalize(managedConfig())
 	if err != nil {
@@ -88,7 +101,6 @@ func TestNormalizeRejectsInvalidEndpointIntent(t *testing.T) {
 		{name: "CIDR VIP", mutate: func(c *Config) { c.Advertisement.VIP = "10.40.0.10/32" }, want: "bare IPv4"},
 		{name: "loopback VIP", mutate: func(c *Config) { c.Advertisement.VIP = "127.0.0.1" }, want: "not a usable routed address"},
 		{name: "IP host mismatch", mutate: func(c *Config) { c.Host = "10.40.0.11" }, want: "must equal"},
-		{name: "missing BGP", mutate: func(c *Config) { c.Advertisement.BGP = nil }, want: "bgp is required"},
 		{name: "reserved local ASN", mutate: func(c *Config) { c.Advertisement.BGP.LocalASN = 65535 }, want: "reserved"},
 		{name: "empty peers", mutate: func(c *Config) { c.Advertisement.BGP.Peers = nil }, want: "must not be empty"},
 		{name: "peer hostname", mutate: func(c *Config) { c.Advertisement.BGP.Peers[0].Address = "router.example" }, want: "usable IPv4"},

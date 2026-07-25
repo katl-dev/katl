@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+name="${1:-}"
+
+if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "usage: scripts/build-system-extension NAME" >&2
+    exit 2
+fi
+
+definition="$repo_root/extensions/$name"
+profile="system-extension-$name"
+environment_file="$definition/extension.env"
+if [[ ! -f "$repo_root/mkosi.profiles/$profile/mkosi.conf" || ! -f "$environment_file" ]]; then
+    echo "error: system extension definition is incomplete: extensions/$name" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$environment_file"
+if [[ "$KATL_EXTENSION_NAME" != "$name" ]]; then
+    echo "error: extension definition name $KATL_EXTENSION_NAME does not match $name" >&2
+    exit 1
+fi
+
+mkdir -p "$build_dir"
+"$repo_root/scripts/mkosi" --profile "$profile" -f build
+
+artifact="$build_dir/katl-$name.raw"
+if [[ ! -s "$artifact" ]]; then
+    echo "error: mkosi did not produce $artifact" >&2
+    exit 1
+fi
+
+(cd "$build_dir" && sha256sum "$(basename "$artifact")" >"$(basename "$artifact").sha256")
+printf 'system-extension: %s\nartifact: %s\nartifact-version: %s\npayload-version: %s\n' \
+    "$name" "$artifact" "$KATL_EXTENSION_ARTIFACT_VERSION" "$KATL_EXTENSION_PAYLOAD_VERSION"

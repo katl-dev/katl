@@ -21,9 +21,10 @@ const (
 )
 
 type ActivationPlan struct {
-	GenerationID string
-	Sysexts      []ActivationLink
-	Confexts     []ActivationLink
+	GenerationID    string
+	Sysexts         []ActivationLink
+	BundledConfexts []ActivationLink
+	Confexts        []ActivationLink
 }
 
 type ActivationLink struct {
@@ -99,7 +100,7 @@ func PlanActivation(record Record) (ActivationPlan, error) {
 		return ActivationPlan{}, err
 	}
 	plan := ActivationPlan{GenerationID: generationID}
-	seen := make(map[string]struct{}, len(record.Sysexts)+len(record.Confexts))
+	seen := make(map[string]struct{}, len(record.Sysexts)+len(record.BundledConfexts)+len(record.Confexts))
 	for _, ref := range record.Sysexts {
 		source, err := cleanGenerationPath("sysext "+ref.Name, generationID, ref.Path, "sysext")
 		if err != nil {
@@ -113,6 +114,20 @@ func PlanActivation(record Record) (ActivationPlan, error) {
 			return ActivationPlan{}, err
 		}
 		plan.Sysexts = append(plan.Sysexts, ActivationLink{Name: ref.Name, SourcePath: source, ActivationPath: activation})
+	}
+	for _, ref := range record.BundledConfexts {
+		source, err := cleanGenerationPath("bundled confext "+ref.Name, generationID, ref.Path, "bundled-confext")
+		if err != nil {
+			return ActivationPlan{}, err
+		}
+		activation, err := cleanActivationPath("bundled confext "+ref.Name, ref.ActivationPath, DefaultConfextsActivationDir)
+		if err != nil {
+			return ActivationPlan{}, err
+		}
+		if err := rememberActivation(seen, activation); err != nil {
+			return ActivationPlan{}, err
+		}
+		plan.BundledConfexts = append(plan.BundledConfexts, ActivationLink{Name: ref.Name, SourcePath: source, ActivationPath: activation})
 	}
 	for _, ref := range record.Confexts {
 		source, err := cleanGenerationPath("confext "+ref.Name, generationID, ref.Path, "confext")
@@ -148,6 +163,15 @@ func ApplyActivation(root string, record Record) (ActivationPlan, error) {
 			return ActivationPlan{}, fmt.Errorf("verify sysext %q: %w", ref.Name, err)
 		}
 	}
+	for _, ref := range record.BundledConfexts {
+		path, err := rootedPath(root, ref.Path)
+		if err != nil {
+			return ActivationPlan{}, err
+		}
+		if err := verifyFileSHA256(path, ref.SHA256); err != nil {
+			return ActivationPlan{}, fmt.Errorf("verify bundled confext %q: %w", ref.Name, err)
+		}
+	}
 	for _, ref := range record.Confexts {
 		path, err := rootedPath(root, ref.Path)
 		if err != nil {
@@ -164,7 +188,10 @@ func ApplyActivation(root string, record Record) (ActivationPlan, error) {
 	if err := resetActivationDirs(root); err != nil {
 		return ActivationPlan{}, err
 	}
-	for _, link := range append(append([]ActivationLink{}, plan.Sysexts...), plan.Confexts...) {
+	links := append([]ActivationLink{}, plan.Sysexts...)
+	links = append(links, plan.BundledConfexts...)
+	links = append(links, plan.Confexts...)
+	for _, link := range links {
 		target, err := rootedPath(root, link.ActivationPath)
 		if err != nil {
 			return ActivationPlan{}, err

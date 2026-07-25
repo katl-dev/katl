@@ -45,6 +45,7 @@ type NodeConfig struct {
 	SystemRole           string                       `json:"systemRole" yaml:"systemRole"`
 	Networkd             NetworkdConfig               `json:"networkd,omitempty" yaml:"networkd,omitempty"`
 	HostConfiguration    HostConfiguration            `json:"hostConfiguration,omitempty,omitzero" yaml:"hostConfiguration,omitempty"`
+	SystemExtensions     []SystemExtension            `json:"systemExtensions,omitempty" yaml:"systemExtensions,omitempty"`
 	Kubernetes           KubernetesConfig             `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlplaneendpoint.Config `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
 	Bootstrap            *BootstrapIntent             `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
@@ -105,6 +106,55 @@ func (notifications HostConfigurationNotifications) IsZero() bool {
 type HostConfigurationSystemdNotification struct {
 	Unit   string `json:"unit" yaml:"unit"`
 	Action string `json:"action" yaml:"action"`
+}
+
+const (
+	SystemExtensionPresent = "present"
+	SystemExtensionAbsent  = "absent"
+)
+
+// SystemExtension is the resolved, generation-scoped desired state for an
+// opaque user-owned system extension. Payload bytes are carried separately in
+// the self-contained config bundle and never persisted in the install
+// manifest.
+type SystemExtension struct {
+	Name                       string                       `json:"name" yaml:"name"`
+	State                      string                       `json:"state,omitempty" yaml:"state,omitempty"`
+	Bundle                     string                       `json:"bundle,omitempty" yaml:"bundle,omitempty"`
+	OCIManifestDigest          string                       `json:"ociManifestDigest,omitempty" yaml:"ociManifestDigest,omitempty"`
+	BundleManifestDigest       string                       `json:"bundleManifestDigest,omitempty" yaml:"bundleManifestDigest,omitempty"`
+	ArtifactVersion            string                       `json:"artifactVersion,omitempty" yaml:"artifactVersion,omitempty"`
+	PayloadVersion             string                       `json:"payloadVersion,omitempty" yaml:"payloadVersion,omitempty"`
+	Architecture               string                       `json:"architecture,omitempty" yaml:"architecture,omitempty"`
+	SupportedRuntimeInterfaces []string                     `json:"supportedRuntimeInterfaces,omitempty" yaml:"supportedRuntimeInterfaces,omitempty"`
+	Configuration              SystemExtensionConfiguration `json:"configuration,omitempty" yaml:"configuration,omitempty"`
+	Units                      []SystemExtensionUnit        `json:"units,omitempty" yaml:"units,omitempty"`
+	Payloads                   []SystemExtensionPayloadRef  `json:"payloads,omitempty" yaml:"payloads,omitempty"`
+}
+
+type SystemExtensionConfiguration struct {
+	Files []HostConfigurationFile `json:"files,omitempty" yaml:"files,omitempty"`
+}
+
+type SystemExtensionUnit struct {
+	Name                  string                      `json:"name" yaml:"name"`
+	Enable                bool                        `json:"enable,omitempty" yaml:"enable,omitempty"`
+	RequiredForBootHealth bool                        `json:"requiredForBootHealth,omitempty" yaml:"requiredForBootHealth,omitempty"`
+	DropIns               []SystemExtensionUnitDropIn `json:"dropIns,omitempty" yaml:"dropIns,omitempty"`
+}
+
+type SystemExtensionUnitDropIn struct {
+	Name    string  `json:"name" yaml:"name"`
+	Content *string `json:"content,omitempty" yaml:"content,omitempty"`
+	Source  string  `json:"source,omitempty" yaml:"source,omitempty"`
+}
+
+type SystemExtensionPayloadRef struct {
+	Name      string `json:"name" yaml:"name"`
+	Role      string `json:"role" yaml:"role"`
+	MediaType string `json:"mediaType" yaml:"mediaType"`
+	Digest    string `json:"digest" yaml:"digest"`
+	SizeBytes int64  `json:"sizeBytes" yaml:"sizeBytes"`
 }
 
 type KubernetesConfig struct {
@@ -291,6 +341,9 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	}
 	if err := ValidateHostConfiguration(manifest.Node.HostConfiguration, false); err != nil {
 		return fmt.Errorf("node.hostConfiguration: %w", err)
+	}
+	if err := ValidateSystemExtensions(manifest.Node.SystemExtensions, false); err != nil {
+		return fmt.Errorf("node.systemExtensions: %w", err)
 	}
 	if err := validateNameRef("node.kubernetes.kubeadm.configRef", manifest.Node.Kubernetes.Kubeadm.ConfigRef); err != nil {
 		return err
@@ -663,6 +716,191 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 		return fmt.Errorf("file content exceeds the %d-byte host configuration limit", MaxHostConfigurationTotalBytes)
 	}
 	return nil
+}
+
+// ValidateSystemExtensions validates only the generic ownership and
+// generation mechanics Katl understands. It deliberately does not inspect the
+// application or its configuration syntax.
+func ValidateSystemExtensions(extensions []SystemExtension, allowSource bool) error {
+	seen := make(map[string]struct{}, len(extensions))
+	for i, extension := range extensions {
+		field := fmt.Sprintf("[%d]", i)
+		if err := validateHostConfigurationSetName(extension.Name); err != nil {
+			return fmt.Errorf("%s.name: %w", field, err)
+		}
+		if _, ok := seen[extension.Name]; ok {
+			return fmt.Errorf("%s.name %q duplicates another system extension", field, extension.Name)
+		}
+		seen[extension.Name] = struct{}{}
+		state := strings.TrimSpace(extension.State)
+		if state == "" {
+			state = SystemExtensionPresent
+		}
+		switch state {
+		case SystemExtensionAbsent:
+			if strings.TrimSpace(extension.Bundle) != "" || len(extension.Configuration.Files) != 0 || len(extension.Units) != 0 || len(extension.Payloads) != 0 {
+				return fmt.Errorf("%s with state absent must not declare a bundle, configuration, units, or payloads", field)
+			}
+			continue
+		case SystemExtensionPresent:
+		default:
+			return fmt.Errorf("%s.state %q is unsupported", field, extension.State)
+		}
+		if err := validateSystemExtensionOCIReference(extension.Bundle); err != nil {
+			return fmt.Errorf("%s.bundle: %w", field, err)
+		}
+		if err := validateSystemExtensionFiles(extension.Name, extension.Configuration.Files, allowSource); err != nil {
+			return fmt.Errorf("%s.configuration: %w", field, err)
+		}
+		if err := validateSystemExtensionUnits(extension.Name, extension.Units, allowSource); err != nil {
+			return fmt.Errorf("%s.units: %w", field, err)
+		}
+		if !allowSource {
+			if err := validateResolvedSystemExtension(field, extension); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateSystemExtensionOCIReference(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("OCI reference is required")
+	}
+	if strings.Contains(value, "://") || strings.HasPrefix(value, "/") {
+		return fmt.Errorf("%q must be REGISTRY/REPOSITORY:TAG with an optional @sha256 digest", value)
+	}
+	name, digestValue, hasDigest := strings.Cut(value, "@")
+	if hasDigest {
+		if strings.Contains(digestValue, "@") || !validSHA256Digest(digestValue) {
+			return fmt.Errorf("%q has an invalid OCI manifest digest", value)
+		}
+	}
+	lastSlash := strings.LastIndex(name, "/")
+	lastColon := strings.LastIndex(name, ":")
+	if lastSlash <= 0 || lastColon <= lastSlash+1 || lastColon == len(name)-1 {
+		return fmt.Errorf("%q must include a registry, repository, and tag", value)
+	}
+	if strings.ContainsAny(name, "?#") {
+		return fmt.Errorf("%q is not an OCI image reference", value)
+	}
+	return nil
+}
+
+func validateSystemExtensionFiles(name string, files []HostConfigurationFile, allowSource bool) error {
+	if len(files) == 0 {
+		return nil
+	}
+	config := HostConfiguration{Sets: map[string]HostConfigurationSet{
+		"extension-" + name: {Files: files},
+	}}
+	return ValidateHostConfiguration(config, allowSource)
+}
+
+func validateSystemExtensionUnits(extensionName string, units []SystemExtensionUnit, allowSource bool) error {
+	seenUnits := make(map[string]struct{}, len(units))
+	for i, unit := range units {
+		field := fmt.Sprintf("[%d]", i)
+		if strings.TrimSpace(unit.Name) == "" || unit.Name != strings.TrimSpace(unit.Name) || len(unit.Name) > 255 || !systemdNotificationUnitPattern.MatchString(unit.Name) {
+			return fmt.Errorf("%s.name %q must be a single systemd unit name", field, unit.Name)
+		}
+		if protectedSystemdUnit(unit.Name) {
+			return fmt.Errorf("%s.name %q is release-critical and cannot be managed by extension %q", field, unit.Name, extensionName)
+		}
+		if _, ok := seenUnits[unit.Name]; ok {
+			return fmt.Errorf("%s.name %q duplicates another declared unit", field, unit.Name)
+		}
+		seenUnits[unit.Name] = struct{}{}
+		seenDropIns := make(map[string]struct{}, len(unit.DropIns))
+		for j, dropIn := range unit.DropIns {
+			dropField := fmt.Sprintf("%s.dropIns[%d]", field, j)
+			name := strings.TrimSpace(dropIn.Name)
+			if name == "" || name != dropIn.Name || filepath.Base(name) != name || !strings.HasSuffix(name, ".conf") || strings.Contains(name, "..") {
+				return fmt.Errorf("%s.name %q must be a safe basename ending in .conf", dropField, dropIn.Name)
+			}
+			if _, ok := seenDropIns[name]; ok {
+				return fmt.Errorf("%s.name %q duplicates another drop-in", dropField, name)
+			}
+			seenDropIns[name] = struct{}{}
+			hasContent := dropIn.Content != nil
+			hasSource := strings.TrimSpace(dropIn.Source) != ""
+			if hasContent == hasSource {
+				return fmt.Errorf("%s must declare exactly one of content or source", dropField)
+			}
+			if hasSource && !allowSource {
+				return fmt.Errorf("%s.source must be resolved before installation", dropField)
+			}
+			if hasContent {
+				if !utf8.ValidString(*dropIn.Content) || strings.ContainsRune(*dropIn.Content, '\x00') {
+					return fmt.Errorf("%s.content must be valid UTF-8 without NUL bytes", dropField)
+				}
+				if len(*dropIn.Content) > MaxHostConfigurationFileBytes {
+					return fmt.Errorf("%s.content exceeds %d bytes", dropField, MaxHostConfigurationFileBytes)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateResolvedSystemExtension(field string, extension SystemExtension) error {
+	for name, digestValue := range map[string]string{
+		"ociManifestDigest":    extension.OCIManifestDigest,
+		"bundleManifestDigest": extension.BundleManifestDigest,
+	} {
+		if !validSHA256Digest(digestValue) {
+			return fmt.Errorf("%s.%s must be a sha256 OCI digest", field, name)
+		}
+	}
+	if strings.TrimSpace(extension.ArtifactVersion) == "" || strings.TrimSpace(extension.PayloadVersion) == "" || strings.TrimSpace(extension.Architecture) == "" {
+		return fmt.Errorf("%s resolved artifactVersion, payloadVersion, and architecture are required", field)
+	}
+	if len(extension.SupportedRuntimeInterfaces) == 0 {
+		return fmt.Errorf("%s supportedRuntimeInterfaces must not be empty", field)
+	}
+	if len(extension.Payloads) == 0 {
+		return fmt.Errorf("%s must contain at least one payload", field)
+	}
+	seen := make(map[string]struct{}, len(extension.Payloads))
+	sysexts := 0
+	for i, payload := range extension.Payloads {
+		payloadField := fmt.Sprintf("%s.payloads[%d]", field, i)
+		if payload.Name == "" || filepath.Base(payload.Name) != payload.Name {
+			return fmt.Errorf("%s.name %q must be a safe extension image name", payloadField, payload.Name)
+		}
+		if _, ok := seen[payload.Name]; ok {
+			return fmt.Errorf("%s.name %q duplicates another payload", payloadField, payload.Name)
+		}
+		seen[payload.Name] = struct{}{}
+		switch payload.Role {
+		case "systemd-sysext":
+			sysexts++
+		case "systemd-confext":
+		default:
+			return fmt.Errorf("%s.role %q is unsupported", payloadField, payload.Role)
+		}
+		if !validSHA256Digest(payload.Digest) || payload.SizeBytes <= 0 || strings.TrimSpace(payload.MediaType) == "" {
+			return fmt.Errorf("%s descriptor digest, mediaType, and positive sizeBytes are required", payloadField)
+		}
+	}
+	if sysexts == 0 {
+		return fmt.Errorf("%s must contain at least one systemd-sysext payload", field)
+	}
+	return nil
+}
+
+func validSHA256Digest(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+sha256.Size*2 {
+		return false
+	}
+	hexValue := strings.TrimPrefix(value, "sha256:")
+	if hexValue != strings.ToLower(hexValue) {
+		return false
+	}
+	_, err := hex.DecodeString(hexValue)
+	return err == nil
 }
 
 func validateHostConfigurationSetName(name string) error {

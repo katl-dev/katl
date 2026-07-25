@@ -84,6 +84,7 @@ type VIPInterface struct {
 }
 
 type Routing struct {
+	Mode             string       `yaml:"mode,omitempty" json:"mode,omitempty"`
 	Daemon           string       `yaml:"daemon,omitempty" json:"daemon,omitempty"`
 	ProtocolBoundary string       `yaml:"protocolBoundary,omitempty" json:"protocolBoundary,omitempty"`
 	RouterID         string       `yaml:"routerID" json:"routerID"`
@@ -161,10 +162,9 @@ type Plan struct {
 // Katl-owned endpoint-advertiser configuration. BIRD, interface and health
 // details deliberately remain absent from ClusterConfig.
 func FromControlPlaneEndpoint(plan controlplaneendpoint.Plan) (Config, error) {
-	if plan.Config.Advertisement == nil || plan.Config.Advertisement.BGP == nil {
-		return Config{}, fmt.Errorf("managed control-plane endpoint BGP intent is required")
+	if plan.Config.Advertisement == nil {
+		return Config{}, fmt.Errorf("managed control-plane endpoint intent is required")
 	}
-	bgp := plan.Config.Advertisement.BGP
 	config := Config{
 		Endpoint: Endpoint{
 			Host:          plan.Config.Host,
@@ -175,7 +175,7 @@ func FromControlPlaneEndpoint(plan controlplaneendpoint.Plan) (Config, error) {
 			Provenance:    "platform-host",
 		},
 		VIPInterface: VIPInterface{Kind: "dummy", Name: "katl-api"},
-		Routing:      Routing{LocalASN: bgp.LocalASN},
+		Routing:      Routing{Mode: "vip-only"},
 		AdvertiseOn:  AdvertiseOn{Roles: []string{"control-plane"}},
 		Advertisement: Advertisement{
 			Enabled:               boolPtr(true),
@@ -184,6 +184,12 @@ func FromControlPlaneEndpoint(plan controlplaneendpoint.Plan) (Config, error) {
 			WithdrawOnFailure:     boolPtr(true),
 		},
 	}
+	bgp := plan.Config.Advertisement.BGP
+	if bgp == nil {
+		return Normalize(config)
+	}
+	config.Routing.Mode = "bgp"
+	config.Routing.LocalASN = bgp.LocalASN
 	for index, peer := range bgp.Peers {
 		config.FabricPeers = append(config.FabricPeers, Peer{
 			Name:                  fmt.Sprintf("fabric-%d", index+1),
@@ -315,7 +321,7 @@ func Normalize(config Config) (Config, error) {
 		return Config{}, err
 	}
 	normalized.DevHostPeers = peers
-	if len(normalized.FabricPeers)+len(normalized.DevHostPeers) == 0 {
+	if normalized.Routing.Mode == "bgp" && len(normalized.FabricPeers)+len(normalized.DevHostPeers) == 0 {
 		return Config{}, fmt.Errorf("at least one fabricPeers or devHostPeers entry is required")
 	}
 	return normalized, nil
@@ -344,18 +350,8 @@ func RenderNativeEtcFiles(request RenderRequest) (Plan, error) {
 			Mode:    0o644,
 		},
 		{
-			Path:    BirdConfigPath,
-			Content: renderBirdConfig(config),
-			Mode:    0o644,
-		},
-		{
 			Path:    AppDropInPath,
-			Content: renderAppDropIn(),
-			Mode:    0o644,
-		},
-		{
-			Path:    BirdDropInPath,
-			Content: renderBirdDropIn(),
+			Content: renderAppDropIn(config),
 			Mode:    0o644,
 		},
 		{
@@ -363,6 +359,12 @@ func RenderNativeEtcFiles(request RenderRequest) (Plan, error) {
 			Content: renderKubeletDropIn(),
 			Mode:    0o644,
 		},
+	}
+	if config.Routing.Mode == "bgp" {
+		files = append(files,
+			confext.NativeEtcFile{Path: BirdConfigPath, Content: renderBirdConfig(config), Mode: 0o644},
+			confext.NativeEtcFile{Path: BirdDropInPath, Content: renderBirdDropIn(), Mode: 0o644},
+		)
 	}
 	if *config.Advertisement.Enabled {
 		files = append(files, confext.NativeEtcFile{
@@ -465,6 +467,23 @@ func normalizeInterface(vipInterface *VIPInterface) error {
 }
 
 func normalizeRouting(routing *Routing, vip netip.Prefix) error {
+	routing.Mode = strings.TrimSpace(routing.Mode)
+	if routing.Mode == "" {
+		routing.Mode = "bgp"
+	}
+	if routing.Mode != "bgp" && routing.Mode != "vip-only" {
+		return fmt.Errorf("routing.mode must be bgp or vip-only")
+	}
+	if routing.Mode == "vip-only" {
+		routing.Daemon = ""
+		routing.ProtocolBoundary = ""
+		routing.RouterID = ""
+		routing.LocalASN = 0
+		routing.SourceAddress = ""
+		routing.SourceInterface = ""
+		routing.ExportPolicy = ExportPolicy{}
+		return nil
+	}
 	routing.Daemon = strings.TrimSpace(routing.Daemon)
 	if routing.Daemon == "" {
 		routing.Daemon = "bird"
@@ -872,8 +891,12 @@ func safeSymbol(value string) string {
 	return strings.ReplaceAll(value, "-", "_")
 }
 
-func renderAppDropIn() string {
-	return "[Service]\n" +
+func renderAppDropIn(config Config) string {
+	unit := ""
+	if config.Routing.Mode == "bgp" {
+		unit = "[Unit]\nWants=katl-app-bird.service\nAfter=katl-app-bird.service\n\n"
+	}
+	return unit + "[Service]\n" +
 		"Environment=KATL_BGP_API_VIP_CONFIG=" + ConfigPath + "\n" +
 		"Environment=KATL_BGP_API_VIP_STATUS=" + LiveStatusPath + "\n"
 }

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+runtime_root="${KATL_RUNTIME_ROOT:-$build_dir/katl-runtime-root}"
+name="${1:-}"
+artifact="$build_dir/katl-$name.raw"
+
+if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "usage: scripts/check-system-extension NAME" >&2
+    exit 2
+fi
+if [[ ! -s "$artifact" || ! -f "$artifact.sha256" ]]; then
+    echo "error: system extension artifact is missing: $artifact" >&2
+    exit 1
+fi
+
+(cd "$build_dir" && sha256sum --check "$(basename "$artifact.sha256")")
+
+tmpdir="$(mktemp -d)"
+trap 'chmod -R u+w "$tmpdir" >/dev/null 2>&1 || true; rm -rf -- "$tmpdir"' EXIT
+mkdir -p "$tmpdir/usr/lib"
+cp -a "$runtime_root/usr/lib/systemd" "$tmpdir/usr/lib/"
+partitions="$(systemd-repart --json=short "$artifact")"
+if [[ "$(jq '[.[] | select(.type == "root-x86-64")] | length' <<<"$partitions")" != 1 ]]; then
+    echo "error: extension must contain exactly one x86-64 root partition" >&2
+    exit 1
+fi
+offset="$(jq -er '.[] | select(.type == "root-x86-64") | .offset' <<<"$partitions")"
+fsck.erofs --offset="$offset" --extract="$tmpdir" --overwrite --no-preserve "$artifact"
+
+release="$tmpdir/usr/lib/extension-release.d/extension-release.katl-$name"
+test -x "$tmpdir/usr/bin/$name"
+test -f "$tmpdir/usr/lib/systemd/system/$name.service"
+test ! -e "$tmpdir/usr/lib/sysusers.d/$name.conf"
+test ! -e "$tmpdir/usr/lib/tmpfiles.d/$name.conf"
+grep -Fxq "ID=katlos" "$release"
+grep -Fxq "SYSEXT_LEVEL=katl-runtime-1" "$release"
+grep -Fxq "SYSEXT_ID=katl-$name" "$release"
+grep -Fxq "ARCHITECTURE=x86-64" "$release"
+test ! -e "$tmpdir/etc/bird.conf"
+
+systemd-analyze verify --man=no --root="$tmpdir" "$name.service"

@@ -200,6 +200,36 @@ spec:
 	}
 }
 
+func TestValidateNodeConfigurationChangeAcceptsCompiledSystemExtensions(t *testing.T) {
+	input := `
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "2"
+apply:
+  mode: next-boot
+spec:
+  systemExtensionPayloads:
+    - ref:
+        name: routing.raw
+        role: systemd-sysext
+        mediaType: application/vnd.katl.sysext.raw.v1
+        digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        sizeBytes: 2
+      data: AQI=
+  clusterDefaults:
+    systemExtensions:
+      - name: routing
+        state: present
+        bundle: registry.example/routing:v1
+`
+	result := ValidateNodeConfigurationChange(input, Options{})
+	if !result.Accepted() {
+		t.Fatalf("diagnostics = %#v, want accepted", result.Strings())
+	}
+}
+
 func TestValidateNodeConfigurationChangeRejectsRemovedTypedSysctl(t *testing.T) {
 	input := `
 apiVersion: katl.dev/v1alpha1

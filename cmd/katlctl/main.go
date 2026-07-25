@@ -156,6 +156,7 @@ Start with "katlctl install discover" for a waiting installer or
 	nodeCmd.AddCommand(nodeApplyCmd)
 	nodeCmd.AddCommand(newWipeNodeCommand(ctx, stdout, stderr, "katlctl node wipe"))
 	cmd.AddCommand(nodeCmd)
+	cmd.AddCommand(newSystemExtensionCommand(ctx, stdout, stderr))
 
 	configureCommandGroups(cmd)
 	setMinimumInvocationExamples(cmd)
@@ -194,47 +195,52 @@ func rejectUnknownSubcommand(command *cobra.Command, args []string) error {
 
 func setMinimumInvocationExamples(root *cobra.Command) {
 	examples := map[string]string{
-		"katlctl":                      "katlctl install discover",
-		"katlctl version":              "katlctl version",
-		"katlctl cluster":              "katlctl cluster bootstrap --config cluster.yaml",
-		"katlctl cluster status":       "katlctl cluster status --config cluster.yaml",
-		"katlctl cluster apply":        "katlctl cluster apply --config cluster.yaml",
-		"katlctl cluster etcd":         "katlctl cluster etcd members --config cluster.yaml",
-		"katlctl cluster etcd members": "katlctl cluster etcd members --config cluster.yaml",
-		"katlctl cluster etcd remove":  "katlctl cluster etcd remove cp-3 --member-id MEMBER_ID --config cluster.yaml",
-		"katlctl context save":         "katlctl context save --config cluster.yaml",
-		"katlctl cluster bootstrap":    "katlctl cluster bootstrap --config cluster.yaml",
-		"katlctl cluster wipe":         "katlctl cluster wipe --config cluster.yaml --all",
-		"katlctl kubernetes":           "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
-		"katlctl kubernetes upgrade":   "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
-		"katlctl config":               "katlctl config validate cluster.yaml",
-		"katlctl config init":          "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
-		"katlctl config validate":      "katlctl config validate cluster.yaml",
-		"katlctl config schema":        "katlctl config schema",
-		"katlctl config bundle":        "katlctl config bundle cluster.yaml --output cluster.katlcfg",
-		"katlctl config render-node":   "katlctl config render-node --config cluster.yaml --node cp-1 --desired-version 1",
-		"katlctl context":              "katlctl context show",
-		"katlctl context path":         "katlctl context path",
-		"katlctl context list":         "katlctl context list",
-		"katlctl context current":      "katlctl context current",
-		"katlctl context use":          "katlctl context use homelab",
-		"katlctl context show":         "katlctl context show",
-		"katlctl install":              "katlctl install discover",
-		"katlctl install discover":     "katlctl install discover",
-		"katlctl install apply":        "katlctl install apply --config cluster.yaml",
-		"katlctl install status":       "katlctl install status",
-		"katlctl operations":           "katlctl operations list --config cluster.yaml --node cp-1",
-		"katlctl operations status":    "katlctl operations status OPERATION_ID --config cluster.yaml --node cp-1",
-		"katlctl operations list":      "katlctl operations list --config cluster.yaml --node cp-1",
-		"katlctl node":                 "katlctl node status cp-1 --config cluster.yaml",
-		"katlctl node status":          "katlctl node status cp-1 --config cluster.yaml",
-		"katlctl node reboot":          "katlctl node reboot cp-1 --config cluster.yaml",
-		"katlctl node shutdown":        "katlctl node shutdown cp-1 --config cluster.yaml",
-		"katlctl node upgrade":         "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml",
-		"katlctl node apply":           "katlctl node apply cp-1 --config cluster.yaml",
-		"katlctl node apply validate":  "katlctl node apply validate --config cluster.yaml --node cp-1",
-		"katlctl node apply status":    "katlctl node apply status --node cp-1",
-		"katlctl node wipe":            "katlctl node wipe worker-1 --config cluster.yaml --kubeconfig kubeconfig",
+		"katlctl":                           "katlctl install discover",
+		"katlctl version":                   "katlctl version",
+		"katlctl cluster":                   "katlctl cluster bootstrap --config cluster.yaml",
+		"katlctl cluster status":            "katlctl cluster status --config cluster.yaml",
+		"katlctl cluster apply":             "katlctl cluster apply --config cluster.yaml",
+		"katlctl cluster etcd":              "katlctl cluster etcd members --config cluster.yaml",
+		"katlctl cluster etcd members":      "katlctl cluster etcd members --config cluster.yaml",
+		"katlctl cluster etcd remove":       "katlctl cluster etcd remove cp-3 --member-id MEMBER_ID --config cluster.yaml",
+		"katlctl context save":              "katlctl context save --config cluster.yaml",
+		"katlctl cluster bootstrap":         "katlctl cluster bootstrap --config cluster.yaml",
+		"katlctl cluster wipe":              "katlctl cluster wipe --config cluster.yaml --all",
+		"katlctl kubernetes":                "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
+		"katlctl kubernetes upgrade":        "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
+		"katlctl config":                    "katlctl config validate cluster.yaml",
+		"katlctl config init":               "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
+		"katlctl config validate":           "katlctl config validate cluster.yaml",
+		"katlctl config schema":             "katlctl config schema",
+		"katlctl config bundle":             "katlctl config bundle cluster.yaml --output cluster.katlcfg",
+		"katlctl config render-node":        "katlctl config render-node --config cluster.yaml --node cp-1 --desired-version 1",
+		"katlctl context":                   "katlctl context show",
+		"katlctl context path":              "katlctl context path",
+		"katlctl context list":              "katlctl context list",
+		"katlctl context current":           "katlctl context current",
+		"katlctl context use":               "katlctl context use homelab",
+		"katlctl context show":              "katlctl context show",
+		"katlctl install":                   "katlctl install discover",
+		"katlctl install discover":          "katlctl install discover",
+		"katlctl install apply":             "katlctl install apply --config cluster.yaml",
+		"katlctl install status":            "katlctl install status",
+		"katlctl operations":                "katlctl operations list --config cluster.yaml --node cp-1",
+		"katlctl operations status":         "katlctl operations status OPERATION_ID --config cluster.yaml --node cp-1",
+		"katlctl operations list":           "katlctl operations list --config cluster.yaml --node cp-1",
+		"katlctl node":                      "katlctl node status cp-1 --config cluster.yaml",
+		"katlctl node status":               "katlctl node status cp-1 --config cluster.yaml",
+		"katlctl node reboot":               "katlctl node reboot cp-1 --config cluster.yaml",
+		"katlctl node shutdown":             "katlctl node shutdown cp-1 --config cluster.yaml",
+		"katlctl node upgrade":              "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml",
+		"katlctl node apply":                "katlctl node apply cp-1 --config cluster.yaml",
+		"katlctl node apply validate":       "katlctl node apply validate --config cluster.yaml --node cp-1",
+		"katlctl node apply status":         "katlctl node apply status --node cp-1",
+		"katlctl node wipe":                 "katlctl node wipe worker-1 --config cluster.yaml --kubeconfig kubeconfig",
+		"katlctl system-extension":          "katlctl system-extension status --node cp-1 --config cluster.yaml",
+		"katlctl system-extension status":   "katlctl system-extension status --node cp-1 --config cluster.yaml",
+		"katlctl system-extension inspect":  "katlctl system-extension inspect ghcr.io/example/routing:v1",
+		"katlctl system-extension validate": "katlctl system-extension validate ghcr.io/example/routing:v1 --runtime-interface katl-runtime-1 --architecture x86_64",
+		"katlctl system-extension publish":  "katlctl system-extension publish --ref registry.example/routing:v1 --name routing --artifact-version v1 --payload-version v1 --architecture x86_64 --runtime-interface katl-runtime-1 --created-at 2026-07-25T00:00:00Z --sysext routing.raw",
 	}
 	var visit func(*cobra.Command)
 	visit = func(command *cobra.Command) {
@@ -1999,13 +2005,22 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 		sourceID = selected.BundleManifest.ClusterName
 	}
 	return configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
-		NodeName:       selected.Node.Name,
-		Manifest:       selected.InstallManifest,
-		KubeadmConfigs: selected.KubeadmConfigs,
-		SourceID:       sourceID,
-		DesiredVersion: opts.desiredVersion,
-		ApplyMode:      mode,
+		NodeName:                selected.Node.Name,
+		Manifest:                selected.InstallManifest,
+		KubeadmConfigs:          selected.KubeadmConfigs,
+		SourceID:                sourceID,
+		DesiredVersion:          opts.desiredVersion,
+		ApplyMode:               mode,
+		SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
 	})
+}
+
+func configApplySystemExtensionPayloads(payloads []configbundle.SystemExtensionPayload) []configapply.SystemExtensionPayload {
+	out := make([]configapply.SystemExtensionPayload, 0, len(payloads))
+	for _, payload := range payloads {
+		out = append(out, configapply.SystemExtensionPayload{Ref: payload.Ref, Data: append([]byte(nil), payload.Data...)})
+	}
+	return out
 }
 
 type configApplyOptions struct {
@@ -2735,7 +2750,13 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 }
 
 func katlcAgentDialOptions() []grpc.DialOption {
-	return []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(256<<20),
+			grpc.MaxCallSendMsgSize(256<<20),
+		),
+	}
 }
 
 func printBootstrapResult(stdout io.Writer, result cluster.Result) {

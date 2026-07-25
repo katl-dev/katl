@@ -307,7 +307,7 @@ func concreteSysctlKey(key string) bool {
 }
 
 func activeHostConfigurationPath(filePath string) string {
-	return path.Join("/run/confexts/katl-node", strings.TrimPrefix(filePath, "/"))
+	return path.Join("/run/confexts/"+generation.GeneratedConfextName, strings.TrimPrefix(filePath, "/"))
 }
 
 func hostSetNames(sets map[string]manifest.HostConfigurationSet) map[string]struct{} {

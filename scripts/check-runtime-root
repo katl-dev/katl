@@ -172,6 +172,8 @@ for path in \
     /usr/lib/systemd/system/var.mount \
     /usr/lib/systemd/system/etc-kubernetes.mount \
     /usr/lib/systemd/system/katl-generation-activate.service \
+    /usr/lib/systemd/system/katl-system-extensions-reload.service \
+    /usr/lib/systemd/system/katl-system-extensions-activate.service \
     /usr/lib/systemd/system/katl-kubeadm-ready.target \
     /usr/lib/systemd/system/katl-kubeadm-activate.service \
     /usr/lib/systemd/system/katl-boot-complete.target \

@@ -161,7 +161,9 @@ type ConfigApplyRequest struct {
 	ApplyMode             string `json:"applyMode"`
 	NodeName              string `json:"nodeName,omitempty"`
 	CandidateGenerationID string `json:"candidateGenerationID,omitempty"`
-	ConfigYAML            string `json:"configYAML"`
+	ConfigYAML            string `json:"configYAML,omitempty"`
+	ConfigYAMLPath        string `json:"configYAMLPath,omitempty"`
+	ConfigYAMLSHA256      string `json:"configYAMLSHA256,omitempty"`
 }
 
 type KubeadmControlPlaneConfig struct {
@@ -1780,8 +1782,20 @@ func validateConfigApplyRequest(request ConfigApplyRequest) error {
 			return err
 		}
 	}
-	if strings.TrimSpace(request.ConfigYAML) == "" {
-		return fmt.Errorf("configApplyRequest configYAML is required")
+	inline := strings.TrimSpace(request.ConfigYAML) != ""
+	persisted := strings.TrimSpace(request.ConfigYAMLPath) != "" || strings.TrimSpace(request.ConfigYAMLSHA256) != ""
+	if inline == persisted {
+		return fmt.Errorf("configApplyRequest must contain exactly one of configYAML or persisted configYAML metadata")
+	}
+	if persisted {
+		path := strings.TrimSpace(request.ConfigYAMLPath)
+		cleanPath := filepath.Clean(path)
+		if cleanPath != path || filepath.Dir(cleanPath) != "/var/lib/katl/artifacts/config-apply" {
+			return fmt.Errorf("configApplyRequest configYAMLPath must be under /var/lib/katl/artifacts/config-apply")
+		}
+		if err := validateSHA256Hex("configApplyRequest configYAMLSHA256", request.ConfigYAMLSHA256); err != nil {
+			return err
+		}
 	}
 	return nil
 }

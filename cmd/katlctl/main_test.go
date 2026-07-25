@@ -74,15 +74,25 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 	out := stdout.String()
-	for _, want := range []string{
-		"katlctl installs and manages KatlOS nodes",
-		"cluster     Cluster lifecycle operations",
-		"config      Create and compile ClusterConfig",
-		"context     Save and inspect workstation contexts",
-		"node        Manage individual KatlOS nodes",
+	if !strings.Contains(out, "katlctl installs and manages KatlOS nodes") {
+		t.Fatalf("stdout = %q, missing product description", out)
+	}
+	for command, description := range map[string]string{
+		"cluster": "Cluster lifecycle operations",
+		"config":  "Create and compile ClusterConfig",
+		"context": "Save and inspect workstation contexts",
+		"node":    "Manage individual KatlOS nodes",
 	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("stdout = %q, missing %q", out, want)
+		found := false
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == command && strings.Contains(line, description) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("stdout = %q, missing command %q with description %q", out, command, description)
 		}
 	}
 	if strings.Contains(out, "completion") {
@@ -220,25 +230,26 @@ func TestPublicHelpHidesInternalOperationAndTestInputs(t *testing.T) {
 
 func TestConfigInputFlagsUseOneName(t *testing.T) {
 	want := map[string]bool{
-		"katlctl cluster apply":        true,
-		"katlctl cluster etcd members": true,
-		"katlctl cluster etcd remove":  true,
-		"katlctl cluster status":       true,
-		"katlctl context save":         true,
-		"katlctl cluster bootstrap":    true,
-		"katlctl cluster wipe":         true,
-		"katlctl config render-node":   true,
-		"katlctl install apply":        true,
-		"katlctl kubernetes upgrade":   true,
-		"katlctl operations list":      true,
-		"katlctl operations status":    true,
-		"katlctl node apply":           true,
-		"katlctl node apply validate":  true,
-		"katlctl node reboot":          true,
-		"katlctl node shutdown":        true,
-		"katlctl node status":          true,
-		"katlctl node upgrade":         true,
-		"katlctl node wipe":            true,
+		"katlctl cluster apply":           true,
+		"katlctl cluster etcd members":    true,
+		"katlctl cluster etcd remove":     true,
+		"katlctl cluster status":          true,
+		"katlctl context save":            true,
+		"katlctl cluster bootstrap":       true,
+		"katlctl cluster wipe":            true,
+		"katlctl config render-node":      true,
+		"katlctl install apply":           true,
+		"katlctl kubernetes upgrade":      true,
+		"katlctl operations list":         true,
+		"katlctl operations status":       true,
+		"katlctl node apply":              true,
+		"katlctl node apply validate":     true,
+		"katlctl node reboot":             true,
+		"katlctl node shutdown":           true,
+		"katlctl node status":             true,
+		"katlctl node upgrade":            true,
+		"katlctl node wipe":               true,
+		"katlctl system-extension status": true,
 	}
 	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
 	var visit func(*cobra.Command)

@@ -20,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
@@ -113,13 +114,7 @@ type Bundle struct {
 	Signatures                        []Signature         `json:"signatures,omitempty"`
 }
 
-type Descriptor struct {
-	Role      string `json:"role"`
-	MediaType string `json:"mediaType"`
-	Digest    string `json:"digest"`
-	SizeBytes int64  `json:"sizeBytes"`
-	FileName  string `json:"fileName"`
-}
+type Descriptor = payloadbundle.Descriptor
 
 type Signature struct {
 	Type   string `json:"type"`
@@ -141,42 +136,22 @@ type ImageReference struct {
 }
 
 func ParseImageReference(value string) (ImageReference, error) {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.Contains(value, "://") {
-		return ImageReference{}, fmt.Errorf("%w: image reference must be REGISTRY/REPOSITORY:TAG with an optional @sha256 digest", ErrInvalidBundle)
+	ref, err := payloadbundle.ParseReference(value)
+	if err != nil {
+		return ImageReference{}, fmt.Errorf("%w: %v", ErrInvalidBundle, err)
 	}
-	nameAndTag, manifestDigest, hasDigest := strings.Cut(value, "@")
-	if hasDigest {
-		if strings.Contains(manifestDigest, "@") || validateDigest(manifestDigest) != nil {
-			return ImageReference{}, fmt.Errorf("%w: image reference manifest digest is invalid", ErrInvalidBundle)
-		}
-	}
-	lastSlash := strings.LastIndex(nameAndTag, "/")
-	lastColon := strings.LastIndex(nameAndTag, ":")
-	if lastSlash <= 0 || lastColon <= lastSlash+1 || lastColon == len(nameAndTag)-1 {
-		return ImageReference{}, fmt.Errorf("%w: image reference must include a registry, repository, and tag", ErrInvalidBundle)
-	}
-	repository := nameAndTag[:lastColon]
-	tag := nameAndTag[lastColon+1:]
-	parts := strings.SplitN(repository, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, "?#") {
-		return ImageReference{}, fmt.Errorf("%w: image reference repository is invalid", ErrInvalidBundle)
-	}
-	match := artifactVersionPattern.FindStringSubmatch(tag)
+	match := artifactVersionPattern.FindStringSubmatch(ref.Tag)
 	if match == nil {
-		return ImageReference{}, fmt.Errorf("%w: image tag %q must look like v1.36.0-katl.1", ErrInvalidBundle, tag)
-	}
-	if _, err := remote.NewRepository(repository); err != nil {
-		return ImageReference{}, fmt.Errorf("%w: image repository is invalid: %v", ErrInvalidBundle, err)
+		return ImageReference{}, fmt.Errorf("%w: image tag %q must look like v1.36.0-katl.1", ErrInvalidBundle, ref.Tag)
 	}
 	return ImageReference{
-		Value:           value,
-		Repository:      repository,
-		Tag:             tag,
-		ManifestDigest:  manifestDigest,
+		Value:           ref.Value,
+		Repository:      ref.Repository,
+		Tag:             ref.Tag,
+		ManifestDigest:  ref.ManifestDigest,
 		PayloadVersion:  "v" + match[1],
-		ArtifactVersion: tag,
-		Source:          "https://" + parts[0] + "/v2/" + parts[1],
+		ArtifactVersion: ref.Tag,
+		Source:          ref.Source,
 	}, nil
 }
 
@@ -338,32 +313,22 @@ func registryRepository(source string, client *http.Client) (ociRepository, bool
 }
 
 func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository ociRepository, identifier, expectedBundleDigest, expectedManifestDigest, expectedArtifactVersion string) (Staged, error) {
-	manifestDescriptor, err := repository.Resolve(ctx, identifier)
+	fetched, err := payloadbundle.FetchTargetManifest(ctx, repository, identifier, payloadbundle.Reference{
+		Value:          request.Ref,
+		ManifestDigest: expectedManifestDigest,
+	}, bundleArtifactType, bundleMediaType)
 	if err != nil {
-		return Staged{}, fmt.Errorf("resolve Kubernetes payload OCI reference %s from %s: %w", identifier, inventory.Redact(request.Source), err)
+		return Staged{}, fmt.Errorf("fetch Kubernetes payload OCI bundle %s: %w", inventory.Redact(request.Ref), err)
 	}
-	if expectedManifestDigest != "" && manifestDescriptor.Digest.String() != expectedManifestDigest {
+	if expectedManifestDigest != "" && fetched.ManifestDigest != expectedManifestDigest {
 		return Staged{}, fmt.Errorf("%w: resolved OCI manifest digest does not match image reference", ErrInvalidBundle)
 	}
-	manifestBytes, err := content.FetchAll(ctx, repository, manifestDescriptor)
-	if err != nil {
-		return Staged{}, fmt.Errorf("fetch Kubernetes payload OCI manifest from %s: %w", inventory.Redact(request.Source), err)
-	}
-	var manifest ocispec.Manifest
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return Staged{}, fmt.Errorf("%w: decode Kubernetes payload OCI manifest: %v", ErrInvalidBundle, err)
-	}
-	if manifest.SchemaVersion != 2 || manifest.MediaType != ocispec.MediaTypeImageManifest || manifest.ArtifactType != bundleArtifactType {
-		return Staged{}, fmt.Errorf("%w: invalid Kubernetes payload OCI manifest identity", ErrInvalidBundle)
-	}
-	if manifest.Config.MediaType != bundleMediaType || (expectedBundleDigest != "" && manifest.Config.Digest.String() != expectedBundleDigest) {
+	manifest := fetched.Manifest
+	if expectedBundleDigest != "" && manifest.Config.Digest.String() != expectedBundleDigest {
 		return Staged{}, fmt.Errorf("%w: OCI config does not match pinned bundle manifest digest", ErrInvalidBundle)
 	}
 	ref.BundleDigest = manifest.Config.Digest.String()
-	bundleBytes, err := content.FetchAll(ctx, repository, manifest.Config)
-	if err != nil {
-		return Staged{}, fmt.Errorf("fetch Kubernetes payload bundle config from %s: %w", inventory.Redact(request.Source), err)
-	}
+	bundleBytes := fetched.Config
 	var bundle Bundle
 	if err := json.Unmarshal(bundleBytes, &bundle); err != nil {
 		return Staged{}, fmt.Errorf("%w: decode bundle manifest: %v", ErrInvalidBundle, err)
@@ -405,38 +370,47 @@ func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository 
 	}
 	expected := []Descriptor{*payload, *metadata, *provenance, *catalog}
 	if len(manifest.Layers) != len(expected) {
-		return Staged{}, fmt.Errorf("%w: OCI manifest has %d layers, want %d bundle descriptors", ErrInvalidBundle, len(manifest.Layers), len(expected))
+		return Staged{}, fmt.Errorf("%w: OCI manifest has %d layers, want %d", ErrInvalidBundle, len(manifest.Layers), len(expected))
 	}
-	payloadLayer, err := matchingOCILayer(manifest.Layers, *payload)
-	if err != nil {
-		return Staged{}, err
+	if err := payloadbundle.VerifyDescriptors(manifest, expected); err != nil {
+		return Staged{}, fmt.Errorf("%w: %v", ErrInvalidBundle, err)
 	}
-	fetched := make(map[string][]byte, len(expected)-1)
-	for _, descriptor := range expected {
-		if descriptor.Role == sysextRole {
-			continue
-		}
+	fetchedContent := make(map[string][]byte, len(expected)-1)
+	for _, descriptor := range []Descriptor{*metadata, *provenance, *catalog} {
 		layer, err := matchingOCILayer(manifest.Layers, descriptor)
 		if err != nil {
 			return Staged{}, err
 		}
-		data, err := fetchOCIContent(ctx, repository, layer)
+		data, err := payloadbundle.ReadContent(ctx, repository, layer)
 		if err != nil {
 			return Staged{}, fmt.Errorf("fetch OCI layer for descriptor %s from %s: %w", descriptor.Role, inventory.Redact(request.Source), err)
 		}
-		fetched[descriptor.Role] = data
+		fetchedContent[descriptor.Role] = data
 	}
-	if err := validateSysextMetadata(fetched[metadataRole], bundle, *payload, request); err != nil {
+	if err := validateSysextMetadata(fetchedContent[metadataRole], bundle, *payload, request); err != nil {
 		return Staged{}, err
 	}
-	if err := validatePackageProvenance(fetched[provenanceRole], bundle); err != nil {
+	if err := validatePackageProvenance(fetchedContent[provenanceRole], bundle); err != nil {
 		return Staged{}, err
 	}
-	if err := validateCatalogFragment(fetched[catalogRole], bundle, entry, *payload); err != nil {
+	if err := validateCatalogFragment(fetchedContent[catalogRole], bundle, entry, *payload); err != nil {
 		return Staged{}, err
 	}
-	return stage(request, bundle, bundleBytes, fetched[metadataRole], fetched[provenanceRole], fetched[catalogRole], *payload, func(path string) error {
-		return fetchOCIContentToFile(ctx, repository, payloadLayer, path)
+	return stage(request, bundle, bundleBytes, fetchedContent[metadataRole], fetchedContent[provenanceRole], fetchedContent[catalogRole], *payload, func(path string) error {
+		layer, err := matchingOCILayer(manifest.Layers, *payload)
+		if err != nil {
+			return err
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			return err
+		}
+		_, copyErr := payloadbundle.CopyContent(ctx, repository, layer, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
 }
 

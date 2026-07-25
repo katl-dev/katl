@@ -1,0 +1,21 @@
+[Unit]
+Description=BIRD Internet Routing Daemon
+Documentation=man:bird(8)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+RuntimeDirectory=bird
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/bird -f -c /etc/bird.conf
+ExecReload=/usr/bin/birdc configure
+Restart=on-failure
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

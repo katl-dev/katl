@@ -29,6 +29,8 @@ type StateAssets struct {
 	GenerationActivate string
 	HostConfigPrepare  string
 	HostConfigVerify   string
+	ExtensionReload    string
+	ExtensionActivate  string
 	KubeadmActivate    string
 	KubeadmReadyTarget string
 	BootCompleteTarget string
@@ -103,6 +105,8 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		GenerationActivate: renderGenerationActivateService(),
 		HostConfigPrepare:  renderHostConfigPrepareService(),
 		HostConfigVerify:   renderHostConfigVerifyService(),
+		ExtensionReload:    renderSystemExtensionReloadService(),
+		ExtensionActivate:  renderSystemExtensionActivateService(),
 		KubeadmActivate:    renderKubeadmActivateService(),
 		KubeadmReadyTarget: renderKubeadmReadyTarget(),
 		BootCompleteTarget: renderBootCompleteTarget(),
@@ -206,6 +210,44 @@ func renderHostConfigVerifyService() string {
 	}, "\n")
 }
 
+func renderSystemExtensionReloadService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Reload systemd after merging system extension configuration",
+		"Documentation=man:systemd-sysext(8) man:systemd-confext(8)",
+		"Requires=systemd-sysext.service systemd-confext.service",
+		"After=systemd-sysext.service systemd-confext.service",
+		"Before=katl-system-extensions-activate.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"RemainAfterExit=yes",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-system-extensions-reload",
+		"ExecStart=/usr/bin/systemctl daemon-reload",
+		"",
+	}, "\n")
+}
+
+func renderSystemExtensionActivateService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Activate configured system extension units",
+		"Documentation=man:systemd.service(5)",
+		"Requires=katl-system-extensions-reload.service katl-host-config-verify.service",
+		"After=katl-system-extensions-reload.service katl-host-config-verify.service",
+		"Before=katl-boot-health.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"RemainAfterExit=yes",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-system-extensions-activate",
+		"ExecStart=/usr/bin/true",
+		"",
+	}, "\n")
+}
+
 func renderKubeadmReadyTarget() string {
 	return strings.Join([]string{
 		"[Unit]",
@@ -262,8 +304,8 @@ func renderBootHealthService() string {
 		"[Unit]",
 		"Description=Record successful Katl boot health",
 		"Documentation=man:systemd.service(5)",
-		"Requires=katl-runtime-handoff-status.service katl-host-config-verify.service katlc-agent.service systemd-networkd.service sshd.service",
-		"After=katl-runtime-handoff-status.service katl-host-config-verify.service katlc-agent.service systemd-networkd.service sshd.service",
+		"Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katlc-agent.service systemd-networkd.service sshd.service",
+		"After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katlc-agent.service systemd-networkd.service sshd.service",
 		"Before=katl-boot-complete.target",
 		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
@@ -434,6 +476,12 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-host-config-verify.service", assets.HostConfigVerify, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-system-extensions-reload.service", assets.ExtensionReload, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-system-extensions-activate.service", assets.ExtensionActivate, 0o644); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-kubeadm-activate.service", assets.KubeadmActivate, 0o644); err != nil {

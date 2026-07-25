@@ -1,0 +1,4 @@
+ID=katlos
+SYSEXT_LEVEL=katl-runtime-1
+SYSEXT_ID=katl-bird
+ARCHITECTURE=x86-64

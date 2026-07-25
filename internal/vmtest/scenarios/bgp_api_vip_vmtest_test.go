@@ -840,7 +840,7 @@ func configureFabricRouter(ctx context.Context, router vmtest.RunningInstalledRu
 	}
 	if err := assertGuestCommand(ctx, router, []string{
 		"systemd-run", "--quiet", "--collect", "--unit=katl-vmtest-fabric-router.service", "--property=Restart=on-failure",
-		"/usr/bin/bird", "-f", "-c", path, "-s", "/run/katl-fabric-router/bird.ctl",
+		"/usr/lib/katl/endpoint-routing/bird", "-f", "-c", path, "-s", "/run/katl-fabric-router/bird.ctl",
 	}); err != nil {
 		return fmt.Errorf("start fabric BIRD: %w", err)
 	}
@@ -868,7 +868,8 @@ func activateEndpointConfext(ctx context.Context, node vmtest.RunningInstalledRu
 	)
 	for _, file := range plan.Files {
 		switch file.Path {
-		case bgpapivip.ConfigPath, bgpapivip.BirdConfigPath, bgpapivip.AdvertisementEnabledPath:
+		case bgpapivip.ConfigPath, bgpapivip.BirdConfigPath, bgpapivip.AdvertisementEnabledPath,
+			bgpapivip.AppDropInPath, bgpapivip.BirdDropInPath:
 			target := root + file.Path
 			if err := installStagedNodeFile(ctx, node, stagingRoot, target, []byte(file.Content), uint32(file.Mode.Perm()), false); err != nil {
 				return err
@@ -929,7 +930,7 @@ func waitForRouterRouteVia(ctx context.Context, router vmtest.RunningInstalledRu
 	for time.Now().Before(deadline) {
 		result, err := runNodeCommand(ctx, router, []string{
 			"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
-			"/usr/bin/birdc", "-s", "/run/katl-fabric-router/bird.ctl", "show", "route", "for", prefix, "all",
+			"/usr/lib/katl/endpoint-routing/birdc", "-s", "/run/katl-fabric-router/bird.ctl", "show", "route", "for", prefix, "all",
 		}, 32<<10)
 		if err == nil {
 			last = string(result.Stdout) + string(result.Stderr)

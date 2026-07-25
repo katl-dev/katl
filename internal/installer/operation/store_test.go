@@ -886,6 +886,17 @@ func TestStoreRejectsIncompleteOperationRecord(t *testing.T) {
 	}
 }
 
+func TestValidateConfigApplyRequestRejectsPersistedPathTraversal(t *testing.T) {
+	err := validateConfigApplyRequest(ConfigApplyRequest{
+		ApplyMode:        "next-boot",
+		ConfigYAMLPath:   "/var/lib/katl/artifacts/config-apply/../../outside.yaml",
+		ConfigYAMLSHA256: strings.Repeat("a", 64),
+	})
+	if err == nil || !strings.Contains(err.Error(), "must be under /var/lib/katl/artifacts/config-apply") {
+		t.Fatalf("validateConfigApplyRequest() error = %v, want contained-path refusal", err)
+	}
+}
+
 func TestStoreRejectsKubernetesSysextUpdateBodyMismatch(t *testing.T) {
 	tests := []struct {
 		name    string

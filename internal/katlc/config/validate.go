@@ -123,6 +123,9 @@ func validateDocument(root *yaml.Node, options Options, result *Result) {
 			validateOverlayMap(pair.value, pair.path, options, result)
 		case "kubeadmConfigs":
 			validateInlineKubeadmConfigs(pair.value, pair.path, result)
+		case "systemExtensionPayloads":
+			// The compiler embeds verified payload bytes here. KnownFields
+			// decoding and the typed bundle validator enforce its structure.
 		default:
 			result.add(unsupportedCode(pair.key), pair.path, "configuration domain is not supported")
 		}
@@ -216,6 +219,9 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 			validateNetworkd(pair.value, pair.path, result)
 		case "hostConfiguration":
 			validateHostConfiguration(pair.value, pair.path, result)
+		case "systemExtensions":
+			// KnownFields decoding and manifest validation enforce the typed
+			// system extension contract after the safety envelope is accepted.
 		case "kubernetes":
 			validateKubernetes(pair.value, pair.path, options, result)
 		case "controlPlaneEndpoint":

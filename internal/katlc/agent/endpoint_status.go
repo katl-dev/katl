@@ -126,7 +126,8 @@ func endpointProductState(config bgpapivip.Config, live bgpapivip.Status, peers 
 	if live.RecoveryRequired || strings.TrimSpace(live.FailureReason) != "" {
 		return "failed"
 	}
-	if !live.VIPInterfaceReady || !live.BirdProcessActive || !live.BirdControlSocketReady {
+	if !live.VIPInterfaceReady ||
+		(config.Routing.Mode != "vip-only" && (!live.BirdProcessActive || !live.BirdControlSocketReady)) {
 		return "waiting-for-network"
 	}
 	if strings.Contains(strings.ToLower(live.HealthFailure), "kubeadm api ca") {

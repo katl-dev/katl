@@ -38,6 +38,10 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 	if err != nil {
 		return NodeLayer{}, err
 	}
+	out.SystemExtensions, err = mergeSystemExtensions(out.SystemExtensions, next.SystemExtensions)
+	if err != nil {
+		return NodeLayer{}, err
+	}
 	if next.Install.TargetDisk != nil {
 		disk := *next.Install.TargetDisk
 		out.Install.TargetDisk = &disk
@@ -69,6 +73,43 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 		out.Bootstrap.Address = strings.TrimSpace(next.Bootstrap.Address)
 	}
 	out.Bootstrap.Access = mergeAccess(out.Bootstrap.Access, next.Bootstrap.Access)
+	return out, nil
+}
+
+func mergeSystemExtensions(base, next []manifest.SystemExtension) ([]manifest.SystemExtension, error) {
+	entries := make(map[string]manifest.SystemExtension, len(base)+len(next))
+	for _, extension := range base {
+		if strings.TrimSpace(extension.State) == manifest.SystemExtensionAbsent {
+			continue
+		}
+		extension.State = manifest.SystemExtensionPresent
+		entries[extension.Name] = extension
+	}
+	seenNext := make(map[string]struct{}, len(next))
+	for _, extension := range next {
+		if _, ok := seenNext[extension.Name]; ok {
+			return nil, fmt.Errorf("systemExtensions contains duplicate name %q", extension.Name)
+		}
+		seenNext[extension.Name] = struct{}{}
+		if strings.TrimSpace(extension.State) == manifest.SystemExtensionAbsent {
+			delete(entries, extension.Name)
+			continue
+		}
+		extension.State = manifest.SystemExtensionPresent
+		entries[extension.Name] = extension
+	}
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]manifest.SystemExtension, 0, len(names))
+	for _, name := range names {
+		out = append(out, entries[name])
+	}
+	if err := manifest.ValidateSystemExtensions(out, false); err != nil {
+		return nil, fmt.Errorf("systemExtensions: %w", err)
+	}
 	return out, nil
 }
 

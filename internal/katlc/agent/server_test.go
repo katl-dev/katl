@@ -1407,6 +1407,21 @@ func TestValidateConfigPlansAndDigestStagesGeneration(t *testing.T) {
 	if accepted.RequestDigest != result.RequestDigest {
 		t.Fatalf("accepted digest = %q, want validation digest %q", accepted.RequestDigest, result.RequestDigest)
 	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ConfigApplyRequest == nil || record.ConfigApplyRequest.ConfigYAML != "" ||
+		record.ConfigApplyRequest.ConfigYAMLPath == "" || record.ConfigApplyRequest.ConfigYAMLSHA256 == "" {
+		t.Fatalf("config apply request = %+v, want persisted input metadata without inline YAML", record.ConfigApplyRequest)
+	}
+	persisted, err := readConfigApplyRequest(server.Root, *record.ConfigApplyRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted != strings.TrimSpace(configApplyYAML(generation.ApplyModeNextBoot)) {
+		t.Fatalf("persisted config apply input did not round trip")
+	}
 }
 
 func TestValidateConfigAutoLiveDigestMatchesConcreteSubmit(t *testing.T) {

@@ -51,15 +51,16 @@ func run(args []string, stderr io.Writer) error {
 	if err != nil || interval <= 0 {
 		return fmt.Errorf("invalid generated health interval %q", config.Health.Interval)
 	}
-	client := bgpapivip.CommandBirdClient{Config: config}
 	owner := bgpapivip.NetlinkVIPOwner{}
 	controller := bgpapivip.Controller{
 		Config:            config,
 		AppPayloadVersion: version,
-		Bird:              client,
 		Interface:         bgpapivip.LinuxInterfaceChecker{},
 		Owner:             owner,
 		Writer:            bgpapivip.FileStatusWriter{LivePath: *statusPath},
+	}
+	if config.Routing.Mode == "bgp" {
+		controller.Bird = bgpapivip.CommandBirdClient{Config: config}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

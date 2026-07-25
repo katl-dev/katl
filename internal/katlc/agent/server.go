@@ -65,41 +65,43 @@ type Dispatcher interface {
 type Server struct {
 	agentapi.UnimplementedKatlcAgentServer
 
-	Root                    string
-	Store                   operation.Store
-	MachineID               string
-	AgentStartID            string
-	StartedAt               time.Time
-	SupportedOperationKinds []string
-	Dispatcher              Dispatcher
-	RunJoinMaterial         ToolRunner
-	RunEndpointLifecycle    ToolRunner
-	RunKubernetesStatus     ToolRunner
-	RunEtcd                 ToolRunner
-	RunReboot               ToolRunner
-	RunShutdown             ToolRunner
-	Now                     func() time.Time
-	OperationID             func(string, time.Time) (string, error)
-	submitMu                sync.Mutex
+	Root                     string
+	Store                    operation.Store
+	MachineID                string
+	AgentStartID             string
+	StartedAt                time.Time
+	SupportedOperationKinds  []string
+	Dispatcher               Dispatcher
+	RunJoinMaterial          ToolRunner
+	RunEndpointLifecycle     ToolRunner
+	RunKubernetesStatus      ToolRunner
+	RunSystemExtensionStatus ToolRunner
+	RunEtcd                  ToolRunner
+	RunReboot                ToolRunner
+	RunShutdown              ToolRunner
+	Now                      func() time.Time
+	OperationID              func(string, time.Time) (string, error)
+	submitMu                 sync.Mutex
 }
 
 func NewServer(root string, store operation.Store) *Server {
 	now := time.Now().UTC()
 	startID, _ := randomID("agent")
 	return &Server{
-		Root:                    strings.TrimSpace(root),
-		Store:                   store,
-		AgentStartID:            startID,
-		StartedAt:               now,
-		SupportedOperationKinds: append([]string(nil), bootstrapOperationKinds...),
-		RunJoinMaterial:         runChildProcess,
-		RunEndpointLifecycle:    runChildProcess,
-		RunKubernetesStatus:     runChildProcess,
-		RunEtcd:                 runChildProcess,
-		RunReboot:               runChildProcess,
-		RunShutdown:             runChildProcess,
-		Now:                     func() time.Time { return time.Now().UTC() },
-		OperationID:             defaultOperationID,
+		Root:                     strings.TrimSpace(root),
+		Store:                    store,
+		AgentStartID:             startID,
+		StartedAt:                now,
+		SupportedOperationKinds:  append([]string(nil), bootstrapOperationKinds...),
+		RunJoinMaterial:          runChildProcess,
+		RunEndpointLifecycle:     runChildProcess,
+		RunKubernetesStatus:      runChildProcess,
+		RunSystemExtensionStatus: runChildProcess,
+		RunEtcd:                  runChildProcess,
+		RunReboot:                runChildProcess,
+		RunShutdown:              runChildProcess,
+		Now:                      func() time.Time { return time.Now().UTC() },
+		OperationID:              defaultOperationID,
 	}
 }
 
@@ -224,6 +226,10 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 			bootTargetGenerationID = selected
 		}
 	}
+	systemExtensions, err := nodeSystemExtensionStatus(ctx, s.Root, currentGenerationID, bootTargetGenerationID, s.RunSystemExtensionStatus)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read system extension status: %v", err)
+	}
 	return &agentapi.NodeStatus{
 		ApiVersion:              APIVersion,
 		MachineId:               machineID,
@@ -237,6 +243,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		BootTargetGenerationId:  bootTargetGenerationID,
 		ControlPlaneEndpoint:    endpointStatus,
 		Kubernetes:              kubernetesStatus,
+		SystemExtensions:        systemExtensions,
 	}, nil
 }
 
