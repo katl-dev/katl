@@ -4,6 +4,10 @@ Status: accepted contract for optional node applications. Concrete applications
 remain unsupported until their app-specific bundle, configuration, operation,
 status, and VM-test Beads are completed.
 
+This contract governs Katl-supported applications. Opaque user-owned system
+extensions selected through ClusterConfig `systemExtensions` use ADR-012 and
+do not require an app-specific Katl capability contract.
+
 Katl can deliver optional node applications as systemd sysext payloads selected
 by Katl generations. This contract is for host-side node applications such as a
 BIRD routing helper or a BGP API VIP helper. It is not the Kubernetes payload

@@ -2,6 +2,10 @@
 
 Status: accepted format for reusable optional node extension bundles.
 
+This format governs Katl-supported node applications. Opaque user-owned
+sysext and confext bundles selected through ClusterConfig `systemExtensions`
+use the mechanical bundle and generation contract in ADR-012 instead.
+
 Katl node extensions are optional host-side application payloads selected by
 Katl generations. Examples include the future BIRD routing helper and BGP API
 VIP helper. This format defines how those extension payloads are packaged,
@@ -366,8 +370,13 @@ payload selected by a valid generation.
 
 ## User-Provided Extensions
 
-User-provided extensions are allowed only through the same bundle contract.
-They are not a raw sysext escape hatch. A user-provided bundle must:
+This section applies when a user provides an implementation of a
+Katl-supported application. User-owned software which Katl does not understand
+uses ADR-012 instead.
+
+User-provided implementations of Katl applications are allowed only through
+the same bundle contract. They are not a raw sysext escape hatch. Such a bundle
+must:
 
 ```text
 use the NodeExtensionBundle manifest schema
