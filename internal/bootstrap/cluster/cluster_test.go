@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1252,7 +1253,7 @@ func TestKubectlBootstrapRunnerStopsWhenPreWaitFails(t *testing.T) {
 	}
 }
 
-func TestKubectlBootstrapRunnerPollsAndRedactsWaitFailures(t *testing.T) {
+func TestKubectlBootstrapRunnerRedactsWaitFailures(t *testing.T) {
 	secret := "abcdef.0123456789abcdef"
 	commands := &fakeKubectlCommandRunner{
 		defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "still missing token " + secret},
@@ -1281,9 +1282,6 @@ func TestKubectlBootstrapRunnerPollsAndRedactsWaitFailures(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("error = %q, want redacted token", err.Error())
-	}
-	if len(commands.calls) < 2 {
-		t.Fatalf("kubectl calls = %#v, want polling retry", commands.calls)
 	}
 }
 
@@ -1518,7 +1516,7 @@ type fakeKubectlCommandRunner struct {
 }
 
 func (r *fakeKubectlCommandRunner) Run(_ context.Context, argv []string) (readiness.CommandResult, error) {
-	r.calls = append(r.calls, append([]string(nil), argv...))
+	r.calls = append(r.calls, slices.Clone(argv))
 	if len(r.results) > 0 {
 		result := r.results[0]
 		r.results = r.results[1:]

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
 
@@ -51,6 +52,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	manifestTag, err := payloadbundle.ManifestDigestTag(packed.ManifestDigest)
+	if err != nil {
+		return err
+	}
 
 	fmt.Fprintf(stdout, "artifact: %s\n", staged.ArtifactPath)
 	fmt.Fprintf(stdout, "checksum: %s\n", staged.ChecksumPath)
@@ -61,6 +66,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "bundle-index: %s\n", staged.IndexPath)
 	fmt.Fprintf(stdout, "bundle-catalog: %s\n", staged.BundleCatalogPath)
 	fmt.Fprintf(stdout, "oci-manifest-digest: %s\n", packed.ManifestDigest)
+	fmt.Fprintf(stdout, "oci-manifest-tag: %s\n", manifestTag)
 	for _, reference := range publishRefs {
 		published, err := sysextcatalog.PublishStaged(context.Background(), staged, reference, annotations)
 		if err != nil {

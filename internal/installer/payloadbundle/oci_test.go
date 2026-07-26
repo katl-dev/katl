@@ -62,6 +62,20 @@ func TestPackAcceptsPayloadLargerThanORASReadAllLimit(t *testing.T) {
 	}
 }
 
+func TestManifestDigestTagDoesNotUseOCIReferrersFallbackNamespace(t *testing.T) {
+	manifestDigest := "sha256:" + strings.Repeat("a", 64)
+	tag, err := ManifestDigestTag(manifestDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag != "manifest-sha256-"+strings.Repeat("a", 64) {
+		t.Fatalf("manifest digest tag = %q", tag)
+	}
+	if strings.HasPrefix(tag, "sha256-") {
+		t.Fatalf("manifest digest tag %q collides with the OCI referrers fallback namespace", tag)
+	}
+}
+
 func TestVerifyDescriptorsRequiresExactLayerSet(t *testing.T) {
 	data := []byte("payload")
 	blob := DescribeBytes(data, "systemd-sysext", "application/vnd.katl.sysext.raw.v1", "routing.raw")

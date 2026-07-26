@@ -44,6 +44,7 @@ func TestRunPrintsBundleOutputs(t *testing.T) {
 		"bundle-index: " + filepath.Join(outputDir, "index.json"),
 		"bundle-catalog: " + filepath.Join(outputDir, "catalog", "v1.36.json"),
 		"oci-manifest-digest: sha256:",
+		"oci-manifest-tag: manifest-sha256-",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
