@@ -204,6 +204,26 @@ would override its root, immutable-runtime, generation identity, or recovery
 policy. Image-required and Katl-owned arguments remain internal and are always
 carried alongside the configured additions.
 
+Additional whole disks may be configured under a node's
+`install.extraDisks`. The supported and journey-verified filesystems are
+`ext4`, `xfs`, and `btrfs`. Katl derives the mount location as
+`/var/lib/katl/mnt/<name>`; operators cannot choose another path. Set
+`wipe: true` to authorize formatting that selected disk. With `wipe: false`,
+the disk must already contain the requested filesystem and Katl preserves its
+data:
+
+```yaml
+install:
+  targetDisk:
+    byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
+  extraDisks:
+    - name: data
+      selector:
+        byID: /dev/disk/by-id/ata-KATL_WORKER_1_DATA
+      filesystem: btrfs
+      wipe: true
+```
+
 For a routed endpoint advertised by Katl, add the VIP and fabric peers. Katl
 then installs and runs the endpoint advertiser only on control-plane nodes;
 external endpoints and workers do not run BIRD:

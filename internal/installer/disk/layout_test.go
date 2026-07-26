@@ -198,6 +198,21 @@ func TestPlanDiskLayoutReusesOnlyMatchingExtraDiskFilesystem(t *testing.T) {
 	}
 }
 
+func TestVerifyInstallerFilesystemPackages(t *testing.T) {
+	packages := map[string]string{
+		"e2fsprogs": "1.x86_64",
+		"xfsprogs":  "1.x86_64",
+	}
+	err := VerifyInstallerFilesystemPackages(packages)
+	if err == nil || !strings.Contains(err.Error(), "btrfs") || !strings.Contains(err.Error(), "btrfs-progs") {
+		t.Fatalf("VerifyInstallerFilesystemPackages() error = %v", err)
+	}
+	packages["btrfs-progs"] = "1.x86_64"
+	if err := VerifyInstallerFilesystemPackages(packages); err != nil {
+		t.Fatalf("VerifyInstallerFilesystemPackages() error = %v", err)
+	}
+}
+
 func assertPartition(t *testing.T, plan DiskLayoutPlan, name, label string, sizeMiB uint64, remaining bool) PartitionPlan {
 	t.Helper()
 

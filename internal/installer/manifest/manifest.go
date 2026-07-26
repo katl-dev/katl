@@ -384,11 +384,10 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 		if err := validateDiskSelector(fmt.Sprintf("install.extraDisks[%d].selector", i), extra.Selector); err != nil {
 			return err
 		}
-		switch extra.Filesystem {
-		case "ext4", "xfs":
-		case "":
+		switch {
+		case extra.Filesystem == "":
 			return fmt.Errorf("install.extraDisks[%d].filesystem is required", i)
-		default:
+		case !disk.IsSupportedExtraDiskFilesystem(extra.Filesystem):
 			return fmt.Errorf("install.extraDisks[%d].filesystem %q is unsupported", i, extra.Filesystem)
 		}
 	}

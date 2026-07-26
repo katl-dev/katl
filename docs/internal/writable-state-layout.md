@@ -30,7 +30,8 @@ generation state.
 contain the requested filesystem, and Katl mounts it without wiping or
 formatting it. A blank disk or filesystem mismatch fails planning with guidance
 to set `wipe: true` if reformatting is intended. `wipe: true` wipes and formats
-only the selected extra disk.
+only the selected extra disk. The supported extra-disk filesystems are `ext4`,
+`xfs`, and `btrfs`.
 
 ## Etcd Data Placement
 
