@@ -477,19 +477,27 @@ Persisted records contain set names, paths, content digests, classifications,
 actions, results, and rollback targets. Routine status does not echo file
 content, source bytes, or low-level systemd invocation identifiers.
 
-### Bounded tmpfiles and containerd handlers
+### Typed sysfs and containerd handlers
 
-Files directly below `/etc/tmpfiles.d` receive a narrower content contract than
-the full native language. Operator rules may use only exact `w` entries for
-normalized `/sys/...` paths. Mode, user, group, and age remain `-`; targets and
-arguments may not contain globs, specifiers, or escapes. Katl rejects duplicate
-write targets across sets.
+Sysfs writes are typed intent rather than native tmpfiles passthrough:
 
-These rules are next-boot-only. After the selected confext is active, Katl runs
-`systemd-tmpfiles --create` for each operator file and reads every target back.
+```yaml
+hostConfiguration:
+  sysfs:
+    - name: /sys/module/printk/parameters/time
+      value: N
+```
+
+Names must be unique normalized `/sys/...` paths and values must be non-empty
+single-line UTF-8 values without leading or trailing whitespace. A node-level
+list replaces inherited defaults, including an explicit empty list.
+Operator-authored `/etc/tmpfiles.d` files are rejected.
+
+Sysfs changes are next-boot-only. Katl renders a Katl-owned tmpfiles rule in the
+selected confext, runs `systemd-tmpfiles --create`, and reads every target back.
 Boot health fails when application or verification fails. This provides useful
-sysfs configuration without allowing tmpfiles delete/create types to bypass the
-host file ownership boundary.
+sysfs configuration without presenting tmpfiles as an operator API or allowing
+delete/create types to bypass the host file ownership boundary.
 
 The KatlOS containerd base configuration imports
 `/etc/containerd/conf.d/*.toml`. Operators carry version-compatible TOML files

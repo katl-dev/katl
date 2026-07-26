@@ -27,11 +27,13 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 	notifications := map[string]string{}
 	sysctls := map[string]string{}
 	modules := map[string]struct{}{}
-	tmpfilesPaths := map[string]struct{}{}
-	tmpfilesWrites := map[string]string{}
+	sysfs := map[string]string{}
 	udevPaths := map[string]struct{}{}
 	systemdReload := false
 
+	for _, setting := range config.Sysfs {
+		sysfs[setting.Name] = setting.Value
+	}
 	for _, name := range sortedHostConfigurationSetNames(config.Sets) {
 		set := config.Sets[name]
 		if strings.TrimSpace(set.State) == manifest.HostConfigurationAbsent {
@@ -48,14 +50,6 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 			case strings.HasPrefix(file.Path, "/etc/modules-load.d/") && file.Content != nil:
 				for _, module := range parseModulesLoad(*file.Content) {
 					modules[module] = struct{}{}
-				}
-			case strings.HasPrefix(file.Path, "/etc/tmpfiles.d/") && strings.HasSuffix(file.Path, ".conf") && file.Content != nil:
-				writes, err := manifest.ParseTmpfilesSysfsWrites(*file.Content)
-				if err == nil {
-					tmpfilesPaths[file.Path] = struct{}{}
-					for _, write := range writes {
-						tmpfilesWrites[write.Path] = write.Value
-					}
 				}
 			case strings.HasPrefix(file.Path, "/etc/udev/rules.d/") && strings.HasSuffix(file.Path, ".rules"):
 				udevPaths[file.Path] = struct{}{}
@@ -97,25 +91,23 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 			plan.addCommandWithOutput("sysctl-verify-"+key, "apply-and-verify", "sysctl "+key, sysctls[key], "/usr/sbin/sysctl", "-n", key)
 		}
 	}
-	if prepare {
-		for _, filePath := range sortedKeys(tmpfilesPaths) {
-			plan.addCommand(
-				"tmpfiles-create-"+filepath.Base(filePath),
-				"apply",
-				"tmpfiles "+filePath,
-				"systemd-tmpfiles",
-				"--create",
-				filePath,
-			)
-		}
+	if prepare && len(sysfs) > 0 {
+		plan.addCommand(
+			"sysfs-apply",
+			"apply",
+			"sysfs configuration",
+			"systemd-tmpfiles",
+			"--create",
+			manifest.HostConfigurationSysfsTmpfilesPath,
+		)
 	}
 	if verify {
-		for _, target := range sortedKeys(tmpfilesWrites) {
+		for _, target := range sortedKeys(sysfs) {
 			plan.addCommandWithOutput(
-				"tmpfiles-verify-"+strings.Trim(strings.ReplaceAll(target, "/", "-"), "-"),
+				"sysfs-verify-"+strings.Trim(strings.ReplaceAll(target, "/", "-"), "-"),
 				"apply-and-verify",
 				"sysfs "+target,
-				tmpfilesWrites[target],
+				sysfs[target],
 				"/usr/bin/cat",
 				target,
 			)

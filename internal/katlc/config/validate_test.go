@@ -91,6 +91,10 @@ spec:
             Name=ens3
             [Network]
             DHCP=yes
+    hostConfiguration:
+      sysfs:
+        - name: /sys/module/printk/parameters/time
+          value: N
     kubernetes:
       kubeadm:
         configRef: control-plane

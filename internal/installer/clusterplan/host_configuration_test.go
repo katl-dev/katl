@@ -11,15 +11,21 @@ func TestMergeHostConfigurationReplacesAndRemovesSets(t *testing.T) {
 	defaultForwarding := "net.ipv4.ip_forward = 0\n"
 	nodeForwarding := "net.ipv4.ip_forward = 1\n"
 	udev := `SUBSYSTEM=="usb"` + "\n"
-	base := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
-		"forwarding": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/80-forwarding.conf", Content: &defaultForwarding}}},
-		"remove-me":  {Files: []manifest.HostConfigurationFile{{Path: "/etc/example.conf", Content: &defaultForwarding}}},
-	}}
-	next := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
-		"forwarding": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/90-node-forwarding.conf", Content: &nodeForwarding}}},
-		"remove-me":  {State: manifest.HostConfigurationAbsent},
-		"ups-device": {Files: []manifest.HostConfigurationFile{{Path: "/etc/udev/rules.d/80-ups.rules", Content: &udev}}},
-	}}
+	base := manifest.HostConfiguration{
+		Sysfs: []manifest.HostConfigurationSysfsSetting{{Name: "/sys/example", Value: "default"}},
+		Sets: map[string]manifest.HostConfigurationSet{
+			"forwarding": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/80-forwarding.conf", Content: &defaultForwarding}}},
+			"remove-me":  {Files: []manifest.HostConfigurationFile{{Path: "/etc/example.conf", Content: &defaultForwarding}}},
+		},
+	}
+	next := manifest.HostConfiguration{
+		Sysfs: []manifest.HostConfigurationSysfsSetting{{Name: "/sys/example", Value: "node"}},
+		Sets: map[string]manifest.HostConfigurationSet{
+			"forwarding": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/90-node-forwarding.conf", Content: &nodeForwarding}}},
+			"remove-me":  {State: manifest.HostConfigurationAbsent},
+			"ups-device": {Files: []manifest.HostConfigurationFile{{Path: "/etc/udev/rules.d/80-ups.rules", Content: &udev}}},
+		},
+	}
 	got, err := mergeHostConfiguration(base, next)
 	if err != nil {
 		t.Fatalf("mergeHostConfiguration() error = %v", err)
@@ -36,6 +42,22 @@ func TestMergeHostConfigurationReplacesAndRemovesSets(t *testing.T) {
 	}
 	if forwarding.State != manifest.HostConfigurationPresent || forwarding.Files[0].Mode != 0o644 {
 		t.Fatalf("forwarding defaults = %#v", forwarding)
+	}
+	if len(got.Sysfs) != 1 || got.Sysfs[0].Value != "node" {
+		t.Fatalf("sysfs replacement = %#v", got.Sysfs)
+	}
+}
+
+func TestMergeHostConfigurationClearsInheritedSysfs(t *testing.T) {
+	got, err := mergeHostConfiguration(
+		manifest.HostConfiguration{Sysfs: []manifest.HostConfigurationSysfsSetting{{Name: "/sys/example", Value: "default"}}},
+		manifest.HostConfiguration{Sysfs: []manifest.HostConfigurationSysfsSetting{}},
+	)
+	if err != nil {
+		t.Fatalf("mergeHostConfiguration() error = %v", err)
+	}
+	if got.Sysfs == nil || len(got.Sysfs) != 0 {
+		t.Fatalf("sysfs = %#v, want explicit empty replacement", got.Sysfs)
 	}
 }
 

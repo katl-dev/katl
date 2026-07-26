@@ -45,6 +45,9 @@ func TestBuildArchiveCarriesExternalHostConfigurationIntoNodeMaterial(t *testing
 	writeFile(t, filepath.Join(root, "files", "storage.conf"), "br_netfilter\n")
 	source := strings.Replace(validSourceConfig(), "  defaults:\n", `  defaults:
     hostConfiguration:
+      sysfs:
+        - name: /sys/module/printk/parameters/time
+          value: N
       sets:
         storage-modules:
           files:
@@ -68,14 +71,24 @@ func TestBuildArchiveCarriesExternalHostConfigurationIntoNodeMaterial(t *testing
 	if len(set.Files) != 1 || set.Files[0].Source != "" || set.Files[0].Content == nil || *set.Files[0].Content != "br_netfilter\n" {
 		t.Fatalf("compiled host configuration = %#v", set)
 	}
-	found := false
+	if got := selected.NodeMaterial.InstallManifest.Node.HostConfiguration.Sysfs; len(got) != 1 || got[0].Name != "/sys/module/printk/parameters/time" || got[0].Value != "N" {
+		t.Fatalf("compiled sysfs configuration = %#v", got)
+	}
+	foundModules := false
+	foundSysfs := false
 	for _, file := range selected.NodeMaterial.NativeEtcFiles {
 		if file.Path == "/etc/modules-load.d/80-storage.conf" && file.Content == "br_netfilter\n" {
-			found = true
+			foundModules = true
+		}
+		if file.Path == manifest.HostConfigurationSysfsTmpfilesPath {
+			foundSysfs = true
 		}
 	}
-	if !found {
+	if !foundModules {
 		t.Fatalf("node native files do not contain storage module config: %#v", selected.NodeMaterial.NativeEtcFiles)
+	}
+	if !foundSysfs {
+		t.Fatalf("node native files do not contain generated sysfs config: %#v", selected.NodeMaterial.NativeEtcFiles)
 	}
 }
 

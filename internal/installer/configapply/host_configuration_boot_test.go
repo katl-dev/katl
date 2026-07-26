@@ -55,22 +55,20 @@ func TestInspectHostConfigurationClassifiesLiveSysctlDrift(t *testing.T) {
 }
 
 func TestPlanHostConfigurationActivationAppliesAndVerifiesSysfsWrites(t *testing.T) {
-	tmpfiles := "w /sys/module/printk/parameters/time - - - - N\n"
-	config := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
-		"kernel-tunables": {Files: []manifest.HostConfigurationFile{{
-			Path:    "/etc/tmpfiles.d/80-kernel-tunables.conf",
-			Content: &tmpfiles,
-		}}},
+	config := manifest.HostConfiguration{Sysfs: []manifest.HostConfigurationSysfsSetting{
+		{Name: "/sys/module/printk/parameters/time", Value: "N"},
 	}}
 	prepare := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
-	if len(prepare.Commands) != 1 || strings.Join(prepare.Commands[0].Argv, " ") != "systemd-tmpfiles --create /etc/tmpfiles.d/80-kernel-tunables.conf" {
-		t.Fatalf("prepare commands = %#v", prepare.Commands)
+	if len(prepare.Commands) != 1 || len(prepare.Effects) != 1 ||
+		prepare.Effects[0].Action != "apply" || prepare.Effects[0].Target != "sysfs configuration" {
+		t.Fatalf("prepare plan = %#v", prepare)
 	}
 	verify := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
-	if len(verify.Commands) != 1 ||
-		strings.Join(verify.Commands[0].Argv, " ") != "/usr/bin/cat /sys/module/printk/parameters/time" ||
-		verify.Commands[0].ExpectedStdout != "N" {
-		t.Fatalf("verify commands = %#v", verify.Commands)
+	if len(verify.Commands) != 1 || len(verify.Effects) != 1 ||
+		verify.Commands[0].ExpectedStdout != "N" ||
+		verify.Effects[0].Action != "apply-and-verify" ||
+		verify.Effects[0].Target != "sysfs /sys/module/printk/parameters/time" {
+		t.Fatalf("verify plan = %#v", verify)
 	}
 	if HostConfigurationDriftIsLive(verify.Effects) {
 		t.Fatalf("sysfs drift must require next-boot reconciliation: %#v", verify.Effects)
