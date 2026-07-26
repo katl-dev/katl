@@ -9,12 +9,13 @@ import (
 	"testing"
 )
 
-func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
+func TestBuildKatlOSInstallImageBuildsWithStaleInstallerArtifacts(t *testing.T) {
 	repo := repoRoot(t)
 	workDir := testBuildDir(t, repo, "katlos image ")
 
 	runtimeRoot := writeArtifact(t, workDir, "katl-runtime-root.squashfs", "runtime root")
 	runtimeRootSHA := fileSHA256(t, runtimeRoot)
+	writeChecksum(t, runtimeRoot)
 	writeJSONFile(t, runtimeRoot+".json", map[string]any{
 		"name":             "runtime-root",
 		"kind":             "runtime-root",
@@ -34,6 +35,7 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 	})
 
 	runtimeUKI := writeArtifact(t, workDir, "katl-runtime.efi", "runtime uki")
+	writeChecksum(t, runtimeUKI)
 	writeJSONFile(t, runtimeUKI+".json", map[string]any{
 		"name":             "runtime-uki",
 		"kind":             "runtime-uki",
@@ -65,6 +67,10 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 		"architecture":     "x86_64",
 		"runtimeInterface": "katl-runtime-1",
 	})
+	installerUKI := writeArtifact(t, workDir, "katl-installer.efi", "stale installer uki")
+	installerKernel := writeArtifact(t, workDir, "katl-installer.vmlinuz", "stale installer kernel")
+	installerInitrd := writeArtifact(t, workDir, "katl-installer.initrd", "stale installer initrd")
+	installerPackages := writeArtifact(t, workDir, "katl-installer.packages.tsv", "systemd\t0:259.7-1.fc44.x86_64\n")
 
 	fakeBin := filepath.Join(workDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
@@ -90,6 +96,10 @@ func TestBuildKatlOSInstallImageUsesGoMetadata(t *testing.T) {
 		"KATL_RUNTIME_METADATA="+runtimeRoot+".json",
 		"KATL_RUNTIME_UKI="+runtimeUKI,
 		"KATL_RUNTIME_UKI_METADATA="+runtimeUKI+".json",
+		"KATL_INSTALLER_UKI="+installerUKI,
+		"KATL_INSTALLER_KERNEL="+installerKernel,
+		"KATL_INSTALLER_INITRD="+installerInitrd,
+		"KATL_INSTALLER_PACKAGE_SET="+installerPackages,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build-katlos-install-image failed: %v\n%s", err, out)
