@@ -20,6 +20,7 @@ const (
 type InstallRecordRequest struct {
 	TargetRoot        string
 	Manifest          manifest.Manifest
+	ExtraMounts       []generation.ExtraMountRequest
 	KubeadmConfigs    map[string]kubeadmconfig.Plan
 	KubernetesVersion string
 	Record            generation.Record
@@ -50,6 +51,11 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 	if err != nil {
 		return InstallRecordResult{}, err
 	}
+	extraMountFiles, err := extraMountNativeEtcFiles(request.ExtraMounts)
+	if err != nil {
+		return InstallRecordResult{}, err
+	}
+	files = append(files, extraMountFiles...)
 
 	release, err := confextRelease(request.Record)
 	if err != nil {
@@ -105,6 +111,40 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 		Record:       record,
 		MetadataPath: metadataPath,
 	}, nil
+}
+
+func extraMountNativeEtcFiles(requests []generation.ExtraMountRequest) ([]confext.NativeEtcFile, error) {
+	units, _, err := generation.RenderExtraMounts(requests)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]confext.NativeEtcFile, 0, len(units)+1)
+	unitNames := make([]string, 0, len(units))
+	for _, unit := range units {
+		files = append(files, confext.NativeEtcFile{
+			Path:    filepath.ToSlash(filepath.Join("/etc/systemd/system", unit.Name)),
+			Content: unit.Content,
+			Mode:    0o644,
+			UID:     0,
+			GID:     0,
+		})
+		unitNames = append(unitNames, unit.Name)
+	}
+	if len(unitNames) > 0 {
+		files = append(files, confext.NativeEtcFile{
+			Path: "/etc/systemd/system/katl-extra-disks.target.d/50-mounts.conf",
+			Content: strings.Join([]string{
+				"[Unit]",
+				"Requires=" + strings.Join(unitNames, " "),
+				"After=" + strings.Join(unitNames, " "),
+				"",
+			}, "\n"),
+			Mode: 0o644,
+			UID:  0,
+			GID:  0,
+		})
+	}
+	return files, nil
 }
 
 func confextRelease(record generation.Record) (confext.ExtensionRelease, error) {

@@ -54,7 +54,15 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
       "source": "/dev/nvme0n1p1",
       "target": "/boot",
       "fstype": "vfat",
-      "options": "rw,nosuid,nodev"
+      "options": "rw,nosuid,nodev",
+      "children": [
+        {
+          "source": "/dev/sdb",
+          "target": "/boot/data",
+          "fstype": "ext4",
+          "options": "rw"
+        }
+      ]
     }
   ]
 }`),
@@ -106,6 +114,7 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
 
 	wantMounts := []MountFact{
 		{Source: "/dev/nvme0n1p1", Target: "/boot", Filesystem: "vfat", Options: []string{"rw", "nosuid", "nodev"}},
+		{Source: "/dev/sdb", Target: "/boot/data", Filesystem: "ext4", Options: []string{"rw"}},
 	}
 	if !reflect.DeepEqual(facts.Mounts, wantMounts) {
 		t.Fatalf("mounts = %#v, want %#v", facts.Mounts, wantMounts)

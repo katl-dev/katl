@@ -278,8 +278,8 @@ WantedBy=multi-user.target
 	wantHealth := `[Unit]
 Description=Record successful Katl boot health
 Documentation=man:systemd.service(5)
-Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katlc-agent.service systemd-networkd.service sshd.service
-After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katlc-agent.service systemd-networkd.service sshd.service
+Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-extra-disks-activate.service katlc-agent.service systemd-networkd.service sshd.service
+After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-extra-disks-activate.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
 RequiresMountsFor=/efi /var/lib/katl
 
@@ -454,6 +454,8 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-verify.service"), assets.HostConfigVerify)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-reload.service"), assets.ExtensionReload)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-activate.service"), assets.ExtensionActivate)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-extra-disks.target"), assets.ExtraDisksTarget)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-extra-disks-activate.service"), assets.ExtraDisksActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-activate.service"), assets.KubeadmActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-complete.target"), assets.BootCompleteTarget)

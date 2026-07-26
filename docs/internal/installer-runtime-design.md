@@ -384,10 +384,9 @@ Target disk selectors must prefer stable hardware identity such as
 `/dev/sda` are not valid manifest selectors because they are not stable enough
 for destructive operations.
 
-The schema can validate required fields, value shape, safe enum values, exact
-duplicate arrays, and reserved mount path syntax. `katlos-install` must add
-semantic validation for facts that need hardware discovery or normalized path
-comparison:
+The schema can validate required fields, value shape, safe enum values, and
+exact duplicate arrays. `katlos-install` must add semantic validation for facts
+that need hardware discovery:
 
 ```text
 target disk
@@ -429,12 +428,12 @@ SSH and identity
   metadata with systemd.machine_id=
 
 extra disks
-  selectors must not resolve to the target root disk or its partitions; mount
-  paths must normalize under /srv or /var/lib/katl/extra; duplicate normalized
-  mount paths, parent/child mount conflicts, and reserved paths such as /,
-  /boot, /efi, /usr, /etc, /run, /tmp, /var, /var/lib/kubelet,
-  /var/lib/containerd, and /var/lib/etcd must be rejected; custom mount options
-  are deferred
+  selectors must not resolve to the target root disk or its partitions; names
+  must be unique and Katl derives each mount path as
+  /var/lib/katl/mnt/<name>; wipe=false requires an existing filesystem matching
+  the requested type and preserves it, while wipe=true authorizes formatting
+  only that selected extra disk; custom mount paths and mount options are
+  deferred
 ```
 
 Runtime first-boot seed material may configure:
@@ -467,7 +466,7 @@ loading the install manifest
 selecting the node config
 collecting hardware facts
 validating target disk identity and size
-validating extra disk identity, filesystem, and mount requests
+validating extra disk identity, filesystem, preservation, and mount requests
 verifying artifact signatures and digests
 building an install plan
 persisting install progress when the state partition exists

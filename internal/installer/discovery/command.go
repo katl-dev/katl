@@ -189,27 +189,38 @@ func stringValue(value *string) string {
 
 func parseFindmnt(data []byte) ([]MountFact, error) {
 	var raw struct {
-		Filesystems []struct {
-			Source  string `json:"source"`
-			Target  string `json:"target"`
-			FSType  string `json:"fstype"`
-			Options string `json:"options"`
-		} `json:"filesystems"`
+		Filesystems []findmntFilesystem `json:"filesystems"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("decode findmnt json: %w", err)
 	}
 
-	mounts := make([]MountFact, 0, len(raw.Filesystems))
+	var mounts []MountFact
 	for _, filesystem := range raw.Filesystems {
-		mounts = append(mounts, MountFact{
-			Source:     filesystem.Source,
-			Target:     filesystem.Target,
-			Filesystem: filesystem.FSType,
-			Options:    splitOptions(filesystem.Options),
-		})
+		mounts = appendFindmntFilesystem(mounts, filesystem)
 	}
 	return mounts, nil
+}
+
+type findmntFilesystem struct {
+	Source   string              `json:"source"`
+	Target   string              `json:"target"`
+	FSType   string              `json:"fstype"`
+	Options  string              `json:"options"`
+	Children []findmntFilesystem `json:"children"`
+}
+
+func appendFindmntFilesystem(mounts []MountFact, filesystem findmntFilesystem) []MountFact {
+	mounts = append(mounts, MountFact{
+		Source:     filesystem.Source,
+		Target:     filesystem.Target,
+		Filesystem: filesystem.FSType,
+		Options:    splitOptions(filesystem.Options),
+	})
+	for _, child := range filesystem.Children {
+		mounts = appendFindmntFilesystem(mounts, child)
+	}
+	return mounts
 }
 
 func parseIPLinks(data []byte) ([]NICFact, error) {

@@ -15,6 +15,18 @@ const (
 
 type StateRequest struct {
 	PartitionUUID string
+	ExtraMounts   []ExtraMountRequest
+}
+
+type ExtraMountRequest struct {
+	Source     string
+	Path       string
+	Filesystem string
+}
+
+type ExtraMountUnit struct {
+	Name    string
+	Content string
 }
 
 type KubernetesProjectionRequest struct {
@@ -31,6 +43,8 @@ type StateAssets struct {
 	HostConfigVerify   string
 	ExtensionReload    string
 	ExtensionActivate  string
+	ExtraDisksTarget   string
+	ExtraDisksActivate string
 	KubeadmActivate    string
 	KubeadmReadyTarget string
 	BootCompleteTarget string
@@ -43,6 +57,7 @@ type StateAssets struct {
 	RuntimeStatus      string
 	AgentService       string
 	Tmpfiles           string
+	ExtraMounts        []ExtraMountUnit
 	Dirs               []StateDir
 	MountPoints        []StateDir
 }
@@ -58,6 +73,10 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	kubernetesMount, err := RenderKubernetesProjection(KubernetesProjectionRequest{})
+	if err != nil {
+		return StateAssets{}, err
+	}
+	extraMounts, extraMountPoints, err := RenderExtraMounts(request.ExtraMounts)
 	if err != nil {
 		return StateAssets{}, err
 	}
@@ -107,6 +126,8 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		HostConfigVerify:   renderHostConfigVerifyService(),
 		ExtensionReload:    renderSystemExtensionReloadService(),
 		ExtensionActivate:  renderSystemExtensionActivateService(),
+		ExtraDisksTarget:   renderExtraDisksTarget(),
+		ExtraDisksActivate: renderExtraDisksActivateService(),
 		KubeadmActivate:    renderKubeadmActivateService(),
 		KubeadmReadyTarget: renderKubeadmReadyTarget(),
 		BootCompleteTarget: renderBootCompleteTarget(),
@@ -119,10 +140,78 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		RuntimeStatus:      renderRuntimeStatusService(),
 		AgentService:       renderAgentService(),
 		Tmpfiles:           renderTmpfiles(dirs),
+		ExtraMounts:        extraMounts,
 		Dirs:               dirs,
-		MountPoints:        []StateDir{{Path: KubernetesTarget, Mode: 0o755}},
+		MountPoints:        append([]StateDir{{Path: KubernetesTarget, Mode: 0o755}}, extraMountPoints...),
 	}
 	return assets, nil
+}
+
+func RenderExtraMounts(requests []ExtraMountRequest) ([]ExtraMountUnit, []StateDir, error) {
+	units := make([]ExtraMountUnit, 0, len(requests))
+	mountPoints := make([]StateDir, 0, len(requests))
+	for _, request := range requests {
+		name, err := mountUnitName(request.Path)
+		if err != nil {
+			return nil, nil, err
+		}
+		source := strings.TrimSpace(request.Source)
+		if source == "" || strings.ContainsAny(source, "\r\n\x00") {
+			return nil, nil, fmt.Errorf("extra mount %s source is invalid", request.Path)
+		}
+		filesystem := strings.TrimSpace(request.Filesystem)
+		if filesystem == "" || strings.ContainsAny(filesystem, "\r\n\x00") {
+			return nil, nil, fmt.Errorf("extra mount %s filesystem is invalid", request.Path)
+		}
+		units = append(units, ExtraMountUnit{
+			Name: name,
+			Content: strings.Join([]string{
+				"[Unit]",
+				"Description=Katl managed extra disk",
+				"Documentation=man:systemd.mount(5)",
+				"Requires=var.mount",
+				"After=var.mount",
+				"Before=local-fs.target",
+				"Conflicts=umount.target",
+				"Before=umount.target",
+				"",
+				"[Mount]",
+				"What=" + source,
+				"Where=" + request.Path,
+				"Type=" + filesystem,
+				"Options=rw",
+				"",
+				"[Install]",
+				"WantedBy=local-fs.target",
+				"",
+			}, "\n"),
+		})
+		mountPoints = append(mountPoints, StateDir{Path: request.Path, Mode: 0o755})
+	}
+	return units, mountPoints, nil
+}
+
+func mountUnitName(mountPath string) (string, error) {
+	clean := path.Clean(strings.TrimSpace(mountPath))
+	if clean == "." || clean == "/" || !path.IsAbs(clean) || clean != mountPath || strings.ContainsAny(clean, "\r\n\x00") {
+		return "", fmt.Errorf("extra mount path %q is invalid", mountPath)
+	}
+	var name strings.Builder
+	for _, value := range []byte(strings.TrimPrefix(clean, "/")) {
+		switch {
+		case value == '/':
+			name.WriteByte('-')
+		case value >= 'a' && value <= 'z',
+			value >= 'A' && value <= 'Z',
+			value >= '0' && value <= '9',
+			value == '_',
+			value == '.':
+			name.WriteByte(value)
+		default:
+			fmt.Fprintf(&name, "\\x%02x", value)
+		}
+	}
+	return name.String() + ".mount", nil
 }
 
 func RenderKubernetesProjection(request KubernetesProjectionRequest) (string, error) {
@@ -263,6 +352,34 @@ func renderKubeadmReadyTarget() string {
 	}, "\n")
 }
 
+func renderExtraDisksTarget() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Katl managed extra disks",
+		"Documentation=man:systemd.target(5)",
+		"",
+	}, "\n")
+}
+
+func renderExtraDisksActivateService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Activate Katl managed extra disks",
+		"Documentation=man:systemd.mount(5) man:systemd.target(5)",
+		"Requires=katl-system-extensions-reload.service",
+		"After=katl-system-extensions-reload.service",
+		"Before=katl-boot-health.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"RemainAfterExit=yes",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-extra-disks-activate",
+		"ExecStart=/usr/bin/systemctl start katl-extra-disks.target",
+		"",
+	}, "\n")
+}
+
 func renderKubeadmActivateService() string {
 	return strings.Join([]string{
 		"[Unit]",
@@ -304,8 +421,8 @@ func renderBootHealthService() string {
 		"[Unit]",
 		"Description=Record successful Katl boot health",
 		"Documentation=man:systemd.service(5)",
-		"Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katlc-agent.service systemd-networkd.service sshd.service",
-		"After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katlc-agent.service systemd-networkd.service sshd.service",
+		"Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-extra-disks-activate.service katlc-agent.service systemd-networkd.service sshd.service",
+		"After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-extra-disks-activate.service katlc-agent.service systemd-networkd.service sshd.service",
 		"Before=katl-boot-complete.target",
 		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
@@ -469,6 +586,16 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeFile(root, "etc/systemd/system/etc-kubernetes.mount", assets.EtcKubernetesMount, 0o644); err != nil {
 		return StateAssets{}, err
 	}
+	for _, mount := range assets.ExtraMounts {
+		unitPath := filepath.Join("etc/systemd/system", mount.Name)
+		if err := writeFile(root, unitPath, mount.Content, 0o644); err != nil {
+			return StateAssets{}, err
+		}
+		linkPath := filepath.Join("etc/systemd/system/local-fs.target.wants", mount.Name)
+		if err := writeSymlink(root, linkPath, "../"+mount.Name); err != nil {
+			return StateAssets{}, err
+		}
+	}
 	if err := writeFile(root, "etc/systemd/system/katl-generation-activate.service", assets.GenerationActivate, 0o644); err != nil {
 		return StateAssets{}, err
 	}
@@ -482,6 +609,12 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-system-extensions-activate.service", assets.ExtensionActivate, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-extra-disks.target", assets.ExtraDisksTarget, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-extra-disks-activate.service", assets.ExtraDisksActivate, 0o644); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-kubeadm-activate.service", assets.KubeadmActivate, 0o644); err != nil {

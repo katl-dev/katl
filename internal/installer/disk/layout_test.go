@@ -121,7 +121,6 @@ func TestPlanDiskLayoutExtraDiskMountRequests(t *testing.T) {
 				Name:       "data",
 				Selector:   TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"},
 				Filesystem: "xfs",
-				MountPath:  "/srv/data",
 				Wipe:       true,
 			},
 		},
@@ -134,7 +133,7 @@ func TestPlanDiskLayoutExtraDiskMountRequests(t *testing.T) {
 		t.Fatalf("extra mount count = %d, want 1", len(plan.ExtraMounts))
 	}
 	extra := plan.ExtraMounts[0]
-	if extra.DevicePath != "/dev/sdb" || extra.MountPath != "/srv/data" || extra.Filesystem != "xfs" || !extra.Wipe {
+	if extra.DevicePath != "/dev/sdb" || extra.MountSource != "/dev/disk/by-id/ata-data" || extra.MountPath != "/var/lib/katl/mnt/data" || extra.Filesystem != "xfs" || !extra.Wipe {
 		t.Fatalf("extra mount = %#v", extra)
 	}
 	if len(extra.Signatures) != 1 || extra.Signatures[0].Value != "gpt" {
@@ -142,7 +141,7 @@ func TestPlanDiskLayoutExtraDiskMountRequests(t *testing.T) {
 	}
 }
 
-func TestPlanDiskLayoutRejectsDuplicateAndUnsafeExtraMounts(t *testing.T) {
+func TestPlanDiskLayoutRejectsDuplicateExtraDiskNames(t *testing.T) {
 	facts := layoutFacts(
 		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768),
 		diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data-a", 16384),
@@ -155,25 +154,47 @@ func TestPlanDiskLayoutRejectsDuplicateAndUnsafeExtraMounts(t *testing.T) {
 		RootB:      RootSlotRequest{SizeMiB: 4096},
 		State:      StatePartitionRequest{MinSizeMiB: 8192},
 		ExtraDisks: []ExtraDiskRequest{
-			{Name: "data-a", Selector: TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-a"}, MountPath: "/srv/data"},
-			{Name: "data-b", Selector: TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-b"}, MountPath: "/srv/data/cache"},
+			{Name: "data", Selector: TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-a"}, Wipe: true},
+			{Name: "data", Selector: TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-b"}, Wipe: true},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "conflicts") {
-		t.Fatalf("PlanDiskLayout() error = %v, want mount conflict", err)
+	if err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("PlanDiskLayout() error = %v, want duplicate name failure", err)
 	}
+}
 
-	_, err = PlanDiskLayout(facts, DiskLayoutRequest{
+func TestPlanDiskLayoutReusesOnlyMatchingExtraDiskFilesystem(t *testing.T) {
+	extra := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data", 16384)
+	extra.FilesystemSignature = "ext4"
+	facts := layoutFacts(
+		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768),
+		extra,
+	)
+	request := DiskLayoutRequest{
 		TargetDisk: TargetDiskSelector{ByID: "/dev/disk/by-id/nvme-root"},
 		RootA:      RootSlotRequest{SizeMiB: 4096},
 		RootB:      RootSlotRequest{SizeMiB: 4096},
 		State:      StatePartitionRequest{MinSizeMiB: 8192},
-		ExtraDisks: []ExtraDiskRequest{
-			{Name: "data-a", Selector: TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-a"}, MountPath: "/var/lib/kubelet"},
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "reserved") {
-		t.Fatalf("PlanDiskLayout() error = %v, want reserved mount failure", err)
+		ExtraDisks: []ExtraDiskRequest{{
+			Name:       "data",
+			Selector:   TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"},
+			Filesystem: "ext4",
+		}},
+	}
+
+	if _, err := PlanDiskLayout(facts, request); err != nil {
+		t.Fatalf("PlanDiskLayout() error = %v", err)
+	}
+
+	request.ExtraDisks[0].Filesystem = "xfs"
+	if _, err := PlanDiskLayout(facts, request); err == nil || !strings.Contains(err.Error(), "set wipe to true") {
+		t.Fatalf("PlanDiskLayout() error = %v, want safe reuse refusal", err)
+	}
+
+	facts.BlockDevices[1].FilesystemSignature = ""
+	request.ExtraDisks[0].Filesystem = "ext4"
+	if _, err := PlanDiskLayout(facts, request); err == nil || !strings.Contains(err.Error(), "set wipe to true") {
+		t.Fatalf("PlanDiskLayout() error = %v, want blank disk refusal", err)
 	}
 }
 

@@ -861,8 +861,6 @@ spec:
           selector:
             byID: /dev/disk/by-id/ata-data
           filesystem: xfs
-          mount:
-            path: /srv/data
     identity:
       ssh:
         authorizedKeys:

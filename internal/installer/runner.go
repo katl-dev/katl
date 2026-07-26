@@ -802,6 +802,7 @@ func (installMountUnitsStep) Run(ctx context.Context, install *Context) error {
 	}
 	if _, err := generation.WriteState(install.TargetRoot, generation.StateRequest{
 		PartitionUUID: install.LoaderRecord.Root.PartitionUUID,
+		ExtraMounts:   installedExtraMounts(install),
 	}); err != nil {
 		return err
 	}
@@ -826,6 +827,7 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 	result, err := MaterializeInstallRecord(InstallRecordRequest{
 		TargetRoot:        install.TargetRoot,
 		Manifest:          install.Manifest,
+		ExtraMounts:       installedExtraMounts(install),
 		KubeadmConfigs:    install.KubeadmConfigs,
 		KubernetesVersion: installedKubernetesPayloadVersion(install),
 		Record:            *install.LoaderRecord,
@@ -854,6 +856,21 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	return recordStep(ctx, install, WriteInstallRecord)
+}
+
+func installedExtraMounts(install *Context) []generation.ExtraMountRequest {
+	if install.DiskLayout == nil {
+		return nil
+	}
+	extraMounts := make([]generation.ExtraMountRequest, 0, len(install.DiskLayout.ExtraMounts))
+	for _, mount := range install.DiskLayout.ExtraMounts {
+		extraMounts = append(extraMounts, generation.ExtraMountRequest{
+			Source:     mount.MountSource,
+			Path:       mount.MountPath,
+			Filesystem: mount.Filesystem,
+		})
+	}
+	return extraMounts
 }
 
 func writeInstalledManifest(targetRoot, generationID string, installManifest manifest.Manifest) error {

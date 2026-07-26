@@ -85,8 +85,9 @@ SSH and operator access
   no general host account, PAM, sudo, passwd, shadow, or sysusers passthrough
 
 extra disk mount requests
-  additional non-root data disks with explicit mount points and filesystem
-  policy
+  additional non-root data disks named by the operator and mounted at
+  Katl-controlled paths below /var/lib/katl/mnt
+  explicit filesystem and per-disk preservation or wipe policy
   installer plans the disk work; runtime config renders native mounts
 ```
 
@@ -185,8 +186,8 @@ tmpfiles
   verify generated rules with systemd-tmpfiles where practical
 
 mount units and extra disks
-  validate mount points, filesystem choices, and destructive-install guards
-  reject paths under /run, /usr, /boot, /efi, and /etc/kubernetes
+  derive mount points below /var/lib/katl/mnt from validated unique names
+  validate filesystem choices, preservation state, and destructive-install guards
   verify generated units with systemd-analyze verify where practical
 
 Bootstrap profile input

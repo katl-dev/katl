@@ -18,6 +18,20 @@ systemd-gpt-auto type var only when the target disk is unambiguous
 Persistent identity must not be stored in `/run`. `/run` is only for boot-local
 activation links and service handoff state that can be regenerated from `/var`.
 
+## Extra Disk Placement
+
+Katl mounts configured non-root data disks below
+`/var/lib/katl/mnt/<extra-disk-name>`. The name is operator supplied, but the
+mount path is Katl controlled and is not part of the install configuration
+surface. This prevents an extra disk from shadowing runtime, Kubernetes, or
+generation state.
+
+`wipe: false` is the preservation path: the selected whole disk must already
+contain the requested filesystem, and Katl mounts it without wiping or
+formatting it. A blank disk or filesystem mismatch fails planning with guidance
+to set `wipe: true` if reformatting is intended. `wipe: true` wipes and formats
+only the selected extra disk.
+
 ## Etcd Data Placement
 
 The first supported path keeps etcd data at `/var/lib/etcd` on the `KATL_STATE`
@@ -55,10 +69,10 @@ validation and mount-unit coverage.
 
 Unsafe cases must be rejected rather than interpreted as etcd storage:
 
-- `install.extraDisks[].mount.path` equal to `/var/lib/etcd` or any parent or
-  child path that would shadow it.
 - Extra-disk selectors that resolve to the selected target root disk or one of
   its partitions.
+- Duplicate or invalid extra-disk names, which would collide below
+  `/var/lib/katl/mnt`.
 - Dedicated etcd partition requests without a positive size, with a filesystem
   outside the supported allowlist, or that leave less than the minimum state
   partition size.
@@ -75,6 +89,7 @@ paths for services:
 | `var.mount` | installed `KATL_STATE` partition by PARTUUID | `/var` | Required local filesystem; no `nofail`; must be active before any persistent node service starts |
 | `etc-kubernetes.mount` | `/var/lib/katl/kubernetes/etc-kubernetes` bind source | `/etc/kubernetes` | Only writable `/etc` projection in the first implementation; active after confext and before kubelet or kubeadm automation |
 | `var-lib-etcd.mount` | optional installed `KATL_ETCD` partition by PARTUUID | `/var/lib/etcd` | Generated only when a dedicated etcd partition was planned; active before kubelet, kubeadm automation, and the kubeadm-ready target |
+| `var-lib-katl-mnt-<name>.mount` | selected extra disk by durable `/dev/disk/by-id` identity | `/var/lib/katl/mnt/<name>` | Generated for each configured extra disk; active after `var.mount` through `katl-extra-disks.target` and required before boot health succeeds |
 
 No mount units are generated for `/var/lib/kubelet` or
 `/var/lib/containerd` in the default model. They are native directories on the

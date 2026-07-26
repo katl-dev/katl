@@ -1,0 +1,13 @@
+[Unit]
+Description=Activate Katl managed extra disks
+Documentation=man:systemd.mount(5) man:systemd.target(5)
+Requires=katl-system-extensions-reload.service
+After=katl-system-extensions-reload.service
+Before=katl-boot-health.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal+console
+SyslogIdentifier=katl-extra-disks-activate
+ExecStart=/usr/bin/systemctl start katl-extra-disks.target

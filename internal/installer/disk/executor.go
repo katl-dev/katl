@@ -213,8 +213,8 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 	for _, extra := range plan.ExtraMounts {
 		if extra.Wipe {
 			operations = append(operations, DiskOperation{Name: "wipe-extra-" + extra.Name, Command: "wipefs", Args: []string{"--all", extra.DevicePath}, Destructive: true})
+			operations = append(operations, DiskOperation{Name: "format-extra-" + extra.Name, Command: "mkfs." + extra.Filesystem, Args: []string{extra.DevicePath}, Destructive: true})
 		}
-		operations = append(operations, DiskOperation{Name: "format-extra-" + extra.Name, Command: "mkfs." + extra.Filesystem, Args: []string{extra.DevicePath}, Destructive: true})
 		operations = append(operations, DiskOperation{Name: "create-mountpoint-extra-" + extra.Name, Command: "mkdir", Args: []string{"-p", targetMountPrefix + extra.MountPath}})
 		operations = append(operations, DiskOperation{Name: "mount-extra-" + extra.Name, Command: "mount", Args: []string{extra.DevicePath, targetMountPrefix + extra.MountPath}})
 	}

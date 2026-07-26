@@ -196,14 +196,13 @@ func TestDecodeAcceptsExtraDisks(t *testing.T) {
 					"name": "data",
 					"selector": {"byID": "/dev/disk/by-id/ata-data"},
 					"filesystem": "xfs",
-					"mount": {"path": "/srv/data"},
 					"wipe": true
 				}
 			]`)))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if len(manifest.Install.ExtraDisks) != 1 || manifest.Install.ExtraDisks[0].Mount.Path != "/srv/data" {
+	if len(manifest.Install.ExtraDisks) != 1 || manifest.Install.ExtraDisks[0].Name != "data" {
 		t.Fatalf("extra disks = %#v", manifest.Install.ExtraDisks)
 	}
 }
@@ -610,15 +609,15 @@ func TestDecodeRejectsDeferredFields(t *testing.T) {
 		{name: "trust", manifest: manifestWithTop(`, "trust": {"roots": []}`), want: "trust"},
 		{name: "boot", manifest: manifestWithTop(`, "boot": {"efi": true}`), want: "boot"},
 		{name: "kernel args", manifest: manifestWithTop(`, "kernelArgs": ["quiet"]`), want: "kernelArgs"},
-		{name: "extra disk mount options", manifest: manifestWithInstall(`,
+		{name: "extra disk mount path", manifest: manifestWithInstall(`,
 			"extraDisks": [
 				{
 					"name": "data",
 					"selector": {"byID": "/dev/disk/by-id/ata-data"},
 					"filesystem": "xfs",
-					"mount": {"path": "/srv/data", "options": ["noatime"]}
+					"mount": {"path": "/srv/data"}
 				}
-			]`), want: "options"},
+			]`), want: "mount"},
 	}
 
 	for _, tt := range tests {
@@ -641,7 +640,6 @@ func TestBuildDiskLayoutRequestUsesKatlOwnedRootProfile(t *testing.T) {
 					"name": "data",
 					"selector": {"byID": "/dev/disk/by-id/ata-data"},
 					"filesystem": "xfs",
-					"mount": {"path": "/srv/data"},
 					"wipe": true
 				}
 			]`)))
@@ -673,7 +671,7 @@ func TestBuildDiskLayoutRequestUsesKatlOwnedRootProfile(t *testing.T) {
 	if request.InitialRootSlot != disk.RootSlotB || request.RuntimeRootSizeMiB != 4096 {
 		t.Fatalf("root profile fields = %#v", request)
 	}
-	if len(request.ExtraDisks) != 1 || request.ExtraDisks[0].Filesystem != "xfs" || request.ExtraDisks[0].MountPath != "/srv/data" || !request.ExtraDisks[0].Wipe {
+	if len(request.ExtraDisks) != 1 || request.ExtraDisks[0].Filesystem != "xfs" || !request.ExtraDisks[0].Wipe {
 		t.Fatalf("extra disks = %#v", request.ExtraDisks)
 	}
 }
