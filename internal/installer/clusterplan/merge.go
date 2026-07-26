@@ -120,7 +120,7 @@ func mergeSystemExtensions(base, next []manifest.SystemExtension) ([]manifest.Sy
 }
 
 func mergeHostConfiguration(base, next manifest.HostConfiguration) (manifest.HostConfiguration, error) {
-	if len(base.Sets) == 0 && len(next.Sets) == 0 {
+	if len(base.Sets) == 0 && len(next.Sets) == 0 && base.Sysfs == nil && next.Sysfs == nil {
 		return manifest.HostConfiguration{}, nil
 	}
 	sets := make(map[string]manifest.HostConfigurationSet, len(base.Sets)+len(next.Sets))
@@ -137,7 +137,12 @@ func mergeHostConfiguration(base, next manifest.HostConfiguration) (manifest.Hos
 		}
 		sets[name] = normalizeHostConfigurationSet(set)
 	}
-	out := manifest.HostConfiguration{Sets: sets}
+	sysfs := slices.Clone(base.Sysfs)
+	if next.Sysfs != nil {
+		sysfs = slices.Clone(next.Sysfs)
+	}
+	sort.Slice(sysfs, func(i, j int) bool { return sysfs[i].Name < sysfs[j].Name })
+	out := manifest.HostConfiguration{Sysfs: sysfs, Sets: sets}
 	if err := manifest.ValidateHostConfiguration(out, false); err != nil {
 		return manifest.HostConfiguration{}, fmt.Errorf("hostConfiguration: %w", err)
 	}

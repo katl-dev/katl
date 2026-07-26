@@ -62,7 +62,10 @@ modules-load
 tmpfiles
   required directories, modes, and ownership for Katl-managed node state
   rendered under /etc/tmpfiles.d/
-  public hostConfiguration supports bounded exact sysfs write rules
+
+sysfs
+  public hostConfiguration accepts typed name/value settings
+  Katl renders exact writes to an internal tmpfiles.d rule
 
 mount units
   persistent state projections and extra data disk mounts
@@ -183,9 +186,11 @@ modules-load
 
 tmpfiles
   keep internal directory and ownership rules limited to Katl-managed paths
-  allow public hostConfiguration only for exact w rules below /sys
-  reject destructive types, globs, specifiers, escapes, and duplicate targets
-  apply and read-back verify public sysfs writes before boot health succeeds
+
+sysfs
+  accept unique normalized names below /sys and non-empty single-line values
+  reject operator-authored tmpfiles.d files
+  apply and read-back verify settings before boot health succeeds
 
 mount units and extra disks
   derive mount points below /var/lib/katl/mnt from validated unique names

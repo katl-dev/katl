@@ -37,6 +37,25 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	systemdReload := false
 	stagedReason := ""
 
+	currentSysfs := hostSysfsByName(current.Sysfs)
+	desiredSysfs := hostSysfsByName(desired.Sysfs)
+	for _, name := range sortedStringUnion(hostSysfsNames(currentSysfs), hostSysfsNames(desiredSysfs)) {
+		before, beforeExists := currentSysfs[name]
+		after, afterExists := desiredSysfs[name]
+		if beforeExists == afterExists && before == after {
+			continue
+		}
+		plan.Paths = append(plan.Paths, name)
+		if stagedReason == "" {
+			stagedReason = "sysfs configuration applies and verifies on next boot"
+		}
+		if afterExists {
+			plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysfs "+name))
+		} else {
+			plan.Effects = append(plan.Effects, plannedEffect("stop-managing", "sysfs "+name))
+		}
+	}
+
 	for _, name := range names {
 		before, beforeOK := currentSets[name]
 		after, afterOK := desiredSets[name]
@@ -89,18 +108,6 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 				plan.SysctlAssignments = append(plan.SysctlAssignments, assignments...)
 				for _, assignment := range assignments {
 					plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+assignment.Key))
-				}
-			case strings.HasPrefix(filePath, "/etc/tmpfiles.d/") && strings.HasSuffix(filePath, ".conf"):
-				if stagedReason == "" {
-					stagedReason = "tmpfiles sysfs writes apply and verify on next boot"
-				}
-				if file, exists := afterFiles[filePath]; exists && file.Content != nil {
-					writes, err := manifest.ParseTmpfilesSysfsWrites(*file.Content)
-					if err == nil {
-						for _, write := range writes {
-							plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysfs "+write.Path))
-						}
-					}
 				}
 			case strings.HasPrefix(filePath, "/etc/containerd/conf.d/") && strings.HasSuffix(filePath, ".toml"):
 				if stagedReason == "" {
@@ -218,6 +225,22 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 
 func plannedEffect(action, target string) generation.ConfigApplyEffect {
 	return generation.ConfigApplyEffect{Action: action, Target: target, Status: generation.ConfigApplyActionPlanned}
+}
+
+func hostSysfsByName(settings []manifest.HostConfigurationSysfsSetting) map[string]string {
+	out := make(map[string]string, len(settings))
+	for _, setting := range settings {
+		out[setting.Name] = setting.Value
+	}
+	return out
+}
+
+func hostSysfsNames(settings map[string]string) map[string]struct{} {
+	out := make(map[string]struct{}, len(settings))
+	for name := range settings {
+		out[name] = struct{}{}
+	}
+	return out
 }
 
 func hostConfigurationMessage(prefix string, effects []generation.ConfigApplyEffect) string {

@@ -65,6 +65,9 @@ operator does not build or activate a confext.
 spec:
   defaults:
     hostConfiguration:
+      sysfs:
+        - name: /sys/module/printk/parameters/time
+          value: N
       sets:
         forwarding:
           files:
@@ -83,12 +86,6 @@ spec:
               content: |
                 br_netfilter
                 vfio_pci
-
-        kernel-tunables:
-          files:
-            - path: /etc/tmpfiles.d/80-home-lab-kernel-tunables.conf
-              content: |
-                w /sys/module/printk/parameters/time - - - - N
 
         containerd:
           files:
@@ -120,11 +117,12 @@ spec:
 
 Sysctl files with a reversible concrete-key change can apply live. Udev rules
 can reload live, but Katl does not retrigger existing devices. Module load,
-modprobe, tmpfiles sysfs writes, and containerd overlays are next-boot-only.
-Katl runs each operator tmpfiles file and verifies the requested sysfs value
-before boot health succeeds. Containerd imports `/etc/containerd/conf.d/*.toml`
-when it starts. Other permitted files are next-boot unless their set declares a
-bounded notification for an unprotected existing unit:
+modprobe, typed sysfs settings, and containerd overlays are next-boot-only.
+Katl renders `hostConfiguration.sysfs` to an internal tmpfiles rule, applies
+each value, and reads it back before boot health succeeds. Containerd imports
+`/etc/containerd/conf.d/*.toml` when it starts. Other permitted files are
+next-boot unless their set declares a bounded notification for an unprotected
+existing unit:
 
 ```yaml
 notify:
@@ -136,10 +134,11 @@ notify:
 The accepted actions are `reload`, `try-reload-or-restart`, and `try-restart`.
 Katl rejects protected paths, duplicate path ownership, executable or writable
 modes, and attempts to notify release-critical units before rendering a
-candidate generation. Operator tmpfiles files are intentionally narrower than
-the full `tmpfiles.d` language: each non-comment line must be an exact `w` rule
-for a normalized `/sys/...` path, with `-` for mode, user, group, and age, and a
-concrete value without globs, specifiers, or escapes.
+candidate generation. Each sysfs `name` must be a unique normalized `/sys/...`
+path, and each `value` must be a non-empty single-line value without leading or
+trailing whitespace. A node-level `sysfs` list replaces the defaults list; use
+`sysfs: []` to clear inherited settings. Operator-authored files below
+`/etc/tmpfiles.d` are rejected because Katl owns the generated sysfs rule.
 
 ## Apply The Cluster
 

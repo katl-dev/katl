@@ -7,58 +7,55 @@ import (
 
 func TestValidateHostConfigurationAcceptsNativeFilesAndNotifications(t *testing.T) {
 	sysctl := "net.ipv4.ip_forward = 1\n"
-	tmpfiles := "w /sys/module/printk/parameters/time - - - - N\n"
 	journal := "[Journal]\nSystemMaxUse=2G\n"
-	config := HostConfiguration{Sets: map[string]HostConfigurationSet{
-		"forwarding": {
-			Files: []HostConfigurationFile{{
-				Path:    "/etc/sysctl.d/80-forwarding.conf",
-				Content: &sysctl,
-				Mode:    0o640,
-			}},
+	config := HostConfiguration{
+		Sysfs: []HostConfigurationSysfsSetting{{
+			Name:  "/sys/module/printk/parameters/time",
+			Value: "N",
+		}},
+		Sets: map[string]HostConfigurationSet{
+			"forwarding": {
+				Files: []HostConfigurationFile{{
+					Path:    "/etc/sysctl.d/80-forwarding.conf",
+					Content: &sysctl,
+					Mode:    0o640,
+				}},
+			},
+			"journal-limits": {
+				Files: []HostConfigurationFile{{
+					Path:    "/etc/systemd/journald.conf.d/80-home-lab.conf",
+					Content: &journal,
+				}},
+				Notify: HostConfigurationNotifications{Systemd: []HostConfigurationSystemdNotification{{
+					Unit:   "systemd-journald.service",
+					Action: "try-reload-or-restart",
+				}}},
+			},
 		},
-		"kernel-tunables": {
-			Files: []HostConfigurationFile{{
-				Path:    "/etc/tmpfiles.d/80-kernel-tunables.conf",
-				Content: &tmpfiles,
-			}},
-		},
-		"journal-limits": {
-			Files: []HostConfigurationFile{{
-				Path:    "/etc/systemd/journald.conf.d/80-home-lab.conf",
-				Content: &journal,
-			}},
-			Notify: HostConfigurationNotifications{Systemd: []HostConfigurationSystemdNotification{{
-				Unit:   "systemd-journald.service",
-				Action: "try-reload-or-restart",
-			}}},
-		},
-	}}
+	}
 	if err := ValidateHostConfiguration(config, false); err != nil {
 		t.Fatalf("ValidateHostConfiguration() error = %v", err)
 	}
 }
 
-func TestValidateHostConfigurationRejectsUnsafeTmpfilesRules(t *testing.T) {
+func TestValidateHostConfigurationRejectsUnsafeSysfsSettings(t *testing.T) {
 	tests := []struct {
 		name    string
-		content string
+		setting HostConfigurationSysfsSetting
 		want    string
 	}{
-		{name: "destructive type", content: "r /sys/example - - - - -\n", want: "use w"},
-		{name: "host file", content: "w /etc/hostname - - - - lab\n", want: "below /sys"},
-		{name: "glob", content: "w /sys/class/net/*/mtu - - - - 9000\n", want: "must not contain globs"},
-		{name: "argument glob", content: "w /sys/example - - - - *\n", want: "argument must be a concrete value"},
-		{name: "ownership", content: "w /sys/example 0644 - - - value\n", want: "mode must be -"},
+		{name: "outside sysfs", setting: HostConfigurationSysfsSetting{Name: "/proc/sys/kernel/hostname", Value: "lab"}, want: "below /sys"},
+		{name: "not normalized", setting: HostConfigurationSysfsSetting{Name: "/sys/module/../example", Value: "1"}, want: "normalized"},
+		{name: "name glob", setting: HostConfigurationSysfsSetting{Name: "/sys/class/net/*/mtu", Value: "9000"}, want: "globs"},
+		{name: "name whitespace", setting: HostConfigurationSysfsSetting{Name: "/sys/example value", Value: "1"}, want: "must not contain whitespace"},
+		{name: "empty value", setting: HostConfigurationSysfsSetting{Name: "/sys/example"}, want: "non-empty single-line"},
+		{name: "leading whitespace", setting: HostConfigurationSysfsSetting{Name: "/sys/example", Value: " one two"}, want: "leading or trailing whitespace"},
+		{name: "newline", setting: HostConfigurationSysfsSetting{Name: "/sys/example", Value: "one\ntwo"}, want: "single-line"},
+		{name: "nul", setting: HostConfigurationSysfsSetting{Name: "/sys/example", Value: "one\x00two"}, want: "single-line"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := HostConfiguration{Sets: map[string]HostConfigurationSet{
-				"kernel-tunables": {Files: []HostConfigurationFile{{
-					Path:    "/etc/tmpfiles.d/80-kernel-tunables.conf",
-					Content: &tt.content,
-				}}},
-			}}
+			config := HostConfiguration{Sysfs: []HostConfigurationSysfsSetting{tt.setting}}
 			err := ValidateHostConfiguration(config, false)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("ValidateHostConfiguration() error = %v, want %q", err, tt.want)
@@ -67,22 +64,24 @@ func TestValidateHostConfigurationRejectsUnsafeTmpfilesRules(t *testing.T) {
 	}
 }
 
-func TestValidateHostConfigurationRejectsDuplicateTmpfilesTargets(t *testing.T) {
-	first := "w /sys/module/printk/parameters/time - - - - N\n"
-	second := "w /sys/module/printk/parameters/time - - - - Y\n"
-	config := HostConfiguration{Sets: map[string]HostConfigurationSet{
-		"first": {Files: []HostConfigurationFile{{
-			Path:    "/etc/tmpfiles.d/80-first.conf",
-			Content: &first,
-		}}},
-		"second": {Files: []HostConfigurationFile{{
-			Path:    "/etc/tmpfiles.d/80-second.conf",
-			Content: &second,
-		}}},
+func TestValidateHostConfigurationAcceptsSysfsValueWithoutLeakingRendererSyntax(t *testing.T) {
+	config := HostConfiguration{Sysfs: []HostConfigurationSysfsSetting{{
+		Name:  "/sys/example",
+		Value: `one two %m [value] \ -`,
+	}}}
+	if err := ValidateHostConfiguration(config, false); err != nil {
+		t.Fatalf("ValidateHostConfiguration() error = %v", err)
+	}
+}
+
+func TestValidateHostConfigurationRejectsDuplicateSysfsNames(t *testing.T) {
+	config := HostConfiguration{Sysfs: []HostConfigurationSysfsSetting{
+		{Name: "/sys/module/printk/parameters/time", Value: "N"},
+		{Name: "/sys/module/printk/parameters/time", Value: "Y"},
 	}}
 	err := ValidateHostConfiguration(config, false)
-	if err == nil || !strings.Contains(err.Error(), "already owned") {
-		t.Fatalf("ValidateHostConfiguration() error = %v, want duplicate target rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "duplicates") {
+		t.Fatalf("ValidateHostConfiguration() error = %v, want duplicate name rejection", err)
 	}
 }
 
@@ -100,6 +99,7 @@ func TestValidateHostConfigurationRejectsUnsafeOwnership(t *testing.T) {
 		{name: "kubelet drop-in", path: "/etc/systemd/system/kubelet.service.d/80-user.conf", want: "protected systemd"},
 		{name: "unit enablement", path: "/etc/systemd/system/multi-user.target.wants/example.service", want: "protected systemd"},
 		{name: "accounts", path: "/etc/shadow", want: "owned by KatlOS"},
+		{name: "tmpfiles", path: "/etc/tmpfiles.d/80-example.conf", want: "hostConfiguration.sysfs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -58,13 +58,6 @@ func TestPlanHostConfigurationStagesBootOwnedOverlays(t *testing.T) {
 		target  string
 	}{
 		{
-			name:    "tmpfiles sysfs write",
-			path:    "/etc/tmpfiles.d/80-kernel-tunables.conf",
-			content: "w /sys/module/printk/parameters/time - - - - N\n",
-			want:    "apply and verify on next boot",
-			target:  "sysfs /sys/module/printk/parameters/time",
-		},
-		{
 			name:    "containerd overlay",
 			path:    "/etc/containerd/conf.d/80-debug.toml",
 			content: "[debug]\n  level = \"warn\"\n",
@@ -85,6 +78,32 @@ func TestPlanHostConfigurationStagesBootOwnedOverlays(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("effects = %#v, want target %q", plan.Effects, tt.target)
+			}
+		})
+	}
+}
+
+func TestPlanHostConfigurationStagesSysfsSettings(t *testing.T) {
+	setting := manifest.HostConfigurationSysfsSetting{Name: "/sys/module/printk/parameters/time", Value: "N"}
+	for _, tt := range []struct {
+		name    string
+		current []manifest.HostConfigurationSysfsSetting
+		desired []manifest.HostConfigurationSysfsSetting
+		action  string
+	}{
+		{name: "change", current: []manifest.HostConfigurationSysfsSetting{setting}, desired: []manifest.HostConfigurationSysfsSetting{{Name: setting.Name, Value: "Y"}}, action: "apply-and-verify"},
+		{name: "remove", current: []manifest.HostConfigurationSysfsSetting{setting}, action: "stop-managing"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := planHostConfigurationChange(
+				manifest.HostConfiguration{Sysfs: tt.current},
+				manifest.HostConfiguration{Sysfs: tt.desired},
+			)
+			if plan.Live || !strings.Contains(plan.Message, "sysfs configuration applies and verifies on next boot") {
+				t.Fatalf("plan = %#v, want staged sysfs change", plan)
+			}
+			if len(plan.Effects) != 1 || plan.Effects[0].Action != tt.action || plan.Effects[0].Target != "sysfs "+setting.Name {
+				t.Fatalf("effects = %#v", plan.Effects)
 			}
 		})
 	}

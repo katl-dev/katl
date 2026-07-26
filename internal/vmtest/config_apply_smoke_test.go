@@ -338,7 +338,6 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"target": "containerd configuration /etc/containerd/conf.d/80-katl-vmtest.toml"`,
 	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/tmpfiles.d/80-katl-vmtest-sysfs.conf", "w /sys/module/printk/parameters/time - - - - N")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/containerd/conf.d/80-katl-vmtest.toml", "oom_score = 123")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+liveGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
@@ -367,7 +366,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	)
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "katl.vmtest.config_apply_kernel=1")
-	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "effective-tmpfiles-sysfs",
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "effective-sysfs",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
 		"/usr/bin/cat", "/sys/module/printk/parameters/time",
 	)); got != "N" {
