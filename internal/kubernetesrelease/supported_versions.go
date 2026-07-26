@@ -14,7 +14,7 @@ import (
 const (
 	APIVersion         = "katl.dev/v1alpha1"
 	Kind               = "KubernetesSupportedVersions"
-	CurrentRecipeScope = "kubernetes-bundle-v1"
+	CurrentRecipeScope = "kubernetes-bundle-v2"
 )
 
 //go:embed supported-versions.json
@@ -98,7 +98,7 @@ func (supported SupportedVersions) Select(payloadVersion string) ([]SupportedVer
 
 func (supported SupportedVersions) ChangedSince(previous SupportedVersions) ([]SupportedVersion, error) {
 	recipeChanged := supported.RecipeDigest != previous.RecipeDigest
-	scopeChangedWithoutRebuild := previous.RecipeScope == "" && supported.RecipeScope == CurrentRecipeScope
+	scopeChangedWithoutRebuild := supported.RecipeScope != previous.RecipeScope
 	previousByPayload := make(map[string]SupportedVersion, len(previous.Versions))
 	for _, version := range previous.Versions {
 		previousByPayload[version.PayloadVersion] = version

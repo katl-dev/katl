@@ -882,9 +882,11 @@ generation records after `katlc` stages the payload locally.
 The release-owned compatibility catalog maps exact Kubernetes version to OCI
 bundle identity, manifest digest, architectures, and supported KatlOS runtime
 interfaces. It is embedded in `katlctl`, is not a ClusterConfig input, and is
-updated by a ready auto-merged PR after the producer publishes and verifies a
-new immutable bundle. Missing versions and incompatible runtimes fail before an
-install or upgrade operation is accepted.
+updated through one reusable ready auto-merged PR after the producer publishes
+and verifies a new immutable bundle. The repository deletes the generated
+branch after merge, while reconciliation closes and deletes superseded legacy
+branches. Missing versions and incompatible runtimes fail before an install or
+upgrade operation is accepted.
 
 The catalog is authoritative for discovery, not for trust by itself. Consumers
 still verify the referenced OCI and sysext digests and, once signing is enabled,
@@ -903,11 +905,13 @@ The initial policy lists the GA releases `v1.36.0` through `v1.36.3`.
 Adding a payload starts its artifact revision at `1`. The policy also records
 the named recipe scope and a fingerprint of every bundle-producing input. The
 scope covers the Kubernetes sysext and package policy, the runtime ABI and base
-package inputs used to construct the overlay, the metadata and catalog
-producers, and the publication workflow. It does not cover KatlOS runtime
-binaries, agents, installer policy, VM infrastructure, or unrelated product
-code. A change to a fingerprinted producer input must refresh the fingerprint
-and increment every supported payload's revision, so the main-branch producer
+package inputs used to construct the overlay, the dedicated Kubernetes
+metadata producer, and the bundle packing and catalog format. It deliberately
+does not cover GitHub Actions orchestration, release planning, generated-PR
+management, the shared KatlOS artifact controller, KatlOS runtime binaries,
+agents, installer policy, VM infrastructure, or unrelated product code. A
+change to a fingerprinted producer input must refresh the fingerprint and
+increment every supported payload's revision, so the main-branch producer
 rebuilds the entire supported matrix without replacing an immutable tag.
 Changing only the definition of the fingerprint scope records the new scope and
 digest without minting payload revisions. Package changes for an existing

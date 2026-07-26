@@ -100,11 +100,13 @@ list_cache_inputs() {
             scripts/build-kubernetes-sysext \
             scripts/mkosi
         git -C "$repo_root" ls-files -z \
-            cmd/katl-mkosi-artifacts \
+            cmd/katl-kubernetes-metadata \
+            internal/installer/artifact/artifact.go \
+            internal/installer/artifact/local.go \
             internal/installer/manifest \
             mkosi.profiles/kubernetes-sysext
         git -C "$repo_root" ls-files --others --exclude-standard -z -- \
-            cmd/katl-mkosi-artifacts \
+            cmd/katl-kubernetes-metadata \
             internal/installer/manifest \
             mkosi.profiles/kubernetes-sysext
     } | sort -zu
@@ -235,7 +237,7 @@ fi
 
 KATL_BUILD_COMMIT="$build_commit" \
 KATL_ARCHITECTURE="$architecture" \
-    go run ./cmd/katl-mkosi-artifacts write-kubernetes-sysext-from-log \
+    go run ./cmd/katl-kubernetes-metadata write-from-log \
     --artifact "$artifact" \
     --log "$log" \
     --runtime-artifact "$runtime_artifact" \

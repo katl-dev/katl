@@ -24,7 +24,7 @@ func TestRefreshRebuildsRescopesWithoutAdvancingArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	supported.RecipeScope = ""
+	supported.RecipeScope = "kubernetes-bundle-v1"
 	supported.RecipeDigest = "sha256:" + strings.Repeat("a", 64)
 	before := append([]kubernetesrelease.SupportedVersion(nil), supported.Versions...)
 	data, err := kubernetesrelease.MarshalSupportedVersions(supported)

@@ -289,68 +289,11 @@ func TestPathForKindRejectsDuplicate(t *testing.T) {
 	}
 }
 
-func TestKubernetesSysextFromLog(t *testing.T) {
-	repo := testRepoRoot(t)
-	workDir := testWorkDir(t, repo)
-	runtimeRoot := writeTestFile(t, workDir, "katl-runtime-root.squashfs", "runtime root")
-	runtimeSHA := testFileSHA256(t, runtimeRoot)
-	writeTestJSON(t, runtimeRoot+".json", map[string]any{"sha256": runtimeSHA})
-	sysext := writeTestFile(t, workDir, "katl-kubernetes.raw", "kubernetes sysext")
-	logPath := filepath.Join(workDir, "mkosi.log")
-	if err := os.WriteFile(logPath, []byte(strings.Join([]string{
-		"kubeadm x86_64 1.36.0-1 kubernetes installed",
-		"kubelet x86_64 1.36.0-1 kubernetes installed",
-		"kubectl x86_64 1.36.0-1 kubernetes installed",
-		"cri-tools x86_64 1.36.0-1 kubernetes installed",
-		"ethtool x86_64 2:7.0-1.fc44 fedora installed",
-		"socat x86_64 0:1.8.1.1-1.fc44 updates installed",
-		"",
-	}, "\n")), 0o644); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", logPath, err)
-	}
-
-	var stdout bytes.Buffer
-	err := run([]string{
-		"write-kubernetes-sysext-from-log",
-		"--artifact", sysext,
-		"--log", logPath,
-		"--runtime-artifact", runtimeRoot,
-		"--runtime-metadata", runtimeRoot + ".json",
-		"--repo-id", "kubernetes",
-		"--repo-base-url", "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
-		"--repo-minor", "v1.36",
-		"--expected-payload-version", "v1.36.0",
-		"--expected-kubeadm-version", "1.36.0-1",
-	}, &stdout, &bytes.Buffer{}, []string{
-		"KATL_BUILD_COMMIT=test-build",
-		"KATL_ARCHITECTURE=x86_64",
-		"SOURCE_DATE_EPOCH=0",
-	})
-	if err != nil {
-		t.Fatalf("write-kubernetes-sysext-from-log error = %v", err)
-	}
-	var metadata localMetadata
-	readTestJSON(t, sysext+".json", &metadata)
-	if metadata.PayloadVersion != "v1.36.0" || metadata.PackageVersions["kubeadm"] != "1.36.0-1" {
-		t.Fatalf("metadata = %#v", metadata)
-	}
-	if metadata.Created != "1970-01-01T00:00:00Z" {
-		t.Fatalf("metadata created = %q", metadata.Created)
-	}
-	if metadata.PackageVersions["ethtool"] != "2:7.0-1.fc44" || metadata.PackageVersions["socat"] != "0:1.8.1.1-1.fc44" {
-		t.Fatalf("helper packageVersions = %#v", metadata.PackageVersions)
-	}
-	if metadata.CompatibleRuntime == nil || metadata.CompatibleRuntime.ArtifactSHA256 != runtimeSHA {
-		t.Fatalf("compatibleRuntime = %#v", metadata.CompatibleRuntime)
-	}
-}
-
 func TestMetadataWriters(t *testing.T) {
 	repo := testRepoRoot(t)
 	workDir := testWorkDir(t, repo)
 	runtimeRoot := writeTestFile(t, workDir, "katl-runtime-root.squashfs", "runtime root")
 	runtimeUKI := writeTestFile(t, workDir, "katl-runtime.efi", "runtime uki")
-	sysext := writeTestFile(t, workDir, "katl-kubernetes.raw", "kubernetes sysext")
 	env := []string{
 		"KATL_BUILD_COMMIT=test-build",
 		"KATL_VERSION=0.1.0",
@@ -402,42 +345,6 @@ func TestMetadataWriters(t *testing.T) {
 	}
 	if got := strings.Join(ukiMetadata.KernelCommandLine, " "); !strings.Contains(got, "console=ttyS0,115200n8 console=tty0 systemd.getty_auto=no") {
 		t.Fatalf("runtime UKI kernel command line = %q", got)
-	}
-
-	stdout.Reset()
-	if err := run([]string{
-		"write-kubernetes-sysext",
-		"--artifact", sysext,
-		"--payload-version", "v1.36.0",
-		"--kubeadm-version", "1.36.0-1",
-		"--kubelet-version", "1.36.0-1",
-		"--kubectl-version", "1.36.0-1",
-		"--cri-tools-version", "1.36.0-1",
-		"--ethtool-version", "2:7.0-1.fc44",
-		"--socat-version", "1.8.1.1-1.fc44",
-		"--runtime-artifact", runtimeRoot,
-		"--runtime-metadata", runtimeRoot + ".json",
-		"--repo-id", "kubernetes",
-		"--repo-base-url", "https://pkgs.k8s.io/core:/stable:/v1.36/rpm/",
-		"--repo-minor", "v1.36",
-	}, &stdout, &bytes.Buffer{}, env); err != nil {
-		t.Fatalf("write-kubernetes-sysext error = %v", err)
-	}
-	var sysextMetadata localMetadata
-	readTestJSON(t, sysext+".json", &sysextMetadata)
-	if sysextMetadata.Name != "kubernetes" || sysextMetadata.PayloadVersion != "v1.36.0" {
-		t.Fatalf("Kubernetes sysext metadata = %#v", sysextMetadata)
-	}
-	if sysextMetadata.CompatibleRuntime == nil || sysextMetadata.CompatibleRuntime.ArtifactSHA256 != runtimeSHA {
-		t.Fatalf("Kubernetes sysext compatibility = %#v", sysextMetadata.CompatibleRuntime)
-	}
-	if sysextMetadata.SourceRepo == nil || sysextMetadata.SourceRepo.Minor != "v1.36" {
-		t.Fatalf("Kubernetes source repo = %#v", sysextMetadata.SourceRepo)
-	}
-	if sysextMetadata.PackageVersions["cri-tools"] != "1.36.0-1" ||
-		sysextMetadata.PackageVersions["ethtool"] != "2:7.0-1.fc44" ||
-		sysextMetadata.PackageVersions["socat"] != "1.8.1.1-1.fc44" {
-		t.Fatalf("packageVersions = %#v", sysextMetadata.PackageVersions)
 	}
 
 	indexPath := filepath.Join(workDir, "katlos-root", "katlos", "image.json")

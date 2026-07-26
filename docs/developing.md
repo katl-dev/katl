@@ -369,19 +369,22 @@ payload at artifact revision `1`. Review the policy diff and submit it as a
 normal ready pull request.
 
 Changes to the Kubernetes sysext profile, package or base-runtime ABI inputs,
-bundle metadata or catalog producers, or publication workflow must rebuild
-every supported payload. Refresh the recipe fingerprint and advance all
-immutable artifact revisions in the same pull request:
+dedicated Kubernetes metadata producer, or bundle packing and catalog format
+must rebuild every supported payload. Refresh the recipe fingerprint and
+advance all immutable artifact revisions in the same pull request:
 
 ```sh
 go run ./cmd/katl-kubernetes-release refresh-rebuilds
 ```
 
 The Go baseline rejects a changed bundle recipe until this command has updated
-the supported-version policy. KatlOS runtime binaries, agents, installer policy,
-VM infrastructure, documentation, and other product code are outside this
-recipe boundary and must not advance Kubernetes artifact revisions. Changes
-that only add a supported payload do not advance existing artifact revisions.
+the supported-version policy. GitHub Actions orchestration, release planning,
+compatibility-PR management, the shared KatlOS artifact controller, KatlOS
+runtime binaries, agents, installer policy, VM infrastructure, documentation,
+and other product code are outside this recipe boundary and must not advance
+Kubernetes artifact revisions. Pull requests still validate the producer
+workflow, but control-plane-only changes do not publish bundles. Changes that
+only add a supported payload do not advance existing artifact revisions.
 
 Manual dispatch remains the explicit dry-run path. Dispatch it with empty
 version inputs to build the whole supported matrix, or select one supported
@@ -393,10 +396,12 @@ existing tag only when it resolves to the byte-identical OCI manifest produced
 from the same commit, making interrupted publication safe to retry. It
 publishes the Katl custom bundle manifest as the OCI config with the sysext and
 metadata as layers, pulls the config back for byte verification, and creates a
-GitHub build-provenance attestation. It
-then records the exact version, manifest digest, architecture, and runtime
-interfaces in the embedded compatibility catalog through a ready auto-merged
-pull request. Install and upgrade clients consume that mapping; they never
+GitHub build-provenance attestation. It then records the exact version,
+manifest digest, architecture, and runtime interfaces in the embedded
+compatibility catalog through one reusable ready auto-merged pull request. The
+generated branch is deleted after merge, and reconciliation deletes
+superseded legacy branches after closing their pull requests. Install and
+upgrade clients consume that mapping; they never
 construct a `katl.1` tag from an operator-supplied Kubernetes version. The
 canonical package is `ghcr.io/katl-dev/kubernetes`. Its readable tags use the
 bundle build identity directly, for example `v1.36.0-katl.1`, while a
