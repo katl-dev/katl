@@ -105,13 +105,4 @@ mkosi_artifacts write-katlos-artifact \
     --architecture "$architecture" \
     --runtime-interface "$runtime_interface" >/dev/null
 
-if [[ "$image_role" == install \
-    && -f "$build_dir/katl-installer.efi" \
-    && -f "$build_dir/katl-installer.vmlinuz" \
-    && -f "$build_dir/katl-installer.initrd" \
-    && -f "$runtime_root_checksum" \
-    && -f "$runtime_uki_checksum" ]]; then
-    KATL_KATLOS_IMAGE="$output" mkosi_artifacts write >/dev/null
-fi
-
 echo "katlos image: ${output#"$repo_root"/}"
