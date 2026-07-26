@@ -705,38 +705,48 @@ func SourceControlPlaneEndpoint(source SourceConfig) string {
 	return plan.Endpoint
 }
 
-func defaultKubeadmInitConfig(version string) string {
-	config := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n  taints: []\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nnetworking:\n  podSubnet: 10.244.0.0/16\n  serviceSubnet: 10.96.0.0/12\n"
-	if version != "" {
-		config += "kubernetesVersion: " + version + "\n"
-	}
-	return config + defaultKubeletConfig()
+func defaultKubeadmInitConfig() string {
+	return "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nnetworking:\n  podSubnet: 10.244.0.0/16\n  serviceSubnet: 10.96.0.0/12\n" + defaultKubeletConfig()
 }
 
 func defaultKubeadmJoinConfig() string {
-	return "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n" + defaultKubeletConfig()
+	return "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n" + defaultKubeletConfig()
 }
 
 func defaultKubeletConfig() string {
-	return "---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nvolumePluginDir: /var/lib/kubelet/plugins/volume/exec\n"
+	return "---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
 }
 
 func defaultKubeadmConfigs(kubernetesVersion string) (map[string]kubeadmconfig.Plan, error) {
-	inputs := map[string]string{
-		"control-plane": defaultKubeadmInitConfig(kubernetesVersion),
-		"worker":        defaultKubeadmJoinConfig(),
+	documents, err := defaultKubeadmDocuments()
+	if err != nil {
+		return nil, err
 	}
-	configs := make(map[string]kubeadmconfig.Plan, len(inputs))
-	for _, name := range []string{"control-plane", "worker"} {
-		plan, err := kubeadmconfig.PlanFromRenderedFiles(name, []kubeadmconfig.File{{
-			RenderPath: "/etc/katl/kubeadm/" + name + "/config.yaml",
-			Content:    []byte(inputs[name]),
+	if err := provideKubeadmDefaults(documents, kubernetesVersion); err != nil {
+		return nil, err
+	}
+	roles := []struct {
+		name      string
+		documents []map[string]any
+	}{
+		{name: "control-plane", documents: []map[string]any{documents["InitConfiguration"], documents["ClusterConfiguration"], documents["KubeletConfiguration"]}},
+		{name: "worker", documents: []map[string]any{documents["JoinConfiguration"], documents["KubeletConfiguration"]}},
+	}
+	configs := make(map[string]kubeadmconfig.Plan, len(roles))
+	for _, role := range roles {
+		content, err := encodeKubeadmDocuments(role.documents, role.name, false)
+		if err != nil {
+			return nil, err
+		}
+		plan, err := kubeadmconfig.PlanFromRenderedFiles(role.name, []kubeadmconfig.File{{
+			RenderPath: "/etc/katl/kubeadm/" + role.name + "/config.yaml",
+			Content:    content,
 			Mode:       0o644,
 		}})
 		if err != nil {
-			return nil, fmt.Errorf("select internal kubeadm profile %s: %w", name, err)
+			return nil, fmt.Errorf("select internal kubeadm profile %s: %w", role.name, err)
 		}
-		configs[name] = plan
+		configs[role.name] = plan
 	}
 	return configs, nil
 }

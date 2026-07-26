@@ -54,6 +54,29 @@ func TestInspectHostConfigurationClassifiesLiveSysctlDrift(t *testing.T) {
 	}
 }
 
+func TestPlanHostConfigurationActivationAppliesAndVerifiesSysfsWrites(t *testing.T) {
+	tmpfiles := "w /sys/module/printk/parameters/time - - - - N\n"
+	config := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"kernel-tunables": {Files: []manifest.HostConfigurationFile{{
+			Path:    "/etc/tmpfiles.d/80-kernel-tunables.conf",
+			Content: &tmpfiles,
+		}}},
+	}}
+	prepare := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
+	if len(prepare.Commands) != 1 || strings.Join(prepare.Commands[0].Argv, " ") != "systemd-tmpfiles --create /etc/tmpfiles.d/80-kernel-tunables.conf" {
+		t.Fatalf("prepare commands = %#v", prepare.Commands)
+	}
+	verify := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
+	if len(verify.Commands) != 1 ||
+		strings.Join(verify.Commands[0].Argv, " ") != "/usr/bin/cat /sys/module/printk/parameters/time" ||
+		verify.Commands[0].ExpectedStdout != "N" {
+		t.Fatalf("verify commands = %#v", verify.Commands)
+	}
+	if HostConfigurationDriftIsLive(verify.Effects) {
+		t.Fatalf("sysfs drift must require next-boot reconciliation: %#v", verify.Effects)
+	}
+}
+
 func TestExecuteHostConfigurationActivationReportsEachOutcome(t *testing.T) {
 	plan := HostConfigurationActivationPlan{}
 	plan.addCommand("first", "reload", "udev rules", "/usr/bin/true")

@@ -27,3 +27,16 @@ spec:
 
             [DHCPv6]
             UseHostname=no
+    hostConfiguration:
+      sets:
+        vmtest-tmpfiles:
+          files:
+            - path: /etc/tmpfiles.d/80-katl-vmtest-sysfs.conf
+              content: |
+                w /sys/module/printk/parameters/time - - - - N
+        vmtest-containerd:
+          files:
+            - path: /etc/containerd/conf.d/80-katl-vmtest.toml
+              content: |
+                version = 4
+                oom_score = 123

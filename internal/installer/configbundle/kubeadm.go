@@ -87,7 +87,7 @@ func splitKubeadmPlans(input kubeadmconfig.Plan, kubernetesVersion string) (map[
 		byKind[kind] = document
 	}
 
-	defaults, err := defaultKubeadmDocuments(kubernetesVersion)
+	defaults, err := defaultKubeadmDocuments()
 	if err != nil {
 		return nil, err
 	}
@@ -139,8 +139,8 @@ func splitKubeadmPlans(input kubeadmconfig.Plan, kubernetesVersion string) (map[
 	return plans, nil
 }
 
-func defaultKubeadmDocuments(kubernetesVersion string) (map[string]map[string]any, error) {
-	controlPlane, err := decodeKubeadmDocuments([]byte(defaultKubeadmInitConfig(kubernetesVersion)))
+func defaultKubeadmDocuments() (map[string]map[string]any, error) {
+	controlPlane, err := decodeKubeadmDocuments([]byte(defaultKubeadmInitConfig()))
 	if err != nil {
 		return nil, err
 	}
@@ -167,8 +167,15 @@ func provideKubeadmDefaults(documents map[string]map[string]any, kubernetesVersi
 	for _, kind := range []string{"InitConfiguration", "JoinConfiguration"} {
 		document := documents[kind]
 		nodeRegistration := childMapping(document, "nodeRegistration")
-		if value, _ := nodeRegistration["criSocket"].(string); strings.TrimSpace(value) == "" {
-			nodeRegistration["criSocket"] = kubeadmCRISocket
+		if value, _ := nodeRegistration["criSocket"].(string); strings.TrimSpace(value) != "" && value != kubeadmCRISocket {
+			return fmt.Errorf("spec.kubernetes.kubeadm.configFile %s nodeRegistration.criSocket must be %q on KatlOS", kind, kubeadmCRISocket)
+		}
+		nodeRegistration["criSocket"] = kubeadmCRISocket
+		if kind == "InitConfiguration" {
+			if taints, exists := nodeRegistration["taints"]; exists && !emptyKubeadmSequence(taints) {
+				return fmt.Errorf("spec.kubernetes.kubeadm.configFile InitConfiguration nodeRegistration.taints must be empty; configure node taints in ClusterConfig")
+			}
+			nodeRegistration["taints"] = []any{}
 		}
 		document["nodeRegistration"] = nodeRegistration
 	}
@@ -178,6 +185,14 @@ func provideKubeadmDefaults(documents map[string]map[string]any, kubernetesVersi
 	}
 	kubelet["volumePluginDir"] = kubeadmconfig.KubeletVolumePluginDir
 	return nil
+}
+
+func emptyKubeadmSequence(value any) bool {
+	if value == nil {
+		return true
+	}
+	sequence, ok := value.([]any)
+	return ok && len(sequence) == 0
 }
 
 func encodeKubeadmDocuments(documents []map[string]any, role string, hasPatches bool) ([]byte, error) {

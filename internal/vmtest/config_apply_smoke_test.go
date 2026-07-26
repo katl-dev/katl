@@ -331,10 +331,15 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json",
 		`"phase": "next-boot"`,
 		`"acceptedApplyMode": "next-boot"`,
+		`"domain": "host-configuration"`,
 		`"domain": "networkd"`,
 		`"domain": "kernel-command-line"`,
+		`"target": "sysfs /sys/module/printk/parameters/time"`,
+		`"target": "containerd configuration /etc/containerd/conf.d/80-katl-vmtest.toml"`,
 	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/tmpfiles.d/80-katl-vmtest-sysfs.conf", "w /sys/module/printk/parameters/time - - - - N")
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/containerd/conf.d/80-katl-vmtest.toml", "oom_score = 123")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+liveGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
@@ -362,6 +367,24 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	)
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "katl.vmtest.config_apply_kernel=1")
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "effective-tmpfiles-sysfs",
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/cat", "/sys/module/printk/parameters/time",
+	)); got != "N" {
+		t.Fatalf("printk time sysfs value = %q, want N", got)
+	}
+	guestCommand(t, ctx, guest, "start-containerd-with-overlay", "systemctl", "start", "containerd.service")
+	guestCommand(t, ctx, guest, "containerd-active-after-overlay", "systemctl", "is-active", "--quiet", "containerd.service")
+	containerdPID := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "containerd-main-pid", "systemctl", "show", "--property=MainPID", "--value", "containerd.service"))
+	if containerdPID == "" || containerdPID == "0" {
+		t.Fatalf("containerd MainPID = %q, want running process", containerdPID)
+	}
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "containerd-oom-score",
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/cat", "/proc/"+containerdPID+"/oom_score_adj",
+	)); got != "123" {
+		t.Fatalf("containerd oom_score_adj = %q, want imported overlay value 123", got)
+	}
 	if cmdline := readGuestFile(t, ctx, guest, "/proc/cmdline"); strings.Contains(cmdline, "katl.vmtest.initial_kernel=1") {
 		t.Fatalf("replaced initial kernel argument remained active after reboot: %s", cmdline)
 	}

@@ -289,6 +289,7 @@ file_has_line /usr/lib/os-release 'KATL_BASE_VERSION_ID=44'
 file_has_line /usr/lib/os-release "SYSEXT_LEVEL=katl-runtime-1"
 file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STATE"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
+file_has /etc/containerd/config.toml 'imports = ["/etc/containerd/conf.d/*.toml"]'
 file_has /etc/containerd/config.toml 'bin_dirs = ["/var/lib/katl/kubernetes/cni/bin", "/usr/libexec/cni"]'
 file_has /etc/containerd/config.toml 'conf_dir = "/var/lib/katl/kubernetes/cni/net.d"'
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/bin 0755 root root -"

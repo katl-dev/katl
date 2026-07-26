@@ -477,6 +477,27 @@ Persisted records contain set names, paths, content digests, classifications,
 actions, results, and rollback targets. Routine status does not echo file
 content, source bytes, or low-level systemd invocation identifiers.
 
+### Bounded tmpfiles and containerd handlers
+
+Files directly below `/etc/tmpfiles.d` receive a narrower content contract than
+the full native language. Operator rules may use only exact `w` entries for
+normalized `/sys/...` paths. Mode, user, group, and age remain `-`; targets and
+arguments may not contain globs, specifiers, or escapes. Katl rejects duplicate
+write targets across sets.
+
+These rules are next-boot-only. After the selected confext is active, Katl runs
+`systemd-tmpfiles --create` for each operator file and reads every target back.
+Boot health fails when application or verification fails. This provides useful
+sysfs configuration without allowing tmpfiles delete/create types to bypass the
+host file ownership boundary.
+
+The KatlOS containerd base configuration imports
+`/etc/containerd/conf.d/*.toml`. Operators carry version-compatible TOML files
+there through the same hostConfiguration API. Overlay changes are
+next-boot-only because containerd is release-critical and is not restarted by
+a routine live apply; its normal service and boot-health semantics validate
+the resulting daemon startup.
+
 ## Install And Update Behavior
 
 The same `hostConfiguration` input is valid during first install and runtime
@@ -542,7 +563,7 @@ domains merely to reproduce their native file formats.
 This decision does not provide:
 
 ```text
-arbitrary writes outside /etc
+arbitrary files or unbounded writes outside /etc
 mutable in-place editing of the active /etc tree
 shell hooks or a general command runner
 package installation or an embedded package manager

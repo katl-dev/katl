@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -116,6 +117,11 @@ func (notifications HostConfigurationNotifications) IsZero() bool {
 type HostConfigurationSystemdNotification struct {
 	Unit   string `json:"unit" yaml:"unit"`
 	Action string `json:"action" yaml:"action"`
+}
+
+type TmpfilesSysfsWrite struct {
+	Path  string
+	Value string
 }
 
 const (
@@ -662,6 +668,7 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 	}
 	sort.Strings(setNames)
 	paths := make(map[string]string)
+	tmpfilesTargets := make(map[string]string)
 	systemdNotifications := make(map[string]string)
 	totalBytes := 0
 	for _, name := range setNames {
@@ -715,6 +722,21 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 					return fmt.Errorf("%s.content exceeds %d bytes", field, MaxHostConfigurationFileBytes)
 				}
 				totalBytes += len(*file.Content)
+				if strings.HasPrefix(cleaned, "/etc/tmpfiles.d/") {
+					writes, err := ParseTmpfilesSysfsWrites(*file.Content)
+					if err != nil {
+						return fmt.Errorf("%s.content: %w", field, err)
+					}
+					for _, write := range writes {
+						if owner, exists := tmpfilesTargets[write.Path]; exists {
+							return fmt.Errorf("%s.content writes %q, which is already owned by set %q", field, write.Path, owner)
+						}
+						tmpfilesTargets[write.Path] = name
+					}
+				}
+			}
+			if strings.HasPrefix(cleaned, "/etc/tmpfiles.d/") && (path.Dir(cleaned) != "/etc/tmpfiles.d" || !strings.HasSuffix(cleaned, ".conf")) {
+				return fmt.Errorf("%s.path %q must be a .conf file directly below /etc/tmpfiles.d", field, cleaned)
 			}
 			switch file.Mode {
 			case 0, 0o600, 0o640, 0o644:
@@ -736,6 +758,56 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 		return fmt.Errorf("file content exceeds the %d-byte host configuration limit", MaxHostConfigurationTotalBytes)
 	}
 	return nil
+}
+
+// ParseTmpfilesSysfsWrites accepts the bounded tmpfiles subset Katl can apply
+// and verify without granting rules ownership of arbitrary host paths.
+func ParseTmpfilesSysfsWrites(content string) ([]TmpfilesSysfsWrite, error) {
+	var writes []TmpfilesSysfsWrite
+	seen := make(map[string]struct{})
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for lineNumber := 1; scanner.Scan(); lineNumber++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 7 {
+			return nil, fmt.Errorf("tmpfiles line %d must contain type, path, mode, user, group, age, and argument", lineNumber)
+		}
+		if fields[0] != "w" {
+			return nil, fmt.Errorf("tmpfiles line %d type %q is unsupported; use w for a sysfs write", lineNumber, fields[0])
+		}
+		target := fields[1]
+		if path.Clean(target) != target || !strings.HasPrefix(target, "/sys/") {
+			return nil, fmt.Errorf("tmpfiles line %d path %q must be a normalized path below /sys", lineNumber, target)
+		}
+		if strings.ContainsAny(target, "*?[]%\\") {
+			return nil, fmt.Errorf("tmpfiles line %d path %q must not contain globs, specifiers, or escapes", lineNumber, target)
+		}
+		for index, value := range fields[2:6] {
+			if value != "-" {
+				names := []string{"mode", "user", "group", "age"}
+				return nil, fmt.Errorf("tmpfiles line %d %s must be - for a sysfs write", lineNumber, names[index])
+			}
+		}
+		value := fields[6]
+		if value == "-" || strings.ContainsAny(value, "*?[]%\\\x00") {
+			return nil, fmt.Errorf("tmpfiles line %d argument must be a concrete value without globs, specifiers, or escapes", lineNumber)
+		}
+		if _, duplicate := seen[target]; duplicate {
+			return nil, fmt.Errorf("tmpfiles line %d duplicates write target %q", lineNumber, target)
+		}
+		seen[target] = struct{}{}
+		writes = append(writes, TmpfilesSysfsWrite{Path: target, Value: value})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read tmpfiles content: %w", err)
+	}
+	if len(writes) == 0 {
+		return nil, fmt.Errorf("tmpfiles content must contain at least one sysfs write")
+	}
+	return writes, nil
 }
 
 // ValidateSystemExtensions validates only the generic ownership and

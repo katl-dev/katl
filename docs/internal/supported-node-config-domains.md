@@ -62,6 +62,7 @@ modules-load
 tmpfiles
   required directories, modes, and ownership for Katl-managed node state
   rendered under /etc/tmpfiles.d/
+  public hostConfiguration supports bounded exact sysfs write rules
 
 mount units
   persistent state projections and extra data disk mounts
@@ -181,9 +182,10 @@ modules-load
   golden tests cover required Kubernetes/network modules
 
 tmpfiles
-  allow only Katl-managed directories and modes
-  reject files that would override host identity or kubeadm output
-  verify generated rules with systemd-tmpfiles where practical
+  keep internal directory and ownership rules limited to Katl-managed paths
+  allow public hostConfiguration only for exact w rules below /sys
+  reject destructive types, globs, specifiers, escapes, and duplicate targets
+  apply and read-back verify public sysfs writes before boot health succeeds
 
 mount units and extra disks
   derive mount points below /var/lib/katl/mnt from validated unique names
@@ -195,7 +197,10 @@ Bootstrap profile input
   allow kubelet configuration only as native kubelet documents referenced by
   the resolved KubeadmConfig
   reject denied host paths and unsafe patch directories
-  require kubernetesVersion, when present, to match the selected sysext
+  supply kubernetesVersion from spec.kubernetes.version and reject conflicts
+  default the containerd CRI socket and empty control-plane registration taints
+  enforce the writable-state kubelet volumePluginDir
+  inject controlPlaneEndpoint and its hostname certificate SAN at bootstrap
   golden tests cover init, join, kubelet configuration, patches, and selected
   sysext mismatch
 
