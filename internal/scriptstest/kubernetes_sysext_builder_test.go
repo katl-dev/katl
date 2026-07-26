@@ -133,6 +133,8 @@ printf '{"sha256":"%s","sizeBytes":%s}\n' "$digest" "$size" > "$artifact.json"
 	}
 	if got := strings.Join(readLinesForScripts(t, goArgs), " "); !strings.Contains(got, "--artifact "+filepath.Join(buildDir, "katl-kubernetes-upgrade.raw")) {
 		t.Fatalf("metadata command did not receive the explicit output: %s", got)
+	} else if !strings.Contains(got, "run ./cmd/katl-kubernetes-metadata write-from-log") {
+		t.Fatalf("metadata command still uses the shared artifact controller: %s", got)
 	}
 
 	if err := os.RemoveAll(runtimePackageDB); err != nil {

@@ -138,7 +138,7 @@ func TestPublicKubernetesBundleCheckRequiresUpstreamRelease(t *testing.T) {
 	}
 }
 
-func TestKubernetesBundleWorkflowRetiresSupersededCompatibilityPRs(t *testing.T) {
+func TestKubernetesBundleWorkflowReusesAndCleansCompatibilityBranch(t *testing.T) {
 	repo := repoRoot(t)
 	contents, err := os.ReadFile(filepath.Join(repo, ".github", "workflows", "kubernetes-bundles.yml"))
 	if err != nil {
@@ -150,6 +150,7 @@ func TestKubernetesBundleWorkflowRetiresSupersededCompatibilityPRs(t *testing.T)
 			Steps       []struct {
 				Name string `yaml:"name"`
 				Uses string `yaml:"uses"`
+				Run  string `yaml:"run"`
 				With struct {
 					Script string `yaml:"script"`
 				} `yaml:"with"`
@@ -168,11 +169,34 @@ func TestKubernetesBundleWorkflowRetiresSupersededCompatibilityPRs(t *testing.T)
 		t.Fatalf("compatibility actions permission = %q, want write", got)
 	}
 
-	var script string
+	var restore, branch, script string
 	for _, step := range compatibility.Steps {
-		if step.Name == "Open compatibility pull request" {
+		switch step.Name {
+		case "Restore pending compatibility update":
+			restore = step.Run
+		case "Publish compatibility update branch":
+			branch = step.Run
+		case "Open compatibility pull request":
 			script = step.With.Script
-			break
+		}
+	}
+	for _, contract := range []string{
+		`branch="automation/kubernetes-compatibility"`,
+		`git fetch origin "refs/heads/${branch}:${remote_ref}"`,
+		"git restore",
+		"internal/installer/kubernetescompat/catalog.json",
+	} {
+		if !strings.Contains(restore, contract) {
+			t.Errorf("pending compatibility restore does not enforce %q", contract)
+		}
+	}
+	for _, contract := range []string{
+		`branch="automation/kubernetes-compatibility"`,
+		`git ls-remote --heads origin`,
+		`--force-with-lease="refs/heads/${branch}:${remote_sha}"`,
+	} {
+		if !strings.Contains(branch, contract) {
+			t.Errorf("compatibility branch step does not enforce %q", contract)
 		}
 	}
 	if script == "" {
@@ -180,12 +204,16 @@ func TestKubernetesBundleWorkflowRetiresSupersededCompatibilityPRs(t *testing.T)
 	}
 	for _, contract := range []string{
 		"github.paginate(github.rest.pulls.list",
-		`candidate.head.ref.startsWith(branchPrefix)`,
-		`candidate.head.repo?.full_name === repository`,
-		`candidate.number !== pull.number`,
+		"head: `${owner}:${process.env.HEAD_BRANCH}`",
+		"Updated generated compatibility PR",
+		"Opened generated compatibility PR",
+		"github.rest.git.getMatchingRefs",
+		`const legacyPrefix = "automation/kubernetes-compatibility-"`,
 		"github.rest.issues.createComment",
 		"github.rest.pulls.update",
 		`state: "closed"`,
+		"github.rest.git.deleteRef",
+		"`heads/${branch}`",
 		"github.rest.actions.listWorkflowRuns",
 		`"fast-checks.yml"`,
 		`"kubernetes-bundles.yml"`,

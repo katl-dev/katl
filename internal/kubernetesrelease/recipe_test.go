@@ -27,9 +27,28 @@ func TestRecipeDigestChangesWithProductionInput(t *testing.T) {
 	}
 }
 
+func TestRecipeDigestTracksNewProductionInput(t *testing.T) {
+	root := writeRecipeFixture(t)
+	first, err := RecipeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "cmd", "katl-kubernetes-metadata", "new.go")
+	if err := os.WriteFile(path, []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := RecipeDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("new producer source did not affect recipe digest")
+	}
+}
+
 func TestRecipeDigestIgnoresTests(t *testing.T) {
 	root := writeRecipeFixture(t)
-	path := filepath.Join(root, "cmd", "katl-mkosi-artifacts", "main_test.go")
+	path := filepath.Join(root, "cmd", "katl-kubernetes-metadata", "main_test.go")
 	first, err := RecipeDigest(root)
 	if err != nil {
 		t.Fatal(err)
@@ -48,14 +67,13 @@ func TestRecipeDigestIgnoresTests(t *testing.T) {
 
 func TestRecipeDigestTracksBundleProducerSources(t *testing.T) {
 	for _, relative := range []string{
-		"internal/kubernetesrelease/input.go",
 		"internal/installer/artifact/artifact.go",
 		"internal/installer/artifact/local.go",
 		"internal/installer/payloadbundle/input.go",
 		"internal/installer/sysextcatalog/catalog.go",
 		"internal/installer/sysextcatalog/publish.go",
 		"internal/installer/sysextcatalog/stage.go",
-		"cmd/katl-mkosi-artifacts/input.go",
+		"cmd/katl-kubernetes-metadata/input.go",
 		"cmd/katl-publish-kubernetes-sysext/input.go",
 		"mkosi.profiles/kubernetes-sysext/input.go",
 		"mkosi.profiles/runtime/mkosi.conf",
@@ -86,7 +104,10 @@ func TestRecipeDigestTracksBundleProducerSources(t *testing.T) {
 
 func TestRecipeDigestIgnoresUnrelatedProductAndRuntimeSources(t *testing.T) {
 	for _, relative := range []string{
+		".github/workflows/kubernetes-bundles.yml",
 		"cmd/katl-boot-health/main.go",
+		"cmd/katl-kubernetes-release/main.go",
+		"cmd/katl-mkosi-artifacts/main.go",
 		"cmd/katlc/input.go",
 		"internal/installer/configapply/input.go",
 		"internal/installer/generation/input.go",
@@ -196,6 +217,7 @@ func TestRefreshRecipeChangesScopeWithoutAdvancingArtifacts(t *testing.T) {
 	supported := SupportedVersions{
 		APIVersion:   APIVersion,
 		Kind:         Kind,
+		RecipeScope:  "kubernetes-bundle-v1",
 		RecipeDigest: "sha256:" + strings.Repeat("a", 64),
 		Versions: []SupportedVersion{
 			testSupportedVersion("v1.35.9", 2),
@@ -227,7 +249,7 @@ func TestDefaultRecipeDigestMatchesRepository(t *testing.T) {
 	}
 }
 
-func TestKubernetesBundleWorkflowUsesRecipeBoundary(t *testing.T) {
+func TestKubernetesBundleWorkflowUsesBoundedTriggers(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "kubernetes-bundles.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +259,7 @@ func TestKubernetesBundleWorkflowUsesRecipeBoundary(t *testing.T) {
 		".github/workflows/kubernetes-bundles.yml",
 		"Containerfile.mkosi",
 		"cmd/katl-kubernetes-release/**",
-		"cmd/katl-mkosi-artifacts/**",
+		"cmd/katl-kubernetes-metadata/**",
 		"cmd/katl-publish-kubernetes-sysext/**",
 		"containers-policy.json",
 		"go.mod",
@@ -261,6 +283,7 @@ func TestKubernetesBundleWorkflowUsesRecipeBoundary(t *testing.T) {
 		}
 	}
 	for _, unrelated := range []string{
+		"cmd/katl-mkosi-artifacts/**",
 		"cmd/katlc/**",
 		"internal/**",
 		"internal/installer/manifest/**",
@@ -293,11 +316,9 @@ func writeRecipeFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	directories := map[string]bool{
-		"cmd/katl-kubernetes-release":        true,
-		"cmd/katl-mkosi-artifacts":           true,
+		"cmd/katl-kubernetes-metadata":       true,
 		"cmd/katl-publish-kubernetes-sysext": true,
 		"internal/installer/payloadbundle":   true,
-		"internal/kubernetesrelease":         true,
 		"mkosi.profiles/kubernetes-sysext":   true,
 	}
 	for _, input := range recipeRoots {
@@ -319,11 +340,14 @@ func writeRecipeFixture(t *testing.T) string {
 		}
 	}
 	for relative, content := range map[string]string{
-		"cmd/katl-mkosi-artifacts/main_test.go": "test",
-		"cmd/katlc/input.go":                    "agent",
-		"docs/input.md":                         "documentation",
-		"internal/operatorconsole/input.go":     "runtime",
-		"mkosi.profiles/runtime/mkosi.build":    "runtime build",
+		".github/workflows/kubernetes-bundles.yml":  "workflow",
+		"cmd/katl-kubernetes-metadata/main_test.go": "test",
+		"cmd/katl-kubernetes-release/main.go":       "release controller",
+		"cmd/katl-mkosi-artifacts/main.go":          "shared artifact controller",
+		"cmd/katlc/input.go":                        "agent",
+		"docs/input.md":                             "documentation",
+		"internal/operatorconsole/input.go":         "runtime",
+		"mkosi.profiles/runtime/mkosi.build":        "runtime build",
 		"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-example.service": "runtime unit",
 	} {
 		path := filepath.Join(root, filepath.FromSlash(relative))
