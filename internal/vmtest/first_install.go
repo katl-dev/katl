@@ -109,6 +109,9 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		config.Installer.Expect = installedSignal
 		config.Installer.VM.Expect = installedSignal
 		config.Installer.DiskFirst = true
+		if config.Installer.VM.SerialIdleTimeout == 0 {
+			config.Installer.VM.SerialIdleTimeout = -1
+		}
 	}
 	if config.GuestHandoff {
 		preseed, err := writeGuestHandoffSeedMedia(ctx, result, config, manifest)

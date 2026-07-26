@@ -50,6 +50,7 @@ func TestMkosiArtifactsWriteProducesValidJSON(t *testing.T) {
 		"KATL_INSTALLER_UKI="+installerUKI,
 		"KATL_INSTALLER_KERNEL="+installerKernel,
 		"KATL_INSTALLER_INITRD="+installerInitrd,
+		"KATL_INSTALLER_PACKAGE_SET="+filepath.Join(workDir, "missing-installer-packages.tsv"),
 		"KATL_INSTALLER_ISO="+installerISO,
 		"KATL_RUNTIME_UKI="+runtimeUKI,
 		"KATL_RUNTIME_UKI_METADATA="+runtimeUKI+".json",

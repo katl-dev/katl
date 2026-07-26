@@ -4,6 +4,9 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 artifact="${1:-$repo_root/_build/mkosi/katl-installer.efi}"
 initrd="${KATL_INSTALLER_INITRD:-${artifact%.efi}.initrd}"
+packages="${KATL_INSTALLER_PACKAGE_SET:-$repo_root/_build/mkosi/katl-installer.packages.tsv}"
+artifact_metadata="${artifact}.json"
+initrd_metadata="${initrd}.json"
 
 fail() {
     echo "error: $*" >&2
@@ -15,17 +18,62 @@ need() {
 }
 
 need cpio
+need go
 need grep
+need jq
+need modinfo
+need sha256sum
 need ukify
 need zstd
 
 [[ -f "$artifact" ]] || fail "installer UKI not found: $artifact"
 [[ -f "$initrd" ]] || fail "installer initrd not found: $initrd"
+[[ -f "$packages" ]] || fail "installer package inventory not found: $packages"
+[[ -f "$artifact_metadata" ]] || fail "installer UKI metadata not found: $artifact_metadata"
+[[ -f "$initrd_metadata" ]] || fail "installer initrd metadata not found: $initrd_metadata"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/katl-installer-check.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+    chmod -R u+w "$work" 2>/dev/null || true
+    rm -rf "$work"
+}
+trap cleanup EXIT
+early_cpio="$work/early.cpio"
+normal_initrd="$work/normal.initrd"
 initrd_cpio="$work/installer.cpio"
-zstd -q -d -c "$initrd" >"$initrd_cpio" || fail "decompress installer initrd failed"
+GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
+    go run "$repo_root/cmd/katl-mkosi-artifacts" verify-firmware-packages \
+    --kind installer \
+    --inventory "$packages" >/dev/null ||
+    fail "verify installer firmware package capabilities failed"
+firmware_report="$(GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
+    go run "$repo_root/cmd/katl-mkosi-artifacts" verify-uki-initrd \
+    --uki "$artifact" \
+    --initrd "$initrd")" ||
+    fail "verify installer UKI early CPU microcode failed"
+early_sha="${firmware_report#earlyMicrocodeSHA256=}"
+early_sha="${early_sha%% *}"
+package_sha="$(sha256sum "$packages" | awk '{print $1}')"
+jq -e --arg early "$early_sha" --arg packages "$package_sha" \
+    '.artifactRole == "installer-uki"
+      and .earlyMicrocodeSHA256 == $early
+      and .packageInventorySHA256 == $packages' \
+    "$artifact_metadata" >/dev/null ||
+    fail "installer UKI metadata does not bind the firmware package inventory and early microcode"
+jq -e --arg early "$early_sha" --arg packages "$package_sha" \
+    '.artifactRole == "installer-initrd"
+      and .compression == "early-cpio+zstd"
+      and .earlyMicrocodeSHA256 == $early
+      and .packageInventorySHA256 == $packages' \
+    "$initrd_metadata" >/dev/null ||
+    fail "installer initrd metadata does not bind the firmware package inventory and early microcode"
+GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
+    go run "$repo_root/cmd/katl-mkosi-artifacts" split-initrd \
+    --input "$initrd" \
+    --early "$early_cpio" \
+    --initramfs "$normal_initrd" >/dev/null ||
+    fail "split installer early CPU microcode and normal initramfs failed"
+zstd -q -d -c "$normal_initrd" >"$initrd_cpio" || fail "decompress installer initrd failed"
 
 inspect="$(ukify inspect "$artifact")" || fail "inspect installer UKI failed"
 grep -Fq '.linux:' <<<"$inspect" || fail "installer UKI missing .linux section"
@@ -43,6 +91,21 @@ fi
 if grep -Eq '^usr/lib/modules/[^/]+/(System\.map|vmlinuz)$' <<<"$initrd_list"; then
     fail "installer initrd contains duplicate kernel build artifacts"
 fi
+initrd_root="$work/root"
+mkdir -p "$initrd_root"
+(
+    cd "$initrd_root"
+    cpio -id --quiet --no-absolute-filenames <"$initrd_cpio"
+) || fail "extract installer initrd for firmware verification failed"
+if find "$initrd_root/usr/lib/modules" -type f \
+    \( -name 'i915.ko*' -o -name 'xe.ko*' -o -name 'amdgpu.ko*' \) \
+    -print -quit | grep -q .; then
+    fail "installer initrd unexpectedly contains runtime GPU drivers"
+fi
+GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
+    go run "$repo_root/cmd/katl-mkosi-artifacts" verify-module-firmware \
+    --root "$initrd_root" >/dev/null ||
+    fail "verify installer driver firmware co-location failed"
 
 has_path() {
     local path="${1#/}"

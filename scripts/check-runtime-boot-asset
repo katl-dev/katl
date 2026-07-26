@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 artifact="${1:-_build/mkosi/katl-runtime.efi}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
+initrd="${KATL_RUNTIME_INITRD:-$(dirname "$artifact")/katl-runtime-root.initrd}"
+packages="${KATL_RUNTIME_PACKAGE_SET:-$(dirname "$artifact")/katl-runtime.packages.tsv}"
 
 fail() {
     echo "error: $*" >&2
@@ -15,6 +18,7 @@ need() {
 }
 
 need jq
+need go
 need grep
 need sha256sum
 need stat
@@ -22,13 +26,25 @@ need stat
 [[ -f "$artifact" ]] || fail "artifact not found: $artifact"
 [[ -f "$metadata" ]] || fail "metadata not found: $metadata"
 [[ -f "$checksum" ]] || fail "checksum not found: $checksum"
+[[ -f "$initrd" ]] || fail "runtime initrd not found: $initrd"
+[[ -f "$packages" ]] || fail "runtime package inventory not found: $packages"
 
 (cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
 
 size="$(stat -c %s "$artifact")"
 sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+package_sha="$(sha256sum "$packages" | awk '{print $1}')"
+firmware_report="$(GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
+    go run "$repo_root/cmd/katl-mkosi-artifacts" verify-uki-initrd \
+    --uki "$artifact" \
+    --initrd "$initrd")" ||
+    fail "runtime UKI early CPU microcode verification failed"
+early_sha="${firmware_report#earlyMicrocodeSHA256=}"
+early_sha="${early_sha%% *}"
 jq -e \
     --arg sha "$sha256" \
+    --arg early "$early_sha" \
+    --arg packages "$package_sha" \
     --argjson size "$size" \
     '.name == "runtime-uki"
       and .kind == "runtime-uki"
@@ -38,9 +54,11 @@ jq -e \
       and .compatibleRuntime.artifactPath == "katl-runtime-root.squashfs"
       and ((.kernelCommandLine // []) | index("rootfstype=squashfs") != null)
       and ((.kernelCommandLine // []) | index("ro") != null)
+      and .earlyMicrocodeSHA256 == $early
+      and .packageInventorySHA256 == $packages
       and .sizeBytes == $size
       and .sha256 == $sha' "$metadata" >/dev/null ||
-    fail "runtime UKI metadata does not match artifact"
+    fail "runtime UKI metadata does not match artifact or firmware inputs"
 
 if command -v ukify >/dev/null 2>&1; then
     inspection="$(ukify inspect "$artifact")"

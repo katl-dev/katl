@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 artifact="${1:-_build/mkosi/katl-runtime-root.squashfs}"
 metadata="${artifact}.json"
 checksum="${artifact}.sha256"
+packages="${KATL_RUNTIME_PACKAGE_SET:-$(dirname "$artifact")/katl-runtime.packages.tsv}"
 
 fail() {
     echo "error: $*" >&2
@@ -56,7 +58,7 @@ links_to() {
 }
 
 check_kernel_support() {
-    local module_index versions version builtin module_count firmware_index firmware_count
+    local module_index versions version builtin module_count firmware_index firmware_count module_root
     module_index="$(unsquashfs -ll "$artifact" usr/lib/modules)" || fail "inspect /usr/lib/modules failed"
     versions="$(
         sed -n 's#.*squashfs-root/usr/lib/modules/\([^/[:space:]]*\).*#\1#p' <<<"$module_index" |
@@ -94,9 +96,20 @@ check_kernel_support() {
         ip_vs_wrr \
         ip_vs_sh \
         virtio_net \
-        virtio_blk
+        virtio_blk \
+        i915 \
+        xe \
+        amdgpu
     do
         require_module "$name"
+    done
+
+    module_root="$work/runtime-modules"
+    unsquashfs -no-progress -d "$module_root" "$artifact" usr/lib/modules >/dev/null ||
+        fail "extract runtime kernel modules failed"
+    for name in i915 xe amdgpu; do
+        modinfo -b "$module_root/usr" -k "$version" "$name" >/dev/null ||
+            fail "runtime artifact-local modinfo failed for $name"
     done
 
     firmware_index="$(unsquashfs -ll "$artifact" usr/lib/firmware 2>/dev/null || true)"
@@ -105,12 +118,21 @@ check_kernel_support() {
     )"
     printf "runtime kernel modules: version=%s module_files=%s required=%s\n" \
         "$version" "$module_count" \
-        "br_netfilter,nf_conntrack,overlay,ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,virtio_net,virtio_blk"
+        "br_netfilter,nf_conntrack,overlay,ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,virtio_net,virtio_blk,i915,xe,amdgpu"
     if [[ "${firmware_count:-0}" -eq 0 ]]; then
         echo "runtime firmware inventory: none; this artifact does not claim firmware-backed hardware support"
     else
         printf "runtime firmware inventory: files=%s\n" "$firmware_count"
     fi
+}
+
+require_firmware_family() {
+    local family="$1"
+    local capability="$2"
+    local output
+    output="$(unsquashfs -ll "$artifact" "usr/lib/firmware/$family" 2>/dev/null || true)"
+    grep -Eq "squashfs-root/usr/lib/firmware/$family/.+" <<<"$output" ||
+        fail "runtime $capability capability is missing: expected firmware family /usr/lib/firmware/$family"
 }
 
 root_locked() {
@@ -122,8 +144,10 @@ root_locked() {
 }
 
 need awk
+need go
 need grep
 need jq
+need modinfo
 need sha256sum
 need stat
 need unsquashfs
@@ -131,15 +155,27 @@ need unsquashfs
 [[ -f "$artifact" ]] || fail "artifact not found: $artifact"
 [[ -f "$metadata" ]] || fail "metadata not found: $metadata"
 [[ -f "$checksum" ]] || fail "checksum not found: $checksum"
+[[ -f "$packages" ]] || fail "runtime package inventory not found: $packages"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/katl-runtime-check.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
+    go run "$repo_root/cmd/katl-mkosi-artifacts" verify-firmware-packages \
+    --kind runtime \
+    --inventory "$packages" >/dev/null ||
+    fail "verify runtime firmware package capabilities failed"
 
 (cd "$(dirname "$artifact")" && sha256sum -c "$(basename "$checksum")")
 
 size="$(stat -c %s "$artifact")"
 sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+package_sha="$(sha256sum "$packages" | awk '{print $1}')"
 runtime_version="$(jq -r '.version // empty' "$metadata")"
 [[ -n "$runtime_version" ]] || fail "runtime root metadata version is missing"
 jq -e \
     --arg sha "$sha256" \
+    --arg packages "$package_sha" \
     --argjson size "$size" \
     '.name == "runtime-root"
       and .kind == "runtime-root"
@@ -149,9 +185,10 @@ jq -e \
       and .compatibleBoot.kind == "uki"
       and ((.compatibleBoot.kernelCommandLine // []) | index("rootfstype=squashfs") != null)
       and ((.compatibleBoot.kernelCommandLine // []) | index("ro") != null)
+      and .packageInventorySHA256 == $packages
       and .sizeBytes == $size
       and .sha256 == $sha' "$metadata" >/dev/null ||
-    fail "runtime root metadata does not match artifact"
+    fail "runtime root metadata does not match artifact or firmware package inventory"
 
 runtime_inventory="$(unsquashfs -ll "$artifact")" || fail "list runtime root failed"
 if grep -Eiq 'squashfs-root/[^[:space:]]*(vmtest|vm-test)' <<<"$runtime_inventory"; then
@@ -257,6 +294,11 @@ file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/net
 links_to /opt/cni/bin /var/lib/katl/kubernetes/cni/bin
 links_to /etc/cni/net.d /var/lib/katl/kubernetes/cni/net.d
 check_kernel_support
+require_firmware_family intel-ucode "Intel CPU microcode"
+require_firmware_family amd-ucode "AMD CPU microcode"
+require_firmware_family i915 "Intel i915 GPU firmware"
+require_firmware_family xe "Intel xe GPU firmware"
+require_firmware_family amdgpu "AMD amdgpu firmware"
 
 for path in \
     /usr/bin/mkosi \

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/firmware"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -107,6 +108,20 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		return runWriteRuntimeRoot(args, stdout, stderr, cfg)
 	case "write-runtime-uki":
 		return runWriteRuntimeUKI(args, stdout, stderr, cfg)
+	case "normalize-installer-firmware":
+		return runNormalizeInstallerFirmware(args, stdout, stderr, cfg, envMap(environ))
+	case "split-initrd":
+		return runSplitInitrd(args, stdout, stderr, cfg)
+	case "join-initrd":
+		return runJoinInitrd(args, stdout, stderr, cfg)
+	case "verify-initrd":
+		return runVerifyInitrd(args, stdout, stderr, cfg)
+	case "verify-uki-initrd":
+		return runVerifyUKIInitrd(args, stdout, stderr, cfg)
+	case "verify-firmware-packages":
+		return runVerifyFirmwarePackages(args, stdout, stderr, cfg)
+	case "verify-module-firmware":
+		return runVerifyModuleFirmware(args, stdout, stderr, cfg)
 	case "write-kubernetes-sysext":
 		return runWriteKubernetesSysext(args, stdout, stderr, cfg)
 	case "write-kubernetes-sysext-from-log":
@@ -133,6 +148,13 @@ const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts path KIND [INDEX]
        katl-mkosi-artifacts write-runtime-root --artifact PATH
        katl-mkosi-artifacts write-runtime-uki --artifact PATH --runtime-artifact PATH --runtime-sha256 SHA --kernel-version VERSION
+       katl-mkosi-artifacts normalize-installer-firmware [--uki PATH] [--initrd PATH]
+       katl-mkosi-artifacts split-initrd --input PATH --early PATH --initramfs PATH
+       katl-mkosi-artifacts join-initrd --early PATH --initramfs PATH --output PATH
+       katl-mkosi-artifacts verify-initrd --input PATH
+       katl-mkosi-artifacts verify-uki-initrd --uki PATH [--initrd PATH]
+       katl-mkosi-artifacts verify-firmware-packages --kind installer|runtime --inventory PATH
+       katl-mkosi-artifacts verify-module-firmware --root PATH
        katl-mkosi-artifacts write-kubernetes-sysext --artifact PATH --payload-version VERSION --kubeadm-version VERSION --kubelet-version VERSION --kubectl-version VERSION --cri-tools-version VERSION --ethtool-version VERSION --socat-version VERSION
        katl-mkosi-artifacts write-kubernetes-sysext-from-log --artifact PATH --log PATH --repo-id ID --repo-base-url URL --repo-minor MINOR
        katl-mkosi-artifacts write-endpoint-advertiser-sysext --artifact PATH --log PATH --runtime-artifact PATH --runtime-metadata PATH
@@ -158,9 +180,12 @@ type config struct {
 	InstallerUKI         string
 	InstallerKernel      string
 	InstallerInitrd      string
+	InstallerPackages    string
 	InstallerISO         string
 	InstallerISOExplicit bool
 	RuntimeUKI           string
+	RuntimeInitrd        string
+	RuntimePackages      string
 	RuntimeUKIMetadata   string
 	RuntimeUKIChecksum   string
 	RuntimeRoot          string
@@ -197,9 +222,12 @@ func configFromEnv(env map[string]string, repo string) (config, error) {
 		InstallerUKI:         envPath(env, repo, "KATL_INSTALLER_UKI", filepath.Join(buildDir, "katl-installer.efi")),
 		InstallerKernel:      envPath(env, repo, "KATL_INSTALLER_KERNEL", filepath.Join(buildDir, "katl-installer.vmlinuz")),
 		InstallerInitrd:      envPath(env, repo, "KATL_INSTALLER_INITRD", filepath.Join(buildDir, "katl-installer.initrd")),
+		InstallerPackages:    envPath(env, repo, "KATL_INSTALLER_PACKAGE_SET", filepath.Join(buildDir, "katl-installer.packages.tsv")),
 		InstallerISO:         installerISO,
 		InstallerISOExplicit: installerISOExplicit,
 		RuntimeUKI:           runtimeUKI,
+		RuntimeInitrd:        envPath(env, repo, "KATL_RUNTIME_INITRD", filepath.Join(buildDir, "katl-runtime-root.initrd")),
+		RuntimePackages:      envPath(env, repo, "KATL_RUNTIME_PACKAGE_SET", filepath.Join(buildDir, "katl-runtime.packages.tsv")),
 		RuntimeUKIMetadata:   envPath(env, repo, "KATL_RUNTIME_UKI_METADATA", runtimeUKI+".json"),
 		RuntimeUKIChecksum:   envPath(env, repo, "KATL_RUNTIME_UKI_CHECKSUM", runtimeUKI+".sha256"),
 		RuntimeRoot:          runtimeRoot,
@@ -262,28 +290,32 @@ type bootMetadata struct {
 	InstallerInterface       string   `json:"installerInterface"`
 	DefaultKernelCommandLine []string `json:"defaultKernelCommandLine"`
 	SupportedInputModes      []string `json:"supportedInputModes"`
+	PackageInventorySHA256   string   `json:"packageInventorySHA256,omitempty"`
+	EarlyMicrocodeSHA256     string   `json:"earlyMicrocodeSHA256,omitempty"`
 }
 
 type localMetadata struct {
-	Name              string            `json:"name"`
-	Kind              string            `json:"kind"`
-	Format            string            `json:"format"`
-	Path              string            `json:"path"`
-	SizeBytes         int64             `json:"sizeBytes"`
-	SHA256            string            `json:"sha256"`
-	Compression       string            `json:"compression,omitempty"`
-	Generation        string            `json:"generation,omitempty"`
-	Version           string            `json:"version,omitempty"`
-	PayloadVersion    string            `json:"payloadVersion,omitempty"`
-	Architecture      string            `json:"architecture"`
-	SourceRepo        *sourceRepo       `json:"sourceRepo,omitempty"`
-	PackageVersions   map[string]string `json:"packageVersions,omitempty"`
-	RuntimeInterface  string            `json:"runtimeInterface"`
-	CompatibleBoot    *bootCompat       `json:"compatibleBoot,omitempty"`
-	CompatibleRuntime *runtimeCompat    `json:"compatibleRuntime,omitempty"`
-	KernelVersion     string            `json:"kernelVersion,omitempty"`
-	KernelCommandLine []string          `json:"kernelCommandLine,omitempty"`
-	Created           string            `json:"created"`
+	Name                   string            `json:"name"`
+	Kind                   string            `json:"kind"`
+	Format                 string            `json:"format"`
+	Path                   string            `json:"path"`
+	SizeBytes              int64             `json:"sizeBytes"`
+	SHA256                 string            `json:"sha256"`
+	Compression            string            `json:"compression,omitempty"`
+	Generation             string            `json:"generation,omitempty"`
+	Version                string            `json:"version,omitempty"`
+	PayloadVersion         string            `json:"payloadVersion,omitempty"`
+	Architecture           string            `json:"architecture"`
+	SourceRepo             *sourceRepo       `json:"sourceRepo,omitempty"`
+	PackageVersions        map[string]string `json:"packageVersions,omitempty"`
+	RuntimeInterface       string            `json:"runtimeInterface"`
+	CompatibleBoot         *bootCompat       `json:"compatibleBoot,omitempty"`
+	CompatibleRuntime      *runtimeCompat    `json:"compatibleRuntime,omitempty"`
+	KernelVersion          string            `json:"kernelVersion,omitempty"`
+	KernelCommandLine      []string          `json:"kernelCommandLine,omitempty"`
+	PackageInventorySHA256 string            `json:"packageInventorySHA256,omitempty"`
+	EarlyMicrocodeSHA256   string            `json:"earlyMicrocodeSHA256,omitempty"`
+	Created                string            `json:"created"`
 }
 
 type bootCompat struct {
@@ -377,6 +409,10 @@ func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) er
 	}
 
 	artifactPath := absPath(cfg.RepoRoot, *artifact)
+	packageDigest, err := packageInventoryDigest("runtime", cfg.RuntimePackages)
+	if err != nil {
+		return err
+	}
 	size, digest, err := fileInfo(artifactPath)
 	if err != nil {
 		return err
@@ -401,7 +437,8 @@ func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) er
 			RuntimeInterface:  "katl-runtime-1",
 			KernelCommandLine: runtimeKernelCommandLine(),
 		},
-		Created: cfg.CreatedAt,
+		PackageInventorySHA256: packageDigest,
+		Created:                cfg.CreatedAt,
 	}
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
 		return err
@@ -432,6 +469,21 @@ func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) err
 
 	artifactPath := absPath(cfg.RepoRoot, *artifact)
 	runtimePath := absPath(cfg.RepoRoot, *runtimeArtifact)
+	packageDigest, err := packageInventoryDigest("runtime", cfg.RuntimePackages)
+	if err != nil {
+		return err
+	}
+	earlyDigest := ""
+	if packageDigest != "" {
+		if !fileExists(cfg.RuntimeInitrd) {
+			return fmt.Errorf("runtime initrd not found for firmware metadata: %s", cfg.RuntimeInitrd)
+		}
+		report, verifyErr := firmware.VerifyUKIInitrd(artifactPath, cfg.RuntimeInitrd)
+		if verifyErr != nil {
+			return fmt.Errorf("verify runtime firmware metadata: %w", verifyErr)
+		}
+		earlyDigest = report.EarlySHA256
+	}
 	size, digest, err := fileInfo(artifactPath)
 	if err != nil {
 		return err
@@ -454,14 +506,184 @@ func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) err
 			ArtifactPath:   filepath.Base(runtimePath),
 			ArtifactSHA256: *runtimeSHA,
 		},
-		KernelVersion:     *kernelVersion,
-		KernelCommandLine: runtimeKernelCommandLine(),
-		Created:           cfg.CreatedAt,
+		KernelVersion:          *kernelVersion,
+		KernelCommandLine:      runtimeKernelCommandLine(),
+		PackageInventorySHA256: packageDigest,
+		EarlyMicrocodeSHA256:   earlyDigest,
+		Created:                cfg.CreatedAt,
 	}
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, digest)
+	return nil
+}
+
+func runNormalizeInstallerFirmware(args []string, stdout, stderr io.Writer, cfg config, env map[string]string) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts normalize-installer-firmware", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	uki := flags.String("uki", cfg.InstallerUKI, "installer UKI artifact")
+	initrd := flags.String("initrd", cfg.InstallerInitrd, "loose installer initrd artifact")
+	ukify := flags.String("ukify", envDefault(env, "KATL_UKIFY", "ukify"), "ukify executable")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if err := firmware.NormalizeInstaller(absPath(cfg.RepoRoot, *uki), absPath(cfg.RepoRoot, *initrd), *ukify); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, "installer firmware normalized")
+	return nil
+}
+
+func runSplitInitrd(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts split-initrd", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	input := flags.String("input", "", "combined initrd input")
+	early := flags.String("early", "", "early microcode cpio output")
+	initramfs := flags.String("initramfs", "", "normal initramfs output")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*input) == "" || strings.TrimSpace(*early) == "" || strings.TrimSpace(*initramfs) == "" {
+		return fmt.Errorf("--input, --early, and --initramfs are required")
+	}
+	report, err := firmware.WriteSplit(
+		absPath(cfg.RepoRoot, *input),
+		absPath(cfg.RepoRoot, *early),
+		absPath(cfg.RepoRoot, *initramfs),
+	)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "earlyMicrocodeSHA256=%s\n", report.EarlySHA256)
+	return nil
+}
+
+func runJoinInitrd(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts join-initrd", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	early := flags.String("early", "", "early microcode cpio input")
+	initramfs := flags.String("initramfs", "", "normal initramfs input")
+	output := flags.String("output", "", "combined initrd output")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*early) == "" || strings.TrimSpace(*initramfs) == "" || strings.TrimSpace(*output) == "" {
+		return fmt.Errorf("--early, --initramfs, and --output are required")
+	}
+	report, err := firmware.WriteJoined(
+		absPath(cfg.RepoRoot, *early),
+		absPath(cfg.RepoRoot, *initramfs),
+		absPath(cfg.RepoRoot, *output),
+	)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "earlyMicrocodeSHA256=%s\n", report.EarlySHA256)
+	return nil
+}
+
+func runVerifyInitrd(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts verify-initrd", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	input := flags.String("input", "", "combined initrd input")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*input) == "" {
+		return fmt.Errorf("--input is required")
+	}
+	data, err := os.ReadFile(absPath(cfg.RepoRoot, *input))
+	if err != nil {
+		return err
+	}
+	report, err := firmware.SplitEarlyInitrd(data)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "earlyMicrocodeSHA256=%s vendors=Intel,AMD\n", report.EarlySHA256)
+	return nil
+}
+
+func runVerifyUKIInitrd(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts verify-uki-initrd", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	uki := flags.String("uki", "", "UKI artifact")
+	initrd := flags.String("initrd", "", "matching loose initrd")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*uki) == "" {
+		return fmt.Errorf("--uki is required")
+	}
+	initrdPath := ""
+	if strings.TrimSpace(*initrd) != "" {
+		initrdPath = absPath(cfg.RepoRoot, *initrd)
+	}
+	report, err := firmware.VerifyUKIInitrd(absPath(cfg.RepoRoot, *uki), initrdPath)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "earlyMicrocodeSHA256=%s vendors=Intel,AMD\n", report.EarlySHA256)
+	return nil
+}
+
+func runVerifyFirmwarePackages(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts verify-firmware-packages", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	kind := flags.String("kind", "", "artifact kind: installer or runtime")
+	inventory := flags.String("inventory", "", "resolved package inventory")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*kind) == "" || strings.TrimSpace(*inventory) == "" {
+		return fmt.Errorf("--kind and --inventory are required")
+	}
+	packages, err := firmware.VerifyPackageInventory(*kind, absPath(cfg.RepoRoot, *inventory))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "firmwarePackages=%d kind=%s\n", len(packages), *kind)
+	return nil
+}
+
+func runVerifyModuleFirmware(args []string, stdout, stderr io.Writer, cfg config) error {
+	flags := flag.NewFlagSet("katl-mkosi-artifacts verify-module-firmware", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	root := flags.String("root", "", "extracted initramfs root")
+	modinfo := flags.String("modinfo", "modinfo", "modinfo executable")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if strings.TrimSpace(*root) == "" {
+		return fmt.Errorf("--root is required")
+	}
+	modules, requirements, err := firmware.VerifyInstallerModuleFirmware(absPath(cfg.RepoRoot, *root), *modinfo)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "modules=%d firmwareRequirements=%d\n", modules, requirements)
 	return nil
 }
 
@@ -1311,6 +1533,31 @@ func writeRuntimeIndex(indexPath string, cfg config) error {
 }
 
 func writeBootMetadata(role, format, artifactPath, created string, cfg config) error {
+	packageDigest, err := packageInventoryDigest("installer", cfg.InstallerPackages)
+	if err != nil {
+		return err
+	}
+	earlyDigest := ""
+	if packageDigest != "" {
+		switch role {
+		case "installer-uki":
+			report, verifyErr := firmware.VerifyUKIInitrd(artifactPath, cfg.InstallerInitrd)
+			if verifyErr != nil {
+				return fmt.Errorf("verify installer UKI firmware metadata: %w", verifyErr)
+			}
+			earlyDigest = report.EarlySHA256
+		case "installer-initrd":
+			data, readErr := os.ReadFile(artifactPath)
+			if readErr != nil {
+				return fmt.Errorf("read installer initrd firmware metadata: %w", readErr)
+			}
+			report, verifyErr := firmware.SplitEarlyInitrd(data)
+			if verifyErr != nil {
+				return fmt.Errorf("verify installer initrd firmware metadata: %w", verifyErr)
+			}
+			earlyDigest = report.EarlySHA256
+		}
+	}
 	size, digest, err := fileInfo(artifactPath)
 	if err != nil {
 		return err
@@ -1335,6 +1582,8 @@ func writeBootMetadata(role, format, artifactPath, created string, cfg config) e
 		InstallerInterface:       cfg.InstallerInterface,
 		DefaultKernelCommandLine: []string{"console=ttyS0,115200n8", "console=tty0", "systemd.getty_auto=no", "systemd.log_target=console", "loglevel=6"},
 		SupportedInputModes:      []string{"pxe-preseed", "local-handoff", "offline-media"},
+		PackageInventorySHA256:   packageDigest,
+		EarlyMicrocodeSHA256:     earlyDigest,
 	}
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
@@ -1347,9 +1596,23 @@ func writeBootMetadata(role, format, artifactPath, created string, cfg config) e
 	return nil
 }
 
+func packageInventoryDigest(kind, path string) (string, error) {
+	if !fileExists(path) {
+		return "", nil
+	}
+	if _, err := firmware.VerifyPackageInventory(kind, path); err != nil {
+		return "", err
+	}
+	_, digest, err := fileInfo(path)
+	if err != nil {
+		return "", err
+	}
+	return digest, nil
+}
+
 func installerBootCompression(role string) string {
 	if role == "installer-initrd" {
-		return "zstd"
+		return "early-cpio+zstd"
 	}
 	return ""
 }

@@ -320,8 +320,10 @@ install and upgrade SquashFS images, and the installer UKI, kernel, initrd, and
 UEFI-bootable ISO variants, each with
 adjacent JSON metadata and SHA-256 files. The ISO embeds the matching KatlOS
 install image and its metadata, so it is the primary self-contained install
-artifact. The installer initrd is zstd-compressed inside both the loose initrd
-and UKI; its metadata records that compression while filenames remain stable.
+artifact. The installer initrd contains an uncompressed early CPU microcode
+archive followed by the zstd-compressed normal initramfs inside both the loose
+initrd and UKI; its metadata records that combined format while filenames remain
+stable.
 It remains generic because node identity, disk selection, network,
 and bootstrap configuration are supplied separately at boot. The loose
 installer and install-image artifacts remain available for PXE deployments.
