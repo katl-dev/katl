@@ -268,7 +268,10 @@ scripts/check-fast origin/main...HEAD
 The command checks all tracked Go formatting, patch whitespace, and runs the
 complete Go suite with `-count=1` so cached test results cannot hide failures.
 Changes reach `main` through pull requests after the `Format And Unit Tests`
-check passes; direct pushes are not part of the supported development loop.
+and `Kubernetes Bundle Presubmit` checks pass. The Kubernetes check is a quick
+no-op for unrelated changes and builds every affected supported bundle when
+producer inputs change. Direct pushes are not part of the supported development
+loop.
 
 It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
 publishing. Run host-specific VM gates locally with `scripts/vmtest-run` on a

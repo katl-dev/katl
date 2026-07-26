@@ -2,33 +2,6 @@ name: Kubernetes Bundle Artifacts
 
 on:
   pull_request:
-    paths:
-      - .github/workflows/kubernetes-bundles.yml
-      - Containerfile.mkosi
-      - cmd/katl-kubernetes-release/**
-      - "!cmd/katl-kubernetes-release/**/*_test.go"
-      - cmd/katl-mkosi-artifacts/**
-      - "!cmd/katl-mkosi-artifacts/**/*_test.go"
-      - cmd/katl-publish-kubernetes-sysext/**
-      - "!cmd/katl-publish-kubernetes-sysext/**/*_test.go"
-      - containers-policy.json
-      - go.mod
-      - go.sum
-      - internal/installer/artifact/artifact.go
-      - internal/installer/artifact/local.go
-      - internal/installer/payloadbundle/**
-      - internal/installer/sysextcatalog/catalog.go
-      - internal/installer/sysextcatalog/publish.go
-      - internal/installer/sysextcatalog/stage.go
-      - internal/kubernetesrelease/**
-      - "!internal/kubernetesrelease/**/*_test.go"
-      - internal/kubernetesrelease/supported-versions.json
-      - mkosi.conf
-      - mkosi.profiles/kubernetes-sysext/**
-      - mkosi.profiles/runtime/mkosi.conf
-      - mkosi.profiles/runtime/os-release.in
-      - scripts/build-kubernetes-sysext
-      - scripts/check-kubernetes-sysext
   push:
     branches:
       - main
@@ -445,6 +418,35 @@ jobs:
           name: kubernetes-compatibility-${{ env.PAYLOAD_VERSION }}
           path: _build/compatibility/*.json
           if-no-files-found: error
+
+  presubmit:
+    name: Kubernetes Bundle Presubmit
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs:
+      - plan
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      BUILD_REQUIRED: ${{ needs.plan.outputs.build }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      PLAN_RESULT: ${{ needs.plan.result }}
+    steps:
+      - name: Require successful producer validation
+        shell: bash
+        run: |
+          if [[ "$PLAN_RESULT" != "success" ]]; then
+            echo "error: Kubernetes bundle planning did not succeed: $PLAN_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$BUILD_REQUIRED" == "true" && "$BUILD_RESULT" != "success" ]]; then
+            echo "error: Kubernetes bundle builds did not succeed: $BUILD_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$BUILD_REQUIRED" == "false" && "$BUILD_RESULT" != "skipped" ]]; then
+            echo "error: unexpected Kubernetes bundle build result: $BUILD_RESULT" >&2
+            exit 1
+          fi
 
   compatibility:
     name: Record Published Compatibility

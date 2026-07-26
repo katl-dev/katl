@@ -18,6 +18,8 @@ func TestKubernetesBundleWorkflowLinksUpstreamRelease(t *testing.T) {
 	var workflow struct {
 		On   map[string]any `yaml:"on"`
 		Jobs map[string]struct {
+			Name  string            `yaml:"name"`
+			Needs any               `yaml:"needs"`
 			Env   map[string]string `yaml:"env"`
 			Steps []struct {
 				Name string `yaml:"name"`
@@ -28,8 +30,27 @@ func TestKubernetesBundleWorkflowLinksUpstreamRelease(t *testing.T) {
 	if err := yaml.Unmarshal(contents, &workflow); err != nil {
 		t.Fatalf("parse Kubernetes bundle workflow: %v", err)
 	}
-	if _, ok := workflow.On["pull_request"]; !ok {
-		t.Fatal("Kubernetes bundle workflow does not build relevant pull requests")
+	pullRequest, ok := workflow.On["pull_request"]
+	if !ok {
+		t.Fatal("Kubernetes bundle workflow does not validate pull requests")
+	}
+	if config, ok := pullRequest.(map[string]any); ok {
+		if _, restricted := config["paths"]; restricted {
+			t.Fatal("Kubernetes bundle presubmit is not available to every pull request")
+		}
+	}
+
+	presubmit, ok := workflow.Jobs["presubmit"]
+	if !ok {
+		t.Fatal("Kubernetes bundle workflow has no stable presubmit result")
+	}
+	if presubmit.Name != "Kubernetes Bundle Presubmit" {
+		t.Fatalf("Kubernetes bundle presubmit name = %q", presubmit.Name)
+	}
+	for _, dependency := range []string{"plan", "build"} {
+		if !hasWorkflowNeed(presubmit.Needs, dependency) {
+			t.Errorf("Kubernetes bundle presubmit does not wait for %s", dependency)
+		}
 	}
 
 	build, ok := workflow.Jobs["build"]
@@ -83,6 +104,20 @@ func TestKubernetesBundleWorkflowLinksUpstreamRelease(t *testing.T) {
 	if strings.Contains(string(contents), "oras push") || strings.Contains(string(contents), "oras cp") {
 		t.Fatal("Kubernetes workflow must not assemble or publish through a second OCI implementation")
 	}
+}
+
+func hasWorkflowNeed(value any, want string) bool {
+	switch needs := value.(type) {
+	case string:
+		return needs == want
+	case []any:
+		for _, need := range needs {
+			if need == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestPublicKubernetesBundleCheckRequiresUpstreamRelease(t *testing.T) {
