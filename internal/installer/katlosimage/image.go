@@ -11,11 +11,13 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
@@ -391,6 +393,9 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 	if strings.TrimSpace(request.UKIPath) == "" {
 		return generation.FirstInstallRequest{}, fmt.Errorf("UKI path is required")
 	}
+	if err := kernelcmdline.ValidateRequiredCompatibility(request.KernelCommandLine, p.Boot.Compatibility.KernelCommandLine); err != nil {
+		return generation.FirstInstallRequest{}, err
+	}
 	var sysexts []generation.ExtensionRef
 	if request.EnableEndpointAdvertiser {
 		ref, err := p.EndpointAdvertiserExtensionRef(filepath.Join("/var/lib/katl/generations", request.GenerationID, "sysext", EndpointAdvertiserName+".raw"))
@@ -400,17 +405,18 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 		sysexts = append(sysexts, ref)
 	}
 	return generation.FirstInstallRequest{
-		GenerationID:          request.GenerationID,
-		RuntimeVersion:        first(p.Runtime.Version, p.Index.Version),
-		RuntimeInterface:      p.Index.RuntimeInterface,
-		RuntimeArchitecture:   p.Index.Architecture,
-		RootSlot:              request.RootSlot,
-		RootPartitionUUID:     request.RootPartitionUUID,
-		RuntimeArtifactSHA256: p.Runtime.SHA256,
-		UKIPath:               request.UKIPath,
-		KernelCommandLine:     append([]string(nil), p.Boot.Compatibility.KernelCommandLine...),
-		Sysexts:               sysexts,
-		CreatedAt:             request.CreatedAt,
+		GenerationID:                request.GenerationID,
+		RuntimeVersion:              first(p.Runtime.Version, p.Index.Version),
+		RuntimeInterface:            p.Index.RuntimeInterface,
+		RuntimeArchitecture:         p.Index.Architecture,
+		RootSlot:                    request.RootSlot,
+		RootPartitionUUID:           request.RootPartitionUUID,
+		RuntimeArtifactSHA256:       p.Runtime.SHA256,
+		UKIPath:                     request.UKIPath,
+		KernelCommandLine:           kernelcmdline.ReplaceConfigured(p.Boot.Compatibility.KernelCommandLine, nil, request.KernelCommandLine),
+		ConfiguredKernelCommandLine: slices.Clone(request.KernelCommandLine),
+		Sysexts:                     sysexts,
+		CreatedAt:                   request.CreatedAt,
 	}, nil
 }
 
@@ -442,6 +448,7 @@ type FirstInstallRequest struct {
 	UKIPath                  string
 	CreatedAt                time.Time
 	EnableEndpointAdvertiser bool
+	KernelCommandLine        []string
 }
 
 func readIndex(path string) (Index, error) {

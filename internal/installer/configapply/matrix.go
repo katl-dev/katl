@@ -32,6 +32,7 @@ const (
 	DomainControlPlaneEndpointRouting   = "control-plane-endpoint-routing"
 	DomainHostConfiguration             = "host-configuration"
 	DomainSystemExtensions              = "system-extensions"
+	DomainKernelCommandLine             = "kernel-command-line"
 )
 
 const (
@@ -304,6 +305,10 @@ var domainPolicies = map[string]domainPolicy{
 		NextBootAllowed: true,
 	},
 	DomainSystemExtensions: {
+		Classification:  ClassificationStagedOnly,
+		NextBootAllowed: true,
+	},
+	DomainKernelCommandLine: {
 		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},

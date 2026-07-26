@@ -1061,6 +1061,9 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 					"authorizedKeys": []string{sshAuthorizedKey},
 				},
 			},
+			"kernel": map[string]any{
+				"commandLine": []string{"katl.vmtest.initial_kernel=1"},
+			},
 			"networkd": map[string]any{
 				"files": []map[string]any{{
 					"name":    "80-katl-vmtest-dhcp.network",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -698,6 +699,9 @@ func assertGeneration0NodeEvidence(paths generation0EvidencePaths, input threeNo
 	if strings.TrimSpace(spec.RuntimeVersion) == "" || strings.TrimSpace(spec.Root.Architecture) == "" || strings.TrimSpace(spec.Boot.UKIPath) == "" {
 		return generation0RuntimeMetadata{}, fmt.Errorf("generation 0 runtime version, architecture, or UKI path is incomplete")
 	}
+	if !slices.Contains(spec.ConfiguredKernelCommandLine, "katl.vmtest.initial_kernel=1") {
+		return generation0RuntimeMetadata{}, fmt.Errorf("generation 0 configured kernel command line = %q", spec.ConfiguredKernelCommandLine)
+	}
 	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateGood || status.HealthState != generation.HealthStateHealthy {
 		return generation0RuntimeMetadata{}, fmt.Errorf("generation 0 status = commit:%q boot:%q health:%q", status.CommitState, status.BootState, status.HealthState)
 	}
@@ -729,6 +733,13 @@ func assertGeneration0NodeEvidence(paths generation0EvidencePaths, input threeNo
 	}
 	if strings.TrimSpace(string(machineID)) != strings.TrimSpace(string(persistentMachineID)) {
 		return generation0RuntimeMetadata{}, fmt.Errorf("/etc/machine-id does not match /var/lib/katl/identity/machine-id")
+	}
+	layoutProbe, err := os.ReadFile(paths.LayoutProbe)
+	if err != nil {
+		return generation0RuntimeMetadata{}, err
+	}
+	if !strings.Contains(string(layoutProbe), "katl.vmtest.initial_kernel=1") {
+		return generation0RuntimeMetadata{}, fmt.Errorf("generation 0 running kernel command line does not contain configured argument")
 	}
 	return generation0RuntimeMetadata{
 		RuntimeVersion:        spec.RuntimeVersion,

@@ -73,6 +73,10 @@ spec:
       ssh:
         authorizedKeys:
           - ssh-ed25519 AAAA... operator@home
+    kernel:
+      commandLine:
+        - intel_iommu=on
+        - iommu=pt
     networkd:
       files:
         - name: 10-lan.network

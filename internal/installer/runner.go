@@ -340,6 +340,7 @@ func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.Root
 		UKIPath:                  "/efi/EFI/Linux/katl-" + generationID + ".efi",
 		CreatedAt:                timeNow(),
 		EnableEndpointAdvertiser: install.Manifest.Node.ControlPlaneEndpoint != nil,
+		KernelCommandLine:        install.Manifest.Node.Kernel.CommandLine,
 	})
 	if err != nil {
 		return generation.Record{}, err
@@ -357,12 +358,13 @@ func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.Root
 			Architecture:          request.RuntimeArchitecture,
 			RuntimeArtifactSHA256: request.RuntimeArtifactSHA256,
 		},
-		Boot:              generation.BootSelection{UKIPath: request.UKIPath},
-		Sysexts:           request.Sysexts,
-		KernelCommandLine: request.KernelCommandLine,
-		CreatedAt:         request.CreatedAt,
-		BootState:         "pending",
-		HealthState:       "unknown",
+		Boot:                        generation.BootSelection{UKIPath: request.UKIPath},
+		Sysexts:                     request.Sysexts,
+		KernelCommandLine:           request.KernelCommandLine,
+		ConfiguredKernelCommandLine: request.ConfiguredKernelCommandLine,
+		CreatedAt:                   request.CreatedAt,
+		BootState:                   "pending",
+		HealthState:                 "unknown",
 	}
 	for _, sysext := range record.Sysexts {
 		if err := generation.ValidatePair(record.Root, sysext); err != nil {

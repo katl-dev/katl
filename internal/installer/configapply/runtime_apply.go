@@ -20,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configdomain"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
@@ -62,6 +63,7 @@ type TrustedBundleRequest struct {
 type NodeOverlay struct {
 	Identity                *IdentityOverlay
 	SystemRole              string
+	Kernel                  *manifest.KernelConfig
 	Networkd                *manifest.NetworkdConfig
 	HostConfiguration       *manifest.HostConfiguration
 	SystemExtensions        *[]manifest.SystemExtension
@@ -289,6 +291,13 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		},
 		Kubeadm:     request.kubeadmActionRequired(changes),
 		RequestedAt: now,
+		KernelCommandLine: kernelcmdline.ReplaceConfigured(
+			request.CurrentRecord.KernelCommandLine,
+			request.CurrentRecord.ConfiguredKernelCommandLine,
+			merged.Node.Kernel.CommandLine,
+		),
+		ConfiguredKernelCommandLine:    slices.Clone(merged.Node.Kernel.CommandLine),
+		ConfiguredKernelCommandLineSet: true,
 	})
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
@@ -606,6 +615,11 @@ func currentNodeConfextRoot(root string, record generation.Record) (string, erro
 }
 
 func validateOverlay(path string, overlay NodeOverlay) error {
+	if overlay.Kernel != nil {
+		if err := manifest.ValidateKernelConfig(*overlay.Kernel); err != nil {
+			return fmt.Errorf("%s.kernel: %w", path, err)
+		}
+	}
 	if overlay.HostConfiguration != nil {
 		if err := manifest.ValidateHostConfiguration(*overlay.HostConfiguration, false); err != nil {
 			return fmt.Errorf("%s.hostConfiguration: %w", path, err)
@@ -643,6 +657,13 @@ func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, kubernetesInit
 		if changed {
 			domains.add(DomainSystemRole)
 			domains.add(DomainBootstrapNodeMetadata)
+		}
+	}
+	if overlay.Kernel != nil {
+		changed := !slices.Equal(node.Kernel.CommandLine, overlay.Kernel.CommandLine)
+		node.Kernel = manifest.KernelConfig{CommandLine: slices.Clone(overlay.Kernel.CommandLine)}
+		if changed {
+			domains.add(DomainKernelCommandLine)
 		}
 	}
 	if overlay.Networkd != nil {

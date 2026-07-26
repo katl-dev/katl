@@ -26,8 +26,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const installedRuntimeSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
-
 func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	options := DefaultOptions()
 	if !options.Enabled {
@@ -225,7 +223,6 @@ func katlcEndpoint(t *testing.T, node RunningInstalledRuntimeNode, plannedAddres
 func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, currentGeneration string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
-	beforeConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	beforeBootSelection := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json")
 	rejectedGeneration := "2026.06.06-vmtest-rejected"
 	liveGeneration := "2026.06.06-vmtest-live"
@@ -251,7 +248,9 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedGeneration)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
-	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
+	if got := currentGenerationFromGuest(t, ctx, guest); got != currentGeneration {
+		t.Fatalf("current generation after rejected validation = %q, want %q", got, currentGeneration)
+	}
 
 	rejectedApplyGeneration := "2026.06.06-vmtest-rejected-apply"
 	rejectedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-rejected", "live", rejectedApplyGeneration, configApplyFixture(t, "rejected-live-without-preflight.yaml"), true)
@@ -264,7 +263,9 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedApplyGeneration)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
-	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
+	if got := currentGenerationFromGuest(t, ctx, guest); got != currentGeneration {
+		t.Fatalf("current generation after rejected apply = %q, want %q", got, currentGeneration)
+	}
 	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "staged-only")
 
 	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-udev.yaml"), false)
@@ -295,7 +296,10 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"vmtest-udev"`,
 		`existing devices will not be retriggered`,
 	)
-	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/udev/rules.d/80-katl-vmtest.rules", `SUBSYSTEM=="katl-vmtest"`)
+	guestCommand(t, ctx, guest, "effective-udev-rule",
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/test", "-r", "/etc/udev/rules.d/80-katl-vmtest.rules",
+	)
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json",
 		`"defaultGenerationID": "`+liveGeneration+`"`,
@@ -304,8 +308,10 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"pendingHealthValidation": false`,
 	)
 
-	liveConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
 	assertGuestNonLoopbackLink(t, ctx, guest)
+	if cmdline := readGuestFile(t, ctx, guest, "/proc/cmdline"); strings.Contains(cmdline, "katl.vmtest.config_apply_kernel=1") {
+		t.Fatalf("kernel command-line change became active before reboot: %s", cmdline)
+	}
 	stagedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-staged-networkd", "next-boot", stagedGeneration, configApplyFixture(t, "next-boot-networkd.yaml"), false)
 	stagedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, stagedAccepted.OperationId)
 	if stagedStatus.Result != operation.ResultSucceeded || stagedStatus.ConfigApplyPhase != "next-boot" {
@@ -315,13 +321,22 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if stagedGenerationStatus.GetConfigApply().GetPhase() != "next-boot" || stagedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
 		t.Fatalf("staged katlctl generation status = %+v, want next-boot config apply", stagedGenerationStatus.GetConfigApply())
 	}
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json", `"generationID": "`+stagedGeneration+`"`, `"previousGenerationID": "`+liveGeneration+`"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json",
+		`"generationID": "`+stagedGeneration+`"`,
+		`"previousGenerationID": "`+liveGeneration+`"`,
+		`"configuredKernelCommandLine": [`,
+		`"katl.vmtest.config_apply_kernel=1"`,
+	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "trying"`, `"committedByOperationID": "`+stagedAccepted.OperationId+`"`)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json", `"phase": "next-boot"`, `"acceptedApplyMode": "next-boot"`, `"domain": "networkd"`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json",
+		`"phase": "next-boot"`,
+		`"acceptedApplyMode": "next-boot"`,
+		`"domain": "networkd"`,
+		`"domain": "kernel-command-line"`,
+	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+liveGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
-	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", liveConfext)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
 	assertGuestFileContains(t, ctx, guest, stagedAccepted.RecordPath, `"operationKind": "generation-stage"`, `"configApplyPhase": "next-boot"`)
 	if afterBootSelection := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); afterBootSelection == beforeBootSelection {
@@ -341,8 +356,15 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 	assertInstalledSSHReady(t, ctx, guest)
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "good"`, `"healthState": "healthy"`)
-	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
+	guestCommand(t, ctx, guest, "effective-networkd-config",
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/test", "-r", "/etc/systemd/network/20-katl-vmtest-extra-address.network",
+	)
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
+	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "katl.vmtest.config_apply_kernel=1")
+	if cmdline := readGuestFile(t, ctx, guest, "/proc/cmdline"); strings.Contains(cmdline, "katl.vmtest.initial_kernel=1") {
+		t.Fatalf("replaced initial kernel argument remained active after reboot: %s", cmdline)
+	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+stagedGeneration+`"`, `"bootedGenerationID": "`+stagedGeneration+`"`, `"pendingHealthValidation": false`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json", `"phase": "active"`, `"acceptedApplyMode": "next-boot"`)
 	bootedGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, "status-booted-networkd", stagedGeneration)
@@ -359,8 +381,8 @@ func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestCont
 	guestCommand(t, ctx, guest, "sshd-active", "systemctl", "is-active", "--quiet", "sshd.service")
 	guestCommand(t, ctx, guest, "persistent-ssh-host-key", "test", "-s", "/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key")
 	guestCommand(t, ctx, guest, "valid-persistent-ssh-host-key", "sshd", "-t")
-	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/ssh/authorized_keys/katl", installedRuntimeSSHKey)
-	assertGuestFileContains(t, ctx, guest, "/run/confexts/katl-node/etc/ssh/authorized_keys/root", installedRuntimeSSHKey)
+	guestCommand(t, ctx, guest, "katl-authorized-key", "test", "-s", "/etc/ssh/authorized_keys/katl")
+	guestCommand(t, ctx, guest, "root-authorized-key", "test", "-s", "/etc/ssh/authorized_keys/root")
 	effective := strings.ToLower(guestCommandOutput(t, ctx, guest, "sshd-effective-config", "sshd", "-T"))
 	for _, want := range []string{
 		"authorizedkeysfile /etc/ssh/authorized_keys/%u",
@@ -682,7 +704,7 @@ current-context: ""
 users: []
 `
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
-	beforeConfext := readlink(t, ctx, guest, "/run/confexts/katl-node")
+	beforeGeneration := currentGenerationFromGuest(t, ctx, guest)
 	markerSource := "/var/lib/katl/test-artifacts/config-apply/kubelet.conf"
 	if _, err := guest.WriteFile(ctx, GuestFileRequest{
 		Name:    "bootstrapped-kubelet-conf-source",
@@ -725,7 +747,9 @@ users: []
 		assertGuestMissing(t, ctx, guest, "/etc/kubernetes/admin.conf")
 		assertGuestMissing(t, ctx, guest, "/etc/kubernetes/manifests/kube-apiserver.yaml")
 		assertGuestMissing(t, ctx, guest, "/var/lib/kubelet/config.yaml")
-		assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
+		if got := currentGenerationFromGuest(t, ctx, guest); got != beforeGeneration {
+			t.Fatalf("current generation after rejected sysext update = %q, want %q", got, beforeGeneration)
+		}
 		return
 	}
 	if err != nil {
@@ -755,7 +779,9 @@ users: []
 	assertGuestMissing(t, ctx, guest, "/etc/kubernetes/manifests/kube-apiserver.yaml")
 	assertGuestMissing(t, ctx, guest, "/var/lib/kubelet/config.yaml")
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
-	assertReadlink(t, ctx, guest, "/run/confexts/katl-node", beforeConfext)
+	if got := currentGenerationFromGuest(t, ctx, guest); got != beforeGeneration {
+		t.Fatalf("current generation after rejected sysext update = %q, want %q", got, beforeGeneration)
+	}
 }
 
 func dialKatlcAgentForVMTest(t *testing.T, ctx context.Context, endpoint string) (*grpc.ClientConn, agentapi.KatlcAgentClient) {

@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 )
 
 type HostUpgradeRequest struct {
@@ -91,6 +93,9 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 	if p.Index.RuntimeInterface != request.PreviousSpec.Root.RuntimeInterface {
 		return HostUpgradePlan{}, fmt.Errorf("KatlOS image runtime interface %q does not match current runtime interface %q", p.Index.RuntimeInterface, request.PreviousSpec.Root.RuntimeInterface)
 	}
+	if err := kernelcmdline.ValidateRequiredCompatibility(request.PreviousSpec.ConfiguredKernelCommandLine, p.Boot.Compatibility.KernelCommandLine); err != nil {
+		return HostUpgradePlan{}, fmt.Errorf("host upgrade kernel command line: %w", err)
+	}
 
 	createdAt := request.CreatedAt
 	if createdAt.IsZero() {
@@ -127,11 +132,12 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 			UKIPath:         strings.TrimSpace(request.UKIPath),
 			LoaderEntryPath: strings.TrimSpace(request.LoaderEntryPath),
 		},
-		Sysexts:           sysexts,
-		BundledConfexts:   bundledConfexts,
-		Confexts:          confexts,
-		KernelCommandLine: mergeKernelCommandLine(request.PreviousSpec.KernelCommandLine, p.Boot.Compatibility.KernelCommandLine),
-		CreatedAt:         createdAt.UTC(),
+		Sysexts:                     sysexts,
+		BundledConfexts:             bundledConfexts,
+		Confexts:                    confexts,
+		KernelCommandLine:           mergeKernelCommandLine(request.PreviousSpec.KernelCommandLine, p.Boot.Compatibility.KernelCommandLine),
+		ConfiguredKernelCommandLine: slices.Clone(request.PreviousSpec.ConfiguredKernelCommandLine),
+		CreatedAt:                   createdAt.UTC(),
 	}
 	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, createdAt)
 	if err != nil {

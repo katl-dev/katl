@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -84,6 +85,7 @@ type SourceNode struct {
 	Name              string                     `yaml:"name" json:"name"`
 	ControlPlane      bool                       `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
 	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Kernel            *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
 	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
 	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
 	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
@@ -94,6 +96,7 @@ type SourceNode struct {
 
 type SourceNodeLayer struct {
 	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Kernel            *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
 	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
 	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
 	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
@@ -452,6 +455,7 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 	return clusterplan.NodeLayer{
 		SSH:               layer.Identity.SSH,
+		Kernel:            cloneKernelConfig(layer.Kernel),
 		Networkd:          layer.Networkd,
 		HostConfiguration: layer.HostConfiguration,
 		SystemExtensions:  append([]manifest.SystemExtension(nil), layer.SystemExtensions...),
@@ -470,6 +474,7 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 func sourceNodeLayer(node SourceNode) SourceNodeLayer {
 	return SourceNodeLayer{
 		Identity:          node.Identity,
+		Kernel:            cloneKernelConfig(node.Kernel),
 		Networkd:          node.Networkd,
 		HostConfiguration: node.HostConfiguration,
 		SystemExtensions:  append([]manifest.SystemExtension(nil), node.SystemExtensions...),
@@ -513,6 +518,18 @@ func defaultSource(source SourceConfig) SourceConfig {
 
 func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	source = defaultSource(source)
+	if source.Spec.Defaults.Kernel != nil {
+		if err := manifest.ValidateKernelConfig(*source.Spec.Defaults.Kernel); err != nil {
+			return SourceConfig{}, fmt.Errorf("spec.defaults.kernel: %w", err)
+		}
+	}
+	for i := range source.Spec.Nodes {
+		if source.Spec.Nodes[i].Kernel != nil {
+			if err := manifest.ValidateKernelConfig(*source.Spec.Nodes[i].Kernel); err != nil {
+				return SourceConfig{}, fmt.Errorf("spec.nodes[%d].kernel: %w", i, err)
+			}
+		}
+	}
 	if err := manifest.ValidateHostConfiguration(source.Spec.Defaults.HostConfiguration, true); err != nil {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.hostConfiguration: %w", err)
 	}
@@ -538,6 +555,15 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	}
 	source.Spec.ControlPlaneEndpoint = &plan.Config
 	return source, nil
+}
+
+func cloneKernelConfig(config *manifest.KernelConfig) *manifest.KernelConfig {
+	if config == nil {
+		return nil
+	}
+	clone := *config
+	clone.CommandLine = slices.Clone(config.CommandLine)
+	return &clone
 }
 
 func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (SourceConfig, error) {

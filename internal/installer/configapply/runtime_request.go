@@ -49,6 +49,7 @@ type inlineKubeadmConfig struct {
 type nodeConfigurationOverlay struct {
 	Identity             *IdentityOverlay             `json:"identity,omitempty" yaml:"identity,omitempty"`
 	SystemRole           string                       `json:"systemRole,omitempty" yaml:"systemRole,omitempty"`
+	Kernel               *manifest.KernelConfig       `json:"kernel,omitempty" yaml:"kernel,omitempty"`
 	Networkd             *manifest.NetworkdConfig     `json:"networkd,omitempty" yaml:"networkd,omitempty"`
 	HostConfiguration    *manifest.HostConfiguration  `json:"hostConfiguration,omitempty" yaml:"hostConfiguration,omitempty"`
 	SystemExtensions     *[]manifest.SystemExtension  `json:"systemExtensions,omitempty" yaml:"systemExtensions,omitempty"`
@@ -156,6 +157,7 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 	nodeOverlay := NodeOverlay{
 		Identity:          overlay.Identity,
 		SystemRole:        overlay.SystemRole,
+		Kernel:            overlay.Kernel,
 		Networkd:          overlay.Networkd,
 		HostConfiguration: overlay.HostConfiguration,
 		SystemExtensions:  overlay.SystemExtensions,

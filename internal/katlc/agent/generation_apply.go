@@ -18,6 +18,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -549,7 +550,11 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	result, err := configapply.ApplyTrustedBundle(ctx, decoded)
 	completedAt := e.clock()
 	if result.Plan.GenerationRecord.GenerationID != "" {
-		result.Plan.GenerationRecord = inheritCurrentKernelCommandLine(e.Root, result.Plan.GenerationRecord)
+		result.Plan.GenerationRecord = inheritCurrentKernelCommandLine(
+			e.Root,
+			result.Plan.GenerationRecord,
+			base.CurrentRecord.ConfiguredKernelCommandLine,
+		)
 		if splitErr := writeSplitGeneration(e.Root, result.Plan.GenerationRecord); splitErr != nil {
 			err = errorsJoin(err, splitErr)
 		}
@@ -1081,12 +1086,12 @@ func writeSplitGeneration(root string, record generation.Record) error {
 	return generation.WriteGeneration(root, spec, status)
 }
 
-func inheritCurrentKernelCommandLine(root string, record generation.Record) generation.Record {
+func inheritCurrentKernelCommandLine(root string, record generation.Record, replaced []string) generation.Record {
 	options, err := readCurrentKernelCommandLine(root)
 	if err != nil {
 		return record
 	}
-	record.KernelCommandLine = mergeKernelCommandLine(record.KernelCommandLine, options)
+	record.KernelCommandLine = kernelcmdline.MergeCurrent(record.KernelCommandLine, options, replaced)
 	return record
 }
 

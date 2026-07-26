@@ -42,6 +42,76 @@ func TestApplyTrustedBundleRejectsLiveNetworkdBeforeRender(t *testing.T) {
 	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
+func TestApplyTrustedBundleStagesKernelCommandLineReplacementForNextBoot(t *testing.T) {
+	root := t.TempDir()
+	current := baseManifest()
+	current.Node.Kernel.CommandLine = []string{"intel_iommu=on"}
+	record := currentRecord()
+	record.KernelCommandLine = append(record.KernelCommandLine, "console=ttyS0,115200n8", "intel_iommu=on")
+	record.ConfiguredKernelCommandLine = []string{"intel_iommu=on"}
+	desired := manifest.KernelConfig{CommandLine: []string{"amd_iommu=on", "iommu=pt"}}
+
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:       generation.ApplyModeAuto,
+		CurrentManifest: current,
+		CurrentRecord:   record,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {Kernel: &desired},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeNextBoot || !containsDomain(result.Plan.Decision.ChangedDomains, DomainKernelCommandLine) {
+		t.Fatalf("kernel command-line decision = %#v", result.Plan.Decision)
+	}
+	for _, option := range []string{"console=ttyS0,115200n8", "amd_iommu=on", "iommu=pt"} {
+		if !slices.Contains(result.Plan.GenerationRecord.KernelCommandLine, option) {
+			t.Fatalf("candidate command line %q does not contain %q", result.Plan.GenerationRecord.KernelCommandLine, option)
+		}
+	}
+	if slices.Contains(result.Plan.GenerationRecord.KernelCommandLine, "intel_iommu=on") {
+		t.Fatalf("candidate command line still contains replaced option: %q", result.Plan.GenerationRecord.KernelCommandLine)
+	}
+	if !slices.Equal(result.Manifest.Node.Kernel.CommandLine, desired.CommandLine) {
+		t.Fatalf("desired manifest kernel command line = %q", result.Manifest.Node.Kernel.CommandLine)
+	}
+	if !slices.Equal(result.Plan.GenerationRecord.ConfiguredKernelCommandLine, desired.CommandLine) {
+		t.Fatalf("candidate configured kernel command line = %q", result.Plan.GenerationRecord.ConfiguredKernelCommandLine)
+	}
+}
+
+func TestApplyTrustedBundleCanClearConfiguredKernelCommandLine(t *testing.T) {
+	root := t.TempDir()
+	current := baseManifest()
+	current.Node.Kernel.CommandLine = []string{"intel_iommu=on"}
+	record := currentRecord()
+	record.KernelCommandLine = append(record.KernelCommandLine, "console=ttyS0,115200n8", "intel_iommu=on")
+	record.ConfiguredKernelCommandLine = []string{"intel_iommu=on"}
+	desired := manifest.KernelConfig{CommandLine: []string{}}
+
+	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode:       generation.ApplyModeAuto,
+		CurrentManifest: current,
+		CurrentRecord:   record,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {Kernel: &desired},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if slices.Contains(result.Plan.GenerationRecord.KernelCommandLine, "intel_iommu=on") {
+		t.Fatalf("candidate command line still contains cleared option: %q", result.Plan.GenerationRecord.KernelCommandLine)
+	}
+	if !slices.Contains(result.Plan.GenerationRecord.KernelCommandLine, "console=ttyS0,115200n8") {
+		t.Fatalf("candidate command line lost inherited console option: %q", result.Plan.GenerationRecord.KernelCommandLine)
+	}
+	if len(result.Plan.GenerationRecord.ConfiguredKernelCommandLine) != 0 {
+		t.Fatalf("candidate configured kernel command line = %q, want empty", result.Plan.GenerationRecord.ConfiguredKernelCommandLine)
+	}
+}
+
 func TestControlPlaneEndpointApplyClassification(t *testing.T) {
 	tests := []struct {
 		name        string
