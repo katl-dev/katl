@@ -579,34 +579,40 @@ jobs:
               });
             }
 
-            let validationRun;
-            for (let attempt = 0; attempt < 12; attempt++) {
-              const { data: runs } = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: "fast-checks.yml",
-                branch: process.env.HEAD_BRANCH,
-                event: "pull_request",
-                per_page: 10,
-              });
-              validationRun = runs.workflow_runs.find(run =>
-                run.head_sha === process.env.HEAD_SHA
-              );
-              if (validationRun) {
-                break;
+            const validationWorkflows = [
+              "fast-checks.yml",
+              "kubernetes-bundles.yml",
+            ];
+            for (const workflowId of validationWorkflows) {
+              let validationRun;
+              for (let attempt = 0; attempt < 12; attempt++) {
+                const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: workflowId,
+                  branch: process.env.HEAD_BRANCH,
+                  event: "pull_request",
+                  per_page: 10,
+                });
+                validationRun = runs.workflow_runs.find(run =>
+                  run.head_sha === process.env.HEAD_SHA
+                );
+                if (validationRun) {
+                  break;
+                }
+                await new Promise(resolve => setTimeout(resolve, 5000));
               }
-              await new Promise(resolve => setTimeout(resolve, 5000));
-            }
-            if (!validationRun) {
-              throw new Error(`Fast Checks pull_request run was not created for ${process.env.HEAD_BRANCH}@${process.env.HEAD_SHA}`);
-            }
-            if (validationRun.conclusion === "action_required") {
-              await github.request("POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve", {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: validationRun.id,
-              });
-              core.info(`Approved Fast Checks run ${validationRun.id} for generated PR #${pull.number}`);
-            } else {
-              core.info(`Fast Checks run ${validationRun.id} requires no approval (${validationRun.status}/${validationRun.conclusion || "pending"})`);
+              if (!validationRun) {
+                throw new Error(`${workflowId} pull_request run was not created for ${process.env.HEAD_BRANCH}@${process.env.HEAD_SHA}`);
+              }
+              if (validationRun.conclusion === "action_required") {
+                await github.request("POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve", {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: validationRun.id,
+                });
+                core.info(`Approved ${workflowId} run ${validationRun.id} for generated PR #${pull.number}`);
+              } else {
+                core.info(`${workflowId} run ${validationRun.id} requires no approval (${validationRun.status}/${validationRun.conclusion || "pending"})`);
+              }
             }

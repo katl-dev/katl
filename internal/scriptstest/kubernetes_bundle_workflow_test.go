@@ -187,6 +187,8 @@ func TestKubernetesBundleWorkflowRetiresSupersededCompatibilityPRs(t *testing.T)
 		"github.rest.pulls.update",
 		`state: "closed"`,
 		"github.rest.actions.listWorkflowRuns",
+		`"fast-checks.yml"`,
+		`"kubernetes-bundles.yml"`,
 		`run.head_sha === process.env.HEAD_SHA`,
 		`validationRun.conclusion === "action_required"`,
 		`/actions/runs/{run_id}/approve`,
