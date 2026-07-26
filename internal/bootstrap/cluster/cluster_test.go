@@ -1253,36 +1253,63 @@ func TestKubectlBootstrapRunnerStopsWhenPreWaitFails(t *testing.T) {
 	}
 }
 
-func TestKubectlBootstrapRunnerRedactsWaitFailures(t *testing.T) {
+func TestKubectlBootstrapRunnerPollsAndRedactsWaitFailures(t *testing.T) {
 	secret := "abcdef.0123456789abcdef"
-	commands := &fakeKubectlCommandRunner{
-		defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "still missing token " + secret},
-		results: []readiness.CommandResult{
-			{ExitStatus: 1, Stderr: "missing token " + secret},
-			{ExitStatus: 1, Stderr: "still missing token " + secret},
-		},
-	}
-	_, err := (KubectlBootstrapRunner{
-		CommandRunner: commands,
-		TempDir:       t.TempDir(),
-		Timeout:       2 * time.Millisecond,
-		PollInterval:  time.Millisecond,
-		ProbeTimeout:  time.Millisecond,
-	}).RunUserBootstrap(context.Background(), BootstrapRequest{
-		Server: "10.0.0.11:6443",
-		Credentials: AdminCredentials{
-			CertificateAuthorityData: testCA,
-			ClientCertificateData:    testCert,
-			ClientKeyData:            testKey,
-		},
-		Waits: []BootstrapWait{{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"}},
+
+	t.Run("retries transient failures", func(t *testing.T) {
+		commands := &fakeKubectlCommandRunner{
+			defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "unexpected extra probe"},
+			results: []readiness.CommandResult{
+				{ExitStatus: 1, Stderr: "not ready"},
+				{ExitStatus: 0},
+			},
+		}
+		_, err := (KubectlBootstrapRunner{
+			CommandRunner: commands,
+			TempDir:       t.TempDir(),
+			Timeout:       10 * time.Second,
+			PollInterval:  time.Millisecond,
+			ProbeTimeout:  time.Second,
+		}).RunUserBootstrap(context.Background(), BootstrapRequest{
+			Server: "10.0.0.11:6443",
+			Credentials: AdminCredentials{
+				CertificateAuthorityData: testCA,
+				ClientCertificateData:    testCert,
+				ClientKeyData:            testKey,
+			},
+			Waits: []BootstrapWait{{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"}},
+		})
+		if err != nil {
+			t.Fatalf("RunUserBootstrap() error = %v, want transient wait failure retried", err)
+		}
 	})
-	if err == nil {
-		t.Fatal("RunUserBootstrap() error = nil, want wait timeout")
-	}
-	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
-		t.Fatalf("error = %q, want redacted token", err.Error())
-	}
+
+	t.Run("redacts terminal failures", func(t *testing.T) {
+		commands := &fakeKubectlCommandRunner{
+			defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "wait failed with token " + secret},
+		}
+		_, err := (KubectlBootstrapRunner{
+			CommandRunner: commands,
+			TempDir:       t.TempDir(),
+			Timeout:       2 * time.Millisecond,
+			PollInterval:  time.Millisecond,
+			ProbeTimeout:  time.Millisecond,
+		}).RunUserBootstrap(context.Background(), BootstrapRequest{
+			Server: "10.0.0.11:6443",
+			Credentials: AdminCredentials{
+				CertificateAuthorityData: testCA,
+				ClientCertificateData:    testCert,
+				ClientKeyData:            testKey,
+			},
+			Waits: []BootstrapWait{{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"}},
+		})
+		if err == nil {
+			t.Fatal("RunUserBootstrap() error = nil, want wait failure")
+		}
+		if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
+			t.Fatalf("error = %q, want redacted token", err.Error())
+		}
+	})
 }
 
 func phaseNames(phases []Phase) []string {
