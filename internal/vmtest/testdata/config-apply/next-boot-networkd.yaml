@@ -7,6 +7,9 @@ apply:
   mode: next-boot
 spec:
   clusterDefaults:
+    kernel:
+      commandLine:
+        - katl.vmtest.config_apply_kernel=1
     networkd:
       files:
         - name: 20-katl-vmtest-extra-address.network

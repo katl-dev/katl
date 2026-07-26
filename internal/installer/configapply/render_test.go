@@ -2,6 +2,7 @@ package configapply
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,6 +24,9 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 					}},
 				},
 				SystemRole: "control-plane",
+				Kernel: manifest.KernelConfig{
+					CommandLine: []string{"intel_iommu=on", "iommu=pt"},
+				},
 				Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
 					Name:    "10-lan.network",
 					Content: "[Network]\nDHCP=yes\n",
@@ -54,6 +58,9 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	}
 	if overlay.SystemRole != "control-plane" || overlay.Kubernetes == nil || overlay.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
 		t.Fatalf("rendered operation fields = role %q kubernetes %#v", overlay.SystemRole, overlay.Kubernetes)
+	}
+	if overlay.Kernel == nil || !slices.Equal(overlay.Kernel.CommandLine, []string{"intel_iommu=on", "iommu=pt"}) {
+		t.Fatalf("rendered kernel config = %#v", overlay.Kernel)
 	}
 	if !overlay.ControlPlaneEndpointSet || overlay.ControlPlaneEndpoint == nil || overlay.ControlPlaneEndpoint.Advertisement == nil {
 		t.Fatalf("rendered control-plane endpoint = %#v, set=%t", overlay.ControlPlaneEndpoint, overlay.ControlPlaneEndpointSet)

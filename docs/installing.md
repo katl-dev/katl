@@ -162,6 +162,11 @@ spec:
       ssh:
         authorizedKeys:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+    # Optional operator-owned additions to the installed kernel command line.
+    # kernel:
+    #   commandLine:
+    #     - intel_iommu=on
+    #     - iommu=pt
   nodes:
     - name: cp-1
       controlPlane: true
@@ -189,6 +194,15 @@ Kubernetes version itself. ClusterConfig does not expose KatlOS or Kubernetes
 image URLs, credentials, named kubeadm profiles, node classes, or other
 compiler mechanisms. An advanced `systemExtensions` entry may select an
 operator-owned native software bundle by OCI reference as described below.
+
+`kernel.commandLine` adds operator-owned arguments to the installed kernel
+command line. It may be set under `spec.defaults` or on a concrete node; a
+node-level `kernel` block replaces the default list, and `commandLine: []`
+clears inherited additions. Each list item is one whitespace-free kernel
+argument, such as `intel_iommu=on` or `iommu=pt`. Katl rejects arguments that
+would override its root, immutable-runtime, generation identity, or recovery
+policy. Image-required and Katl-owned arguments remain internal and are always
+carried alongside the configured additions.
 
 For a routed endpoint advertised by Katl, add the VIP and fabric peers. Katl
 then installs and runs the endpoint advertiser only on control-plane nodes;

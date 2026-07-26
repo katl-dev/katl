@@ -51,17 +51,34 @@ jobs:
       contents: read
       packages: write
     env:
+      KATL_BIRD_RECIPE_PATTERN: '^(\.github/workflows/system-extensions\.yml$|Containerfile\.mkosi$|cmd/katlctl/system_extension\.go$|extensions/bird/extension\.env$|internal/installer/payloadbundle/|internal/installer/systemextensionbundle/|mkosi\.conf$|mkosi\.profiles/runtime/|mkosi\.profiles/system-extension-bird/|scripts/build-system-extension$|scripts/check-system-extension$|scripts/mkosi$)'
       KATL_ARCHITECTURE: x86_64
       KATL_CONTAINER_RUNTIME: docker
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+      - name: Require an immutable revision for recipe changes
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed="$(git diff --name-only "$BASE_SHA"...HEAD | grep -Ev '_test\.go$' || true)"
+          if ! grep -Eq "$KATL_BIRD_RECIPE_PATTERN" <<<"$changed"; then
+            exit 0
+          fi
+          previous_version="$(git show "$BASE_SHA:extensions/bird/extension.env" | sed -n 's/^KATL_EXTENSION_ARTIFACT_VERSION=//p')"
+          source extensions/bird/extension.env
+          if [[ "$KATL_EXTENSION_ARTIFACT_VERSION" == "$previous_version" ]]; then
+            echo "error: BIRD extension recipe changed without advancing KATL_EXTENSION_ARTIFACT_VERSION" >&2
+            exit 1
+          fi
       - name: Set reproducible inputs
         shell: bash
         run: |
@@ -78,8 +95,8 @@ jobs:
           if [[ "$EVENT_NAME" == "workflow_dispatch" && "$MANUAL_PUBLISH" == "true" ]]; then
             publish=true
           elif [[ "$EVENT_NAME" == "push" ]]; then
-            changed="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")"
-            if grep -Eq '^(Containerfile\.mkosi$|extensions/bird/extension\.env$|mkosi\.conf$|mkosi\.profiles/runtime/|mkosi\.profiles/system-extension-bird/|scripts/build-system-extension$|scripts/mkosi$)' <<<"$changed"; then
+            changed="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -Ev '_test\.go$' || true)"
+            if grep -Eq "$KATL_BIRD_RECIPE_PATTERN" <<<"$changed"; then
               publish=true
             fi
           fi

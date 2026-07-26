@@ -1,6 +1,34 @@
 name: Kubernetes Bundle Artifacts
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/kubernetes-bundles.yml
+      - Containerfile.mkosi
+      - cmd/katl-kubernetes-release/**
+      - "!cmd/katl-kubernetes-release/**/*_test.go"
+      - cmd/katl-mkosi-artifacts/**
+      - "!cmd/katl-mkosi-artifacts/**/*_test.go"
+      - cmd/katl-publish-kubernetes-sysext/**
+      - "!cmd/katl-publish-kubernetes-sysext/**/*_test.go"
+      - containers-policy.json
+      - go.mod
+      - go.sum
+      - internal/installer/artifact/artifact.go
+      - internal/installer/artifact/local.go
+      - internal/installer/payloadbundle/**
+      - internal/installer/sysextcatalog/catalog.go
+      - internal/installer/sysextcatalog/publish.go
+      - internal/installer/sysextcatalog/stage.go
+      - internal/kubernetesrelease/**
+      - "!internal/kubernetesrelease/**/*_test.go"
+      - internal/kubernetesrelease/supported-versions.json
+      - mkosi.conf
+      - mkosi.profiles/kubernetes-sysext/**
+      - mkosi.profiles/runtime/mkosi.conf
+      - mkosi.profiles/runtime/os-release.in
+      - scripts/build-kubernetes-sysext
+      - scripts/check-kubernetes-sysext
   push:
     branches:
       - main
@@ -86,12 +114,17 @@ jobs:
           if [[ -n "$DISPATCH_PAYLOAD_VERSION" ]]; then
             args+=(--payload-version "$DISPATCH_PAYLOAD_VERSION")
           fi
+          previous_commit=""
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            previous="$RUNNER_TEMP/previous-supported-versions.json"
             previous_commit="${{ github.event.before }}"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            previous_commit="${{ github.event.pull_request.base.sha }}"
+          fi
+          if [[ -n "$previous_commit" ]]; then
+            previous="$RUNNER_TEMP/previous-supported-versions.json"
             previous_ref="${previous_commit}:internal/kubernetesrelease/supported-versions.json"
             if ! git cat-file -e "${previous_commit}^{commit}"; then
-              echo "error: previous main commit is unavailable: $previous_commit" >&2
+              echo "error: comparison commit is unavailable: $previous_commit" >&2
               exit 1
             fi
             if git cat-file -e "$previous_ref"; then
@@ -291,8 +324,12 @@ jobs:
             echo "error: invalid packed OCI manifest digest: $manifest_digest" >&2
             exit 1
           fi
+          manifest_tag="$(awk '$1 == "oci-manifest-tag:" { print $2 }' _build/kubernetes-bundle-stage.txt)"
+          if [[ ! "$manifest_tag" =~ ^manifest-sha256-[0-9a-f]{64}$ ]]; then
+            echo "error: invalid referrer-safe OCI manifest tag: $manifest_tag" >&2
+            exit 1
+          fi
           version_tag="$ARTIFACT_VERSION"
-          digest_tag="sha256-${manifest_digest#sha256:}"
           bundle_dir="dist/bundles/${PAYLOAD_VERSION}/${architecture}"
           raw="dist/katl-kubernetes-${PAYLOAD_VERSION}-${architecture}.sysext.raw"
 
@@ -306,7 +343,7 @@ jobs:
             echo "architecture=$architecture"
             echo "bundle-digest=$bundle_digest"
             echo "bundle-dir=$bundle_dir"
-            echo "digest-tag=$digest_tag"
+            echo "digest-tag=$manifest_tag"
             echo "manifest-digest=$manifest_digest"
             echo "raw=$raw"
             echo "version-tag=$version_tag"

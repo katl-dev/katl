@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 )
 
 const (
@@ -32,19 +35,20 @@ const (
 )
 
 type GenerationSpec struct {
-	APIVersion           string             `json:"apiVersion"`
-	Kind                 string             `json:"kind"`
-	GenerationID         string             `json:"generationID"`
-	RuntimeVersion       string             `json:"runtimeVersion"`
-	PreviousGenerationID string             `json:"previousGenerationID,omitempty"`
-	Root                 RootSelection      `json:"root"`
-	Boot                 BootSelection      `json:"boot"`
-	Sysexts              []ExtensionRef     `json:"sysexts"`
-	BundledConfexts      []ExtensionRef     `json:"bundledConfexts,omitempty"`
-	Confexts             []GeneratedConfext `json:"confexts"`
-	KernelCommandLine    []string           `json:"kernelCommandLine"`
-	KubernetesUpgrade    *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
-	CreatedAt            time.Time          `json:"createdAt"`
+	APIVersion                  string             `json:"apiVersion"`
+	Kind                        string             `json:"kind"`
+	GenerationID                string             `json:"generationID"`
+	RuntimeVersion              string             `json:"runtimeVersion"`
+	PreviousGenerationID        string             `json:"previousGenerationID,omitempty"`
+	Root                        RootSelection      `json:"root"`
+	Boot                        BootSelection      `json:"boot"`
+	Sysexts                     []ExtensionRef     `json:"sysexts"`
+	BundledConfexts             []ExtensionRef     `json:"bundledConfexts,omitempty"`
+	Confexts                    []GeneratedConfext `json:"confexts"`
+	KernelCommandLine           []string           `json:"kernelCommandLine"`
+	ConfiguredKernelCommandLine []string           `json:"configuredKernelCommandLine,omitempty"`
+	KubernetesUpgrade           *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
+	CreatedAt                   time.Time          `json:"createdAt"`
 }
 
 type GenerationStatus struct {
@@ -79,19 +83,20 @@ func SpecFromRecord(record Record) GenerationSpec {
 		previous = strings.TrimSpace(record.PreviousGenerationID)
 	}
 	return GenerationSpec{
-		APIVersion:           APIVersion,
-		Kind:                 SpecKind,
-		GenerationID:         strings.TrimSpace(record.GenerationID),
-		RuntimeVersion:       strings.TrimSpace(record.RuntimeVersion),
-		PreviousGenerationID: previous,
-		Root:                 record.Root,
-		Boot:                 record.Boot,
-		Sysexts:              append([]ExtensionRef{}, record.Sysexts...),
-		BundledConfexts:      append([]ExtensionRef{}, record.BundledConfexts...),
-		Confexts:             append([]GeneratedConfext{}, record.Confexts...),
-		KernelCommandLine:    append([]string{}, record.KernelCommandLine...),
-		KubernetesUpgrade:    record.KubernetesUpgrade,
-		CreatedAt:            record.CreatedAt.UTC(),
+		APIVersion:                  APIVersion,
+		Kind:                        SpecKind,
+		GenerationID:                strings.TrimSpace(record.GenerationID),
+		RuntimeVersion:              strings.TrimSpace(record.RuntimeVersion),
+		PreviousGenerationID:        previous,
+		Root:                        record.Root,
+		Boot:                        record.Boot,
+		Sysexts:                     append([]ExtensionRef{}, record.Sysexts...),
+		BundledConfexts:             append([]ExtensionRef{}, record.BundledConfexts...),
+		Confexts:                    append([]GeneratedConfext{}, record.Confexts...),
+		KernelCommandLine:           append([]string{}, record.KernelCommandLine...),
+		ConfiguredKernelCommandLine: slices.Clone(record.ConfiguredKernelCommandLine),
+		KubernetesUpgrade:           record.KubernetesUpgrade,
+		CreatedAt:                   record.CreatedAt.UTC(),
 	}
 }
 
@@ -126,21 +131,22 @@ func StatusFromRecord(record Record, specDigest string) GenerationStatus {
 
 func RecordFromSplit(spec GenerationSpec, status GenerationStatus) Record {
 	return Record{
-		APIVersion:           APIVersion,
-		Kind:                 Kind,
-		GenerationID:         spec.GenerationID,
-		RuntimeVersion:       spec.RuntimeVersion,
-		PreviousGenerationID: spec.PreviousGenerationID,
-		Root:                 spec.Root,
-		Boot:                 spec.Boot,
-		Sysexts:              append([]ExtensionRef(nil), spec.Sysexts...),
-		BundledConfexts:      append([]ExtensionRef(nil), spec.BundledConfexts...),
-		Confexts:             append([]GeneratedConfext(nil), spec.Confexts...),
-		KernelCommandLine:    append([]string(nil), spec.KernelCommandLine...),
-		KubernetesUpgrade:    spec.KubernetesUpgrade,
-		CreatedAt:            spec.CreatedAt,
-		BootState:            status.BootState,
-		HealthState:          status.HealthState,
+		APIVersion:                  APIVersion,
+		Kind:                        Kind,
+		GenerationID:                spec.GenerationID,
+		RuntimeVersion:              spec.RuntimeVersion,
+		PreviousGenerationID:        spec.PreviousGenerationID,
+		Root:                        spec.Root,
+		Boot:                        spec.Boot,
+		Sysexts:                     append([]ExtensionRef(nil), spec.Sysexts...),
+		BundledConfexts:             append([]ExtensionRef(nil), spec.BundledConfexts...),
+		Confexts:                    append([]GeneratedConfext(nil), spec.Confexts...),
+		KernelCommandLine:           append([]string(nil), spec.KernelCommandLine...),
+		ConfiguredKernelCommandLine: slices.Clone(spec.ConfiguredKernelCommandLine),
+		KubernetesUpgrade:           spec.KubernetesUpgrade,
+		CreatedAt:                   spec.CreatedAt,
+		BootState:                   status.BootState,
+		HealthState:                 status.HealthState,
 	}
 }
 
@@ -418,6 +424,9 @@ func ValidateGenerationSpec(spec GenerationSpec) error {
 	}
 	if strings.TrimSpace(spec.Boot.UKIPath) == "" {
 		return fmt.Errorf("UKI path is required")
+	}
+	if err := kernelcmdline.ValidateEffective(spec.ConfiguredKernelCommandLine, spec.KernelCommandLine); err != nil {
+		return fmt.Errorf("configured kernel command line: %w", err)
 	}
 	for _, sysext := range spec.Sysexts {
 		if err := ValidatePair(spec.Root, sysext); err != nil {

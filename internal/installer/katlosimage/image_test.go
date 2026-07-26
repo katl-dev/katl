@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,7 @@ func TestResolveDirectoryAcceptsInstallImage(t *testing.T) {
 		RootPartitionUUID: "11111111-2222-3333-4444-555555555555",
 		UKIPath:           "/efi/EFI/Linux/katl-2026.06.06-001.efi",
 		CreatedAt:         createdAt,
+		KernelCommandLine: []string{"intel_iommu=on", "iommu=pt"},
 	})
 	if err != nil {
 		t.Fatalf("FirstInstallRequest() error = %v", err)
@@ -71,6 +73,14 @@ func TestResolveDirectoryAcceptsInstallImage(t *testing.T) {
 	}
 	if got := strings.Join(request.KernelCommandLine, " "); !strings.Contains(got, "katl.generation=2026.06.06-001") {
 		t.Fatalf("kernel command line = %#v", request.KernelCommandLine)
+	}
+	for _, option := range []string{"intel_iommu=on", "iommu=pt"} {
+		if !slices.Contains(request.KernelCommandLine, option) {
+			t.Fatalf("kernel command line %#v does not contain configured option %q", request.KernelCommandLine, option)
+		}
+	}
+	if !slices.Equal(request.ConfiguredKernelCommandLine, []string{"intel_iommu=on", "iommu=pt"}) {
+		t.Fatalf("configured kernel command line = %#v", request.ConfiguredKernelCommandLine)
 	}
 }
 
@@ -177,6 +187,8 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 	root := t.TempDir()
 	payload := upgradePayload(t, nil)
 	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", sha256Bytes([]byte("kubernetes sysext")), "v1.35.0")
+	previousSpec.KernelCommandLine = append(previousSpec.KernelCommandLine, "intel_iommu=on")
+	previousSpec.ConfiguredKernelCommandLine = []string{"intel_iommu=on"}
 	previousSpec, previousStatus = writePreservedGenerationAssets(t, root, previousSpec)
 	previousKubernetes := previousSpec.Sysexts[0]
 
@@ -202,6 +214,9 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 	}
 	if plan.Spec.Boot.UKIPath != "/efi/EFI/Linux/katl-gen1.efi" || plan.Spec.Boot.LoaderEntryPath != "loader/entries/katl-gen1.conf" {
 		t.Fatalf("candidate boot = %#v", plan.Spec.Boot)
+	}
+	if !slices.Contains(plan.Spec.KernelCommandLine, "intel_iommu=on") || !slices.Equal(plan.Spec.ConfiguredKernelCommandLine, []string{"intel_iommu=on"}) {
+		t.Fatalf("candidate kernel command line = effective %#v configured %#v", plan.Spec.KernelCommandLine, plan.Spec.ConfiguredKernelCommandLine)
 	}
 	if len(plan.Spec.Sysexts) != 1 {
 		t.Fatalf("candidate sysexts = %#v, want one preserved sysext", plan.Spec.Sysexts)

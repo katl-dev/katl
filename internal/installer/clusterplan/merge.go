@@ -2,6 +2,7 @@ package clusterplan
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -29,6 +30,11 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 		out.Hostname = strings.TrimSpace(next.Hostname)
 	}
 	out.SSH.AuthorizedKeys = appendUnique(out.SSH.AuthorizedKeys, next.SSH.AuthorizedKeys)
+	if next.Kernel != nil {
+		kernel := *next.Kernel
+		kernel.CommandLine = slices.Clone(next.Kernel.CommandLine)
+		out.Kernel = &kernel
+	}
 	networkd, err := mergeNetworkd(out.Networkd, next.Networkd)
 	if err != nil {
 		return NodeLayer{}, err

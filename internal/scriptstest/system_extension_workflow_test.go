@@ -17,6 +17,7 @@ func TestSystemExtensionWorkflowSeparatesValidationFromPublication(t *testing.T)
 	}
 	var workflow struct {
 		Jobs map[string]struct {
+			Env   map[string]string `yaml:"env"`
 			Steps []struct {
 				Name string `yaml:"name"`
 				ID   string `yaml:"id"`
@@ -33,10 +34,12 @@ func TestSystemExtensionWorkflowSeparatesValidationFromPublication(t *testing.T)
 	if !ok {
 		t.Fatal("system extension workflow has no bird job")
 	}
-	var decision, build string
+	var revision, decision, build string
 	var loginIf, publishIf string
 	for _, step := range bird.Steps {
 		switch step.Name {
+		case "Require an immutable revision for recipe changes":
+			revision = step.Run
 		case "Determine immutable publication intent":
 			if step.ID != "publication" {
 				t.Fatalf("publication decision id = %q, want publication", step.ID)
@@ -51,11 +54,33 @@ func TestSystemExtensionWorkflowSeparatesValidationFromPublication(t *testing.T)
 		}
 	}
 
+	recipePattern := bird.Env["KATL_BIRD_RECIPE_PATTERN"]
 	for _, contract := range []string{
-		`git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA"`,
+		`\.github/workflows/system-extensions\.yml`,
+		`cmd/katlctl/system_extension\.go`,
 		`extensions/bird/extension\.env`,
+		`internal/installer/payloadbundle/`,
+		`internal/installer/systemextensionbundle/`,
+		`mkosi\.profiles/runtime/`,
 		`mkosi\.profiles/system-extension-bird/`,
 		`scripts/mkosi`,
+	} {
+		if !strings.Contains(recipePattern, contract) {
+			t.Errorf("BIRD recipe boundary does not include %q", contract)
+		}
+	}
+	for _, contract := range []string{
+		`git diff --name-only "$BASE_SHA"...HEAD`,
+		`git show "$BASE_SHA:extensions/bird/extension.env"`,
+		`KATL_EXTENSION_ARTIFACT_VERSION`,
+	} {
+		if !strings.Contains(revision, contract) {
+			t.Errorf("pre-merge revision check does not enforce %q", contract)
+		}
+	}
+	for _, contract := range []string{
+		`git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA"`,
+		`KATL_BIRD_RECIPE_PATTERN`,
 		`echo "publish=$publish" >> "$GITHUB_OUTPUT"`,
 	} {
 		if !strings.Contains(decision, contract) {

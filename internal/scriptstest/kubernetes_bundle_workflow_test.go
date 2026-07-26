@@ -16,6 +16,7 @@ func TestKubernetesBundleWorkflowLinksUpstreamRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	var workflow struct {
+		On   map[string]any `yaml:"on"`
 		Jobs map[string]struct {
 			Env   map[string]string `yaml:"env"`
 			Steps []struct {
@@ -26,6 +27,9 @@ func TestKubernetesBundleWorkflowLinksUpstreamRelease(t *testing.T) {
 	}
 	if err := yaml.Unmarshal(contents, &workflow); err != nil {
 		t.Fatalf("parse Kubernetes bundle workflow: %v", err)
+	}
+	if _, ok := workflow.On["pull_request"]; !ok {
+		t.Fatal("Kubernetes bundle workflow does not build relevant pull requests")
 	}
 
 	build, ok := workflow.Jobs["build"]
@@ -56,6 +60,8 @@ func TestKubernetesBundleWorkflowLinksUpstreamRelease(t *testing.T) {
 	for _, contract := range []string{
 		`go run ./cmd/katl-publish-kubernetes-sysext`,
 		`oci-manifest-digest:`,
+		`oci-manifest-tag:`,
+		`manifest-sha256-`,
 		`--annotation "org.opencontainers.image.url=${KUBERNETES_RELEASE_URL}"`,
 		`--annotation "dev.katl.kubernetes.payload.version=${PAYLOAD_VERSION}"`,
 	} {

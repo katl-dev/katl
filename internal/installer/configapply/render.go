@@ -3,6 +3,7 @@ package configapply
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
@@ -44,6 +45,7 @@ type renderedNodeConfigurationChangeSpec struct {
 type renderedNodeConfigurationOverlay struct {
 	Identity             *renderedNodeIdentity        `yaml:"identity,omitempty"`
 	SystemRole           string                       `yaml:"systemRole,omitempty"`
+	Kernel               *manifest.KernelConfig       `yaml:"kernel,omitempty"`
 	Networkd             *manifest.NetworkdConfig     `yaml:"networkd,omitempty"`
 	HostConfiguration    *manifest.HostConfiguration  `yaml:"hostConfiguration,omitempty"`
 	SystemExtensions     *[]manifest.SystemExtension  `yaml:"systemExtensions,omitempty"`
@@ -76,6 +78,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 
 	node := request.Manifest.Node
 	systemExtensions := append([]manifest.SystemExtension(nil), node.SystemExtensions...)
+	kernel := manifest.KernelConfig{CommandLine: slices.Clone(node.Kernel.CommandLine)}
 	kubeadmConfigs, err := renderKubeadmConfigs(node.Kubernetes.Kubeadm.ConfigRef, request.KubeadmConfigs)
 	if err != nil {
 		return nil, err
@@ -86,6 +89,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 			AuthorizedKeys: append([]string{}, node.Identity.SSH.AuthorizedKeys...),
 		},
 		SystemRole:           node.SystemRole,
+		Kernel:               &kernel,
 		Networkd:             &node.Networkd,
 		HostConfiguration:    &node.HostConfiguration,
 		SystemExtensions:     &systemExtensions,

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -124,6 +125,23 @@ func TestCompileSelectsManagedEndpointOnlyForControlPlanes(t *testing.T) {
 	}
 	if nativeFile(worker.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") != nil {
 		t.Fatal("worker received BIRD config")
+	}
+}
+
+func TestCompileResolvesKernelCommandLinePerNode(t *testing.T) {
+	config := validConfig()
+	config.Spec.Defaults.Kernel = &manifest.KernelConfig{CommandLine: []string{"intel_iommu=on", "iommu=pt"}}
+	config.Spec.Nodes[1].Overrides.Kernel = &manifest.KernelConfig{}
+
+	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if got := plan.Nodes[0].InstallManifest.Node.Kernel.CommandLine; !slices.Equal(got, []string{"intel_iommu=on", "iommu=pt"}) {
+		t.Fatalf("control-plane kernel command line = %q", got)
+	}
+	if got := plan.Nodes[1].InstallManifest.Node.Kernel.CommandLine; len(got) != 0 {
+		t.Fatalf("worker kernel command line = %q, want cleared", got)
 	}
 }
 

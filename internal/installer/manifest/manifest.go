@@ -17,6 +17,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,12 +44,21 @@ type Manifest struct {
 type NodeConfig struct {
 	Identity             NodeIdentity                 `json:"identity" yaml:"identity"`
 	SystemRole           string                       `json:"systemRole" yaml:"systemRole"`
+	Kernel               KernelConfig                 `json:"kernel,omitempty,omitzero" yaml:"kernel,omitempty"`
 	Networkd             NetworkdConfig               `json:"networkd,omitempty" yaml:"networkd,omitempty"`
 	HostConfiguration    HostConfiguration            `json:"hostConfiguration,omitempty,omitzero" yaml:"hostConfiguration,omitempty"`
 	SystemExtensions     []SystemExtension            `json:"systemExtensions,omitempty" yaml:"systemExtensions,omitempty"`
 	Kubernetes           KubernetesConfig             `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlplaneendpoint.Config `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
 	Bootstrap            *BootstrapIntent             `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
+}
+
+type KernelConfig struct {
+	CommandLine []string `json:"commandLine,omitempty" yaml:"commandLine,omitempty"`
+}
+
+func (config KernelConfig) IsZero() bool {
+	return len(config.CommandLine) == 0
 }
 
 type NodeIdentity struct {
@@ -339,6 +349,9 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	if err := validateNetworkd(manifest.Node.Networkd); err != nil {
 		return err
 	}
+	if err := ValidateKernelConfig(manifest.Node.Kernel); err != nil {
+		return fmt.Errorf("node.kernel: %w", err)
+	}
 	if err := ValidateHostConfiguration(manifest.Node.HostConfiguration, false); err != nil {
 		return fmt.Errorf("node.hostConfiguration: %w", err)
 	}
@@ -376,6 +389,10 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 		}
 	}
 	return nil
+}
+
+func ValidateKernelConfig(config KernelConfig) error {
+	return kernelcmdline.ValidateConfigured(config.CommandLine)
 }
 
 func validateBootstrapIntent(intent BootstrapIntent) error {

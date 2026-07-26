@@ -31,6 +31,11 @@ tests before it becomes user-facing.
 Initial supported domains:
 
 ```text
+kernel command line
+  operator-owned additions to the installed kernel arguments
+  Katl retains root, immutable-runtime, generation identity, and recovery policy
+  changes are staged in a next-boot generation
+
 node identity
   hostname
   stable node name used by generated kubeadm input
@@ -145,6 +150,11 @@ validate native syntax enough to catch unsupported or dangerous fields
 Domain-specific expectations:
 
 ```text
+kernel command line
+  require one whitespace-free argument per list entry
+  reject duplicate entries and Katl-owned boot arguments
+  preserve image-required arguments across install, config apply, and upgrade
+
 node identity
   validate hostname and node name as DNS-compatible single labels or explicitly
   supported fully qualified names
@@ -228,6 +238,9 @@ operator or test-harness steps.
 Runtime apply behavior is domain-specific:
 
 ```text
+kernel command line
+  stage a next-boot generation and require reboot before the change is active
+
 networkd
   reload or restart systemd-networkd only through tested KatlOS runtime logic
 

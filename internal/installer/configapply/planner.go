@@ -13,17 +13,20 @@ const (
 )
 
 type NodeConfigurationChange struct {
-	APIVersion       string
-	Kind             string
-	GenerationID     string
-	SourceDigest     string
-	Apply            Apply
-	Changes          []Change
-	Sysexts          []generation.ExtensionRef
-	BundledConfexts  []generation.ExtensionRef
-	GeneratedConfext generation.GeneratedConfext
-	Kubeadm          generation.KubeadmActionRequired
-	RequestedAt      time.Time
+	APIVersion                     string
+	Kind                           string
+	GenerationID                   string
+	SourceDigest                   string
+	Apply                          Apply
+	Changes                        []Change
+	Sysexts                        []generation.ExtensionRef
+	BundledConfexts                []generation.ExtensionRef
+	GeneratedConfext               generation.GeneratedConfext
+	Kubeadm                        generation.KubeadmActionRequired
+	RequestedAt                    time.Time
+	KernelCommandLine              []string
+	ConfiguredKernelCommandLine    []string
+	ConfiguredKernelCommandLineSet bool
 }
 
 type Apply struct {
@@ -69,17 +72,20 @@ func PlanChange(current generation.Record, request NodeConfigurationChange) (Res
 	}
 
 	record, err := generation.NewRuntimeConfigRecord(generation.RuntimeConfigRequest{
-		GenerationID:       request.GenerationID,
-		Previous:           current,
-		SourceDigest:       request.SourceDigest,
-		Sysexts:            request.Sysexts,
-		BundledConfexts:    request.BundledConfexts,
-		GeneratedConfext:   request.GeneratedConfext,
-		ChangedDomains:     decision.ChangedDomains,
-		RequestedApplyMode: decision.RequestedMode,
-		AcceptedApplyMode:  decision.AcceptedMode,
-		Kubeadm:            request.Kubeadm,
-		CreatedAt:          request.RequestedAt,
+		GenerationID:                   request.GenerationID,
+		Previous:                       current,
+		SourceDigest:                   request.SourceDigest,
+		Sysexts:                        request.Sysexts,
+		BundledConfexts:                request.BundledConfexts,
+		GeneratedConfext:               request.GeneratedConfext,
+		ChangedDomains:                 decision.ChangedDomains,
+		RequestedApplyMode:             decision.RequestedMode,
+		AcceptedApplyMode:              decision.AcceptedMode,
+		Kubeadm:                        request.Kubeadm,
+		CreatedAt:                      request.RequestedAt,
+		KernelCommandLine:              request.KernelCommandLine,
+		ConfiguredKernelCommandLine:    request.ConfiguredKernelCommandLine,
+		ConfiguredKernelCommandLineSet: request.ConfiguredKernelCommandLineSet,
 	})
 	if err != nil {
 		return Result{Decision: decision}, err

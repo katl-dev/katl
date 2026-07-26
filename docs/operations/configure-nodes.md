@@ -10,6 +10,7 @@ The normal source is the same `ClusterConfig` used for installation. The current
 renderer carries:
 
 - SSH authorized keys;
+- operator-owned kernel command-line additions;
 - systemd-networkd files;
 - native host configuration file sets; and
 - operation-only system role and role-dependent Kubernetes bootstrap state.
@@ -22,6 +23,37 @@ If `spec.kubernetes.kubeadm` changes, cluster apply validates every node before
 mutation and then reconciles every affected Kubernetes component online. A
 Kubernetes configuration change never falls back to next-boot application or
 requires a host reboot.
+
+## Configure Kernel Arguments
+
+Set `kernel.commandLine` under defaults or a concrete node:
+
+```yaml
+spec:
+  defaults:
+    kernel:
+      commandLine:
+        - intel_iommu=on
+        - iommu=pt
+```
+
+Each entry is one argument without whitespace. Applying a changed list creates
+a next-boot generation; `katlctl cluster apply` reports that a reboot is
+required, and the new arguments become active after that reboot. Reapplying the
+same list is a no-op. To remove all operator additions for one node, set:
+
+```yaml
+spec:
+  nodes:
+    - name: worker-1
+      kernel:
+        commandLine: []
+```
+
+Katl preserves release-required arguments and owns root selection, immutable
+runtime mounting, generation and machine identity, and recovery targets.
+Attempts to configure those arguments fail validation with the offending list
+entry.
 
 ## Configure Native Linux Facilities
 

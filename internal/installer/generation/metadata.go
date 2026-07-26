@@ -9,9 +9,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 )
 
 const (
@@ -26,22 +29,23 @@ func IsGeneratedConfextName(name string) bool {
 }
 
 type Record struct {
-	APIVersion           string             `json:"apiVersion"`
-	Kind                 string             `json:"kind"`
-	GenerationID         string             `json:"generationID"`
-	RuntimeVersion       string             `json:"runtimeVersion"`
-	PreviousGenerationID string             `json:"previousGenerationID,omitempty"`
-	Root                 RootSelection      `json:"root"`
-	Boot                 BootSelection      `json:"boot"`
-	Sysexts              []ExtensionRef     `json:"sysexts"`
-	BundledConfexts      []ExtensionRef     `json:"bundledConfexts,omitempty"`
-	Confexts             []GeneratedConfext `json:"confexts"`
-	KernelCommandLine    []string           `json:"kernelCommandLine"`
-	ConfigApply          *ConfigApplyRecord `json:"configApply,omitempty"`
-	KubernetesUpgrade    *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
-	CreatedAt            time.Time          `json:"createdAt"`
-	BootState            string             `json:"bootState"`
-	HealthState          string             `json:"healthState"`
+	APIVersion                  string             `json:"apiVersion"`
+	Kind                        string             `json:"kind"`
+	GenerationID                string             `json:"generationID"`
+	RuntimeVersion              string             `json:"runtimeVersion"`
+	PreviousGenerationID        string             `json:"previousGenerationID,omitempty"`
+	Root                        RootSelection      `json:"root"`
+	Boot                        BootSelection      `json:"boot"`
+	Sysexts                     []ExtensionRef     `json:"sysexts"`
+	BundledConfexts             []ExtensionRef     `json:"bundledConfexts,omitempty"`
+	Confexts                    []GeneratedConfext `json:"confexts"`
+	KernelCommandLine           []string           `json:"kernelCommandLine"`
+	ConfiguredKernelCommandLine []string           `json:"configuredKernelCommandLine,omitempty"`
+	ConfigApply                 *ConfigApplyRecord `json:"configApply,omitempty"`
+	KubernetesUpgrade           *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
+	CreatedAt                   time.Time          `json:"createdAt"`
+	BootState                   string             `json:"bootState"`
+	HealthState                 string             `json:"healthState"`
 }
 
 type KubernetesUpgrade struct {
@@ -94,33 +98,37 @@ type ConfextCompatibility struct {
 }
 
 type FirstInstallRequest struct {
-	GenerationID          string
-	RuntimeVersion        string
-	RuntimeInterface      string
-	RuntimeArchitecture   string
-	RootSlot              string
-	RootPartitionUUID     string
-	RuntimeArtifactSHA256 string
-	UKIPath               string
-	Sysexts               []ExtensionRef
-	BundledConfexts       []ExtensionRef
-	GeneratedConfext      GeneratedConfext
-	KernelCommandLine     []string
-	CreatedAt             time.Time
+	GenerationID                string
+	RuntimeVersion              string
+	RuntimeInterface            string
+	RuntimeArchitecture         string
+	RootSlot                    string
+	RootPartitionUUID           string
+	RuntimeArtifactSHA256       string
+	UKIPath                     string
+	Sysexts                     []ExtensionRef
+	BundledConfexts             []ExtensionRef
+	GeneratedConfext            GeneratedConfext
+	KernelCommandLine           []string
+	ConfiguredKernelCommandLine []string
+	CreatedAt                   time.Time
 }
 
 type RuntimeConfigRequest struct {
-	GenerationID       string
-	Previous           Record
-	SourceDigest       string
-	Sysexts            []ExtensionRef
-	BundledConfexts    []ExtensionRef
-	GeneratedConfext   GeneratedConfext
-	ChangedDomains     []string
-	RequestedApplyMode string
-	AcceptedApplyMode  string
-	Kubeadm            KubeadmActionRequired
-	CreatedAt          time.Time
+	GenerationID                   string
+	Previous                       Record
+	SourceDigest                   string
+	Sysexts                        []ExtensionRef
+	BundledConfexts                []ExtensionRef
+	GeneratedConfext               GeneratedConfext
+	ChangedDomains                 []string
+	RequestedApplyMode             string
+	AcceptedApplyMode              string
+	Kubeadm                        KubeadmActionRequired
+	CreatedAt                      time.Time
+	KernelCommandLine              []string
+	ConfiguredKernelCommandLine    []string
+	ConfiguredKernelCommandLineSet bool
 }
 
 type ConfigApplyRecord struct {
@@ -188,14 +196,15 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 			Architecture:          request.RuntimeArchitecture,
 			RuntimeArtifactSHA256: strings.ToLower(request.RuntimeArtifactSHA256),
 		},
-		Boot:              BootSelection{UKIPath: request.UKIPath},
-		Sysexts:           sysexts,
-		BundledConfexts:   bundledConfexts,
-		Confexts:          []GeneratedConfext{confext},
-		KernelCommandLine: append([]string(nil), request.KernelCommandLine...),
-		CreatedAt:         createdAt.UTC(),
-		BootState:         "pending",
-		HealthState:       "unknown",
+		Boot:                        BootSelection{UKIPath: request.UKIPath},
+		Sysexts:                     sysexts,
+		BundledConfexts:             bundledConfexts,
+		Confexts:                    []GeneratedConfext{confext},
+		KernelCommandLine:           slices.Clone(request.KernelCommandLine),
+		ConfiguredKernelCommandLine: slices.Clone(request.ConfiguredKernelCommandLine),
+		CreatedAt:                   createdAt.UTC(),
+		BootState:                   "pending",
+		HealthState:                 "unknown",
 	}
 	if err := ValidateRecord(record); err != nil {
 		return Record{}, err
@@ -272,10 +281,11 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 			UKIPath:         request.Previous.Boot.UKIPath,
 			LoaderEntryPath: filepath.ToSlash(filepath.Join("loader/entries", "katl-"+generationID+".conf")),
 		},
-		Sysexts:           sysexts,
-		BundledConfexts:   bundledConfexts,
-		Confexts:          []GeneratedConfext{confext},
-		KernelCommandLine: append([]string(nil), request.Previous.KernelCommandLine...),
+		Sysexts:                     sysexts,
+		BundledConfexts:             bundledConfexts,
+		Confexts:                    []GeneratedConfext{confext},
+		KernelCommandLine:           runtimeKernelCommandLine(request),
+		ConfiguredKernelCommandLine: runtimeConfiguredKernelCommandLine(request),
 		ConfigApply: &ConfigApplyRecord{
 			SourceDigest:       strings.ToLower(request.SourceDigest),
 			ChangedDomains:     domains,
@@ -292,6 +302,20 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 		return Record{}, err
 	}
 	return record, nil
+}
+
+func runtimeKernelCommandLine(request RuntimeConfigRequest) []string {
+	if request.KernelCommandLine != nil {
+		return slices.Clone(request.KernelCommandLine)
+	}
+	return slices.Clone(request.Previous.KernelCommandLine)
+}
+
+func runtimeConfiguredKernelCommandLine(request RuntimeConfigRequest) []string {
+	if request.ConfiguredKernelCommandLineSet {
+		return slices.Clone(request.ConfiguredKernelCommandLine)
+	}
+	return slices.Clone(request.Previous.ConfiguredKernelCommandLine)
 }
 
 func MarshalRecord(record Record) ([]byte, error) {
@@ -421,6 +445,9 @@ func ValidatePair(root RootSelection, sysext ExtensionRef) error {
 }
 
 func ValidateRecord(record Record) error {
+	if err := kernelcmdline.ValidateEffective(record.ConfiguredKernelCommandLine, record.KernelCommandLine); err != nil {
+		return fmt.Errorf("configured kernel command line: %w", err)
+	}
 	for _, sysext := range record.Sysexts {
 		if err := ValidatePair(record.Root, sysext); err != nil {
 			return err

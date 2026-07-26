@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -244,6 +245,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 				SSH:      layer.SSH,
 			},
 			SystemRole:           string(role),
+			Kernel:               kernelConfig(layer.Kernel),
 			Networkd:             layer.Networkd,
 			HostConfiguration:    layer.HostConfiguration,
 			SystemExtensions:     append([]manifest.SystemExtension(nil), layer.SystemExtensions...),
@@ -332,6 +334,13 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		KubernetesBundleRef:    kubernetes.bundleRef,
 		KubernetesSysext:       kubernetes.sysext,
 	}, invNode, nil
+}
+
+func kernelConfig(config *manifest.KernelConfig) manifest.KernelConfig {
+	if config == nil {
+		return manifest.KernelConfig{}
+	}
+	return manifest.KernelConfig{CommandLine: slices.Clone(config.CommandLine)}
 }
 
 func manifestAccess(access inventory.Access) manifest.BootstrapAccess {

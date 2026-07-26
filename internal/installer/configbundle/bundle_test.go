@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,6 +73,40 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 		if _, ok := files[blobPath]; !ok {
 			t.Fatalf("descriptor %s missing blob %s", desc.FileName, blobPath)
 		}
+	}
+}
+
+func TestDecodeSourceAcceptsKernelCommandLineDefaultsAndNodeClear(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "  defaults:\n", `  defaults:
+    kernel:
+      commandLine:
+        - intel_iommu=on
+`, 1)
+	source = strings.Replace(source, "    - name: worker-1\n", `    - name: worker-1
+      kernel:
+        commandLine: []
+`, 1)
+
+	config, err := DecodeSource(strings.NewReader(source))
+	if err != nil {
+		t.Fatalf("DecodeSource() error = %v", err)
+	}
+	if config.Spec.Defaults.Kernel == nil || !slices.Equal(config.Spec.Defaults.Kernel.CommandLine, []string{"intel_iommu=on"}) {
+		t.Fatalf("default kernel config = %#v", config.Spec.Defaults.Kernel)
+	}
+	if config.Spec.Nodes[1].Kernel == nil || len(config.Spec.Nodes[1].Kernel.CommandLine) != 0 {
+		t.Fatalf("worker kernel override = %#v", config.Spec.Nodes[1].Kernel)
+	}
+}
+
+func TestDecodeSourceRejectsKatlOwnedKernelArgument(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "  defaults:\n", `  defaults:
+    kernel:
+      commandLine:
+        - root=/dev/sda
+`, 1)
+	if _, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)}); err == nil || !strings.Contains(err.Error(), "managed by Katl") {
+		t.Fatalf("BuildArchive() error = %v", err)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -136,6 +137,16 @@ type Published struct {
 	Existing       bool
 }
 
+// ManifestDigestTag returns a stable registry tag for an OCI manifest digest.
+// The "sha256-<hex>" shape is reserved by the OCI referrers fallback protocol,
+// so Katl uses a distinct namespace for direct immutable manifest references.
+func ManifestDigestTag(manifestDigest string) (string, error) {
+	if !validDigest(manifestDigest) {
+		return "", fmt.Errorf("OCI manifest digest is invalid")
+	}
+	return "manifest-sha256-" + strings.TrimPrefix(manifestDigest, "sha256:"), nil
+}
+
 // Pack builds and verifies the common OCI envelope without contacting a
 // registry. Producers use this in presubmit checks so the bytes validated in
 // CI are packed by the same implementation that publishes them.
@@ -189,7 +200,7 @@ func DescribeBytes(data []byte, role, mediaType, fileName string) Blob {
 				"dev.katl.bundle.role":  role,
 			},
 		},
-		Data: append([]byte(nil), data...),
+		Data: slices.Clone(data),
 	}
 }
 
