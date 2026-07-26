@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"io"
 	"os"
@@ -84,6 +85,48 @@ func TestVMPlanSupportsIndependentDomainOwnershipAndPersistentSerial(t *testing.
 	if strings.Contains(plan.DomainXML, ">katl/vmtest</vmtest>") {
 		t.Fatalf("independently owned VM uses automated vmtest metadata:\n%s", plan.DomainXML)
 	}
+}
+
+func TestVMPlanReservesHotplugPCISlots(t *testing.T) {
+	result, config := vmFixture(t)
+	probe := probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	}
+	config.HotplugPCISlots = 1
+	plan, err := planVM(result, config, probe)
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	baseline := countPCIeRootPorts(t, plan.DomainXML)
+	config.HotplugPCISlots = 4
+	plan, err = planVM(result, config, probe)
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+	if got := countPCIeRootPorts(t, plan.DomainXML) - baseline; got != 3 {
+		t.Fatalf("additional hotplug PCI slots = %d, want 3", got)
+	}
+}
+
+func countPCIeRootPorts(t *testing.T, domainXML string) int {
+	t.Helper()
+	var domain struct {
+		Devices struct {
+			Controllers []domainController `xml:"controller"`
+		} `xml:"devices"`
+	}
+	if err := xml.Unmarshal([]byte(domainXML), &domain); err != nil {
+		t.Fatalf("decode domain XML: %v", err)
+	}
+	var hotplugSlots int
+	for _, controller := range domain.Devices.Controllers {
+		if controller.Type == "pci" && controller.Model == "pcie-root-port" {
+			hotplugSlots++
+		}
+	}
+	return hotplugSlots
 }
 
 func TestVMLibvirtNetworkFromConfigAndEnv(t *testing.T) {

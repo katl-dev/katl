@@ -305,6 +305,7 @@ func (manager installerManager) create(ctx context.Context, opts installerOption
 		Network:          vmtest.VMNetworkConfig{Mode: vmtest.VMNetworkUser, MAC: mac},
 		DomainMetadata:   installerDomainMetadata,
 		PersistentSerial: true,
+		HotplugPCISlots:  3,
 	}
 	plan, err := vmtest.PlanVM(result, config)
 	if err != nil {
