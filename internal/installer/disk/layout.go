@@ -238,7 +238,7 @@ func planExtraDisks(facts HardwareFacts, target BlockDevice, requests []ExtraDis
 		if filesystem == "" {
 			filesystem = "ext4"
 		}
-		if filesystem != "ext4" && filesystem != "xfs" {
+		if !IsSupportedExtraDiskFilesystem(filesystem) {
 			return nil, fmt.Errorf("extra disk %q filesystem %q is unsupported", request.Name, filesystem)
 		}
 		if !request.Wipe {
@@ -261,6 +261,35 @@ func planExtraDisks(facts HardwareFacts, target BlockDevice, requests []ExtraDis
 	}
 
 	return plans, nil
+}
+
+func IsSupportedExtraDiskFilesystem(filesystem string) bool {
+	for _, capability := range extraDiskFilesystemCapabilities {
+		if capability.Filesystem == filesystem {
+			return true
+		}
+	}
+	return false
+}
+
+type extraDiskFilesystemCapability struct {
+	Filesystem       string
+	FormatterPackage string
+}
+
+var extraDiskFilesystemCapabilities = []extraDiskFilesystemCapability{
+	{Filesystem: "ext4", FormatterPackage: "e2fsprogs"},
+	{Filesystem: "xfs", FormatterPackage: "xfsprogs"},
+	{Filesystem: "btrfs", FormatterPackage: "btrfs-progs"},
+}
+
+func VerifyInstallerFilesystemPackages(packages map[string]string) error {
+	for _, capability := range extraDiskFilesystemCapabilities {
+		if packages[capability.FormatterPackage] == "" {
+			return fmt.Errorf("installer %s extra-disk formatting capability is missing: expected package %s", capability.Filesystem, capability.FormatterPackage)
+		}
+	}
+	return nil
 }
 
 func persistentDevicePath(device BlockDevice, selector discovery.TargetDiskSelector) (string, error) {

@@ -195,14 +195,14 @@ func TestDecodeAcceptsExtraDisks(t *testing.T) {
 				{
 					"name": "data",
 					"selector": {"byID": "/dev/disk/by-id/ata-data"},
-					"filesystem": "xfs",
+					"filesystem": "btrfs",
 					"wipe": true
 				}
 			]`)))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if len(manifest.Install.ExtraDisks) != 1 || manifest.Install.ExtraDisks[0].Name != "data" {
+	if len(manifest.Install.ExtraDisks) != 1 || manifest.Install.ExtraDisks[0].Name != "data" || manifest.Install.ExtraDisks[0].Filesystem != "btrfs" {
 		t.Fatalf("extra disks = %#v", manifest.Install.ExtraDisks)
 	}
 }

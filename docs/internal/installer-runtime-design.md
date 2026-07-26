@@ -430,10 +430,10 @@ SSH and identity
 extra disks
   selectors must not resolve to the target root disk or its partitions; names
   must be unique and Katl derives each mount path as
-  /var/lib/katl/mnt/<name>; wipe=false requires an existing filesystem matching
-  the requested type and preserves it, while wipe=true authorizes formatting
-  only that selected extra disk; custom mount paths and mount options are
-  deferred
+  /var/lib/katl/mnt/<name>; supported filesystems are ext4, xfs, and btrfs;
+  wipe=false requires an existing filesystem matching the requested type and
+  preserves it, while wipe=true authorizes formatting only that selected extra
+  disk; custom mount paths and mount options are deferred
 ```
 
 Runtime first-boot seed material may configure:

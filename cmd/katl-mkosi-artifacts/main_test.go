@@ -26,6 +26,24 @@ func TestBuildTimestamp(t *testing.T) {
 	}
 }
 
+func TestPackageInventoryDigestRejectsMissingExtraDiskFormatter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "packages.tsv")
+	content := strings.Join([]string{
+		"linux-firmware\t1.noarch",
+		"microcode_ctl\t2.x86_64",
+		"amd-ucode-firmware\t1.noarch",
+		"e2fsprogs\t1.x86_64",
+		"xfsprogs\t1.x86_64",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := packageInventoryDigest("installer", path)
+	if err == nil || !strings.Contains(err.Error(), "btrfs") || !strings.Contains(err.Error(), "btrfs-progs") {
+		t.Fatalf("packageInventoryDigest() error = %v", err)
+	}
+}
+
 func TestWriteAndPath(t *testing.T) {
 	repo := testRepoRoot(t)
 	workDir := testWorkDir(t, repo)

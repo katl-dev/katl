@@ -229,7 +229,8 @@
         "filesystem": {
           "enum": [
             "ext4",
-            "xfs"
+            "xfs",
+            "btrfs"
           ]
         },
         "wipe": {

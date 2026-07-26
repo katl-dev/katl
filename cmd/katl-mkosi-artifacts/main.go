@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/firmware"
+	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -1600,8 +1601,14 @@ func packageInventoryDigest(kind, path string) (string, error) {
 	if !fileExists(path) {
 		return "", nil
 	}
-	if _, err := firmware.VerifyPackageInventory(kind, path); err != nil {
+	packages, err := firmware.VerifyPackageInventory(kind, path)
+	if err != nil {
 		return "", err
+	}
+	if kind == "installer" {
+		if err := disk.VerifyInstallerFilesystemPackages(packages); err != nil {
+			return "", err
+		}
 	}
 	_, digest, err := fileInfo(path)
 	if err != nil {
