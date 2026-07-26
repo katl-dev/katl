@@ -149,9 +149,10 @@ jobs:
           fi
           matrix="$(go run ./cmd/katl-kubernetes-release "${args[@]}")"
 
+          publish=false
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             publish=true
-          else
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             publish="$DISPATCH_PUBLISH"
           fi
           if [[ "$publish" != "true" && "$publish" != "false" ]]; then
