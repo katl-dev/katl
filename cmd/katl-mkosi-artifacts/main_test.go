@@ -52,6 +52,7 @@ func TestWriteAndPath(t *testing.T) {
 		"KATL_INSTALLER_UKI=" + installerUKI,
 		"KATL_INSTALLER_KERNEL=" + installerKernel,
 		"KATL_INSTALLER_INITRD=" + installerInitrd,
+		"KATL_INSTALLER_PACKAGE_SET=" + filepath.Join(workDir, "missing-installer-packages.tsv"),
 		"KATL_INSTALLER_ISO=" + installerISO,
 		"KATL_RUNTIME_UKI=" + runtimeUKI,
 		"KATL_RUNTIME_UKI_METADATA=" + runtimeUKI + ".json",
@@ -107,7 +108,7 @@ func TestWriteAndPath(t *testing.T) {
 		t.Fatalf("installer UKI compression = %q, want empty outer compression", metadata.Compression)
 	}
 	readTestJSON(t, installerInitrd+".json", &metadata)
-	if metadata.ArtifactRole != "installer-initrd" || metadata.Compression != "zstd" {
+	if metadata.ArtifactRole != "installer-initrd" || metadata.Compression != "early-cpio+zstd" {
 		t.Fatalf("installer initrd metadata = %#v", metadata)
 	}
 	readTestJSON(t, installerISO+".json", &metadata)
@@ -140,6 +141,7 @@ func TestWriteInstallerArtifactsDoesNotRequireRuntime(t *testing.T) {
 		"KATL_INSTALLER_UKI=" + installerUKI,
 		"KATL_INSTALLER_KERNEL=" + installerKernel,
 		"KATL_INSTALLER_INITRD=" + installerInitrd,
+		"KATL_INSTALLER_PACKAGE_SET=" + filepath.Join(workDir, "missing-installer-packages.tsv"),
 	})
 	if err != nil {
 		t.Fatalf("write installer artifacts error = %v", err)
@@ -335,6 +337,8 @@ func TestMetadataWriters(t *testing.T) {
 		"KATL_BUILD_COMMIT=test-build",
 		"KATL_VERSION=0.1.0",
 		"KATL_ARCHITECTURE=x86_64",
+		"KATL_RUNTIME_INITRD=" + filepath.Join(workDir, "missing-runtime.initrd"),
+		"KATL_RUNTIME_PACKAGE_SET=" + filepath.Join(workDir, "missing-runtime-packages.tsv"),
 	}
 
 	var stdout bytes.Buffer

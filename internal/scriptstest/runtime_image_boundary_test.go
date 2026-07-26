@@ -8,20 +8,20 @@ import (
 	"testing"
 )
 
-func TestRuntimeInitrdIncludesLibseccomp(t *testing.T) {
+func TestRuntimeInitrdPackagingPreservesEarlyMicrocode(t *testing.T) {
 	wrapper, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "mkosi"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(wrapper)
-	for _, want := range []string{
-		`"$root/usr/lib64/libseccomp.so.2"`,
-		"cpio --null --create --append --format=newc",
-		`zstd -q --ultra -22 -f "$initrd_raw" -o "$runtime_initrd"`,
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("runtime artifact packaging does not append libseccomp to the initrd: missing %q", want)
-		}
+	splitAt := strings.Index(text, "mkosi_artifacts split-initrd")
+	repackAt := strings.Index(text, "cpio --null --create --append --format=newc")
+	joinAt := strings.Index(text, "mkosi_artifacts join-initrd")
+	if splitAt < 0 || repackAt < 0 || joinAt < 0 || splitAt >= repackAt || repackAt >= joinAt {
+		t.Fatal("runtime initrd packaging must preserve early microcode around normal initramfs changes")
+	}
+	if !strings.Contains(text, `"$root/usr/lib64/libseccomp.so.2"`) {
+		t.Fatal("runtime initrd packaging must include libseccomp for the runtime switch-root helper")
 	}
 }
 
@@ -32,7 +32,7 @@ func TestRuntimeBootInputsArePublishedBeforeInitrdPackaging(t *testing.T) {
 	}
 	text := string(wrapper)
 	publish := `cp --reflink=auto "$kernel_source" "$runtime_kernel"`
-	packageInitrd := `zstd -q -d -c "$runtime_initrd"`
+	packageInitrd := `mkosi_artifacts split-initrd`
 	publishAt := strings.Index(text, publish)
 	packageAt := strings.Index(text, packageInitrd)
 	if publishAt < 0 || packageAt < 0 || publishAt >= packageAt {

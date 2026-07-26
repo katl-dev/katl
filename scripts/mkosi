@@ -671,6 +671,10 @@ if [[ "$runtime" == direct ]]; then
     fi
     if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
         GOCACHE="${GOCACHE:-$TMPDIR/katl-go-cache}" \
+            go run ./cmd/katl-mkosi-artifacts normalize-installer-firmware >/dev/null || status=1
+    fi
+    if [[ "$status" -eq 0 && -n "$installer_package_set" ]]; then
+        GOCACHE="${GOCACHE:-$TMPDIR/katl-go-cache}" \
             go run ./cmd/katl-mkosi-artifacts write-installer-artifacts >/dev/null || status=1
     fi
     if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
@@ -764,6 +768,11 @@ set +e
             status=1
         fi
     fi
+    if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
+        if ! mkosi_artifacts normalize-installer-firmware >/dev/null; then
+            status=1
+        fi
+    fi
     if [[ "$status" -eq 0 && "${KATL_EMIT_RUNTIME_ARTIFACT:-0}" == 1 ]]; then
         root=_build/mkosi/katl-runtime-root
         artifact=_build/mkosi/katl-runtime-root.squashfs
@@ -802,15 +811,23 @@ set +e
                     status=1
                 else
                     initrd_overlay=$(mktemp -d)
+                    initrd_early=$(mktemp)
+                    initrd_regular=$(mktemp)
                     initrd_raw=$(mktemp)
                     mkdir -p "$initrd_overlay/usr/lib64"
-                    if ! cp -a \
+                    if ! mkosi_artifacts split-initrd \
+                        --input "$runtime_initrd" \
+                        --early "$initrd_early" \
+                        --initramfs "$initrd_regular" >/dev/null; then
+                        echo "error: split runtime early microcode and normal initramfs" >&2
+                        status=1
+                    elif ! cp -a \
                         "$root/usr/lib64/libseccomp.so.2" \
                         "$root/usr/lib64/libseccomp.so.2."* \
                         "$initrd_overlay/usr/lib64/"; then
                         echo "error: stage runtime initrd libseccomp overlay" >&2
                         status=1
-                    elif ! zstd -q -d -c "$runtime_initrd" >"$initrd_raw"; then
+                    elif ! zstd -q -d -c "$initrd_regular" >"$initrd_raw"; then
                         echo "error: decompress runtime initrd" >&2
                         status=1
                     elif ! (
@@ -821,11 +838,17 @@ set +e
                     ); then
                         echo "error: append runtime initrd libseccomp overlay" >&2
                         status=1
-                    elif ! zstd -q --ultra -22 -f "$initrd_raw" -o "$runtime_initrd"; then
+                    elif ! zstd -q --ultra -22 -f "$initrd_raw" -o "$initrd_regular"; then
                         echo "error: recompress runtime initrd" >&2
                         status=1
+                    elif ! mkosi_artifacts join-initrd \
+                        --early "$initrd_early" \
+                        --initramfs "$initrd_regular" \
+                        --output "$runtime_initrd" >/dev/null; then
+                        echo "error: restore runtime early microcode before normal initramfs" >&2
+                        status=1
                     fi
-                    rm -rf "$initrd_overlay" "$initrd_raw"
+                    rm -rf "$initrd_overlay" "$initrd_early" "$initrd_regular" "$initrd_raw"
                     ukify_args=(
                         build
                         --linux "$runtime_kernel"
@@ -839,6 +862,10 @@ set +e
                         ukify_args+=(--stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub)
                     fi
                     if [[ "$status" -eq 0 ]] && ! ukify "${ukify_args[@]}"; then
+                        status=1
+                    elif [[ "$status" -eq 0 ]] && ! mkosi_artifacts verify-uki-initrd \
+                        --uki "$boot_artifact" \
+                        --initrd "$runtime_initrd" >/dev/null; then
                         status=1
                     fi
                 fi

@@ -1,6 +1,6 @@
 # ADR-013: KatlOS includes common firmware and CPU microcode
 
-Status: proposed.
+Status: accepted.
 
 Date: 2026-07-25.
 
