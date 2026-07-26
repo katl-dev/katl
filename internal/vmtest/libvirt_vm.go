@@ -61,6 +61,7 @@ type VMConfig struct {
 	Agent             AgentControlConfig
 	DomainMetadata    string
 	PersistentSerial  bool
+	HotplugPCISlots   int
 }
 
 type SerialHook struct {
@@ -999,6 +1000,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		VSock:            vsock,
 		Metadata:         first(config.DomainMetadata, "katl/vmtest"),
 		PersistentSerial: config.PersistentSerial,
+		HotplugPCISlots:  config.HotplugPCISlots,
 	})
 	if err != nil {
 		return VMPlan{}, fmt.Errorf("marshal libvirt domain XML: %w", err)
@@ -1204,6 +1206,7 @@ type libvirtDomain struct {
 	VSock            VSockPlan
 	Metadata         string
 	PersistentSerial bool
+	HotplugPCISlots  int
 }
 
 type domainXML struct {
@@ -1258,17 +1261,24 @@ type domainFeatures struct {
 }
 
 type domainDevices struct {
-	RNG       domainRNG       `xml:"rng"`
-	Interface domainInterface `xml:"interface"`
-	Disks     []domainDisk    `xml:"disk"`
-	Serial    domainSerial    `xml:"serial"`
-	Console   domainConsole   `xml:"console"`
-	VSock     *domainVSock    `xml:"vsock,omitempty"`
+	RNG         domainRNG          `xml:"rng"`
+	Interface   domainInterface    `xml:"interface"`
+	Disks       []domainDisk       `xml:"disk"`
+	Controllers []domainController `xml:"controller,omitempty"`
+	Serial      domainSerial       `xml:"serial"`
+	Console     domainConsole      `xml:"console"`
+	VSock       *domainVSock       `xml:"vsock,omitempty"`
 }
 
 type domainRNG struct {
 	Model   string           `xml:"model,attr"`
 	Backend domainRNGBackend `xml:"backend"`
+}
+
+type domainController struct {
+	Type  string `xml:"type,attr"`
+	Index int    `xml:"index,attr"`
+	Model string `xml:"model,attr"`
 }
 
 type domainRNGBackend struct {
@@ -1532,6 +1542,28 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	}
 	if domain.PersistentSerial {
 		doc.Devices.Serial.Log = &domainSerialLog{File: domain.SerialLog, Append: "on"}
+	}
+	if domain.HotplugPCISlots > 0 {
+		doc.Devices.Controllers = append(doc.Devices.Controllers, domainController{
+			Type:  "pci",
+			Model: "pcie-root",
+		})
+		rootPorts := 4 + domain.HotplugPCISlots
+		for _, disk := range domain.Disks {
+			if disk.Bus == "" || disk.Bus == "virtio" {
+				rootPorts++
+			}
+		}
+		if domain.VSock.Enabled {
+			rootPorts++
+		}
+		for index := 1; index <= rootPorts; index++ {
+			doc.Devices.Controllers = append(doc.Devices.Controllers, domainController{
+				Type:  "pci",
+				Index: index,
+				Model: "pcie-root-port",
+			})
+		}
 	}
 	for _, disk := range domain.Disks {
 		device := disk.Device
