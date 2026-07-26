@@ -526,7 +526,6 @@ func externalConfigLiterals(manifestPath, nodeMetadataPath string) ([]string, er
 		addExternalConfigLiteral(values, disk.Selector.ByID)
 		addExternalConfigLiteral(values, disk.Selector.WWN)
 		addExternalConfigLiteral(values, disk.Selector.Serial)
-		addExternalConfigLiteral(values, disk.Mount.Path)
 	}
 	if manifest.Node.Bootstrap != nil {
 		bootstrap := manifest.Node.Bootstrap

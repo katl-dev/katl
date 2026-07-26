@@ -57,6 +57,26 @@ func TestDiskExecutorRefusesDestructiveActionsWithoutPermission(t *testing.T) {
 	}
 }
 
+func TestDiskExecutorPreservesReusableExtraDisk(t *testing.T) {
+	plan := executorPlan()
+	plan.ExtraMounts[0].Wipe = false
+
+	result, err := (DiskExecutor{}).Execute(context.Background(), DiskExecutionRequest{
+		Plan:             plan,
+		AllowDestructive: true,
+		DryRun:           true,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if countOps(result.Operations, "format-extra-data") != 0 || countOps(result.Operations, "wipe-extra-data") != 0 {
+		t.Fatalf("preserved extra disk has destructive operations: %#v", result.Operations)
+	}
+	if countOps(result.Operations, "mount-extra-data") != 1 {
+		t.Fatalf("preserved extra disk is not mounted: %#v", result.Operations)
+	}
+}
+
 func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
 	plan := executorPlan()
 	commands := &NoopCommandRunner{}
@@ -273,7 +293,7 @@ func TestValidateAppliedLayout(t *testing.T) {
 		Mounts: []MountFact{
 			{Source: "/dev/nvme0n1p1", Target: "/efi", Filesystem: "vfat"},
 			{Source: "/dev/nvme0n1p4", Target: "/var", Filesystem: "ext4"},
-			{Source: "/dev/sdb", Target: "/srv/data", Filesystem: "xfs"},
+			{Source: "/dev/sdb", Target: "/var/lib/katl/mnt/data", Filesystem: "xfs"},
 		},
 	}
 	if err := ValidateAppliedLayout(facts, plan); err != nil {
@@ -283,7 +303,7 @@ func TestValidateAppliedLayout(t *testing.T) {
 	prefixed.Mounts = []MountFact{
 		{Source: "/dev/nvme0n1p1", Target: "/target/efi", Filesystem: "vfat"},
 		{Source: "/dev/nvme0n1p4", Target: "/target/var", Filesystem: "ext4"},
-		{Source: "/dev/sdb", Target: "/target/srv/data", Filesystem: "xfs"},
+		{Source: "/dev/sdb", Target: "/target/var/lib/katl/mnt/data", Filesystem: "xfs"},
 	}
 	if err := ValidateAppliedLayoutAt(prefixed, plan, "/target"); err != nil {
 		t.Fatalf("ValidateAppliedLayoutAt() error = %v", err)
@@ -305,7 +325,7 @@ func executorPlan() DiskLayoutPlan {
 			{Name: "state", GPTLabel: GPTLabelState, Type: "var", Filesystem: "ext4", MountPath: "/var", Remaining: true},
 		},
 		ExtraMounts: []ExtraDiskPlan{
-			{Name: "data", DevicePath: "/dev/sdb", Filesystem: "xfs", MountPath: "/srv/data", Wipe: true},
+			{Name: "data", DevicePath: "/dev/sdb", Filesystem: "xfs", MountPath: "/var/lib/katl/mnt/data", Wipe: true},
 		},
 		Boot: BootTargetMetadata{RootSlot: RootSlotA, RootPartitionLabel: GPTLabelRootA},
 	}

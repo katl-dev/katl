@@ -1203,8 +1203,14 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 	install := &Context{
 		TargetRoot:   targetRoot,
 		LoaderRecord: &record,
-		Commands:     &NoopCommandRunner{},
-		Store:        store,
+		DiskLayout: &disk.DiskLayoutPlan{ExtraMounts: []disk.ExtraDiskPlan{{
+			Name:        "data",
+			MountSource: "/dev/disk/by-id/virtio-katl-extra-a",
+			Filesystem:  "ext4",
+			MountPath:   "/var/lib/katl/mnt/data",
+		}}},
+		Commands: &NoopCommandRunner{},
+		Store:    store,
 	}
 
 	if err := NewRunner(Plan{installMountUnitsStep{}}, install).Run(context.Background()); err != nil {
@@ -1213,11 +1219,14 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/etc-kubernetes.mount"), "Where=/etc/kubernetes")
+	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var-lib-katl-mnt-data.mount"), "What=/dev/disk/by-id/virtio-katl-extra-a")
+	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var-lib-katl-mnt-data.mount"), "Where=/var/lib/katl/mnt/data")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount")
 	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"))
 	assertContains(t, filepath.Join(targetRoot, "etc/tmpfiles.d/katl-state.conf"), "d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -")
 	assertContains(t, filepath.Join(targetRoot, "etc/tmpfiles.d/katl-state.conf"), "d /var/lib/etcd 0755 root root -")
 	assertDir(t, filepath.Join(targetRoot, "etc/kubernetes"), 0o755)
+	assertDir(t, filepath.Join(targetRoot, "var/lib/katl/mnt/data"), 0o755)
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{InstallMountUnits}) {
 		t.Fatalf("completed steps = %#v", got)
 	}

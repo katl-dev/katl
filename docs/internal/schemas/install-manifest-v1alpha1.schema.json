@@ -216,12 +216,12 @@
       "required": [
         "name",
         "selector",
-        "filesystem",
-        "mount"
+        "filesystem"
       ],
       "properties": {
         "name": {
-          "$ref": "#/$defs/dnsLabel"
+          "$ref": "#/$defs/dnsLabel",
+          "description": "Name used by Katl to derive /var/lib/katl/mnt/<name>."
         },
         "selector": {
           "$ref": "#/$defs/diskSelector"
@@ -232,22 +232,10 @@
             "xfs"
           ]
         },
-        "mount": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "path"
-          ],
-          "properties": {
-            "path": {
-              "type": "string",
-              "pattern": "^/(srv|var/lib/katl/extra)/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
-            }
-          }
-        },
         "wipe": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "When true, wipe and format this selected disk. When false, require and preserve a matching existing filesystem."
         }
       }
     },

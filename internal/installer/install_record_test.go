@@ -6,8 +6,46 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
+
+func TestMaterializeInstallRecordIncludesExtraDiskMount(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(validInstallManifestForRecord()))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	result, err := MaterializeInstallRecord(InstallRecordRequest{
+		TargetRoot: t.TempDir(),
+		Manifest:   installManifest,
+		ExtraMounts: []generation.ExtraMountRequest{{
+			Source:     "/dev/disk/by-id/virtio-katl-extra-a",
+			Path:       "/var/lib/katl/mnt/data",
+			Filesystem: "ext4",
+		}},
+		Record: *minimalRecord("2026.06.04-001"),
+		Chown:  func(string, int, int) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("MaterializeInstallRecord() error = %v", err)
+	}
+	unitPath := filepath.Join(result.Tree.ConfextDir, "etc/systemd/system/var-lib-katl-mnt-data.mount")
+	unit, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read extra disk mount unit: %v", err)
+	}
+	if !strings.Contains(string(unit), "What=/dev/disk/by-id/virtio-katl-extra-a") || !strings.Contains(string(unit), "Where=/var/lib/katl/mnt/data") {
+		t.Fatalf("extra disk mount unit:\n%s", unit)
+	}
+	enablementPath := filepath.Join(result.Tree.ConfextDir, "etc/systemd/system/katl-extra-disks.target.d/50-mounts.conf")
+	enablement, err := os.ReadFile(enablementPath)
+	if err != nil {
+		t.Fatalf("read extra disk mount enablement: %v", err)
+	}
+	if !strings.Contains(string(enablement), "Requires=var-lib-katl-mnt-data.mount") {
+		t.Fatalf("extra disk mount enablement:\n%s", enablement)
+	}
+}
 
 func TestMaterializeInstallRecordRejectsUncleanGenerationID(t *testing.T) {
 	installManifest, err := manifest.Decode(strings.NewReader(validInstallManifestForRecord()))

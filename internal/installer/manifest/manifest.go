@@ -218,12 +218,7 @@ type ExtraDisk struct {
 	Name       string       `json:"name" yaml:"name"`
 	Selector   DiskSelector `json:"selector" yaml:"selector"`
 	Filesystem string       `json:"filesystem" yaml:"filesystem"`
-	Mount      ExtraMount   `json:"mount" yaml:"mount"`
 	Wipe       bool         `json:"wipe,omitempty" yaml:"wipe,omitempty"`
-}
-
-type ExtraMount struct {
-	Path string `json:"path" yaml:"path"`
 }
 
 type KatlosImage struct {
@@ -374,18 +369,27 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 			return err
 		}
 	}
+	extraDiskNames := make(map[string]struct{}, len(manifest.Install.ExtraDisks))
 	for i, extra := range manifest.Install.ExtraDisks {
-		if strings.TrimSpace(extra.Name) == "" {
+		if extra.Name == "" {
 			return fmt.Errorf("install.extraDisks[%d].name is required", i)
 		}
+		if err := validateNameRef(fmt.Sprintf("install.extraDisks[%d].name", i), extra.Name); err != nil {
+			return err
+		}
+		if _, exists := extraDiskNames[extra.Name]; exists {
+			return fmt.Errorf("install.extraDisks[%d].name %q is duplicated", i, extra.Name)
+		}
+		extraDiskNames[extra.Name] = struct{}{}
 		if err := validateDiskSelector(fmt.Sprintf("install.extraDisks[%d].selector", i), extra.Selector); err != nil {
 			return err
 		}
-		if strings.TrimSpace(extra.Filesystem) == "" {
+		switch extra.Filesystem {
+		case "ext4", "xfs":
+		case "":
 			return fmt.Errorf("install.extraDisks[%d].filesystem is required", i)
-		}
-		if strings.TrimSpace(extra.Mount.Path) == "" {
-			return fmt.Errorf("install.extraDisks[%d].mount.path is required", i)
+		default:
+			return fmt.Errorf("install.extraDisks[%d].filesystem %q is unsupported", i, extra.Filesystem)
 		}
 	}
 	return nil
@@ -1158,7 +1162,6 @@ func BuildDiskLayoutRequest(manifest Manifest, profile RootDiskProfile, runtimeR
 			Name:       extra.Name,
 			Selector:   diskSelector(extra.Selector),
 			Filesystem: extra.Filesystem,
-			MountPath:  extra.Mount.Path,
 			Wipe:       extra.Wipe,
 		})
 	}

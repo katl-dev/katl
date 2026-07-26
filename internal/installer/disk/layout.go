@@ -2,15 +2,15 @@ package disk
 
 import (
 	"fmt"
-	"path"
-	"strings"
+	"slices"
 
 	"github.com/katl-dev/katl/internal/installer/discovery"
 )
 
 const (
-	DefaultESPSizeMiB = 512
-	MinimumRootMiB    = 1024
+	DefaultESPSizeMiB  = 512
+	MinimumRootMiB     = 1024
+	ExtraDiskMountRoot = "/var/lib/katl/mnt"
 
 	GPTLabelESP      = "KATL_ESP"
 	GPTLabelXBOOTLDR = "KATL_XBOOTLDR"
@@ -62,7 +62,6 @@ type ExtraDiskRequest struct {
 	Name       string
 	Selector   TargetDiskSelector
 	Filesystem string
-	MountPath  string
 	Wipe       bool
 }
 
@@ -92,12 +91,13 @@ type PartitionPlan struct {
 }
 
 type ExtraDiskPlan struct {
-	Name       string
-	DevicePath string
-	Filesystem string
-	MountPath  string
-	Wipe       bool
-	Signatures []SignatureReport
+	Name        string
+	DevicePath  string
+	MountSource string
+	Filesystem  string
+	MountPath   string
+	Wipe        bool
+	Signatures  []SignatureReport
 }
 
 type BootTargetMetadata struct {
@@ -212,18 +212,16 @@ func planTargetPartitions(target BlockDevice, request DiskLayoutRequest) ([]Part
 }
 
 func planExtraDisks(facts HardwareFacts, target BlockDevice, requests []ExtraDiskRequest) ([]ExtraDiskPlan, error) {
-	seenMounts := make(map[string]string, len(requests))
+	seenNames := make(map[string]struct{}, len(requests))
 	plans := make([]ExtraDiskPlan, 0, len(requests))
 	for _, request := range requests {
-		mountPath, err := normalizeExtraMountPath(request.MountPath)
-		if err != nil {
-			return nil, fmt.Errorf("extra disk %q: %w", request.Name, err)
+		if err := validateExtraDiskName(request.Name); err != nil {
+			return nil, err
 		}
-		if conflictWith, ok := mountConflict(seenMounts, mountPath); ok {
-			return nil, fmt.Errorf("extra disk %q mount %s conflicts with %s", request.Name, mountPath, conflictWith)
+		if _, exists := seenNames[request.Name]; exists {
+			return nil, fmt.Errorf("extra disk name %q is duplicated", request.Name)
 		}
-		seenMounts[mountPath] = request.Name
-
+		seenNames[request.Name] = struct{}{}
 		match, err := discovery.MatchTargetDisk(facts, request.Selector)
 		if err != nil {
 			return nil, fmt.Errorf("extra disk %q: %w", request.Name, err)
@@ -231,54 +229,63 @@ func planExtraDisks(facts HardwareFacts, target BlockDevice, requests []ExtraDis
 		if match.Device.Path == target.Path {
 			return nil, fmt.Errorf("extra disk %q resolves to target root disk %s", request.Name, target.Path)
 		}
+		mountSource, err := persistentDevicePath(match.Device, request.Selector)
+		if err != nil {
+			return nil, fmt.Errorf("extra disk %q: %w", request.Name, err)
+		}
 
 		filesystem := request.Filesystem
 		if filesystem == "" {
 			filesystem = "ext4"
 		}
+		if filesystem != "ext4" && filesystem != "xfs" {
+			return nil, fmt.Errorf("extra disk %q filesystem %q is unsupported", request.Name, filesystem)
+		}
+		if !request.Wipe {
+			switch {
+			case match.Device.FilesystemSignature == "":
+				return nil, fmt.Errorf("extra disk %q has no reusable filesystem; set wipe to true to format it as %s", request.Name, filesystem)
+			case match.Device.FilesystemSignature != filesystem:
+				return nil, fmt.Errorf("extra disk %q has filesystem %s, not requested %s; set wipe to true to reformat it", request.Name, match.Device.FilesystemSignature, filesystem)
+			}
+		}
 		plans = append(plans, ExtraDiskPlan{
-			Name:       request.Name,
-			DevicePath: match.Device.Path,
-			Filesystem: filesystem,
-			MountPath:  mountPath,
-			Wipe:       request.Wipe,
-			Signatures: match.Signatures,
+			Name:        request.Name,
+			DevicePath:  match.Device.Path,
+			MountSource: mountSource,
+			Filesystem:  filesystem,
+			MountPath:   ExtraDiskMountRoot + "/" + request.Name,
+			Wipe:        request.Wipe,
+			Signatures:  match.Signatures,
 		})
 	}
 
 	return plans, nil
 }
 
-func normalizeExtraMountPath(mountPath string) (string, error) {
-	clean := path.Clean("/" + strings.TrimPrefix(strings.TrimSpace(mountPath), "/"))
-	if clean == "." || clean == "/" {
-		return "", fmt.Errorf("mount path is required")
+func persistentDevicePath(device BlockDevice, selector discovery.TargetDiskSelector) (string, error) {
+	if selector.ByID != "" {
+		return selector.ByID, nil
 	}
-	if isReservedMountPath(clean) {
-		return "", fmt.Errorf("mount path %s is reserved", clean)
+	aliases := slices.Clone(device.ByID)
+	slices.Sort(aliases)
+	if len(aliases) == 0 {
+		return "", fmt.Errorf("selected disk %s has no durable /dev/disk/by-id path for boot-time mounting", device.Path)
 	}
-	if !strings.HasPrefix(clean, "/srv/") && !strings.HasPrefix(clean, "/var/lib/katl/extra/") {
-		return "", fmt.Errorf("mount path %s must be under /srv or /var/lib/katl/extra", clean)
-	}
-	return clean, nil
+	return aliases[0], nil
 }
 
-func isReservedMountPath(mountPath string) bool {
-	switch mountPath {
-	case "/", "/boot", "/efi", "/usr", "/etc", "/run", "/tmp", "/var", "/var/lib/kubelet", "/var/lib/containerd", "/var/lib/etcd":
-		return true
-	default:
-		return false
+func validateExtraDiskName(name string) error {
+	if name == "" {
+		return fmt.Errorf("extra disk name is required")
 	}
-}
-
-func mountConflict(seen map[string]string, candidate string) (string, bool) {
-	for existing, name := range seen {
-		if existing == candidate || strings.HasPrefix(existing, candidate+"/") || strings.HasPrefix(candidate, existing+"/") {
-			return name, true
+	for i, value := range name {
+		if value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '-' && i > 0 && i < len(name)-1 {
+			continue
 		}
+		return fmt.Errorf("extra disk name %q must use lowercase letters, digits, and internal dashes", name)
 	}
-	return "", false
+	return nil
 }
 
 func planBootTarget(slot RootSlot) (BootTargetMetadata, error) {

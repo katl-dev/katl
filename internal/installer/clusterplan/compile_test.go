@@ -455,7 +455,6 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 					Name:       "data",
 					Selector:   manifest.DiskSelector{Serial: "different"},
 					Filesystem: "xfs",
-					Mount:      manifest.ExtraMount{Path: "/srv/data"},
 				})
 			},
 			want: "extra disk",
@@ -668,7 +667,6 @@ func validConfig() Config {
 					Name:       "data",
 					Selector:   manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-data"},
 					Filesystem: "xfs",
-					Mount:      manifest.ExtraMount{Path: "/srv/data"},
 				}}},
 				Bootstrap: BootstrapLayer{Access: inventory.Access{Method: "agent", CredentialRef: "vsock:1234:10240"}},
 			},

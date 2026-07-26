@@ -87,10 +87,7 @@
               "selector": {
                 "byID": "/dev/disk/by-id/ata-data"
               },
-              "filesystem": "xfs",
-              "mount": {
-                "path": "/srv/data"
-              }
+              "filesystem": "xfs"
             }
           ]
         },
@@ -211,10 +208,7 @@
               "selector": {
                 "byID": "/dev/disk/by-id/ata-data"
               },
-              "filesystem": "xfs",
-              "mount": {
-                "path": "/srv/data"
-              }
+              "filesystem": "xfs"
             }
           ]
         },
