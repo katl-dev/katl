@@ -431,7 +431,7 @@ payloadVersion exactly matches resolved intent
 architecture matches the installed runtime
 supportedRuntimeInterfaces includes the runtime root interface
 Kubernetes minor and skew policy are allowed for the requested operation
-kubeadm config kubernetesVersion, when present, matches the selected payload
+kubeadm config kubernetesVersion is supplied from the selected payload
 supportedKubeadmConfigAPIFamilies covers the rendered kubeadm input
 required host prerequisites are present or planned in the candidate generation
 ```
@@ -440,8 +440,8 @@ Skew validation is operation-specific:
 
 ```text
 first bootstrap or first join
-  Exact `v1.36.x` payload selected by bundle ref is allowed when rendered
-  kubeadm input either omits kubernetesVersion or names the same exact version.
+  Exact `v1.36.x` payload selected by bundle ref is allowed. Katl supplies the
+  rendered kubeadm kubernetesVersion; redundant authored values must match.
 
 normal runtime config apply
   Kubernetes payload selection must be unchanged; any requested sysext change is

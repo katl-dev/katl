@@ -37,11 +37,6 @@ string inside Katl YAML:
 
 ```yaml
 apiVersion: kubeadm.k8s.io/v1beta4
-kind: InitConfiguration
-nodeRegistration:
-  criSocket: unix:///run/containerd/containerd.sock
----
-apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
 clusterName: katl
 networking:
@@ -70,6 +65,21 @@ containerd CRI socket, and safe patch paths are supplied by Katl. Control-plane
 join material is derived from the selected init input. Tokens, discovery
 hashes, and certificate keys are injected only by the accepted bootstrap
 operation and are never read from ClusterConfig.
+
+Operator-authored kubeadm YAML omits values already owned by Katl:
+
+- `ClusterConfiguration.kubernetesVersion` comes from
+  `spec.kubernetes.version`.
+- `ClusterConfiguration.controlPlaneEndpoint` is injected for bootstrap; a
+  conflicting authored value is rejected.
+- The selected endpoint hostname is added once to
+  `ClusterConfiguration.apiServer.certSANs`.
+- `InitConfiguration` and `JoinConfiguration`
+  `nodeRegistration.criSocket` default to containerd.
+- `InitConfiguration.nodeRegistration.taints` defaults to `[]`; node taints
+  belong in ClusterConfig.
+- `KubeletConfiguration.volumePluginDir` is enforced as
+  `/var/lib/kubelet/plugins/volume/exec`.
 
 The rendered path is stable for node-local `katlc` operation wrappers:
 
@@ -198,17 +208,18 @@ only paths that are already part of the kubeadm contract or explicitly
 allowlisted for a tested scenario. Any hostPath under the denied path list must
 fail validation.
 
-`kubernetesVersion` may be omitted or set to the selected sysext version. If it
-is present and conflicts with the selected Kubernetes sysext payload version,
-validation must fail before install or runtime config activation. For first
-install, the selected payload version comes from Katl bootstrap intent and the
-exact matching Kubernetes payload bundle fetched and verified by `katlc`. Katl
-may normalize manifest `1.36.0` to kubeadm's `v1.36.0` form for comparison.
-Release compatibility resolution selects the bundle outside native kubeadm
-YAML; no catalog references or sentinel values are written into it.
+Operators should omit `kubernetesVersion`; Katl writes the version selected by
+`spec.kubernetes.version`. A redundant matching value remains valid, while a
+conflict fails before install or runtime config activation. For first install,
+the selected payload version comes from Katl bootstrap intent and the exact
+matching Kubernetes payload bundle fetched and verified by `katlc`. Release
+compatibility resolution selects the bundle outside native kubeadm YAML; no
+catalog references or sentinel values are written into it.
 
-The CRI socket should default to containerd's socket. A different CRI socket is
-deferred until Katl intentionally supports another runtime.
+The CRI socket defaults to containerd's socket and any different value is
+rejected until Katl intentionally supports another runtime. Control-plane
+registration taints are defaulted empty; users configure node taints through
+ClusterConfig rather than duplicating that intent in native kubeadm YAML.
 
 ## Rendered Files
 

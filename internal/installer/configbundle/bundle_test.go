@@ -249,7 +249,7 @@ shutdownGracePeriod: 45s
 	}
 	cp := controlPlane.KubeadmConfigs["control-plane"]
 	cpConfig := string(cp.Config.Content)
-	for _, want := range []string{"kind: InitConfiguration", "kind: ClusterConfiguration", "kubernetesVersion: v1.36.1", "name: profiling", "kind: KubeletConfiguration", "volumePluginDir: /var/lib/kubelet/plugins/volume/exec", "directory: /etc/katl/kubeadm/control-plane/patches"} {
+	for _, want := range []string{"kind: InitConfiguration", "criSocket: unix:///run/containerd/containerd.sock", "taints: []", "kind: ClusterConfiguration", "kubernetesVersion: v1.36.1", "name: profiling", "kind: KubeletConfiguration", "volumePluginDir: /var/lib/kubelet/plugins/volume/exec", "directory: /etc/katl/kubeadm/control-plane/patches"} {
 		if !strings.Contains(cpConfig, want) {
 			t.Fatalf("control-plane kubeadm input missing %q:\n%s", want, cpConfig)
 		}
@@ -283,6 +283,64 @@ shutdownGracePeriod: 45s
 	}
 	if changed.Manifest.Source.SourceDigest == result.Manifest.Source.SourceDigest {
 		t.Fatalf("source digest did not change with referenced kubeadm input: %s", changed.Manifest.Source.SourceDigest)
+	}
+}
+
+func TestBuildArchiveRejectsConflictingKatlOwnedKubeadmValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+		want   string
+	}{
+		{
+			name: "Kubernetes version",
+			config: `apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v1.35.0
+`,
+			want: "does not match spec.kubernetes.version",
+		},
+		{
+			name: "CRI socket",
+			config: `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: unix:///run/crio/crio.sock
+`,
+			want: "nodeRegistration.criSocket must be",
+		},
+		{
+			name: "control-plane taints",
+			config: `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  taints:
+    - key: node-role.kubernetes.io/control-plane
+      effect: NoSchedule
+`,
+			want: "nodeRegistration.taints must be empty",
+		},
+		{
+			name: "volume plugin directory",
+			config: `apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+volumePluginDir: other
+`,
+			want: "volumePluginDir must be",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "kubeadm.yaml"), tt.config)
+			source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml", 1)
+			sourcePath := filepath.Join(dir, "cluster.yaml")
+			writeFile(t, sourcePath, source)
+			_, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("BuildArchive() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

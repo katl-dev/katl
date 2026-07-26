@@ -49,6 +49,47 @@ func TestPlanHostConfigurationStagesKernelModuleFiles(t *testing.T) {
 	}
 }
 
+func TestPlanHostConfigurationStagesBootOwnedOverlays(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		content string
+		want    string
+		target  string
+	}{
+		{
+			name:    "tmpfiles sysfs write",
+			path:    "/etc/tmpfiles.d/80-kernel-tunables.conf",
+			content: "w /sys/module/printk/parameters/time - - - - N\n",
+			want:    "apply and verify on next boot",
+			target:  "sysfs /sys/module/printk/parameters/time",
+		},
+		{
+			name:    "containerd overlay",
+			path:    "/etc/containerd/conf.d/80-debug.toml",
+			content: "[debug]\n  level = \"warn\"\n",
+			want:    "load on next boot",
+			target:  "containerd configuration /etc/containerd/conf.d/80-debug.toml",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desired := testHostConfiguration("example", tt.path, tt.content)
+			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+			if plan.Live || !strings.Contains(plan.Message, tt.want) {
+				t.Fatalf("plan = %#v, want staged change", plan)
+			}
+			found := false
+			for _, effect := range plan.Effects {
+				found = found || effect.Target == tt.target
+			}
+			if !found {
+				t.Fatalf("effects = %#v, want target %q", plan.Effects, tt.target)
+			}
+		})
+	}
+}
+
 func TestPlanHostConfigurationUsesBoundedSystemdNotification(t *testing.T) {
 	content := "[Journal]\nSystemMaxUse=2G\n"
 	desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{

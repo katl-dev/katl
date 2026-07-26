@@ -266,7 +266,7 @@ func renderHostConfigPrepareService() string {
 	return strings.Join([]string{
 		"[Unit]",
 		"Description=Prepare selected Katl native host configuration",
-		"Documentation=man:systemd-confext(8) man:sysctl.d(5) man:modules-load.d(5) man:udev(7)",
+		"Documentation=man:systemd-confext(8) man:sysctl.d(5) man:modules-load.d(5) man:tmpfiles.d(5) man:udev(7)",
 		"DefaultDependencies=no",
 		"Requires=systemd-confext.service",
 		"After=systemd-confext.service",
@@ -284,7 +284,7 @@ func renderHostConfigVerifyService() string {
 	return strings.Join([]string{
 		"[Unit]",
 		"Description=Verify selected Katl native host configuration",
-		"Documentation=man:sysctl.d(5) man:modules-load.d(5)",
+		"Documentation=man:sysctl.d(5) man:modules-load.d(5) man:tmpfiles.d(5)",
 		"DefaultDependencies=no",
 		"Requires=katl-host-config-prepare.service",
 		"After=katl-host-config-prepare.service",

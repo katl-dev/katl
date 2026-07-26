@@ -1,6 +1,6 @@
 [Unit]
 Description=Prepare selected Katl native host configuration
-Documentation=man:systemd-confext(8) man:sysctl.d(5) man:modules-load.d(5) man:udev(7)
+Documentation=man:systemd-confext(8) man:sysctl.d(5) man:modules-load.d(5) man:tmpfiles.d(5) man:udev(7)
 DefaultDependencies=no
 Requires=systemd-confext.service
 After=systemd-confext.service

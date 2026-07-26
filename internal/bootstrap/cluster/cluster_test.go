@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -759,6 +760,27 @@ func TestTransportRunnerRunKubeadmInitWritesEndpointConfig(t *testing.T) {
 		if !strings.Contains(uploaded, want) {
 			t.Fatalf("uploaded init config = %q, want %q", uploaded, want)
 		}
+	}
+}
+
+func TestRenderInitConfigRejectsConflictingEndpointAndDeduplicatesSAN(t *testing.T) {
+	base := []byte(`apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+controlPlaneEndpoint: old-api.katl.test:6443
+apiServer:
+  certSANs:
+    - api.katl.test
+`)
+	if _, err := RenderInitConfig(base, "api.katl.test:6443"); err == nil || !strings.Contains(err.Error(), "conflicts with cluster endpoint") {
+		t.Fatalf("RenderInitConfig() error = %v, want endpoint conflict", err)
+	}
+
+	rendered, err := RenderInitConfig(bytes.ReplaceAll(base, []byte("old-api.katl.test:6443"), []byte("api.katl.test:6443")), "api.katl.test:6443")
+	if err != nil {
+		t.Fatalf("RenderInitConfig() error = %v", err)
+	}
+	if strings.Count(string(rendered), "- api.katl.test") != 1 {
+		t.Fatalf("rendered config duplicated endpoint SAN:\n%s", rendered)
 	}
 }
 

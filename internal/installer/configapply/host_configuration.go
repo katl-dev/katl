@@ -90,6 +90,25 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 				for _, assignment := range assignments {
 					plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+assignment.Key))
 				}
+			case strings.HasPrefix(filePath, "/etc/tmpfiles.d/") && strings.HasSuffix(filePath, ".conf"):
+				if stagedReason == "" {
+					stagedReason = "tmpfiles sysfs writes apply and verify on next boot"
+				}
+				if file, exists := afterFiles[filePath]; exists && file.Content != nil {
+					writes, err := manifest.ParseTmpfilesSysfsWrites(*file.Content)
+					if err == nil {
+						for _, write := range writes {
+							plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysfs "+write.Path))
+						}
+					}
+				}
+			case strings.HasPrefix(filePath, "/etc/containerd/conf.d/") && strings.HasSuffix(filePath, ".toml"):
+				if stagedReason == "" {
+					stagedReason = "containerd configuration overlays load on next boot"
+				}
+				if _, exists := afterFiles[filePath]; exists {
+					plan.Effects = append(plan.Effects, plannedEffect("load", "containerd configuration "+filePath))
+				}
 			case strings.HasPrefix(filePath, "/etc/udev/rules.d/") && strings.HasSuffix(filePath, ".rules"):
 				udevReload = true
 				if _, exists := afterFiles[filePath]; exists {

@@ -83,6 +83,21 @@ spec:
               content: |
                 br_netfilter
                 vfio_pci
+
+        kernel-tunables:
+          files:
+            - path: /etc/tmpfiles.d/80-home-lab-kernel-tunables.conf
+              content: |
+                w /sys/module/printk/parameters/time - - - - N
+
+        containerd:
+          files:
+            - path: /etc/containerd/conf.d/80-home-lab.toml
+              content: |
+                version = 4
+
+                [debug]
+                  level = "warn"
 ```
 
 `source` is relative to the ClusterConfig directory and is embedded when
@@ -104,9 +119,12 @@ spec:
 ```
 
 Sysctl files with a reversible concrete-key change can apply live. Udev rules
-can reload live, but Katl does not retrigger existing devices. Module load and
-modprobe files are next-boot-only. Other permitted files are next-boot unless
-their set declares a bounded notification for an unprotected existing unit:
+can reload live, but Katl does not retrigger existing devices. Module load,
+modprobe, tmpfiles sysfs writes, and containerd overlays are next-boot-only.
+Katl runs each operator tmpfiles file and verifies the requested sysfs value
+before boot health succeeds. Containerd imports `/etc/containerd/conf.d/*.toml`
+when it starts. Other permitted files are next-boot unless their set declares a
+bounded notification for an unprotected existing unit:
 
 ```yaml
 notify:
@@ -118,7 +136,10 @@ notify:
 The accepted actions are `reload`, `try-reload-or-restart`, and `try-restart`.
 Katl rejects protected paths, duplicate path ownership, executable or writable
 modes, and attempts to notify release-critical units before rendering a
-candidate generation.
+candidate generation. Operator tmpfiles files are intentionally narrower than
+the full `tmpfiles.d` language: each non-comment line must be an exact `w` rule
+for a normalized `/sys/...` path, with `-` for mode, user, group, and age, and a
+concrete value without globs, specifiers, or escapes.
 
 ## Apply The Cluster
 

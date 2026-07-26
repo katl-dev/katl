@@ -1,6 +1,6 @@
 [Unit]
 Description=Verify selected Katl native host configuration
-Documentation=man:sysctl.d(5) man:modules-load.d(5)
+Documentation=man:sysctl.d(5) man:modules-load.d(5) man:tmpfiles.d(5)
 DefaultDependencies=no
 Requires=katl-host-config-prepare.service
 After=katl-host-config-prepare.service
