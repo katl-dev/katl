@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -19,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
+	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,7 +48,6 @@ type NodeConfig struct {
 	Identity             NodeIdentity                 `json:"identity" yaml:"identity"`
 	SystemRole           string                       `json:"systemRole" yaml:"systemRole"`
 	Kernel               KernelConfig                 `json:"kernel,omitempty,omitzero" yaml:"kernel,omitempty"`
-	Networkd             NetworkdConfig               `json:"networkd,omitempty" yaml:"networkd,omitempty"`
 	HostConfiguration    HostConfiguration            `json:"hostConfiguration,omitempty,omitzero" yaml:"hostConfiguration,omitempty"`
 	SystemExtensions     []SystemExtension            `json:"systemExtensions,omitempty" yaml:"systemExtensions,omitempty"`
 	Kubernetes           KubernetesConfig             `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
@@ -71,15 +72,6 @@ type SSHIdentity struct {
 	AuthorizedKeys []string `json:"authorizedKeys" yaml:"authorizedKeys"`
 }
 
-type NetworkdConfig struct {
-	Files []NetworkdFile `json:"files,omitempty" yaml:"files,omitempty"`
-}
-
-type NetworkdFile struct {
-	Name    string `json:"name" yaml:"name"`
-	Content string `json:"content" yaml:"content"`
-}
-
 const (
 	HostConfigurationPresent = "present"
 	HostConfigurationAbsent  = "absent"
@@ -92,6 +84,46 @@ type HostConfiguration struct {
 
 func (config HostConfiguration) IsZero() bool {
 	return len(config.Sysfs) == 0 && len(config.Sets) == 0
+}
+
+func NormalizeHostConfiguration(config HostConfiguration) HostConfiguration {
+	if config.Sysfs == nil && len(config.Sets) == 0 {
+		return HostConfiguration{}
+	}
+	sysfs := slices.Clone(config.Sysfs)
+	if config.Sysfs != nil && sysfs == nil {
+		sysfs = []HostConfigurationSysfsSetting{}
+	}
+	sort.Slice(sysfs, func(i, j int) bool { return sysfs[i].Name < sysfs[j].Name })
+	sets := make(map[string]HostConfigurationSet, len(config.Sets))
+	for name, set := range config.Sets {
+		if strings.TrimSpace(set.State) == HostConfigurationAbsent {
+			continue
+		}
+		set.State = HostConfigurationPresent
+		set.Files = slices.Clone(set.Files)
+		for i := range set.Files {
+			if set.Files[i].Mode == 0 {
+				set.Files[i].Mode = 0o644
+			}
+		}
+		sort.Slice(set.Files, func(i, j int) bool { return set.Files[i].Path < set.Files[j].Path })
+		set.Notify.Systemd = slices.Clone(set.Notify.Systemd)
+		sort.Slice(set.Notify.Systemd, func(i, j int) bool {
+			if set.Notify.Systemd[i].Unit != set.Notify.Systemd[j].Unit {
+				return set.Notify.Systemd[i].Unit < set.Notify.Systemd[j].Unit
+			}
+			return set.Notify.Systemd[i].Action < set.Notify.Systemd[j].Action
+		})
+		if len(set.Notify.Systemd) == 0 {
+			set.Notify.Systemd = nil
+		}
+		sets[name] = set
+	}
+	if len(sets) == 0 {
+		sets = nil
+	}
+	return HostConfiguration{Sysfs: sysfs, Sets: sets}
 }
 
 type HostConfigurationSysfsSetting struct {
@@ -349,9 +381,6 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 			return fmt.Errorf("node.identity.ssh.authorizedKeys[%d] must be an SSH public key", i)
 		}
 	}
-	if err := validateNetworkd(manifest.Node.Networkd); err != nil {
-		return err
-	}
 	if err := ValidateKernelConfig(manifest.Node.Kernel); err != nil {
 		return fmt.Errorf("node.kernel: %w", err)
 	}
@@ -599,37 +628,6 @@ func validateSystemRole(value string) error {
 	}
 }
 
-func validateNetworkd(config NetworkdConfig) error {
-	seen := make(map[string]struct{}, len(config.Files))
-	for i, file := range config.Files {
-		field := fmt.Sprintf("node.networkd.files[%d]", i)
-		if strings.TrimSpace(file.Name) == "" {
-			return fmt.Errorf("%s.name is required", field)
-		}
-		if file.Name != filepath.Base(file.Name) || file.Name == "." || file.Name == ".." {
-			return fmt.Errorf("%s.name %q must be a single path segment", field, file.Name)
-		}
-		ext := filepath.Ext(file.Name)
-		if ext != ".network" && ext != ".netdev" && ext != ".link" {
-			return fmt.Errorf("%s.name %q must end with .network, .netdev, or .link", field, file.Name)
-		}
-		for _, r := range file.Name {
-			ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._@+-", r)
-			if !ok {
-				return fmt.Errorf("%s.name %q contains unsupported character %q", field, file.Name, r)
-			}
-		}
-		if _, ok := seen[file.Name]; ok {
-			return fmt.Errorf("%s.name %q duplicates another networkd file", field, file.Name)
-		}
-		seen[file.Name] = struct{}{}
-		if strings.TrimSpace(file.Content) == "" {
-			return fmt.Errorf("%s.content is required", field)
-		}
-	}
-	return nil
-}
-
 const (
 	MaxHostConfigurationFileBytes  = 1 << 20
 	MaxHostConfigurationTotalBytes = 4 << 20
@@ -741,6 +739,9 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 				}
 				if len(*file.Content) > MaxHostConfigurationFileBytes {
 					return fmt.Errorf("%s.content exceeds %d bytes", field, MaxHostConfigurationFileBytes)
+				}
+				if networkdconfig.IsPath(cleaned) && strings.TrimSpace(*file.Content) == "" {
+					return fmt.Errorf("%s.content is required for a networkd file", field)
 				}
 				totalBytes += len(*file.Content)
 			}
@@ -985,6 +986,9 @@ func validateHostConfigurationPath(value string) (string, error) {
 	}
 	if protectedSystemdPath(cleaned) {
 		return "", fmt.Errorf("%q is protected systemd configuration", value)
+	}
+	if err := networkdconfig.ValidatePath(cleaned); err != nil {
+		return "", err
 	}
 	return cleaned, nil
 }

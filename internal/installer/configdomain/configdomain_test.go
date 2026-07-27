@@ -6,17 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON(`,
-			"networkd": {
-				"files": [
-					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"}
-				]
-			},
 			"hostConfiguration": {
 				"sysfs": [
 					{"name": "/sys/module/printk/parameters/time", "value": "N"}
@@ -25,6 +21,11 @@ func TestNativeEtcFilesRendersKnownDomains(t *testing.T) {
 					"forwarding": {
 						"files": [
 							{"path": "/etc/sysctl.d/80-forwarding.conf", "content": "net.ipv4.ip_forward = 1\n"}
+						]
+					},
+					"lan": {
+						"files": [
+							{"path": "/etc/systemd/network/10-lan.network", "content": "[Match]\nName=enp1s0\n"}
 						]
 					}
 				}
@@ -136,29 +137,63 @@ func TestNativeEtcFilesRendersWorkerNodeMetadata(t *testing.T) {
 	}
 }
 
-func TestNativeEtcFilesRejectsHostConfigurationCollisionWithKatlOutput(t *testing.T) {
-	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON(`,
-			"networkd": {
-				"files": [
-					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"}
-				]
-			}`)))
+func TestNativeEtcFilesUsesOperatorNetworkdFilesInsteadOfDefault(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON("")))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	content := "[Match]\nName=enp2s0\n"
 	installManifest.Node.HostConfiguration = manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
-		"network-takeover": {
+		"lan": {
 			Files: []manifest.HostConfigurationFile{{
-				Path:    "/etc/systemd/network/10-lan.network",
+				Path:    "/etc/systemd/network/20-lan.network",
 				Content: &content,
 			}},
 		},
 	}}
-	_, err = NativeEtcFiles(RenderRequest{Manifest: installManifest})
-	if err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("NativeEtcFiles() error = %v, want Katl output collision", err)
+	files, err := NativeEtcFiles(RenderRequest{Manifest: installManifest})
+	if err != nil {
+		t.Fatalf("NativeEtcFiles() error = %v", err)
 	}
+	if fileByPath(files, "/etc/systemd/network/20-lan.network") == nil {
+		t.Fatalf("operator network file missing: %#v", files)
+	}
+	if fileByPath(files, "/etc/systemd/network/10-lan.network") != nil {
+		t.Fatalf("default network file rendered with operator configuration: %#v", files)
+	}
+}
+
+func TestNativeEtcFilesKeepsDefaultForNetworkdDropIn(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(manifestJSON("")))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	content := "[Network]\nDNS=192.0.2.53\n"
+	installManifest.Node.HostConfiguration = manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"lan-options": {
+			Files: []manifest.HostConfigurationFile{{
+				Path:    "/etc/systemd/network/10-lan.network.d/50-dns.conf",
+				Content: &content,
+			}},
+		},
+	}}
+	files, err := NativeEtcFiles(RenderRequest{Manifest: installManifest})
+	if err != nil {
+		t.Fatalf("NativeEtcFiles() error = %v", err)
+	}
+	if fileByPath(files, "/etc/systemd/network/10-lan.network") == nil ||
+		fileByPath(files, "/etc/systemd/network/10-lan.network.d/50-dns.conf") == nil {
+		t.Fatalf("default network unit and operator drop-in did not compose: %#v", files)
+	}
+}
+
+func fileByPath(files []confext.NativeEtcFile, path string) *confext.NativeEtcFile {
+	for i := range files {
+		if files[i].Path == path {
+			return &files[i]
+		}
+	}
+	return nil
 }
 
 func TestNativeEtcFilesAcceptsControlPlaneJoinIntent(t *testing.T) {

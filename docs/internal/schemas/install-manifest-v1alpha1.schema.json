@@ -62,9 +62,6 @@
             "worker"
           ]
         },
-        "networkd": {
-          "$ref": "#/$defs/networkdConfig"
-        },
         "hostConfiguration": {
           "$ref": "#/$defs/hostConfiguration"
         },
@@ -381,39 +378,6 @@
     "relativePath": {
       "type": "string",
       "pattern": "^(?!.*(^|/)\\.\\.?($|/))[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$"
-    },
-    "networkdConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "files": {
-          "type": "array",
-          "default": [],
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/networkdFile"
-          }
-        }
-      }
-    },
-    "networkdFile": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "content"
-      ],
-      "properties": {
-        "name": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9._@+-]+\\.(network|netdev|link)$"
-        },
-        "content": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        }
-      }
     },
     "hostConfiguration": {
       "type": "object",

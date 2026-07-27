@@ -15,7 +15,7 @@ func TestConfigApplyStatusSerializesSchema(t *testing.T) {
 		PreviousGeneration: "2026.06.05-001",
 		RequestedApplyMode: ApplyModeLive,
 		AcceptedApplyMode:  ApplyModeLive,
-		ChangedDomains:     []string{"networkd", "networkd", "tmpfiles"},
+		ChangedDomains:     []string{"host-configuration", "host-configuration", "tmpfiles"},
 		HealthState:        "unknown",
 		Kubeadm: KubeadmActionRequired{
 			Required:           true,
@@ -29,8 +29,8 @@ func TestConfigApplyStatusSerializesSchema(t *testing.T) {
 		t.Fatalf("NewConfigApplyStatus() error = %v", err)
 	}
 	status.DomainActions = []ConfigApplyDomainAction{{
-		Domain: "networkd",
-		Action: "networkctl-reload",
+		Domain: "host-configuration",
+		Action: "stage-next-boot",
 		Status: ConfigApplyActionPlanned,
 	}}
 	status.DiagnosticArtifacts = []DiagnosticArtifact{{
@@ -53,15 +53,15 @@ func TestConfigApplyStatusSerializesSchema(t *testing.T) {
     "requestedApplyMode": "live",
     "acceptedApplyMode": "live",
     "changedDomains": [
-      "networkd",
+      "host-configuration",
       "tmpfiles"
     ],
     "phase": "planned",
     "healthState": "unknown",
     "domainActions": [
       {
-        "domain": "networkd",
-        "action": "networkctl-reload",
+        "domain": "host-configuration",
+        "action": "stage-next-boot",
         "status": "planned"
       }
     ],
@@ -239,7 +239,7 @@ func TestConfigApplyStatusRejectsInvalidInput(t *testing.T) {
 		{
 			name: "action status",
 			mutate: func(status ConfigApplyStatus) ConfigApplyStatus {
-				status.DomainActions = []ConfigApplyDomainAction{{Domain: "networkd", Action: "reload", Status: "maybe"}}
+				status.DomainActions = []ConfigApplyDomainAction{{Domain: "host-configuration", Action: "stage-next-boot", Status: "maybe"}}
 				return status
 			},
 			wantErr: "action status",

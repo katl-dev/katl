@@ -215,8 +215,6 @@ func liveAction(domain string) string {
 		return "systemd-resolved-reload"
 	case DomainTmpfiles:
 		return "systemd-tmpfiles"
-	case DomainNetworkd:
-		return "networkctl-reload"
 	case DomainBootstrapNodeMetadata:
 		return "node-metadata-refresh"
 	case DomainHostConfiguration:

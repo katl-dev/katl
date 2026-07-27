@@ -52,7 +52,6 @@ type NodeLayer struct {
 	Hostname          string                     `yaml:"hostname,omitempty" json:"hostname,omitempty"`
 	SSH               manifest.SSHIdentity       `yaml:"ssh,omitempty" json:"ssh,omitempty"`
 	Kernel            *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
-	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
 	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
 	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
 	Install           InstallLayer               `yaml:"install,omitempty" json:"install,omitempty"`

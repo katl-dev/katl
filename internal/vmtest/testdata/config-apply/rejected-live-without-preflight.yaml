@@ -7,11 +7,13 @@ apply:
   mode: live
 spec:
   clusterDefaults:
-    networkd:
-      files:
-        - name: 20-vmtest-rejected.network
-          content: |
-            [Match]
-            Name=*
-            [Network]
-            DHCP=yes
+    hostConfiguration:
+      sets:
+        rejected-network:
+          files:
+            - path: /etc/systemd/network/20-vmtest-rejected.network
+              content: |
+                [Match]
+                Name=*
+                [Network]
+                DHCP=yes

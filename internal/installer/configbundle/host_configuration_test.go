@@ -43,8 +43,9 @@ func TestResolveHostConfigurationSourcesEmbedsContent(t *testing.T) {
 func TestBuildArchiveCarriesExternalHostConfigurationIntoNodeMaterial(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "files", "storage.conf"), "br_netfilter\n")
-	source := strings.Replace(validSourceConfig(), "  defaults:\n", `  defaults:
-    hostConfiguration:
+	source := strings.Replace(validSourceConfig(), `    hostConfiguration:
+      sets:
+`, `    hostConfiguration:
       sysfs:
         - name: /sys/module/printk/parameters/time
           value: N

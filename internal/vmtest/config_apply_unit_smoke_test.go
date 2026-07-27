@@ -57,10 +57,10 @@ func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {
 		t.Fatalf("rejected audit = %#v", rejected.Audit)
 	}
 	if len(rejected.Audit.Diagnostics) != 1 ||
-		rejected.Audit.Diagnostics[0].Domain != configapply.DomainNetworkd ||
+		rejected.Audit.Diagnostics[0].Domain != configapply.DomainHostConfiguration ||
 		rejected.Audit.Diagnostics[0].Decision != configapply.DecisionStagedRequired ||
-		rejected.Audit.Diagnostics[0].Classification != configapply.ClassificationStagedOnly ||
-		!strings.Contains(rejected.Audit.Diagnostics[0].Message, "staged-only") {
+		rejected.Audit.Diagnostics[0].Classification != configapply.ClassificationOnlineApplicable ||
+		!strings.Contains(rejected.Audit.Diagnostics[0].Message, "systemd-networkd configuration applies on next boot") {
 		t.Fatalf("rejected diagnostics = %#v", rejected.Audit.Diagnostics)
 	}
 	if !strings.Contains(rejected.Audit.FailureReason, "config apply live request rejected for 1 domain") {
@@ -83,7 +83,7 @@ func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {
 	}
 	assertFileContains(t, accepted.AuditPath, `"decision": "accepted"`, `"candidateGenerationID": "`+acceptedGeneration+`"`)
 	assertFileContains(t, accepted.MetadataPath, `"previousGenerationID": "`+fixture.GenerationID+`"`, `"payloadVersion": "v1.36.0"`)
-	assertFileContains(t, accepted.StatusPath, `"acceptedApplyMode": "next-boot"`, `"phase": "next-boot"`, `"domain": "networkd"`)
+	assertFileContains(t, accepted.StatusPath, `"acceptedApplyMode": "next-boot"`, `"phase": "next-boot"`, `"domain": "host-configuration"`)
 	assertFileContains(t, filepath.Join(work, "var/lib/katl/generations", acceptedGeneration, "confext/etc/systemd/network/20-unprivileged-accepted.network"), "Address=192.0.2.10/24")
 	assertFileContains(t, filepath.Join(work, "var/lib/katl/generations", acceptedGeneration, "confext/etc/extension-release.d/extension-release.katl-node"), "CONFEXT_LEVEL=1")
 	assertPathMissing(t, filepath.Join(work, "run/extensions/kubernetes"))
@@ -158,14 +158,16 @@ apply:
   mode: live
 spec:
   clusterDefaults:
-    networkd:
-      files:
-        - name: 20-rejected.network
-          content: |
-            [Match]
-            Name=*
-            [Network]
-            DHCP=yes
+    hostConfiguration:
+      sets:
+        rejected-network:
+          files:
+            - path: /etc/systemd/network/20-rejected.network
+              content: |
+                [Match]
+                Name=*
+                [Network]
+                DHCP=yes
 `
 
 const configApplyAcceptedRequest = `apiVersion: katl.dev/v1alpha1
@@ -177,12 +179,14 @@ apply:
   mode: next-boot
 spec:
   clusterDefaults:
-    networkd:
-      files:
-        - name: 20-unprivileged-accepted.network
-          content: |
-            [Match]
-            Name=*
-            [Network]
-            Address=192.0.2.10/24
+    hostConfiguration:
+      sets:
+        accepted-network:
+          files:
+            - path: /etc/systemd/network/20-unprivileged-accepted.network
+              content: |
+                [Match]
+                Name=*
+                [Network]
+                Address=192.0.2.10/24
 `

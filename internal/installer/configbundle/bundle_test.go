@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -408,8 +409,9 @@ spec:
 	if selected.InstallManifest.Node.Identity.Hostname != "cp-1" || selected.InstallManifest.Node.Bootstrap.Access.CredentialRef != "" {
 		t.Fatalf("defaulted install manifest = %#v", selected.InstallManifest)
 	}
-	if len(selected.InstallManifest.Node.Networkd.Files) != 1 || !strings.Contains(selected.InstallManifest.Node.Networkd.Files[0].Content, "DHCP=yes") {
-		t.Fatalf("defaulted networkd = %#v", selected.InstallManifest.Node.Networkd)
+	defaultNetwork := nativeFile(selected.NodeMaterial.NativeEtcFiles, "/etc/systemd/network/10-lan.network")
+	if defaultNetwork == nil || !strings.Contains(defaultNetwork.Content, "DHCP=yes") {
+		t.Fatalf("defaulted networkd files = %#v", selected.NodeMaterial.NativeEtcFiles)
 	}
 	if selected.NodeMaterial.KubeadmConfig.Ref != "control-plane" || selected.KubeadmConfigs["control-plane"].Config.RenderPath == "" {
 		t.Fatalf("defaulted kubeadm = material %#v configs %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
@@ -923,15 +925,17 @@ spec:
       ssh:
         authorizedKeys:
           - ` + testSSHKey + `
-    networkd:
-      files:
-        - name: 10-common.network
-          content: |
-            [Match]
-            Name=enp1s0
+    hostConfiguration:
+      sets:
+        common-network:
+          files:
+            - path: /etc/systemd/network/10-common.network
+              content: |
+                [Match]
+                Name=enp1s0
 
-            [Network]
-            DHCP=yes
+                [Network]
+                DHCP=yes
   nodes:
     - name: cp-1
       controlPlane: true
@@ -956,6 +960,15 @@ spec:
         labels:
           katl.dev/pool: workers
 `
+}
+
+func nativeFile(files []confext.NativeEtcFile, path string) *confext.NativeEtcFile {
+	for i := range files {
+		if files[i].Path == path {
+			return &files[i]
+		}
+	}
+	return nil
 }
 
 const testSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"

@@ -733,10 +733,10 @@ validation rules
 runtime apply, reload, or restart behavior
 ```
 
-For example, a `networkd` domain can allow native `.network`, `.netdev`, and
-`.link` file content while Katl owns rendering those files under
-`/etc/systemd/network/` and applying changes with `systemd-networkd` and
-`networkctl`.
+For example, the native host-configuration surface can accept `.network`,
+`.netdev`, and `.link` file content while Katl constrains those files to
+`/etc/systemd/network/` and owns their next-boot application and health
+semantics.
 
 For the initial install, `katlos-install` owns this conversion:
 

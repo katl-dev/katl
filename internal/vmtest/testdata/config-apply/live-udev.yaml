@@ -7,6 +7,22 @@ spec:
   clusterDefaults:
     hostConfiguration:
       sets:
+        vmtest-network:
+          files:
+            - path: /etc/systemd/network/80-katl-vmtest-dhcp.network
+              content: |
+                [Match]
+                Name=en*
+
+                [Network]
+                DHCP=yes
+
+                [DHCPv4]
+                ClientIdentifier=mac
+                UseHostname=no
+
+                [DHCPv6]
+                UseHostname=no
         vmtest-udev:
           files:
             - path: /etc/udev/rules.d/80-katl-vmtest.rules

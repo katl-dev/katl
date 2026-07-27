@@ -64,7 +64,6 @@ type NodeOverlay struct {
 	Identity                *IdentityOverlay
 	SystemRole              string
 	Kernel                  *manifest.KernelConfig
-	Networkd                *manifest.NetworkdConfig
 	HostConfiguration       *manifest.HostConfiguration
 	SystemExtensions        *[]manifest.SystemExtension
 	Kubernetes              *manifest.KubernetesConfig
@@ -666,19 +665,13 @@ func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, kubernetesInit
 			domains.add(DomainKernelCommandLine)
 		}
 	}
-	if overlay.Networkd != nil {
-		changed := !slices.Equal(node.Networkd.Files, overlay.Networkd.Files)
-		node.Networkd = *overlay.Networkd
-		if changed {
-			domains.add(DomainNetworkd)
-		}
-	}
 	if overlay.HostConfiguration != nil {
-		current := node.HostConfiguration
-		changed := !reflect.DeepEqual(current, *overlay.HostConfiguration)
-		node.HostConfiguration = *overlay.HostConfiguration
+		current := manifest.NormalizeHostConfiguration(node.HostConfiguration)
+		desired := manifest.NormalizeHostConfiguration(*overlay.HostConfiguration)
+		changed := !hostConfigurationsEqual(current, desired)
+		node.HostConfiguration = desired
 		if changed {
-			domains.addHostConfiguration(planHostConfigurationChange(current, *overlay.HostConfiguration))
+			domains.addHostConfiguration(planHostConfigurationChange(current, desired))
 		}
 	}
 	if overlay.SystemExtensions != nil {
@@ -708,6 +701,16 @@ func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, kubernetesInit
 		*unsafeFiles = append(*unsafeFiles, overlay.UnsafeEtcFiles...)
 		domains.add(DomainArbitraryEtc)
 	}
+}
+
+func hostConfigurationsEqual(left, right manifest.HostConfiguration) bool {
+	if len(left.Sysfs) == 0 {
+		left.Sysfs = nil
+	}
+	if len(right.Sysfs) == 0 {
+		right.Sysfs = nil
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.Config, kubernetesInitialized bool, domains *domainAccumulator) {

@@ -9,7 +9,6 @@ import (
 
 const (
 	DomainNodeIdentity                  = "node-identity"
-	DomainNetworkd                      = "networkd"
 	DomainResolved                      = "resolved"
 	DomainModulesLoad                   = "modules-load"
 	DomainTmpfiles                      = "tmpfiles"
@@ -313,10 +312,6 @@ var domainPolicies = map[string]domainPolicy{
 		NextBootAllowed: true,
 	},
 	DomainTmpfiles: {
-		Classification:  ClassificationStagedOnly,
-		NextBootAllowed: true,
-	},
-	DomainNetworkd: {
 		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},

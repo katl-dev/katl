@@ -75,8 +75,9 @@ KatlOS generations own the immutable root, UKI, selected sysexts, and compiled
 node configuration. They do not own or roll back etcd, kubeadm mutations,
 Kubernetes API objects, CNI state, persistent volumes, or workloads.
 
-Normal configuration apply covers SSH authorized keys and systemd-networkd
-files. It also carries operation-only system-role and kubeadm profile changes to
+Normal configuration apply covers SSH authorized keys and native host
+configuration, including next-boot systemd-networkd files. It also carries
+operation-only system-role and kubeadm profile changes to
 the planner so they produce an explicit lifecycle action instead of being
 silently ignored. Disk policy and Kubernetes version selection use their named
 install or upgrade workflows.

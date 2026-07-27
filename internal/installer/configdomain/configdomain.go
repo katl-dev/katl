@@ -16,6 +16,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 )
 
 type RenderRequest struct {
@@ -27,7 +28,7 @@ type RenderRequest struct {
 }
 
 func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
-	files := networkdFiles(request.Manifest.Node.Networkd)
+	files := defaultNetworkdFiles(request.Manifest.Node.HostConfiguration)
 	files = append(files, confext.NativeEtcFile{
 		Path:    "/etc/hostname",
 		Content: request.Manifest.Node.Identity.Hostname + "\n",
@@ -390,16 +391,22 @@ func kubeadmIntent(config kubeadmconfig.Plan) (string, error) {
 	return intent, nil
 }
 
-func networkdFiles(config manifest.NetworkdConfig) []confext.NativeEtcFile {
-	files := make([]confext.NativeEtcFile, 0, len(config.Files))
-	for _, file := range config.Files {
-		files = append(files, confext.NativeEtcFile{
-			Path:    filepath.Join("/etc/systemd/network", file.Name),
-			Content: file.Content,
-			Mode:    0o644,
-			UID:     0,
-			GID:     0,
-		})
+func defaultNetworkdFiles(config manifest.HostConfiguration) []confext.NativeEtcFile {
+	for _, set := range config.Sets {
+		if strings.TrimSpace(set.State) == manifest.HostConfigurationAbsent {
+			continue
+		}
+		for _, file := range set.Files {
+			if networkdconfig.IsNetworkUnitPath(file.Path) {
+				return nil
+			}
+		}
 	}
-	return files
+	return []confext.NativeEtcFile{{
+		Path:    networkdconfig.DefaultPath,
+		Content: networkdconfig.DefaultContent,
+		Mode:    0o644,
+		UID:     0,
+		GID:     0,
+	}}
 }

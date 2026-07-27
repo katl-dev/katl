@@ -1120,14 +1120,21 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 			"  clusterDefaults:",
 			"    identity:",
 			"      hostname: cp-2",
-			"    networkd:",
-			"      files:",
-			"        - name: 20-uplink.network",
-			"          content: |",
-			"            [Match]",
-			"            Name=ens3",
-			"            [Network]",
-			"            DHCP=yes",
+			"    hostConfiguration:",
+			"      sets:",
+			"        forwarding:",
+			"          files:",
+			"            - path: /etc/sysctl.d/80-forwarding.conf",
+			"              content: |",
+			"                net.ipv4.ip_forward = 0",
+			"        network:",
+			"          files:",
+			"            - path: /etc/systemd/network/20-uplink.network",
+			"              content: |",
+			"                [Match]",
+			"                Name=ens3",
+			"                [Network]",
+			"                DHCP=yes",
 			"",
 		}, "\n"),
 	}
@@ -1140,18 +1147,17 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantDiagnostics := []string{
-		"node-identity: staged-required: domain is staged-only for normal runtime configuration apply",
-		"networkd: staged-required: domain is staged-only for normal runtime configuration apply",
-	}
 	if first.Accepted || second.Accepted {
 		t.Fatalf("accepted = %v/%v, want rejected", first.Accepted, second.Accepted)
 	}
 	if first.RequestDigest == "" || first.RequestDigest != second.RequestDigest {
 		t.Fatalf("request digests = %q/%q, want stable non-empty", first.RequestDigest, second.RequestDigest)
 	}
-	if !reflect.DeepEqual(first.Diagnostics, wantDiagnostics) || !reflect.DeepEqual(second.Diagnostics, wantDiagnostics) {
-		t.Fatalf("diagnostics = %#v/%#v, want %#v", first.Diagnostics, second.Diagnostics, wantDiagnostics)
+	diagnostics := strings.Join(first.Diagnostics, "\n")
+	if !reflect.DeepEqual(first.Diagnostics, second.Diagnostics) ||
+		!strings.Contains(diagnostics, "node-identity: staged-required") ||
+		!strings.Contains(diagnostics, "host-configuration: staged-required: systemd-networkd configuration applies on next boot") {
+		t.Fatalf("diagnostics = %#v/%#v, want stable identity and next-boot network diagnostics", first.Diagnostics, second.Diagnostics)
 	}
 	if first.FailureReason != second.FailureReason || !strings.Contains(first.FailureReason, "config apply live request rejected for 2 domain(s)") {
 		t.Fatalf("failure reasons = %q/%q, want stable plan rejection", first.FailureReason, second.FailureReason)
@@ -1324,10 +1330,12 @@ func TestStageGenerationRejectsInvalidConfigBeforeRecord(t *testing.T) {
 				"  unexpected: true",
 				"spec:",
 				"  clusterDefaults:",
-				"    networkd:",
-				"      files:",
-				"        - name: 20-uplink.network",
-				"          content: ok",
+				"    hostConfiguration:",
+				"      sets:",
+				"        network:",
+				"          files:",
+				"            - path: /etc/systemd/network/20-uplink.network",
+				"              content: ok",
 				"",
 			}, "\n"),
 			want: "field unexpected not found",
@@ -1387,8 +1395,8 @@ func TestValidateConfigPlansAndDigestStagesGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Accepted || result.RequestDigest == "" || result.AcceptedApplyMode != generation.ApplyModeNextBoot || !contains(result.ChangedDomains, "networkd") {
-		t.Fatalf("validation result = %+v, want accepted staged plan with networkd domain", result)
+	if !result.Accepted || result.RequestDigest == "" || result.AcceptedApplyMode != generation.ApplyModeNextBoot || !contains(result.ChangedDomains, configapply.DomainHostConfiguration) {
+		t.Fatalf("validation result = %+v, want accepted staged plan with host configuration domain", result)
 	}
 
 	accepted, err := server.StageGeneration(context.Background(), &agentapi.GenerationApplyRequest{
@@ -1522,8 +1530,8 @@ func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
 	if !record.Terminal || record.Result != operation.ResultFailedNeedsRepair || record.ExternalMutationStarted {
 		t.Fatalf("record = %+v, want terminal failed before external mutation", record)
 	}
-	if !strings.Contains(record.FailureReason, "staged-only") {
-		t.Fatalf("failure reason = %q, want staged-only diagnostic", record.FailureReason)
+	if !strings.Contains(record.FailureReason, "systemd-networkd configuration applies on next boot") {
+		t.Fatalf("failure reason = %q, want next-boot network diagnostic", record.FailureReason)
 	}
 	if len(record.DiagnosticArtifacts) != 1 || record.DiagnosticArtifacts[0].ArtifactID != "config-apply-plan-diagnostics" {
 		t.Fatalf("diagnostic artifacts = %+v", record.DiagnosticArtifacts)
@@ -1532,8 +1540,8 @@ func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read diagnostic attachment: %v", err)
 	}
-	if !strings.Contains(string(attachment), "staged-only") {
-		t.Fatalf("diagnostic attachment = %q, want staged-only diagnostic", attachment)
+	if !strings.Contains(string(attachment), "systemd-networkd configuration applies on next boot") {
+		t.Fatalf("diagnostic attachment = %q, want next-boot network diagnostic", attachment)
 	}
 	status, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{
 		OperationId:        accepted.OperationId,
@@ -3187,14 +3195,21 @@ func configApplyYAML(mode string) string {
 		"  mode: " + mode,
 		"spec:",
 		"  clusterDefaults:",
-		"    networkd:",
-		"      files:",
-		"        - name: 20-uplink.network",
-		"          content: |",
-		"            [Match]",
-		"            Name=ens3",
-		"            [Network]",
-		"            DHCP=yes",
+		"    hostConfiguration:",
+		"      sets:",
+		"        forwarding:",
+		"          files:",
+		"            - path: /etc/sysctl.d/80-forwarding.conf",
+		"              content: |",
+		"                net.ipv4.ip_forward = 0",
+		"        network:",
+		"          files:",
+		"            - path: /etc/systemd/network/20-uplink.network",
+		"              content: |",
+		"                [Match]",
+		"                Name=ens3",
+		"                [Network]",
+		"                DHCP=yes",
 		"",
 	}, "\n")
 }

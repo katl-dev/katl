@@ -552,28 +552,30 @@ spec:
   nodes:
     - name: cp-1
       controlPlane: true
-      networkd:
-        files:
-          - name: 10-fabric.network
-            content: |
-              [Match]
-              Name=bond0
+      hostConfiguration:
+        sets:
+          fabric-network:
+            files:
+              - path: /etc/systemd/network/10-fabric.network
+                content: |
+                  [Match]
+                  Name=bond0
 
-              [Network]
-              Address=10.254.1.1/31
-              Gateway=10.254.1.0
-          - name: 20-bird0.netdev
-            content: |
-              [NetDev]
-              Name=bird0
-              Kind=dummy
-          - name: 20-bird0.network
-            content: |
-              [Match]
-              Name=bird0
+                  [Network]
+                  Address=10.254.1.1/31
+                  Gateway=10.254.1.0
+              - path: /etc/systemd/network/20-bird0.netdev
+                content: |
+                  [NetDev]
+                  Name=bird0
+                  Kind=dummy
+              - path: /etc/systemd/network/20-bird0.network
+                content: |
+                  [Match]
+                  Name=bird0
 
-              [Network]
-              Address=10.254.254.128/32
+                  [Network]
+                  Address=10.254.254.128/32
 ```
 
 Other nodes use their own `/31` and `bird0` `/32`. The BIRD configuration can

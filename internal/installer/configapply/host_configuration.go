@@ -10,6 +10,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 )
 
 type HostConfigurationChangePlan struct {
@@ -78,6 +79,15 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 			}
 			plan.Paths = append(plan.Paths, filePath)
 			switch {
+			case networkdconfig.IsPath(filePath):
+				if stagedReason == "" {
+					stagedReason = "systemd-networkd configuration applies on next boot"
+				}
+				if _, exists := afterFiles[filePath]; exists {
+					plan.Effects = append(plan.Effects, plannedEffect("load", "networkd configuration "+filePath))
+				} else {
+					plan.Effects = append(plan.Effects, plannedEffect("stop-managing", "networkd configuration "+filePath))
+				}
 			case strings.HasPrefix(filePath, "/etc/modules-load.d/"),
 				strings.HasPrefix(filePath, "/etc/modprobe.d/"):
 				if stagedReason == "" {

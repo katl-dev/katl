@@ -86,10 +86,10 @@ control of the destination path and apply behavior.
 Example:
 
 ```text
-networkd domain
-  accepts native .network, .netdev, and .link content
-  renders into /etc/systemd/network/
-  applies through systemd-networkd/networkctl behavior
+host-configuration networkd handler
+  accepts native .network, .netdev, and .link content plus matching drop-ins
+  constrains rendering to /etc/systemd/network/
+  stages changes for installed boot and systemd-networkd health verification
 ```
 
 This is a thin abstraction, not an arbitrary `/etc` passthrough.

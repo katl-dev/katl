@@ -21,11 +21,7 @@ spec:
       hostname: Bad_Host
       authorizedKeys: []
     hostAccountPolicy: {}
-    networkd:
-      files:
-        - name: ../escape.network
-          content: ok
-          renderer: unsupported
+    networkd: {}
     kubernetes:
       kubeadm:
         configRef: missing
@@ -55,10 +51,9 @@ spec:
 		`invalid-ssh-key: spec.nodeOverrides.cp-1.identity.authorizedKeys[0]: must be an SSH public key`,
 		`invalid-ssh-key: spec.nodeOverrides.cp-1.identity.authorizedKeys[1]: must be an SSH public key`,
 		`missing-ssh-key: spec.clusterDefaults.identity.authorizedKeys: authorizedKeys must contain at least one SSH public key`,
-		`unsafe-render-path: spec.clusterDefaults.networkd.files[0].name: "../escape.network" must be a single render path segment`,
 		`unsupported-activation-input: spec.clusterDefaults.kubernetes.sysext: direct Kubernetes sysext/confext activation input is not supported`,
 		`unsupported-domain: spec.clusterDefaults.hostAccountPolicy: configuration domain is not supported`,
-		`unsupported-field: spec.clusterDefaults.networkd.files[0].renderer: networkd file field is not supported`,
+		`unsupported-domain: spec.clusterDefaults.networkd: configuration domain is not supported`,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("diagnostics = %#v, want %#v", got, want)
@@ -83,18 +78,19 @@ spec:
       hostname: cp-2
       authorizedKeys:
         - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl
-    networkd:
-      files:
-        - name: 20-uplink.network
-          content: |
-            [Match]
-            Name=ens3
-            [Network]
-            DHCP=yes
     hostConfiguration:
       sysfs:
         - name: /sys/module/printk/parameters/time
           value: N
+      sets:
+        uplink:
+          files:
+            - path: /etc/systemd/network/20-uplink.network
+              content: |
+                [Match]
+                Name=ens3
+                [Network]
+                DHCP=yes
     kubernetes:
       kubeadm:
         configRef: control-plane

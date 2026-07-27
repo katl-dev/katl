@@ -77,17 +77,17 @@ spec:
       commandLine:
         - intel_iommu=on
         - iommu=pt
-    networkd:
-      files:
-        - name: 10-lan.network
-          content: |
-            [Match]
-            Name=enp1s0
-
-            [Network]
-            DHCP=yes
     hostConfiguration:
       sets:
+        network:
+          files:
+            - path: /etc/systemd/network/10-lan.network
+              content: |
+                [Match]
+                Name=enp1s0
+
+                [Network]
+                DHCP=yes
         storage-modules:
           files:
             - path: /etc/modules-load.d/80-home-lab-storage.conf
@@ -131,8 +131,11 @@ worker, and at least one node must set it to true. Katl derives its internal
 system role, kubeadm material, and lifecycle ordering from this value.
 
 Nodes use a generated DHCP systemd-networkd profile when neither defaults nor
-the node supplies native networkd files. Default and node files merge by file
-name and conflicting content is rejected.
+the node supplies a `.network` unit below `/etc/systemd/network`. Auxiliary
+`.link`, `.netdev`, and drop-in files compose with that fallback. Network files
+use the same named-set layering as other host configuration: a node set replaces
+a default set with the same name, while differently named sets compose. This
+allows a shared unit and a node-specific drop-in to be expressed independently.
 
 Kubernetes labels merge by key and taints by their Kubernetes identity.
 Conflicting values are rejected instead of silently selecting a layer.
@@ -178,7 +181,8 @@ host paths, symlinks, traversal, and a kubeadm version that conflicts with
 
 When a ClusterConfig is rendered for an installed node, Katl includes every
 supported desired field in the node change request. Runtime-live fields such as
-SSH keys and networkd files can be applied directly. Operation-only fields such
+SSH keys and host configuration files use their declared apply behavior.
+Networkd paths are staged for next boot. Operation-only fields such
 as control-plane participation and role-dependent Kubernetes bootstrap state
 remain visible to the planner and produce an explicit lifecycle action or
 refusal; the renderer must not silently omit them.

@@ -220,7 +220,7 @@ func TestPersistedStateRollbackCompatibilityEquivalent(t *testing.T) {
 		PreviousGeneration: previous.GenerationID,
 		RequestedApplyMode: generation.ApplyModeNextBoot,
 		AcceptedApplyMode:  generation.ApplyModeNextBoot,
-		ChangedDomains:     []string{"networkd"},
+		ChangedDomains:     []string{"host-configuration"},
 		HealthState:        generation.HealthStateUnknown,
 		Kubeadm:            generation.KubeadmActionRequired{Required: false},
 		UpdatedAt:          now.Add(-50 * time.Minute),

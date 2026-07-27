@@ -686,22 +686,24 @@ spec:
       ssh:
         authorizedKeys:
           - ` + sshAuthorizedKey + `
-    networkd:
-      files:
-        - name: 80-katl-vmtest-dhcp.network
-          content: |
-            [Match]
-            Name=en*
+    hostConfiguration:
+      sets:
+        network:
+          files:
+            - path: /etc/systemd/network/80-katl-vmtest-dhcp.network
+              content: |
+                [Match]
+                Name=en*
 
-            [Network]
-            DHCP=yes
+                [Network]
+                DHCP=yes
 
-            [DHCPv4]
-            ClientIdentifier=mac
-            UseHostname=no
+                [DHCPv4]
+                ClientIdentifier=mac
+                UseHostname=no
 
-            [DHCPv6]
-            UseHostname=no
+                [DHCPv6]
+                UseHostname=no
   nodes:
 `
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {

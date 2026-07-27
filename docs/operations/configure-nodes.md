@@ -11,8 +11,8 @@ renderer carries:
 
 - SSH authorized keys;
 - operator-owned kernel command-line additions;
-- systemd-networkd files;
-- native host configuration file sets; and
+- native host configuration file sets, including systemd-networkd files and
+  drop-ins;
 - operation-only system role and role-dependent Kubernetes bootstrap state.
 
 Runtime-safe fields apply normally. Katl coordinates affected node generations
@@ -95,6 +95,19 @@ spec:
 
                 [debug]
                   level = "warn"
+
+        network-common:
+          files:
+            - path: /etc/systemd/network/20-bond0.network
+              content: |
+                [Match]
+                Name=bond0
+
+                [Network]
+                DNS=172.53.53.53
+                LinkLocalAddressing=no
+                VLAN=bond0.20
+                VLAN=bond0.40
 ```
 
 `source` is relative to the ClusterConfig directory and is embedded when
@@ -115,9 +128,37 @@ spec:
             state: absent
 ```
 
+Use a separate node set for host-specific networkd drop-ins so it composes with
+the shared set:
+
+```yaml
+spec:
+  nodes:
+    - name: cp-1
+      hostConfiguration:
+        sets:
+          network-address:
+            files:
+              - path: /etc/systemd/network/20-bond0.network.d/50-address.conf
+                content: |
+                  [Network]
+                  Address=10.254.1.1/31
+
+                  [Route]
+                  Gateway=10.254.1.0
+```
+
+Katl accepts native `.network`, `.netdev`, and `.link` units plus one-level
+`*.network.d/*.conf`, `*.netdev.d/*.conf`, and `*.link.d/*.conf` drop-ins below
+`/etc/systemd/network`. Users select the unit and drop-in names but cannot move
+network configuration outside that Katl-controlled directory. Any operator
+`.network` unit replaces Katl's generated DHCP fallback; auxiliary `.link`,
+`.netdev`, and drop-in files can compose with the fallback.
+
 Sysctl files with a reversible concrete-key change can apply live. Udev rules
 can reload live, but Katl does not retrigger existing devices. Module load,
-modprobe, typed sysfs settings, and containerd overlays are next-boot-only.
+modprobe, typed sysfs settings, containerd overlays, and networkd files are
+next-boot-only.
 Katl renders `hostConfiguration.sysfs` to an internal tmpfiles rule, applies
 each value, and reads it back before boot health succeeds. Containerd imports
 `/etc/containerd/conf.d/*.toml` when it starts. Other permitted files are

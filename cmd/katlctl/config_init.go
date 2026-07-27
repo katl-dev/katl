@@ -213,7 +213,7 @@ func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 		"    #     # To let Katl advertise a routed endpoint, add advertisement.vip and bgp peers.\n" +
 		"    # Set controlPlane: true on nodes that join the Kubernetes control plane.\n" +
 		"    # Omission means worker.\n" +
-		"    # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.\n"
+		"    # Nodes use DHCP by default; add native systemd-networkd files through hostConfiguration.sets.\n"
 	comments += "    # Optional kernel arguments can be set under defaults.kernel.commandLine or a node.\n"
 	if missingSSHKeys {
 		comments += "    # Add an SSH public key here if console-only access is not sufficient.\n" +

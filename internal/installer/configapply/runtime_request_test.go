@@ -22,14 +22,16 @@ apply:
   mode: next-boot
 spec:
   clusterDefaults:
-    networkd:
-      files:
-        - name: 10-common.network
-          content: |
-            [Match]
-            Name=*
-            [Network]
-            DHCP=yes
+    hostConfiguration:
+      sets:
+        common-network:
+          files:
+            - path: /etc/systemd/network/10-common.network
+              content: |
+                [Match]
+                Name=*
+                [Network]
+                DHCP=yes
   systemRoleOverrides:
     control-plane:
       identity:
@@ -52,7 +54,7 @@ spec:
 	if result.Manifest.Node.Identity.Hostname != "cp-1-renamed" {
 		t.Fatalf("hostname = %q", result.Manifest.Node.Identity.Hostname)
 	}
-	if !containsDomain(result.Plan.Decision.ChangedDomains, DomainNetworkd) || containsDomain(result.Plan.Decision.ChangedDomains, DomainSSHOperatorAccess) {
+	if !containsDomain(result.Plan.Decision.ChangedDomains, DomainHostConfiguration) || containsDomain(result.Plan.Decision.ChangedDomains, DomainSSHOperatorAccess) {
 		t.Fatalf("changed domains = %#v", result.Plan.Decision.ChangedDomains)
 	}
 	if _, err := generation.ReadRecord(filepath.Join(root, "var/lib/katl/generations/2026.06.05-002/metadata.json")); err != nil {
@@ -138,7 +140,7 @@ spec:
 			want: "field hostAccountPolicy not found",
 		},
 		{
-			name: "unsupported known domain field",
+			name: "removed networkd domain",
 			body: `
 apiVersion: katl.dev/v1alpha1
 kind: NodeConfigurationChange
@@ -149,13 +151,9 @@ apply:
   mode: next-boot
 spec:
   clusterDefaults:
-    networkd:
-      files:
-        - name: 10-common.network
-          content: ok
-          renderer: unsupported
+    networkd: {}
 `,
-			want: "field renderer not found",
+			want: "field networkd not found",
 		},
 		{
 			name: "unsupported sysext selection",

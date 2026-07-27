@@ -16,17 +16,19 @@ node:
     controlPlaneEndpoint: api.katl.test:6443
     bootstrapProfileRef: control-plane
     kubernetesBundle: ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-  networkd:
-    files:
-      - name: 10-lan.network
-        content: |
-          [Match]
-          Name=enp1s0
-
-          [Network]
-          DHCP=yes
   hostConfiguration:
     sets:
+      network:
+        state: present
+        files:
+          - path: /etc/systemd/network/10-lan.network
+            content: |
+              [Match]
+              Name=enp1s0
+
+              [Network]
+              DHCP=yes
+            mode: 420
       storage-modules:
         state: present
         files:

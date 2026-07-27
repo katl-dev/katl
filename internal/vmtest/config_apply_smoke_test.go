@@ -243,8 +243,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	rejectedOutput := runKatlctl(t, ctx, result, katlctl, "config-apply-validate-rejected", rejectedArgs...)
 	var rejected agentapi.ConfigValidationResult
 	mustUnmarshalProtoJSON(t, rejectedOutput, &rejected)
-	if rejected.Accepted || !strings.Contains(strings.Join(rejected.Diagnostics, "\n"), "staged-only") {
-		t.Fatalf("rejected validation = %+v, want fail closed staged-only diagnostic", rejected)
+	if rejected.Accepted || !strings.Contains(strings.Join(rejected.Diagnostics, "\n"), "systemd-networkd configuration applies on next boot") {
+		t.Fatalf("rejected validation = %+v, want fail closed next-boot network diagnostic", rejected)
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedGeneration)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
@@ -266,7 +266,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if got := currentGenerationFromGuest(t, ctx, guest); got != currentGeneration {
 		t.Fatalf("current generation after rejected apply = %q, want %q", got, currentGeneration)
 	}
-	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "staged-only")
+	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "systemd-networkd configuration applies on next boot")
 
 	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-udev.yaml"), false)
 	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, liveAccepted.OperationId)
@@ -332,12 +332,11 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"phase": "next-boot"`,
 		`"acceptedApplyMode": "next-boot"`,
 		`"domain": "host-configuration"`,
-		`"domain": "networkd"`,
 		`"domain": "kernel-command-line"`,
 		`"target": "sysfs /sys/module/printk/parameters/time"`,
 		`"target": "containerd configuration /etc/containerd/conf.d/80-katl-vmtest.toml"`,
 	)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/20-katl-vmtest-extra-address.network", "Address=198.51.100.77/32")
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf", "Address=198.51.100.77/32")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/containerd/conf.d/80-katl-vmtest.toml", "oom_score = 123")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+liveGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
@@ -362,7 +361,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "good"`, `"healthState": "healthy"`)
 	guestCommand(t, ctx, guest, "effective-networkd-config",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
-		"/usr/bin/test", "-r", "/etc/systemd/network/20-katl-vmtest-extra-address.network",
+		"/usr/bin/test", "-r", "/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf",
 	)
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "katl.vmtest.config_apply_kernel=1")

@@ -20,17 +20,13 @@ import (
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 )
 
-func TestApplyTrustedBundleRejectsLiveNetworkdBeforeRender(t *testing.T) {
+func TestApplyTrustedBundleRejectsLiveNetworkdFileSetBeforeRender(t *testing.T) {
 	root := t.TempDir()
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeLive,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "20-uplink.network",
-				Content: "[Match]\nName=ens3\n[Network]\nDHCP=yes\n",
-			}}},
-			LivePreflight: map[string]bool{DomainNetworkd: true},
+			HostConfiguration: networkHostConfiguration("20-uplink.network", "[Match]\nName=ens3\n[Network]\nDHCP=yes\n"),
 		},
 	}))
 	if err == nil || !strings.Contains(err.Error(), "live request rejected") {
@@ -507,15 +503,12 @@ func TestApplyTrustedBundleStagesStrictNextBootSysctl(t *testing.T) {
 	}
 }
 
-func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkd(t *testing.T) {
+func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkdFileSet(t *testing.T) {
 	root := t.TempDir()
 	request := trustedBundleRequest(root, TrustedBundleRequest{
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	})
 	request.ApplyMode = ""
@@ -552,16 +545,65 @@ func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkd(t *testing.T) {
 	}
 }
 
+func TestApplyTrustedBundleDoesNotRestageUnchangedNetworkdDefaults(t *testing.T) {
+	root := t.TempDir()
+	network := "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n"
+	udev := "ACTION==\"add\", SUBSYSTEM==\"katl-vmtest\"\n"
+	current := baseManifest()
+	current.Node.HostConfiguration = manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"network": {
+			State: manifest.HostConfigurationPresent,
+			Files: []manifest.HostConfigurationFile{{
+				Path:    "/etc/systemd/network/80-katl-vmtest-dhcp.network",
+				Content: &network,
+				Mode:    0o644,
+			}},
+		},
+	}}
+	desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"network": {
+			Files: []manifest.HostConfigurationFile{{
+				Path:    "/etc/systemd/network/80-katl-vmtest-dhcp.network",
+				Content: &network,
+			}},
+		},
+		"udev": {
+			Files: []manifest.HostConfigurationFile{{
+				Path:    "/etc/udev/rules.d/80-katl-vmtest.rules",
+				Content: &udev,
+			}},
+		},
+	}}
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		CurrentManifest: current,
+		ClusterDefaults: NodeOverlay{HostConfiguration: &desired},
+		Executor: &Executor{
+			Runner:    &fakeCommandRunner{},
+			Activator: &fakeActivator{},
+			Now:       fixedNow,
+		},
+	})
+	request.ApplyMode = ""
+	result, err := ApplyTrustedBundle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("ApplyTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive || result.Status.Phase != generation.ConfigApplyPhaseActive {
+		t.Fatalf("plan/status = %#v %#v, want live apply", result.Plan.Decision, result.Status)
+	}
+	action := result.Status.DomainActions[0]
+	if !slices.Equal(action.Paths, []string{"/etc/udev/rules.d/80-katl-vmtest.rules"}) {
+		t.Fatalf("changed paths = %q, want only the new udev rule", action.Paths)
+	}
+}
+
 func TestApplyTrustedBundleResolvesRoleAndNodeOverlaysForNextBoot(t *testing.T) {
 	root := t.TempDir()
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeNextBoot,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 		SystemRoleOverrides: map[string]NodeOverlay{
 			"control-plane": {
@@ -580,7 +622,7 @@ func TestApplyTrustedBundleResolvesRoleAndNodeOverlaysForNextBoot(t *testing.T) 
 	if result.Manifest.Node.SystemRole != "control-plane" || result.Manifest.Node.Identity.Hostname != "worker-1" {
 		t.Fatalf("merged node = %#v", result.Manifest.Node)
 	}
-	for _, domain := range []string{DomainNetworkd, DomainNodeIdentity, DomainBootstrapNodeMetadata} {
+	for _, domain := range []string{DomainHostConfiguration, DomainNodeIdentity, DomainBootstrapNodeMetadata} {
 		if !containsDomain(result.Plan.Decision.ChangedDomains, domain) {
 			t.Fatalf("changed domains = %#v, missing %s", result.Plan.Decision.ChangedDomains, domain)
 		}
@@ -642,10 +684,7 @@ func TestApplyTrustedBundleReplaysSameRequestWithoutRenderingAgain(t *testing.T)
 		ApplyMode:    generation.ApplyModeNextBoot,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	})
 	first, err := ApplyTrustedBundle(context.Background(), request)
@@ -698,10 +737,7 @@ func TestApplyTrustedBundleRejectsSameVersionDigestConflictBeforeRender(t *testi
 		ApplyMode:    generation.ApplyModeNextBoot,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	}))
 	if err != nil {
@@ -711,10 +747,7 @@ func TestApplyTrustedBundleRejectsSameVersionDigestConflictBeforeRender(t *testi
 		ApplyMode:    generation.ApplyModeNextBoot,
 		GenerationID: "2026.06.05-003",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nAddress=192.0.2.10/24\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nAddress=192.0.2.10/24\n"),
 		},
 	}))
 	if err == nil || !strings.Contains(err.Error(), "different request digest") {
@@ -735,10 +768,7 @@ func TestApplyTrustedBundleRejectsStaleVersionBeforeRender(t *testing.T) {
 		ApplyMode:      generation.ApplyModeNextBoot,
 		GenerationID:   "2026.06.05-010",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	}))
 	if err != nil {
@@ -749,10 +779,7 @@ func TestApplyTrustedBundleRejectsStaleVersionBeforeRender(t *testing.T) {
 		ApplyMode:      generation.ApplyModeNextBoot,
 		GenerationID:   "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	}))
 	if err == nil || !strings.Contains(err.Error(), "older than recorded version 10") {
@@ -790,10 +817,7 @@ func TestApplyTrustedBundleRejectsRuntimeSelectionOverridesBeforeRender(t *testi
 			override.ApplyMode = generation.ApplyModeNextBoot
 			override.GenerationID = "2026.06.05-002"
 			override.ClusterDefaults = NodeOverlay{
-				Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-					Name:    "10-common.network",
-					Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-				}}},
+				HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 			}
 			result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, override))
 			if err == nil || !strings.Contains(err.Error(), tt.wantReason) {
@@ -816,13 +840,10 @@ func TestApplyTrustedBundleRejectsRuntimeSelectionOverrideReplay(t *testing.T) {
 		GenerationID:      "2026.06.05-002",
 		KubernetesVersion: "v1.37.0",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	})
-	audit := request.audit("operator", "2", DecisionAccepted, []Change{{Domain: DomainNetworkd}}, nil, nil, fixedNow())
+	audit := request.audit("operator", "2", DecisionAccepted, []Change{{Domain: DomainHostConfiguration}}, nil, nil, fixedNow())
 	if _, err := writeAudit(root, "operator", "2", audit); err != nil {
 		t.Fatalf("writeAudit() error = %v", err)
 	}
@@ -845,10 +866,7 @@ func TestApplyTrustedBundleRejectsLeadingZeroDesiredVersion(t *testing.T) {
 		ApplyMode:      generation.ApplyModeNextBoot,
 		GenerationID:   "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	}))
 	if err == nil || !strings.Contains(err.Error(), "leading zeroes") {
@@ -910,10 +928,7 @@ func TestApplyTrustedBundleRejectsUnsupportedApplyModeBeforeRender(t *testing.T)
 		ApplyMode:    "immediate",
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "10-common.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	}))
 	if err == nil || !strings.Contains(err.Error(), "apply mode") {
@@ -925,22 +940,19 @@ func TestApplyTrustedBundleRejectsUnsupportedApplyModeBeforeRender(t *testing.T)
 	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
-func TestApplyTrustedBundleRejectsUnsupportedKnownDomainFieldsBeforeRender(t *testing.T) {
+func TestApplyTrustedBundleRejectsInvalidNetworkdFileSetBeforeRender(t *testing.T) {
 	root := t.TempDir()
 	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeNextBoot,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			Networkd: &manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-				Name:    "bad name.network",
-				Content: "[Match]\nName=*\n[Network]\nDHCP=yes\n",
-			}}},
+			HostConfiguration: networkHostConfiguration("bad name.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
 		},
 	}))
-	if err == nil || !strings.Contains(err.Error(), "networkd") {
-		t.Fatalf("ApplyTrustedBundle() error = %v, want known-domain field rejection; result = %#v", err, result)
+	if err == nil || !strings.Contains(err.Error(), "must name a .network, .netdev, or .link file") {
+		t.Fatalf("ApplyTrustedBundle() error = %v, want invalid networkd path rejection; result = %#v", err, result)
 	}
-	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainNetworkd) {
+	if result.Audit.Decision != DecisionRejected || len(result.Audit.ChangedDomains) != 0 {
 		t.Fatalf("audit = %#v", result.Audit)
 	}
 	assertGenerationMissing(t, root, "2026.06.05-002")
@@ -1296,6 +1308,11 @@ func hostSysctlConfiguration(value string) manifest.HostConfiguration {
 }
 
 func hostConfigurationPointer(config manifest.HostConfiguration) *manifest.HostConfiguration {
+	return &config
+}
+
+func networkHostConfiguration(name, content string) *manifest.HostConfiguration {
+	config := testHostConfiguration("network", "/etc/systemd/network/"+name, content)
 	return &config
 }
 

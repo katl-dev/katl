@@ -21,8 +21,6 @@ import (
 
 const validationActivationPath = "/run/extensions/katl-kubernetes.raw"
 
-const defaultNetworkdFile = "[Match]\nType=ether\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nClientIdentifier=mac\nUseHostname=no\n\n[DHCPv6]\nUseHostname=no\n"
-
 type selectedKubernetes struct {
 	version        string
 	catalogRef     string
@@ -103,9 +101,6 @@ func Compile(request CompileRequest) (Plan, error) {
 			return Plan{}, fmt.Errorf("node %q: %w", name, err)
 		}
 		layer.Bootstrap.Access = portableBootstrapAccess(layer.Bootstrap.Access)
-		if len(layer.Networkd.Files) == 0 {
-			layer.Networkd.Files = []manifest.NetworkdFile{{Name: "10-lan.network", Content: defaultNetworkdFile}}
-		}
 		layer = applyTargetDiskDefaults(layer)
 		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, endpointPlan)
 		if err != nil {
@@ -246,7 +241,6 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			},
 			SystemRole:           string(role),
 			Kernel:               kernelConfig(layer.Kernel),
-			Networkd:             layer.Networkd,
 			HostConfiguration:    layer.HostConfiguration,
 			SystemExtensions:     append([]manifest.SystemExtension(nil), layer.SystemExtensions...),
 			ControlPlaneEndpoint: managedEndpoint,

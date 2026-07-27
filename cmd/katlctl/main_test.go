@@ -1922,7 +1922,7 @@ func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 		PreviousGeneration: "2026.06.05-001",
 		Mode:               generation.ApplyModeLive,
 		Phase:              generation.ConfigApplyPhaseActive,
-		Domains:            []string{"networkd", "tmpfiles"},
+		Domains:            []string{"host-configuration", "tmpfiles"},
 	})
 	writeConfigApplyFixture(t, root, configApplyFixture{
 		GenerationID:       "2026.06.05-003",
@@ -1950,7 +1950,7 @@ func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 	if report.ActiveGenerationID != "2026.06.05-002" || report.NextBootGenerationID != "2026.06.05-003" {
 		t.Fatalf("report ids = %#v", report)
 	}
-	if report.Active == nil || report.Active.Phase != generation.ConfigApplyPhaseActive || strings.Join(report.Active.ChangedDomains, ",") != "networkd,tmpfiles" {
+	if report.Active == nil || report.Active.Phase != generation.ConfigApplyPhaseActive || strings.Join(report.Active.ChangedDomains, ",") != "host-configuration,tmpfiles" {
 		t.Fatalf("active report = %#v", report.Active)
 	}
 	if report.NextBoot == nil || report.NextBoot.Phase != generation.ConfigApplyPhaseNextBoot || report.NextBoot.AcceptedApplyMode != generation.ApplyModeNextBoot {
@@ -2264,7 +2264,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 			Accepted:              true,
 			RequestDigest:         strings.Repeat("c", 64),
 			CandidateGenerationId: "generation-plan",
-			ChangedDomains:        []string{"networkd"},
+			ChangedDomains:        []string{"host-configuration"},
 		},
 	}
 	oldDial := dialKatlcAgent
@@ -2299,7 +2299,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatalf("decode stdout = %v: %s", err, stdout.String())
 	}
-	if output["accepted"] != true || output["candidateGenerationId"] != "generation-plan" || !strings.Contains(stdout.String(), `"networkd"`) || strings.Contains(stdout.String(), "requestDigest") {
+	if output["accepted"] != true || output["candidateGenerationId"] != "generation-plan" || !strings.Contains(stdout.String(), `"host-configuration"`) || strings.Contains(stdout.String(), "requestDigest") {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }
@@ -2346,7 +2346,7 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 			RequestDigest:         strings.Repeat("c", 64),
 			AcceptedApplyMode:     generation.ApplyModeLive,
 			CandidateGenerationId: "generation-bundle",
-			ChangedDomains:        []string{"node-identity", "networkd"},
+			ChangedDomains:        []string{"host-configuration", "node-identity"},
 		},
 		stageAccepted: &agentapi.OperationAccepted{
 			OperationId:   "generation-bundle-apply",
@@ -2411,7 +2411,7 @@ func TestConfigApplyStatusQueriesGenerationFromAgent(t *testing.T) {
 			ConfigApply: &agentapi.ConfigApplyStatus{
 				Phase:              generation.ConfigApplyPhaseNextBoot,
 				AcceptedApplyMode:  generation.ApplyModeNextBoot,
-				ChangedDomains:     []string{"networkd"},
+				ChangedDomains:     []string{"host-configuration"},
 				RequestedApplyMode: generation.ApplyModeNextBoot,
 			},
 		},
@@ -2462,7 +2462,7 @@ func TestConfigApplyStatusReportsFailureRollbackAndKubeadmRedacted(t *testing.T)
 		PreviousGeneration: "2026.06.05-004",
 		Mode:               generation.ApplyModeLive,
 		Phase:              generation.ConfigApplyPhaseRolledBack,
-		Domains:            []string{"networkd"},
+		Domains:            []string{"host-configuration"},
 		RollbackTarget:     "2026.06.05-004",
 	})
 

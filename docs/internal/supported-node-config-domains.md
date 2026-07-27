@@ -41,11 +41,6 @@ node identity
   stable node name used by generated kubeadm input
   rendered to bounded Katl/systemd host identity files
 
-networkd
-  native .link, .netdev, and .network content
-  links, bonds, bridges, VLANs, addresses, routes, DHCP, and matching rules
-  rendered under /etc/systemd/network/
-
 resolved and host DNS
   only when needed for generation 0 install/runtime or explicit cluster bootstrap
   resolved.conf snippets and host resolver policy
@@ -66,6 +61,12 @@ tmpfiles
 sysfs
   public hostConfiguration accepts typed name/value settings
   Katl renders exact writes to an internal tmpfiles.d rule
+
+native host configuration
+  named file sets below validated /etc paths
+  a built-in networkd handler accepts .link, .netdev, .network, and their
+    one-level .d/*.conf drop-ins below /etc/systemd/network
+  networkd paths are next-boot-only and use installed boot health
 
 mount units
   persistent state projections and extra data disk mounts
@@ -96,8 +97,9 @@ extra disk mount requests
 ```
 
 Domains may preserve native file syntax when that is the least lossy interface.
-For example, `networkd` can accept native unit content, but Katl still owns the
-destination path and validation. Users do not choose arbitrary `/etc` paths.
+For example, native host configuration accepts systemd-networkd unit content,
+but Katl validates and constrains it to `/etc/systemd/network`. Users do not
+choose another destination for network files.
 
 ## Explicit Deferrals
 
@@ -166,12 +168,6 @@ node identity
   reject names that conflict with generated kubeadm nodeRegistration
   golden tests cover hostname rendering and kubeadm node-name propagation
 
-networkd
-  allow only .link, .netdev, and .network names
-  keep names as safe single path segments
-  preserve native content but reject duplicate output filenames
-  golden tests cover links, bonds, bridges, VLANs, static routes, and DHCP
-
 resolved and host DNS
   validate bounded resolved settings and DNS server/search-domain values
   golden tests cover generated resolved drop-ins
@@ -191,6 +187,14 @@ sysfs
   accept unique normalized names below /sys and non-empty single-line values
   reject operator-authored tmpfiles.d files
   apply and read-back verify settings before boot health succeeds
+
+native host configuration
+  validate bounded /etc ownership, modes, sources, and duplicate paths
+  for /etc/systemd/network allow only .link, .netdev, and .network units or
+    exactly one matching .d directory containing .conf drop-ins
+  reject unsafe names, deeper nesting, unsupported suffixes, and empty network
+    content
+  golden tests cover shared units plus node-specific drop-ins
 
 mount units and extra disks
   derive mount points below /var/lib/katl/mnt from validated unique names
@@ -252,8 +256,9 @@ Runtime apply behavior is domain-specific:
 kernel command line
   stage a next-boot generation and require reboot before the change is active
 
-networkd
-  reload or restart systemd-networkd only through tested KatlOS runtime logic
+networkd host files
+  stage a next-boot generation; systemd-networkd and operator access
+  participate in installed boot health
 
 resolved
   reload or restart systemd-resolved only through tested KatlOS runtime logic

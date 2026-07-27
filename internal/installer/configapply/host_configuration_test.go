@@ -64,6 +64,13 @@ func TestPlanHostConfigurationStagesBootOwnedOverlays(t *testing.T) {
 			want:    "load on next boot",
 			target:  "containerd configuration /etc/containerd/conf.d/80-debug.toml",
 		},
+		{
+			name:    "networkd drop-in",
+			path:    "/etc/systemd/network/20-bond0.network.d/50-address.conf",
+			content: "[Network]\nAddress=10.254.1.1/31\n",
+			want:    "applies on next boot",
+			target:  "networkd configuration /etc/systemd/network/20-bond0.network.d/50-address.conf",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

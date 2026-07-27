@@ -10,28 +10,38 @@ spec:
     kernel:
       commandLine:
         - katl.vmtest.config_apply_kernel=1
-    networkd:
-      files:
-        - name: 20-katl-vmtest-extra-address.network
-          content: |
-            [Match]
-            Name=e*
-
-            [Network]
-            DHCP=yes
-            Address=198.51.100.77/32
-
-            [DHCPv4]
-            ClientIdentifier=mac
-            UseHostname=no
-
-            [DHCPv6]
-            UseHostname=no
     hostConfiguration:
       sysfs:
         - name: /sys/module/printk/parameters/time
           value: N
       sets:
+        vmtest-network:
+          files:
+            - path: /etc/systemd/network/80-katl-vmtest-dhcp.network
+              content: |
+                [Match]
+                Name=en*
+
+                [Network]
+                DHCP=yes
+
+                [DHCPv4]
+                ClientIdentifier=mac
+                UseHostname=no
+
+                [DHCPv6]
+                UseHostname=no
+        vmtest-network-address:
+          files:
+            - path: /etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf
+              content: |
+                [Network]
+                Address=198.51.100.77/32
+        vmtest-udev:
+          files:
+            - path: /etc/udev/rules.d/80-katl-vmtest.rules
+              content: |
+                ACTION=="add", SUBSYSTEM=="katl-vmtest", TAG+="katl-vmtest"
         vmtest-containerd:
           files:
             - path: /etc/containerd/conf.d/80-katl-vmtest.toml

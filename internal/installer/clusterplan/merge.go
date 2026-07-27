@@ -19,7 +19,6 @@ func mergedLayer(layers ...NodeLayer) (NodeLayer, error) {
 			return NodeLayer{}, err
 		}
 	}
-	sortNetworkd(out.Networkd.Files)
 	sortExtraDisks(out.Install.ExtraDisks)
 	return out, nil
 }
@@ -35,11 +34,7 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 		kernel.CommandLine = slices.Clone(next.Kernel.CommandLine)
 		out.Kernel = &kernel
 	}
-	networkd, err := mergeNetworkd(out.Networkd, next.Networkd)
-	if err != nil {
-		return NodeLayer{}, err
-	}
-	out.Networkd = networkd
+	var err error
 	out.HostConfiguration, err = mergeHostConfiguration(out.HostConfiguration, next.HostConfiguration)
 	if err != nil {
 		return NodeLayer{}, err
@@ -128,44 +123,24 @@ func mergeHostConfiguration(base, next manifest.HostConfiguration) (manifest.Hos
 		if strings.TrimSpace(set.State) == manifest.HostConfigurationAbsent {
 			continue
 		}
-		sets[name] = normalizeHostConfigurationSet(set)
+		sets[name] = set
 	}
 	for name, set := range next.Sets {
 		if strings.TrimSpace(set.State) == manifest.HostConfigurationAbsent {
 			delete(sets, name)
 			continue
 		}
-		sets[name] = normalizeHostConfigurationSet(set)
+		sets[name] = set
 	}
 	sysfs := slices.Clone(base.Sysfs)
 	if next.Sysfs != nil {
 		sysfs = slices.Clone(next.Sysfs)
 	}
-	sort.Slice(sysfs, func(i, j int) bool { return sysfs[i].Name < sysfs[j].Name })
-	out := manifest.HostConfiguration{Sysfs: sysfs, Sets: sets}
+	out := manifest.NormalizeHostConfiguration(manifest.HostConfiguration{Sysfs: sysfs, Sets: sets})
 	if err := manifest.ValidateHostConfiguration(out, false); err != nil {
 		return manifest.HostConfiguration{}, fmt.Errorf("hostConfiguration: %w", err)
 	}
 	return out, nil
-}
-
-func normalizeHostConfigurationSet(set manifest.HostConfigurationSet) manifest.HostConfigurationSet {
-	set.State = manifest.HostConfigurationPresent
-	set.Files = append([]manifest.HostConfigurationFile(nil), set.Files...)
-	for i := range set.Files {
-		if set.Files[i].Mode == 0 {
-			set.Files[i].Mode = 0o644
-		}
-	}
-	sort.Slice(set.Files, func(i, j int) bool { return set.Files[i].Path < set.Files[j].Path })
-	set.Notify.Systemd = append([]manifest.HostConfigurationSystemdNotification(nil), set.Notify.Systemd...)
-	sort.Slice(set.Notify.Systemd, func(i, j int) bool {
-		if set.Notify.Systemd[i].Unit != set.Notify.Systemd[j].Unit {
-			return set.Notify.Systemd[i].Unit < set.Notify.Systemd[j].Unit
-		}
-		return set.Notify.Systemd[i].Action < set.Notify.Systemd[j].Action
-	})
-	return set
 }
 
 func mergeTargetDiskDefaults(base, next *manifest.DiskSelector) (*manifest.DiskSelector, error) {
@@ -258,26 +233,6 @@ func taintKey(taint manifest.NodeTaint) string {
 	return taint.Key + "\x00" + taint.Effect
 }
 
-func mergeNetworkd(base, next manifest.NetworkdConfig) (manifest.NetworkdConfig, error) {
-	files := append([]manifest.NetworkdFile(nil), base.Files...)
-	index := make(map[string]int, len(files))
-	for i, file := range files {
-		index[file.Name] = i
-	}
-	for _, file := range next.Files {
-		if i, ok := index[file.Name]; ok {
-			if files[i].Content != file.Content {
-				return manifest.NetworkdConfig{}, fmt.Errorf("networkd file %q has conflicting content", file.Name)
-			}
-			continue
-		}
-		index[file.Name] = len(files)
-		files = append(files, file)
-	}
-	sortNetworkd(files)
-	return manifest.NetworkdConfig{Files: files}, nil
-}
-
 func mergeExtraDisks(base, next []manifest.ExtraDisk) ([]manifest.ExtraDisk, error) {
 	disks := append([]manifest.ExtraDisk(nil), base...)
 	index := make(map[string]int, len(disks))
@@ -331,10 +286,6 @@ func appendUnique(base, next []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func sortNetworkd(files []manifest.NetworkdFile) {
-	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 }
 
 func sortExtraDisks(disks []manifest.ExtraDisk) {

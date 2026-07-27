@@ -94,9 +94,9 @@ katlos-install-<version>-<arch>.squashfs.json
 The installer boot artifacts start the temporary installer environment. The
 KatlOS image is the payload that `katlos-install` verifies and writes into the
 installed system. Do not rebuild either artifact for each node. Put node
-identity, disk selection, networkd snippets, SSH authorized keys, system role,
-and bootstrap intent in one `ClusterConfig`, then compile one bundle for all
-nodes.
+identity, disk selection, native host configuration including networkd files,
+SSH authorized keys, system role, and bootstrap intent in one `ClusterConfig`,
+then compile one bundle for all nodes.
 
 ### Optional: authenticate release artifacts
 
@@ -594,8 +594,9 @@ Katl applies ordinary node domains and all affected kubeadm-produced component
 configuration as one coordinated workflow. Kubernetes configuration changes
 are online-only and never require rebooting a node.
 
-The renderer carries node identity, systemd-networkd files, system role, and
-role-dependent Kubernetes intent. The planner does not silently discard
+The renderer carries node identity, native host configuration, system role, and
+role-dependent Kubernetes intent. Networkd files are supplied through
+`hostConfiguration.sets` and staged for next boot. The planner does not silently discard
 operation-owned differences: cluster apply invokes the required internal
 kubeadm-aware phases and verifies the live result. Disk install selection and
 Kubernetes version changes keep their dedicated install and upgrade workflows.
