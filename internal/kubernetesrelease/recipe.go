@@ -13,10 +13,8 @@ import (
 )
 
 var recipeRoots = []string{
-	".github/workflows/kubernetes-bundles.yml",
 	"Containerfile.mkosi",
-	"cmd/katl-kubernetes-release",
-	"cmd/katl-mkosi-artifacts",
+	"cmd/katl-kubernetes-metadata",
 	"cmd/katl-publish-kubernetes-sysext",
 	"containers-policy.json",
 	"go.mod",
@@ -27,7 +25,6 @@ var recipeRoots = []string{
 	"internal/installer/sysextcatalog/catalog.go",
 	"internal/installer/sysextcatalog/publish.go",
 	"internal/installer/sysextcatalog/stage.go",
-	"internal/kubernetesrelease",
 	"mkosi.conf",
 	"mkosi.profiles/kubernetes-sysext",
 	"mkosi.profiles/runtime/mkosi.conf",
@@ -78,16 +75,13 @@ func RefreshRecipe(root string, supported SupportedVersions) (SupportedVersions,
 		return supported, false, nil
 	}
 	supported.Versions = copyVersions(supported.Versions)
-	if supported.RecipeScope == "" {
+	if supported.RecipeScope != CurrentRecipeScope {
 		supported.RecipeScope = CurrentRecipeScope
 		supported.RecipeDigest = digest
 		if err := validateSupportedVersions(supported); err != nil {
 			return SupportedVersions{}, false, err
 		}
 		return supported, true, nil
-	}
-	if supported.RecipeScope != CurrentRecipeScope {
-		return SupportedVersions{}, false, fmt.Errorf("unsupported Kubernetes bundle recipe scope %q", supported.RecipeScope)
 	}
 	supported.RecipeDigest = digest
 	for index := range supported.Versions {
@@ -106,7 +100,7 @@ type recipeFile struct {
 }
 
 func recipeFiles(root string) ([]recipeFile, error) {
-	args := append([]string{"-C", root, "ls-files", "-z", "--"}, recipeRoots...)
+	args := append([]string{"-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"}, recipeRoots...)
 	output, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("list tracked Kubernetes bundle recipe inputs: %w", err)

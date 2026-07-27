@@ -10,8 +10,8 @@ on:
       - Containerfile.mkosi
       - cmd/katl-kubernetes-release/**
       - "!cmd/katl-kubernetes-release/**/*_test.go"
-      - cmd/katl-mkosi-artifacts/**
-      - "!cmd/katl-mkosi-artifacts/**/*_test.go"
+      - cmd/katl-kubernetes-metadata/**
+      - "!cmd/katl-kubernetes-metadata/**/*_test.go"
       - cmd/katl-publish-kubernetes-sysext/**
       - "!cmd/katl-publish-kubernetes-sysext/**/*_test.go"
       - containers-policy.json
@@ -218,7 +218,8 @@ jobs:
 
       - name: Run producer unit tests
         run: |
-          go test ./cmd/katl-publish-kubernetes-sysext \
+          go test ./cmd/katl-kubernetes-metadata \
+            ./cmd/katl-publish-kubernetes-sysext \
             ./internal/installer/kubernetesbundle \
             ./internal/installer/sysextcatalog \
             ./internal/kubernetesrelease \
@@ -477,6 +478,18 @@ jobs:
           path: _build/compatibility
           merge-multiple: true
 
+      - name: Restore pending compatibility update
+        shell: bash
+        run: |
+          branch="automation/kubernetes-compatibility"
+          remote_ref="refs/remotes/origin/$branch"
+          if git fetch origin "refs/heads/${branch}:${remote_ref}"; then
+            git restore \
+              --source="$remote_ref" \
+              --worktree \
+              -- internal/installer/kubernetescompat/catalog.json
+          fi
+
       - name: Record published compatibility
         id: compatibility
         shell: bash
@@ -511,14 +524,21 @@ jobs:
         id: compatibility-branch
         shell: bash
         run: |
-          branch="automation/kubernetes-compatibility-${GITHUB_RUN_ID}"
+          branch="automation/kubernetes-compatibility"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
           git add internal/installer/kubernetescompat/catalog.json
           git commit -m "release: record supported Kubernetes compatibility"
           head_sha="$(git rev-parse HEAD)"
-          git push --set-upstream origin "$branch"
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
+          if [[ -n "$remote_sha" ]]; then
+            git push \
+              --force-with-lease="refs/heads/${branch}:${remote_sha}" \
+              --set-upstream origin "$branch"
+          else
+            git push --set-upstream origin "$branch"
+          fi
           echo "name=$branch" >> "$GITHUB_OUTPUT"
           echo "sha=$head_sha" >> "$GITHUB_OUTPUT"
 
@@ -530,53 +550,102 @@ jobs:
           HEAD_SHA: ${{ steps.compatibility-branch.outputs.sha }}
         with:
           script: |
-            const { data: pull } = await github.rest.pulls.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const title = "release: record supported Kubernetes compatibility";
+            const body = "Records the newly published immutable bundles for every supported Kubernetes payload built by the producer.";
+            const existing = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
               base: "main",
-              head: process.env.HEAD_BRANCH,
-              title: "release: record supported Kubernetes compatibility",
-              body: "Records the newly published immutable bundles for every supported Kubernetes payload built by the producer.",
-              draft: false,
-            });
-            await github.graphql(`
-              mutation($pullRequestId: ID!) {
-                enablePullRequestAutoMerge(input: {
-                  pullRequestId: $pullRequestId,
-                  mergeMethod: SQUASH
-                }) {
-                  pullRequest { number }
-                }
-              }
-            `, { pullRequestId: pull.node_id });
-
-            const openPulls = await github.paginate(github.rest.pulls.list, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              base: "main",
+              head: `${owner}:${process.env.HEAD_BRANCH}`,
               state: "open",
               per_page: 100,
             });
-            const branchPrefix = "automation/kubernetes-compatibility-";
-            const repository = `${context.repo.owner}/${context.repo.repo}`;
-            const superseded = openPulls.filter(candidate =>
-              candidate.number !== pull.number &&
-              candidate.head.repo?.full_name === repository &&
-              candidate.head.ref.startsWith(branchPrefix)
-            );
-            for (const candidate of superseded) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: candidate.number,
-                body: `Superseded by #${pull.number}, which records newer successfully published Kubernetes bundles. Closing this stale catalog update to prevent older bundle references from being merged.`,
+            if (existing.length > 1) {
+              throw new Error(`generated branch ${process.env.HEAD_BRANCH} has multiple open pull requests`);
+            }
+            let pull;
+            if (existing.length > 0) {
+              pull = existing[0];
+              const { data: updated } = await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pull.number,
+                title,
+                body,
               });
-              await github.rest.pulls.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: candidate.number,
-                state: "closed",
+              pull = updated;
+              core.info(`Updated generated compatibility PR #${pull.number}`);
+            } else {
+              const { data: created } = await github.rest.pulls.create({
+                owner,
+                repo,
+                base: "main",
+                head: process.env.HEAD_BRANCH,
+                title,
+                body,
+                draft: false,
               });
+              pull = created;
+              core.info(`Opened generated compatibility PR #${pull.number}`);
+            }
+            if (!pull.auto_merge) {
+              await github.graphql(`
+                mutation($pullRequestId: ID!) {
+                  enablePullRequestAutoMerge(input: {
+                    pullRequestId: $pullRequestId,
+                    mergeMethod: SQUASH
+                  }) {
+                    pullRequest { number }
+                  }
+                }
+              `, { pullRequestId: pull.node_id });
+            }
+
+            const legacyPrefix = "automation/kubernetes-compatibility-";
+            const legacyRefs = await github.paginate(github.rest.git.getMatchingRefs, {
+              owner,
+              repo,
+              ref: `heads/${legacyPrefix}`,
+              per_page: 100,
+            });
+            for (const reference of legacyRefs) {
+              const branch = reference.ref.replace(/^refs\/heads\//, "");
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                head: `${owner}:${branch}`,
+                state: "all",
+                per_page: 100,
+              });
+              for (const candidate of pulls.filter(candidate => candidate.state === "open")) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: candidate.number,
+                  body: `Superseded by #${pull.number}, which records the current successfully published Kubernetes bundles. Closing this stale catalog update before removing its generated branch.`,
+                });
+                await github.rest.pulls.update({
+                  owner,
+                  repo,
+                  pull_number: candidate.number,
+                  state: "closed",
+                });
+              }
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `heads/${branch}`,
+                });
+                core.info(`Deleted stale generated branch ${branch}`);
+              } catch (error) {
+                if (error.status !== 404 && error.status !== 422) {
+                  throw error;
+                }
+                core.info(`Generated branch ${branch} was already absent or protected`);
+              }
             }
 
             const validationWorkflows = [

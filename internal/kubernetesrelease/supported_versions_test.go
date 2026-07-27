@@ -106,7 +106,7 @@ func TestSupportedVersionsChangedSinceAllowsRecipeRescopeWithoutRebuild(t *testi
 	}
 	previous := supported
 	previous.Versions = copyVersions(supported.Versions)
-	previous.RecipeScope = ""
+	previous.RecipeScope = "kubernetes-bundle-v1"
 	previous.RecipeDigest = "sha256:" + strings.Repeat("a", 64)
 
 	changed, err := supported.ChangedSince(previous)

@@ -231,10 +231,15 @@ orchestrates external packaging tools such as `mksquashfs` and `ukify`.
 
 `cmd/katl-mkosi-artifacts` owns structured local build artifact metadata. It
 writes and queries the mkosi artifact index, emits runtime root and runtime UKI
-metadata, derives Kubernetes sysext package provenance from mkosi output, writes
-KatlOS image indexes, and writes outer KatlOS image artifact metadata. Shell
-wrappers may invoke this command during scaffolding, but they should not
-assemble these JSON documents themselves.
+metadata, writes KatlOS image indexes, and writes outer KatlOS image artifact
+metadata. Shell wrappers may invoke this command during scaffolding, but they
+should not assemble these JSON documents themselves.
+
+`cmd/katl-kubernetes-metadata` owns the release-sensitive Kubernetes sysext
+metadata and package provenance derived from mkosi output. It is separate
+because its source is part of the immutable Kubernetes bundle recipe, while
+changes to installer, runtime-image, firmware, or other shared local artifact
+metadata must not mint new Kubernetes bundle revisions.
 
 `scripts/build-katlos-install-image` remains temporary file assembly glue. It
 copies already-built runtime, boot, and sysext artifacts into the KatlOS image
@@ -315,8 +320,8 @@ world path.
 
 | Script | Current role | Policy action |
 | --- | --- | --- |
-| `scripts/mkosi` | Supported KatlOS image build entrypoint and containerized mkosi adapter | Keep as the generic top-level mkosi adapter while scaffolding. It must not select Kubernetes payload versions, outputs, or VM fixture variants. Artifact metadata and package provenance are delegated to `cmd/katl-mkosi-artifacts`. |
-| `scripts/build-kubernetes-sysext` | Explicit Kubernetes sysext producer over the generic mkosi adapter | Keep as a narrow artifact entrypoint. It owns the Kubernetes repository/profile preparation and one requested output; callers, including VM tests, supply non-release versions and output names explicitly. Move its remaining structured validation and cache policy into Go as they stabilize. |
+| `scripts/mkosi` | Supported KatlOS image build entrypoint and containerized mkosi adapter | Keep as the generic top-level mkosi adapter while scaffolding. It must not select Kubernetes payload versions, outputs, or VM fixture variants. Generic KatlOS artifact metadata is delegated to `cmd/katl-mkosi-artifacts`. |
+| `scripts/build-kubernetes-sysext` | Explicit Kubernetes sysext producer over the generic mkosi adapter | Keep as a narrow artifact entrypoint. It owns the Kubernetes repository/profile preparation and one requested output; callers, including VM tests, supply non-release versions and output names explicitly. Kubernetes metadata and package provenance are delegated to `cmd/katl-kubernetes-metadata`. Move its remaining structured validation and cache policy into Go as they stabilize. |
 | `scripts/vmtest-run` | Supported enabled VM world entrypoint over `go test -exec` | Keep as the canonical developer entrypoint. Keep it thin; move fixture policy, leases, aggregation, and host policy into Go helpers or a future Go runner command. |
 | `scripts/vmtest-exec` | `go test -exec` package-binary wrapper | Keep as an implementation detail of `scripts/vmtest-run`; do not document it as a developer entrypoint. |
 | `scripts/vmtest-debug` | Compatibility wrapper for retained-domain debug target rendering | Keep as a thin wrapper around `cmd/katl-vmtest-debug`; debug target discovery and rendering policy live in Go. |
