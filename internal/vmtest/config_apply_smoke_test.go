@@ -108,6 +108,18 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		t.Fatalf("katlc runtime smoke: %v", err)
 	}
 	assertInstalledSSHReady(t, ctx, guest)
+	networkdConfig := guestCommandOutput(t, ctx, guest, "networkd-manager-policy",
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/systemd-analyze", "cat-config", "systemd/networkd.conf",
+	)
+	if !containsAll(networkdConfig,
+		"ManageForeignRoutes=no",
+		"ManageForeignRoutingPolicyRules=no",
+		"ManageForeignNextHops=no",
+	) {
+		t.Fatalf("merged systemd-networkd configuration is missing Kubernetes route policy:\n%s", networkdConfig)
+	}
+	guestCommand(t, ctx, guest, "networkd-active", "systemctl", "is-active", "systemd-networkd.service")
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/install/status.json", `"finalHandoff": "waiting-for-cluster-bootstrap"`)
 	defer func() {
 		if t.Failed() {

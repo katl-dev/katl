@@ -68,6 +68,24 @@ func TestRuntimeKubernetesSysctlsSupportCNIs(t *testing.T) {
 	}
 }
 
+func TestRuntimeNetworkdLeavesKubernetesRoutesAlone(t *testing.T) {
+	config, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "runtime", "mkosi.extra", "usr", "lib", "systemd", "networkd.conf.d", "10-katl-kubernetes.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(config)
+	for _, want := range []string{
+		"[Network]",
+		"ManageForeignRoutes=no",
+		"ManageForeignRoutingPolicyRules=no",
+		"ManageForeignNextHops=no",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("runtime networkd policy missing %q", want)
+		}
+	}
+}
+
 func TestRuntimeBuildExcludesVMTestSupportByDefault(t *testing.T) {
 	repo := repoRoot(t)
 	bin := filepath.Join(t.TempDir(), "bin")
