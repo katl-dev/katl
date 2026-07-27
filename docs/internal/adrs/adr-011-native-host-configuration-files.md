@@ -328,8 +328,33 @@ Strict `live` rejects the whole request before activation.
 
 ## Built-In Activation Adapters
 
-Built-in activation adapters are internal Katl policy. They are not public
-sysctl, udev, or module configuration schemas.
+Built-in handlers and activation adapters are internal Katl policy. They are
+not public networkd, sysctl, udev, or module configuration schemas.
+
+### systemd-networkd
+
+Files below `/etc/systemd/network` use a built-in networkd handler. The public
+input remains an ordinary `hostConfiguration` file set.
+
+Accepted paths are native `.network`, `.netdev`, and `.link` units plus one
+drop-in directory level ending in `.network.d/*.conf`, `.netdev.d/*.conf`, or
+`.link.d/*.conf`. Katl rejects other suffixes, deeper nesting, unsafe names, and
+empty content. Users choose unit and drop-in names within this directory but do
+not choose another mount or render location.
+
+Defaults and concrete nodes use normal named-set layering. A shared set can own
+`20-bond0.network`, while a differently named node set owns
+`20-bond0.network.d/50-address.conf`. The sets compose without a network-specific
+merge model.
+
+If no operator `.network` unit exists below `/etc/systemd/network`, Katl
+renders its DHCP fallback internally. Supplying a base `.network` unit disables
+that fallback; `.link`, `.netdev`, and drop-in files can compose with it.
+
+Networkd changes are next-boot-only. Katl renders the complete candidate
+generation without refreshing networkd in the current boot; installed boot
+health verifies the resulting systemd-networkd service and operator access.
+This handler replaces the dedicated public `networkd` field.
 
 ### sysctl.d
 
@@ -562,7 +587,7 @@ Native host configuration is appropriate when Linux already defines the
 durable file contract and Katl does not need a new operator-facing model.
 
 Before the stable ClusterConfig contract, Katl removes the public typed
-`sysctl.settings` shape in favor of a native `/etc/sysctl.d` file set. Katl does
+`networkd` and `sysctl.settings` shapes in favor of native file sets. Katl does
 not add public `udev`, `modulesLoad`, `modprobe`, or per-daemon configuration
 domains merely to reproduce their native file formats.
 

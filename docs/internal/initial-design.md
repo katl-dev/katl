@@ -200,10 +200,10 @@ Kubernetes-generated mutable state under /etc/kubernetes
 
 Katl is not a general-purpose OS configuration system. The configuration surface
 should be small, explicit, and domain-scoped, but thin enough that users are not
-forced through a lossy abstraction. For example, a networkd domain may accept
-native `.network`, `.netdev`, and `.link` content, but Katl owns the destination
-under `/etc/systemd/network/` and owns the apply behavior with
-`systemd-networkd`/`networkctl`.
+forced through a lossy abstraction. For example, native host configuration may
+accept `.network`, `.netdev`, and `.link` content, but Katl constrains the
+destination to `/etc/systemd/network/` and owns the systemd-networkd apply and
+health behavior.
 
 Known configuration domains should be added only when implementation work needs
 them. The first likely additions for kubeadm-readiness are:

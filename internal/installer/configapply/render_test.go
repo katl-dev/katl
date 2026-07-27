@@ -27,10 +27,7 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 				Kernel: manifest.KernelConfig{
 					CommandLine: []string{"intel_iommu=on", "iommu=pt"},
 				},
-				Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-					Name:    "10-lan.network",
-					Content: "[Network]\nDHCP=yes\n",
-				}}},
+				HostConfiguration:    testHostConfiguration("lan", "/etc/systemd/network/10-lan.network", "[Network]\nDHCP=yes\n"),
 				Kubernetes:           manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
 				ControlPlaneEndpoint: managedEndpoint("192.0.2.1"),
 			},
@@ -53,8 +50,8 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	if overlay.Identity == nil || overlay.Identity.Hostname != "cp-1" || len(overlay.Identity.AuthorizedKeys) != 1 {
 		t.Fatalf("rendered identity = %#v", overlay.Identity)
 	}
-	if overlay.Networkd == nil || len(overlay.Networkd.Files) != 1 || overlay.Networkd.Files[0].Name != "10-lan.network" {
-		t.Fatalf("rendered networkd = %#v", overlay.Networkd)
+	if overlay.HostConfiguration == nil || len(overlay.HostConfiguration.Sets["lan"].Files) != 1 {
+		t.Fatalf("rendered host configuration = %#v", overlay.HostConfiguration)
 	}
 	if overlay.SystemRole != "control-plane" || overlay.Kubernetes == nil || overlay.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
 		t.Fatalf("rendered operation fields = role %q kubernetes %#v", overlay.SystemRole, overlay.Kubernetes)
@@ -209,7 +206,7 @@ func TestRenderedNodeConfigurationDoesNotPlanUnchangedDomains(t *testing.T) {
 			Hostname: "worker-1",
 			SSH:      manifest.SSHIdentity{AuthorizedKeys: []string{"ssh-ed25519 AAAA katl@example"}},
 		},
-		Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{Name: "10-lan.network", Content: "[Network]\nDHCP=yes\n"}}},
+		HostConfiguration: testHostConfiguration("lan", "/etc/systemd/network/10-lan.network", "[Network]\nDHCP=yes\n"),
 	}}
 	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
 		NodeName:       "worker-1",

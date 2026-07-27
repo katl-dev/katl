@@ -240,7 +240,7 @@ func TestPlanFirstInstallWorldRunKeepsInstallerArtifactsGeneric(t *testing.T) {
 	}
 }
 
-func TestExternalConfigLiteralsIncludeRolesNetworkdAndKubeadmSecrets(t *testing.T) {
+func TestExternalConfigLiteralsIncludeRolesHostConfigurationAndKubeadmSecrets(t *testing.T) {
 	root := t.TempDir()
 	manifestPath := writeFixtureFile(t, filepath.Join(root, "install-manifest.json"), `{
   "apiVersion": "install.katl.dev/v1alpha1",
@@ -254,11 +254,15 @@ func TestExternalConfigLiteralsIncludeRolesNetworkdAndKubeadmSecrets(t *testing.
         ]
       }
     },
-  "systemRole": "control-plane",
-    "networkd": {
-      "files": [
-        {"name": "80-static.network", "content": "[Network]\nAddress=192.0.2.10/24\nGateway=192.0.2.1\nDNS=192.0.2.53\n"}
-      ]
+    "systemRole": "control-plane",
+    "hostConfiguration": {
+      "sets": {
+        "network": {
+          "files": [
+            {"path": "/etc/systemd/network/80-static.network", "content": "[Network]\nAddress=192.0.2.10/24\nGateway=192.0.2.1\nDNS=192.0.2.53\n"}
+          ]
+        }
+      }
     }
   },
   "install": {
@@ -483,7 +487,7 @@ func TestPlanFirstInstallWorldRunResolvesLocalMkosiArtifacts(t *testing.T) {
 	if !strings.Contains(string(manifestData), `"hostname": "cp-1"`) ||
 		!strings.Contains(string(manifestData), `"localRef": "katlos-install-0.0.0-dev-x86_64.squashfs"`) ||
 		!strings.Contains(string(manifestData), `"configRef": "control-plane"`) ||
-		!strings.Contains(string(manifestData), `"name": "80-katl-vmtest-dhcp.network"`) ||
+		!strings.Contains(string(manifestData), `"path": "/etc/systemd/network/80-katl-vmtest-dhcp.network"`) ||
 		!strings.Contains(string(manifestData), `Name=en*`) ||
 		!strings.Contains(string(manifestData), `DHCP=yes`) ||
 		!strings.Contains(string(manifestData), `UseHostname=no`) {
@@ -660,11 +664,15 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 						"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
 					},
 				},
-				"networkd": map[string]any{
-					"files": []map[string]any{{
-						"name":    "80-katl-vmtest-dhcp.network",
-						"content": vmtestDHCPNetwork,
-					}},
+				"hostConfiguration": map[string]any{
+					"sets": map[string]any{
+						"network": map[string]any{
+							"files": []map[string]any{{
+								"path":    "/etc/systemd/network/80-katl-vmtest-dhcp.network",
+								"content": vmtestDHCPNetwork,
+							}},
+						},
+					},
 				},
 			},
 			"nodes": []map[string]any{

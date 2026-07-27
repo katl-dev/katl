@@ -514,9 +514,13 @@ func externalConfigLiterals(manifestPath, nodeMetadataPath string) ([]string, er
 			addExternalConfigLiteral(values, fields[1])
 		}
 	}
-	for _, file := range manifest.Node.Networkd.Files {
-		addExternalConfigLiteral(values, file.Name)
-		addExternalConfigContentLiterals(values, file.Content)
+	for _, set := range manifest.Node.HostConfiguration.Sets {
+		for _, file := range set.Files {
+			addExternalConfigLiteral(values, file.Path)
+			if file.Content != nil {
+				addExternalConfigContentLiterals(values, *file.Content)
+			}
+		}
 	}
 	addExternalConfigLiteral(values, manifest.Install.TargetDisk.ByID)
 	addExternalConfigLiteral(values, manifest.Install.TargetDisk.WWN)
@@ -1063,12 +1067,7 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 			"kernel": map[string]any{
 				"commandLine": []string{"katl.vmtest.initial_kernel=1"},
 			},
-			"networkd": map[string]any{
-				"files": []map[string]any{{
-					"name":    "80-katl-vmtest-dhcp.network",
-					"content": vmtestDHCPNetwork,
-				}},
-			},
+			"hostConfiguration": vmtestNetworkHostConfiguration(),
 		},
 		"nodes": nodes,
 	}
@@ -1205,15 +1204,8 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 				"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
 			},
 		},
-		"networkd": map[string]any{
-			"files": []map[string]any{
-				{
-					"name":    "80-katl-vmtest-dhcp.network",
-					"content": vmtestDHCPNetwork,
-				},
-			},
-		},
-		"systemRole": string(spec.Role),
+		"hostConfiguration": vmtestNetworkHostConfiguration(),
+		"systemRole":        string(spec.Role),
 	}
 	if kubeadmRef != "" {
 		node["kubernetes"] = map[string]any{
@@ -1257,6 +1249,19 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 		return "", err
 	}
 	return manifestPath, nil
+}
+
+func vmtestNetworkHostConfiguration() map[string]any {
+	return map[string]any{
+		"sets": map[string]any{
+			"vmtest-network": map[string]any{
+				"files": []map[string]any{{
+					"path":    "/etc/systemd/network/80-katl-vmtest-dhcp.network",
+					"content": vmtestDHCPNetwork,
+				}},
+			},
+		},
+	}
 }
 
 func (metadata katlosImageMetadata) KubernetesPayloadVersion() string {

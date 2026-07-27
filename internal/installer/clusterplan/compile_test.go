@@ -52,8 +52,9 @@ func TestCompileClusterPlan(t *testing.T) {
 	if len(cp.NodeTaints) != 1 || cp.NodeTaints[0].Effect != "NoSchedule" {
 		t.Fatalf("node taints = %#v", cp.NodeTaints)
 	}
-	if len(cp.InstallManifest.Node.Networkd.Files) != 2 {
-		t.Fatalf("networkd files = %#v", cp.InstallManifest.Node.Networkd.Files)
+	if nativeFile(cp.NativeEtcFiles, "/etc/systemd/network/10-common.network") == nil ||
+		nativeFile(cp.NativeEtcFiles, "/etc/systemd/network/20-cp.network") == nil {
+		t.Fatalf("networkd files = %#v", cp.NativeEtcFiles)
 	}
 	hostname := nativeFile(cp.NativeEtcFiles, "/etc/hostname")
 	if hostname == nil || hostname.Content != "cp-1-host\n" {
@@ -233,16 +234,16 @@ func TestCompileAllowsMissingAddressAndAppliesOverride(t *testing.T) {
 
 func TestCompileDefaultDHCPUsesStableMACIdentity(t *testing.T) {
 	config := validConfig()
-	config.Spec.Defaults.Networkd.Files = nil
-	config.Spec.Nodes[0].Overrides.Networkd.Files = nil
+	config.Spec.Defaults.HostConfiguration = manifest.HostConfiguration{}
+	config.Spec.Nodes[0].Overrides.HostConfiguration = manifest.HostConfiguration{}
 	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
 	for _, node := range plan.Nodes {
-		files := node.InstallManifest.Node.Networkd.Files
-		if len(files) != 1 || !strings.Contains(files[0].Content, "[DHCPv4]\nClientIdentifier=mac\nUseHostname=no") || !strings.Contains(files[0].Content, "[DHCPv6]\nUseHostname=no") {
-			t.Fatalf("%s default network = %#v", node.Name, files)
+		file := nativeFile(node.NativeEtcFiles, "/etc/systemd/network/10-lan.network")
+		if file == nil || !strings.Contains(file.Content, "[DHCPv4]\nClientIdentifier=mac\nUseHostname=no") || !strings.Contains(file.Content, "[DHCPv6]\nUseHostname=no") {
+			t.Fatalf("%s default network = %#v", node.Name, node.NativeEtcFiles)
 		}
 	}
 }
@@ -439,14 +440,17 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "address override references unknown node",
 		},
 		{
-			name: "conflicting networkd file",
+			name: "conflicting networkd ownership",
 			mut: func(config *Config) {
-				config.Spec.Nodes[0].Overrides.Networkd.Files = append(config.Spec.Nodes[0].Overrides.Networkd.Files, manifest.NetworkdFile{
-					Name:    "10-common.network",
-					Content: "[Match]\nName=enp9s0\n",
-				})
+				content := "[Match]\nName=enp9s0\n"
+				config.Spec.Nodes[0].Overrides.HostConfiguration.Sets["conflicting-network"] = manifest.HostConfigurationSet{
+					Files: []manifest.HostConfigurationFile{{
+						Path:    "/etc/systemd/network/10-common.network",
+						Content: &content,
+					}},
+				}
 			},
-			want: "networkd file",
+			want: "already owned",
 		},
 		{
 			name: "conflicting extra disk",
@@ -484,10 +488,13 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 		{
 			name: "host specific path",
 			mut: func(config *Config) {
-				config.Spec.Nodes[0].Overrides.Networkd.Files = append(config.Spec.Nodes[0].Overrides.Networkd.Files, manifest.NetworkdFile{
-					Name:    "20-host.network",
-					Content: "[Network]\nDescription=/nix/store/host-specific\n",
-				})
+				content := "[Network]\nDescription=/nix/store/host-specific\n"
+				config.Spec.Nodes[0].Overrides.HostConfiguration.Sets["host-specific-network"] = manifest.HostConfigurationSet{
+					Files: []manifest.HostConfigurationFile{{
+						Path:    "/etc/systemd/network/20-host.network",
+						Content: &content,
+					}},
+				}
 			},
 			want: "host-specific path",
 		},
@@ -658,11 +665,8 @@ func validConfig() Config {
 			KatlosImage:          validImage(),
 			WipeTarget:           true,
 			Defaults: NodeLayer{
-				SSH: manifest.SSHIdentity{AuthorizedKeys: []string{sshKey}},
-				Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-					Name:    "10-common.network",
-					Content: "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n",
-				}}},
+				SSH:               manifest.SSHIdentity{AuthorizedKeys: []string{sshKey}},
+				HostConfiguration: hostConfigurationFile("common-network", "/etc/systemd/network/10-common.network", "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"),
 				Install: InstallLayer{ExtraDisks: []manifest.ExtraDisk{{
 					Name:       "data",
 					Selector:   manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-data"},
@@ -675,12 +679,9 @@ func validConfig() Config {
 					Name:       "cp-1",
 					SystemRole: inventory.RoleControlPlane,
 					Overrides: NodeLayer{
-						Hostname: "cp-1-host",
-						SSH:      manifest.SSHIdentity{AuthorizedKeys: []string{sshKey}},
-						Networkd: manifest.NetworkdConfig{Files: []manifest.NetworkdFile{{
-							Name:    "20-cp.network",
-							Content: "[Match]\nName=enp2s0\n",
-						}}},
+						Hostname:          "cp-1-host",
+						SSH:               manifest.SSHIdentity{AuthorizedKeys: []string{sshKey}},
+						HostConfiguration: hostConfigurationFile("cp-network", "/etc/systemd/network/20-cp.network", "[Match]\nName=enp2s0\n"),
 						Kubernetes: KubernetesLayer{
 							KubeadmConfigRef: "control-plane",
 							NodeLabels: map[string]string{
@@ -708,6 +709,17 @@ func validConfig() Config {
 			},
 		},
 	}
+}
+
+func hostConfigurationFile(setName, path, content string) manifest.HostConfiguration {
+	return manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		setName: {
+			Files: []manifest.HostConfigurationFile{{
+				Path:    path,
+				Content: &content,
+			}},
+		},
+	}}
 }
 
 func validSysextCatalog() sysextcatalog.Catalog {

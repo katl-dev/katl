@@ -15,7 +15,7 @@ func TestDomainClassificationMatrix(t *testing.T) {
 		{DomainResolved, ClassificationStagedOnly},
 		{DomainHostConfiguration, ClassificationOnlineApplicable},
 		{DomainTmpfiles, ClassificationStagedOnly},
-		{DomainNetworkd, ClassificationStagedOnly},
+		{DomainKernelCommandLine, ClassificationStagedOnly},
 		{DomainBootstrapNodeMetadata, ClassificationOnlineApplicable},
 		{DomainNodeIdentity, ClassificationStagedOnly},
 		{DomainModulesLoad, ClassificationStagedOnly},
@@ -90,7 +90,7 @@ func TestPlanExplainsLiveEndpointRoutingImpact(t *testing.T) {
 func TestPlanAutoFallsBackToNextBootForStagedDomains(t *testing.T) {
 	decision, err := Plan(generation.ApplyModeAuto, []Change{
 		{Domain: DomainHostConfiguration, LivePreflightOK: true},
-		{Domain: DomainNetworkd},
+		{Domain: DomainKernelCommandLine},
 	})
 	if err != nil {
 		t.Fatalf("Plan() error = %v, diagnostics = %#v", err, decision.Diagnostics)
@@ -98,13 +98,13 @@ func TestPlanAutoFallsBackToNextBootForStagedDomains(t *testing.T) {
 	if decision.RequestedMode != generation.ApplyModeAuto || decision.AcceptedMode != generation.ApplyModeNextBoot || len(decision.Diagnostics) != 0 {
 		t.Fatalf("decision = %#v", decision)
 	}
-	if got, want := strings.Join(decision.ChangedDomains, ","), "host-configuration,networkd"; got != want {
+	if got, want := strings.Join(decision.ChangedDomains, ","), "host-configuration,kernel-command-line"; got != want {
 		t.Fatalf("changed domains = %q, want %q", got, want)
 	}
 }
 
 func TestPlanRejectsStrictLiveForStagedOnlyDomains(t *testing.T) {
-	decision, err := Plan(generation.ApplyModeLive, []Change{{Domain: DomainNetworkd}})
+	decision, err := Plan(generation.ApplyModeLive, []Change{{Domain: DomainKernelCommandLine}})
 	if err == nil {
 		t.Fatalf("Plan() error = nil, decision = %#v", decision)
 	}
@@ -112,7 +112,7 @@ func TestPlanRejectsStrictLiveForStagedOnlyDomains(t *testing.T) {
 		t.Fatalf("diagnostics = %#v", decision.Diagnostics)
 	}
 	diagnostic := decision.Diagnostics[0]
-	if diagnostic.Domain != DomainNetworkd || diagnostic.Decision != DecisionStagedRequired || diagnostic.Classification != ClassificationStagedOnly {
+	if diagnostic.Domain != DomainKernelCommandLine || diagnostic.Decision != DecisionStagedRequired || diagnostic.Classification != ClassificationStagedOnly {
 		t.Fatalf("diagnostic = %#v", diagnostic)
 	}
 	if !strings.Contains(diagnostic.Message, "staged-only") {
@@ -129,7 +129,7 @@ func TestPlanTreatsStagedOnlyDomainsAsNextBoot(t *testing.T) {
 		DomainSSHOperatorAccess,
 		DomainResolved,
 		DomainTmpfiles,
-		DomainNetworkd,
+		DomainKernelCommandLine,
 		DomainControlPlaneEndpointBootstrap,
 	} {
 		t.Run(domain, func(t *testing.T) {
@@ -240,7 +240,7 @@ func TestPlanActivatesSelectedKubeadmConfigAndNodeMetadataLive(t *testing.T) {
 func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 	allowed := []string{
 		DomainHostConfiguration,
-		DomainNetworkd,
+		DomainKernelCommandLine,
 		DomainNodeIdentity,
 		DomainModulesLoad,
 		DomainKubeadmConfig,
@@ -285,7 +285,7 @@ func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 func TestPlanMixedLiveRequestFailsAtomically(t *testing.T) {
 	decision, err := Plan(generation.ApplyModeLive, []Change{
 		{Domain: DomainHostConfiguration, LivePreflightOK: true},
-		{Domain: DomainNetworkd},
+		{Domain: DomainKernelCommandLine},
 		{Domain: DomainKubeadmConfig},
 		{Domain: DomainEtcKubernetes},
 	})
@@ -296,15 +296,15 @@ func TestPlanMixedLiveRequestFailsAtomically(t *testing.T) {
 		t.Fatalf("accepted mode = %q, want empty rejected decision", decision.AcceptedMode)
 	}
 	if len(decision.Diagnostics) != 2 {
-		t.Fatalf("diagnostics = %#v, want staged networkd and rejected /etc/kubernetes", decision.Diagnostics)
+		t.Fatalf("diagnostics = %#v, want staged kernel command line and rejected /etc/kubernetes", decision.Diagnostics)
 	}
-	if decision.Diagnostics[0].Domain != DomainNetworkd || decision.Diagnostics[0].Decision != DecisionStagedRequired {
+	if decision.Diagnostics[0].Domain != DomainKernelCommandLine || decision.Diagnostics[0].Decision != DecisionStagedRequired {
 		t.Fatalf("first diagnostic = %#v", decision.Diagnostics[0])
 	}
 	if decision.Diagnostics[1].Domain != DomainEtcKubernetes || decision.Diagnostics[1].Decision != DecisionRejected {
 		t.Fatalf("second diagnostic = %#v", decision.Diagnostics[1])
 	}
-	if got, want := strings.Join(decision.ChangedDomains, ","), "host-configuration,networkd,kubeadm-config,etc-kubernetes"; got != want {
+	if got, want := strings.Join(decision.ChangedDomains, ","), "host-configuration,kernel-command-line,kubeadm-config,etc-kubernetes"; got != want {
 		t.Fatalf("changed domains = %q, want %q", got, want)
 	}
 }

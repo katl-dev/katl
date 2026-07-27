@@ -218,8 +218,6 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 		case "kernel":
 			// KnownFields decoding and manifest validation enforce the typed
 			// kernel command-line contract after the safety envelope accepts it.
-		case "networkd":
-			validateNetworkd(pair.value, pair.path, result)
 		case "hostConfiguration":
 			validateHostConfiguration(pair.value, pair.path, result)
 		case "systemExtensions":
@@ -309,55 +307,6 @@ func validateSystemRole(node *yaml.Node, path string, result *Result) {
 	case "control-plane", "worker":
 	default:
 		result.add("invalid-system-role", path, "systemRole must be control-plane or worker")
-	}
-}
-
-func validateNetworkd(node *yaml.Node, path string, result *Result) {
-	if node.Kind != yaml.MappingNode {
-		result.add("invalid-field", path, "networkd must be a mapping")
-		return
-	}
-	for _, pair := range mappingPairsWithPath(node, path) {
-		switch pair.key {
-		case "files":
-			validateNetworkdFiles(pair.value, pair.path, result)
-		default:
-			result.add("unsupported-field", pair.path, "networkd field is not supported")
-		}
-	}
-}
-
-func validateNetworkdFiles(node *yaml.Node, path string, result *Result) {
-	if node.Kind != yaml.SequenceNode {
-		result.add("invalid-field", path, "networkd files must be a list")
-		return
-	}
-	seen := map[string]struct{}{}
-	for i, child := range node.Content {
-		filePath := fmt.Sprintf("%s[%d]", path, i)
-		if child.Kind != yaml.MappingNode {
-			result.add("invalid-field", filePath, "networkd file must be a mapping")
-			continue
-		}
-		for _, pair := range mappingPairsWithPath(child, filePath) {
-			switch pair.key {
-			case "name", "content":
-			default:
-				result.add("unsupported-field", pair.path, "networkd file field is not supported")
-			}
-		}
-		name := strings.TrimSpace(scalarAt(child, "name"))
-		if name == "" {
-			result.add("unsafe-render-path", filePath+".name", "networkd file name is required")
-			continue
-		}
-		if err := validateNetworkdName(name); err != nil {
-			result.add("unsafe-render-path", filePath+".name", err.Error())
-		}
-		if _, ok := seen[name]; ok {
-			result.add("duplicate-render-path", filePath+".name", fmt.Sprintf("%q duplicates another networkd file", name))
-		}
-		seen[name] = struct{}{}
 	}
 }
 

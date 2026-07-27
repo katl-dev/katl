@@ -35,17 +35,29 @@
             }
           },
           "systemRole": "control-plane",
-          "networkd": {
-            "files": [
-              {
-                "name": "10-common.network",
-                "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"
+          "hostConfiguration": {
+            "sets": {
+              "common-network": {
+                "state": "present",
+                "files": [
+                  {
+                    "path": "/etc/systemd/network/10-common.network",
+                    "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n",
+                    "mode": 420
+                  }
+                ]
               },
-              {
-                "name": "20-cp.network",
-                "content": "[Match]\nName=enp2s0\n"
+              "cp-network": {
+                "state": "present",
+                "files": [
+                  {
+                    "path": "/etc/systemd/network/20-cp.network",
+                    "content": "[Match]\nName=enp2s0\n",
+                    "mode": 420
+                  }
+                ]
               }
-            ]
+            }
           },
           "kubernetes": {
             "kubeadm": {
@@ -167,13 +179,19 @@
             }
           },
           "systemRole": "worker",
-          "networkd": {
-            "files": [
-              {
-                "name": "10-common.network",
-                "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"
+          "hostConfiguration": {
+            "sets": {
+              "common-network": {
+                "state": "present",
+                "files": [
+                  {
+                    "path": "/etc/systemd/network/10-common.network",
+                    "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n",
+                    "mode": 420
+                  }
+                ]
               }
-            ]
+            }
           },
           "kubernetes": {
             "kubeadm": {

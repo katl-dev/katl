@@ -8,6 +8,7 @@ import (
 func TestValidateHostConfigurationAcceptsNativeFilesAndNotifications(t *testing.T) {
 	sysctl := "net.ipv4.ip_forward = 1\n"
 	journal := "[Journal]\nSystemMaxUse=2G\n"
+	network := "[Network]\nAddress=10.254.1.1/31\n"
 	config := HostConfiguration{
 		Sysfs: []HostConfigurationSysfsSetting{{
 			Name:  "/sys/module/printk/parameters/time",
@@ -30,6 +31,12 @@ func TestValidateHostConfigurationAcceptsNativeFilesAndNotifications(t *testing.
 					Unit:   "systemd-journald.service",
 					Action: "try-reload-or-restart",
 				}}},
+			},
+			"bond-address": {
+				Files: []HostConfigurationFile{{
+					Path:    "/etc/systemd/network/20-bond0.network.d/50-address.conf",
+					Content: &network,
+				}},
 			},
 		},
 	}
@@ -100,6 +107,8 @@ func TestValidateHostConfigurationRejectsUnsafeOwnership(t *testing.T) {
 		{name: "unit enablement", path: "/etc/systemd/system/multi-user.target.wants/example.service", want: "protected systemd"},
 		{name: "accounts", path: "/etc/shadow", want: "owned by KatlOS"},
 		{name: "tmpfiles", path: "/etc/tmpfiles.d/80-example.conf", want: "hostConfiguration.sysfs"},
+		{name: "networkd suffix", path: "/etc/systemd/network/20-bond0.conf", want: ".network, .netdev, or .link"},
+		{name: "networkd drop-in suffix", path: "/etc/systemd/network/20-bond0.network.d/50-address.txt", want: "safe .conf drop-in"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

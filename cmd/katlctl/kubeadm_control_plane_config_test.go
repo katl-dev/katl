@@ -551,10 +551,13 @@ func TestActivateClusterConfigUsesOneLiveWholeNodeGeneration(t *testing.T) {
 	if client.validateRequest == nil || client.validateRequest.ApplyMode != "auto" || client.validateRequest.CandidateGenerationId != "cluster-config-42" {
 		t.Fatalf("validate request = %#v", client.validateRequest)
 	}
-	for _, required := range []string{"identity:", "networkd:", "controlPlaneEndpoint:", "kubeadmConfigs:"} {
+	for _, required := range []string{"identity:", "controlPlaneEndpoint:", "kubeadmConfigs:"} {
 		if !strings.Contains(client.validateRequest.ConfigYaml, required) {
 			t.Fatalf("whole cluster config is missing %q:\n%s", required, client.validateRequest.ConfigYaml)
 		}
+	}
+	if strings.Contains(client.validateRequest.ConfigYaml, "networkd:") {
+		t.Fatalf("whole cluster config contains removed networkd API:\n%s", client.validateRequest.ConfigYaml)
 	}
 	if client.submitRequest == nil || client.submitRequest.OperationKind != "generation-apply" || client.submitRequest.ConfigApply == nil {
 		t.Fatalf("submit request = %#v", client.submitRequest)

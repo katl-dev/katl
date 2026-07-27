@@ -1277,10 +1277,14 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 	}
 	install := &Context{
 		ManifestPath: writeManifestWithNode(t, `,
-			"networkd": {
-				"files": [
-					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"}
-				]
+			"hostConfiguration": {
+				"sets": {
+					"lan": {
+						"files": [
+							{"path": "/etc/systemd/network/10-lan.network", "content": "[Match]\nName=enp1s0\n"}
+						]
+					}
+				}
 			},
 			"kubernetes": {
 				"kubeadm": {"configRef": "control-plane"}
@@ -1372,10 +1376,14 @@ func TestRunnerRejectsMissingGenerationRecord(t *testing.T) {
 func TestRunnerRejectsConfigDomainsWithoutGenerationRecord(t *testing.T) {
 	install := &Context{
 		ManifestPath: writeManifestWithNode(t, `,
-			"networkd": {
-				"files": [
-					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"}
-				]
+			"hostConfiguration": {
+				"sets": {
+					"lan": {
+						"files": [
+							{"path": "/etc/systemd/network/10-lan.network", "content": "[Match]\nName=enp1s0\n"}
+						]
+					}
+				}
 			}`),
 		StateDir:       t.TempDir(),
 		TargetRoot:     t.TempDir(),

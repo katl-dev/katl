@@ -10,7 +10,7 @@
     "requestedApplyMode": "next-boot",
     "acceptedApplyMode": "next-boot",
     "changedDomains": [
-      "networkd"
+      "host-configuration"
     ],
     "previousGenerationID": "gen-0",
     "candidateGenerationID": "gen-1",

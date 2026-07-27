@@ -66,17 +66,17 @@ node:
       authorizedKeys:
         - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
   systemRole: control-plane
-  networkd:
-    files:
-      - name: 10-lan.network
-        content: |
-          [Match]
-          Name=enp1s0
-
-          [Network]
-          DHCP=yes
   hostConfiguration:
     sets:
+      lan:
+        files:
+          - path: /etc/systemd/network/10-lan.network
+            content: |
+              [Match]
+              Name=enp1s0
+
+              [Network]
+              DHCP=yes
       forwarding:
         files:
           - path: /etc/sysctl.d/80-forwarding.conf
@@ -112,8 +112,9 @@ katlosImage:
 	if manifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
 		t.Fatalf("configRef = %q", manifest.Node.Kubernetes.Kubeadm.ConfigRef)
 	}
-	if len(manifest.Node.Networkd.Files) != 1 || !strings.Contains(manifest.Node.Networkd.Files[0].Content, "DHCP=yes") {
-		t.Fatalf("networkd files = %#v", manifest.Node.Networkd.Files)
+	networkFile := manifest.Node.HostConfiguration.Sets["lan"].Files[0]
+	if networkFile.Content == nil || !strings.Contains(*networkFile.Content, "DHCP=yes") {
+		t.Fatalf("networkd host configuration = %#v", manifest.Node.HostConfiguration)
 	}
 	hostFile := manifest.Node.HostConfiguration.Sets["forwarding"].Files[0]
 	if hostFile.Content == nil || !strings.Contains(*hostFile.Content, "net.ipv4.ip_forward = 1") {
@@ -222,21 +223,24 @@ func TestDecodeAcceptsKubeadmConfigRef(t *testing.T) {
 	}
 }
 
-func TestDecodeAcceptsNetworkdDomain(t *testing.T) {
+func TestDecodeAcceptsNetworkdFileSet(t *testing.T) {
 	manifest, err := Decode(strings.NewReader(manifestWithNode(`,
-			"networkd": {
-				"files": [
-					{
-						"name": "10-lan.network",
-						"content": "[Match]\nName=enp1s0\n"
+			"hostConfiguration": {
+				"sets": {
+					"lan": {
+						"files": [{
+							"path": "/etc/systemd/network/10-lan.network",
+							"content": "[Match]\nName=enp1s0\n"
+						}]
 					}
-				]
+				}
 			}`)))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if len(manifest.Node.Networkd.Files) != 1 || manifest.Node.Networkd.Files[0].Name != "10-lan.network" {
-		t.Fatalf("networkd = %#v", manifest.Node.Networkd)
+	files := manifest.Node.HostConfiguration.Sets["lan"].Files
+	if len(files) != 1 || files[0].Path != "/etc/systemd/network/10-lan.network" {
+		t.Fatalf("host configuration = %#v", manifest.Node.HostConfiguration)
 	}
 }
 
@@ -385,59 +389,24 @@ func TestDecodeRejectsLegacyLooseArtifacts(t *testing.T) {
 	}
 }
 
-func TestDecodeRejectsUnsafeNetworkdDomain(t *testing.T) {
-	tests := []struct {
-		name string
-		file string
-		want string
-	}{
-		{
-			name: "path traversal",
-			file: `{"name": "../10-lan.network", "content": "[Match]\nName=enp1s0\n"}`,
-			want: "single path segment",
-		},
-		{
-			name: "wrong extension",
-			file: `{"name": "10-lan.conf", "content": "[Match]\nName=enp1s0\n"}`,
-			want: "must end with",
-		},
-		{
-			name: "empty content",
-			file: `{"name": "10-lan.network", "content": ""}`,
-			want: "content is required",
-		},
-		{
-			name: "bad character",
-			file: `{"name": "10 lan.network", "content": "[Match]\nName=enp1s0\n"}`,
-			want: "unsupported character",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Decode(strings.NewReader(manifestWithNode(fmt.Sprintf(`,
-			"networkd": {
-				"files": [%s]
-			}`, tt.file))))
-			if err == nil {
-				t.Fatal("Decode() error = nil, want networkd rejection")
-			}
-			if !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Decode() error = %q, want %q", err, tt.want)
-			}
-		})
+func TestDecodeRejectsRemovedNetworkdDomain(t *testing.T) {
+	_, err := Decode(strings.NewReader(manifestWithNode(`,
+			"networkd": {"files": []}`)))
+	if err == nil || !strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), "networkd") {
+		t.Fatalf("Decode() error = %v, want removed networkd field rejection", err)
 	}
 }
 
-func TestDecodeRejectsDuplicateNetworkdFiles(t *testing.T) {
+func TestDecodeRejectsDuplicateNetworkdFileOwnership(t *testing.T) {
 	_, err := Decode(strings.NewReader(manifestWithNode(`,
-			"networkd": {
-				"files": [
-					{"name": "10-lan.network", "content": "[Match]\nName=enp1s0\n"},
-					{"name": "10-lan.network", "content": "[Match]\nName=enp2s0\n"}
-				]
+			"hostConfiguration": {
+				"sets": {
+					"first": {"files": [{"path": "/etc/systemd/network/10-lan.network", "content": "[Match]\nName=enp1s0\n"}]},
+					"second": {"files": [{"path": "/etc/systemd/network/10-lan.network", "content": "[Match]\nName=enp2s0\n"}]}
+				}
 			}`)))
-	if err == nil || !strings.Contains(err.Error(), "duplicates another networkd file") {
-		t.Fatalf("Decode() error = %v, want duplicate networkd rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "already owned") {
+		t.Fatalf("Decode() error = %v, want duplicate file ownership rejection", err)
 	}
 }
 

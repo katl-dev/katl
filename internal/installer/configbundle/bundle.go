@@ -86,7 +86,6 @@ type SourceNode struct {
 	ControlPlane      bool                       `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
 	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
 	Kernel            *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
-	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
 	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
 	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
 	Install           SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
@@ -97,7 +96,6 @@ type SourceNode struct {
 type SourceNodeLayer struct {
 	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
 	Kernel            *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
-	Networkd          manifest.NetworkdConfig    `yaml:"networkd,omitempty" json:"networkd,omitempty"`
 	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
 	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
 	Install           SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
@@ -456,7 +454,6 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 	return clusterplan.NodeLayer{
 		SSH:               layer.Identity.SSH,
 		Kernel:            cloneKernelConfig(layer.Kernel),
-		Networkd:          layer.Networkd,
 		HostConfiguration: layer.HostConfiguration,
 		SystemExtensions:  append([]manifest.SystemExtension(nil), layer.SystemExtensions...),
 		Install: clusterplan.InstallLayer{
@@ -475,7 +472,6 @@ func sourceNodeLayer(node SourceNode) SourceNodeLayer {
 	return SourceNodeLayer{
 		Identity:          node.Identity,
 		Kernel:            cloneKernelConfig(node.Kernel),
-		Networkd:          node.Networkd,
 		HostConfiguration: node.HostConfiguration,
 		SystemExtensions:  append([]manifest.SystemExtension(nil), node.SystemExtensions...),
 		Install:           node.Install,

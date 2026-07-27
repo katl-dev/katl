@@ -292,8 +292,6 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		commands = append(commands, Command{Name: "systemd-resolved-reload", Argv: []string{"systemctl", "reload-or-restart", "systemd-resolved.service"}})
 	case DomainTmpfiles:
 		commands = append(commands, Command{Name: "systemd-tmpfiles", Argv: []string{"systemd-tmpfiles", "--create", "--remove"}})
-	case DomainNetworkd:
-		commands = append(commands, Command{Name: "networkctl-reload", Argv: []string{"networkctl", "reload"}})
 	case DomainBootstrapNodeMetadata:
 		commands = append(commands, Command{Name: "node-metadata-refresh", Argv: []string{"systemctl", "try-reload-or-restart", "katl-runtime-handoff-status.service"}})
 	case DomainControlPlaneEndpointRouting:

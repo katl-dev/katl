@@ -152,7 +152,7 @@ func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
 		Previous:           previous,
 		SourceDigest:       strings.Repeat("d", 64),
 		GeneratedConfext:   runtimeConfext("2026.06.05-002"),
-		ChangedDomains:     []string{"networkd", "tmpfiles", "networkd"},
+		ChangedDomains:     []string{"host-configuration", "tmpfiles", "host-configuration"},
 		RequestedApplyMode: ApplyModeLive,
 		AcceptedApplyMode:  ApplyModeLive,
 		Kubeadm: KubeadmActionRequired{
@@ -224,7 +224,7 @@ func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
   "configApply": {
     "sourceDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "changedDomains": [
-      "networkd",
+      "host-configuration",
       "tmpfiles"
     ],
     "requestedApplyMode": "live",

@@ -148,35 +148,22 @@ boot, and runs the bounded sysctl apply action for only the rendered keys. The
 live proof must show the new kernel value through `/proc/sys` or `sysctl -n`,
 not just the generated file.
 
-The first supported network interface manifest change set is a staged
-`networkd` generation containing Katl-owned native `.link`, `.netdev`, and
-`.network` files under `/etc/systemd/network/`. For v0.1 the accepted staged
-case is additive or replacement configuration for explicitly named
-non-management interfaces, bridges, bonds, VLANs, and static addresses or routes
-that do not alter the currently used operator/API management path. The staged
-proof may use a VM-test secondary interface, dummy interface, bridge, or VLAN,
-but it must prove that the current boot's `/run/confexts/katl-node` selection
-does not change when the request is accepted as next boot.
+The first supported network interface change set is a staged
+`host-configuration` generation containing native `.link`, `.netdev`, and
+`.network` files or their `.d/*.conf` drop-ins under
+`/etc/systemd/network/`. The staged proof may use a VM-test secondary address,
+dummy interface, bridge, bond, or VLAN, but it must prove that the current
+boot's `/run/confexts/katl-node` selection does not change when the request is
+accepted as next boot.
 
 Network changes are not live-applicable in v0.1. Strict `live` requests that
-contain any `networkd` diff are rejected with a diagnostic that names the
-network domain and says the change is staged-only for this release. Omitted or
-`auto` mode accepts a safe network-only request as `next-boot`. Strict
-`next-boot` accepts the same safe request as a candidate generation.
-
-Network changes are rejected before rendering when the planner cannot prove they
-are safe to stage. Rejected v0.1 network diffs include:
-
-```text
-renaming or rematching the active management interface
-removing the address used for operator, API VIP, or default-route reachability
-changing the default route or DHCP gateway for the management path
-deleting the current management interface networkd unit
-writing networkd units outside Katl-owned generated confext paths
-using absolute paths, path traversal, duplicate render names, or unsupported
-  file extensions
-using arbitrary systemd unit passthrough to control networking
-```
+contain a networkd path diff are rejected with a diagnostic that names the
+`host-configuration` domain and says systemd-networkd configuration applies on
+next boot. Omitted or `auto` mode accepts the request as `next-boot`. Strict
+`next-boot` accepts the same request as a candidate generation. Path validation
+rejects files outside `/etc/systemd/network`, path traversal, duplicate
+ownership, unsafe names, unsupported unit or drop-in suffixes, deeper drop-in
+nesting, and empty content.
 
 Unsupported domains in v0.1 are rejected as normal config apply rather than
 silently staged. This includes root or UKI selection, sysext selection,
@@ -214,16 +201,18 @@ sysctl live
     generation's sysctl values for the changed keys; failed rollback selects the
     previous generation for next boot and reports repair-required
 
-networkd staged
+networkd host files staged
   generated confext:
     /var/lib/katl/generations/<id>/confext/etc/systemd/network/*.link
     /var/lib/katl/generations/<id>/confext/etc/systemd/network/*.netdev
     /var/lib/katl/generations/<id>/confext/etc/systemd/network/*.network
+    /var/lib/katl/generations/<id>/confext/etc/systemd/network/*.{link,netdev,network}.d/*.conf
   active selection:
     unchanged in the current boot
   OperationRecord:
     generation-stage, requestedApplyMode auto|next-boot, acceptedApplyMode
-    next-boot, phase next-boot on success, domain action stage-next-boot
+    next-boot, phase next-boot on success, host-configuration effects naming
+    changed networkd paths
   rollback:
     before boot, unselect the candidate and keep the current generation active;
     after boot, use the normal generation boot-health rollback path
@@ -235,8 +224,8 @@ supported:
 ```text
 omitted apply.mode defaults to auto and accepts sysctl as live
 strict live accepts sysctl and changes the running kernel value
-strict live rejects the staged-only networkd change before activation
-auto or next-boot accepts the safe networkd change as a candidate generation
+strict live rejects the next-boot-only networkd file change before activation
+auto or next-boot accepts the networkd file change as a candidate generation
 the staged network candidate writes generated networkd artifacts but does not
   change /run/confexts/katl-node in the current boot
 OperationRecords and generation config-apply status record requested and

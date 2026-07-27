@@ -9,14 +9,14 @@
     "requestedApplyMode": "next-boot",
     "acceptedApplyMode": "next-boot",
     "changedDomains": [
-      "networkd"
+      "host-configuration"
     ],
     "phase": "next-boot",
     "healthState": "unknown",
     "domainActions": [
       {
-        "domain": "networkd",
-        "action": "render",
+        "domain": "host-configuration",
+        "action": "stage-next-boot",
         "status": "passed"
       }
     ],
