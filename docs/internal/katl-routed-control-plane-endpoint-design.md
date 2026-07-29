@@ -137,13 +137,13 @@ spec:
         peers:
           - address: 10.0.0.1
             asn: 64500
-        routeExchange:
+        routeExchanges:
           - name: cilium
             exportToFabric:
               - cidr: 10.50.0.0/16
-                prefixLength: 32
+                exactPrefixLength: 32
               - cidr: 10.60.0.0/16
-                prefixLength: 24
+                exactPrefixLength: 24
 ```
 
 `advertisement` being absent means that reachability is externally owned.
@@ -156,7 +156,7 @@ can be added as a sibling discriminated choice, for example `ospf`, with
 validation requiring exactly one supported protocol. Unknown fields continue
 to be rejected.
 
-`routeExchange` stays inside this BGP attachment rather than introducing
+`routeExchanges` stays inside this BGP attachment rather than introducing
 `spec.routing`, `spec.bird` or a cluster-wide CNI section. Each list entry
 declares one named, passive BGP protocol in the Katl-owned BIRD configuration.
 Katl does not interpret the name, know which program connects to it, install
@@ -175,13 +175,13 @@ accidentally.
 | `bgp.localASN` | With BGP | ASN used by every control-plane node for this endpoint advertiser. |
 | `bgp.peers[].address` | Yes | One directly reachable IPv4 fabric peer address. Each control-plane node connects to every declared peer. |
 | `bgp.peers[].asn` | Yes | ASN expected from that fabric peer. Equal to `localASN` selects iBGP; a different value selects eBGP. |
-| `bgp.routeExchange[]` | No | Named passive localhost BGP protocols which may supply routes to BIRD. |
-| `routeExchange[].name` | Yes | Stable DNS-label-style name used as the generated BIRD protocol identity and in status. It has no vendor semantics. |
-| `routeExchange[].listenPort` | No | Local TCP port. A single entry defaults to the standard BGP port `179`; multiple entries must choose distinct ports explicitly. |
-| `routeExchange[].peerASN` | No | ASN expected from the local peer; defaults to `localASN`, making the attachment iBGP. |
-| `routeExchange[].exportToFabric[]` | No | Prefix envelopes controlling which routes learned from this named protocol are exported to fabric peers. Absent or empty exports none. |
+| `bgp.routeExchanges[]` | No | Named passive localhost BGP protocols which may supply routes to BIRD. |
+| `routeExchanges[].name` | Yes | Stable DNS-label-style name used as the generated BIRD protocol identity and in status. It has no vendor semantics. |
+| `routeExchanges[].listenPort` | No | Local TCP port. A single entry defaults to the standard BGP port `179`; multiple entries must choose distinct ports explicitly. |
+| `routeExchanges[].peerASN` | No | ASN expected from the local peer; defaults to `localASN`, making the attachment iBGP. |
+| `routeExchanges[].exportToFabric[]` | No | Prefix envelopes controlling which routes learned from this named protocol are exported to fabric peers. Absent or empty exports none. |
 | `exportToFabric[].cidr` | Yes | An IPv4 CIDR containing the routes selected for export. It is a match envelope, not a route originated by Katl. |
-| `exportToFabric[].prefixLength` | No | When present, require this exact route length. When absent, accept every prefix length contained by `cidr`. |
+| `exportToFabric[].exactPrefixLength` | No | When present, require this exact route length. When absent, accept every prefix length contained by `cidr`. |
 
 For example, a LoadBalancer pool may permit only `/32` Service VIPs, while a
 pod pool may permit only the per-node `/24` allocations. An envelope never
@@ -226,7 +226,7 @@ is always exactly the configured VIP. The generated endpoint BIRD instance uses
 `import none` on fabric channels because Katl has no consumer for those routes.
 API advertisement always starts withdrawn and is always health gated.
 
-The preceding defaults apply when `routeExchange` is absent. For each exchange,
+The preceding defaults apply when `routeExchanges` is absent. For each exchange,
 Katl derives the loopback peer address, passive mode and table plumbing. The
 name, optional port and optional peer ASN describe the local protocol contract;
 the prefix envelopes describe the operator's chosen export policy. Katl does
@@ -286,7 +286,7 @@ the host and VIP as SANs.
 
 ## Route exchange and other BGP speakers
 
-`routeExchange` is an optional attachment, not the only supported network
+`routeExchanges` is an optional attachment, not the only supported network
 topology. Its purpose is to let a local route producer use the Katl-owned BIRD
 instance as its path to the declared fabric peers. A common arrangement is:
 
@@ -332,11 +332,11 @@ export state; it does not silently rewrite ASNs or enable reflection.
 For this input:
 
 ```yaml
-routeExchange:
+routeExchanges:
   - name: cilium
     exportToFabric:
       - cidr: 10.45.0.0/24
-        prefixLength: 32
+        exactPrefixLength: 32
       - cidr: 172.20.0.0/16
 ```
 
@@ -358,7 +358,7 @@ in status, so generated filters and diagnostics can identify their source.
 Katl preserves ordinary BGP path attributes and communities. BIRD still applies
 the normal next-hop and AS-path behavior of the destination fabric protocol.
 Katl does not reinterpret a broad policy: `cidr: 0.0.0.0/0` without
-`prefixLength` exports every IPv4 route learned from that protocol.
+`exactPrefixLength` exports every IPv4 route learned from that protocol.
 
 The optional `listenPort` and `peerASN` fields allow more than one local route
 source or an eBGP local attachment without exposing BIRD syntax. The peer
@@ -421,7 +421,7 @@ withdrawal.
 
 Service VIPs are `/32` by default, so an exact `/32` envelope is a useful
 default. Pod route envelopes may use their allocation length or omit
-`prefixLength` to accept all routes within the pod pool. Operators may also use
+`exactPrefixLength` to accept all routes within the pod pool. Operators may also use
 `0.0.0.0/0` to export everything. Katl warns, but does not reject, when that
 choice includes the API VIP or other Katl-originated address space.
 
@@ -716,7 +716,7 @@ controlPlaneEndpoint:
       asn: 64500
       state: established
       routeExported: true
-  routeExchange:
+  routeExchanges:
     - name: cilium
       listenAddress: 127.0.0.1
       listenPort: 179

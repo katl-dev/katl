@@ -21,12 +21,12 @@ func TestFromControlPlaneEndpointRendersManagedPolicy(t *testing.T) {
 			BGP: &controlplaneendpoint.BGP{
 				LocalASN: 64512,
 				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
-				RouteExchange: []controlplaneendpoint.RouteExchange{{
+				RouteExchanges: []controlplaneendpoint.RouteExchange{{
 					Name:       "cilium",
 					ListenPort: 179,
 					PeerASN:    64512,
 					ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{
-						CIDR: "10.50.0.0/16", PrefixLength: &length,
+						CIDR: "10.50.0.0/16", ExactPrefixLength: &length,
 					}},
 				}},
 			},
@@ -107,7 +107,7 @@ func TestGeneratedConfigParsesWithPackagedBird(t *testing.T) {
 			BGP: &controlplaneendpoint.BGP{
 				LocalASN: 64512,
 				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
-				RouteExchange: []controlplaneendpoint.RouteExchange{{
+				RouteExchanges: []controlplaneendpoint.RouteExchange{{
 					Name: "cilium", ListenPort: 179, PeerASN: 64512,
 					ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{CIDR: "10.50.0.0/16"}},
 				}},

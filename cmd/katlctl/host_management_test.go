@@ -80,7 +80,7 @@ func TestHostStatusJSON(t *testing.T) {
 	if report.Node != "node-a" || report.Endpoint != "node-a.test:9443" || report.Health != "OK" || report.Generation != "generation-0" || report.Activity != "idle" {
 		t.Fatalf("report = %#v", report)
 	}
-	if report.ControlPlaneEndpoint == nil || report.ControlPlaneEndpoint.State != "advertised" || !report.ControlPlaneEndpoint.LocalVIPOwned || len(report.ControlPlaneEndpoint.RouteExchange) != 1 || report.ControlPlaneEndpoint.RouteExchange[0].ExportedRoutes != 3 {
+	if report.ControlPlaneEndpoint == nil || report.ControlPlaneEndpoint.State != "advertised" || !report.ControlPlaneEndpoint.LocalVIPOwned || len(report.ControlPlaneEndpoint.RouteExchanges) != 1 || report.ControlPlaneEndpoint.RouteExchanges[0].ExportedRoutes != 3 {
 		t.Fatalf("control-plane endpoint report = %#v", report.ControlPlaneEndpoint)
 	}
 }

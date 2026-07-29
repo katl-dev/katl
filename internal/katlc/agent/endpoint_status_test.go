@@ -210,7 +210,7 @@ spec:
       address: 10.0.0.1
       asn: 64500
       allowedExportPrefixes: [10.40.0.10/32]
-  routeExchange:
+  routeExchanges:
     - name: cilium
       listenPort: 179
       peerASN: 64512

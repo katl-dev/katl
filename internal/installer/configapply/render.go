@@ -45,9 +45,9 @@ type renderedNodeConfigurationChangeSpec struct {
 type renderedNodeConfigurationOverlay struct {
 	Identity             *renderedNodeIdentity        `yaml:"identity,omitempty"`
 	SystemRole           string                       `yaml:"systemRole,omitempty"`
-	Kernel               *manifest.KernelConfig       `yaml:"kernel,omitempty"`
-	HostConfiguration    *manifest.HostConfiguration  `yaml:"hostConfiguration,omitempty"`
-	SystemExtensions     *[]manifest.SystemExtension  `yaml:"systemExtensions,omitempty"`
+	Kernel               *manifest.KernelConfig       `yaml:"kernel"`
+	HostConfiguration    *manifest.HostConfiguration  `yaml:"hostConfiguration"`
+	SystemExtensions     *[]manifest.SystemExtension  `yaml:"systemExtensions"`
 	Kubernetes           *manifest.KubernetesConfig   `yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint,omitempty"`
 }

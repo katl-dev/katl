@@ -605,14 +605,14 @@ func matchingKatldevConfig(path string, state installerState) error {
 		return fmt.Errorf("decode config: %w", err)
 	}
 	for _, node := range source.Spec.Nodes {
-		if !node.ControlPlane || node.Bootstrap.Address != state.IPAddress {
+		if !node.ControlPlane || node.Management.Address != state.IPAddress {
 			continue
 		}
-		targetDisk := source.Spec.Defaults.Install.TargetDisk
-		if node.Install.TargetDisk != nil {
-			targetDisk = node.Install.TargetDisk
+		layer, err := configbundle.ResolveNodeLayer(source.Spec.Defaults, node)
+		if err != nil {
+			return fmt.Errorf("resolve node %s: %w", node.Name, err)
 		}
-		if targetDisk != nil && targetDisk.ByID == katldevTargetDisk {
+		if layer.Install.TargetDisk != nil && layer.Install.TargetDisk.ByID == katldevTargetDisk {
 			return nil
 		}
 	}

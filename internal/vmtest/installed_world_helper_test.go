@@ -456,13 +456,16 @@ func TestPublishFirstInstallRuntimeWorldFixtureUsesWorldFactory(t *testing.T) {
 	disk := writeFixtureFile(t, filepath.Join(sourceDir, "installed-runtime.qcow2"), "disk")
 	esp := writeFixtureESP(t, filepath.Join(sourceDir, "esp"))
 	metadata := writeFixtureNodeMetadata(t, filepath.Join(sourceDir, "node.json"), Node{Name: "cp-1", Role: ControlPlane})
+	image := writeFixtureFile(t, filepath.Join(sourceDir, "katlos-install.squashfs"), "image")
+	manifest := strings.Replace(firstManifest(), `"url": "https://example.invalid/katlos-install.squashfs",`, `"localRef": "`+filepath.Base(image)+`",`, 1)
+	writeFixtureFile(t, filepath.Join(sourceDir, "single-image-proof.json"), "{}")
 
 	fixture, err := publishFirstInstallRuntimeWorldFixture(FirstInstallRuntimeFixtureContract{
 		WorldScenario:   scenario,
 		WorldNode:       node,
 		InstallerBoot:   InstallerBootConfig{InstallerUKI: writeFixtureFile(t, filepath.Join(sourceDir, "katl-installer.efi"), "installer")},
 		RuntimeArtifact: writeFixtureFile(t, filepath.Join(sourceDir, "katl-runtime-root.squashfs"), "runtime"),
-		ManifestPath:    writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), firstManifest()),
+		ManifestPath:    writeFixtureFile(t, filepath.Join(sourceDir, "install-manifest.json"), manifest),
 		NodeMetadata:    metadata,
 		Node:            NodeSpec{Name: "cp-1", Role: ControlPlane},
 	}, disk, esp)
@@ -479,9 +482,28 @@ func TestPublishFirstInstallRuntimeWorldFixtureUsesWorldFactory(t *testing.T) {
 	if published.FixtureManifest == fixture.ManifestPath || !pathUnder(published.FixtureManifest, world.CacheDir) {
 		t.Fatalf("published fixture = %q, want durable cache copy distinct from scenario fixture %q", published.FixtureManifest, fixture.ManifestPath)
 	}
-	manifest := readScenarioManifest(t, scenario.ManifestPath)
-	if !hasFixtureKind(manifest.Fixtures, FixturePublishedFirstInstall) {
-		t.Fatalf("scenario fixtures missing published first-install runtime: %#v", manifest.Fixtures)
+	if err := os.RemoveAll(sourceDir); err != nil {
+		t.Fatalf("remove producer inputs: %v", err)
+	}
+	published, err = FindPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{world.CacheDir}, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	if err != nil {
+		t.Fatalf("find fixture after producer cleanup: %v", err)
+	}
+	for _, required := range []string{published.InstallerUKI, published.RuntimeArtifact, published.InstallManifest} {
+		if _, err := os.Stat(required); err != nil {
+			t.Fatalf("cached reinstall input %s is unavailable: %v", required, err)
+		}
+	}
+	cachedImage, err := installManifestLocalImagePath(published.InstallManifest)
+	if err != nil {
+		t.Fatalf("resolve cached install image: %v", err)
+	}
+	if _, err := os.Stat(cachedImage); err != nil {
+		t.Fatalf("cached install image %s is unavailable: %v", cachedImage, err)
+	}
+	scenarioManifest := readScenarioManifest(t, scenario.ManifestPath)
+	if !hasFixtureKind(scenarioManifest.Fixtures, FixturePublishedFirstInstall) {
+		t.Fatalf("scenario fixtures missing published first-install runtime: %#v", scenarioManifest.Fixtures)
 	}
 }
 

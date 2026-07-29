@@ -231,12 +231,12 @@ func TestKubernetesAddressApplyClassification(t *testing.T) {
 
 func TestEndpointRoutingImpactNamesExchangeAndExportChanges(t *testing.T) {
 	before := managedEndpoint("192.0.2.1")
-	before.Advertisement.BGP.RouteExchange = []controlplaneendpoint.RouteExchange{{
+	before.Advertisement.BGP.RouteExchanges = []controlplaneendpoint.RouteExchange{{
 		Name: "cilium", ListenPort: 179, PeerASN: 64512,
 		ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{CIDR: "10.50.0.0/16"}},
 	}}
 	after := managedEndpoint("192.0.2.1")
-	after.Advertisement.BGP.RouteExchange = []controlplaneendpoint.RouteExchange{{
+	after.Advertisement.BGP.RouteExchanges = []controlplaneendpoint.RouteExchange{{
 		Name: "cilium", ListenPort: 1179, PeerASN: 64513,
 		ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{CIDR: "10.60.0.0/16"}},
 	}}

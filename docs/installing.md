@@ -158,7 +158,7 @@ spec:
   kubernetes:
     version: v1.36.1
   defaults:
-    identity:
+    access:
       ssh:
         authorizedKeys:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
@@ -171,19 +171,19 @@ spec:
     - name: cp-1
       controlPlane: true
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
-      bootstrap:
+      management:
         address: 192.0.2.11
       # Optional on multihomed nodes; this is Kubernetes identity, not the
-      # operator-reachable bootstrap address.
+      # operator-reachable management address.
       kubernetes:
         address: 10.254.1.1
     - name: worker-1
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
-      bootstrap:
+      management:
         address: 192.0.2.21
       kubernetes:
         address: 10.254.1.3
@@ -205,7 +205,7 @@ On a multihomed node, set the optional exact `nodes[].kubernetes.address`.
 Katl uses it for kubelet `--node-ip` and the kubeadm local API advertise address
 during both init and control-plane join. It is deliberately one literal IP,
 not a subnet-selection policy. Omit it for normal single-uplink nodes. The
-separate `bootstrap.address` remains the management address used by `katlctl`
+separate `management.address` remains the operator-reachable address used by `katlctl`
 and may be different.
 
 `kernel.commandLine` adds operator-owned arguments to the installed kernel
@@ -217,8 +217,8 @@ would override its root, immutable-runtime, generation identity, or recovery
 policy. Image-required and Katl-owned arguments remain internal and are always
 carried alongside the configured additions.
 
-Additional whole disks may be configured under a node's
-`install.extraDisks`. The supported and journey-verified filesystems are
+Additional whole disks may be configured under a node's `storage.disks`. The
+supported and journey-verified filesystems are
 `ext4`, `xfs`, and `btrfs`. Katl derives the mount location as
 `/var/lib/katl/mnt/<name>`; operators cannot choose another path. Set
 `wipe: true` to authorize formatting that selected disk. With `wipe: false`,
@@ -227,9 +227,10 @@ data:
 
 ```yaml
 install:
-  targetDisk:
+  systemDisk:
     byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
-  extraDisks:
+storage:
+  disks:
     - name: data
       selector:
         byID: /dev/disk/by-id/ata-KATL_WORKER_1_DATA
@@ -609,10 +610,11 @@ are online-only and never require rebooting a node.
 
 The renderer carries node identity, native host configuration, system role, and
 role-dependent Kubernetes intent. Networkd files are supplied through
-`hostConfiguration.sets` and staged for next boot. The planner does not silently discard
+`hostConfiguration.fileSets` and staged for next boot. The planner does not silently discard
 operation-owned differences: cluster apply invokes the required internal
-kubeadm-aware phases and verifies the live result. Disk install selection and
-Kubernetes version changes keep their dedicated install and upgrade workflows.
+kubeadm-aware phases and verifies the live result. System-disk install
+selection and Kubernetes version changes keep their dedicated install and
+upgrade workflows; `storage.disks` remains desired node state.
 The node-agent request envelope remains an internal API documented separately
 from the operator installation flow.
 

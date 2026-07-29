@@ -49,16 +49,16 @@ type Object struct {
 }
 
 type Config struct {
-	Endpoint      Endpoint        `yaml:"endpoint" json:"endpoint"`
-	VIPInterface  VIPInterface    `yaml:"vipInterface" json:"vipInterface"`
-	Routing       Routing         `yaml:"routing" json:"routing"`
-	AdvertiseOn   AdvertiseOn     `yaml:"advertiseOn" json:"advertiseOn"`
-	FabricPeers   []Peer          `yaml:"fabricPeers,omitempty" json:"fabricPeers,omitempty"`
-	DevHostPeers  []Peer          `yaml:"devHostPeers,omitempty" json:"devHostPeers,omitempty"`
-	RouteExchange []RouteExchange `yaml:"routeExchange,omitempty" json:"routeExchange,omitempty"`
-	Advertisement Advertisement   `yaml:"advertisement" json:"advertisement"`
-	Health        Health          `yaml:"health" json:"health"`
-	Status        StatusConfig    `yaml:"status,omitempty" json:"status,omitempty"`
+	Endpoint       Endpoint        `yaml:"endpoint" json:"endpoint"`
+	VIPInterface   VIPInterface    `yaml:"vipInterface" json:"vipInterface"`
+	Routing        Routing         `yaml:"routing" json:"routing"`
+	AdvertiseOn    AdvertiseOn     `yaml:"advertiseOn" json:"advertiseOn"`
+	FabricPeers    []Peer          `yaml:"fabricPeers,omitempty" json:"fabricPeers,omitempty"`
+	DevHostPeers   []Peer          `yaml:"devHostPeers,omitempty" json:"devHostPeers,omitempty"`
+	RouteExchanges []RouteExchange `yaml:"routeExchanges,omitempty" json:"routeExchanges,omitempty"`
+	Advertisement  Advertisement   `yaml:"advertisement" json:"advertisement"`
+	Health         Health          `yaml:"health" json:"health"`
+	Status         StatusConfig    `yaml:"status,omitempty" json:"status,omitempty"`
 }
 
 type RouteExchange struct {
@@ -198,8 +198,8 @@ func FromControlPlaneEndpoint(plan controlplaneendpoint.Plan) (Config, error) {
 			AllowedExportPrefixes: []string{plan.VIPPrefix},
 		})
 	}
-	for _, exchange := range bgp.RouteExchange {
-		config.RouteExchange = append(config.RouteExchange, RouteExchange{
+	for _, exchange := range bgp.RouteExchanges {
+		config.RouteExchanges = append(config.RouteExchanges, RouteExchange{
 			Name:           exchange.Name,
 			ListenPort:     exchange.ListenPort,
 			PeerASN:        exchange.PeerASN,
@@ -796,7 +796,7 @@ func renderBirdConfig(config Config) string {
 		b.WriteString("router id " + config.Routing.RouterID + ";\n\n")
 	}
 	b.WriteString(family + " table katl_fabric;\n")
-	for _, exchange := range config.RouteExchange {
+	for _, exchange := range config.RouteExchanges {
 		b.WriteString(family + " table katl_exchange_" + safeSymbol(exchange.Name) + "_table;\n")
 	}
 	b.WriteByte('\n')
@@ -805,7 +805,7 @@ func renderBirdConfig(config Config) string {
 	b.WriteString("  " + family + " { table katl_fabric; };\n")
 	b.WriteString("  interface \"" + config.VIPInterface.Name + "\";\n")
 	b.WriteString("}\n\n")
-	for _, exchange := range config.RouteExchange {
+	for _, exchange := range config.RouteExchanges {
 		b.WriteString(renderRouteExchange(config, exchange))
 		b.WriteByte('\n')
 	}
@@ -824,7 +824,7 @@ func renderPeerFilter(config Config, peer Peer) string {
 	var b strings.Builder
 	b.WriteString("filter " + filterName + " {\n")
 	b.WriteString("  if source = RTS_DEVICE && net = " + config.Endpoint.VIP + " then accept;\n")
-	if len(config.RouteExchange) > 0 {
+	if len(config.RouteExchanges) > 0 {
 		b.WriteString("  if source = RTS_BGP then accept;\n")
 	}
 	b.WriteString("  reject;\n")
@@ -881,10 +881,10 @@ func renderRouteExchange(config Config, exchange RouteExchange) string {
 }
 
 func birdPrefixPattern(envelope controlplaneendpoint.PrefixEnvelope) string {
-	if envelope.PrefixLength == nil {
+	if envelope.ExactPrefixLength == nil {
 		return envelope.CIDR + "+"
 	}
-	return envelope.CIDR + "{" + strconv.Itoa(*envelope.PrefixLength) + "," + strconv.Itoa(*envelope.PrefixLength) + "}"
+	return envelope.CIDR + "{" + strconv.Itoa(*envelope.ExactPrefixLength) + "," + strconv.Itoa(*envelope.ExactPrefixLength) + "}"
 }
 
 func safeSymbol(value string) string {

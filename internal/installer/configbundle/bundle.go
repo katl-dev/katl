@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -82,38 +83,90 @@ type SourceSpec struct {
 }
 
 type SourceNode struct {
-	Name              string                     `yaml:"name" json:"name"`
-	ControlPlane      bool                       `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
-	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
-	Kernel            *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
-	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
-	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
-	Install           SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
-	Kubernetes        SourceKubernetesLayer      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Bootstrap         SourceBootstrapLayer       `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
+	Name              string                            `yaml:"name" json:"name"`
+	ControlPlane      bool                              `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
+	Access            SourceAccess                      `yaml:"access,omitempty" json:"access,omitempty"`
+	Kernel            *SourceKernelConfig               `yaml:"kernel,omitempty" json:"kernel,omitempty"`
+	HostConfiguration SourceHostConfiguration           `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	SystemExtensions  Optional[[]SourceSystemExtension] `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitzero"`
+	Install           SourceInstallLayer                `yaml:"install,omitempty" json:"install,omitempty"`
+	Storage           SourceStorageLayer                `yaml:"storage,omitempty" json:"storage,omitempty"`
+	Kubernetes        SourceKubernetesLayer             `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Management        SourceManagementLayer             `yaml:"management,omitempty" json:"management,omitempty"`
 }
 
 type SourceNodeLayer struct {
-	Identity          SourceIdentity             `yaml:"identity,omitempty" json:"identity,omitempty"`
-	Kernel            *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
-	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
-	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
-	Install           SourceInstallLayer         `yaml:"install,omitempty" json:"install,omitempty"`
-	Kubernetes        SourceKubernetesLayer      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Access            SourceAccess                      `yaml:"access,omitempty" json:"access,omitempty"`
+	Kernel            *SourceKernelConfig               `yaml:"kernel,omitempty" json:"kernel,omitempty"`
+	HostConfiguration SourceHostConfiguration           `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	SystemExtensions  Optional[[]SourceSystemExtension] `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitzero"`
+	Install           SourceInstallLayer                `yaml:"install,omitempty" json:"install,omitempty"`
+	Storage           SourceStorageLayer                `yaml:"storage,omitempty" json:"storage,omitempty"`
+	Kubernetes        SourceKubernetesLayer             `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
 }
 
-type SourceBootstrapLayer struct {
+type SourceManagementLayer struct {
 	Address string `yaml:"address,omitempty" json:"address,omitempty"`
 }
 
-type SourceIdentity struct {
-	SSH manifest.SSHIdentity `yaml:"ssh,omitempty" json:"ssh,omitempty"`
+type SourceAccess struct {
+	SSH SourceSSHAccess `yaml:"ssh,omitempty" json:"ssh,omitempty"`
+}
+
+type SourceSSHAccess struct {
+	AuthorizedKeys Optional[[]string] `yaml:"authorizedKeys,omitempty" json:"authorizedKeys,omitzero"`
+}
+
+type SourceKernelConfig struct {
+	CommandLine Optional[[]string] `yaml:"commandLine,omitempty" json:"commandLine,omitzero"`
+}
+
+type SourceHostConfiguration struct {
+	Sysfs    Optional[[]SourceHostConfigurationSysfsSetting]     `yaml:"sysfs,omitempty" json:"sysfs,omitzero"`
+	FileSets Optional[map[string]SourceHostConfigurationFileSet] `yaml:"fileSets,omitempty" json:"fileSets,omitzero"`
+}
+
+type SourceHostConfigurationSysfsSetting struct {
+	Path  string `yaml:"path" json:"path"`
+	Value string `yaml:"value" json:"value"`
+}
+
+type SourceHostConfigurationFileSet struct {
+	State    string                                  `yaml:"state,omitempty" json:"state,omitempty"`
+	Files    []manifest.HostConfigurationFile        `yaml:"files,omitempty" json:"files,omitempty"`
+	OnChange manifest.HostConfigurationNotifications `yaml:"onChange,omitempty" json:"onChange,omitempty"`
+}
+
+type SourceSystemExtension struct {
+	Name          string                                `yaml:"name" json:"name"`
+	State         string                                `yaml:"state,omitempty" json:"state,omitempty"`
+	Bundle        string                                `yaml:"bundle,omitempty" json:"bundle,omitempty"`
+	Configuration manifest.SystemExtensionConfiguration `yaml:"configuration,omitempty" json:"configuration,omitempty"`
+	Units         []manifest.SystemExtensionUnit        `yaml:"units,omitempty" json:"units,omitempty"`
+	resolved      *manifest.SystemExtension
 }
 
 type SourceInstallLayer struct {
-	TargetDisk         *manifest.DiskSelector `yaml:"targetDisk,omitempty" json:"targetDisk,omitempty"`
-	TargetDiskDefaults *manifest.DiskSelector `yaml:"targetDiskDefaults,omitempty" json:"targetDiskDefaults,omitempty"`
-	ExtraDisks         []manifest.ExtraDisk   `yaml:"extraDisks,omitempty" json:"extraDisks,omitempty"`
+	SystemDisk *SourceDiskSelector `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
+}
+
+type SourceStorageLayer struct {
+	Disks Optional[[]SourceStorageDisk] `yaml:"disks,omitempty" json:"disks,omitzero"`
+}
+
+type SourceStorageDisk struct {
+	Name       string              `yaml:"name" json:"name"`
+	State      string              `yaml:"state,omitempty" json:"state,omitempty"`
+	Selector   *SourceDiskSelector `yaml:"selector,omitempty" json:"selector,omitempty"`
+	Filesystem Optional[string]    `yaml:"filesystem,omitempty" json:"filesystem,omitzero"`
+	Wipe       Optional[bool]      `yaml:"wipe,omitempty" json:"wipe,omitzero"`
+}
+
+type SourceDiskSelector struct {
+	ByID       Optional[string] `yaml:"byID,omitempty" json:"byID,omitzero"`
+	WWN        Optional[string] `yaml:"wwn,omitempty" json:"wwn,omitzero"`
+	Serial     Optional[string] `yaml:"serial,omitempty" json:"serial,omitzero"`
+	MinSizeMiB Optional[uint64] `yaml:"minSizeMiB,omitempty" json:"minSizeMiB,omitzero"`
 }
 
 type SourceKubernetesCluster struct {
@@ -127,9 +180,9 @@ type SourceKubeadmInput struct {
 }
 
 type SourceKubernetesLayer struct {
-	Address string               `yaml:"address,omitempty" json:"address,omitempty"`
-	Labels  map[string]string    `yaml:"labels,omitempty" json:"labels,omitempty"`
-	Taints  []manifest.NodeTaint `yaml:"taints,omitempty" json:"taints,omitempty"`
+	Address string                         `yaml:"address,omitempty" json:"address,omitempty"`
+	Labels  Optional[map[string]string]    `yaml:"labels,omitempty" json:"labels,omitzero"`
+	Taints  Optional[[]manifest.NodeTaint] `yaml:"taints,omitempty" json:"taints,omitzero"`
 }
 
 type BundleManifest struct {
@@ -251,9 +304,6 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	}
 	source, err = normalizeSource(source)
 	if err != nil {
-		return nil, Result{}, err
-	}
-	if err := validateAuthoringSystemExtensions(source); err != nil {
 		return nil, Result{}, err
 	}
 	source, err = resolveHostConfigurationSources(filepath.Dir(sourcePath), source)
@@ -403,8 +453,12 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 		if role == inventory.RoleControlPlane {
 			hasControlPlane = true
 		}
-		layer := lowerNodeLayer(sourceNodeLayer(node))
-		layer.Bootstrap.Address = strings.TrimSpace(node.Bootstrap.Address)
+		resolved, err := mergeSourceNodeLayer(source.Spec.Defaults, sourceNodeLayer(node))
+		if err != nil {
+			return clusterplan.Config{}, fmt.Errorf("spec.nodes[%q]: %w", node.Name, err)
+		}
+		layer := lowerNodeLayer(resolved)
+		layer.Bootstrap.Address = strings.TrimSpace(node.Management.Address)
 		if access, ok := planning.BootstrapAccess[node.Name]; ok {
 			layer.Bootstrap.Access = access
 		}
@@ -427,7 +481,6 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 			Kubernetes:           selection,
 			KatlosImage:          planning.KatlosImage,
 			WipeTarget:           true,
-			Defaults:             lowerNodeLayer(source.Spec.Defaults),
 			Nodes:                nodes,
 		},
 	}, nil
@@ -453,32 +506,40 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 
 func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 	return clusterplan.NodeLayer{
-		SSH:               layer.Identity.SSH,
-		Kernel:            cloneKernelConfig(layer.Kernel),
-		HostConfiguration: layer.HostConfiguration,
-		SystemExtensions:  append([]manifest.SystemExtension(nil), layer.SystemExtensions...),
+		SSH:               lowerSSHAccess(layer.Access.SSH),
+		Kernel:            lowerKernelConfig(layer.Kernel),
+		HostConfiguration: lowerHostConfiguration(layer.HostConfiguration),
+		SystemExtensions:  lowerSystemExtensions(layer.SystemExtensions),
 		Install: clusterplan.InstallLayer{
-			TargetDisk:         layer.Install.TargetDisk,
-			TargetDiskDefaults: layer.Install.TargetDiskDefaults,
-			ExtraDisks:         append([]manifest.ExtraDisk(nil), layer.Install.ExtraDisks...),
+			TargetDisk: lowerDiskSelector(layer.Install.SystemDisk),
+			ExtraDisks: lowerStorageDisks(layer.Storage.Disks),
 		},
 		Kubernetes: clusterplan.KubernetesLayer{
 			Address:    strings.TrimSpace(layer.Kubernetes.Address),
-			NodeLabels: copyLabels(layer.Kubernetes.Labels),
-			NodeTaints: append([]manifest.NodeTaint(nil), layer.Kubernetes.Taints...),
+			NodeLabels: lowerLabels(layer.Kubernetes.Labels),
+			NodeTaints: lowerTaints(layer.Kubernetes.Taints),
 		},
 	}
 }
 
 func sourceNodeLayer(node SourceNode) SourceNodeLayer {
 	return SourceNodeLayer{
-		Identity:          node.Identity,
-		Kernel:            cloneKernelConfig(node.Kernel),
+		Access:            node.Access,
+		Kernel:            cloneSourceKernelConfig(node.Kernel),
 		HostConfiguration: node.HostConfiguration,
-		SystemExtensions:  append([]manifest.SystemExtension(nil), node.SystemExtensions...),
+		SystemExtensions:  cloneOptionalSourceSystemExtensions(node.SystemExtensions),
 		Install:           node.Install,
+		Storage:           node.Storage,
 		Kubernetes:        node.Kubernetes,
 	}
+}
+
+func ResolveNodeLayer(defaults SourceNodeLayer, node SourceNode) (clusterplan.NodeLayer, error) {
+	resolved, err := mergeSourceNodeLayer(defaults, sourceNodeLayer(node))
+	if err != nil {
+		return clusterplan.NodeLayer{}, err
+	}
+	return lowerNodeLayer(resolved), nil
 }
 
 func sourceNodeRole(node SourceNode) inventory.SystemRole {
@@ -505,7 +566,7 @@ func selectedKubernetesVersion(source SourceConfig) string {
 
 func defaultSource(source SourceConfig) SourceConfig {
 	spec := source.Spec
-	spec.Nodes = append([]SourceNode(nil), spec.Nodes...)
+	spec.Nodes = slices.Clone(spec.Nodes)
 	version := strings.TrimSpace(spec.Kubernetes.Version)
 	if version == "" {
 		spec.Kubernetes.Version = DefaultKubernetesVersion
@@ -520,7 +581,7 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node")
 	}
 	if source.Spec.Defaults.Kernel != nil {
-		if err := manifest.ValidateKernelConfig(*source.Spec.Defaults.Kernel); err != nil {
+		if err := manifest.ValidateKernelConfig(*lowerKernelConfig(source.Spec.Defaults.Kernel)); err != nil {
 			return SourceConfig{}, fmt.Errorf("spec.defaults.kernel: %w", err)
 		}
 	}
@@ -531,25 +592,36 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 		}
 		source.Spec.Nodes[i].Kubernetes.Address = address
 		if source.Spec.Nodes[i].Kernel != nil {
-			if err := manifest.ValidateKernelConfig(*source.Spec.Nodes[i].Kernel); err != nil {
+			if err := manifest.ValidateKernelConfig(*lowerKernelConfig(source.Spec.Nodes[i].Kernel)); err != nil {
 				return SourceConfig{}, fmt.Errorf("spec.nodes[%d].kernel: %w", i, err)
 			}
 		}
 	}
-	if err := manifest.ValidateHostConfiguration(source.Spec.Defaults.HostConfiguration, true); err != nil {
+	if err := manifest.ValidateHostConfiguration(lowerHostConfiguration(source.Spec.Defaults.HostConfiguration), true); err != nil {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.hostConfiguration: %w", err)
 	}
 	for i := range source.Spec.Nodes {
-		if err := manifest.ValidateHostConfiguration(source.Spec.Nodes[i].HostConfiguration, true); err != nil {
+		if err := manifest.ValidateHostConfiguration(lowerHostConfiguration(source.Spec.Nodes[i].HostConfiguration), true); err != nil {
 			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].hostConfiguration: %w", i, err)
 		}
 	}
-	if err := manifest.ValidateSystemExtensions(source.Spec.Defaults.SystemExtensions, true); err != nil {
+	if err := manifest.ValidateSystemExtensions(lowerSystemExtensions(source.Spec.Defaults.SystemExtensions), true); err != nil {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.systemExtensions: %w", err)
 	}
 	for i := range source.Spec.Nodes {
-		if err := manifest.ValidateSystemExtensions(source.Spec.Nodes[i].SystemExtensions, true); err != nil {
+		if err := manifest.ValidateSystemExtensions(lowerSystemExtensions(source.Spec.Nodes[i].SystemExtensions), true); err != nil {
 			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].systemExtensions: %w", i, err)
+		}
+	}
+	if err := validateDefaultSystemDisk(source.Spec.Defaults.Install.SystemDisk); err != nil {
+		return SourceConfig{}, fmt.Errorf("spec.defaults.install.systemDisk: %w", err)
+	}
+	if err := validateSourceStorageDisks("spec.defaults.storage.disks", source.Spec.Defaults.Storage.Disks); err != nil {
+		return SourceConfig{}, err
+	}
+	for i := range source.Spec.Nodes {
+		if err := validateSourceStorageDisks(fmt.Sprintf("spec.nodes[%d].storage.disks", i), source.Spec.Nodes[i].Storage.Disks); err != nil {
+			return SourceConfig{}, err
 		}
 	}
 	if source.Spec.ControlPlaneEndpoint == nil {
@@ -563,28 +635,24 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	return source, nil
 }
 
-func cloneKernelConfig(config *manifest.KernelConfig) *manifest.KernelConfig {
-	if config == nil {
-		return nil
-	}
-	clone := *config
-	clone.CommandLine = slices.Clone(config.CommandLine)
-	return &clone
-}
-
 func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (SourceConfig, error) {
 	root, err := filepath.EvalSymlinks(sourceRoot)
 	if err != nil {
 		return SourceConfig{}, fmt.Errorf("resolve ClusterConfig source root: %w", err)
 	}
-	resolve := func(field string, config *manifest.HostConfiguration) error {
-		setNames := make([]string, 0, len(config.Sets))
-		for name := range config.Sets {
+	resolve := func(field string, config *SourceHostConfiguration) error {
+		fileSets, ok := config.FileSets.Get()
+		if !ok {
+			return nil
+		}
+		fileSets = maps.Clone(fileSets)
+		setNames := make([]string, 0, len(fileSets))
+		for name := range fileSets {
 			setNames = append(setNames, name)
 		}
 		sort.Strings(setNames)
 		for _, setName := range setNames {
-			set := config.Sets[setName]
+			set := fileSets[setName]
 			for i := range set.Files {
 				file := &set.Files[i]
 				if strings.TrimSpace(file.Source) == "" {
@@ -592,14 +660,15 @@ func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (So
 				}
 				data, err := readHostConfigurationSource(root, file.Source)
 				if err != nil {
-					return fmt.Errorf("%s.sets[%q].files[%d].source: %w", field, setName, i, err)
+					return fmt.Errorf("%s.fileSets[%q].files[%d].source: %w", field, setName, i, err)
 				}
 				content := string(data)
 				file.Content = &content
 				file.Source = ""
 			}
-			config.Sets[setName] = set
+			fileSets[setName] = set
 		}
+		config.FileSets = supplied(fileSets)
 		return nil
 	}
 	if err := resolve("spec.defaults.hostConfiguration", &source.Spec.Defaults.HostConfiguration); err != nil {
@@ -610,9 +679,14 @@ func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (So
 			return SourceConfig{}, err
 		}
 	}
-	resolveExtensions := func(field string, extensions []manifest.SystemExtension) error {
-		for i := range extensions {
-			extension := &extensions[i]
+	resolveExtensions := func(field string, extensions *Optional[[]SourceSystemExtension]) error {
+		values, ok := extensions.Get()
+		if !ok {
+			return nil
+		}
+		values = cloneSourceSystemExtensions(values)
+		for i := range values {
+			extension := &values[i]
 			for j := range extension.Configuration.Files {
 				file := &extension.Configuration.Files[j]
 				if strings.TrimSpace(file.Source) == "" {
@@ -642,13 +716,14 @@ func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (So
 				}
 			}
 		}
+		*extensions = supplied(values)
 		return nil
 	}
-	if err := resolveExtensions("spec.defaults.systemExtensions", source.Spec.Defaults.SystemExtensions); err != nil {
+	if err := resolveExtensions("spec.defaults.systemExtensions", &source.Spec.Defaults.SystemExtensions); err != nil {
 		return SourceConfig{}, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := resolveExtensions(fmt.Sprintf("spec.nodes[%d].systemExtensions", i), source.Spec.Nodes[i].SystemExtensions); err != nil {
+		if err := resolveExtensions(fmt.Sprintf("spec.nodes[%d].systemExtensions", i), &source.Spec.Nodes[i].SystemExtensions); err != nil {
 			return SourceConfig{}, err
 		}
 	}

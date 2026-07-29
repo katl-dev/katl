@@ -13,11 +13,13 @@ renderer carries:
 - operator-owned kernel command-line additions;
 - native host configuration file sets, including systemd-networkd files and
   drop-ins;
+- desired data disks under `storage.disks`;
 - operation-only system role and role-dependent Kubernetes bootstrap state.
 
 Runtime-safe fields apply normally. Katl coordinates affected node generations
-and kubeadm phases internally. Disk/install selection and Kubernetes version
-changes use the dedicated install and Kubernetes upgrade workflows.
+and kubeadm phases internally. System-disk installation selection and
+Kubernetes version changes use the dedicated install and Kubernetes upgrade
+workflows; data disks remain desired node storage.
 
 If `spec.kubernetes.kubeadm` changes, cluster apply validates every node before
 mutation and then reconciles every affected Kubernetes component online. A
@@ -57,7 +59,7 @@ entry.
 
 ## Configure Native Linux Facilities
 
-Use `hostConfiguration.sets` for file-based Linux and systemd configuration.
+Use `hostConfiguration.fileSets` for file-based Linux and systemd configuration.
 Katl validates ownership and carries the files in the node's generation; the
 operator does not build or activate a confext.
 
@@ -66,9 +68,9 @@ spec:
   defaults:
     hostConfiguration:
       sysfs:
-        - name: /sys/module/printk/parameters/time
+        - path: /sys/module/printk/parameters/time
           value: N
-      sets:
+      fileSets:
         forwarding:
           files:
             - path: /etc/sysctl.d/80-home-lab-forwarding.conf
@@ -123,7 +125,7 @@ spec:
   nodes:
     - name: worker-1
       hostConfiguration:
-        sets:
+        fileSets:
           storage-modules:
             state: absent
 ```
@@ -136,7 +138,7 @@ spec:
   nodes:
     - name: cp-1
       hostConfiguration:
-        sets:
+        fileSets:
           network-address:
             files:
               - path: /etc/systemd/network/20-bond0.network.d/50-address.conf
@@ -166,7 +168,7 @@ next-boot unless their set declares a bounded notification for an unprotected
 existing unit:
 
 ```yaml
-notify:
+onChange:
   systemd:
     - unit: systemd-journald.service
       action: try-reload-or-restart
@@ -175,7 +177,7 @@ notify:
 The accepted actions are `reload`, `try-reload-or-restart`, and `try-restart`.
 Katl rejects protected paths, duplicate path ownership, executable or writable
 modes, and attempts to notify release-critical units before rendering a
-candidate generation. Each sysfs `name` must be a unique normalized `/sys/...`
+candidate generation. Each sysfs `path` must be a unique normalized `/sys/...`
 path, and each `value` must be a non-empty single-line value without leading or
 trailing whitespace. A node-level `sysfs` list replaces the defaults list; use
 `sysfs: []` to clear inherited settings. Operator-authored files below

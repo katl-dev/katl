@@ -283,17 +283,17 @@ func TestActivateClusterConfigPlansOneFreshReplacementNode(t *testing.T) {
 	configPath := filepath.Join(root, "cluster.yaml")
 	source := configBundleSource() + `    - name: cp-2
       controlPlane: true
-      bootstrap:
+      management:
         address: 10.0.0.12
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-2-root
     - name: cp-3
       controlPlane: true
-      bootstrap:
+      management:
         address: 10.0.0.13
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-3-root
 `
 	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {
@@ -351,10 +351,10 @@ func TestRunClusterApplyRefreshesReplacementGenerationAfterJoin(t *testing.T) {
 	configPath := filepath.Join(root, "cluster.yaml")
 	source := configBundleSource() + `    - name: cp-2
       controlPlane: true
-      bootstrap:
+      management:
         address: 10.0.0.12
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-2-root
 `
 	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {
@@ -429,10 +429,10 @@ func TestActivateClusterConfigValidatesEveryNodeBeforeMutation(t *testing.T) {
 	configPath := filepath.Join(root, "cluster.yaml")
 	source := configBundleSource() + `    - name: cp-2
       controlPlane: true
-      bootstrap:
+      management:
         address: 10.0.0.12
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-2-root
 `
 	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {

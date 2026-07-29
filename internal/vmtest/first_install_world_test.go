@@ -644,30 +644,30 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 	t.Helper()
 	image := writeFixtureFile(t, filepath.Join(dir, "katlos-install-2026.06.04-x86_64.squashfs"), "katlos-image")
 	writeFixtureKatlOSInstallImageRoot(t, dir, "2026.06.04")
-	source := map[string]any{
+	source := jsonObject{
 		"apiVersion": configbundle.APIVersion,
 		"kind":       configbundle.Kind,
-		"metadata": map[string]any{
+		"metadata": jsonObject{
 			"name": "katl-shared",
 		},
-		"spec": map[string]any{
-			"controlPlaneEndpoint": map[string]any{
+		"spec": jsonObject{
+			"controlPlaneEndpoint": jsonObject{
 				"host": "api.katl.test",
 				"port": 6443,
 			},
-			"kubernetes": map[string]any{
+			"kubernetes": jsonObject{
 				"version": "v1.36.1",
 			},
-			"defaults": map[string]any{
-				"identity": map[string]any{
-					"ssh": map[string]any{
+			"defaults": jsonObject{
+				"access": jsonObject{
+					"ssh": jsonObject{
 						"authorizedKeys": []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"},
 					},
 				},
-				"hostConfiguration": map[string]any{
-					"sets": map[string]any{
-						"network": map[string]any{
-							"files": []map[string]any{{
+				"hostConfiguration": jsonObject{
+					"fileSets": jsonObject{
+						"network": jsonObject{
+							"files": []jsonObject{{
 								"path":    "/etc/systemd/network/80-katl-vmtest-dhcp.network",
 								"content": vmtestDHCPNetwork,
 							}},
@@ -675,7 +675,7 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 					},
 				},
 			},
-			"nodes": []map[string]any{
+			"nodes": []jsonObject{
 				firstInstallWorldSourceNode("cp-shared-1", ControlPlane, "/dev/disk/by-id/virtio-katl-control-plane-root"),
 				firstInstallWorldSourceNode("worker-shared-1", Worker, "/dev/disk/by-id/virtio-katl-worker-root"),
 			},

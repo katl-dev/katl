@@ -228,3 +228,54 @@ func TestRenderedNodeConfigurationDoesNotPlanUnchangedDomains(t *testing.T) {
 		t.Fatalf("mergeRuntimeConfig() error = %v, want unchanged desired state", err)
 	}
 }
+
+func TestRenderedNodeConfigurationClearsDesiredDomains(t *testing.T) {
+	current := manifest.Manifest{Node: manifest.NodeConfig{
+		Identity: manifest.NodeIdentity{
+			Hostname: "worker-1",
+			SSH:      manifest.SSHIdentity{AuthorizedKeys: []string{"ssh-ed25519 AAAA katl@example"}},
+		},
+		Kernel:            manifest.KernelConfig{CommandLine: []string{"intel_iommu=on"}},
+		HostConfiguration: testHostConfiguration("lan", "/etc/systemd/network/10-lan.network", "[Network]\nDHCP=yes\n"),
+		SystemExtensions:  []manifest.SystemExtension{{Name: "tools"}},
+	}}
+	desired := current
+	desired.Node.Kernel = manifest.KernelConfig{}
+	desired.Node.HostConfiguration = manifest.HostConfiguration{}
+	desired.Node.SystemExtensions = []manifest.SystemExtension{}
+
+	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
+		NodeName:       "worker-1",
+		Manifest:       desired,
+		SourceID:       "lab",
+		DesiredVersion: "5",
+	})
+	if err != nil {
+		t.Fatalf("RenderNodeConfigurationChange() error = %v", err)
+	}
+	request, err := DecodeNodeConfigurationChange(strings.NewReader(string(data)), TrustedBundleRequest{
+		NodeName:        "worker-1",
+		CurrentManifest: current,
+	})
+	if err != nil {
+		t.Fatalf("DecodeNodeConfigurationChange() error = %v", err)
+	}
+	merged, changes, _, err := mergeRuntimeConfig(request)
+	if err != nil {
+		t.Fatalf("mergeRuntimeConfig() error = %v", err)
+	}
+	if len(merged.Node.Kernel.CommandLine) != 0 ||
+		!merged.Node.HostConfiguration.IsZero() ||
+		len(merged.Node.SystemExtensions) != 0 {
+		t.Fatalf("cleared manifest = %#v", merged.Node)
+	}
+	domains := map[string]bool{}
+	for _, change := range changes {
+		domains[change.Domain] = true
+	}
+	for _, domain := range []string{DomainKernelCommandLine, DomainHostConfiguration, DomainSystemExtensions} {
+		if !domains[domain] {
+			t.Fatalf("changed domains = %#v, missing %s", domains, domain)
+		}
+	}
+}

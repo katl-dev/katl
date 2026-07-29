@@ -682,12 +682,12 @@ spec:
   kubernetes:
     version: ` + kubernetesVersion + `
   defaults:
-    identity:
+    access:
       ssh:
         authorizedKeys:
           - ` + sshAuthorizedKey + `
     hostConfiguration:
-      sets:
+      fileSets:
         network:
           files:
             - path: /etc/systemd/network/80-katl-vmtest-dhcp.network
@@ -710,9 +710,9 @@ spec:
 		source += `    - name: ` + name + `
       controlPlane: true
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/virtio-katl-root
-      bootstrap:
+      management:
         address: ` + addresses[name] + `
 `
 	}

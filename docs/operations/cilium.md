@@ -105,7 +105,7 @@ interfaces.
 
 If another CNI or a site-specific network design requires different persistent
 host settings, declare a native `/etc/sysctl.d/*.conf` file through
-`hostConfiguration.sets` and apply the complete `ClusterConfig`; see
+`hostConfiguration.fileSets` and apply the complete `ClusterConfig`; see
 [Apply cluster configuration](configure-nodes.md#configure-native-linux-facilities).
 Katl validates and carries the file in the selected generation.
 

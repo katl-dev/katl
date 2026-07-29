@@ -40,11 +40,11 @@ func TestNormalizeManagedEndpoint(t *testing.T) {
 					{Address: "10.0.0.2", ASN: 64500},
 					{Address: "10.0.0.1", ASN: 64512},
 				},
-				RouteExchange: []RouteExchange{{
+				RouteExchanges: []RouteExchange{{
 					Name: "cilium",
 					ExportToFabric: []PrefixEnvelope{
-						{CIDR: "10.50.0.1/16", PrefixLength: &length},
-						{CIDR: "10.50.0.0/16", PrefixLength: &length},
+						{CIDR: "10.50.0.1/16", ExactPrefixLength: &length},
+						{CIDR: "10.50.0.0/16", ExactPrefixLength: &length},
 					},
 				}},
 			},
@@ -60,7 +60,7 @@ func TestNormalizeManagedEndpoint(t *testing.T) {
 	if got := bgp.Peers; !reflect.DeepEqual(got, []Peer{{Address: "10.0.0.1", ASN: 64512}, {Address: "10.0.0.2", ASN: 64500}}) {
 		t.Fatalf("peers = %#v", got)
 	}
-	exchange := bgp.RouteExchange[0]
+	exchange := bgp.RouteExchanges[0]
 	if exchange.ListenPort != 179 || exchange.PeerASN != 64512 || len(exchange.ExportToFabric) != 1 || exchange.ExportToFabric[0].CIDR != "10.50.0.0/16" {
 		t.Fatalf("route exchange = %#v", exchange)
 	}
@@ -107,13 +107,13 @@ func TestNormalizeRejectsInvalidEndpointIntent(t *testing.T) {
 		{name: "duplicate peer", mutate: func(c *Config) {
 			c.Advertisement.BGP.Peers = append(c.Advertisement.BGP.Peers, c.Advertisement.BGP.Peers[0])
 		}, want: "duplicates another peer"},
-		{name: "invalid exchange name", mutate: func(c *Config) { c.Advertisement.BGP.RouteExchange[0].Name = "Cilium_Routes" }, want: "DNS-label-style"},
+		{name: "invalid exchange name", mutate: func(c *Config) { c.Advertisement.BGP.RouteExchanges[0].Name = "Cilium_Routes" }, want: "DNS-label-style"},
 		{name: "multiple default ports", mutate: func(c *Config) {
-			c.Advertisement.BGP.RouteExchange = append(c.Advertisement.BGP.RouteExchange, RouteExchange{Name: "other"})
+			c.Advertisement.BGP.RouteExchanges = append(c.Advertisement.BGP.RouteExchanges, RouteExchange{Name: "other"})
 		}, want: "listenPort is required"},
 		{name: "impossible prefix length", mutate: func(c *Config) {
 			value := 8
-			c.Advertisement.BGP.RouteExchange[0].ExportToFabric[0].PrefixLength = &value
+			c.Advertisement.BGP.RouteExchanges[0].ExportToFabric[0].ExactPrefixLength = &value
 		}, want: "between 24 and 32"},
 	}
 	for _, tt := range tests {
@@ -137,9 +137,9 @@ func managedConfig() Config {
 			BGP: &BGP{
 				LocalASN: 64512,
 				Peers:    []Peer{{Address: "10.0.0.1", ASN: 64500}},
-				RouteExchange: []RouteExchange{{
+				RouteExchanges: []RouteExchange{{
 					Name:           "cilium",
-					ExportToFabric: []PrefixEnvelope{{CIDR: "10.40.0.0/24", PrefixLength: &length}},
+					ExportToFabric: []PrefixEnvelope{{CIDR: "10.40.0.0/24", ExactPrefixLength: &length}},
 				}},
 			},
 		},

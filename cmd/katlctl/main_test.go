@@ -752,13 +752,13 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 
 func TestConfigValidateReportsNestedFieldPath(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
-	source := strings.Replace(configBundleSource(), "targetDisk:\n          byID:", "targetDisk:\n          unsupportedSelector: true\n          byID:", 1)
+	source := strings.Replace(configBundleSource(), "systemDisk:\n          byID:", "systemDisk:\n          unsupportedSelector: true\n          byID:", 1)
 	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "spec.nodes[0].install.targetDisk.unsupportedSelector: field is not supported") {
+	if err == nil || !strings.Contains(err.Error(), "spec.nodes[0].install.systemDisk.unsupportedSelector: field is not supported") {
 		t.Fatalf("run() error = %v, want nested field path", err)
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
@@ -3100,19 +3100,19 @@ spec:
     version: v1.36.1
   defaults:
     install:
-      targetDiskDefaults:
+      systemDisk:
         minSizeMiB: 32768
-    identity:
+    access:
       ssh:
         authorizedKeys:
           - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
   nodes:
     - name: cp-1
       controlPlane: true
-      bootstrap:
+      management:
         address: 10.0.0.11
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-root
 `
 }
@@ -3145,18 +3145,18 @@ func writeMultiControlPlaneClusterConfig(t *testing.T) string {
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
 	source := strings.Replace(configBundleSource(), `
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-root
 `, `
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-root
     - name: cp-2
       controlPlane: true
-      bootstrap:
+      management:
         address: 10.0.0.12
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-2-root
 `, 1)
 	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {

@@ -298,7 +298,7 @@ func parseProtocolStatus(output string, config Config) []PeerRuntimeStatus {
 			SessionState:  "unknown",
 		}
 	}
-	for _, exchange := range config.RouteExchange {
+	for _, exchange := range config.RouteExchanges {
 		known["katl_exchange_"+safeSymbol(exchange.Name)] = PeerRuntimeStatus{
 			Name:          exchange.Name,
 			Kind:          "route-exchange",
@@ -353,7 +353,7 @@ func parseProtocolStatus(output string, config Config) []PeerRuntimeStatus {
 	for _, peer := range config.FabricPeers {
 		out = append(out, known[protocolName(peer)])
 	}
-	for _, exchange := range config.RouteExchange {
+	for _, exchange := range config.RouteExchanges {
 		out = append(out, known["katl_exchange_"+safeSymbol(exchange.Name)])
 		out = append(out, known["katl_exchange_"+safeSymbol(exchange.Name)+"_to_fabric"])
 	}

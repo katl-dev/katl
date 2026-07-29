@@ -21,6 +21,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type jsonObject = map[string]any
+
 type FirstInstallWorldRun struct {
 	Scenario *WorldScenario
 	Node     Node
@@ -1040,7 +1042,7 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 		return "", "", err
 	}
 
-	nodes := []map[string]any{}
+	nodes := []jsonObject{}
 	if spec.Role != ControlPlane {
 		nodes = append(nodes, firstInstallWorldSourceNode(firstControlPlaneName(spec), ControlPlane, "/dev/disk/by-id/virtio-katl-control-plane-root"))
 	}
@@ -1050,31 +1052,31 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	if sshAuthorizedKey == "" {
 		sshAuthorizedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
 	}
-	sourceSpec := map[string]any{
-		"controlPlaneEndpoint": map[string]any{
+	sourceSpec := jsonObject{
+		"controlPlaneEndpoint": jsonObject{
 			"host": "api.katl.test",
 			"port": 6443,
 		},
-		"kubernetes": map[string]any{
+		"kubernetes": jsonObject{
 			"version": kubernetesVersion,
 		},
-		"defaults": map[string]any{
-			"identity": map[string]any{
-				"ssh": map[string]any{
+		"defaults": jsonObject{
+			"access": jsonObject{
+				"ssh": jsonObject{
 					"authorizedKeys": []string{sshAuthorizedKey},
 				},
 			},
-			"kernel": map[string]any{
+			"kernel": jsonObject{
 				"commandLine": []string{"katl.vmtest.initial_kernel=1"},
 			},
-			"hostConfiguration": vmtestNetworkHostConfiguration(),
+			"hostConfiguration": vmtestSourceHostConfiguration(),
 		},
 		"nodes": nodes,
 	}
-	source := map[string]any{
+	source := jsonObject{
 		"apiVersion": configbundle.APIVersion,
 		"kind":       configbundle.Kind,
-		"metadata": map[string]any{
+		"metadata": jsonObject{
 			"name": "katl-smoke",
 		},
 		"spec": sourceSpec,
@@ -1129,11 +1131,11 @@ func firstControlPlaneName(spec NodeSpec) string {
 	return "cp-1"
 }
 
-func firstInstallWorldSourceNode(name string, role NodeRole, diskID string) map[string]any {
-	node := map[string]any{
+func firstInstallWorldSourceNode(name string, role NodeRole, diskID string) jsonObject {
+	node := jsonObject{
 		"name": name,
-		"install": map[string]any{
-			"targetDisk": map[string]any{
+		"install": jsonObject{
+			"systemDisk": jsonObject{
 				"byID":       diskID,
 				"minSizeMiB": 32,
 			},
@@ -1256,6 +1258,19 @@ func vmtestNetworkHostConfiguration() map[string]any {
 		"sets": map[string]any{
 			"vmtest-network": map[string]any{
 				"files": []map[string]any{{
+					"path":    "/etc/systemd/network/80-katl-vmtest-dhcp.network",
+					"content": vmtestDHCPNetwork,
+				}},
+			},
+		},
+	}
+}
+
+func vmtestSourceHostConfiguration() jsonObject {
+	return jsonObject{
+		"fileSets": jsonObject{
+			"vmtest-network": jsonObject{
+				"files": []jsonObject{{
 					"path":    "/etc/systemd/network/80-katl-vmtest-dhcp.network",
 					"content": vmtestDHCPNetwork,
 				}},

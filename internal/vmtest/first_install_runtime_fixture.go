@@ -219,6 +219,17 @@ func firstInstallContractRuntimeSHA(contract FirstInstallRuntimeFixtureContract)
 }
 
 func installManifestLocalImagePath(manifestPath string) (string, error) {
+	localRef, err := installManifestLocalImageRef(manifestPath)
+	if err != nil {
+		return "", err
+	}
+	if localRef == "" {
+		return "", fmt.Errorf("install manifest katlosImage.localRef is required when no loose runtime artifact is present")
+	}
+	return filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(localRef)), nil
+}
+
+func installManifestLocalImageRef(manifestPath string) (string, error) {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return "", fmt.Errorf("read install manifest: %w", err)
@@ -233,12 +244,12 @@ func installManifestLocalImagePath(manifestPath string) (string, error) {
 	}
 	localRef := strings.TrimSpace(manifest.KatlosImage.LocalRef)
 	if localRef == "" {
-		return "", fmt.Errorf("install manifest katlosImage.localRef is required when no loose runtime artifact is present")
+		return "", nil
 	}
 	if filepath.IsAbs(localRef) || filepath.Clean(localRef) != localRef || localRef == "." || strings.HasPrefix(localRef, "../") || strings.Contains(localRef, "/../") {
 		return "", fmt.Errorf("install manifest katlosImage.localRef %q must be a clean relative path", localRef)
 	}
-	return filepath.Join(filepath.Dir(manifestPath), filepath.FromSlash(localRef)), nil
+	return localRef, nil
 }
 
 func firstInstallModeForContract(contract FirstInstallRuntimeFixtureContract) FirstInstallWorldMode {
@@ -569,5 +580,5 @@ func targetDiskPathFromResult(result Result) (string, error) {
 }
 
 func isMissingPublishedFirstInstallRuntimeFixture(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "published installed runtime fixture is missing")
+	return errors.Is(err, errPublishedFirstInstallRuntimeFixtureMissing)
 }

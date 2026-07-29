@@ -103,14 +103,15 @@ func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
 	if source.Metadata.Name != "homelab" || configbundle.SourceControlPlaneEndpoint(source) != "" || source.Spec.Kubernetes.Version != configbundle.DefaultKubernetesVersion || len(source.Spec.Nodes) != 2 {
 		t.Fatalf("generated source = %#v", source)
 	}
-	if keys := source.Spec.Defaults.Identity.SSH.AuthorizedKeys; len(keys) != 1 || keys[0] != uxTestSSHKey {
+	keys, _ := source.Spec.Defaults.Access.SSH.AuthorizedKeys.Get()
+	if len(keys) != 1 || keys[0] != uxTestSSHKey {
 		t.Fatalf("authorized keys = %#v", keys)
 	}
 	cp, worker := source.Spec.Nodes[0], source.Spec.Nodes[1]
-	if cp.Name != "cp-1" || !cp.ControlPlane || cp.Bootstrap.Address != "192.0.2.11" || cp.Install.TargetDisk == nil || cp.Install.TargetDisk.ByID != "/dev/disk/by-id/ata-cp-root" {
+	if cp.Name != "cp-1" || !cp.ControlPlane || cp.Management.Address != "192.0.2.11" || cp.Install.SystemDisk == nil || cp.Install.SystemDisk.ByID.Value() != "/dev/disk/by-id/ata-cp-root" {
 		t.Fatalf("control-plane node = %#v", cp)
 	}
-	if worker.Name != "worker-1" || worker.ControlPlane || worker.Bootstrap.Address != "192.0.2.21" || worker.Install.TargetDisk == nil || worker.Install.TargetDisk.WWN != "worker-root-wwn" {
+	if worker.Name != "worker-1" || worker.ControlPlane || worker.Management.Address != "192.0.2.21" || worker.Install.SystemDisk == nil || worker.Install.SystemDisk.WWN.Value() != "worker-root-wwn" {
 		t.Fatalf("worker node = %#v", worker)
 	}
 	if !strings.Contains(stdout.String(), "created "+outputPath) {
@@ -199,11 +200,11 @@ func TestConfigInitFromInstallerAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeSource() error = %v\n%s", err, stdout.String())
 	}
-	if len(source.Spec.Nodes) != 1 || source.Spec.Nodes[0].Name != "cp-1" || source.Spec.Nodes[0].Install.TargetDisk == nil || source.Spec.Nodes[0].Install.TargetDisk.ByID != "/dev/disk/by-id/virtio-root" {
+	if len(source.Spec.Nodes) != 1 || source.Spec.Nodes[0].Name != "cp-1" || source.Spec.Nodes[0].Install.SystemDisk == nil || source.Spec.Nodes[0].Install.SystemDisk.ByID.Value() != "/dev/disk/by-id/virtio-root" {
 		t.Fatalf("generated source = %#v", source)
 	}
-	if got := source.Spec.Nodes[0].Bootstrap.Address; got != "127.0.0.1" {
-		t.Fatalf("bootstrap address = %q", got)
+	if got := source.Spec.Nodes[0].Management.Address; got != "127.0.0.1" {
+		t.Fatalf("management address = %q", got)
 	}
 }
 
