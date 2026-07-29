@@ -453,15 +453,16 @@ func TestCompileRejectsInvalidInput(t *testing.T) {
 			want: "already owned",
 		},
 		{
-			name: "conflicting extra disk",
+			name: "conflicting volume",
 			mut: func(config *Config) {
-				config.Spec.Nodes[0].Overrides.Install.ExtraDisks = append(config.Spec.Nodes[0].Overrides.Install.ExtraDisks, manifest.ExtraDisk{
+				disk := manifest.DiskSelector{Serial: "different"}
+				config.Spec.Nodes[0].Overrides.Install.Volumes = append(config.Spec.Nodes[0].Overrides.Install.Volumes, manifest.Volume{
 					Name:       "data",
-					Selector:   manifest.DiskSelector{Serial: "different"},
+					Selector:   manifest.VolumeSelector{Disk: &disk},
 					Filesystem: "xfs",
 				})
 			},
-			want: "extra disk",
+			want: "volume",
 		},
 		{
 			name: "conflicting node label",
@@ -667,9 +668,11 @@ func validConfig() Config {
 			Defaults: NodeLayer{
 				SSH:               manifest.SSHIdentity{AuthorizedKeys: []string{sshKey}},
 				HostConfiguration: hostConfigurationFile("common-network", "/etc/systemd/network/10-common.network", "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n"),
-				Install: InstallLayer{ExtraDisks: []manifest.ExtraDisk{{
-					Name:       "data",
-					Selector:   manifest.DiskSelector{ByID: "/dev/disk/by-id/ata-data"},
+				Install: InstallLayer{Volumes: []manifest.Volume{{
+					Name: "data",
+					Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{
+						ByID: "/dev/disk/by-id/ata-data",
+					}},
 					Filesystem: "xfs",
 				}}},
 				Bootstrap: BootstrapLayer{Access: inventory.Access{Method: "agent", CredentialRef: "vsock:1234:10240"}},

@@ -264,7 +264,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		Install: manifest.InstallConfig{
 			WipeTarget: config.Spec.WipeTarget,
 			TargetDisk: *layer.Install.TargetDisk,
-			ExtraDisks: append([]manifest.ExtraDisk(nil), layer.Install.ExtraDisks...),
+			Volumes:    append([]manifest.Volume(nil), layer.Install.Volumes...),
 		},
 		KatlosImage: config.Spec.KatlosImage,
 	}

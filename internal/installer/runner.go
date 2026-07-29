@@ -862,8 +862,8 @@ func installedExtraMounts(install *Context) []generation.ExtraMountRequest {
 	if install.DiskLayout == nil {
 		return nil
 	}
-	extraMounts := make([]generation.ExtraMountRequest, 0, len(install.DiskLayout.ExtraMounts))
-	for _, mount := range install.DiskLayout.ExtraMounts {
+	extraMounts := make([]generation.ExtraMountRequest, 0, len(install.DiskLayout.VolumeMounts))
+	for _, mount := range install.DiskLayout.VolumeMounts {
 		extraMounts = append(extraMounts, generation.ExtraMountRequest{
 			Source:     mount.MountSource,
 			Path:       mount.MountPath,

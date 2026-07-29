@@ -1,6 +1,8 @@
 package disk
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 
@@ -8,9 +10,9 @@ import (
 )
 
 const (
-	DefaultESPSizeMiB  = 512
-	MinimumRootMiB     = 1024
-	ExtraDiskMountRoot = "/var/lib/katl/mnt"
+	DefaultESPSizeMiB = 512
+	MinimumRootMiB    = 1024
+	VolumeMountRoot   = "/var/mnt"
 
 	GPTLabelESP      = "KATL_ESP"
 	GPTLabelXBOOTLDR = "KATL_XBOOTLDR"
@@ -21,6 +23,7 @@ const (
 )
 
 type TargetDiskSelector = discovery.TargetDiskSelector
+type PartitionSelector = discovery.PartitionSelector
 type HardwareFacts = discovery.HardwareFacts
 type BlockDevice = discovery.BlockDevice
 type SignatureReport = discovery.SignatureReport
@@ -39,7 +42,7 @@ type DiskLayoutRequest struct {
 	RootB              RootSlotRequest
 	State              StatePartitionRequest
 	Etcd               *FixedPartitionRequest
-	ExtraDisks         []ExtraDiskRequest
+	Volumes            []VolumeRequest
 	InitialRootSlot    RootSlot
 	RuntimeRootSizeMiB uint64
 }
@@ -58,9 +61,10 @@ type FixedPartitionRequest struct {
 	SizeMiB    uint64
 }
 
-type ExtraDiskRequest struct {
+type VolumeRequest struct {
 	Name       string
-	Selector   TargetDiskSelector
+	Disk       *TargetDiskSelector
+	Partition  *PartitionSelector
 	Filesystem string
 	Wipe       bool
 }
@@ -75,7 +79,7 @@ const (
 type DiskLayoutPlan struct {
 	TargetDiskPath string
 	Partitions     []PartitionPlan
-	ExtraMounts    []ExtraDiskPlan
+	VolumeMounts   []VolumePlan
 	Boot           BootTargetMetadata
 	Signatures     []SignatureReport
 }
@@ -90,13 +94,16 @@ type PartitionPlan struct {
 	Remaining  bool
 }
 
-type ExtraDiskPlan struct {
+type VolumePlan struct {
 	Name        string
+	TargetKind  string
 	DevicePath  string
 	MountSource string
 	Filesystem  string
 	MountPath   string
 	Wipe        bool
+	Repartition bool
+	TypeUUID    string
 	Signatures  []SignatureReport
 }
 
@@ -123,7 +130,7 @@ func PlanDiskLayout(facts HardwareFacts, request DiskLayoutRequest) (DiskLayoutP
 		return DiskLayoutPlan{}, err
 	}
 
-	extraMounts, err := planExtraDisks(facts, target.Device, normalized.ExtraDisks)
+	volumeMounts, err := PlanVolumes(facts, target.Device, normalized.Volumes)
 	if err != nil {
 		return DiskLayoutPlan{}, err
 	}
@@ -136,10 +143,168 @@ func PlanDiskLayout(facts HardwareFacts, request DiskLayoutRequest) (DiskLayoutP
 	return DiskLayoutPlan{
 		TargetDiskPath: target.Device.Path,
 		Partitions:     partitions,
-		ExtraMounts:    extraMounts,
+		VolumeMounts:   volumeMounts,
 		Boot:           boot,
 		Signatures:     target.Signatures,
 	}, nil
+}
+
+func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeRequest) ([]VolumePlan, error) {
+	seenNames := make(map[string]struct{}, len(requests))
+	plans := make([]VolumePlan, 0, len(requests))
+	for _, request := range requests {
+		if err := validateMountName("volume", request.Name); err != nil {
+			return nil, err
+		}
+		if _, exists := seenNames[request.Name]; exists {
+			return nil, fmt.Errorf("volume name %q is duplicated", request.Name)
+		}
+		seenNames[request.Name] = struct{}{}
+
+		if (request.Disk == nil) == (request.Partition == nil) {
+			return nil, fmt.Errorf("volume %q must select exactly one of disk or partition", request.Name)
+		}
+		if !IsSupportedVolumeFilesystem(request.Filesystem) {
+			return nil, fmt.Errorf("volume %q filesystem %q is unsupported", request.Name, request.Filesystem)
+		}
+
+		var plan VolumePlan
+		if request.Disk != nil {
+			match, err := discovery.MatchTargetDisk(facts, *request.Disk)
+			if err != nil {
+				return nil, fmt.Errorf("volume %q disk: %w", request.Name, err)
+			}
+			if match.Device.Path == target.Path {
+				return nil, fmt.Errorf("volume %q resolves to target root disk %s", request.Name, target.Path)
+			}
+			label := volumePartitionLabel(request.Name)
+			if request.Wipe {
+				plan = VolumePlan{
+					Name: request.Name, TargetKind: "disk", DevicePath: match.Device.Path,
+					MountSource: "/dev/disk/by-partlabel/" + label, Filesystem: request.Filesystem,
+					MountPath: VolumeMountRoot + "/" + request.Name, Wipe: true, Repartition: true,
+					TypeUUID: volumePartitionTypeUUID(request.Name), Signatures: match.Signatures,
+				}
+			} else {
+				partition, err := volumePartitionOnDisk(match.Device, label)
+				if err != nil {
+					return nil, fmt.Errorf("volume %q disk: %w", request.Name, err)
+				}
+				plan = VolumePlan{
+					Name: request.Name, TargetKind: "disk", DevicePath: partition.Path,
+					MountSource: "/dev/disk/by-partlabel/" + label, Filesystem: request.Filesystem,
+					MountPath: VolumeMountRoot + "/" + request.Name, Signatures: collectVolumeSignatures(partition),
+				}
+				if err := validateReusableVolume(plan, partition.FilesystemSignature); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			match, err := discovery.MatchPartition(facts, *request.Partition)
+			if err != nil {
+				return nil, fmt.Errorf("volume %q partition: %w", request.Name, err)
+			}
+			if match.ParentDisk.Path == target.Path {
+				return nil, fmt.Errorf("volume %q partition is on target root disk %s", request.Name, target.Path)
+			}
+			if isKatlPartitionLabel(match.Device.GPTLabel) {
+				return nil, fmt.Errorf("volume %q resolves to Katl-managed partition %s", request.Name, match.Device.GPTLabel)
+			}
+			mountSource, err := persistentPartitionPath(match.Device, *request.Partition)
+			if err != nil {
+				return nil, fmt.Errorf("volume %q partition: %w", request.Name, err)
+			}
+			plan = VolumePlan{
+				Name: request.Name, TargetKind: "partition", DevicePath: match.Device.Path, MountSource: mountSource,
+				Filesystem: request.Filesystem, MountPath: VolumeMountRoot + "/" + request.Name, Wipe: request.Wipe, Signatures: match.Signatures,
+			}
+			if err := validateReusableVolume(plan, match.Device.FilesystemSignature); err != nil {
+				return nil, err
+			}
+		}
+		plans = append(plans, plan)
+	}
+	return plans, nil
+}
+
+func volumePartitionLabel(name string) string {
+	return "u-" + name
+}
+
+func volumePartitionOnDisk(disk BlockDevice, label string) (BlockDevice, error) {
+	var matches []BlockDevice
+	for _, partition := range disk.Partitions {
+		if partition.GPTLabel == label {
+			matches = append(matches, partition)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return BlockDevice{}, fmt.Errorf("partition label %s was not found; set wipe to true to initialize this disk", label)
+	case 1:
+		return matches[0], nil
+	default:
+		return BlockDevice{}, fmt.Errorf("partition label %s matched %d partitions", label, len(matches))
+	}
+}
+
+func volumePartitionTypeUUID(name string) string {
+	sum := sha256.Sum256([]byte("katl-volume-type:" + name))
+	sum[6] = (sum[6] & 0x0f) | 0x50
+	sum[8] = (sum[8] & 0x3f) | 0x80
+	raw := hex.EncodeToString(sum[:16])
+	return raw[0:8] + "-" + raw[8:12] + "-" + raw[12:16] + "-" + raw[16:20] + "-" + raw[20:32]
+}
+
+func collectVolumeSignatures(partition BlockDevice) []SignatureReport {
+	var signatures []SignatureReport
+	if partition.FilesystemSignature != "" {
+		signatures = append(signatures, SignatureReport{DevicePath: partition.Path, Kind: "filesystem", Value: partition.FilesystemSignature})
+	}
+	if partition.PartitionSignature != "" {
+		signatures = append(signatures, SignatureReport{DevicePath: partition.Path, Kind: "partition-type", Value: partition.PartitionSignature})
+	}
+	return signatures
+}
+
+func validateReusableVolume(plan VolumePlan, existingFilesystem string) error {
+	if plan.Wipe {
+		return nil
+	}
+	switch {
+	case existingFilesystem == "":
+		return fmt.Errorf("volume %q has no reusable filesystem; set wipe to true to format it as %s", plan.Name, plan.Filesystem)
+	case existingFilesystem != plan.Filesystem:
+		return fmt.Errorf("volume %q has filesystem %s, not requested %s; set wipe to true to reformat it", plan.Name, existingFilesystem, plan.Filesystem)
+	default:
+		return nil
+	}
+}
+
+func persistentPartitionPath(device BlockDevice, selector PartitionSelector) (string, error) {
+	switch {
+	case selector.ByID != "":
+		return selector.ByID, nil
+	case selector.PartUUID != "":
+		return "PARTUUID=" + selector.PartUUID, nil
+	case selector.FilesystemUUID != "":
+		return "UUID=" + selector.FilesystemUUID, nil
+	case selector.PartLabel != "":
+		return "/dev/disk/by-partlabel/" + selector.PartLabel, nil
+	default:
+		return "", fmt.Errorf("stable partition identity is required")
+	}
+}
+
+func isKatlPartitionLabel(label string) bool {
+	return slices.Contains([]string{
+		GPTLabelESP,
+		GPTLabelXBOOTLDR,
+		GPTLabelRootA,
+		GPTLabelRootB,
+		GPTLabelState,
+		GPTLabelEtcd,
+	}, label)
 }
 
 func normalizeLayoutRequest(request DiskLayoutRequest) (DiskLayoutRequest, error) {
@@ -211,59 +376,7 @@ func planTargetPartitions(target BlockDevice, request DiskLayoutRequest) ([]Part
 	return partitions, nil
 }
 
-func planExtraDisks(facts HardwareFacts, target BlockDevice, requests []ExtraDiskRequest) ([]ExtraDiskPlan, error) {
-	seenNames := make(map[string]struct{}, len(requests))
-	plans := make([]ExtraDiskPlan, 0, len(requests))
-	for _, request := range requests {
-		if err := validateExtraDiskName(request.Name); err != nil {
-			return nil, err
-		}
-		if _, exists := seenNames[request.Name]; exists {
-			return nil, fmt.Errorf("extra disk name %q is duplicated", request.Name)
-		}
-		seenNames[request.Name] = struct{}{}
-		match, err := discovery.MatchTargetDisk(facts, request.Selector)
-		if err != nil {
-			return nil, fmt.Errorf("extra disk %q: %w", request.Name, err)
-		}
-		if match.Device.Path == target.Path {
-			return nil, fmt.Errorf("extra disk %q resolves to target root disk %s", request.Name, target.Path)
-		}
-		mountSource, err := persistentDevicePath(match.Device, request.Selector)
-		if err != nil {
-			return nil, fmt.Errorf("extra disk %q: %w", request.Name, err)
-		}
-
-		filesystem := request.Filesystem
-		if filesystem == "" {
-			filesystem = "ext4"
-		}
-		if !IsSupportedExtraDiskFilesystem(filesystem) {
-			return nil, fmt.Errorf("extra disk %q filesystem %q is unsupported", request.Name, filesystem)
-		}
-		if !request.Wipe {
-			switch {
-			case match.Device.FilesystemSignature == "":
-				return nil, fmt.Errorf("extra disk %q has no reusable filesystem; set wipe to true to format it as %s", request.Name, filesystem)
-			case match.Device.FilesystemSignature != filesystem:
-				return nil, fmt.Errorf("extra disk %q has filesystem %s, not requested %s; set wipe to true to reformat it", request.Name, match.Device.FilesystemSignature, filesystem)
-			}
-		}
-		plans = append(plans, ExtraDiskPlan{
-			Name:        request.Name,
-			DevicePath:  match.Device.Path,
-			MountSource: mountSource,
-			Filesystem:  filesystem,
-			MountPath:   ExtraDiskMountRoot + "/" + request.Name,
-			Wipe:        request.Wipe,
-			Signatures:  match.Signatures,
-		})
-	}
-
-	return plans, nil
-}
-
-func IsSupportedExtraDiskFilesystem(filesystem string) bool {
+func IsSupportedVolumeFilesystem(filesystem string) bool {
 	for _, capability := range extraDiskFilesystemCapabilities {
 		if capability.Filesystem == filesystem {
 			return true
@@ -304,15 +417,15 @@ func persistentDevicePath(device BlockDevice, selector discovery.TargetDiskSelec
 	return aliases[0], nil
 }
 
-func validateExtraDiskName(name string) error {
+func validateMountName(kind, name string) error {
 	if name == "" {
-		return fmt.Errorf("extra disk name is required")
+		return fmt.Errorf("%s name is required", kind)
 	}
 	for i, value := range name {
 		if value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '-' && i > 0 && i < len(name)-1 {
 			continue
 		}
-		return fmt.Errorf("extra disk name %q must use lowercase letters, digits, and internal dashes", name)
+		return fmt.Errorf("%s name %q must use lowercase letters, digits, and internal dashes", kind, name)
 	}
 	return nil
 }

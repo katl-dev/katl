@@ -219,6 +219,8 @@ func liveAction(domain string) string {
 		return "node-metadata-refresh"
 	case DomainHostConfiguration:
 		return "native-host-configuration-apply"
+	case DomainVolumes:
+		return "volume-prepare-and-activate"
 	default:
 		return "none"
 	}

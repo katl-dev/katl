@@ -198,6 +198,9 @@ fi
 for path in \
     /usr/lib/os-release \
     /usr/bin/blockdev \
+    /usr/bin/mkfs.btrfs \
+    /usr/bin/mkfs.ext4 \
+    /usr/bin/mkfs.xfs \
     /usr/bin/katlc \
     /usr/bin/katl-console \
     /usr/bin/mount.nfs \
@@ -211,8 +214,8 @@ for path in \
     /usr/lib/systemd/system/katl-generation-activate.service \
     /usr/lib/systemd/system/katl-system-extensions-reload.service \
     /usr/lib/systemd/system/katl-system-extensions-activate.service \
-    /usr/lib/systemd/system/katl-extra-disks.target \
-    /usr/lib/systemd/system/katl-extra-disks-activate.service \
+    /usr/lib/systemd/system/katl-volumes.target \
+    /usr/lib/systemd/system/katl-volumes-activate.service \
     /usr/lib/systemd/system/katl-kubeadm-ready.target \
     /usr/lib/systemd/system/katl-kubeadm-activate.service \
     /usr/lib/systemd/system/katl-boot-complete.target \

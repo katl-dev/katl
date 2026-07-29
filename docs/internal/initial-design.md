@@ -192,7 +192,7 @@ machine-id values or machine-id policy
 installer SSH override policy
 artifact trust-root or signing policy
 bootloader, loader entry, or kernel argument policy
-extra disk mount paths or mount options
+volume mount paths, GPT labels, or mount options
 prebuilt confext artifacts in the default path
 arbitrary `/etc` file paths
 Kubernetes-generated mutable state under /etc/kubernetes

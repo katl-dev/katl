@@ -66,6 +66,7 @@ type NodeOverlay struct {
 	Kernel                  *manifest.KernelConfig
 	HostConfiguration       *manifest.HostConfiguration
 	SystemExtensions        *[]manifest.SystemExtension
+	Volumes                 *[]manifest.Volume
 	Kubernetes              *manifest.KubernetesConfig
 	ControlPlaneEndpoint    *controlplaneendpoint.Config
 	ControlPlaneEndpointSet bool
@@ -179,6 +180,13 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
+	volumeFiles, err := volumeMountNativeEtcFiles(merged.Install.Volumes)
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
+	files = append(files, volumeFiles...)
 	files = append(files, unsafeFiles...)
 	audit := request.audit(sourceID, desiredVersion, DecisionAccepted, changes, matrixDecision.Diagnostics, nil, now)
 	audit.CandidateGeneration = request.GenerationID
@@ -514,18 +522,18 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 	if err := validateOverlay("clusterDefaults", request.ClusterDefaults); err != nil {
 		return manifest.Manifest{}, nil, nil, err
 	}
-	applyOverlay(&merged.Node, request.ClusterDefaults, request.KubernetesInitialized, &domains, &unsafeFiles)
+	applyOverlay(&merged, request.ClusterDefaults, request.KubernetesInitialized, &domains, &unsafeFiles)
 	roleOverlay := request.SystemRoleOverrides[merged.Node.SystemRole]
 	if err := validateOverlay("systemRoleOverrides."+merged.Node.SystemRole, roleOverlay); err != nil {
 		return manifest.Manifest{}, nil, nil, err
 	}
-	applyOverlay(&merged.Node, roleOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
+	applyOverlay(&merged, roleOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	nodeOverlay := request.NodeOverrides[request.NodeName]
 	if request.NodeName != "" {
 		if err := validateOverlay("nodeOverrides."+request.NodeName, nodeOverlay); err != nil {
 			return manifest.Manifest{}, nil, nil, err
 		}
-		applyOverlay(&merged.Node, nodeOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
+		applyOverlay(&merged, nodeOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	}
 	if len(domains.domains) == 0 {
 		endpointDrifted, err := endpointRenderingDrifted(request, merged)
@@ -629,10 +637,16 @@ func validateOverlay(path string, overlay NodeOverlay) error {
 			return fmt.Errorf("%s.systemExtensions: %w", path, err)
 		}
 	}
+	if overlay.Volumes != nil {
+		if err := manifest.ValidateVolumes(*overlay.Volumes); err != nil {
+			return fmt.Errorf("%s.volumes: %w", path, err)
+		}
+	}
 	return nil
 }
 
-func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, kubernetesInitialized bool, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
+func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kubernetesInitialized bool, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
+	node := &installManifest.Node
 	if overlay.Identity != nil {
 		if overlay.Identity.Hostname != "" {
 			changed := node.Identity.Hostname != overlay.Identity.Hostname
@@ -680,6 +694,14 @@ func applyOverlay(node *manifest.NodeConfig, overlay NodeOverlay, kubernetesInit
 		node.SystemExtensions = append([]manifest.SystemExtension(nil), (*overlay.SystemExtensions)...)
 		if changed {
 			domains.add(DomainSystemExtensions)
+		}
+	}
+	if overlay.Volumes != nil {
+		current := installManifest.Install.Volumes
+		changed := !(len(current) == 0 && len(*overlay.Volumes) == 0) && !reflect.DeepEqual(current, *overlay.Volumes)
+		installManifest.Install.Volumes = append([]manifest.Volume(nil), (*overlay.Volumes)...)
+		if changed {
+			domains.add(DomainVolumes)
 		}
 	}
 	if overlay.Kubernetes != nil {

@@ -190,12 +190,12 @@ func TestDecodeRejectsInvalidIdentityScalars(t *testing.T) {
 	}
 }
 
-func TestDecodeAcceptsExtraDisks(t *testing.T) {
-	manifest, err := Decode(strings.NewReader(manifestWithInstall(`,
-			"extraDisks": [
+func TestDecodeAcceptsDiskBackedVolume(t *testing.T) {
+	installManifest, err := Decode(strings.NewReader(manifestWithInstall(`,
+			"volumes": [
 				{
 					"name": "data",
-					"selector": {"byID": "/dev/disk/by-id/ata-data"},
+					"selector": {"disk": {"byID": "/dev/disk/by-id/ata-data"}},
 					"filesystem": "btrfs",
 					"wipe": true
 				}
@@ -203,8 +203,25 @@ func TestDecodeAcceptsExtraDisks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if len(manifest.Install.ExtraDisks) != 1 || manifest.Install.ExtraDisks[0].Name != "data" || manifest.Install.ExtraDisks[0].Filesystem != "btrfs" {
-		t.Fatalf("extra disks = %#v", manifest.Install.ExtraDisks)
+	if len(installManifest.Install.Volumes) != 1 || installManifest.Install.Volumes[0].Name != "data" || installManifest.Install.Volumes[0].Selector.Disk == nil {
+		t.Fatalf("volumes = %#v", installManifest.Install.Volumes)
+	}
+}
+
+func TestDecodeAcceptsConventionSelectedPartitionVolume(t *testing.T) {
+	installManifest, err := Decode(strings.NewReader(manifestWithInstall(`,
+			"volumes": [
+				{
+					"name": "local-hostpath",
+					"selector": {"partition": {}},
+					"filesystem": "xfs"
+				}
+			]`)))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(installManifest.Install.Volumes) != 1 || installManifest.Install.Volumes[0].Selector.Partition == nil {
+		t.Fatalf("volumes = %#v", installManifest.Install.Volumes)
 	}
 }
 
@@ -578,15 +595,23 @@ func TestDecodeRejectsDeferredFields(t *testing.T) {
 		{name: "trust", manifest: manifestWithTop(`, "trust": {"roots": []}`), want: "trust"},
 		{name: "boot", manifest: manifestWithTop(`, "boot": {"efi": true}`), want: "boot"},
 		{name: "kernel args", manifest: manifestWithTop(`, "kernelArgs": ["quiet"]`), want: "kernelArgs"},
-		{name: "extra disk mount path", manifest: manifestWithInstall(`,
-			"extraDisks": [
+		{name: "volume mount path", manifest: manifestWithInstall(`,
+			"volumes": [
 				{
 					"name": "data",
-					"selector": {"byID": "/dev/disk/by-id/ata-data"},
+					"selector": {"disk": {"byID": "/dev/disk/by-id/ata-data"}},
 					"filesystem": "xfs",
 					"mount": {"path": "/srv/data"}
 				}
 			]`), want: "mount"},
+		{name: "volume partition label", manifest: manifestWithInstall(`,
+			"volumes": [
+				{
+					"name": "local-hostpath",
+					"selector": {"partition": {"partLabel": "custom"}},
+					"filesystem": "xfs"
+				}
+			]`), want: "partLabel"},
 	}
 
 	for _, tt := range tests {
@@ -604,12 +629,17 @@ func TestDecodeRejectsDeferredFields(t *testing.T) {
 
 func TestBuildDiskLayoutRequestUsesKatlOwnedRootProfile(t *testing.T) {
 	manifest, err := Decode(strings.NewReader(manifestWithInstall(`,
-			"extraDisks": [
+			"volumes": [
 				{
 					"name": "data",
-					"selector": {"byID": "/dev/disk/by-id/ata-data"},
+					"selector": {"disk": {"byID": "/dev/disk/by-id/ata-data"}},
 					"filesystem": "xfs",
 					"wipe": true
+				},
+				{
+					"name": "local-hostpath",
+					"selector": {"partition": {}},
+					"filesystem": "xfs"
 				}
 			]`)))
 	if err != nil {
@@ -640,8 +670,11 @@ func TestBuildDiskLayoutRequestUsesKatlOwnedRootProfile(t *testing.T) {
 	if request.InitialRootSlot != disk.RootSlotB || request.RuntimeRootSizeMiB != 4096 {
 		t.Fatalf("root profile fields = %#v", request)
 	}
-	if len(request.ExtraDisks) != 1 || request.ExtraDisks[0].Filesystem != "xfs" || !request.ExtraDisks[0].Wipe {
-		t.Fatalf("extra disks = %#v", request.ExtraDisks)
+	if len(request.Volumes) != 2 || request.Volumes[0].Disk == nil || !request.Volumes[0].Wipe {
+		t.Fatalf("volumes = %#v", request.Volumes)
+	}
+	if request.Volumes[1].Partition == nil || request.Volumes[1].Partition.PartLabel != "u-local-hostpath" {
+		t.Fatalf("derived partition selector = %#v", request.Volumes[1])
 	}
 }
 

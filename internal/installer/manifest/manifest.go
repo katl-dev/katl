@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
+	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"github.com/katl-dev/katl/internal/installer/networkdconfig"
@@ -244,7 +245,7 @@ type NodeTaint struct {
 type InstallConfig struct {
 	WipeTarget bool         `json:"wipeTarget" yaml:"wipeTarget"`
 	TargetDisk DiskSelector `json:"targetDisk" yaml:"targetDisk"`
-	ExtraDisks []ExtraDisk  `json:"extraDisks,omitempty" yaml:"extraDisks,omitempty"`
+	Volumes    []Volume     `json:"volumes,omitempty" yaml:"volumes,omitempty"`
 }
 
 type DiskSelector struct {
@@ -254,11 +255,22 @@ type DiskSelector struct {
 	MinSizeMiB uint64 `json:"minSizeMiB,omitempty" yaml:"minSizeMiB,omitempty"`
 }
 
-type ExtraDisk struct {
-	Name       string       `json:"name" yaml:"name"`
-	Selector   DiskSelector `json:"selector" yaml:"selector"`
-	Filesystem string       `json:"filesystem" yaml:"filesystem"`
-	Wipe       bool         `json:"wipe,omitempty" yaml:"wipe,omitempty"`
+type PartitionSelector struct {
+	ByID           string `json:"byID,omitempty" yaml:"byID,omitempty"`
+	PartUUID       string `json:"partUUID,omitempty" yaml:"partUUID,omitempty"`
+	FilesystemUUID string `json:"filesystemUUID,omitempty" yaml:"filesystemUUID,omitempty"`
+}
+
+type VolumeSelector struct {
+	Disk      *DiskSelector      `json:"disk,omitempty" yaml:"disk,omitempty"`
+	Partition *PartitionSelector `json:"partition,omitempty" yaml:"partition,omitempty"`
+}
+
+type Volume struct {
+	Name       string         `json:"name" yaml:"name"`
+	Selector   VolumeSelector `json:"selector" yaml:"selector"`
+	Filesystem string         `json:"filesystem" yaml:"filesystem"`
+	Wipe       bool           `json:"wipe,omitempty" yaml:"wipe,omitempty"`
 }
 
 type KatlosImage struct {
@@ -406,27 +418,62 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 			return err
 		}
 	}
-	extraDiskNames := make(map[string]struct{}, len(manifest.Install.ExtraDisks))
-	for i, extra := range manifest.Install.ExtraDisks {
-		if extra.Name == "" {
-			return fmt.Errorf("install.extraDisks[%d].name is required", i)
+	if err := ValidateVolumes(manifest.Install.Volumes); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ValidateVolumes(volumes []Volume) error {
+	volumeNames := make(map[string]struct{}, len(volumes))
+	for i, volume := range volumes {
+		field := fmt.Sprintf("install.volumes[%d]", i)
+		if volume.Name == "" {
+			return fmt.Errorf("%s.name is required", field)
 		}
-		if err := validateNameRef(fmt.Sprintf("install.extraDisks[%d].name", i), extra.Name); err != nil {
+		if err := validateNameRef(field+".name", volume.Name); err != nil {
 			return err
 		}
-		if _, exists := extraDiskNames[extra.Name]; exists {
-			return fmt.Errorf("install.extraDisks[%d].name %q is duplicated", i, extra.Name)
+		if _, exists := volumeNames[volume.Name]; exists {
+			return fmt.Errorf("%s.name %q is duplicated", field, volume.Name)
 		}
-		extraDiskNames[extra.Name] = struct{}{}
-		if err := validateDiskSelector(fmt.Sprintf("install.extraDisks[%d].selector", i), extra.Selector); err != nil {
-			return err
+		volumeNames[volume.Name] = struct{}{}
+		switch {
+		case volume.Selector.Disk != nil && volume.Selector.Partition != nil:
+			return fmt.Errorf("%s.selector must set exactly one of disk or partition", field)
+		case volume.Selector.Disk != nil:
+			if err := validateDiskSelector(field+".selector.disk", *volume.Selector.Disk); err != nil {
+				return err
+			}
+		case volume.Selector.Partition != nil:
+			if err := validatePartitionSelector(field+".selector.partition", *volume.Selector.Partition); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%s.selector must set exactly one of disk or partition", field)
 		}
 		switch {
-		case extra.Filesystem == "":
-			return fmt.Errorf("install.extraDisks[%d].filesystem is required", i)
-		case !disk.IsSupportedExtraDiskFilesystem(extra.Filesystem):
-			return fmt.Errorf("install.extraDisks[%d].filesystem %q is unsupported", i, extra.Filesystem)
+		case volume.Filesystem == "":
+			return fmt.Errorf("%s.filesystem is required", field)
+		case !disk.IsSupportedVolumeFilesystem(volume.Filesystem):
+			return fmt.Errorf("%s.filesystem %q is unsupported", field, volume.Filesystem)
 		}
+	}
+	return nil
+}
+
+func validatePartitionSelector(field string, selector PartitionSelector) error {
+	count := 0
+	for _, value := range []string{selector.ByID, selector.PartUUID, selector.FilesystemUUID} {
+		if strings.TrimSpace(value) != "" {
+			count++
+		}
+	}
+	if count > 1 {
+		return fmt.Errorf("%s must use exactly one stable identity", field)
+	}
+	if selector.ByID != "" && (!strings.HasPrefix(selector.ByID, "/dev/disk/by-id/") || path.Clean(selector.ByID) != selector.ByID) {
+		return fmt.Errorf("%s.byID must be an absolute /dev/disk/by-id path", field)
 	}
 	return nil
 }
@@ -1187,15 +1234,7 @@ func BuildDiskLayoutRequest(manifest Manifest, profile RootDiskProfile, runtimeR
 		profile.InitialRootSlot = disk.RootSlotA
 	}
 
-	extraDisks := make([]disk.ExtraDiskRequest, 0, len(manifest.Install.ExtraDisks))
-	for _, extra := range manifest.Install.ExtraDisks {
-		extraDisks = append(extraDisks, disk.ExtraDiskRequest{
-			Name:       extra.Name,
-			Selector:   diskSelector(extra.Selector),
-			Filesystem: extra.Filesystem,
-			Wipe:       extra.Wipe,
-		})
-	}
+	volumes := BuildVolumeRequests(manifest.Install.Volumes)
 
 	return disk.DiskLayoutRequest{
 		TargetDisk:         diskSelector(manifest.Install.TargetDisk),
@@ -1204,10 +1243,42 @@ func BuildDiskLayoutRequest(manifest Manifest, profile RootDiskProfile, runtimeR
 		RootA:              disk.RootSlotRequest{SizeMiB: profile.RootSlotSizeMiB},
 		RootB:              disk.RootSlotRequest{SizeMiB: profile.RootSlotSizeMiB},
 		State:              disk.StatePartitionRequest{Filesystem: profile.StateFilesystem, MinSizeMiB: profile.StateMinSizeMiB},
-		ExtraDisks:         extraDisks,
+		Volumes:            volumes,
 		InitialRootSlot:    profile.InitialRootSlot,
 		RuntimeRootSizeMiB: runtimeRootSizeMiB,
 	}, nil
+}
+
+func BuildVolumeRequests(volumes []Volume) []disk.VolumeRequest {
+	requests := make([]disk.VolumeRequest, 0, len(volumes))
+	for _, volume := range volumes {
+		request := disk.VolumeRequest{
+			Name:       volume.Name,
+			Filesystem: volume.Filesystem,
+			Wipe:       volume.Wipe,
+		}
+		if volume.Selector.Disk != nil {
+			selector := diskSelector(*volume.Selector.Disk)
+			request.Disk = &selector
+		} else {
+			selector := partitionSelector(volume.Name, *volume.Selector.Partition)
+			request.Partition = &selector
+		}
+		requests = append(requests, request)
+	}
+	return requests
+}
+
+func partitionSelector(name string, selector PartitionSelector) discovery.PartitionSelector {
+	out := discovery.PartitionSelector{
+		ByID:           selector.ByID,
+		PartUUID:       selector.PartUUID,
+		FilesystemUUID: selector.FilesystemUUID,
+	}
+	if out.ByID == "" && out.PartUUID == "" && out.FilesystemUUID == "" {
+		out.PartLabel = "u-" + name
+	}
+	return out
 }
 
 func diskSelector(selector DiskSelector) disk.TargetDiskSelector {

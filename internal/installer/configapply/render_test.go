@@ -16,6 +16,9 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
 		NodeName: "cp-1",
 		Manifest: manifest.Manifest{
+			Install: manifest.InstallConfig{Volumes: []manifest.Volume{{
+				Name: "local-hostpath", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{}}, Filesystem: "xfs",
+			}}},
 			Node: manifest.NodeConfig{
 				Identity: manifest.NodeIdentity{
 					Hostname: "cp-1",
@@ -61,6 +64,9 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	}
 	if !overlay.ControlPlaneEndpointSet || overlay.ControlPlaneEndpoint == nil || overlay.ControlPlaneEndpoint.Advertisement == nil {
 		t.Fatalf("rendered control-plane endpoint = %#v, set=%t", overlay.ControlPlaneEndpoint, overlay.ControlPlaneEndpointSet)
+	}
+	if overlay.Volumes == nil || len(*overlay.Volumes) != 1 || (*overlay.Volumes)[0].Name != "local-hostpath" {
+		t.Fatalf("rendered volumes = %#v", overlay.Volumes)
 	}
 	if strings.Contains(string(data), "install:") {
 		t.Fatalf("rendered change contains install fields:\n%s", data)

@@ -916,10 +916,11 @@ spec:
     install:
       targetDiskDefaults:
         minSizeMiB: 65536
-      extraDisks:
+      volumes:
         - name: data
           selector:
-            byID: /dev/disk/by-id/ata-data
+            disk:
+              byID: /dev/disk/by-id/ata-data
           filesystem: xfs
     identity:
       ssh:

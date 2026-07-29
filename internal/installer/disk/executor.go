@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -46,6 +48,7 @@ type DiskOperation struct {
 	Command     string
 	Args        []string
 	Stdin       string
+	Definition  string
 	Destructive bool
 }
 
@@ -137,6 +140,10 @@ func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecuti
 			if err := commands.RunInput(ctx, operation.Stdin, operation.Command, operation.Args...); err != nil {
 				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 			}
+		} else if operation.Definition != "" {
+			if err := runRepartOperation(ctx, e.Commands, operation); err != nil {
+				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
+			}
 		} else if err := e.Commands.Run(ctx, operation.Command, operation.Args...); err != nil {
 			return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 		}
@@ -148,6 +155,22 @@ func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecuti
 	}
 
 	return result, nil
+}
+
+func runRepartOperation(ctx context.Context, commands CommandRunner, operation DiskOperation) error {
+	dir, err := os.MkdirTemp("", "katl-repart-")
+	if err != nil {
+		return fmt.Errorf("create repart definition directory: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	if err := os.WriteFile(filepath.Join(dir, "50-katl-volume.conf"), []byte(operation.Definition), 0o600); err != nil {
+		return fmt.Errorf("write repart definition: %w", err)
+	}
+	args := make([]string, len(operation.Args))
+	for i, arg := range operation.Args {
+		args[i] = strings.ReplaceAll(arg, "{definitions}", dir)
+	}
+	return commands.Run(ctx, operation.Command, args...)
 }
 
 func filterOperations(operations []DiskOperation, group DiskOperationGroup) []DiskOperation {
@@ -163,9 +186,9 @@ func filterOperations(operations []DiskOperation, group DiskOperationGroup) []Di
 func operationInGroup(operation DiskOperation, group DiskOperationGroup) bool {
 	switch group {
 	case PrepareOperations:
-		return operation.Name == "wipe-target-signatures" || strings.HasPrefix(operation.Name, "wipe-extra-")
+		return operation.Name == "wipe-target-signatures"
 	case PartitionOperations:
-		return operation.Name == "create-gpt" || operation.Name == "reread-partitions" || operation.Name == "settle-partitions"
+		return operation.Name == "create-gpt" || operation.Name == "reread-partitions" || operation.Name == "settle-partitions" || strings.HasPrefix(operation.Name, "repart-volume-") || strings.HasPrefix(operation.Name, "settle-volume-")
 	case FormatOperations:
 		return strings.HasPrefix(operation.Name, "format-")
 	case MountOperations:
@@ -210,16 +233,33 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 		operations = append(operations, DiskOperation{Name: "install-systemd-boot", Command: "bootctl", Args: []string{"install"}, Destructive: true})
 	}
 
-	for _, extra := range plan.ExtraMounts {
-		if extra.Wipe {
-			operations = append(operations, DiskOperation{Name: "wipe-extra-" + extra.Name, Command: "wipefs", Args: []string{"--all", extra.DevicePath}, Destructive: true})
-			operations = append(operations, DiskOperation{Name: "format-extra-" + extra.Name, Command: "mkfs." + extra.Filesystem, Args: []string{extra.DevicePath}, Destructive: true})
+	for _, volume := range plan.VolumeMounts {
+		if volume.Repartition {
+			operations = append(operations, DiskOperation{
+				Name: "repart-volume-" + volume.Name, Command: "systemd-repart",
+				Args:       []string{"--dry-run=no", "--empty=force", "--definitions={definitions}", volume.DevicePath},
+				Definition: RepartDefinition(volume), Destructive: true,
+			})
+			operations = append(operations, DiskOperation{Name: "settle-volume-" + volume.Name, Command: "udevadm", Args: []string{"settle"}})
+		} else if volume.Wipe {
+			operations = append(operations, DiskOperation{Name: "wipe-volume-" + volume.Name, Command: "wipefs", Args: []string{"--all", volume.DevicePath}, Destructive: true})
+			operations = append(operations, DiskOperation{Name: "format-volume-" + volume.Name, Command: "mkfs." + volume.Filesystem, Args: []string{volume.DevicePath}, Destructive: true})
 		}
-		operations = append(operations, DiskOperation{Name: "create-mountpoint-extra-" + extra.Name, Command: "mkdir", Args: []string{"-p", targetMountPrefix + extra.MountPath}})
-		operations = append(operations, DiskOperation{Name: "mount-extra-" + extra.Name, Command: "mount", Args: []string{extra.DevicePath, targetMountPrefix + extra.MountPath}})
+		operations = append(operations, DiskOperation{Name: "create-mountpoint-volume-" + volume.Name, Command: "mkdir", Args: []string{"-p", targetMountPrefix + volume.MountPath}})
+		operations = append(operations, DiskOperation{Name: "mount-volume-" + volume.Name, Command: "mount", Args: []string{volume.MountSource, targetMountPrefix + volume.MountPath}})
 	}
 
 	return operations
+}
+
+func RepartDefinition(volume VolumePlan) string {
+	return strings.Join([]string{
+		"[Partition]",
+		"Type=" + volume.TypeUUID,
+		"Label=" + volumePartitionLabel(volume.Name),
+		"Format=" + volume.Filesystem,
+		"",
+	}, "\n")
 }
 
 func sfdiskScript(plan DiskLayoutPlan) string {
@@ -306,10 +346,10 @@ func ValidateAppliedLayoutAt(facts HardwareFacts, plan DiskLayoutPlan, targetMou
 		return fmt.Errorf("XBOOTLDR partition is not mounted at %s", targetPath(targetMountPrefix, "/boot"))
 	}
 
-	for _, extra := range plan.ExtraMounts {
-		target := targetPath(targetMountPrefix, extra.MountPath)
+	for _, volume := range plan.VolumeMounts {
+		target := targetPath(targetMountPrefix, volume.MountPath)
 		if !mountExists(facts.Mounts, target) {
-			return fmt.Errorf("extra disk %q is not mounted at %s", extra.Name, target)
+			return fmt.Errorf("volume %q is not mounted at %s", volume.Name, target)
 		}
 	}
 

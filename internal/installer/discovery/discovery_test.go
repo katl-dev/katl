@@ -183,6 +183,56 @@ func TestMatchTargetDiskRejectsUnstableOrAmbiguousSelectors(t *testing.T) {
 	}
 }
 
+func TestMatchPartitionUsesStableIdentitiesAndRejectsMountedOrAmbiguousMatches(t *testing.T) {
+	data := BlockDevice{
+		Path:                "/dev/nvme1n1p1",
+		Type:                DevicePartition,
+		ByID:                []string{"/dev/disk/by-id/nvme-data-part1"},
+		GPTLabel:            "u-local-hostpath",
+		PartitionUUID:       "part-uuid",
+		FilesystemUUID:      "fs-uuid",
+		FilesystemSignature: "xfs",
+	}
+	facts := HardwareFacts{BlockDevices: []BlockDevice{{
+		Path:       "/dev/nvme1n1",
+		Type:       DeviceDisk,
+		Partitions: []BlockDevice{data},
+	}}}
+
+	for name, selector := range map[string]PartitionSelector{
+		"by-id":           {ByID: "/dev/disk/by-id/nvme-data-part1"},
+		"partuuid":        {PartUUID: "part-uuid"},
+		"filesystem uuid": {FilesystemUUID: "fs-uuid"},
+		"partlabel":       {PartLabel: "u-local-hostpath"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			match, err := MatchPartition(facts, selector)
+			if err != nil {
+				t.Fatalf("MatchPartition() error = %v", err)
+			}
+			if match.Device.Path != data.Path || match.ParentDisk.Path != "/dev/nvme1n1" {
+				t.Fatalf("match = %#v", match)
+			}
+		})
+	}
+
+	mounted := facts
+	mounted.Mounts = []MountFact{{Source: "UUID=fs-uuid", Target: "/var/mnt/data"}}
+	if _, err := MatchPartition(mounted, PartitionSelector{FilesystemUUID: "fs-uuid"}); !errors.Is(err, ErrUnsafeTargetDisk) {
+		t.Fatalf("mounted MatchPartition() error = %v, want ErrUnsafeTargetDisk", err)
+	}
+
+	ambiguous := facts
+	ambiguous.BlockDevices = append(ambiguous.BlockDevices, BlockDevice{
+		Path: "/dev/nvme2n1", Type: DeviceDisk, Partitions: []BlockDevice{{
+			Path: "/dev/nvme2n1p1", Type: DevicePartition, GPTLabel: "u-local-hostpath",
+		}},
+	})
+	if _, err := MatchPartition(ambiguous, PartitionSelector{PartLabel: "u-local-hostpath"}); err == nil {
+		t.Fatal("ambiguous MatchPartition() error = nil, want failure")
+	}
+}
+
 func factsWithDisk(device BlockDevice) HardwareFacts {
 	return HardwareFacts{BlockDevices: []BlockDevice{device}}
 }

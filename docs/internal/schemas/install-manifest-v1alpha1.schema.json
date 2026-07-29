@@ -88,12 +88,12 @@
         "targetDisk": {
           "$ref": "#/$defs/diskSelector"
         },
-        "extraDisks": {
+        "volumes": {
           "type": "array",
           "default": [],
           "uniqueItems": true,
           "items": {
-            "$ref": "#/$defs/extraDisk"
+            "$ref": "#/$defs/volume"
           }
         }
       }
@@ -207,21 +207,61 @@
       "maxLength": 63,
       "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
     },
-    "extraDisk": {
+    "partitionSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 1,
+      "properties": {
+        "byID": {
+          "type": "string",
+          "pattern": "^/dev/disk/by-id/[^/]+$"
+        },
+        "partUUID": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "filesystemUUID": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "volumeSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "disk": {
+          "$ref": "#/$defs/diskSelector"
+        },
+        "partition": {
+          "$ref": "#/$defs/partitionSelector"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "disk"
+          ]
+        },
+        {
+          "required": [
+            "partition"
+          ]
+        }
+      ]
+    },
+    "volume": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "name",
-        "selector",
         "filesystem"
       ],
       "properties": {
         "name": {
           "$ref": "#/$defs/dnsLabel",
-          "description": "Name used by Katl to derive /var/lib/katl/mnt/<name>."
+          "description": "Name used by Katl to derive /var/mnt/<name>."
         },
         "selector": {
-          "$ref": "#/$defs/diskSelector"
+          "$ref": "#/$defs/volumeSelector"
         },
         "filesystem": {
           "enum": [
@@ -233,7 +273,7 @@
         "wipe": {
           "type": "boolean",
           "default": false,
-          "description": "When true, wipe and format this selected disk. When false, require and preserve a matching existing filesystem."
+          "description": "When true, authorize formatting the selected target. A disk selector is reinitialized with systemd-repart; a partition selector never repartitions its parent disk."
         }
       }
     },

@@ -13,7 +13,7 @@ const (
 	DomainModulesLoad                   = "modules-load"
 	DomainTmpfiles                      = "tmpfiles"
 	DomainMountUnits                    = "mount-units"
-	DomainExtraDisks                    = "extra-disks"
+	DomainVolumes                       = "volumes"
 	DomainKubeadmConfig                 = "kubeadm-config"
 	DomainBootstrapNodeMetadata         = "bootstrap-node-metadata"
 	DomainSSHOperatorAccess             = "ssh-operator-access"
@@ -331,9 +331,10 @@ var domainPolicies = map[string]domainPolicy{
 		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},
-	DomainExtraDisks: {
-		Classification:  ClassificationStagedOnly,
-		NextBootAllowed: true,
+	DomainVolumes: {
+		Classification:      ClassificationOnlineApplicable,
+		NextBootAllowed:     false,
+		LiveRejectionReason: "volume changes require live target discovery and preparation; use live or auto apply",
 	},
 	DomainSSHOperatorAccess: {
 		Classification:  ClassificationStagedOnly,

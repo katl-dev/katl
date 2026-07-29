@@ -39,6 +39,7 @@ type clusterNodeStatus struct {
 	Kubernetes           *kubernetesStatusReport        `json:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointReport    `json:"controlPlaneEndpoint,omitempty"`
 	SystemExtensions     []clusterSystemExtensionStatus `json:"systemExtensions,omitempty"`
+	Volumes              []volumeStatusReport           `json:"volumes,omitempty"`
 }
 
 type clusterSystemExtensionStatus struct {
@@ -138,6 +139,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result.Activity = host.Activity
 			result.Kubernetes = host.Kubernetes
 			result.ControlPlaneEndpoint = host.ControlPlaneEndpoint
+			result.Volumes = append(result.Volumes, host.Volumes...)
 			for _, extension := range status.GetSystemExtensions() {
 				result.SystemExtensions = append(result.SystemExtensions, clusterSystemExtensionStatus{
 					Name: extension.GetName(), Desired: extension.GetDesiredState(), Staging: extension.GetStagingState(),
@@ -185,6 +187,13 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		for _, extension := range node.SystemExtensions {
 			fmt.Fprintf(w, "\t\t\textension %s: desired=%s staged=%s active=%s generation=%s reboot=%s\n",
 				extension.Name, extension.Desired, extension.Staging, extension.Activation, extension.Generation, yesNo(extension.Reboot))
+		}
+		for _, volume := range node.Volumes {
+			fmt.Fprintf(w, "\t\t\tvolume %s: target=%s mount=%s filesystem=%s state=%s\n",
+				volume.Name, volume.TargetKind, volume.MountPath, volume.Filesystem, firstNonEmpty(volume.ActiveState, "unknown"))
+			if volume.FailureDiagnostic != "" {
+				fmt.Fprintf(w, "\t\t\t%s\n", volume.FailureDiagnostic)
+			}
 		}
 	}
 	return w.Flush()

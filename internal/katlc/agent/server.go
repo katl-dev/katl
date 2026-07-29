@@ -230,6 +230,10 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read system extension status: %v", err)
 	}
+	volumes, err := nodeVolumeStatus(ctx, s.Root, currentGenerationID, s.RunSystemExtensionStatus)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read volume status: %v", err)
+	}
 	return &agentapi.NodeStatus{
 		ApiVersion:              APIVersion,
 		MachineId:               machineID,
@@ -244,6 +248,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		ControlPlaneEndpoint:    endpointStatus,
 		Kubernetes:              kubernetesStatus,
 		SystemExtensions:        systemExtensions,
+		Volumes:                 volumes,
 	}, nil
 }
 

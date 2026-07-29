@@ -52,6 +52,7 @@ type nodeConfigurationOverlay struct {
 	Kernel               *manifest.KernelConfig       `json:"kernel,omitempty" yaml:"kernel,omitempty"`
 	HostConfiguration    *manifest.HostConfiguration  `json:"hostConfiguration,omitempty" yaml:"hostConfiguration,omitempty"`
 	SystemExtensions     *[]manifest.SystemExtension  `json:"systemExtensions,omitempty" yaml:"systemExtensions,omitempty"`
+	Volumes              *[]manifest.Volume           `json:"volumes,omitempty" yaml:"volumes,omitempty"`
 	Kubernetes           *manifest.KubernetesConfig   `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
 	LivePreflight        map[string]bool              `json:"livePreflight,omitempty" yaml:"livePreflight,omitempty"`
@@ -159,6 +160,7 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 		Kernel:            overlay.Kernel,
 		HostConfiguration: overlay.HostConfiguration,
 		SystemExtensions:  overlay.SystemExtensions,
+		Volumes:           overlay.Volumes,
 		Kubernetes:        overlay.Kubernetes,
 		KubeadmChanged:    kubeadmChanged,
 		LivePreflight:     overlay.LivePreflight,
