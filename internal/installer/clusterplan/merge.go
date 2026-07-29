@@ -19,7 +19,7 @@ func mergedLayer(layers ...NodeLayer) (NodeLayer, error) {
 			return NodeLayer{}, err
 		}
 	}
-	sortExtraDisks(out.Install.ExtraDisks)
+	sortVolumes(out.Install.Volumes)
 	return out, nil
 }
 
@@ -52,11 +52,11 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 		return NodeLayer{}, err
 	}
 	out.Install.TargetDiskDefaults = defaults
-	extra, err := mergeExtraDisks(out.Install.ExtraDisks, next.Install.ExtraDisks)
+	volumes, err := mergeVolumes(out.Install.Volumes, next.Install.Volumes)
 	if err != nil {
 		return NodeLayer{}, err
 	}
-	out.Install.ExtraDisks = extra
+	out.Install.Volumes = volumes
 	if strings.TrimSpace(next.Kubernetes.Address) != "" {
 		out.Kubernetes.Address = strings.TrimSpace(next.Kubernetes.Address)
 	}
@@ -236,24 +236,24 @@ func taintKey(taint manifest.NodeTaint) string {
 	return taint.Key + "\x00" + taint.Effect
 }
 
-func mergeExtraDisks(base, next []manifest.ExtraDisk) ([]manifest.ExtraDisk, error) {
-	disks := append([]manifest.ExtraDisk(nil), base...)
-	index := make(map[string]int, len(disks))
-	for i, disk := range disks {
-		index[disk.Name] = i
+func mergeVolumes(base, next []manifest.Volume) ([]manifest.Volume, error) {
+	volumes := append([]manifest.Volume(nil), base...)
+	index := make(map[string]int, len(volumes))
+	for i, volume := range volumes {
+		index[volume.Name] = i
 	}
-	for _, disk := range next {
-		if i, ok := index[disk.Name]; ok {
-			if !same(disks[i], disk) {
-				return nil, fmt.Errorf("extra disk %q has conflicting settings", disk.Name)
+	for _, volume := range next {
+		if i, ok := index[volume.Name]; ok {
+			if !same(volumes[i], volume) {
+				return nil, fmt.Errorf("volume %q has conflicting settings", volume.Name)
 			}
 			continue
 		}
-		index[disk.Name] = len(disks)
-		disks = append(disks, disk)
+		index[volume.Name] = len(volumes)
+		volumes = append(volumes, volume)
 	}
-	sortExtraDisks(disks)
-	return disks, nil
+	sortVolumes(volumes)
+	return volumes, nil
 }
 
 func mergeAccess(base, next inventory.Access) inventory.Access {
@@ -291,8 +291,8 @@ func appendUnique(base, next []string) []string {
 	return out
 }
 
-func sortExtraDisks(disks []manifest.ExtraDisk) {
-	sort.Slice(disks, func(i, j int) bool { return disks[i].Name < disks[j].Name })
+func sortVolumes(volumes []manifest.Volume) {
+	sort.Slice(volumes, func(i, j int) bool { return volumes[i].Name < volumes[j].Name })
 }
 
 func sortTaints(taints []manifest.NodeTaint) {

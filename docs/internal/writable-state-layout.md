@@ -18,20 +18,20 @@ systemd-gpt-auto type var only when the target disk is unambiguous
 Persistent identity must not be stored in `/run`. `/run` is only for boot-local
 activation links and service handoff state that can be regenerated from `/var`.
 
-## Extra Disk Placement
+## Volume Placement
 
-Katl mounts configured non-root data disks below
-`/var/lib/katl/mnt/<extra-disk-name>`. The name is operator supplied, but the
-mount path is Katl controlled and is not part of the install configuration
-surface. This prevents an extra disk from shadowing runtime, Kubernetes, or
-generation state.
+Katl mounts configured non-root data volumes below `/var/mnt/<name>`. The name
+is operator supplied, but the mount path and GPT label `u-<name>` are
+Katl-controlled conventions. This prevents a volume from shadowing runtime,
+Kubernetes, or generation state.
 
-`wipe: false` is the preservation path: the selected whole disk must already
-contain the requested filesystem, and Katl mounts it without wiping or
-formatting it. A blank disk or filesystem mismatch fails planning with guidance
-to set `wipe: true` if reformatting is intended. `wipe: true` wipes and formats
-only the selected extra disk. The supported extra-disk filesystems are `ext4`,
-`xfs`, and `btrfs`.
+Each volume selects exactly one whole disk or one partition. `wipe: false` is
+the preservation path: the selected target must already contain the requested
+filesystem. A disk selector resolves its convention-labelled partition.
+`wipe: true` formats the selected target; for a disk selector Katl reinitializes
+the disk with a single convention-labelled partition through
+`systemd-repart`, while a partition selector never repartitions its parent.
+The supported filesystems are `ext4`, `xfs`, and `btrfs`.
 
 ## Etcd Data Placement
 
@@ -43,7 +43,7 @@ experiments, and control-plane nodes on the same base install layout until the
 installer has role-aware storage policy.
 
 A dedicated etcd data partition is a future Katl-owned root-disk partition, not
-an `extraDisks` mount. When exposed in the install manifest, it should be a
+an `install.volumes` mount. When exposed in the install manifest, it should be a
 first-class field under install storage, for example:
 
 ```json
@@ -90,7 +90,7 @@ paths for services:
 | `var.mount` | installed `KATL_STATE` partition by PARTUUID | `/var` | Required local filesystem; no `nofail`; must be active before any persistent node service starts |
 | `etc-kubernetes.mount` | `/var/lib/katl/kubernetes/etc-kubernetes` bind source | `/etc/kubernetes` | Only writable `/etc` projection in the first implementation; active after confext and before kubelet or kubeadm automation |
 | `var-lib-etcd.mount` | optional installed `KATL_ETCD` partition by PARTUUID | `/var/lib/etcd` | Generated only when a dedicated etcd partition was planned; active before kubelet, kubeadm automation, and the kubeadm-ready target |
-| `var-lib-katl-mnt-<name>.mount` | selected extra disk by durable `/dev/disk/by-id` identity | `/var/lib/katl/mnt/<name>` | Generated for each configured extra disk; active after `var.mount` through `katl-extra-disks.target` and required before boot health succeeds |
+| `var-mnt-<name>.mount` | disk- or partition-backed Katl volume by stable identity | `/var/mnt/<name>` | Generated for each configured volume; disk initialization uses a convention-labelled `systemd-repart` partition, partition selection never repartitions its parent, and all mounts are required before boot health succeeds |
 
 No mount units are generated for `/var/lib/kubelet` or
 `/var/lib/containerd` in the default model. They are native directories on the

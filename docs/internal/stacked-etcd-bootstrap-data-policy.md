@@ -62,7 +62,7 @@ partition mounted at `/var`.
 
 An optional Katl-owned `KATL_ETCD` partition may be mounted at `/var/lib/etcd`
 when the install storage plan explicitly requests it. That partition is still
-persistent node state, not a generation artifact. It is not an `extraDisks`
+persistent node state, not a generation artifact. It is not an `install.volumes`
 mount and must be planned as part of the root-disk storage layout so the
 installer can reject ambiguous or unsafe placement.
 

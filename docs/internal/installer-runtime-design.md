@@ -363,7 +363,7 @@ policy.
 The current manifest deliberately does not expose a separate manifest name,
 metadata labels, user-chosen generation IDs, node matching selectors, SSH
 enable/disable policy, installer SSH overrides, artifact trust roots, bootloader
-policy, loader entry names, kernel arguments, or extra disk mount options. The
+policy, loader entry names, kernel arguments, or volume mount options. The
 hostname under `node.identity.hostname` is the only per-node identity field.
 Those can be added later through explicit design when there is a concrete
 implementation need.
@@ -427,13 +427,14 @@ SSH and identity
   /var/lib/katl/identity/machine-id, and renders it into generation 0 boot
   metadata with systemd.machine_id=
 
-extra disks
-  selectors must not resolve to the target root disk or its partitions; names
-  must be unique and Katl derives each mount path as
-  /var/lib/katl/mnt/<name>; supported filesystems are ext4, xfs, and btrfs;
-  wipe=false requires an existing filesystem matching the requested type and
-  preserves it, while wipe=true authorizes formatting only that selected extra
-  disk; custom mount paths and mount options are deferred
+volumes
+  each selector chooses exactly one whole disk or partition and must not
+  resolve to the target root disk or Katl-managed partitions; names are unique
+  and derive GPT label u-<name> plus mount /var/mnt/<name>; supported
+  filesystems are ext4, xfs, and btrfs; wipe=false preserves a matching
+  existing filesystem, while wipe=true authorizes formatting the selected
+  target; disk initialization uses a Go-planned systemd-repart definition;
+  custom labels, mount paths, and mount options are not supported
 ```
 
 Runtime first-boot seed material may configure:
@@ -466,7 +467,7 @@ loading the install manifest
 selecting the node config
 collecting hardware facts
 validating target disk identity and size
-validating extra disk identity, filesystem, preservation, and mount requests
+validating volume target identity, filesystem, preservation, and mount requests
 verifying artifact signatures and digests
 building an install plan
 persisting install progress when the state partition exists
@@ -479,7 +480,7 @@ installing systemd-boot
 installing UKIs and loader entries
 not installing or caching Kubernetes sysext artifacts for generation 0
 materializing generated confext from trusted manifest input
-generating runtime mount units for /var, /etc/kubernetes, and extra disks
+generating runtime mount units for /var, /etc/kubernetes, and volumes
 writing runtime seed data
 writing install records under /var/lib/katl
 verifying the final mounted layout

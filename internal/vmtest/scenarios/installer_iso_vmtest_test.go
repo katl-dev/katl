@@ -139,6 +139,13 @@ install:
   wipeTarget: true
   targetDisk:
     byID: /dev/disk/by-id/virtio-katl-root
+  volumes:
+    - name: data
+      selector:
+        disk:
+          byID: /dev/disk/by-id/virtio-katl-data
+      filesystem: xfs
+      wipe: true
 `, installerISOTestSSHKey))
 	vm := vmtest.VMConfig{
 		KVM:     options.KVM,
@@ -148,10 +155,16 @@ install:
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	result, err := vmtest.RunFirstInstall(ctx, vmtest.NewRunner(options), vmtest.Scenario{Name: "installer-iso-first-install"}, vmtest.FirstInstallConfig{
+	result, err := vmtest.RunFirstInstall(ctx, vmtest.NewRunner(options), vmtest.Scenario{
+		Name: "installer-iso-first-install",
+		Disks: []vmtest.DiskFixture{
+			vmtest.TargetDisk("root", string(vmtest.DiskRaw), "32G"),
+			vmtest.ExtraDisk("data", string(vmtest.DiskRaw), "4G"),
+		},
+	}, vmtest.FirstInstallConfig{
 		Installer: vmtest.InstallerBootConfig{InstallerISO: iso, VM: vm},
 		Runtime: vmtest.InstalledRuntimeConfig{
-			Expect: "katl.generation=0 katl.root-slot=root-a",
+			Expect: "katl-boot-health generation=0 result=success",
 			VM:     vm,
 		},
 		Manifest:            manifest,

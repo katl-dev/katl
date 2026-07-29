@@ -132,7 +132,7 @@ func extraMountNativeEtcFiles(requests []generation.ExtraMountRequest) ([]confex
 	}
 	if len(unitNames) > 0 {
 		files = append(files, confext.NativeEtcFile{
-			Path: "/etc/systemd/system/katl-extra-disks.target.d/50-mounts.conf",
+			Path: "/etc/systemd/system/katl-volumes.target.d/50-mounts.conf",
 			Content: strings.Join([]string{
 				"[Unit]",
 				"Requires=" + strings.Join(unitNames, " "),

@@ -38,6 +38,20 @@ message NodeStatus {
   ControlPlaneEndpointStatus control_plane_endpoint = 11;
   KubernetesStatus kubernetes = 12;
   repeated SystemExtensionStatus system_extensions = 13;
+  repeated VolumeStatus volumes = 14;
+}
+
+message VolumeStatus {
+  string name = 1;
+  string target_kind = 2;
+  string mount_path = 3;
+  string filesystem = 4;
+  string load_state = 5;
+  string active_state = 6;
+  string sub_state = 7;
+  string result = 8;
+  string state_change_timestamp = 9;
+  string failure_diagnostic = 10;
 }
 
 message SystemExtensionStatus {

@@ -113,7 +113,7 @@ type SourceIdentity struct {
 type SourceInstallLayer struct {
 	TargetDisk         *manifest.DiskSelector `yaml:"targetDisk,omitempty" json:"targetDisk,omitempty"`
 	TargetDiskDefaults *manifest.DiskSelector `yaml:"targetDiskDefaults,omitempty" json:"targetDiskDefaults,omitempty"`
-	ExtraDisks         []manifest.ExtraDisk   `yaml:"extraDisks,omitempty" json:"extraDisks,omitempty"`
+	Volumes            []manifest.Volume      `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 }
 
 type SourceKubernetesCluster struct {
@@ -460,7 +460,7 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 		Install: clusterplan.InstallLayer{
 			TargetDisk:         layer.Install.TargetDisk,
 			TargetDiskDefaults: layer.Install.TargetDiskDefaults,
-			ExtraDisks:         append([]manifest.ExtraDisk(nil), layer.Install.ExtraDisks...),
+			Volumes:            append([]manifest.Volume(nil), layer.Install.Volumes...),
 		},
 		Kubernetes: clusterplan.KubernetesLayer{
 			Address:    strings.TrimSpace(layer.Kubernetes.Address),

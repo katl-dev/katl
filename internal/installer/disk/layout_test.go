@@ -99,7 +99,7 @@ func TestPlanDiskLayoutRejectsInvalidRootSizingAndSmallDisk(t *testing.T) {
 	}
 }
 
-func TestPlanDiskLayoutExtraDiskMountRequests(t *testing.T) {
+func TestPlanDiskLayoutInitializesDiskBackedVolumeWithRepart(t *testing.T) {
 	facts := layoutFacts(
 		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768),
 		BlockDevice{
@@ -116,10 +116,10 @@ func TestPlanDiskLayoutExtraDiskMountRequests(t *testing.T) {
 		RootA:      RootSlotRequest{SizeMiB: 4096},
 		RootB:      RootSlotRequest{SizeMiB: 4096},
 		State:      StatePartitionRequest{MinSizeMiB: 8192},
-		ExtraDisks: []ExtraDiskRequest{
+		Volumes: []VolumeRequest{
 			{
 				Name:       "data",
-				Selector:   TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"},
+				Disk:       &TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"},
 				Filesystem: "xfs",
 				Wipe:       true,
 			},
@@ -129,19 +129,19 @@ func TestPlanDiskLayoutExtraDiskMountRequests(t *testing.T) {
 		t.Fatalf("PlanDiskLayout() error = %v", err)
 	}
 
-	if len(plan.ExtraMounts) != 1 {
-		t.Fatalf("extra mount count = %d, want 1", len(plan.ExtraMounts))
+	if len(plan.VolumeMounts) != 1 {
+		t.Fatalf("volume mount count = %d, want 1", len(plan.VolumeMounts))
 	}
-	extra := plan.ExtraMounts[0]
-	if extra.DevicePath != "/dev/sdb" || extra.MountSource != "/dev/disk/by-id/ata-data" || extra.MountPath != "/var/lib/katl/mnt/data" || extra.Filesystem != "xfs" || !extra.Wipe {
-		t.Fatalf("extra mount = %#v", extra)
+	volume := plan.VolumeMounts[0]
+	if volume.DevicePath != "/dev/sdb" || volume.MountSource != "/dev/disk/by-partlabel/u-data" || volume.MountPath != "/var/mnt/data" || volume.Filesystem != "xfs" || !volume.Wipe || !volume.Repartition {
+		t.Fatalf("volume mount = %#v", volume)
 	}
-	if len(extra.Signatures) != 1 || extra.Signatures[0].Value != "gpt" {
-		t.Fatalf("extra signatures = %#v, want gpt signature", extra.Signatures)
+	if len(volume.Signatures) != 1 || volume.Signatures[0].Value != "gpt" {
+		t.Fatalf("volume signatures = %#v, want gpt signature", volume.Signatures)
 	}
 }
 
-func TestPlanDiskLayoutRejectsDuplicateExtraDiskNames(t *testing.T) {
+func TestPlanDiskLayoutRejectsDuplicateVolumeNames(t *testing.T) {
 	facts := layoutFacts(
 		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768),
 		diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data-a", 16384),
@@ -153,9 +153,9 @@ func TestPlanDiskLayoutRejectsDuplicateExtraDiskNames(t *testing.T) {
 		RootA:      RootSlotRequest{SizeMiB: 4096},
 		RootB:      RootSlotRequest{SizeMiB: 4096},
 		State:      StatePartitionRequest{MinSizeMiB: 8192},
-		ExtraDisks: []ExtraDiskRequest{
-			{Name: "data", Selector: TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-a"}, Wipe: true},
-			{Name: "data", Selector: TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-b"}, Wipe: true},
+		Volumes: []VolumeRequest{
+			{Name: "data", Disk: &TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-a"}, Filesystem: "xfs", Wipe: true},
+			{Name: "data", Disk: &TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data-b"}, Filesystem: "xfs", Wipe: true},
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "duplicated") {
@@ -163,9 +163,12 @@ func TestPlanDiskLayoutRejectsDuplicateExtraDiskNames(t *testing.T) {
 	}
 }
 
-func TestPlanDiskLayoutReusesOnlyMatchingExtraDiskFilesystem(t *testing.T) {
+func TestPlanDiskLayoutReusesOnlyMatchingDiskVolumePartition(t *testing.T) {
 	extra := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data", 16384)
-	extra.FilesystemSignature = "ext4"
+	extra.PartitionSignature = "gpt"
+	extra.Partitions = []BlockDevice{{
+		Path: "/dev/sdb1", Type: DevicePartition, GPTLabel: "u-data", FilesystemSignature: "ext4",
+	}}
 	facts := layoutFacts(
 		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768),
 		extra,
@@ -175,9 +178,9 @@ func TestPlanDiskLayoutReusesOnlyMatchingExtraDiskFilesystem(t *testing.T) {
 		RootA:      RootSlotRequest{SizeMiB: 4096},
 		RootB:      RootSlotRequest{SizeMiB: 4096},
 		State:      StatePartitionRequest{MinSizeMiB: 8192},
-		ExtraDisks: []ExtraDiskRequest{{
+		Volumes: []VolumeRequest{{
 			Name:       "data",
-			Selector:   TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"},
+			Disk:       &TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"},
 			Filesystem: "ext4",
 		}},
 	}
@@ -186,15 +189,83 @@ func TestPlanDiskLayoutReusesOnlyMatchingExtraDiskFilesystem(t *testing.T) {
 		t.Fatalf("PlanDiskLayout() error = %v", err)
 	}
 
-	request.ExtraDisks[0].Filesystem = "xfs"
+	request.Volumes[0].Filesystem = "xfs"
 	if _, err := PlanDiskLayout(facts, request); err == nil || !strings.Contains(err.Error(), "set wipe to true") {
 		t.Fatalf("PlanDiskLayout() error = %v, want safe reuse refusal", err)
 	}
 
-	facts.BlockDevices[1].FilesystemSignature = ""
-	request.ExtraDisks[0].Filesystem = "ext4"
+	facts.BlockDevices[1].Partitions[0].FilesystemSignature = ""
+	request.Volumes[0].Filesystem = "ext4"
 	if _, err := PlanDiskLayout(facts, request); err == nil || !strings.Contains(err.Error(), "set wipe to true") {
 		t.Fatalf("PlanDiskLayout() error = %v, want blank disk refusal", err)
+	}
+}
+
+func TestPlanDiskLayoutAdoptsExistingPartitionByConventionWithoutDestructiveIntent(t *testing.T) {
+	dataDisk := diskForLayout("/dev/nvme1n1", "/dev/disk/by-id/nvme-data", 32768)
+	dataDisk.PartitionSignature = "gpt"
+	dataDisk.Partitions = []BlockDevice{{
+		Path:                "/dev/nvme1n1p1",
+		Type:                DevicePartition,
+		ByID:                []string{"/dev/disk/by-id/nvme-data-part1"},
+		GPTLabel:            "u-local-hostpath",
+		PartitionUUID:       "part-uuid",
+		FilesystemUUID:      "fs-uuid",
+		FilesystemSignature: "xfs",
+	}}
+	facts := layoutFacts(
+		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768),
+		dataDisk,
+	)
+
+	plan, err := PlanDiskLayout(facts, DiskLayoutRequest{
+		TargetDisk: TargetDiskSelector{ByID: "/dev/disk/by-id/nvme-root"},
+		RootA:      RootSlotRequest{SizeMiB: 4096},
+		RootB:      RootSlotRequest{SizeMiB: 4096},
+		State:      StatePartitionRequest{MinSizeMiB: 8192},
+		Volumes: []VolumeRequest{{
+			Name:       "local-hostpath",
+			Partition:  &PartitionSelector{PartLabel: "u-local-hostpath"},
+			Filesystem: "xfs",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("PlanDiskLayout() error = %v", err)
+	}
+	if len(plan.VolumeMounts) != 1 {
+		t.Fatalf("volume mount count = %d, want 1", len(plan.VolumeMounts))
+	}
+	volume := plan.VolumeMounts[0]
+	if volume.DevicePath != "/dev/nvme1n1p1" || volume.MountSource != "/dev/disk/by-partlabel/u-local-hostpath" || volume.MountPath != "/var/mnt/local-hostpath" || volume.Filesystem != "xfs" || volume.TargetKind != "partition" {
+		t.Fatalf("volume mount = %#v", volume)
+	}
+}
+
+func TestPlanDiskLayoutRejectsUnsafeAdoptedPartitions(t *testing.T) {
+	root := diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768)
+	root.Partitions = []BlockDevice{{
+		Path: "/dev/nvme0n1p9", Type: DevicePartition, GPTLabel: "u-local-hostpath", FilesystemSignature: "xfs",
+	}}
+	data := diskForLayout("/dev/nvme1n1", "/dev/disk/by-id/nvme-data", 32768)
+	data.Partitions = []BlockDevice{{
+		Path: "/dev/nvme1n1p1", Type: DevicePartition, GPTLabel: GPTLabelState, FilesystemSignature: "xfs",
+	}}
+	base := DiskLayoutRequest{
+		TargetDisk: TargetDiskSelector{ByID: "/dev/disk/by-id/nvme-root"},
+		RootA:      RootSlotRequest{SizeMiB: 4096},
+		RootB:      RootSlotRequest{SizeMiB: 4096},
+		State:      StatePartitionRequest{MinSizeMiB: 8192},
+		Volumes: []VolumeRequest{{
+			Name: "local-hostpath", Partition: &PartitionSelector{PartLabel: "u-local-hostpath"}, Filesystem: "xfs",
+		}},
+	}
+
+	if _, err := PlanDiskLayout(layoutFacts(root, data), base); err == nil || !strings.Contains(err.Error(), "target root disk") {
+		t.Fatalf("root-disk adoption error = %v", err)
+	}
+	base.Volumes[0].Partition.PartLabel = GPTLabelState
+	if _, err := PlanDiskLayout(layoutFacts(root, data), base); err == nil || !strings.Contains(err.Error(), "Katl-managed") {
+		t.Fatalf("Katl partition adoption error = %v", err)
 	}
 }
 

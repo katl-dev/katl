@@ -48,6 +48,19 @@ type hostStatusReport struct {
 	Activity             string                      `json:"activity"`
 	Kubernetes           *kubernetesStatusReport     `json:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
+	Volumes              []volumeStatusReport        `json:"volumes,omitempty"`
+}
+
+type volumeStatusReport struct {
+	Name              string `json:"name"`
+	TargetKind        string `json:"targetKind"`
+	MountPath         string `json:"mountPath"`
+	Filesystem        string `json:"filesystem"`
+	LoadState         string `json:"loadState"`
+	ActiveState       string `json:"activeState"`
+	SubState          string `json:"subState"`
+	Result            string `json:"result"`
+	FailureDiagnostic string `json:"failureDiagnostic,omitempty"`
 }
 
 type kubernetesStatusReport struct {
@@ -374,6 +387,13 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 	if target := strings.TrimSpace(status.GetBootTargetGenerationId()); target != "" && target != current.GetGenerationId() {
 		report.NextBoot = target
 	}
+	for _, volume := range status.GetVolumes() {
+		report.Volumes = append(report.Volumes, volumeStatusReport{
+			Name: volume.GetName(), TargetKind: volume.GetTargetKind(), MountPath: volume.GetMountPath(),
+			Filesystem: volume.GetFilesystem(), LoadState: volume.GetLoadState(), ActiveState: volume.GetActiveState(),
+			SubState: volume.GetSubState(), Result: volume.GetResult(), FailureDiagnostic: volume.GetFailureDiagnostic(),
+		})
+	}
 	return report
 }
 
@@ -461,6 +481,26 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	}
 	if err := w.Flush(); err != nil {
 		return err
+	}
+	if len(report.Volumes) > 0 {
+		w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(w, "\nVOLUME\tTARGET\tMOUNT\tFILESYSTEM\tSTATE"); err != nil {
+			return err
+		}
+		for _, volume := range report.Volumes {
+			state := firstNonEmpty(volume.ActiveState, "unknown")
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", volume.Name, volume.TargetKind, volume.MountPath, volume.Filesystem, state); err != nil {
+				return err
+			}
+			if volume.FailureDiagnostic != "" {
+				if _, err := fmt.Fprintf(w, "\t\t\t\t%s\n", volume.FailureDiagnostic); err != nil {
+					return err
+				}
+			}
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
 	}
 	if report.ControlPlaneEndpoint == nil {
 		return nil

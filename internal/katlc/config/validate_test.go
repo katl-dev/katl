@@ -230,6 +230,30 @@ spec:
 	}
 }
 
+func TestValidateNodeConfigurationChangeAcceptsVolumes(t *testing.T) {
+	input := `
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "2"
+apply:
+  mode: live
+spec:
+  nodeOverrides:
+    cp-1:
+      volumes:
+        - name: data
+          selector:
+            partition: {}
+          filesystem: xfs
+`
+	result := ValidateNodeConfigurationChange(input, Options{})
+	if !result.Accepted() {
+		t.Fatalf("diagnostics = %#v, want accepted", result.Strings())
+	}
+}
+
 func TestValidateNodeConfigurationChangeRejectsRemovedTypedSysctl(t *testing.T) {
 	input := `
 apiVersion: katl.dev/v1alpha1

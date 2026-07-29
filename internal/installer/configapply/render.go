@@ -48,6 +48,7 @@ type renderedNodeConfigurationOverlay struct {
 	Kernel               *manifest.KernelConfig       `yaml:"kernel,omitempty"`
 	HostConfiguration    *manifest.HostConfiguration  `yaml:"hostConfiguration,omitempty"`
 	SystemExtensions     *[]manifest.SystemExtension  `yaml:"systemExtensions,omitempty"`
+	Volumes              *[]manifest.Volume           `yaml:"volumes,omitempty"`
 	Kubernetes           *manifest.KubernetesConfig   `yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint,omitempty"`
 }
@@ -77,6 +78,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 
 	node := request.Manifest.Node
 	systemExtensions := append([]manifest.SystemExtension(nil), node.SystemExtensions...)
+	volumes := append([]manifest.Volume(nil), request.Manifest.Install.Volumes...)
 	kernel := manifest.KernelConfig{CommandLine: slices.Clone(node.Kernel.CommandLine)}
 	kubeadmConfigs, err := renderKubeadmConfigs(node.Kubernetes.Kubeadm.ConfigRef, request.KubeadmConfigs)
 	if err != nil {
@@ -91,6 +93,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		Kernel:               &kernel,
 		HostConfiguration:    &node.HostConfiguration,
 		SystemExtensions:     &systemExtensions,
+		Volumes:              &volumes,
 		Kubernetes:           &node.Kubernetes,
 		ControlPlaneEndpoint: renderedControlPlaneEndpoint(node.ControlPlaneEndpoint),
 	}

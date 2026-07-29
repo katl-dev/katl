@@ -272,10 +272,14 @@ node identity and hostname
 modules-load
   Boot ordering through systemd-modules-load is the initial supported path.
 
-mount units and extra disks
-  Persistent state projections and extra disk topology require boot ordering,
-  filesystem checks, and rollback semantics that are not part of first live
-  apply.
+root/state mount units
+  Katl-owned root and state projections remain next-boot-only.
+
+volumes
+  Named disk- or partition-backed volumes are live-applicable through a typed
+  Go plan, bounded systemd-repart execution for disk initialization, generated
+  native mount units, and explicit wipe authorization. Unsafe active targets
+  fail with recovery guidance.
 
 SSH and operator access
   Operator access changes are next-boot-only until a lockout-safe validation and

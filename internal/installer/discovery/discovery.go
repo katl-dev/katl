@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -32,6 +33,8 @@ type BlockDevice struct {
 	Serial              string
 	Model               string
 	GPTLabel            string
+	PartitionUUID       string
+	FilesystemUUID      string
 	SizeBytes           uint64
 	ReadOnly            bool
 	FilesystemSignature string
@@ -87,6 +90,19 @@ type TargetDiskMatch struct {
 	Signatures []SignatureReport
 }
 
+type PartitionSelector struct {
+	ByID           string
+	PartUUID       string
+	FilesystemUUID string
+	PartLabel      string
+}
+
+type PartitionMatch struct {
+	Device     BlockDevice
+	ParentDisk BlockDevice
+	Signatures []SignatureReport
+}
+
 type SignatureReport struct {
 	DevicePath string
 	Kind       string
@@ -99,8 +115,23 @@ var (
 )
 
 func MatchTargetDisk(facts HardwareFacts, selector TargetDiskSelector) (TargetDiskMatch, error) {
-	if err := selector.validate(); err != nil {
+	device, err := MatchDiskIdentity(facts, selector)
+	if err != nil {
 		return TargetDiskMatch{}, err
+	}
+	if err := validateTargetDiskSafety(facts, device, selector); err != nil {
+		return TargetDiskMatch{}, err
+	}
+
+	return TargetDiskMatch{
+		Device:     device,
+		Signatures: collectSignatures(device),
+	}, nil
+}
+
+func MatchDiskIdentity(facts HardwareFacts, selector TargetDiskSelector) (BlockDevice, error) {
+	if err := selector.validate(); err != nil {
+		return BlockDevice{}, err
 	}
 
 	var matches []BlockDevice
@@ -112,21 +143,50 @@ func MatchTargetDisk(facts HardwareFacts, selector TargetDiskSelector) (TargetDi
 
 	switch len(matches) {
 	case 0:
-		return TargetDiskMatch{}, fmt.Errorf("target disk selector matched no disks")
+		return BlockDevice{}, fmt.Errorf("target disk selector matched no disks")
 	case 1:
 	default:
-		return TargetDiskMatch{}, fmt.Errorf("target disk selector matched %d disks", len(matches))
+		return BlockDevice{}, fmt.Errorf("target disk selector matched %d disks", len(matches))
 	}
 
 	device := matches[0]
-	if err := validateTargetDiskSafety(facts, device, selector); err != nil {
-		return TargetDiskMatch{}, err
+	if device.Type != DeviceDisk {
+		return BlockDevice{}, fmt.Errorf("%w: %s is %s, not a whole disk", ErrUnsafeTargetDisk, device.Path, device.Type)
+	}
+	return device, nil
+}
+
+func MatchPartition(facts HardwareFacts, selector PartitionSelector) (PartitionMatch, error) {
+	if err := selector.validate(); err != nil {
+		return PartitionMatch{}, err
 	}
 
-	return TargetDiskMatch{
-		Device:     device,
-		Signatures: collectSignatures(device),
-	}, nil
+	var matches []PartitionMatch
+	for _, disk := range facts.BlockDevices {
+		for _, partition := range disk.Partitions {
+			if selector.matches(partition) {
+				matches = append(matches, PartitionMatch{
+					Device:     partition,
+					ParentDisk: disk,
+					Signatures: collectSignatures(partition),
+				})
+			}
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return PartitionMatch{}, fmt.Errorf("partition selector matched no partitions")
+	case 1:
+	default:
+		return PartitionMatch{}, fmt.Errorf("partition selector matched %d partitions", len(matches))
+	}
+
+	match := matches[0]
+	if err := validatePartitionSafety(facts, match.Device); err != nil {
+		return PartitionMatch{}, err
+	}
+	return match, nil
 }
 
 func (s TargetDiskSelector) validate() error {
@@ -172,6 +232,50 @@ func (s TargetDiskSelector) matches(device BlockDevice) bool {
 	}
 }
 
+func (s PartitionSelector) validate() error {
+	hasSelector := 0
+	if strings.TrimSpace(s.ByID) != "" {
+		hasSelector++
+		if !strings.HasPrefix(s.ByID, "/dev/disk/by-id/") || path.Clean(s.ByID) != s.ByID {
+			return fmt.Errorf("partition by-id selector must be an absolute /dev/disk/by-id path")
+		}
+	}
+	if strings.TrimSpace(s.PartUUID) != "" {
+		hasSelector++
+	}
+	if strings.TrimSpace(s.FilesystemUUID) != "" {
+		hasSelector++
+	}
+	if strings.TrimSpace(s.PartLabel) != "" {
+		hasSelector++
+	}
+	if hasSelector == 0 {
+		return fmt.Errorf("partition selector is required")
+	}
+	if hasSelector > 1 {
+		return fmt.Errorf("partition selector must use exactly one stable identity")
+	}
+	return nil
+}
+
+func (s PartitionSelector) matches(device BlockDevice) bool {
+	if device.Type != DevicePartition {
+		return false
+	}
+	switch {
+	case s.ByID != "":
+		return slices.Contains(device.ByID, s.ByID) || device.Path == s.ByID
+	case s.PartUUID != "":
+		return device.PartitionUUID == s.PartUUID
+	case s.FilesystemUUID != "":
+		return device.FilesystemUUID == s.FilesystemUUID
+	case s.PartLabel != "":
+		return device.GPTLabel == s.PartLabel
+	default:
+		return false
+	}
+}
+
 func validateTargetDiskSafety(facts HardwareFacts, device BlockDevice, selector TargetDiskSelector) error {
 	if device.Type != DeviceDisk {
 		return fmt.Errorf("%w: %s is %s, not a whole disk", ErrUnsafeTargetDisk, device.Path, device.Type)
@@ -187,6 +291,41 @@ func validateTargetDiskSafety(facts HardwareFacts, device BlockDevice, selector 
 	}
 
 	return nil
+}
+
+func validatePartitionSafety(facts HardwareFacts, device BlockDevice) error {
+	if device.Type != DevicePartition {
+		return fmt.Errorf("%w: %s is %s, not a partition", ErrUnsafeTargetDisk, device.Path, device.Type)
+	}
+	if device.ReadOnly {
+		return fmt.Errorf("%w: %s is read-only", ErrUnsafeTargetDisk, device.Path)
+	}
+	if partitionHasMounts(facts, device) {
+		return fmt.Errorf("%w: partition %s is mounted", ErrUnsafeTargetDisk, device.Path)
+	}
+	return nil
+}
+
+func partitionHasMounts(facts HardwareFacts, device BlockDevice) bool {
+	if len(device.Mountpoints) > 0 {
+		return true
+	}
+	sources := map[string]struct{}{device.Path: {}}
+	if device.PartitionUUID != "" {
+		sources["PARTUUID="+device.PartitionUUID] = struct{}{}
+	}
+	if device.FilesystemUUID != "" {
+		sources["UUID="+device.FilesystemUUID] = struct{}{}
+	}
+	for _, alias := range device.ByID {
+		sources[alias] = struct{}{}
+	}
+	for _, mount := range facts.Mounts {
+		if _, ok := sources[mount.Source]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func diskHasMounts(facts HardwareFacts, device BlockDevice) bool {

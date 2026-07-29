@@ -96,7 +96,7 @@ spec:
     install:
       targetDiskDefaults:
         minSizeMiB: 32768
-      extraDisks: []
+      volumes: []
     kubernetes:
       labels: {}
       taints: []
