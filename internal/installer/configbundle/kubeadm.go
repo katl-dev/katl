@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	kubeadmCRISocket = "unix:///run/containerd/containerd.sock"
+	kubeadmCRISocket      = "unix:///run/containerd/containerd.sock"
+	kubeletNodeIPArgument = "node-ip"
 )
 
 type kubeadmSourceInput struct {
@@ -71,6 +72,9 @@ func splitKubeadmPlans(input kubeadmconfig.Plan, kubernetesVersion string) (map[
 		kind, _ := document["kind"].(string)
 		if _, exists := byKind[kind]; exists {
 			return nil, fmt.Errorf("spec.kubernetes.kubeadm.configFile contains duplicate %s documents", kind)
+		}
+		if err := rejectManagedNodeAddress(document); err != nil {
+			return nil, fmt.Errorf("spec.kubernetes.kubeadm.configFile document %d: %w", index+1, err)
 		}
 		if kind == "JoinConfiguration" {
 			if _, controlPlane := document["controlPlane"]; controlPlane {
@@ -137,6 +141,44 @@ func splitKubeadmPlans(input kubeadmconfig.Plan, kubernetesVersion string) (map[
 		plans[role.name] = plan
 	}
 	return plans, nil
+}
+
+func rejectManagedNodeAddress(document map[string]any) error {
+	kind, _ := document["kind"].(string)
+	if kind != "InitConfiguration" && kind != "JoinConfiguration" {
+		return nil
+	}
+	if nodeRegistration, ok := document["nodeRegistration"].(map[string]any); ok {
+		switch extraArgs := nodeRegistration["kubeletExtraArgs"].(type) {
+		case map[string]any:
+			if _, exists := extraArgs[kubeletNodeIPArgument]; exists {
+				return fmt.Errorf("%s nodeRegistration.kubeletExtraArgs node-ip is supplied from nodes[].kubernetes.address", kind)
+			}
+		case []any:
+			for _, raw := range extraArgs {
+				argument, _ := raw.(map[string]any)
+				name, _ := argument["name"].(string)
+				if strings.TrimSpace(name) == kubeletNodeIPArgument {
+					return fmt.Errorf("%s nodeRegistration.kubeletExtraArgs node-ip is supplied from nodes[].kubernetes.address", kind)
+				}
+			}
+		}
+	}
+	if kind == "InitConfiguration" {
+		if endpoint, ok := document["localAPIEndpoint"].(map[string]any); ok {
+			if value, exists := endpoint["advertiseAddress"]; exists && strings.TrimSpace(fmt.Sprint(value)) != "" {
+				return fmt.Errorf("InitConfiguration localAPIEndpoint.advertiseAddress is supplied from nodes[].kubernetes.address")
+			}
+		}
+	}
+	if controlPlane, ok := document["controlPlane"].(map[string]any); ok {
+		if endpoint, ok := controlPlane["localAPIEndpoint"].(map[string]any); ok {
+			if value, exists := endpoint["advertiseAddress"]; exists && strings.TrimSpace(fmt.Sprint(value)) != "" {
+				return fmt.Errorf("JoinConfiguration controlPlane.localAPIEndpoint.advertiseAddress is supplied from nodes[].kubernetes.address")
+			}
+		}
+	}
+	return nil
 }
 
 func defaultKubeadmDocuments() (map[string]map[string]any, error) {

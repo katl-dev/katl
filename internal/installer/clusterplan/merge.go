@@ -57,6 +57,9 @@ func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 		return NodeLayer{}, err
 	}
 	out.Install.ExtraDisks = extra
+	if strings.TrimSpace(next.Kubernetes.Address) != "" {
+		out.Kubernetes.Address = strings.TrimSpace(next.Kubernetes.Address)
+	}
 	if strings.TrimSpace(next.Kubernetes.KubeadmConfigRef) != "" {
 		out.Kubernetes.KubeadmConfigRef = strings.TrimSpace(next.Kubernetes.KubeadmConfigRef)
 	}
