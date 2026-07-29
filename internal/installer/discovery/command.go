@@ -28,7 +28,7 @@ func (s CommandDiscoverySource) Discover(ctx context.Context) (HardwareFacts, er
 		return HardwareFacts{}, fmt.Errorf("discovery command runner is required")
 	}
 
-	lsblk, err := s.Commands.Output(ctx, "lsblk", "--json", "--bytes", "--output", "NAME,PATH,TYPE,SIZE,RO,MODEL,SERIAL,WWN,FSTYPE,PTTYPE,PARTTYPE,PARTLABEL,MOUNTPOINTS")
+	lsblk, err := s.Commands.Output(ctx, "lsblk", "--json", "--bytes", "--output", "NAME,PATH,TYPE,SIZE,RO,MODEL,SERIAL,WWN,FSTYPE,UUID,PTTYPE,PARTTYPE,PARTUUID,PARTLABEL,MOUNTPOINTS")
 	if err != nil {
 		return HardwareFacts{}, fmt.Errorf("lsblk discovery: %w", err)
 	}
@@ -141,8 +141,10 @@ type lsblkDevice struct {
 	Serial      *string       `json:"serial"`
 	WWN         *string       `json:"wwn"`
 	FSType      *string       `json:"fstype"`
+	UUID        *string       `json:"uuid"`
 	PTType      *string       `json:"pttype"`
 	PartType    *string       `json:"parttype"`
+	PartUUID    *string       `json:"partuuid"`
 	PartLabel   *string       `json:"partlabel"`
 	Mountpoints []string      `json:"mountpoints"`
 	Children    []lsblkDevice `json:"children"`
@@ -162,6 +164,8 @@ func convertLSBLKDevice(raw lsblkDevice) BlockDevice {
 		Serial:              stringValue(raw.Serial),
 		Model:               stringValue(raw.Model),
 		GPTLabel:            stringValue(raw.PartLabel),
+		PartitionUUID:       stringValue(raw.PartUUID),
+		FilesystemUUID:      stringValue(raw.UUID),
 		SizeBytes:           raw.Size,
 		ReadOnly:            raw.ReadOnly,
 		FilesystemSignature: stringValue(raw.FSType),

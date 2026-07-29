@@ -155,11 +155,16 @@ type SourceStorageLayer struct {
 }
 
 type SourceStorageDisk struct {
-	Name       string              `yaml:"name" json:"name"`
-	State      string              `yaml:"state,omitempty" json:"state,omitempty"`
-	Selector   *SourceDiskSelector `yaml:"selector,omitempty" json:"selector,omitempty"`
-	Filesystem Optional[string]    `yaml:"filesystem,omitempty" json:"filesystem,omitzero"`
-	Wipe       Optional[bool]      `yaml:"wipe,omitempty" json:"wipe,omitzero"`
+	Name       string                `yaml:"name" json:"name"`
+	State      string                `yaml:"state,omitempty" json:"state,omitempty"`
+	Selector   *SourceVolumeSelector `yaml:"selector,omitempty" json:"selector,omitempty"`
+	Filesystem Optional[string]      `yaml:"filesystem,omitempty" json:"filesystem,omitzero"`
+	Wipe       Optional[bool]        `yaml:"wipe,omitempty" json:"wipe,omitzero"`
+}
+
+type SourceVolumeSelector struct {
+	Disk      *SourceDiskSelector      `yaml:"disk,omitempty" json:"disk,omitempty"`
+	Partition *SourcePartitionSelector `yaml:"partition,omitempty" json:"partition,omitempty"`
 }
 
 type SourceDiskSelector struct {
@@ -167,6 +172,12 @@ type SourceDiskSelector struct {
 	WWN        Optional[string] `yaml:"wwn,omitempty" json:"wwn,omitzero"`
 	Serial     Optional[string] `yaml:"serial,omitempty" json:"serial,omitzero"`
 	MinSizeMiB Optional[uint64] `yaml:"minSizeMiB,omitempty" json:"minSizeMiB,omitzero"`
+}
+
+type SourcePartitionSelector struct {
+	ByID           Optional[string] `yaml:"byID,omitempty" json:"byID,omitzero"`
+	PartUUID       Optional[string] `yaml:"partUUID,omitempty" json:"partUUID,omitzero"`
+	FilesystemUUID Optional[string] `yaml:"filesystemUUID,omitempty" json:"filesystemUUID,omitzero"`
 }
 
 type SourceKubernetesCluster struct {
@@ -512,7 +523,7 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 		SystemExtensions:  lowerSystemExtensions(layer.SystemExtensions),
 		Install: clusterplan.InstallLayer{
 			TargetDisk: lowerDiskSelector(layer.Install.SystemDisk),
-			ExtraDisks: lowerStorageDisks(layer.Storage.Disks),
+			Volumes:    lowerStorageDisks(layer.Storage.Disks),
 		},
 		Kubernetes: clusterplan.KubernetesLayer{
 			Address:    strings.TrimSpace(layer.Kubernetes.Address),

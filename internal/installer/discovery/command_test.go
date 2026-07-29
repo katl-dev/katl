@@ -39,8 +39,10 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
           "serial": null,
           "wwn": null,
           "fstype": "vfat",
+          "uuid": "esp-fs-uuid",
           "pttype": null,
           "parttype": "esp",
+          "partuuid": "esp-part-uuid",
           "partlabel": "KATL_ESP",
           "mountpoints": ["/boot"]
         }
@@ -104,6 +106,12 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
 	if got := disk.Partitions[0].GPTLabel; got != "KATL_ESP" {
 		t.Fatalf("partition GPT label = %q, want KATL_ESP", got)
 	}
+	if got := disk.Partitions[0].PartitionUUID; got != "esp-part-uuid" {
+		t.Fatalf("partition UUID = %q, want esp-part-uuid", got)
+	}
+	if got := disk.Partitions[0].FilesystemUUID; got != "esp-fs-uuid" {
+		t.Fatalf("filesystem UUID = %q, want esp-fs-uuid", got)
+	}
 
 	wantNICs := []NICFact{
 		{Name: "eno1", MACAddress: "52:54:00:12:34:56", OperState: "up"},
@@ -124,8 +132,8 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
 	if !reflect.DeepEqual(runner.calls, wantCommands) {
 		t.Fatalf("commands = %#v, want %#v", runner.calls, wantCommands)
 	}
-	if got := strings.Join(runner.args["lsblk"], " "); !strings.Contains(got, "PARTLABEL") {
-		t.Fatalf("lsblk args = %q, want PARTLABEL output column", got)
+	if got := strings.Join(runner.args["lsblk"], " "); !strings.Contains(got, "PARTLABEL") || !strings.Contains(got, "PARTUUID") || !strings.Contains(got, "UUID") {
+		t.Fatalf("lsblk args = %q, want stable partition identity columns", got)
 	}
 }
 

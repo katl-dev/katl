@@ -541,10 +541,11 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 			activator = generationActivator{root: e.Root}
 		}
 		decoded.Executor = &configapply.Executor{
-			Root:      e.Root,
-			Runner:    runner,
-			Activator: activator,
-			Now:       e.clock,
+			Root:         e.Root,
+			Runner:       runner,
+			Activator:    activator,
+			ApplyVolumes: e.applyVolumes,
+			Now:          e.clock,
 		}
 	}
 	result, err := configapply.ApplyTrustedBundle(ctx, decoded)

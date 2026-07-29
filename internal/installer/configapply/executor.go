@@ -12,6 +12,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
 type Command struct {
@@ -46,6 +47,7 @@ type Executor struct {
 	StatusPath        string
 	ActionCommands    map[string][]Command
 	HostConfiguration *HostConfigurationChangePlan
+	ApplyVolumes      func(context.Context, manifest.Manifest, manifest.Manifest) error
 	Timeout           time.Duration
 	Now               func() time.Time
 }
@@ -86,6 +88,22 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 		}
 		if !enabled {
 			return e.failBeforeActivation(status, errors.New("control-plane endpoint routing cannot be applied because VIP advertisement is not enabled"))
+		}
+	}
+	if containsDomainAction(status.DomainActions, DomainVolumes) {
+		if e.ApplyVolumes == nil {
+			return e.failBeforeActivation(status, errors.New("live volume applicator is not configured"))
+		}
+		current, err := ReadGenerationManifest(e.Root, plan.GenerationRecord.ConfigApply.PreviousGeneration)
+		if err != nil {
+			return e.failBeforeActivation(status, fmt.Errorf("read current volume manifest: %w", err))
+		}
+		desired, err := ReadGenerationManifest(e.Root, plan.GenerationRecord.GenerationID)
+		if err != nil {
+			return e.failBeforeActivation(status, fmt.Errorf("read desired volume manifest: %w", err))
+		}
+		if err := e.ApplyVolumes(ctx, current, desired); err != nil {
+			return e.failBeforeActivation(status, fmt.Errorf("prepare volumes: %w", err))
 		}
 	}
 
@@ -294,6 +312,8 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		commands = append(commands, Command{Name: "systemd-tmpfiles", Argv: []string{"systemd-tmpfiles", "--create", "--remove"}})
 	case DomainBootstrapNodeMetadata:
 		commands = append(commands, Command{Name: "node-metadata-refresh", Argv: []string{"systemctl", "try-reload-or-restart", "katl-runtime-handoff-status.service"}})
+	case DomainVolumes:
+		commands = append(commands, Command{Name: "volume-mount-activate", Argv: []string{"systemctl", "restart", "katl-volumes.target"}})
 	case DomainControlPlaneEndpointRouting:
 		commands = append(commands,
 			Command{Name: "endpoint-routing-validate", Argv: []string{bgpapivip.BirdExecutablePath, "-p", "-c", bgpapivip.BirdConfigPath}},

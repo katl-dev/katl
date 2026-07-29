@@ -93,11 +93,13 @@
             "byID": "/dev/disk/by-id/ata-cp-root",
             "minSizeMiB": 32768
           },
-          "extraDisks": [
+          "volumes": [
             {
               "name": "data",
               "selector": {
-                "byID": "/dev/disk/by-id/ata-data"
+                "disk": {
+                  "byID": "/dev/disk/by-id/ata-data"
+                }
               },
               "filesystem": "xfs"
             }
@@ -220,11 +222,13 @@
             "byID": "/dev/disk/by-id/ata-worker-root",
             "minSizeMiB": 32768
           },
-          "extraDisks": [
+          "volumes": [
             {
               "name": "data",
               "selector": {
-                "byID": "/dev/disk/by-id/ata-data"
+                "disk": {
+                  "byID": "/dev/disk/by-id/ata-data"
+                }
               },
               "filesystem": "xfs"
             }

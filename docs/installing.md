@@ -217,13 +217,16 @@ would override its root, immutable-runtime, generation identity, or recovery
 policy. Image-required and Katl-owned arguments remain internal and are always
 carried alongside the configured additions.
 
-Additional whole disks may be configured under a node's `storage.disks`. The
-supported and journey-verified filesystems are
-`ext4`, `xfs`, and `btrfs`. Katl derives the mount location as
-`/var/lib/katl/mnt/<name>`; operators cannot choose another path. Set
-`wipe: true` to authorize formatting that selected disk. With `wipe: false`,
-the disk must already contain the requested filesystem and Katl preserves its
-data:
+Persistent data disks are configured under a node's `storage.disks` during
+installation or through normal node configuration. The supported and
+journey-verified filesystems are `ext4`, `xfs`, and `btrfs`. Each entry selects
+exactly one whole disk or one existing partition, and Katl derives both the GPT
+label `u-<name>` and mount path `/var/mnt/<name>`; operators cannot choose
+another location.
+
+A disk-backed entry with `wipe: true` authorizes Katl to reinitialize the
+selected disk. Katl uses `systemd-repart` to create and format its
+convention-labelled partition:
 
 ```yaml
 install:
@@ -233,10 +236,31 @@ storage:
   disks:
     - name: data
       selector:
-        byID: /dev/disk/by-id/ata-KATL_WORKER_1_DATA
+        disk:
+          byID: /dev/disk/by-id/ata-KATL_WORKER_1_DATA
       filesystem: btrfs
       wipe: true
 ```
+
+To preserve an existing Talos UserVolumeConfig partition, select
+`partition: {}`. Katl derives `u-<name>` and requires it to identify exactly
+one unmounted partition. A stable partition by-id path, PARTUUID, or filesystem
+UUID may be supplied inside `partition` instead:
+
+```yaml
+storage:
+  disks:
+    - name: local-hostpath
+      selector:
+        partition: {}
+      filesystem: xfs
+```
+
+With `wipe: false`, the selected target must already contain the requested
+filesystem and Katl preserves it. With `wipe: true`, Katl formats the selected
+target; a partition selector never repartitions its parent disk. Live apply
+refuses mounted or otherwise active destructive targets rather than disrupting
+workloads.
 
 For a routed endpoint advertised by Katl, add the VIP and fabric peers. Katl
 then installs and runs the endpoint advertiser only on control-plane nodes;

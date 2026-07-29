@@ -145,12 +145,14 @@ spec:
       disks:
         - name: data
           selector:
-            minSizeMiB: 1024
+            disk:
+              minSizeMiB: 1024
           filesystem: btrfs
           wipe: true
         - name: scratch
           selector:
-            minSizeMiB: 2048
+            disk:
+              minSizeMiB: 2048
           filesystem: xfs
     kubernetes:
       labels:
@@ -204,7 +206,8 @@ spec:
         disks:
           - name: data
             selector:
-              byID: /dev/disk/by-id/overridden-data
+              disk:
+                byID: /dev/disk/by-id/overridden-data
           - name: scratch
             state: absent
       kubernetes:
@@ -235,7 +238,7 @@ spec:
 	if len(cleared.SSH.AuthorizedKeys) != 0 ||
 		cleared.Kernel == nil || len(cleared.Kernel.CommandLine) != 0 ||
 		len(cleared.HostConfiguration.Sysfs) != 0 || len(cleared.HostConfiguration.Sets) != 0 ||
-		len(cleared.SystemExtensions) != 0 || len(cleared.Install.ExtraDisks) != 0 ||
+		len(cleared.SystemExtensions) != 0 || len(cleared.Install.Volumes) != 0 ||
 		len(cleared.Kubernetes.NodeLabels) != 0 || len(cleared.Kubernetes.NodeTaints) != 0 {
 		t.Fatalf("explicitly empty node fields did not clear defaults: %#v", cleared)
 	}
@@ -252,12 +255,13 @@ spec:
 	if len(overridden.SystemExtensions) != 1 || overridden.SystemExtensions[0].Name != "bird" || overridden.SystemExtensions[0].Bundle != "registry.example/bird:v2" {
 		t.Fatalf("named system extensions did not replace or remove by name: %#v", overridden.SystemExtensions)
 	}
-	if len(overridden.Install.ExtraDisks) != 1 {
-		t.Fatalf("named storage disks did not replace or remove by name: %#v", overridden.Install.ExtraDisks)
+	if len(overridden.Install.Volumes) != 1 {
+		t.Fatalf("named storage disks did not replace or remove by name: %#v", overridden.Install.Volumes)
 	}
-	data := overridden.Install.ExtraDisks[0]
-	if data.Name != "data" || data.Selector.ByID != "/dev/disk/by-id/overridden-data" ||
-		data.Selector.MinSizeMiB != 1024 || data.Filesystem != "btrfs" || !data.Wipe {
+	data := overridden.Install.Volumes[0]
+	if data.Name != "data" || data.Selector.Disk == nil ||
+		data.Selector.Disk.ByID != "/dev/disk/by-id/overridden-data" ||
+		data.Selector.Disk.MinSizeMiB != 1024 || data.Filesystem != "btrfs" || !data.Wipe {
 		t.Fatalf("storage disk fields did not inherit and override predictably: %#v", data)
 	}
 	if got := overridden.Kubernetes.NodeLabels; len(got) != 2 || got["environment"] != "lab" || got["topology.kubernetes.io/zone"] != "rack-b" {
@@ -939,6 +943,13 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 			want: "spec.nodes[0].install.extraDisks: field is not supported",
 		},
 		{
+			name: "install volumes",
+			raw: strings.Replace(validSourceConfig(),
+				"      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root",
+				"      install:\n        volumes: []\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root", 1),
+			want: "spec.nodes[0].install.volumes: field is not supported",
+		},
+		{
 			name: "host configuration sets",
 			raw:  strings.Replace(validSourceConfig(), "      fileSets:\n", "      sets:\n", 1),
 			want: "spec.defaults.hostConfiguration.sets: field is not supported",
@@ -1111,7 +1122,7 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 			t.Fatalf("source node schema exposes removed %q", field)
 		}
 	}
-	assertSchemaFields(t, document.Defs, "configbundle.SourceInstallLayer", []string{"systemDisk"}, []string{"extraDisks", "targetDisk", "targetDiskDefaults"})
+	assertSchemaFields(t, document.Defs, "configbundle.SourceInstallLayer", []string{"systemDisk"}, []string{"extraDisks", "targetDisk", "targetDiskDefaults", "volumes"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceStorageLayer", []string{"disks"}, nil)
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfiguration", []string{"fileSets", "sysfs"}, []string{"sets"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationSysfsSetting", []string{"path", "value"}, []string{"name"})
@@ -1364,7 +1375,8 @@ spec:
       disks:
         - name: data
           selector:
-            byID: /dev/disk/by-id/ata-data
+            disk:
+              byID: /dev/disk/by-id/ata-data
           filesystem: xfs
     access:
       ssh:

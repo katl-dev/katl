@@ -43,8 +43,8 @@ type StateAssets struct {
 	HostConfigVerify   string
 	ExtensionReload    string
 	ExtensionActivate  string
-	ExtraDisksTarget   string
-	ExtraDisksActivate string
+	VolumesTarget      string
+	VolumesActivate    string
 	KubeadmActivate    string
 	KubeadmReadyTarget string
 	BootCompleteTarget string
@@ -126,8 +126,8 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		HostConfigVerify:   renderHostConfigVerifyService(),
 		ExtensionReload:    renderSystemExtensionReloadService(),
 		ExtensionActivate:  renderSystemExtensionActivateService(),
-		ExtraDisksTarget:   renderExtraDisksTarget(),
-		ExtraDisksActivate: renderExtraDisksActivateService(),
+		VolumesTarget:      renderVolumesTarget(),
+		VolumesActivate:    renderVolumesActivateService(),
 		KubeadmActivate:    renderKubeadmActivateService(),
 		KubeadmReadyTarget: renderKubeadmReadyTarget(),
 		BootCompleteTarget: renderBootCompleteTarget(),
@@ -151,7 +151,7 @@ func RenderExtraMounts(requests []ExtraMountRequest) ([]ExtraMountUnit, []StateD
 	units := make([]ExtraMountUnit, 0, len(requests))
 	mountPoints := make([]StateDir, 0, len(requests))
 	for _, request := range requests {
-		name, err := mountUnitName(request.Path)
+		name, err := MountUnitName(request.Path)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -167,7 +167,7 @@ func RenderExtraMounts(requests []ExtraMountRequest) ([]ExtraMountUnit, []StateD
 			Name: name,
 			Content: strings.Join([]string{
 				"[Unit]",
-				"Description=Katl managed extra disk",
+				"Description=Katl managed volume",
 				"Documentation=man:systemd.mount(5)",
 				"Requires=var.mount",
 				"After=var.mount",
@@ -191,7 +191,7 @@ func RenderExtraMounts(requests []ExtraMountRequest) ([]ExtraMountUnit, []StateD
 	return units, mountPoints, nil
 }
 
-func mountUnitName(mountPath string) (string, error) {
+func MountUnitName(mountPath string) (string, error) {
 	clean := path.Clean(strings.TrimSpace(mountPath))
 	if clean == "." || clean == "/" || !path.IsAbs(clean) || clean != mountPath || strings.ContainsAny(clean, "\r\n\x00") {
 		return "", fmt.Errorf("extra mount path %q is invalid", mountPath)
@@ -352,19 +352,19 @@ func renderKubeadmReadyTarget() string {
 	}, "\n")
 }
 
-func renderExtraDisksTarget() string {
+func renderVolumesTarget() string {
 	return strings.Join([]string{
 		"[Unit]",
-		"Description=Katl managed extra disks",
+		"Description=Katl managed volumes",
 		"Documentation=man:systemd.target(5)",
 		"",
 	}, "\n")
 }
 
-func renderExtraDisksActivateService() string {
+func renderVolumesActivateService() string {
 	return strings.Join([]string{
 		"[Unit]",
-		"Description=Activate Katl managed extra disks",
+		"Description=Activate Katl managed volumes",
 		"Documentation=man:systemd.mount(5) man:systemd.target(5)",
 		"Requires=katl-system-extensions-reload.service",
 		"After=katl-system-extensions-reload.service",
@@ -374,8 +374,8 @@ func renderExtraDisksActivateService() string {
 		"Type=oneshot",
 		"RemainAfterExit=yes",
 		"StandardOutput=journal+console",
-		"SyslogIdentifier=katl-extra-disks-activate",
-		"ExecStart=/usr/bin/systemctl start katl-extra-disks.target",
+		"SyslogIdentifier=katl-volumes-activate",
+		"ExecStart=/usr/bin/systemctl start katl-volumes.target",
 		"",
 	}, "\n")
 }
@@ -421,8 +421,8 @@ func renderBootHealthService() string {
 		"[Unit]",
 		"Description=Record successful Katl boot health",
 		"Documentation=man:systemd.service(5)",
-		"Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-extra-disks-activate.service katlc-agent.service systemd-networkd.service sshd.service",
-		"After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-extra-disks-activate.service katlc-agent.service systemd-networkd.service sshd.service",
+		"Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service",
+		"After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service",
 		"Before=katl-boot-complete.target",
 		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
@@ -611,10 +611,10 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeFile(root, "etc/systemd/system/katl-system-extensions-activate.service", assets.ExtensionActivate, 0o644); err != nil {
 		return StateAssets{}, err
 	}
-	if err := writeFile(root, "etc/systemd/system/katl-extra-disks.target", assets.ExtraDisksTarget, 0o644); err != nil {
+	if err := writeFile(root, "etc/systemd/system/katl-volumes.target", assets.VolumesTarget, 0o644); err != nil {
 		return StateAssets{}, err
 	}
-	if err := writeFile(root, "etc/systemd/system/katl-extra-disks-activate.service", assets.ExtraDisksActivate, 0o644); err != nil {
+	if err := writeFile(root, "etc/systemd/system/katl-volumes-activate.service", assets.VolumesActivate, 0o644); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-kubeadm-activate.service", assets.KubeadmActivate, 0o644); err != nil {

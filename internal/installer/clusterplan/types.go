@@ -62,7 +62,7 @@ type NodeLayer struct {
 type InstallLayer struct {
 	TargetDisk         *manifest.DiskSelector `yaml:"targetDisk,omitempty" json:"targetDisk,omitempty"`
 	TargetDiskDefaults *manifest.DiskSelector `yaml:"targetDiskDefaults,omitempty" json:"targetDiskDefaults,omitempty"`
-	ExtraDisks         []manifest.ExtraDisk   `yaml:"extraDisks,omitempty" json:"extraDisks,omitempty"`
+	Volumes            []manifest.Volume      `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 }
 
 type KubernetesLayer struct {

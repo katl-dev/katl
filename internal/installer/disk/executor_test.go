@@ -57,9 +57,10 @@ func TestDiskExecutorRefusesDestructiveActionsWithoutPermission(t *testing.T) {
 	}
 }
 
-func TestDiskExecutorPreservesReusableExtraDisk(t *testing.T) {
+func TestDiskExecutorPreservesReusableVolume(t *testing.T) {
 	plan := executorPlan()
-	plan.ExtraMounts[0].Wipe = false
+	plan.VolumeMounts[0].Wipe = false
+	plan.VolumeMounts[0].Repartition = false
 
 	result, err := (DiskExecutor{}).Execute(context.Background(), DiskExecutionRequest{
 		Plan:             plan,
@@ -69,11 +70,45 @@ func TestDiskExecutorPreservesReusableExtraDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if countOps(result.Operations, "format-extra-data") != 0 || countOps(result.Operations, "wipe-extra-data") != 0 {
-		t.Fatalf("preserved extra disk has destructive operations: %#v", result.Operations)
+	if countOps(result.Operations, "format-volume-data") != 0 || countOps(result.Operations, "wipe-volume-data") != 0 || countOps(result.Operations, "repart-volume-data") != 0 {
+		t.Fatalf("preserved volume has destructive operations: %#v", result.Operations)
 	}
-	if countOps(result.Operations, "mount-extra-data") != 1 {
-		t.Fatalf("preserved extra disk is not mounted: %#v", result.Operations)
+	if countOps(result.Operations, "mount-volume-data") != 1 {
+		t.Fatalf("preserved volume is not mounted: %#v", result.Operations)
+	}
+}
+
+func TestDiskExecutorPartitionVolumeOnlyCreatesAndMounts(t *testing.T) {
+	plan := executorPlan()
+	plan.VolumeMounts = []VolumePlan{{
+		Name:        "local-hostpath",
+		TargetKind:  "partition",
+		DevicePath:  "/dev/nvme1n1p1",
+		MountSource: "PARTUUID=data-part",
+		Filesystem:  "xfs",
+		MountPath:   "/var/mnt/local-hostpath",
+	}}
+
+	result, err := (DiskExecutor{}).Execute(context.Background(), DiskExecutionRequest{
+		Plan:             plan,
+		AllowDestructive: true,
+		DryRun:           true,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	create := findOp(result.Operations, "create-mountpoint-volume-local-hostpath")
+	mount := findOp(result.Operations, "mount-volume-local-hostpath")
+	if create.Destructive || mount.Destructive {
+		t.Fatalf("adoption operations are destructive: %#v %#v", create, mount)
+	}
+	if got := strings.Join(mount.Args, " "); got != "PARTUUID=data-part /mnt/target/var/mnt/local-hostpath" {
+		t.Fatalf("adoption mount args = %q", got)
+	}
+	for _, operation := range result.Operations {
+		if strings.Contains(operation.Name, "volume-local-hostpath") && (operation.Command == "wipefs" || strings.HasPrefix(operation.Command, "mkfs.") || operation.Command == "sfdisk" || operation.Command == "systemd-repart") {
+			t.Fatalf("preserved partition volume has destructive operation: %#v", operation)
+		}
 	}
 }
 
@@ -91,6 +126,10 @@ func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
 	}
 	if strings.Contains(callNames(commands.Calls), "mkfs.") || strings.Contains(callNames(commands.Calls), "mount") {
 		t.Fatalf("partition group ran later operations: %#v", commands.Calls)
+	}
+	repart := findCall(commands.Calls, "systemd-repart")
+	if got := strings.Join(repart.Args, " "); strings.Contains(got, "{definitions}") || !strings.Contains(got, "--definitions=/tmp/katl-repart-") {
+		t.Fatalf("repart definitions argument = %q", got)
 	}
 
 	commands = &NoopCommandRunner{}
@@ -293,7 +332,7 @@ func TestValidateAppliedLayout(t *testing.T) {
 		Mounts: []MountFact{
 			{Source: "/dev/nvme0n1p1", Target: "/efi", Filesystem: "vfat"},
 			{Source: "/dev/nvme0n1p4", Target: "/var", Filesystem: "ext4"},
-			{Source: "/dev/sdb", Target: "/var/lib/katl/mnt/data", Filesystem: "xfs"},
+			{Source: "/dev/disk/by-partlabel/u-data", Target: "/var/mnt/data", Filesystem: "xfs"},
 		},
 	}
 	if err := ValidateAppliedLayout(facts, plan); err != nil {
@@ -303,7 +342,7 @@ func TestValidateAppliedLayout(t *testing.T) {
 	prefixed.Mounts = []MountFact{
 		{Source: "/dev/nvme0n1p1", Target: "/target/efi", Filesystem: "vfat"},
 		{Source: "/dev/nvme0n1p4", Target: "/target/var", Filesystem: "ext4"},
-		{Source: "/dev/sdb", Target: "/target/var/lib/katl/mnt/data", Filesystem: "xfs"},
+		{Source: "/dev/disk/by-partlabel/u-data", Target: "/target/var/mnt/data", Filesystem: "xfs"},
 	}
 	if err := ValidateAppliedLayoutAt(prefixed, plan, "/target"); err != nil {
 		t.Fatalf("ValidateAppliedLayoutAt() error = %v", err)
@@ -324,8 +363,13 @@ func executorPlan() DiskLayoutPlan {
 			{Name: "root-b", GPTLabel: GPTLabelRootB, Type: "root-x86-64", Filesystem: "squashfs", SizeMiB: 1024},
 			{Name: "state", GPTLabel: GPTLabelState, Type: "var", Filesystem: "ext4", MountPath: "/var", Remaining: true},
 		},
-		ExtraMounts: []ExtraDiskPlan{
-			{Name: "data", DevicePath: "/dev/sdb", Filesystem: "xfs", MountPath: "/var/lib/katl/mnt/data", Wipe: true},
+		VolumeMounts: []VolumePlan{
+			{
+				Name: "data", TargetKind: "disk", DevicePath: "/dev/sdb",
+				MountSource: "/dev/disk/by-partlabel/u-data", Filesystem: "xfs",
+				MountPath: "/var/mnt/data", Wipe: true, Repartition: true,
+				TypeUUID: volumePartitionTypeUUID("data"),
+			},
 		},
 		Boot: BootTargetMetadata{RootSlot: RootSlotA, RootPartitionLabel: GPTLabelRootA},
 	}
@@ -366,6 +410,15 @@ func countCalls(calls []CommandCall, name string) int {
 		}
 	}
 	return count
+}
+
+func findCall(calls []CommandCall, name string) CommandCall {
+	for _, call := range calls {
+		if call.Name == name {
+			return call
+		}
+	}
+	return CommandCall{}
 }
 
 func callNames(calls []CommandCall) string {

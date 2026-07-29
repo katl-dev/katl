@@ -37,7 +37,7 @@ func TestMaterializeInstallRecordIncludesExtraDiskMount(t *testing.T) {
 	if !strings.Contains(string(unit), "What=/dev/disk/by-id/virtio-katl-extra-a") || !strings.Contains(string(unit), "Where=/var/lib/katl/mnt/data") {
 		t.Fatalf("extra disk mount unit:\n%s", unit)
 	}
-	enablementPath := filepath.Join(result.Tree.ConfextDir, "etc/systemd/system/katl-extra-disks.target.d/50-mounts.conf")
+	enablementPath := filepath.Join(result.Tree.ConfextDir, "etc/systemd/system/katl-volumes.target.d/50-mounts.conf")
 	enablement, err := os.ReadFile(enablementPath)
 	if err != nil {
 		t.Fatalf("read extra disk mount enablement: %v", err)

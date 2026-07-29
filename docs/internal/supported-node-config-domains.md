@@ -69,8 +69,10 @@ native host configuration
   networkd paths are next-boot-only and use installed boot health
 
 mount units
-  persistent state projections and extra data disk mounts
-  rendered as native .mount/.automount units where appropriate
+  persistent state projections and disk- or partition-backed volumes
+  volume paths and GPT labels are convention-derived from the volume name
+  disk initialization uses a Go-planned systemd-repart transition
+  rendered as native .mount units and applicable on a running node
 
 Bootstrap profile input
   selected bootstrap profile reference
@@ -89,11 +91,11 @@ SSH and operator access
   bounded sshd policy owned by Katl
   no general host account, PAM, sudo, passwd, shadow, or sysusers passthrough
 
-extra disk mount requests
-  additional non-root data disks named by the operator and mounted at
-  Katl-controlled paths below /var/lib/katl/mnt
-  explicit filesystem and per-disk preservation or wipe policy
-  installer plans the disk work; runtime config renders native mounts
+volume requests
+  disk- or partition-backed data volumes named by the operator
+  Katl derives u-<name> and /var/mnt/<name>
+  explicit filesystem and per-target preservation or wipe policy
+  Go plans target safety; systemd-repart and native mount units execute it
 ```
 
 Domains may preserve native file syntax when that is the least lossy interface.
@@ -109,7 +111,7 @@ The following behavior is not part of the initial Katl node configuration API:
 BIRD or other routing daemon service packaging
 CNI installation and lifecycle
 gVisor, Kata, or alternate CRI/runtime integration
-storage stack add-ons beyond explicit extra disk mounts
+storage stack add-ons beyond explicit Katl volumes
 GPU, device plugin, or workload accelerator configuration
 Katl day-2 update controllers
 Kubernetes add-ons, GitOps controllers, ingress, and workload policy
@@ -196,9 +198,10 @@ native host configuration
     content
   golden tests cover shared units plus node-specific drop-ins
 
-mount units and extra disks
-  derive mount points below /var/lib/katl/mnt from validated unique names
+mount units and volumes
+  derive mount points below /var/mnt and GPT labels u-<name> from validated unique names
   validate filesystem choices, preservation state, and destructive-install guards
+  require exactly one typed disk or partition selector
   verify generated units with systemd-analyze verify where practical
 
 Bootstrap profile input

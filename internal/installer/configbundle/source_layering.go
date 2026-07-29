@@ -173,12 +173,37 @@ func mergeSourceStorageDisk(base, next SourceStorageDisk) SourceStorageDisk {
 	out := cloneSourceStorageDisk(base)
 	out.Name = next.Name
 	out.State = next.State
-	out.Selector = mergeSourceDiskSelector(out.Selector, next.Selector)
+	out.Selector = mergeSourceVolumeSelector(out.Selector, next.Selector)
 	if value, ok := next.Filesystem.Get(); ok {
 		out.Filesystem = supplied(value)
 	}
 	if value, ok := next.Wipe.Get(); ok {
 		out.Wipe = supplied(value)
+	}
+	return out
+}
+
+func mergeSourceVolumeSelector(base, next *SourceVolumeSelector) *SourceVolumeSelector {
+	if next == nil {
+		return cloneSourceVolumeSelector(base)
+	}
+	out := cloneSourceVolumeSelector(base)
+	if out == nil {
+		out = &SourceVolumeSelector{}
+	}
+	switch {
+	case next.Disk != nil:
+		if out.Partition != nil {
+			out.Disk = nil
+		}
+		out.Disk = mergeSourceDiskSelector(out.Disk, next.Disk)
+		out.Partition = nil
+	case next.Partition != nil:
+		if out.Disk != nil {
+			out.Partition = nil
+		}
+		out.Partition = mergeSourcePartitionSelector(out.Partition, next.Partition)
+		out.Disk = nil
 	}
 	return out
 }
@@ -202,6 +227,26 @@ func mergeSourceDiskSelector(base, next *SourceDiskSelector) *SourceDiskSelector
 	}
 	if value, ok := next.MinSizeMiB.Get(); ok {
 		out.MinSizeMiB = supplied(value)
+	}
+	return out
+}
+
+func mergeSourcePartitionSelector(base, next *SourcePartitionSelector) *SourcePartitionSelector {
+	if next == nil {
+		return cloneSourcePartitionSelector(base)
+	}
+	out := cloneSourcePartitionSelector(base)
+	if out == nil {
+		out = &SourcePartitionSelector{}
+	}
+	if value, ok := next.ByID.Get(); ok {
+		out.ByID = supplied(value)
+	}
+	if value, ok := next.PartUUID.Get(); ok {
+		out.PartUUID = supplied(value)
+	}
+	if value, ok := next.FilesystemUUID.Get(); ok {
+		out.FilesystemUUID = supplied(value)
 	}
 	return out
 }
@@ -274,27 +319,37 @@ func lowerDiskSelector(selector *SourceDiskSelector) *manifest.DiskSelector {
 	}
 }
 
-func lowerStorageDisks(disks Optional[[]SourceStorageDisk]) []manifest.ExtraDisk {
+func lowerStorageDisks(disks Optional[[]SourceStorageDisk]) []manifest.Volume {
 	values, ok := disks.Get()
 	if !ok {
 		return nil
 	}
-	out := make([]manifest.ExtraDisk, 0, len(values))
+	out := make([]manifest.Volume, 0, len(values))
 	for _, disk := range values {
 		if strings.TrimSpace(disk.State) == manifest.SystemExtensionAbsent {
 			continue
 		}
-		selector := lowerDiskSelector(disk.Selector)
-		var resolvedSelector manifest.DiskSelector
-		if selector != nil {
-			resolvedSelector = *selector
-		}
-		out = append(out, manifest.ExtraDisk{
+		out = append(out, manifest.Volume{
 			Name:       strings.TrimSpace(disk.Name),
-			Selector:   resolvedSelector,
+			Selector:   lowerVolumeSelector(disk.Selector),
 			Filesystem: disk.Filesystem.Value(),
 			Wipe:       disk.Wipe.Value(),
 		})
+	}
+	return out
+}
+
+func lowerVolumeSelector(selector *SourceVolumeSelector) manifest.VolumeSelector {
+	if selector == nil {
+		return manifest.VolumeSelector{}
+	}
+	out := manifest.VolumeSelector{Disk: lowerDiskSelector(selector.Disk)}
+	if selector.Partition != nil {
+		out.Partition = &manifest.PartitionSelector{
+			ByID:           selector.Partition.ByID.Value(),
+			PartUUID:       selector.Partition.PartUUID.Value(),
+			FilesystemUUID: selector.Partition.FilesystemUUID.Value(),
+		}
 	}
 	return out
 }
@@ -420,7 +475,7 @@ func cloneOptionalStorageDisks(optional Optional[[]SourceStorageDisk]) Optional[
 
 func cloneSourceStorageDisk(disk SourceStorageDisk) SourceStorageDisk {
 	out := disk
-	out.Selector = cloneSourceDiskSelector(disk.Selector)
+	out.Selector = cloneSourceVolumeSelector(disk.Selector)
 	return out
 }
 
@@ -462,6 +517,24 @@ func cloneSourceSystemExtension(extension SourceSystemExtension) SourceSystemExt
 }
 
 func cloneSourceDiskSelector(selector *SourceDiskSelector) *SourceDiskSelector {
+	if selector == nil {
+		return nil
+	}
+	out := *selector
+	return &out
+}
+
+func cloneSourceVolumeSelector(selector *SourceVolumeSelector) *SourceVolumeSelector {
+	if selector == nil {
+		return nil
+	}
+	out := *selector
+	out.Disk = cloneSourceDiskSelector(selector.Disk)
+	out.Partition = cloneSourcePartitionSelector(selector.Partition)
+	return &out
+}
+
+func cloneSourcePartitionSelector(selector *SourcePartitionSelector) *SourcePartitionSelector {
 	if selector == nil {
 		return nil
 	}

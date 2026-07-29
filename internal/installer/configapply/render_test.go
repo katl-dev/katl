@@ -16,6 +16,9 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
 		NodeName: "cp-1",
 		Manifest: manifest.Manifest{
+			Install: manifest.InstallConfig{Volumes: []manifest.Volume{{
+				Name: "local-hostpath", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{}}, Filesystem: "xfs",
+			}}},
 			Node: manifest.NodeConfig{
 				Identity: manifest.NodeIdentity{
 					Hostname: "cp-1",
@@ -61,6 +64,9 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	}
 	if !overlay.ControlPlaneEndpointSet || overlay.ControlPlaneEndpoint == nil || overlay.ControlPlaneEndpoint.Advertisement == nil {
 		t.Fatalf("rendered control-plane endpoint = %#v, set=%t", overlay.ControlPlaneEndpoint, overlay.ControlPlaneEndpointSet)
+	}
+	if overlay.Volumes == nil || len(*overlay.Volumes) != 1 || (*overlay.Volumes)[0].Name != "local-hostpath" {
+		t.Fatalf("rendered volumes = %#v", overlay.Volumes)
 	}
 	if strings.Contains(string(data), "install:") {
 		t.Fatalf("rendered change contains install fields:\n%s", data)
@@ -238,11 +244,16 @@ func TestRenderedNodeConfigurationClearsDesiredDomains(t *testing.T) {
 		Kernel:            manifest.KernelConfig{CommandLine: []string{"intel_iommu=on"}},
 		HostConfiguration: testHostConfiguration("lan", "/etc/systemd/network/10-lan.network", "[Network]\nDHCP=yes\n"),
 		SystemExtensions:  []manifest.SystemExtension{{Name: "tools"}},
-	}}
+	}, Install: manifest.InstallConfig{Volumes: []manifest.Volume{{
+		Name:       "data",
+		Selector:   manifest.VolumeSelector{Partition: &manifest.PartitionSelector{}},
+		Filesystem: "xfs",
+	}}}}
 	desired := current
 	desired.Node.Kernel = manifest.KernelConfig{}
 	desired.Node.HostConfiguration = manifest.HostConfiguration{}
 	desired.Node.SystemExtensions = []manifest.SystemExtension{}
+	desired.Install.Volumes = []manifest.Volume{}
 
 	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
 		NodeName:       "worker-1",
@@ -266,14 +277,15 @@ func TestRenderedNodeConfigurationClearsDesiredDomains(t *testing.T) {
 	}
 	if len(merged.Node.Kernel.CommandLine) != 0 ||
 		!merged.Node.HostConfiguration.IsZero() ||
-		len(merged.Node.SystemExtensions) != 0 {
-		t.Fatalf("cleared manifest = %#v", merged.Node)
+		len(merged.Node.SystemExtensions) != 0 ||
+		len(merged.Install.Volumes) != 0 {
+		t.Fatalf("cleared manifest = %#v", merged)
 	}
 	domains := map[string]bool{}
 	for _, change := range changes {
 		domains[change.Domain] = true
 	}
-	for _, domain := range []string{DomainKernelCommandLine, DomainHostConfiguration, DomainSystemExtensions} {
+	for _, domain := range []string{DomainKernelCommandLine, DomainHostConfiguration, DomainSystemExtensions, DomainVolumes} {
 		if !domains[domain] {
 			t.Fatalf("changed domains = %#v, missing %s", domains, domain)
 		}

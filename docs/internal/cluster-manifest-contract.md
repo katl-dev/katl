@@ -112,7 +112,8 @@ spec:
       disks:
         - name: data
           selector:
-            minSizeMiB: 1048576
+            disk:
+              minSizeMiB: 1048576
           filesystem: btrfs
           wipe: false
     kubernetes:
@@ -133,7 +134,8 @@ spec:
         disks:
           - name: data
             selector:
-              byID: /dev/disk/by-id/ata-KATL_CP_1_DATA
+              disk:
+                byID: /dev/disk/by-id/ata-KATL_CP_1_DATA
       kubernetes:
         # Optional exact address used for this node's Kubernetes identity.
         address: 10.254.1.1

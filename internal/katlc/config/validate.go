@@ -223,6 +223,9 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 		case "systemExtensions":
 			// KnownFields decoding and manifest validation enforce the typed
 			// system extension contract after the safety envelope is accepted.
+		case "volumes":
+			// KnownFields decoding and manifest validation enforce the typed
+			// volume contract after the safety envelope is accepted.
 		case "kubernetes":
 			validateKubernetes(pair.value, pair.path, options, result)
 		case "controlPlaneEndpoint":

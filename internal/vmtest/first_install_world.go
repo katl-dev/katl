@@ -527,11 +527,18 @@ func externalConfigLiterals(manifestPath, nodeMetadataPath string) ([]string, er
 	addExternalConfigLiteral(values, manifest.Install.TargetDisk.ByID)
 	addExternalConfigLiteral(values, manifest.Install.TargetDisk.WWN)
 	addExternalConfigLiteral(values, manifest.Install.TargetDisk.Serial)
-	for _, disk := range manifest.Install.ExtraDisks {
-		addExternalConfigLiteral(values, disk.Name)
-		addExternalConfigLiteral(values, disk.Selector.ByID)
-		addExternalConfigLiteral(values, disk.Selector.WWN)
-		addExternalConfigLiteral(values, disk.Selector.Serial)
+	for _, volume := range manifest.Install.Volumes {
+		addExternalConfigLiteral(values, volume.Name)
+		if volume.Selector.Disk != nil {
+			addExternalConfigLiteral(values, volume.Selector.Disk.ByID)
+			addExternalConfigLiteral(values, volume.Selector.Disk.WWN)
+			addExternalConfigLiteral(values, volume.Selector.Disk.Serial)
+		}
+		if volume.Selector.Partition != nil {
+			addExternalConfigLiteral(values, volume.Selector.Partition.ByID)
+			addExternalConfigLiteral(values, volume.Selector.Partition.PartUUID)
+			addExternalConfigLiteral(values, volume.Selector.Partition.FilesystemUUID)
+		}
 	}
 	if manifest.Node.Bootstrap != nil {
 		bootstrap := manifest.Node.Bootstrap
