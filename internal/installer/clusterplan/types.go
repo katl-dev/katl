@@ -66,6 +66,7 @@ type InstallLayer struct {
 }
 
 type KubernetesLayer struct {
+	Address          string               `yaml:"address,omitempty" json:"address,omitempty"`
 	KubeadmConfigRef string               `yaml:"kubeadmConfigRef,omitempty" json:"kubeadmConfigRef,omitempty"`
 	NodeLabels       map[string]string    `yaml:"nodeLabels,omitempty" json:"nodeLabels,omitempty"`
 	NodeTaints       []manifest.NodeTaint `yaml:"nodeTaints,omitempty" json:"nodeTaints,omitempty"`

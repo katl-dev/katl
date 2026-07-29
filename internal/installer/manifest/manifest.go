@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -209,6 +210,7 @@ type SystemExtensionPayloadRef struct {
 }
 
 type KubernetesConfig struct {
+	Address string           `json:"address,omitempty" yaml:"address,omitempty"`
 	Kubeadm KubeadmReference `json:"kubeadm,omitempty" yaml:"kubeadm,omitempty"`
 }
 
@@ -402,6 +404,9 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	if err := ValidateSystemExtensions(manifest.Node.SystemExtensions, false); err != nil {
 		return fmt.Errorf("node.systemExtensions: %w", err)
 	}
+	if _, err := NormalizeKubernetesAddress(manifest.Node.Kubernetes.Address); err != nil {
+		return fmt.Errorf("node.kubernetes.address: %w", err)
+	}
 	if err := validateNameRef("node.kubernetes.kubeadm.configRef", manifest.Node.Kubernetes.Kubeadm.ConfigRef); err != nil {
 		return err
 	}
@@ -476,6 +481,18 @@ func validatePartitionSelector(field string, selector PartitionSelector) error {
 		return fmt.Errorf("%s.byID must be an absolute /dev/disk/by-id path", field)
 	}
 	return nil
+}
+
+func NormalizeKubernetesAddress(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	address, err := netip.ParseAddr(value)
+	if err != nil || address.Zone() != "" || !address.IsGlobalUnicast() {
+		return "", fmt.Errorf("%q must be a literal unicast IP address", value)
+	}
+	return address.String(), nil
 }
 
 func ValidateKernelConfig(config KernelConfig) error {

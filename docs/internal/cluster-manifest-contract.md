@@ -112,6 +112,8 @@ spec:
         targetDisk:
           byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
       kubernetes:
+        # Optional exact address used for this node's Kubernetes identity.
+        address: 10.254.1.1
         labels:
           topology.kubernetes.io/zone: rack-a
         taints: []
@@ -125,6 +127,15 @@ initial Kubernetes bootstrap, and an optional initial workstation context.
 It need not be a permanent node identity, but it must remain reachable through
 those steps. For DHCP nodes, use a reservation or update the workstation
 saved context when the address changes.
+
+`nodes[].kubernetes.address` is an optional exact IP address for Kubernetes on
+a multihomed node. Katl supplies it to kubelet as `--node-ip`, to kubeadm init
+as `InitConfiguration.localAPIEndpoint.advertiseAddress`, and to control-plane
+join as `JoinConfiguration.controlPlane.localAPIEndpoint.advertiseAddress`.
+It must be a literal unicast IPv4 or IPv6 address; hostnames and CIDR selectors
+are rejected. Omit it on ordinary single-uplink nodes to retain kubeadm and
+kubelet automatic address selection. The value is node-specific and cannot be
+set under `spec.defaults`.
 
 `controlPlane: true` is the only public role choice. Omission or `false` means
 worker, and at least one node must set it to true. Katl derives its internal
@@ -175,7 +186,9 @@ and embeds into the compiled bundle. Katl supplies missing role documents, the
 selected Kubernetes version, the containerd CRI socket, safe rendered paths,
 and dynamic bootstrap credentials. It rejects unsupported API kinds, unsafe
 host paths, symlinks, traversal, and a kubeadm version that conflicts with
-`spec.kubernetes.version`.
+`spec.kubernetes.version`. Kubelet `node-ip` and the init/join local API
+advertise address are also Katl-owned and must be expressed through
+`nodes[].kubernetes.address`.
 
 ## Runtime Planning
 
@@ -192,6 +205,11 @@ state. Normal config apply may stage and report that state, but making a running
 cluster match it requires the dedicated kubeadm-aware operation. Native input
 acceptance does not imply that every kubeadm change has a supported live
 transition.
+
+Changing `nodes[].kubernetes.address` on an already installed node is a
+node-identity migration. Normal config apply keeps the requested field visible
+but refuses the change with a kubeadm-aware operation requirement; set the
+address in the ClusterConfig used for installation.
 
 Disk installation fields are consumed by installation and are not runtime
 configuration. Kubernetes version changes are handled by the Kubernetes

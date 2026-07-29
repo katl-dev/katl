@@ -24,6 +24,20 @@ func TestDecodeAcceptsMinimal(t *testing.T) {
 	}
 }
 
+func TestNormalizeKubernetesAddress(t *testing.T) {
+	for _, address := range []string{"10.254.1.1", "fd00::1"} {
+		got, err := NormalizeKubernetesAddress(address)
+		if err != nil || got != address {
+			t.Fatalf("NormalizeKubernetesAddress(%q) = %q, %v", address, got, err)
+		}
+	}
+	for _, address := range []string{"10.254.1.0/31", "node.example", "0.0.0.0", "224.0.0.1", "::1"} {
+		if _, err := NormalizeKubernetesAddress(address); err == nil {
+			t.Fatalf("NormalizeKubernetesAddress(%q) error = nil", address)
+		}
+	}
+}
+
 func TestDecodeUsesDefaultKatlosImage(t *testing.T) {
 	input := `apiVersion: install.katl.dev/v1alpha1
 kind: InstallManifest

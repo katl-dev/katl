@@ -705,11 +705,15 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 		}
 	}
 	if overlay.Kubernetes != nil {
-		changed := node.Kubernetes != *overlay.Kubernetes
+		addressChanged := node.Kubernetes.Address != overlay.Kubernetes.Address
+		configChanged := node.Kubernetes.Kubeadm != overlay.Kubernetes.Kubeadm
 		node.Kubernetes = *overlay.Kubernetes
-		if changed {
+		if configChanged {
 			domains.add(DomainSelectedKubeadmConfig)
 			domains.add(DomainBootstrapNodeMetadata)
+		}
+		if addressChanged {
+			domains.add(DomainKubeletNodeIdentity)
 		}
 	}
 	if overlay.ControlPlaneEndpointSet && !reflect.DeepEqual(node.ControlPlaneEndpoint, overlay.ControlPlaneEndpoint) {

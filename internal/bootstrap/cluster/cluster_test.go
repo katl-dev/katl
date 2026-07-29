@@ -1690,6 +1690,35 @@ patches:
 	}
 }
 
+func TestRenderControlPlaneJoinCarriesLocalAPIEndpoint(t *testing.T) {
+	base := []byte(`apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 10.254.1.3
+nodeRegistration:
+  kubeletExtraArgs:
+    - name: node-ip
+      value: 10.254.1.3
+`)
+	material := JoinMaterial{Argv: []string{
+		"kubeadm", "join", "api.katl.test:6443",
+		"--token", "abcdef.0123456789abcdef",
+		"--discovery-token-ca-cert-hash", testDiscoveryHash,
+		"--control-plane",
+		"--certificate-key", strings.Repeat("a", 64),
+	}}
+	rendered, err := RenderControlPlaneJoinConfig(base, material)
+	if err != nil {
+		t.Fatalf("RenderControlPlaneJoinConfig() error = %v", err)
+	}
+	text := string(rendered)
+	for _, want := range []string{"advertiseAddress: 10.254.1.3", "name: node-ip", "value: 10.254.1.3"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("rendered join config missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestRenderControlPlaneJoinUsesEphemeralFileDiscovery(t *testing.T) {
 	base := []byte(`apiVersion: kubeadm.k8s.io/v1beta4
 kind: JoinConfiguration

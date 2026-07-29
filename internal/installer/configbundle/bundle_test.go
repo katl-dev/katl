@@ -287,6 +287,65 @@ shutdownGracePeriod: 45s
 	}
 }
 
+func TestBuildArchiveRendersExactKubernetesAddressPerNode(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "      kubernetes:\n        labels:\n          katl.dev/zone: rack-a", "      kubernetes:\n        address: 10.254.1.1\n        labels:\n          katl.dev/zone: rack-a", 1)
+	source = strings.Replace(source, "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        address: 10.254.1.3\n        labels:\n          katl.dev/pool: workers", 1)
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+
+	controlPlane, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode(control-plane) error = %v", err)
+	}
+	cpDocuments, err := decodeKubeadmDocuments(controlPlane.KubeadmConfigs["control-plane"].Config.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	init := kubeadmDocument(cpDocuments, "InitConfiguration")
+	if got := nestedString(init, "localAPIEndpoint", "advertiseAddress"); got != "10.254.1.1" {
+		t.Fatalf("control-plane advertiseAddress = %q", got)
+	}
+	if got := kubeletNodeIP(init); got != "10.254.1.1" {
+		t.Fatalf("control-plane kubelet node-ip = %q", got)
+	}
+
+	worker, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "worker-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode(worker) error = %v", err)
+	}
+	workerDocuments, err := decodeKubeadmDocuments(worker.KubeadmConfigs["worker"].Config.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := kubeletNodeIP(kubeadmDocument(workerDocuments, "JoinConfiguration")); got != "10.254.1.3" {
+		t.Fatalf("worker kubelet node-ip = %q", got)
+	}
+}
+
+func TestBuildArchiveLeavesKubernetesAddressAutomaticWhenOmitted(t *testing.T) {
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, validSourceConfig())})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	controlPlane, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode() error = %v", err)
+	}
+	documents, err := decodeKubeadmDocuments(controlPlane.KubeadmConfigs["control-plane"].Config.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	init := kubeadmDocument(documents, "InitConfiguration")
+	if got := nestedString(init, "localAPIEndpoint", "advertiseAddress"); got != "" {
+		t.Fatalf("advertiseAddress = %q, want automatic selection", got)
+	}
+	if got := kubeletNodeIP(init); got != "" {
+		t.Fatalf("kubelet node-ip = %q, want automatic selection", got)
+	}
+}
+
 func TestBuildArchiveRejectsConflictingKatlOwnedKubeadmValues(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -329,6 +388,36 @@ volumePluginDir: other
 `,
 			want: "volumePluginDir must be",
 		},
+		{
+			name: "kubelet node IP",
+			config: `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  kubeletExtraArgs:
+    - name: node-ip
+      value: 10.254.1.1
+`,
+			want: "node-ip is supplied from nodes[].kubernetes.address",
+		},
+		{
+			name: "local API advertise address",
+			config: `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 10.254.1.1
+`,
+			want: "advertiseAddress is supplied from nodes[].kubernetes.address",
+		},
+		{
+			name: "join local API advertise address",
+			config: `apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+controlPlane:
+  localAPIEndpoint:
+    advertiseAddress: 10.254.1.3
+`,
+			want: "advertiseAddress is supplied from nodes[].kubernetes.address",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -342,6 +431,22 @@ volumePluginDir: other
 				t.Fatalf("BuildArchive() error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildArchiveRejectsInvalidKubernetesAddress(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "      kubernetes:\n        labels:\n          katl.dev/zone: rack-a", "      kubernetes:\n        address: 10.254.1.0/31\n        labels:\n          katl.dev/zone: rack-a", 1)
+	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+	if err == nil || !strings.Contains(err.Error(), "must be a literal unicast IP address") {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+}
+
+func TestBuildArchiveRequiresKubernetesAddressPerNode(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "  defaults:\n", "  defaults:\n    kubernetes:\n      address: 10.254.1.1\n", 1)
+	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+	if err == nil || !strings.Contains(err.Error(), "must be set per node") {
+		t.Fatalf("BuildArchive() error = %v", err)
 	}
 }
 
@@ -970,6 +1075,38 @@ func nativeFile(files []confext.NativeEtcFile, path string) *confext.NativeEtcFi
 		}
 	}
 	return nil
+}
+
+func kubeadmDocument(documents []map[string]any, kind string) map[string]any {
+	for _, document := range documents {
+		if document["kind"] == kind {
+			return document
+		}
+	}
+	return nil
+}
+
+func nestedString(document map[string]any, path ...string) string {
+	var value any = document
+	for _, segment := range path {
+		mapping, _ := value.(map[string]any)
+		value = mapping[segment]
+	}
+	text, _ := value.(string)
+	return text
+}
+
+func kubeletNodeIP(document map[string]any) string {
+	registration, _ := document["nodeRegistration"].(map[string]any)
+	arguments, _ := registration["kubeletExtraArgs"].([]any)
+	for _, raw := range arguments {
+		argument, _ := raw.(map[string]any)
+		if argument["name"] == "node-ip" {
+			value, _ := argument["value"].(string)
+			return value
+		}
+	}
+	return ""
 }
 
 const testSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"

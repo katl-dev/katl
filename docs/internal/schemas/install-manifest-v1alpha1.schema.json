@@ -380,6 +380,17 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "address": {
+          "type": "string",
+          "anyOf": [
+            {
+              "format": "ipv4"
+            },
+            {
+              "format": "ipv6"
+            }
+          ]
+        },
         "kubeadm": {
           "$ref": "#/$defs/kubeadmReference"
         }

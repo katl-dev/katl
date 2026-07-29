@@ -342,6 +342,10 @@ func validateKubernetes(node *yaml.Node, path string, options Options, result *R
 	}
 	for _, pair := range mappingPairsWithPath(node, path) {
 		switch pair.key {
+		case "address":
+			if _, err := manifest.NormalizeKubernetesAddress(scalarValue(pair.value)); err != nil {
+				result.add("invalid-kubernetes-address", pair.path, err.Error())
+			}
 		case "kubeadm":
 			validateKubeadm(pair.value, pair.path, options, result)
 		default:

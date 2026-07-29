@@ -175,12 +175,18 @@ spec:
           byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
       bootstrap:
         address: 192.0.2.11
+      # Optional on multihomed nodes; this is Kubernetes identity, not the
+      # operator-reachable bootstrap address.
+      kubernetes:
+        address: 10.254.1.1
     - name: worker-1
       install:
         targetDisk:
           byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
       bootstrap:
         address: 192.0.2.21
+      kubernetes:
+        address: 10.254.1.3
 ```
 
 When no native kubeadm file is supplied, Katl's generated kubeadm profile keeps
@@ -194,6 +200,13 @@ Kubernetes version itself. ClusterConfig does not expose KatlOS or Kubernetes
 image URLs, credentials, named kubeadm profiles, node classes, or other
 compiler mechanisms. An advanced `systemExtensions` entry may select an
 operator-owned native software bundle by OCI reference as described below.
+
+On a multihomed node, set the optional exact `nodes[].kubernetes.address`.
+Katl uses it for kubelet `--node-ip` and the kubeadm local API advertise address
+during both init and control-plane join. It is deliberately one literal IP,
+not a subnet-selection policy. Omit it for normal single-uplink nodes. The
+separate `bootstrap.address` remains the management address used by `katlctl`
+and may be different.
 
 `kernel.commandLine` adds operator-owned arguments to the installed kernel
 command line. It may be set under `spec.defaults` or on a concrete node; a

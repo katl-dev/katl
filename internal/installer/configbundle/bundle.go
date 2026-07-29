@@ -127,8 +127,9 @@ type SourceKubeadmInput struct {
 }
 
 type SourceKubernetesLayer struct {
-	Labels map[string]string    `yaml:"labels,omitempty" json:"labels,omitempty"`
-	Taints []manifest.NodeTaint `yaml:"taints,omitempty" json:"taints,omitempty"`
+	Address string               `yaml:"address,omitempty" json:"address,omitempty"`
+	Labels  map[string]string    `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Taints  []manifest.NodeTaint `yaml:"taints,omitempty" json:"taints,omitempty"`
 }
 
 type BundleManifest struct {
@@ -462,6 +463,7 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 			Volumes:            append([]manifest.Volume(nil), layer.Install.Volumes...),
 		},
 		Kubernetes: clusterplan.KubernetesLayer{
+			Address:    strings.TrimSpace(layer.Kubernetes.Address),
 			NodeLabels: copyLabels(layer.Kubernetes.Labels),
 			NodeTaints: append([]manifest.NodeTaint(nil), layer.Kubernetes.Taints...),
 		},
@@ -514,12 +516,20 @@ func defaultSource(source SourceConfig) SourceConfig {
 
 func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	source = defaultSource(source)
+	if strings.TrimSpace(source.Spec.Defaults.Kubernetes.Address) != "" {
+		return SourceConfig{}, fmt.Errorf("spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node")
+	}
 	if source.Spec.Defaults.Kernel != nil {
 		if err := manifest.ValidateKernelConfig(*source.Spec.Defaults.Kernel); err != nil {
 			return SourceConfig{}, fmt.Errorf("spec.defaults.kernel: %w", err)
 		}
 	}
 	for i := range source.Spec.Nodes {
+		address, err := manifest.NormalizeKubernetesAddress(source.Spec.Nodes[i].Kubernetes.Address)
+		if err != nil {
+			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].kubernetes.address: %w", i, err)
+		}
+		source.Spec.Nodes[i].Kubernetes.Address = address
 		if source.Spec.Nodes[i].Kernel != nil {
 			if err := manifest.ValidateKernelConfig(*source.Spec.Nodes[i].Kernel); err != nil {
 				return SourceConfig{}, fmt.Errorf("spec.nodes[%d].kernel: %w", i, err)
@@ -896,6 +906,10 @@ func addNodeKubeadmInputs(members *[]member, descriptors *[]Descriptor, node clu
 	if !ok {
 		return nil, fmt.Errorf("node %s kubeadm config %q was not resolved", node.Name, ref)
 	}
+	plan, err := kubeadmconfig.WithNodeAddress(plan, node.InstallManifest.Node.Kubernetes.Address)
+	if err != nil {
+		return nil, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
+	}
 	var out []Descriptor
 	files := append([]kubeadmconfig.File{plan.Config}, plan.Patches...)
 	for _, file := range files {
@@ -1003,7 +1017,7 @@ func addBytes(members *[]member, descriptors *[]Descriptor, role, node, mediaTyp
 		FileName:    fileName,
 		Annotations: annotations,
 	}
-	*members = append(*members, member{descriptor: desc, data: append([]byte(nil), data...)})
+	*members = append(*members, member{descriptor: desc, data: slices.Clone(data)})
 	*descriptors = append(*descriptors, desc)
 	return desc
 }
