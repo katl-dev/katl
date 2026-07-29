@@ -1420,6 +1420,11 @@ func synthesizeJoinConfig(initDoc map[string]any) map[string]any {
 	if patches, ok := initDoc["patches"].(map[string]any); ok {
 		doc["patches"] = patches
 	}
+	if localAPIEndpoint, ok := initDoc["localAPIEndpoint"].(map[string]any); ok {
+		doc["controlPlane"] = map[string]any{
+			"localAPIEndpoint": localAPIEndpoint,
+		}
+	}
 	return doc
 }
 

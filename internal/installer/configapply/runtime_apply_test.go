@@ -205,6 +205,30 @@ func TestControlPlaneEndpointApplyClassification(t *testing.T) {
 	}
 }
 
+func TestKubernetesAddressApplyClassification(t *testing.T) {
+	current := baseManifest()
+	desired := current.Node.Kubernetes
+	desired.Address = "10.254.1.1"
+	request := trustedBundleRequest(t.TempDir(), TrustedBundleRequest{
+		ApplyMode:       generation.ApplyModeAuto,
+		CurrentManifest: current,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {Kubernetes: &desired},
+		},
+	})
+	_, changes, _, err := mergeRuntimeConfig(request)
+	if err != nil {
+		t.Fatalf("mergeRuntimeConfig() error = %v", err)
+	}
+	if len(changes) != 1 || changes[0].Domain != DomainKubeletNodeIdentity {
+		t.Fatalf("changes = %#v, want %q", changes, DomainKubeletNodeIdentity)
+	}
+	decision, err := Plan(request.ApplyMode, changes)
+	if err == nil || len(decision.Diagnostics) != 1 || decision.Diagnostics[0].RequiredOperation != "kubeadm-aware operation" {
+		t.Fatalf("Plan() error = %v, decision = %#v", err, decision)
+	}
+}
+
 func TestEndpointRoutingImpactNamesExchangeAndExportChanges(t *testing.T) {
 	before := managedEndpoint("192.0.2.1")
 	before.Advertisement.BGP.RouteExchange = []controlplaneendpoint.RouteExchange{{

@@ -74,6 +74,11 @@ Operator-authored kubeadm YAML omits values already owned by Katl:
   conflicting authored value is rejected.
 - The selected endpoint hostname is added once to
   `ClusterConfiguration.apiServer.certSANs`.
+- kubelet `node-ip`, `InitConfiguration.localAPIEndpoint.advertiseAddress`,
+  and control-plane join
+  `JoinConfiguration.controlPlane.localAPIEndpoint.advertiseAddress` come from
+  the optional exact `nodes[].kubernetes.address`; conflicting native values
+  are rejected.
 - `InitConfiguration` and `JoinConfiguration`
   `nodeRegistration.criSocket` default to containerd.
 - `InitConfiguration.nodeRegistration.taints` defaults to `[]`; node taints

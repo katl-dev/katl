@@ -245,6 +245,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			SystemExtensions:     append([]manifest.SystemExtension(nil), layer.SystemExtensions...),
 			ControlPlaneEndpoint: managedEndpoint,
 			Kubernetes: manifest.KubernetesConfig{
+				Address: strings.TrimSpace(layer.Kubernetes.Address),
 				Kubeadm: manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
 			},
 			Bootstrap: &manifest.BootstrapIntent{
@@ -372,6 +373,9 @@ func copyLabels(labels map[string]string) map[string]string {
 func validateSharedLayer(path string, layer NodeLayer) error {
 	if layer.Install.TargetDisk != nil {
 		return fmt.Errorf("%s.install.targetDisk is not allowed; target disk identity must be set per node", path)
+	}
+	if strings.TrimSpace(layer.Kubernetes.Address) != "" {
+		return fmt.Errorf("%s.kubernetes.address is not allowed; Kubernetes address must be set per node", path)
 	}
 	if layer.Install.TargetDiskDefaults != nil {
 		if err := validateTargetDiskDefaults(*layer.Install.TargetDiskDefaults); err != nil {
