@@ -9,32 +9,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 )
 
-func validateAuthoringSystemExtensions(source SourceConfig) error {
-	validate := func(field string, extensions []manifest.SystemExtension) error {
-		for i, extension := range extensions {
-			if extension.OCIManifestDigest != "" ||
-				extension.BundleManifestDigest != "" ||
-				extension.ArtifactVersion != "" ||
-				extension.PayloadVersion != "" ||
-				extension.Architecture != "" ||
-				len(extension.SupportedRuntimeInterfaces) != 0 ||
-				len(extension.Payloads) != 0 {
-				return fmt.Errorf("%s[%d] contains compiler-owned resolution fields; configure only name, state, bundle, configuration, and units", field, i)
-			}
-		}
-		return nil
-	}
-	if err := validate("spec.defaults.systemExtensions", source.Spec.Defaults.SystemExtensions); err != nil {
-		return err
-	}
-	for i, node := range source.Spec.Nodes {
-		if err := validate(fmt.Sprintf("spec.nodes[%d].systemExtensions", i), node.SystemExtensions); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func resolveSystemExtensionBundles(
 	ctx context.Context,
 	source SourceConfig,
@@ -45,9 +19,14 @@ func resolveSystemExtensionBundles(
 		resolver = systemextensionbundle.Resolve
 	}
 	resolved := make(map[string]systemextensionbundle.Resolved)
-	resolveEntries := func(field string, extensions []manifest.SystemExtension) error {
-		for i := range extensions {
-			extension := &extensions[i]
+	resolveEntries := func(field string, extensions *Optional[[]SourceSystemExtension]) error {
+		values, ok := extensions.Get()
+		if !ok {
+			return nil
+		}
+		values = cloneSourceSystemExtensions(values)
+		for i := range values {
+			extension := &values[i]
 			state := strings.TrimSpace(extension.State)
 			if state == manifest.SystemExtensionAbsent {
 				continue
@@ -66,15 +45,17 @@ func resolveSystemExtensionBundles(
 				}
 				resolved[ref] = bundle
 			}
-			*extension = bundle.Desired(*extension)
+			desired := bundle.Desired(lowerSystemExtension(*extension))
+			extension.resolved = &desired
 		}
+		*extensions = supplied(values)
 		return nil
 	}
-	if err := resolveEntries("spec.defaults.systemExtensions", source.Spec.Defaults.SystemExtensions); err != nil {
+	if err := resolveEntries("spec.defaults.systemExtensions", &source.Spec.Defaults.SystemExtensions); err != nil {
 		return SourceConfig{}, nil, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := resolveEntries(fmt.Sprintf("spec.nodes[%d].systemExtensions", i), source.Spec.Nodes[i].SystemExtensions); err != nil {
+		if err := resolveEntries(fmt.Sprintf("spec.nodes[%d].systemExtensions", i), &source.Spec.Nodes[i].SystemExtensions); err != nil {
 			return SourceConfig{}, nil, err
 		}
 	}

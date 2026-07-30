@@ -61,6 +61,9 @@ func (builder *schemaBuilder) schemaFor(t reflect.Type) schemaObject {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	if valueType, ok := optionalValueType(t); ok {
+		return builder.schemaFor(valueType)
+	}
 	switch t.Kind() {
 	case reflect.Struct:
 		name := schemaTypeName(t)
@@ -157,6 +160,9 @@ func validateSourceFields(node *yaml.Node) error {
 func validateYAMLFields(node *yaml.Node, t reflect.Type, path string) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	if valueType, ok := optionalValueType(t); ok {
+		return validateYAMLFields(node, valueType, path)
 	}
 	switch t.Kind() {
 	case reflect.Struct:

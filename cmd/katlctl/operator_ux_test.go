@@ -47,14 +47,14 @@ func TestConfigInitEmitsStarterClusterConfig(t *testing.T) {
 	if source.Metadata.Name != "homelab" || configbundle.SourceControlPlaneEndpoint(source) != "" || source.Spec.Kubernetes.Version != configbundle.DefaultKubernetesVersion || len(source.Spec.Nodes) != 2 {
 		t.Fatalf("generated source = %#v", source)
 	}
-	if got := source.Spec.Nodes[0].Bootstrap.Address; got != "192.0.2.11" {
-		t.Fatalf("generated bootstrap address = %q", got)
+	if got := source.Spec.Nodes[0].Management.Address; got != "192.0.2.11" {
+		t.Fatalf("generated management address = %q", got)
 	}
 	if !source.Spec.Nodes[0].ControlPlane || source.Spec.Nodes[1].ControlPlane {
 		t.Fatalf("generated control-plane choices = %#v", source.Spec.Nodes)
 	}
 	rendered := stdout.String()
-	for _, internalDefault := range []string{"katlosImage:", "wipeTarget:", "systemRoleDefaults:", "kubeadmConfigs:", "nodeClasses:", "overrides:", "bundle:", "catalogRef:", "hostname:", "access:"} {
+	for _, internalDefault := range []string{"katlosImage:", "wipeTarget:", "systemRoleDefaults:", "kubeadmConfigs:", "nodeClasses:", "overrides:", "bundle:", "catalogRef:", "hostname:"} {
 		if strings.Contains(rendered, internalDefault) {
 			t.Fatalf("generated config contains internal default %q:\n%s", internalDefault, rendered)
 		}
@@ -114,7 +114,7 @@ func TestConfigInitUsesSSHAgentKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys := source.Spec.Defaults.Identity.SSH.AuthorizedKeys
+	keys, _ := source.Spec.Defaults.Access.SSH.AuthorizedKeys.Get()
 	if len(keys) != 1 || keys[0] != uxTestSSHKey {
 		t.Fatalf("authorized keys = %#v", keys)
 	}
@@ -148,7 +148,8 @@ func TestConfigInitWithoutSSHKeysWritesEditableConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if keys := source.Spec.Defaults.Identity.SSH.AuthorizedKeys; len(keys) != 0 {
+	keys, _ := source.Spec.Defaults.Access.SSH.AuthorizedKeys.Get()
+	if len(keys) != 0 {
 		t.Fatalf("authorized keys = %#v", keys)
 	}
 	if !strings.Contains(stderr.String(), "generated ClusterConfig has no SSH authorized keys") {

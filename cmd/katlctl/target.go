@@ -60,7 +60,7 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 			target.endpoint = endpoint
 		}
 		if target.endpoint == "" {
-			return managementTarget{}, fmt.Errorf("node %q has no bootstrap.address in --config; set it or pass --endpoint ADDRESS", target.nodeName)
+			return managementTarget{}, fmt.Errorf("node %q has no management.address in --config; set it or pass --endpoint ADDRESS", target.nodeName)
 		}
 		return target, nil
 	}
@@ -111,7 +111,7 @@ func readManagementInventory(path string) (inventory.Inventory, error) {
 			if sourceNode.ControlPlane {
 				role = inventory.RoleControlPlane
 			}
-			inv.Nodes = append(inv.Nodes, inventory.Node{Name: name, Address: strings.TrimSpace(sourceNode.Bootstrap.Address), SystemRole: role})
+			inv.Nodes = append(inv.Nodes, inventory.Node{Name: name, Address: strings.TrimSpace(sourceNode.Management.Address), SystemRole: role})
 		}
 		if inv.ControlPlaneEndpoint == "" {
 			for _, node := range inv.Nodes {

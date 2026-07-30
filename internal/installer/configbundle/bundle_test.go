@@ -92,12 +92,237 @@ func TestDecodeSourceAcceptsKernelCommandLineDefaultsAndNodeClear(t *testing.T) 
 	if err != nil {
 		t.Fatalf("DecodeSource() error = %v", err)
 	}
-	if config.Spec.Defaults.Kernel == nil || !slices.Equal(config.Spec.Defaults.Kernel.CommandLine, []string{"intel_iommu=on"}) {
+	if config.Spec.Defaults.Kernel == nil {
 		t.Fatalf("default kernel config = %#v", config.Spec.Defaults.Kernel)
 	}
-	if config.Spec.Nodes[1].Kernel == nil || len(config.Spec.Nodes[1].Kernel.CommandLine) != 0 {
+	defaultCommandLine, defaultSet := config.Spec.Defaults.Kernel.CommandLine.Get()
+	if !defaultSet || !slices.Equal(defaultCommandLine, []string{"intel_iommu=on"}) {
+		t.Fatalf("default kernel config = %#v", config.Spec.Defaults.Kernel)
+	}
+	if config.Spec.Nodes[1].Kernel == nil {
 		t.Fatalf("worker kernel override = %#v", config.Spec.Nodes[1].Kernel)
 	}
+	workerCommandLine, workerSet := config.Spec.Nodes[1].Kernel.CommandLine.Get()
+	if !workerSet || len(workerCommandLine) != 0 {
+		t.Fatalf("worker kernel override = %#v", config.Spec.Nodes[1].Kernel)
+	}
+}
+
+func TestLowerSourceAppliesPredictableNodeLayering(t *testing.T) {
+	config, err := DecodeSource(strings.NewReader(`apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: layering
+spec:
+  kubernetes:
+    version: v1.36.1
+  defaults:
+    access:
+      ssh:
+        authorizedKeys:
+          - ` + testSSHKey + `
+    kernel:
+      commandLine:
+        - intel_iommu=on
+    hostConfiguration:
+      sysfs:
+        - path: /sys/module/printk/parameters/time
+          value: N
+      fileSets:
+        network:
+          files:
+            - path: /etc/systemd/network/20-common.network
+              content: common
+    systemExtensions:
+      - name: bird
+        bundle: registry.example/bird:v1
+      - name: tools
+        bundle: registry.example/tools:v1
+    install:
+      systemDisk:
+        minSizeMiB: 65536
+    storage:
+      disks:
+        - name: data
+          selector:
+            disk:
+              minSizeMiB: 1024
+          filesystem: btrfs
+          wipe: true
+        - name: scratch
+          selector:
+            disk:
+              minSizeMiB: 2048
+          filesystem: xfs
+    kubernetes:
+      labels:
+        environment: lab
+        topology.kubernetes.io/zone: rack-a
+      taints:
+        - key: inherited
+          effect: NoSchedule
+  nodes:
+    - name: inherited
+      controlPlane: true
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/inherited-root
+    - name: cleared
+      access:
+        ssh:
+          authorizedKeys: []
+      kernel:
+        commandLine: []
+      hostConfiguration:
+        sysfs: []
+        fileSets: {}
+      systemExtensions: []
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/cleared-root
+      storage:
+        disks: []
+      kubernetes:
+        labels: {}
+        taints: []
+    - name: overridden
+      hostConfiguration:
+        fileSets:
+          network:
+            state: absent
+          host:
+            files:
+              - path: /etc/hostname-note
+                content: overridden
+      systemExtensions:
+        - name: bird
+          bundle: registry.example/bird:v2
+        - name: tools
+          state: absent
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/overridden-root
+      storage:
+        disks:
+          - name: data
+            selector:
+              disk:
+                byID: /dev/disk/by-id/overridden-data
+          - name: scratch
+            state: absent
+      kubernetes:
+        labels:
+          topology.kubernetes.io/zone: rack-b
+        taints:
+          - key: dedicated
+            value: build
+            effect: NoSchedule
+`))
+	if err != nil {
+		t.Fatalf("DecodeSource() error = %v", err)
+	}
+	plan, err := LowerSource(config, PlanningInputs{})
+	if err != nil {
+		t.Fatalf("LowerSource() error = %v", err)
+	}
+
+	inherited := plan.Spec.Nodes[0].Overrides
+	if !slices.Equal(inherited.SSH.AuthorizedKeys, []string{testSSHKey}) ||
+		inherited.Kernel == nil || !slices.Equal(inherited.Kernel.CommandLine, []string{"intel_iommu=on"}) ||
+		inherited.Install.TargetDisk == nil || inherited.Install.TargetDisk.ByID != "/dev/disk/by-id/inherited-root" ||
+		inherited.Install.TargetDisk.MinSizeMiB != 65536 {
+		t.Fatalf("omitted node fields did not inherit defaults: %#v", inherited)
+	}
+
+	cleared := plan.Spec.Nodes[1].Overrides
+	if len(cleared.SSH.AuthorizedKeys) != 0 ||
+		cleared.Kernel == nil || len(cleared.Kernel.CommandLine) != 0 ||
+		len(cleared.HostConfiguration.Sysfs) != 0 || len(cleared.HostConfiguration.Sets) != 0 ||
+		len(cleared.SystemExtensions) != 0 || len(cleared.Install.Volumes) != 0 ||
+		len(cleared.Kubernetes.NodeLabels) != 0 || len(cleared.Kubernetes.NodeTaints) != 0 {
+		t.Fatalf("explicitly empty node fields did not clear defaults: %#v", cleared)
+	}
+	if cleared.Install.TargetDisk == nil ||
+		cleared.Install.TargetDisk.ByID != "/dev/disk/by-id/cleared-root" ||
+		cleared.Install.TargetDisk.MinSizeMiB != 65536 {
+		t.Fatalf("system disk constraints did not layer by field: %#v", cleared.Install.TargetDisk)
+	}
+
+	overridden := plan.Spec.Nodes[2].Overrides
+	if len(overridden.HostConfiguration.Sets) != 1 || overridden.HostConfiguration.Sets["host"].Files[0].Path != "/etc/hostname-note" {
+		t.Fatalf("named file sets did not replace or remove by name: %#v", overridden.HostConfiguration.Sets)
+	}
+	if len(overridden.SystemExtensions) != 1 || overridden.SystemExtensions[0].Name != "bird" || overridden.SystemExtensions[0].Bundle != "registry.example/bird:v2" {
+		t.Fatalf("named system extensions did not replace or remove by name: %#v", overridden.SystemExtensions)
+	}
+	if len(overridden.Install.Volumes) != 1 {
+		t.Fatalf("named storage disks did not replace or remove by name: %#v", overridden.Install.Volumes)
+	}
+	data := overridden.Install.Volumes[0]
+	if data.Name != "data" || data.Selector.Disk == nil ||
+		data.Selector.Disk.ByID != "/dev/disk/by-id/overridden-data" ||
+		data.Selector.Disk.MinSizeMiB != 1024 || data.Filesystem != "btrfs" || !data.Wipe {
+		t.Fatalf("storage disk fields did not inherit and override predictably: %#v", data)
+	}
+	if got := overridden.Kubernetes.NodeLabels; len(got) != 2 || got["environment"] != "lab" || got["topology.kubernetes.io/zone"] != "rack-b" {
+		t.Fatalf("labels did not replace values by key: %#v", got)
+	}
+	if got := overridden.Kubernetes.NodeTaints; len(got) != 1 || got[0].Key != "dedicated" {
+		t.Fatalf("taints did not replace the inherited list: %#v", got)
+	}
+}
+
+func TestNormalizedSourcePreservesExplicitEmptyValues(t *testing.T) {
+	config, err := DecodeSource(strings.NewReader(`apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: empty-values
+spec:
+  nodes:
+    - name: cp-1
+      controlPlane: true
+      access:
+        ssh:
+          authorizedKeys: []
+      hostConfiguration:
+        fileSets: {}
+      storage:
+        disks: []
+      kubernetes:
+        labels: {}
+        taints: []
+`))
+	if err != nil {
+		t.Fatalf("DecodeSource() error = %v", err)
+	}
+	normalized, err := marshalCanonical(config)
+	if err != nil {
+		t.Fatalf("marshalCanonical() error = %v", err)
+	}
+	roundTripped, err := DecodeSource(bytes.NewReader(normalized))
+	if err != nil {
+		t.Fatalf("DecodeSource(normalized) error = %v", err)
+	}
+	node := roundTripped.Spec.Nodes[0]
+	for name, present := range map[string]bool{
+		"authorizedKeys": optionalIsSet(node.Access.SSH.AuthorizedKeys),
+		"fileSets":       optionalIsSet(node.HostConfiguration.FileSets),
+		"storage.disks":  optionalIsSet(node.Storage.Disks),
+		"labels":         optionalIsSet(node.Kubernetes.Labels),
+		"taints":         optionalIsSet(node.Kubernetes.Taints),
+	} {
+		if !present {
+			t.Fatalf("normalized source lost explicit empty %s:\n%s", name, normalized)
+		}
+	}
+	if optionalIsSet(node.SystemExtensions) {
+		t.Fatalf("normalized source turned omitted systemExtensions into an explicit value:\n%s", normalized)
+	}
+}
+
+func optionalIsSet[T any](value Optional[T]) bool {
+	_, ok := value.Get()
+	return ok
 }
 
 func TestDecodeSourceRejectsKatlOwnedKernelArgument(t *testing.T) {
@@ -169,6 +394,13 @@ func TestBuildArchiveResolvesAndVendorsSystemExtensionOnce(t *testing.T) {
 	}
 	if resolveCalls != 1 {
 		t.Fatalf("resolver calls = %d, want one for shared defaults", resolveCalls)
+	}
+	files := readTarFiles(t, archive)
+	normalized := files["blobs/sha256/"+strings.TrimPrefix(result.Manifest.Source.NormalizedConfig.Digest, "sha256:")]
+	for _, compilerOwned := range []string{"ociManifestDigest", "bundleManifestDigest", "artifactVersion", "payloadVersion", "supportedRuntimeInterfaces", "payloads"} {
+		if bytes.Contains(normalized, []byte(compilerOwned)) {
+			t.Fatalf("normalized ClusterConfig exposes compiler-owned system extension field %q:\n%s", compilerOwned, normalized)
+		}
 	}
 	if len(result.Manifest.Cluster.SystemExtensions) != 1 {
 		t.Fatalf("bundle records = %#v", result.Manifest.Cluster.SystemExtensions)
@@ -486,7 +718,7 @@ spec:
   kubernetes:
     version: v1.36.1
   defaults:
-    identity:
+    access:
       ssh:
         authorizedKeys:
           - `+testSSHKey+`
@@ -494,9 +726,9 @@ spec:
     - name: cp-1
       controlPlane: true
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-root
-      bootstrap:
+      management:
         address: 192.0.2.11
 `)
 	archive, result, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
@@ -655,7 +887,7 @@ func TestInstallingGuideClusterConfigCompiles(t *testing.T) {
 
 func TestBuildArchiveRejectsUnsafeDiskDefaults(t *testing.T) {
 	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, strings.Replace(validSourceConfig(), "minSizeMiB: 65536", "serial: shared-root", 1))})
-	if err == nil || !strings.Contains(err.Error(), "targetDiskDefaults must not set byID, wwn, or serial") {
+	if err == nil || !strings.Contains(err.Error(), "identifying selectors byID, wwn, and serial must be set per node") {
 		t.Fatalf("BuildArchive() error = %v, want unsafe disk defaults", err)
 	}
 }
@@ -673,13 +905,100 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 		},
 		{
 			name: "wipe authorization",
-			raw:  strings.Replace(validSourceConfig(), "      targetDiskDefaults:\n", "      wipeTarget: true\n      targetDiskDefaults:\n", 1),
+			raw:  strings.Replace(validSourceConfig(), "      systemDisk:\n", "      wipeTarget: true\n      systemDisk:\n", 1),
 			want: "spec.defaults.install.wipeTarget: field is not supported",
 		},
 		{
 			name: "hostname alias",
 			raw:  strings.Replace(validSourceConfig(), "      ssh:\n", "      hostname: cp-alias\n      ssh:\n", 1),
-			want: "spec.defaults.identity.hostname: field is not supported",
+			want: "spec.defaults.access.hostname: field is not supported",
+		},
+		{
+			name: "identity access block",
+			raw:  strings.Replace(validSourceConfig(), "    access:\n", "    identity:\n", 1),
+			want: "spec.defaults.identity: field is not supported",
+		},
+		{
+			name: "bootstrap management block",
+			raw:  strings.Replace(validSourceConfig(), "      management:\n", "      bootstrap:\n", 1),
+			want: "spec.nodes[0].bootstrap: field is not supported",
+		},
+		{
+			name: "target disk defaults",
+			raw:  strings.Replace(validSourceConfig(), "      systemDisk:\n        minSizeMiB:", "      targetDiskDefaults:\n        minSizeMiB:", 1),
+			want: "spec.defaults.install.targetDiskDefaults: field is not supported",
+		},
+		{
+			name: "target disk",
+			raw: strings.Replace(validSourceConfig(),
+				"      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root",
+				"      install:\n        targetDisk:\n          byID: /dev/disk/by-id/ata-cp-root", 1),
+			want: "spec.nodes[0].install.targetDisk: field is not supported",
+		},
+		{
+			name: "extra disks",
+			raw: strings.Replace(validSourceConfig(),
+				"      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root",
+				"      install:\n        extraDisks: []\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root", 1),
+			want: "spec.nodes[0].install.extraDisks: field is not supported",
+		},
+		{
+			name: "install volumes",
+			raw: strings.Replace(validSourceConfig(),
+				"      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root",
+				"      install:\n        volumes: []\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root", 1),
+			want: "spec.nodes[0].install.volumes: field is not supported",
+		},
+		{
+			name: "host configuration sets",
+			raw:  strings.Replace(validSourceConfig(), "      fileSets:\n", "      sets:\n", 1),
+			want: "spec.defaults.hostConfiguration.sets: field is not supported",
+		},
+		{
+			name: "sysfs name",
+			raw: strings.Replace(validSourceConfig(), "    hostConfiguration:\n", `    hostConfiguration:
+      sysfs:
+        - name: /sys/module/printk/parameters/time
+          value: N
+`, 1),
+			want: "spec.defaults.hostConfiguration.sysfs[0].name: field is not supported",
+		},
+		{
+			name: "file set notify",
+			raw:  strings.Replace(validSourceConfig(), "        common-network:\n", "        common-network:\n          notify: {}\n", 1),
+			want: "spec.defaults.hostConfiguration.fileSets.common-network.notify: field is not supported",
+		},
+		{
+			name: "route exchange singular",
+			raw: strings.Replace(validSourceConfig(), "    port: 6443\n", `    port: 6443
+    advertisement:
+      vip: 10.40.0.10
+      bgp:
+        localASN: 64512
+        peers:
+          - address: 10.0.0.1
+            asn: 64500
+        routeExchange: []
+`, 1),
+			want: "spec.controlPlaneEndpoint.advertisement.bgp.routeExchange: field is not supported",
+		},
+		{
+			name: "prefix length",
+			raw: strings.Replace(validSourceConfig(), "    port: 6443\n", `    port: 6443
+    advertisement:
+      vip: 10.40.0.10
+      bgp:
+        localASN: 64512
+        peers:
+          - address: 10.0.0.1
+            asn: 64500
+        routeExchanges:
+          - name: cilium
+            exportToFabric:
+              - cidr: 10.50.0.0/16
+                prefixLength: 32
+`, 1),
+			want: "spec.controlPlaneEndpoint.advertisement.bgp.routeExchanges[0].exportToFabric[0].prefixLength: field is not supported",
 		},
 		{
 			name: "Kubernetes bundle",
@@ -724,7 +1043,7 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 		{
 			name: "bootstrap credentials",
 			raw:  strings.Replace(validSourceConfig(), "        address: 10.0.0.11", "        address: 10.0.0.11\n        access:\n          credentialRef: file:/tmp/token", 1),
-			want: "spec.nodes[0].bootstrap.access: field is not supported",
+			want: "spec.nodes[0].management.access: field is not supported",
 		},
 		{
 			name: "kubeadm profiles",
@@ -793,11 +1112,42 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 		}
 	}
 	node := document.Defs["configbundle.SourceNode"]
-	if _, ok := node.Properties["controlPlane"]; !ok {
-		t.Fatal("source node schema is missing controlPlane")
+	for _, field := range []string{"access", "controlPlane", "install", "kubernetes", "management", "storage"} {
+		if _, ok := node.Properties[field]; !ok {
+			t.Fatalf("source node schema is missing %q", field)
+		}
 	}
-	if _, ok := node.Properties["systemRole"]; ok {
-		t.Fatal("source node schema exposes removed systemRole")
+	for _, field := range []string{"bootstrap", "identity", "systemRole"} {
+		if _, ok := node.Properties[field]; ok {
+			t.Fatalf("source node schema exposes removed %q", field)
+		}
+	}
+	assertSchemaFields(t, document.Defs, "configbundle.SourceInstallLayer", []string{"systemDisk"}, []string{"extraDisks", "targetDisk", "targetDiskDefaults", "volumes"})
+	assertSchemaFields(t, document.Defs, "configbundle.SourceStorageLayer", []string{"disks"}, nil)
+	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfiguration", []string{"fileSets", "sysfs"}, []string{"sets"})
+	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationSysfsSetting", []string{"path", "value"}, []string{"name"})
+	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationFileSet", []string{"files", "onChange", "state"}, []string{"notify"})
+	assertSchemaFields(t, document.Defs, "configbundle.SourceSystemExtension",
+		[]string{"bundle", "configuration", "name", "state", "units"},
+		[]string{"architecture", "artifactVersion", "bundleManifestDigest", "ociManifestDigest", "payloadVersion", "payloads", "supportedRuntimeInterfaces"})
+	assertSchemaFields(t, document.Defs, "controlplaneendpoint.BGP", []string{"routeExchanges"}, []string{"routeExchange"})
+	assertSchemaFields(t, document.Defs, "controlplaneendpoint.PrefixEnvelope", []string{"exactPrefixLength"}, []string{"prefixLength"})
+}
+
+func assertSchemaFields(t *testing.T, definitions map[string]struct {
+	Properties map[string]json.RawMessage `json:"properties"`
+}, definition string, present, absent []string) {
+	t.Helper()
+	properties := definitions[definition].Properties
+	for _, field := range present {
+		if _, ok := properties[field]; !ok {
+			t.Fatalf("%s schema is missing %q", definition, field)
+		}
+	}
+	for _, field := range absent {
+		if _, ok := properties[field]; ok {
+			t.Fatalf("%s schema exposes removed %q", definition, field)
+		}
 	}
 }
 
@@ -1019,20 +1369,21 @@ spec:
     version: v1.36.1
   defaults:
     install:
-      targetDiskDefaults:
+      systemDisk:
         minSizeMiB: 65536
-      volumes:
+    storage:
+      disks:
         - name: data
           selector:
             disk:
               byID: /dev/disk/by-id/ata-data
           filesystem: xfs
-    identity:
+    access:
       ssh:
         authorizedKeys:
           - ` + testSSHKey + `
     hostConfiguration:
-      sets:
+      fileSets:
         common-network:
           files:
             - path: /etc/systemd/network/10-common.network
@@ -1045,10 +1396,10 @@ spec:
   nodes:
     - name: cp-1
       controlPlane: true
-      bootstrap:
+      management:
         address: 10.0.0.11
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-cp-root
       kubernetes:
         labels:
@@ -1057,10 +1408,10 @@ spec:
           - key: node-role.kubernetes.io/control-plane
             effect: NoSchedule
     - name: worker-1
-      bootstrap:
+      management:
         address: 10.0.0.21
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-worker-root
       kubernetes:
         labels:

@@ -52,7 +52,7 @@ carrying the file and applying it at boot.
 ## Decision
 
 ClusterConfig supports named native host configuration sets under
-`hostConfiguration.sets`.
+`hostConfiguration.fileSets`.
 
 Each set owns:
 
@@ -121,7 +121,7 @@ kind: ClusterConfig
 spec:
   defaults:
     hostConfiguration:
-      sets:
+      fileSets:
         kernel-forwarding:
           files:
             - path: /etc/sysctl.d/80-home-lab-forwarding.conf
@@ -148,7 +148,7 @@ spec:
               content: |
                 [Journal]
                 SystemMaxUse=2G
-          notify:
+          onChange:
             systemd:
               - unit: systemd-journald.service
                 action: try-reload-or-restart
@@ -419,7 +419,7 @@ A set may declare bounded notification for an existing unprotected systemd
 unit:
 
 ```yaml
-notify:
+onChange:
   systemd:
     - unit: example.service
       action: reload
@@ -509,11 +509,11 @@ Sysfs writes are typed intent rather than native tmpfiles passthrough:
 ```yaml
 hostConfiguration:
   sysfs:
-    - name: /sys/module/printk/parameters/time
+    - path: /sys/module/printk/parameters/time
       value: N
 ```
 
-Names must be unique normalized `/sys/...` paths and values must be non-empty
+Paths must be unique normalized `/sys/...` paths and values must be non-empty
 single-line UTF-8 values without leading or trailing whitespace. A node-level
 list replaces inherited defaults, including an explicit empty list.
 Operator-authored `/etc/tmpfiles.d` files are rejected.

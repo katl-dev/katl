@@ -83,7 +83,7 @@ type controlPlaneEndpointReport struct {
 	SelectedSourceAddress string                               `json:"selectedSourceAddress,omitempty"`
 	RouterID              string                               `json:"routerID,omitempty"`
 	Peers                 []controlPlaneEndpointPeerReport     `json:"peers,omitempty"`
-	RouteExchange         []controlPlaneEndpointExchangeReport `json:"routeExchange,omitempty"`
+	RouteExchanges        []controlPlaneEndpointExchangeReport `json:"routeExchanges,omitempty"`
 	LastTransitionTime    string                               `json:"lastTransitionTime,omitempty"`
 	FailureReason         string                               `json:"failureReason,omitempty"`
 }
@@ -434,7 +434,7 @@ func newControlPlaneEndpointReport(status *agentapi.ControlPlaneEndpointStatus) 
 		})
 	}
 	for _, exchange := range status.GetRouteExchange() {
-		report.RouteExchange = append(report.RouteExchange, controlPlaneEndpointExchangeReport{
+		report.RouteExchanges = append(report.RouteExchanges, controlPlaneEndpointExchangeReport{
 			Name: exchange.GetName(), ListenAddress: exchange.GetListenAddress(), ListenPort: exchange.GetListenPort(), PeerASN: exchange.GetPeerAsn(), State: exchange.GetState(), AcceptedRoutes: exchange.GetAcceptedRoutes(), ExportedRoutes: exchange.GetExportedRoutes(),
 		})
 	}
@@ -516,7 +516,7 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	if _, err := fmt.Fprintln(w, "\nCONTROL PLANE ENDPOINT\tVIP\tSTATE\tLOCAL API\tLOCAL VIP\tROUTE\tPEERS\tEXCHANGES"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d/%d\t%d\n", endpoint.Endpoint, endpoint.VIP, endpoint.State, yesNo(endpoint.LocalAPIReady), yesNo(endpoint.LocalVIPOwned), yesNo(endpoint.RouteOriginated), established, len(endpoint.Peers), len(endpoint.RouteExchange)); err != nil {
+	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d/%d\t%d\n", endpoint.Endpoint, endpoint.VIP, endpoint.State, yesNo(endpoint.LocalAPIReady), yesNo(endpoint.LocalVIPOwned), yesNo(endpoint.RouteOriginated), established, len(endpoint.Peers), len(endpoint.RouteExchanges)); err != nil {
 		return err
 	}
 	if endpoint.FailureReason != "" {

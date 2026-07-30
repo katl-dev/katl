@@ -31,9 +31,9 @@ type Advertisement struct {
 }
 
 type BGP struct {
-	LocalASN      uint32          `yaml:"localASN" json:"localASN"`
-	Peers         []Peer          `yaml:"peers" json:"peers"`
-	RouteExchange []RouteExchange `yaml:"routeExchange,omitempty" json:"routeExchange,omitempty"`
+	LocalASN       uint32          `yaml:"localASN" json:"localASN"`
+	Peers          []Peer          `yaml:"peers" json:"peers"`
+	RouteExchanges []RouteExchange `yaml:"routeExchanges,omitempty" json:"routeExchanges,omitempty"`
 }
 
 type Peer struct {
@@ -49,8 +49,8 @@ type RouteExchange struct {
 }
 
 type PrefixEnvelope struct {
-	CIDR         string `yaml:"cidr" json:"cidr"`
-	PrefixLength *int   `yaml:"prefixLength,omitempty" json:"prefixLength,omitempty"`
+	CIDR              string `yaml:"cidr" json:"cidr"`
+	ExactPrefixLength *int   `yaml:"exactPrefixLength,omitempty" json:"exactPrefixLength,omitempty"`
 }
 
 type Warning struct {
@@ -183,11 +183,11 @@ func normalizeBGP(input BGP, vip netip.Addr) (BGP, []Warning, error) {
 		return bgp.Peers[i].Address < bgp.Peers[j].Address
 	})
 
-	exchanges, warnings, err := normalizeRouteExchanges(bgp.RouteExchange, bgp.LocalASN, vip)
+	exchanges, warnings, err := normalizeRouteExchanges(bgp.RouteExchanges, bgp.LocalASN, vip)
 	if err != nil {
 		return BGP{}, nil, err
 	}
-	bgp.RouteExchange = exchanges
+	bgp.RouteExchanges = exchanges
 	return bgp, warnings, nil
 }
 
@@ -197,7 +197,7 @@ func normalizeRouteExchanges(input []RouteExchange, localASN uint32, vip netip.A
 	seenPorts := map[int]struct{}{}
 	var warnings []Warning
 	for i := range exchanges {
-		path := fmt.Sprintf("controlPlaneEndpoint.advertisement.bgp.routeExchange[%d]", i)
+		path := fmt.Sprintf("controlPlaneEndpoint.advertisement.bgp.routeExchanges[%d]", i)
 		exchange := &exchanges[i]
 		exchange.Name = strings.TrimSpace(exchange.Name)
 		if len(exchange.Name) > 63 || !dnsLabelRE.MatchString(exchange.Name) {
@@ -253,18 +253,18 @@ func normalizeEnvelopes(path string, input []PrefixEnvelope, vip netip.Addr) ([]
 		}
 		prefix = prefix.Masked()
 		envelope.CIDR = prefix.String()
-		if envelope.PrefixLength != nil {
-			length := *envelope.PrefixLength
+		if envelope.ExactPrefixLength != nil {
+			length := *envelope.ExactPrefixLength
 			if length < prefix.Bits() || length > 32 {
-				return nil, false, fmt.Errorf("%s.prefixLength must be between %d and 32", field, prefix.Bits())
+				return nil, false, fmt.Errorf("%s.exactPrefixLength must be between %d and 32", field, prefix.Bits())
 			}
 		}
-		if prefix.Contains(vip) && (envelope.PrefixLength == nil || *envelope.PrefixLength == 32) {
+		if prefix.Contains(vip) && (envelope.ExactPrefixLength == nil || *envelope.ExactPrefixLength == 32) {
 			includesVIP = true
 		}
 		key := envelope.CIDR + "/any"
-		if envelope.PrefixLength != nil {
-			key = envelope.CIDR + "/" + strconv.Itoa(*envelope.PrefixLength)
+		if envelope.ExactPrefixLength != nil {
+			key = envelope.CIDR + "/" + strconv.Itoa(*envelope.ExactPrefixLength)
 		}
 		byKey[key] = envelope
 	}

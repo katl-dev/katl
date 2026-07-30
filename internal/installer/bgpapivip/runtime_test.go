@@ -16,7 +16,7 @@ func TestCommandBirdClientReportsBoundedPeerState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.RouteExchange = []RouteExchange{{Name: "cilium"}}
+	config.RouteExchanges = []RouteExchange{{Name: "cilium"}}
 	runner := &recordingCommandRunner{outputs: [][]byte{[]byte(`Name Proto Table State Since Info
 katl_fabric_router_a BGP katl_fabric up 12:00:00 Established
 	Local address: 10.0.0.11

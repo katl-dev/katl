@@ -153,7 +153,9 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 				Version: strings.TrimSpace(opts.kubernetesVersion),
 			},
 			Defaults: configbundle.SourceNodeLayer{
-				Identity: configbundle.SourceIdentity{SSH: manifest.SSHIdentity{AuthorizedKeys: sshKeys}},
+				Access: configbundle.SourceAccess{SSH: configbundle.SourceSSHAccess{
+					AuthorizedKeys: configbundle.Some(sshKeys),
+				}},
 			},
 		},
 	}
@@ -163,12 +165,24 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			return fmt.Errorf("duplicate node name %q", node.name)
 		}
 		seen[node.name] = struct{}{}
-		targetDisk := node.disk
+		targetDisk := configbundle.SourceDiskSelector{}
+		if node.disk.ByID != "" {
+			targetDisk.ByID = configbundle.Some(node.disk.ByID)
+		}
+		if node.disk.WWN != "" {
+			targetDisk.WWN = configbundle.Some(node.disk.WWN)
+		}
+		if node.disk.Serial != "" {
+			targetDisk.Serial = configbundle.Some(node.disk.Serial)
+		}
+		if node.disk.MinSizeMiB != 0 {
+			targetDisk.MinSizeMiB = configbundle.Some(node.disk.MinSizeMiB)
+		}
 		source.Spec.Nodes = append(source.Spec.Nodes, configbundle.SourceNode{
 			Name:         node.name,
 			ControlPlane: node.role == inventory.RoleControlPlane,
-			Install:      configbundle.SourceInstallLayer{TargetDisk: &targetDisk},
-			Bootstrap:    configbundle.SourceBootstrapLayer{Address: node.address},
+			Install:      configbundle.SourceInstallLayer{SystemDisk: &targetDisk},
+			Management:   configbundle.SourceManagementLayer{Address: node.address},
 		})
 	}
 	data, err := yaml.Marshal(source)
@@ -213,12 +227,12 @@ func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 		"    #     # To let Katl advertise a routed endpoint, add advertisement.vip and bgp peers.\n" +
 		"    # Set controlPlane: true on nodes that join the Kubernetes control plane.\n" +
 		"    # Omission means worker.\n" +
-		"    # Nodes use DHCP by default; add native systemd-networkd files through hostConfiguration.sets.\n"
+		"    # Nodes use DHCP by default; add native systemd-networkd files through hostConfiguration.fileSets.\n"
 	comments += "    # Optional kernel arguments can be set under defaults.kernel.commandLine or a node.\n"
 	if missingSSHKeys {
 		comments += "    # Add an SSH public key here if console-only access is not sufficient.\n" +
 			"    # defaults:\n" +
-			"    #     identity:\n" +
+			"    #     access:\n" +
 			"    #         ssh:\n" +
 			"    #             authorizedKeys:\n" +
 			"    #                 - ssh-ed25519 AAAA... operator@home\n"

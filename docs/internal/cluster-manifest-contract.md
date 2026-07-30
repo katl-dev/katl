@@ -41,6 +41,15 @@ Katl selects its control-plane and worker kubeadm profiles internally from
 model may supply one bounded cluster-wide kubeadm file and optional patch
 directory. They never name or select the generated profiles.
 
+Layering follows one source-level rule: omitted node fields inherit from
+`spec.defaults`, while explicitly supplied node values replace the
+corresponding default values. Empty maps and lists therefore clear inherited
+values. Lists without a stable identity replace wholesale. Named collections
+compose by name: a node entry replaces the default entry with the same name,
+and `state: absent` removes it. Structured disk selectors compose by supplied
+field so a common size constraint can be combined with a node-specific durable
+identifier.
+
 ## Supported Shape
 
 ```yaml
@@ -69,7 +78,7 @@ spec:
     #   patchesDir: ./kubeadm-patches
 
   defaults:
-    identity:
+    access:
       ssh:
         authorizedKeys:
           - ssh-ed25519 AAAA... operator@home
@@ -78,7 +87,10 @@ spec:
         - intel_iommu=on
         - iommu=pt
     hostConfiguration:
-      sets:
+      sysfs:
+        - path: /sys/module/printk/parameters/time
+          value: N
+      fileSets:
         network:
           files:
             - path: /etc/systemd/network/10-lan.network
@@ -94,9 +106,16 @@ spec:
               content: |
                 br_netfilter
     install:
-      targetDiskDefaults:
+      systemDisk:
         minSizeMiB: 32768
-      volumes: []
+    storage:
+      disks:
+        - name: data
+          selector:
+            disk:
+              minSizeMiB: 1048576
+          filesystem: btrfs
+          wipe: false
     kubernetes:
       labels: {}
       taints: []
@@ -106,11 +125,17 @@ spec:
       # Set to true for nodes that join the Kubernetes control plane.
       # Omission means worker.
       controlPlane: true
-      bootstrap:
+      management:
         address: 192.0.2.11
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
+      storage:
+        disks:
+          - name: data
+            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-KATL_CP_1_DATA
       kubernetes:
         # Optional exact address used for this node's Kubernetes identity.
         address: 10.254.1.1
@@ -122,7 +147,7 @@ spec:
 `name` is also the node hostname. A separate hostname alias is deliberately not
 part of the contract.
 
-`bootstrap.address` is the operator-reachable address used for installation,
+`management.address` is the operator-reachable address used for installation,
 initial Kubernetes bootstrap, and an optional initial workstation context.
 It need not be a permanent node identity, but it must remain reachable through
 those steps. For DHCP nodes, use a reservation or update the workstation
@@ -144,12 +169,14 @@ system role, kubeadm material, and lifecycle ordering from this value.
 Nodes use a generated DHCP systemd-networkd profile when neither defaults nor
 the node supplies a `.network` unit below `/etc/systemd/network`. Auxiliary
 `.link`, `.netdev`, and drop-in files compose with that fallback. Network files
-use the same named-set layering as other host configuration: a node set replaces
+use the same named-file-set layering as other host configuration: a node set replaces
 a default set with the same name, while differently named sets compose. This
 allows a shared unit and a node-specific drop-in to be expressed independently.
 
-Kubernetes labels merge by key and taints by their Kubernetes identity.
-Conflicting values are rejected instead of silently selecting a layer.
+Kubernetes labels compose by key, with node values replacing default values.
+An explicitly empty label map clears inherited labels. Taints have no stable
+source identity and therefore a supplied node list replaces the default list
+wholesale; `taints: []` clears it.
 
 ## Install Selection
 
@@ -157,9 +184,11 @@ Each node chooses its own install target. Prefer durable `byID`, `wwn`, or
 `serial` selectors; short kernel names such as `/dev/sda` are not valid
 destructive selectors.
 
-`targetDiskDefaults` may contain only non-identifying constraints such as
-minimum size. It cannot select a disk for several nodes. Extra disks are desired
-node storage and therefore remain valid cluster intent.
+`defaults.install.systemDisk` may contain only non-identifying constraints such
+as minimum size. It cannot select a disk for several nodes. A node's
+`install.systemDisk` supplies the durable identity and may override common
+constraints. `storage.disks` describes persistent desired data-disk state
+rather than a one-time installation input.
 
 The decision to execute a destructive install belongs to the install operation,
 not ClusterConfig. There is no `wipeTarget` authorization field in this API.
@@ -171,7 +200,7 @@ The following are not ClusterConfig fields:
 - KatlOS image URLs, checksums, local paths, or release descriptors;
 - Kubernetes OCI bundle references, catalogs, resolver inputs, or digests;
 - named kubeadm profiles, maps, render paths, or config references;
-- bootstrap access methods, tokens, or credential references;
+- management access methods, tokens, or credential references;
 - node classes, platform API endpoint helpers, or role-default layers;
 - generation IDs, operation IDs, source digests, or validation bookkeeping.
 
@@ -211,9 +240,10 @@ node-identity migration. Normal config apply keeps the requested field visible
 but refuses the change with a kubeadm-aware operation requirement; set the
 address in the ClusterConfig used for installation.
 
-Disk installation fields are consumed by installation and are not runtime
-configuration. Kubernetes version changes are handled by the Kubernetes
-upgrade workflow rather than ordinary node configuration apply.
+`install.systemDisk` is consumed by installation. `storage.disks` remains
+persistent node intent and is reconciled by supported configuration workflows.
+Kubernetes version changes are handled by the Kubernetes upgrade workflow
+rather than ordinary node configuration apply.
 
 ## Rejected Flexibility
 
@@ -228,8 +258,8 @@ spec.platformAPIEndpoint
 spec.katlosImage
 spec.kubernetes.bundle and spec.kubernetes.catalogRef
 spec.kubeadmConfigs, named kubeadm maps, and kubeadm config references
-bootstrap access or credential fields
-identity.hostname
+management access or credential fields
+access.hostname
 install.wipeTarget
 nodeLabels and nodeTaints aliases
 templates, loops, ranges, generated node lists, and expression languages

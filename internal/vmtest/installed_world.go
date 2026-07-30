@@ -3,11 +3,17 @@ package vmtest
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/installer"
 )
+
+var errPublishedFirstInstallRuntimeFixtureMissing = errors.New("published installed runtime fixture is missing")
 
 type InstalledRuntimeWorldNode struct {
 	Node    Node
@@ -145,7 +151,7 @@ func findPublishedFirstInstallRuntimeFixtureInBuildRoots(buildRoots []string, sp
 			return best, nil
 		}
 	}
-	return PublishedFirstInstallRuntimeFixture{}, errors.New("published installed runtime fixture is missing: run the first-install fixture contract")
+	return PublishedFirstInstallRuntimeFixture{}, fmt.Errorf("%w: run the first-install fixture contract", errPublishedFirstInstallRuntimeFixtureMissing)
 }
 
 func selectPublishedFirstInstallRuntimeFixture(candidates []publishedFixtureCandidate, spec NodeSpec, inputDigest string) (PublishedFirstInstallRuntimeFixture, bool, error) {
@@ -154,6 +160,9 @@ func selectPublishedFirstInstallRuntimeFixture(candidates []publishedFixtureCand
 	for _, candidate := range candidates {
 		published, err := ReadPublishedFirstInstallRuntimeFixture(candidate.Path)
 		if err != nil {
+			if errors.Is(err, errPublishedFirstInstallRuntimeFixtureMissing) {
+				continue
+			}
 			return PublishedFirstInstallRuntimeFixture{}, false, err
 		}
 		if spec.Name != "" && published.NodeName != spec.Name {
@@ -221,18 +230,22 @@ func writePublishedFirstInstallRuntimeFixtureForContract(root, name, fixtureMani
 		InputDigest:     inputDigest,
 	}
 	if strings.TrimSpace(contract.ManifestPath) != "" {
+		provenance, err := cachePublishedFirstInstallProvenance(filepath.Dir(path), inputDigest, contract)
+		if err != nil {
+			return "", err
+		}
 		relOptional := func(value string) string {
 			if strings.TrimSpace(value) == "" {
 				return ""
 			}
 			return relFrom(filepath.Dir(path), value)
 		}
-		published.InstallerUKI = relOptional(contract.InstallerBoot.InstallerUKI)
-		published.InstallerKernel = relOptional(contract.InstallerBoot.InstallerKernel)
-		published.InstallerInitrd = relOptional(contract.InstallerBoot.InstallerInitrd)
-		published.InstallerCommandLine = append([]string(nil), contract.InstallerBoot.CommandLine...)
-		published.RuntimeArtifact = relOptional(contract.RuntimeArtifact)
-		published.InstallManifest = relOptional(contract.ManifestPath)
+		published.InstallerUKI = relOptional(provenance.InstallerUKI)
+		published.InstallerKernel = relOptional(provenance.InstallerKernel)
+		published.InstallerInitrd = relOptional(provenance.InstallerInitrd)
+		published.InstallerCommandLine = slices.Clone(contract.InstallerBoot.CommandLine)
+		published.RuntimeArtifact = relOptional(provenance.RuntimeArtifact)
+		published.InstallManifest = relOptional(provenance.InstallManifest)
 		published.FirstInstallMode = string(firstInstallModeForContract(contract))
 		published.UseInstalledESP = contract.UseInstalledESP
 	}
@@ -240,6 +253,74 @@ func writePublishedFirstInstallRuntimeFixtureForContract(root, name, fixtureMani
 		return "", err
 	}
 	return path, nil
+}
+
+type publishedFirstInstallProvenance struct {
+	InstallerUKI    string
+	InstallerKernel string
+	InstallerInitrd string
+	RuntimeArtifact string
+	InstallManifest string
+}
+
+func cachePublishedFirstInstallProvenance(root, inputDigest string, contract FirstInstallRuntimeFixtureContract) (publishedFirstInstallProvenance, error) {
+	id := clean(inputDigest)
+	if id == "" {
+		id = "current"
+	}
+	dir := filepath.Join(root, "inputs", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return publishedFirstInstallProvenance{}, err
+	}
+	cacheFile := func(source, name string) (string, error) {
+		if strings.TrimSpace(source) == "" {
+			return "", nil
+		}
+		target := filepath.Join(dir, name)
+		if err := copyRequiredFile(source, target, 0o644); err != nil {
+			return "", err
+		}
+		return target, nil
+	}
+	var cached publishedFirstInstallProvenance
+	var err error
+	if cached.InstallerUKI, err = cacheFile(contract.InstallerBoot.InstallerUKI, "katl-installer.efi"); err != nil {
+		return publishedFirstInstallProvenance{}, fmt.Errorf("cache installer UKI: %w", err)
+	}
+	if cached.InstallerKernel, err = cacheFile(contract.InstallerBoot.InstallerKernel, "katl-installer-kernel"); err != nil {
+		return publishedFirstInstallProvenance{}, fmt.Errorf("cache installer kernel: %w", err)
+	}
+	if cached.InstallerInitrd, err = cacheFile(contract.InstallerBoot.InstallerInitrd, "katl-installer-initrd"); err != nil {
+		return publishedFirstInstallProvenance{}, fmt.Errorf("cache installer initrd: %w", err)
+	}
+	if cached.RuntimeArtifact, err = cacheFile(contract.RuntimeArtifact, "katl-runtime-artifact"); err != nil {
+		return publishedFirstInstallProvenance{}, fmt.Errorf("cache runtime artifact: %w", err)
+	}
+	if cached.InstallManifest, err = cacheFile(contract.ManifestPath, "install-manifest.json"); err != nil {
+		return publishedFirstInstallProvenance{}, fmt.Errorf("cache install manifest: %w", err)
+	}
+	if _, err := cacheFile(filepath.Join(filepath.Dir(contract.ManifestPath), "single-image-proof.json"), "single-image-proof.json"); err != nil {
+		return publishedFirstInstallProvenance{}, fmt.Errorf("cache install single-image proof: %w", err)
+	}
+	localRef, err := installManifestLocalImageRef(contract.ManifestPath)
+	if err != nil {
+		return publishedFirstInstallProvenance{}, err
+	}
+	if localRef != "" {
+		if err := copyRequiredFile(
+			filepath.Join(filepath.Dir(contract.ManifestPath), filepath.FromSlash(localRef)),
+			filepath.Join(dir, filepath.FromSlash(localRef)),
+			0o644,
+		); err != nil {
+			return publishedFirstInstallProvenance{}, fmt.Errorf("cache install manifest local image: %w", err)
+		}
+	}
+	for _, name := range []string{installer.KubeadmConfigObjectsDir, installer.KubeadmConfigFilesDir} {
+		if err := copyOptionalDir(filepath.Join(filepath.Dir(contract.ManifestPath), name), filepath.Join(dir, name)); err != nil {
+			return publishedFirstInstallProvenance{}, fmt.Errorf("cache install manifest %s: %w", name, err)
+		}
+	}
+	return cached, nil
 }
 
 func ReadPublishedFirstInstallRuntimeFixture(path string) (PublishedFirstInstallRuntimeFixture, error) {
@@ -276,6 +357,57 @@ func ReadPublishedFirstInstallRuntimeFixture(path string) (PublishedFirstInstall
 	published.InstallManifest = resolve(published.InstallManifest)
 	if published.DiskFormat == "" {
 		published.DiskFormat = string(DiskQCOW2)
+	}
+	for label, referenced := range map[string]string{
+		"fixture manifest": published.FixtureManifest,
+		"installer UKI":    published.InstallerUKI,
+		"installer kernel": published.InstallerKernel,
+		"installer initrd": published.InstallerInitrd,
+		"runtime artifact": published.RuntimeArtifact,
+		"install manifest": published.InstallManifest,
+	} {
+		if strings.TrimSpace(referenced) == "" {
+			continue
+		}
+		info, err := os.Stat(referenced)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return PublishedFirstInstallRuntimeFixture{}, fmt.Errorf("%w: %s %s", errPublishedFirstInstallRuntimeFixtureMissing, label, referenced)
+			}
+			return PublishedFirstInstallRuntimeFixture{}, err
+		}
+		if !info.Mode().IsRegular() {
+			return PublishedFirstInstallRuntimeFixture{}, fmt.Errorf("published installed runtime fixture %s is not a regular file: %s", label, referenced)
+		}
+	}
+	if published.InstallManifest != "" && published.RuntimeArtifact == "" {
+		image, err := installManifestLocalImagePath(published.InstallManifest)
+		if err != nil {
+			return PublishedFirstInstallRuntimeFixture{}, err
+		}
+		info, err := os.Stat(image)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return PublishedFirstInstallRuntimeFixture{}, fmt.Errorf("%w: install image %s", errPublishedFirstInstallRuntimeFixtureMissing, image)
+			}
+			return PublishedFirstInstallRuntimeFixture{}, err
+		}
+		if !info.Mode().IsRegular() {
+			return PublishedFirstInstallRuntimeFixture{}, fmt.Errorf("published installed runtime fixture install image is not a regular file: %s", image)
+		}
+	}
+	if published.InstallManifest != "" {
+		proof := filepath.Join(filepath.Dir(published.InstallManifest), "single-image-proof.json")
+		info, err := os.Stat(proof)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return PublishedFirstInstallRuntimeFixture{}, fmt.Errorf("%w: single-image proof %s", errPublishedFirstInstallRuntimeFixtureMissing, proof)
+			}
+			return PublishedFirstInstallRuntimeFixture{}, err
+		}
+		if !info.Mode().IsRegular() {
+			return PublishedFirstInstallRuntimeFixture{}, fmt.Errorf("published installed runtime fixture single-image proof is not a regular file: %s", proof)
+		}
 	}
 	return published, nil
 }

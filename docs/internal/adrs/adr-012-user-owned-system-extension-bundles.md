@@ -553,7 +553,7 @@ spec:
     - name: cp-1
       controlPlane: true
       hostConfiguration:
-        sets:
+        fileSets:
           fabric-network:
             files:
               - path: /etc/systemd/network/10-fabric.network

@@ -19,23 +19,25 @@ func TestResolveHostConfigurationSourcesEmbedsContent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sourceDir, "forwarding.conf"), []byte("net.ipv4.ip_forward = 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fileSets := map[string]SourceHostConfigurationFileSet{
+		"forwarding": {Files: []manifest.HostConfigurationFile{{
+			Path:   "/etc/sysctl.d/80-forwarding.conf",
+			Source: "files/forwarding.conf",
+		}}},
+	}
 	source := SourceConfig{Spec: SourceSpec{Defaults: SourceNodeLayer{
-		HostConfiguration: manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
-			"forwarding": {Files: []manifest.HostConfigurationFile{{
-				Path:   "/etc/sysctl.d/80-forwarding.conf",
-				Source: "files/forwarding.conf",
-			}}},
-		}},
+		HostConfiguration: SourceHostConfiguration{FileSets: supplied(fileSets)},
 	}}}
 	resolved, err := resolveHostConfigurationSources(root, source)
 	if err != nil {
 		t.Fatalf("resolveHostConfigurationSources() error = %v", err)
 	}
-	file := resolved.Spec.Defaults.HostConfiguration.Sets["forwarding"].Files[0]
+	resolvedFileSets, _ := resolved.Spec.Defaults.HostConfiguration.FileSets.Get()
+	file := resolvedFileSets["forwarding"].Files[0]
 	if file.Source != "" || file.Content == nil || *file.Content != "net.ipv4.ip_forward = 1\n" {
 		t.Fatalf("resolved file = %#v", file)
 	}
-	if err := manifest.ValidateHostConfiguration(resolved.Spec.Defaults.HostConfiguration, false); err != nil {
+	if err := manifest.ValidateHostConfiguration(lowerHostConfiguration(resolved.Spec.Defaults.HostConfiguration), false); err != nil {
 		t.Fatalf("resolved config is not self-contained: %v", err)
 	}
 }
@@ -44,12 +46,12 @@ func TestBuildArchiveCarriesExternalHostConfigurationIntoNodeMaterial(t *testing
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "files", "storage.conf"), "br_netfilter\n")
 	source := strings.Replace(validSourceConfig(), `    hostConfiguration:
-      sets:
+      fileSets:
 `, `    hostConfiguration:
       sysfs:
-        - name: /sys/module/printk/parameters/time
+        - path: /sys/module/printk/parameters/time
           value: N
-      sets:
+      fileSets:
         storage-modules:
           files:
             - path: /etc/modules-load.d/80-storage.conf

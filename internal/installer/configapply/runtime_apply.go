@@ -847,8 +847,8 @@ func endpointRoutingImpact(current, desired controlplaneendpoint.Config) Endpoin
 		}
 	}
 
-	currentExchanges := routeExchangesByName(currentBGP.RouteExchange)
-	desiredExchanges := routeExchangesByName(desiredBGP.RouteExchange)
+	currentExchanges := routeExchangesByName(currentBGP.RouteExchanges)
+	desiredExchanges := routeExchangesByName(desiredBGP.RouteExchanges)
 	for _, name := range sortedStringUnion(currentExchanges, desiredExchanges) {
 		before, beforeOK := currentExchanges[name]
 		after, afterOK := desiredExchanges[name]

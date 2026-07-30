@@ -508,9 +508,9 @@ spec:
     - name: cp-1
       controlPlane: true
       install:
-        targetDisk:
+        systemDisk:
           byID: /dev/disk/by-id/virtio-katl-root
-      bootstrap:
+      management:
         address: ` + address + `
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {

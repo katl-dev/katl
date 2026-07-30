@@ -103,7 +103,7 @@ func endpointStatusFrom(config bgpapivip.Config, live *bgpapivip.Status) *agenta
 			RouteExported: runtime.ExportedRoutes > 0,
 		})
 	}
-	for _, exchange := range config.RouteExchange {
+	for _, exchange := range config.RouteExchanges {
 		runtime := exchanges[exchange.Name]
 		export := exports[exchange.Name]
 		report.RouteExchange = append(report.RouteExchange, &agentapi.ControlPlaneEndpointRouteExchangeStatus{
