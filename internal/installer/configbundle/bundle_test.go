@@ -969,6 +969,10 @@ kind: ClusterConfiguration
 networking:
   podSubnet: 172.20.0.0/16
   serviceSubnet: 172.21.0.0/16
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: nftables
 `)
 	source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml", 1)
 	sourcePath := filepath.Join(dir, "cluster.yaml")
@@ -981,11 +985,26 @@ networking:
 	if err != nil {
 		t.Fatalf("ReadSelectedNode() error = %v", err)
 	}
-	config := string(selected.KubeadmConfigs["control-plane"].Config.Content)
-	for _, want := range []string{"addon/kube-proxy", "podSubnet: 172.20.0.0/16", "serviceSubnet: 172.21.0.0/16"} {
-		if !strings.Contains(config, want) {
-			t.Fatalf("control-plane kubeadm input is missing %q:\n%s", want, config)
-		}
+	config := selected.KubeadmConfigs["control-plane"].Config.Content
+	documents, err := decodeKubeadmDocuments(config)
+	if err != nil {
+		t.Fatalf("decode control-plane kubeadm input: %v", err)
+	}
+	init := kubeadmDocument(documents, "InitConfiguration")
+	skipPhases, _ := init["skipPhases"].([]any)
+	if len(skipPhases) != 1 || skipPhases[0] != "addon/kube-proxy" {
+		t.Fatalf("InitConfiguration.skipPhases = %#v", skipPhases)
+	}
+	cluster := kubeadmDocument(documents, "ClusterConfiguration")
+	if got := nestedString(cluster, "networking", "podSubnet"); got != "172.20.0.0/16" {
+		t.Fatalf("ClusterConfiguration.networking.podSubnet = %q", got)
+	}
+	if got := nestedString(cluster, "networking", "serviceSubnet"); got != "172.21.0.0/16" {
+		t.Fatalf("ClusterConfiguration.networking.serviceSubnet = %q", got)
+	}
+	proxy := kubeadmDocument(documents, "KubeProxyConfiguration")
+	if got, _ := proxy["mode"].(string); got != "nftables" {
+		t.Fatalf("KubeProxyConfiguration.mode = %q", got)
 	}
 }
 

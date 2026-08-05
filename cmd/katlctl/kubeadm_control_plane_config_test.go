@@ -14,6 +14,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -221,6 +222,74 @@ func TestRunClusterApplySkipsKubernetesComponentsBeforeBootstrap(t *testing.T) {
 	}
 	if len(client.submitRequests) != 0 {
 		t.Fatalf("pre-bootstrap no-op submitted mutations: %#v", client.submitRequests)
+	}
+}
+
+func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T) {
+	beforePath := writeClusterConfig(t)
+	afterPath := filepath.Join(t.TempDir(), "cluster.yaml")
+	afterSource := strings.Replace(configBundleSource(), "address: 10.0.0.11", "address: 10.0.0.12", 1)
+	if err := os.WriteFile(afterPath, []byte(afterSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	render := func(path string) []byte {
+		t.Helper()
+		loaded, err := loadKatlConfig(path, configBundleCreator, configbundle.PlanningInputs{}, nil)
+		if err != nil {
+			t.Fatalf("load %s: %v", path, err)
+		}
+		selected, err := configbundle.ReadSelectedNode(bytes.NewReader(loaded.Archive), configbundle.ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+		if err != nil {
+			t.Fatalf("select cp-1 from %s: %v", path, err)
+		}
+		data, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
+			NodeName:       "cp-1",
+			Manifest:       selected.InstallManifest,
+			KubeadmConfigs: selected.KubeadmConfigs,
+			SourceID:       selected.BundleManifest.ClusterName,
+			DesiredVersion: "1",
+			ApplyMode:      generation.ApplyModeAuto,
+		})
+		if err != nil {
+			t.Fatalf("render %s: %v", path, err)
+		}
+		return data
+	}
+	beforeRendered := render(beforePath)
+	afterRendered := render(afterPath)
+	if !bytes.Equal(beforeRendered, afterRendered) {
+		t.Fatalf("management address changed rendered node state:\nbefore:\n%s\nafter:\n%s", beforeRendered, afterRendered)
+	}
+
+	client := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{
+			MachineId:           "machine-cp-1",
+			CurrentGenerationId: "generation-current",
+			Kubernetes:          &agentapi.KubernetesStatus{State: "ready"},
+		},
+		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: generation.ApplyModeLive, NoChanges: true},
+	}
+	previousDial := dialKatlcAgent
+	defer func() { dialKatlcAgent = previousDial }()
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != "10.0.0.12:9443" {
+			t.Fatalf("management target = %q, want updated address", endpoint)
+		}
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: afterPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.submitRequests) != 0 || client.generationRequest != nil {
+		t.Fatalf("management-only apply mutated node state: submits=%#v generation=%#v", client.submitRequests, client.generationRequest)
+	}
+	if !strings.Contains(stderr.String(), "phase=node-config node=cp-1 status=unchanged") {
+		t.Fatalf("apply progress = %q, want unchanged node", stderr.String())
+	}
+	if client.validateRequest == nil || strings.Contains(client.validateRequest.ConfigYaml, "10.0.0.12") {
+		t.Fatalf("validated node config contains workstation management target: %#v", client.validateRequest)
 	}
 }
 
