@@ -77,6 +77,31 @@ func TestBuildArchiveWritesDeterministicBundle(t *testing.T) {
 	}
 }
 
+func TestSelectedKubeadmConfigsDefaultsMissingNodeLocalAnnotation(t *testing.T) {
+	data := []byte(defaultKubeadmJoinConfig())
+	digest := digestBytes(data)
+	node := NodeRecord{
+		Name: "worker-1",
+		KubeadmInputs: []Descriptor{{
+			Role:      "kubeadm-input",
+			Node:      "worker-1",
+			Digest:    digest,
+			SizeBytes: len(data),
+			FileName:  "nodes/worker-1/kubernetes/kubeadm/config.yaml",
+			Annotations: map[string]string{
+				"dev.katl.kubeadm.resolved-id": "worker",
+			},
+		}},
+	}
+	configs, err := selectedKubeadmConfigs(ociArchive{blobs: map[string][]byte{digest: data}}, node)
+	if err != nil {
+		t.Fatalf("selectedKubeadmConfigs() error = %v", err)
+	}
+	if configs["worker"].NodeLocalKubelet {
+		t.Fatal("missing node-local annotation selected node-local mode")
+	}
+}
+
 func TestDecodeSourceAcceptsKernelCommandLineDefaultsAndNodeClear(t *testing.T) {
 	source := strings.Replace(validSourceConfig(), "  defaults:\n", `  defaults:
     kernel:
