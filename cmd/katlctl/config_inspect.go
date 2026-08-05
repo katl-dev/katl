@@ -78,7 +78,7 @@ func newConfigDiffCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func resolveNodeConfig(sourcePath, nodeName string) (configbundle.NodeResolution, error) {
-	archive, _, err := configbundle.BuildArchive(configbundle.BuildRequest{
+	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
 		SourcePath:     sourcePath,
 		KatlctlVersion: version,
 		KatlctlCommit:  commit,
@@ -87,8 +87,12 @@ func resolveNodeConfig(sourcePath, nodeName string) (configbundle.NodeResolution
 	if err != nil {
 		return configbundle.NodeResolution{}, err
 	}
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" && len(result.Manifest.Nodes) == 1 {
+		nodeName = result.Manifest.Nodes[0].Name
+	}
 	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(archive), configbundle.ReadOptions{
-		NodeName:                strings.TrimSpace(nodeName),
+		NodeName:                nodeName,
 		AllowMissingKatlosImage: true,
 	})
 	if err != nil {

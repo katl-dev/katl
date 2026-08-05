@@ -19,7 +19,7 @@ func TestConfigResolveShowsPublicEffectiveNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"config", "resolve", path, "--node", "cp-1", "--output", "json"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"config", "resolve", path, "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
 	var report struct {
@@ -99,6 +99,18 @@ func TestConfigDiffClassifiesLifecycleAndTargetChanges(t *testing.T) {
 	}
 	if report.Changes[0].RequiredOperation != "wipe-reinstall" || report.Changes[1].Classification != "target-only" {
 		t.Fatalf("changes = %#v", report.Changes)
+	}
+}
+
+func TestConfigResolveRequiresSelectionForMultipleNodes(t *testing.T) {
+	path := writeMultiControlPlaneClusterConfig(t)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"config", "resolve", path}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "selected node is required") {
+		t.Fatalf("run() error = %v, want explicit multi-node selection", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want empty", stdout.String(), stderr.String())
 	}
 }
 
