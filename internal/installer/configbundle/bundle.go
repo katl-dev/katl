@@ -605,19 +605,11 @@ func selectedKubernetesVersion(source SourceConfig) string {
 	return strings.TrimSpace(source.Spec.Kubernetes.Version)
 }
 
-func defaultSource(source SourceConfig) SourceConfig {
-	spec := source.Spec
-	spec.Nodes = slices.Clone(spec.Nodes)
-	version := strings.TrimSpace(spec.Kubernetes.Version)
-	if version == "" {
-		spec.Kubernetes.Version = DefaultKubernetesVersion
-	}
-	source.Spec = spec
-	return source
-}
-
 func normalizeSource(source SourceConfig) (SourceConfig, error) {
-	source = defaultSource(source)
+	if strings.TrimSpace(source.Spec.Kubernetes.Version) == "" {
+		return SourceConfig{}, fmt.Errorf("spec.kubernetes.version is required; set an exact version such as %s", DefaultKubernetesVersion)
+	}
+	source.Spec.Nodes = slices.Clone(source.Spec.Nodes)
 	seenNodes := make(map[string]struct{}, len(source.Spec.Nodes))
 	for i, node := range source.Spec.Nodes {
 		name := strings.TrimSpace(node.Name)

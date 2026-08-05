@@ -107,6 +107,10 @@ func addConfigInitFlags(cmd *cobra.Command, opts *configInitOptions) {
 }
 
 func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr io.Writer) error {
+	kubernetesVersion := strings.TrimSpace(opts.kubernetesVersion)
+	if kubernetesVersion == "" {
+		return fmt.Errorf("--kubernetes-version is required and must be an exact version such as %s", configbundle.DefaultKubernetesVersion)
+	}
 	if len(opts.nodes) > 0 && len(opts.installers.values) > 0 {
 		return fmt.Errorf("--node and --installer cannot be used together")
 	}
@@ -150,7 +154,7 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 		Spec: configbundle.SourceSpec{
 			ControlPlaneEndpoint: controlPlaneEndpoint,
 			Kubernetes: configbundle.SourceKubernetesCluster{
-				Version: strings.TrimSpace(opts.kubernetesVersion),
+				Version: kubernetesVersion,
 			},
 			Defaults: configbundle.SourceNodeLayer{
 				Access: configbundle.SourceAccess{SSH: configbundle.SourceSSHAccess{

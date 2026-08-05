@@ -63,7 +63,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceSpec.controlPlaneEndpoint":
 		return description("Stable Kubernetes API endpoint and optional Katl-managed advertisement.")
 	case "configbundle.SourceSpec.kubernetes":
-		return description("Cluster-wide Kubernetes version and optional native kubeadm input.")
+		return schemaFieldRule{Required: true, Description: "Cluster-wide Kubernetes version and optional native kubeadm input."}
 	case "configbundle.SourceSpec.defaults":
 		return description("Non-identifying values inherited by every node unless overridden.")
 	case "configbundle.SourceSpec.nodes":
@@ -153,7 +153,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourcePartitionSelector.filesystemUUID":
 		return description("Existing filesystem UUID; an empty value clears an inherited identity.")
 	case "configbundle.SourceKubernetesCluster.version":
-		return schemaFieldRule{Description: "Exact Kubernetes patch version compiled into the cluster.", Default: DefaultKubernetesVersion, Pattern: `^(?:|v[0-9]+\.[0-9]+\.[0-9]+)$`}
+		return schemaFieldRule{Required: true, Description: "Exact Kubernetes patch version compiled into the cluster.", Pattern: `^v[0-9]+\.[0-9]+\.[0-9]+$`, MinLength: intPointer(1)}
 	case "configbundle.SourceKubernetesCluster.kubeadm":
 		return description("Optional native kubeadm configuration and patches.")
 	case "configbundle.SourceKubeadmInput.configFile":

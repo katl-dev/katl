@@ -788,6 +788,18 @@ func TestBuildArchiveRejectsInvalidKubernetesAddress(t *testing.T) {
 	}
 }
 
+func TestBuildArchiveRequiresExplicitKubernetesVersion(t *testing.T) {
+	for _, source := range []string{
+		strings.Replace(validSourceConfig(), "  kubernetes:\n    version: v1.36.1\n", "", 1),
+		strings.Replace(validSourceConfig(), "    version: v1.36.1", `    version: ""`, 1),
+	} {
+		_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+		if err == nil || !strings.Contains(err.Error(), "spec.kubernetes.version is required") {
+			t.Fatalf("BuildArchive() error = %v, want required public version path", err)
+		}
+	}
+}
+
 func TestBuildArchiveRequiresKubernetesAddressPerNode(t *testing.T) {
 	source := strings.Replace(validSourceConfig(), "  defaults:\n", "  defaults:\n    kubernetes:\n      address: 10.254.1.1\n", 1)
 	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
