@@ -21,6 +21,7 @@ networks.
 | Kubeadm cluster has no CNI | Install Cilium without mutating the host generation | [Run Cilium on KatlOS](cilium.md) |
 | Installed node | Inspect or reboot one host | [Access installed nodes](access.md#routine-host-management) |
 | Installed or bootstrapped node | Change supported runtime configuration | [Apply node configuration](configure-nodes.md) |
+| Node list, name, role, or hardware is changing | Review the supported transition and explicit refusal/recovery path | [Node lifecycle matrix](configure-nodes.md#node-lifecycle-matrix) |
 | Healthy installed node | Stage a new KatlOS release | [Upgrade a KatlOS host](upgrade-host.md) |
 | One control plane is being replaced | Preserve the healthy cluster and rejoin one fresh node | [Wipe and reinstall](wipe-reinstall.md#plan-one-node-replacement) |
 | Cluster is intentionally being discarded | Reset boot state and reinstall | [Wipe and reinstall](wipe-reinstall.md) |

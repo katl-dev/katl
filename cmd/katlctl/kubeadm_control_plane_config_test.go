@@ -346,6 +346,84 @@ func TestActivateClusterConfigPlansOneFreshReplacementNode(t *testing.T) {
 	}
 }
 
+func TestActivateClusterConfigRefusesEnrolledNameAndRoleChangesBeforeValidation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		kubernetes *agentapi.KubernetesStatus
+		want       []string
+	}{
+		{
+			name:       "rename",
+			kubernetes: &agentapi.KubernetesStatus{State: "ready", NodeName: "cp-old", Role: "control-plane"},
+			want:       []string{`enrolled in Kubernetes as "cp-old"`, "enrolled node rename is unsupported", "katlctl node wipe cp-old", "no node was wiped"},
+		},
+		{
+			name:       "role change",
+			kubernetes: &agentapi.KubernetesStatus{State: "ready", NodeName: "cp-1", Role: "worker"},
+			want:       []string{`desired role is "control-plane"`, `enrolled Kubernetes role is "worker"`, "role changes require", "no node was wiped"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configPath := writeClusterConfig(t)
+			client := &fakeKatlcAgentClient{
+				nodeStatus: &agentapi.NodeStatus{
+					MachineId:           "machine-cp-1",
+					CurrentGenerationId: "generation-1",
+					Kubernetes:          test.kubernetes,
+				},
+				validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", NoChanges: true},
+			}
+			previousDial := dialKatlcAgent
+			defer func() { dialKatlcAgent = previousDial }()
+			dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+				if endpoint != "10.0.0.11:9443" {
+					t.Fatalf("endpoint = %q", endpoint)
+				}
+				return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+			}
+
+			_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, []inventory.Node{{
+				Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"},
+			}})
+			if err == nil {
+				t.Fatal("activateClusterConfig() accepted an enrolled lifecycle change")
+			}
+			for _, want := range test.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("activateClusterConfig() error = %q, want %q", err, want)
+				}
+			}
+			if client.validateRequest != nil || len(client.submitRequests) != 0 {
+				t.Fatalf("lifecycle refusal reached validation or mutation: validate=%#v submit=%#v", client.validateRequest, client.submitRequests)
+			}
+		})
+	}
+}
+
+func TestValidateClusterNodeLifecycleAllowsFreshReplacement(t *testing.T) {
+	err := validateClusterNodeLifecycle(inventory.Node{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane}, &agentapi.NodeStatus{
+		Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"},
+	})
+	if err != nil {
+		t.Fatalf("validateClusterNodeLifecycle() error = %v", err)
+	}
+}
+
+func TestClusterConfigRejectionExplainsRoleChangeRecovery(t *testing.T) {
+	message := clusterConfigRejection("katldev", &agentapi.ConfigValidationResult{
+		FailureReason: "config apply auto request rejected for 1 domain(s)",
+		Diagnostics:   []string{"system-role: rejected: domain requires wipe-reinstall"},
+	})
+	for _, want := range []string{"system-role: rejected", "katlctl node wipe katldev", "reinstall it with the desired role", "no node was wiped"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("clusterConfigRejection() = %q, want %q", message, want)
+		}
+	}
+	if strings.Contains(message, "request rejected for 1 domain") {
+		t.Fatalf("clusterConfigRejection() retained generic failure: %q", message)
+	}
+}
+
 func TestRunClusterApplyRefreshesReplacementGenerationAfterJoin(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "cluster.yaml")

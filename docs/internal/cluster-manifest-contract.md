@@ -245,6 +245,16 @@ persistent node intent and is reconciled by supported configuration workflows.
 Kubernetes version changes are handled by the Kubernetes upgrade workflow
 rather than ordinary node configuration apply.
 
+The node list is not destructive reconciliation authority. Omitting a node
+stops targeting it and preserves its host, Kubernetes membership, etcd
+membership, partitions, filesystems, and data. Removal, enrolled rename,
+replacement, and role change use the explicit node wipe/reinstall workflow so
+the affected node is named and Kubernetes or etcd membership is handled before
+any node-local reset. Cluster apply refuses an enrolled name or role mismatch;
+one fresh same-name replacement may join at a time after the explicit wipe and
+reinstall workflow. An unenrolled hostname change remains an ordinary
+next-boot configuration change.
+
 ## Rejected Flexibility
 
 Katl v1alpha1 rejects aliases and speculative mechanisms including:

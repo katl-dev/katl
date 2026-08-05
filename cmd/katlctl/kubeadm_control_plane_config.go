@@ -31,7 +31,20 @@ var kubeadmConfigNow = func() time.Time { return time.Now().UTC() }
 
 func newClusterApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := kubeadmControlPlaneConfigOptions{}
-	cmd := &cobra.Command{Use: "apply", Short: "Apply the complete ClusterConfig to a running cluster", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error { return runClusterApply(ctx, opts, stdout, stderr) }}
+	cmd := &cobra.Command{
+		Use:   "apply",
+		Short: "Apply the complete ClusterConfig to a running cluster",
+		Long: `Apply the complete ClusterConfig to the nodes it lists.
+
+Omitting a node stops targeting it but never drains, deletes, powers off, or
+wipes that node. Use 'katlctl node wipe NODE --config CURRENT --plan' while the
+node is still listed before an intentional removal, rename, replacement, or
+role change. Enrolled node renames and role changes are refused here.`,
+		Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return runClusterApply(ctx, opts, stdout, stderr)
+		},
+	}
 	f := cmd.Flags()
 	f.StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	f.StringVar(&opts.inventoryPath, "inventory", "", "advanced cluster inventory")
@@ -452,6 +465,10 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			_ = conn.Close()
 			return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w", node.Name, err)
 		}
+		if err := validateClusterNodeLifecycle(node, status); err != nil {
+			_ = conn.Close()
+			return activatedClusterConfig{}, err
+		}
 		validation, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion: operation.APIVersion, Kind: "ValidateConfigRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
 			Actor: "katlctl cluster apply", ExpectedMachineId: status.MachineId, ApplyMode: generation.ApplyModeAuto,
@@ -463,7 +480,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 		if !validation.Accepted {
 			_ = conn.Close()
-			return activatedClusterConfig{}, fmt.Errorf("node %s rejected cluster config: %s", node.Name, firstNonEmpty(validation.FailureReason, strings.Join(validation.Diagnostics, "; ")))
+			return activatedClusterConfig{}, fmt.Errorf("node %s rejected cluster config: %s", node.Name, clusterConfigRejection(node.Name, validation))
 		}
 		if err := clusterApplyProgress(opts.progress, "phase=config-validation node=%s status=succeeded", node.Name); err != nil {
 			_ = conn.Close()
@@ -635,6 +652,49 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		joinNodes:       joinNodes,
 		joinCoordinator: joinCoordinator,
 	}, nil
+}
+
+func validateClusterNodeLifecycle(node inventory.Node, status *agentapi.NodeStatus) error {
+	kubernetes := status.GetKubernetes()
+	if kubernetes == nil || strings.TrimSpace(kubernetes.GetState()) == "" || strings.TrimSpace(kubernetes.GetState()) == "not-configured" {
+		return nil
+	}
+	observedName := strings.TrimSpace(kubernetes.GetNodeName())
+	if observedName != "" && observedName != node.Name {
+		return fmt.Errorf(
+			"refusing cluster apply for node %q at %s: the host is enrolled in Kubernetes as %q; enrolled node rename is unsupported; restore spec.nodes[].name to %q, or plan 'katlctl node wipe %s --config <previous-config> --plan' before reinstalling it with the new name; no node was wiped",
+			node.Name, node.Address, observedName, observedName, observedName,
+		)
+	}
+	observedRole := strings.TrimSpace(kubernetes.GetRole())
+	if observedRole != "" && observedRole != string(node.SystemRole) {
+		return fmt.Errorf(
+			"refusing cluster apply for node %q: desired role is %q but the enrolled Kubernetes role is %q; role changes require 'katlctl node wipe %s --config <current-config> --plan', reinstall with the desired role, then cluster apply; no node was wiped",
+			node.Name, node.SystemRole, observedRole, node.Name,
+		)
+	}
+	return nil
+}
+
+func clusterConfigRejection(node string, validation *agentapi.ConfigValidationResult) string {
+	if validation == nil {
+		return "node returned an empty validation result"
+	}
+	diagnostics := strings.TrimSpace(strings.Join(validation.Diagnostics, "; "))
+	if strings.Contains(diagnostics, configapply.DomainSystemRole+":") {
+		diagnostics += fmt.Sprintf(
+			"; keep the node in its current config and plan 'katlctl node wipe %s --config <current-config> --plan', then reinstall it with the desired role and retry; no node was wiped",
+			node,
+		)
+	}
+	failure := strings.TrimSpace(validation.FailureReason)
+	if diagnostics == "" {
+		return firstNonEmpty(failure, "configuration was rejected without a diagnostic")
+	}
+	if failure == "" || (strings.HasPrefix(failure, "config apply ") && strings.Contains(failure, " request rejected for ")) {
+		return diagnostics
+	}
+	return failure + "; " + diagnostics
 }
 
 func containsKubernetesConfigDomain(domains []string) bool {
