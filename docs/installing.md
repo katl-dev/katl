@@ -400,6 +400,28 @@ and injects bootstrap tokens and certificate material only when the explicit
 bootstrap operation runs. Omit the entire `kubeadm` block for Katl's complete
 defaults.
 
+This bounded native file is the stable interface for cluster-wide Kubernetes
+networking choices. Set Pod and Service CIDRs in
+`ClusterConfiguration.networking`, and use `InitConfiguration.skipPhases` when
+the chosen CNI replaces kube-proxy:
+
+```yaml
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+skipPhases:
+  - addon/kube-proxy
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+networking:
+  podSubnet: 172.20.0.0/16
+  serviceSubnet: 172.21.0.0/16
+```
+
+Include a native `KubeProxyConfiguration` document when kube-proxy remains in
+use but needs non-default policy. Katl does not duplicate these upstream
+cluster-wide fields under a second typed ClusterConfig networking surface.
+
 For node-specific kubelet policy, reference one native
 `kubelet.config.k8s.io/v1beta1` `KubeletConfiguration` from that node:
 

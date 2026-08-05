@@ -277,6 +277,15 @@ cluster match it requires the dedicated kubeadm-aware operation. Native input
 acceptance does not imply that every kubeadm change has a supported live
 transition.
 
+Cluster-wide Pod CIDRs, Service CIDRs, kube-proxy configuration, and
+kube-proxy omission deliberately remain native kubeadm choices. Operators set
+the CIDRs in `ClusterConfiguration.networking`, include a
+`KubeProxyConfiguration` document when needed, and use
+`InitConfiguration.skipPhases` with `addon/kube-proxy` when their CNI replaces
+it. These upstream fields do not gain duplicate typed ClusterConfig options.
+Node-specific Kubernetes identity and kubelet policy remain the bounded typed
+exceptions described above.
+
 Changing `nodes[].kubernetes.address` on an already installed node is a
 node-identity migration. Normal config apply keeps the requested field visible
 but refuses the change with a kubeadm-aware operation requirement; set the

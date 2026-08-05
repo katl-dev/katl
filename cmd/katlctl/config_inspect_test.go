@@ -102,6 +102,35 @@ func TestConfigDiffClassifiesLifecycleAndTargetChanges(t *testing.T) {
 	}
 }
 
+func TestConfigDiffClassifiesManagementAddressOnlyAsTargetOnly(t *testing.T) {
+	dir := t.TempDir()
+	beforePath := filepath.Join(dir, "before.yaml")
+	afterPath := filepath.Join(dir, "after.yaml")
+	before := configInspectionSource()
+	after := strings.Replace(before, "address: 10.0.0.11", "address: 10.0.0.12", 1)
+	if err := os.WriteFile(beforePath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(afterPath, []byte(after), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"config", "diff", beforePath, afterPath, "--node", "cp-1", "--output", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	var report configbundle.ConfigDiff
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, stdout.String())
+	}
+	if report.Classification.Overall != "target-only" || len(report.Changes) != 1 {
+		t.Fatalf("diff = %#v", report)
+	}
+	change := report.Changes[0]
+	if change.Path != `spec.nodes["cp-1"].management.address` || change.Classification != "target-only" || change.RequiredOperation != "" || !strings.Contains(change.Message, "no node generation or mutation") {
+		t.Fatalf("management address change = %#v", change)
+	}
+}
+
 func TestConfigResolveRequiresSelectionForMultipleNodes(t *testing.T) {
 	path := writeMultiControlPlaneClusterConfig(t)
 	var stdout, stderr bytes.Buffer

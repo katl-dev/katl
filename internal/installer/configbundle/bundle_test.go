@@ -957,6 +957,57 @@ clusterName: operator-cluster
 	}
 }
 
+func TestBuildArchiveAcceptsCommonNetworkingThroughNativeKubeadm(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "kubeadm.yaml"), `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+skipPhases:
+  - addon/kube-proxy
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+networking:
+  podSubnet: 172.20.0.0/16
+  serviceSubnet: 172.21.0.0/16
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: nftables
+`)
+	source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml", 1)
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	writeFile(t, sourcePath, source)
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode() error = %v", err)
+	}
+	config := selected.KubeadmConfigs["control-plane"].Config.Content
+	documents, err := decodeKubeadmDocuments(config)
+	if err != nil {
+		t.Fatalf("decode control-plane kubeadm input: %v", err)
+	}
+	init := kubeadmDocument(documents, "InitConfiguration")
+	skipPhases, _ := init["skipPhases"].([]any)
+	if len(skipPhases) != 1 || skipPhases[0] != "addon/kube-proxy" {
+		t.Fatalf("InitConfiguration.skipPhases = %#v", skipPhases)
+	}
+	cluster := kubeadmDocument(documents, "ClusterConfiguration")
+	if got := nestedString(cluster, "networking", "podSubnet"); got != "172.20.0.0/16" {
+		t.Fatalf("ClusterConfiguration.networking.podSubnet = %q", got)
+	}
+	if got := nestedString(cluster, "networking", "serviceSubnet"); got != "172.21.0.0/16" {
+		t.Fatalf("ClusterConfiguration.networking.serviceSubnet = %q", got)
+	}
+	proxy := kubeadmDocument(documents, "KubeProxyConfiguration")
+	if got, _ := proxy["mode"].(string); got != "nftables" {
+		t.Fatalf("KubeProxyConfiguration.mode = %q", got)
+	}
+}
+
 func TestBuildArchiveRequiresControlPlaneNode(t *testing.T) {
 	source := strings.Replace(validSourceConfig(), "      controlPlane: true\n", "", 1)
 	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
