@@ -148,6 +148,6 @@ func renderKubeadmConfigs(ref string, configs map[string]kubeadmconfig.Plan) (ma
 		patches = nil
 	}
 	return map[string]inlineKubeadmConfig{
-		ref: {Config: string(plan.Config.Content), Patches: patches},
+		ref: {Config: string(plan.Config.Content), Patches: patches, NodeLocalKubelet: plan.NodeLocalKubelet},
 	}, nil
 }

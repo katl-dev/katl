@@ -62,6 +62,153 @@ func resolveKubeadmConfigs(sourceRoot string, input *SourceKubeadmInput, kuberne
 	return plans, inputs, nil
 }
 
+func resolveNodeKubeletConfigs(sourceRoot string, source SourceConfig, base map[string]kubeadmconfig.Plan) (map[string]kubeadmconfig.Plan, []kubeadmSourceInput, error) {
+	configs := make(map[string]kubeadmconfig.Plan, len(base)+len(source.Spec.Nodes))
+	for name, plan := range base {
+		configs[name] = plan
+	}
+	var inputs []kubeadmSourceInput
+	for i, node := range source.Spec.Nodes {
+		if node.Kubernetes.Kubelet == nil {
+			continue
+		}
+		field := sourceNodePath(node, i) + ".kubernetes.kubelet.configFile"
+		configFile := strings.TrimSpace(node.Kubernetes.Kubelet.ConfigFile)
+		data, err := readHostConfigurationSource(sourceRoot, configFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", field, err)
+		}
+		patch, err := kubeletConfigurationPatch(data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", field, err)
+		}
+		roleRef := defaultKubeadmConfigRef(sourceNodeRole(node))
+		rolePlan, ok := base[roleRef]
+		if !ok {
+			return nil, nil, fmt.Errorf("%s: base %s kubeadm input is unavailable", field, roleRef)
+		}
+		ref := nodeKubeadmConfigRef(node.Name)
+		plan, err := kubeadmPlanWithNodeKubeletConfig(rolePlan, ref, configFile, patch)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", field, err)
+		}
+		configs[ref] = plan
+		inputs = append(inputs, kubeadmSourceInput{Name: "nodes/" + node.Name + "/kubelet/" + configFile, Content: data})
+	}
+	return configs, inputs, nil
+}
+
+func kubeletConfigurationPatch(data []byte) ([]byte, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode KubeletConfiguration: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("decode KubeletConfiguration: multiple YAML documents")
+	}
+	if version, _ := document["apiVersion"].(string); strings.TrimSpace(version) != "kubelet.config.k8s.io/v1beta1" {
+		return nil, fmt.Errorf("apiVersion must be kubelet.config.k8s.io/v1beta1")
+	}
+	if kind, _ := document["kind"].(string); strings.TrimSpace(kind) != "KubeletConfiguration" {
+		return nil, fmt.Errorf("kind must be KubeletConfiguration")
+	}
+	delete(document, "apiVersion")
+	delete(document, "kind")
+	if len(document) == 0 {
+		return nil, fmt.Errorf("KubeletConfiguration must set at least one kubelet field")
+	}
+	patch, err := yaml.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("encode kubelet patch: %w", err)
+	}
+	return patch, nil
+}
+
+func kubeadmPlanWithNodeKubeletConfig(base kubeadmconfig.Plan, name, sourcePath string, patch []byte) (kubeadmconfig.Plan, error) {
+	documents, err := decodeKubeadmDocuments(base.Config.Content)
+	if err != nil {
+		return kubeadmconfig.Plan{}, fmt.Errorf("decode base kubeadm input: %w", err)
+	}
+	var patchFields map[string]any
+	if err := yaml.Unmarshal(patch, &patchFields); err != nil {
+		return kubeadmconfig.Plan{}, fmt.Errorf("decode kubelet patch: %w", err)
+	}
+	foundKubelet := false
+	for _, document := range documents {
+		if document["kind"] != "KubeletConfiguration" {
+			continue
+		}
+		mergeKubeletFields(document, patchFields)
+		foundKubelet = true
+		break
+	}
+	if !foundKubelet {
+		return kubeadmconfig.Plan{}, fmt.Errorf("base kubeadm input has no KubeletConfiguration")
+	}
+	content, err := encodeKubeadmDocuments(documents, name, true)
+	if err != nil {
+		return kubeadmconfig.Plan{}, err
+	}
+	files := []kubeadmconfig.File{{
+		SourcePath: base.Config.SourcePath,
+		RenderPath: "/etc/katl/kubeadm/" + name + "/config.yaml",
+		Content:    content,
+		Mode:       0o644,
+	}}
+	basePrefix := "/etc/katl/kubeadm/" + base.Name + "/patches/"
+	for _, existing := range base.Patches {
+		rel := strings.TrimPrefix(filepath.ToSlash(existing.RenderPath), basePrefix)
+		copy := existing
+		copy.RenderPath = "/etc/katl/kubeadm/" + name + "/patches/" + rel
+		files = append(files, copy)
+	}
+	const patchName = "kubeletconfiguration999+merge.yaml"
+	for _, existing := range files[1:] {
+		if filepath.Base(existing.RenderPath) == patchName {
+			return kubeadmconfig.Plan{}, fmt.Errorf("cluster kubeadm patches already contain reserved per-node patch name %q", patchName)
+		}
+	}
+	files = append(files, kubeadmconfig.File{
+		SourcePath: sourcePath,
+		RenderPath: "/etc/katl/kubeadm/" + name + "/patches/" + patchName,
+		Content:    patch,
+		Mode:       0o644,
+	})
+	plan, err := kubeadmconfig.PlanFromRenderedFiles(name, files)
+	if err != nil {
+		return kubeadmconfig.Plan{}, fmt.Errorf("compile per-node kubelet input: %w", err)
+	}
+	plan.NodeLocalKubelet = true
+	return plan, nil
+}
+
+func mergeKubeletFields(target, patch map[string]any) {
+	for key, value := range patch {
+		if value == nil {
+			delete(target, key)
+			continue
+		}
+		patchMap, patchIsMap := value.(map[string]any)
+		targetMap, targetIsMap := target[key].(map[string]any)
+		if patchIsMap && targetIsMap {
+			mergeKubeletFields(targetMap, patchMap)
+			continue
+		}
+		target[key] = value
+	}
+}
+
+func nodeKubeadmConfigRef(nodeName string) string {
+	name := "node-" + strings.TrimSpace(nodeName)
+	if len(name) <= 63 {
+		return name
+	}
+	digest := strings.TrimPrefix(digestBytes([]byte(nodeName)), "sha256:")[:10]
+	return name[:52] + "-" + digest
+}
+
 func splitKubeadmPlans(input kubeadmconfig.Plan, kubernetesVersion string) (map[string]kubeadmconfig.Plan, error) {
 	documents, err := decodeKubeadmDocuments(input.Config.Content)
 	if err != nil {

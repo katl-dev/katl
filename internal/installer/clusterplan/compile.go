@@ -281,9 +281,10 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		}
 		kubeadmPlan = &configPlan
 		kubeadmConfig = inventory.KubeadmConfig{
-			Ref:    kubeadmRef,
-			Path:   configPlan.Config.RenderPath,
-			Intent: inventory.KubeadmIntent(role),
+			Ref:              kubeadmRef,
+			Path:             configPlan.Config.RenderPath,
+			Intent:           inventory.KubeadmIntent(role),
+			NodeLocalKubelet: configPlan.NodeLocalKubelet,
 		}
 	}
 	nativeEtcFiles, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{

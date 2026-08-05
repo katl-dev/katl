@@ -31,6 +31,14 @@ func TestOrderControlPlanesChangesCoordinatorLast(t *testing.T) {
 	}
 }
 
+func TestKubeadmControlPlaneConfigBodyKeepsNodeLocalKubeletOffCluster(t *testing.T) {
+	node := inventory.Node{Name: "cp-1", KubeadmConfig: inventory.KubeadmConfig{Ref: "node-cp-1", NodeLocalKubelet: true}}
+	body := kubeadmControlPlaneConfigBody(kubeadmControlPlaneConfigOptions{rolloutID: "rollout", coordinator: "cp-1", component: "kubelet"}, node, "generation-1", 1, 1)
+	if !body.NodeLocalKubelet || body.CoordinatorUpload {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
 func TestRunKubeadmControlPlaneConfigSubmitsSerialCoordinatorLast(t *testing.T) {
 	root := t.TempDir()
 	inventoryPath := filepath.Join(root, "inventory.yaml")

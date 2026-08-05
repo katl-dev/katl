@@ -80,9 +80,10 @@ type Access struct {
 }
 
 type KubeadmConfig struct {
-	Ref    string        `json:"ref"`
-	Path   string        `json:"path"`
-	Intent KubeadmIntent `json:"intent"`
+	Ref              string        `json:"ref"`
+	Path             string        `json:"path"`
+	Intent           KubeadmIntent `json:"intent"`
+	NodeLocalKubelet bool          `json:"nodeLocalKubelet,omitempty"`
 }
 
 type PlanRequest struct {

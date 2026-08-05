@@ -45,10 +45,11 @@ type ResolveRequest struct {
 }
 
 type Plan struct {
-	Name      string
-	Config    File
-	Patches   []File
-	Documents []Document
+	Name             string
+	Config           File
+	Patches          []File
+	Documents        []Document
+	NodeLocalKubelet bool
 }
 
 type File struct {

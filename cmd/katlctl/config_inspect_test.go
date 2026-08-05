@@ -136,6 +136,41 @@ func TestConfigDiffRefusesDifferentInferredNodes(t *testing.T) {
 	}
 }
 
+func TestConfigInspectionReportsPerNodeKubeletConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"kubelet-a.yaml", "kubelet-b.yaml"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nsystemReserved:\n  cpu: 500m\ntopologyManagerPolicy: restricted\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := strings.Replace(configInspectionSource(), "      management:\n", "      kubernetes:\n        kubelet:\n          configFile: ./kubelet-a.yaml\n      management:\n", 1)
+	after := strings.Replace(before, "./kubelet-a.yaml", "./kubelet-b.yaml", 1)
+	beforePath := filepath.Join(dir, "before.yaml")
+	afterPath := filepath.Join(dir, "after.yaml")
+	if err := os.WriteFile(beforePath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(afterPath, []byte(after), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"config", "resolve", beforePath, "--output", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("resolve error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{`"kubelet"`, `"configFile": "./kubelet-a.yaml"`, `/etc/katl/kubeadm/node-cp-1/patches/kubeletconfiguration999+merge.yaml`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("resolve output missing %q:\n%s", want, stdout.String())
+		}
+	}
+	stdout.Reset()
+	if err := run(context.Background(), []string{"config", "diff", beforePath, afterPath, "--output", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("diff error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `.kubernetes.kubelet`) || !strings.Contains(stdout.String(), `"requiredOperation": "kubeadm-aware operation"`) {
+		t.Fatalf("diff output does not classify kubelet change:\n%s", stdout.String())
+	}
+}
+
 func configInspectionSource() string {
 	source := strings.Replace(configBundleSource(), "  nodes:\n", `    storage:
       disks:

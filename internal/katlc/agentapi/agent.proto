@@ -292,6 +292,7 @@ message KubeadmControlPlaneConfigOperationRequest {
   string snapshot_storage_location = 19;
   string snapshot_operator_identity = 20;
   string node_name = 21;
+  bool node_local_kubelet = 22;
 }
 
 message KubernetesSysextUpdateOperationRequest {

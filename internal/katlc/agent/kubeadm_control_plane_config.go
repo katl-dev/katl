@@ -83,6 +83,12 @@ func validateKubeadmControlPlaneConfigRequest(kind string, req *agentapi.Kubeadm
 	if (component == kubeadmConfigComponentKubelet || component == kubeadmConfigComponentKubeProxy) && len(seen) != 1 {
 		return fmt.Errorf("%s configuration does not accept control-plane field deltas", strings.TrimPrefix(component, "component/"))
 	}
+	if req.GetNodeLocalKubelet() && component != kubeadmConfigComponentKubelet {
+		return fmt.Errorf("nodeLocalKubelet requires the kubelet component")
+	}
+	if req.GetNodeLocalKubelet() && req.GetCoordinatorUpload() {
+		return fmt.Errorf("node-local kubelet configuration must not be uploaded cluster-wide")
+	}
 	return nil
 }
 
@@ -107,7 +113,7 @@ func controlPlaneConfigFromProto(req *agentapi.KubeadmControlPlaneConfigOperatio
 		}
 	}
 	return operation.KubeadmControlPlaneConfig{
-		Component: component, RolloutID: req.GetRolloutId(), NodePosition: req.GetNodePosition(), NodeCount: req.GetNodeCount(), CoordinatorNode: req.GetCoordinatorNode(), NodeName: req.GetNodeName(), CoordinatorUpload: req.GetCoordinatorUpload(), DesiredGenerationID: req.GetDesiredGenerationId(), ConfigName: req.GetConfigName(), ConfigPath: "/etc/katl/kubeadm/" + req.GetConfigName() + "/config.yaml", DesiredConfigSHA256: req.GetDesiredConfigSha256(), ExpectedLiveConfigSHA256: req.GetExpectedLiveConfigSha256(), KubernetesPayloadVersion: req.GetKubernetesPayloadVersion(), KubernetesPayloadSHA256: req.GetKubernetesPayloadSha256(), SupportedFieldDelta: fields, SnapshotRef: req.GetSnapshotRef(), SnapshotDigest: req.GetSnapshotDigest(), SnapshotRevision: req.GetSnapshotRevision(), CapturedMemberListDigest: req.GetCapturedMemberListDigest(), SourceEtcdVersion: req.GetSourceEtcdVersion(), SnapshotCreatedAt: req.GetSnapshotCreatedAt(), SnapshotStorageLocation: req.GetSnapshotStorageLocation(), SnapshotOperatorIdentity: req.GetSnapshotOperatorIdentity(),
+		Component: component, RolloutID: req.GetRolloutId(), NodePosition: req.GetNodePosition(), NodeCount: req.GetNodeCount(), CoordinatorNode: req.GetCoordinatorNode(), NodeName: req.GetNodeName(), CoordinatorUpload: req.GetCoordinatorUpload(), NodeLocalKubelet: req.GetNodeLocalKubelet(), DesiredGenerationID: req.GetDesiredGenerationId(), ConfigName: req.GetConfigName(), ConfigPath: "/etc/katl/kubeadm/" + req.GetConfigName() + "/config.yaml", DesiredConfigSHA256: req.GetDesiredConfigSha256(), ExpectedLiveConfigSHA256: req.GetExpectedLiveConfigSha256(), KubernetesPayloadVersion: req.GetKubernetesPayloadVersion(), KubernetesPayloadSHA256: req.GetKubernetesPayloadSha256(), SupportedFieldDelta: fields, SnapshotRef: req.GetSnapshotRef(), SnapshotDigest: req.GetSnapshotDigest(), SnapshotRevision: req.GetSnapshotRevision(), CapturedMemberListDigest: req.GetCapturedMemberListDigest(), SourceEtcdVersion: req.GetSourceEtcdVersion(), SnapshotCreatedAt: req.GetSnapshotCreatedAt(), SnapshotStorageLocation: req.GetSnapshotStorageLocation(), SnapshotOperatorIdentity: req.GetSnapshotOperatorIdentity(),
 	}
 }
 
@@ -176,7 +182,8 @@ func (s *Server) validateKubeadmControlPlaneConfigState(req *agentapi.SubmitOper
 	}
 	var node struct {
 		Kubeadm struct {
-			ConfigRef string `json:"configRef"`
+			ConfigRef        string `json:"configRef"`
+			NodeLocalKubelet bool   `json:"nodeLocalKubelet"`
 		} `json:"kubeadm"`
 	}
 	if err := json.Unmarshal(metadata, &node); err != nil {
@@ -184,6 +191,9 @@ func (s *Server) validateKubeadmControlPlaneConfigState(req *agentapi.SubmitOper
 	}
 	if strings.TrimSpace(node.Kubeadm.ConfigRef) != body.ConfigName {
 		return body, fmt.Errorf("active generation does not select kubeadm config %q", body.ConfigName)
+	}
+	if node.Kubeadm.NodeLocalKubelet != body.NodeLocalKubelet {
+		return body, fmt.Errorf("active generation node-local kubelet mode does not match the request")
 	}
 	applyStatusPath, err := generation.ConfigApplyStatusPath(s.Root, body.DesiredGenerationID)
 	if err != nil {
@@ -566,7 +576,12 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 		}
 	}
 	if !localMatches {
-		if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-kubelet-config-dry-run", []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--dry-run"}, false); err != nil {
+		argv := []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config"}
+		if request.NodeLocalKubelet {
+			argv = append(argv, "--patches", filepath.Dir(request.ConfigPath)+"/patches")
+		}
+		argv = append(argv, "--dry-run")
+		if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-kubelet-config-dry-run", argv, false); err != nil {
 			return err
 		}
 	}
@@ -607,7 +622,11 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 	}
 	afterData := localBefore
 	if !localMatches {
-		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-config-running", []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config"}, true); err != nil {
+		argv := []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config"}
+		if request.NodeLocalKubelet {
+			argv = append(argv, "--patches", filepath.Dir(request.ConfigPath)+"/patches")
+		}
+		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-config-running", argv, true); err != nil {
 			return err
 		}
 		afterData, err = os.ReadFile(rootedRuntimePath(e.Root, "/var/lib/kubelet/config.yaml"))

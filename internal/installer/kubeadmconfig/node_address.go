@@ -67,6 +67,7 @@ func WithNodeAddress(plan Plan, address string) (Plan, error) {
 	if err != nil {
 		return Plan{}, fmt.Errorf("validate KubeadmConfig %q with node address: %w", plan.Name, err)
 	}
+	rendered.NodeLocalKubelet = plan.NodeLocalKubelet
 	return rendered, nil
 }
 

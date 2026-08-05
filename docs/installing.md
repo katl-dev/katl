@@ -376,6 +376,35 @@ and injects bootstrap tokens and certificate material only when the explicit
 bootstrap operation runs. Omit the entire `kubeadm` block for Katl's complete
 defaults.
 
+For node-specific kubelet policy, reference one native
+`kubelet.config.k8s.io/v1beta1` `KubeletConfiguration` from that node:
+
+```yaml
+spec:
+  nodes:
+    - name: worker-1
+      kubernetes:
+        kubelet:
+          configFile: ./worker-1-kubelet.yaml
+```
+
+```yaml
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+systemReserved:
+  cpu: 500m
+  memory: 1Gi
+topologyManagerPolicy: restricted
+```
+
+The file is a bounded native overlay, not a Katl-owned host path. Katl applies
+it as a node-local kubeadm kubelet patch during bootstrap and online changes,
+then verifies the local kubelet configuration and node health. It is never
+uploaded to the cluster-wide `kubelet-config` ConfigMap and does not change
+other nodes. This input is node-only: defaults cannot set it. Katl rejects
+multiple documents, other API kinds or versions, and fields that replace
+Katl-owned runtime paths.
+
 The ISO flow consumes this source directly: `katlctl install apply` and
 `katlctl cluster bootstrap` compile the internal bundle automatically. Produce
 an explicit bundle only for PXE or offline provisioning, as shown in the next

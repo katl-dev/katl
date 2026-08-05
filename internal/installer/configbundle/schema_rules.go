@@ -166,6 +166,10 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return mapRule("Kubernetes labels merged by key; an empty node map clears inherited labels.", kubernetesLabelKeyPattern)
 	case "configbundle.SourceKubernetesLayer.taints":
 		return description("Complete Kubernetes taint list; an empty node list clears inherited taints.")
+	case "configbundle.SourceKubernetesLayer.kubelet":
+		return description("Per-node native KubeletConfiguration applied through kubeadm's bounded kubelet patch path.")
+	case "configbundle.SourceKubeletConfig.configFile":
+		return schemaFieldRule{Required: true, Description: "Relative path to one kubelet.config.k8s.io/v1beta1 KubeletConfiguration document.", MinLength: intPointer(1)}
 	case "controlplaneendpoint.Config.host":
 		return stringRule("Stable Kubernetes API DNS name or IP address.", "", 1, 253)
 	case "controlplaneendpoint.Config.port":

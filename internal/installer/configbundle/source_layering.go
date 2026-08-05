@@ -36,6 +36,9 @@ func mergeSourceNodeLayer(base, next SourceNodeLayer) (SourceNodeLayer, error) {
 	if taints, ok := next.Kubernetes.Taints.Get(); ok {
 		out.Kubernetes.Taints = supplied(slices.Clone(taints))
 	}
+	if next.Kubernetes.Kubelet != nil {
+		out.Kubernetes.Kubelet = cloneSourceKubeletConfig(next.Kubernetes.Kubelet)
+	}
 	return out, nil
 }
 
@@ -49,7 +52,16 @@ func cloneSourceNodeLayer(layer SourceNodeLayer) SourceNodeLayer {
 	out.Storage.Disks = cloneOptionalStorageDisks(layer.Storage.Disks)
 	out.Kubernetes.Labels = cloneOptionalMap(layer.Kubernetes.Labels)
 	out.Kubernetes.Taints = cloneOptionalSlice(layer.Kubernetes.Taints)
+	out.Kubernetes.Kubelet = cloneSourceKubeletConfig(layer.Kubernetes.Kubelet)
 	return out
+}
+
+func cloneSourceKubeletConfig(config *SourceKubeletConfig) *SourceKubeletConfig {
+	if config == nil {
+		return nil
+	}
+	copy := *config
+	return &copy
 }
 
 func mergeSourceHostConfiguration(base, next SourceHostConfiguration) SourceHostConfiguration {
