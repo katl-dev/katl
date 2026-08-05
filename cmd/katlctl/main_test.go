@@ -758,11 +758,113 @@ func TestConfigValidateReportsNestedFieldPath(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "spec.nodes[0].install.systemDisk.unsupportedSelector: field is not supported") {
+	if err == nil || !strings.Contains(err.Error(), "spec.nodes[\"cp-1\"].install.systemDisk.unsupportedSelector: field is not supported") {
 		t.Fatalf("run() error = %v, want nested field path", err)
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q, want empty", stdout.String(), stderr.String())
+	}
+}
+
+func TestConfigValidateReportsOnlyPublicNodePaths(t *testing.T) {
+	base := configBundleSource()
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "system disk selector",
+			source: strings.Replace(base,
+				"          byID: /dev/disk/by-id/ata-cp-root",
+				"          byID: /dev/disk/by-id/ata-cp-root\n          serial: duplicate-identity", 1),
+			want: `spec.nodes["cp-1"].install.systemDisk must set exactly one of byID, wwn, or serial`,
+		},
+		{
+			name: "storage selector",
+			source: strings.Replace(base, "      install:\n", `      storage:
+        disks:
+          - name: data
+            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-data
+              partition:
+                partUUID: 11111111-2222-3333-4444-555555555555
+            filesystem: xfs
+      install:
+`, 1),
+			want: `spec.nodes["cp-1"].storage.disks[0].selector must set exactly one of disk or partition`,
+		},
+		{
+			name: "sysfs path",
+			source: strings.Replace(base, "      install:\n", `      hostConfiguration:
+        sysfs:
+          - path: relative/path
+            value: enabled
+      install:
+`, 1),
+			want: `spec.nodes["cp-1"].hostConfiguration.sysfs[0].path "relative/path" must be a normalized path below /sys`,
+		},
+		{
+			name: "file set notification",
+			source: strings.Replace(base, "      install:\n", `      hostConfiguration:
+        fileSets:
+          service:
+            files:
+              - path: /etc/example.conf
+                content: enabled
+            onChange:
+              systemd:
+                - unit: example.service
+                  action: restart
+      install:
+`, 1),
+			want: `spec.nodes["cp-1"].hostConfiguration.fileSets["service"].onChange.systemd[0].action "restart" is unsupported`,
+		},
+		{
+			name: "Kubernetes taint",
+			source: strings.Replace(base, "      install:\n", `      kubernetes:
+        taints:
+          - key: dedicated
+            effect: RestartAlways
+      install:
+`, 1),
+			want: `spec.nodes["cp-1"].kubernetes.taints[0].effect "RestartAlways" is unsupported`,
+		},
+		{
+			name: "system extension configuration file",
+			source: strings.Replace(base, "      install:\n", `      systemExtensions:
+        - name: tools
+          bundle: registry.example/tools:v1
+          configuration:
+            files:
+              - path: relative.conf
+                content: enabled
+      install:
+`, 1),
+			want: `spec.nodes["cp-1"].systemExtensions[0].configuration.files[0].path: "relative.conf" must be absolute`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
+			if err := os.WriteFile(sourcePath, []byte(tt.source), 0o644); err != nil {
+				t.Fatalf("write source: %v", err)
+			}
+			var stdout, stderr bytes.Buffer
+			err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("run() error = %v, want %q", err, tt.want)
+			}
+			for _, internal := range []string{"targetDisk", "install.volumes", ".sets[", ".notify.", ".sysfs[0].name", "node.bootstrap"} {
+				if strings.Contains(err.Error(), internal) {
+					t.Fatalf("run() error exposes internal path %q: %v", internal, err)
+				}
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Fatalf("stdout=%q stderr=%q, want empty", stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 

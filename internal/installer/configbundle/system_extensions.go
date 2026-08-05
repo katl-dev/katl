@@ -55,7 +55,7 @@ func resolveSystemExtensionBundles(
 		return SourceConfig{}, nil, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := resolveEntries(fmt.Sprintf("spec.nodes[%d].systemExtensions", i), &source.Spec.Nodes[i].SystemExtensions); err != nil {
+		if err := resolveEntries(sourceNodePath(source.Spec.Nodes[i], i)+".systemExtensions", &source.Spec.Nodes[i].SystemExtensions); err != nil {
 			return SourceConfig{}, nil, err
 		}
 	}
