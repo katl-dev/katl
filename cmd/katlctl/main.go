@@ -128,6 +128,8 @@ Start with "katlctl install discover" for a waiting installer or
 	configCmd.AddCommand(newConfigValidateCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigSchemaCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigBundleCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigResolveCommand(stdout, stderr))
+	configCmd.AddCommand(newConfigDiffCommand(stdout, stderr))
 	renderNodeCmd := newConfigRenderNodeCommand(stdout, stderr)
 	renderNodeCmd.Hidden = true
 	configCmd.AddCommand(renderNodeCmd)
@@ -215,6 +217,8 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl config validate":           "katlctl config validate cluster.yaml",
 		"katlctl config schema":             "katlctl config schema",
 		"katlctl config bundle":             "katlctl config bundle cluster.yaml --output cluster.katlcfg",
+		"katlctl config resolve":            "katlctl config resolve cluster.yaml --node cp-1",
+		"katlctl config diff":               "katlctl config diff before.yaml after.yaml --node cp-1",
 		"katlctl config render-node":        "katlctl config render-node --config cluster.yaml --node cp-1 --desired-version 1",
 		"katlctl context":                   "katlctl context show",
 		"katlctl context path":              "katlctl context path",

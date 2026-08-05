@@ -21,6 +21,33 @@ and kubeadm phases internally. System-disk installation selection and
 Kubernetes version changes use the dedicated install and Kubernetes upgrade
 workflows; data disks remain desired node storage.
 
+## Inspect Effective Configuration
+
+Resolve one node before applying a config:
+
+```console
+katlctl config resolve ./cluster.yaml --node cp-1
+```
+
+The YAML output uses ClusterConfig field names and shows the final values after
+defaults, named-entry overlays, removals, and explicit empty collections. It
+also reports where each effective value came from, derived hostnames, storage
+mount paths and GPT labels, Katl-owned `/etc` paths, warnings, and the boundary
+between normal apply and lifecycle operations. Use `--output json` for tooling.
+
+Compare two revisions through the same effective per-node model:
+
+```console
+katlctl config diff ./cluster-before.yaml ./cluster-after.yaml --node cp-1
+```
+
+The default table classifies every changed public path. `operation-only`
+changes name the required workflow; `staged-only` changes activate through a
+node generation; storage changes call out live discovery and destructive
+authorization; `target-only` means workstation targeting changes without a
+node generation. Use `--output yaml` or `--output json` to retain before and
+after values in review or automation.
+
 If `spec.kubernetes.kubeadm` changes, cluster apply validates every node before
 mutation and then reconciles every affected Kubernetes component online. A
 Kubernetes configuration change never falls back to next-boot application or

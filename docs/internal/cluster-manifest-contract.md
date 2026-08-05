@@ -26,7 +26,14 @@ Use the compiler and its schema directly:
 ```console
 katlctl config validate ./cluster.yaml
 katlctl config schema > cluster-config-v1alpha1.schema.json
+katlctl config resolve ./cluster.yaml --node cp-1
+katlctl config diff ./cluster-before.yaml ./cluster-after.yaml --node cp-1
 ```
+
+`config resolve` is the supported effective-value view. It preserves public
+ClusterConfig names while showing field provenance, derived storage paths and
+labels, owned files, warnings, and apply/lifecycle boundaries. `config diff`
+compares that model rather than compiled install-manifest internals.
 
 ## Authoring Model
 

@@ -1223,6 +1223,9 @@ func TestReadSelectedNodeVerifiesBundleAndSelectsNodeMaterial(t *testing.T) {
 	if selected.Node.Name != "cp-1" || selected.InstallManifest.Node.Identity.Hostname != "cp-1" {
 		t.Fatalf("selected node/install material = %#v / %#v", selected.Node, selected.InstallManifest.Node.Identity)
 	}
+	if selected.Source.Kind != Kind || selected.Source.Metadata.Name != "lab" || len(selected.Source.Spec.Nodes) != 2 {
+		t.Fatalf("selected normalized source = %#v", selected.Source)
+	}
 	if _, ok := selected.KubeadmConfigs["control-plane"]; !ok {
 		t.Fatalf("KubeadmConfigs = %#v, want control-plane", selected.KubeadmConfigs)
 	}
