@@ -26,6 +26,37 @@ mutation and then reconciles every affected Kubernetes component online. A
 Kubernetes configuration change never falls back to next-boot application or
 requires a host reboot.
 
+## Node Lifecycle Matrix
+
+`spec.nodes` is both the install inventory and the set of nodes targeted by
+`katlctl cluster apply`. Editing the list is not authority to mutate a node that
+is no longer listed. In particular, omission never drains a Kubernetes Node,
+removes an etcd member, powers off a host, changes partitions, formats storage,
+or wipes KatlOS.
+
+| Desired change | `cluster apply` behavior | Supported operator path |
+| --- | --- | --- |
+| Reorder nodes or change ordinary supported fields | Applies by stable node name | Run `katlctl cluster apply --config ./cluster.yaml` |
+| Add one installed, unenrolled node | Joins one fresh node at a time using a ready control plane | Install the new named node, add it to the config, then run `cluster apply` |
+| Replace hardware while keeping the node name and role | Joins the fresh replacement; it never wipes the old host implicitly | While the old node is still listed, run `katlctl node wipe NAME --config ./cluster.yaml --plan`, execute the reviewed wipe with the required kubeconfig, reinstall the replacement, then run `cluster apply` |
+| Remove a node from the cluster | Omission only stops Katl targeting; the old node and its data are preserved | Keep the node listed while planning and executing `katlctl node wipe NAME --config ./cluster.yaml --plan`; remove the entry only after the explicit Kubernetes/etcd-aware wipe succeeds |
+| Rename an unenrolled installed node | Stages the hostname through normal next-boot configuration | Apply, reboot, verify the new hostname, and only then bootstrap Kubernetes |
+| Rename an enrolled node | Refused before any node mutation | Keep the old name, or explicitly wipe it under the old config and reinstall it as a new node |
+| Change `controlPlane` / node role | Refused as an operation-only change | Explicitly wipe the named node, reinstall it with the desired role, then join it through `cluster apply` |
+| Change only `management.address` | Changes workstation targeting only | Verify the new address reaches the same node; no node generation or Kubernetes state changes |
+
+Removing one entry and adding another is never inferred to be a rename. It is a
+preserved omitted node plus a distinct addition until the operator completes
+the explicit removal/reinstall workflow. If an entry was removed too early,
+put it back with its old name and address, inspect its current status, and run
+the appropriate wipe plan. Do not reinstall merely to make the config match;
+preserve and diagnose the existing node first.
+
+The wipe workflow is intentionally separate because it names the affected
+node, proves Kubernetes and stacked-etcd removal where required, reports what
+disk state is preserved, and stops before installer formatting. See
+[Wipe and reinstall KatlOS](wipe-reinstall.md#plan-one-node-replacement).
+
 ## Configure Kernel Arguments
 
 Set `kernel.commandLine` under defaults or a concrete node:
