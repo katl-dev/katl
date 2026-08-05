@@ -29,6 +29,7 @@ type VMBoot struct {
 	Image         string
 	ImageFormat   DiskFormat
 	ImageSnapshot bool
+	ImageSerial   string
 }
 
 type VMConfig struct {
@@ -1378,6 +1379,7 @@ type domainVSockCID struct {
 
 func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, string, string, string, error) {
 	boot := config.Boot
+	bootImageSerial := first(boot.ImageSerial, "katl-boot")
 	var disks []libvirtDisk
 	efiTree := filepath.Join(result.VMDir, "efi")
 	efiImage := ""
@@ -1428,7 +1430,7 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 	}
 	if boot.Kernel != "" {
 		if boot.Image != "" {
-			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
+			add(boot.Image, boot.ImageFormat, bootImageSerial, boot.ImageSnapshot)
 		}
 	} else if boot.ISO != "" {
 		isoBootOrder := 1
@@ -1445,7 +1447,7 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 			BootOrder: isoBootOrder,
 		})
 		if boot.Image != "" {
-			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
+			add(boot.Image, boot.ImageFormat, bootImageSerial, boot.ImageSnapshot)
 		}
 	} else if boot.EFIImage != "" {
 		efiImage = boot.EFIImage
@@ -1453,12 +1455,12 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 		if boot.Image == "" {
 			return nil, "", "", "", "", errors.New("VM boot from EFI image requires disk image")
 		}
-		add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
+		add(boot.Image, boot.ImageFormat, bootImageSerial, boot.ImageSnapshot)
 	} else if boot.UKI != "" {
 		efiImage = filepath.Join(result.VMDir, "efi.img")
 		add(efiImage, DiskRaw, "katl-efi", false)
 		if boot.Image != "" {
-			add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
+			add(boot.Image, boot.ImageFormat, bootImageSerial, boot.ImageSnapshot)
 		}
 	} else if boot.EFITree != "" {
 		efiTree = boot.EFITree
@@ -1467,12 +1469,12 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 		if boot.Image == "" {
 			return nil, "", "", "", "", errors.New("VM boot from EFI tree requires disk image")
 		}
-		add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
+		add(boot.Image, boot.ImageFormat, bootImageSerial, boot.ImageSnapshot)
 	} else {
 		if boot.Image == "" {
 			return nil, "", "", "", "", errors.New("VM boot requires UKI or disk image")
 		}
-		add(boot.Image, boot.ImageFormat, "katl-boot", boot.ImageSnapshot)
+		add(boot.Image, boot.ImageFormat, bootImageSerial, boot.ImageSnapshot)
 	}
 	for _, disk := range result.Disks {
 		add(disk.HostPath, disk.Format, "katl-"+clean(disk.Name), false)

@@ -120,6 +120,31 @@ func TestApplyVolumesPreflightsBeforeStoppingExistingMount(t *testing.T) {
 	}
 }
 
+func TestApplyVolumesRemovalOnlyUnmountsWithoutTouchingStorage(t *testing.T) {
+	current := manifest.Manifest{Install: manifest.InstallConfig{
+		TargetDisk: manifest.DiskSelector{Serial: "root"},
+		Volumes: []manifest.Volume{{
+			Name: "data", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "keep-me"}}, Filesystem: "xfs",
+		}},
+	}}
+	desired := current
+	desired.Install.Volumes = []manifest.Volume{}
+	var calls [][]string
+	runner := func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		calls = append(calls, append([]string(nil), argv...))
+		if len(argv) != 3 || argv[0] != "systemctl" || argv[1] != "stop" || argv[2] != "var-mnt-data.mount" {
+			return ToolResult{Err: fmt.Errorf("unexpected storage-removal command %q", argv), ExitStatus: 1}
+		}
+		return ToolResult{}
+	}
+	if err := (&Executor{RunTool: runner}).applyVolumes(context.Background(), current, desired, "cp-1", nil); err != nil {
+		t.Fatalf("applyVolumes() removal error = %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("removal commands = %v, want only the managed mount stop", calls)
+	}
+}
+
 func TestDestructiveStorageAuthorityUsesDiscoveredTargetState(t *testing.T) {
 	current := manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}}}
 	desired := current

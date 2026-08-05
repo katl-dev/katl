@@ -45,7 +45,10 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	} else {
 		_ = RequireWorld(t)
 	}
-	scenario := Scenario{Name: "installed-runtime-config-apply-modes"}
+	scenario := Scenario{
+		Name:  "installed-runtime-config-apply-modes",
+		Disks: []DiskFixture{ExtraDisk("data", "raw", "1G")},
+	}
 	result, err := runner.Plan(scenario)
 	if err != nil {
 		t.Fatalf("Plan() error = %v", err)
@@ -58,6 +61,9 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	if err := CreateDisks(ctx, diskExec(nil), result.Disks); err != nil {
+		t.Fatalf("create config apply data disk: %v", err)
+	}
 	katlctl := buildKatlctlForConfigApplySmoke(t, ctx)
 	vm := runtime.VM
 	vm.KVM = runner.options().KVM
@@ -319,6 +325,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"previousKnownGoodGenerationID": "`+currentGeneration+`"`,
 		`"pendingHealthValidation": false`,
 	)
+	activeGeneration := runVolumeRemovalSmoke(t, ctx, guest, result, katlctl, endpoint)
 
 	assertGuestNonLoopbackLink(t, ctx, guest)
 	if cmdline := readGuestFile(t, ctx, guest, "/proc/cmdline"); strings.Contains(cmdline, "katl.vmtest.config_apply_kernel=1") {
@@ -335,7 +342,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json",
 		`"generationID": "`+stagedGeneration+`"`,
-		`"previousGenerationID": "`+liveGeneration+`"`,
+		`"previousGenerationID": "`+activeGeneration+`"`,
 		`"configuredKernelCommandLine": [`,
 		`"katl.vmtest.config_apply_kernel=1"`,
 	)
@@ -350,7 +357,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf", "Address=198.51.100.77/32")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/containerd/conf.d/80-katl-vmtest.toml", "oom_score = 123")
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+liveGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+activeGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
 	assertGuestFileContains(t, ctx, guest, stagedAccepted.RecordPath, `"operationKind": "generation-stage"`, `"configApplyPhase": "next-boot"`)
@@ -407,6 +414,53 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
 	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)
 	return guest, nil
+}
+
+func runVolumeRemovalSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl, endpoint string) string {
+	t.Helper()
+	addGeneration := "2026.06.06-vmtest-volume-add"
+	removeGeneration := "2026.06.06-vmtest-volume-remove"
+	readdGeneration := "2026.06.06-vmtest-volume-readd"
+
+	added := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-volume-add", "live", addGeneration, configApplyFixture(t, "live-volume-add.yaml"), false)
+	addedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, added.OperationId)
+	if addedStatus.Result != operation.ResultSucceeded || addedStatus.ConfigApplyPhase != "active" {
+		t.Fatalf("volume add operation status = %+v, want active success", addedStatus)
+	}
+	guestCommand(t, ctx, guest, "volume-add-mounted", "findmnt", "--mountpoint", "/var/mnt/data")
+	markerSource := "/var/lib/katl/test-artifacts/config-apply/volume-removal-marker"
+	if _, err := guest.WriteFile(ctx, GuestFileRequest{
+		Name:     "volume-removal-marker-source",
+		Path:     markerSource,
+		Content:  []byte("preserve me\n"),
+		Mode:     0o600,
+		Truncate: true,
+	}); err != nil {
+		t.Fatalf("write volume marker source: %v", err)
+	}
+	guestCommand(t, ctx, guest, "volume-write-marker", "install", "-m", "0600", markerSource, "/var/mnt/data/katl-removal-preserves-data")
+
+	removed := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-volume-remove", "live", removeGeneration, configApplyFixture(t, "live-volume-remove.yaml"), false)
+	removedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, removed.OperationId)
+	if removedStatus.Result != operation.ResultSucceeded || removedStatus.ConfigApplyPhase != "active" {
+		t.Fatalf("volume removal operation status = %+v, want active success", removedStatus)
+	}
+	guestCommand(t, ctx, guest, "volume-removal-unmounted", "test", "!", "-e", "/var/mnt/data/katl-removal-preserves-data")
+	guestCommand(t, ctx, guest, "volume-removal-unit-gone", "test", "!", "-e", "/etc/systemd/system/var-mnt-data.mount")
+	guestCommand(t, ctx, guest, "volume-removal-partition-preserved", "test", "-b", "/dev/disk/by-partlabel/u-data")
+	if filesystem := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "volume-removal-filesystem-preserved", "blkid", "-s", "TYPE", "-o", "value", "/dev/disk/by-partlabel/u-data")); filesystem != "xfs" {
+		t.Fatalf("filesystem after volume removal = %q, want xfs", filesystem)
+	}
+
+	readded := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-volume-readd", "live", readdGeneration, configApplyFixture(t, "live-volume-readd.yaml"), false)
+	readdedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, readded.OperationId)
+	if readdedStatus.Result != operation.ResultSucceeded || readdedStatus.ConfigApplyPhase != "active" {
+		t.Fatalf("volume re-add operation status = %+v, want active success", readdedStatus)
+	}
+	guestCommand(t, ctx, guest, "volume-readd-mounted", "findmnt", "--mountpoint", "/var/mnt/data")
+	guestCommand(t, ctx, guest, "volume-readd-marker-preserved", "test", "-f", "/var/mnt/data/katl-removal-preserves-data")
+	assertGuestFileContains(t, ctx, guest, removed.RecordPath, `"operationKind": "generation-apply"`, `"result": "succeeded"`)
+	return readdGeneration
 }
 
 func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestControl) {

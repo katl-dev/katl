@@ -71,6 +71,15 @@ separate operation acknowledgement naming the concrete node and volume. That
 acknowledgement is never persisted in ClusterConfig or inherited by later
 operations.
 
+Storage removal is a management transition, not a data transition. An empty
+node `storage.disks` collection clears inherited volumes, and an entry with
+`state: absent` removes the inherited entry of the same name. Live apply stops
+the Katl-managed `/var/mnt/<name>` mount before removing its generated unit.
+The underlying partition table, partition, filesystem, and data are preserved;
+removal never invokes target discovery, repartitioning, formatting, or wiping.
+The mount-point directory may remain empty. Re-adding a selector for the same
+filesystem resumes management and mounts the preserved data.
+
 ## Supported Shape
 
 ```yaml

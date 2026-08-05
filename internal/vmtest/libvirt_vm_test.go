@@ -87,6 +87,25 @@ func TestVMPlanSupportsIndependentDomainOwnershipAndPersistentSerial(t *testing.
 	}
 }
 
+func TestVMDomainDisksUsesConfiguredBootImageSerial(t *testing.T) {
+	result := Result{
+		VMDir: t.TempDir(),
+	}
+	disks, _, _, _, _, err := vmDomainDisks(result, VMConfig{
+		Boot: VMBoot{
+			Image:       "/tmp/installed.qcow2",
+			ImageFormat: DiskQCOW2,
+			ImageSerial: "katl-root",
+		},
+	})
+	if err != nil {
+		t.Fatalf("vmDomainDisks() error = %v", err)
+	}
+	if len(disks) != 1 || disks[0].Serial != "katl-root" {
+		t.Fatalf("disks = %#v, want boot image serial katl-root", disks)
+	}
+}
+
 func TestVMPlanReservesHotplugPCISlots(t *testing.T) {
 	result, config := vmFixture(t)
 	probe := probe{

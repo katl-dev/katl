@@ -21,16 +21,18 @@ func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.M
 		run = runChildProcess
 	}
 	stopNames, changed := changedVolumes(current, desired)
-	if len(changed) == 0 {
+	if len(stopNames) == 0 && len(changed) == 0 {
 		return nil
 	}
 
-	plans, err := preflightLiveVolumes(ctx, run, desired, stopNames, changed)
-	if err != nil {
-		return err
-	}
-	if err := disk.ValidateDestructiveVolumeAcknowledgements(nodeName, plans, acknowledgements); err != nil {
-		return err
+	if len(changed) > 0 {
+		plans, err := preflightLiveVolumes(ctx, run, desired, stopNames, changed)
+		if err != nil {
+			return err
+		}
+		if err := disk.ValidateDestructiveVolumeAcknowledgements(nodeName, plans, acknowledgements); err != nil {
+			return err
+		}
 	}
 
 	for _, name := range stopNames {
@@ -44,12 +46,15 @@ func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.M
 			return fmt.Errorf("%w; stop workloads using /var/mnt/%s and retry", err, name)
 		}
 	}
+	if len(changed) == 0 {
+		return nil
+	}
 
 	facts, err := discoverVolumeFacts(ctx, run)
 	if err != nil {
 		return err
 	}
-	plans, err = planLiveVolumes(facts, desired, changed)
+	plans, err := planLiveVolumes(facts, desired, changed)
 	if err != nil {
 		return err
 	}
