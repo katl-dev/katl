@@ -92,6 +92,18 @@ func TestConfigInitRendersExplicitIntent(t *testing.T) {
 	}
 }
 
+func TestConfigInitRejectsEmptyKubernetesVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"config", "init",
+		"--kubernetes-version", "",
+		"--node", "cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-cp-root",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "--kubernetes-version is required") {
+		t.Fatalf("run() error = %v, want required concrete Kubernetes version", err)
+	}
+}
+
 func TestConfigInitUsesSSHAgentKeys(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

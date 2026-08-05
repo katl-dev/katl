@@ -196,7 +196,10 @@ Pod CIDRs from `10.244.0.0/16` and Service IPs from `10.96.0.0/12`. Supply
 including different or intentionally absent Pod and Service subnets.
 
 The release ISO supplies the KatlOS image, and Katl resolves the selected
-Kubernetes version itself. ClusterConfig does not expose KatlOS or Kubernetes
+Kubernetes payload from the exact required `spec.kubernetes.version`. Keeping
+that version in source makes compilation reproducible across `katlctl`
+versions; `katlctl config init` always writes a concrete compatible version.
+ClusterConfig does not expose KatlOS or Kubernetes
 image URLs, credentials, named kubeadm profiles, node classes, or other
 compiler mechanisms. An advanced `systemExtensions` entry may select an
 operator-owned native software bundle by OCI reference as described below.

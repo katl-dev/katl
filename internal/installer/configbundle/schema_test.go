@@ -13,8 +13,6 @@ func TestSourceSchemaAcceptsConfigsAcceptedByKatl(t *testing.T) {
               partition: {}
 `, 1)
 	zeroDefaults := strings.Replace(validSourceConfig(), "    port: 6443\n", "    port: 0\n", 1)
-	zeroDefaults = strings.Replace(zeroDefaults, "    version: v1.36.1\n", `    version: ""
-`, 1)
 	zeroDefaults = strings.Replace(zeroDefaults, "          files:\n", `          state: ""
           files:
 `, 1)
@@ -52,6 +50,18 @@ func TestSourceSchemaRejectsSemanticErrors(t *testing.T) {
 		name   string
 		source string
 	}{
+		{
+			name:   "missing Kubernetes block",
+			source: strings.Replace(validSourceConfig(), "  kubernetes:\n    version: v1.36.1\n", "", 1),
+		},
+		{
+			name:   "missing Kubernetes version",
+			source: strings.Replace(validSourceConfig(), "    version: v1.36.1\n", "", 1),
+		},
+		{
+			name:   "empty Kubernetes version",
+			source: strings.Replace(validSourceConfig(), "    version: v1.36.1", `    version: ""`, 1),
+		},
 		{
 			name: "disk and partition",
 			source: strings.Replace(validSourceConfig(), `            selector:
