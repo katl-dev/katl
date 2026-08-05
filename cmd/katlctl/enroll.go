@@ -179,11 +179,8 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
-	config, err := loadKatlConfig(opts.configInput, "katlctl context save", configbundle.PlanningInputs{})
+	config, err := loadKatlConfig(opts.configInput, "katlctl context save", configbundle.PlanningInputs{}, stderr)
 	if err != nil {
-		return err
-	}
-	if err := writeCompilationWarnings(stderr, config.Warnings); err != nil {
 		return err
 	}
 	bundle := config.Bundle

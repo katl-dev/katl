@@ -50,7 +50,7 @@ func newEtcdCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 		Short: "Show stacked etcd members and endpoint health",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return runEtcdMembers(ctx, statusOpts, stdout)
+			return runEtcdMembers(ctx, statusOpts, stdout, stderr)
 		},
 	}
 	members.Flags().StringVar(&statusOpts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
@@ -79,11 +79,11 @@ func newEtcdCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 	return cmd
 }
 
-func runEtcdMembers(ctx context.Context, opts etcdOptions, stdout io.Writer) error {
+func runEtcdMembers(ctx context.Context, opts etcdOptions, stdout, stderr io.Writer) error {
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
-	inv, err := loadWipeInventory(opts.configPath, "")
+	inv, err := loadWipeInventory(opts.configPath, "", stderr)
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func runEtcdRemove(ctx context.Context, opts etcdRemoveOptions, stdout, stderr i
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	inv, err := loadWipeInventory(opts.configPath, "")
+	inv, err := loadWipeInventory(opts.configPath, "", stderr)
 	if err != nil {
 		return err
 	}

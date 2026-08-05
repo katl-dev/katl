@@ -105,11 +105,8 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if err != nil {
 		return err
 	}
-	config, err := loadKatlConfig(opts.configPath, installApplyCreator, configbundle.PlanningInputs{})
+	config, err := loadKatlConfig(opts.configPath, installApplyCreator, configbundle.PlanningInputs{}, stderr)
 	if err != nil {
-		return err
-	}
-	if err := writeCompilationWarnings(stderr, config.Warnings); err != nil {
 		return err
 	}
 	archive := config.Archive

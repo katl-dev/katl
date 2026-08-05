@@ -29,7 +29,7 @@ func newConfigResolveCommand(stdout, stderr io.Writer) *cobra.Command {
 			if opts.output != "yaml" && opts.output != "json" {
 				return fmt.Errorf("--output = %q, want yaml or json", opts.output)
 			}
-			report, err := resolveNodeConfig(args[0], opts.node)
+			report, err := resolveNodeConfig(args[0], opts.node, stderr)
 			if err != nil {
 				return err
 			}
@@ -57,11 +57,11 @@ func newConfigDiffCommand(stdout, stderr io.Writer) *cobra.Command {
 			if opts.output != "text" && opts.output != "yaml" && opts.output != "json" {
 				return fmt.Errorf("--output = %q, want text, yaml, or json", opts.output)
 			}
-			before, err := resolveNodeConfig(args[0], opts.node)
+			before, err := resolveNodeConfig(args[0], opts.node, stderr)
 			if err != nil {
 				return fmt.Errorf("resolve before config: %w", err)
 			}
-			after, err := resolveNodeConfig(args[1], opts.node)
+			after, err := resolveNodeConfig(args[1], opts.node, stderr)
 			if err != nil {
 				return fmt.Errorf("resolve after config: %w", err)
 			}
@@ -80,7 +80,7 @@ func newConfigDiffCommand(stdout, stderr io.Writer) *cobra.Command {
 	return cmd
 }
 
-func resolveNodeConfig(sourcePath, nodeName string) (configbundle.NodeResolution, error) {
+func resolveNodeConfig(sourcePath, nodeName string, stderr io.Writer) (configbundle.NodeResolution, error) {
 	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
 		SourcePath:     sourcePath,
 		KatlctlVersion: version,
@@ -88,6 +88,9 @@ func resolveNodeConfig(sourcePath, nodeName string) (configbundle.NodeResolution
 		CreatedBy:      "katlctl config resolve",
 	})
 	if err != nil {
+		return configbundle.NodeResolution{}, err
+	}
+	if err := writeCompilationWarnings(stderr, result.Warnings); err != nil {
 		return configbundle.NodeResolution{}, err
 	}
 	nodeName = strings.TrimSpace(nodeName)

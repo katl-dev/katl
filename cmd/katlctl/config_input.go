@@ -11,13 +11,12 @@ import (
 )
 
 type katlConfigInput struct {
-	Archive  []byte
-	Bundle   configbundle.Bundle
-	Source   bool
-	Warnings []configbundle.CompilationWarning
+	Archive []byte
+	Bundle  configbundle.Bundle
+	Source  bool
 }
 
-func loadKatlConfig(path, createdBy string, planning configbundle.PlanningInputs) (katlConfigInput, error) {
+func loadKatlConfig(path, createdBy string, planning configbundle.PlanningInputs, stderr io.Writer) (katlConfigInput, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return katlConfigInput{}, fmt.Errorf("--config is required")
@@ -43,7 +42,10 @@ func loadKatlConfig(path, createdBy string, planning configbundle.PlanningInputs
 		if err != nil {
 			return katlConfigInput{}, fmt.Errorf("read compiled --config %s: %w", path, err)
 		}
-		return katlConfigInput{Archive: archive, Bundle: bundle, Source: true, Warnings: result.Warnings}, nil
+		if err := writeCompilationWarnings(stderr, result.Warnings); err != nil {
+			return katlConfigInput{}, err
+		}
+		return katlConfigInput{Archive: archive, Bundle: bundle, Source: true}, nil
 	}
 
 	bundle, bundleErr := configbundle.ReadBundle(bytes.NewReader(data), "")
