@@ -148,7 +148,7 @@ spec:
             disk:
               minSizeMiB: 1024
           filesystem: btrfs
-          wipe: true
+          wipe: false
         - name: scratch
           selector:
             disk:
@@ -208,6 +208,7 @@ spec:
             selector:
               disk:
                 byID: /dev/disk/by-id/overridden-data
+            wipe: true
           - name: scratch
             state: absent
       kubernetes:
@@ -892,6 +893,41 @@ func TestBuildArchiveRejectsUnsafeDiskDefaults(t *testing.T) {
 	}
 }
 
+func TestBuildArchiveRejectsUnsafeStorageDefaults(t *testing.T) {
+	tests := []struct {
+		name        string
+		old         string
+		replacement string
+		want        string
+	}{
+		{name: "by ID", old: "              minSizeMiB: 1024\n", replacement: "              byID: /dev/disk/by-id/shared-data\n", want: "spec.defaults.storage.disks[0].selector.disk.byID identifies a target"},
+		{name: "WWN", old: "              minSizeMiB: 1024\n", replacement: "              wwn: shared-data\n", want: "spec.defaults.storage.disks[0].selector.disk.wwn identifies a target"},
+		{name: "serial", old: "              minSizeMiB: 1024\n", replacement: "              serial: shared-data\n", want: "spec.defaults.storage.disks[0].selector.disk.serial identifies a target"},
+		{name: "partition by ID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              byID: /dev/disk/by-id/shared-data-part1\n", want: "spec.defaults.storage.disks[0].selector.partition identifies a target"},
+		{name: "partition UUID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              partUUID: 01234567-89ab-cdef-0123-456789abcdef\n", want: "spec.defaults.storage.disks[0].selector.partition identifies a target"},
+		{name: "filesystem UUID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              filesystemUUID: shared-data\n", want: "spec.defaults.storage.disks[0].selector.partition identifies a target"},
+		{name: "convention partition", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition: {}\n", want: "spec.defaults.storage.disks[0].selector.partition identifies a target"},
+		{name: "wipe", old: "          filesystem: xfs\n", replacement: "          filesystem: xfs\n          wipe: true\n", want: "spec.defaults.storage.disks[0].wipe must not be true"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := strings.Replace(validSourceConfig(), test.old, test.replacement, 1)
+			_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("BuildArchive() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildArchiveAcceptsSafeStorageDefaultsAndNodeAuthority(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "          filesystem: xfs\n", "          filesystem: xfs\n          wipe: false\n", 1)
+	source = strings.Replace(source, "                byID: /dev/disk/by-id/ata-cp-data\n", "                byID: /dev/disk/by-id/ata-cp-data\n            wipe: true\n", 1)
+	if _, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)}); err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+}
+
 func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1392,7 +1428,7 @@ spec:
         - name: data
           selector:
             disk:
-              byID: /dev/disk/by-id/ata-data
+              minSizeMiB: 1024
           filesystem: xfs
     access:
       ssh:
@@ -1417,6 +1453,12 @@ spec:
       install:
         systemDisk:
           byID: /dev/disk/by-id/ata-cp-root
+      storage:
+        disks:
+          - name: data
+            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-cp-data
       kubernetes:
         labels:
           katl.dev/zone: rack-a
@@ -1429,6 +1471,12 @@ spec:
       install:
         systemDisk:
           byID: /dev/disk/by-id/ata-worker-root
+      storage:
+        disks:
+          - name: data
+            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-worker-data
       kubernetes:
         labels:
           katl.dev/pool: workers

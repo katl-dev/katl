@@ -50,6 +50,13 @@ and `state: absent` removes it. Structured disk selectors compose by supplied
 field so a common size constraint can be combined with a node-specific durable
 identifier.
 
+Storage defaults are policy, never target identity or destructive authority.
+They may carry fields such as `minSizeMiB`, `filesystem`, and explicit
+`wipe: false`. Katl rejects default `byID`, `wwn`, `serial`, every partition
+selector (including the convention-derived empty selector), `partUUID`,
+`filesystemUUID`, and `wipe: true`. Those choices must appear on the concrete
+node volume that they affect.
+
 ## Supported Shape
 
 ```yaml

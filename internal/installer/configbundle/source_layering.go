@@ -382,6 +382,41 @@ func validateDefaultSystemDisk(selector *SourceDiskSelector) error {
 	return nil
 }
 
+func validateDefaultStorageDisks(disks Optional[[]SourceStorageDisk]) error {
+	values, ok := disks.Get()
+	if !ok {
+		return nil
+	}
+	for i, volume := range values {
+		field := fmt.Sprintf("spec.defaults.storage.disks[%d]", i)
+		if wipe, supplied := volume.Wipe.Get(); supplied && wipe {
+			return fmt.Errorf("%s.wipe must not be true in defaults; set destructive authority on a concrete node volume", field)
+		}
+		if volume.Selector == nil {
+			continue
+		}
+		if volume.Selector.Partition != nil {
+			return fmt.Errorf("%s.selector.partition identifies a target and must be set on a concrete node volume", field)
+		}
+		if volume.Selector.Disk == nil {
+			continue
+		}
+		for _, identity := range []struct {
+			name  string
+			value Optional[string]
+		}{
+			{name: "byID", value: volume.Selector.Disk.ByID},
+			{name: "wwn", value: volume.Selector.Disk.WWN},
+			{name: "serial", value: volume.Selector.Disk.Serial},
+		} {
+			if configured, supplied := identity.value.Get(); supplied && strings.TrimSpace(configured) != "" {
+				return fmt.Errorf("%s.selector.disk.%s identifies a target and must be set on a concrete node volume", field, identity.name)
+			}
+		}
+	}
+	return nil
+}
+
 func validateSourceStorageDisks(field string, disks Optional[[]SourceStorageDisk], requireComplete bool) error {
 	values, ok := disks.Get()
 	if !ok {

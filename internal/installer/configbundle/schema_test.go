@@ -6,11 +6,11 @@ import (
 )
 
 func TestSourceSchemaAcceptsConfigsAcceptedByKatl(t *testing.T) {
-	partitionBacked := strings.Replace(validSourceConfig(), `          selector:
-            disk:
-              byID: /dev/disk/by-id/ata-data
-`, `          selector:
-            partition: {}
+	partitionBacked := strings.Replace(validSourceConfig(), `            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-cp-data
+`, `            selector:
+              partition: {}
 `, 1)
 	zeroDefaults := strings.Replace(validSourceConfig(), "    port: 6443\n", "    port: 0\n", 1)
 	zeroDefaults = strings.Replace(zeroDefaults, "    version: v1.36.1\n", `    version: ""
@@ -21,16 +21,8 @@ func TestSourceSchemaAcceptsConfigsAcceptedByKatl(t *testing.T) {
 	zeroDefaults = strings.Replace(zeroDefaults, "              content: |\n", `              mode: 0
               content: |
 `, 1)
-	clearedIdentity := strings.Replace(validSourceConfig(), "      kubernetes:\n        labels:\n          katl.dev/zone: rack-a\n", `      storage:
-        disks:
-          - name: data
-            selector:
-              disk:
-                byID: ""
+	clearedIdentity := strings.Replace(validSourceConfig(), "                byID: /dev/disk/by-id/ata-cp-data\n", `                byID: ""
                 serial: data-for-cp-1
-      kubernetes:
-        labels:
-          katl.dev/zone: rack-a
 `, 1)
 
 	schema := newSourceSchemaValidator(t)
@@ -62,13 +54,13 @@ func TestSourceSchemaRejectsSemanticErrors(t *testing.T) {
 	}{
 		{
 			name: "disk and partition",
-			source: strings.Replace(validSourceConfig(), `          selector:
-            disk:
-              byID: /dev/disk/by-id/ata-data
-`, `          selector:
-            disk:
-              byID: /dev/disk/by-id/ata-data
-            partition: {}
+			source: strings.Replace(validSourceConfig(), `            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-cp-data
+`, `            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-cp-data
+              partition: {}
 `, 1),
 		},
 		{
