@@ -350,6 +350,9 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 		}
 		planning.KubernetesBundle = selection.Bundle
 	}
+	if err := validateResolvedSourceNodes(source); err != nil {
+		return nil, Result{}, err
+	}
 	config, err := LowerSource(source, planning)
 	if err != nil {
 		return nil, Result{}, err
@@ -359,7 +362,7 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 		KubeadmConfigs: kubeadmConfigs,
 	})
 	if err != nil {
-		return nil, Result{}, err
+		return nil, Result{}, publicClusterPlanError(source, err)
 	}
 	members, manifest, err := buildMembers(source, normalized, sourceDigest, plan, kubeadmConfigs, extensionBundles, request)
 	if err != nil {
@@ -459,14 +462,14 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 	}
 	nodes := make([]clusterplan.Node, 0, len(source.Spec.Nodes))
 	hasControlPlane := false
-	for _, node := range source.Spec.Nodes {
+	for i, node := range source.Spec.Nodes {
 		role := sourceNodeRole(node)
 		if role == inventory.RoleControlPlane {
 			hasControlPlane = true
 		}
 		resolved, err := mergeSourceNodeLayer(source.Spec.Defaults, sourceNodeLayer(node))
 		if err != nil {
-			return clusterplan.Config{}, fmt.Errorf("spec.nodes[%q]: %w", node.Name, err)
+			return clusterplan.Config{}, fmt.Errorf("%s: %w", sourceNodePath(node, i), err)
 		}
 		layer := lowerNodeLayer(resolved)
 		layer.Bootstrap.Address = strings.TrimSpace(node.Management.Address)
@@ -495,6 +498,19 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 			Nodes:                nodes,
 		},
 	}, nil
+}
+
+func validateResolvedSourceNodes(source SourceConfig) error {
+	for i, node := range source.Spec.Nodes {
+		resolved, err := mergeSourceNodeLayer(source.Spec.Defaults, sourceNodeLayer(node))
+		if err != nil {
+			return fmt.Errorf("%s: %w", sourceNodePath(node, i), err)
+		}
+		if err := validateResolvedSourceNode(sourceNodePath(node, i), resolved); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.KubernetesSelection, error) {
@@ -588,6 +604,21 @@ func defaultSource(source SourceConfig) SourceConfig {
 
 func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	source = defaultSource(source)
+	seenNodes := make(map[string]struct{}, len(source.Spec.Nodes))
+	for i, node := range source.Spec.Nodes {
+		name := strings.TrimSpace(node.Name)
+		path := sourceNodePath(node, i)
+		if name == "" {
+			return SourceConfig{}, fmt.Errorf("%s.name is required", path)
+		}
+		if !manifest.ValidHostname(name) {
+			return SourceConfig{}, fmt.Errorf("%s.name %q must be a single DNS-style label", path, node.Name)
+		}
+		if _, exists := seenNodes[name]; exists {
+			return SourceConfig{}, fmt.Errorf("%s.name %q duplicates another node", path, name)
+		}
+		seenNodes[name] = struct{}{}
+	}
 	if strings.TrimSpace(source.Spec.Defaults.Kubernetes.Address) != "" {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node")
 	}
@@ -597,41 +628,42 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 		}
 	}
 	for i := range source.Spec.Nodes {
+		path := sourceNodePath(source.Spec.Nodes[i], i)
 		address, err := manifest.NormalizeKubernetesAddress(source.Spec.Nodes[i].Kubernetes.Address)
 		if err != nil {
-			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].kubernetes.address: %w", i, err)
+			return SourceConfig{}, fmt.Errorf("%s.kubernetes.address: %w", path, err)
 		}
 		source.Spec.Nodes[i].Kubernetes.Address = address
 		if source.Spec.Nodes[i].Kernel != nil {
 			if err := manifest.ValidateKernelConfig(*lowerKernelConfig(source.Spec.Nodes[i].Kernel)); err != nil {
-				return SourceConfig{}, fmt.Errorf("spec.nodes[%d].kernel: %w", i, err)
+				return SourceConfig{}, fmt.Errorf("%s.kernel: %w", path, err)
 			}
 		}
 	}
-	if err := manifest.ValidateHostConfiguration(lowerHostConfiguration(source.Spec.Defaults.HostConfiguration), true); err != nil {
-		return SourceConfig{}, fmt.Errorf("spec.defaults.hostConfiguration: %w", err)
+	if err := validateSourceHostConfiguration("spec.defaults.hostConfiguration", source.Spec.Defaults.HostConfiguration); err != nil {
+		return SourceConfig{}, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := manifest.ValidateHostConfiguration(lowerHostConfiguration(source.Spec.Nodes[i].HostConfiguration), true); err != nil {
-			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].hostConfiguration: %w", i, err)
+		if err := validateSourceHostConfiguration(sourceNodePath(source.Spec.Nodes[i], i)+".hostConfiguration", source.Spec.Nodes[i].HostConfiguration); err != nil {
+			return SourceConfig{}, err
 		}
 	}
-	if err := manifest.ValidateSystemExtensions(lowerSystemExtensions(source.Spec.Defaults.SystemExtensions), true); err != nil {
-		return SourceConfig{}, fmt.Errorf("spec.defaults.systemExtensions: %w", err)
+	if err := validateSourceSystemExtensions("spec.defaults.systemExtensions", source.Spec.Defaults.SystemExtensions); err != nil {
+		return SourceConfig{}, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := manifest.ValidateSystemExtensions(lowerSystemExtensions(source.Spec.Nodes[i].SystemExtensions), true); err != nil {
-			return SourceConfig{}, fmt.Errorf("spec.nodes[%d].systemExtensions: %w", i, err)
+		if err := validateSourceSystemExtensions(sourceNodePath(source.Spec.Nodes[i], i)+".systemExtensions", source.Spec.Nodes[i].SystemExtensions); err != nil {
+			return SourceConfig{}, err
 		}
 	}
 	if err := validateDefaultSystemDisk(source.Spec.Defaults.Install.SystemDisk); err != nil {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.install.systemDisk: %w", err)
 	}
-	if err := validateSourceStorageDisks("spec.defaults.storage.disks", source.Spec.Defaults.Storage.Disks); err != nil {
+	if err := validateSourceStorageDisks("spec.defaults.storage.disks", source.Spec.Defaults.Storage.Disks, false); err != nil {
 		return SourceConfig{}, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := validateSourceStorageDisks(fmt.Sprintf("spec.nodes[%d].storage.disks", i), source.Spec.Nodes[i].Storage.Disks); err != nil {
+		if err := validateSourceStorageDisks(sourceNodePath(source.Spec.Nodes[i], i)+".storage.disks", source.Spec.Nodes[i].Storage.Disks, false); err != nil {
 			return SourceConfig{}, err
 		}
 	}
@@ -686,7 +718,7 @@ func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (So
 		return SourceConfig{}, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := resolve(fmt.Sprintf("spec.nodes[%d].hostConfiguration", i), &source.Spec.Nodes[i].HostConfiguration); err != nil {
+		if err := resolve(sourceNodePath(source.Spec.Nodes[i], i)+".hostConfiguration", &source.Spec.Nodes[i].HostConfiguration); err != nil {
 			return SourceConfig{}, err
 		}
 	}
@@ -734,11 +766,18 @@ func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (So
 		return SourceConfig{}, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := resolveExtensions(fmt.Sprintf("spec.nodes[%d].systemExtensions", i), &source.Spec.Nodes[i].SystemExtensions); err != nil {
+		if err := resolveExtensions(sourceNodePath(source.Spec.Nodes[i], i)+".systemExtensions", &source.Spec.Nodes[i].SystemExtensions); err != nil {
 			return SourceConfig{}, err
 		}
 	}
 	return source, nil
+}
+
+func sourceNodePath(node SourceNode, index int) string {
+	if name := strings.TrimSpace(node.Name); name != "" {
+		return fmt.Sprintf("spec.nodes[%q]", name)
+	}
+	return fmt.Sprintf("spec.nodes[%d]", index)
 }
 
 func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {

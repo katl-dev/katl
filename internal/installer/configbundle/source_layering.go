@@ -382,7 +382,7 @@ func validateDefaultSystemDisk(selector *SourceDiskSelector) error {
 	return nil
 }
 
-func validateSourceStorageDisks(field string, disks Optional[[]SourceStorageDisk]) error {
+func validateSourceStorageDisks(field string, disks Optional[[]SourceStorageDisk], requireComplete bool) error {
 	values, ok := disks.Get()
 	if !ok {
 		return nil
@@ -402,8 +402,93 @@ func validateSourceStorageDisks(field string, disks Optional[[]SourceStorageDisk
 		default:
 			return fmt.Errorf("%s[%d].state must be %q or %q", field, i, manifest.SystemExtensionPresent, manifest.SystemExtensionAbsent)
 		}
+		if strings.TrimSpace(disk.State) == manifest.SystemExtensionAbsent {
+			continue
+		}
+		if disk.Selector != nil && disk.Selector.Disk != nil && disk.Selector.Partition != nil {
+			return fmt.Errorf("%s[%d].selector must set exactly one of disk or partition", field, i)
+		}
+		if !requireComplete {
+			continue
+		}
+		volume := lowerStorageDisks(supplied([]SourceStorageDisk{disk}))
+		if err := manifest.ValidateVolumes(volume); err != nil {
+			message := strings.Replace(err.Error(), "install.volumes[0]", fmt.Sprintf("%s[%d]", field, i), 1)
+			return fmt.Errorf("%s", message)
+		}
 	}
 	return nil
+}
+
+func validateResolvedSourceNode(path string, layer SourceNodeLayer) error {
+	if keys, ok := layer.Access.SSH.AuthorizedKeys.Get(); !ok || len(keys) == 0 {
+		return fmt.Errorf("%s.access.ssh.authorizedKeys must not be empty", path)
+	} else {
+		for i, key := range keys {
+			if !manifest.ValidAuthorizedKey(key) {
+				return fmt.Errorf("%s.access.ssh.authorizedKeys[%d] must be an SSH public key", path, i)
+			}
+		}
+	}
+	if layer.Install.SystemDisk == nil {
+		return fmt.Errorf("%s.install.systemDisk is required", path)
+	}
+	selected := 0
+	for _, value := range []Optional[string]{layer.Install.SystemDisk.ByID, layer.Install.SystemDisk.WWN, layer.Install.SystemDisk.Serial} {
+		if configured, ok := value.Get(); ok && strings.TrimSpace(configured) != "" {
+			selected++
+		}
+	}
+	if selected != 1 {
+		return fmt.Errorf("%s.install.systemDisk must set exactly one of byID, wwn, or serial", path)
+	}
+	if err := validateSourceStorageDisks(path+".storage.disks", layer.Storage.Disks, true); err != nil {
+		return err
+	}
+	if err := validateSourceHostConfiguration(path+".hostConfiguration", layer.HostConfiguration); err != nil {
+		return err
+	}
+	if err := validateSourceSystemExtensions(path+".systemExtensions", layer.SystemExtensions); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSourceHostConfiguration(field string, config SourceHostConfiguration) error {
+	if err := manifest.ValidateHostConfiguration(lowerHostConfiguration(config), true); err != nil {
+		return fmt.Errorf("%s.%s", field, publicHostConfigurationMessage(err.Error()))
+	}
+	return nil
+}
+
+func publicHostConfigurationMessage(message string) string {
+	if strings.HasPrefix(message, "sysfs[") {
+		message = strings.Replace(message, "].name", "].path", 1)
+	}
+	if strings.HasPrefix(message, "sets[") {
+		message = "fileSets[" + strings.TrimPrefix(message, "sets[")
+	}
+	message = strings.ReplaceAll(message, ".notify.", ".onChange.")
+	message = strings.ReplaceAll(message, "host configuration set name", "fileSets key")
+	return message
+}
+
+func validateSourceSystemExtensions(field string, extensions Optional[[]SourceSystemExtension]) error {
+	if err := manifest.ValidateSystemExtensions(lowerSystemExtensions(extensions), true); err != nil {
+		return fmt.Errorf("%s%s", field, publicSystemExtensionsMessage(err.Error()))
+	}
+	return nil
+}
+
+func publicSystemExtensionsMessage(message string) string {
+	if index := strings.Index(message, ".configuration: sets["); index >= 0 {
+		detail := message[index+len(".configuration: sets["):]
+		if end := strings.Index(detail, "].files"); end >= 0 {
+			message = message[:index] + ".configuration.files" + detail[end+len("].files"):]
+		}
+	}
+	message = strings.ReplaceAll(message, "host configuration set name", "system extension name")
+	return message
 }
 
 func lowerSystemExtensions(extensions Optional[[]SourceSystemExtension]) []manifest.SystemExtension {

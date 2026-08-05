@@ -921,7 +921,7 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 		{
 			name: "bootstrap management block",
 			raw:  strings.Replace(validSourceConfig(), "      management:\n", "      bootstrap:\n", 1),
-			want: "spec.nodes[0].bootstrap: field is not supported",
+			want: "spec.nodes[\"cp-1\"].bootstrap: field is not supported",
 		},
 		{
 			name: "target disk defaults",
@@ -933,21 +933,21 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 			raw: strings.Replace(validSourceConfig(),
 				"      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root",
 				"      install:\n        targetDisk:\n          byID: /dev/disk/by-id/ata-cp-root", 1),
-			want: "spec.nodes[0].install.targetDisk: field is not supported",
+			want: "spec.nodes[\"cp-1\"].install.targetDisk: field is not supported",
 		},
 		{
 			name: "extra disks",
 			raw: strings.Replace(validSourceConfig(),
 				"      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root",
 				"      install:\n        extraDisks: []\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root", 1),
-			want: "spec.nodes[0].install.extraDisks: field is not supported",
+			want: "spec.nodes[\"cp-1\"].install.extraDisks: field is not supported",
 		},
 		{
 			name: "install volumes",
 			raw: strings.Replace(validSourceConfig(),
 				"      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root",
 				"      install:\n        volumes: []\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root", 1),
-			want: "spec.nodes[0].install.volumes: field is not supported",
+			want: "spec.nodes[\"cp-1\"].install.volumes: field is not supported",
 		},
 		{
 			name: "host configuration sets",
@@ -1023,7 +1023,7 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 		{
 			name: "system role alias",
 			raw:  strings.Replace(validSourceConfig(), "      controlPlane: true\n", "      systemRole: control-plane\n", 1),
-			want: "spec.nodes[0].systemRole: field is not supported",
+			want: "spec.nodes[\"cp-1\"].systemRole: field is not supported",
 		},
 		{
 			name: "platform endpoint",
@@ -1033,17 +1033,17 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 		{
 			name: "node overrides wrapper",
 			raw:  strings.Replace(validSourceConfig(), "      install:\n", "      overrides:\n        install:\n", 1),
-			want: "spec.nodes[0].overrides: field is not supported",
+			want: "spec.nodes[\"cp-1\"].overrides: field is not supported",
 		},
 		{
 			name: "node labels alias",
 			raw:  strings.Replace(validSourceConfig(), "        labels:\n", "        nodeLabels:\n", 1),
-			want: "spec.nodes[0].kubernetes.nodeLabels: field is not supported",
+			want: "spec.nodes[\"cp-1\"].kubernetes.nodeLabels: field is not supported",
 		},
 		{
 			name: "bootstrap credentials",
 			raw:  strings.Replace(validSourceConfig(), "        address: 10.0.0.11", "        address: 10.0.0.11\n        access:\n          credentialRef: file:/tmp/token", 1),
-			want: "spec.nodes[0].management.access: field is not supported",
+			want: "spec.nodes[\"cp-1\"].management.access: field is not supported",
 		},
 		{
 			name: "kubeadm profiles",

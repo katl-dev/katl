@@ -202,13 +202,24 @@ func validateYAMLFields(node *yaml.Node, t reflect.Type, path string) error {
 			return nil
 		}
 		for i, item := range node.Content {
-			itemPath := fmt.Sprintf("%s[%d]", path, i)
+			itemPath := sequenceItemPath(path, item, i)
 			if err := validateYAMLFields(item, t.Elem(), itemPath); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func sequenceItemPath(path string, item *yaml.Node, index int) string {
+	if path == "spec.nodes" && item.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(item.Content); i += 2 {
+			if item.Content[i].Value == "name" && strings.TrimSpace(item.Content[i+1].Value) != "" {
+				return fmt.Sprintf("%s[%q]", path, strings.TrimSpace(item.Content[i+1].Value))
+			}
+		}
+	}
+	return fmt.Sprintf("%s[%d]", path, index)
 }
 
 func joinFieldPath(parent, field string) string {
