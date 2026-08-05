@@ -27,12 +27,13 @@ const (
 )
 
 type installApplyOptions struct {
-	endpoint   string
-	configPath string
-	nodeName   string
-	noWait     bool
-	timeout    time.Duration
-	output     string
+	endpoint                           string
+	configPath                         string
+	nodeName                           string
+	destructiveStorageAcknowledgements []string
+	noWait                             bool
+	timeout                            time.Duration
+	output                             string
 }
 
 type installStatusOptions struct {
@@ -70,6 +71,7 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer address or HTTP(S) base URL; overrides the selected node's bootstrap address")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name or bootstrap address; required unless the config contains one node")
+	cmd.Flags().StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "authorize overwriting one non-blank node volume as NODE/VOLUME (repeatable)")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
@@ -98,6 +100,10 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	}
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
+	}
+	acknowledgements, err := normalizeDestructiveStorageAcknowledgements(opts.destructiveStorageAcknowledgements)
+	if err != nil {
+		return err
 	}
 	config, err := loadKatlConfig(opts.configPath, installApplyCreator, configbundle.PlanningInputs{})
 	if err != nil {
@@ -143,7 +149,7 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 		return fmt.Errorf("installer is not accepting config: state=%s selectedNode=%s", before.State, before.SelectedNode)
 	}
 
-	accepted, err := submitInstallBundle(waitCtx, client, endpoint, archive, selected.BundleDigest, selected.Node.Name)
+	accepted, err := submitInstallBundle(waitCtx, client, endpoint, archive, selected.BundleDigest, selected.Node.Name, acknowledgements)
 	if err != nil {
 		return err
 	}
@@ -307,7 +313,7 @@ func fetchInstallStatus(ctx context.Context, client *http.Client, endpoint strin
 	return doInstallRequest(client, req, "read installer status")
 }
 
-func submitInstallBundle(ctx context.Context, client *http.Client, endpoint string, archive []byte, digest, node string) (handoff.HandoffStatus, error) {
+func submitInstallBundle(ctx context.Context, client *http.Client, endpoint string, archive []byte, digest, node string, acknowledgements []string) (handoff.HandoffStatus, error) {
 	requestURL, err := url.Parse(endpoint + "/v1/config-bundle")
 	if err != nil {
 		return handoff.HandoffStatus{}, fmt.Errorf("create installer handoff URL: %w", err)
@@ -315,6 +321,9 @@ func submitInstallBundle(ctx context.Context, client *http.Client, endpoint stri
 	query := requestURL.Query()
 	query.Set("node", node)
 	query.Set("digest", digest)
+	for _, acknowledgement := range acknowledgements {
+		query.Add("acknowledgeStorageWipe", acknowledgement)
+	}
 	requestURL.RawQuery = query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(archive))
 	if err != nil {

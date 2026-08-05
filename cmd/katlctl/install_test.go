@@ -446,7 +446,7 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(status)
 	})
 	mux.HandleFunc("POST /v1/config-bundle", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("node") != "cp-1" || !strings.HasPrefix(r.URL.Query().Get("digest"), "sha256:") {
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("node") != "cp-1" || !strings.HasPrefix(r.URL.Query().Get("digest"), "sha256:") || r.URL.Query().Get("acknowledgeStorageWipe") != "cp-1/data" {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -465,6 +465,7 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 		"--output", "json",
 		"--endpoint", ts.URL,
 		"--node", "cp-1",
+		"--acknowledge-storage-wipe", "cp-1/data",
 		"--timeout", "5s",
 	}, &stdout, &stderr)
 	if err != nil {

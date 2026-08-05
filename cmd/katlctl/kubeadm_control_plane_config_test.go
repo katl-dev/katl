@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -619,14 +620,14 @@ func TestActivateClusterConfigUsesOneLiveWholeNodeGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1", destructiveStorageAcknowledgements: []string{"cp-1/data"}}, inv.Nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if activated.generations["cp-1"] != "cluster-config-42" {
 		t.Fatalf("generations = %#v", activated.generations)
 	}
-	if client.validateRequest == nil || client.validateRequest.ApplyMode != "auto" || client.validateRequest.CandidateGenerationId != "cluster-config-42" {
+	if client.validateRequest == nil || client.validateRequest.ApplyMode != "auto" || client.validateRequest.CandidateGenerationId != "cluster-config-42" || !slices.Equal(client.validateRequest.DestructiveStorageAcknowledgements, []string{"cp-1/data"}) {
 		t.Fatalf("validate request = %#v", client.validateRequest)
 	}
 	for _, required := range []string{"identity:", "controlPlaneEndpoint:", "kubeadmConfigs:"} {
@@ -639,6 +640,9 @@ func TestActivateClusterConfigUsesOneLiveWholeNodeGeneration(t *testing.T) {
 	}
 	if client.submitRequest == nil || client.submitRequest.OperationKind != "generation-apply" || client.submitRequest.ConfigApply == nil {
 		t.Fatalf("submit request = %#v", client.submitRequest)
+	}
+	if !slices.Equal(client.submitRequest.ConfigApply.DestructiveStorageAcknowledgements, []string{"cp-1/data"}) {
+		t.Fatalf("submit acknowledgements = %v", client.submitRequest.ConfigApply.DestructiveStorageAcknowledgements)
 	}
 }
 

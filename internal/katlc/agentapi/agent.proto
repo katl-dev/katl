@@ -229,6 +229,7 @@ message ValidateConfigRequest {
   string config_yaml = 9;
   string client_request_id = 10;
   string operation_timeout = 11;
+  repeated string destructive_storage_acknowledgements = 12;
 }
 
 message ConfigValidationResult {
@@ -243,6 +244,7 @@ message ConfigValidationResult {
   repeated string diagnostics = 9;
   string failure_reason = 10;
   bool no_changes = 11;
+  repeated string required_destructive_storage_acknowledgements = 12;
 }
 
 message GenerationApplyRequest {
@@ -257,6 +259,7 @@ message GenerationApplyRequest {
   string candidate_generation_id = 9;
   string node_name = 10;
   string config_yaml = 11;
+  repeated string destructive_storage_acknowledgements = 12;
 }
 
 message ConfigApplyOperationRequest {
@@ -264,6 +267,7 @@ message ConfigApplyOperationRequest {
   string apply_mode = 2;
   string node_name = 3;
   string config_yaml = 4;
+  repeated string destructive_storage_acknowledgements = 5;
 }
 
 message KubeadmControlPlaneConfigOperationRequest {

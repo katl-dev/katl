@@ -1,10 +1,16 @@
 package scenarios
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,7 +119,7 @@ func TestInstallerPXEBootSmoke(t *testing.T) {
 	}
 }
 
-func TestInstallerISOFirstInstallSmoke(t *testing.T) {
+func TestInstallerISOFirstInstallStorageAuthority(t *testing.T) {
 	options := vmtest.DefaultOptions()
 	if !options.Enabled {
 		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run installer ISO first-install smoke")
@@ -155,8 +161,10 @@ install:
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
+	var dataDisk string
+	diskRunner := nonBlankDataDiskRunner{dataPath: &dataDisk}
 	result, err := vmtest.RunFirstInstall(ctx, vmtest.NewRunner(options), vmtest.Scenario{
-		Name: "installer-iso-first-install",
+		Name: "installer-iso-first-install-storage-authority",
 		Disks: []vmtest.DiskFixture{
 			vmtest.TargetDisk("root", string(vmtest.DiskRaw), "32G"),
 			vmtest.ExtraDisk("data", string(vmtest.DiskRaw), "4G"),
@@ -168,9 +176,34 @@ install:
 			VM:     vm,
 		},
 		Manifest:            manifest,
-		PreseedManifest:     true,
+		GuestHandoff:        true,
 		RebootIntoInstalled: true,
 		TargetDisk:          vmtest.TargetDisk("root", string(vmtest.DiskRaw), "32G"),
+		DiskRunner:          diskRunner,
+		HandoffPoster: func(ctx context.Context, endpoint string, payload []byte) (int, string, error) {
+			status, body, err := postInstallerManifest(ctx, endpoint, payload)
+			if err != nil {
+				return 0, "", err
+			}
+			if status != http.StatusPreconditionRequired || !strings.Contains(body, "--acknowledge-storage-wipe iso-node/data") {
+				return 0, "", fmt.Errorf("unacknowledged handoff status=%d body=%s", status, body)
+			}
+			if dataDisk == "" {
+				return 0, "", fmt.Errorf("non-blank data disk path was not recorded")
+			}
+			filesystem, err := exec.CommandContext(ctx, "blkid", "-p", "-s", "TYPE", "-o", "value", dataDisk).CombinedOutput()
+			if err != nil || strings.TrimSpace(string(filesystem)) != "ext4" {
+				return 0, "", fmt.Errorf("refused handoff changed existing data disk signature: type=%q err=%v", filesystem, err)
+			}
+			acknowledged, err := url.Parse(endpoint)
+			if err != nil {
+				return 0, "", err
+			}
+			query := acknowledged.Query()
+			query.Add("acknowledgeStorageWipe", "iso-node/data")
+			acknowledged.RawQuery = query.Encode()
+			return postInstallerManifest(ctx, acknowledged.String(), payload)
+		},
 	})
 	if err != nil {
 		_ = worldScenario.WriteSetupFailure(err)
@@ -185,4 +218,41 @@ install:
 	if err := worldScenario.WriteResult(vmtest.WorldStatusPassed, ""); err != nil {
 		t.Fatalf("write passed world result: %v", err)
 	}
+}
+
+type nonBlankDataDiskRunner struct {
+	dataPath *string
+}
+
+func (r nonBlankDataDiskRunner) Run(ctx context.Context, name string, args ...string) error {
+	if err := (vmtest.ExecDiskRunner{}).Run(ctx, name, args...); err != nil {
+		return err
+	}
+	if name != "qemu-img" || len(args) < 2 {
+		return nil
+	}
+	path := args[len(args)-2]
+	if !strings.Contains(filepath.Base(path), "-data.") {
+		return nil
+	}
+	if err := exec.CommandContext(ctx, "mkfs.ext4", "-F", path).Run(); err != nil {
+		return fmt.Errorf("create existing ext4 data signature: %w", err)
+	}
+	*r.dataPath = path
+	return nil
+}
+
+func postInstallerManifest(ctx context.Context, endpoint string, payload []byte) (int, string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return 0, "", err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		return 0, "", err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	return response.StatusCode, string(body), err
 }

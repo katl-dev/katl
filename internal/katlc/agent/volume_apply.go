@@ -15,12 +15,56 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
-func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.Manifest) error {
+func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.Manifest, nodeName string, acknowledgements []string) error {
 	run := e.RunTool
 	if run == nil {
 		run = runChildProcess
 	}
+	stopNames, changed := changedVolumes(current, desired)
+	if len(changed) == 0 {
+		return nil
+	}
 
+	plans, err := preflightLiveVolumes(ctx, run, desired, stopNames, changed)
+	if err != nil {
+		return err
+	}
+	if err := disk.ValidateDestructiveVolumeAcknowledgements(nodeName, plans, acknowledgements); err != nil {
+		return err
+	}
+
+	for _, name := range stopNames {
+		unit, err := generation.MountUnitName("/var/mnt/" + name)
+		if err != nil {
+			return err
+		}
+		result := run(ctx, []string{"systemctl", "stop", unit}, nil)
+		if result.Err != nil || result.ExitStatus != 0 && result.ExitStatus != 5 {
+			err := fmt.Errorf("stop volume %s: %s", name, toolFailure(result))
+			return fmt.Errorf("%w; stop workloads using /var/mnt/%s and retry", err, name)
+		}
+	}
+
+	facts, err := discoverVolumeFacts(ctx, run)
+	if err != nil {
+		return err
+	}
+	plans, err = planLiveVolumes(facts, desired, changed)
+	if err != nil {
+		return err
+	}
+	if err := disk.ValidateDestructiveVolumeAcknowledgements(nodeName, plans, acknowledgements); err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		if err := prepareLiveVolume(ctx, run, e.Root, plan); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func changedVolumes(current, desired manifest.Manifest) ([]string, []manifest.Volume) {
 	currentByName := volumesByName(current.Install.Volumes)
 	desiredByName := volumesByName(desired.Install.Volumes)
 	var stopNames []string
@@ -41,48 +85,51 @@ func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.M
 		changed = append(changed, after)
 	}
 	sort.Slice(changed, func(i, j int) bool { return changed[i].Name < changed[j].Name })
+	return stopNames, changed
+}
 
-	if len(changed) > 0 {
-		facts, err := discoverVolumeFacts(ctx, run)
-		if err != nil {
-			return err
-		}
-		preflight := factsWithoutManagedVolumeMounts(facts, stopNames)
-		if _, err := planLiveVolumes(preflight, desired, changed); err != nil {
-			return err
-		}
-	}
-
-	for _, name := range stopNames {
-		unit, err := generation.MountUnitName("/var/mnt/" + name)
-		if err != nil {
-			return err
-		}
-		result := run(ctx, []string{"systemctl", "stop", unit}, nil)
-		if result.Err != nil || result.ExitStatus != 0 && result.ExitStatus != 5 {
-			err := fmt.Errorf("stop volume %s: %s", name, toolFailure(result))
-			return fmt.Errorf("%w; stop workloads using /var/mnt/%s and retry", err, name)
-		}
-	}
-
-	if len(changed) == 0 {
-		return nil
-	}
-
+func preflightLiveVolumes(ctx context.Context, run ToolRunner, desired manifest.Manifest, stopNames []string, changed []manifest.Volume) ([]disk.VolumePlan, error) {
 	facts, err := discoverVolumeFacts(ctx, run)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	plans, err := planLiveVolumes(facts, desired, changed)
+	return planLiveVolumes(factsWithoutManagedVolumeMounts(facts, stopNames), desired, changed)
+}
+
+func (s *Server) validateDestructiveStorageAuthority(ctx context.Context, nodeName string, current, desired manifest.Manifest, acknowledgements []string) ([]string, error) {
+	if err := disk.ValidateDestructiveVolumeAcknowledgementKeys(acknowledgements); err != nil {
+		return nil, err
+	}
+	stopNames, changed := changedVolumes(current, desired)
+	if len(changed) == 0 {
+		return nil, nil
+	}
+	run := s.RunVolumeDiscovery
+	if run == nil {
+		run = runChildProcess
+	}
+	plans, err := preflightLiveVolumes(ctx, run, desired, stopNames, changed)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, plan := range plans {
-		if err := prepareLiveVolume(ctx, run, e.Root, plan); err != nil {
-			return err
+	nodeName = storageAuthorityNodeName(nodeName, current)
+	required := disk.RequiredDestructiveVolumeAcknowledgements(nodeName, plans)
+	if err := disk.ValidateDestructiveVolumeAcknowledgements(nodeName, plans, acknowledgements); err != nil {
+		return required, err
+	}
+	return required, nil
+}
+
+func storageAuthorityNodeName(requested string, current manifest.Manifest) string {
+	if requested = strings.TrimSpace(requested); requested != "" {
+		return requested
+	}
+	if current.Node.Bootstrap != nil {
+		if name := strings.TrimSpace(current.Node.Bootstrap.InventoryNodeName); name != "" {
+			return name
 		}
 	}
-	return nil
+	return strings.TrimSpace(current.Node.Identity.Hostname)
 }
 
 func discoverVolumeFacts(ctx context.Context, run ToolRunner) (discovery.HardwareFacts, error) {

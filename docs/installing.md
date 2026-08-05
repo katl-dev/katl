@@ -230,9 +230,9 @@ filesystem, and `wipe: false`. Stable disk or partition identity and
 `spec.defaults` so one inherited value cannot select or erase storage across
 the cluster.
 
-A disk-backed entry with `wipe: true` authorizes Katl to reinitialize the
-selected disk. Katl uses `systemd-repart` to create and format its
-convention-labelled partition:
+A disk-backed entry with `wipe: true` requests reinitialization of the selected
+disk. It is desired state, not permission to overwrite existing contents. Katl
+uses `systemd-repart` to create and format its convention-labelled partition:
 
 ```yaml
 install:
@@ -267,6 +267,25 @@ filesystem and Katl preserves it. With `wipe: true`, Katl formats the selected
 target; a partition selector never repartitions its parent disk. Live apply
 refuses mounted or otherwise active destructive targets rather than disrupting
 workloads.
+
+Katl provisions a discovered blank target automatically. If the selected disk
+or partition already has a partition-table, partition, or filesystem
+signature, planning stops before mutation and reports the exact `NODE/VOLUME`
+acknowledgement required. Inspect the selected hardware, then repeat the
+operation with the reported flag, for example:
+
+```console
+katlctl install apply --config ./cluster.yaml --node worker-1 \
+  --acknowledge-storage-wipe worker-1/data
+
+katlctl cluster apply --config ./cluster.yaml \
+  --acknowledge-storage-wipe worker-1/data
+```
+
+Repeat the flag for multiple affected volumes. The acknowledgement belongs to
+that operation and is never written into ClusterConfig or a node generation;
+changing a selector or encountering existing contents in a later operation
+requires acknowledgement again.
 
 For a routed endpoint advertised by Katl, add the VIP and fabric peers. Katl
 then installs and runs the endpoint advertiser only on control-plane nodes;

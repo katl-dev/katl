@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 )
 
@@ -158,12 +159,13 @@ type BootstrapRequest struct {
 }
 
 type ConfigApplyRequest struct {
-	ApplyMode             string `json:"applyMode"`
-	NodeName              string `json:"nodeName,omitempty"`
-	CandidateGenerationID string `json:"candidateGenerationID,omitempty"`
-	ConfigYAML            string `json:"configYAML,omitempty"`
-	ConfigYAMLPath        string `json:"configYAMLPath,omitempty"`
-	ConfigYAMLSHA256      string `json:"configYAMLSHA256,omitempty"`
+	ApplyMode                          string   `json:"applyMode"`
+	NodeName                           string   `json:"nodeName,omitempty"`
+	CandidateGenerationID              string   `json:"candidateGenerationID,omitempty"`
+	ConfigYAML                         string   `json:"configYAML,omitempty"`
+	ConfigYAMLPath                     string   `json:"configYAMLPath,omitempty"`
+	ConfigYAMLSHA256                   string   `json:"configYAMLSHA256,omitempty"`
+	DestructiveStorageAcknowledgements []string `json:"destructiveStorageAcknowledgements,omitempty"`
 }
 
 type KubeadmControlPlaneConfig struct {
@@ -1165,6 +1167,7 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	}
 	if record.ConfigApplyRequest != nil {
 		request := *record.ConfigApplyRequest
+		request.DestructiveStorageAcknowledgements = cloneStrings(request.DestructiveStorageAcknowledgements)
 		record.ConfigApplyRequest = &request
 	}
 	if record.KubernetesSysextUpdate != nil {
@@ -1796,6 +1799,9 @@ func validateConfigApplyRequest(request ConfigApplyRequest) error {
 		if err := validateSHA256Hex("configApplyRequest configYAMLSHA256", request.ConfigYAMLSHA256); err != nil {
 			return err
 		}
+	}
+	if err := disk.ValidateDestructiveVolumeAcknowledgementKeys(request.DestructiveStorageAcknowledgements); err != nil {
+		return fmt.Errorf("configApplyRequest: %w", err)
 	}
 	return nil
 }

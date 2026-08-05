@@ -17,6 +17,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
@@ -78,17 +79,18 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		provisionalOperationKind = OperationKindGenerationApply
 	}
 	submitBase := &agentapi.GenerationApplyRequest{
-		ApiVersion:                  APIVersion,
-		Kind:                        "GenerationApplyRequest",
-		ClientRequestId:             req.ClientRequestId,
-		Actor:                       req.Actor,
-		ExpectedMachineId:           req.ExpectedMachineId,
-		ExpectedCurrentGenerationId: req.ExpectedCurrentGenerationId,
-		RequestDigest:               "",
-		OperationTimeout:            req.OperationTimeout,
-		CandidateGenerationId:       candidateID,
-		NodeName:                    req.NodeName,
-		ConfigYaml:                  req.ConfigYaml,
+		ApiVersion:                         APIVersion,
+		Kind:                               "GenerationApplyRequest",
+		ClientRequestId:                    req.ClientRequestId,
+		Actor:                              req.Actor,
+		ExpectedMachineId:                  req.ExpectedMachineId,
+		ExpectedCurrentGenerationId:        req.ExpectedCurrentGenerationId,
+		RequestDigest:                      "",
+		OperationTimeout:                   req.OperationTimeout,
+		CandidateGenerationId:              candidateID,
+		NodeName:                           req.NodeName,
+		ConfigYaml:                         req.ConfigYaml,
+		DestructiveStorageAcknowledgements: append([]string(nil), req.DestructiveStorageAcknowledgements...),
 	}
 	submit := generationSubmitRequest(submitBase, provisionalOperationKind, applyMode)
 	requestDigest, err := RequestDigest(submit)
@@ -182,6 +184,12 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		}
 		return rejected(err, configApplyDiagnostics(plan.Plan.Decision)), nil
 	}
+	requiredStorage, err := s.validateDestructiveStorageAuthority(ctx, req.NodeName, base.CurrentManifest, plan.Manifest, req.DestructiveStorageAcknowledgements)
+	if err != nil {
+		result := rejected(err, []string{inventory.Redact(err.Error())})
+		result.RequiredDestructiveStorageAcknowledgements = requiredStorage
+		return result, nil
+	}
 	operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -203,6 +211,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		AcceptedApplyMode:     plan.Plan.Decision.AcceptedMode,
 		CandidateGenerationId: candidateID,
 		ChangedDomains:        append([]string(nil), plan.Plan.Decision.ChangedDomains...),
+		RequiredDestructiveStorageAcknowledgements: requiredStorage,
 	}, nil
 }
 
@@ -258,10 +267,11 @@ func generationSubmitRequest(req *agentapi.GenerationApplyRequest, operationKind
 		RequestDigest:               req.RequestDigest,
 		OperationTimeout:            req.OperationTimeout,
 		ConfigApply: &agentapi.ConfigApplyOperationRequest{
-			CandidateGenerationId: req.CandidateGenerationId,
-			ApplyMode:             applyMode,
-			NodeName:              req.NodeName,
-			ConfigYaml:            req.ConfigYaml,
+			CandidateGenerationId:              req.CandidateGenerationId,
+			ApplyMode:                          applyMode,
+			NodeName:                           req.NodeName,
+			ConfigYaml:                         req.ConfigYaml,
+			DestructiveStorageAcknowledgements: append([]string(nil), req.DestructiveStorageAcknowledgements...),
 		},
 	}
 }
@@ -413,7 +423,7 @@ func configApplyDomainActionsToProto(actions []generation.ConfigApplyDomainActio
 	return out
 }
 
-func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest, digest string, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
+func (s *Server) acceptConfigApplyOperation(ctx context.Context, req *agentapi.SubmitOperationRequest, digest string, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
 	configReq := configApplyRequestFromProto(req.GetConfigApply())
 	if strings.TrimSpace(configReq.CandidateGenerationID) == "" {
 		configReq.CandidateGenerationID = id + "-candidate"
@@ -425,6 +435,7 @@ func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "config apply base state: %v", err)
 	}
+	configReq.NodeName = storageAuthorityNodeName(configReq.NodeName, base.CurrentManifest)
 	if diagnostics := validateConfigApplyDocument(configReq.ConfigYAML, base.KubeadmConfigs); !diagnostics.Accepted() {
 		return operation.OperationRecord{}, nil, status.Error(codes.InvalidArgument, configValidationError(diagnostics.Strings()).Error())
 	}
@@ -436,6 +447,9 @@ func (s *Server) acceptConfigApplyOperation(req *agentapi.SubmitOperationRequest
 	decoded.GenerationID = configReq.CandidateGenerationID
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err == nil {
+		if _, authorityErr := s.validateDestructiveStorageAuthority(ctx, configReq.NodeName, base.CurrentManifest, plan.Manifest, configReq.DestructiveStorageAcknowledgements); authorityErr != nil {
+			return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, authorityErr.Error())
+		}
 		operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)
 		if err != nil {
 			return operation.OperationRecord{}, nil, status.Error(codes.Internal, err.Error())
@@ -541,11 +555,13 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 			activator = generationActivator{root: e.Root}
 		}
 		decoded.Executor = &configapply.Executor{
-			Root:         e.Root,
-			Runner:       runner,
-			Activator:    activator,
-			ApplyVolumes: e.applyVolumes,
-			Now:          e.clock,
+			Root:      e.Root,
+			Runner:    runner,
+			Activator: activator,
+			ApplyVolumes: func(ctx context.Context, current, desired manifest.Manifest) error {
+				return e.applyVolumes(ctx, current, desired, record.ConfigApplyRequest.NodeName, record.ConfigApplyRequest.DestructiveStorageAcknowledgements)
+			},
+			Now: e.clock,
 		}
 	}
 	result, err := configapply.ApplyTrustedBundle(ctx, decoded)
@@ -783,10 +799,11 @@ func configApplyRequestFromProto(req *agentapi.ConfigApplyOperationRequest) oper
 		return operation.ConfigApplyRequest{}
 	}
 	return operation.ConfigApplyRequest{
-		ApplyMode:             strings.TrimSpace(req.ApplyMode),
-		NodeName:              strings.TrimSpace(req.NodeName),
-		CandidateGenerationID: strings.TrimSpace(req.CandidateGenerationId),
-		ConfigYAML:            strings.TrimSpace(req.ConfigYaml),
+		ApplyMode:                          strings.TrimSpace(req.ApplyMode),
+		NodeName:                           strings.TrimSpace(req.NodeName),
+		CandidateGenerationID:              strings.TrimSpace(req.CandidateGenerationId),
+		ConfigYAML:                         strings.TrimSpace(req.ConfigYaml),
+		DestructiveStorageAcknowledgements: append([]string(nil), req.DestructiveStorageAcknowledgements...),
 	}
 }
 
@@ -831,6 +848,9 @@ func validateConfigApplyRequest(operationKind string, req *agentapi.ConfigApplyO
 	}
 	if strings.TrimSpace(req.ConfigYaml) == "" {
 		return fmt.Errorf("configYAML is required")
+	}
+	if err := disk.ValidateDestructiveVolumeAcknowledgementKeys(req.DestructiveStorageAcknowledgements); err != nil {
+		return err
 	}
 	return nil
 }

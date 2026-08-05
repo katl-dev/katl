@@ -57,6 +57,13 @@ selector (including the convention-derived empty selector), `partUUID`,
 `filesystemUUID`, and `wipe: true`. Those choices must appear on the concrete
 node volume that they affect.
 
+Node-specific `wipe: true` expresses the desired formatting result but is not
+destructive authority. Installer and online-apply planning discover the target;
+blank targets may proceed automatically, while non-blank targets require a
+separate operation acknowledgement naming the concrete node and volume. That
+acknowledgement is never persisted in ClusterConfig or inherited by later
+operations.
+
 ## Supported Shape
 
 ```yaml

@@ -1169,6 +1169,51 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRequiresOperationAuthorityForNonBlankStorage(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	server.RunVolumeDiscovery = volumeAuthorityRunner("gpt", nil)
+	request := &agentapi.ValidateConfigRequest{
+		ApiVersion: APIVersion, Kind: "ValidateConfigRequest", ClientRequestId: "req-storage-authority",
+		Actor: "test-actor", ApplyMode: generation.ApplyModeAuto, CandidateGenerationId: "generation-storage-authority", NodeName: "node-a",
+		ConfigYaml: strings.Join([]string{
+			"apiVersion: katl.dev/v1alpha1",
+			"kind: NodeConfigurationChange",
+			"metadata:",
+			"  sourceID: operator",
+			"  desiredVersion: \"4\"",
+			"apply:",
+			"  mode: auto",
+			"spec:",
+			"  clusterDefaults:",
+			"    volumes:",
+			"      - name: data",
+			"        selector:",
+			"          disk:",
+			"            serial: data",
+			"        filesystem: xfs",
+			"        wipe: true",
+			"",
+		}, "\n"),
+	}
+
+	result, err := server.ValidateConfig(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted || !reflect.DeepEqual(result.RequiredDestructiveStorageAcknowledgements, []string{"node-a/data"}) || !strings.Contains(result.FailureReason, "--acknowledge-storage-wipe node-a/data") {
+		t.Fatalf("unacknowledged validation result = %+v", result)
+	}
+	request.DestructiveStorageAcknowledgements = []string{"node-a/data"}
+	result, err = server.ValidateConfig(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted || !reflect.DeepEqual(result.RequiredDestructiveStorageAcknowledgements, []string{"node-a/data"}) || result.AcceptedApplyMode != generation.ApplyModeLive {
+		t.Fatalf("acknowledged validation result = %+v", result)
+	}
+}
+
 func TestValidateConfigAcceptsDesiredStateThatAlreadyMatches(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
@@ -3348,7 +3393,7 @@ const configApplyInstallManifestJSON = `{
   },
   "install": {
     "wipeTarget": true,
-    "targetDisk": {"byID": "disk/by-id/test"}
+    "targetDisk": {"serial": "root"}
   },
   "katlosImage": {
     "localRef": "images/katlos.raw",

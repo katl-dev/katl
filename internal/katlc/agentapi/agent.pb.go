@@ -1814,20 +1814,21 @@ func (x *EtcdMemberRemoveOperationRequest) GetExpectedMemberCount() uint32 {
 }
 
 type ValidateConfigRequest struct {
-	state                       protoimpl.MessageState `protogen:"open.v1"`
-	ApiVersion                  string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
-	Kind                        string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	Actor                       string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
-	ExpectedMachineId           string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
-	ExpectedCurrentGenerationId string                 `protobuf:"bytes,5,opt,name=expected_current_generation_id,json=expectedCurrentGenerationId,proto3" json:"expected_current_generation_id,omitempty"`
-	ApplyMode                   string                 `protobuf:"bytes,6,opt,name=apply_mode,json=applyMode,proto3" json:"apply_mode,omitempty"`
-	CandidateGenerationId       string                 `protobuf:"bytes,7,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
-	NodeName                    string                 `protobuf:"bytes,8,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
-	ConfigYaml                  string                 `protobuf:"bytes,9,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
-	ClientRequestId             string                 `protobuf:"bytes,10,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
-	OperationTimeout            string                 `protobuf:"bytes,11,opt,name=operation_timeout,json=operationTimeout,proto3" json:"operation_timeout,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	state                              protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion                         string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind                               string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Actor                              string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	ExpectedMachineId                  string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
+	ExpectedCurrentGenerationId        string                 `protobuf:"bytes,5,opt,name=expected_current_generation_id,json=expectedCurrentGenerationId,proto3" json:"expected_current_generation_id,omitempty"`
+	ApplyMode                          string                 `protobuf:"bytes,6,opt,name=apply_mode,json=applyMode,proto3" json:"apply_mode,omitempty"`
+	CandidateGenerationId              string                 `protobuf:"bytes,7,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
+	NodeName                           string                 `protobuf:"bytes,8,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	ConfigYaml                         string                 `protobuf:"bytes,9,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
+	ClientRequestId                    string                 `protobuf:"bytes,10,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
+	OperationTimeout                   string                 `protobuf:"bytes,11,opt,name=operation_timeout,json=operationTimeout,proto3" json:"operation_timeout,omitempty"`
+	DestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=destructive_storage_acknowledgements,json=destructiveStorageAcknowledgements,proto3" json:"destructive_storage_acknowledgements,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
 }
 
 func (x *ValidateConfigRequest) Reset() {
@@ -1937,21 +1938,29 @@ func (x *ValidateConfigRequest) GetOperationTimeout() string {
 	return ""
 }
 
+func (x *ValidateConfigRequest) GetDestructiveStorageAcknowledgements() []string {
+	if x != nil {
+		return x.DestructiveStorageAcknowledgements
+	}
+	return nil
+}
+
 type ConfigValidationResult struct {
-	state                 protoimpl.MessageState `protogen:"open.v1"`
-	ApiVersion            string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
-	Kind                  string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	Accepted              bool                   `protobuf:"varint,3,opt,name=accepted,proto3" json:"accepted,omitempty"`
-	RequestDigest         string                 `protobuf:"bytes,4,opt,name=request_digest,json=requestDigest,proto3" json:"request_digest,omitempty"`
-	RequestedApplyMode    string                 `protobuf:"bytes,5,opt,name=requested_apply_mode,json=requestedApplyMode,proto3" json:"requested_apply_mode,omitempty"`
-	AcceptedApplyMode     string                 `protobuf:"bytes,6,opt,name=accepted_apply_mode,json=acceptedApplyMode,proto3" json:"accepted_apply_mode,omitempty"`
-	CandidateGenerationId string                 `protobuf:"bytes,7,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
-	ChangedDomains        []string               `protobuf:"bytes,8,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
-	Diagnostics           []string               `protobuf:"bytes,9,rep,name=diagnostics,proto3" json:"diagnostics,omitempty"`
-	FailureReason         string                 `protobuf:"bytes,10,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
-	NoChanges             bool                   `protobuf:"varint,11,opt,name=no_changes,json=noChanges,proto3" json:"no_changes,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	state                                      protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion                                 string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind                                       string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Accepted                                   bool                   `protobuf:"varint,3,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	RequestDigest                              string                 `protobuf:"bytes,4,opt,name=request_digest,json=requestDigest,proto3" json:"request_digest,omitempty"`
+	RequestedApplyMode                         string                 `protobuf:"bytes,5,opt,name=requested_apply_mode,json=requestedApplyMode,proto3" json:"requested_apply_mode,omitempty"`
+	AcceptedApplyMode                          string                 `protobuf:"bytes,6,opt,name=accepted_apply_mode,json=acceptedApplyMode,proto3" json:"accepted_apply_mode,omitempty"`
+	CandidateGenerationId                      string                 `protobuf:"bytes,7,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
+	ChangedDomains                             []string               `protobuf:"bytes,8,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
+	Diagnostics                                []string               `protobuf:"bytes,9,rep,name=diagnostics,proto3" json:"diagnostics,omitempty"`
+	FailureReason                              string                 `protobuf:"bytes,10,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	NoChanges                                  bool                   `protobuf:"varint,11,opt,name=no_changes,json=noChanges,proto3" json:"no_changes,omitempty"`
+	RequiredDestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=required_destructive_storage_acknowledgements,json=requiredDestructiveStorageAcknowledgements,proto3" json:"required_destructive_storage_acknowledgements,omitempty"`
+	unknownFields                              protoimpl.UnknownFields
+	sizeCache                                  protoimpl.SizeCache
 }
 
 func (x *ConfigValidationResult) Reset() {
@@ -2061,21 +2070,29 @@ func (x *ConfigValidationResult) GetNoChanges() bool {
 	return false
 }
 
+func (x *ConfigValidationResult) GetRequiredDestructiveStorageAcknowledgements() []string {
+	if x != nil {
+		return x.RequiredDestructiveStorageAcknowledgements
+	}
+	return nil
+}
+
 type GenerationApplyRequest struct {
-	state                       protoimpl.MessageState `protogen:"open.v1"`
-	ApiVersion                  string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
-	Kind                        string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	ClientRequestId             string                 `protobuf:"bytes,3,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
-	Actor                       string                 `protobuf:"bytes,4,opt,name=actor,proto3" json:"actor,omitempty"`
-	ExpectedMachineId           string                 `protobuf:"bytes,5,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
-	ExpectedCurrentGenerationId string                 `protobuf:"bytes,6,opt,name=expected_current_generation_id,json=expectedCurrentGenerationId,proto3" json:"expected_current_generation_id,omitempty"`
-	RequestDigest               string                 `protobuf:"bytes,7,opt,name=request_digest,json=requestDigest,proto3" json:"request_digest,omitempty"`
-	OperationTimeout            string                 `protobuf:"bytes,8,opt,name=operation_timeout,json=operationTimeout,proto3" json:"operation_timeout,omitempty"`
-	CandidateGenerationId       string                 `protobuf:"bytes,9,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
-	NodeName                    string                 `protobuf:"bytes,10,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
-	ConfigYaml                  string                 `protobuf:"bytes,11,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	state                              protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion                         string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind                               string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	ClientRequestId                    string                 `protobuf:"bytes,3,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
+	Actor                              string                 `protobuf:"bytes,4,opt,name=actor,proto3" json:"actor,omitempty"`
+	ExpectedMachineId                  string                 `protobuf:"bytes,5,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
+	ExpectedCurrentGenerationId        string                 `protobuf:"bytes,6,opt,name=expected_current_generation_id,json=expectedCurrentGenerationId,proto3" json:"expected_current_generation_id,omitempty"`
+	RequestDigest                      string                 `protobuf:"bytes,7,opt,name=request_digest,json=requestDigest,proto3" json:"request_digest,omitempty"`
+	OperationTimeout                   string                 `protobuf:"bytes,8,opt,name=operation_timeout,json=operationTimeout,proto3" json:"operation_timeout,omitempty"`
+	CandidateGenerationId              string                 `protobuf:"bytes,9,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
+	NodeName                           string                 `protobuf:"bytes,10,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	ConfigYaml                         string                 `protobuf:"bytes,11,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
+	DestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=destructive_storage_acknowledgements,json=destructiveStorageAcknowledgements,proto3" json:"destructive_storage_acknowledgements,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
 }
 
 func (x *GenerationApplyRequest) Reset() {
@@ -2185,14 +2202,22 @@ func (x *GenerationApplyRequest) GetConfigYaml() string {
 	return ""
 }
 
+func (x *GenerationApplyRequest) GetDestructiveStorageAcknowledgements() []string {
+	if x != nil {
+		return x.DestructiveStorageAcknowledgements
+	}
+	return nil
+}
+
 type ConfigApplyOperationRequest struct {
-	state                 protoimpl.MessageState `protogen:"open.v1"`
-	CandidateGenerationId string                 `protobuf:"bytes,1,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
-	ApplyMode             string                 `protobuf:"bytes,2,opt,name=apply_mode,json=applyMode,proto3" json:"apply_mode,omitempty"`
-	NodeName              string                 `protobuf:"bytes,3,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
-	ConfigYaml            string                 `protobuf:"bytes,4,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	state                              protoimpl.MessageState `protogen:"open.v1"`
+	CandidateGenerationId              string                 `protobuf:"bytes,1,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
+	ApplyMode                          string                 `protobuf:"bytes,2,opt,name=apply_mode,json=applyMode,proto3" json:"apply_mode,omitempty"`
+	NodeName                           string                 `protobuf:"bytes,3,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	ConfigYaml                         string                 `protobuf:"bytes,4,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
+	DestructiveStorageAcknowledgements []string               `protobuf:"bytes,5,rep,name=destructive_storage_acknowledgements,json=destructiveStorageAcknowledgements,proto3" json:"destructive_storage_acknowledgements,omitempty"`
+	unknownFields                      protoimpl.UnknownFields
+	sizeCache                          protoimpl.SizeCache
 }
 
 func (x *ConfigApplyOperationRequest) Reset() {
@@ -2251,6 +2276,13 @@ func (x *ConfigApplyOperationRequest) GetConfigYaml() string {
 		return x.ConfigYaml
 	}
 	return ""
+}
+
+func (x *ConfigApplyOperationRequest) GetDestructiveStorageAcknowledgements() []string {
+	if x != nil {
+		return x.DestructiveStorageAcknowledgements
+	}
+	return nil
 }
 
 type KubeadmControlPlaneConfigOperationRequest struct {
@@ -5133,7 +5165,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x10target_member_id\x18\x02 \x01(\tR\x0etargetMemberId\x12&\n" +
 	"\x0ftarget_peer_url\x18\x03 \x01(\tR\rtargetPeerUrl\x12.\n" +
 	"\x13expected_cluster_id\x18\x04 \x01(\tR\x11expectedClusterId\x122\n" +
-	"\x15expected_member_count\x18\x05 \x01(\rR\x13expectedMemberCount\"\xc5\x03\n" +
+	"\x15expected_member_count\x18\x05 \x01(\rR\x13expectedMemberCount\"\x97\x04\n" +
 	"\x15ValidateConfigRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5149,7 +5181,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"configYaml\x12*\n" +
 	"\x11client_request_id\x18\n" +
 	" \x01(\tR\x0fclientRequestId\x12+\n" +
-	"\x11operation_timeout\x18\v \x01(\tR\x10operationTimeout\"\xbb\x03\n" +
+	"\x11operation_timeout\x18\v \x01(\tR\x10operationTimeout\x12P\n" +
+	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\"\x9e\x04\n" +
 	"\x16ConfigValidationResult\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5164,7 +5197,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x0efailure_reason\x18\n" +
 	" \x01(\tR\rfailureReason\x12\x1d\n" +
 	"\n" +
-	"no_changes\x18\v \x01(\bR\tnoChanges\"\xce\x03\n" +
+	"no_changes\x18\v \x01(\bR\tnoChanges\x12a\n" +
+	"-required_destructive_storage_acknowledgements\x18\f \x03(\tR*requiredDestructiveStorageAcknowledgements\"\xa0\x04\n" +
 	"\x16GenerationApplyRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5179,14 +5213,16 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\tnode_name\x18\n" +
 	" \x01(\tR\bnodeName\x12\x1f\n" +
 	"\vconfig_yaml\x18\v \x01(\tR\n" +
-	"configYaml\"\xb2\x01\n" +
+	"configYaml\x12P\n" +
+	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\"\x84\x02\n" +
 	"\x1bConfigApplyOperationRequest\x126\n" +
 	"\x17candidate_generation_id\x18\x01 \x01(\tR\x15candidateGenerationId\x12\x1d\n" +
 	"\n" +
 	"apply_mode\x18\x02 \x01(\tR\tapplyMode\x12\x1b\n" +
 	"\tnode_name\x18\x03 \x01(\tR\bnodeName\x12\x1f\n" +
 	"\vconfig_yaml\x18\x04 \x01(\tR\n" +
-	"configYaml\"\x8d\b\n" +
+	"configYaml\x12P\n" +
+	"$destructive_storage_acknowledgements\x18\x05 \x03(\tR\"destructiveStorageAcknowledgements\"\x8d\b\n" +
 	")KubeadmControlPlaneConfigOperationRequest\x12\x1d\n" +
 	"\n" +
 	"rollout_id\x18\x01 \x01(\tR\trolloutId\x12#\n" +
