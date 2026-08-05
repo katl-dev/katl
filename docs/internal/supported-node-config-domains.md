@@ -216,6 +216,16 @@ Bootstrap profile input
   golden tests cover init, join, kubelet configuration, patches, and selected
   sysext mismatch
 
+per-node kubelet input
+  accept one native kubelet.config.k8s.io/v1beta1 KubeletConfiguration from a
+  node-specific source path; defaults cannot set it
+  compile it to a node-local kubeadm patch and a node-specific desired
+  KubeletConfiguration without exposing the generated profile as public input
+  apply online with kubeadm upgrade node phase kubelet-config --patches and
+  never upload the node overlay to the shared kubelet-config ConfigMap
+  verify the resulting local config, restart, and node health; removing the
+  input refreshes that node from shared kubeadm configuration
+
 SSH and operator access
   validate SSH public key syntax
   render only Katl-owned authorized_keys and bounded sshd policy

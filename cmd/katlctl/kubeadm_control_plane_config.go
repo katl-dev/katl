@@ -372,7 +372,8 @@ func kubeadmControlPlaneConfigBody(opts kubeadmControlPlaneConfigOptions, node i
 	} else if opts.component == "kubelet" {
 		component = kubeadmConfigComponentKubelet
 	}
-	return &agentapi.KubeadmControlPlaneConfigOperationRequest{RolloutId: opts.rolloutID, NodePosition: position, NodeCount: count, NodeName: node.Name, CoordinatorNode: opts.coordinator, CoordinatorUpload: node.Name == opts.coordinator, DesiredGenerationId: generationID, ConfigName: node.KubeadmConfig.Ref, SupportedFieldDelta: []string{component}}
+	localKubelet := component == kubeadmConfigComponentKubelet && node.KubeadmConfig.NodeLocalKubelet
+	return &agentapi.KubeadmControlPlaneConfigOperationRequest{RolloutId: opts.rolloutID, NodePosition: position, NodeCount: count, NodeName: node.Name, CoordinatorNode: opts.coordinator, CoordinatorUpload: node.Name == opts.coordinator && !localKubelet, NodeLocalKubelet: localKubelet, DesiredGenerationId: generationID, ConfigName: node.KubeadmConfig.Ref, SupportedFieldDelta: []string{component}}
 }
 
 const (

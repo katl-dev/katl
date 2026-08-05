@@ -176,6 +176,7 @@ type KubeadmControlPlaneConfig struct {
 	CoordinatorNode           string            `json:"coordinatorNode"`
 	NodeName                  string            `json:"nodeName"`
 	CoordinatorUpload         bool              `json:"coordinatorUpload"`
+	NodeLocalKubelet          bool              `json:"nodeLocalKubelet,omitempty"`
 	DesiredGenerationID       string            `json:"desiredGenerationID"`
 	ConfigName                string            `json:"configName"`
 	ConfigPath                string            `json:"configPath"`

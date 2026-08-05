@@ -42,8 +42,9 @@ type SystemExtensionPayload struct {
 }
 
 type inlineKubeadmConfig struct {
-	Config  string            `json:"config" yaml:"config"`
-	Patches map[string]string `json:"patches,omitempty" yaml:"patches,omitempty"`
+	Config           string            `json:"config" yaml:"config"`
+	Patches          map[string]string `json:"patches,omitempty" yaml:"patches,omitempty"`
+	NodeLocalKubelet bool              `json:"nodeLocalKubelet,omitempty" yaml:"nodeLocalKubelet,omitempty"`
 }
 
 type nodeConfigurationOverlay struct {
@@ -209,6 +210,7 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 		if err != nil {
 			return nil, nil, fmt.Errorf("spec.kubeadmConfigs.%s: %w", name, err)
 		}
+		plan.NodeLocalKubelet = input.NodeLocalKubelet
 		previous, exists := installed[name]
 		if !exists || !equivalentKubeadmPlans(previous, plan) {
 			changed[name] = struct{}{}

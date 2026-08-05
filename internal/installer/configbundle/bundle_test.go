@@ -520,6 +520,94 @@ shutdownGracePeriod: 45s
 	}
 }
 
+func TestBuildArchiveAddsPerNodeKubeletConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	kubeletPath := filepath.Join(dir, "worker-kubelet.yaml")
+	writeFile(t, kubeletPath, `apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+systemReserved:
+  cpu: 500m
+  memory: 1Gi
+topologyManagerPolicy: restricted
+`)
+	source := strings.Replace(validSourceConfig(), "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        kubelet:\n          configFile: ./worker-kubelet.yaml\n        labels:\n          katl.dev/pool: workers", 1)
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	writeFile(t, sourcePath, source)
+	archive, result, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "worker-1", AllowMissingKatlosImage: true})
+	if err != nil {
+		t.Fatalf("ReadSelectedNode() error = %v", err)
+	}
+	if selected.NodeMaterial.KubeadmConfig.Ref != "node-worker-1" || !selected.NodeMaterial.KubeadmConfig.NodeLocalKubelet || selected.InstallManifest.Node.Kubernetes.Kubeadm.ConfigRef != "node-worker-1" {
+		t.Fatalf("selected kubeadm ref = %#v / %#v", selected.NodeMaterial.KubeadmConfig, selected.InstallManifest.Node.Kubernetes.Kubeadm)
+	}
+	plan, ok := selected.KubeadmConfigs["node-worker-1"]
+	if !ok || !plan.NodeLocalKubelet || len(plan.Patches) != 1 {
+		t.Fatalf("per-node kubeadm plan = %#v", selected.KubeadmConfigs)
+	}
+	if !strings.Contains(string(plan.Config.Content), "directory: /etc/katl/kubeadm/node-worker-1/patches") || !strings.Contains(string(plan.Config.Content), "topologyManagerPolicy: restricted") || !strings.Contains(string(plan.Patches[0].Content), "topologyManagerPolicy: restricted") || strings.Contains(string(plan.Patches[0].Content), "kind: KubeletConfiguration") {
+		t.Fatalf("per-node kubelet material = config %s patch %s", plan.Config.Content, plan.Patches[0].Content)
+	}
+	report, err := InspectSelectedNode(selected)
+	if err != nil {
+		t.Fatalf("InspectSelectedNode() error = %v", err)
+	}
+	if report.Effective.Kubernetes.Kubelet == nil || report.Effective.Kubernetes.Kubelet.ConfigFile != "./worker-kubelet.yaml" || report.Derived.KubeadmConfig != "node-worker-1" {
+		t.Fatalf("resolved kubelet config = %#v", report)
+	}
+	data, err := os.ReadFile(kubeletPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, kubeletPath, strings.Replace(string(data), "500m", "750m", 1))
+	_, changed, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("changed BuildArchive() error = %v", err)
+	}
+	if changed.Manifest.Source.SourceDigest == result.Manifest.Source.SourceDigest {
+		t.Fatalf("source digest did not include per-node kubelet input: %s", changed.Manifest.Source.SourceDigest)
+	}
+}
+
+func TestBuildArchiveRejectsInvalidPerNodeKubeletConfiguration(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "wrong kind", content: "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: NotKubelet\ncpuManagerPolicy: static\n", want: "kind must be KubeletConfiguration"},
+		{name: "multiple documents", content: "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\ncpuManagerPolicy: static\n---\nfoo: bar\n", want: "multiple YAML documents"},
+		{name: "Katl-owned path", content: "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nvolumePluginDir: /var/lib/kubelet/plugins/custom\n", want: "host path /var/lib/kubelet/plugins/custom is denied"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "worker-kubelet.yaml"), test.content)
+			source := strings.Replace(validSourceConfig(), "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        kubelet:\n          configFile: ./worker-kubelet.yaml\n        labels:\n          katl.dev/pool: workers", 1)
+			sourcePath := filepath.Join(dir, "cluster.yaml")
+			writeFile(t, sourcePath, source)
+			_, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+			if err == nil || !strings.Contains(err.Error(), `spec.nodes["worker-1"].kubernetes.kubelet.configFile`) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("BuildArchive() error = %v, want public path and %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildArchiveRequiresConcretePerNodeKubeletConfiguration(t *testing.T) {
+	defaultSource := strings.Replace(validSourceConfig(), "    access:\n", "    kubernetes:\n      kubelet:\n        configFile: ./kubelet.yaml\n    access:\n", 1)
+	if _, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, defaultSource)}); err == nil || !strings.Contains(err.Error(), "spec.defaults.kubernetes.kubelet is not allowed") {
+		t.Fatalf("default BuildArchive() error = %v", err)
+	}
+	emptySource := strings.Replace(validSourceConfig(), "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        kubelet:\n          configFile: \"\"\n        labels:\n          katl.dev/pool: workers", 1)
+	if _, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, emptySource)}); err == nil || !strings.Contains(err.Error(), `spec.nodes["worker-1"].kubernetes.kubelet.configFile is required`) {
+		t.Fatalf("empty BuildArchive() error = %v", err)
+	}
+}
+
 func TestBuildArchiveRendersExactKubernetesAddressPerNode(t *testing.T) {
 	source := strings.Replace(validSourceConfig(), "      kubernetes:\n        labels:\n          katl.dev/zone: rack-a", "      kubernetes:\n        address: 10.254.1.1\n        labels:\n          katl.dev/zone: rack-a", 1)
 	source = strings.Replace(source, "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        address: 10.254.1.3\n        labels:\n          katl.dev/pool: workers", 1)
@@ -1162,10 +1250,13 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 		[]string{"bundle", "configuration", "name", "state", "units"},
 		[]string{"architecture", "artifactVersion", "bundleManifestDigest", "ociManifestDigest", "payloadVersion", "payloads", "supportedRuntimeInterfaces"})
 	assertSchemaFields(t, document.Defs, "controlplaneendpoint.BGP", []string{"routeExchanges"}, []string{"routeExchange"})
+	assertSchemaFields(t, document.Defs, "configbundle.SourceKubernetesLayer", []string{"address", "kubelet", "labels", "taints"}, nil)
+	assertSchemaFields(t, document.Defs, "configbundle.SourceKubeletConfig", []string{"configFile"}, nil)
 	assertSchemaFields(t, document.Defs, "controlplaneendpoint.PrefixEnvelope", []string{"exactPrefixLength"}, []string{"prefixLength"})
 	assertSchemaRequired(t, document.Defs, "configbundle.SourceSpec", "nodes")
 	assertSchemaRequired(t, document.Defs, "configbundle.SourceNode", "name")
 	assertSchemaRequired(t, document.Defs, "configbundle.SourceHostConfigurationSysfsSetting", "path", "value")
+	assertSchemaRequired(t, document.Defs, "configbundle.SourceKubeletConfig", "configFile")
 	if selector := document.Defs["configbundle.SourceVolumeSelector"]; len(selector.OneOf) != 2 {
 		t.Fatalf("volume selector oneOf branches = %d, want 2", len(selector.OneOf))
 	}

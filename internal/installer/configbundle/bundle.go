@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,6 +195,11 @@ type SourceKubernetesLayer struct {
 	Address string                         `yaml:"address,omitempty" json:"address,omitempty"`
 	Labels  Optional[map[string]string]    `yaml:"labels,omitempty" json:"labels,omitzero"`
 	Taints  Optional[[]manifest.NodeTaint] `yaml:"taints,omitempty" json:"taints,omitzero"`
+	Kubelet *SourceKubeletConfig           `yaml:"kubelet,omitempty" json:"kubelet,omitempty"`
+}
+
+type SourceKubeletConfig struct {
+	ConfigFile string `yaml:"configFile" json:"configFile"`
 }
 
 type BundleManifest struct {
@@ -337,6 +343,11 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
+	kubeadmConfigs, nodeKubeletInputs, err := resolveNodeKubeletConfigs(filepath.Dir(sourcePath), source, kubeadmConfigs)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	kubeadmSourceInputs = append(kubeadmSourceInputs, nodeKubeletInputs...)
 	sourceDigest := digestSourceInputs(normalized, kubeadmSourceInputs)
 	planning := request.Planning
 	if strings.TrimSpace(planning.KubernetesBundle) == "" {
@@ -477,6 +488,9 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 			layer.Bootstrap.Access = access
 		}
 		layer.Kubernetes.KubeadmConfigRef = defaultKubeadmConfigRef(role)
+		if node.Kubernetes.Kubelet != nil {
+			layer.Kubernetes.KubeadmConfigRef = nodeKubeadmConfigRef(node.Name)
+		}
 		nodes = append(nodes, clusterplan.Node{
 			Name:       node.Name,
 			SystemRole: role,
@@ -622,6 +636,9 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	if strings.TrimSpace(source.Spec.Defaults.Kubernetes.Address) != "" {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node")
 	}
+	if source.Spec.Defaults.Kubernetes.Kubelet != nil {
+		return SourceConfig{}, fmt.Errorf("spec.defaults.kubernetes.kubelet is not allowed; kubelet configuration must be set per node")
+	}
 	if source.Spec.Defaults.Kernel != nil {
 		if err := manifest.ValidateKernelConfig(*lowerKernelConfig(source.Spec.Defaults.Kernel)); err != nil {
 			return SourceConfig{}, fmt.Errorf("spec.defaults.kernel: %w", err)
@@ -634,6 +651,9 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 			return SourceConfig{}, fmt.Errorf("%s.kubernetes.address: %w", path, err)
 		}
 		source.Spec.Nodes[i].Kubernetes.Address = address
+		if kubelet := source.Spec.Nodes[i].Kubernetes.Kubelet; kubelet != nil && strings.TrimSpace(kubelet.ConfigFile) == "" {
+			return SourceConfig{}, fmt.Errorf("%s.kubernetes.kubelet.configFile is required", path)
+		}
 		if source.Spec.Nodes[i].Kernel != nil {
 			if err := manifest.ValidateKernelConfig(*lowerKernelConfig(source.Spec.Nodes[i].Kernel)); err != nil {
 				return SourceConfig{}, fmt.Errorf("%s.kernel: %w", path, err)
@@ -1043,9 +1063,10 @@ func addNodeKubeadmInputs(members *[]member, descriptors *[]Descriptor, node clu
 	for _, file := range files {
 		rel := strings.TrimPrefix(strings.TrimPrefix(filepath.ToSlash(file.RenderPath), "/etc/katl/kubeadm/"+ref+"/"), "/")
 		desc := addBytes(members, descriptors, "kubeadm-input", node.Name, "application/vnd.katl.kubeadm.input.v1+yaml", "nodes/"+node.Name+"/kubernetes/kubeadm/"+rel, file.Content, map[string]string{
-			"dev.katl.kubeadm.resolved-id":  ref,
-			"dev.katl.kubeadm.intent":       string(node.KubeadmConfig.Intent),
-			"dev.katl.kubeadm.api-versions": strings.Join(kubeadmAPIVersions(map[string]kubeadmconfig.Plan{ref: plan}), ","),
+			"dev.katl.kubeadm.resolved-id":        ref,
+			"dev.katl.kubeadm.intent":             string(node.KubeadmConfig.Intent),
+			"dev.katl.kubeadm.api-versions":       strings.Join(kubeadmAPIVersions(map[string]kubeadmconfig.Plan{ref: plan}), ","),
+			"dev.katl.kubeadm.node-local-kubelet": strconv.FormatBool(plan.NodeLocalKubelet),
 		})
 		out = append(out, desc)
 	}

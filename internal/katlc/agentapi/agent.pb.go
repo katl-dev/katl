@@ -2308,6 +2308,7 @@ type KubeadmControlPlaneConfigOperationRequest struct {
 	SnapshotStorageLocation  string                 `protobuf:"bytes,19,opt,name=snapshot_storage_location,json=snapshotStorageLocation,proto3" json:"snapshot_storage_location,omitempty"`
 	SnapshotOperatorIdentity string                 `protobuf:"bytes,20,opt,name=snapshot_operator_identity,json=snapshotOperatorIdentity,proto3" json:"snapshot_operator_identity,omitempty"`
 	NodeName                 string                 `protobuf:"bytes,21,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	NodeLocalKubelet         bool                   `protobuf:"varint,22,opt,name=node_local_kubelet,json=nodeLocalKubelet,proto3" json:"node_local_kubelet,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -2487,6 +2488,13 @@ func (x *KubeadmControlPlaneConfigOperationRequest) GetNodeName() string {
 		return x.NodeName
 	}
 	return ""
+}
+
+func (x *KubeadmControlPlaneConfigOperationRequest) GetNodeLocalKubelet() bool {
+	if x != nil {
+		return x.NodeLocalKubelet
+	}
+	return false
 }
 
 type KubernetesSysextUpdateOperationRequest struct {
@@ -5222,7 +5230,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\tnode_name\x18\x03 \x01(\tR\bnodeName\x12\x1f\n" +
 	"\vconfig_yaml\x18\x04 \x01(\tR\n" +
 	"configYaml\x12P\n" +
-	"$destructive_storage_acknowledgements\x18\x05 \x03(\tR\"destructiveStorageAcknowledgements\"\x8d\b\n" +
+	"$destructive_storage_acknowledgements\x18\x05 \x03(\tR\"destructiveStorageAcknowledgements\"\xbb\b\n" +
 	")KubeadmControlPlaneConfigOperationRequest\x12\x1d\n" +
 	"\n" +
 	"rollout_id\x18\x01 \x01(\tR\trolloutId\x12#\n" +
@@ -5248,7 +5256,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x13snapshot_created_at\x18\x12 \x01(\tR\x11snapshotCreatedAt\x12:\n" +
 	"\x19snapshot_storage_location\x18\x13 \x01(\tR\x17snapshotStorageLocation\x12<\n" +
 	"\x1asnapshot_operator_identity\x18\x14 \x01(\tR\x18snapshotOperatorIdentity\x12\x1b\n" +
-	"\tnode_name\x18\x15 \x01(\tR\bnodeName\"\x89\b\n" +
+	"\tnode_name\x18\x15 \x01(\tR\bnodeName\x12,\n" +
+	"\x12node_local_kubelet\x18\x16 \x01(\bR\x10nodeLocalKubelet\"\x89\b\n" +
 	"&KubernetesSysextUpdateOperationRequest\x124\n" +
 	"\x16target_payload_version\x18\x01 \x01(\tR\x14targetPayloadVersion\x12,\n" +
 	"\x12target_sysext_path\x18\x02 \x01(\tR\x10targetSysextPath\x120\n" +

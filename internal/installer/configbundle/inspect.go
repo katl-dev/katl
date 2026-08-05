@@ -141,7 +141,11 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 			Message: "management.address selects the workstation target and does not change generated node state",
 		})
 	}
-	report.OwnedFiles = ownedFiles(selected.NodeMaterial.NativeEtcFiles)
+	owned := append([]confext.NativeEtcFile(nil), selected.NodeMaterial.NativeEtcFiles...)
+	if plan, ok := selected.KubeadmConfigs[selected.NodeMaterial.KubeadmConfig.Ref]; ok {
+		owned = append(owned, plan.NativeEtcFiles()...)
+	}
+	report.OwnedFiles = ownedFiles(owned)
 	sort.Slice(report.Provenance, func(i, j int) bool { return report.Provenance[i].Path < report.Provenance[j].Path })
 	sort.Slice(report.Warnings, func(i, j int) bool { return report.Warnings[i].Path < report.Warnings[j].Path })
 	return report, nil
@@ -271,6 +275,9 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 	}
 	if strings.TrimSpace(resolved.Kubernetes.Address) != "" {
 		choose("kubernetes.address", strings.TrimSpace(node.Kubernetes.Address) != "")
+	}
+	if resolved.Kubernetes.Kubelet != nil {
+		choose("kubernetes.kubelet.configFile", node.Kubernetes.Kubelet != nil)
 	}
 	_, taintsSet := node.Kubernetes.Taints.Get()
 	if _, set := resolved.Kubernetes.Taints.Get(); set {
@@ -454,6 +461,7 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	add(base+".install.systemDisk", before.Effective.Install.SystemDisk, after.Effective.Install.SystemDisk)
 	diffNamedDisks(&diff, base+".storage.disks", before.Effective.Storage.Disks.Value(), after.Effective.Storage.Disks.Value())
 	add(base+".kubernetes.address", before.Effective.Kubernetes.Address, after.Effective.Kubernetes.Address)
+	add(base+".kubernetes.kubelet", before.Effective.Kubernetes.Kubelet, after.Effective.Kubernetes.Kubelet)
 	diffStringMaps(&diff, base+".kubernetes.labels", before.Effective.Kubernetes.Labels.Value(), after.Effective.Kubernetes.Labels.Value())
 	add(base+".kubernetes.taints", before.Effective.Kubernetes.Taints.Value(), after.Effective.Kubernetes.Taints.Value())
 	add(base+".management.address", before.Effective.Management.Address, after.Effective.Management.Address)
@@ -522,6 +530,8 @@ func classifyDiffPath(path string) (string, string, string) {
 		return "operation-only", "wipe-reinstall", "changing the system disk requires an explicit reinstall and never wipes implicitly"
 	case strings.Contains(path, ".kubernetes.address"):
 		return "operation-only", "kubeadm-aware operation", "changing kubelet node identity requires a kubeadm-aware operation"
+	case strings.Contains(path, ".kubernetes.kubelet"):
+		return "operation-only", "kubeadm-aware operation", "per-node kubelet configuration changes require kubeadm-aware reconciliation on this node"
 	case strings.Contains(path, ".kubernetes.labels"), strings.Contains(path, ".kubernetes.taints"):
 		return "operation-only", "kubeadm-aware operation", "Kubernetes node metadata changes require Kubernetes-aware reconciliation"
 	case strings.Contains(path, ".management.address"):

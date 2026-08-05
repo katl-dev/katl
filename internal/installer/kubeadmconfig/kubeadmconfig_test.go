@@ -415,6 +415,24 @@ func assertFile(t *testing.T, path string, want string) {
 	}
 }
 
+func TestWithNodeAddressPreservesNodeLocalKubeletMode(t *testing.T) {
+	plan, err := PlanFromRenderedFiles("control-plane", []File{{
+		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+		Content:    []byte(initConfig()),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.NodeLocalKubelet = true
+	got, err := WithNodeAddress(plan, "192.0.2.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.NodeLocalKubelet {
+		t.Fatal("WithNodeAddress() dropped node-local kubelet mode")
+	}
+}
+
 func initConfig() string {
 	return `apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration

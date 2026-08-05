@@ -36,6 +36,11 @@ func TestValidateKubeadmKubeletConfigRequestAllowsAnyRolloutSize(t *testing.T) {
 	if err := validateKubeadmControlPlaneConfigRequest(OperationKindKubeadmControlPlaneConfig, req); err != nil {
 		t.Fatalf("validate request: %v", err)
 	}
+	req.NodeLocalKubelet = true
+	req.CoordinatorUpload = true
+	if err := validateKubeadmControlPlaneConfigRequest(OperationKindKubeadmControlPlaneConfig, req); err == nil || !strings.Contains(err.Error(), "must not be uploaded") {
+		t.Fatalf("node-local upload error = %v", err)
+	}
 }
 
 func TestAcceptKubeadmControlPlaneConfigBindsActiveGeneration(t *testing.T) {
@@ -384,6 +389,71 @@ func TestExecuteKubeletConfigNoChangeDoesNotRestart(t *testing.T) {
 	}
 	completed, err := store.Read(record.OperationID)
 	if err != nil || !completed.Terminal || completed.Result != operation.ResultSucceeded || completed.MutatingToolRan {
+		t.Fatalf("completed = %#v, err = %v", completed, err)
+	}
+}
+
+func TestExecuteNodeLocalKubeletConfigUsesPatchesWithoutUpload(t *testing.T) {
+	root := t.TempDir()
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	desiredConfig := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\ntopologyManagerPolicy: restricted\n"
+	desiredPath := filepath.Join(root, "etc/katl/kubeadm/node-worker-1/config.yaml")
+	if err := os.MkdirAll(filepath.Dir(desiredPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desiredPath, []byte(desiredConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	livePath := filepath.Join(root, "var/lib/kubelet/config.yaml")
+	if err := os.MkdirAll(filepath.Dir(livePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(livePath, []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 110\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
+	body.Component = "kubelet"
+	body.ConfigName = "node-worker-1"
+	body.ConfigPath = "/etc/katl/kubeadm/node-worker-1/config.yaml"
+	body.CoordinatorUpload = false
+	body.NodeLocalKubelet = true
+	body.KubernetesPayloadVersion = "v1.36.1"
+	body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
+	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desiredConfig))
+	record, err := store.Create(operation.OperationRecord{OperationID: "node-local-kubelet", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commands [][]string
+	executor := NewExecutor(root, store, "agent-start")
+	executor.Async = false
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		commands = append(commands, append([]string(nil), argv...))
+		if reflect.DeepEqual(argv, []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--patches", "/etc/katl/kubeadm/node-worker-1/patches"}) {
+			updated := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\ntopologyManagerPolicy: restricted\ncgroupDriver: systemd\n"
+			if err := os.WriteFile(livePath, []byte(updated), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return ToolResult{}
+	}
+	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+	if err := executor.Execute(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--patches", "/etc/katl/kubeadm/node-worker-1/patches", "--dry-run"},
+		{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--patches", "/etc/katl/kubeadm/node-worker-1/patches"},
+		{"/usr/bin/systemctl", "restart", "kubelet.service"},
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("commands = %#v, want %#v", commands, want)
+	}
+	completed, err := store.Read(record.OperationID)
+	if err != nil || !completed.Terminal || completed.Result != operation.ResultSucceeded || completed.KubeadmControlPlaneConfig.ConfigUploadRan {
 		t.Fatalf("completed = %#v, err = %v", completed, err)
 	}
 }

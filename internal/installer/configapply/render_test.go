@@ -126,6 +126,7 @@ func TestRenderNodeConfigurationChangeCarriesSelectedKubeadmInput(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	plan.NodeLocalKubelet = true
 	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
 		NodeName: "cp-1",
 		Manifest: manifest.Manifest{Node: manifest.NodeConfig{
@@ -145,7 +146,7 @@ func TestRenderNodeConfigurationChangeCarriesSelectedKubeadmInput(t *testing.T) 
 		t.Fatalf("DecodeNodeConfigurationChange() error = %v\n%s", err, data)
 	}
 	resolved := request.KubeadmConfigs["control-plane"]
-	if !strings.Contains(string(resolved.Config.Content), "kubernetesVersion: v1.36.1") || len(resolved.Patches) != 1 {
+	if !strings.Contains(string(resolved.Config.Content), "kubernetesVersion: v1.36.1") || !resolved.NodeLocalKubelet || len(resolved.Patches) != 1 {
 		t.Fatalf("resolved kubeadm input = %#v", resolved)
 	}
 	if !request.NodeOverrides["cp-1"].KubeadmChanged {

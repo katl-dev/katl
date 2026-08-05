@@ -109,12 +109,14 @@ func TestNativeEtcFilesRendersWorkerNodeMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
+	plan := workerPlan()
+	plan.NodeLocalKubelet = true
 	files, err := NativeEtcFiles(RenderRequest{
 		Manifest:                 installManifest,
 		KubernetesVersion:        "v1.36.1",
 		KubernetesActivationPath: "/run/extensions/katl-kubernetes.raw",
 		KubeadmConfigs: map[string]kubeadmconfig.Plan{
-			"worker": workerPlan(),
+			"worker": plan,
 		},
 	})
 	if err != nil {
@@ -132,7 +134,7 @@ func TestNativeEtcFilesRendersWorkerNodeMetadata(t *testing.T) {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 	kubeadm := metadata["kubeadm"].(map[string]any)
-	if kubeadm["intent"] != "worker" || kubeadm["configRef"] != "worker" {
+	if kubeadm["intent"] != "worker" || kubeadm["configRef"] != "worker" || kubeadm["nodeLocalKubelet"] != true {
 		t.Fatalf("metadata kubeadm = %#v", kubeadm)
 	}
 }
