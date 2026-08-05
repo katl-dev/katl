@@ -26,6 +26,7 @@ type ReadOptions struct {
 
 type SelectedNodeMaterial struct {
 	BundleManifest          BundleManifest
+	Source                  SourceConfig
 	Node                    NodeRecord
 	NodeMaterial            clusterplan.NodeMaterial
 	InstallManifest         manifest.Manifest
@@ -107,6 +108,14 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 	if err := validateBundleManifest(bundle); err != nil {
 		return SelectedNodeMaterial{}, err
 	}
+	normalizedSourceData, err := archive.descriptorData(bundle.Source.NormalizedConfig)
+	if err != nil {
+		return SelectedNodeMaterial{}, fmt.Errorf("read normalized source config: %w", err)
+	}
+	source, err := DecodeSource(bytes.NewReader(normalizedSourceData))
+	if err != nil {
+		return SelectedNodeMaterial{}, fmt.Errorf("decode normalized source config: %w", err)
+	}
 	node, err := selectNode(bundle.Nodes, options.NodeName)
 	if err != nil {
 		return SelectedNodeMaterial{}, err
@@ -148,6 +157,7 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 
 	return SelectedNodeMaterial{
 		BundleManifest:          bundle,
+		Source:                  source,
 		Node:                    node,
 		NodeMaterial:            nodeMaterial,
 		InstallManifest:         installManifest,
