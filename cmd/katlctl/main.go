@@ -762,7 +762,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		return fmt.Errorf("--all and --node cannot be combined")
 	}
 
-	targets, partial, err := resolveWipeClusterTargets(opts)
+	targets, partial, err := resolveWipeClusterTargets(opts, stderr)
 	if err != nil {
 		return err
 	}
@@ -801,7 +801,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	return submitErr
 }
 
-func resolveWipeClusterTargets(opts wipeClusterOptions) ([]inventory.PlannedNode, bool, error) {
+func resolveWipeClusterTargets(opts wipeClusterOptions, stderr io.Writer) ([]inventory.PlannedNode, bool, error) {
 	hasExplicitTopology := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != ""
 	if !hasExplicitTopology {
 		topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
@@ -827,7 +827,7 @@ func resolveWipeClusterTargets(opts wipeClusterOptions) ([]inventory.PlannedNode
 		return wipeClusterTargets(plan, opts.all, opts.selectedNodes.values)
 	}
 
-	inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath)
+	inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath, stderr)
 	if err != nil {
 		return nil, false, err
 	}
@@ -908,7 +908,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return fmt.Errorf("--timeout must not exceed 25m")
 	}
 
-	target, partial, err := resolveWipeNodeTarget(opts)
+	target, partial, err := resolveWipeNodeTarget(opts, stderr)
 	if err != nil {
 		return err
 	}
@@ -930,7 +930,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	notConfigured := strings.TrimSpace(statuses[target.Name].GetKubernetes().GetState()) == "not-configured"
 	var etcdPlan etcdRemovalPlan
 	if target.SystemRole == inventory.RoleControlPlane && !notConfigured {
-		fullInventory, inventoryErr := wipeNodeInventory(opts)
+		fullInventory, inventoryErr := wipeNodeInventory(opts, nil)
 		if inventoryErr != nil {
 			return inventoryErr
 		}
@@ -1011,9 +1011,9 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	return submitErr
 }
 
-func wipeNodeInventory(opts wipeNodeOptions) (inventory.Inventory, error) {
+func wipeNodeInventory(opts wipeNodeOptions, stderr io.Writer) (inventory.Inventory, error) {
 	if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != "" {
-		inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath)
+		inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath, stderr)
 		if err != nil {
 			return inventory.Inventory{}, err
 		}
@@ -1039,7 +1039,7 @@ func wipeNodeInventory(opts wipeNodeOptions) (inventory.Inventory, error) {
 	return inv, nil
 }
 
-func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, error) {
+func resolveWipeNodeTarget(opts wipeNodeOptions, stderr io.Writer) (inventory.PlannedNode, bool, error) {
 	hasExplicitTopology := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != ""
 	if !hasExplicitTopology {
 		topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
@@ -1067,7 +1067,7 @@ func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, e
 		return inventory.PlannedNode{}, false, fmt.Errorf("node %q is not in context %q", opts.selectedNodes.values[0], topology.ContextName)
 	}
 
-	inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath)
+	inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath, stderr)
 	if err != nil {
 		return inventory.PlannedNode{}, false, err
 	}
@@ -1086,7 +1086,7 @@ func resolveWipeNodeTarget(opts wipeNodeOptions) (inventory.PlannedNode, bool, e
 	return targets[0], partial, nil
 }
 
-func loadWipeInventory(configPath, inventoryPath string) (inventory.Inventory, error) {
+func loadWipeInventory(configPath, inventoryPath string, stderr io.Writer) (inventory.Inventory, error) {
 	inputs := 0
 	for _, value := range []string{configPath, inventoryPath} {
 		if strings.TrimSpace(value) != "" {
@@ -1099,7 +1099,7 @@ func loadWipeInventory(configPath, inventoryPath string) (inventory.Inventory, e
 	if strings.TrimSpace(inventoryPath) != "" {
 		return loadInventory(inventoryPath)
 	}
-	config, err := loadKatlConfig(configPath, "katlctl cluster wipe", configbundle.PlanningInputs{})
+	config, err := loadKatlConfig(configPath, "katlctl cluster wipe", configbundle.PlanningInputs{}, stderr)
 	if err != nil {
 		return inventory.Inventory{}, err
 	}
@@ -1972,8 +1972,7 @@ func newConfigRenderNodeCommand(stdout, stderr io.Writer) *cobra.Command {
 		Short: "Render one node's runtime configuration from cluster intent",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			_ = stderr
-			data, err := renderNodeConfig(opts, mode)
+			data, err := renderNodeConfig(opts, mode, stderr)
 			if err != nil {
 				return err
 			}
@@ -1993,7 +1992,7 @@ func addNodeConfigInputFlags(cmd *cobra.Command, opts *nodeConfigInputOptions) {
 	cmd.Flags().StringVar(&opts.desiredVersion, "desired-version", "", "monotonic unsigned runtime configuration version")
 }
 
-func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) {
+func renderNodeConfig(opts nodeConfigInputOptions, mode string, stderr io.Writer) ([]byte, error) {
 	if strings.TrimSpace(opts.nodeName) == "" {
 		return nil, fmt.Errorf("--node is required")
 	}
@@ -2004,7 +2003,7 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string) ([]byte, error) 
 		NodeName:                opts.nodeName,
 		AllowMissingKatlosImage: true,
 	}
-	config, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{})
+	config, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{}, stderr)
 	if err != nil {
 		return nil, err
 	}
@@ -2156,7 +2155,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if strings.TrimSpace(opts.candidateGeneration) == "" {
 		opts.candidateGeneration = "config-" + strconv.FormatInt(configApplyNow().UnixNano(), 10)
 	}
-	configYAML, rendered, err := nodeConfigYAML(opts.nodeConfig, opts.mode)
+	configYAML, rendered, err := nodeConfigYAML(opts.nodeConfig, opts.mode, stderr)
 	if err != nil {
 		return err
 	}
@@ -2327,7 +2326,7 @@ func isRenderedNodeConfig(path string) bool {
 	return yaml.Unmarshal(data, &identity) == nil && identity.Kind == configapply.NodeConfigurationChangeKind
 }
 
-func nodeConfigYAML(opts nodeConfigInputOptions, mode string) ([]byte, bool, error) {
+func nodeConfigYAML(opts nodeConfigInputOptions, mode string, stderr io.Writer) ([]byte, bool, error) {
 	data, err := os.ReadFile(strings.TrimSpace(opts.configPath))
 	if err != nil {
 		return nil, false, fmt.Errorf("read --config %s: %w", opts.configPath, err)
@@ -2341,7 +2340,7 @@ func nodeConfigYAML(opts nodeConfigInputOptions, mode string) ([]byte, bool, err
 	if strings.TrimSpace(opts.desiredVersion) == "" {
 		opts.desiredVersion = strconv.FormatInt(configApplyNow().UnixNano(), 10)
 	}
-	rendered, err := renderNodeConfig(opts, mode)
+	rendered, err := renderNodeConfig(opts, mode, stderr)
 	return rendered, true, err
 }
 
@@ -2735,11 +2734,8 @@ func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (invento
 	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
 		return inventory.Inventory{}, fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in the cluster config")
 	}
-	config, err := loadKatlConfig(configPath, clusterBootstrapCreator, configbundle.PlanningInputs{KubernetesBundle: opts.kubernetesBundle})
+	config, err := loadKatlConfig(configPath, clusterBootstrapCreator, configbundle.PlanningInputs{KubernetesBundle: opts.kubernetesBundle}, stderr)
 	if err != nil {
-		return inventory.Inventory{}, err
-	}
-	if err := writeCompilationWarnings(stderr, config.Warnings); err != nil {
 		return inventory.Inventory{}, err
 	}
 	if !config.Source && strings.TrimSpace(opts.kubernetesBundle) != "" {

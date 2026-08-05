@@ -391,7 +391,7 @@ func kubeadmConfigInventory(opts kubeadmControlPlaneConfigOptions) (inventory.In
 	if inventoryPath != "" {
 		return loadInventory(inventoryPath)
 	}
-	return loadWipeInventory(configPath, "")
+	return loadWipeInventory(configPath, "", opts.progress)
 }
 
 type activatedClusterConfig struct {
@@ -404,11 +404,8 @@ type activatedClusterConfig struct {
 }
 
 func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, nodes []inventory.Node) (activatedClusterConfig, error) {
-	loaded, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{})
+	loaded, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{}, nil)
 	if err != nil {
-		return activatedClusterConfig{}, err
-	}
-	if err := writeCompilationWarnings(opts.progress, loaded.Warnings); err != nil {
 		return activatedClusterConfig{}, err
 	}
 	now := kubeadmConfigNow()
