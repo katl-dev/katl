@@ -1783,11 +1783,12 @@ type configValidationNode struct {
 }
 
 type configValidationReport struct {
-	APIVersion  string                 `json:"apiVersion"`
-	Kind        string                 `json:"kind"`
-	Source      string                 `json:"source"`
-	ClusterName string                 `json:"clusterName"`
-	Nodes       []configValidationNode `json:"nodes"`
+	APIVersion  string                            `json:"apiVersion"`
+	Kind        string                            `json:"kind"`
+	Source      string                            `json:"source"`
+	ClusterName string                            `json:"clusterName"`
+	Nodes       []configValidationNode            `json:"nodes"`
+	Warnings    []configbundle.CompilationWarning `json:"warnings,omitempty"`
 }
 
 func newConfigValidateCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -1805,7 +1806,6 @@ func newConfigValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func runConfigValidate(sourcePath, output string, stdout, stderr io.Writer) error {
-	_ = stderr
 	if output != "text" && output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", output)
 	}
@@ -1828,10 +1828,13 @@ func runConfigValidate(sourcePath, output string, stdout, stderr io.Writer) erro
 		Source:      sourcePath,
 		ClusterName: result.Manifest.ClusterName,
 		Nodes:       nodes,
+		Warnings:    result.Warnings,
 	}
 	if output == "text" {
-		_, err := fmt.Fprintf(stdout, "%s is valid for cluster %s (%d node(s))\n", sourcePath, report.ClusterName, len(report.Nodes))
-		return err
+		if _, err := fmt.Fprintf(stdout, "%s is valid for cluster %s (%d node(s))\n", sourcePath, report.ClusterName, len(report.Nodes)); err != nil {
+			return err
+		}
+		return writeCompilationWarnings(stderr, result.Warnings)
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -1859,10 +1862,11 @@ func newConfigSchemaCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 type configBundleReport struct {
-	APIVersion  string `json:"apiVersion"`
-	Kind        string `json:"kind"`
-	Output      string `json:"output"`
-	ArchiveSize int64  `json:"archiveSizeBytes"`
+	APIVersion  string                            `json:"apiVersion"`
+	Kind        string                            `json:"kind"`
+	Output      string                            `json:"output"`
+	ArchiveSize int64                             `json:"archiveSizeBytes"`
+	Warnings    []configbundle.CompilationWarning `json:"warnings,omitempty"`
 }
 
 func newConfigBundleCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -1888,7 +1892,6 @@ func newConfigBundleCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
-	_ = stderr
 	if strings.TrimSpace(opts.outputPath) == "" {
 		return fmt.Errorf("--output is required")
 	}
@@ -1911,13 +1914,16 @@ func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
 		Kind:        "ConfigBundleReport",
 		Output:      opts.outputPath,
 		ArchiveSize: result.ArchiveSize,
+		Warnings:    result.Warnings,
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config bundle report: %w", err)
 	}
-	_, err = stdout.Write(append(data, '\n'))
-	return err
+	if _, err = stdout.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	return writeCompilationWarnings(stderr, result.Warnings)
 }
 
 func loadKatlosImagePlanningInput(imageURL, metadataPath string) (manifest.KatlosImage, error) {
@@ -2633,8 +2639,7 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 }
 
 func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdout, stderr io.Writer) error {
-	_ = stderr
-	inv, err := bootstrapInventory(opts)
+	inv, err := bootstrapInventory(opts, stderr)
 	if err != nil {
 		return err
 	}
@@ -2712,7 +2717,7 @@ func fallbackText(value, fallback string) string {
 	return value
 }
 
-func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, error) {
+func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (inventory.Inventory, error) {
 	configPath := strings.TrimSpace(opts.configPath)
 	inventoryPath := strings.TrimSpace(opts.inventoryPath)
 	inputs := 0
@@ -2732,6 +2737,9 @@ func bootstrapInventory(opts clusterBootstrapOptions) (inventory.Inventory, erro
 	}
 	config, err := loadKatlConfig(configPath, clusterBootstrapCreator, configbundle.PlanningInputs{KubernetesBundle: opts.kubernetesBundle})
 	if err != nil {
+		return inventory.Inventory{}, err
+	}
+	if err := writeCompilationWarnings(stderr, config.Warnings); err != nil {
 		return inventory.Inventory{}, err
 	}
 	if !config.Source && strings.TrimSpace(opts.kubernetesBundle) != "" {

@@ -176,12 +176,14 @@ func newContextUseCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr io.Writer) error {
-	_ = stderr
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
 	config, err := loadKatlConfig(opts.configInput, "katlctl context save", configbundle.PlanningInputs{})
 	if err != nil {
+		return err
+	}
+	if err := writeCompilationWarnings(stderr, config.Warnings); err != nil {
 		return err
 	}
 	bundle := config.Bundle

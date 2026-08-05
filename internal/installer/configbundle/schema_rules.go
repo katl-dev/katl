@@ -115,7 +115,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceSystemExtension.state":
 		return enumRule("Whether the extension is present or removed.", "present", "", "present", "absent")
 	case "configbundle.SourceSystemExtension.bundle":
-		return stringRule("OCI bundle reference including registry, repository, and tag.", "", 1, 0)
+		return stringRule("OCI bundle reference including registry, repository, and tag. Add @sha256:<OCI-manifest-digest> to pin an immutable payload; Katl warns when compiling a tag-only reference.", "", 1, 0)
 	case "configbundle.SourceSystemExtension.configuration":
 		return description("Files consumed by the selected extension.")
 	case "configbundle.SourceSystemExtension.units":
