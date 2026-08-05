@@ -659,6 +659,9 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	if err := validateDefaultSystemDisk(source.Spec.Defaults.Install.SystemDisk); err != nil {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.install.systemDisk: %w", err)
 	}
+	if err := validateDefaultStorageDisks(source.Spec.Defaults.Storage.Disks); err != nil {
+		return SourceConfig{}, err
+	}
 	if err := validateSourceStorageDisks("spec.defaults.storage.disks", source.Spec.Defaults.Storage.Disks, false); err != nil {
 		return SourceConfig{}, err
 	}

@@ -224,6 +224,12 @@ exactly one whole disk or one existing partition, and Katl derives both the GPT
 label `u-<name>` and mount path `/var/mnt/<name>`; operators cannot choose
 another location.
 
+Defaults may share non-identifying storage policy such as `minSizeMiB`, the
+filesystem, and `wipe: false`. Stable disk or partition identity and
+`wipe: true` must be set on the concrete node volume; Katl rejects them under
+`spec.defaults` so one inherited value cannot select or erase storage across
+the cluster.
+
 A disk-backed entry with `wipe: true` authorizes Katl to reinitialize the
 selected disk. Katl uses `systemd-repart` to create and format its
 convention-labelled partition:
