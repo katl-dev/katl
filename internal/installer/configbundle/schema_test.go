@@ -10,7 +10,8 @@ func TestSourceSchemaAcceptsConfigsAcceptedByKatl(t *testing.T) {
               disk:
                 byID: /dev/disk/by-id/ata-cp-data
 `, `            selector:
-              partition: {}
+              partition:
+                byVolumeName: true
 `, 1)
 	zeroDefaults := strings.Replace(validSourceConfig(), "    port: 6443\n", "    port: 0\n", 1)
 	zeroDefaults = strings.Replace(zeroDefaults, "          files:\n", `          state: ""
@@ -70,6 +71,16 @@ func TestSourceSchemaRejectsSemanticErrors(t *testing.T) {
 `, `            selector:
               disk:
                 byID: /dev/disk/by-id/ata-cp-data
+              partition:
+                byVolumeName: true
+`, 1),
+		},
+		{
+			name: "empty partition selector",
+			source: strings.Replace(validSourceConfig(), `            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-cp-data
+`, `            selector:
               partition: {}
 `, 1),
 		},

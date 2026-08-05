@@ -162,10 +162,10 @@ type SourceInstallLayer struct {
 }
 
 type SourceStorageLayer struct {
-	Disks Optional[[]SourceStorageDisk] `yaml:"disks,omitempty" json:"disks,omitzero"`
+	Volumes Optional[[]SourceStorageVolume] `yaml:"volumes,omitempty" json:"volumes,omitzero"`
 }
 
-type SourceStorageDisk struct {
+type SourceStorageVolume struct {
 	Name       string                `yaml:"name" json:"name"`
 	State      string                `yaml:"state,omitempty" json:"state,omitempty"`
 	Selector   *SourceVolumeSelector `yaml:"selector,omitempty" json:"selector,omitempty"`
@@ -189,6 +189,7 @@ type SourcePartitionSelector struct {
 	ByID           Optional[string] `yaml:"byID,omitempty" json:"byID,omitzero"`
 	PartUUID       Optional[string] `yaml:"partUUID,omitempty" json:"partUUID,omitzero"`
 	FilesystemUUID Optional[string] `yaml:"filesystemUUID,omitempty" json:"filesystemUUID,omitzero"`
+	ByVolumeName   Optional[bool]   `yaml:"byVolumeName,omitempty" json:"byVolumeName,omitzero"`
 }
 
 type SourceKubernetesCluster struct {
@@ -589,7 +590,7 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 		SystemExtensions:  lowerSystemExtensions(layer.SystemExtensions),
 		Install: clusterplan.InstallLayer{
 			TargetDisk: lowerDiskSelector(layer.Install.SystemDisk),
-			Volumes:    lowerStorageDisks(layer.Storage.Disks),
+			Volumes:    lowerStorageVolumes(layer.Storage.Volumes),
 		},
 		Kubernetes: clusterplan.KubernetesLayer{
 			Address:    strings.TrimSpace(layer.Kubernetes.Address),
@@ -707,14 +708,14 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 	if err := validateDefaultSystemDisk(source.Spec.Defaults.Install.SystemDisk); err != nil {
 		return SourceConfig{}, fmt.Errorf("spec.defaults.install.systemDisk: %w", err)
 	}
-	if err := validateDefaultStorageDisks(source.Spec.Defaults.Storage.Disks); err != nil {
+	if err := validateDefaultStorageVolumes(source.Spec.Defaults.Storage.Volumes); err != nil {
 		return SourceConfig{}, err
 	}
-	if err := validateSourceStorageDisks("spec.defaults.storage.disks", source.Spec.Defaults.Storage.Disks, false); err != nil {
+	if err := validateSourceStorageVolumes("spec.defaults.storage.volumes", source.Spec.Defaults.Storage.Volumes, false); err != nil {
 		return SourceConfig{}, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := validateSourceStorageDisks(sourceNodePath(source.Spec.Nodes[i], i)+".storage.disks", source.Spec.Nodes[i].Storage.Disks, false); err != nil {
+		if err := validateSourceStorageVolumes(sourceNodePath(source.Spec.Nodes[i], i)+".storage.volumes", source.Spec.Nodes[i].Storage.Volumes, false); err != nil {
 			return SourceConfig{}, err
 		}
 	}

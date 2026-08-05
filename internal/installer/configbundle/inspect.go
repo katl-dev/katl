@@ -220,11 +220,11 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 			choose("install.systemDisk."+field.name, field.set)
 		}
 	}
-	resolvedDisks, _ := resolved.Storage.Disks.Get()
-	nodeDisks, nodeDisksSet := node.Storage.Disks.Get()
+	resolvedDisks, _ := resolved.Storage.Volumes.Get()
+	nodeDisks, nodeDisksSet := node.Storage.Volumes.Get()
 	for _, disk := range resolvedDisks {
-		nodeDisk, found := storageDisk(nodeDisks, disk.Name)
-		prefix := fmt.Sprintf("storage.disks[name=%q]", disk.Name)
+		nodeDisk, found := storageVolume(nodeDisks, disk.Name)
+		prefix := fmt.Sprintf("storage.volumes[name=%q]", disk.Name)
 		var nodeSelector *SourceVolumeSelector
 		if nodeDisksSet && found {
 			nodeSelector = nodeDisk.Selector
@@ -263,6 +263,7 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 				{"byID", optionalPartitionStringSet(disk.Selector.Partition, func(v *SourcePartitionSelector) Optional[string] { return v.ByID }), optionalPartitionStringSet(nodePartition, func(v *SourcePartitionSelector) Optional[string] { return v.ByID })},
 				{"partUUID", optionalPartitionStringSet(disk.Selector.Partition, func(v *SourcePartitionSelector) Optional[string] { return v.PartUUID }), optionalPartitionStringSet(nodePartition, func(v *SourcePartitionSelector) Optional[string] { return v.PartUUID })},
 				{"filesystemUUID", optionalPartitionStringSet(disk.Selector.Partition, func(v *SourcePartitionSelector) Optional[string] { return v.FilesystemUUID }), optionalPartitionStringSet(nodePartition, func(v *SourcePartitionSelector) Optional[string] { return v.FilesystemUUID })},
+				{"byVolumeName", optionalPartitionBoolSet(disk.Selector.Partition), optionalPartitionBoolSet(nodePartition)},
 			}
 			selected := false
 			for _, field := range partitionFields {
@@ -307,12 +308,12 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 }
 
 func derivedVolumesAndWarnings(storage SourceStorageLayer, base string) ([]DerivedVolume, []ResolutionWarning) {
-	disks, _ := storage.Disks.Get()
+	disks, _ := storage.Volumes.Get()
 	volumes := make([]DerivedVolume, 0, len(disks))
 	var warnings []ResolutionWarning
 	for _, disk := range disks {
 		derived := DerivedVolume{Name: disk.Name, MountPath: "/var/mnt/" + disk.Name}
-		path := fmt.Sprintf("%s.storage.disks[name=%q]", base, disk.Name)
+		path := fmt.Sprintf("%s.storage.volumes[name=%q]", base, disk.Name)
 		switch {
 		case disk.Selector != nil && disk.Selector.Disk != nil:
 			derived.PartitionLabel = "u-" + disk.Name
@@ -326,10 +327,9 @@ func derivedVolumesAndWarnings(storage SourceStorageLayer, base string) ([]Deriv
 				derived.MountSource = "PARTUUID=" + selector.PartUUID.Value()
 			case selector.FilesystemUUID.Value() != "":
 				derived.MountSource = "UUID=" + selector.FilesystemUUID.Value()
-			default:
+			case selector.ByVolumeName.Value():
 				derived.PartitionLabel = "u-" + disk.Name
 				derived.MountSource = "/dev/disk/by-partlabel/" + derived.PartitionLabel
-				warnings = append(warnings, ResolutionWarning{Path: path + ".selector.partition", Message: "empty partition selector uses the convention-derived GPT label " + derived.PartitionLabel})
 			}
 		}
 		if wipe, set := disk.Wipe.Get(); set && wipe {
@@ -373,13 +373,13 @@ func hasExtension(values []SourceSystemExtension, name string) bool {
 	return false
 }
 
-func storageDisk(values []SourceStorageDisk, name string) (SourceStorageDisk, bool) {
+func storageVolume(values []SourceStorageVolume, name string) (SourceStorageVolume, bool) {
 	for _, value := range values {
 		if value.Name == name {
 			return value, true
 		}
 	}
-	return SourceStorageDisk{}, false
+	return SourceStorageVolume{}, false
 }
 
 func optionalStringSet(selector *SourceDiskSelector, get func(*SourceDiskSelector) Optional[string]) bool {
@@ -403,6 +403,14 @@ func optionalPartitionStringSet(selector *SourcePartitionSelector, get func(*Sou
 		return false
 	}
 	_, ok := get(selector).Get()
+	return ok
+}
+
+func optionalPartitionBoolSet(selector *SourcePartitionSelector) bool {
+	if selector == nil {
+		return false
+	}
+	_, ok := selector.ByVolumeName.Get()
 	return ok
 }
 
@@ -476,7 +484,7 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	diffNamedMaps(&diff, base+".hostConfiguration.fileSets", before.Effective.HostConfiguration.FileSets.Value(), after.Effective.HostConfiguration.FileSets.Value())
 	diffNamedExtensions(&diff, base+".systemExtensions", before.Effective.SystemExtensions.Value(), after.Effective.SystemExtensions.Value())
 	add(base+".install.systemDisk", before.Effective.Install.SystemDisk, after.Effective.Install.SystemDisk)
-	diffNamedDisks(&diff, base+".storage.disks", before.Effective.Storage.Disks.Value(), after.Effective.Storage.Disks.Value())
+	diffNamedVolumes(&diff, base+".storage.volumes", before.Effective.Storage.Volumes.Value(), after.Effective.Storage.Volumes.Value())
 	add(base+".kubernetes.address", before.Effective.Kubernetes.Address, after.Effective.Kubernetes.Address)
 	add(base+".kubernetes.kubelet", before.Effective.Kubernetes.Kubelet, after.Effective.Kubernetes.Kubelet)
 	diffStringMaps(&diff, base+".kubernetes.labels", before.Effective.Kubernetes.Labels.Value(), after.Effective.Kubernetes.Labels.Value())
@@ -492,7 +500,7 @@ func appendNamedChange(diff *ConfigDiff, path string, before, after any) {
 		return
 	}
 	classification, operation, message := classifyDiffPath(path)
-	if strings.Contains(path, ".storage.disks") && after == nil {
+	if strings.Contains(path, ".storage.volumes") && after == nil {
 		message = "removal unmounts the volume and stops Katl management; the partition, filesystem, and data are preserved"
 	}
 	diff.Changes = append(diff.Changes, ConfigFieldChange{Path: path, Before: before, After: after, Classification: classification, RequiredOperation: operation, Message: message})
@@ -518,9 +526,9 @@ func diffNamedExtensions(diff *ConfigDiff, prefix string, before, after []Source
 	diffNamedMaps(diff, prefix, left, right)
 }
 
-func diffNamedDisks(diff *ConfigDiff, prefix string, before, after []SourceStorageDisk) {
-	left := make(map[string]SourceStorageDisk, len(before))
-	right := make(map[string]SourceStorageDisk, len(after))
+func diffNamedVolumes(diff *ConfigDiff, prefix string, before, after []SourceStorageVolume) {
+	left := make(map[string]SourceStorageVolume, len(before))
+	right := make(map[string]SourceStorageVolume, len(after))
 	for _, value := range before {
 		left[value.Name] = value
 	}
@@ -556,7 +564,7 @@ func classifyDiffPath(path string) (string, string, string) {
 		return "operation-only", "kubeadm-aware operation", "Kubernetes node metadata changes require Kubernetes-aware reconciliation"
 	case strings.Contains(path, ".management.address"):
 		return "target-only", "", "changes only the workstation management target; no node generation or mutation is planned"
-	case strings.Contains(path, ".storage.disks"):
+	case strings.Contains(path, ".storage.volumes"):
 		return "online-applicable", "", "volume changes require live target discovery; existing data is preserved unless explicitly authorized"
 	case strings.Contains(path, ".hostConfiguration"):
 		return "online-or-next-boot", "", "the concrete file or sysfs change determines whether live preflight succeeds"

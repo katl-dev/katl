@@ -220,7 +220,7 @@ would override its root, immutable-runtime, generation identity, or recovery
 policy. Image-required and Katl-owned arguments remain internal and are always
 carried alongside the configured additions.
 
-Persistent data disks are configured under a node's `storage.disks` during
+Persistent data disks are configured under a node's `storage.volumes` during
 installation or through normal node configuration. The supported and
 journey-verified filesystems are `ext4`, `xfs`, and `btrfs`. Each entry selects
 exactly one whole disk or one existing partition, and Katl derives both the GPT
@@ -235,7 +235,7 @@ the cluster.
 
 Removing a volume is non-destructive. Set an inherited entry to
 `state: absent`, omit a node-specific entry from the desired collection, or
-use `storage.disks: []` to clear all inherited volumes for that node. Online
+use `storage.volumes: []` to clear all inherited volumes for that node. Online
 apply first unmounts `/var/mnt/<name>`, then removes Katl's generated mount
 unit and stops managing the target. It does not format, repartition, run
 `wipefs`, or erase the partition, filesystem, mount-point directory, or data.
@@ -250,7 +250,7 @@ install:
   systemDisk:
     byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
 storage:
-  disks:
+  volumes:
     - name: data
       selector:
         disk:
@@ -260,16 +260,17 @@ storage:
 ```
 
 To preserve an existing Talos UserVolumeConfig partition, select
-`partition: {}`. Katl derives `u-<name>` and requires it to identify exactly
-one unmounted partition. A stable partition by-id path, PARTUUID, or filesystem
-UUID may be supplied inside `partition` instead:
+`partition.byVolumeName: true`. Katl derives `u-<name>` and requires it to
+identify exactly one unmounted partition. A stable partition by-id path,
+PARTUUID, or filesystem UUID may be supplied inside `partition` instead:
 
 ```yaml
 storage:
-  disks:
+  volumes:
     - name: local-hostpath
       selector:
-        partition: {}
+        partition:
+          byVolumeName: true
       filesystem: xfs
 ```
 
@@ -715,7 +716,7 @@ role-dependent Kubernetes intent. Networkd files are supplied through
 operation-owned differences: cluster apply invokes the required internal
 kubeadm-aware phases and verifies the live result. System-disk install
 selection and Kubernetes version changes keep their dedicated install and
-upgrade workflows; `storage.disks` remains desired node state.
+upgrade workflows; `storage.volumes` remains desired node state.
 The node-agent request envelope remains an internal API documented separately
 from the operator installation flow.
 

@@ -239,7 +239,7 @@ func TestHandoffServerRequiresOperationAuthorityForNonBlankStorage(t *testing.T)
         systemDisk:
           byID: /dev/disk/by-id/ata-root
       storage:
-        disks:
+        volumes:
           - name: data
             selector:
               disk:

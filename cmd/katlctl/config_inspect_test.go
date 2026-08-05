@@ -44,12 +44,12 @@ func TestConfigResolveShowsPublicEffectiveNode(t *testing.T) {
 	if len(report.Provenance) == 0 || len(report.OwnedFiles) == 0 || len(report.Warnings) == 0 {
 		t.Fatalf("inspection detail missing: provenance=%d files=%d warnings=%d", len(report.Provenance), len(report.OwnedFiles), len(report.Warnings))
 	}
-	for _, internal := range []string{`"targetDisk"`, `"volumes"`, `"sets"`, `"notify"`, `"name":"kernel.`} {
+	for _, internal := range []string{`"targetDisk"`, `"sets"`, `"notify"`, `"name":"kernel.`} {
 		if strings.Contains(stdout.String(), internal) {
 			t.Fatalf("resolve output exposes internal field %q:\n%s", internal, stdout.String())
 		}
 	}
-	for _, public := range []string{`"systemDisk"`, `"storage"`, `"disks"`, `"classification"`} {
+	for _, public := range []string{`"systemDisk"`, `"storage"`, `"volumes"`, `"classification"`} {
 		if !strings.Contains(stdout.String(), public) {
 			t.Fatalf("resolve output missing %q:\n%s", public, stdout.String())
 		}
@@ -58,13 +58,13 @@ func TestConfigResolveShowsPublicEffectiveNode(t *testing.T) {
 	foundDefaultSize := false
 	foundNodeIdentity := false
 	for _, entry := range report.Provenance {
-		if entry.Source == `spec.defaults.storage.disks[name="data"].filesystem` {
+		if entry.Source == `spec.defaults.storage.volumes[name="data"].filesystem` {
 			foundDefaultFilesystem = true
 		}
-		if entry.Source == `spec.defaults.storage.disks[name="data"].selector.disk.minSizeMiB` {
+		if entry.Source == `spec.defaults.storage.volumes[name="data"].selector.disk.minSizeMiB` {
 			foundDefaultSize = true
 		}
-		if entry.Source == `spec.nodes["cp-1"].storage.disks[name="data"].selector.disk.byID` {
+		if entry.Source == `spec.nodes["cp-1"].storage.volumes[name="data"].selector.disk.byID` {
 			foundNodeIdentity = true
 		}
 	}
@@ -173,7 +173,7 @@ func TestConfigInspectionReportsPerNodeKubeletConfiguration(t *testing.T) {
 
 func configInspectionSource() string {
 	source := strings.Replace(configBundleSource(), "  nodes:\n", `    storage:
-      disks:
+      volumes:
         - name: data
           selector:
             disk:
@@ -182,7 +182,7 @@ func configInspectionSource() string {
   nodes:
 `, 1)
 	return strings.Replace(source, "      install:\n", `      storage:
-        disks:
+        volumes:
           - name: data
             selector:
               disk:
