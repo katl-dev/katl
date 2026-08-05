@@ -1809,6 +1809,9 @@ func runConfigValidate(sourcePath, output string, stdout, stderr io.Writer) erro
 	if output != "text" && output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", output)
 	}
+	if err := configbundle.ValidateSourceFile(sourcePath); err != nil {
+		return err
+	}
 	_, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
 		SourcePath:     sourcePath,
 		KatlctlVersion: version,

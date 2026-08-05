@@ -402,16 +402,17 @@ func validateDefaultStorageVolumes(disks Optional[[]SourceStorageVolume]) error 
 	if !ok {
 		return nil
 	}
+	var errs []error
 	for i, volume := range values {
 		field := fmt.Sprintf("spec.defaults.storage.volumes[%d]", i)
 		if wipe, supplied := volume.Wipe.Get(); supplied && wipe {
-			return fmt.Errorf("%s.wipe must not be true in defaults; set destructive authority on a concrete node volume", field)
+			errs = append(errs, fmt.Errorf("%s.wipe must not be true in defaults; set destructive authority on a concrete node volume", field))
 		}
 		if volume.Selector == nil {
 			continue
 		}
 		if volume.Selector.Partition != nil {
-			return fmt.Errorf("%s.selector.partition identifies a target and must be set on a concrete node volume", field)
+			errs = append(errs, fmt.Errorf("%s.selector.partition identifies a target and must be set on a concrete node volume", field))
 		}
 		if volume.Selector.Disk == nil {
 			continue
@@ -425,11 +426,11 @@ func validateDefaultStorageVolumes(disks Optional[[]SourceStorageVolume]) error 
 			{name: "serial", value: volume.Selector.Disk.Serial},
 		} {
 			if configured, supplied := identity.value.Get(); supplied && strings.TrimSpace(configured) != "" {
-				return fmt.Errorf("%s.selector.disk.%s identifies a target and must be set on a concrete node volume", field, identity.name)
+				errs = append(errs, fmt.Errorf("%s.selector.disk.%s identifies a target and must be set on a concrete node volume", field, identity.name))
 			}
 		}
 	}
-	return nil
+	return newValidationErrors(validationIssuesFromErrors(errs, nil))
 }
 
 func validateSourceStorageVolumes(field string, disks Optional[[]SourceStorageVolume], requireComplete bool) error {
@@ -437,26 +438,27 @@ func validateSourceStorageVolumes(field string, disks Optional[[]SourceStorageVo
 	if !ok {
 		return nil
 	}
+	var errs []error
 	seen := map[string]struct{}{}
 	for i, disk := range values {
 		name := strings.TrimSpace(disk.Name)
 		if name == "" {
-			return fmt.Errorf("%s[%d].name is required", field, i)
+			errs = append(errs, fmt.Errorf("%s[%d].name is required", field, i))
+		} else if _, exists := seen[name]; exists {
+			errs = append(errs, fmt.Errorf("%s[%d].name %q duplicates another volume", field, i, name))
+		} else {
+			seen[name] = struct{}{}
 		}
-		if _, exists := seen[name]; exists {
-			return fmt.Errorf("%s contains duplicate name %q", field, name)
-		}
-		seen[name] = struct{}{}
 		switch state := strings.TrimSpace(disk.State); state {
 		case "", manifest.SystemExtensionPresent, manifest.SystemExtensionAbsent:
 		default:
-			return fmt.Errorf("%s[%d].state must be %q or %q", field, i, manifest.SystemExtensionPresent, manifest.SystemExtensionAbsent)
+			errs = append(errs, fmt.Errorf("%s[%d].state must be %q or %q", field, i, manifest.SystemExtensionPresent, manifest.SystemExtensionAbsent))
 		}
 		if strings.TrimSpace(disk.State) == manifest.SystemExtensionAbsent {
 			continue
 		}
 		if disk.Selector != nil && disk.Selector.Disk != nil && disk.Selector.Partition != nil {
-			return fmt.Errorf("%s[%d].selector must set exactly one of disk or partition", field, i)
+			errs = append(errs, fmt.Errorf("%s[%d].selector must set exactly one of disk or partition", field, i))
 		}
 		if disk.Selector != nil && disk.Selector.Partition != nil {
 			selected := 0
@@ -473,7 +475,7 @@ func validateSourceStorageVolumes(field string, disks Optional[[]SourceStorageVo
 				selected++
 			}
 			if selected > 1 || requireComplete && selected != 1 {
-				return fmt.Errorf("%s[%d].selector.partition must set exactly one of byID, partUUID, filesystemUUID, or byVolumeName: true", field, i)
+				errs = append(errs, fmt.Errorf("%s[%d].selector.partition must set exactly one of byID, partUUID, filesystemUUID, or byVolumeName: true", field, i))
 			}
 		}
 		if !requireComplete {
@@ -482,51 +484,93 @@ func validateSourceStorageVolumes(field string, disks Optional[[]SourceStorageVo
 		volume := lowerStorageVolumes(supplied([]SourceStorageVolume{disk}))
 		if err := manifest.ValidateVolumes(volume); err != nil {
 			message := strings.Replace(err.Error(), "install.volumes[0]", fmt.Sprintf("%s[%d]", field, i), 1)
-			return fmt.Errorf("%s", message)
+			errs = append(errs, fmt.Errorf("%s", message))
 		}
 	}
-	return nil
+	return newValidationErrors(validationIssuesFromErrors(errs, nil))
 }
 
 func validateResolvedSourceNode(path string, layer SourceNodeLayer) error {
+	return newValidationErrors(validationIssuesFromErrors(validateResolvedSourceNodeLayerIssues(path, layer), nil))
+}
+
+func validateResolvedSourceNodeLayerIssues(path string, layer SourceNodeLayer) []error {
+	var errs []error
 	if keys, ok := layer.Access.SSH.AuthorizedKeys.Get(); !ok || len(keys) == 0 {
-		return fmt.Errorf("%s.access.ssh.authorizedKeys must not be empty", path)
+		errs = append(errs, fmt.Errorf("%s.access.ssh.authorizedKeys must not be empty", path))
 	} else {
 		for i, key := range keys {
 			if !manifest.ValidAuthorizedKey(key) {
-				return fmt.Errorf("%s.access.ssh.authorizedKeys[%d] must be an SSH public key", path, i)
+				errs = append(errs, fmt.Errorf("%s.access.ssh.authorizedKeys[%d] must be an SSH public key", path, i))
 			}
 		}
 	}
 	if layer.Install.SystemDisk == nil {
-		return fmt.Errorf("%s.install.systemDisk is required", path)
-	}
-	selected := 0
-	for _, value := range []Optional[string]{layer.Install.SystemDisk.ByID, layer.Install.SystemDisk.WWN, layer.Install.SystemDisk.Serial} {
-		if configured, ok := value.Get(); ok && strings.TrimSpace(configured) != "" {
-			selected++
+		errs = append(errs, fmt.Errorf("%s.install.systemDisk is required", path))
+	} else {
+		selected := 0
+		for _, value := range []Optional[string]{layer.Install.SystemDisk.ByID, layer.Install.SystemDisk.WWN, layer.Install.SystemDisk.Serial} {
+			if configured, ok := value.Get(); ok && strings.TrimSpace(configured) != "" {
+				selected++
+			}
+		}
+		if selected != 1 {
+			errs = append(errs, fmt.Errorf("%s.install.systemDisk must set exactly one of byID, wwn, or serial", path))
 		}
 	}
-	if selected != 1 {
-		return fmt.Errorf("%s.install.systemDisk must set exactly one of byID, wwn, or serial", path)
-	}
 	if err := validateSourceStorageVolumes(path+".storage.volumes", layer.Storage.Volumes, true); err != nil {
-		return err
+		errs = append(errs, err)
 	}
 	if err := validateSourceHostConfiguration(path+".hostConfiguration", layer.HostConfiguration); err != nil {
-		return err
+		errs = append(errs, err)
 	}
 	if err := validateSourceSystemExtensions(path+".systemExtensions", layer.SystemExtensions); err != nil {
-		return err
+		errs = append(errs, err)
 	}
-	return nil
+	labels, _ := layer.Kubernetes.Labels.Get()
+	labelKeys := make([]string, 0, len(labels))
+	for key := range labels {
+		labelKeys = append(labelKeys, key)
+	}
+	sort.Strings(labelKeys)
+	for _, key := range labelKeys {
+		if err := manifest.ValidateKubernetesMetadata(map[string]string{key: labels[key]}, nil); err != nil {
+			errs = append(errs, fmt.Errorf("%s.%s", path, publicManifestMessage(err.Error())))
+		}
+	}
+	taints, _ := layer.Kubernetes.Taints.Get()
+	for i, taint := range taints {
+		if err := manifest.ValidateKubernetesMetadata(nil, []manifest.NodeTaint{taint}); err != nil {
+			message := strings.Replace(publicManifestMessage(err.Error()), "kubernetes.taints[0]", fmt.Sprintf("kubernetes.taints[%d]", i), 1)
+			errs = append(errs, fmt.Errorf("%s.%s", path, message))
+		}
+	}
+	return errs
 }
 
 func validateSourceHostConfiguration(field string, config SourceHostConfiguration) error {
-	if err := manifest.ValidateHostConfiguration(lowerHostConfiguration(config), true); err != nil {
-		return fmt.Errorf("%s.%s", field, publicHostConfigurationMessage(err.Error()))
+	lowered := lowerHostConfiguration(config)
+	var errs []error
+	for i, setting := range lowered.Sysfs {
+		if err := manifest.ValidateHostConfiguration(manifest.HostConfiguration{Sysfs: []manifest.HostConfigurationSysfsSetting{setting}}, true); err != nil {
+			message := strings.Replace(publicHostConfigurationMessage(err.Error()), "sysfs[0]", fmt.Sprintf("sysfs[%d]", i), 1)
+			errs = append(errs, fmt.Errorf("%s.%s", field, message))
+		}
 	}
-	return nil
+	setNames := make([]string, 0, len(lowered.Sets))
+	for name := range lowered.Sets {
+		setNames = append(setNames, name)
+	}
+	sort.Strings(setNames)
+	for _, name := range setNames {
+		if err := manifest.ValidateHostConfiguration(manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{name: lowered.Sets[name]}}, true); err != nil {
+			errs = append(errs, fmt.Errorf("%s.%s", field, publicHostConfigurationMessage(err.Error())))
+		}
+	}
+	if err := manifest.ValidateHostConfiguration(lowered, true); err != nil {
+		errs = append(errs, fmt.Errorf("%s.%s", field, publicHostConfigurationMessage(err.Error())))
+	}
+	return newValidationErrors(validationIssuesFromErrors(errs, nil))
 }
 
 func publicHostConfigurationMessage(message string) string {
@@ -542,10 +586,18 @@ func publicHostConfigurationMessage(message string) string {
 }
 
 func validateSourceSystemExtensions(field string, extensions Optional[[]SourceSystemExtension]) error {
-	if err := manifest.ValidateSystemExtensions(lowerSystemExtensions(extensions), true); err != nil {
-		return fmt.Errorf("%s%s", field, publicSystemExtensionsMessage(err.Error()))
+	lowered := lowerSystemExtensions(extensions)
+	var errs []error
+	for i, extension := range lowered {
+		if err := manifest.ValidateSystemExtensions([]manifest.SystemExtension{extension}, true); err != nil {
+			message := strings.Replace(publicSystemExtensionsMessage(err.Error()), "[0]", fmt.Sprintf("[%d]", i), 1)
+			errs = append(errs, fmt.Errorf("%s%s", field, message))
+		}
 	}
-	return nil
+	if err := manifest.ValidateSystemExtensions(lowered, true); err != nil {
+		errs = append(errs, fmt.Errorf("%s%s", field, publicSystemExtensionsMessage(err.Error())))
+	}
+	return newValidationErrors(validationIssuesFromErrors(errs, nil))
 }
 
 func publicSystemExtensionsMessage(message string) string {

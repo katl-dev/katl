@@ -785,6 +785,128 @@ func TestConfigValidateReportsNestedFieldPath(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAggregatesPublicErrorsInStablePathOrder(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
+	source := `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: invalid
+spec:
+  kubernetes: {}
+  defaults:
+    kubernetes:
+      address: 10.0.0.10
+      kubelet: {}
+    storage:
+      disks: []
+  nodes:
+    - name: node-b
+      kubernetes:
+        address: 10.0.0.0/24
+        kubelet: {}
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/node-b-root
+          serial: duplicate
+      unsupported: true
+    - name: node-a
+      controlPlane: true
+      access:
+        ssh:
+          authorizedKeys:
+            - not-an-ssh-key
+      install: {}
+      kubernetes:
+        taints:
+          - key: dedicated
+            effect: Sometimes
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	validate := func() string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("config validate error = nil")
+		}
+		if stdout.Len() != 0 || stderr.Len() != 0 {
+			t.Fatalf("stdout=%q stderr=%q, want empty", stdout.String(), stderr.String())
+		}
+		return err.Error()
+	}
+	first := validate()
+	if second := validate(); second != first {
+		t.Fatalf("validation order changed between runs:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	wants := []string{
+		"spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node (line 9)",
+		"spec.defaults.kubernetes.kubelet is not allowed; kubelet configuration must be set per node (line 10)",
+		"spec.defaults.storage.disks: field is not supported (line 12)",
+		"spec.kubernetes.version is required; set an exact version such as v1.36.1 (line 6)",
+		`spec.nodes["node-a"].access.ssh.authorizedKeys[0] must be an SSH public key (line 28)`,
+		`spec.nodes["node-a"].install.systemDisk is required (line 29)`,
+		`spec.nodes["node-a"].kubernetes.taints[0].effect "Sometimes" is unsupported (line 33)`,
+		`spec.nodes["node-b"].access.ssh.authorizedKeys must not be empty (line 14)`,
+		`spec.nodes["node-b"].install.systemDisk must set exactly one of byID, wwn, or serial (line 20)`,
+		`spec.nodes["node-b"].kubernetes.address: "10.0.0.0/24" must be a literal unicast IP address (line 16)`,
+		`spec.nodes["node-b"].kubernetes.kubelet.configFile is required (line 17)`,
+		`spec.nodes["node-b"].unsupported: field is not supported (line 22)`,
+	}
+	previous := -1
+	for _, want := range wants {
+		index := strings.Index(first, want)
+		if index < 0 {
+			t.Fatalf("validation output is missing %q:\n%s", want, first)
+		}
+		if index <= previous {
+			t.Fatalf("validation output is not in public path order at %q:\n%s", want, first)
+		}
+		previous = index
+	}
+	for _, internal := range []string{"targetDisk", "install.volumes", "sets", "notify", "configbundle."} {
+		if strings.Contains(first, internal) {
+			t.Fatalf("validation output exposes internal name %q:\n%s", internal, first)
+		}
+	}
+}
+
+func TestConfigValidateAggregatesPublicSourceTypeErrors(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
+	source := `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+spec:
+  kubernetes:
+    version: []
+  defaults:
+    kernel: []
+    unknown: true
+  nodes: {}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"config", "validate", sourcePath}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("config validate error = nil")
+	}
+	for _, want := range []string{
+		"spec.defaults.kernel must be an object (line 7)",
+		"spec.defaults.unknown: field is not supported (line 8)",
+		"spec.kubernetes.version must be a string (line 5)",
+		"spec.nodes must be a list (line 9)",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("validation output is missing %q:\n%s", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "configbundle.") {
+		t.Fatalf("validation output exposes a Go type:\n%s", err)
+	}
+}
+
 func TestConfigValidateReportsOnlyPublicNodePaths(t *testing.T) {
 	base := configBundleSource()
 	tests := []struct {

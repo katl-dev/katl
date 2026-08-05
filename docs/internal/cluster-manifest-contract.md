@@ -30,6 +30,11 @@ katlctl config resolve ./cluster.yaml --node cp-1
 katlctl config diff ./cluster-before.yaml ./cluster-after.yaml --node cp-1
 ```
 
+`config validate` collects independent structural and semantic failures before
+returning. Diagnostics are sorted by public ClusterConfig path, use named node
+paths, and include the nearest YAML line where available; compiler and manifest
+implementation names are never part of the operator-facing error contract.
+
 `config resolve` is the supported effective-value view. It preserves public
 ClusterConfig names while showing field provenance, derived storage paths and
 labels, owned files, warnings, and apply/lifecycle boundaries. `config diff`

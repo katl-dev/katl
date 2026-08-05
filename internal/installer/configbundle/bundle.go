@@ -552,16 +552,20 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 }
 
 func validateResolvedSourceNodes(source SourceConfig) error {
+	return newValidationErrors(validationIssuesFromErrors(validateResolvedSourceNodeIssues(source), nil))
+}
+
+func validateResolvedSourceNodeIssues(source SourceConfig) []error {
+	var errs []error
 	for i, node := range source.Spec.Nodes {
 		resolved, err := mergeSourceNodeLayer(source.Spec.Defaults, sourceNodeLayer(node))
 		if err != nil {
-			return fmt.Errorf("%s: %w", sourceNodePath(node, i), err)
+			errs = append(errs, fmt.Errorf("%s: %w", sourceNodePath(node, i), err))
+			continue
 		}
-		if err := validateResolvedSourceNode(sourceNodePath(node, i), resolved); err != nil {
-			return err
-		}
+		errs = append(errs, validateResolvedSourceNodeLayerIssues(sourceNodePath(node, i), resolved)...)
 	}
-	return nil
+	return errs
 }
 
 func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.KubernetesSelection, error) {
@@ -643,8 +647,20 @@ func selectedKubernetesVersion(source SourceConfig) string {
 }
 
 func normalizeSource(source SourceConfig) (SourceConfig, error) {
+	source, errs := normalizeSourceIssues(source)
+	if err := newValidationErrors(validationIssuesFromErrors(errs, nil)); err != nil {
+		return SourceConfig{}, err
+	}
+	return source, nil
+}
+
+func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
+	var errs []error
+	if strings.TrimSpace(source.Metadata.Name) == "" {
+		errs = append(errs, fmt.Errorf("metadata.name is required"))
+	}
 	if strings.TrimSpace(source.Spec.Kubernetes.Version) == "" {
-		return SourceConfig{}, fmt.Errorf("spec.kubernetes.version is required; set an exact version such as %s", DefaultKubernetesVersion)
+		errs = append(errs, fmt.Errorf("spec.kubernetes.version is required; set an exact version such as %s", DefaultKubernetesVersion))
 	}
 	source.Spec.Nodes = slices.Clone(source.Spec.Nodes)
 	seenNodes := make(map[string]struct{}, len(source.Spec.Nodes))
@@ -652,82 +668,99 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 		name := strings.TrimSpace(node.Name)
 		path := sourceNodePath(node, i)
 		if name == "" {
-			return SourceConfig{}, fmt.Errorf("%s.name is required", path)
+			errs = append(errs, fmt.Errorf("%s.name is required", path))
+			continue
 		}
 		if !manifest.ValidHostname(name) {
-			return SourceConfig{}, fmt.Errorf("%s.name %q must be a single DNS-style label", path, node.Name)
+			errs = append(errs, fmt.Errorf("%s.name %q must be a single DNS-style label", path, node.Name))
 		}
 		if _, exists := seenNodes[name]; exists {
-			return SourceConfig{}, fmt.Errorf("%s.name %q duplicates another node", path, name)
+			errs = append(errs, fmt.Errorf("%s.name %q duplicates another node", path, name))
 		}
 		seenNodes[name] = struct{}{}
 	}
+	if len(source.Spec.Nodes) == 0 {
+		errs = append(errs, fmt.Errorf("spec.nodes must not be empty"))
+	} else {
+		hasControlPlane := false
+		for _, node := range source.Spec.Nodes {
+			if node.ControlPlane {
+				hasControlPlane = true
+				break
+			}
+		}
+		if !hasControlPlane {
+			errs = append(errs, fmt.Errorf("spec.nodes must include at least one node with controlPlane: true"))
+		}
+	}
 	if strings.TrimSpace(source.Spec.Defaults.Kubernetes.Address) != "" {
-		return SourceConfig{}, fmt.Errorf("spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node")
+		errs = append(errs, fmt.Errorf("spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node"))
 	}
 	if source.Spec.Defaults.Kubernetes.Kubelet != nil {
-		return SourceConfig{}, fmt.Errorf("spec.defaults.kubernetes.kubelet is not allowed; kubelet configuration must be set per node")
+		errs = append(errs, fmt.Errorf("spec.defaults.kubernetes.kubelet is not allowed; kubelet configuration must be set per node"))
 	}
 	if source.Spec.Defaults.Kernel != nil {
 		if err := manifest.ValidateKernelConfig(*lowerKernelConfig(source.Spec.Defaults.Kernel)); err != nil {
-			return SourceConfig{}, fmt.Errorf("spec.defaults.kernel: %w", err)
+			errs = append(errs, fmt.Errorf("spec.defaults.kernel: %w", err))
 		}
 	}
 	for i := range source.Spec.Nodes {
 		path := sourceNodePath(source.Spec.Nodes[i], i)
 		address, err := manifest.NormalizeKubernetesAddress(source.Spec.Nodes[i].Kubernetes.Address)
 		if err != nil {
-			return SourceConfig{}, fmt.Errorf("%s.kubernetes.address: %w", path, err)
+			errs = append(errs, fmt.Errorf("%s.kubernetes.address: %w", path, err))
+		} else {
+			source.Spec.Nodes[i].Kubernetes.Address = address
 		}
-		source.Spec.Nodes[i].Kubernetes.Address = address
 		if kubelet := source.Spec.Nodes[i].Kubernetes.Kubelet; kubelet != nil && strings.TrimSpace(kubelet.ConfigFile) == "" {
-			return SourceConfig{}, fmt.Errorf("%s.kubernetes.kubelet.configFile is required", path)
+			errs = append(errs, fmt.Errorf("%s.kubernetes.kubelet.configFile is required", path))
 		}
 		if source.Spec.Nodes[i].Kernel != nil {
 			if err := manifest.ValidateKernelConfig(*lowerKernelConfig(source.Spec.Nodes[i].Kernel)); err != nil {
-				return SourceConfig{}, fmt.Errorf("%s.kernel: %w", path, err)
+				errs = append(errs, fmt.Errorf("%s.kernel: %w", path, err))
 			}
 		}
 	}
 	if err := validateSourceHostConfiguration("spec.defaults.hostConfiguration", source.Spec.Defaults.HostConfiguration); err != nil {
-		return SourceConfig{}, err
+		errs = append(errs, err)
 	}
 	for i := range source.Spec.Nodes {
 		if err := validateSourceHostConfiguration(sourceNodePath(source.Spec.Nodes[i], i)+".hostConfiguration", source.Spec.Nodes[i].HostConfiguration); err != nil {
-			return SourceConfig{}, err
+			errs = append(errs, err)
 		}
 	}
 	if err := validateSourceSystemExtensions("spec.defaults.systemExtensions", source.Spec.Defaults.SystemExtensions); err != nil {
-		return SourceConfig{}, err
+		errs = append(errs, err)
 	}
 	for i := range source.Spec.Nodes {
 		if err := validateSourceSystemExtensions(sourceNodePath(source.Spec.Nodes[i], i)+".systemExtensions", source.Spec.Nodes[i].SystemExtensions); err != nil {
-			return SourceConfig{}, err
+			errs = append(errs, err)
 		}
 	}
 	if err := validateDefaultSystemDisk(source.Spec.Defaults.Install.SystemDisk); err != nil {
-		return SourceConfig{}, fmt.Errorf("spec.defaults.install.systemDisk: %w", err)
+		errs = append(errs, fmt.Errorf("spec.defaults.install.systemDisk: %w", err))
 	}
 	if err := validateDefaultStorageVolumes(source.Spec.Defaults.Storage.Volumes); err != nil {
-		return SourceConfig{}, err
+		errs = append(errs, err)
 	}
 	if err := validateSourceStorageVolumes("spec.defaults.storage.volumes", source.Spec.Defaults.Storage.Volumes, false); err != nil {
-		return SourceConfig{}, err
+		errs = append(errs, err)
 	}
 	for i := range source.Spec.Nodes {
 		if err := validateSourceStorageVolumes(sourceNodePath(source.Spec.Nodes[i], i)+".storage.volumes", source.Spec.Nodes[i].Storage.Volumes, false); err != nil {
-			return SourceConfig{}, err
+			errs = append(errs, err)
 		}
 	}
 	if source.Spec.ControlPlaneEndpoint == nil {
-		return source, nil
+		return source, errs
 	}
 	plan, err := controlplaneendpoint.Normalize(*source.Spec.ControlPlaneEndpoint)
 	if err != nil {
-		return SourceConfig{}, err
+		errs = append(errs, fmt.Errorf("spec.controlPlaneEndpoint: %w", err))
+	} else {
+		source.Spec.ControlPlaneEndpoint = &plan.Config
 	}
-	source.Spec.ControlPlaneEndpoint = &plan.Config
-	return source, nil
+	return source, errs
 }
 
 func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (SourceConfig, error) {
