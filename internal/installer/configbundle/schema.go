@@ -13,23 +13,37 @@ import (
 const SourceSchemaID = "https://katl.dev/schemas/config.katl.dev/v1alpha1/cluster-config.json"
 
 type sourceSchema struct {
-	Schema string                  `json:"$schema"`
-	ID     string                  `json:"$id"`
-	Title  string                  `json:"title"`
-	Ref    string                  `json:"$ref"`
-	Defs   map[string]schemaObject `json:"$defs"`
+	Schema      string                  `json:"$schema"`
+	ID          string                  `json:"$id"`
+	Title       string                  `json:"title"`
+	Description string                  `json:"description"`
+	Ref         string                  `json:"$ref"`
+	Defs        map[string]schemaObject `json:"$defs"`
 }
 
 type schemaObject struct {
 	Ref                  string                  `json:"$ref,omitempty"`
 	Type                 string                  `json:"type,omitempty"`
-	Const                string                  `json:"const,omitempty"`
-	Enum                 []string                `json:"enum,omitempty"`
+	Const                any                     `json:"const,omitempty"`
+	Enum                 []any                   `json:"enum,omitempty"`
+	Description          string                  `json:"description,omitempty"`
+	Default              any                     `json:"default,omitempty"`
 	Properties           map[string]schemaObject `json:"properties,omitempty"`
 	Required             []string                `json:"required,omitempty"`
 	AdditionalProperties any                     `json:"additionalProperties,omitempty"`
+	PropertyNames        *schemaObject           `json:"propertyNames,omitempty"`
 	Items                *schemaObject           `json:"items,omitempty"`
-	Minimum              *int                    `json:"minimum,omitempty"`
+	MinItems             *int                    `json:"minItems,omitempty"`
+	MaxItems             *int                    `json:"maxItems,omitempty"`
+	MinLength            *int                    `json:"minLength,omitempty"`
+	MaxLength            *int                    `json:"maxLength,omitempty"`
+	Pattern              string                  `json:"pattern,omitempty"`
+	Format               string                  `json:"format,omitempty"`
+	Minimum              *int64                  `json:"minimum,omitempty"`
+	Maximum              *int64                  `json:"maximum,omitempty"`
+	OneOf                []schemaObject          `json:"oneOf,omitempty"`
+	AnyOf                []schemaObject          `json:"anyOf,omitempty"`
+	Not                  *schemaObject           `json:"not,omitempty"`
 }
 
 // SourceSchema returns the JSON Schema for the ClusterConfig accepted by this
@@ -40,11 +54,12 @@ func SourceSchema() ([]byte, error) {
 	root := reflect.TypeOf(SourceConfig{})
 	builder.schemaFor(root)
 	document := sourceSchema{
-		Schema: "https://json-schema.org/draft/2020-12/schema",
-		ID:     SourceSchemaID,
-		Title:  APIVersion + " " + Kind,
-		Ref:    "#/$defs/" + schemaTypeName(root),
-		Defs:   builder.defs,
+		Schema:      "https://json-schema.org/draft/2020-12/schema",
+		ID:          SourceSchemaID,
+		Title:       APIVersion + " " + Kind,
+		Description: "Katl cluster intent compiled into per-node install and runtime configuration.",
+		Ref:         "#/$defs/" + schemaTypeName(root),
+		Defs:        builder.defs,
 	}
 	data, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
@@ -77,7 +92,7 @@ func (builder *schemaBuilder) schemaFor(t reflect.Type) schemaObject {
 		var required []string
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
-			name, _, visible := yamlField(field)
+			name, omitEmpty, visible := yamlField(field)
 			if !visible {
 				continue
 			}
@@ -89,17 +104,22 @@ func (builder *schemaBuilder) schemaFor(t reflect.Type) schemaObject {
 				case "kind":
 					property = schemaObject{Type: "string", Const: Kind}
 				}
+			}
+			rule := sourceSchemaFieldRule(t, name)
+			property = applySchemaFieldRule(property, rule)
+			if !omitEmpty || rule.Required {
 				required = append(required, name)
 			}
 			properties[name] = property
 		}
 		sort.Strings(required)
-		builder.defs[name] = schemaObject{
+		object := schemaObject{
 			Type:                 "object",
 			Properties:           properties,
 			Required:             required,
 			AdditionalProperties: false,
 		}
+		builder.defs[name] = applySchemaTypeRule(object, sourceSchemaTypeRule(t))
 		return ref
 	case reflect.Slice, reflect.Array:
 		items := builder.schemaFor(t.Elem())
@@ -112,7 +132,7 @@ func (builder *schemaBuilder) schemaFor(t reflect.Type) schemaObject {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return schemaObject{Type: "integer"}
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		zero := 0
+		zero := int64(0)
 		return schemaObject{Type: "integer", Minimum: &zero}
 	case reflect.Float32, reflect.Float64:
 		return schemaObject{Type: "number"}

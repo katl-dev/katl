@@ -1093,12 +1093,7 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SourceSchema() error = %v", err)
 	}
-	var document struct {
-		ID   string `json:"$id"`
-		Defs map[string]struct {
-			Properties map[string]json.RawMessage `json:"properties"`
-		} `json:"$defs"`
-	}
+	var document sourceSchema
 	if err := json.Unmarshal(data, &document); err != nil {
 		t.Fatalf("decode schema: %v", err)
 	}
@@ -1132,11 +1127,23 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 		[]string{"architecture", "artifactVersion", "bundleManifestDigest", "ociManifestDigest", "payloadVersion", "payloads", "supportedRuntimeInterfaces"})
 	assertSchemaFields(t, document.Defs, "controlplaneendpoint.BGP", []string{"routeExchanges"}, []string{"routeExchange"})
 	assertSchemaFields(t, document.Defs, "controlplaneendpoint.PrefixEnvelope", []string{"exactPrefixLength"}, []string{"prefixLength"})
+	assertSchemaRequired(t, document.Defs, "configbundle.SourceSpec", "nodes")
+	assertSchemaRequired(t, document.Defs, "configbundle.SourceNode", "name")
+	assertSchemaRequired(t, document.Defs, "configbundle.SourceHostConfigurationSysfsSetting", "path", "value")
+	if selector := document.Defs["configbundle.SourceVolumeSelector"]; len(selector.OneOf) != 2 {
+		t.Fatalf("volume selector oneOf branches = %d, want 2", len(selector.OneOf))
+	}
+	filesystem := document.Defs["configbundle.SourceStorageDisk"].Properties["filesystem"]
+	if !slices.Equal(filesystem.Enum, []any{"xfs", "ext4", "btrfs"}) || filesystem.Description == "" {
+		t.Fatalf("filesystem schema = %#v", filesystem)
+	}
+	port := document.Defs["controlplaneendpoint.Config"].Properties["port"]
+	if port.Minimum == nil || *port.Minimum != 0 || port.Maximum == nil || *port.Maximum != 65535 || port.Default != float64(6443) {
+		t.Fatalf("control-plane port schema = %#v", port)
+	}
 }
 
-func assertSchemaFields(t *testing.T, definitions map[string]struct {
-	Properties map[string]json.RawMessage `json:"properties"`
-}, definition string, present, absent []string) {
+func assertSchemaFields(t *testing.T, definitions map[string]schemaObject, definition string, present, absent []string) {
 	t.Helper()
 	properties := definitions[definition].Properties
 	for _, field := range present {
@@ -1147,6 +1154,15 @@ func assertSchemaFields(t *testing.T, definitions map[string]struct {
 	for _, field := range absent {
 		if _, ok := properties[field]; ok {
 			t.Fatalf("%s schema exposes removed %q", definition, field)
+		}
+	}
+}
+
+func assertSchemaRequired(t *testing.T, definitions map[string]schemaObject, definition string, required ...string) {
+	t.Helper()
+	for _, field := range required {
+		if !slices.Contains(definitions[definition].Required, field) {
+			t.Fatalf("%s schema does not require %q: %v", definition, field, definitions[definition].Required)
 		}
 	}
 }
