@@ -3,8 +3,10 @@ package handoff
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,6 +227,85 @@ func TestHandoffServerAcceptsConfigBundleWithSelectedNode(t *testing.T) {
 	}
 }
 
+func TestHandoffServerRequiresOperationAuthorityForNonBlankStorage(t *testing.T) {
+	server := newTestHandoffServer(t)
+	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+		{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
+		{Path: "/dev/vdb", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30, PartitionSignature: "gpt"},
+	}})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	source := strings.Replace(validBundleSourceConfig(), "      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-root\n", `      install:
+        systemDisk:
+          byID: /dev/disk/by-id/ata-root
+      storage:
+        disks:
+          - name: data
+            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-data
+            filesystem: xfs
+            wipe: true
+`, 1)
+	bundle, result := configBundleFromSource(t, source)
+
+	resp := postBundle(t, ts.URL, "cp-1", result.Digest, bundle)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionRequired || !strings.Contains(string(body), "--acknowledge-storage-wipe cp-1/data") {
+		t.Fatalf("unacknowledged POST status=%d body=%s", resp.StatusCode, body)
+	}
+	if server.Status().State != HandoffWaiting {
+		t.Fatalf("refused handoff state = %s", server.Status().State)
+	}
+
+	resp = postBundle(t, ts.URL, "cp-1", result.Digest, bundle, "cp-1/data")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("acknowledged POST status = %d", resp.StatusCode)
+	}
+	if got := server.Bundle().DestructiveStorageAcknowledgements; len(got) != 1 || got[0] != "cp-1/data" {
+		t.Fatalf("stored acknowledgements = %v", got)
+	}
+}
+
+func TestHandoffServerRequiresOperationAuthorityForRawManifestStorage(t *testing.T) {
+	server := newTestHandoffServer(t)
+	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+		{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
+		{Path: "/dev/vdb", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30, PartitionSignature: "gpt"},
+	}})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	install := []byte(`"targetDisk": {"byID": "/dev/disk/by-id/ata-root"},
+			"volumes": [{
+				"name": "data",
+				"selector": {"disk": {"byID": "/dev/disk/by-id/ata-data"}},
+				"filesystem": "xfs",
+				"wipe": true
+			}]`)
+	input := bytes.Replace(validManifestJSON(), []byte(`"targetDisk": {"byID": "/dev/disk/by-id/ata-root"}`), install, 1)
+
+	resp := postManifest(t, ts.URL, input)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionRequired || !strings.Contains(string(body), "--acknowledge-storage-wipe lab-node-01/data") {
+		t.Fatalf("unacknowledged POST status=%d body=%s", resp.StatusCode, body)
+	}
+	if server.Status().State != HandoffWaiting || len(server.Manifest()) != 0 {
+		t.Fatalf("refused handoff state = %#v", server.Status())
+	}
+
+	resp = postManifest(t, ts.URL, input, "lab-node-01/data")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("acknowledged POST status = %d", resp.StatusCode)
+	}
+	if got := server.DestructiveStorageAcknowledgements(); len(got) != 1 || got[0] != "lab-node-01/data" {
+		t.Fatalf("stored acknowledgements = %v", got)
+	}
+}
+
 func TestHandoffServerRejectsConfigBundleWithoutSelectedNode(t *testing.T) {
 	server := newTestHandoffServer(t)
 	ts := httptest.NewServer(server.Handler())
@@ -321,9 +402,17 @@ func newTestHandoffServer(t *testing.T) *HandoffServer {
 	})
 }
 
-func postManifest(t *testing.T, baseURL string, manifest []byte) *http.Response {
+func postManifest(t *testing.T, baseURL string, manifest []byte, acknowledgements ...string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/install", bytes.NewReader(manifest))
+	query := url.Values{}
+	for _, acknowledgement := range acknowledgements {
+		query.Add("acknowledgeStorageWipe", acknowledgement)
+	}
+	endpoint := baseURL + "/v1/install"
+	if encoded := query.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(manifest))
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
@@ -334,9 +423,13 @@ func postManifest(t *testing.T, baseURL string, manifest []byte) *http.Response 
 	return resp
 }
 
-func postBundle(t *testing.T, baseURL, node, digest string, bundle []byte) *http.Response {
+func postBundle(t *testing.T, baseURL, node, digest string, bundle []byte, acknowledgements ...string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/config-bundle?node="+node+"&digest="+digest, bytes.NewReader(bundle))
+	query := url.Values{"node": []string{node}, "digest": []string{digest}}
+	for _, acknowledgement := range acknowledgements {
+		query.Add("acknowledgeStorageWipe", acknowledgement)
+	}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/config-bundle?"+query.Encode(), bytes.NewReader(bundle))
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
@@ -348,10 +441,14 @@ func postBundle(t *testing.T, baseURL, node, digest string, bundle []byte) *http
 }
 
 func validConfigBundle(t *testing.T) ([]byte, configbundle.Result) {
+	return configBundleFromSource(t, validBundleSourceConfig())
+}
+
+func configBundleFromSource(t *testing.T, source string) ([]byte, configbundle.Result) {
 	t.Helper()
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "cluster.yaml")
-	if err := os.WriteFile(sourcePath, []byte(validBundleSourceConfig()), 0o644); err != nil {
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	archive, result, err := configbundle.BuildArchive(configbundle.BuildRequest{SourcePath: sourcePath})

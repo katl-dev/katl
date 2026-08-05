@@ -897,6 +897,19 @@ func TestValidateConfigApplyRequestRejectsPersistedPathTraversal(t *testing.T) {
 	}
 }
 
+func TestValidateConfigApplyRequestAcceptsScopedStorageAcknowledgements(t *testing.T) {
+	request := ConfigApplyRequest{
+		ApplyMode: "live", ConfigYAML: "config", DestructiveStorageAcknowledgements: []string{"cp-1/data"},
+	}
+	if err := validateConfigApplyRequest(request); err != nil {
+		t.Fatalf("validateConfigApplyRequest() error = %v", err)
+	}
+	request.DestructiveStorageAcknowledgements = []string{"cp-1"}
+	if err := validateConfigApplyRequest(request); err == nil || !strings.Contains(err.Error(), "NODE/VOLUME") {
+		t.Fatalf("invalid acknowledgement error = %v", err)
+	}
+}
+
 func TestStoreRejectsKubernetesSysextUpdateBodyMismatch(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -3,6 +3,8 @@ package handoff
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/discovery"
+	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
@@ -28,13 +31,15 @@ type HandoffServer struct {
 	defaultKatlosImage manifest.KatlosImage
 	statusReader       func() (installstatus.Record, error)
 
-	mu       sync.Mutex
-	state    HandoffState
-	manifest []byte
-	bundle   []byte
-	nodeName string
-	status   installstatus.Record
-	disks    []HandoffDisk
+	mu                                 sync.Mutex
+	state                              HandoffState
+	manifest                           []byte
+	bundle                             []byte
+	nodeName                           string
+	destructiveStorageAcknowledgements []string
+	status                             installstatus.Record
+	disks                              []HandoffDisk
+	hardwareFacts                      discovery.HardwareFacts
 }
 
 type HandoffStatus struct {
@@ -59,8 +64,9 @@ type HandoffDisk struct {
 }
 
 type BundlePayload struct {
-	Data     []byte
-	NodeName string
+	Data                               []byte
+	NodeName                           string
+	DestructiveStorageAcknowledgements []string
 }
 
 func NewHandoffServer(validate func([]byte) error) *HandoffServer {
@@ -93,13 +99,21 @@ func (s *HandoffServer) Manifest() []byte {
 	return append([]byte(nil), s.manifest...)
 }
 
+func (s *HandoffServer) DestructiveStorageAcknowledgements() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]string(nil), s.destructiveStorageAcknowledgements...)
+}
+
 func (s *HandoffServer) Bundle() BundlePayload {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return BundlePayload{
-		Data:     append([]byte(nil), s.bundle...),
-		NodeName: s.nodeName,
+		Data:                               append([]byte(nil), s.bundle...),
+		NodeName:                           s.nodeName,
+		DestructiveStorageAcknowledgements: append([]string(nil), s.destructiveStorageAcknowledgements...),
 	}
 }
 
@@ -148,6 +162,7 @@ func (s *HandoffServer) PrepareRetry(status installstatus.Record) bool {
 	s.manifest = nil
 	s.bundle = nil
 	s.nodeName = ""
+	s.destructiveStorageAcknowledgements = nil
 	s.status = status
 	return true
 }
@@ -183,6 +198,7 @@ func (s *HandoffServer) SetHardwareFacts(facts discovery.HardwareFacts) {
 	sort.Slice(disks, func(i, j int) bool { return disks[i].Path < disks[j].Path })
 	s.mu.Lock()
 	s.disks = disks
+	s.hardwareFacts = facts
 	s.mu.Unlock()
 }
 
@@ -229,6 +245,15 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid manifest: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	acknowledgements, err := destructiveStorageAcknowledgements(r)
+	if err != nil {
+		http.Error(w, "invalid destructive storage acknowledgement: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.validateDestructiveStorageAuthority(decoded, decoded.Node.Identity.Hostname, acknowledgements); err != nil {
+		http.Error(w, err.Error(), destructiveStorageAuthorityStatus(err))
+		return
+	}
 	digest, err := installstatus.DigestManifest(decoded)
 	if err != nil {
 		http.Error(w, "invalid manifest: "+err.Error(), http.StatusBadRequest)
@@ -243,6 +268,7 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.manifest = append([]byte(nil), body...)
+	s.destructiveStorageAcknowledgements = acknowledgements
 	s.state = HandoffAccepted
 	status := installstatus.New(installstatus.StateRunning, time.Now().UTC())
 	status.InputMode = installstatus.InputModeLocalHandoff
@@ -279,6 +305,15 @@ func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid config bundle: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	acknowledgements, err := destructiveStorageAcknowledgements(r)
+	if err != nil {
+		http.Error(w, "invalid destructive storage acknowledgement: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.validateDestructiveStorageAuthority(selected.InstallManifest, selected.Node.Name, acknowledgements); err != nil {
+		http.Error(w, err.Error(), destructiveStorageAuthorityStatus(err))
+		return
+	}
 	digest, err := installstatus.DigestManifest(selected.InstallManifest)
 	if err != nil {
 		http.Error(w, "invalid config bundle: "+err.Error(), http.StatusBadRequest)
@@ -294,6 +329,7 @@ func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Reques
 
 	s.bundle = append([]byte(nil), body...)
 	s.nodeName = selected.Node.Name
+	s.destructiveStorageAcknowledgements = acknowledgements
 	s.state = HandoffAccepted
 	status := installstatus.New(installstatus.StateRunning, time.Now().UTC())
 	status.InputMode = installstatus.InputModeLocalHandoff
@@ -317,6 +353,47 @@ func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Reques
 	s.mu.Unlock()
 
 	writeJSON(w, response)
+}
+
+func destructiveStorageAcknowledgements(r *http.Request) ([]string, error) {
+	acknowledgements := append([]string(nil), r.URL.Query()["acknowledgeStorageWipe"]...)
+	for i := range acknowledgements {
+		acknowledgements[i] = strings.TrimSpace(acknowledgements[i])
+	}
+	sort.Strings(acknowledgements)
+	if err := disk.ValidateDestructiveVolumeAcknowledgementKeys(acknowledgements); err != nil {
+		return nil, err
+	}
+	return acknowledgements, nil
+}
+
+func (s *HandoffServer) validateDestructiveStorageAuthority(installManifest manifest.Manifest, nodeName string, acknowledgements []string) error {
+	s.mu.Lock()
+	facts := s.hardwareFacts
+	s.mu.Unlock()
+	if len(facts.BlockDevices) == 0 {
+		return nil
+	}
+	rootDisk, err := discovery.MatchDiskIdentity(facts, discovery.TargetDiskSelector{
+		ByID: installManifest.Install.TargetDisk.ByID, WWN: installManifest.Install.TargetDisk.WWN,
+		Serial: installManifest.Install.TargetDisk.Serial, MinSizeMiB: installManifest.Install.TargetDisk.MinSizeMiB,
+	})
+	if err != nil {
+		return fmt.Errorf("plan storage targets: resolve install root disk: %w", err)
+	}
+	plans, err := disk.PlanVolumes(facts, rootDisk, manifest.BuildVolumeRequests(installManifest.Install.Volumes))
+	if err != nil {
+		return fmt.Errorf("plan storage targets: %w", err)
+	}
+	return disk.ValidateDestructiveVolumeAcknowledgements(nodeName, plans, acknowledgements)
+}
+
+func destructiveStorageAuthorityStatus(err error) int {
+	var authorityErr *disk.DestructiveVolumeAuthorityError
+	if errors.As(err, &authorityErr) {
+		return http.StatusPreconditionRequired
+	}
+	return http.StatusBadRequest
 }
 
 func ValidateInstallManifestEnvelope(data []byte) error {

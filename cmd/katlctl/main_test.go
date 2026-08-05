@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2339,21 +2340,37 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 		"--config", configPath,
 		"--candidate-generation", "generation-auto",
 		"--client-request-id", "req-auto",
+		"--acknowledge-storage-wipe", "node-a/data",
 		"--output", "json",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" || fake.validateRequest.Actor != "katlctl node apply" {
+	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" || fake.validateRequest.Actor != "katlctl node apply" || !slices.Equal(fake.validateRequest.DestructiveStorageAcknowledgements, []string{"node-a/data"}) {
 		t.Fatalf("validate request = %+v", fake.validateRequest)
 	}
-	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.Actor != "katlctl node apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto {
+	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.Actor != "katlctl node apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto || !slices.Equal(fake.submitRequest.GetConfigApply().GetDestructiveStorageAcknowledgements(), []string{"node-a/data"}) {
 		t.Fatalf("submit request = %+v", fake.submitRequest)
 	}
 	if fake.stageRequest != nil || fake.applyRequest != nil {
 		t.Fatalf("direct mutation request was sent: stage=%+v apply=%+v", fake.stageRequest, fake.applyRequest)
 	}
 	assertSuccessfulMutationOutput(t, stdout.Bytes())
+}
+
+func TestNormalizeDestructiveStorageAcknowledgements(t *testing.T) {
+	got, err := normalizeDestructiveStorageAcknowledgements([]string{"worker-1/cache", " cp-1/data "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"cp-1/data", "worker-1/cache"}) {
+		t.Fatalf("normalized acknowledgements = %v", got)
+	}
+	for _, values := range [][]string{{"cp-1"}, {"CP-1/data"}, {"cp-1/data", "cp-1/data"}} {
+		if _, err := normalizeDestructiveStorageAcknowledgements(values); err == nil || !strings.Contains(err.Error(), "--acknowledge-storage-wipe") {
+			t.Fatalf("normalize invalid %v error = %v", values, err)
+		}
+	}
 }
 
 func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {

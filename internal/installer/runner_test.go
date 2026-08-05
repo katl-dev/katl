@@ -633,6 +633,43 @@ func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
 	}
 }
 
+func TestPlanInstallRequiresAuthorityForNonBlankStorageVolume(t *testing.T) {
+	file, err := os.Open(writeManifest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	installManifest, err := manifest.Decode(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installManifest.Install.Volumes = []manifest.Volume{{
+		Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "data"}}, Filesystem: "xfs", Wipe: true,
+	}}
+	payload := planningPayload()
+	install := &Context{
+		Manifest:    installManifest,
+		KatlosImage: &payload,
+		HardwareFacts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+			{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
+			{Path: "/dev/vdb", Type: discovery.DeviceDisk, Serial: "data", SizeBytes: 64 << 30, PartitionSignature: "gpt"},
+		}},
+	}
+	err = planInstall(install)
+	var authority *disk.DestructiveVolumeAuthorityError
+	if !errors.As(err, &authority) || !reflect.DeepEqual(authority.Required, []string{"lab-node-01/data"}) {
+		t.Fatalf("planInstall() error = %#v", err)
+	}
+	if install.DiskLayout != nil {
+		t.Fatal("refused install retained a disk layout")
+	}
+
+	install.DestructiveStorageAcknowledgements = []string{"lab-node-01/data"}
+	if err := planInstall(install); err != nil {
+		t.Fatalf("acknowledged planInstall() error = %v", err)
+	}
+}
+
 func TestRunnerCapturesRootUUIDAfterMountTarget(t *testing.T) {
 	store := &MemoryStateStore{}
 	payload := planningPayload()

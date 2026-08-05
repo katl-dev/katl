@@ -50,44 +50,45 @@ const (
 )
 
 type Context struct {
-	ManifestPath            string
-	StateDir                string
-	TargetRoot              string
-	BootRoot                string
-	Commands                CommandRunner
-	Store                   StateStore
-	Manifest                manifest.Manifest
-	LoaderRecord            *generation.Record
-	KatlosImage             *katlosimage.Payload
-	KatlosResolver          KatlosImageResolver
-	MediaKatlosResolver     KatlosImageResolver
-	DefaultKatlosImage      manifest.KatlosImage
-	KatlosImageFromMedia    bool
-	Discovery               discovery.DiscoverySource
-	HardwareFacts           discovery.HardwareFacts
-	RootProfile             manifest.RootDiskProfile
-	DiskLayout              *disk.DiskLayoutPlan
-	RootSlotPlan            *disk.RootSlotWritePlan
-	RootSlotTarget          disk.RootSlotDevice
-	RootSlotOpener          disk.RootSlotDeviceOpener
-	RootSlotInstaller       disk.RootSlotInstaller
-	CurrentRootSlot         disk.RootSlot
-	RootPartitionUUID       string
-	GenerationID            string
-	KubeadmConfigs          map[string]kubeadmconfig.Plan
-	SystemExtensionPayloads []configapply.SystemExtensionPayload
-	IdentityRandom          io.Reader
-	Completed               []StepID
-	Chown                   func(path string, uid int, gid int) error
-	InputMode               string
-	InputSource             string
-	RequestDigest           string
-	BundleDigest            string
-	SourceDigest            string
-	NodeMaterialDigest      string
-	InstallMaterialDigest   string
-	PreviousStatus          *installstatus.Record
-	ReportStep              func(StepID)
+	ManifestPath                       string
+	StateDir                           string
+	TargetRoot                         string
+	BootRoot                           string
+	Commands                           CommandRunner
+	Store                              StateStore
+	Manifest                           manifest.Manifest
+	LoaderRecord                       *generation.Record
+	KatlosImage                        *katlosimage.Payload
+	KatlosResolver                     KatlosImageResolver
+	MediaKatlosResolver                KatlosImageResolver
+	DefaultKatlosImage                 manifest.KatlosImage
+	KatlosImageFromMedia               bool
+	Discovery                          discovery.DiscoverySource
+	HardwareFacts                      discovery.HardwareFacts
+	RootProfile                        manifest.RootDiskProfile
+	DiskLayout                         *disk.DiskLayoutPlan
+	RootSlotPlan                       *disk.RootSlotWritePlan
+	RootSlotTarget                     disk.RootSlotDevice
+	RootSlotOpener                     disk.RootSlotDeviceOpener
+	RootSlotInstaller                  disk.RootSlotInstaller
+	CurrentRootSlot                    disk.RootSlot
+	RootPartitionUUID                  string
+	GenerationID                       string
+	KubeadmConfigs                     map[string]kubeadmconfig.Plan
+	SystemExtensionPayloads            []configapply.SystemExtensionPayload
+	IdentityRandom                     io.Reader
+	Completed                          []StepID
+	Chown                              func(path string, uid int, gid int) error
+	InputMode                          string
+	InputSource                        string
+	RequestDigest                      string
+	BundleDigest                       string
+	SourceDigest                       string
+	NodeMaterialDigest                 string
+	InstallMaterialDigest              string
+	DestructiveStorageAcknowledgements []string
+	PreviousStatus                     *installstatus.Record
+	ReportStep                         func(StepID)
 }
 
 type Step interface {
@@ -309,6 +310,9 @@ func planInstall(install *Context) error {
 	}
 	layout, err := disk.PlanDiskLayout(install.HardwareFacts, layoutRequest)
 	if err != nil {
+		return err
+	}
+	if err := disk.ValidateDestructiveVolumeAcknowledgements(inventoryNodeName(install.Manifest), layout.VolumeMounts, install.DestructiveStorageAcknowledgements); err != nil {
 		return err
 	}
 	rootPlan, err := disk.PlanRootSlotWrite(layout, disk.RootSlotWriteRequest{

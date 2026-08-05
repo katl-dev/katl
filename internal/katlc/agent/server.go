@@ -76,6 +76,7 @@ type Server struct {
 	RunEndpointLifecycle     ToolRunner
 	RunKubernetesStatus      ToolRunner
 	RunSystemExtensionStatus ToolRunner
+	RunVolumeDiscovery       ToolRunner
 	RunEtcd                  ToolRunner
 	RunReboot                ToolRunner
 	RunShutdown              ToolRunner
@@ -97,6 +98,7 @@ func NewServer(root string, store operation.Store) *Server {
 		RunEndpointLifecycle:     runChildProcess,
 		RunKubernetesStatus:      runChildProcess,
 		RunSystemExtensionStatus: runChildProcess,
+		RunVolumeDiscovery:       runChildProcess,
 		RunEtcd:                  runChildProcess,
 		RunReboot:                runChildProcess,
 		RunShutdown:              runChildProcess,
@@ -270,7 +272,7 @@ func (s *Server) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperat
 	if !req.DryRun && s.Dispatcher == nil {
 		return nil, status.Error(codes.FailedPrecondition, "agent executor is not configured")
 	}
-	created, dryRun, err := s.acceptOperation(req, digest)
+	created, dryRun, err := s.acceptOperation(ctx, req, digest)
 	if err != nil {
 		return nil, err
 	}
@@ -422,7 +424,7 @@ func (s *Server) joinDiscoveryKubeconfig(material cluster.JoinMaterial) ([]byte,
 	return cluster.RenderJoinDiscoveryKubeconfig(material, material.Argv[2], config.Clusters[0].Cluster.CertificateAuthorityData)
 }
 
-func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest string) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
+func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperationRequest, digest string) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	if existing, ok, err := s.findClientRequest(req.ClientRequestId); err != nil {
@@ -484,7 +486,7 @@ func (s *Server) acceptOperation(req *agentapi.SubmitOperationRequest, digest st
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "generate operation id: %v", err)
 	}
 	if req.GetConfigApply() != nil {
-		return s.acceptConfigApplyOperation(req, digest, id, locks, now)
+		return s.acceptConfigApplyOperation(ctx, req, digest, id, locks, now)
 	}
 	if req.GetKubeadmControlPlaneConfig() != nil {
 		return s.acceptKubeadmControlPlaneConfigOperation(req, digest, id, locks, now)

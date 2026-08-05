@@ -45,7 +45,7 @@ func main() {
 	}
 }
 
-func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSource string, stdout io.Writer) error {
+func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSource string, stdout io.Writer, destructiveStorageAcknowledgements ...string) error {
 	if manifestPath == "" {
 		return fmt.Errorf("--manifest is required unless --list-states, --version, --apply-input, or --boot is set")
 	}
@@ -56,7 +56,7 @@ func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSo
 		inputSource = manifestPath
 	}
 
-	install, err := manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource)
+	install, err := manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource, destructiveStorageAcknowledgements...)
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSo
 	return nil
 }
 
-func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string) (*installer.Context, error) {
+func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string, destructiveStorageAcknowledgements ...string) (*installer.Context, error) {
 	mediaRoot, err := manifestMediaRoot(manifestPath)
 	if err != nil {
 		return nil, err
@@ -102,18 +102,19 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 			WorkDir:   filepath.Join(stateDir, "katlos-image"),
 			Commands:  commands,
 		},
-		DefaultKatlosImage: media.Image,
-		Discovery:          discovery.NewCommandDiscoverySource(commands),
-		RootSlotOpener:     disk.FileRootSlotDeviceOpener{},
-		IdentityRandom:     rand.Reader,
-		Chown:              os.Lchown,
-		KubeadmConfigs:     kubeadmConfigs,
-		InputMode:          inputMode,
-		InputSource:        inputSource,
+		DefaultKatlosImage:                 media.Image,
+		Discovery:                          discovery.NewCommandDiscoverySource(commands),
+		RootSlotOpener:                     disk.FileRootSlotDeviceOpener{},
+		IdentityRandom:                     rand.Reader,
+		Chown:                              os.Lchown,
+		KubeadmConfigs:                     kubeadmConfigs,
+		InputMode:                          inputMode,
+		InputSource:                        inputSource,
+		DestructiveStorageAcknowledgements: append([]string(nil), destructiveStorageAcknowledgements...),
 	}, nil
 }
 
-func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, stateDir, inputMode, inputSource string, stdout io.Writer) error {
+func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, stateDir, inputMode, inputSource string, stdout io.Writer, destructiveStorageAcknowledgements ...string) error {
 	if strings.TrimSpace(bundlePath) == "" {
 		return fmt.Errorf("--bundle is required")
 	}
@@ -139,7 +140,7 @@ func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, st
 	if err != nil {
 		return err
 	}
-	install, err := bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSource, selected)
+	install, err := bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSource, selected, destructiveStorageAcknowledgements)
 	if err != nil {
 		return err
 	}
@@ -154,7 +155,7 @@ func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, st
 	return nil
 }
 
-func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSource string, selected configbundle.SelectedNodeMaterial) (*installer.Context, error) {
+func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSource string, selected configbundle.SelectedNodeMaterial, destructiveStorageAcknowledgements []string) (*installer.Context, error) {
 	mediaRoot, err := manifestMediaRoot(bundlePath)
 	if err != nil {
 		return nil, err
@@ -180,20 +181,21 @@ func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSou
 			WorkDir:   filepath.Join(stateDir, "katlos-image"),
 			Commands:  commands,
 		},
-		DefaultKatlosImage:      media.Image,
-		KatlosImageFromMedia:    selected.KatlosImageFromMedia,
-		Discovery:               discovery.NewCommandDiscoverySource(commands),
-		RootSlotOpener:          disk.FileRootSlotDeviceOpener{},
-		IdentityRandom:          rand.Reader,
-		Chown:                   os.Lchown,
-		KubeadmConfigs:          selected.KubeadmConfigs,
-		SystemExtensionPayloads: installSystemExtensionPayloads(selected.SystemExtensionPayloads),
-		InputMode:               inputMode,
-		InputSource:             inputSource,
-		BundleDigest:            selected.BundleDigest,
-		SourceDigest:            selected.SourceDigest,
-		NodeMaterialDigest:      selected.NodeMaterialDigest,
-		InstallMaterialDigest:   selected.InstallMaterialDigest,
+		DefaultKatlosImage:                 media.Image,
+		KatlosImageFromMedia:               selected.KatlosImageFromMedia,
+		Discovery:                          discovery.NewCommandDiscoverySource(commands),
+		RootSlotOpener:                     disk.FileRootSlotDeviceOpener{},
+		IdentityRandom:                     rand.Reader,
+		Chown:                              os.Lchown,
+		KubeadmConfigs:                     selected.KubeadmConfigs,
+		SystemExtensionPayloads:            installSystemExtensionPayloads(selected.SystemExtensionPayloads),
+		InputMode:                          inputMode,
+		InputSource:                        inputSource,
+		BundleDigest:                       selected.BundleDigest,
+		SourceDigest:                       selected.SourceDigest,
+		NodeMaterialDigest:                 selected.NodeMaterialDigest,
+		InstallMaterialDigest:              selected.InstallMaterialDigest,
+		DestructiveStorageAcknowledgements: append([]string(nil), destructiveStorageAcknowledgements...),
 	}, nil
 }
 
@@ -628,7 +630,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 				return fmt.Errorf("write handoff config bundle: %w", err)
 			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted bundle=%s node=%s\n", bundlePath, bundle.NodeName)
-			err := runBundle(ctx, bundlePath, bundle.NodeName, "", filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, bundlePath, stdout)
+			err := runBundle(ctx, bundlePath, bundle.NodeName, "", filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, bundlePath, stdout, bundle.DestructiveStorageAcknowledgements...)
 			if prepareHandoffRetry(server, runDir, err, stdout) {
 				continue
 			}
@@ -648,7 +650,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 				return err
 			}
 			fmt.Fprintf(stdout, "katlos-install handoff accepted manifest=%s\n", manifestPath)
-			err := runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath, stdout)
+			err := runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), installstatus.InputModeLocalHandoff, manifestPath, stdout, server.DestructiveStorageAcknowledgements()...)
 			if prepareHandoffRetry(server, runDir, err, stdout) {
 				continue
 			}

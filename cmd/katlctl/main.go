@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -23,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
@@ -2024,18 +2026,19 @@ func configApplySystemExtensionPayloads(payloads []configbundle.SystemExtensionP
 }
 
 type configApplyOptions struct {
-	endpoint            string
-	workstationConfig   string
-	contextName         string
-	nodeConfig          nodeConfigInputOptions
-	mode                string
-	candidateGeneration string
-	clientRequestID     string
-	actor               string
-	plan                bool
-	noWait              bool
-	waitTimeout         time.Duration
-	output              string
+	endpoint                           string
+	workstationConfig                  string
+	contextName                        string
+	nodeConfig                         nodeConfigInputOptions
+	mode                               string
+	candidateGeneration                string
+	clientRequestID                    string
+	actor                              string
+	plan                               bool
+	noWait                             bool
+	waitTimeout                        time.Duration
+	output                             string
+	destructiveStorageAcknowledgements []string
 }
 
 var configApplyNow = func() time.Time { return time.Now().UTC() }
@@ -2105,6 +2108,7 @@ func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
+	cmd.Flags().StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "authorize overwriting one non-blank node volume as NODE/VOLUME (repeatable)")
 }
 
 func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr io.Writer) error {
@@ -2113,6 +2117,10 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	}
 	if opts.waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
+	}
+	acknowledgements, err := normalizeDestructiveStorageAcknowledgements(opts.destructiveStorageAcknowledgements)
+	if err != nil {
+		return err
 	}
 	requestID, err := clientRequestID(opts.clientRequestID)
 	if err != nil {
@@ -2154,14 +2162,15 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	defer conn.Close()
 	if opts.plan {
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
-			ApiVersion:            operation.APIVersion,
-			Kind:                  "ValidateConfigRequest",
-			ClientRequestId:       requestID,
-			Actor:                 opts.actor,
-			ApplyMode:             opts.mode,
-			CandidateGenerationId: opts.candidateGeneration,
-			NodeName:              opts.nodeConfig.nodeName,
-			ConfigYaml:            string(configYAML),
+			ApiVersion:                         operation.APIVersion,
+			Kind:                               "ValidateConfigRequest",
+			ClientRequestId:                    requestID,
+			Actor:                              opts.actor,
+			ApplyMode:                          opts.mode,
+			CandidateGenerationId:              opts.candidateGeneration,
+			NodeName:                           opts.nodeConfig.nodeName,
+			ConfigYaml:                         string(configYAML),
+			DestructiveStorageAcknowledgements: acknowledgements,
 		})
 		if err != nil {
 			return err
@@ -2191,13 +2200,14 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	}
 	requestedMode := strings.TrimSpace(opts.mode)
 	req := &agentapi.GenerationApplyRequest{
-		ApiVersion:            operation.APIVersion,
-		Kind:                  "GenerationApplyRequest",
-		ClientRequestId:       requestID,
-		Actor:                 opts.actor,
-		CandidateGenerationId: opts.candidateGeneration,
-		NodeName:              opts.nodeConfig.nodeName,
-		ConfigYaml:            string(configYAML),
+		ApiVersion:                         operation.APIVersion,
+		Kind:                               "GenerationApplyRequest",
+		ClientRequestId:                    requestID,
+		Actor:                              opts.actor,
+		CandidateGenerationId:              opts.candidateGeneration,
+		NodeName:                           opts.nodeConfig.nodeName,
+		ConfigYaml:                         string(configYAML),
+		DestructiveStorageAcknowledgements: acknowledgements,
 	}
 	var accepted *agentapi.OperationAccepted
 	switch requestedMode {
@@ -2207,14 +2217,15 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		accepted, err = conn.Client.StageGeneration(ctx, req)
 	case generation.ApplyModeAuto:
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
-			ApiVersion:            operation.APIVersion,
-			Kind:                  "ValidateConfigRequest",
-			ClientRequestId:       requestID,
-			Actor:                 opts.actor,
-			ApplyMode:             requestedMode,
-			CandidateGenerationId: opts.candidateGeneration,
-			NodeName:              opts.nodeConfig.nodeName,
-			ConfigYaml:            string(configYAML),
+			ApiVersion:                         operation.APIVersion,
+			Kind:                               "ValidateConfigRequest",
+			ClientRequestId:                    requestID,
+			Actor:                              opts.actor,
+			ApplyMode:                          requestedMode,
+			CandidateGenerationId:              opts.candidateGeneration,
+			NodeName:                           opts.nodeConfig.nodeName,
+			ConfigYaml:                         string(configYAML),
+			DestructiveStorageAcknowledgements: acknowledgements,
 		})
 		if err != nil {
 			return err
@@ -2253,10 +2264,11 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			OperationKind:   operationKind,
 			Actor:           opts.actor,
 			ConfigApply: &agentapi.ConfigApplyOperationRequest{
-				CandidateGenerationId: opts.candidateGeneration,
-				ApplyMode:             requestedMode,
-				NodeName:              opts.nodeConfig.nodeName,
-				ConfigYaml:            string(configYAML),
+				CandidateGenerationId:              opts.candidateGeneration,
+				ApplyMode:                          requestedMode,
+				NodeName:                           opts.nodeConfig.nodeName,
+				ConfigYaml:                         string(configYAML),
+				DestructiveStorageAcknowledgements: acknowledgements,
 			},
 		})
 	default:
@@ -2280,6 +2292,18 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		return err
 	}
 	return operationResultError(terminal)
+}
+
+func normalizeDestructiveStorageAcknowledgements(values []string) ([]string, error) {
+	normalized := make([]string, len(values))
+	for i, value := range values {
+		normalized[i] = strings.TrimSpace(value)
+	}
+	sort.Strings(normalized)
+	if err := disk.ValidateDestructiveVolumeAcknowledgementKeys(normalized); err != nil {
+		return nil, fmt.Errorf("--acknowledge-storage-wipe: %w", err)
+	}
+	return normalized, nil
 }
 
 func isRenderedNodeConfig(path string) bool {

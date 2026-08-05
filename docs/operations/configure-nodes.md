@@ -57,6 +57,16 @@ node, proves Kubernetes and stacked-etcd removal where required, reports what
 disk state is preserved, and stops before installer formatting. See
 [Wipe and reinstall KatlOS](wipe-reinstall.md#plan-one-node-replacement).
 
+## Destructive Storage Changes
+
+`wipe: true` on a node volume requests formatting but does not authorize an
+operation to overwrite existing contents. `cluster apply` validates every node
+before mutation. When discovery finds data or disk metadata on a destructive
+target, it refuses the whole apply and reports one or more exact
+`--acknowledge-storage-wipe NODE/VOLUME` flags. Inspect those targets and repeat
+the command with only the acknowledgements you intend. Blank targets need no
+flag, and acknowledgements are not retained for later applies.
+
 ## Configure Kernel Arguments
 
 Set `kernel.commandLine` under defaults or a concrete node:

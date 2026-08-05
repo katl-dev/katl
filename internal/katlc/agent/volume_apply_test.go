@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -108,12 +111,106 @@ func TestApplyVolumesPreflightsBeforeStoppingExistingMount(t *testing.T) {
 			return ToolResult{Err: fmt.Errorf("unexpected command %q", argv[0]), ExitStatus: 1}
 		}
 	}
-	err := (&Executor{RunTool: runner}).applyVolumes(context.Background(), current, desired)
+	err := (&Executor{RunTool: runner}).applyVolumes(context.Background(), current, desired, "node-a", nil)
 	if err == nil || !strings.Contains(err.Error(), "partition selector matched no partitions") {
 		t.Fatalf("applyVolumes() error = %v, want missing partition", err)
 	}
 	if systemctlCalled {
 		t.Fatal("applyVolumes() stopped the existing mount before preflight completed")
+	}
+}
+
+func TestDestructiveStorageAuthorityUsesDiscoveredTargetState(t *testing.T) {
+	current := manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}}}
+	desired := current
+	desired.Install.Volumes = []manifest.Volume{{
+		Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "data"}}, Filesystem: "xfs", Wipe: true,
+	}}
+
+	for _, test := range []struct {
+		name             string
+		partitionTable   string
+		acknowledgements []string
+		wantRequired     []string
+		wantError        bool
+	}{
+		{name: "blank target is automatic"},
+		{name: "non-blank target is refused", partitionTable: "gpt", wantRequired: []string{"cp-1/data"}, wantError: true},
+		{name: "named non-blank target is authorized", partitionTable: "gpt", acknowledgements: []string{"cp-1/data"}, wantRequired: []string{"cp-1/data"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := volumeAuthorityRunner(test.partitionTable, nil)
+			server := newTestServer(t)
+			server.RunVolumeDiscovery = runner
+			required, err := server.validateDestructiveStorageAuthority(context.Background(), "cp-1", current, desired, test.acknowledgements)
+			if !slices.Equal(required, test.wantRequired) {
+				t.Fatalf("required acknowledgements = %v, want %v", required, test.wantRequired)
+			}
+			var authority *disk.DestructiveVolumeAuthorityError
+			if errors.As(err, &authority) != test.wantError {
+				t.Fatalf("authority error = %v, want error %t", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestApplyVolumesRefusesNonBlankTargetBeforeMutation(t *testing.T) {
+	current := manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}}}
+	desired := current
+	desired.Install.Volumes = []manifest.Volume{{
+		Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "data"}}, Filesystem: "xfs", Wipe: true,
+	}}
+	var mutations [][]string
+	runner := volumeAuthorityRunner("gpt", &mutations)
+	err := (&Executor{RunTool: runner}).applyVolumes(context.Background(), current, desired, "cp-1", nil)
+	var authority *disk.DestructiveVolumeAuthorityError
+	if !errors.As(err, &authority) || !reflect.DeepEqual(authority.Required, []string{"cp-1/data"}) {
+		t.Fatalf("applyVolumes() error = %#v", err)
+	}
+	if len(mutations) != 0 {
+		t.Fatalf("destructive storage refusal ran mutating tools: %v", mutations)
+	}
+}
+
+func TestApplyVolumesMutatesNonBlankTargetOnlyWithNamedAuthority(t *testing.T) {
+	current := manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}}}
+	desired := current
+	desired.Install.Volumes = []manifest.Volume{{
+		Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "data"}}, Filesystem: "xfs", Wipe: true,
+	}}
+	var mutations [][]string
+	runner := volumeAuthorityRunner("gpt", &mutations)
+	err := (&Executor{Root: t.TempDir(), RunTool: runner}).applyVolumes(context.Background(), current, desired, "cp-1", []string{"cp-1/data"})
+	if err != nil {
+		t.Fatalf("applyVolumes() error = %v", err)
+	}
+	if len(mutations) != 2 || mutations[0][0] != "systemd-repart" || mutations[1][0] != "udevadm" {
+		t.Fatalf("acknowledged volume mutations = %v", mutations)
+	}
+}
+
+func volumeAuthorityRunner(partitionTable string, mutations *[][]string) ToolRunner {
+	return func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		switch argv[0] {
+		case "lsblk":
+			pttype := ""
+			if partitionTable != "" {
+				pttype = `,"pttype":"` + partitionTable + `"`
+			}
+			return ToolResult{Stdout: []byte(`{"blockdevices":[` +
+				`{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[]},` +
+				`{"name":"vdb","path":"/dev/vdb","type":"disk","serial":"data","size":68719476736,"ro":false,"mountpoints":[]` + pttype + `}` +
+				`]}`)}
+		case "findmnt":
+			return ToolResult{Stdout: []byte(`{"filesystems":[]}`)}
+		case "ip":
+			return ToolResult{Stdout: []byte(`[]`)}
+		default:
+			if mutations != nil {
+				*mutations = append(*mutations, append([]string(nil), argv...))
+			}
+			return ToolResult{}
+		}
 	}
 }
 

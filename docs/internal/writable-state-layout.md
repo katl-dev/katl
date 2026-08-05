@@ -28,9 +28,14 @@ Kubernetes, or generation state.
 Each volume selects exactly one whole disk or one partition. `wipe: false` is
 the preservation path: the selected target must already contain the requested
 filesystem. A disk selector resolves its convention-labelled partition.
-`wipe: true` formats the selected target; for a disk selector Katl reinitializes
-the disk with a single convention-labelled partition through
-`systemd-repart`, while a partition selector never repartitions its parent.
+`wipe: true` requests formatting of the selected target; for a disk selector
+Katl reinitializes the disk with a single convention-labelled partition through
+`systemd-repart`, while a partition selector never repartitions its parent. It
+does not itself grant destructive authority. A blank target is provisioned
+automatically. A target with any discovered partition-table, partition, or
+filesystem signature requires an operation-level `NODE/VOLUME`
+acknowledgement, checked again immediately before destructive preparation. The
+acknowledgement is carried in the operation record and never in desired state.
 The supported filesystems are `ext4`, `xfs`, and `btrfs`.
 
 ## Etcd Data Placement
