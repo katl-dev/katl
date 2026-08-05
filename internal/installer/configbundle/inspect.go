@@ -492,6 +492,9 @@ func appendNamedChange(diff *ConfigDiff, path string, before, after any) {
 		return
 	}
 	classification, operation, message := classifyDiffPath(path)
+	if strings.Contains(path, ".storage.disks") && after == nil {
+		message = "removal unmounts the volume and stops Katl management; the partition, filesystem, and data are preserved"
+	}
 	diff.Changes = append(diff.Changes, ConfigFieldChange{Path: path, Before: before, After: after, Classification: classification, RequiredOperation: operation, Message: message})
 }
 

@@ -1,0 +1,15 @@
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: storage-operator
+  desiredVersion: "1"
+spec:
+  nodeOverrides:
+    cp-1:
+      volumes:
+        - name: data
+          selector:
+            disk:
+              serial: katl-data
+          filesystem: xfs
+          wipe: true

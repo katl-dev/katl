@@ -54,6 +54,7 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		Image:         runtime.Disk,
 		ImageFormat:   diskFormat(runtime.DiskFormat),
 		ImageSnapshot: true,
+		ImageSerial:   "katl-root",
 	}
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true

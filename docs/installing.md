@@ -233,6 +233,14 @@ filesystem, and `wipe: false`. Stable disk or partition identity and
 `spec.defaults` so one inherited value cannot select or erase storage across
 the cluster.
 
+Removing a volume is non-destructive. Set an inherited entry to
+`state: absent`, omit a node-specific entry from the desired collection, or
+use `storage.disks: []` to clear all inherited volumes for that node. Online
+apply first unmounts `/var/mnt/<name>`, then removes Katl's generated mount
+unit and stops managing the target. It does not format, repartition, run
+`wipefs`, or erase the partition, filesystem, mount-point directory, or data.
+Re-adding a matching selector mounts the preserved filesystem again.
+
 A disk-backed entry with `wipe: true` requests reinitialization of the selected
 disk. It is desired state, not permission to overwrite existing contents. Katl
 uses `systemd-repart` to create and format its convention-labelled partition:
