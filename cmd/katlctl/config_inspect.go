@@ -65,7 +65,10 @@ func newConfigDiffCommand(stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve after config: %w", err)
 			}
-			report := configbundle.DiffNodeResolutions(before, after)
+			report, err := configbundle.DiffNodeResolutions(before, after)
+			if err != nil {
+				return err
+			}
 			if opts.output == "text" {
 				return writeConfigDiffText(stdout, report)
 			}

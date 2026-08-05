@@ -415,7 +415,10 @@ type DiffClassification struct {
 	RequiredOperations []string `json:"requiredOperations,omitempty" yaml:"requiredOperations,omitempty"`
 }
 
-func DiffNodeResolutions(before, after NodeResolution) ConfigDiff {
+func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
+	if before.Node != after.Node {
+		return ConfigDiff{}, fmt.Errorf("config diff resolved different nodes %q and %q; use --node to compare one stable node identity; node renames require an explicit lifecycle operation", before.Node, after.Node)
+	}
 	base := fmt.Sprintf("spec.nodes[%q]", after.Node)
 	if after.Node == "" {
 		base = fmt.Sprintf("spec.nodes[%q]", before.Node)
@@ -456,7 +459,7 @@ func DiffNodeResolutions(before, after NodeResolution) ConfigDiff {
 	add(base+".management.address", before.Effective.Management.Address, after.Effective.Management.Address)
 	sort.Slice(diff.Changes, func(i, j int) bool { return diff.Changes[i].Path < diff.Changes[j].Path })
 	diff.Classification = summarizeDiff(diff.Changes)
-	return diff
+	return diff, nil
 }
 
 func appendNamedChange(diff *ConfigDiff, path string, before, after any) {

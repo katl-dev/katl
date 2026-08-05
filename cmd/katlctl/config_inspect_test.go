@@ -114,6 +114,28 @@ func TestConfigResolveRequiresSelectionForMultipleNodes(t *testing.T) {
 	}
 }
 
+func TestConfigDiffRefusesDifferentInferredNodes(t *testing.T) {
+	dir := t.TempDir()
+	beforePath := filepath.Join(dir, "before.yaml")
+	afterPath := filepath.Join(dir, "after.yaml")
+	before := configInspectionSource()
+	after := strings.Replace(before, "name: cp-1", "name: cp-2", 1)
+	if err := os.WriteFile(beforePath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(afterPath, []byte(after), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"config", "diff", beforePath, afterPath}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), `config diff resolved different nodes "cp-1" and "cp-2"`) || !strings.Contains(err.Error(), "node renames require an explicit lifecycle operation") {
+		t.Fatalf("run() error = %v, want cross-node lifecycle refusal", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want empty", stdout.String(), stderr.String())
+	}
+}
+
 func configInspectionSource() string {
 	source := strings.Replace(configBundleSource(), "  nodes:\n", `    storage:
       disks:
