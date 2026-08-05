@@ -142,6 +142,11 @@ internally.
 image embedded in the release ISO. Replace the SSH key, node addresses, and
 stable disk IDs:
 
+Run `katlctl config validate ./cluster.yaml` while authoring. One run reports
+all independent source-policy and effective per-node errors in stable public
+field-path order, names the affected node, and includes YAML line numbers when
+the source location is available.
+
 ```yaml
 apiVersion: config.katl.dev/v1alpha1
 kind: ClusterConfig

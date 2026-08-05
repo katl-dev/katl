@@ -520,7 +520,13 @@ func validateBootstrapIntent(intent BootstrapIntent) error {
 	if err := validateBootstrapAccess(intent.Access); err != nil {
 		return err
 	}
-	for key, value := range intent.Labels {
+	labelKeys := make([]string, 0, len(intent.Labels))
+	for key := range intent.Labels {
+		labelKeys = append(labelKeys, key)
+	}
+	sort.Strings(labelKeys)
+	for _, key := range labelKeys {
+		value := intent.Labels[key]
 		if strings.TrimSpace(key) == "" {
 			return fmt.Errorf("node.bootstrap.labels contains an empty key")
 		}
@@ -561,6 +567,12 @@ func validateBootstrapIntent(intent BootstrapIntent) error {
 		}
 	}
 	return nil
+}
+
+// ValidateKubernetesMetadata validates operator-authored node labels and
+// taints without requiring the rest of a compiled bootstrap intent.
+func ValidateKubernetesMetadata(labels map[string]string, taints []NodeTaint) error {
+	return validateBootstrapIntent(BootstrapIntent{Labels: labels, Taints: taints})
 }
 
 func validateBootstrapAccess(access BootstrapAccess) error {
