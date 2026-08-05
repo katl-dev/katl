@@ -40,7 +40,7 @@ func publicManifestMessage(message string) string {
 		{"node.bootstrap.inventoryNodeName", "name"},
 		{"node.bootstrap.clusterName", "metadata.name"},
 		{"install.targetDisk", "install.systemDisk"},
-		{"install.volumes", "storage.disks"},
+		{"install.volumes", "storage.volumes"},
 	}
 	for _, replacement := range replacements {
 		if strings.HasPrefix(message, replacement.internal) {
@@ -76,7 +76,7 @@ func publicCompilerMessage(message string) string {
 		"spec.kubernetes.payloadVersion", "spec.kubernetes.version",
 		"spec.defaults.install.targetDisk", "spec.defaults.install.systemDisk",
 		"install.targetDisk", "install.systemDisk",
-		"install.volumes", "storage.disks",
+		"install.volumes", "storage.volumes",
 	)
 	return replacer.Replace(message)
 }

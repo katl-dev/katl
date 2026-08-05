@@ -48,19 +48,31 @@ Katl selects its control-plane and worker kubeadm profiles internally from
 model may supply one bounded cluster-wide kubeadm file and optional patch
 directory. They never name or select the generated profiles.
 
-Layering follows one source-level rule: omitted node fields inherit from
-`spec.defaults`, while explicitly supplied node values replace the
-corresponding default values. Empty maps and lists therefore clear inherited
-values. Lists without a stable identity replace wholesale. Named collections
-compose by name: a node entry replaces the default entry with the same name,
-and `state: absent` removes it. Structured disk selectors compose by supplied
-field so a common size constraint can be combined with a node-specific durable
-identifier.
+Layering is defined by collection shape:
+
+- Scalars and structured selectors inherit omitted fields. Supplied values
+  replace the corresponding field; an empty identity string or `false` clears
+  that inherited field.
+- Anonymous lists, including kernel command-line entries, SSH keys, sysfs
+  settings, and Kubernetes taints, replace wholesale. An explicit `[]` clears
+  the inherited list.
+- Maps such as Kubernetes labels merge by key. An explicit `{}` clears the
+  inherited map.
+- Named file sets and system extensions compose by name. A node entry replaces
+  the complete default entry with that name, `state: absent` removes it, and an
+  explicit empty collection clears all inherited entries.
+- Storage volumes deliberately differ from other named collections. They
+  compose by name, but a same-name node entry inherits individual omitted
+  fields, including selector constraints, filesystem, and `wipe`. This lets a
+  default minimum-size or filesystem policy combine with a node-specific
+  identity. Switching between `disk` and `partition` replaces the selector
+  kind. `state: absent` removes a named volume and `volumes: []` clears the
+  collection without erasing its storage.
 
 Storage defaults are policy, never target identity or destructive authority.
 They may carry fields such as `minSizeMiB`, `filesystem`, and explicit
 `wipe: false`. Katl rejects default `byID`, `wwn`, `serial`, every partition
-selector (including the convention-derived empty selector), `partUUID`,
+selector (including `byVolumeName: true`), `partUUID`,
 `filesystemUUID`, and `wipe: true`. Those choices must appear on the concrete
 node volume that they affect.
 
@@ -72,7 +84,7 @@ acknowledgement is never persisted in ClusterConfig or inherited by later
 operations.
 
 Storage removal is a management transition, not a data transition. An empty
-node `storage.disks` collection clears inherited volumes, and an entry with
+node `storage.volumes` collection clears inherited volumes, and an entry with
 `state: absent` removes the inherited entry of the same name. Live apply stops
 the Katl-managed `/var/mnt/<name>` mount before removing its generated unit.
 The underlying partition table, partition, filesystem, and data are preserved;
@@ -139,7 +151,7 @@ spec:
       systemDisk:
         minSizeMiB: 32768
     storage:
-      disks:
+      volumes:
         - name: data
           selector:
             disk:
@@ -161,7 +173,7 @@ spec:
         systemDisk:
           byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
       storage:
-        disks:
+        volumes:
           - name: data
             selector:
               disk:
@@ -217,7 +229,7 @@ destructive selectors.
 `defaults.install.systemDisk` may contain only non-identifying constraints such
 as minimum size. It cannot select a disk for several nodes. A node's
 `install.systemDisk` supplies the durable identity and may override common
-constraints. `storage.disks` describes persistent desired data-disk state
+constraints. `storage.volumes` describes persistent desired data-disk state
 rather than a one-time installation input.
 
 The decision to execute a destructive install belongs to the install operation,
@@ -270,7 +282,7 @@ node-identity migration. Normal config apply keeps the requested field visible
 but refuses the change with a kubeadm-aware operation requirement; set the
 address in the ClusterConfig used for installation.
 
-`install.systemDisk` is consumed by installation. `storage.disks` remains
+`install.systemDisk` is consumed by installation. `storage.volumes` remains
 persistent node intent and is reconciled by supported configuration workflows.
 Kubernetes version changes are handled by the Kubernetes upgrade workflow
 rather than ordinary node configuration apply.

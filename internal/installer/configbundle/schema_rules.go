@@ -122,22 +122,22 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return description("Systemd units and drop-ins activated with the extension.")
 	case "configbundle.SourceInstallLayer.systemDisk":
 		return description("System disk selector. Defaults may provide only non-identifying size policy; each effective node requires one stable identity.")
-	case "configbundle.SourceStorageLayer.disks":
+	case "configbundle.SourceStorageLayer.volumes":
 		return description("Named whole-disk or partition-backed volumes.")
-	case "configbundle.SourceStorageDisk.name":
+	case "configbundle.SourceStorageVolume.name":
 		return stringRule("Volume name used to derive its GPT label and /var/mnt path.", dnsLabelPattern, 1, 63)
-	case "configbundle.SourceStorageDisk.state":
+	case "configbundle.SourceStorageVolume.state":
 		return enumRule("Whether Katl manages or stops managing this volume.", "present", "", "present", "absent")
-	case "configbundle.SourceStorageDisk.selector":
+	case "configbundle.SourceStorageVolume.selector":
 		return description("Exactly one whole-disk or partition selector.")
-	case "configbundle.SourceStorageDisk.filesystem":
+	case "configbundle.SourceStorageVolume.filesystem":
 		return enumRule("Filesystem required on the selected target.", nil, "xfs", "ext4", "btrfs")
-	case "configbundle.SourceStorageDisk.wipe":
+	case "configbundle.SourceStorageVolume.wipe":
 		return schemaFieldRule{Description: "Whether provisioning may format the selected target.", Default: false}
 	case "configbundle.SourceVolumeSelector.disk":
 		return description("Select a safe whole disk.")
 	case "configbundle.SourceVolumeSelector.partition":
-		return description("Select an existing partition; an empty object uses the u-{volume-name} GPT label convention.")
+		return description("Select an existing partition using one stable identity or the explicit volume-name convention.")
 	case "configbundle.SourceDiskSelector.byID":
 		return stringRule("Absolute stable /dev/disk/by-id path; an empty value clears an inherited identity.", `^(?:|/dev/disk/by-id/[^/]+)$`, 0, 0)
 	case "configbundle.SourceDiskSelector.wwn":
@@ -152,6 +152,8 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return schemaFieldRule{Description: "GPT partition UUID; an empty value clears an inherited identity.", Pattern: `^(?:|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$`}
 	case "configbundle.SourcePartitionSelector.filesystemUUID":
 		return description("Existing filesystem UUID; an empty value clears an inherited identity.")
+	case "configbundle.SourcePartitionSelector.byVolumeName":
+		return schemaFieldRule{Description: "Select the convention-derived u-{volume-name} GPT label.", Default: false}
 	case "configbundle.SourceKubernetesCluster.version":
 		return schemaFieldRule{Required: true, Description: "Exact Kubernetes patch version compiled into the cluster.", Pattern: `^v[0-9]+\.[0-9]+\.[0-9]+$`, MinLength: intPointer(1)}
 	case "configbundle.SourceKubernetesCluster.kubeadm":
@@ -250,7 +252,12 @@ func sourceSchemaTypeRule(t reflect.Type) schemaTypeRule {
 	case "configbundle.SourceDiskSelector":
 		return schemaTypeRule{OneOf: atMostOneRequired("byID", "wwn", "serial")}
 	case "configbundle.SourcePartitionSelector":
-		return schemaTypeRule{OneOf: atMostOneRequired("byID", "partUUID", "filesystemUUID")}
+		return schemaTypeRule{OneOf: exactlyOneActive(
+			nonEmptyRequired("byID"),
+			nonEmptyRequired("partUUID"),
+			nonEmptyRequired("filesystemUUID"),
+			trueRequired("byVolumeName"),
+		)}
 	case "manifest.HostConfigurationFile":
 		return schemaTypeRule{OneOf: exactlyOneRequired("content", "source")}
 	case "manifest.SystemExtensionUnitDropIn":
@@ -296,6 +303,33 @@ func nonEmptyRequired(field string) schemaObject {
 			field: {Not: &schemaObject{Const: ""}},
 		},
 	}
+}
+
+func trueRequired(field string) schemaObject {
+	return schemaObject{
+		Required: []string{field},
+		Properties: map[string]schemaObject{
+			field: {Const: true},
+		},
+	}
+}
+
+func exactlyOneActive(active ...schemaObject) []schemaObject {
+	branches := make([]schemaObject, 0, len(active))
+	for i := range active {
+		others := make([]schemaObject, 0, len(active)-1)
+		for j := range active {
+			if i != j {
+				others = append(others, active[j])
+			}
+		}
+		branches = append(branches, schemaObject{
+			Required:   active[i].Required,
+			Properties: active[i].Properties,
+			Not:        &schemaObject{AnyOf: others},
+		})
+	}
+	return branches
 }
 
 const (

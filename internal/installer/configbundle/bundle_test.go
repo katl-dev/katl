@@ -133,7 +133,7 @@ func TestDecodeSourceAcceptsKernelCommandLineDefaultsAndNodeClear(t *testing.T) 
 	}
 }
 
-func TestLowerSourceAppliesPredictableNodeLayering(t *testing.T) {
+func TestLowerSourceAppliesDocumentedLayeringContract(t *testing.T) {
 	config, err := DecodeSource(strings.NewReader(`apiVersion: config.katl.dev/v1alpha1
 kind: ClusterConfig
 metadata:
@@ -167,7 +167,7 @@ spec:
       systemDisk:
         minSizeMiB: 65536
     storage:
-      disks:
+      volumes:
         - name: data
           selector:
             disk:
@@ -206,7 +206,7 @@ spec:
         systemDisk:
           byID: /dev/disk/by-id/cleared-root
       storage:
-        disks: []
+        volumes: []
       kubernetes:
         labels: {}
         taints: []
@@ -228,7 +228,7 @@ spec:
         systemDisk:
           byID: /dev/disk/by-id/overridden-root
       storage:
-        disks:
+        volumes:
           - name: data
             selector:
               disk:
@@ -282,19 +282,32 @@ spec:
 		t.Fatalf("named system extensions did not replace or remove by name: %#v", overridden.SystemExtensions)
 	}
 	if len(overridden.Install.Volumes) != 1 {
-		t.Fatalf("named storage disks did not replace or remove by name: %#v", overridden.Install.Volumes)
+		t.Fatalf("named storage volumes did not compose or remove by name: %#v", overridden.Install.Volumes)
 	}
 	data := overridden.Install.Volumes[0]
 	if data.Name != "data" || data.Selector.Disk == nil ||
 		data.Selector.Disk.ByID != "/dev/disk/by-id/overridden-data" ||
 		data.Selector.Disk.MinSizeMiB != 1024 || data.Filesystem != "btrfs" || !data.Wipe {
-		t.Fatalf("storage disk fields did not inherit and override predictably: %#v", data)
+		t.Fatalf("storage volume fields did not inherit and override predictably: %#v", data)
 	}
 	if got := overridden.Kubernetes.NodeLabels; len(got) != 2 || got["environment"] != "lab" || got["topology.kubernetes.io/zone"] != "rack-b" {
 		t.Fatalf("labels did not replace values by key: %#v", got)
 	}
 	if got := overridden.Kubernetes.NodeTaints; len(got) != 1 || got[0].Key != "dedicated" {
 		t.Fatalf("taints did not replace the inherited list: %#v", got)
+	}
+}
+
+func TestBuildArchiveRequiresExplicitPartitionSelector(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), `            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-cp-data
+`, `            selector:
+              partition: {}
+`, 1)
+	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+	if err == nil || !strings.Contains(err.Error(), "spec.nodes[\"cp-1\"].storage.volumes[0].selector.partition must set exactly one of byID, partUUID, filesystemUUID, or byVolumeName: true") {
+		t.Fatalf("BuildArchive() error = %v, want explicit partition selector", err)
 	}
 }
 
@@ -313,7 +326,7 @@ spec:
       hostConfiguration:
         fileSets: {}
       storage:
-        disks: []
+        volumes: []
       kubernetes:
         labels: {}
         taints: []
@@ -331,11 +344,11 @@ spec:
 	}
 	node := roundTripped.Spec.Nodes[0]
 	for name, present := range map[string]bool{
-		"authorizedKeys": optionalIsSet(node.Access.SSH.AuthorizedKeys),
-		"fileSets":       optionalIsSet(node.HostConfiguration.FileSets),
-		"storage.disks":  optionalIsSet(node.Storage.Disks),
-		"labels":         optionalIsSet(node.Kubernetes.Labels),
-		"taints":         optionalIsSet(node.Kubernetes.Taints),
+		"authorizedKeys":  optionalIsSet(node.Access.SSH.AuthorizedKeys),
+		"fileSets":        optionalIsSet(node.HostConfiguration.FileSets),
+		"storage.volumes": optionalIsSet(node.Storage.Volumes),
+		"labels":          optionalIsSet(node.Kubernetes.Labels),
+		"taints":          optionalIsSet(node.Kubernetes.Taints),
 	} {
 		if !present {
 			t.Fatalf("normalized source lost explicit empty %s:\n%s", name, normalized)
@@ -1058,14 +1071,14 @@ func TestBuildArchiveRejectsUnsafeStorageDefaults(t *testing.T) {
 		replacement string
 		want        string
 	}{
-		{name: "by ID", old: "              minSizeMiB: 1024\n", replacement: "              byID: /dev/disk/by-id/shared-data\n", want: "spec.defaults.storage.disks[0].selector.disk.byID identifies a target"},
-		{name: "WWN", old: "              minSizeMiB: 1024\n", replacement: "              wwn: shared-data\n", want: "spec.defaults.storage.disks[0].selector.disk.wwn identifies a target"},
-		{name: "serial", old: "              minSizeMiB: 1024\n", replacement: "              serial: shared-data\n", want: "spec.defaults.storage.disks[0].selector.disk.serial identifies a target"},
-		{name: "partition by ID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              byID: /dev/disk/by-id/shared-data-part1\n", want: "spec.defaults.storage.disks[0].selector.partition identifies a target"},
-		{name: "partition UUID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              partUUID: 01234567-89ab-cdef-0123-456789abcdef\n", want: "spec.defaults.storage.disks[0].selector.partition identifies a target"},
-		{name: "filesystem UUID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              filesystemUUID: shared-data\n", want: "spec.defaults.storage.disks[0].selector.partition identifies a target"},
-		{name: "convention partition", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition: {}\n", want: "spec.defaults.storage.disks[0].selector.partition identifies a target"},
-		{name: "wipe", old: "          filesystem: xfs\n", replacement: "          filesystem: xfs\n          wipe: true\n", want: "spec.defaults.storage.disks[0].wipe must not be true"},
+		{name: "by ID", old: "              minSizeMiB: 1024\n", replacement: "              byID: /dev/disk/by-id/shared-data\n", want: "spec.defaults.storage.volumes[0].selector.disk.byID identifies a target"},
+		{name: "WWN", old: "              minSizeMiB: 1024\n", replacement: "              wwn: shared-data\n", want: "spec.defaults.storage.volumes[0].selector.disk.wwn identifies a target"},
+		{name: "serial", old: "              minSizeMiB: 1024\n", replacement: "              serial: shared-data\n", want: "spec.defaults.storage.volumes[0].selector.disk.serial identifies a target"},
+		{name: "partition by ID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              byID: /dev/disk/by-id/shared-data-part1\n", want: "spec.defaults.storage.volumes[0].selector.partition identifies a target"},
+		{name: "partition UUID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              partUUID: 01234567-89ab-cdef-0123-456789abcdef\n", want: "spec.defaults.storage.volumes[0].selector.partition identifies a target"},
+		{name: "filesystem UUID", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              filesystemUUID: shared-data\n", want: "spec.defaults.storage.volumes[0].selector.partition identifies a target"},
+		{name: "convention partition", old: "            disk:\n              minSizeMiB: 1024\n", replacement: "            partition:\n              byVolumeName: true\n", want: "spec.defaults.storage.volumes[0].selector.partition identifies a target"},
+		{name: "wipe", old: "          filesystem: xfs\n", replacement: "          filesystem: xfs\n          wipe: true\n", want: "spec.defaults.storage.volumes[0].wipe must not be true"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1142,6 +1155,11 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 				"      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root",
 				"      install:\n        volumes: []\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root", 1),
 			want: "spec.nodes[\"cp-1\"].install.volumes: field is not supported",
+		},
+		{
+			name: "storage disks",
+			raw:  strings.Replace(validSourceConfig(), "    storage:\n      volumes:\n", "    storage:\n      disks:\n", 1),
+			want: "spec.defaults.storage.disks: field is not supported",
 		},
 		{
 			name: "host configuration sets",
@@ -1312,7 +1330,7 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 		}
 	}
 	assertSchemaFields(t, document.Defs, "configbundle.SourceInstallLayer", []string{"systemDisk"}, []string{"extraDisks", "targetDisk", "targetDiskDefaults", "volumes"})
-	assertSchemaFields(t, document.Defs, "configbundle.SourceStorageLayer", []string{"disks"}, nil)
+	assertSchemaFields(t, document.Defs, "configbundle.SourceStorageLayer", []string{"volumes"}, []string{"disks"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfiguration", []string{"fileSets", "sysfs"}, []string{"sets"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationSysfsSetting", []string{"path", "value"}, []string{"name"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationFileSet", []string{"files", "onChange", "state"}, []string{"notify"})
@@ -1330,7 +1348,7 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 	if selector := document.Defs["configbundle.SourceVolumeSelector"]; len(selector.OneOf) != 2 {
 		t.Fatalf("volume selector oneOf branches = %d, want 2", len(selector.OneOf))
 	}
-	filesystem := document.Defs["configbundle.SourceStorageDisk"].Properties["filesystem"]
+	filesystem := document.Defs["configbundle.SourceStorageVolume"].Properties["filesystem"]
 	if !slices.Equal(filesystem.Enum, []any{"xfs", "ext4", "btrfs"}) || filesystem.Description == "" {
 		t.Fatalf("filesystem schema = %#v", filesystem)
 	}
@@ -1588,7 +1606,7 @@ spec:
       systemDisk:
         minSizeMiB: 65536
     storage:
-      disks:
+      volumes:
         - name: data
           selector:
             disk:
@@ -1618,7 +1636,7 @@ spec:
         systemDisk:
           byID: /dev/disk/by-id/ata-cp-root
       storage:
-        disks:
+        volumes:
           - name: data
             selector:
               disk:
@@ -1636,7 +1654,7 @@ spec:
         systemDisk:
           byID: /dev/disk/by-id/ata-worker-root
       storage:
-        disks:
+        volumes:
           - name: data
             selector:
               disk:

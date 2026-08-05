@@ -25,7 +25,7 @@ func mergeSourceNodeLayer(base, next SourceNodeLayer) (SourceNodeLayer, error) {
 		return SourceNodeLayer{}, err
 	}
 	out.Install.SystemDisk = mergeSourceDiskSelector(out.Install.SystemDisk, next.Install.SystemDisk)
-	out.Storage.Disks, err = mergeSourceStorageDisks(out.Storage.Disks, next.Storage.Disks)
+	out.Storage.Volumes, err = mergeSourceStorageVolumes(out.Storage.Volumes, next.Storage.Volumes)
 	if err != nil {
 		return SourceNodeLayer{}, err
 	}
@@ -49,7 +49,7 @@ func cloneSourceNodeLayer(layer SourceNodeLayer) SourceNodeLayer {
 	out.HostConfiguration = cloneSourceHostConfiguration(layer.HostConfiguration)
 	out.SystemExtensions = cloneOptionalSourceSystemExtensions(layer.SystemExtensions)
 	out.Install.SystemDisk = cloneSourceDiskSelector(layer.Install.SystemDisk)
-	out.Storage.Disks = cloneOptionalStorageDisks(layer.Storage.Disks)
+	out.Storage.Volumes = cloneOptionalStorageVolumes(layer.Storage.Volumes)
 	out.Kubernetes.Labels = cloneOptionalMap(layer.Kubernetes.Labels)
 	out.Kubernetes.Taints = cloneOptionalSlice(layer.Kubernetes.Taints)
 	out.Kubernetes.Kubelet = cloneSourceKubeletConfig(layer.Kubernetes.Kubelet)
@@ -136,19 +136,19 @@ func mergeSourceSystemExtensions(base, next Optional[[]SourceSystemExtension]) (
 	return supplied(values), nil
 }
 
-func mergeSourceStorageDisks(base, next Optional[[]SourceStorageDisk]) (Optional[[]SourceStorageDisk], error) {
+func mergeSourceStorageVolumes(base, next Optional[[]SourceStorageVolume]) (Optional[[]SourceStorageVolume], error) {
 	nextDisks, ok := next.Get()
 	if !ok {
-		return cloneOptionalStorageDisks(base), nil
+		return cloneOptionalStorageVolumes(base), nil
 	}
 	if len(nextDisks) == 0 {
-		return supplied([]SourceStorageDisk{}), nil
+		return supplied([]SourceStorageVolume{}), nil
 	}
-	entries := map[string]SourceStorageDisk{}
+	entries := map[string]SourceStorageVolume{}
 	if baseDisks, present := base.Get(); present {
 		for _, disk := range baseDisks {
 			if strings.TrimSpace(disk.State) != manifest.SystemExtensionAbsent {
-				entries[disk.Name] = cloneSourceStorageDisk(disk)
+				entries[disk.Name] = cloneSourceStorageVolume(disk)
 			}
 		}
 	}
@@ -156,7 +156,7 @@ func mergeSourceStorageDisks(base, next Optional[[]SourceStorageDisk]) (Optional
 	for _, disk := range nextDisks {
 		name := strings.TrimSpace(disk.Name)
 		if _, exists := seen[name]; exists {
-			return Optional[[]SourceStorageDisk]{}, fmt.Errorf("storage.disks contains duplicate name %q", name)
+			return Optional[[]SourceStorageVolume]{}, fmt.Errorf("storage.volumes contains duplicate name %q", name)
 		}
 		seen[name] = struct{}{}
 		if strings.TrimSpace(disk.State) == manifest.SystemExtensionAbsent {
@@ -165,24 +165,24 @@ func mergeSourceStorageDisks(base, next Optional[[]SourceStorageDisk]) (Optional
 		}
 		disk.Name = name
 		if inherited, exists := entries[name]; exists {
-			disk = mergeSourceStorageDisk(inherited, disk)
+			disk = mergeSourceStorageVolume(inherited, disk)
 		}
-		entries[name] = cloneSourceStorageDisk(disk)
+		entries[name] = cloneSourceStorageVolume(disk)
 	}
 	names := make([]string, 0, len(entries))
 	for name := range entries {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	values := make([]SourceStorageDisk, 0, len(names))
+	values := make([]SourceStorageVolume, 0, len(names))
 	for _, name := range names {
 		values = append(values, entries[name])
 	}
 	return supplied(values), nil
 }
 
-func mergeSourceStorageDisk(base, next SourceStorageDisk) SourceStorageDisk {
-	out := cloneSourceStorageDisk(base)
+func mergeSourceStorageVolume(base, next SourceStorageVolume) SourceStorageVolume {
+	out := cloneSourceStorageVolume(base)
 	out.Name = next.Name
 	out.State = next.State
 	out.Selector = mergeSourceVolumeSelector(out.Selector, next.Selector)
@@ -260,6 +260,9 @@ func mergeSourcePartitionSelector(base, next *SourcePartitionSelector) *SourcePa
 	if value, ok := next.FilesystemUUID.Get(); ok {
 		out.FilesystemUUID = supplied(value)
 	}
+	if value, ok := next.ByVolumeName.Get(); ok {
+		out.ByVolumeName = supplied(value)
+	}
 	return out
 }
 
@@ -331,7 +334,7 @@ func lowerDiskSelector(selector *SourceDiskSelector) *manifest.DiskSelector {
 	}
 }
 
-func lowerStorageDisks(disks Optional[[]SourceStorageDisk]) []manifest.Volume {
+func lowerStorageVolumes(disks Optional[[]SourceStorageVolume]) []manifest.Volume {
 	values, ok := disks.Get()
 	if !ok {
 		return nil
@@ -394,13 +397,13 @@ func validateDefaultSystemDisk(selector *SourceDiskSelector) error {
 	return nil
 }
 
-func validateDefaultStorageDisks(disks Optional[[]SourceStorageDisk]) error {
+func validateDefaultStorageVolumes(disks Optional[[]SourceStorageVolume]) error {
 	values, ok := disks.Get()
 	if !ok {
 		return nil
 	}
 	for i, volume := range values {
-		field := fmt.Sprintf("spec.defaults.storage.disks[%d]", i)
+		field := fmt.Sprintf("spec.defaults.storage.volumes[%d]", i)
 		if wipe, supplied := volume.Wipe.Get(); supplied && wipe {
 			return fmt.Errorf("%s.wipe must not be true in defaults; set destructive authority on a concrete node volume", field)
 		}
@@ -429,7 +432,7 @@ func validateDefaultStorageDisks(disks Optional[[]SourceStorageDisk]) error {
 	return nil
 }
 
-func validateSourceStorageDisks(field string, disks Optional[[]SourceStorageDisk], requireComplete bool) error {
+func validateSourceStorageVolumes(field string, disks Optional[[]SourceStorageVolume], requireComplete bool) error {
 	values, ok := disks.Get()
 	if !ok {
 		return nil
@@ -455,10 +458,28 @@ func validateSourceStorageDisks(field string, disks Optional[[]SourceStorageDisk
 		if disk.Selector != nil && disk.Selector.Disk != nil && disk.Selector.Partition != nil {
 			return fmt.Errorf("%s[%d].selector must set exactly one of disk or partition", field, i)
 		}
+		if disk.Selector != nil && disk.Selector.Partition != nil {
+			selected := 0
+			for _, identity := range []Optional[string]{
+				disk.Selector.Partition.ByID,
+				disk.Selector.Partition.PartUUID,
+				disk.Selector.Partition.FilesystemUUID,
+			} {
+				if value, supplied := identity.Get(); supplied && strings.TrimSpace(value) != "" {
+					selected++
+				}
+			}
+			if byVolumeName, supplied := disk.Selector.Partition.ByVolumeName.Get(); supplied && byVolumeName {
+				selected++
+			}
+			if selected > 1 || requireComplete && selected != 1 {
+				return fmt.Errorf("%s[%d].selector.partition must set exactly one of byID, partUUID, filesystemUUID, or byVolumeName: true", field, i)
+			}
+		}
 		if !requireComplete {
 			continue
 		}
-		volume := lowerStorageDisks(supplied([]SourceStorageDisk{disk}))
+		volume := lowerStorageVolumes(supplied([]SourceStorageVolume{disk}))
 		if err := manifest.ValidateVolumes(volume); err != nil {
 			message := strings.Replace(err.Error(), "install.volumes[0]", fmt.Sprintf("%s[%d]", field, i), 1)
 			return fmt.Errorf("%s", message)
@@ -489,7 +510,7 @@ func validateResolvedSourceNode(path string, layer SourceNodeLayer) error {
 	if selected != 1 {
 		return fmt.Errorf("%s.install.systemDisk must set exactly one of byID, wwn, or serial", path)
 	}
-	if err := validateSourceStorageDisks(path+".storage.disks", layer.Storage.Disks, true); err != nil {
+	if err := validateSourceStorageVolumes(path+".storage.volumes", layer.Storage.Volumes, true); err != nil {
 		return err
 	}
 	if err := validateSourceHostConfiguration(path+".hostConfiguration", layer.HostConfiguration); err != nil {
@@ -593,19 +614,19 @@ func cloneSourceHostConfigurationFileSet(set SourceHostConfigurationFileSet) Sou
 	return out
 }
 
-func cloneOptionalStorageDisks(optional Optional[[]SourceStorageDisk]) Optional[[]SourceStorageDisk] {
+func cloneOptionalStorageVolumes(optional Optional[[]SourceStorageVolume]) Optional[[]SourceStorageVolume] {
 	disks, ok := optional.Get()
 	if !ok {
-		return Optional[[]SourceStorageDisk]{}
+		return Optional[[]SourceStorageVolume]{}
 	}
-	values := make([]SourceStorageDisk, 0, len(disks))
+	values := make([]SourceStorageVolume, 0, len(disks))
 	for _, disk := range disks {
-		values = append(values, cloneSourceStorageDisk(disk))
+		values = append(values, cloneSourceStorageVolume(disk))
 	}
 	return supplied(values)
 }
 
-func cloneSourceStorageDisk(disk SourceStorageDisk) SourceStorageDisk {
+func cloneSourceStorageVolume(disk SourceStorageVolume) SourceStorageVolume {
 	out := disk
 	out.Selector = cloneSourceVolumeSelector(disk.Selector)
 	return out

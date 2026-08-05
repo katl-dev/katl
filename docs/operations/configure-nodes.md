@@ -13,7 +13,7 @@ renderer carries:
 - operator-owned kernel command-line additions;
 - native host configuration file sets, including systemd-networkd files and
   drop-ins;
-- desired data disks under `storage.disks`;
+- desired data disks under `storage.volumes`;
 - per-node native kubelet configuration under `nodes[].kubernetes.kubelet`;
 - operation-only system role and role-dependent Kubernetes bootstrap state.
 

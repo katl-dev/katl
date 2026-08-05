@@ -802,7 +802,7 @@ func TestConfigValidateReportsOnlyPublicNodePaths(t *testing.T) {
 		{
 			name: "storage selector",
 			source: strings.Replace(base, "      install:\n", `      storage:
-        disks:
+        volumes:
           - name: data
             selector:
               disk:
@@ -812,7 +812,7 @@ func TestConfigValidateReportsOnlyPublicNodePaths(t *testing.T) {
             filesystem: xfs
       install:
 `, 1),
-			want: `spec.nodes["cp-1"].storage.disks[0].selector must set exactly one of disk or partition`,
+			want: `spec.nodes["cp-1"].storage.volumes[0].selector must set exactly one of disk or partition`,
 		},
 		{
 			name: "sysfs path",
