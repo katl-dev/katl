@@ -27,6 +27,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 	"gopkg.in/yaml.v3"
 )
@@ -63,6 +64,15 @@ type Result struct {
 	Digest      string
 	Manifest    BundleManifest
 	ArchiveSize int64
+	Warnings    []CompilationWarning
+}
+
+type CompilationWarning struct {
+	Code           string `json:"code" yaml:"code"`
+	Path           string `json:"path" yaml:"path"`
+	Node           string `json:"node" yaml:"node"`
+	Message        string `json:"message" yaml:"message"`
+	SuggestedValue string `json:"suggestedValue,omitempty" yaml:"suggestedValue,omitempty"`
 }
 
 type SourceConfig struct {
@@ -368,6 +378,7 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
+	warnings := systemExtensionReferenceWarnings(config)
 	plan, err := clusterplan.Compile(clusterplan.CompileRequest{
 		Config:         config,
 		KubeadmConfigs: kubeadmConfigs,
@@ -404,7 +415,32 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
-	return archive, Result{Digest: manifestDigest, Manifest: manifest, ArchiveSize: int64(len(archive))}, nil
+	return archive, Result{Digest: manifestDigest, Manifest: manifest, ArchiveSize: int64(len(archive)), Warnings: warnings}, nil
+}
+
+func systemExtensionReferenceWarnings(config clusterplan.Config) []CompilationWarning {
+	var warnings []CompilationWarning
+	for _, node := range config.Spec.Nodes {
+		for _, extension := range node.Overrides.SystemExtensions {
+			if extension.State == manifest.SystemExtensionAbsent || strings.TrimSpace(extension.Bundle) == "" {
+				continue
+			}
+			parsed, err := payloadbundle.ParseReference(extension.Bundle)
+			if err != nil || parsed.ManifestDigest != "" || strings.TrimSpace(extension.OCIManifestDigest) == "" {
+				continue
+			}
+			pinned := parsed.Repository + ":" + parsed.Tag + "@" + extension.OCIManifestDigest
+			warnings = append(warnings, CompilationWarning{
+				Code:           "mutable-system-extension-reference",
+				Path:           fmt.Sprintf("spec.nodes[%q].systemExtensions[name=%q].bundle", node.Name, extension.Name),
+				Node:           node.Name,
+				Message:        fmt.Sprintf("mutable system-extension reference %q resolved to %s; use the suggested digest-pinned value to make later compilations select the same payload", extension.Bundle, extension.OCIManifestDigest),
+				SuggestedValue: pinned,
+			})
+		}
+	}
+	sort.Slice(warnings, func(i, j int) bool { return warnings[i].Path < warnings[j].Path })
+	return warnings
 }
 
 func WriteArchive(path string, request BuildRequest) (Result, error) {

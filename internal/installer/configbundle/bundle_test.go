@@ -387,39 +387,46 @@ func TestBuildArchiveResolvesAndVendorsSystemExtensionOnce(t *testing.T) {
 	customManifest := []byte(`{"apiVersion":"payload.katl.dev/v1alpha1","kind":"SystemExtensionBundle"}`)
 	customDigest := digestBytes(customManifest)
 	resolveCalls := 0
-	archive, result, err := BuildArchive(BuildRequest{
-		SourcePath: writeSource(t, source),
-		Planning:   PlanningInputs{KatlosImage: testKatlosImage()},
-		ResolveSystemExtension: func(_ context.Context, request systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error) {
-			resolveCalls++
-			if request.Reference != "registry.example/katl-dev/bird:v3.1.2-katl.1" ||
-				request.Architecture != "x86_64" || request.RuntimeInterface != "katl-runtime-1" {
-				t.Fatalf("resolve request = %#v", request)
-			}
-			return systemextensionbundle.Resolved{
-				Reference:            request.Reference,
-				OCIManifestDigest:    "sha256:" + strings.Repeat("a", 64),
-				BundleManifestDigest: customDigest,
-				BundleManifest:       customManifest,
-				Bundle: systemextensionbundle.Bundle{
-					ArtifactVersion: "v3.1.2-katl.1", PayloadVersion: "v3.1.2",
-					Architecture: "x86_64", SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
+	resolver := func(_ context.Context, request systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error) {
+		resolveCalls++
+		if !strings.HasPrefix(request.Reference, "registry.example/katl-dev/bird:v3.1.2-katl.1") ||
+			request.Architecture != "x86_64" || request.RuntimeInterface != "katl-runtime-1" {
+			t.Fatalf("resolve request = %#v", request)
+		}
+		return systemextensionbundle.Resolved{
+			Reference:            request.Reference,
+			OCIManifestDigest:    "sha256:" + strings.Repeat("a", 64),
+			BundleManifestDigest: customDigest,
+			BundleManifest:       customManifest,
+			Bundle: systemextensionbundle.Bundle{
+				ArtifactVersion: "v3.1.2-katl.1", PayloadVersion: "v3.1.2",
+				Architecture: "x86_64", SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
+			},
+			Payloads: []systemextensionbundle.Payload{{
+				Descriptor: systemextensionbundle.Descriptor{
+					Role: systemextensionbundle.SysextRole, MediaType: systemextensionbundle.SysextMediaType,
+					Digest: payloadDigest, SizeBytes: int64(len(payloadData)), FileName: "katl-bird.raw",
 				},
-				Payloads: []systemextensionbundle.Payload{{
-					Descriptor: systemextensionbundle.Descriptor{
-						Role: systemextensionbundle.SysextRole, MediaType: systemextensionbundle.SysextMediaType,
-						Digest: payloadDigest, SizeBytes: int64(len(payloadData)), FileName: "katl-bird.raw",
-					},
-					Data: payloadData,
-				}},
-			}, nil
-		},
+				Data: payloadData,
+			}},
+		}, nil
+	}
+	archive, result, err := BuildArchive(BuildRequest{
+		SourcePath:             writeSource(t, source),
+		Planning:               PlanningInputs{KatlosImage: testKatlosImage()},
+		ResolveSystemExtension: resolver,
 	})
 	if err != nil {
 		t.Fatalf("BuildArchive() error = %v", err)
 	}
 	if resolveCalls != 1 {
 		t.Fatalf("resolver calls = %d, want one for shared defaults", resolveCalls)
+	}
+	wantPinned := "registry.example/katl-dev/bird:v3.1.2-katl.1@sha256:" + strings.Repeat("a", 64)
+	if len(result.Warnings) != 2 || result.Warnings[0].Node != "cp-1" || result.Warnings[1].Node != "worker-1" ||
+		result.Warnings[0].Path != `spec.nodes["cp-1"].systemExtensions[name="bird"].bundle` ||
+		result.Warnings[0].SuggestedValue != wantPinned || result.Warnings[1].SuggestedValue != wantPinned {
+		t.Fatalf("compilation warnings = %#v", result.Warnings)
 	}
 	files := readTarFiles(t, archive)
 	normalized := files["blobs/sha256/"+strings.TrimPrefix(result.Manifest.Source.NormalizedConfig.Digest, "sha256:")]
@@ -440,6 +447,32 @@ func TestBuildArchiveResolvesAndVendorsSystemExtensionOnce(t *testing.T) {
 		len(selected.SystemExtensionPayloads) != 1 ||
 		!bytes.Equal(selected.SystemExtensionPayloads[0].Data, payloadData) {
 		t.Fatalf("selected system extension material = %#v / %#v", selected.InstallManifest.Node.SystemExtensions, selected.SystemExtensionPayloads)
+	}
+	inspection, err := InspectSelectedNode(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMutableWarning := false
+	for _, warning := range inspection.Warnings {
+		if warning.Path == `spec.nodes["cp-1"].systemExtensions[name="bird"].bundle` && strings.Contains(warning.Message, wantPinned) {
+			foundMutableWarning = true
+		}
+	}
+	if !foundMutableWarning {
+		t.Fatalf("inspection warnings = %#v", inspection.Warnings)
+	}
+
+	pinnedSource := strings.Replace(source, "registry.example/katl-dev/bird:v3.1.2-katl.1", wantPinned, 1)
+	_, pinnedResult, err := BuildArchive(BuildRequest{
+		SourcePath:             writeSource(t, pinnedSource),
+		Planning:               PlanningInputs{KatlosImage: testKatlosImage()},
+		ResolveSystemExtension: resolver,
+	})
+	if err != nil {
+		t.Fatalf("BuildArchive(pinned) error = %v", err)
+	}
+	if len(pinnedResult.Warnings) != 0 {
+		t.Fatalf("pinned compilation warnings = %#v", pinnedResult.Warnings)
 	}
 }
 

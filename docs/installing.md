@@ -359,6 +359,18 @@ apply. Registry credentials, when needed during workstation compilation, come
 from the normal Docker credential store and are never embedded in config or
 node state.
 
+A tag-only `bundle` reference keeps the routine home-lab path convenient, but
+the tag may select different bytes in a later compilation. Katl resolves it
+once, verifies the content, and prints a warning for every affected node with
+the exact digest-pinned replacement:
+
+```text
+registry.example/katl/extensions/bird:v3.3.1-katl.4@sha256:<OCI-manifest-digest>
+```
+
+Commit that value in `cluster.yaml` when repeatable selection matters. A
+digest-pinned reference compiles without the mutable-reference warning.
+
 Advanced users can keep native kubeadm settings without waiting for Katl to add
 a typed field for each upstream option:
 

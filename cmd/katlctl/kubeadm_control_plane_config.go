@@ -408,6 +408,9 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	if err != nil {
 		return activatedClusterConfig{}, err
 	}
+	if err := writeCompilationWarnings(opts.progress, loaded.Warnings); err != nil {
+		return activatedClusterConfig{}, err
+	}
 	now := kubeadmConfigNow()
 	generationID := strings.TrimSpace(opts.generationID)
 	if generationID == "" {

@@ -135,6 +135,23 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 		})
 	}
 	report.Derived.StorageVolumes, report.Warnings = derivedVolumesAndWarnings(resolved.Storage, base)
+	if extensions, ok := resolved.SystemExtensions.Get(); ok {
+		installedByName := make(map[string]string, len(selected.InstallManifest.Node.SystemExtensions))
+		for _, extension := range selected.InstallManifest.Node.SystemExtensions {
+			installedByName[extension.Name] = extension.OCIManifestDigest
+		}
+		for _, extension := range extensions {
+			digest := installedByName[extension.Name]
+			if digest == "" || strings.Contains(extension.Bundle, "@") {
+				continue
+			}
+			pinned := strings.SplitN(extension.Bundle, "@", 2)[0] + "@" + digest
+			report.Warnings = append(report.Warnings, ResolutionWarning{
+				Path:    fmt.Sprintf("%s.systemExtensions[name=%q].bundle", base, extension.Name),
+				Message: fmt.Sprintf("mutable reference %q resolved to %s; pin it as %s for reproducible compilation", extension.Bundle, digest, pinned),
+			})
+		}
+	}
 	if node.Management.Address != "" {
 		report.Warnings = append(report.Warnings, ResolutionWarning{
 			Path:    base + ".management.address",

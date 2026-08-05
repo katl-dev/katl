@@ -109,6 +109,9 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if err != nil {
 		return err
 	}
+	if err := writeCompilationWarnings(stderr, config.Warnings); err != nil {
+		return err
+	}
 	archive := config.Archive
 	if len(archive) > maxInstallBundleSize {
 		return fmt.Errorf("compiled config bundle size %d exceeds %d bytes", len(archive), maxInstallBundleSize)

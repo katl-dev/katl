@@ -751,6 +751,24 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestWriteCompilationWarningsShowsPublicPathNodeAndPinnedValue(t *testing.T) {
+	var stderr bytes.Buffer
+	warning := configbundle.CompilationWarning{
+		Path:           `spec.nodes["worker-1"].systemExtensions[name="bird"].bundle`,
+		Node:           "worker-1",
+		Message:        "mutable system-extension reference resolved to sha256:abc",
+		SuggestedValue: "registry.example/extensions/bird:v1@sha256:abc",
+	}
+	if err := writeCompilationWarnings(&stderr, []configbundle.CompilationWarning{warning}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{warning.Path, "node worker-1", warning.Message, warning.SuggestedValue} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("warning output %q does not contain %q", stderr.String(), want)
+		}
+	}
+}
+
 func TestConfigValidateReportsNestedFieldPath(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
 	source := strings.Replace(configBundleSource(), "systemDisk:\n          byID:", "systemDisk:\n          unsupportedSelector: true\n          byID:", 1)
