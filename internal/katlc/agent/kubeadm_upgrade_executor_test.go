@@ -89,6 +89,8 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		"systemctl stop kubelet.service",
 		"systemd-sysext refresh",
 		"systemctl restart kubelet.service",
+		"--server https://10.0.0.1:6443 -n kube-system wait --for=condition=Ready --timeout=5m pod/etcd-cp-1 pod/kube-apiserver-cp-1 pod/kube-controller-manager-cp-1 pod/kube-scheduler-cp-1",
+		"--server https://10.0.0.1:6443 wait --for=condition=Ready --timeout=5m node/cp-1",
 		"systemctl start "+endpointAdvertiserUnit,
 	)
 	if _, err := os.Stat(filepath.Join(root, "var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf")); !errors.Is(err, os.ErrNotExist) {
@@ -107,6 +109,9 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateGood || status.HealthState != generation.HealthStateHealthy || spec.Sysexts[0].PayloadVersion != "v1.36.2" {
 		t.Fatalf("candidate = spec %+v status %+v", spec, status)
 	}
+	if _, err := generation.PlanActivation(generation.RecordFromSplit(spec, status)); err != nil {
+		t.Fatalf("candidate activation plan: %v", err)
+	}
 	if completed.BootHealthPending || completed.ActivationMode != operation.ActivationModeLive || completed.ActivationState != operation.ActivationStateActiveLive {
 		t.Fatalf("online lifecycle = mode %q state %q bootPending %v", completed.ActivationMode, completed.ActivationState, completed.BootHealthPending)
 	}
@@ -122,6 +127,18 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "var/lib/katl/generations/gen1/confext/etc/systemd/network/20-node.network")); err != nil || !strings.Contains(string(data), "DHCP=yes") {
 		t.Fatalf("candidate inherited confext = %q, %v", data, err)
+	}
+	if len(spec.Sysexts) != 2 || spec.Sysexts[1].Name != "endpoint-advertiser" || spec.Sysexts[1].Path != "/var/lib/katl/generations/gen1/sysext/endpoint-advertiser.raw" {
+		t.Fatalf("candidate inherited sysext refs = %+v", spec.Sysexts)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "var/lib/katl/generations/gen1/sysext/endpoint-advertiser.raw")); err != nil || string(data) != "endpoint advertiser sysext" {
+		t.Fatalf("candidate inherited sysext = %q, %v", data, err)
+	}
+	if len(spec.BundledConfexts) != 1 || spec.BundledConfexts[0].Path != "/var/lib/katl/generations/gen1/bundled-confext/runtime.raw" {
+		t.Fatalf("candidate inherited bundled confext refs = %+v", spec.BundledConfexts)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "var/lib/katl/generations/gen1/bundled-confext/runtime.raw")); err != nil || string(data) != "runtime bundled confext" {
+		t.Fatalf("candidate inherited bundled confext = %q, %v", data, err)
 	}
 	gate := filepath.Join(root, "run/katl/operation-gates/kubeadm-upgrade-1/target-kubelet-released")
 	if data, err := os.ReadFile(gate); err != nil || strings.TrimSpace(string(data)) != record.OperationID {
@@ -821,6 +838,7 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	if err := os.WriteFile(filepath.Join(root, "etc/machine-id"), []byte("0123456789abcdef0123456789abcdef\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestFile(t, filepath.Join(root, "etc/hostname"), "cp-1\n")
 	writeTestFile(t, filepath.Join(root, "etc/kubernetes/admin.conf"), "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://10.0.0.100:6443\ncontexts:\n  - name: kubernetes-admin@kubernetes\n    context:\n      cluster: kubernetes\n      user: kubernetes-admin\ncurrent-context: kubernetes-admin@kubernetes\nusers:\n  - name: kubernetes-admin\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n")
 	writeTestFile(t, filepath.Join(root, "etc/kubernetes/kubelet.conf"), "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://10.0.0.1:6443\ncontexts:\n  - name: system:node:cp-1@kubernetes\n    context:\n      cluster: kubernetes\n      user: system:node:cp-1\ncurrent-context: system:node:cp-1@kubernetes\nusers:\n  - name: system:node:cp-1\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n")
 	writeTestFile(t, filepath.Join(root, "etc/kubernetes/manifests/kube-apiserver.yaml"), "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: kube-apiserver\n      command:\n        - kube-apiserver\n        - --advertise-address=10.0.0.1\n")
@@ -841,6 +859,24 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	endpointAdvertiser := []byte("endpoint advertiser sysext")
+	endpointAdvertiserDigest := sha256.Sum256(endpointAdvertiser)
+	endpointAdvertiserPath := filepath.Join(root, "var/lib/katl/generations/gen0/sysext/endpoint-advertiser.raw")
+	if err := os.MkdirAll(filepath.Dir(endpointAdvertiserPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(endpointAdvertiserPath, endpointAdvertiser, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bundledConfext := []byte("runtime bundled confext")
+	bundledConfextDigest := sha256.Sum256(bundledConfext)
+	bundledConfextPath := filepath.Join(root, "var/lib/katl/generations/gen0/bundled-confext/runtime.raw")
+	if err := os.MkdirAll(filepath.Dir(bundledConfextPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundledConfextPath, bundledConfext, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	artifact := filepath.Join(root, "var/lib/katl/artifacts/kubernetes.raw")
 	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
 		t.Fatal(err)
@@ -857,10 +893,14 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	}
 	previous := generation.GenerationSpec{
 		APIVersion: generation.APIVersion, Kind: generation.SpecKind, GenerationID: "gen0", RuntimeVersion: "2026.7.0-dev.0", CreatedAt: now.Add(-time.Hour),
-		Root:     generation.RootSelection{Slot: "root-a", PartitionUUID: "aaaaaaaa-1111-2222-3333-444444444444", RuntimeVersion: "2026.7.0-dev.0", RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", RuntimeArtifactSHA256: strings.Repeat("d", 64)},
-		Boot:     generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl.efi", LoaderEntryPath: "loader/entries/katl-gen0.conf"},
-		Sysexts:  []generation.ExtensionRef{{Name: "kubernetes", Path: "/var/lib/katl/generations/gen0/sysext/kubernetes.raw", ActivationPath: "/run/extensions/katl-kubernetes.raw", SHA256: strings.Repeat("e", 64), ArtifactVersion: "v1.36.1", PayloadVersion: "v1.36.1", Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}}},
-		Confexts: []generation.GeneratedConfext{{Name: "katl-node", Path: "/var/lib/katl/generations/gen0/confext", ActivationPath: "/run/confexts/katl-node", SHA256: confextSHA, Compatibility: generation.ConfextCompatibility{ID: "katlos", VersionID: "1", ConfextLevel: 1}}},
+		Root: generation.RootSelection{Slot: "root-a", PartitionUUID: "aaaaaaaa-1111-2222-3333-444444444444", RuntimeVersion: "2026.7.0-dev.0", RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", RuntimeArtifactSHA256: strings.Repeat("d", 64)},
+		Boot: generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl.efi", LoaderEntryPath: "loader/entries/katl-gen0.conf"},
+		Sysexts: []generation.ExtensionRef{
+			{Name: "kubernetes", Path: "/var/lib/katl/generations/gen0/sysext/kubernetes.raw", ActivationPath: "/run/extensions/katl-kubernetes.raw", SHA256: strings.Repeat("e", 64), ArtifactVersion: "v1.36.1", PayloadVersion: "v1.36.1", Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}},
+			{Name: "endpoint-advertiser", Path: "/var/lib/katl/generations/gen0/sysext/endpoint-advertiser.raw", ActivationPath: "/run/extensions/katl-endpoint-advertiser.raw", SHA256: hex.EncodeToString(endpointAdvertiserDigest[:]), ArtifactVersion: "2026.7.0-dev.0", PayloadVersion: "2026.7.0-dev.0", Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}},
+		},
+		BundledConfexts: []generation.ExtensionRef{{Name: "runtime", Path: "/var/lib/katl/generations/gen0/bundled-confext/runtime.raw", ActivationPath: "/run/confexts/katl-runtime.raw", SHA256: hex.EncodeToString(bundledConfextDigest[:]), ArtifactVersion: "2026.7.0-dev.0", PayloadVersion: "2026.7.0-dev.0", Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}}},
+		Confexts:        []generation.GeneratedConfext{{Name: "katl-node", Path: "/var/lib/katl/generations/gen0/confext", ActivationPath: "/run/confexts/katl-node", SHA256: confextSHA, Compatibility: generation.ConfextCompatibility{ID: "katlos", VersionID: "1", ConfextLevel: 1}}},
 	}
 	status, err := generation.NewGenerationStatus(previous, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, previous.CreatedAt)
 	if err != nil {

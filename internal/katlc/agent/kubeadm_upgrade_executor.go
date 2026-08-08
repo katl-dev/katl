@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -812,11 +813,20 @@ func (e *Executor) stageKubernetesCandidate(previous generation.GenerationSpec, 
 	ref.SHA256 = request.TargetSysextSHA256
 	ref.PayloadVersion = request.TargetPayloadVersion
 	ref.ArtifactVersion = request.TargetPayloadVersion
+	sysexts, err := e.inheritCandidateExtensionRefs(previous.GenerationID, request.CandidateGenerationID, "sysext", previous.Sysexts, "kubernetes")
+	if err != nil {
+		return generation.ExtensionRef{}, err
+	}
+	bundledConfexts, err := e.inheritCandidateExtensionRefs(previous.GenerationID, request.CandidateGenerationID, "bundled-confext", previous.BundledConfexts, "")
+	if err != nil {
+		return generation.ExtensionRef{}, err
+	}
 	spec := previous
 	spec.GenerationID = request.CandidateGenerationID
 	spec.PreviousGenerationID = previous.GenerationID
 	spec.Boot.LoaderEntryPath = "loader/entries/katl-" + request.CandidateGenerationID + ".conf"
-	spec.Sysexts = replaceKubernetesRef(spec.Sysexts, ref)
+	spec.Sysexts = replaceKubernetesRef(sysexts, ref)
+	spec.BundledConfexts = bundledConfexts
 	spec.KubernetesUpgrade = &generation.KubernetesUpgrade{
 		OperationID:             operationID,
 		TargetKubeadmAccessMode: kubeadmAccessOperationPrivate,
@@ -837,6 +847,33 @@ func (e *Executor) stageKubernetesCandidate(previous generation.GenerationSpec, 
 		return generation.ExtensionRef{}, fmt.Errorf("write candidate generation %s (%s): %w", request.CandidateGenerationID, dir, err)
 	}
 	return ref, nil
+}
+
+func (e *Executor) inheritCandidateExtensionRefs(previousID, candidateID, subdir string, refs []generation.ExtensionRef, skipName string) ([]generation.ExtensionRef, error) {
+	previousLogical := filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, previousID, subdir))
+	candidateLogical := filepath.ToSlash(filepath.Join(generation.GenerationRecordsDir, candidateID, subdir))
+	inherited := append([]generation.ExtensionRef(nil), refs...)
+	for i := range inherited {
+		ref := &inherited[i]
+		if skipName != "" && ref.Name == skipName {
+			continue
+		}
+		cleaned := filepath.ToSlash(filepath.Clean(ref.Path))
+		relative, err := filepath.Rel(previousLogical, cleaned)
+		if err != nil || relative == "." || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("%s %s path %q does not belong to previous generation %s", subdir, ref.Name, ref.Path, previousID)
+		}
+		targetLogical := filepath.ToSlash(filepath.Join(candidateLogical, relative))
+		targetHost := rootedRuntimePath(e.Root, targetLogical)
+		if err := os.MkdirAll(filepath.Dir(targetHost), 0o700); err != nil {
+			return nil, err
+		}
+		if err := copyVerifiedFile(rootedRuntimePath(e.Root, cleaned), targetHost, ref.SHA256); err != nil {
+			return nil, fmt.Errorf("inherit %s %s for candidate generation %s: %w", subdir, ref.Name, candidateID, err)
+		}
+		ref.Path = targetLogical
+	}
+	return inherited, nil
 }
 
 func (e *Executor) cloneCandidateConfext(previousID, candidateID string, refs []generation.GeneratedConfext) error {
@@ -889,7 +926,25 @@ func (e *Executor) activateKubernetesCandidate(ctx context.Context, current, can
 func (e *Executor) checkKubeadmUpgradeHealth(ctx context.Context, request operation.KubernetesSysextUpdate) error {
 	commands := [][]string{{"systemctl", "is-active", "--quiet", "containerd.service"}, {"systemctl", "is-active", "--quiet", "kubelet.service"}, {"kubelet", "--version"}}
 	if request.UpgradeRole != "worker" {
-		commands = append(commands, []string{"kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"})
+		localEndpoint, err := localKubeAPIServerEndpoint(e.Root)
+		if err != nil {
+			return fmt.Errorf("identify local Kubernetes API endpoint: %w", err)
+		}
+		nodeName, err := kubernetesNodeName(e.Root)
+		if err != nil {
+			return fmt.Errorf("identify local Kubernetes node: %w", err)
+		}
+		localAPI := []string{"kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--server", localEndpoint.URL()}
+		commands = append(commands,
+			append(slices.Clone(localAPI), "get", "--raw=/readyz"),
+			append(slices.Clone(localAPI), "-n", "kube-system", "wait", "--for=condition=Ready", "--timeout=5m",
+				"pod/etcd-"+nodeName,
+				"pod/kube-apiserver-"+nodeName,
+				"pod/kube-controller-manager-"+nodeName,
+				"pod/kube-scheduler-"+nodeName,
+			),
+			append(slices.Clone(localAPI), "wait", "--for=condition=Ready", "--timeout=5m", "node/"+nodeName),
+		)
 	}
 	for _, argv := range commands {
 		result := e.toolRunner()(ctx, argv, nil)
@@ -1118,7 +1173,7 @@ func copyVerifiedFile(source, target, want string) error {
 	}
 	if got := hex.EncodeToString(hash.Sum(nil)); got != want {
 		_ = os.Remove(target)
-		return fmt.Errorf("copied sysext sha256 %s, want %s", got, want)
+		return fmt.Errorf("copied file sha256 %s, want %s", got, want)
 	}
 	return nil
 }
