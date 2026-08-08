@@ -296,6 +296,45 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	}
 }
 
+func TestInstallSSHEnablesAccessWithoutStartingInstall(t *testing.T) {
+	server := handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
+		LocalRef:         "images/katlos-install-test-x86_64.squashfs",
+		SHA256:           strings.Repeat("a", 64),
+		SizeBytes:        1,
+		Version:          "test",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Role:             "install",
+	})
+	var configured []string
+	server.SetSSHConfigurer(func(_ context.Context, keys []string) error {
+		configured = append([]string(nil), keys...)
+		return nil
+	})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"install", "ssh",
+		"--config", writeClusterConfig(t),
+		"--endpoint", ts.URL,
+		"--node", "cp-1",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("install ssh error = %v, stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "installer SSH enabled for cp-1 with 1 authorized key(s)") || !strings.Contains(stdout.String(), "Next: ssh root@127.0.0.1") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if len(configured) != 1 || !strings.Contains(configured[0], "katl@example") {
+		t.Fatalf("configured keys = %#v", configured)
+	}
+	if status := server.Status(); status.State != handoff.HandoffWaiting || !status.SSHAccess.Enabled || len(server.Bundle().Data) != 0 {
+		t.Fatalf("server status = %#v, bundle bytes=%d", status, len(server.Bundle().Data))
+	}
+}
+
 func TestInstallApplyAcceptsGeneratedConfigByAddress(t *testing.T) {
 	dir := t.TempDir()
 	outputPath := filepath.Join(dir, "cluster.yaml")

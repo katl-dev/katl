@@ -579,6 +579,9 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 		return err
 	}
 	server := handoff.NewHandoffServerWithDefaultImage(nil, media.Image)
+	server.SetSSHConfigurer(func(ctx context.Context, keys []string) error {
+		return configureInstallerSSH(ctx, "/", installer.NewExecCommandRunner(), keys)
+	})
 	facts, discoveryErr := discovery.NewCommandDiscoverySource(installer.NewExecCommandRunner()).Discover(ctx)
 	if discoveryErr != nil {
 		fmt.Fprintf(stdout, "katlos-install hardware discovery: %v\n", discoveryErr)
@@ -665,6 +668,38 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer) erro
 		case <-ticker.C:
 		}
 	}
+}
+
+func configureInstallerSSH(ctx context.Context, root string, commands installer.CommandRunner, keys []string) error {
+	if len(keys) == 0 {
+		return fmt.Errorf("at least one authorized key is required")
+	}
+	sshDir := filepath.Join(root, "root", ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return fmt.Errorf("create installer SSH directory: %w", err)
+	}
+	if err := os.Chmod(sshDir, 0o700); err != nil {
+		return fmt.Errorf("secure installer SSH directory: %w", err)
+	}
+	content := strings.Join(keys, "\n") + "\n"
+	authorizedKeysPath := filepath.Join(sshDir, "authorized_keys")
+	if err := os.WriteFile(authorizedKeysPath, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("write installer SSH authorized keys: %w", err)
+	}
+	if err := os.Chmod(authorizedKeysPath, 0o600); err != nil {
+		return fmt.Errorf("secure installer SSH authorized keys: %w", err)
+	}
+	marker := filepath.Join(root, "etc", "katl", "installer-ssh.enabled")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		return fmt.Errorf("create installer SSH marker directory: %w", err)
+	}
+	if err := os.WriteFile(marker, []byte("enabled\n"), 0o644); err != nil {
+		return fmt.Errorf("enable installer SSH: %w", err)
+	}
+	if err := commands.Run(ctx, "systemctl", "start", "sshd.service"); err != nil {
+		return fmt.Errorf("start installer SSH: %w", err)
+	}
+	return nil
 }
 
 func prepareHandoffRetry(server *handoff.HandoffServer, runDir string, installErr error, stdout io.Writer) bool {

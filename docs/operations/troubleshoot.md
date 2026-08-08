@@ -61,7 +61,16 @@ Do not edit operation, generation, or boot-selection records as a repair method.
 
 ## Installer Evidence
 
-From the installer environment collect:
+While the installer is still waiting for configuration, enable its ephemeral
+key-only SSH access without starting an install:
+
+```sh
+katlctl install ssh --config ./cluster.yaml --node cp-1
+ssh root@192.0.2.11
+```
+
+The command uses only the selected node's configured public keys. From the
+installer environment collect:
 
 ```sh
 journalctl -b -u katlos-install.service --no-pager

@@ -2,6 +2,7 @@ package handoff
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -69,6 +70,53 @@ func TestHandoffStatusReportsStableSelectableDisks(t *testing.T) {
 	}
 	if status.Disks[1].Selectable || !status.Disks[1].Mounted {
 		t.Fatalf("mounted disk = %#v", status.Disks[1])
+	}
+}
+
+func TestHandoffServerConfiguresSSHWithoutStartingInstall(t *testing.T) {
+	server := newTestHandoffServer(t)
+	var configured []string
+	server.SetSSHConfigurer(func(_ context.Context, keys []string) error {
+		configured = append([]string(nil), keys...)
+		return nil
+	})
+	bundle, result := validConfigBundle(t)
+	request := httptest.NewRequest(http.MethodPost, "/v1/ssh-access?node=cp-1&digest="+url.QueryEscape(result.Digest), bytes.NewReader(bundle))
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ssh-access status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var status HandoffStatus
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatalf("decode SSH access response: %v", err)
+	}
+	if status.State != HandoffWaiting || !status.SSHAccess.Enabled || status.SSHAccess.Account != "root" || status.SSHAccess.AuthorizedKeyCount != 1 {
+		t.Fatalf("SSH access status = %#v", status)
+	}
+	if len(configured) != 1 || !strings.Contains(configured[0], "katl@example") {
+		t.Fatalf("configured keys = %#v", configured)
+	}
+	if len(server.Bundle().Data) != 0 || len(server.Manifest()) != 0 {
+		t.Fatal("SSH access handoff started an install")
+	}
+	if got := server.Status().SSHAccess; !got.Enabled || got.AuthorizedKeyCount != 1 {
+		t.Fatalf("durable live SSH status = %#v", got)
+	}
+}
+
+func TestHandoffServerRefusesUnavailableSSHConfiguration(t *testing.T) {
+	server := newTestHandoffServer(t)
+	bundle, result := validConfigBundle(t)
+	request := httptest.NewRequest(http.MethodPost, "/v1/ssh-access?node=cp-1&digest="+url.QueryEscape(result.Digest), bytes.NewReader(bundle))
+	response := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented || !strings.Contains(response.Body.String(), "unavailable") {
+		t.Fatalf("POST /v1/ssh-access status = %d, body=%s", response.Code, response.Body.String())
 	}
 }
 

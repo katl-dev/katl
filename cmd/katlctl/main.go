@@ -229,6 +229,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl install":                   "katlctl install discover",
 		"katlctl install discover":          "katlctl install discover",
 		"katlctl install apply":             "katlctl install apply --config cluster.yaml",
+		"katlctl install ssh":               "katlctl install ssh --config cluster.yaml --node cp-1",
 		"katlctl install status":            "katlctl install status",
 		"katlctl operations":                "katlctl operations list --config cluster.yaml --node cp-1",
 		"katlctl operations status":         "katlctl operations status OPERATION_ID --config cluster.yaml --node cp-1",

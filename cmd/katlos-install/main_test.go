@@ -215,6 +215,52 @@ func TestBootInputMode(t *testing.T) {
 	}
 }
 
+func TestConfigureInstallerSSH(t *testing.T) {
+	root := t.TempDir()
+	commands := &installer.NoopCommandRunner{}
+	keys := []string{
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm first@example",
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm second@example",
+	}
+
+	if err := configureInstallerSSH(context.Background(), root, commands, keys); err != nil {
+		t.Fatalf("configureInstallerSSH() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "root", ".ssh", "authorized_keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), strings.Join(keys, "\n")+"\n"; got != want {
+		t.Fatalf("authorized_keys = %q, want %q", got, want)
+	}
+	info, err := os.Stat(filepath.Join(root, "root", ".ssh", "authorized_keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("authorized_keys mode = %o, want 600", info.Mode().Perm())
+	}
+	if err := os.Chmod(filepath.Join(root, "root", ".ssh", "authorized_keys"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureInstallerSSH(context.Background(), root, commands, keys); err != nil {
+		t.Fatalf("repeat configureInstallerSSH() error = %v", err)
+	}
+	info, err = os.Stat(filepath.Join(root, "root", ".ssh", "authorized_keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("replaced authorized_keys mode = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(root, "etc", "katl", "installer-ssh.enabled")); err != nil {
+		t.Fatalf("SSH enable marker: %v", err)
+	}
+	if len(commands.Calls) != 2 || commands.Calls[0].Name != "systemctl" || strings.Join(commands.Calls[0].Args, " ") != "start sshd.service" {
+		t.Fatalf("commands = %#v", commands.Calls)
+	}
+}
+
 func TestFetchBundleURL(t *testing.T) {
 	bundle := []byte("bundle archive")
 	digest := sha256.Sum256(bundle)

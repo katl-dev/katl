@@ -24,6 +24,7 @@ const (
 	maxInstallBundleSize   = 64 << 20
 	maxInstallResponseSize = 1 << 20
 	installApplyCreator    = "katlctl install apply"
+	installSSHCreator      = "katlctl install ssh"
 )
 
 type installApplyOptions struct {
@@ -42,6 +43,23 @@ type installStatusOptions struct {
 	output   string
 }
 
+type installSSHOptions struct {
+	endpoint   string
+	configPath string
+	nodeName   string
+	timeout    time.Duration
+	output     string
+}
+
+type installSSHReport struct {
+	APIVersion         string `json:"apiVersion"`
+	Kind               string `json:"kind"`
+	Endpoint           string `json:"endpoint"`
+	SelectedNode       string `json:"selectedNode"`
+	Account            string `json:"account"`
+	AuthorizedKeyCount int    `json:"authorizedKeyCount"`
+}
+
 type installHandoffReport struct {
 	APIVersion   string                `json:"apiVersion"`
 	Kind         string                `json:"kind"`
@@ -54,7 +72,26 @@ func newInstallCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 	cmd := &cobra.Command{Use: "install", Short: "KatlOS installer handoff operations"}
 	cmd.AddCommand(newInstallDiscoverCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newInstallApplyCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newInstallSSHCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newInstallStatusCommand(ctx, stdout, stderr))
+	return cmd
+}
+
+func newInstallSSHCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	opts := installSSHOptions{timeout: 30 * time.Second, output: "text"}
+	cmd := &cobra.Command{
+		Use:   "ssh",
+		Short: "Enable key-only SSH on a waiting KatlOS installer",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runInstallSSH(ctx, opts, stdout, stderr)
+		},
+	}
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle containing the selected node's SSH keys")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer address or HTTP(S) base URL; overrides the selected node's bootstrap address")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name or bootstrap address; required unless the config contains one node")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "SSH access handoff timeout")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
 }
 
@@ -169,6 +206,76 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 		return fmt.Errorf("installer finished in %s: %s", status.InstallStatus.State, installFailure(status.InstallStatus))
 	}
 	return nil
+}
+
+func runInstallSSH(ctx context.Context, opts installSSHOptions, stdout, stderr io.Writer) error {
+	if opts.output != "text" && opts.output != "json" {
+		return fmt.Errorf("--output = %q, want text or json", opts.output)
+	}
+	if opts.timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	config, err := loadKatlConfig(opts.configPath, installSSHCreator, configbundle.PlanningInputs{}, stderr)
+	if err != nil {
+		return err
+	}
+	archive := config.Archive
+	if len(archive) > maxInstallBundleSize {
+		return fmt.Errorf("compiled config bundle size %d exceeds %d bytes", len(archive), maxInstallBundleSize)
+	}
+	nodeName, err := resolveInstallNode(archive, config.Bundle.Digest, opts.nodeName)
+	if err != nil {
+		return err
+	}
+	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(archive), configbundle.ReadOptions{
+		ExpectedDigest:          config.Bundle.Digest,
+		NodeName:                nodeName,
+		AllowMissingKatlosImage: true,
+	})
+	if err != nil {
+		return fmt.Errorf("select node from compiled cluster config: %w", err)
+	}
+	if len(selected.InstallManifest.Node.Identity.SSH.AuthorizedKeys) == 0 {
+		return fmt.Errorf("node %s has no SSH authorized keys; add spec.nodes[%q].access.ssh.authorizedKeys before enabling installer SSH", selected.Node.Name, selected.Node.Name)
+	}
+	bootstrapAddress := ""
+	if selected.InstallManifest.Node.Bootstrap != nil {
+		bootstrapAddress = selected.InstallManifest.Node.Bootstrap.NodeAddress
+	}
+	endpointHint, err := installEndpointHint(opts.endpoint, bootstrapAddress)
+	if err != nil {
+		return err
+	}
+	endpoint, err := resolveInstallerEndpoint(ctx, endpointHint, opts.timeout)
+	if err != nil {
+		return err
+	}
+
+	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
+	client := &http.Client{Timeout: requestTimeout(opts.timeout)}
+	before, err := fetchInstallStatus(requestCtx, client, endpoint)
+	if err != nil {
+		return err
+	}
+	if before.State != handoff.HandoffWaiting {
+		return fmt.Errorf("installer is not accepting SSH access configuration: state=%s selectedNode=%s", before.State, before.SelectedNode)
+	}
+	status, err := submitInstallerSSHBundle(requestCtx, client, endpoint, archive, selected.BundleDigest, selected.Node.Name)
+	if err != nil {
+		return err
+	}
+	if !status.SSHAccess.Enabled || status.SSHAccess.Account == "" {
+		return fmt.Errorf("installer accepted SSH access configuration but did not report SSH enabled")
+	}
+	return writeInstallSSHReport(stdout, opts.output, installSSHReport{
+		APIVersion:         installstatus.APIVersion,
+		Kind:               "InstallerSSHAccessReport",
+		Endpoint:           endpoint,
+		SelectedNode:       selected.Node.Name,
+		Account:            status.SSHAccess.Account,
+		AuthorizedKeyCount: status.SSHAccess.AuthorizedKeyCount,
+	})
 }
 
 func installEndpointHint(endpoint, bootstrapAddress string) (string, error) {
@@ -335,6 +442,25 @@ func submitInstallBundle(ctx context.Context, client *http.Client, endpoint stri
 	return doInstallRequest(client, req, "submit installer config bundle")
 }
 
+func submitInstallerSSHBundle(ctx context.Context, client *http.Client, endpoint string, archive []byte, digest, node string) (handoff.HandoffStatus, error) {
+	requestURL, err := url.Parse(endpoint + "/v1/ssh-access")
+	if err != nil {
+		return handoff.HandoffStatus{}, fmt.Errorf("create installer SSH handoff URL: %w", err)
+	}
+	query := requestURL.Query()
+	query.Set("node", node)
+	query.Set("digest", digest)
+	requestURL.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(archive))
+	if err != nil {
+		return handoff.HandoffStatus{}, fmt.Errorf("create installer SSH handoff request: %w", err)
+	}
+	req.ContentLength = int64(len(archive))
+	req.Header.Set("Content-Type", "application/vnd.katl.config.bundle.v1")
+	req.Header.Set("Accept", "application/json")
+	return doInstallRequest(client, req, "configure installer SSH access")
+}
+
 func doInstallRequest(client *http.Client, req *http.Request, action string) (handoff.HandoffStatus, error) {
 	resp, err := client.Do(req)
 	if err != nil {
@@ -463,6 +589,24 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal installer handoff report: %w", err)
+	}
+	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+func writeInstallSSHReport(stdout io.Writer, output string, report installSSHReport) error {
+	if output == "text" {
+		parsed, err := url.Parse(report.Endpoint)
+		if err != nil {
+			return fmt.Errorf("parse installer endpoint for SSH report: %w", err)
+		}
+		fmt.Fprintf(stdout, "installer SSH enabled for %s with %d authorized key(s)\n", report.SelectedNode, report.AuthorizedKeyCount)
+		fmt.Fprintf(stdout, "Next: ssh %s@%s\n", report.Account, parsed.Hostname())
+		return nil
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal installer SSH access report: %w", err)
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err
