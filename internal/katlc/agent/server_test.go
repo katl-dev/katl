@@ -1609,7 +1609,7 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
-	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
@@ -1636,6 +1636,9 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if record.GenerationCommitState != operation.GenerationCommitCommitted {
 		t.Fatalf("generation commit state = %q, want committed", record.GenerationCommitState)
 	}
+	if !record.BootHealthPending {
+		t.Fatal("boot health is not pending after live config activation")
+	}
 	if !contains(record.MutationScopes, "confext-activation") || !contains(record.MutationScopes, "config-domain:host-configuration") {
 		t.Fatalf("mutation scopes = %v, want confext activation and host configuration domain", record.MutationScopes)
 	}
@@ -1649,8 +1652,8 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.DefaultGenerationID != "generation-live" || selection.PendingHealthValidation {
-		t.Fatalf("boot selection = %#v, want live generation as durable default", selection)
+	if selection.DefaultGenerationID != "generation-0" || selection.TargetBootGenerationID != "generation-live" || selection.TrialGenerationID != "generation-live" || !selection.PendingHealthValidation {
+		t.Fatalf("boot selection = %#v, want live generation armed as a boot trial", selection)
 	}
 	candidateManifest, err := configapply.ReadGenerationManifest(server.Root, "generation-live")
 	if err != nil {

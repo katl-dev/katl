@@ -579,8 +579,8 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	if err == nil {
 		switch result.Plan.Decision.AcceptedMode {
 		case generation.ApplyModeLive:
-			if promoteErr := e.promoteCandidateGenerationLive(ctx, record, completedAt, "live runtime configuration apply completed successfully"); promoteErr != nil {
-				err = promoteErr
+			if commitErr := e.commitCandidateGeneration(ctx, record, completedAt, "live runtime configuration apply completed successfully; candidate awaits boot validation"); commitErr != nil {
+				err = commitErr
 			}
 		case generation.ApplyModeNextBoot:
 			if commitErr := e.commitCandidateGeneration(ctx, record, completedAt, "next-boot runtime configuration apply staged by katlc agent executor"); commitErr != nil {
@@ -602,18 +602,13 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		record.ConfigApplyPhase = result.Status.Phase
 		record.ChangedDomains = append([]string(nil), result.Status.ChangedDomains...)
 		record.GenerationCommitState = operation.GenerationCommitCommitted
-		if result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot {
-			record.BootHealthPending = true
-		}
+		record.BootHealthPending = true
 		record.ActivationState = configApplyActivationState(result.Status, false)
 		completeConfigApplyInvocation(record.Invocations, liveConfigApplyInvocationID(record.OperationID), completedAt, operation.ResultSucceeded)
 		record.CompletedAt = &completedAt
 		record.Terminal = true
 		record.Result = operation.ResultSucceeded
-		record.NextAction = "generation config apply completed by katlc agent executor"
-		if result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot {
-			record.NextAction = "reboot into committed config apply generation for boot health validation"
-		}
+		record.NextAction = "reboot into committed config apply generation for boot health validation"
 		record.UpdatedAt = completedAt
 		return record, nil
 	})
@@ -1079,6 +1074,19 @@ func currentGenerationID(root string) (string, error) {
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {
 		return "", err
+	}
+	if selection.PendingHealthValidation {
+		target := strings.TrimSpace(selection.TargetBootGenerationID)
+		transaction := strings.TrimSpace(selection.PendingTransactionID)
+		if target != "" && transaction != "" {
+			store, storeErr := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+			if storeErr == nil {
+				record, readErr := store.Read(transaction)
+				if readErr == nil && record.Terminal && record.Result == operation.ResultSucceeded && record.ActivationState == operation.ActivationStateActiveLive && record.CandidateGenerationID == target {
+					return target, nil
+				}
+			}
+		}
 	}
 	for _, candidate := range []string{selection.BootedGenerationID, selection.TargetBootGenerationID, selection.DefaultGenerationID} {
 		if strings.TrimSpace(candidate) != "" {

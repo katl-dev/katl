@@ -31,7 +31,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		}
 		return nil
 	}
-	executor.SetBootDefault = func(_ context.Context, _ string, entry string) error {
+	executor.SetBootOneshot = func(_ context.Context, _ string, entry string) error {
 		if entry != "loader/entries/katl-gen1.conf" {
 			t.Fatalf("boot default entry = %q", entry)
 		}
@@ -106,20 +106,20 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateGood || status.HealthState != generation.HealthStateHealthy || spec.Sysexts[0].PayloadVersion != "v1.36.2" {
+	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateTrying || status.HealthState != generation.HealthStateUnknown || spec.Sysexts[0].PayloadVersion != "v1.36.2" {
 		t.Fatalf("candidate = spec %+v status %+v", spec, status)
 	}
 	if _, err := generation.PlanActivation(generation.RecordFromSplit(spec, status)); err != nil {
 		t.Fatalf("candidate activation plan: %v", err)
 	}
-	if completed.BootHealthPending || completed.ActivationMode != operation.ActivationModeLive || completed.ActivationState != operation.ActivationStateActiveLive {
+	if !completed.BootHealthPending || completed.ActivationMode != operation.ActivationModeLive || completed.ActivationState != operation.ActivationStateActiveLive {
 		t.Fatalf("online lifecycle = mode %q state %q bootPending %v", completed.ActivationMode, completed.ActivationState, completed.BootHealthPending)
 	}
 	selection, err := generation.ReadBootSelection(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.DefaultGenerationID != "gen1" || selection.BootedGenerationID != "gen1" || selection.PendingHealthValidation {
+	if selection.DefaultGenerationID != "gen0" || selection.BootedGenerationID != "gen0" || selection.TargetBootGenerationID != "gen1" || selection.TrialGenerationID != "gen1" || !selection.PendingHealthValidation || selection.PersistentDefaultPromotion != generation.DefaultPromotionPending {
 		t.Fatalf("live selection = %#v", selection)
 	}
 	if len(spec.Confexts) != 1 || spec.Confexts[0].Path != "/var/lib/katl/generations/gen1/confext" {
