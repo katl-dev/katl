@@ -243,7 +243,16 @@ func (e *Executor) executeEtcdMemberRemove(ctx context.Context, record operation
 		return err
 	}
 	if target.GetLeader() {
-		if _, err := runEtcdctl(ctx, e.toolRunner(), containerID, "https://127.0.0.1:2379", "move-leader", report.GetLocalMemberId()); err != nil {
+		leaderEndpoint := ""
+		if len(target.GetClientUrls()) > 0 {
+			leaderEndpoint = target.GetClientUrls()[0]
+		}
+		if leaderEndpoint == "" {
+			err := errors.New("leader member has no client endpoint")
+			_, markErr := e.failRecordPhase(record.OperationID, "etcd-leader-transfer-failed", "etcd-member-remove", "remove-etcd-member", "restore etcd health before retrying member removal", err)
+			return errors.Join(err, markErr)
+		}
+		if _, err := runEtcdctl(ctx, e.toolRunner(), containerID, leaderEndpoint, "move-leader", report.GetLocalMemberId()); err != nil {
 			_, markErr := e.failRecordPhase(record.OperationID, "etcd-leader-transfer-failed", "etcd-member-remove", "remove-etcd-member", "restore etcd health before retrying member removal", fmt.Errorf("move leadership to coordinator: %w", err))
 			return errors.Join(err, markErr)
 		}

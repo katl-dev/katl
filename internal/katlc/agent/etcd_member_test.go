@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -97,14 +98,63 @@ func TestEtcdMemberRemoveOperationValidatesAndVerifiesRemoval(t *testing.T) {
 	}
 }
 
+func TestEtcdMemberRemoveMovesTargetLeadershipThroughLeaderEndpoint(t *testing.T) {
+	server := newTestServer(t)
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	removed := false
+	moved := false
+	executor.RunTool = func(ctx context.Context, argv []string, started func(int)) ToolResult {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "--endpoints=https://10.0.0.3:2379") && strings.Contains(joined, "move-leader 1"):
+			moved = true
+			return ToolResult{Stdout: []byte("Leadership transferred")}
+		case strings.Contains(joined, "member remove 3"):
+			if !moved {
+				return ToolResult{Err: errors.New("leadership was not transferred"), ExitStatus: 1}
+			}
+			removed = true
+			return ToolResult{Stdout: []byte("Member 3 removed")}
+		default:
+			return fakeEtcdRunnerWithLeader(removed, "3")(ctx, argv, started)
+		}
+	}
+	server.Dispatcher = executor
+
+	req := submitRequest("req-etcd-remove-leader")
+	req.Bootstrap = nil
+	req.OperationKind = OperationKindEtcdMemberRemove
+	req.EtcdMemberRemove = &agentapi.EtcdMemberRemoveOperationRequest{
+		TargetNodeName: "cp-3", TargetMemberId: "3", TargetPeerUrl: "https://10.0.0.3:2380",
+		ExpectedClusterId: "64", ExpectedMemberCount: 3,
+	}
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Read(accepted.GetOperationId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !moved || !removed || record.Result != operation.ResultSucceeded {
+		t.Fatalf("moved=%v removed=%v record=%+v", moved, removed, record)
+	}
+}
+
 func fakeEtcdRunner(removed bool) ToolRunner {
+	return fakeEtcdRunnerWithLeader(removed, "1")
+}
+
+func fakeEtcdRunnerWithLeader(removed bool, leader string) ToolRunner {
 	return func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		joined := strings.Join(argv, " ")
 		switch {
 		case joined == "crictl ps --name etcd --state Running --quiet":
 			return ToolResult{Stdout: []byte("etcd-container\n")}
 		case strings.Contains(joined, "endpoint status"):
-			return ToolResult{Stdout: []byte(`[{"Endpoint":"https://127.0.0.1:2379","Status":{"header":{"cluster_id":100,"member_id":1},"leader":1}}]`)}
+			return ToolResult{Stdout: []byte(fmt.Sprintf(`[{"Endpoint":"https://127.0.0.1:2379","Status":{"header":{"cluster_id":100,"member_id":1},"leader":%s}}]`, leader))}
 		case strings.Contains(joined, "member list"):
 			members := `{"members":[{"ID":1,"name":"cp-1","peerURLs":["https://10.0.0.1:2380"],"clientURLs":["https://10.0.0.1:2379"]},{"ID":2,"name":"cp-2","peerURLs":["https://10.0.0.2:2380"],"clientURLs":["https://10.0.0.2:2379"]}`
 			if !removed {
