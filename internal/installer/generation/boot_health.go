@@ -77,7 +77,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	if err != nil {
 		return BootHealthResult{}, err
 	}
-	manualFallback := isManualKnownGoodFallback(selection, generationID)
+	fallbackRecovery := isFallbackRecovery(selection, generationID)
 	selection = inferBootedSelection(selection, spec, generationID, request.CommandLine)
 	if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
 		return BootHealthResult{}, err
@@ -92,7 +92,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 		nextDefaultBootEntry = strings.TrimSpace(selection.TargetBootEntry)
 	} else if strings.TrimSpace(selection.TrialBootEntry) != "" {
 		nextDefaultBootEntry = strings.TrimSpace(selection.TrialBootEntry)
-	} else if manualFallback {
+	} else if fallbackRecovery {
 		nextDefaultBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
 	}
 	bootDefaultSet := false
@@ -139,7 +139,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 		if err := supersedePreviousGeneration(root, previousID, generationID, now); err != nil {
 			return BootHealthResult{}, err
 		}
-		if manualFallback {
+		if fallbackRecovery {
 			selection.PreviousKnownGoodGenerationID = ""
 			selection.PreviousKnownGoodBootEntry = ""
 		} else {
@@ -289,6 +289,17 @@ func isManualKnownGoodFallback(selection BootSelectionRecord, generationID strin
 		generationID != "" &&
 		generationID != strings.TrimSpace(selection.DefaultGenerationID) &&
 		generationID == strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
+}
+
+func isFallbackRecovery(selection BootSelectionRecord, generationID string) bool {
+	if isManualKnownGoodFallback(selection, generationID) {
+		return true
+	}
+	return !selection.PendingHealthValidation &&
+		generationID != "" &&
+		generationID != strings.TrimSpace(selection.DefaultGenerationID) &&
+		generationID == strings.TrimSpace(selection.BootedGenerationID) &&
+		generationID == strings.TrimSpace(selection.FailedBootGenerationID)
 }
 
 func validateBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) error {

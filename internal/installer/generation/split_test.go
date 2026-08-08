@@ -317,6 +317,15 @@ func TestGenerationStatusTransitions(t *testing.T) {
 	if err := ValidateStatusTransition(trying, good); err != nil {
 		t.Fatalf("trying -> good error = %v", err)
 	}
+	failed := good
+	failed.BootState = BootStateFailed
+	failed.HealthState = HealthStateUnhealthy
+	revalidated := failed
+	revalidated.BootState = BootStateGood
+	revalidated.HealthState = HealthStateHealthy
+	if err := ValidateStatusTransition(failed, revalidated); err != nil {
+		t.Fatalf("failed -> good error = %v", err)
+	}
 
 	invalid := committed
 	invalid.CommitState = CommitStateCandidate

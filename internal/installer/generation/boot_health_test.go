@@ -169,6 +169,64 @@ func TestRecordBootHealthReconcilesManualKnownGoodFallback(t *testing.T) {
 	}
 }
 
+func TestRecordBootHealthRevalidatesFailedManualFallback(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 8, 8, 18, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateSuperseded, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion:                    APIVersion,
+		Kind:                          BootSelectionKind,
+		DefaultGenerationID:           "gen1",
+		PreviousKnownGoodGenerationID: "gen0",
+		BootedGenerationID:            "gen1",
+		DefaultBootEntry:              "loader/entries/katl-gen1.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+		BootedBootEntry:               "loader/entries/katl-gen1.conf",
+		PersistentDefaultPromotion:    DefaultPromotionDone,
+		UpdatedAt:                     now.Add(-30 * time.Minute),
+	})
+
+	failed, err := RecordBootHealth(BootHealthRequest{
+		Root:         root,
+		GenerationID: "gen0",
+		CommandLine:  bootHealthCommandLine("gen0"),
+		Result:       BootHealthFailure,
+		Reason:       "stale failed unit",
+		Now:          now,
+		ForceFailure: true,
+	})
+	if err != nil {
+		t.Fatalf("RecordBootHealth(transient failure) error = %v", err)
+	}
+	if !failed.Failed || !failed.RecoveryRequired {
+		t.Fatalf("failure result = %#v, want recovery required", failed)
+	}
+
+	recovered, err := RecordBootHealth(BootHealthRequest{
+		Root:           root,
+		GenerationID:   "gen0",
+		CommandLine:    bootHealthCommandLine("gen0"),
+		Result:         BootHealthSuccess,
+		Reason:         "failed unit cleared",
+		Now:            now.Add(time.Minute),
+		SetBootDefault: bootHealthDefaultRecorder(t, "loader/entries/katl-gen0.conf"),
+	})
+	if err != nil {
+		t.Fatalf("RecordBootHealth(revalidated fallback) error = %v", err)
+	}
+	if !recovered.Promoted || !recovered.BootDefaultSet || recovered.DefaultGeneration != "gen0" || recovered.BootDefaultEntry != "loader/entries/katl-gen0.conf" {
+		t.Fatalf("recovery result = %#v, want durable gen0", recovered)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "gen0" || selection.BootedGenerationID != "gen0" || selection.DefaultBootEntry != "loader/entries/katl-gen0.conf" || selection.PreviousKnownGoodGenerationID != "" || selection.RecoveryRequired {
+		t.Fatalf("selection after revalidation = %#v, want coherent recovered gen0", selection)
+	}
+}
+
 func TestRecordBootHealthInfersBootedTrialFromCommandLine(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 10, 30, 0, 0, time.UTC)
