@@ -89,6 +89,30 @@ func TestHostStatusJSON(t *testing.T) {
 	}
 }
 
+func TestHostStatusReportsSelectedFallbackAndBootFailure(t *testing.T) {
+	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
+	fake.nodeStatus.CurrentGenerationId = "generation-1"
+	fake.nodeStatus.SelectedGenerationId = "generation-0"
+	fake.nodeStatus.BootTargetGenerationId = "generation-1"
+	fake.nodeStatus.BootHealthState = "failed"
+	fake.nodeStatus.BootHealthDiagnostic = "running generation generation-0 does not match durable boot evidence generation-1"
+	installKatlcDial(t, nil, fake)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"node", "status", "node-a", "--endpoint", "node-a.test:9443"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"failed", "generation-0", "generation-1", "does not match durable boot evidence"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "\tOK\t") {
+		t.Fatalf("output masks boot failure as healthy:\n%s", output)
+	}
+}
+
 func TestHostRebootDefaultAllowsBootDeadmanRecovery(t *testing.T) {
 	cmd := newHostRebootCommand(context.Background(), io.Discard, io.Discard)
 	timeout, err := cmd.Flags().GetDuration("timeout")

@@ -438,6 +438,50 @@ func TestNodeStatusReportsSelectedBootTarget(t *testing.T) {
 	}
 }
 
+func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	spec, _, err := generation.ReadGeneration(server.Root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.GenerationID = "generation-1"
+	spec.PreviousGenerationID = "generation-0"
+	spec.Boot.LoaderEntryPath = "loader/entries/katl-generation-1.conf"
+	statusRecord, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, time.Date(2026, 8, 8, 16, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(server.Root, spec, statusRecord); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.DefaultGenerationID = "generation-1"
+	selection.PreviousKnownGoodGenerationID = "generation-0"
+	selection.BootedGenerationID = "generation-1"
+	selection.DefaultBootEntry = "loader/entries/katl-generation-1.conf"
+	selection.PreviousKnownGoodBootEntry = "loader/entries/katl-generation-0.conf"
+	selection.BootedBootEntry = "loader/entries/katl-generation-1.conf"
+	if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+		t.Fatal(err)
+	}
+	writeProcCmdline(t, server.Root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 katl.generation=generation-0")
+
+	nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != nodeBootHealthFailed {
+		t.Fatalf("node status = %#v, want active generation-1, selected generation-0, failed boot health", nodeStatus)
+	}
+	if !strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "does not match durable boot evidence") {
+		t.Fatalf("boot health diagnostic = %q", nodeStatus.GetBootHealthDiagnostic())
+	}
+}
+
 func TestRebootRefusesActiveOperationWithoutExposingID(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
