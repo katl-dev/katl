@@ -690,7 +690,9 @@ selection. `--node-address node=address` remains available for an
 operator-observed address that differs from the compiled source.
 Bootstrap reports phase changes while it runs and writes `./kubeconfig` by
 default. Rerun the unchanged command to resume observing an interrupted
-bootstrap; add `--verbose` for operation IDs and recovery details.
+bootstrap; add `--verbose` for operation IDs and recovery details. At this
+handoff, nodes normally remain `NotReady` and CoreDNS pending until the user
+installs a CNI. Katl does not choose, install, or manage one.
 
 The management API is intentionally credential-free on Katl's supported
 trusted home-lab network. Bootstrap requires no enrollment or token exchange.
