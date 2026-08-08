@@ -963,7 +963,7 @@ func (e *Executor) completeKubeadmUpgrade(ctx context.Context, record operation.
 	if err := e.removeKubeletGate(ctx, record); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
-	if err := e.promoteCandidateGenerationLive(ctx, record, now, "Kubernetes sysext activated live and passed local health checks"); err != nil {
+	if err := e.commitCandidateGeneration(ctx, record, now, "Kubernetes sysext activated live and passed local health checks; candidate awaits boot validation"); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
 	_, err := e.Store.Update(record.OperationID, "kubeadm-upgrade-healthy", "healthy", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -974,12 +974,12 @@ func (e *Executor) completeKubeadmUpgrade(ctx context.Context, record operation.
 		current.ActivationState = operation.ActivationStateActiveLive
 		current.GenerationCommitState = operation.GenerationCommitCommitted
 		current.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
-		current.BootHealthPending = false
+		current.BootHealthPending = true
 		current.Terminal = true
 		current.Result = operation.ResultSucceeded
 		current.CompletedAt = &now
 		current.UpdatedAt = now
-		current.NextAction = "continue the serialized online rollout"
+		current.NextAction = "continue the serialized online rollout; reboot this node to validate the active generation before host changes"
 		return current, nil
 	})
 	return err
