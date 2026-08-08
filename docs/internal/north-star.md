@@ -253,8 +253,10 @@ committed only after kubeadm succeeds and health checks pass. Cluster PKI, etcd
 identity, kubeconfigs, bootstrap tokens, certificate-key material, and
 Kubernetes API state created by kubeadm are durable cluster state outside
 generation 0 and outside host generation rollback. Once cluster bootstrap
-completes, the user installs CNI, DNS, GitOps, policies, storage, and
-applications with their chosen cluster tooling.
+completes, nodes normally remain `NotReady` and CoreDNS pending until the user
+installs a CNI. Katl does not choose, install, or verify one. The user owns CNI,
+DNS, GitOps, policies, storage, and applications with their chosen cluster
+tooling.
 
 Updates follow the same model. A new desired state compiles into a new
 generation. Online-applicable configuration can apply immediately through a

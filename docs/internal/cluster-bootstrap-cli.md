@@ -644,9 +644,10 @@ metadata, and optional HMAC fingerprints for correlation.
 
 After cluster bootstrap exits, the user owns any CNI, CoreDNS, kube-proxy
 policy, CRDs, Flux, Helm releases, storage, ingress, routing, and workloads with
-their chosen cluster tooling. `katlctl cluster bootstrap` may apply explicitly
-provided `--bootstrap-manifest` inputs as a bounded handoff step, but it does not
-select a production distribution or manage add-on lifecycle.
+their chosen cluster tooling. Nodes normally remain `NotReady` and CoreDNS
+pending until the user installs a CNI. `katlctl cluster bootstrap` may apply
+explicitly provided `--bootstrap-manifest` inputs as a bounded handoff step, but
+it does not select a production distribution or manage add-on lifecycle.
 
 ## Non-Goals
 

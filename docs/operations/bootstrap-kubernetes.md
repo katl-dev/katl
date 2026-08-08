@@ -77,10 +77,13 @@ katlctl operations list \
 
 ## Establish Cluster Networking
 
-Kubeadm nodes normally remain `NotReady` until a CNI is installed. Katl does not
-choose or operate a CNI. Either apply it after bootstrap with your cluster
-management workflow, or explicitly include reviewed manifests and readiness
-conditions:
+Kubeadm nodes normally remain `NotReady` and CoreDNS pending until a CNI is
+installed. That is the expected successful bootstrap handoff: the API and
+operator kubeconfig are ready for the user to install their chosen cluster
+networking. Katl does not choose, install, operate, or verify a CNI.
+
+Install it with your cluster management workflow. You may explicitly ask the
+bounded bootstrap helper to apply reviewed manifests and wait for an outcome:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
@@ -88,6 +91,9 @@ katlctl cluster bootstrap --config ./cluster.yaml \
   --bootstrap-manifest ./cni.yaml \
   --bootstrap-wait nodes-ready
 ```
+
+Those options do not transfer ownership of the CNI to Katl and are not part of
+the default bootstrap success contract.
 
 Do not treat an arbitrary downloaded manifest as trusted merely because
 `katlctl` can apply it.
@@ -112,9 +118,10 @@ systemctl status kubelet --no-pager
 systemctl status katl-kubeadm-ready.target --no-pager
 ```
 
-Bootstrap is complete only when the command succeeds, expected generation and
-operation records are terminal, the API is reachable through the intended
-endpoint, and node readiness matches the chosen CNI stage.
+Bootstrap is complete when the command succeeds, expected generation and
+operation records are terminal, and the API is reachable through the intended
+endpoint. Node and CoreDNS readiness are post-bootstrap outcomes of the
+user-selected CNI.
 
 ## Failure Boundary
 

@@ -214,7 +214,8 @@ The node agent fetches the selected Kubernetes OCI bundle, verifies its
 manifest and layer digests, stages the sysext, creates generation 1, and runs
 the bounded kubeadm operation. Katl reports phase changes and writes the
 operator kubeconfig to `./kubeconfig`; rerunning the unchanged command resumes
-an interrupted bootstrap.
+an interrupted bootstrap. Nodes normally remain `NotReady` and CoreDNS pending
+until the user installs a CNI; Katl does not choose or manage one.
 
 ## Configuration and upgrades
 
