@@ -86,6 +86,24 @@ func TestRuntimeNetworkdLeavesKubernetesRoutesAlone(t *testing.T) {
 	}
 }
 
+func TestRuntimeRootShellUsesKubeadmAdminContext(t *testing.T) {
+	profile, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "runtime", "mkosi.extra", "etc", "profile.d", "katl-kubernetes.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(profile)
+	for _, want := range []string{
+		`[ -z "${KUBECONFIG+x}" ]`,
+		`[ "${EUID:-$(id -u)}" -eq 0 ]`,
+		`[ -r /etc/kubernetes/admin.conf ]`,
+		`export KUBECONFIG=/etc/kubernetes/admin.conf`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("runtime Kubernetes profile missing %q", want)
+		}
+	}
+}
+
 func TestRuntimeBuildExcludesVMTestSupportByDefault(t *testing.T) {
 	repo := repoRoot(t)
 	bin := filepath.Join(t.TempDir(), "bin")
