@@ -68,6 +68,7 @@ type installerManager struct {
 	stderr   io.Writer
 	client   *http.Client
 	run      buildCommandRunner
+	runVirsh func(context.Context, string, ...string) ([]byte, error)
 }
 
 func newInstallerCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -712,10 +713,33 @@ func (manager installerManager) removeManagedVM(ctx context.Context, state insta
 			return err
 		}
 	}
+	hasManagedSave, err := manager.domainHasManagedSave(ctx, uri, domain)
+	if err != nil {
+		return err
+	}
+	if hasManagedSave {
+		if _, err := manager.virsh(ctx, uri, "managedsave-remove", domain); err != nil {
+			return err
+		}
+	}
 	if _, err := manager.virsh(ctx, uri, "undefine", domain, "--nvram"); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (manager installerManager) domainHasManagedSave(ctx context.Context, uri, domain string) (bool, error) {
+	output, err := manager.virsh(ctx, uri, "dominfo", domain)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "Managed save") {
+			return strings.EqualFold(strings.TrimSpace(value), "yes"), nil
+		}
+	}
+	return false, nil
 }
 
 func (manager installerManager) domainExists(ctx context.Context, uri, domain string) (bool, error) {
@@ -765,6 +789,9 @@ func domainOwner(data []byte) (string, error) {
 }
 
 func (manager installerManager) virsh(ctx context.Context, uri string, args ...string) ([]byte, error) {
+	if manager.runVirsh != nil {
+		return manager.runVirsh(ctx, uri, args...)
+	}
 	virsh := firstNonEmpty(os.Getenv("KATL_VMTEST_VIRSH"), "virsh")
 	fullArgs := []string{"-c", uri}
 	fullArgs = append(fullArgs, args...)

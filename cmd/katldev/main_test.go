@@ -409,6 +409,44 @@ func TestInstallerStateRoundTripAndReadyGuidance(t *testing.T) {
 	}
 }
 
+func TestInstallerResetRemovesManagedSaveBeforeUndefine(t *testing.T) {
+	var calls [][]string
+	manager := installerManager{
+		repoRoot: t.TempDir(),
+		runVirsh: func(_ context.Context, uri string, args ...string) ([]byte, error) {
+			call := append([]string{uri}, args...)
+			calls = append(calls, call)
+			switch args[0] {
+			case "list":
+				return []byte("katl-dev-installer-test\n"), nil
+			case "metadata":
+				return []byte("<katl xmlns=\"https://katlos.io/xmlns/vmtest/1\">katl/katldev-installer</katl>"), nil
+			case "domstate":
+				return []byte("shut off\n"), nil
+			case "dominfo":
+				return []byte("Id:             -\nManaged save:   yes\n"), nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+	state := installerState{DomainName: "katl-dev-installer-test", LibvirtURI: "qemu:///system"}
+	if err := manager.removeManagedVM(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"qemu:///system", "list", "--all", "--name"},
+		{"qemu:///system", "metadata", "katl-dev-installer-test", "--uri", vmtestMetadataURI},
+		{"qemu:///system", "domstate", "katl-dev-installer-test"},
+		{"qemu:///system", "dominfo", "katl-dev-installer-test"},
+		{"qemu:///system", "managedsave-remove", "katl-dev-installer-test"},
+		{"qemu:///system", "undefine", "katl-dev-installer-test", "--nvram"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("virsh calls = %#v, want %#v", calls, want)
+	}
+}
+
 func TestInstallerReadyCreatesClusterConfigWithKatlctl(t *testing.T) {
 	repo := t.TempDir()
 	var stdout, stderr bytes.Buffer
