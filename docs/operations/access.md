@@ -118,6 +118,12 @@ Use SSH for an interactive shell and arbitrary system administration. The
 KatlOS management API intentionally exposes bounded lifecycle operations rather
 than remote command execution.
 
+After successful Kubernetes bootstrap, an interactive root login automatically
+uses kubeadm's root-only `/etc/kubernetes/admin.conf`; `kubectl get nodes` needs
+no copy beneath immutable `/root`. An explicitly set `KUBECONFIG`, including an
+empty diagnostic value, is preserved. Workstation commands continue to use the
+mode-0600 kubeconfig written by `katlctl cluster bootstrap`.
+
 There is no node credential to rotate in the beta management path. If the
 trusted management network is exposed, isolate the node and restore the network
 boundary before resuming lifecycle operations.
