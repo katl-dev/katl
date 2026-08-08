@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -299,7 +300,11 @@ func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record ope
 	}); err != nil {
 		return kubeAPIServerDrain{}, err
 	}
-	result := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "default", "get", "endpoints", "kubernetes", "-o", "json"}, nil)
+	localEndpoint, err := localKubeAPIServerEndpoint(e.Root)
+	if err != nil {
+		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("identify local Kubernetes API endpoint: %w", err), false)
+	}
+	result := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--server", localEndpoint.URL(), "-n", "default", "get", "endpoints", "kubernetes", "-o", "json"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("inspect Kubernetes API endpoints: %s", toolFailure(result)), false)
 	}
@@ -310,13 +315,9 @@ func (e *Executor) drainKubeAPIServerConnections(ctx context.Context, record ope
 	if len(endpoints) < 2 {
 		return kubeAPIServerDrain{}, e.completeKubeAPIServerDrain(record, "run kubeadm without draining the only API endpoint", "")
 	}
-	localAddress, err := localKubeAPIServerAddress(e.Root)
-	if err != nil {
-		return kubeAPIServerDrain{}, e.failKubeadmUpgrade(record, "apiserver-drain-running", fmt.Errorf("identify local Kubernetes API endpoint: %w", err), false)
-	}
 	var peer *kubeAPIServerEndpoint
 	for i := range endpoints {
-		if endpoints[i].Address == localAddress {
+		if endpoints[i].Address == localEndpoint.Address {
 			continue
 		}
 		probe := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--server", endpoints[i].URL(), "--request-timeout=10s", "get", "--raw=/readyz"}, nil)
@@ -420,10 +421,10 @@ func parseKubeAPIServerEndpoints(data []byte) ([]kubeAPIServerEndpoint, error) {
 	return endpoints, nil
 }
 
-func localKubeAPIServerAddress(root string) (netip.Addr, error) {
+func localKubeAPIServerEndpoint(root string) (kubeAPIServerEndpoint, error) {
 	data, err := os.ReadFile(rootedRuntimePath(root, "/etc/kubernetes/manifests/kube-apiserver.yaml"))
 	if err != nil {
-		return netip.Addr{}, err
+		return kubeAPIServerEndpoint{}, err
 	}
 	var pod struct {
 		Spec struct {
@@ -434,25 +435,36 @@ func localKubeAPIServerAddress(root string) (netip.Addr, error) {
 		} `yaml:"spec"`
 	}
 	if err := yaml.Unmarshal(data, &pod); err != nil {
-		return netip.Addr{}, fmt.Errorf("decode static pod manifest: %w", err)
+		return kubeAPIServerEndpoint{}, fmt.Errorf("decode static pod manifest: %w", err)
 	}
 	for _, container := range pod.Spec.Containers {
 		if container.Name != "kube-apiserver" {
 			continue
 		}
+		var address netip.Addr
+		port := uint16(6443)
 		for _, arg := range container.Command {
-			value, found := strings.CutPrefix(arg, "--advertise-address=")
-			if !found {
-				continue
+			if value, found := strings.CutPrefix(arg, "--advertise-address="); found {
+				parsed, err := netip.ParseAddr(strings.TrimSpace(value))
+				if err != nil {
+					return kubeAPIServerEndpoint{}, fmt.Errorf("invalid --advertise-address %q", value)
+				}
+				address = parsed.Unmap()
 			}
-			address, err := netip.ParseAddr(strings.TrimSpace(value))
-			if err != nil {
-				return netip.Addr{}, fmt.Errorf("invalid --advertise-address %q", value)
+			if value, found := strings.CutPrefix(arg, "--secure-port="); found {
+				parsed, err := strconv.ParseUint(strings.TrimSpace(value), 10, 16)
+				if err != nil || parsed == 0 {
+					return kubeAPIServerEndpoint{}, fmt.Errorf("invalid --secure-port %q", value)
+				}
+				port = uint16(parsed)
 			}
-			return address.Unmap(), nil
 		}
+		if !address.IsValid() {
+			return kubeAPIServerEndpoint{}, fmt.Errorf("kube-apiserver static pod has no --advertise-address")
+		}
+		return kubeAPIServerEndpoint{Address: address, Port: port}, nil
 	}
-	return netip.Addr{}, fmt.Errorf("kube-apiserver static pod has no --advertise-address")
+	return kubeAPIServerEndpoint{}, fmt.Errorf("static pod manifest has no kube-apiserver container")
 }
 
 func writeKubeadmPeerConfig(root, operationID, server string) (string, error) {

@@ -79,6 +79,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		"kubeadm upgrade plan v1.36.2",
 		"systemctl stop "+endpointAdvertiserUnit,
 		endpointAdvertiserCommand+" withdraw",
+		"--server https://10.0.0.1:6443 -n default get endpoints kubernetes -o json",
 		"--server https://10.0.0.2:6443 --request-timeout=10s get --raw=/readyz",
 		"--kubeconfig /var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf --request-timeout=10s get --raw=/readyz",
 		"systemctl restart kubelet.service",
@@ -129,6 +130,19 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	dropIn := filepath.Join(root, "run/systemd/system/kubelet.service.d/20-katl-upgrade-gate.conf")
 	if _, err := os.Stat(dropIn); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("completed kubelet gate drop-in still exists: %v", err)
+	}
+}
+
+func TestLocalKubeAPIServerEndpointUsesManifestAddressAndPort(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "etc/kubernetes/manifests/kube-apiserver.yaml"), "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: kube-apiserver\n      command:\n        - kube-apiserver\n        - --secure-port=7443\n        - --advertise-address=2001:db8::1\n")
+
+	endpoint, err := localKubeAPIServerEndpoint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := endpoint.URL(), "https://[2001:db8::1]:7443"; got != want {
+		t.Fatalf("local API endpoint = %q, want %q", got, want)
 	}
 }
 
