@@ -113,6 +113,62 @@ func TestRecordBootHealthRecommitsSupersededRollbackTarget(t *testing.T) {
 	}
 }
 
+func TestRecordBootHealthReconcilesManualKnownGoodFallback(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 8, 8, 17, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateSuperseded, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion:                    APIVersion,
+		Kind:                          BootSelectionKind,
+		DefaultGenerationID:           "gen1",
+		PreviousKnownGoodGenerationID: "gen0",
+		BootedGenerationID:            "gen1",
+		DefaultBootEntry:              "loader/entries/katl-gen1.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+		BootedBootEntry:               "loader/entries/katl-gen1.conf",
+		PersistentDefaultPromotion:    DefaultPromotionDone,
+		UpdatedAt:                     now.Add(-30 * time.Minute),
+	})
+
+	result, err := RecordBootHealth(BootHealthRequest{
+		Root:           root,
+		GenerationID:   "gen0",
+		CommandLine:    bootHealthCommandLine("gen0"),
+		Result:         BootHealthSuccess,
+		Reason:         "manual known-good fallback booted",
+		Now:            now,
+		SetBootDefault: bootHealthDefaultRecorder(t, "loader/entries/katl-gen0.conf"),
+	})
+	if err != nil {
+		t.Fatalf("RecordBootHealth(manual fallback) error = %v", err)
+	}
+	if !result.Promoted || !result.BootDefaultSet || result.DefaultGeneration != "gen0" || result.BootDefaultEntry != "loader/entries/katl-gen0.conf" {
+		t.Fatalf("result = %#v, want reconciled gen0 default", result)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatalf("ReadBootSelection() error = %v", err)
+	}
+	if selection.DefaultGenerationID != "gen0" || selection.BootedGenerationID != "gen0" || selection.DefaultBootEntry != "loader/entries/katl-gen0.conf" || selection.BootedBootEntry != "loader/entries/katl-gen0.conf" {
+		t.Fatalf("selection after manual fallback = %#v, want coherent gen0 boot evidence", selection)
+	}
+	_, gen0Status, err := ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatalf("ReadGeneration(gen0) error = %v", err)
+	}
+	if gen0Status.CommitState != CommitStateCommitted || gen0Status.BootState != BootStateGood || gen0Status.HealthState != HealthStateHealthy {
+		t.Fatalf("gen0 status = %#v, want committed/good/healthy", gen0Status)
+	}
+	_, gen1Status, err := ReadGeneration(root, "gen1")
+	if err != nil {
+		t.Fatalf("ReadGeneration(gen1) error = %v", err)
+	}
+	if gen1Status.CommitState != CommitStateSuperseded {
+		t.Fatalf("gen1 commitState = %s, want superseded", gen1Status.CommitState)
+	}
+}
+
 func TestRecordBootHealthInfersBootedTrialFromCommandLine(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 10, 30, 0, 0, time.UTC)

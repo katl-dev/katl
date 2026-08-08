@@ -212,6 +212,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
 	}
 	currentGenerationID, _ := currentGenerationID(s.Root)
+	bootHealth := readNodeBootHealth(s.Root)
 	endpointStatus, err := controlPlaneEndpointStatus(s.Root)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read control-plane endpoint status: %v", err)
@@ -251,6 +252,9 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		Kubernetes:              kubernetesStatus,
 		SystemExtensions:        systemExtensions,
 		Volumes:                 volumes,
+		SelectedGenerationId:    bootHealth.SelectedGenerationID,
+		BootHealthState:         bootHealth.State,
+		BootHealthDiagnostic:    bootHealth.Diagnostic,
 	}, nil
 }
 

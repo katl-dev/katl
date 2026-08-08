@@ -39,6 +39,9 @@ message NodeStatus {
   KubernetesStatus kubernetes = 12;
   repeated SystemExtensionStatus system_extensions = 13;
   repeated VolumeStatus volumes = 14;
+  string selected_generation_id = 15;
+  string boot_health_state = 16;
+  string boot_health_diagnostic = 17;
 }
 
 message VolumeStatus {

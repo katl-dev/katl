@@ -77,6 +77,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	if err != nil {
 		return BootHealthResult{}, err
 	}
+	manualFallback := isManualKnownGoodFallback(selection, generationID)
 	selection = inferBootedSelection(selection, spec, generationID, request.CommandLine)
 	if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
 		return BootHealthResult{}, err
@@ -91,6 +92,8 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 		nextDefaultBootEntry = strings.TrimSpace(selection.TargetBootEntry)
 	} else if strings.TrimSpace(selection.TrialBootEntry) != "" {
 		nextDefaultBootEntry = strings.TrimSpace(selection.TrialBootEntry)
+	} else if manualFallback {
+		nextDefaultBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
 	}
 	bootDefaultSet := false
 	if nextDefaultBootEntry != "" && previousBootEntry != nextDefaultBootEntry {
@@ -133,10 +136,15 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	selection.TrialBootEntry = ""
 	selection.BootCountedTrialPath = ""
 	if previousID != "" && previousID != generationID {
-		selection.PreviousKnownGoodGenerationID = previousID
-		selection.PreviousKnownGoodBootEntry = previousBootEntry
 		if err := supersedePreviousGeneration(root, previousID, generationID, now); err != nil {
 			return BootHealthResult{}, err
+		}
+		if manualFallback {
+			selection.PreviousKnownGoodGenerationID = ""
+			selection.PreviousKnownGoodBootEntry = ""
+		} else {
+			selection.PreviousKnownGoodGenerationID = previousID
+			selection.PreviousKnownGoodBootEntry = previousBootEntry
 		}
 	}
 	selection.UpdatedAt = now.UTC()
@@ -252,6 +260,11 @@ func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, ge
 			return selection
 		}
 	} else {
+		if isManualKnownGoodFallback(selection, generationID) {
+			selection.BootedGenerationID = generationID
+			selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
+			return selection
+		}
 		failedID := strings.TrimSpace(selection.FailedBootGenerationID)
 		if failedID == "" ||
 			generationID != strings.TrimSpace(selection.DefaultGenerationID) ||
@@ -269,6 +282,13 @@ func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, ge
 		selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
 	}
 	return selection
+}
+
+func isManualKnownGoodFallback(selection BootSelectionRecord, generationID string) bool {
+	return !selection.PendingHealthValidation &&
+		generationID != "" &&
+		generationID != strings.TrimSpace(selection.DefaultGenerationID) &&
+		generationID == strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
 }
 
 func validateBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) error {

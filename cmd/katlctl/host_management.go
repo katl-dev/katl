@@ -46,6 +46,7 @@ type hostStatusReport struct {
 	KatlOSVersion        string                      `json:"katlosVersion,omitempty"`
 	NextBoot             string                      `json:"nextBoot,omitempty"`
 	Activity             string                      `json:"activity"`
+	BootHealthDiagnostic string                      `json:"bootHealthDiagnostic,omitempty"`
 	Kubernetes           *kubernetesStatusReport     `json:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
 	Volumes              []volumeStatusReport        `json:"volumes,omitempty"`
@@ -359,6 +360,9 @@ func readHostState(ctx context.Context, client agentapi.KatlcAgentClient, node s
 		return nil, nil, fmt.Errorf("read status from %s: %w", node, err)
 	}
 	generationID := strings.TrimSpace(status.GetCurrentGenerationId())
+	if status.GetBootHealthState() == "failed" && strings.TrimSpace(status.GetSelectedGenerationId()) != "" {
+		generationID = strings.TrimSpace(status.GetSelectedGenerationId())
+	}
 	if generationID == "" {
 		return nil, nil, fmt.Errorf("%s did not report a current KatlOS generation", node)
 	}
@@ -374,13 +378,18 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 	if status.GetOperationLockHeld() {
 		activity = "busy"
 	}
+	health := displayHostHealth(current)
+	if bootHealth := strings.TrimSpace(status.GetBootHealthState()); bootHealth != "" && bootHealth != "healthy" {
+		health = bootHealth
+	}
 	report := hostStatusReport{
 		Node:                 node,
 		Endpoint:             endpoint,
-		Health:               displayHostHealth(current),
+		Health:               health,
 		Generation:           current.GetGenerationId(),
 		KatlOSVersion:        strings.TrimSpace(current.GetRuntimeVersion()),
 		Activity:             activity,
+		BootHealthDiagnostic: strings.TrimSpace(status.GetBootHealthDiagnostic()),
 		Kubernetes:           newKubernetesStatusReport(status.GetKubernetes()),
 		ControlPlaneEndpoint: newControlPlaneEndpointReport(status.GetControlPlaneEndpoint()),
 	}
@@ -473,6 +482,11 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	}
 	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", report.Node, report.Health, kubernetes, version, report.Generation, nextBoot, report.Activity); err != nil {
 		return err
+	}
+	if report.BootHealthDiagnostic != "" {
+		if _, err := fmt.Fprintf(w, "\t%s\n", report.BootHealthDiagnostic); err != nil {
+			return err
+		}
 	}
 	if report.Kubernetes != nil && report.Kubernetes.FailureReason != "" {
 		if _, err := fmt.Fprintf(w, "\t\t%s\n", report.Kubernetes.FailureReason); err != nil {

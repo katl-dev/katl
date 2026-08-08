@@ -73,6 +73,9 @@ type NodeStatus struct {
 	Kubernetes              *KubernetesStatus           `protobuf:"bytes,12,opt,name=kubernetes,proto3" json:"kubernetes,omitempty"`
 	SystemExtensions        []*SystemExtensionStatus    `protobuf:"bytes,13,rep,name=system_extensions,json=systemExtensions,proto3" json:"system_extensions,omitempty"`
 	Volumes                 []*VolumeStatus             `protobuf:"bytes,14,rep,name=volumes,proto3" json:"volumes,omitempty"`
+	SelectedGenerationId    string                      `protobuf:"bytes,15,opt,name=selected_generation_id,json=selectedGenerationId,proto3" json:"selected_generation_id,omitempty"`
+	BootHealthState         string                      `protobuf:"bytes,16,opt,name=boot_health_state,json=bootHealthState,proto3" json:"boot_health_state,omitempty"`
+	BootHealthDiagnostic    string                      `protobuf:"bytes,17,opt,name=boot_health_diagnostic,json=bootHealthDiagnostic,proto3" json:"boot_health_diagnostic,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -203,6 +206,27 @@ func (x *NodeStatus) GetVolumes() []*VolumeStatus {
 		return x.Volumes
 	}
 	return nil
+}
+
+func (x *NodeStatus) GetSelectedGenerationId() string {
+	if x != nil {
+		return x.SelectedGenerationId
+	}
+	return ""
+}
+
+func (x *NodeStatus) GetBootHealthState() string {
+	if x != nil {
+		return x.BootHealthState
+	}
+	return ""
+}
+
+func (x *NodeStatus) GetBootHealthDiagnostic() string {
+	if x != nil {
+		return x.BootHealthDiagnostic
+	}
+	return ""
 }
 
 type VolumeStatus struct {
@@ -4986,7 +5010,7 @@ var File_internal_katlc_agentapi_agent_proto protoreflect.FileDescriptor
 const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\n" +
 	"#internal/katlc/agentapi/agent.proto\x12\rkatl.agent.v1\"\x16\n" +
-	"\x14GetNodeStatusRequest\"\x8b\x06\n" +
+	"\x14GetNodeStatusRequest\"\xa3\a\n" +
 	"\n" +
 	"NodeStatus\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
@@ -5007,7 +5031,10 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"kubernetes\x18\f \x01(\v2\x1f.katl.agent.v1.KubernetesStatusR\n" +
 	"kubernetes\x12Q\n" +
 	"\x11system_extensions\x18\r \x03(\v2$.katl.agent.v1.SystemExtensionStatusR\x10systemExtensions\x125\n" +
-	"\avolumes\x18\x0e \x03(\v2\x1b.katl.agent.v1.VolumeStatusR\avolumes\"\xde\x02\n" +
+	"\avolumes\x18\x0e \x03(\v2\x1b.katl.agent.v1.VolumeStatusR\avolumes\x124\n" +
+	"\x16selected_generation_id\x18\x0f \x01(\tR\x14selectedGenerationId\x12*\n" +
+	"\x11boot_health_state\x18\x10 \x01(\tR\x0fbootHealthState\x124\n" +
+	"\x16boot_health_diagnostic\x18\x11 \x01(\tR\x14bootHealthDiagnostic\"\xde\x02\n" +
 	"\fVolumeStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vtarget_kind\x18\x02 \x01(\tR\n" +
