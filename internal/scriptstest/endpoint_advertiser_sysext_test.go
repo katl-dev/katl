@@ -75,10 +75,17 @@ func TestEndpointAdvertiserSysextOnlyStartsBirdForManagedVIP(t *testing.T) {
 		"ExecStart=/usr/bin/systemctl daemon-reload",
 		"ExecStart=/usr/bin/systemctl start katl-app-bgp-api-vip.service",
 		"ExecStart=-/usr/bin/systemctl start katl-app-bgp-api-vip.path",
-		"ExecStop=-/usr/bin/systemctl stop katl-app-bgp-api-vip.path",
 	} {
 		if !strings.Contains(activationUnit, want) {
 			t.Fatalf("endpoint activation unit is missing %q", want)
+		}
+	}
+	if strings.Contains(activationUnit, "ExecStop=/usr/bin/systemctl") || strings.Contains(activationUnit, "ExecStop=-/usr/bin/systemctl") {
+		t.Fatal("endpoint activation must not recursively invoke systemctl while systemd is stopping its transaction")
+	}
+	for name, unit := range map[string]string{"endpoint service": appUnit, "endpoint path": pathUnit} {
+		if !strings.Contains(unit, "PartOf=katl-endpoint-activate.service") {
+			t.Fatalf("%s must stop natively with endpoint activation", name)
 		}
 	}
 	if strings.Contains(activationUnit, "katl-extension-daemon-reload.service") {
