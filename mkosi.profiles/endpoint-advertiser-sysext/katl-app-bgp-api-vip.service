@@ -1,6 +1,7 @@
 [Unit]
 Description=Katl routed control-plane endpoint
 Documentation=https://katl.dev
+PartOf=katl-endpoint-activate.service
 ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
 ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
 ConditionPathExists=/etc/kubernetes/pki/ca.crt
