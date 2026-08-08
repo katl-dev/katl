@@ -2,6 +2,7 @@ package handoff
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,8 @@ type HandoffServer struct {
 	status                             installstatus.Record
 	disks                              []HandoffDisk
 	hardwareFacts                      discovery.HardwareFacts
+	sshAccess                          SSHAccessStatus
+	configureSSH                       func(context.Context, []string) error
 }
 
 type HandoffStatus struct {
@@ -49,6 +52,13 @@ type HandoffStatus struct {
 	SelectedNode     string               `json:"selectedNode,omitempty"`
 	InstallStatus    installstatus.Record `json:"installStatus"`
 	Disks            []HandoffDisk        `json:"disks,omitempty"`
+	SSHAccess        SSHAccessStatus      `json:"sshAccess,omitzero"`
+}
+
+type SSHAccessStatus struct {
+	Enabled            bool   `json:"enabled"`
+	Account            string `json:"account,omitempty"`
+	AuthorizedKeyCount int    `json:"authorizedKeyCount,omitempty"`
 }
 
 type HandoffDisk struct {
@@ -126,6 +136,7 @@ func (s *HandoffServer) Status() HandoffStatus {
 		SelectedNode:     s.nodeName,
 		InstallStatus:    s.status,
 		Disks:            append([]HandoffDisk(nil), s.disks...),
+		SSHAccess:        s.sshAccess,
 	}
 	reader := s.statusReader
 	s.mu.Unlock()
@@ -208,6 +219,12 @@ func (s *HandoffServer) SetStatusReader(reader func() (installstatus.Record, err
 	s.statusReader = reader
 }
 
+func (s *HandoffServer) SetSSHConfigurer(configure func(context.Context, []string) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.configureSSH = configure
+}
+
 func (s *HandoffServer) Announcement(baseURL string) string {
 	return "katlos-install waiting for config at " + strings.TrimRight(baseURL, "/") + "/v1/config-bundle"
 }
@@ -218,7 +235,55 @@ func (s *HandoffServer) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/install", s.handleInstall)
 	mux.HandleFunc("POST /v1/config-bundle", s.handleConfigBundle)
+	mux.HandleFunc("POST /v1/ssh-access", s.handleSSHAccess)
 	return mux
+}
+
+func (s *HandoffServer) handleSSHAccess(w http.ResponseWriter, r *http.Request) {
+	nodeName := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("node"), r.Header.Get("X-Katl-Node-Name")))
+	expectedDigest := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("digest"), r.Header.Get("X-Katl-Bundle-Digest")))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20))
+	if err != nil {
+		http.Error(w, "read config bundle", http.StatusBadRequest)
+		return
+	}
+	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(body), configbundle.ReadOptions{
+		ExpectedDigest:          expectedDigest,
+		NodeName:                nodeName,
+		DefaultKatlosImage:      s.defaultKatlosImage,
+		AllowMissingKatlosImage: true,
+	})
+	if err != nil {
+		http.Error(w, "invalid config bundle: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	keys := selected.InstallManifest.Node.Identity.SSH.AuthorizedKeys
+	if len(keys) == 0 {
+		http.Error(w, "selected node has no SSH authorized keys", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != HandoffWaiting {
+		http.Error(w, "installer SSH can only be configured while waiting for config", http.StatusConflict)
+		return
+	}
+	if s.configureSSH == nil {
+		http.Error(w, "installer SSH configuration is unavailable", http.StatusNotImplemented)
+		return
+	}
+	if err := s.configureSSH(r.Context(), keys); err != nil {
+		http.Error(w, "configure installer SSH: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.sshAccess = SSHAccessStatus{Enabled: true, Account: "root", AuthorizedKeyCount: len(keys)}
+	writeJSON(w, HandoffStatus{
+		State:         s.state,
+		InstallStatus: s.status,
+		Disks:         append([]HandoffDisk(nil), s.disks...),
+		SSHAccess:     s.sshAccess,
+	})
 }
 
 func (s *HandoffServer) handleHealthz(w http.ResponseWriter, _ *http.Request) {

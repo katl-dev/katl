@@ -573,6 +573,22 @@ Review and adjust the generated node names, roles, addresses, disk identities,
 and Kubernetes selection before applying it. Never substitute a transient
 `/dev/vda` or `/dev/sda` path.
 
+For pre-install debugging, enable the installer's ephemeral key-only SSH
+access from the same reviewed source:
+
+```sh
+katlctl install ssh --config ./cluster.yaml --node cp-1
+ssh root@192.0.2.11
+```
+
+This installs only the selected node's configured public keys into the live
+installer and starts OpenSSH; it does not submit an install or mutate a disk.
+The root account is an installer-only recovery surface. The installed KatlOS
+runtime uses the `katl` account and the same configured keys. If the installer
+currently has a different DHCP address, pass the same `--endpoint` override
+described below. Repeating the command replaces the live authorized-key set
+with the current selected-node configuration.
+
 Apply the cluster source directly:
 
 ```sh
@@ -767,6 +783,14 @@ metadata, generation IDs, or operation IDs. Follow
 sysext manually is not a supported upgrade.
 
 ## Troubleshooting
+
+If local console access is inconvenient, enable the waiting installer's
+key-only SSH recovery surface before submitting the install:
+
+```sh
+katlctl install ssh --config ./cluster.yaml --node cp-1
+ssh root@192.0.2.11
+```
 
 Collect these first:
 

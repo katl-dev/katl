@@ -240,6 +240,7 @@ func TestConfigInputFlagsUseOneName(t *testing.T) {
 		"katlctl cluster wipe":            true,
 		"katlctl config render-node":      true,
 		"katlctl install apply":           true,
+		"katlctl install ssh":             true,
 		"katlctl kubernetes upgrade":      true,
 		"katlctl operations list":         true,
 		"katlctl operations status":       true,
