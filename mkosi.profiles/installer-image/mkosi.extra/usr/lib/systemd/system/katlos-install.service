@@ -1,14 +1,14 @@
 [Unit]
 Description=Run Katl installer entrypoint
 DefaultDependencies=no
-Wants=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service
-After=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service
+Wants=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service network-online.target
+After=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service network-online.target
 Before=initrd.target
 
 [Service]
-Type=notify
+Type=oneshot
 NotifyAccess=main
-TimeoutStartSec=30min
+TimeoutStartSec=infinity
 ExecStart=/usr/bin/katlos-install --boot
 StandardOutput=journal+console
 StandardError=journal+console

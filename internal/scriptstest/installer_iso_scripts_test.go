@@ -56,6 +56,32 @@ touch "$output"
 	}
 }
 
+func TestInstallerWaitsForNetworkBeforeURLHandoff(t *testing.T) {
+	unit, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "installer-image", "mkosi.extra", "usr", "lib", "systemd", "system", "katlos-install.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(unit)
+	if !strings.Contains(text, "\nType=oneshot\n") || strings.Contains(text, "\nType=notify\n") {
+		t.Fatal("installer service must block initrd completion as a oneshot")
+	}
+	if !strings.Contains(text, "\nTimeoutStartSec=infinity\n") {
+		t.Fatal("installer handoff and safety holds must not expire")
+	}
+	for _, directive := range []string{"Wants=", "After="} {
+		line := ""
+		for _, candidate := range strings.Split(text, "\n") {
+			if strings.HasPrefix(candidate, directive) {
+				line = candidate
+				break
+			}
+		}
+		if !strings.Contains(" "+line+" ", " network-online.target ") {
+			t.Fatalf("installer unit %s does not include network-online.target", directive)
+		}
+	}
+}
+
 func TestCheckInstallerISO(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()

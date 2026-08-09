@@ -633,6 +633,34 @@ func TestBootHold(t *testing.T) {
 	}
 }
 
+func TestWaitForInstallerRebootBlocksUntilShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout bytes.Buffer
+	err := waitForInstallerReboot(ctx, &stdout)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForInstallerReboot() error = %v, want canceled", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "installation complete; waiting for scheduled reboot") {
+		t.Fatalf("stdout = %q, want reboot wait progress", got)
+	}
+}
+
+func TestFinishAutomaticInstallHoldsInstalledTarget(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout bytes.Buffer
+	err := finishAutomaticInstall(ctx, fmt.Errorf("%w on /dev/vda; use the explicit Katl wipe/reinstall workflow", installer.ErrInstalledTarget), &stdout)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("finishAutomaticInstall() error = %v, want context canceled", err)
+	}
+	for _, want := range []string{"installed KatlOS target detected", "automatic reinstall stopped", "explicit Katl wipe/reinstall workflow"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

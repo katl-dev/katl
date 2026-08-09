@@ -633,6 +633,32 @@ func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
 	}
 }
 
+func TestRunnerHaltIfInstalledRefusesBeforeMutation(t *testing.T) {
+	store := &MemoryStateStore{}
+	facts := appliedLayoutFacts("")
+	facts.Mounts = nil
+	install := &Context{
+		ManifestPath:    writeManifest(t),
+		Commands:        &NoopCommandRunner{},
+		Store:           store,
+		KatlosResolver:  &recordingKatlosResolver{payload: planningPayload()},
+		Discovery:       discovery.StaticDiscoverySource{Facts: facts},
+		HaltIfInstalled: true,
+	}
+	err := NewRunner(Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, prepareDiskStep{}}, install).Run(context.Background())
+	if !errors.Is(err, ErrInstalledTarget) {
+		t.Fatalf("Run() error = %v, want ErrInstalledTarget", err)
+	}
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust}) {
+		t.Fatalf("completed steps = %#v", got)
+	}
+	for _, status := range store.Statuses {
+		if status.DestructiveMutation || status.State == installstatus.StateFailedBeforeMutation {
+			t.Fatalf("installed-target hold recorded a mutation or failure: %#v", status)
+		}
+	}
+}
+
 func TestPlanInstallRequiresAuthorityForNonBlankStorageVolume(t *testing.T) {
 	file, err := os.Open(writeManifest(t))
 	if err != nil {

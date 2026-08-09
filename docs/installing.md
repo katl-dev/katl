@@ -490,11 +490,24 @@ katl.bundle.sha256=<optional expected config bundle archive SHA-256>
 katl.bundle=<local config bundle path>
 katl.node=<node name>
 katl.install.mode=auto
+katl.halt-if-installed=1
 katl.wait-for-config=1
 katl.hold-for-debug=1
 console=...
 ip=...
 ```
+
+Set `katl.halt-if-installed=1` on PXE profiles that remain first in firmware
+boot order. After resolving the selected node and target disk, the installer
+recognizes Katl's installed GPT layout before any mutation and stays in an
+SSH-accessible hold. Reinstallation remains an explicit `katlctl node wipe` or
+`katlctl cluster wipe` workflow; removing the guard alone is not a substitute
+for reviewing that destructive operation.
+
+After a PXE bundle selects a node, Katl configures the live installer's root
+SSH access from that node's `access.ssh.authorizedKeys` before image validation
+or disk planning. This is ephemeral installer access; the installed runtime
+continues to use the `katl` account with the same configured keys.
 
 The installer calculates the downloaded archive identity and checks the bundle
 structure itself. `katl.bundle.sha256` is an optional expert control when an
@@ -508,7 +521,7 @@ Illustrative iPXE entry for `cp-1`:
 #!ipxe
 set base https://boot.example.invalid/katl/2026.7.0
 set node cp-1
-kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 systemd.getty_auto=no katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto
+kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 systemd.getty_auto=no katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto katl.halt-if-installed=1
 initrd ${base}/katl-installer.initrd
 boot
 ```

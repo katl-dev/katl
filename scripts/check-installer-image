@@ -135,6 +135,16 @@ do
     has_path "$path"
 done
 
+installer_unit="$initrd_root/usr/lib/systemd/system/katlos-install.service"
+grep -Fxq 'Type=oneshot' "$installer_unit" ||
+    fail "installer service does not block initrd completion as a oneshot"
+grep -Fxq 'TimeoutStartSec=infinity' "$installer_unit" ||
+    fail "installer handoff and safety holds have a startup timeout"
+grep -Eq '^Wants=.*(^| )network-online\.target( |$)' "$installer_unit" ||
+    fail "installer service does not pull network-online.target before URL handoff"
+grep -Eq '^After=.*(^| )network-online\.target( |$)' "$installer_unit" ||
+    fail "installer service does not wait for network-online.target before URL handoff"
+
 for path in \
     /usr/bin/mkosi \
     /usr/bin/dnf \
