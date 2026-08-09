@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -274,10 +275,11 @@ type contextRebindOptions struct {
 	contextName string
 	nodeName    string
 	endpoint    string
+	timeout     time.Duration
 }
 
 func newContextRebindCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := contextRebindOptions{}
+	opts := contextRebindOptions{timeout: 15 * time.Second}
 	cmd := &cobra.Command{Use: "rebind", Short: "Verify an enrolled node and save its new management address", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
 		_ = stderr
 		return runContextRebind(ctx, opts, stdout)
@@ -287,6 +289,7 @@ func newContextRebindCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "saved context name")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "enrolled inventory node name")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "new node address: IP, hostname, host:port, or tcp:// URL")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "time to verify the proposed address")
 	return cmd
 }
 
@@ -294,6 +297,11 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	if strings.TrimSpace(opts.nodeName) == "" || strings.TrimSpace(opts.endpoint) == "" {
 		return fmt.Errorf("--node and --endpoint are required")
 	}
+	if opts.timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
 	cfg, path, err := loadContexts(opts.contextPath)
 	if err != nil {
 		return err
@@ -321,11 +329,11 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	if err != nil {
 		return err
 	}
-	conn, err := dialKatlcAgent(withManagementTarget(ctx, target), endpoint)
+	conn, err := dialKatlcAgent(withManagementTarget(requestCtx, target), endpoint)
 	if err != nil {
 		return fmt.Errorf("connect to proposed address %s: %w", endpoint, err)
 	}
-	status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	status, statusErr := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
 	closeErr := conn.Close()
 	if statusErr != nil {
 		return fmt.Errorf("verify proposed address %s: %w", endpoint, statusErr)
