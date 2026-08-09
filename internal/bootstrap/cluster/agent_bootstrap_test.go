@@ -424,6 +424,42 @@ func TestRunAgentBootstrapResumesInterruptedInit(t *testing.T) {
 	}
 }
 
+func TestResumeBootstrapOperationRetriesLatestTerminalFailure(t *testing.T) {
+	const requestID = "katlctl-cp-1-123456789abc"
+	client := &fakeAgentClient{listResponse: &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{
+		{OperationId: "unrelated", OperationKind: agentBootstrapInitKind, ClientRequestId: "another-request", Terminal: true, Result: operation.ResultSucceeded},
+		{OperationId: "retry-1", OperationKind: agentBootstrapInitKind, ClientRequestId: requestID + "-retry-1", Terminal: true, Result: operation.ResultFailedNeedsRepair},
+		{OperationId: "initial", OperationKind: agentBootstrapInitKind, ClientRequestId: requestID, Terminal: true, Result: operation.ResultFailedNeedsRepair},
+	}}}
+
+	accepted, nextRequestID, resumed, err := resumeBootstrapOperation(context.Background(), client, requestID, agentBootstrapInitKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted != nil || resumed || nextRequestID != requestID+"-retry-2" {
+		t.Fatalf("accepted = %#v, next request ID = %q, resumed = %t", accepted, nextRequestID, resumed)
+	}
+}
+
+func TestResumeBootstrapOperationResumesLatestRetry(t *testing.T) {
+	const requestID = "katlctl-cp-1-123456789abc"
+	latest := &agentapi.OperationStatus{
+		OperationId: "retry-2", OperationKind: agentBootstrapInitKind, ClientRequestId: requestID + "-retry-2", RequestDigest: strings.Repeat("a", 64),
+	}
+	client := &fakeAgentClient{listResponse: &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{
+		latest,
+		{OperationId: "retry-1", OperationKind: agentBootstrapInitKind, ClientRequestId: requestID + "-retry-1", Terminal: true, Result: operation.ResultFailedNeedsRepair},
+	}}}
+
+	accepted, nextRequestID, resumed, err := resumeBootstrapOperation(context.Background(), client, requestID, agentBootstrapInitKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resumed || nextRequestID != latest.ClientRequestId || accepted.GetOperationId() != latest.OperationId || accepted.GetRequestDigest() != latest.RequestDigest {
+		t.Fatalf("accepted = %#v, next request ID = %q, resumed = %t", accepted, nextRequestID, resumed)
+	}
+}
+
 func TestRunAgentBootstrapRebootsCandidateWithoutRequiringCNI(t *testing.T) {
 	inv := validSingleNodeInventory()
 	candidate := "bootstrap-init-candidate"
