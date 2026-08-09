@@ -2,6 +2,7 @@ package generation
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,13 +69,71 @@ func TestRenderSSH(t *testing.T) {
 func TestWriteIdentity(t *testing.T) {
 	root := t.TempDir()
 	assets, err := WriteIdentity(root, IdentityRequest{
-		AuthorizedKeys: []string{sshKey},
-		Random:         bytes.NewReader([]byte("0123456789abcdef")),
+		AuthorizedKeys:    []string{sshKey},
+		InventoryNodeName: "cp-1",
+		Random:            bytes.NewReader([]byte("0123456789abcdef")),
+		EnrollmentRandom:  bytes.NewReader([]byte("fedcba9876543210")),
 	})
 	if err != nil {
 		t.Fatalf("WriteIdentity() error = %v", err)
 	}
 	assertFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), assets.MachineID+"\n")
+	if assets.Enrollment.InventoryNodeName != "cp-1" || assets.Enrollment.MachineID != assets.MachineID || assets.Enrollment.ID != "66656463626139383736353433323130" {
+		t.Fatalf("enrollment = %+v", assets.Enrollment)
+	}
+	reused, err := WriteEnrollment(root, "cp-1", assets.MachineID, bytes.NewReader([]byte("xxxxxxxxxxxxxxxx")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.ID != assets.Enrollment.ID {
+		t.Fatalf("reused enrollment ID = %q, want %q", reused.ID, assets.Enrollment.ID)
+	}
+	if _, err := WriteEnrollment(root, "cp-2", assets.MachineID, bytes.NewReader([]byte("xxxxxxxxxxxxxxxx"))); err == nil || !strings.Contains(err.Error(), "existing enrollment belongs") {
+		t.Fatalf("renamed enrollment error = %v", err)
+	}
+}
+
+func TestWriteEnrollmentIgnoresInterruptedTemporaryFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, filepath.Dir(EnrollmentPath))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir enrollment identity dir: %v", err)
+	}
+	interrupted := filepath.Join(dir, ".enrollment.json.tmp-interrupted")
+	if err := os.WriteFile(interrupted, []byte(`{"apiVersion":`), 0o600); err != nil {
+		t.Fatalf("write interrupted temporary enrollment: %v", err)
+	}
+
+	enrollment, err := WriteEnrollment(root, "cp-1", "0123456789abcdef0123456789abcdef", bytes.NewReader([]byte("fedcba9876543210")))
+	if err != nil {
+		t.Fatalf("WriteEnrollment() after interrupted temporary write error = %v", err)
+	}
+	read, err := ReadEnrollment(root)
+	if err != nil {
+		t.Fatalf("ReadEnrollment() error = %v", err)
+	}
+	if read != enrollment {
+		t.Fatalf("persisted enrollment = %+v, want %+v", read, enrollment)
+	}
+	assertMode(t, filepath.Join(root, EnrollmentPath), 0o444)
+}
+
+func TestWriteEnrollmentAtomicPublishDoesNotReplaceExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "enrollment.json")
+	if err := os.WriteFile(path, []byte("existing\n"), 0o444); err != nil {
+		t.Fatalf("write existing enrollment: %v", err)
+	}
+	if err := writeEnrollmentAtomic(path, []byte("replacement\n")); err == nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("writeEnrollmentAtomic() error = %v, want file-exists refusal", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read existing enrollment: %v", err)
+	}
+	if string(data) != "existing\n" {
+		t.Fatalf("existing enrollment = %q, want unchanged", data)
+	}
 }
 
 func TestRenderSSHRejectsKey(t *testing.T) {
@@ -124,8 +183,10 @@ func TestWriteInstallIdentity(t *testing.T) {
 		TargetRoot: targetRoot,
 		BootRoot:   bootRoot,
 		Identity: IdentityRequest{
-			AuthorizedKeys: []string{sshKey},
-			Random:         bytes.NewReader([]byte("0123456789abcdef")),
+			AuthorizedKeys:    []string{sshKey},
+			InventoryNodeName: "cp-1",
+			Random:            bytes.NewReader([]byte("0123456789abcdef")),
+			EnrollmentRandom:  bytes.NewReader([]byte("fedcba9876543210")),
 		},
 		Loader: LoaderRequest{Record: record},
 	})

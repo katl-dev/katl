@@ -69,6 +69,8 @@ type Server struct {
 	Root                     string
 	Store                    operation.Store
 	MachineID                string
+	EnrollmentID             string
+	InventoryNodeName        string
 	AgentStartID             string
 	StartedAt                time.Time
 	SupportedOperationKinds  []string
@@ -121,12 +123,8 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	if strings.TrimSpace(req.Actor) == "" {
 		return nil, status.Error(codes.InvalidArgument, "actor is required")
 	}
-	machineID, err := s.machineID()
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
-	}
-	if strings.TrimSpace(req.ExpectedMachineId) == "" || req.ExpectedMachineId != machineID {
-		return nil, status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
+	if err := s.validateMutationTarget(req.ExpectedEnrollmentId, req.ExpectedInventoryNodeName, req.ExpectedMachineId, req.ExpectedCurrentGenerationId); err != nil {
+		return nil, err
 	}
 	target := strings.TrimSpace(req.TargetGenerationId)
 	if err := cleanPublicID("targetGenerationID", target); err != nil {
@@ -176,12 +174,8 @@ func (s *Server) Shutdown(ctx context.Context, req *agentapi.ShutdownRequest) (*
 	if strings.TrimSpace(req.Actor) == "" {
 		return nil, status.Error(codes.InvalidArgument, "actor is required")
 	}
-	machineID, err := s.machineID()
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
-	}
-	if strings.TrimSpace(req.ExpectedMachineId) == "" || req.ExpectedMachineId != machineID {
-		return nil, status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
+	if err := s.validateMutationTarget(req.ExpectedEnrollmentId, req.ExpectedInventoryNodeName, req.ExpectedMachineId, req.ExpectedCurrentGenerationId); err != nil {
+		return nil, err
 	}
 	active, err := s.activeOperationIDs()
 	if err != nil {
@@ -211,6 +205,10 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	machineID, err := s.machineID()
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
+	}
+	enrollment, err := s.enrollment()
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "read enrollment identity: %v", err)
 	}
 	currentGenerationID, _ := currentGenerationID(s.Root)
 	bootHealth := readNodeBootHealth(s.Root)
@@ -256,6 +254,8 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		SelectedGenerationId:    bootHealth.SelectedGenerationID,
 		BootHealthState:         bootHealth.State,
 		BootHealthDiagnostic:    bootHealth.Diagnostic,
+		EnrollmentId:            enrollment.ID,
+		InventoryNodeName:       enrollment.InventoryNodeName,
 	}, nil
 }
 
@@ -313,14 +313,8 @@ func (s *Server) CreateWorkerJoinMaterial(ctx context.Context, req *agentapi.Cre
 	if strings.TrimSpace(req.RequestRef) != "" && inventory.Redact(req.RequestRef) != req.RequestRef {
 		return nil, status.Error(codes.InvalidArgument, "requestRef must be an opaque reference, not raw join material")
 	}
-	if strings.TrimSpace(req.ExpectedMachineId) != "" {
-		machineID, err := s.machineID()
-		if err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
-		}
-		if req.ExpectedMachineId != machineID {
-			return nil, status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
-		}
+	if err := s.validateMutationTarget(req.ExpectedEnrollmentId, req.ExpectedInventoryNodeName, req.ExpectedMachineId, req.ExpectedCurrentGenerationId); err != nil {
+		return nil, err
 	}
 	ttl, err := workerJoinTTL(req.Ttl)
 	if err != nil {
@@ -790,6 +784,9 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if strings.TrimSpace(req.Actor) == "" {
 		return status.Error(codes.InvalidArgument, "actor is required")
 	}
+	if err := s.validateMutationTarget(req.ExpectedEnrollmentId, req.ExpectedInventoryNodeName, req.ExpectedMachineId, req.ExpectedCurrentGenerationId); err != nil {
+		return err
+	}
 	bodyCount := 0
 	if req.GetBootstrap() != nil {
 		bodyCount++
@@ -814,6 +811,9 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	}
 	if bodyCount != 1 {
 		return status.Error(codes.InvalidArgument, "exactly one operation request body is required")
+	}
+	if err := validateRequestedInventoryNode(req); err != nil {
+		return err
 	}
 	if req.GetConfigApply() != nil {
 		if err := validateConfigApplyRequest(req.OperationKind, req.GetConfigApply()); err != nil {
@@ -866,24 +866,29 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 			return status.Errorf(codes.InvalidArgument, "operationTimeout must not exceed %s", maxToolTimeout)
 		}
 	}
-	if strings.TrimSpace(req.ExpectedMachineId) != "" {
-		machineID, err := s.machineID()
-		if err != nil {
-			return status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
-		}
-		if req.ExpectedMachineId != machineID {
-			return status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
-		}
-	}
-	if strings.TrimSpace(req.ExpectedCurrentGenerationId) != "" {
-		if err := s.validateExpectedCurrentGeneration(req.ExpectedCurrentGenerationId); err != nil {
-			return err
-		}
-	}
 	if strings.TrimSpace(req.ExpectedClusterIntentDigest) != "" {
 		if err := s.validateExpectedClusterIntentDigest(req.ExpectedClusterIntentDigest); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateRequestedInventoryNode(req *agentapi.SubmitOperationRequest) error {
+	expected := strings.TrimSpace(req.GetExpectedInventoryNodeName())
+	requested := ""
+	switch {
+	case req.GetBootstrap() != nil:
+		requested = strings.TrimSpace(req.GetBootstrap().GetInventoryNodeName())
+	case req.GetConfigApply() != nil:
+		requested = strings.TrimSpace(req.GetConfigApply().GetNodeName())
+	case req.GetDestructiveReset() != nil:
+		requested = strings.TrimSpace(req.GetDestructiveReset().GetInventoryNodeName())
+	case req.GetKubeadmControlPlaneConfig() != nil:
+		requested = strings.TrimSpace(req.GetKubeadmControlPlaneConfig().GetNodeName())
+	}
+	if requested != "" && requested != expected {
+		return status.Errorf(codes.FailedPrecondition, "requested inventory node %q does not match enrolled request target %q", requested, expected)
 	}
 	return nil
 }
@@ -1082,6 +1087,54 @@ func (s *Server) machineID() (string, error) {
 	return "", fmt.Errorf("machine identity is not initialized")
 }
 
+func (s *Server) enrollment() (generation.Enrollment, error) {
+	if strings.TrimSpace(s.EnrollmentID) != "" || strings.TrimSpace(s.InventoryNodeName) != "" {
+		machineID, err := s.machineID()
+		if err != nil {
+			return generation.Enrollment{}, err
+		}
+		return generation.Enrollment{ID: strings.TrimSpace(s.EnrollmentID), InventoryNodeName: strings.TrimSpace(s.InventoryNodeName), MachineID: machineID}, nil
+	}
+	root := strings.TrimSpace(s.Root)
+	if root == "" {
+		root = "/"
+	}
+	return generation.ReadEnrollment(root)
+}
+
+func (s *Server) validateMutationTarget(enrollmentID, nodeName, machineID, currentGenerationID string) error {
+	for _, required := range []struct {
+		field string
+		value string
+	}{
+		{field: "expectedEnrollmentID", value: enrollmentID},
+		{field: "expectedInventoryNodeName", value: nodeName},
+		{field: "expectedMachineID", value: machineID},
+		{field: "expectedCurrentGenerationID", value: currentGenerationID},
+	} {
+		if strings.TrimSpace(required.value) == "" {
+			return status.Errorf(codes.InvalidArgument, "%s is required for mutating requests", required.field)
+		}
+	}
+	if err := cleanPublicID("expectedCurrentGenerationID", currentGenerationID); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	enrollment, err := s.enrollment()
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "read enrollment identity: %v", err)
+	}
+	if enrollmentID != enrollment.ID {
+		return status.Error(codes.FailedPrecondition, "expectedEnrollmentID does not match node enrollment")
+	}
+	if nodeName != enrollment.InventoryNodeName {
+		return status.Errorf(codes.FailedPrecondition, "requested inventory node %q does not match enrolled node %q", nodeName, enrollment.InventoryNodeName)
+	}
+	if machineID != enrollment.MachineID {
+		return status.Error(codes.FailedPrecondition, "expectedMachineID does not match enrolled machine id")
+	}
+	return s.validateExpectedCurrentGeneration(currentGenerationID)
+}
+
 func (s *Server) operationStoreRoot() string {
 	if strings.TrimSpace(s.Store.Root) != "" {
 		return s.Store.Root
@@ -1116,16 +1169,9 @@ func (s *Server) operationID(kind string, now time.Time) (string, error) {
 }
 
 func (s *Server) validateExpectedCurrentGeneration(expected string) error {
-	selection, err := generation.ReadBootSelection(s.Root)
+	current, err := currentGenerationID(s.Root)
 	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "read boot selection for expectedCurrentGenerationID: %v", err)
-	}
-	current := strings.TrimSpace(selection.BootedGenerationID)
-	if current == "" {
-		current = strings.TrimSpace(selection.DefaultGenerationID)
-	}
-	if current == "" {
-		return status.Error(codes.FailedPrecondition, "current generation is not recorded")
+		return status.Errorf(codes.FailedPrecondition, "read current generation for expectedCurrentGenerationID: %v", err)
 	}
 	if expected != current {
 		return status.Errorf(codes.FailedPrecondition, "expectedCurrentGenerationID %q does not match current generation %q", expected, current)

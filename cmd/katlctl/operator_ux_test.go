@@ -277,6 +277,7 @@ func TestConfigApplyUsesClusterConfigAndDerivesBookkeeping(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := &fakeKatlcAgentClient{
+		nodeStatus:     &agentapi.NodeStatus{MachineId: "machine-cp-1", EnrollmentId: "enrollment-cp-1", InventoryNodeName: "cp-1", CurrentGenerationId: "generation-0"},
 		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live"},
 		stageAccepted:  &agentapi.OperationAccepted{OperationId: "apply-1", OperationKind: "generation-apply", InitialStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded}},
 	}

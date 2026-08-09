@@ -139,6 +139,7 @@ Start with "katlctl install discover" for a waiting installer or
 
 	contextCmd := &cobra.Command{Use: "context", Short: "Save and inspect workstation contexts"}
 	contextCmd.AddCommand(newContextSaveCommand(ctx, stdout, stderr))
+	contextCmd.AddCommand(newContextRebindCommand(ctx, stdout, stderr))
 	contextCmd.AddCommand(newConfigPathCommand(stdout, stderr))
 	contextCmd.AddCommand(newContextListCommand(stdout, stderr))
 	contextCmd.AddCommand(newContextCurrentCommand(stdout, stderr))
@@ -210,6 +211,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl cluster etcd members":        "katlctl cluster etcd members --config cluster.yaml",
 		"katlctl cluster etcd remove":         "katlctl cluster etcd remove cp-3 --member-id MEMBER_ID --config cluster.yaml",
 		"katlctl context save":                "katlctl context save --config cluster.yaml",
+		"katlctl context rebind":              "katlctl context rebind --node cp-1 --endpoint 192.0.2.51",
 		"katlctl cluster bootstrap":           "katlctl cluster bootstrap --config cluster.yaml",
 		"katlctl cluster wipe":                "katlctl cluster wipe --config cluster.yaml --all",
 		"katlctl kubernetes":                  "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
@@ -383,6 +385,9 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return fmt.Errorf("read node status: %w", err)
 	}
+	if err := verifyEnrolledStatus(target, status); err != nil {
+		return err
+	}
 	recoveryRequirement := nodeRecoveryRequirementFor(status)
 	current, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: status.GetCurrentGenerationId()})
 	if err != nil {
@@ -427,7 +432,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
 	}
 	if localArtifact != nil && !opts.plan {
-		localRef, err := stageHostUpgradeArtifact(ctx, conn.Client, strings.TrimSpace(opts.actor), status.GetMachineId(), *localArtifact, target.nodeName, stderr)
+		localRef, err := stageHostUpgradeArtifact(ctx, conn.Client, strings.TrimSpace(opts.actor), status, *localArtifact, target.nodeName, stderr)
 		if err != nil {
 			return err
 		}
@@ -442,6 +447,8 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		ClientRequestId:             requestID,
 		OperationKind:               "host-upgrade",
 		Actor:                       strings.TrimSpace(opts.actor),
+		ExpectedEnrollmentId:        status.GetEnrollmentId(),
+		ExpectedInventoryNodeName:   status.GetInventoryNodeName(),
 		ExpectedMachineId:           status.GetMachineId(),
 		ExpectedCurrentGenerationId: status.GetCurrentGenerationId(),
 		DryRun:                      opts.plan,
@@ -475,7 +482,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		return err
 	}
 	agentStart := status.GetAgentStartId()
-	if err := requestNodeReboot(ctx, conn.Client, opts.actor, status.GetMachineId(), request.CandidateGenerationID); err != nil {
+	if err := requestNodeReboot(ctx, conn.Client, opts.actor, status, request.CandidateGenerationID); err != nil {
 		report.Result = "staged"
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return fmt.Errorf("reboot node %s: %w", report.Node, err)
@@ -599,22 +606,26 @@ func hostUpgradeArtifactLocalRef(sha256 string) string {
 }
 
 type localArtifactUpload struct {
-	Path      string
-	Label     string
-	Version   string
-	Kind      string
-	Actor     string
-	MachineID string
-	SHA256    string
-	SizeBytes uint64
-	LocalRef  string
-	Node      string
+	Path                string
+	Label               string
+	Version             string
+	Kind                string
+	Actor               string
+	MachineID           string
+	EnrollmentID        string
+	InventoryNodeName   string
+	CurrentGenerationID string
+	SHA256              string
+	SizeBytes           uint64
+	LocalRef            string
+	Node                string
 }
 
-func stageHostUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentClient, actor, machineID string, artifact hostUpgradeArtifact, node string, stderr io.Writer) (string, error) {
+func stageHostUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentClient, actor string, status *agentapi.NodeStatus, artifact hostUpgradeArtifact, node string, stderr io.Writer) (string, error) {
 	return stageLocalUpgradeArtifact(ctx, client, localArtifactUpload{
 		Path: artifact.Path, Label: "KatlOS", Version: artifact.Version,
-		Kind: "StageHostUpgradeArtifactRequest", Actor: actor, MachineID: machineID,
+		Kind: "StageHostUpgradeArtifactRequest", Actor: actor, MachineID: status.GetMachineId(),
+		EnrollmentID: status.GetEnrollmentId(), InventoryNodeName: status.GetInventoryNodeName(), CurrentGenerationID: status.GetCurrentGenerationId(),
 		SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes,
 		LocalRef: hostUpgradeArtifactLocalRef(artifact.SHA256), Node: node,
 	}, stderr)
@@ -647,6 +658,9 @@ func stageLocalUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentCl
 				request.Kind = upload.Kind
 				request.Actor = upload.Actor
 				request.ExpectedMachineId = upload.MachineID
+				request.ExpectedEnrollmentId = upload.EnrollmentID
+				request.ExpectedInventoryNodeName = upload.InventoryNodeName
+				request.ExpectedCurrentGenerationId = upload.CurrentGenerationID
 				request.Sha256 = upload.SHA256
 				request.SizeBytes = upload.SizeBytes
 				first = false
@@ -788,7 +802,8 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	if connector == nil {
 		return fmt.Errorf("katlc agent connector is required")
 	}
-	if _, err := preflightWipeCluster(ctx, connector, &report, targets); err != nil {
+	statuses, err := preflightWipeCluster(ctx, connector, &report, targets)
+	if err != nil {
 		if printErr := printWipeClusterReport(stdout, report); printErr != nil {
 			return printErr
 		}
@@ -798,7 +813,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		report.NodeLocalOperations = plannedWipeClusterOperations(targets)
 		return printWipeClusterReport(stdout, report)
 	}
-	submitErr := submitWipeCluster(ctx, connector, &report, targets, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
+	submitErr := submitWipeCluster(ctx, connector, &report, targets, statuses, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
 	if submitErr == nil {
 		report.NextAction = wipeNextAction(opts.noWait)
 	}
@@ -825,10 +840,12 @@ func resolveWipeClusterTargets(opts wipeClusterOptions, stderr io.Writer) ([]inv
 				return nil, false, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
 			}
 			plan.Nodes = append(plan.Nodes, inventory.PlannedNode{
-				Name:       node.Name,
-				Address:    host,
-				SystemRole: node.SystemRole,
-				Access:     inventory.Access{Method: "agent"},
+				Name:         node.Name,
+				Address:      host,
+				SystemRole:   node.SystemRole,
+				Access:       inventory.Access{Method: "agent"},
+				EnrollmentID: node.EnrollmentID,
+				MachineID:    node.MachineID,
 			})
 		}
 		return wipeClusterTargets(plan, opts.all, opts.selectedNodes.values)
@@ -1022,7 +1039,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		}
 	}
 
-	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
+	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, statuses, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
 	if submitErr == nil {
 		report.NextAction = wipeNextAction(opts.noWait)
 	}
@@ -1055,6 +1072,7 @@ func wipeNodeInventory(opts wipeNodeOptions, stderr io.Writer) (inventory.Invent
 		}
 		inv.Nodes = append(inv.Nodes, inventory.Node{
 			Name: node.Name, Address: host, SystemRole: node.SystemRole, Access: inventory.Access{Method: "agent"},
+			EnrollmentID: node.EnrollmentID, MachineID: node.MachineID,
 		})
 	}
 	return inv, nil
@@ -1079,10 +1097,12 @@ func resolveWipeNodeTarget(opts wipeNodeOptions, stderr io.Writer) (inventory.Pl
 				return inventory.PlannedNode{}, false, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
 			}
 			return inventory.PlannedNode{
-				Name:       node.Name,
-				Address:    host,
-				SystemRole: node.SystemRole,
-				Access:     inventory.Access{Method: "agent"},
+				Name:         node.Name,
+				Address:      host,
+				SystemRole:   node.SystemRole,
+				Access:       inventory.Access{Method: "agent"},
+				EnrollmentID: node.EnrollmentID,
+				MachineID:    node.MachineID,
 			}, len(topology.Nodes) > 1, nil
 		}
 		return inventory.PlannedNode{}, false, fmt.Errorf("node %q is not in context %q", opts.selectedNodes.values[0], topology.ContextName)
@@ -1124,16 +1144,37 @@ func loadWipeInventory(configPath, inventoryPath string, stderr io.Writer) (inve
 	if err != nil {
 		return inventory.Inventory{}, err
 	}
-	return config.Bundle.Manifest.Cluster.BootstrapInventory, nil
+	inv := config.Bundle.Manifest.Cluster.BootstrapInventory
+	for index := range inv.Nodes {
+		enrolled, ok := enrolledTarget("", "", config.Bundle.Manifest.ClusterName, inv.Nodes[index].Name)
+		if !ok {
+			continue
+		}
+		host, _, splitErr := net.SplitHostPort(enrolled.endpoint)
+		if splitErr != nil {
+			return inventory.Inventory{}, splitErr
+		}
+		inv.Nodes[index].Address = host
+		inv.Nodes[index].EnrollmentID = enrolled.enrollmentID
+		inv.Nodes[index].MachineID = enrolled.machineID
+	}
+	return inv, nil
 }
 
 func overlayWipeContext(inv inventory.Inventory, configPath, contextName string) (inventory.Inventory, error) {
 	if strings.TrimSpace(configPath) == "" && strings.TrimSpace(contextName) == "" {
-		return inv, nil
+		complete := len(inv.Nodes) > 0
+		for _, node := range inv.Nodes {
+			complete = complete && strings.TrimSpace(node.EnrollmentID) != "" && strings.TrimSpace(node.MachineID) != ""
+		}
+		if complete {
+			return inv, nil
+		}
+		return inventory.Inventory{}, fmt.Errorf("inventory nodes are not enrolled on this workstation; run 'katlctl context save --config cluster.yaml'")
 	}
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: strings.TrimSpace(configPath), ContextName: strings.TrimSpace(contextName)})
 	if err != nil {
-		return inventory.Inventory{}, err
+		return inventory.Inventory{}, fmt.Errorf("resolve enrolled node identities: %w", err)
 	}
 	byName := make(map[string]workstation.TopologyNode, len(topology.Nodes))
 	for _, node := range topology.Nodes {
@@ -1150,6 +1191,8 @@ func overlayWipeContext(inv inventory.Inventory, configPath, contextName string)
 		}
 		inv.Nodes[index].Address = host
 		inv.Nodes[index].Access = inventory.Access{Method: "agent"}
+		inv.Nodes[index].EnrollmentID = node.EnrollmentID
+		inv.Nodes[index].MachineID = node.MachineID
 	}
 	return inv, nil
 }
@@ -1324,7 +1367,12 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 		if err != nil {
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
 		} else {
-			statuses[node.Name] = status
+			target := managementTarget{nodeName: node.Name, endpoint: conn.Endpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID}
+			if verifyErr := verifyEnrolledStatus(target, status); verifyErr != nil {
+				result.Diagnostics = append(result.Diagnostics, inventory.Redact(verifyErr.Error()))
+			} else {
+				statuses[node.Name] = status
+			}
 			result.Diagnostics = append(result.Diagnostics, wipeClusterStatusDiagnostics(status)...)
 		}
 		if closeErr != nil {
@@ -1391,7 +1439,7 @@ func wipeNodeOperation(node inventory.PlannedNode) wipeClusterNodeLocalOperation
 	return operation
 }
 
-func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode, clientRequestID string, timeout string, noWait bool, waitTimeout time.Duration, stderr io.Writer) error {
+func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode, statuses map[string]*agentapi.NodeStatus, clientRequestID string, timeout string, noWait bool, waitTimeout time.Duration, stderr io.Writer) error {
 	var failures []string
 	for _, node := range targets {
 		result := wipeClusterNodeResult{Node: node.Name}
@@ -1411,13 +1459,25 @@ func submitWipeCluster(ctx context.Context, connector cluster.AgentConnector, re
 		if actor == "" {
 			actor = "katlctl cluster wipe"
 		}
+		status := statuses[node.Name]
+		if status == nil {
+			result.Diagnostics = append(result.Diagnostics, "verified node status is missing")
+			report.Nodes = append(report.Nodes, result)
+			failures = append(failures, node.Name)
+			_ = closeAgentConnection(conn)
+			continue
+		}
 		accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
-			ApiVersion:       operation.APIVersion,
-			Kind:             "SubmitOperationRequest",
-			ClientRequestId:  clientRequestID,
-			OperationKind:    operationSpec.OperationKind,
-			Actor:            actor,
-			OperationTimeout: timeout,
+			ApiVersion:                  operation.APIVersion,
+			Kind:                        "SubmitOperationRequest",
+			ClientRequestId:             clientRequestID,
+			OperationKind:               operationSpec.OperationKind,
+			Actor:                       actor,
+			ExpectedEnrollmentId:        status.GetEnrollmentId(),
+			ExpectedInventoryNodeName:   status.GetInventoryNodeName(),
+			ExpectedMachineId:           status.GetMachineId(),
+			ExpectedCurrentGenerationId: status.GetCurrentGenerationId(),
+			OperationTimeout:            timeout,
 			DestructiveReset: &agentapi.DestructiveResetOperationRequest{
 				InventoryNodeName:      operationSpec.Node,
 				ResetScope:             operationSpec.ResetScope,
@@ -2207,12 +2267,23 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		return err
 	}
 	defer conn.Close()
+	status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		return fmt.Errorf("read status from %s: %w", target.nodeName, err)
+	}
+	if err := verifyEnrolledStatus(target, status); err != nil {
+		return err
+	}
 	if opts.plan {
 		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion:                         operation.APIVersion,
 			Kind:                               "ValidateConfigRequest",
 			ClientRequestId:                    requestID,
 			Actor:                              opts.actor,
+			ExpectedEnrollmentId:               target.enrollmentID,
+			ExpectedInventoryNodeName:          target.nodeName,
+			ExpectedMachineId:                  target.machineID,
+			ExpectedCurrentGenerationId:        status.GetCurrentGenerationId(),
 			ApplyMode:                          opts.mode,
 			CandidateGenerationId:              opts.candidateGeneration,
 			NodeName:                           opts.nodeConfig.nodeName,
@@ -2251,6 +2322,10 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		Kind:                               "GenerationApplyRequest",
 		ClientRequestId:                    requestID,
 		Actor:                              opts.actor,
+		ExpectedEnrollmentId:               target.enrollmentID,
+		ExpectedInventoryNodeName:          target.nodeName,
+		ExpectedMachineId:                  target.machineID,
+		ExpectedCurrentGenerationId:        status.GetCurrentGenerationId(),
 		CandidateGenerationId:              opts.candidateGeneration,
 		NodeName:                           opts.nodeConfig.nodeName,
 		ConfigYaml:                         string(configYAML),
@@ -2268,6 +2343,10 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			Kind:                               "ValidateConfigRequest",
 			ClientRequestId:                    requestID,
 			Actor:                              opts.actor,
+			ExpectedEnrollmentId:               target.enrollmentID,
+			ExpectedInventoryNodeName:          target.nodeName,
+			ExpectedMachineId:                  target.machineID,
+			ExpectedCurrentGenerationId:        status.GetCurrentGenerationId(),
 			ApplyMode:                          requestedMode,
 			CandidateGenerationId:              opts.candidateGeneration,
 			NodeName:                           opts.nodeConfig.nodeName,
@@ -2305,11 +2384,15 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			return err
 		}
 		accepted, err = conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
-			ApiVersion:      operation.APIVersion,
-			Kind:            "SubmitOperationRequest",
-			ClientRequestId: requestID,
-			OperationKind:   operationKind,
-			Actor:           opts.actor,
+			ApiVersion:                  operation.APIVersion,
+			Kind:                        "SubmitOperationRequest",
+			ClientRequestId:             requestID,
+			OperationKind:               operationKind,
+			Actor:                       opts.actor,
+			ExpectedEnrollmentId:        target.enrollmentID,
+			ExpectedInventoryNodeName:   target.nodeName,
+			ExpectedMachineId:           target.machineID,
+			ExpectedCurrentGenerationId: status.GetCurrentGenerationId(),
 			ConfigApply: &agentapi.ConfigApplyOperationRequest{
 				CandidateGenerationId:              opts.candidateGeneration,
 				ApplyMode:                          requestedMode,
@@ -2803,7 +2886,22 @@ func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (invento
 	if !config.Source && strings.TrimSpace(opts.kubernetesBundle) != "" {
 		return inventory.Inventory{}, "", fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the compiled config bundle")
 	}
-	return config.Bundle.Manifest.Cluster.BootstrapInventory, config.Bundle.Manifest.ClusterName, nil
+	inv := config.Bundle.Manifest.Cluster.BootstrapInventory
+	clusterName := config.Bundle.Manifest.ClusterName
+	for index := range inv.Nodes {
+		enrolled, ok := enrolledTarget("", "", clusterName, inv.Nodes[index].Name)
+		if !ok {
+			return inventory.Inventory{}, "", fmt.Errorf("node %q is not enrolled on this workstation; run 'katlctl context save --config %s' before bootstrap planning", inv.Nodes[index].Name, configPath)
+		}
+		host, _, splitErr := net.SplitHostPort(enrolled.endpoint)
+		if splitErr != nil {
+			return inventory.Inventory{}, "", fmt.Errorf("node %q saved management endpoint: %w", inv.Nodes[index].Name, splitErr)
+		}
+		inv.Nodes[index].Address = host
+		inv.Nodes[index].EnrollmentID = enrolled.enrollmentID
+		inv.Nodes[index].MachineID = enrolled.machineID
+	}
+	return inv, clusterName, nil
 }
 
 func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
@@ -2904,6 +3002,8 @@ type nodeDocument struct {
 	Access            accessDocument        `yaml:"access"`
 	KubeadmConfig     kubeadmConfigDocument `yaml:"kubeadmConfig"`
 	KubernetesVersion string                `yaml:"kubernetesVersion"`
+	EnrollmentID      string                `yaml:"enrollmentID"`
+	MachineID         string                `yaml:"machineID"`
 }
 
 type accessDocument struct {
@@ -2936,6 +3036,8 @@ func (d inventoryDocument) inventory() inventory.Inventory {
 				Intent: node.KubeadmConfig.Intent,
 			},
 			KubernetesVersion: node.KubernetesVersion,
+			EnrollmentID:      node.EnrollmentID,
+			MachineID:         node.MachineID,
 		})
 	}
 	result := inventory.Inventory{

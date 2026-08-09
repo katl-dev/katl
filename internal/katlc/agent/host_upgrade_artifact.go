@@ -108,7 +108,7 @@ func (s *Server) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agen
 		if err != nil {
 			return err
 		}
-		if request.ApiVersion != "" || request.Kind != "" || request.Actor != "" || request.ExpectedMachineId != "" || request.Sha256 != "" || request.SizeBytes != 0 {
+		if request.ApiVersion != "" || request.Kind != "" || request.Actor != "" || request.ExpectedMachineId != "" || request.ExpectedEnrollmentId != "" || request.ExpectedInventoryNodeName != "" || request.ExpectedCurrentGenerationId != "" || request.Sha256 != "" || request.SizeBytes != 0 {
 			return status.Error(codes.InvalidArgument, "artifact metadata is only allowed in the first chunk")
 		}
 		if err := writeChunk(request.Chunk); err != nil {
@@ -164,12 +164,8 @@ func (s *Server) validateStagedArtifactMetadata(request *agentapi.StageHostUpgra
 	if strings.TrimSpace(request.Actor) == "" {
 		return stagedArtifactTarget{}, status.Error(codes.InvalidArgument, "actor is required")
 	}
-	machineID, err := s.machineID()
-	if err != nil {
-		return stagedArtifactTarget{}, status.Errorf(codes.FailedPrecondition, "read machine id: %v", err)
-	}
-	if strings.TrimSpace(request.ExpectedMachineId) == "" || request.ExpectedMachineId != machineID {
-		return stagedArtifactTarget{}, status.Error(codes.FailedPrecondition, "expectedMachineID does not match node machine id")
+	if err := s.validateMutationTarget(request.ExpectedEnrollmentId, request.ExpectedInventoryNodeName, request.ExpectedMachineId, request.ExpectedCurrentGenerationId); err != nil {
+		return stagedArtifactTarget{}, err
 	}
 	if err := validateArtifactSHA256(request.Sha256); err != nil {
 		return stagedArtifactTarget{}, status.Error(codes.InvalidArgument, err.Error())

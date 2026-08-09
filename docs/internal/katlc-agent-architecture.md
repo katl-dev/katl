@@ -27,6 +27,15 @@ katlctl on workstation
 node-local. `katlc` does not know the whole cluster rollout plan beyond the
 explicit request it accepted for its node.
 
+Every install persists a random enrollment ID bound to the selected inventory
+node name and machine ID. `GetNodeStatus` exposes that public tuple. Every
+planning request that can authorize a later mutation, and every mutating RPC,
+must carry the workstation's expected tuple plus the relevant current
+generation. The agent compares it to its own persisted enrollment before
+validation can accept destructive acknowledgements or an operation can be
+recorded. An operation body that names an inventory node must name the node to
+which the agent itself is enrolled.
+
 ## Boundary
 
 `katlc` owns node-local KatlOS state:

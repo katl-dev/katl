@@ -226,12 +226,23 @@ func guestFileSHA256(t *testing.T, ctx context.Context, guest *GuestControl, nam
 func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage) (string, *agentapi.OperationStatus) {
 	t.Helper()
 	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		conn.Close()
+		t.Fatalf("read enrolled node identity before host upgrade: %v", err)
+	}
+	if nodeStatus.GetMachineId() != machineID {
+		conn.Close()
+		t.Fatalf("host upgrade machine identity = %q, want %q", nodeStatus.GetMachineId(), machineID)
+	}
 	accepted, err := katlc.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 		ApiVersion:                  operation.APIVersion,
 		Kind:                        agent.RequestKind,
 		ClientRequestId:             "vmtest-host-upgrade-" + candidateGeneration,
 		OperationKind:               agent.OperationKindHostUpgrade,
 		Actor:                       "installed runtime host upgrade vmtest",
+		ExpectedEnrollmentId:        nodeStatus.GetEnrollmentId(),
+		ExpectedInventoryNodeName:   nodeStatus.GetInventoryNodeName(),
 		ExpectedMachineId:           machineID,
 		ExpectedCurrentGenerationId: currentGeneration,
 		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
@@ -252,6 +263,13 @@ func stageHostUpgradeArtifactForVMTest(t *testing.T, ctx context.Context, endpoi
 	t.Helper()
 	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
 	defer conn.Close()
+	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("read enrolled node identity before host upgrade upload: %v", err)
+	}
+	if nodeStatus.GetMachineId() != machineID {
+		t.Fatalf("host upgrade upload machine identity = %q, want %q", nodeStatus.GetMachineId(), machineID)
+	}
 	stream, err := katlc.StageHostUpgradeArtifact(ctx)
 	if err != nil {
 		t.Fatalf("start host upgrade artifact staging: %v", err)
@@ -271,7 +289,10 @@ func stageHostUpgradeArtifactForVMTest(t *testing.T, ctx context.Context, endpoi
 				request.ApiVersion = operation.APIVersion
 				request.Kind = agent.StageHostUpgradeArtifactRequestKind
 				request.Actor = "installed runtime host upgrade vmtest"
+				request.ExpectedEnrollmentId = nodeStatus.GetEnrollmentId()
+				request.ExpectedInventoryNodeName = nodeStatus.GetInventoryNodeName()
 				request.ExpectedMachineId = machineID
+				request.ExpectedCurrentGenerationId = nodeStatus.GetCurrentGenerationId()
 				request.Sha256 = upgrade.SHA256
 				request.SizeBytes = upgrade.SizeBytes
 				first = false

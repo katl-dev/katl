@@ -36,7 +36,7 @@ Expected state before Kubernetes bootstrap:
 - runtime handoff reports `waiting-for-cluster-bootstrap`; and
 - `katl-kubeadm-ready.target` is not active yet.
 
-## Save a Workstation Context (Optional)
+## Enroll Nodes on the Workstation
 
 Use the same source used for installation:
 
@@ -44,9 +44,10 @@ Use the same source used for installation:
 katlctl context save --config ./cluster.yaml
 ```
 
-For every node, the command verifies access to TCP port `9443` and writes or
-updates the selected cluster topology in `katlctl.yaml`. It does not use SSH,
-retrieve secrets, or alter the node.
+For every node, the command verifies access to TCP port `9443`, confirms that
+the answering agent is enrolled under the requested inventory node name, and
+records its immutable enrollment identity and machine ID in `katlctl.yaml`.
+It does not use SSH, retrieve secrets, or alter the node.
 
 `katlctl config init` and `katlctl install discover CLUSTER_CONFIG` also read
 supported public keys from the active SSH agent when creating the initial SSH
@@ -54,8 +55,9 @@ authorization. This works with agent-only keys such as 1Password. An explicit
 `--ssh-authorized-key PATH` remains available when only one key should be
 authorized.
 
-`ClusterConfig` remains sufficient for installation and Kubernetes bootstrap;
-saving a context is only a convenience for repeated day-two commands.
+`ClusterConfig` remains sufficient for installation. Planning, bootstrap, and
+mutating commands additionally require this saved enrollment so a stale or
+swapped address cannot target another machine.
 
 ## Connectivity Check
 
@@ -69,8 +71,15 @@ katlctl node status cp-1
 
 The save command has already performed the agent health check. Normal management
 commands now need only `--node`; `--context` selects a non-current cluster.
-An explicit `--endpoint` remains available when operating without a saved
-context.
+Read-only inspection can use an explicit `--endpoint`. Mutations use the saved
+address. When an enrolled node's address changes, verify and save it explicitly:
+
+```sh
+katlctl context rebind --node cp-1 --endpoint 192.0.2.51
+```
+
+Rebind succeeds only when the new address reports the same inventory node,
+enrollment identity, and machine ID.
 
 Use `katlctl context current` to print the selection and `katlctl context use
 NAME` to switch between saved clusters. `katlctl cluster status --config

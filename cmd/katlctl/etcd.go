@@ -231,6 +231,13 @@ func getEtcdStatus(ctx context.Context, coordinator inventory.PlannedNode) (*age
 		return nil, fmt.Errorf("connect etcd coordinator %s: %w", coordinator.Name, err)
 	}
 	defer closeAgentConnection(conn)
+	nodeStatus, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("inspect node identity through %s: %w", coordinator.Name, err)
+	}
+	if err := verifyEnrolledStatus(managementTarget{nodeName: coordinator.Name, endpoint: conn.Endpoint, enrollmentID: coordinator.EnrollmentID, machineID: coordinator.MachineID}, nodeStatus); err != nil {
+		return nil, err
+	}
 	client, ok := conn.Client.(etcdStatusClient)
 	if !ok {
 		return nil, fmt.Errorf("node %s agent does not support etcd maintenance", coordinator.Name)
@@ -256,18 +263,24 @@ func submitEtcdRemoval(ctx context.Context, plan etcdRemovalPlan, timeout time.D
 	if err != nil {
 		return fmt.Errorf("status etcd coordinator %s: %w", plan.Coordinator.Name, err)
 	}
+	if err := verifyEnrolledStatus(managementTarget{nodeName: plan.Coordinator.Name, endpoint: conn.Endpoint, enrollmentID: plan.Coordinator.EnrollmentID, machineID: plan.Coordinator.MachineID}, nodeStatus); err != nil {
+		return err
+	}
 	requestID, err := clientRequestID("")
 	if err != nil {
 		return err
 	}
 	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
-		ApiVersion:        operation.APIVersion,
-		Kind:              "SubmitOperationRequest",
-		ClientRequestId:   requestID,
-		OperationKind:     "etcd-member-remove",
-		Actor:             actor,
-		ExpectedMachineId: nodeStatus.GetMachineId(),
-		OperationTimeout:  timeout.String(),
+		ApiVersion:                  operation.APIVersion,
+		Kind:                        "SubmitOperationRequest",
+		ClientRequestId:             requestID,
+		OperationKind:               "etcd-member-remove",
+		Actor:                       actor,
+		ExpectedEnrollmentId:        nodeStatus.GetEnrollmentId(),
+		ExpectedInventoryNodeName:   nodeStatus.GetInventoryNodeName(),
+		ExpectedMachineId:           nodeStatus.GetMachineId(),
+		ExpectedCurrentGenerationId: nodeStatus.GetCurrentGenerationId(),
+		OperationTimeout:            timeout.String(),
 		EtcdMemberRemove: &agentapi.EtcdMemberRemoveOperationRequest{
 			TargetNodeName:      plan.Target.Name,
 			TargetMemberId:      plan.Member.GetId(),

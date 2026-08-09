@@ -28,7 +28,7 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 	configPath := filepath.Join(root, "katlctl.yaml")
 	var nodes strings.Builder
 	for _, node := range []struct{ name, endpoint, role string }{{"worker-1", "192.0.2.4:9443", "worker"}, {"cp-2", "192.0.2.2:9443", "control-plane"}, {"cp-1", "192.0.2.1:9443", "control-plane"}} {
-		_, _ = nodes.WriteString("      - name: " + node.name + "\n        managementEndpoint: " + node.endpoint + "\n        systemRole: " + node.role + "\n")
+		_, _ = nodes.WriteString("      - name: " + node.name + "\n        managementEndpoint: " + node.endpoint + "\n        systemRole: " + node.role + "\n        enrollmentID: enrollment-" + node.name + "\n        machineID: machine-" + node.name + "\n")
 	}
 	config := "currentContext: lab\ncontexts:\n  - name: lab\n    cluster: home\nclusters:\n  - name: home\n    controlPlaneEndpoint: 192.0.2.10:6443\n    nodes:\n" + nodes.String()
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
@@ -125,10 +125,10 @@ func TestKubernetesUpgradeBundleUsesReleaseCompatibility(t *testing.T) {
 func TestKubernetesUpgradePlanDoesNotExecute(t *testing.T) {
 	root := t.TempDir()
 	inv := filepath.Join(root, "inventory.yaml")
-	if err := os.WriteFile(inv, []byte("nodes:\n  - name: cp-1\n    address: 192.0.2.1\n    systemRole: control-plane\n    access:\n      method: agent\n"), 0o600); err != nil {
+	if err := os.WriteFile(inv, []byte("nodes:\n  - name: cp-1\n    address: 192.0.2.1\n    systemRole: control-plane\n    access:\n      method: agent\n    enrollmentID: enrollment-cp-1\n    machineID: machine\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	client := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine", CurrentGenerationId: "gen-1"}, generation: &agentapi.Generation{GenerationId: "gen-1", CommitState: "committed", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.0"}}}}
+	client := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine", EnrollmentId: "enrollment-cp-1", InventoryNodeName: "cp-1", CurrentGenerationId: "gen-1"}, generation: &agentapi.Generation{GenerationId: "gen-1", CommitState: "committed", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.0"}}}}
 	previous := dialKatlcAgent
 	defer func() { dialKatlcAgent = previous }()
 	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
@@ -228,7 +228,8 @@ func TestKubernetesUpgradeRejectsMismatchedLocalArtifactVersion(t *testing.T) {
 func TestKubernetesUpgradeLocalArtifactExplainsAgentUpgradeRequirement(t *testing.T) {
 	local := writeKubernetesUpgradeArtifact(t, "v1.36.2")
 	client := &fakeKatlcAgentClient{stageArtifactErr: status.Error(codes.Unimplemented, "old agent")}
-	_, err := stageKubernetesUpgradeArtifact(context.Background(), client, "machine", local, "cp-1", io.Discard)
+	target := kubernetesUpgradeTarget{machineID: "machine", generation: "generation-1", node: workstation.TopologyNode{Name: "cp-1", EnrollmentID: "enrollment"}}
+	_, err := stageKubernetesUpgradeArtifact(context.Background(), client, target, local, "cp-1", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "upgrade KatlOS to a build with local Kubernetes artifact support") {
 		t.Fatalf("stageKubernetesUpgradeArtifact() error = %v", err)
 	}
@@ -298,7 +299,7 @@ func TestKubernetesUpgradeStopsAfterNodeFailure(t *testing.T) {
 	var nodes strings.Builder
 	clients := map[string]*fakeKatlcAgentClient{}
 	for _, node := range []struct{ name, endpoint, role string }{{"cp-1", "192.0.2.1:9443", "control-plane"}, {"cp-2", "192.0.2.2:9443", "control-plane"}, {"worker-1", "192.0.2.3:9443", "worker"}} {
-		_, _ = nodes.WriteString("      - name: " + node.name + "\n        managementEndpoint: " + node.endpoint + "\n        systemRole: " + node.role + "\n")
+		_, _ = nodes.WriteString("      - name: " + node.name + "\n        managementEndpoint: " + node.endpoint + "\n        systemRole: " + node.role + "\n        enrollmentID: enrollment-" + node.name + "\n        machineID: machine-" + node.name + "\n")
 		client := &fakeKatlcAgentClient{
 			nodeStatus:     &agentapi.NodeStatus{MachineId: "machine-" + node.name, AgentStartId: "before-" + node.name, CurrentGenerationId: "gen-1"},
 			generation:     &agentapi.Generation{GenerationId: "gen-1", CommitState: "committed", BootState: "good", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.0"}}},
@@ -336,7 +337,7 @@ func TestKubernetesUpgradeStopsAfterNodeFailure(t *testing.T) {
 func writeKubernetesUpgradeInventory(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "inventory.yaml")
-	if err := os.WriteFile(path, []byte("nodes:\n  - name: cp-1\n    address: 192.0.2.1\n    systemRole: control-plane\n    access:\n      method: agent\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("nodes:\n  - name: cp-1\n    address: 192.0.2.1\n    systemRole: control-plane\n    access:\n      method: agent\n    enrollmentID: enrollment-cp-1\n    machineID: machine\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -345,7 +346,7 @@ func writeKubernetesUpgradeInventory(t *testing.T) string {
 func writeKubernetesUpgradeContext(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "katlctl.yaml")
-	config := "currentContext: lab\ncontexts:\n  - name: lab\n    cluster: home\nclusters:\n  - name: home\n    controlPlaneEndpoint: 192.0.2.1:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: 192.0.2.1:9443\n        systemRole: control-plane\n"
+	config := "currentContext: lab\ncontexts:\n  - name: lab\n    cluster: home\nclusters:\n  - name: home\n    controlPlaneEndpoint: 192.0.2.1:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: 192.0.2.1:9443\n        systemRole: control-plane\n        enrollmentID: enrollment-cp-1\n        machineID: machine\n"
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +355,7 @@ func writeKubernetesUpgradeContext(t *testing.T) string {
 
 func healthyKubernetesUpgradeClient() *fakeKatlcAgentClient {
 	return &fakeKatlcAgentClient{
-		nodeStatus: &agentapi.NodeStatus{MachineId: "machine", CurrentGenerationId: "gen-1"},
+		nodeStatus: &agentapi.NodeStatus{MachineId: "machine", EnrollmentId: "enrollment-cp-1", InventoryNodeName: "cp-1", CurrentGenerationId: "gen-1"},
 		generation: &agentapi.Generation{
 			GenerationId: "gen-1", CommitState: "committed", BootState: "good", HealthState: "healthy",
 			RuntimeArchitecture: "x86_64",
