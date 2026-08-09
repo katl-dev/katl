@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
@@ -34,6 +35,7 @@ type AgentBootstrapDependencies struct {
 	WatchTimeout        time.Duration
 	PollInterval        time.Duration
 	OperationWait       time.Duration
+	BootWait            time.Duration
 	BootstrapRunner     BootstrapRunner
 	Progress            func(AgentBootstrapProgress)
 }
@@ -60,6 +62,8 @@ type AgentConnection struct {
 
 type AgentClient interface {
 	GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error)
+	Reboot(context.Context, *agentapi.RebootRequest, ...grpc.CallOption) (*agentapi.RebootAccepted, error)
+	GetGeneration(context.Context, *agentapi.GetGenerationRequest, ...grpc.CallOption) (*agentapi.Generation, error)
 	SubmitOperation(context.Context, *agentapi.SubmitOperationRequest, ...grpc.CallOption) (*agentapi.OperationAccepted, error)
 	CreateWorkerJoinMaterial(context.Context, *agentapi.CreateWorkerJoinMaterialRequest, ...grpc.CallOption) (*agentapi.CreateWorkerJoinMaterialResponse, error)
 	GetOperation(context.Context, *agentapi.GetOperationRequest, ...grpc.CallOption) (*agentapi.OperationStatus, error)
@@ -167,6 +171,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		return result, fmt.Errorf("bootstrap-init operation on %s: %s", initNode.Name, inventory.Redact(err.Error()))
 	}
 	result.addOperationPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed", initResult.Operation)
+	boots := []bootstrapBoot{{Node: initNode, Operation: initResult.Operation}}
 	stableEndpointReady := false
 	if plan.ControlPlaneEndpointManaged {
 		emitAgentProgress(deps, AgentBootstrapProgress{Phase: "checking-stable-endpoint"})
@@ -195,6 +200,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 			return result, fmt.Errorf("control-plane join operation on %s: %s", node.Name, inventory.Redact(err.Error()))
 		}
 		result.addOperationPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "passed", operationRef)
+		boots = append(boots, bootstrapBoot{Node: node, Operation: operationRef})
 	}
 	for _, node := range workerNodes(plan) {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-worker", Phase: "creating-join-material"})
@@ -209,6 +215,18 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 			return result, fmt.Errorf("worker join operation on %s: %s", node.Name, inventory.Redact(err.Error()))
 		}
 		result.addOperationPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "passed", operationRef)
+		boots = append(boots, bootstrapBoot{Node: node, Operation: operationRef})
+	}
+	for _, boot := range boots {
+		if !boot.Operation.BootHealthPending {
+			continue
+		}
+		emitAgentProgress(deps, AgentBootstrapProgress{Node: boot.Node.Name, Kind: "boot-health", Phase: "checking"})
+		if err := rebootAndWaitBootstrapGeneration(ctx, boot.Node, boot.Operation.CandidateGenerationID, deps); err != nil {
+			result.addPhase("boot-health", boot.Node.Name, boot.Node.Action, "failed")
+			return result, fmt.Errorf("boot-health validation on %s: %w", boot.Node.Name, err)
+		}
+		result.addPhase("boot-health", boot.Node.Name, boot.Node.Action, "passed")
 	}
 	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "writing-kubeconfig"})
 	kubeconfigResult, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, initResult.Credentials, stableEndpointReady, request.OverwriteKubeconfig)
@@ -413,7 +431,14 @@ type bootstrapInitResult struct {
 }
 
 type operationReference struct {
-	ID string
+	ID                    string
+	CandidateGenerationID string
+	BootHealthPending     bool
+}
+
+type bootstrapBoot struct {
+	Node      inventory.PlannedNode
+	Operation operationReference
 }
 
 type workerJoinMaterial struct {
@@ -451,6 +476,8 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	if final.GetResult() != "" && final.GetResult() != operation.ResultSucceeded {
 		return result, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
 	}
+	result.Operation.CandidateGenerationID = strings.TrimSpace(final.GetCandidateGenerationId())
+	result.Operation.BootHealthPending = final.GetBootHealthPending()
 	output, err := conn.Client.GetOperation(ctx, &agentapi.GetOperationRequest{
 		OperationId:           accepted.GetOperationId(),
 		ExpectedRequestDigest: accepted.GetRequestDigest(),
@@ -641,7 +668,112 @@ func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inv
 	if final.GetResult() != "" && final.GetResult() != operation.ResultSucceeded {
 		return operationRef, fmt.Errorf("operation %s finished with result %s: %s", accepted.GetOperationId(), final.GetResult(), final.GetFailureReason())
 	}
+	operationRef.CandidateGenerationID = strings.TrimSpace(final.GetCandidateGenerationId())
+	operationRef.BootHealthPending = final.GetBootHealthPending()
 	return operationRef, nil
+}
+
+func rebootAndWaitBootstrapGeneration(ctx context.Context, node inventory.PlannedNode, generationID string, deps AgentBootstrapDependencies) error {
+	generationID = strings.TrimSpace(generationID)
+	if generationID == "" {
+		return errors.New("operation requires boot-health validation but did not report a candidate generation")
+	}
+	conn, err := deps.Connector.Connect(ctx, node)
+	if err != nil {
+		return fmt.Errorf("connect before reboot: %w", err)
+	}
+	status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		_ = closeAgent(conn)
+		return fmt.Errorf("get node status before reboot: %w", err)
+	}
+	candidate, generationErr := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: generationID})
+	if generationErr == nil && bootstrapGenerationHealthy(node, status, candidate, generationID) {
+		_ = closeAgent(conn)
+		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "boot-health", Phase: "already-completed", Terminal: true, Result: "succeeded"})
+		return nil
+	}
+	previousStart := strings.TrimSpace(status.GetAgentStartId())
+	if previousStart == "" {
+		_ = closeAgent(conn)
+		return errors.New("agent did not report its current start identity")
+	}
+	emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "boot-health", Phase: "scheduling-reboot"})
+	accepted, err := conn.Client.Reboot(ctx, &agentapi.RebootRequest{
+		ApiVersion:         agentAPIVersion,
+		Kind:               "RebootRequest",
+		Actor:              valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
+		ExpectedMachineId:  strings.TrimSpace(status.GetMachineId()),
+		TargetGenerationId: generationID,
+	})
+	_ = closeAgent(conn)
+	if err != nil {
+		return fmt.Errorf("schedule reboot: %w", err)
+	}
+	if !accepted.GetScheduled() || strings.TrimSpace(accepted.GetTargetGenerationId()) != generationID {
+		return fmt.Errorf("node did not schedule reboot into generation %s", generationID)
+	}
+	wait := deps.BootWait
+	if wait <= 0 {
+		wait = 10 * time.Minute
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	poll := deps.PollInterval
+	if poll <= 0 {
+		poll = 2 * time.Second
+	}
+	last := ""
+	for {
+		conn, err := deps.Connector.Connect(waitCtx, node)
+		if err == nil {
+			status, statusErr := conn.Client.GetNodeStatus(waitCtx, &agentapi.GetNodeStatusRequest{})
+			if statusErr == nil {
+				state := fmt.Sprintf("agent=%s generation=%s kubernetes=%s", status.GetAgentStartId(), status.GetCurrentGenerationId(), status.GetKubernetes().GetState())
+				if state != last {
+					last = state
+					emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "boot-health", Phase: "waiting", NextAction: state})
+				}
+				if strings.TrimSpace(status.GetAgentStartId()) != "" && status.GetAgentStartId() != previousStart && status.GetCurrentGenerationId() == generationID {
+					candidate, generationErr := conn.Client.GetGeneration(waitCtx, &agentapi.GetGenerationRequest{GenerationId: generationID})
+					if generationErr == nil && bootstrapGenerationHealthy(node, status, candidate, generationID) {
+						_ = closeAgent(conn)
+						emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "boot-health", Phase: "completed", Terminal: true, Result: "succeeded"})
+						return nil
+					}
+				}
+			}
+			_ = closeAgent(conn)
+		}
+		timer := time.NewTimer(poll)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return fmt.Errorf("node did not return healthy on generation %s: %w", generationID, waitCtx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func bootstrapGenerationHealthy(node inventory.PlannedNode, status *agentapi.NodeStatus, candidate *agentapi.Generation, generationID string) bool {
+	return status.GetCurrentGenerationId() == generationID &&
+		candidate.GetCommitState() == generation.CommitStateCommitted &&
+		candidate.GetBootState() == generation.BootStateGood &&
+		candidate.GetHealthState() == generation.HealthStateHealthy &&
+		bootstrapKubernetesHealthy(node, status)
+}
+
+func bootstrapKubernetesHealthy(node inventory.PlannedNode, status *agentapi.NodeStatus) bool {
+	kubernetes := status.GetKubernetes()
+	if kubernetes == nil || !kubernetes.GetKubeletActive() {
+		return false
+	}
+	if node.SystemRole == inventory.RoleControlPlane && !kubernetes.GetControlPlaneComponentsReady() {
+		return false
+	}
+	// Node Ready is intentionally not part of bootstrap completion. Kubernetes
+	// requires a user-installed CNI before the node can become Ready.
+	return true
 }
 
 func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) *agentapi.SubmitOperationRequest {
