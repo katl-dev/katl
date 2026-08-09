@@ -71,6 +71,8 @@ type Node struct {
 	KubeadmConfig     KubeadmConfig     `json:"kubeadmConfig"`
 	KubernetesVersion string            `json:"kubernetesVersion"`
 	Labels            map[string]string `json:"labels,omitempty"`
+	EnrollmentID      string            `json:"enrollmentID,omitempty" yaml:"enrollmentID,omitempty"`
+	MachineID         string            `json:"machineID,omitempty" yaml:"machineID,omitempty"`
 }
 
 type Access struct {
@@ -113,6 +115,8 @@ type PlannedNode struct {
 	KubeadmConfig     KubeadmConfig     `json:"kubeadmConfig"`
 	KubernetesVersion string            `json:"kubernetesVersion"`
 	Labels            map[string]string `json:"labels,omitempty"`
+	EnrollmentID      string            `json:"enrollmentID,omitempty" yaml:"enrollmentID,omitempty"`
+	MachineID         string            `json:"machineID,omitempty" yaml:"machineID,omitempty"`
 }
 
 type AddressOverride struct {
@@ -318,6 +322,8 @@ func normalizeNode(node Node, inventoryVersion string) (PlannedNode, error) {
 		KubeadmConfig:     config,
 		KubernetesVersion: version,
 		Labels:            copyLabels(node.Labels),
+		EnrollmentID:      strings.TrimSpace(node.EnrollmentID),
+		MachineID:         strings.TrimSpace(node.MachineID),
 	}, nil
 }
 

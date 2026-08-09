@@ -125,6 +125,7 @@ func TestHostRebootDefaultAllowsBootDeadmanRecovery(t *testing.T) {
 }
 
 func TestHostRebootHonorsBootTargetAndWaits(t *testing.T) {
+	configPath := writeHostMutationContext(t, "machine-a")
 	fake := healthyHostClient("machine-a", "before", "generation-0")
 	fake.nodeStatus.BootTargetGenerationId = "generation-staged"
 	fake.onReboot = func(req *agentapi.RebootRequest) {
@@ -135,7 +136,7 @@ func TestHostRebootHonorsBootTargetAndWaits(t *testing.T) {
 	installKatlcDial(t, nil, fake)
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "1s"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "reboot", "node-a", "--context-file", configPath, "--timeout", "1s"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	if len(fake.rebootRequests) != 1 {
@@ -154,11 +155,12 @@ func TestHostRebootHonorsBootTargetAndWaits(t *testing.T) {
 }
 
 func TestHostRebootNoWaitJSON(t *testing.T) {
+	configPath := writeHostMutationContext(t, "machine-a")
 	fake := healthyHostClient("machine-a", "before", "generation-0")
 	installKatlcDial(t, nil, fake)
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--no-wait", "--output", "json"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "reboot", "node-a", "--context-file", configPath, "--no-wait", "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	var report hostRebootReport
@@ -171,6 +173,7 @@ func TestHostRebootNoWaitJSON(t *testing.T) {
 }
 
 func TestHostRebootReportsUnhealthyReturn(t *testing.T) {
+	configPath := writeHostMutationContext(t, "machine-a")
 	fake := healthyHostClient("machine-a", "before", "generation-0")
 	fake.onReboot = func(*agentapi.RebootRequest) {
 		fake.nodeStatus.AgentStartId = "after"
@@ -178,26 +181,28 @@ func TestHostRebootReportsUnhealthyReturn(t *testing.T) {
 	}
 	installKatlcDial(t, nil, fake)
 
-	err := run(context.Background(), []string{"node", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "1s"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := run(context.Background(), []string{"node", "reboot", "node-a", "--context-file", configPath, "--timeout", "1s"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "reported generation generation-0 unhealthy after reboot") {
 		t.Fatalf("run() error = %v, want unhealthy boot error", err)
 	}
 }
 
 func TestHostRebootTimesOutWhenAgentDoesNotRestart(t *testing.T) {
+	configPath := writeHostMutationContext(t, "machine-a")
 	fake := healthyHostClient("machine-a", "before", "generation-0")
 	installKatlcDial(t, nil, fake)
 	oldInterval := upgradeRebootPollInterval
 	upgradeRebootPollInterval = time.Millisecond
 	t.Cleanup(func() { upgradeRebootPollInterval = oldInterval })
 
-	err := run(context.Background(), []string{"node", "reboot", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "10ms"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := run(context.Background(), []string{"node", "reboot", "node-a", "--context-file", configPath, "--timeout", "10ms"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "node node-a did not return healthy") {
 		t.Fatalf("run() error = %v, want reboot timeout", err)
 	}
 }
 
 func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
+	configPath := writeHostMutationContext(t, "machine-a")
 	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
 	fake.onShutdown = func(*agentapi.ShutdownRequest) {
 		fake.nodeStatusErr = context.Canceled
@@ -208,7 +213,7 @@ func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
 	t.Cleanup(func() { hostShutdownPollInterval = oldInterval })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "shutdown", "node-a", "--endpoint", "node-a.test:9443", "--timeout", "1s"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "shutdown", "node-a", "--context-file", configPath, "--timeout", "1s"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	if len(fake.shutdownRequests) != 1 {
@@ -227,11 +232,12 @@ func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
 }
 
 func TestHostShutdownNoWaitJSON(t *testing.T) {
+	configPath := writeHostMutationContext(t, "machine-a")
 	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
 	installKatlcDial(t, nil, fake)
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "shutdown", "node-a", "--endpoint", "node-a.test:9443", "--no-wait", "--output", "json"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "shutdown", "node-a", "--context-file", configPath, "--no-wait", "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	var report hostShutdownReport
@@ -254,6 +260,8 @@ func healthyHostClient(machineID, agentStartID, generationID string) *fakeKatlcA
 	return &fakeKatlcAgentClient{
 		nodeStatus: &agentapi.NodeStatus{
 			MachineId:           machineID,
+			EnrollmentId:        "enrollment-" + machineID,
+			InventoryNodeName:   "node-a",
 			AgentStartId:        agentStartID,
 			CurrentGenerationId: generationID,
 			Kubernetes:          &agentapi.KubernetesStatus{State: "not-configured"},
@@ -265,6 +273,23 @@ func healthyHostClient(machineID, agentStartID, generationID string) *fakeKatlcA
 			HealthState:  generation.HealthStateHealthy,
 		},
 	}
+}
+
+func writeHostMutationContext(t *testing.T, machineID string) string {
+	t.Helper()
+	return writeKatlctlConfig(t, `currentContext: lab
+contexts:
+- name: lab
+  cluster: homelab
+clusters:
+- name: homelab
+  nodes:
+  - name: node-a
+    managementEndpoint: node-a.test:9443
+    systemRole: control-plane
+    enrollmentID: enrollment-`+machineID+`
+    machineID: `+machineID+`
+`)
 }
 
 func installKatlcDial(t *testing.T, inspect func(endpoint string), client agentapi.KatlcAgentClient) {

@@ -413,9 +413,6 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		assertGeneration0Selection(t, beforeSelection)
 		bootSelectionsBefore[node.Name] = beforeSelectionPath
 	}
-	if err := writeOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress); err != nil {
-		t.Fatal(err)
-	}
 	for _, endpoint := range []struct {
 		name    string
 		address string
@@ -429,6 +426,16 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			t.Fatalf("wait for %s katlc agent TCP endpoint: %v", endpoint.name, err)
 		}
 	}
+	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("read installed node enrollment identities: %v", err)
+	}
+	if err := writeOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments); err != nil {
+		t.Fatal(err)
+	}
+	assertSwappedEnrollmentRefused(t, ctx, result.RunDir, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments)
 	for _, node := range nodes {
 		if err := assertOperatorSSH(ctx, inputs.SSHPrivateKey, node.Result.IPAddress); err != nil {
 			collectTwoNodeDiagnostics("", nodes...)
@@ -829,7 +836,12 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 
 func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
 	configPath := filepath.Join(evidenceDir, "katlctl-upgrade.yaml")
-	config := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n", cpAddress, cpAddress, workerAddress)
+	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		return err
+	}
+	cpStatus, workerStatus := enrollments["cp-1"], enrollments["worker-1"]
+	config := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n        enrollmentID: %s\n        machineID: %s\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n        enrollmentID: %s\n        machineID: %s\n", cpAddress, cpAddress, cpStatus.GetEnrollmentId(), cpStatus.GetMachineId(), workerAddress, workerStatus.GetEnrollmentId(), workerStatus.GetMachineId())
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return fmt.Errorf("write katlctl upgrade context: %w", err)
 	}
@@ -977,7 +989,7 @@ func submitKubeadmUpgrade(ctx context.Context, address string, request agentapi.
 	if err != nil {
 		return nil, err
 	}
-	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: "vmtest-" + request.CandidateGenerationId, OperationKind: "kubeadm-upgrade", Actor: "vmtest:kubeadm-upgrade", ExpectedMachineId: nodeStatus.MachineId, KubernetesSysextUpdate: &request})
+	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: "vmtest-" + request.CandidateGenerationId, OperationKind: "kubeadm-upgrade", Actor: "vmtest:kubeadm-upgrade", ExpectedEnrollmentId: nodeStatus.EnrollmentId, ExpectedInventoryNodeName: nodeStatus.InventoryNodeName, ExpectedMachineId: nodeStatus.MachineId, ExpectedCurrentGenerationId: nodeStatus.CurrentGenerationId, KubernetesSysextUpdate: &request})
 	if err != nil {
 		return nil, err
 	}
@@ -1642,9 +1654,14 @@ nodes:
 	return os.WriteFile(path, []byte(data), 0o644)
 }
 
-func writeOperationBackedInventory(path, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string) error {
+func writeOperationBackedInventory(path, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string, enrollments map[string]*agentapi.NodeStatus) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
+	}
+	cp := enrollments["cp-1"]
+	worker := enrollments["worker-1"]
+	if cp == nil || worker == nil {
+		return errors.New("cp-1 and worker-1 enrollment status are required")
 	}
 	data := `controlPlaneEndpoint: ` + cpAddress + `:6443
 kubernetesVersion: ` + kubernetesVersion + `
@@ -1660,6 +1677,8 @@ nodes:
     path: /etc/katl/kubeadm/control-plane/config.yaml
     intent: control-plane
   kubernetesVersion: ` + kubernetesVersion + `
+  enrollmentID: ` + strconv.Quote(cp.GetEnrollmentId()) + `
+  machineID: ` + strconv.Quote(cp.GetMachineId()) + `
 - name: worker-1
   address: ` + workerAddress + `
   systemRole: worker
@@ -1670,8 +1689,41 @@ nodes:
     path: /etc/katl/kubeadm/worker/config.yaml
     intent: worker
   kubernetesVersion: ` + kubernetesVersion + `
+  enrollmentID: ` + strconv.Quote(worker.GetEnrollmentId()) + `
+  machineID: ` + strconv.Quote(worker.GetMachineId()) + `
 `
 	return os.WriteFile(path, []byte(data), 0o644)
+}
+
+func readTwoNodeEnrollments(ctx context.Context, cpAddress, workerAddress string) (map[string]*agentapi.NodeStatus, error) {
+	statuses := make(map[string]*agentapi.NodeStatus, 2)
+	for _, node := range []struct {
+		name    string
+		address string
+	}{{name: "cp-1", address: cpAddress}, {name: "worker-1", address: workerAddress}} {
+		status, err := readAgentNodeStatus(ctx, node.name, node.address)
+		if err != nil {
+			return nil, fmt.Errorf("read %s status: %w", node.name, err)
+		}
+		if status.GetInventoryNodeName() != node.name || status.GetEnrollmentId() == "" || status.GetMachineId() == "" || status.GetCurrentGenerationId() == "" {
+			return nil, fmt.Errorf("%s returned incomplete or mismatched enrollment status: %+v", node.name, status)
+		}
+		statuses[node.name] = status
+	}
+	return statuses, nil
+}
+
+func assertSwappedEnrollmentRefused(t *testing.T, ctx context.Context, runDir, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string, enrollments map[string]*agentapi.NodeStatus) {
+	t.Helper()
+	path := filepath.Join(runDir, "swapped-bootstrap-inventory.yaml")
+	if err := writeOperationBackedInventory(path, kubernetesVersion, kubernetesBundle, workerAddress, cpAddress, enrollments); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "bootstrap", "--inventory", path, "--init-node", "cp-1", "--dry-run"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(stderr.String(), `address answered as enrolled node "worker-1"`) {
+		t.Fatalf("swapped enrollment bootstrap plan error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
 }
 
 type operationBackedArtifacts struct {

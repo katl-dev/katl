@@ -667,13 +667,15 @@ the management listener is unauthenticated and unencrypted on the trusted
 katlctl runs off-node and connects to the katlc management endpoint advertised
   by inventory or client configuration
 katlctl does not SSH to nodes or execute remote shell commands
-operators do not enroll nodes or manage transport credentials
+operators enroll installed node identities in the workstation context; this is
+  an address-to-node safety binding, not a transport credential
 any on-host debug command is secondary to the TCP gRPC contract and must not be
   required for normal operation submission or status
 no multi-tenant RBAC beyond local OS user/group permissions
 no Kubernetes API, kubeconfig, or cluster identity required before bootstrap
-node-local katlc revalidates machine ID, stored intent, request digest, and
-  operation locks before accepting a mutating request
+node-local katlc requires and revalidates enrollment ID, enrolled inventory
+  node name, machine ID, current generation, stored intent where relevant,
+  request digest, and operation locks before accepting a mutating request
 ```
 
 This is sufficient for home-ops day one and VM validation. Stronger remote

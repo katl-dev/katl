@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 type dispatchFunc func(context.Context, operation.OperationRecord) error
@@ -88,6 +89,84 @@ func TestOperationStatusIncludesConfigApplyActions(t *testing.T) {
 		got.GetBootHealthPending() ||
 		!strings.Contains(got.GetNextAction(), "active generation") {
 		t.Fatalf("operation status boot completion = %+v", got)
+	}
+}
+
+func TestEveryMutatingRPCRejectsWrongEnrollmentBeforeAcceptance(t *testing.T) {
+	server := newTestServer(t)
+	wrong := "ffeeddccbbaa99887766554433221100"
+	assertRejected := func(name string, err error) {
+		t.Helper()
+		if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "expectedEnrollmentID does not match") {
+			t.Fatalf("%s error = %v, want enrollment FailedPrecondition", name, err)
+		}
+	}
+	baseSubmit := func() *agentapi.SubmitOperationRequest {
+		request := submitRequest("wrong-enrollment")
+		request.ExpectedEnrollmentId = wrong
+		request.ExpectedCurrentGenerationId = "generation-0"
+		return request
+	}
+	_, err := server.Server.SubmitOperation(context.Background(), baseSubmit())
+	assertRejected("SubmitOperation", err)
+	_, err = server.Server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{ApiVersion: APIVersion, Kind: "ValidateConfigRequest", Actor: "test", ExpectedEnrollmentId: wrong, ExpectedInventoryNodeName: testInventoryNodeName, ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0"})
+	assertRejected("ValidateConfig", err)
+	apply := &agentapi.GenerationApplyRequest{ApiVersion: APIVersion, Kind: "GenerationApplyRequest", ClientRequestId: "wrong-enrollment", Actor: "test", ExpectedEnrollmentId: wrong, ExpectedInventoryNodeName: testInventoryNodeName, ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0"}
+	_, err = server.Server.ApplyGeneration(context.Background(), apply)
+	assertRejected("ApplyGeneration", err)
+	_, err = server.Server.StageGeneration(context.Background(), apply)
+	assertRejected("StageGeneration", err)
+	_, err = server.Server.Reboot(context.Background(), &agentapi.RebootRequest{ApiVersion: APIVersion, Kind: RebootRequestKind, Actor: "test", ExpectedEnrollmentId: wrong, ExpectedInventoryNodeName: testInventoryNodeName, ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0"})
+	assertRejected("Reboot", err)
+	_, err = server.Server.Shutdown(context.Background(), &agentapi.ShutdownRequest{ApiVersion: APIVersion, Kind: ShutdownRequestKind, Actor: "test", ExpectedEnrollmentId: wrong, ExpectedInventoryNodeName: testInventoryNodeName, ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0"})
+	assertRejected("Shutdown", err)
+	_, err = server.Server.CreateWorkerJoinMaterial(context.Background(), &agentapi.CreateWorkerJoinMaterialRequest{ApiVersion: APIVersion, Kind: WorkerJoinMaterialRequestKind, Actor: "test", ExpectedEnrollmentId: wrong, ExpectedInventoryNodeName: testInventoryNodeName, ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0"})
+	assertRejected("CreateWorkerJoinMaterial", err)
+	stream := newHostUpgradeArtifactServerStream(&agentapi.StageHostUpgradeArtifactRequest{ApiVersion: APIVersion, Kind: StageHostUpgradeArtifactRequestKind, Actor: "test", ExpectedEnrollmentId: wrong, ExpectedInventoryNodeName: testInventoryNodeName, ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0"})
+	assertRejected("StageHostUpgradeArtifact", server.Server.StageHostUpgradeArtifact(stream))
+	if server.Dispatcher != nil {
+		t.Fatal("wrong enrollment configured a dispatcher")
+	}
+}
+
+func TestMutatingRequestRequiresCompleteTargetPreconditions(t *testing.T) {
+	server := newTestServer(t)
+	base := submitRequest("complete-target-preconditions")
+	base.ExpectedEnrollmentId = testEnrollmentID
+	base.ExpectedInventoryNodeName = testInventoryNodeName
+	base.ExpectedMachineId = testMachineID
+	base.ExpectedCurrentGenerationId = "generation-0"
+	for _, test := range []struct {
+		name  string
+		field string
+		clear func(*agentapi.SubmitOperationRequest)
+	}{
+		{name: "enrollment", field: "expectedEnrollmentID", clear: func(request *agentapi.SubmitOperationRequest) { request.ExpectedEnrollmentId = "" }},
+		{name: "inventory node", field: "expectedInventoryNodeName", clear: func(request *agentapi.SubmitOperationRequest) { request.ExpectedInventoryNodeName = "" }},
+		{name: "machine", field: "expectedMachineID", clear: func(request *agentapi.SubmitOperationRequest) { request.ExpectedMachineId = "" }},
+		{name: "generation", field: "expectedCurrentGenerationID", clear: func(request *agentapi.SubmitOperationRequest) { request.ExpectedCurrentGenerationId = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := proto.Clone(base).(*agentapi.SubmitOperationRequest)
+			test.clear(request)
+			_, err := server.Server.SubmitOperation(context.Background(), request)
+			if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), test.field+" is required") {
+				t.Fatalf("SubmitOperation error = %v, want required %s", err, test.field)
+			}
+		})
+	}
+}
+
+func TestAgentRejectsRequestedInventoryNodeDifferentFromEnrollment(t *testing.T) {
+	server := newTestServer(t)
+	writeBootSelection(t, server.Root, "generation-0")
+	request := submitRequest("wrong-node-name")
+	request.ExpectedInventoryNodeName = testInventoryNodeName
+	request.ExpectedCurrentGenerationId = "generation-0"
+	request.Bootstrap.InventoryNodeName = "node-b"
+	_, err := server.Server.SubmitOperation(context.Background(), request)
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), `requested inventory node "node-b"`) {
+		t.Fatalf("SubmitOperation error = %v, want enrolled node-name refusal", err)
 	}
 }
 
@@ -504,6 +583,79 @@ func TestNodeStatusReportsSelectedBootTarget(t *testing.T) {
 	}
 }
 
+func TestMutationPreconditionAcceptsCurrentLiveGenerationReportedByStatus(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	const (
+		operationID  = "live-activation"
+		generationID = "generation-live"
+	)
+	spec, _, err := generation.ReadGeneration(server.Root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.GenerationID = generationID
+	spec.PreviousGenerationID = "generation-0"
+	spec.Boot.LoaderEntryPath = "loader/entries/katl-generation-live.conf"
+	generationStatus, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateTrying, generation.HealthStateUnknown, server.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(server.Root, spec, generationStatus); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := server.Now()
+	if _, err := server.Store.Create(operation.OperationRecord{
+		OperationID:           operationID,
+		OperationKind:         "config-apply",
+		Scope:                 "configuration",
+		RequestDigest:         strings.Repeat("1", 64),
+		Phase:                 "complete",
+		PhasePlan:             []string{"accepted", "complete"},
+		CompletedPhases:       []string{"accepted", "complete"},
+		PhaseIndex:            2,
+		PreviousGenerationID:  "generation-0",
+		CandidateGenerationID: generationID,
+		ActivationMode:        operation.ActivationModeLive,
+		ActivationState:       operation.ActivationStateActiveLive,
+		GenerationCommitState: operation.GenerationCommitCommitted,
+		ResourceLocks:         []string{"generation-state.lock"},
+		Terminal:              true,
+		Result:                operation.ResultSucceeded,
+		CompletedAt:           &completedAt,
+		CreatedAt:             server.Now(),
+		UpdatedAt:             server.Now(),
+	}, "accepted", server.Now()); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.TargetBootGenerationID = generationID
+	selection.TargetBootEntry = spec.Boot.LoaderEntryPath
+	selection.PendingHealthValidation = true
+	selection.PendingTransactionID = operationID
+	selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
+	if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+		t.Fatal(err)
+	}
+
+	nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStatus.GetCurrentGenerationId() != generationID {
+		t.Fatalf("current generation = %q, want %q", nodeStatus.GetCurrentGenerationId(), generationID)
+	}
+	if err := server.validateMutationTarget(nodeStatus.GetEnrollmentId(), nodeStatus.GetInventoryNodeName(), nodeStatus.GetMachineId(), nodeStatus.GetCurrentGenerationId()); err != nil {
+		t.Fatalf("validate mutation against reported current generation: %v", err)
+	}
+	if err := server.validateExpectedCurrentGeneration("generation-0"); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("validate stale booted generation error = %v, want FailedPrecondition", err)
+	}
+}
+
 func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
@@ -790,11 +942,14 @@ func TestSubmitOperationRejectsUnsafeHostUpgradeReference(t *testing.T) {
 
 func hostUpgradeSubmitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 	return &agentapi.SubmitOperationRequest{
-		ApiVersion:      APIVersion,
-		Kind:            RequestKind,
-		ClientRequestId: clientRequestID,
-		OperationKind:   OperationKindHostUpgrade,
-		Actor:           "test-actor",
+		ApiVersion:                APIVersion,
+		Kind:                      RequestKind,
+		ClientRequestId:           clientRequestID,
+		OperationKind:             OperationKindHostUpgrade,
+		Actor:                     "test-actor",
+		ExpectedEnrollmentId:      testEnrollmentID,
+		ExpectedInventoryNodeName: testInventoryNodeName,
+		ExpectedMachineId:         testMachineID,
 		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
 			ImageUrl:              "https://updates.example.test/katlos-upgrade.squashfs",
 			CandidateGenerationId: "gen-upgrade-1",
@@ -868,7 +1023,7 @@ func TestKubernetesSysextUpdateRefusesBootstrappedNode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newTestServer(t)
 			writeConfigApplyBaseState(t, server.Root)
-			writeKubeadmMutationEvidence(t, server, "bootstrap-evidence", tt.operationKind, tt.wantEvidence)
+			writeKubeadmMutationEvidence(t, server.Server, "bootstrap-evidence", tt.operationKind, tt.wantEvidence)
 			var dispatched atomic.Int32
 			server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 				dispatched.Add(1)
@@ -961,7 +1116,7 @@ func TestKubernetesSysextUpdateRejectsRawActivationPath(t *testing.T) {
 func TestKubernetesSysextUpdateDryRunUsesRefusalPlan(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
-	writeKubeadmMutationEvidence(t, server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
+	writeKubeadmMutationEvidence(t, server.Server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		t.Fatalf("dispatcher called for dry-run Kubernetes sysext update")
 		return nil
@@ -1036,7 +1191,7 @@ func TestKubernetesSysextUpdateBootstrappedGenerationZeroUsesClusterIntent(t *te
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
 	writeInstalledClusterIntent(t, server.Root, "v1.35.0", "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")
-	writeKubeadmMutationEvidence(t, server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
+	writeKubeadmMutationEvidence(t, server.Server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		dispatched.Add(1)
@@ -1063,7 +1218,7 @@ func TestKubernetesSysextUpdateGenerationZeroIntentMatchStillRefuses(t *testing.
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
 	writeInstalledClusterIntent(t, server.Root, "v1.35.0", "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")
-	writeKubeadmMutationEvidence(t, server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
+	writeKubeadmMutationEvidence(t, server.Server, "bootstrap-evidence", "bootstrap-init", "etc-kubernetes")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		t.Fatalf("dispatcher called for refused Kubernetes sysext update")
 		return nil
@@ -2321,6 +2476,7 @@ func TestSubmitOperationWithoutDispatcherRejectsBeforeRecord(t *testing.T) {
 
 func TestDryRunDoesNotRequireDispatcher(t *testing.T) {
 	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
 	req := submitRequest("req-dry-run-no-dispatcher")
 	req.DryRun = true
 
@@ -2477,7 +2633,7 @@ func validControlPlaneJoinMaterial() *agentapi.WorkerJoinMaterial {
 
 func TestCreateWorkerJoinMaterialRunsKubeadmTokenCreate(t *testing.T) {
 	server := newTestServer(t)
-	writeJoinMaterialAdminKubeconfig(t, server)
+	writeJoinMaterialAdminKubeconfig(t, server.Server)
 	var calls [][]string
 	server.RunJoinMaterial = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		calls = append(calls, append([]string(nil), argv...))
@@ -2541,7 +2697,7 @@ func TestCreateWorkerJoinMaterialRejectsActiveOperationLock(t *testing.T) {
 
 func TestCreateWorkerJoinMaterialSerializesWithSubmitOperation(t *testing.T) {
 	server := newTestServer(t)
-	writeJoinMaterialAdminKubeconfig(t, server)
+	writeJoinMaterialAdminKubeconfig(t, server.Server)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2629,11 +2785,13 @@ func TestCreateWorkerJoinMaterialRedactsKubeadmFailure(t *testing.T) {
 
 func createWorkerJoinMaterialRequest() *agentapi.CreateWorkerJoinMaterialRequest {
 	return &agentapi.CreateWorkerJoinMaterialRequest{
-		ApiVersion:        APIVersion,
-		Kind:              WorkerJoinMaterialRequestKind,
-		Actor:             "test-actor",
-		ExpectedMachineId: "0123456789abcdef0123456789abcdef",
-		RequestRef:        "operation:bootstrap-init-1/worker:worker-1",
+		ApiVersion:                APIVersion,
+		Kind:                      WorkerJoinMaterialRequestKind,
+		Actor:                     "test-actor",
+		ExpectedEnrollmentId:      testEnrollmentID,
+		ExpectedInventoryNodeName: testInventoryNodeName,
+		ExpectedMachineId:         testMachineID,
+		RequestRef:                "operation:bootstrap-init-1/worker:worker-1",
 	}
 }
 
@@ -2978,7 +3136,131 @@ func TestWatchOperationHonorsDiagnosticsModeAndTerminalAtCurrentSeq(t *testing.T
 	}
 }
 
-func newTestServer(t *testing.T) *Server {
+type testServer struct{ *Server }
+
+func (s *testServer) mutationDefaults(enrollmentID, nodeName, machineID, generationID *string) {
+	if *enrollmentID == "" {
+		*enrollmentID = testEnrollmentID
+	}
+	if *nodeName == "" {
+		*nodeName = testInventoryNodeName
+	}
+	if *machineID == "" {
+		*machineID = testMachineID
+	}
+	if *generationID == "" {
+		if selection, err := generation.ReadBootSelection(s.Root); err == nil {
+			*generationID = firstNonEmpty(selection.BootedGenerationID, selection.DefaultGenerationID)
+		} else {
+			selection := generation.BootSelectionRecord{
+				APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+				DefaultGenerationID: "generation-0", BootedGenerationID: "generation-0", Generation0FallbackID: "generation-0",
+				DefaultBootEntry: "loader/entries/katl-generation-0.conf", BootedBootEntry: "loader/entries/katl-generation-0.conf", UpdatedAt: time.Now().UTC(),
+			}
+			if writeErr := generation.WriteBootSelection(s.Root, selection); writeErr == nil {
+				*generationID = "generation-0"
+			}
+		}
+	}
+}
+
+func (s *testServer) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperationRequest) (*agentapi.OperationAccepted, error) {
+	if req != nil {
+		requestedNode := ""
+		switch {
+		case req.Bootstrap != nil:
+			requestedNode = req.Bootstrap.InventoryNodeName
+		case req.ConfigApply != nil:
+			requestedNode = req.ConfigApply.NodeName
+		case req.DestructiveReset != nil:
+			requestedNode = req.DestructiveReset.InventoryNodeName
+		case req.KubeadmControlPlaneConfig != nil:
+			requestedNode = req.KubeadmControlPlaneConfig.NodeName
+		}
+		if req.ExpectedInventoryNodeName == "" && requestedNode != "" {
+			req.ExpectedInventoryNodeName = requestedNode
+			s.InventoryNodeName = requestedNode
+		}
+		s.mutationDefaults(&req.ExpectedEnrollmentId, &req.ExpectedInventoryNodeName, &req.ExpectedMachineId, &req.ExpectedCurrentGenerationId)
+		if req.ConfigApply != nil && req.ConfigApply.NodeName == "" {
+			req.ConfigApply.NodeName = req.ExpectedInventoryNodeName
+		}
+	}
+	return s.Server.SubmitOperation(ctx, req)
+}
+
+func (s *testServer) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfigRequest) (*agentapi.ConfigValidationResult, error) {
+	if req != nil {
+		if req.ExpectedInventoryNodeName == "" && req.NodeName != "" {
+			req.ExpectedInventoryNodeName = req.NodeName
+			s.InventoryNodeName = req.NodeName
+		}
+		s.mutationDefaults(&req.ExpectedEnrollmentId, &req.ExpectedInventoryNodeName, &req.ExpectedMachineId, &req.ExpectedCurrentGenerationId)
+		if req.NodeName == "" {
+			req.NodeName = testInventoryNodeName
+		}
+	}
+	return s.Server.ValidateConfig(ctx, req)
+}
+
+func (s *testServer) StageGeneration(ctx context.Context, req *agentapi.GenerationApplyRequest) (*agentapi.OperationAccepted, error) {
+	if req != nil {
+		if req.ExpectedInventoryNodeName == "" && req.NodeName != "" {
+			req.ExpectedInventoryNodeName = req.NodeName
+			s.InventoryNodeName = req.NodeName
+		}
+		s.mutationDefaults(&req.ExpectedEnrollmentId, &req.ExpectedInventoryNodeName, &req.ExpectedMachineId, &req.ExpectedCurrentGenerationId)
+		if req.NodeName == "" {
+			req.NodeName = testInventoryNodeName
+		}
+	}
+	return s.Server.StageGeneration(ctx, req)
+}
+
+func (s *testServer) ApplyGeneration(ctx context.Context, req *agentapi.GenerationApplyRequest) (*agentapi.OperationAccepted, error) {
+	if req != nil {
+		if req.ExpectedInventoryNodeName == "" && req.NodeName != "" {
+			req.ExpectedInventoryNodeName = req.NodeName
+			s.InventoryNodeName = req.NodeName
+		}
+		s.mutationDefaults(&req.ExpectedEnrollmentId, &req.ExpectedInventoryNodeName, &req.ExpectedMachineId, &req.ExpectedCurrentGenerationId)
+		if req.NodeName == "" {
+			req.NodeName = testInventoryNodeName
+		}
+	}
+	return s.Server.ApplyGeneration(ctx, req)
+}
+
+func (s *testServer) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agentapi.RebootAccepted, error) {
+	if req != nil {
+		s.mutationDefaults(&req.ExpectedEnrollmentId, &req.ExpectedInventoryNodeName, &req.ExpectedMachineId, &req.ExpectedCurrentGenerationId)
+	}
+	return s.Server.Reboot(ctx, req)
+}
+
+func (s *testServer) Shutdown(ctx context.Context, req *agentapi.ShutdownRequest) (*agentapi.ShutdownAccepted, error) {
+	if req != nil {
+		s.mutationDefaults(&req.ExpectedEnrollmentId, &req.ExpectedInventoryNodeName, &req.ExpectedMachineId, &req.ExpectedCurrentGenerationId)
+	}
+	return s.Server.Shutdown(ctx, req)
+}
+
+func (s *testServer) CreateWorkerJoinMaterial(ctx context.Context, req *agentapi.CreateWorkerJoinMaterialRequest) (*agentapi.CreateWorkerJoinMaterialResponse, error) {
+	if req != nil {
+		s.mutationDefaults(&req.ExpectedEnrollmentId, &req.ExpectedInventoryNodeName, &req.ExpectedMachineId, &req.ExpectedCurrentGenerationId)
+	}
+	return s.Server.CreateWorkerJoinMaterial(ctx, req)
+}
+
+func (s *testServer) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agentapi.StageHostUpgradeArtifactRequest, agentapi.HostUpgradeArtifactStaged]) error {
+	if testStream, ok := stream.(*hostUpgradeArtifactServerStream); ok && len(testStream.requests) > 0 {
+		request := testStream.requests[0]
+		s.mutationDefaults(&request.ExpectedEnrollmentId, &request.ExpectedInventoryNodeName, &request.ExpectedMachineId, &request.ExpectedCurrentGenerationId)
+	}
+	return s.Server.StageHostUpgradeArtifact(stream)
+}
+
+func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "var/lib/katl/identity"), 0o755); err != nil {
@@ -2992,6 +3274,8 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	server := NewServer(root, store)
+	server.EnrollmentID = testEnrollmentID
+	server.InventoryNodeName = testInventoryNodeName
 	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 	var seq atomic.Int64
 	server.Now = func() time.Time {
@@ -3001,17 +3285,19 @@ func newTestServer(t *testing.T) *Server {
 		next := seq.Add(1)
 		return fmt.Sprintf("%s-%02d", kind, next), nil
 	}
-	return server
+	return &testServer{Server: server}
 }
 
 func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 	return &agentapi.SubmitOperationRequest{
-		ApiVersion:        APIVersion,
-		Kind:              RequestKind,
-		ClientRequestId:   clientRequestID,
-		OperationKind:     "bootstrap-init",
-		Actor:             "test-actor",
-		ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+		ApiVersion:                APIVersion,
+		Kind:                      RequestKind,
+		ClientRequestId:           clientRequestID,
+		OperationKind:             "bootstrap-init",
+		Actor:                     "test-actor",
+		ExpectedEnrollmentId:      testEnrollmentID,
+		ExpectedInventoryNodeName: testInventoryNodeName,
+		ExpectedMachineId:         testMachineID,
 		Bootstrap: &agentapi.BootstrapOperationRequest{
 			InventoryNodeName:        "node-a",
 			SystemRole:               "control-plane",
@@ -3024,11 +3310,14 @@ func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 
 func destructiveResetRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
 	return &agentapi.SubmitOperationRequest{
-		ApiVersion:      APIVersion,
-		Kind:            RequestKind,
-		ClientRequestId: clientRequestID,
-		OperationKind:   OperationKindDestructiveReset,
-		Actor:           "test-actor",
+		ApiVersion:                APIVersion,
+		Kind:                      RequestKind,
+		ClientRequestId:           clientRequestID,
+		OperationKind:             OperationKindDestructiveReset,
+		Actor:                     "test-actor",
+		ExpectedEnrollmentId:      testEnrollmentID,
+		ExpectedInventoryNodeName: testInventoryNodeName,
+		ExpectedMachineId:         testMachineID,
 		DestructiveReset: &agentapi.DestructiveResetOperationRequest{
 			InventoryNodeName:      "node-a",
 			ResetScope:             "cluster",
@@ -3040,12 +3329,14 @@ func destructiveResetRequest(clientRequestID string) *agentapi.SubmitOperationRe
 
 func kubernetesSysextUpdateRequest(clientRequestID string, payloadVersion string, sha256Hex string) *agentapi.SubmitOperationRequest {
 	return &agentapi.SubmitOperationRequest{
-		ApiVersion:        APIVersion,
-		Kind:              RequestKind,
-		ClientRequestId:   clientRequestID,
-		OperationKind:     OperationKindKubeadmUpgrade,
-		Actor:             "test-actor",
-		ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+		ApiVersion:                APIVersion,
+		Kind:                      RequestKind,
+		ClientRequestId:           clientRequestID,
+		OperationKind:             OperationKindKubeadmUpgrade,
+		Actor:                     "test-actor",
+		ExpectedEnrollmentId:      testEnrollmentID,
+		ExpectedInventoryNodeName: testInventoryNodeName,
+		ExpectedMachineId:         testMachineID,
 		KubernetesSysextUpdate: &agentapi.KubernetesSysextUpdateOperationRequest{
 			TargetPayloadVersion: payloadVersion,
 			TargetSysextPath:     "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",
@@ -3053,6 +3344,12 @@ func kubernetesSysextUpdateRequest(clientRequestID string, payloadVersion string
 		},
 	}
 }
+
+const (
+	testEnrollmentID      = "00112233445566778899aabbccddeeff"
+	testInventoryNodeName = "node-a"
+	testMachineID         = "0123456789abcdef0123456789abcdef"
+)
 
 func writeBootSelection(t *testing.T, root string, generationID string) {
 	t.Helper()

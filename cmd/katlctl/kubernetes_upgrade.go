@@ -214,6 +214,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest",
 			ClientRequestId: "katlctl-plan-" + target.candidate, OperationKind: "kubeadm-upgrade",
 			Actor: "katlctl kubernetes upgrade", ExpectedMachineId: target.machineID,
+			ExpectedEnrollmentId: target.node.EnrollmentID, ExpectedInventoryNodeName: target.node.Name,
 			ExpectedCurrentGenerationId: target.generation, DryRun: true, KubernetesSysextUpdate: body,
 		})
 		if err != nil {
@@ -266,7 +267,7 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 	}
 	body := kubernetesUpgradeBody(target, image, localArtifact)
 	if localArtifact != nil {
-		localRef, err := stageKubernetesUpgradeArtifact(ctx, target.conn.Client, target.machineID, *localArtifact, target.node.Name, stderr)
+		localRef, err := stageKubernetesUpgradeArtifact(ctx, target.conn.Client, target, *localArtifact, target.node.Name, stderr)
 		if err != nil {
 			nodeReport.Result = "upload-failed"
 			return nodeReport, err
@@ -277,6 +278,7 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 		ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest",
 		ClientRequestId: "katlctl-" + target.candidate, OperationKind: "kubeadm-upgrade",
 		Actor: "katlctl kubernetes upgrade", ExpectedMachineId: target.machineID,
+		ExpectedEnrollmentId: target.node.EnrollmentID, ExpectedInventoryNodeName: target.node.Name,
 		ExpectedCurrentGenerationId: target.generation, OperationTimeout: opts.timeout.String(),
 		KubernetesSysextUpdate: body,
 	})
@@ -456,6 +458,11 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 			closeTargets()
 			return nil, fmt.Errorf("status node %s: %w", node.Name, err)
 		}
+		if err := verifyEnrolledStatus(managementTarget{nodeName: node.Name, endpoint: node.ManagementEndpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+			_ = conn.Close()
+			closeTargets()
+			return nil, err
+		}
 		generationID := strings.TrimSpace(status.CurrentGenerationId)
 		if generationID == "" {
 			_ = conn.Close()
@@ -590,11 +597,12 @@ func kubernetesUpgradeArtifactLogicalPath(localRef string) string {
 	return filepath.ToSlash(filepath.Join("/var/lib/katl/artifacts", localRef))
 }
 
-func stageKubernetesUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentClient, machineID string, local kubernetesUpgradeArtifact, node string, stderr io.Writer) (string, error) {
+func stageKubernetesUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentClient, target kubernetesUpgradeTarget, local kubernetesUpgradeArtifact, node string, stderr io.Writer) (string, error) {
 	return stageLocalUpgradeArtifact(ctx, client, localArtifactUpload{
 		Path: local.Path, Label: "Kubernetes", Version: local.PayloadVersion,
 		Kind: "StageKubernetesUpgradeArtifactRequest", Actor: "katlctl kubernetes upgrade",
-		MachineID: machineID, SHA256: local.SHA256, SizeBytes: local.SizeBytes,
+		MachineID: target.machineID, EnrollmentID: target.node.EnrollmentID, InventoryNodeName: target.node.Name, CurrentGenerationID: target.generation,
+		SHA256: local.SHA256, SizeBytes: local.SizeBytes,
 		LocalRef: kubernetesUpgradeArtifactLocalRef(local.SHA256), Node: node,
 	}, stderr)
 }

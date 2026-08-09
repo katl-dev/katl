@@ -195,6 +195,9 @@ func TestCurrentHostUpgradeAcceptsPreservedPreCNIState(t *testing.T) {
 	const generationID = "katlos-2026.7.0-alpha.9"
 	fake := &fakeKatlcAgentClient{
 		nodeStatus: &agentapi.NodeStatus{
+			MachineId:           "machine-cp-1",
+			EnrollmentId:        "enrollment-cp-1",
+			InventoryNodeName:   "cp-1",
 			CurrentGenerationId: generationID,
 			Kubernetes: &agentapi.KubernetesStatus{
 				State:         "waiting-for-node",

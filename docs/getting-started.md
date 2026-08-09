@@ -134,15 +134,17 @@ Expected generation 0 state is host health `OK`, an active management agent,
 and Kubernetes `not-configured` or waiting for bootstrap. Kubernetes services
 and Node readiness are not generation 0 requirements.
 
-Optionally save the verified topology for shorter day-two commands:
+Enroll the installed nodes before bootstrap or any host mutation:
 
 ```sh
 katlctl context save --config ./cluster.yaml
 katlctl context show
 ```
 
-`ClusterConfig` remains authoritative; a workstation context is only a local
-convenience.
+This records each node's install-generated enrollment identity and machine ID.
+`ClusterConfig` remains authoritative for desired state; the context is the
+operator's durable binding between that inventory identity and its current
+management address.
 
 ## 6. Bootstrap kubeadm
 

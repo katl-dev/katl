@@ -76,6 +76,8 @@ type NodeStatus struct {
 	SelectedGenerationId    string                      `protobuf:"bytes,15,opt,name=selected_generation_id,json=selectedGenerationId,proto3" json:"selected_generation_id,omitempty"`
 	BootHealthState         string                      `protobuf:"bytes,16,opt,name=boot_health_state,json=bootHealthState,proto3" json:"boot_health_state,omitempty"`
 	BootHealthDiagnostic    string                      `protobuf:"bytes,17,opt,name=boot_health_diagnostic,json=bootHealthDiagnostic,proto3" json:"boot_health_diagnostic,omitempty"`
+	EnrollmentId            string                      `protobuf:"bytes,18,opt,name=enrollment_id,json=enrollmentId,proto3" json:"enrollment_id,omitempty"`
+	InventoryNodeName       string                      `protobuf:"bytes,19,opt,name=inventory_node_name,json=inventoryNodeName,proto3" json:"inventory_node_name,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -225,6 +227,20 @@ func (x *NodeStatus) GetBootHealthState() string {
 func (x *NodeStatus) GetBootHealthDiagnostic() string {
 	if x != nil {
 		return x.BootHealthDiagnostic
+	}
+	return ""
+}
+
+func (x *NodeStatus) GetEnrollmentId() string {
+	if x != nil {
+		return x.EnrollmentId
+	}
+	return ""
+}
+
+func (x *NodeStatus) GetInventoryNodeName() string {
+	if x != nil {
+		return x.InventoryNodeName
 	}
 	return ""
 }
@@ -1189,6 +1205,8 @@ type SubmitOperationRequest struct {
 	HostUpgrade                 *HostUpgradeOperationRequest               `protobuf:"bytes,16,opt,name=host_upgrade,json=hostUpgrade,proto3" json:"host_upgrade,omitempty"`
 	KubeadmControlPlaneConfig   *KubeadmControlPlaneConfigOperationRequest `protobuf:"bytes,17,opt,name=kubeadm_control_plane_config,json=kubeadmControlPlaneConfig,proto3" json:"kubeadm_control_plane_config,omitempty"`
 	EtcdMemberRemove            *EtcdMemberRemoveOperationRequest          `protobuf:"bytes,18,opt,name=etcd_member_remove,json=etcdMemberRemove,proto3" json:"etcd_member_remove,omitempty"`
+	ExpectedEnrollmentId        string                                     `protobuf:"bytes,19,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
+	ExpectedInventoryNodeName   string                                     `protobuf:"bytes,20,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
 	unknownFields               protoimpl.UnknownFields
 	sizeCache                   protoimpl.SizeCache
 }
@@ -1347,6 +1365,20 @@ func (x *SubmitOperationRequest) GetEtcdMemberRemove() *EtcdMemberRemoveOperatio
 		return x.EtcdMemberRemove
 	}
 	return nil
+}
+
+func (x *SubmitOperationRequest) GetExpectedEnrollmentId() string {
+	if x != nil {
+		return x.ExpectedEnrollmentId
+	}
+	return ""
+}
+
+func (x *SubmitOperationRequest) GetExpectedInventoryNodeName() string {
+	if x != nil {
+		return x.ExpectedInventoryNodeName
+	}
+	return ""
 }
 
 type BootstrapOperationRequest struct {
@@ -1867,6 +1899,8 @@ type ValidateConfigRequest struct {
 	ClientRequestId                    string                 `protobuf:"bytes,10,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
 	OperationTimeout                   string                 `protobuf:"bytes,11,opt,name=operation_timeout,json=operationTimeout,proto3" json:"operation_timeout,omitempty"`
 	DestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=destructive_storage_acknowledgements,json=destructiveStorageAcknowledgements,proto3" json:"destructive_storage_acknowledgements,omitempty"`
+	ExpectedEnrollmentId               string                 `protobuf:"bytes,13,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
+	ExpectedInventoryNodeName          string                 `protobuf:"bytes,14,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
 	unknownFields                      protoimpl.UnknownFields
 	sizeCache                          protoimpl.SizeCache
 }
@@ -1983,6 +2017,20 @@ func (x *ValidateConfigRequest) GetDestructiveStorageAcknowledgements() []string
 		return x.DestructiveStorageAcknowledgements
 	}
 	return nil
+}
+
+func (x *ValidateConfigRequest) GetExpectedEnrollmentId() string {
+	if x != nil {
+		return x.ExpectedEnrollmentId
+	}
+	return ""
+}
+
+func (x *ValidateConfigRequest) GetExpectedInventoryNodeName() string {
+	if x != nil {
+		return x.ExpectedInventoryNodeName
+	}
+	return ""
 }
 
 type ConfigValidationResult struct {
@@ -2131,6 +2179,8 @@ type GenerationApplyRequest struct {
 	NodeName                           string                 `protobuf:"bytes,10,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
 	ConfigYaml                         string                 `protobuf:"bytes,11,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
 	DestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=destructive_storage_acknowledgements,json=destructiveStorageAcknowledgements,proto3" json:"destructive_storage_acknowledgements,omitempty"`
+	ExpectedEnrollmentId               string                 `protobuf:"bytes,13,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
+	ExpectedInventoryNodeName          string                 `protobuf:"bytes,14,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
 	unknownFields                      protoimpl.UnknownFields
 	sizeCache                          protoimpl.SizeCache
 }
@@ -2247,6 +2297,20 @@ func (x *GenerationApplyRequest) GetDestructiveStorageAcknowledgements() []strin
 		return x.DestructiveStorageAcknowledgements
 	}
 	return nil
+}
+
+func (x *GenerationApplyRequest) GetExpectedEnrollmentId() string {
+	if x != nil {
+		return x.ExpectedEnrollmentId
+	}
+	return ""
+}
+
+func (x *GenerationApplyRequest) GetExpectedInventoryNodeName() string {
+	if x != nil {
+		return x.ExpectedInventoryNodeName
+	}
+	return ""
 }
 
 type ConfigApplyOperationRequest struct {
@@ -2878,16 +2942,19 @@ func (x *HostUpgradeOperationRequest) GetCandidateGenerationId() string {
 }
 
 type StageHostUpgradeArtifactRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	ApiVersion        string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
-	Kind              string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	Actor             string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
-	ExpectedMachineId string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
-	Sha256            string                 `protobuf:"bytes,5,opt,name=sha256,proto3" json:"sha256,omitempty"`
-	SizeBytes         uint64                 `protobuf:"varint,6,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
-	Chunk             []byte                 `protobuf:"bytes,7,opt,name=chunk,proto3" json:"chunk,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state                       protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion                  string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind                        string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Actor                       string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	ExpectedMachineId           string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
+	Sha256                      string                 `protobuf:"bytes,5,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	SizeBytes                   uint64                 `protobuf:"varint,6,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	Chunk                       []byte                 `protobuf:"bytes,7,opt,name=chunk,proto3" json:"chunk,omitempty"`
+	ExpectedEnrollmentId        string                 `protobuf:"bytes,8,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
+	ExpectedInventoryNodeName   string                 `protobuf:"bytes,9,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
+	ExpectedCurrentGenerationId string                 `protobuf:"bytes,10,opt,name=expected_current_generation_id,json=expectedCurrentGenerationId,proto3" json:"expected_current_generation_id,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *StageHostUpgradeArtifactRequest) Reset() {
@@ -2969,6 +3036,27 @@ func (x *StageHostUpgradeArtifactRequest) GetChunk() []byte {
 	return nil
 }
 
+func (x *StageHostUpgradeArtifactRequest) GetExpectedEnrollmentId() string {
+	if x != nil {
+		return x.ExpectedEnrollmentId
+	}
+	return ""
+}
+
+func (x *StageHostUpgradeArtifactRequest) GetExpectedInventoryNodeName() string {
+	if x != nil {
+		return x.ExpectedInventoryNodeName
+	}
+	return ""
+}
+
+func (x *StageHostUpgradeArtifactRequest) GetExpectedCurrentGenerationId() string {
+	if x != nil {
+		return x.ExpectedCurrentGenerationId
+	}
+	return ""
+}
+
 type HostUpgradeArtifactStaged struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LocalRef      string                 `protobuf:"bytes,1,opt,name=local_ref,json=localRef,proto3" json:"local_ref,omitempty"`
@@ -3030,15 +3118,18 @@ func (x *HostUpgradeArtifactStaged) GetSizeBytes() uint64 {
 }
 
 type CreateWorkerJoinMaterialRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	ApiVersion        string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
-	Kind              string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	Actor             string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
-	ExpectedMachineId string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
-	RequestRef        string                 `protobuf:"bytes,5,opt,name=request_ref,json=requestRef,proto3" json:"request_ref,omitempty"`
-	Ttl               string                 `protobuf:"bytes,6,opt,name=ttl,proto3" json:"ttl,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state                       protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion                  string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind                        string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Actor                       string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	ExpectedMachineId           string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
+	RequestRef                  string                 `protobuf:"bytes,5,opt,name=request_ref,json=requestRef,proto3" json:"request_ref,omitempty"`
+	Ttl                         string                 `protobuf:"bytes,6,opt,name=ttl,proto3" json:"ttl,omitempty"`
+	ExpectedEnrollmentId        string                 `protobuf:"bytes,7,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
+	ExpectedInventoryNodeName   string                 `protobuf:"bytes,8,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
+	ExpectedCurrentGenerationId string                 `protobuf:"bytes,9,opt,name=expected_current_generation_id,json=expectedCurrentGenerationId,proto3" json:"expected_current_generation_id,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *CreateWorkerJoinMaterialRequest) Reset() {
@@ -3109,6 +3200,27 @@ func (x *CreateWorkerJoinMaterialRequest) GetRequestRef() string {
 func (x *CreateWorkerJoinMaterialRequest) GetTtl() string {
 	if x != nil {
 		return x.Ttl
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetExpectedEnrollmentId() string {
+	if x != nil {
+		return x.ExpectedEnrollmentId
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetExpectedInventoryNodeName() string {
+	if x != nil {
+		return x.ExpectedInventoryNodeName
+	}
+	return ""
+}
+
+func (x *CreateWorkerJoinMaterialRequest) GetExpectedCurrentGenerationId() string {
+	if x != nil {
+		return x.ExpectedCurrentGenerationId
 	}
 	return ""
 }
@@ -4782,14 +4894,17 @@ func (x *ConfigApplyEffect) GetDiagnostic() string {
 }
 
 type RebootRequest struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	ApiVersion         string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
-	Kind               string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	Actor              string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
-	ExpectedMachineId  string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
-	TargetGenerationId string                 `protobuf:"bytes,5,opt,name=target_generation_id,json=targetGenerationId,proto3" json:"target_generation_id,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state                       protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion                  string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind                        string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Actor                       string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	ExpectedMachineId           string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
+	TargetGenerationId          string                 `protobuf:"bytes,5,opt,name=target_generation_id,json=targetGenerationId,proto3" json:"target_generation_id,omitempty"`
+	ExpectedEnrollmentId        string                 `protobuf:"bytes,6,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
+	ExpectedInventoryNodeName   string                 `protobuf:"bytes,7,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
+	ExpectedCurrentGenerationId string                 `protobuf:"bytes,8,opt,name=expected_current_generation_id,json=expectedCurrentGenerationId,proto3" json:"expected_current_generation_id,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *RebootRequest) Reset() {
@@ -4857,6 +4972,27 @@ func (x *RebootRequest) GetTargetGenerationId() string {
 	return ""
 }
 
+func (x *RebootRequest) GetExpectedEnrollmentId() string {
+	if x != nil {
+		return x.ExpectedEnrollmentId
+	}
+	return ""
+}
+
+func (x *RebootRequest) GetExpectedInventoryNodeName() string {
+	if x != nil {
+		return x.ExpectedInventoryNodeName
+	}
+	return ""
+}
+
+func (x *RebootRequest) GetExpectedCurrentGenerationId() string {
+	if x != nil {
+		return x.ExpectedCurrentGenerationId
+	}
+	return ""
+}
+
 type RebootAccepted struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Scheduled          bool                   `protobuf:"varint,1,opt,name=scheduled,proto3" json:"scheduled,omitempty"`
@@ -4910,13 +5046,16 @@ func (x *RebootAccepted) GetTargetGenerationId() string {
 }
 
 type ShutdownRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	ApiVersion        string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
-	Kind              string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	Actor             string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
-	ExpectedMachineId string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state                       protoimpl.MessageState `protogen:"open.v1"`
+	ApiVersion                  string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	Kind                        string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Actor                       string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	ExpectedMachineId           string                 `protobuf:"bytes,4,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
+	ExpectedEnrollmentId        string                 `protobuf:"bytes,5,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
+	ExpectedInventoryNodeName   string                 `protobuf:"bytes,6,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
+	ExpectedCurrentGenerationId string                 `protobuf:"bytes,7,opt,name=expected_current_generation_id,json=expectedCurrentGenerationId,proto3" json:"expected_current_generation_id,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *ShutdownRequest) Reset() {
@@ -4977,6 +5116,27 @@ func (x *ShutdownRequest) GetExpectedMachineId() string {
 	return ""
 }
 
+func (x *ShutdownRequest) GetExpectedEnrollmentId() string {
+	if x != nil {
+		return x.ExpectedEnrollmentId
+	}
+	return ""
+}
+
+func (x *ShutdownRequest) GetExpectedInventoryNodeName() string {
+	if x != nil {
+		return x.ExpectedInventoryNodeName
+	}
+	return ""
+}
+
+func (x *ShutdownRequest) GetExpectedCurrentGenerationId() string {
+	if x != nil {
+		return x.ExpectedCurrentGenerationId
+	}
+	return ""
+}
+
 type ShutdownAccepted struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Scheduled     bool                   `protobuf:"varint,1,opt,name=scheduled,proto3" json:"scheduled,omitempty"`
@@ -5026,7 +5186,7 @@ var File_internal_katlc_agentapi_agent_proto protoreflect.FileDescriptor
 const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\n" +
 	"#internal/katlc/agentapi/agent.proto\x12\rkatl.agent.v1\"\x16\n" +
-	"\x14GetNodeStatusRequest\"\xa3\a\n" +
+	"\x14GetNodeStatusRequest\"\xf8\a\n" +
 	"\n" +
 	"NodeStatus\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
@@ -5050,7 +5210,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\avolumes\x18\x0e \x03(\v2\x1b.katl.agent.v1.VolumeStatusR\avolumes\x124\n" +
 	"\x16selected_generation_id\x18\x0f \x01(\tR\x14selectedGenerationId\x12*\n" +
 	"\x11boot_health_state\x18\x10 \x01(\tR\x0fbootHealthState\x124\n" +
-	"\x16boot_health_diagnostic\x18\x11 \x01(\tR\x14bootHealthDiagnostic\"\xde\x02\n" +
+	"\x16boot_health_diagnostic\x18\x11 \x01(\tR\x14bootHealthDiagnostic\x12#\n" +
+	"\renrollment_id\x18\x12 \x01(\tR\fenrollmentId\x12.\n" +
+	"\x13inventory_node_name\x18\x13 \x01(\tR\x11inventoryNodeName\"\xde\x02\n" +
 	"\fVolumeStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vtarget_kind\x18\x02 \x01(\tR\n" +
@@ -5148,7 +5310,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\bpeer_asn\x18\x04 \x01(\rR\apeerAsn\x12\x14\n" +
 	"\x05state\x18\x05 \x01(\tR\x05state\x12'\n" +
 	"\x0faccepted_routes\x18\x06 \x01(\x04R\x0eacceptedRoutes\x12'\n" +
-	"\x0fexported_routes\x18\a \x01(\x04R\x0eexportedRoutes\"\xec\b\n" +
+	"\x0fexported_routes\x18\a \x01(\x04R\x0eexportedRoutes\"\xe3\t\n" +
 	"\x16SubmitOperationRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5169,7 +5331,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x11destructive_reset\x18\x0f \x01(\v2/.katl.agent.v1.DestructiveResetOperationRequestR\x10destructiveReset\x12M\n" +
 	"\fhost_upgrade\x18\x10 \x01(\v2*.katl.agent.v1.HostUpgradeOperationRequestR\vhostUpgrade\x12y\n" +
 	"\x1ckubeadm_control_plane_config\x18\x11 \x01(\v28.katl.agent.v1.KubeadmControlPlaneConfigOperationRequestR\x19kubeadmControlPlaneConfig\x12]\n" +
-	"\x12etcd_member_remove\x18\x12 \x01(\v2/.katl.agent.v1.EtcdMemberRemoveOperationRequestR\x10etcdMemberRemove\"\xc3\x06\n" +
+	"\x12etcd_member_remove\x18\x12 \x01(\v2/.katl.agent.v1.EtcdMemberRemoveOperationRequestR\x10etcdMemberRemove\x124\n" +
+	"\x16expected_enrollment_id\x18\x13 \x01(\tR\x14expectedEnrollmentId\x12?\n" +
+	"\x1cexpected_inventory_node_name\x18\x14 \x01(\tR\x19expectedInventoryNodeName\"\xc3\x06\n" +
 	"\x19BootstrapOperationRequest\x12.\n" +
 	"\x13inventory_node_name\x18\x01 \x01(\tR\x11inventoryNodeName\x12\x1f\n" +
 	"\vsystem_role\x18\x02 \x01(\tR\n" +
@@ -5218,7 +5382,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x10target_member_id\x18\x02 \x01(\tR\x0etargetMemberId\x12&\n" +
 	"\x0ftarget_peer_url\x18\x03 \x01(\tR\rtargetPeerUrl\x12.\n" +
 	"\x13expected_cluster_id\x18\x04 \x01(\tR\x11expectedClusterId\x122\n" +
-	"\x15expected_member_count\x18\x05 \x01(\rR\x13expectedMemberCount\"\x97\x04\n" +
+	"\x15expected_member_count\x18\x05 \x01(\rR\x13expectedMemberCount\"\x8e\x05\n" +
 	"\x15ValidateConfigRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5235,7 +5399,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x11client_request_id\x18\n" +
 	" \x01(\tR\x0fclientRequestId\x12+\n" +
 	"\x11operation_timeout\x18\v \x01(\tR\x10operationTimeout\x12P\n" +
-	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\"\x9e\x04\n" +
+	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\x124\n" +
+	"\x16expected_enrollment_id\x18\r \x01(\tR\x14expectedEnrollmentId\x12?\n" +
+	"\x1cexpected_inventory_node_name\x18\x0e \x01(\tR\x19expectedInventoryNodeName\"\x9e\x04\n" +
 	"\x16ConfigValidationResult\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5251,7 +5417,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	" \x01(\tR\rfailureReason\x12\x1d\n" +
 	"\n" +
 	"no_changes\x18\v \x01(\bR\tnoChanges\x12a\n" +
-	"-required_destructive_storage_acknowledgements\x18\f \x03(\tR*requiredDestructiveStorageAcknowledgements\"\xa0\x04\n" +
+	"-required_destructive_storage_acknowledgements\x18\f \x03(\tR*requiredDestructiveStorageAcknowledgements\"\x97\x05\n" +
 	"\x16GenerationApplyRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5267,7 +5433,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	" \x01(\tR\bnodeName\x12\x1f\n" +
 	"\vconfig_yaml\x18\v \x01(\tR\n" +
 	"configYaml\x12P\n" +
-	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\"\x84\x02\n" +
+	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\x124\n" +
+	"\x16expected_enrollment_id\x18\r \x01(\tR\x14expectedEnrollmentId\x12?\n" +
+	"\x1cexpected_inventory_node_name\x18\x0e \x01(\tR\x19expectedInventoryNodeName\"\x84\x02\n" +
 	"\x1bConfigApplyOperationRequest\x126\n" +
 	"\x17candidate_generation_id\x18\x01 \x01(\tR\x15candidateGenerationId\x12\x1d\n" +
 	"\n" +
@@ -5336,7 +5504,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x0fimage_local_ref\x18\x02 \x01(\tR\rimageLocalRef\x12!\n" +
 	"\fimage_sha256\x18\x03 \x01(\tR\vimageSha256\x12(\n" +
 	"\x10image_size_bytes\x18\x04 \x01(\x04R\x0eimageSizeBytes\x126\n" +
-	"\x17candidate_generation_id\x18\x05 \x01(\tR\x15candidateGenerationId\"\xe9\x01\n" +
+	"\x17candidate_generation_id\x18\x05 \x01(\tR\x15candidateGenerationId\"\xa5\x03\n" +
 	"\x1fStageHostUpgradeArtifactRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5346,12 +5514,16 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x06sha256\x18\x05 \x01(\tR\x06sha256\x12\x1d\n" +
 	"\n" +
 	"size_bytes\x18\x06 \x01(\x04R\tsizeBytes\x12\x14\n" +
-	"\x05chunk\x18\a \x01(\fR\x05chunk\"o\n" +
+	"\x05chunk\x18\a \x01(\fR\x05chunk\x124\n" +
+	"\x16expected_enrollment_id\x18\b \x01(\tR\x14expectedEnrollmentId\x12?\n" +
+	"\x1cexpected_inventory_node_name\x18\t \x01(\tR\x19expectedInventoryNodeName\x12C\n" +
+	"\x1eexpected_current_generation_id\x18\n" +
+	" \x01(\tR\x1bexpectedCurrentGenerationId\"o\n" +
 	"\x19HostUpgradeArtifactStaged\x12\x1b\n" +
 	"\tlocal_ref\x18\x01 \x01(\tR\blocalRef\x12\x16\n" +
 	"\x06sha256\x18\x02 \x01(\tR\x06sha256\x12\x1d\n" +
 	"\n" +
-	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\"\xcf\x01\n" +
+	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\"\x8b\x03\n" +
 	"\x1fCreateWorkerJoinMaterialRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5360,7 +5532,10 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x13expected_machine_id\x18\x04 \x01(\tR\x11expectedMachineId\x12\x1f\n" +
 	"\vrequest_ref\x18\x05 \x01(\tR\n" +
 	"requestRef\x12\x10\n" +
-	"\x03ttl\x18\x06 \x01(\tR\x03ttl\"\xb9\x01\n" +
+	"\x03ttl\x18\x06 \x01(\tR\x03ttl\x124\n" +
+	"\x16expected_enrollment_id\x18\a \x01(\tR\x14expectedEnrollmentId\x12?\n" +
+	"\x1cexpected_inventory_node_name\x18\b \x01(\tR\x19expectedInventoryNodeName\x12C\n" +
+	"\x1eexpected_current_generation_id\x18\t \x01(\tR\x1bexpectedCurrentGenerationId\"\xb9\x01\n" +
 	" CreateWorkerJoinMaterialResponse\x12!\n" +
 	"\fmaterial_ref\x18\x01 \x01(\tR\vmaterialRef\x12S\n" +
 	"\x14worker_join_material\x18\x02 \x01(\v2!.katl.agent.v1.WorkerJoinMaterialR\x12workerJoinMaterial\x12\x1d\n" +
@@ -5530,23 +5705,29 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12\x1e\n" +
 	"\n" +
 	"diagnostic\x18\x04 \x01(\tR\n" +
-	"diagnostic\"\xbc\x01\n" +
+	"diagnostic\"\xf8\x02\n" +
 	"\rRebootRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +
 	"\x05actor\x18\x03 \x01(\tR\x05actor\x12.\n" +
 	"\x13expected_machine_id\x18\x04 \x01(\tR\x11expectedMachineId\x120\n" +
-	"\x14target_generation_id\x18\x05 \x01(\tR\x12targetGenerationId\"`\n" +
+	"\x14target_generation_id\x18\x05 \x01(\tR\x12targetGenerationId\x124\n" +
+	"\x16expected_enrollment_id\x18\x06 \x01(\tR\x14expectedEnrollmentId\x12?\n" +
+	"\x1cexpected_inventory_node_name\x18\a \x01(\tR\x19expectedInventoryNodeName\x12C\n" +
+	"\x1eexpected_current_generation_id\x18\b \x01(\tR\x1bexpectedCurrentGenerationId\"`\n" +
 	"\x0eRebootAccepted\x12\x1c\n" +
 	"\tscheduled\x18\x01 \x01(\bR\tscheduled\x120\n" +
-	"\x14target_generation_id\x18\x02 \x01(\tR\x12targetGenerationId\"\x8c\x01\n" +
+	"\x14target_generation_id\x18\x02 \x01(\tR\x12targetGenerationId\"\xc8\x02\n" +
 	"\x0fShutdownRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +
 	"\x05actor\x18\x03 \x01(\tR\x05actor\x12.\n" +
-	"\x13expected_machine_id\x18\x04 \x01(\tR\x11expectedMachineId\"0\n" +
+	"\x13expected_machine_id\x18\x04 \x01(\tR\x11expectedMachineId\x124\n" +
+	"\x16expected_enrollment_id\x18\x05 \x01(\tR\x14expectedEnrollmentId\x12?\n" +
+	"\x1cexpected_inventory_node_name\x18\x06 \x01(\tR\x19expectedInventoryNodeName\x12C\n" +
+	"\x1eexpected_current_generation_id\x18\a \x01(\tR\x1bexpectedCurrentGenerationId\"0\n" +
 	"\x10ShutdownAccepted\x12\x1c\n" +
 	"\tscheduled\x18\x01 \x01(\bR\tscheduled2\xe9\n" +
 	"\n" +
