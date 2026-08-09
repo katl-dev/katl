@@ -16,8 +16,8 @@ The beta release surface is deliberately narrow:
 - one explicitly selected target disk per node, with destructive wipe consent;
 - kubeadm bootstrap using the published Kubernetes bundle named in the install
   guide; and
-- node-local runtime configuration for the domains exposed by
-  `katlctl config render-node`.
+- node-local runtime configuration for the supported domains described in
+  [Apply cluster configuration](operations/configure-nodes.md).
 
 Release claims extend only to the exact VM and physical-hardware paths named in
 that release's retained evidence. The automated capable-host path uses libvirt,
@@ -107,8 +107,9 @@ using the bug report form. Remove tokens, private keys, kubeconfigs, join
 commands, and other secrets before attaching anything. Include:
 
 - the KatlOS version, release URL, and `katlctl version` output;
-- exact artifact filenames and Kubernetes OCI reference, plus SHA-256 values
-  or provenance results when they are relevant and available;
+- exact artifact filenames, configured Kubernetes version, and any resolved
+  bundle identity reported in operation evidence, plus SHA-256 values or
+  provenance results when they are relevant and available;
 - hardware or hypervisor, firmware/UEFI mode, CPU, storage controller and disk
   identity, and network devices;
 - the smallest redacted `ClusterConfig` and exact command sequence that

@@ -16,7 +16,7 @@ at `/run/katl/console/rendered.txt` for collection over SSH.
 | Installer never becomes ready | installer console; `katlos-install.service` journal |
 | Config bundle rejected | bundle command output; selected node; validation error |
 | Installed node does not complete boot | boot console; boot-health and handoff services |
-| Agent cannot be reached | network path to TCP 9443; `katlc-agent.service`; token file mapping |
+| Agent cannot be reached | network path to TCP 9443; `katlc-agent.service`; trusted-network firewall boundary |
 | Bootstrap or join fails | `katlctl` phase output; node operation record; kubelet/containerd/kubeadm journals |
 | Config apply stalls or rolls back | `katlctl node status` and `katlctl operations list`; generation and operation records |
 | Routed API endpoint is unavailable | `katlctl cluster status`; per-node local API, route, peer, and exchange state |

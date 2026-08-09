@@ -131,4 +131,7 @@ operation: if kubeadm or API mutation began, host generation rollback does not
 erase it. Preserve the command result and follow [Troubleshoot
 KatlOS](troubleshoot.md). Kubernetes upgrades use the separate
 [Upgrade Kubernetes](upgrade-kubernetes.md) workflow. Additional-control-plane
-repair and general reconciliation remain unsupported beta operations.
+addition or one-for-one replacement in a healthy cluster uses the explicit
+[cluster membership](change-cluster-nodes.md) workflow. General reconciliation,
+loss-of-quorum recovery, and arbitrary repair after partial kubeadm mutation
+remain unsupported beta operations.

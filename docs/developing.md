@@ -1,10 +1,8 @@
 # Developing Katl
 
-This document describes the local tooling expected for early Katl development.
-The immediate goal is to build a minimal installer OS with mkosi, boot it in a
-local VM, and prove the boot by matching deterministic serial output. Katl should
-move toward a usable system one working step at a time instead of carrying named
-phase labels in docs.
+This document describes the supported local build, persistent development VM,
+automated VM-test, and release-tooling workflows. Product behavior belongs in
+the public [KatlOS documentation](README.md); this page is for contributors.
 
 Read `docs/internal/north-star.md` for the product direction that grounds the
 local development loop.
@@ -23,10 +21,12 @@ Use the libvirt-backed vmtest world as the supported automated VM layer:
 `virt-manager` is useful for interactive debugging, but it is not a project
 dependency and should not be required by automated tests.
 
-## Local Boot Contract
+## Local Artifact And Boot Contract
 
-The current local boot contract proves only the installer OS
-build/boot/test loop.
+Local builds produce the same release-shaped installer, KatlOS, and upgrade
+artifacts exercised by the public user journeys. Automated coverage must use
+the libvirt-backed runner so capability evidence, disk mutation boundaries,
+serial output, lifecycle, and cleanup are consistent.
 
 - Build tool: `mkosi 26`, run inside the project's containerized builder.
 - Base distribution: Fedora, chosen for current systemd and mkosi support.
@@ -41,17 +41,17 @@ build/boot/test loop.
   `console=ttyS0,115200n8` and `console=tty0`. VGA remains the interactive
   display console while the installer journal is mirrored to ttyS0 for the
   runner's deterministic captured console log.
-- Stable boot signal: `Katl hello`.
-- Generated VM logs and scratch state belong under `build/`.
+- Generated build artifacts belong under `_build/`; VM-test worlds use the
+  temporary path reported by `scripts/vmtest-run`.
 
 The libvirt-backed vmtest path is the automation contract because it gives the
 smoke harness stable process control, serial output, timeout handling, network
 leases, storage setup, and exit details. KVM should be used when available, and
 the runner records missing `/dev/kvm` access as a host capability gap.
 
-The current local boot loop is explicitly not a real host installer. It must not
-partition, format, or mutate host disks. It also excludes `katlc`, A/B root
-updates, GUI tools, and end-user asset publishing.
+Installer and lifecycle scenarios deliberately mutate only runner-created VM
+disks. Test agents and fixtures are allowed only in instrumented test artifacts
+and are rejected from production release images.
 
 ## Required For The Current Loop
 
@@ -547,18 +547,3 @@ group or polkit rule that can access `qemu:///system`.
 If `qemu:///session` fails under Codex or another sandbox, prefer
 `qemu:///system` for manual libvirt checks. The vmtest runner defaults to
 `qemu:///system`.
-
-## Current Tooling Snapshot
-
-The local environment was checked on 2026-05-31:
-
-- `mkosi 26`
-- `virsh 12.2.0`
-- `virt-install 5.1.0`
-- `virt-manager 5.1.0`
-- `go 1.26.3`
-
-At that time, `qemu:///system` worked from this shell and `libvirtd` was active.
-`/dev/kvm` and `/dev/net/tun` were not visible from the Codex sandbox even
-though the host reported hardware virtualization support and the `kvm_intel`,
-`kvm`, and `tun` modules were loaded.
