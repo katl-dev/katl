@@ -3,8 +3,12 @@ package scenarios
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +19,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/vmtest"
+	"gopkg.in/yaml.v3"
 )
 
 func TestInstalledRuntimeTwoNodeWipeClusterBootstrapSmoke(t *testing.T) {
@@ -135,6 +140,8 @@ type wipeReinstallBootstrapEvidence struct {
 	KubeconfigMetadata      string                                    `json:"kubeconfigMetadata,omitempty"`
 	BootstrapStdout         string                                    `json:"bootstrapStdout,omitempty"`
 	BootstrapStderr         string                                    `json:"bootstrapStderr,omitempty"`
+	UserBootstrapStdout     string                                    `json:"userBootstrapStdout,omitempty"`
+	UserBootstrapStderr     string                                    `json:"userBootstrapStderr,omitempty"`
 	KubectlOutput           string                                    `json:"kubectlOutput,omitempty"`
 	KubectlDiagnostics      map[string]string                         `json:"kubectlDiagnostics,omitempty"`
 	BootstrapFixture        *bootstrapFixtureInputs                   `json:"bootstrapFixture,omitempty"`
@@ -155,6 +162,8 @@ type wipeReinstallBootstrapEvidence struct {
 	NodeIPs                 map[string]string                         `json:"nodeIPs,omitempty"`
 	SerialLogs              map[string]string                         `json:"serialLogs,omitempty"`
 	Diagnostics             map[string]string                         `json:"diagnostics,omitempty"`
+	KubernetesIdentity      string                                    `json:"kubernetesIdentity,omitempty"`
+	KubernetesCAFingerprint string                                    `json:"kubernetesCAFingerprint,omitempty"`
 }
 
 type wipeClusterEvidence struct {
@@ -194,6 +203,16 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 			stopNode(t, node)
 		}
 	}()
+	identityPath := filepath.Join(result.RunDir, "homelab-kubernetes-identity.katlkey")
+	var identityStdout, identityStderr bytes.Buffer
+	if err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{
+		"kubernetes", "identity", "create",
+		"--cluster-name", "homelab",
+		"--output", identityPath,
+	}, &identityStdout, &identityStderr); err != nil {
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("create Kubernetes identity: %v\nstdout:\n%s\nstderr:\n%s", err, identityStdout.String(), identityStderr.String())
+	}
 
 	initialNodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneMAC, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerMAC)
 	if err != nil {
@@ -201,7 +220,7 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		t.Fatal(err)
 	}
 	liveNodes = initialNodes
-	initialEvidence, err := runWipeReinstallBootstrapRound(t, ctx, run, result, "initial", kubernetesBundle, initialNodes)
+	initialEvidence, err := runWipeReinstallBootstrapRound(t, ctx, run, result, "initial", kubernetesBundle, initialNodes, identityPath)
 	if err != nil {
 		collectTwoNodeDiagnostics("", initialNodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -253,9 +272,14 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
 	}
-	postEvidence, err := runWipeReinstallBootstrapRound(t, ctx, run, postResult, "post-reinstall", kubernetesBundle, reinstalledNodes)
+	postEvidence, err := runWipeReinstallBootstrapRound(t, ctx, run, postResult, "post-reinstall", kubernetesBundle, reinstalledNodes, identityPath)
 	if err != nil {
 		collectTwoNodeDiagnostics("", reinstalledNodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatal(err)
+	}
+	if initialEvidence.KubernetesCAFingerprint == "" || initialEvidence.KubernetesCAFingerprint != postEvidence.KubernetesCAFingerprint {
+		err := fmt.Errorf("Kubernetes CA fingerprint changed across wipe/reinstall: initial=%q post=%q", initialEvidence.KubernetesCAFingerprint, postEvidence.KubernetesCAFingerprint)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
 	}
@@ -724,7 +748,7 @@ func startOperationBackedNodes(ctx context.Context, run operationBackedSmokeRun,
 	return []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}, nil
 }
 
-func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, name string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode) (wipeReinstallBootstrapEvidence, error) {
+func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, name string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode, identityPaths ...string) (wipeReinstallBootstrapEvidence, error) {
 	t.Helper()
 	roundDir := filepath.Join(result.RunDir, name)
 	manifestDir := filepath.Join(result.ManifestDir, name)
@@ -740,6 +764,8 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 	kubeconfigMetadataPath := filepath.Join(roundDir, "operator-kubeconfig-metadata.json")
 	stdoutPath := filepath.Join(roundDir, "katlctl-bootstrap.stdout")
 	stderrPath := filepath.Join(roundDir, "katlctl-bootstrap.stderr")
+	userBootstrapStdoutPath := filepath.Join(roundDir, "katlctl-user-bootstrap.stdout")
+	userBootstrapStderrPath := filepath.Join(roundDir, "katlctl-user-bootstrap.stderr")
 	kubectlOut := filepath.Join(roundDir, "kubectl-get-nodes.txt")
 	bootstrapFixture, err := stageBootstrapFixtureInputs(manifestDir, bootstrapFixtureInputsForRun(katlRepoRoot(t)))
 	if err != nil {
@@ -765,7 +791,7 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 	}
 	cniFixtures, err := stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, cpAddress, workerAddress)
 	if err != nil {
-		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("stage test CNI fixtures: %w", err)
+		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("stage test CNI fixtures for image preload: %w", err)
 	}
 	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), run.Inputs.KubernetesVersion, nodes...)
 	if err == nil {
@@ -808,7 +834,7 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 		return wipeReinstallBootstrapEvidence{}, err
 	}
 	var stdout, stderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
+	bootstrapArgs := []string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
@@ -818,7 +844,15 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 		"--node-address", "worker-1=" + workerAddress,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
-	}, bootstrapFixture), &stdout, &stderr)
+	}
+	identityPath := ""
+	if len(identityPaths) > 0 {
+		identityPath = strings.TrimSpace(identityPaths[0])
+		if identityPath != "" {
+			bootstrapArgs = append(bootstrapArgs, "--identity", identityPath)
+		}
+	}
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), bootstrapArgs, &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
@@ -830,18 +864,40 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, roundDir)
 		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("%s katlctl cluster bootstrap failed: %w\nstdout:\n%s\nstderr:\n%s", name, err, stdout.String(), stderr.String())
 	}
+	cniFixtures, err = stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, cpAddress, workerAddress)
+	if err != nil {
+		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("stage test CNI fixtures after %s generation activation: %w", name, err)
+	}
+	var userBootstrapStdout, userBootstrapStderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs(bootstrapArgs, bootstrapFixture), &userBootstrapStdout, &userBootstrapStderr)
+	_ = os.WriteFile(userBootstrapStdoutPath, userBootstrapStdout.Bytes(), 0o644)
+	_ = os.WriteFile(userBootstrapStderrPath, userBootstrapStderr.Bytes(), 0o644)
+	if err := bootstrapCommandError(err, userBootstrapStdout.String()); err != nil {
+		_ = os.WriteFile(filepath.Join(roundDir, "katlctl-user-bootstrap-error.txt"), []byte(err.Error()+"\n"), 0o644)
+		collectOperationBackedFailureEvidence(ctx, cpNode, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init")
+		collectOperationBackedFailureEvidence(ctx, workerNode, filepath.Join(evidenceDir, "worker-1"), "bootstrap-join-worker")
+		_ = collectNodeLocalStatusFailureEvidence(ctx, evidenceDir, nodes...)
+		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, roundDir)
+		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("%s katlctl user bootstrap handoff failed: %w\nstdout:\n%s\nstderr:\n%s", name, err, userBootstrapStdout.String(), userBootstrapStderr.String())
+	}
 	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 3*time.Minute, "node/cp-1", "node/worker-1")
 	if err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, roundDir)
 		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("%s kubectl nodes did not converge: %w\n%s", name, err, output)
 	}
 	collectKubectlDiagnostics(kubeconfigPath, roundDir)
+	caFingerprint, err := kubeconfigCAFingerprint(kubeconfigPath)
+	if err != nil {
+		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("read %s Kubernetes CA from operator kubeconfig: %w", name, err)
+	}
 	return wipeReinstallBootstrapEvidence{
 		Inventory:               inventoryPath,
 		Kubeconfig:              kubeconfigPath,
 		KubeconfigMetadata:      kubeconfigMetadataPath,
 		BootstrapStdout:         stdoutPath,
 		BootstrapStderr:         stderrPath,
+		UserBootstrapStdout:     userBootstrapStdoutPath,
+		UserBootstrapStderr:     userBootstrapStderrPath,
 		KubectlOutput:           kubectlOut,
 		KubectlDiagnostics:      kubectlDiagnosticPaths(roundDir),
 		BootstrapFixture:        bootstrapFixture.manifestValue(),
@@ -861,7 +917,58 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 		NodeIPs:                 nodeIPAddresses(nodes),
 		SerialLogs:              serialLogPaths(nodes),
 		Diagnostics:             diagnosticSummaryPaths(nodes),
+		KubernetesIdentity:      identityPath,
+		KubernetesCAFingerprint: caFingerprint,
 	}, nil
+}
+
+func kubeconfigCAFingerprint(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var config struct {
+		Clusters []struct {
+			Cluster struct {
+				CertificateAuthorityData string `yaml:"certificate-authority-data"`
+			} `yaml:"cluster"`
+		} `yaml:"clusters"`
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return "", err
+	}
+	if len(config.Clusters) != 1 {
+		return "", fmt.Errorf("kubeconfig has %d clusters, want 1", len(config.Clusters))
+	}
+	encoded := strings.TrimSpace(config.Clusters[0].Cluster.CertificateAuthorityData)
+	if encoded == "" {
+		return "", errors.New("kubeconfig certificate-authority-data is empty")
+	}
+	caPEM, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("decode certificate-authority-data: %w", err)
+	}
+	sum := sha256.Sum256(caPEM)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func TestKubeconfigCAFingerprintUsesOperatorArtifact(t *testing.T) {
+	ca := []byte("test-ca-pem\n")
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	data := []byte("clusters:\n- cluster:\n    certificate-authority-data: " + base64.StdEncoding.EncodeToString(ca) + "\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sum := sha256.Sum256(ca)
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	got, err := kubeconfigCAFingerprint(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("kubeconfigCAFingerprint() = %q, want %q", got, want)
+	}
 }
 
 func runTwoNodeReinstallProofs(ctx context.Context, run operationBackedSmokeRun, parent vmtest.Result, overlays map[string]string) (map[string]string, map[string]string, map[string]string, error) {
@@ -987,7 +1094,7 @@ func bootOverlayPath(node vmtest.RunningInstalledRuntimeNode) (string, error) {
 		return "", fmt.Errorf("decode %s domain XML: %w", node.Name, err)
 	}
 	for _, disk := range domain.Devices.Disks {
-		if disk.Serial != "katl-boot" {
+		if disk.Serial != "katl-root" {
 			continue
 		}
 		if _, err := os.Stat(disk.Source.File); err != nil {
@@ -995,7 +1102,7 @@ func bootOverlayPath(node vmtest.RunningInstalledRuntimeNode) (string, error) {
 		}
 		return disk.Source.File, nil
 	}
-	return "", fmt.Errorf("%s domain XML has no katl-boot disk", node.Name)
+	return "", fmt.Errorf("%s domain XML has no katl-root disk", node.Name)
 }
 
 func collectWipeReinstallGeneration0Evidence(ctx context.Context, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode) (map[string]threeNodeGeneration0NodeEvidence, error) {

@@ -18,6 +18,7 @@ networks.
 | Bare or disposable machine | Install generation 0 | [Install KatlOS](../installing.md) |
 | Generation 0 booted | Establish node management access | [Access installed nodes](access.md) |
 | All intended nodes installed | Create the kubeadm cluster | [Bootstrap Kubernetes](bootstrap-kubernetes.md) |
+| Cluster may be rebuilt later | Preserve kubeadm trust and signing keys | [Preserve Kubernetes identity](kubernetes-identity.md) |
 | Kubeadm cluster has no CNI | Install Cilium without mutating the host generation | [Run Cilium on KatlOS](cilium.md) |
 | Installed node | Inspect or reboot one host | [Access installed nodes](access.md#routine-host-management) |
 | Installed or bootstrapped node | Change supported runtime configuration | [Apply node configuration](configure-nodes.md) |
@@ -42,6 +43,7 @@ Keep these artifacts together for the life of an evaluation:
 - the configured Kubernetes version and any resolved bundle identity reported
   in operation evidence;
 - the retained cluster config and any optional workstation topology context;
+- the mode-`0600` Kubernetes identity and its public fingerprint, when used;
 - the kubeconfig, command results, generation IDs, and relevant timestamps; and
 - independent etcd, application, and persistent-data backups.
 

@@ -14,6 +14,10 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 - the control-plane endpoint resolves or routes as designed; and
 - independent recovery/backup expectations are understood.
 
+For any cluster you may rebuild, create and independently back up a
+[Kubernetes identity](kubernetes-identity.md) before the first bootstrap. It
+preserves kubeadm trust and signing keys; it is not an etcd or workload backup.
+
 Katl resolves and fetches the immutable Kubernetes bundle during this
 operation. Nodes need registry and CA access to `ghcr.io` unless the bundle is
 supplied through an explicitly supported local mechanism.
@@ -33,6 +37,7 @@ running kubeadm:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
+  --identity ./homelab-kubernetes-identity.katlkey \
   --dry-run \
   --init-node cp-1
 ```
@@ -51,6 +56,7 @@ Run the same command without `--dry-run`:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
+  --identity ./homelab-kubernetes-identity.katlkey \
   --init-node cp-1
 ```
 
@@ -63,6 +69,10 @@ existing file is intentionally being replaced.
 
 The command prints each node and operation phase as it changes. Add `--verbose`
 to include operation IDs and the agent's current recovery guidance.
+
+The identity file is optional for disposable evaluations. Without it, kubeadm
+generates the cluster CA and signing keys on the init node; losing all copies of
+that PKI means a later fresh cluster cannot retain the same identity.
 
 Bootstrap waits for its submitted operations, and their node-local records
 remain queryable afterward. Rerunning the same command with the same config

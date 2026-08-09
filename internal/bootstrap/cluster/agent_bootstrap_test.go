@@ -340,10 +340,12 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	connector := newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	result, err := RunAgentBootstrap(context.Background(), Request{
-		Inventory:            inv,
-		ControlPlaneEndpoint: "api.katl.test:6443",
-		KubeconfigOut:        out,
-		OverwriteKubeconfig:  true,
+		Inventory:                     inv,
+		ControlPlaneEndpoint:          "api.katl.test:6443",
+		KubeconfigOut:                 out,
+		OverwriteKubeconfig:           true,
+		KubernetesIdentity:            []byte("operator-secret"),
+		KubernetesIdentityFingerprint: "sha256:identity",
 	}, AgentBootstrapDependencies{
 		Connector:    connector,
 		Actor:        "test-actor",
@@ -368,6 +370,9 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	if req.Bootstrap.KubernetesBundleSource != inv.KubernetesBundleSource || req.Bootstrap.KubernetesBundleRef != bundleRef {
 		t.Fatalf("bootstrap bundle request = %#v", req.Bootstrap)
 	}
+	if string(req.Bootstrap.KubernetesIdentity) != "operator-secret" || req.Bootstrap.KubernetesIdentityFingerprint != "sha256:identity" {
+		t.Fatalf("bootstrap identity request = %#v", req.Bootstrap)
+	}
 	if result.Kubeconfig.Path != out || result.Kubeconfig.Server != "https://api.katl.test:6443" {
 		t.Fatalf("kubeconfig result = %#v", result.Kubeconfig)
 	}
@@ -379,7 +384,7 @@ func TestRunAgentBootstrapResumesInterruptedInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requestID := clientRequestID(plan.Nodes[0], plan, agentBootstrapInitKind)
+	requestID := clientRequestID(plan.Nodes[0], plan, agentBootstrapInitKind, "")
 	status := &agentapi.OperationStatus{
 		OperationId:     "bootstrap-init-existing",
 		OperationKind:   agentBootstrapInitKind,
@@ -532,7 +537,7 @@ func TestBootstrapRequestIdentityIgnoresTransportAddressOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := clientRequestID(after.Nodes[0], after, agentBootstrapInitKind), clientRequestID(before.Nodes[0], before, agentBootstrapInitKind); got != want {
+	if got, want := clientRequestID(after.Nodes[0], after, agentBootstrapInitKind, ""), clientRequestID(before.Nodes[0], before, agentBootstrapInitKind, ""); got != want {
 		t.Fatalf("request identity changed with transport address: %q != %q", got, want)
 	}
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
+	"github.com/katl-dev/katl/internal/kubernetesidentity"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 	"github.com/spf13/cobra"
@@ -120,6 +121,7 @@ Start with "katlctl install discover" for a waiting installer or
 	cmd.AddCommand(clusterCmd)
 
 	kubernetesCmd := &cobra.Command{Use: "kubernetes", Short: "Kubernetes lifecycle operations"}
+	kubernetesCmd.AddCommand(newKubernetesIdentityCommand(stdout, stderr))
 	kubernetesCmd.AddCommand(newKubernetesUpgradeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(kubernetesCmd)
 
@@ -199,55 +201,58 @@ func rejectUnknownSubcommand(command *cobra.Command, args []string) error {
 
 func setMinimumInvocationExamples(root *cobra.Command) {
 	examples := map[string]string{
-		"katlctl":                           "katlctl install discover",
-		"katlctl version":                   "katlctl version",
-		"katlctl cluster":                   "katlctl cluster bootstrap --config cluster.yaml",
-		"katlctl cluster status":            "katlctl cluster status --config cluster.yaml",
-		"katlctl cluster apply":             "katlctl cluster apply --config cluster.yaml",
-		"katlctl cluster etcd":              "katlctl cluster etcd members --config cluster.yaml",
-		"katlctl cluster etcd members":      "katlctl cluster etcd members --config cluster.yaml",
-		"katlctl cluster etcd remove":       "katlctl cluster etcd remove cp-3 --member-id MEMBER_ID --config cluster.yaml",
-		"katlctl context save":              "katlctl context save --config cluster.yaml",
-		"katlctl cluster bootstrap":         "katlctl cluster bootstrap --config cluster.yaml",
-		"katlctl cluster wipe":              "katlctl cluster wipe --config cluster.yaml --all",
-		"katlctl kubernetes":                "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
-		"katlctl kubernetes upgrade":        "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
-		"katlctl config":                    "katlctl config validate cluster.yaml",
-		"katlctl config init":               "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
-		"katlctl config validate":           "katlctl config validate cluster.yaml",
-		"katlctl config schema":             "katlctl config schema",
-		"katlctl config bundle":             "katlctl config bundle cluster.yaml --output cluster.katlcfg",
-		"katlctl config resolve":            "katlctl config resolve cluster.yaml --node cp-1",
-		"katlctl config diff":               "katlctl config diff before.yaml after.yaml --node cp-1",
-		"katlctl config render-node":        "katlctl config render-node --config cluster.yaml --node cp-1 --desired-version 1",
-		"katlctl context":                   "katlctl context show",
-		"katlctl context path":              "katlctl context path",
-		"katlctl context list":              "katlctl context list",
-		"katlctl context current":           "katlctl context current",
-		"katlctl context use":               "katlctl context use homelab",
-		"katlctl context show":              "katlctl context show",
-		"katlctl install":                   "katlctl install discover",
-		"katlctl install discover":          "katlctl install discover",
-		"katlctl install apply":             "katlctl install apply --config cluster.yaml",
-		"katlctl install ssh":               "katlctl install ssh --config cluster.yaml --node cp-1",
-		"katlctl install status":            "katlctl install status",
-		"katlctl operations":                "katlctl operations list --config cluster.yaml --node cp-1",
-		"katlctl operations status":         "katlctl operations status OPERATION_ID --config cluster.yaml --node cp-1",
-		"katlctl operations list":           "katlctl operations list --config cluster.yaml --node cp-1",
-		"katlctl node":                      "katlctl node status cp-1 --config cluster.yaml",
-		"katlctl node status":               "katlctl node status cp-1 --config cluster.yaml",
-		"katlctl node reboot":               "katlctl node reboot cp-1 --config cluster.yaml",
-		"katlctl node shutdown":             "katlctl node shutdown cp-1 --config cluster.yaml",
-		"katlctl node upgrade":              "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml",
-		"katlctl node apply":                "katlctl node apply cp-1 --config cluster.yaml",
-		"katlctl node apply validate":       "katlctl node apply validate --config cluster.yaml --node cp-1",
-		"katlctl node apply status":         "katlctl node apply status --node cp-1",
-		"katlctl node wipe":                 "katlctl node wipe worker-1 --config cluster.yaml --kubeconfig kubeconfig",
-		"katlctl system-extension":          "katlctl system-extension status --node cp-1 --config cluster.yaml",
-		"katlctl system-extension status":   "katlctl system-extension status --node cp-1 --config cluster.yaml",
-		"katlctl system-extension inspect":  "katlctl system-extension inspect ghcr.io/example/routing:v1",
-		"katlctl system-extension validate": "katlctl system-extension validate ghcr.io/example/routing:v1 --runtime-interface katl-runtime-1 --architecture x86_64",
-		"katlctl system-extension publish":  "katlctl system-extension publish --ref registry.example/routing:v1 --name routing --artifact-version v1 --payload-version v1 --architecture x86_64 --runtime-interface katl-runtime-1 --created-at 2026-07-25T00:00:00Z --sysext routing.raw",
+		"katlctl":                             "katlctl install discover",
+		"katlctl version":                     "katlctl version",
+		"katlctl cluster":                     "katlctl cluster bootstrap --config cluster.yaml",
+		"katlctl cluster status":              "katlctl cluster status --config cluster.yaml",
+		"katlctl cluster apply":               "katlctl cluster apply --config cluster.yaml",
+		"katlctl cluster etcd":                "katlctl cluster etcd members --config cluster.yaml",
+		"katlctl cluster etcd members":        "katlctl cluster etcd members --config cluster.yaml",
+		"katlctl cluster etcd remove":         "katlctl cluster etcd remove cp-3 --member-id MEMBER_ID --config cluster.yaml",
+		"katlctl context save":                "katlctl context save --config cluster.yaml",
+		"katlctl cluster bootstrap":           "katlctl cluster bootstrap --config cluster.yaml",
+		"katlctl cluster wipe":                "katlctl cluster wipe --config cluster.yaml --all",
+		"katlctl kubernetes":                  "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
+		"katlctl kubernetes identity":         "katlctl kubernetes identity create --cluster-name homelab --output kubernetes-identity.katlkey",
+		"katlctl kubernetes identity create":  "katlctl kubernetes identity create --cluster-name homelab --output kubernetes-identity.katlkey",
+		"katlctl kubernetes identity inspect": "katlctl kubernetes identity inspect kubernetes-identity.katlkey",
+		"katlctl kubernetes upgrade":          "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
+		"katlctl config":                      "katlctl config validate cluster.yaml",
+		"katlctl config init":                 "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
+		"katlctl config validate":             "katlctl config validate cluster.yaml",
+		"katlctl config schema":               "katlctl config schema",
+		"katlctl config bundle":               "katlctl config bundle cluster.yaml --output cluster.katlcfg",
+		"katlctl config resolve":              "katlctl config resolve cluster.yaml --node cp-1",
+		"katlctl config diff":                 "katlctl config diff before.yaml after.yaml --node cp-1",
+		"katlctl config render-node":          "katlctl config render-node --config cluster.yaml --node cp-1 --desired-version 1",
+		"katlctl context":                     "katlctl context show",
+		"katlctl context path":                "katlctl context path",
+		"katlctl context list":                "katlctl context list",
+		"katlctl context current":             "katlctl context current",
+		"katlctl context use":                 "katlctl context use homelab",
+		"katlctl context show":                "katlctl context show",
+		"katlctl install":                     "katlctl install discover",
+		"katlctl install discover":            "katlctl install discover",
+		"katlctl install apply":               "katlctl install apply --config cluster.yaml",
+		"katlctl install ssh":                 "katlctl install ssh --config cluster.yaml --node cp-1",
+		"katlctl install status":              "katlctl install status",
+		"katlctl operations":                  "katlctl operations list --config cluster.yaml --node cp-1",
+		"katlctl operations status":           "katlctl operations status OPERATION_ID --config cluster.yaml --node cp-1",
+		"katlctl operations list":             "katlctl operations list --config cluster.yaml --node cp-1",
+		"katlctl node":                        "katlctl node status cp-1 --config cluster.yaml",
+		"katlctl node status":                 "katlctl node status cp-1 --config cluster.yaml",
+		"katlctl node reboot":                 "katlctl node reboot cp-1 --config cluster.yaml",
+		"katlctl node shutdown":               "katlctl node shutdown cp-1 --config cluster.yaml",
+		"katlctl node upgrade":                "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml",
+		"katlctl node apply":                  "katlctl node apply cp-1 --config cluster.yaml",
+		"katlctl node apply validate":         "katlctl node apply validate --config cluster.yaml --node cp-1",
+		"katlctl node apply status":           "katlctl node apply status --node cp-1",
+		"katlctl node wipe":                   "katlctl node wipe worker-1 --config cluster.yaml --kubeconfig kubeconfig",
+		"katlctl system-extension":            "katlctl system-extension status --node cp-1 --config cluster.yaml",
+		"katlctl system-extension status":     "katlctl system-extension status --node cp-1 --config cluster.yaml",
+		"katlctl system-extension inspect":    "katlctl system-extension inspect ghcr.io/example/routing:v1",
+		"katlctl system-extension validate":   "katlctl system-extension validate ghcr.io/example/routing:v1 --runtime-interface katl-runtime-1 --architecture x86_64",
+		"katlctl system-extension publish":    "katlctl system-extension publish --ref registry.example/routing:v1 --name routing --artifact-version v1 --payload-version v1 --architecture x86_64 --runtime-interface katl-runtime-1 --created-at 2026-07-25T00:00:00Z --sysext routing.raw",
 	}
 	var visit func(*cobra.Command)
 	visit = func(command *cobra.Command) {
@@ -2622,6 +2627,7 @@ type clusterBootstrapOptions struct {
 	joinWorker                             string
 	controlPlaneEndpoint                   string
 	kubernetesBundle                       string
+	kubernetesIdentity                     string
 	kubeconfigOut                          string
 	overwriteKubeconfig                    bool
 	dryRun                                 bool
@@ -2652,6 +2658,7 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	cmd.Flags().StringVar(&opts.joinWorker, "join-worker", "", "join one fresh worker to an already initialized cluster without rerunning kubeadm init")
 	cmd.Flags().StringVar(&opts.controlPlaneEndpoint, "control-plane-endpoint", "", "control-plane endpoint host:port")
 	cmd.Flags().StringVar(&opts.kubernetesBundle, "kubernetes-bundle", "", "Kubernetes OCI bundle image reference; an @sha256 manifest pin is optional")
+	cmd.Flags().StringVar(&opts.kubernetesIdentity, "identity", "", "operator-held Kubernetes identity created by 'katlctl kubernetes identity create'")
 	cmd.Flags().StringVar(&opts.kubeconfigOut, "kubeconfig-out", opts.kubeconfigOut, "operator kubeconfig output path")
 	cmd.Flags().BoolVar(&opts.overwriteKubeconfig, "overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "validate and print the bootstrap plan without running kubeadm")
@@ -2670,7 +2677,7 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 }
 
 func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdout, stderr io.Writer) error {
-	inv, err := bootstrapInventory(opts, stderr)
+	inv, clusterName, err := bootstrapInventory(opts, stderr)
 	if err != nil {
 		return err
 	}
@@ -2695,6 +2702,27 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		OverwriteKubeconfig:  opts.overwriteKubeconfig,
 		DryRun:               opts.dryRun,
 		Bootstrap:            bootstrap,
+		ClusterName:          clusterName,
+	}
+	if strings.TrimSpace(opts.kubernetesIdentity) != "" {
+		bundle, data, err := readKubernetesIdentityFile(opts.kubernetesIdentity)
+		if err != nil {
+			return err
+		}
+		if clusterName == "" {
+			// --inventory is a hidden VM-test interface. Public config input always
+			// supplies the authoritative cluster name for this check.
+			clusterName = bundle.ClusterName
+			request.ClusterName = clusterName
+		} else if bundle.ClusterName != clusterName {
+			return fmt.Errorf("Kubernetes identity belongs to cluster %q, but config names cluster %q; select the matching identity", bundle.ClusterName, clusterName)
+		}
+		info, err := kubernetesidentity.Validate(bundle, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("validate Kubernetes identity: %w", err)
+		}
+		request.KubernetesIdentity = data
+		request.KubernetesIdentityFingerprint = info.Fingerprint
 	}
 	if strings.TrimSpace(opts.joinWorker) != "" {
 		if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
@@ -2748,7 +2776,7 @@ func fallbackText(value, fallback string) string {
 	return value
 }
 
-func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (inventory.Inventory, error) {
+func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (inventory.Inventory, string, error) {
 	configPath := strings.TrimSpace(opts.configPath)
 	inventoryPath := strings.TrimSpace(opts.inventoryPath)
 	inputs := 0
@@ -2758,22 +2786,23 @@ func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (invento
 		}
 	}
 	if inputs != 1 {
-		return inventory.Inventory{}, fmt.Errorf("exactly one of --config or --inventory is required")
+		return inventory.Inventory{}, "", fmt.Errorf("exactly one of --config or --inventory is required")
 	}
 	if inventoryPath != "" {
-		return loadInventory(inventoryPath)
+		inv, err := loadInventory(inventoryPath)
+		return inv, "", err
 	}
 	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
-		return inventory.Inventory{}, fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in the cluster config")
+		return inventory.Inventory{}, "", fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in the cluster config")
 	}
 	config, err := loadKatlConfig(configPath, clusterBootstrapCreator, configbundle.PlanningInputs{KubernetesBundle: opts.kubernetesBundle}, stderr)
 	if err != nil {
-		return inventory.Inventory{}, err
+		return inventory.Inventory{}, "", err
 	}
 	if !config.Source && strings.TrimSpace(opts.kubernetesBundle) != "" {
-		return inventory.Inventory{}, fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the compiled config bundle")
+		return inventory.Inventory{}, "", fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the compiled config bundle")
 	}
-	return config.Bundle.Manifest.Cluster.BootstrapInventory, nil
+	return config.Bundle.Manifest.Cluster.BootstrapInventory, config.Bundle.Manifest.ClusterName, nil
 }
 
 func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {

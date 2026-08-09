@@ -286,7 +286,7 @@ func TestCommandGroupsExposeOneSupportedPath(t *testing.T) {
 	}{
 		{group: "node", required: []string{"reboot", "shutdown", "status", "upgrade", "wipe"}, forbidden: []string{"apply"}},
 		{group: "cluster", required: []string{"apply", "bootstrap", "status", "wipe"}, forbidden: []string{"enroll", "kubeadm-control-plane-config"}},
-		{group: "kubernetes", required: []string{"upgrade"}, forbidden: []string{"apply-config"}},
+		{group: "kubernetes", required: []string{"identity", "upgrade"}, forbidden: []string{"apply-config"}},
 		{group: "config", required: []string{"bundle", "init", "schema", "validate"}, forbidden: []string{"apply", "path", "topology"}},
 		{group: "context", required: []string{"current", "list", "path", "save", "show", "use"}},
 	}

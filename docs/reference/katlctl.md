@@ -11,7 +11,7 @@ installed release.
 | `katlctl install` | Discover a waiting installer, enable installer SSH, submit config, and inspect installation. |
 | `katlctl cluster` | Inspect or apply the complete cluster, bootstrap kubeadm, inspect etcd, and perform explicit cluster wipes. |
 | `katlctl node` | Inspect, reboot, shut down, upgrade, or explicitly wipe one node. |
-| `katlctl kubernetes` | Plan and execute supported Kubernetes upgrades. |
+| `katlctl kubernetes` | Create, import, and inspect reusable Kubernetes identity; plan and execute supported Kubernetes upgrades. |
 | `katlctl operations` | Inspect current and recent durable node operations. |
 | `katlctl context` | Save and select optional workstation topology shortcuts. |
 | `katlctl system-extension` | Inspect, validate, publish, and query operator-owned system extensions. |
@@ -50,3 +50,18 @@ enough recovery evidence.
 Planning and dry-run flags do not authorize mutation. Destructive wipe and
 storage acknowledgements are operation-specific; they are never persisted as
 blanket consent in `ClusterConfig`.
+
+## Kubernetes identity
+
+```sh
+katlctl kubernetes identity create \
+  --cluster-name homelab --output ./homelab-kubernetes-identity.katlkey
+katlctl kubernetes identity inspect ./homelab-kubernetes-identity.katlkey
+katlctl cluster bootstrap --config ./cluster.yaml \
+  --identity ./homelab-kubernetes-identity.katlkey --init-node cp-1
+```
+
+The identity is a mode-`0600` operator secret, not a config field or publishable
+install artifact. See [Preserve Kubernetes
+identity](../operations/kubernetes-identity.md) for import, rebuild, security,
+and backup semantics.

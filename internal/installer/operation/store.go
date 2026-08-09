@@ -156,6 +156,9 @@ type BootstrapRequest struct {
 	JoinMaterialExpiresAt          string `json:"joinMaterialExpiresAt,omitempty"`
 	TemporaryJoinConfigPath        string `json:"temporaryJoinConfigPath,omitempty"`
 	ExistingClusterJoin            bool   `json:"existingClusterJoin,omitempty"`
+	KubernetesIdentityCluster      string `json:"kubernetesIdentityCluster,omitempty"`
+	KubernetesIdentityFingerprint  string `json:"kubernetesIdentityFingerprint,omitempty"`
+	KubernetesIdentityDigest       string `json:"kubernetesIdentityDigest,omitempty"`
 }
 
 type ConfigApplyRequest struct {
@@ -1771,6 +1774,26 @@ func validateBootstrapRequest(request BootstrapRequest) error {
 	}
 	if strings.TrimSpace(request.BootstrapProfileRef) == "" {
 		return fmt.Errorf("bootstrapRequest bootstrapProfileRef is required")
+	}
+	identityFields := 0
+	for _, value := range []string{request.KubernetesIdentityCluster, request.KubernetesIdentityFingerprint, request.KubernetesIdentityDigest} {
+		if strings.TrimSpace(value) != "" {
+			identityFields++
+		}
+	}
+	if identityFields != 0 && identityFields != 3 {
+		return fmt.Errorf("bootstrapRequest Kubernetes identity cluster, fingerprint, and digest must be set together")
+	}
+	if identityFields == 3 {
+		if request.SystemRole != "control-plane" {
+			return fmt.Errorf("bootstrapRequest Kubernetes identity is only valid for a control-plane node")
+		}
+		if err := validateSHA256Digest("bootstrapRequest kubernetesIdentityFingerprint", request.KubernetesIdentityFingerprint); err != nil {
+			return err
+		}
+		if err := validateSHA256Digest("bootstrapRequest kubernetesIdentityDigest", request.KubernetesIdentityDigest); err != nil {
+			return err
+		}
 	}
 	return nil
 }
