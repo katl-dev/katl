@@ -40,6 +40,7 @@ type etcdRemovalPlan struct {
 	Target      inventory.PlannedNode
 	Status      *agentapi.EtcdStatus
 	Member      *agentapi.EtcdMember
+	AlreadyGone bool
 }
 
 func newEtcdCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -124,6 +125,14 @@ func runEtcdRemove(ctx context.Context, opts etcdRemoveOptions, stdout, stderr i
 }
 
 func planEtcdRemoval(ctx context.Context, inv inventory.Inventory, targetName, coordinatorName, confirmedMemberID string) (etcdRemovalPlan, error) {
+	return planEtcdRemovalState(ctx, inv, targetName, coordinatorName, confirmedMemberID, false)
+}
+
+func planWipeEtcdRemoval(ctx context.Context, inv inventory.Inventory, targetName, coordinatorName string) (etcdRemovalPlan, error) {
+	return planEtcdRemovalState(ctx, inv, targetName, coordinatorName, "", true)
+}
+
+func planEtcdRemovalState(ctx context.Context, inv inventory.Inventory, targetName, coordinatorName, confirmedMemberID string, allowAbsent bool) (etcdRemovalPlan, error) {
 	plan, err := planWipeInventory(inv)
 	if err != nil {
 		return etcdRemovalPlan{}, err
@@ -156,8 +165,17 @@ func planEtcdRemoval(ctx context.Context, inv inventory.Inventory, targetName, c
 			member = candidate
 			break
 		}
+		if candidate.GetName() == target.Name || containsString(candidate.GetPeerUrls(), expectedPeer) {
+			return etcdRemovalPlan{}, fmt.Errorf("etcd member identity for %s does not match expected name and peer URL %s", target.Name, expectedPeer)
+		}
 	}
 	if member == nil {
+		if allowAbsent {
+			if status.GetHealthyMembers() < status.GetQuorum() {
+				return etcdRemovalPlan{}, fmt.Errorf("etcd has %d healthy members, below quorum %d", status.GetHealthyMembers(), status.GetQuorum())
+			}
+			return etcdRemovalPlan{Coordinator: coordinator, Target: target, Status: status, AlreadyGone: true}, nil
+		}
 		return etcdRemovalPlan{}, fmt.Errorf("etcd member for %s with peer URL %s is not present", target.Name, expectedPeer)
 	}
 	if strings.TrimSpace(confirmedMemberID) != "" && !strings.EqualFold(strings.TrimSpace(confirmedMemberID), member.GetId()) {

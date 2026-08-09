@@ -520,6 +520,7 @@ func TestRunClusterApplyRefreshesReplacementGenerationAfterJoin(t *testing.T) {
 		return &agentapi.Generation{
 			GenerationId: id,
 			CommitState:  "committed",
+			BootState:    "good",
 			HealthState:  "healthy",
 			ConfigApply:  &agentapi.ConfigApplyStatus{SelectedKubeadmConfigName: "control-plane"},
 			Sysexts:      []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1", Sha256: strings.Repeat("c", 64)}},
@@ -534,7 +535,7 @@ func TestRunClusterApplyRefreshesReplacementGenerationAfterJoin(t *testing.T) {
 	}
 	cp2StatusCalls := 0
 	cp2 := &fakeKatlcAgentClient{
-		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-2", CurrentGenerationId: "generation-0", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-2", AgentStartId: "agent-before", CurrentGenerationId: "generation-0", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		validateResult:  &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", NoChanges: true},
 		generation:      generation("generation-joined"),
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "operation-cp-2", RequestDigest: strings.Repeat("e", 64)},
@@ -544,8 +545,11 @@ func TestRunClusterApplyRefreshesReplacementGenerationAfterJoin(t *testing.T) {
 		cp2StatusCalls++
 		if cp2StatusCalls == 2 {
 			cp2.nodeStatus.CurrentGenerationId = "generation-joined"
-			cp2.nodeStatus.Kubernetes.State = "ready"
+			cp2.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{State: "ready", Role: "control-plane", KubeletActive: true, ControlPlaneComponentsReady: true, NodeReady: true}
 		}
+	}
+	cp2.onReboot = func(*agentapi.RebootRequest) {
+		cp2.nodeStatus.AgentStartId = "agent-after"
 	}
 	clients := map[string]*fakeKatlcAgentClient{"10.0.0.11:9443": cp1, "10.0.0.12:9443": cp2}
 	previousDial := dialKatlcAgent
@@ -577,6 +581,66 @@ func TestRunClusterApplyRefreshesReplacementGenerationAfterJoin(t *testing.T) {
 	}
 	if cp2.generationRequest == nil || cp2.generationRequest.GenerationId != "generation-joined" {
 		t.Fatalf("replacement generation request = %#v, want generation-joined", cp2.generationRequest)
+	}
+	if len(cp2.rebootRequests) != 1 || cp2.rebootRequests[0].GetTargetGenerationId() != "generation-joined" {
+		t.Fatalf("replacement reboot requests = %#v", cp2.rebootRequests)
+	}
+	if len(cp1.submitRequests) != 0 || len(cp2.submitRequests) != 0 {
+		t.Fatalf("unchanged replacement triggered configuration rollout: cp1=%#v cp2=%#v", cp1.submitRequests, cp2.submitRequests)
+	}
+	for _, want := range []string{"phase=node-join node=cp-2 step=reboot status=scheduled", "phase=node-join node=cp-2 waiting-for-boot-health", "phase=node-join node=cp-2 step=boot-health status=succeeded"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, want %q", stderr.String(), want)
+		}
+	}
+}
+
+func TestActivateClusterConfigRecognizesPendingJoinReboot(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "cluster.yaml")
+	source := configBundleSource() + `    - name: cp-2
+      controlPlane: true
+      management:
+        address: 10.0.0.12
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/ata-cp-2-root
+`
+	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cp1 := &fakeKatlcAgentClient{
+		nodeStatus:     &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-cp-1", Kubernetes: &agentapi.KubernetesStatus{State: "ready"}},
+		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", NoChanges: true},
+	}
+	cp2 := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{
+			MachineId: "machine-cp-2", CurrentGenerationId: "bootstrap-join-control-plane-example-candidate",
+			Kubernetes: &agentapi.KubernetesStatus{State: "ready"},
+		},
+		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", NoChanges: true},
+		generation:     &agentapi.Generation{GenerationId: "bootstrap-join-control-plane-example-candidate", CommitState: "trial", HealthState: "unknown"},
+	}
+	previousDial := dialKatlcAgent
+	defer func() { dialKatlcAgent = previousDial }()
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		clients := map[string]*fakeKatlcAgentClient{"10.0.0.11:9443": cp1, "10.0.0.12:9443": cp2}
+		client := clients[endpoint]
+		if client == nil {
+			return katlcAgentConnection{}, os.ErrNotExist
+		}
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-resume"}, []inventory.Node{
+		{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-2", Address: "10.0.0.12", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activated.joinNodes) != 0 || !reflect.DeepEqual(activated.joinBootNodes, []string{"cp-2"}) {
+		t.Fatalf("join nodes = %#v, pending boots = %#v", activated.joinNodes, activated.joinBootNodes)
 	}
 }
 

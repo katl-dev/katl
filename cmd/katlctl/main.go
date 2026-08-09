@@ -935,7 +935,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		if inventoryErr != nil {
 			return inventoryErr
 		}
-		etcdPlan, err = planEtcdRemoval(ctx, fullInventory, target.Name, "", "")
+		etcdPlan, err = planWipeEtcdRemoval(ctx, fullInventory, target.Name, "")
 		if err != nil {
 			report.EtcdCleanup = "refused"
 			report.Nodes = append(report.Nodes, wipeClusterNodeResult{Node: target.Name, Result: "refused"})
@@ -946,14 +946,21 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 			return fmt.Errorf("control-plane etcd cleanup preflight: %w", err)
 		}
 		report.EtcdCleanup = "planned"
+		if etcdPlan.AlreadyGone {
+			report.EtcdCleanup = "already-removed"
+		}
 		report.EtcdCoordinator = etcdPlan.Coordinator.Name
-		report.EtcdMemberID = etcdPlan.Member.GetId()
+		if etcdPlan.Member != nil {
+			report.EtcdMemberID = etcdPlan.Member.GetId()
+		}
 	}
 	if opts.planOnly {
 		if notConfigured {
 			report.KubernetesCleanup = "not-needed"
 		} else if strings.TrimSpace(opts.kubeconfigPath) == "" {
 			report.KubernetesCleanup = "unknown"
+		} else {
+			report.KubernetesCleanup = "planned"
 		}
 		report.NodeLocalOperations = []wipeClusterNodeLocalOperation{wipeNodeOperation(target)}
 		return printWipeNodeReport(stdout, report)
@@ -973,7 +980,10 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		cleanup := wipeNodeCleanupResult{Status: "succeeded"}
 		if target.SystemRole == inventory.RoleControlPlane {
 			cleanup = prepareWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
-			if err := submitEtcdRemoval(ctx, etcdPlan, waitTimeout, stderr, "katlctl node wipe"); err != nil {
+			if !etcdPlan.AlreadyGone {
+				err = submitEtcdRemoval(ctx, etcdPlan, waitTimeout, stderr, "katlctl node wipe")
+			}
+			if err != nil {
 				report.EtcdCleanup = "recovery-required"
 				report.KubernetesCleanup = cleanup.Status
 				report.KubernetesDiagnostics = cleanup.Diagnostics
@@ -983,8 +993,12 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 				}
 				return fmt.Errorf("control-plane etcd cleanup failed before node-local wipe: %w", err)
 			}
-			report.EtcdCleanup = "succeeded"
-			deleted := deleteWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target)
+			if etcdPlan.AlreadyGone {
+				report.EtcdCleanup = "already-removed"
+			} else {
+				report.EtcdCleanup = "succeeded"
+			}
+			deleted := deleteWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, etcdPlan.Coordinator)
 			cleanup.Diagnostics = append(cleanup.Diagnostics, deleted.Diagnostics...)
 			if deleted.Status == "recovery-required" {
 				cleanup.Status = deleted.Status
@@ -998,7 +1012,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 			if printErr := printWipeNodeReport(stdout, report); printErr != nil {
 				return printErr
 			}
-			return fmt.Errorf("Kubernetes cleanup failed before node-local wipe")
+			return fmt.Errorf("Kubernetes cleanup failed before node-local wipe: %s", strings.Join(cleanup.Diagnostics, "; "))
 		}
 	}
 
@@ -1493,6 +1507,12 @@ func printWipeNodeReport(stdout io.Writer, report wipeNodeReport) error {
 		if strings.TrimSpace(report.EtcdCleanup) != "" {
 			fmt.Fprintf(stdout, "etcd cleanup=%s coordinator=%s member=%s\n", report.EtcdCleanup, report.EtcdCoordinator, report.EtcdMemberID)
 		}
+		if strings.TrimSpace(report.KubernetesCleanup) != "" {
+			fmt.Fprintf(stdout, "Kubernetes cleanup=%s\n", report.KubernetesCleanup)
+		}
+		for _, diagnostic := range report.KubernetesDiagnostics {
+			fmt.Fprintf(stdout, "Kubernetes: %s\n", diagnostic)
+		}
 		return nil
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
@@ -1623,9 +1643,9 @@ func prepareWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node 
 	return result
 }
 
-func deleteWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node inventory.PlannedNode) wipeNodeCleanupResult {
+func deleteWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node, coordinator inventory.PlannedNode) wipeNodeCleanupResult {
 	result := wipeNodeCleanupResult{Status: "succeeded"}
-	argv := []string{"kubectl", "--kubeconfig", kubeconfigPath, "delete", "node", node.Name, "--ignore-not-found=true"}
+	argv := []string{"kubectl", "--kubeconfig", kubeconfigPath, "--server=" + kubernetesNodeServer(coordinator.Address), "delete", "node", node.Name, "--ignore-not-found=true"}
 	output, err := operatorKubectlRunner.Run(ctx, argv)
 	if err != nil {
 		result.Status = "recovery-required"
@@ -1635,6 +1655,14 @@ func deleteWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node i
 		result.Diagnostics = append(result.Diagnostics, inventory.Redact(fmt.Sprintf("delete node failed: %s", strings.TrimSpace(output.Stderr))))
 	}
 	return result
+}
+
+func kubernetesNodeServer(address string) string {
+	host := strings.TrimSpace(address)
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	return "https://" + net.JoinHostPort(host, "6443")
 }
 
 type execWipeNodeKubectlRunner struct{}

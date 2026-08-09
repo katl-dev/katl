@@ -42,6 +42,10 @@ func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, ac
 }
 
 func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
+	return waitNodeBootHealthWithPrefix(ctx, nodeName, endpoint, previousAgentStart, targetGeneration, "upgrade node="+nodeName, stderr)
+}
+
+func waitNodeBootHealthWithPrefix(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
 	lastState := ""
 	lastRecovery := nodeRecovery{}
 	for {
@@ -52,7 +56,7 @@ func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentSt
 				state := fmt.Sprintf("agent=%s generation=%s", status.GetAgentStartId(), status.GetCurrentGenerationId())
 				if state != lastState {
 					lastState = state
-					_, _ = fmt.Fprintf(stderr, "upgrade node=%s waiting-for-boot-health %s\n", nodeName, state)
+					_, _ = fmt.Fprintf(stderr, "%s waiting-for-boot-health %s\n", progressPrefix, state)
 				}
 				if strings.TrimSpace(status.GetAgentStartId()) != "" && status.GetAgentStartId() != strings.TrimSpace(previousAgentStart) {
 					candidate, generationErr := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: targetGeneration})
@@ -72,7 +76,7 @@ func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentSt
 							if recovery != lastRecovery {
 								lastRecovery = recovery
 								if !recovery.Ready {
-									_, _ = fmt.Fprintf(stderr, "upgrade node=%s waiting-for-kubernetes state=%s reason=%s\n", nodeName, recovery.State, recovery.Reason)
+									_, _ = fmt.Fprintf(stderr, "%s waiting-for-kubernetes state=%s reason=%s\n", progressPrefix, recovery.State, recovery.Reason)
 								}
 							}
 							if recovery.Ready {
