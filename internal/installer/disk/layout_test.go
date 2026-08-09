@@ -167,7 +167,7 @@ func TestPlanDiskLayoutReusesOnlyMatchingDiskVolumePartition(t *testing.T) {
 	extra := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data", 16384)
 	extra.PartitionSignature = "gpt"
 	extra.Partitions = []BlockDevice{{
-		Path: "/dev/sdb1", Type: DevicePartition, GPTLabel: "u-data", FilesystemSignature: "ext4",
+		Path: "/dev/sdb1", Type: DevicePartition, GPTLabel: "u-data", PartitionUUID: "data-partuuid", FilesystemSignature: "ext4",
 	}}
 	facts := layoutFacts(
 		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768),
@@ -236,8 +236,25 @@ func TestPlanDiskLayoutAdoptsExistingPartitionByConventionWithoutDestructiveInte
 		t.Fatalf("volume mount count = %d, want 1", len(plan.VolumeMounts))
 	}
 	volume := plan.VolumeMounts[0]
-	if volume.DevicePath != "/dev/nvme1n1p1" || volume.MountSource != "/dev/disk/by-partlabel/u-local-hostpath" || volume.MountPath != "/var/mnt/local-hostpath" || volume.Filesystem != "xfs" || volume.TargetKind != "partition" {
+	if volume.DevicePath != "/dev/nvme1n1p1" || volume.MountSource != "PARTUUID=part-uuid" || volume.MountPath != "/var/mnt/local-hostpath" || volume.Filesystem != "xfs" || volume.TargetKind != "partition" {
 		t.Fatalf("volume mount = %#v", volume)
+	}
+}
+
+func TestBindVolumePlansDoesNotFallBackToLogicalLabelWhenSelectedPartitionDisappears(t *testing.T) {
+	facts := layoutFacts(BlockDevice{
+		Path: "/dev/sdc", Type: DeviceDisk,
+		Partitions: []BlockDevice{{
+			Path: "/dev/sdc1", Type: DevicePartition, GPTLabel: "u-data",
+			PartitionUUID: "replacement-partuuid", FilesystemUUID: "replacement-fsuuid",
+		}},
+	})
+
+	_, _, err := BindVolumePlans(facts, []VolumePlan{{
+		Name: "data", DevicePath: "/dev/sdb1", MountSource: "PARTUUID=selected-partuuid",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "selected partition /dev/sdb1 was not found") {
+		t.Fatalf("BindVolumePlans() error = %v, want exact selected-partition failure", err)
 	}
 }
 

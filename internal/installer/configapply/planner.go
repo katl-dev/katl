@@ -27,6 +27,8 @@ type NodeConfigurationChange struct {
 	KernelCommandLine              []string
 	ConfiguredKernelCommandLine    []string
 	ConfiguredKernelCommandLineSet bool
+	VolumeBindings                 []generation.VolumeBinding
+	VolumeBindingsSet              bool
 }
 
 type Apply struct {
@@ -86,6 +88,8 @@ func PlanChange(current generation.Record, request NodeConfigurationChange) (Res
 		KernelCommandLine:              request.KernelCommandLine,
 		ConfiguredKernelCommandLine:    request.ConfiguredKernelCommandLine,
 		ConfiguredKernelCommandLineSet: request.ConfiguredKernelCommandLineSet,
+		VolumeBindings:                 append([]generation.VolumeBinding(nil), request.VolumeBindings...),
+		VolumeBindingsSet:              request.VolumeBindingsSet,
 	})
 	if err != nil {
 		return Result{Decision: decision}, err

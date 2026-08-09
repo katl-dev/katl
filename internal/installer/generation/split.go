@@ -48,6 +48,7 @@ type GenerationSpec struct {
 	KernelCommandLine           []string           `json:"kernelCommandLine"`
 	ConfiguredKernelCommandLine []string           `json:"configuredKernelCommandLine,omitempty"`
 	KubernetesUpgrade           *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
+	VolumeBindings              []VolumeBinding    `json:"volumeBindings,omitempty"`
 	CreatedAt                   time.Time          `json:"createdAt"`
 }
 
@@ -96,6 +97,7 @@ func SpecFromRecord(record Record) GenerationSpec {
 		KernelCommandLine:           append([]string{}, record.KernelCommandLine...),
 		ConfiguredKernelCommandLine: slices.Clone(record.ConfiguredKernelCommandLine),
 		KubernetesUpgrade:           record.KubernetesUpgrade,
+		VolumeBindings:              append([]VolumeBinding(nil), record.VolumeBindings...),
 		CreatedAt:                   record.CreatedAt.UTC(),
 	}
 }
@@ -144,6 +146,7 @@ func RecordFromSplit(spec GenerationSpec, status GenerationStatus) Record {
 		KernelCommandLine:           append([]string(nil), spec.KernelCommandLine...),
 		ConfiguredKernelCommandLine: slices.Clone(spec.ConfiguredKernelCommandLine),
 		KubernetesUpgrade:           spec.KubernetesUpgrade,
+		VolumeBindings:              append([]VolumeBinding(nil), spec.VolumeBindings...),
 		CreatedAt:                   spec.CreatedAt,
 		BootState:                   status.BootState,
 		HealthState:                 status.HealthState,
@@ -450,6 +453,9 @@ func ValidateGenerationSpec(spec GenerationSpec) error {
 		if strings.TrimSpace(spec.KubernetesUpgrade.TargetKubeadmAccessMode) == "" || strings.TrimSpace(spec.KubernetesUpgrade.KubeletActivationGate) == "" {
 			return fmt.Errorf("Kubernetes upgrade access mode and kubelet activation gate are required")
 		}
+	}
+	if _, err := cleanVolumeBindings(spec.VolumeBindings); err != nil {
+		return err
 	}
 	if spec.CreatedAt.IsZero() {
 		return fmt.Errorf("generation spec createdAt is required")

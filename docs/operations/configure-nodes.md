@@ -104,6 +104,18 @@ target, it refuses the whole apply and reports one or more exact
 the command with only the acknowledgements you intend. Blank targets need no
 flag, and acknowledgements are not retained for later applies.
 
+Katl records the exact PARTUUID or filesystem UUID selected for every
+provisioned volume. Later generations mount that identity directly instead of
+following the logical label again. If a selector changes to a different
+device, planning fails until the operator supplies the reported one-shot
+`--rebind-volume NODE/VOLUME` authority. Use an exact `byID`, `partUUID`, or
+`filesystemUUID` selector for the replacement; an ambiguous `byVolumeName`
+label remains an error even with rebind authority. A destructive replacement
+may require both `--rebind-volume` and `--acknowledge-storage-wipe`.
+`katlctl node status NODE` reports the active exact mount source so the
+operator can verify the retained identity before and after the change without
+exposing the generation's internal binding metadata as a separate API.
+
 ## Configure Kernel Arguments
 
 Set `kernel.commandLine` under defaults or a concrete node:

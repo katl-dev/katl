@@ -2162,6 +2162,7 @@ type configApplyOptions struct {
 	waitTimeout                        time.Duration
 	output                             string
 	destructiveStorageAcknowledgements []string
+	volumeRebinds                      []string
 }
 
 var configApplyNow = func() time.Time { return time.Now().UTC() }
@@ -2232,6 +2233,7 @@ func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
 	cmd.Flags().StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "authorize overwriting one non-blank node volume as NODE/VOLUME (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
 }
 
 func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr io.Writer) error {
@@ -2242,6 +2244,10 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		return fmt.Errorf("--timeout must be positive")
 	}
 	acknowledgements, err := normalizeDestructiveStorageAcknowledgements(opts.destructiveStorageAcknowledgements)
+	if err != nil {
+		return err
+	}
+	rebinds, err := normalizeVolumeRebinds(opts.volumeRebinds)
 	if err != nil {
 		return err
 	}
@@ -2305,6 +2311,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			NodeName:                           opts.nodeConfig.nodeName,
 			ConfigYaml:                         string(configYAML),
 			DestructiveStorageAcknowledgements: acknowledgements,
+			VolumeRebinds:                      rebinds,
 		})
 		if err != nil {
 			return err
@@ -2346,6 +2353,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		NodeName:                           opts.nodeConfig.nodeName,
 		ConfigYaml:                         string(configYAML),
 		DestructiveStorageAcknowledgements: acknowledgements,
+		VolumeRebinds:                      rebinds,
 	}
 	var accepted *agentapi.OperationAccepted
 	switch requestedMode {
@@ -2368,6 +2376,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			NodeName:                           opts.nodeConfig.nodeName,
 			ConfigYaml:                         string(configYAML),
 			DestructiveStorageAcknowledgements: acknowledgements,
+			VolumeRebinds:                      rebinds,
 		})
 		if err != nil {
 			return err
@@ -2415,6 +2424,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 				NodeName:                           opts.nodeConfig.nodeName,
 				ConfigYaml:                         string(configYAML),
 				DestructiveStorageAcknowledgements: acknowledgements,
+				VolumeRebinds:                      rebinds,
 			},
 		})
 	default:
@@ -2448,6 +2458,18 @@ func normalizeDestructiveStorageAcknowledgements(values []string) ([]string, err
 	sort.Strings(normalized)
 	if err := disk.ValidateDestructiveVolumeAcknowledgementKeys(normalized); err != nil {
 		return nil, fmt.Errorf("--acknowledge-storage-wipe: %w", err)
+	}
+	return normalized, nil
+}
+
+func normalizeVolumeRebinds(values []string) ([]string, error) {
+	normalized := make([]string, len(values))
+	for i, value := range values {
+		normalized[i] = strings.TrimSpace(value)
+	}
+	sort.Strings(normalized)
+	if err := disk.ValidateVolumeRebindKeys(normalized); err != nil {
+		return nil, fmt.Errorf("--rebind-volume: %w", err)
 	}
 	return normalized, nil
 }

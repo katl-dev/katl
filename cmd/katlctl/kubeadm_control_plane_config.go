@@ -27,6 +27,7 @@ type kubeadmControlPlaneConfigOptions struct {
 	rolloutID, component                                             string
 	progress                                                         io.Writer
 	destructiveStorageAcknowledgements                               []string
+	volumeRebinds                                                    []string
 }
 
 var kubeadmConfigNow = func() time.Time { return time.Now().UTC() }
@@ -57,6 +58,7 @@ role change. Enrolled node renames and role changes are refused here.`,
 	f.StringVar(&opts.configName, "config-name", "", "selected KubeadmConfig name")
 	f.StringVar(&opts.rolloutID, "rollout-id", "", "rollout identity")
 	f.StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "authorize overwriting one non-blank node volume as NODE/VOLUME (repeatable)")
+	f.StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
 	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id"} {
 		cmd.Flags().Lookup(name).Hidden = true
 	}
@@ -70,6 +72,11 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		return err
 	}
 	opts.destructiveStorageAcknowledgements = acknowledgements
+	rebinds, err := normalizeVolumeRebinds(opts.volumeRebinds)
+	if err != nil {
+		return err
+	}
+	opts.volumeRebinds = rebinds
 	inv, err := kubeadmConfigInventory(opts)
 	if err != nil {
 		return err
@@ -576,6 +583,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			ExpectedMachineId: status.MachineId, ExpectedCurrentGenerationId: status.CurrentGenerationId, ApplyMode: generation.ApplyModeAuto,
 			CandidateGenerationId: generationID, NodeName: node.Name, ConfigYaml: string(input.configYAML),
 			DestructiveStorageAcknowledgements: append([]string(nil), opts.destructiveStorageAcknowledgements...),
+			VolumeRebinds:                      append([]string(nil), opts.volumeRebinds...),
 		})
 		if err != nil {
 			_ = conn.Close()
@@ -703,7 +711,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
 			OperationKind: operationKind, Actor: "katlctl cluster apply", ExpectedEnrollmentId: node.EnrollmentID, ExpectedInventoryNodeName: node.Name,
 			ExpectedMachineId: input.machineID, ExpectedCurrentGenerationId: input.currentGeneration,
-			ConfigApply: &agentapi.ConfigApplyOperationRequest{CandidateGenerationId: generationID, ApplyMode: generation.ApplyModeAuto, NodeName: node.Name, ConfigYaml: string(input.configYAML), DestructiveStorageAcknowledgements: append([]string(nil), opts.destructiveStorageAcknowledgements...)},
+			ConfigApply: &agentapi.ConfigApplyOperationRequest{CandidateGenerationId: generationID, ApplyMode: generation.ApplyModeAuto, NodeName: node.Name, ConfigYaml: string(input.configYAML), DestructiveStorageAcknowledgements: append([]string(nil), opts.destructiveStorageAcknowledgements...), VolumeRebinds: append([]string(nil), opts.volumeRebinds...)},
 		})
 		if err != nil {
 			_ = conn.Close()

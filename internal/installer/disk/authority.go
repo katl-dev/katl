@@ -69,15 +69,24 @@ func ValidateDestructiveVolumeAcknowledgements(node string, plans []VolumePlan, 
 // ValidateDestructiveVolumeAcknowledgementKeys validates the public
 // NODE/VOLUME acknowledgement shape independently of a particular plan.
 func ValidateDestructiveVolumeAcknowledgementKeys(values []string) error {
+	return validateVolumeAuthorityKeys("destructive storage acknowledgement", values)
+}
+
+// ValidateVolumeRebindKeys validates one-shot volume rebind authority keys.
+func ValidateVolumeRebindKeys(values []string) error {
+	return validateVolumeAuthorityKeys("volume rebind", values)
+}
+
+func validateVolumeAuthorityKeys(kind string, values []string) error {
 	seen := make(map[string]struct{}, len(values))
 	for i, raw := range values {
 		value := strings.TrimSpace(raw)
 		parts := strings.Split(value, "/")
 		if len(parts) != 2 || !validAuthoritySegment(parts[0]) || !validAuthoritySegment(parts[1]) {
-			return fmt.Errorf("destructive storage acknowledgement %d must be NODE/VOLUME using lowercase DNS-label names", i+1)
+			return fmt.Errorf("%s %d must be NODE/VOLUME using lowercase DNS-label names", kind, i+1)
 		}
 		if _, exists := seen[value]; exists {
-			return fmt.Errorf("destructive storage acknowledgement %q is duplicated", value)
+			return fmt.Errorf("%s %q is duplicated", kind, value)
 		}
 		seen[value] = struct{}{}
 	}
