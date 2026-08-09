@@ -11,7 +11,7 @@ const (
 	DefaultPath = Directory + "/10-lan.network"
 )
 
-const DefaultContent = "[Match]\nType=ether\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nClientIdentifier=mac\nUseHostname=no\n\n[DHCPv6]\nUseHostname=no\n"
+const DefaultContent = "[Match]\nType=ether\nKind=!*\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nClientIdentifier=mac\nUseHostname=no\n\n[DHCPv6]\nUseHostname=no\n"
 
 func IsPath(value string) bool {
 	return strings.HasPrefix(value, Directory+"/")

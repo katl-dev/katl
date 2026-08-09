@@ -19,6 +19,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/handoff"
+	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -50,7 +51,7 @@ const (
 	guestHandoffAcceptedSignal = "katlos-install handoff accepted manifest="
 	installerCompletedSignal   = "katlos-install completed manifest="
 	bundleCompletedSignal      = "katlos-install completed bundle="
-	vmtestDHCPNetwork          = "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nClientIdentifier=mac\nUseHostname=no\n\n[DHCPv6]\nUseHostname=no\n"
+	vmtestDHCPNetwork          = networkdconfig.DefaultContent
 )
 
 type handoffLog struct {

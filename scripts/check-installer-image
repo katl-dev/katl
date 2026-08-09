@@ -145,6 +145,12 @@ grep -Eq '^Wants=.*(^| )network-online\.target( |$)' "$installer_unit" ||
 grep -Eq '^After=.*(^| )network-online\.target( |$)' "$installer_unit" ||
     fail "installer service does not wait for network-online.target before URL handoff"
 
+installer_network="$initrd_root/usr/lib/systemd/network/80-katl-installer-dhcp.network"
+grep -Fxq 'Type=ether' "$installer_network" ||
+    fail "installer DHCP fallback does not match Ethernet links"
+grep -Fxq 'Kind=!*' "$installer_network" ||
+    fail "installer DHCP fallback can adopt virtual netdev kinds"
+
 for path in \
     /usr/bin/mkosi \
     /usr/bin/dnf \

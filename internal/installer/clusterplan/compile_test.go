@@ -242,7 +242,7 @@ func TestCompileDefaultDHCPUsesStableMACIdentity(t *testing.T) {
 	}
 	for _, node := range plan.Nodes {
 		file := nativeFile(node.NativeEtcFiles, "/etc/systemd/network/10-lan.network")
-		if file == nil || !strings.Contains(file.Content, "[DHCPv4]\nClientIdentifier=mac\nUseHostname=no") || !strings.Contains(file.Content, "[DHCPv6]\nUseHostname=no") {
+		if file == nil || !strings.Contains(file.Content, "[Match]\nType=ether\nKind=!*\n") || !strings.Contains(file.Content, "[DHCPv4]\nClientIdentifier=mac\nUseHostname=no") || !strings.Contains(file.Content, "[DHCPv6]\nUseHostname=no") {
 			t.Fatalf("%s default network = %#v", node.Name, node.NativeEtcFiles)
 		}
 	}

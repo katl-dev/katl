@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -126,6 +127,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		t.Fatalf("merged systemd-networkd configuration is missing Kubernetes route policy:\n%s", networkdConfig)
 	}
 	guestCommand(t, ctx, guest, "networkd-active", "systemctl", "is-active", "systemd-networkd.service")
+	assertDefaultNetworkdCNIOwnership(t, ctx, guest)
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/install/status.json", `"finalHandoff": "waiting-for-cluster-bootstrap"`)
 	defer func() {
 		if t.Failed() {
@@ -144,6 +146,178 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 			t.Fatalf("write world scenario result: %v", err)
 		}
 	}
+}
+
+type networkdLinkStatus struct {
+	Name                string `json:"Name"`
+	Kind                string `json:"Kind"`
+	AdministrativeState string `json:"AdministrativeState"`
+	IPv4AddressState    string `json:"IPv4AddressState"`
+	NetworkFile         string `json:"NetworkFile"`
+	Addresses           []struct {
+		Family       int    `json:"Family"`
+		ConfigSource string `json:"ConfigSource"`
+	} `json:"Addresses"`
+	Routes []struct {
+		ConfigSource string `json:"ConfigSource"`
+	} `json:"Routes"`
+}
+
+func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest *GuestControl) {
+	t.Helper()
+	networkConfig := guestCommandOutput(t, ctx, guest, "networkd-default-policy",
+		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+		"/usr/bin/systemd-analyze", "cat-config", "systemd/network/80-katl-vmtest-dhcp.network",
+	)
+	if !strings.Contains(networkConfig, "[Match]\nType=ether\nKind=!*\n") {
+		t.Fatalf("default networkd policy does not exclude virtual netdev kinds:\n%s", networkConfig)
+	}
+
+	hostLink := defaultRouteLink(t, ctx, guest)
+	before := networkdStatus(t, ctx, guest, "networkd-host-before-cni", hostLink)
+	assertNetworkdDHCPHost(t, before)
+
+	for _, module := range []string{"veth", "dummy", "geneve", "vxlan", "bridge"} {
+		guestCommand(t, ctx, guest, "networkd-cni-modprobe-"+module, "modprobe", module)
+	}
+	for _, command := range []struct {
+		name string
+		argv []string
+	}{
+		{name: "veth", argv: []string{"ip", "link", "add", "katl-veth0", "type", "veth", "peer", "name", "katl-veth1"}},
+		{name: "cilium-host", argv: []string{"ip", "link", "add", "cilium_host", "type", "dummy"}},
+		{name: "geneve", argv: []string{"ip", "link", "add", "katl-geneve", "type", "geneve", "id", "100", "remote", "192.0.2.1", "dstport", "6081"}},
+		{name: "vxlan", argv: []string{"ip", "link", "add", "katl-vxlan", "type", "vxlan", "id", "100", "dev", hostLink, "dstport", "4789"}},
+		{name: "bridge", argv: []string{"ip", "link", "add", "cni0", "type", "bridge"}},
+	} {
+		guestCommand(t, ctx, guest, "networkd-cni-create-"+command.name, command.argv...)
+	}
+	defer func() {
+		for _, name := range []string{"katl-veth0", "cilium_host", "katl-geneve", "katl-vxlan", "cni0"} {
+			_, _ = guest.RunCommand(ctx, GuestCommandRequest{
+				Name:         "networkd-cni-delete-" + name,
+				Argv:         []string{"ip", "link", "delete", name},
+				AllowFailure: true,
+			})
+		}
+	}()
+	for _, name := range []string{"katl-veth0", "katl-veth1", "cilium_host", "katl-geneve", "katl-vxlan", "cni0"} {
+		guestCommand(t, ctx, guest, "networkd-cni-up-"+name, "ip", "link", "set", name, "up")
+	}
+	guestCommand(t, ctx, guest, "networkd-cni-udev-settle", "udevadm", "settle")
+
+	wantKinds := map[string]string{
+		"katl-veth0":  "veth",
+		"cilium_host": "dummy",
+		"katl-geneve": "geneve",
+		"katl-vxlan":  "vxlan",
+		"cni0":        "bridge",
+	}
+	links := make([]string, 0, len(wantKinds))
+	for name := range wantKinds {
+		links = append(links, name)
+	}
+	slices.Sort(links)
+	statuses := waitNetworkdStatuses(t, ctx, guest, links)
+	for _, name := range links {
+		status := statuses[name]
+		if status.Kind != wantKinds[name] || status.AdministrativeState != "unmanaged" || status.NetworkFile != "" || status.IPv4AddressState != "off" {
+			t.Errorf("networkd status for %s = %+v, want kind %q and unmanaged with IPv4 off", name, status, wantKinds[name])
+		}
+		for _, address := range status.Addresses {
+			if address.Family == 2 || strings.HasPrefix(address.ConfigSource, "DHCP") {
+				t.Errorf("networkd status for %s has unexpected address %+v", name, address)
+			}
+		}
+		if len(status.Routes) != 0 {
+			t.Errorf("networkd status for %s has unexpected routes %+v", name, status.Routes)
+		}
+	}
+	after := networkdStatus(t, ctx, guest, "networkd-host-after-cni", hostLink)
+	assertNetworkdDHCPHost(t, after)
+}
+
+func defaultRouteLink(t *testing.T, ctx context.Context, guest *GuestControl) string {
+	t.Helper()
+	output := guestCommandOutput(t, ctx, guest, "networkd-default-route", "ip", "-j", "route", "show", "default")
+	var routes []struct {
+		Dev string `json:"dev"`
+	}
+	if err := json.Unmarshal([]byte(output), &routes); err != nil || len(routes) == 0 || routes[0].Dev == "" {
+		t.Fatalf("decode default route %q: routes=%+v err=%v", output, routes, err)
+	}
+	return routes[0].Dev
+}
+
+func waitNetworkdStatuses(t *testing.T, ctx context.Context, guest *GuestControl, links []string) map[string]networkdLinkStatus {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		argv := append([]string{"networkctl", "status"}, links...)
+		argv = append(argv, "--json=short")
+		record, err := guest.RunCommand(ctx, GuestCommandRequest{
+			Name:         "networkd-cni-status",
+			Argv:         argv,
+			AllowFailure: true,
+		})
+		if err == nil {
+			statuses, decodeErr := decodeNetworkdStatuses(readFile(t, record.Stdout))
+			if decodeErr == nil && len(statuses) == len(links) {
+				allSettled := true
+				for _, link := range links {
+					if statuses[link].AdministrativeState == "" || statuses[link].AdministrativeState == "pending" {
+						allSettled = false
+					}
+				}
+				if allSettled {
+					return statuses
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("networkd did not report settled status for %v", links)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func decodeNetworkdStatuses(output string) (map[string]networkdLinkStatus, error) {
+	statuses := map[string]networkdLinkStatus{}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		var status networkdLinkStatus
+		if err := json.Unmarshal([]byte(line), &status); err != nil {
+			return nil, err
+		}
+		statuses[status.Name] = status
+	}
+	return statuses, nil
+}
+
+func networkdStatus(t *testing.T, ctx context.Context, guest *GuestControl, commandName, link string) networkdLinkStatus {
+	t.Helper()
+	output := guestCommandOutput(t, ctx, guest, commandName, "networkctl", "status", link, "--json=short")
+	statuses, err := decodeNetworkdStatuses(output)
+	if err != nil {
+		t.Fatalf("decode networkd status for %s: %v\n%s", link, err, output)
+	}
+	status, ok := statuses[link]
+	if !ok {
+		t.Fatalf("networkd status for %s missing from %q", link, output)
+	}
+	return status
+}
+
+func assertNetworkdDHCPHost(t *testing.T, status networkdLinkStatus) {
+	t.Helper()
+	if status.AdministrativeState != "configured" || status.NetworkFile == "" || status.IPv4AddressState != "routable" {
+		t.Fatalf("host networkd status = %+v, want configured DHCP host link", status)
+	}
+	for _, address := range status.Addresses {
+		if address.Family == 2 && address.ConfigSource == "DHCPv4" {
+			return
+		}
+	}
+	t.Fatalf("host networkd status = %+v, want DHCPv4 address", status)
 }
 
 func requirePlannedVMHost(t testTB, runner Runner, scenario Scenario, result Result, requirements HostRequirements) Result {

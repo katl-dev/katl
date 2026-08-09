@@ -2,6 +2,13 @@ package networkdconfig
 
 import "testing"
 
+func TestDefaultContentOnlyMatchesUnkindedEthernetLinks(t *testing.T) {
+	want := "[Match]\nType=ether\nKind=!*\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nClientIdentifier=mac\nUseHostname=no\n\n[DHCPv6]\nUseHostname=no\n"
+	if DefaultContent != want {
+		t.Fatalf("DefaultContent = %q, want %q", DefaultContent, want)
+	}
+}
+
 func TestValidatePathAcceptsUnitsAndDropIns(t *testing.T) {
 	for _, value := range []string{
 		"/etc/systemd/network/20-bond0.network",
