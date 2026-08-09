@@ -151,6 +151,10 @@ This records each node's install-generated enrollment identity and machine ID.
 operator's durable binding between that inventory identity and its current
 management address.
 
+If this is a deliberate reinstall using the same backed-up management identity,
+the old context will refuse the replacement machine. Re-enroll only that node
+with `katlctl context save --config ./cluster.yaml --replace-node NODE`.
+
 ## 6. Bootstrap kubeadm
 
 For a cluster you may rebuild, first create and independently back up its

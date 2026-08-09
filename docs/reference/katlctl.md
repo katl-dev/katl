@@ -48,6 +48,12 @@ Import is idempotent for the same identity and refuses to replace a different
 identity for that cluster. The saved context contains only the operator client
 leaf and never exposes it through `katlctl context show`.
 
+Reinstalling a node with this retained identity preserves TLS trust but creates
+a new enrollment and machine identity. `katlctl context save` refuses that
+change by default. After confirming the named node was deliberately replaced,
+use `katlctl context save --config ./cluster.yaml --replace-node NODE`; this
+updates only the named binding after TLS and inventory-name verification.
+
 Text output is designed for interactive use. Commands that expose `--output
 json` provide the bounded automation surface. Progress is written separately
 from the final result so scripts should consume the structured output rather

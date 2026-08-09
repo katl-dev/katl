@@ -114,6 +114,12 @@ the cluster identity or a saved authenticated context. Restore the backup with
 --config cluster.yaml`. Do not create a new identity for already-installed
 nodes: they will correctly reject it.
 
+After deliberately reinstalling or replacing a node while retaining the same
+management identity, the old enrollment must not be silently reused. Confirm
+the replacement and run `katlctl context save --config cluster.yaml
+--replace-node NODE`. Name each replaced node explicitly; Katl refuses the flag
+when that node's saved identity has not changed.
+
 A certificate-name failure usually means the address answered as another node.
 Do not override verification. Correct the address or use `katlctl context rebind
 --node NODE --endpoint ADDRESS`, which verifies both TLS and enrollment before

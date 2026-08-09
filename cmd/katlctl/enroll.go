@@ -20,10 +20,11 @@ import (
 )
 
 type contextSaveOptions struct {
-	configInput string
-	contextPath string
-	contextName string
-	output      string
+	configInput     string
+	contextPath     string
+	contextName     string
+	replacementNode []string
+	output          string
 }
 
 type contextSaveNodeReport struct {
@@ -32,6 +33,7 @@ type contextSaveNodeReport struct {
 	Connected          bool   `json:"connected"`
 	EnrollmentID       string `json:"enrollmentID"`
 	MachineID          string `json:"machineID"`
+	Replaced           bool   `json:"replaced,omitempty"`
 }
 
 type contextSaveReport struct {
@@ -56,6 +58,7 @@ func newContextSaveCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd.Flags().StringVar(&opts.contextPath, "context-file", "", "workstation context file path")
 	cmd.Flags().Lookup("context-file").Hidden = true
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "context name; defaults to the cluster name")
+	cmd.Flags().StringArrayVar(&opts.replacementNode, "replace-node", nil, "replace the saved enrollment for one deliberately reinstalled or replaced node (repeatable)")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
 }
@@ -188,6 +191,23 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 	}
 	bundle := config.Bundle
 	inv := bundle.Manifest.Cluster.BootstrapInventory
+	replacements := make(map[string]struct{}, len(opts.replacementNode))
+	for _, value := range opts.replacementNode {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			return fmt.Errorf("--replace-node requires a node name")
+		}
+		replacements[name] = struct{}{}
+	}
+	for name := range replacements {
+		found := false
+		for _, node := range inv.Nodes {
+			found = found || node.Name == name
+		}
+		if !found {
+			return fmt.Errorf("--replace-node %q is not present in --config", name)
+		}
+	}
 	configPath := strings.TrimSpace(opts.contextPath)
 	if configPath == "" {
 		configPath, err = workstation.ConfigPath()
@@ -220,6 +240,7 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 		}
 	}
 
+	usedReplacements := make(map[string]struct{}, len(replacements))
 	for _, node := range inv.Nodes {
 		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
 		nodeCtx := withManagementDial(ctx, node.Name, &management)
@@ -244,14 +265,24 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 		if got := strings.TrimSpace(status.GetInventoryNodeName()); got != node.Name {
 			return fmt.Errorf("verify node %s management endpoint: address answered as enrolled node %q", node.Name, got)
 		}
+		replaced := false
 		if previous, ok := known[node.Name]; ok && previous.EnrollmentID != "" && (previous.EnrollmentID != status.GetEnrollmentId() || previous.MachineID != status.GetMachineId()) {
-			return fmt.Errorf("verify node %s management endpoint: enrolled identity changed; remove and deliberately recreate the context after reinstalling the node", node.Name)
+			if _, acknowledged := replacements[node.Name]; !acknowledged {
+				return fmt.Errorf("verify node %s management endpoint: enrolled identity changed; after confirming this node was deliberately reinstalled or replaced, rerun with '--replace-node %s'", node.Name, node.Name)
+			}
+			replaced = true
+			usedReplacements[node.Name] = struct{}{}
 		}
 		clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{
 			Name: node.Name, ManagementEndpoint: endpoint, SystemRole: node.SystemRole,
 			EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(),
 		})
-		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint, Connected: true, EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId()})
+		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint, Connected: true, EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(), Replaced: replaced})
+	}
+	for name := range replacements {
+		if _, used := usedReplacements[name]; !used {
+			return fmt.Errorf("--replace-node %q was provided, but its saved enrollment has not changed", name)
+		}
 	}
 
 	cfg = cfg.UpsertCluster(contextName, clusterProfile)
@@ -259,7 +290,16 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 		return err
 	}
 	if opts.output == "text" {
-		_, err := fmt.Fprintf(stdout, "Saved context %s with %d node(s)\n", contextName, len(report.Nodes))
+		replaced := make([]string, 0, len(usedReplacements))
+		for name := range usedReplacements {
+			replaced = append(replaced, name)
+		}
+		sort.Strings(replaced)
+		suffix := ""
+		if len(replaced) != 0 {
+			suffix = "; replaced enrollment for " + strings.Join(replaced, ", ")
+		}
+		_, err := fmt.Fprintf(stdout, "Saved context %s with %d node(s)%s\n", contextName, len(report.Nodes), suffix)
 		return err
 	}
 	data, err := json.MarshalIndent(report, "", "  ")

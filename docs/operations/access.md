@@ -115,6 +115,19 @@ katlctl context rebind --node cp-1 --endpoint 192.0.2.51
 Rebind succeeds only when TLS authenticates the expected node name and the new
 address reports the same inventory node, enrollment identity, and machine ID.
 
+A deliberate reinstall keeps the cluster management authority but creates a
+new enrollment and machine identity. The old context will authenticate the
+node but refuse planning and mutations. Verify that this is the intended
+replacement, then update only that inventory binding:
+
+```sh
+katlctl context save --config ./cluster.yaml --replace-node cp-1
+```
+
+Without `--replace-node cp-1`, the save is refused and the context is left
+unchanged. The flag cannot approve an address that presents another node's TLS
+certificate or inventory name.
+
 Use `katlctl context current` to print the selection and `katlctl context use
 NAME` to switch between saved clusters. `katlctl cluster status --config
 ./cluster.yaml` summarizes every configured node without requiring a saved
