@@ -12,7 +12,8 @@ spec:
             - path: /etc/systemd/network/80-katl-vmtest-dhcp.network
               content: |
                 [Match]
-                Name=en*
+                Type=ether
+                Kind=!*
 
                 [Network]
                 DHCP=yes
