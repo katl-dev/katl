@@ -341,7 +341,7 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 	}
 	_, _ = fmt.Fprintf(stderr, "Shutdown scheduled for %s; waiting for its management API to stop...\n", node)
 	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
-	err = waitNodeOffline(waitCtx, target.endpoint)
+	err = waitNodeOffline(waitCtx, target)
 	cancelWait()
 	if err != nil {
 		return fmt.Errorf("%s did not shut down: %w", node, err)
@@ -350,10 +350,11 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 	return writeHostShutdown(stdout, opts.output, report)
 }
 
-func waitNodeOffline(ctx context.Context, endpoint string) error {
+func waitNodeOffline(ctx context.Context, target managementTarget) error {
 	for {
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
-		conn, err := dialKatlcAgent(attemptCtx, endpoint)
+		attemptCtx = withManagementTarget(attemptCtx, target)
+		conn, err := dialKatlcAgent(attemptCtx, target.endpoint)
 		if err == nil {
 			_, err = conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{})
 			_ = conn.Close()
