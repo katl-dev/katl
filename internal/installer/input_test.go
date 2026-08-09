@@ -71,7 +71,7 @@ func TestDiscoverBootInputURLWithoutDigestDoesNotMutateDisks(t *testing.T) {
 
 func TestDiscoverBootInputBundleKernelArgs(t *testing.T) {
 	input, err := DiscoverBootInput(BootInputRequest{
-		KernelCmdline: "katl.bundle.url=https://kernel.example/cluster.katlcfg katl.bundle.sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa katl.bundle.digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb katl.node=cp-1 katl.install.mode=auto",
+		KernelCmdline: "katl.bundle.url=https://kernel.example/cluster.katlcfg katl.bundle.sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa katl.bundle.digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb katl.node=cp-1 katl.install.mode=auto katl.halt-if-installed=1",
 	})
 	if err != nil {
 		t.Fatalf("DiscoverBootInput() error = %v", err)
@@ -82,6 +82,9 @@ func TestDiscoverBootInputBundleKernelArgs(t *testing.T) {
 	}
 	if input.NodeName != "cp-1" {
 		t.Fatalf("node name = %q", input.NodeName)
+	}
+	if !input.HaltIfInstalled || input.SelectedSources["haltIfInstalled"] != InputSourceKernelCmdline {
+		t.Fatalf("halt-if-installed input = %#v", input)
 	}
 	if input.Action != InstallActionRun || !input.CanMutateDisks() {
 		t.Fatalf("action = %q, can mutate = %t; want runnable bundle autoinstall", input.Action, input.CanMutateDisks())
@@ -204,6 +207,13 @@ func TestDiscoverBootInputRejectsInvalidKernelBoolean(t *testing.T) {
 	_, err := DiscoverBootInput(BootInputRequest{
 		KernelCmdline: "katl.hold-for-debug=maybe",
 	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported boolean") {
+		t.Fatalf("DiscoverBootInput() error = %v, want invalid boolean", err)
+	}
+}
+
+func TestDiscoverBootInputRejectsInvalidHaltIfInstalled(t *testing.T) {
+	_, err := DiscoverBootInput(BootInputRequest{KernelCmdline: "katl.halt-if-installed=maybe"})
 	if err == nil || !strings.Contains(err.Error(), "unsupported boolean") {
 		t.Fatalf("DiscoverBootInput() error = %v, want invalid boolean", err)
 	}

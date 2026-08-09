@@ -52,6 +52,7 @@ type BootInput struct {
 	InstallMode     string
 	HoldForDebug    bool
 	WaitForConfig   bool
+	HaltIfInstalled bool
 	ArtifactBaseURL string
 	Action          InstallAction
 	SelectedSources map[string]InputSource
@@ -176,6 +177,7 @@ func (r *inputResolver) applyValues(source InputSource, rank int, values bootInp
 	r.setStringWithRank("artifactBaseURL", source, rank, values.ArtifactBaseURL)
 	r.setBoolWithRank("holdForDebug", source, rank, values.HoldForDebug)
 	r.setBoolWithRank("waitForConfig", source, rank, values.WaitForConfig)
+	r.setBoolWithRank("haltIfInstalled", source, rank, values.HaltIfInstalled)
 }
 
 func (r *inputResolver) setString(field string, source InputSource, value string) {
@@ -228,6 +230,8 @@ func (r *inputResolver) setBoolWithRank(field string, source InputSource, rank i
 		r.input.HoldForDebug = *value
 	case "waitForConfig":
 		r.input.WaitForConfig = *value
+	case "haltIfInstalled":
+		r.input.HaltIfInstalled = *value
 	default:
 		return
 	}
@@ -253,6 +257,7 @@ type bootInputValues struct {
 	ArtifactBaseURL string `json:"artifactBaseURL"`
 	HoldForDebug    *bool  `json:"holdForDebug"`
 	WaitForConfig   *bool  `json:"waitForConfig"`
+	HaltIfInstalled *bool  `json:"haltIfInstalled"`
 }
 
 var sourceRanks = map[InputSource]int{
@@ -321,6 +326,12 @@ func parseKernelCmdline(cmdline string) (bootInputValues, error) {
 				return bootInputValues{}, fmt.Errorf("parse %s: %w", key, err)
 			}
 			values.WaitForConfig = &parsed
+		case "katl.halt-if-installed":
+			parsed, err := parseKernelBool(hasValue, value)
+			if err != nil {
+				return bootInputValues{}, fmt.Errorf("parse %s: %w", key, err)
+			}
+			values.HaltIfInstalled = &parsed
 		}
 	}
 	return values, nil

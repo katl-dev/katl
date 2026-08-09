@@ -87,6 +87,7 @@ type Context struct {
 	NodeMaterialDigest                 string
 	InstallMaterialDigest              string
 	DestructiveStorageAcknowledgements []string
+	HaltIfInstalled                    bool
 	PreviousStatus                     *installstatus.Record
 	ReportStep                         func(StepID)
 }
@@ -100,7 +101,10 @@ type KatlosImageResolver interface {
 	ResolveKatlosImage(context.Context, manifest.KatlosImage) (katlosimage.Payload, error)
 }
 
-var ErrInstallRefused = errors.New("install refused")
+var (
+	ErrInstallRefused  = errors.New("install refused")
+	ErrInstalledTarget = errors.New("installed KatlOS target detected")
+)
 
 type Plan []Step
 
@@ -184,6 +188,9 @@ func (r Runner) Run(ctx context.Context) error {
 			r.ctx.ReportStep(step.ID())
 		}
 		if err := step.Run(ctx, r.ctx); err != nil {
+			if errors.Is(err, ErrInstalledTarget) {
+				return err
+			}
 			if statusErr := recordFailure(ctx, r.ctx, step.ID(), err); statusErr != nil {
 				return fmt.Errorf("%s: %w", step.ID(), errors.Join(err, fmt.Errorf("record failure status: %w", statusErr)))
 			}
@@ -298,8 +305,36 @@ func (planInstallStep) Run(ctx context.Context, install *Context) error {
 		if err := planInstall(install); err != nil {
 			return err
 		}
+		if install.HaltIfInstalled && targetHasKatlOS(install.HardwareFacts, install.DiskLayout.TargetDiskPath) {
+			return fmt.Errorf("%w on %s; use the explicit Katl wipe/reinstall workflow before network booting it again", ErrInstalledTarget, install.DiskLayout.TargetDiskPath)
+		}
 	}
 	return recordStep(ctx, install, PlanInstall)
+}
+
+func targetHasKatlOS(facts discovery.HardwareFacts, targetPath string) bool {
+	required := map[string]bool{
+		disk.GPTLabelESP:   false,
+		disk.GPTLabelRootA: false,
+		disk.GPTLabelState: false,
+	}
+	for _, device := range facts.BlockDevices {
+		if device.Path != targetPath {
+			continue
+		}
+		for _, partition := range device.Partitions {
+			if _, ok := required[partition.GPTLabel]; ok {
+				required[partition.GPTLabel] = true
+			}
+		}
+		for _, found := range required {
+			if !found {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func planInstall(install *Context) error {

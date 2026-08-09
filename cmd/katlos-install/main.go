@@ -46,6 +46,10 @@ func main() {
 }
 
 func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSource string, stdout io.Writer, destructiveStorageAcknowledgements ...string) error {
+	return runManifestWithBootPolicy(ctx, manifestPath, stateDir, inputMode, inputSource, false, stdout, destructiveStorageAcknowledgements...)
+}
+
+func runManifestWithBootPolicy(ctx context.Context, manifestPath, stateDir, inputMode, inputSource string, haltIfInstalled bool, stdout io.Writer, destructiveStorageAcknowledgements ...string) error {
 	if manifestPath == "" {
 		return fmt.Errorf("--manifest is required unless --list-states, --version, --apply-input, or --boot is set")
 	}
@@ -63,6 +67,7 @@ func runManifest(ctx context.Context, manifestPath, stateDir, inputMode, inputSo
 	install.ReportStep = func(step installer.StepID) {
 		reportInstallerProgress(stdout, "install step "+string(step), false)
 	}
+	install.HaltIfInstalled = haltIfInstalled
 	runner := installer.NewRunner(installer.PreseededManifestPlan(), install)
 
 	if err := runner.Run(ctx); err != nil {
@@ -115,6 +120,10 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 }
 
 func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, stateDir, inputMode, inputSource string, stdout io.Writer, destructiveStorageAcknowledgements ...string) error {
+	return runBundleWithBootPolicy(ctx, bundlePath, selectedNode, expectedDigest, stateDir, inputMode, inputSource, false, false, stdout, destructiveStorageAcknowledgements...)
+}
+
+func runBundleWithBootPolicy(ctx context.Context, bundlePath, selectedNode, expectedDigest, stateDir, inputMode, inputSource string, haltIfInstalled, configureSSH bool, stdout io.Writer, destructiveStorageAcknowledgements ...string) error {
 	if strings.TrimSpace(bundlePath) == "" {
 		return fmt.Errorf("--bundle is required")
 	}
@@ -136,6 +145,12 @@ func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, st
 	if err != nil {
 		return err
 	}
+	if configureSSH {
+		if err := configureInstallerSSH(ctx, "/", installer.NewExecCommandRunner(), selected.InstallManifest.Node.Identity.SSH.AuthorizedKeys); err != nil {
+			return fmt.Errorf("configure installer SSH from selected node: %w", err)
+		}
+		reportInstallerProgress(stdout, "installer SSH configured from selected node", false)
+	}
 	manifestPath, err := writeBundleInstallManifest(stateDir, selected.InstallManifest)
 	if err != nil {
 		return err
@@ -147,6 +162,7 @@ func runBundle(ctx context.Context, bundlePath, selectedNode, expectedDigest, st
 	install.ReportStep = func(step installer.StepID) {
 		reportInstallerProgress(stdout, "install step "+string(step), false)
 	}
+	install.HaltIfInstalled = haltIfInstalled
 	runner := installer.NewRunner(installer.PreseededManifestPlan(), install)
 	if err := runner.Run(ctx); err != nil {
 		return err
@@ -327,11 +343,13 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 				return err
 			}
 			fmt.Fprintf(stdout, "katlos-install downloaded bundle url=%s path=%s\n", bundleURL, bundlePath)
-			return runBundle(ctx, bundlePath, input.NodeName, input.BundleDigest, filepath.Join(runDir, "state"), inputMode, bundleURL, stdout)
+			err = runBundleWithBootPolicy(ctx, bundlePath, input.NodeName, input.BundleDigest, filepath.Join(runDir, "state"), inputMode, bundleURL, input.HaltIfInstalled, true, stdout)
+			return finishAutomaticInstall(ctx, err, stdout)
 		}
 		if input.BundlePath != "" {
 			reportInstallerProgress(stdout, "loading local configuration bundle", false)
-			return runBundle(ctx, input.BundlePath, input.NodeName, input.BundleDigest, filepath.Join(runDir, "state"), inputMode, input.BundlePath, stdout)
+			err := runBundleWithBootPolicy(ctx, input.BundlePath, input.NodeName, input.BundleDigest, filepath.Join(runDir, "state"), inputMode, input.BundlePath, input.HaltIfInstalled, true, stdout)
+			return finishAutomaticInstall(ctx, err, stdout)
 		}
 		if input.ManifestURL != "" {
 			reportInstallerProgress(stdout, "downloading install manifest", false)
@@ -340,13 +358,34 @@ func runBootWithHandoff(ctx context.Context, runDir, etcDir, handoffAddr string,
 				return err
 			}
 			fmt.Fprintf(stdout, "katlos-install downloaded manifest url=%s path=%s\n", manifestURL, manifestPath)
-			return runManifest(ctx, manifestPath, filepath.Join(runDir, "state"), inputMode, manifestURL, stdout)
+			err = runManifestWithBootPolicy(ctx, manifestPath, filepath.Join(runDir, "state"), inputMode, manifestURL, input.HaltIfInstalled, stdout)
+			return finishAutomaticInstall(ctx, err, stdout)
 		}
 		reportInstallerProgress(stdout, "loading local install manifest", false)
-		return runManifest(ctx, input.ManifestPath, filepath.Join(runDir, "state"), inputMode, input.ManifestPath, stdout)
+		err := runManifestWithBootPolicy(ctx, input.ManifestPath, filepath.Join(runDir, "state"), inputMode, input.ManifestPath, input.HaltIfInstalled, stdout)
+		return finishAutomaticInstall(ctx, err, stdout)
 	default:
 		return fmt.Errorf("unsupported install action %q", input.Action)
 	}
+}
+
+func finishAutomaticInstall(ctx context.Context, err error, stdout io.Writer) error {
+	if err == nil {
+		return waitForInstallerReboot(ctx, stdout)
+	}
+	if !errors.Is(err, installer.ErrInstalledTarget) {
+		return err
+	}
+	reportInstallerProgress(stdout, "installed KatlOS target detected; automatic reinstall stopped", true)
+	fmt.Fprintf(stdout, "katlos-install hold: %v\n", err)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func waitForInstallerReboot(ctx context.Context, stdout io.Writer) error {
+	reportInstallerProgress(stdout, "installation complete; waiting for scheduled reboot", false)
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func fetchBundleURL(ctx context.Context, bundleURL, wantSHA256, runDir string) (string, error) {
