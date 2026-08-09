@@ -86,6 +86,24 @@ func TestRuntimeNetworkdLeavesKubernetesRoutesAlone(t *testing.T) {
 	}
 }
 
+func TestInstallerDHCPOnlyMatchesUnkindedEthernetLinks(t *testing.T) {
+	config, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "installer-image", "mkosi.extra", "usr", "lib", "systemd", "network", "80-katl-installer-dhcp.network"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(config)
+	for _, want := range []string{
+		"[Match]",
+		"Type=ether",
+		"Kind=!*",
+		"DHCP=yes",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("installer DHCP fallback missing %q", want)
+		}
+	}
+}
+
 func TestRuntimeRootShellUsesKubeadmAdminContext(t *testing.T) {
 	profile, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "runtime", "mkosi.extra", "etc", "profile.d", "katl-kubernetes.sh"))
 	if err != nil {

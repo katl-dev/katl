@@ -919,7 +919,7 @@ spec:
 		t.Fatalf("defaulted install manifest = %#v", selected.InstallManifest)
 	}
 	defaultNetwork := nativeFile(selected.NodeMaterial.NativeEtcFiles, "/etc/systemd/network/10-lan.network")
-	if defaultNetwork == nil || !strings.Contains(defaultNetwork.Content, "DHCP=yes") {
+	if defaultNetwork == nil || !strings.Contains(defaultNetwork.Content, "[Match]\nType=ether\nKind=!*\n") || !strings.Contains(defaultNetwork.Content, "DHCP=yes") {
 		t.Fatalf("defaulted networkd files = %#v", selected.NodeMaterial.NativeEtcFiles)
 	}
 	if selected.NodeMaterial.KubeadmConfig.Ref != "control-plane" || selected.KubeadmConfigs["control-plane"].Config.RenderPath == "" {

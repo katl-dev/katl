@@ -235,6 +235,13 @@ network configuration outside that Katl-controlled directory. Any operator
 `.network` unit replaces Katl's generated DHCP fallback; auxiliary `.link`,
 `.netdev`, and drop-in files can compose with the fallback.
 
+The fallback offers DHCP only to Ethernet links that have no virtual netdev
+kind. Interfaces created later by a CNI, including veth pairs, Cilium host
+devices, overlays, and CNI bridges, therefore remain unmanaged by networkd.
+To make a host bridge, bond, VLAN, or tunnel part of the node's own network,
+declare its native networkd units here; the operator units then replace the
+fallback and own that topology explicitly.
+
 Sysctl files with a reversible concrete-key change can apply live. Udev rules
 can reload live, but Katl does not retrigger existing devices. Module load,
 modprobe, typed sysfs settings, containerd overlays, and networkd files are

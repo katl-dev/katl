@@ -97,6 +97,12 @@ Cilium connectivity test appropriate for the cluster:
 cilium connectivity test --kubeconfig ./kubeconfig
 ```
 
+Katl's default DHCP fallback does not match virtual netdev kinds, so
+`cilium_host`, Cilium veth links, and overlay devices remain unmanaged by
+systemd-networkd. If a node uses operator-authored networkd files instead of
+the fallback, keep their matches limited to host-owned links so they do not
+claim Cilium interfaces.
+
 Repeat the health, sysctl, and connectivity checks after a node reboot. This
 proves both KatlOS boot-time policy and Cilium's handling of newly created
 interfaces.
