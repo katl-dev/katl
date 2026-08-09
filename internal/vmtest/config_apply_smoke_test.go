@@ -3,6 +3,7 @@ package vmtest
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -129,7 +131,8 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		t.Fatalf("merged systemd-networkd configuration is missing Kubernetes route policy:\n%s", networkdConfig)
 	}
 	guestCommand(t, ctx, guest, "networkd-active", "systemctl", "is-active", "systemd-networkd.service")
-	assertDefaultNetworkdCNIOwnership(t, ctx, guest)
+	endpoint := katlcEndpoint(t, node, plannedAddress)
+	assertDefaultNetworkdCNIOwnership(t, ctx, guest, endpoint)
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/install/status.json", `"finalHandoff": "waiting-for-cluster-bootstrap"`)
 	defer func() {
 		if t.Failed() {
@@ -137,7 +140,6 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		}
 	}()
 	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
-	endpoint := katlcEndpoint(t, node, plannedAddress)
 	enrollConfigApplyNode(t, ctx, result, katlctl, endpoint)
 	guest, client = runConfigApplyModeSmoke(t, ctx, &node, guest, client, result, katlctl, endpoint, currentGeneration)
 	node.Result.finish(StatusPassed, "", runner.time())
@@ -166,7 +168,7 @@ type networkdLinkStatus struct {
 	} `json:"Routes"`
 }
 
-func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest *GuestControl) {
+func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest *GuestControl, endpoint string) {
 	t.Helper()
 	networkConfig := guestCommandOutput(t, ctx, guest, "networkd-default-policy",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
@@ -236,8 +238,135 @@ func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest 
 			t.Errorf("networkd status for %s has unexpected routes %+v", name, status.Routes)
 		}
 	}
+	assertManagementIngressBoundary(t, ctx, guest, endpoint, hostLink, links)
 	after := networkdStatus(t, ctx, guest, "networkd-host-after-cni", hostLink)
 	assertNetworkdDHCPHost(t, after)
+}
+
+func assertManagementIngressBoundary(t *testing.T, ctx context.Context, guest *GuestControl, endpoint, hostLink string, workloadLinks []string) {
+	t.Helper()
+	guestCommand(t, ctx, guest, "management-firewall-active", "systemctl", "is-active", "katlc-management-firewall.service")
+	snapshot := readGuestFile(t, ctx, guest, "/run/katl/management-interfaces")
+	if !linePresent(snapshot, hostLink) {
+		t.Fatalf("management interface snapshot %q does not contain host link %q", snapshot, hostLink)
+	}
+	for _, link := range workloadLinks {
+		if linePresent(snapshot, link) {
+			t.Fatalf("management interface snapshot adopted workload link %q: %s", link, snapshot)
+		}
+	}
+	assertManagementRulesExcludeWorkloadLinks(t, ctx, guest, workloadLinks)
+	assertUnauthenticatedManagementRejected(t, ctx, endpoint)
+
+	guestCommand(t, ctx, guest, "management-netns-create", "ip", "netns", "add", "katl-management-test")
+	defer func() {
+		_, _ = guest.RunCommand(ctx, GuestCommandRequest{
+			Name: "management-netns-delete", Argv: []string{"ip", "netns", "delete", "katl-management-test"}, AllowFailure: true,
+		})
+	}()
+	guestCommand(t, ctx, guest, "management-netns-peer", "ip", "link", "set", "katl-veth1", "netns", "katl-management-test")
+	guestCommand(t, ctx, guest, "management-netns-host-address", "ip", "address", "add", "198.18.0.1/30", "dev", "katl-veth0")
+	guestCommand(t, ctx, guest, "management-netns-peer-address", "ip", "-n", "katl-management-test", "address", "add", "198.18.0.2/30", "dev", "katl-veth1")
+	guestCommand(t, ctx, guest, "management-netns-peer-up", "ip", "-n", "katl-management-test", "link", "set", "katl-veth1", "up")
+	assertWorkloadManagementConnectionDropped(t, ctx, guest, "management-workload-blocked")
+
+	guestCommand(t, ctx, guest, "management-firewall-table-delete", "nft", "delete", "table", "inet", "katl_management")
+	guestCommand(t, ctx, guest, "management-firewall-restart", "systemctl", "restart", "katlc-management-firewall.service")
+	guestCommand(t, ctx, guest, "management-firewall-active-after-restart", "systemctl", "is-active", "katlc-management-firewall.service")
+	afterRestart := readGuestFile(t, ctx, guest, "/run/katl/management-interfaces")
+	if afterRestart != snapshot {
+		t.Fatalf("management interface snapshot changed across firewall recovery: before=%q after=%q", snapshot, afterRestart)
+	}
+	assertManagementRulesExcludeWorkloadLinks(t, ctx, guest, workloadLinks)
+	assertWorkloadManagementConnectionDropped(t, ctx, guest, "management-workload-blocked-after-restart")
+	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	defer conn.Close()
+	if _, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{}); err != nil {
+		t.Fatalf("authenticated host management failed after firewall restart: %v", err)
+	}
+}
+
+func assertManagementRulesExcludeWorkloadLinks(t *testing.T, ctx context.Context, guest *GuestControl, workloadLinks []string) {
+	t.Helper()
+	rules := guestCommandOutput(t, ctx, guest, "management-firewall-rules", "nft", "list", "table", "inet", "katl_management")
+	if !strings.Contains(rules, "tcp dport 9443") || !strings.Contains(rules, "drop") {
+		t.Fatalf("management firewall does not drop port 9443 outside its host interface set:\n%s", rules)
+	}
+	for _, link := range workloadLinks {
+		if strings.Contains(rules, `\"`+link+`\"`) {
+			t.Fatalf("management firewall adopted workload link %q:\n%s", link, rules)
+		}
+	}
+}
+
+func assertWorkloadManagementConnectionDropped(t *testing.T, ctx context.Context, guest *GuestControl, name string) {
+	t.Helper()
+	record, err := guest.RunCommand(ctx, GuestCommandRequest{
+		Name:    name,
+		Argv:    []string{"ip", "netns", "exec", "katl-management-test", "timeout", "2", "bash", "-c", "exec 3<>/dev/tcp/198.18.0.1/9443"},
+		Timeout: 5 * time.Second, AllowFailure: true,
+	})
+	if err != nil {
+		t.Fatalf("probe management API from workload namespace: %v", err)
+	}
+	if record.ExitStatus != 124 {
+		stderr := ""
+		if record.Stderr != "" {
+			stderr = readFile(t, record.Stderr)
+		}
+		t.Fatalf("workload management probe exit=%d stderr=%q, want timeout exit 124", record.ExitStatus, stderr)
+	}
+}
+
+func assertUnauthenticatedManagementRejected(t *testing.T, ctx context.Context, endpoint string) {
+	t.Helper()
+	for _, test := range []struct {
+		name   string
+		option grpc.DialOption
+	}{
+		{name: "plaintext", option: grpc.WithTransportCredentials(insecure.NewCredentials())},
+		{name: "no-client-certificate", option: grpc.WithTransportCredentials(credentials.NewTLS(managementTLSWithoutClientCertificate(t)))},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conn, err := grpc.DialContext(ctx, endpoint, test.option)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			requestCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			if response, err := agentapi.NewKatlcAgentClient(conn).GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{}); err == nil {
+				t.Fatalf("unauthenticated management query succeeded: %+v", response)
+			}
+		})
+	}
+}
+
+func managementTLSWithoutClientCertificate(t *testing.T) *tls.Config {
+	t.Helper()
+	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := managementidentity.Client(identity, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := transport.ClientTLSConfig(client, "cp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Certificates = nil
+	return config
+}
+
+func linePresent(value, line string) bool {
+	for _, candidate := range strings.Split(value, "\n") {
+		if strings.TrimSpace(candidate) == line {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultRouteLink(t *testing.T, ctx context.Context, guest *GuestControl) string {
