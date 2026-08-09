@@ -1098,7 +1098,7 @@ func currentGenerationID(root string) (string, error) {
 			}
 		}
 	}
-	for _, candidate := range []string{selection.BootedGenerationID, selection.TargetBootGenerationID, selection.DefaultGenerationID} {
+	for _, candidate := range []string{selection.ActiveGenerationID, selection.BootedGenerationID, selection.TargetBootGenerationID, selection.DefaultGenerationID} {
 		if strings.TrimSpace(candidate) != "" {
 			return strings.TrimSpace(candidate), nil
 		}

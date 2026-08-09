@@ -835,15 +835,11 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 }
 
 func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
-	configPath := filepath.Join(evidenceDir, "katlctl-upgrade.yaml")
+	configPath := filepath.Join(evidenceDir, "cluster-upgrade.yaml")
+	contextPath := filepath.Join(evidenceDir, "katlctl-upgrade-context.yaml")
 	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
 	if err != nil {
 		return err
-	}
-	cpStatus, workerStatus := enrollments["cp-1"], enrollments["worker-1"]
-	config := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n        enrollmentID: %s\n        machineID: %s\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n        enrollmentID: %s\n        machineID: %s\n", cpAddress, cpAddress, cpStatus.GetEnrollmentId(), cpStatus.GetMachineId(), workerAddress, workerStatus.GetEnrollmentId(), workerStatus.GetMachineId())
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		return fmt.Errorf("write katlctl upgrade context: %w", err)
 	}
 	image, err := kubernetesbundle.ParseImageReference(bundle)
 	if err != nil {
@@ -853,7 +849,16 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", targetVersion, "--context-file", configPath, "--timeout", "25m")
+	cpStatus, workerStatus := enrollments["cp-1"], enrollments["worker-1"]
+	contextConfig := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n        enrollmentID: %s\n        machineID: %s\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n        enrollmentID: %s\n        machineID: %s\n", cpAddress, cpAddress, cpStatus.GetEnrollmentId(), cpStatus.GetMachineId(), workerAddress, workerStatus.GetEnrollmentId(), workerStatus.GetMachineId())
+	if err := os.WriteFile(contextPath, []byte(contextConfig), 0o600); err != nil {
+		return fmt.Errorf("write katlctl upgrade context: %w", err)
+	}
+	clusterConfig := fmt.Sprintf("apiVersion: config.katl.dev/v1alpha1\nkind: ClusterConfig\nmetadata:\n  name: upgrade\nspec:\n  controlPlaneEndpoint:\n    host: %s\n    port: 6443\n  kubernetes:\n    version: %s\n  defaults:\n    install:\n      systemDisk:\n        minSizeMiB: 32768\n    access:\n      ssh:\n        authorizedKeys:\n          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm vmtest@katl\n  nodes:\n    - name: cp-1\n      controlPlane: true\n      management:\n        address: %s\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/virtio-katl-cp-root\n    - name: worker-1\n      management:\n        address: %s\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/virtio-katl-worker-root\n", cpAddress, targetVersion, cpAddress, workerAddress)
+	if err := os.WriteFile(configPath, []byte(clusterConfig), 0o600); err != nil {
+		return fmt.Errorf("write Kubernetes upgrade ClusterConfig: %w", err)
+	}
+	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--bundle", bundle, "--timeout", "25m", "--output", "json")
 	command.Dir = repoRoot
 	stdout, err := command.Output()
 	if err != nil {
@@ -878,7 +883,7 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err := json.Unmarshal(stdout, &report); err != nil {
 		return fmt.Errorf("decode katlctl Kubernetes upgrade report: %w", err)
 	}
-	if report.SourceVersion != "v1.36.0" || report.TargetVersion != "v1.36.1" || len(report.Nodes) != 2 {
+	if report.SourceVersion != "v1.36.0" || report.TargetVersion != targetVersion || len(report.Nodes) != 2 {
 		return fmt.Errorf("unexpected katlctl Kubernetes upgrade report: %+v", report)
 	}
 	for i, want := range []string{"cp-1", "worker-1"} {
@@ -891,6 +896,10 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	}
 	if err := assertNodeBootIDsUnchanged(ctx, bootIDs, cpNode, workerNode); err != nil {
 		return err
+	}
+	postUpgradeStatus, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		return fmt.Errorf("read node status after live Kubernetes upgrade: %w", err)
 	}
 	for _, item := range []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode} {
 		dir := filepath.Join(evidenceDir, item.Name, "upgrade")
@@ -906,6 +915,10 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		}
 		if item.Name == cpNode.Name && (record.KubernetesSysextUpdate.SnapshotDigest == "" || record.KubernetesSysextUpdate.SnapshotStorageLocation == "") {
 			return fmt.Errorf("%s upgrade did not capture etcd snapshot evidence", item.Name)
+		}
+		nodeStatus := postUpgradeStatus[item.Name]
+		if nodeStatus.GetCurrentGenerationId() != record.CandidateGenerationID || nodeStatus.GetBootHealthState() != "healthy" || nodeStatus.GetBootHealthDiagnostic() != "" {
+			return fmt.Errorf("%s live-promoted generation is not current and healthy: current=%s candidate=%s bootHealth=%s diagnostic=%q", item.Name, nodeStatus.GetCurrentGenerationId(), record.CandidateGenerationID, nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
 		}
 	}
 	return nil

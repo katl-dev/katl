@@ -408,7 +408,7 @@ func writeKatlOSUpgradeArtifact(stdout io.Writer, artifact hostUpgradeBuildArtif
 }
 
 func writeKubernetesBuildArtifact(stdout io.Writer, artifact kubernetesBuildArtifact) error {
-	_, err := fmt.Fprintf(stdout, "Kubernetes upgrade image ready.\nImage: %s\nUse with:\n  katlctl kubernetes upgrade %s --config cluster.yaml --artifact %s\n", artifact.Path, artifact.PayloadVersion, artifact.Path)
+	_, err := fmt.Fprintf(stdout, "Kubernetes upgrade image ready.\nImage: %s\nSet spec.kubernetes.version to %s, then use:\n  katlctl kubernetes upgrade --config cluster.yaml --artifact %s\n", artifact.Path, artifact.PayloadVersion, artifact.Path)
 	return err
 }
 

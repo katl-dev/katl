@@ -22,19 +22,28 @@ release; operators do not supply the bundle identity.
 ## Plan
 
 ```sh
+# Edit spec.kubernetes.version in the Git-managed ClusterConfig first.
 katlctl kubernetes upgrade \
-  v1.36.1 --config ./cluster.yaml --plan
+  --config ./cluster.yaml --plan
 ```
 
-The retained `ClusterConfig` is the normal topology source. A saved context is
-optional shorthand: use `--context NAME` after `katlctl context save`.
+`spec.kubernetes.version` is the rollout's sole desired-version authority.
+Review and commit that Git change before planning. The command intentionally
+does not accept a positional target version, so an executed rollout cannot
+leave Git declaring an older version.
+
+The `ClusterConfig` is always required and supplies both the desired version
+and topology. The saved context created during enrollment supplies the
+immutable identity and current management address for each node. Use
+`--context NAME` to select a non-current saved context; a context cannot replace
+the `ClusterConfig`.
 
 The plan connects to every node, reads its current healthy generation and
 Kubernetes payload, derives the control-plane/worker order, and asks every
 pending node to validate its operation. It does not fetch a bundle, create a
 candidate generation, take a snapshot, or run kubeadm.
 
-Operators provide only the cluster selection and Kubernetes version. Katl
+Operators declare the Kubernetes version in the cluster configuration. Katl
 selects the release-owned compatible bundle and records its digest, sysext paths
 and sizes, candidate generation IDs, operation IDs, and snapshot evidence
 internally. An unavailable version fails before any node operation is accepted.
@@ -44,7 +53,7 @@ internally. An unavailable version fails before any node operation is accepted.
 Run the same command without `--plan`:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1 --config ./cluster.yaml
+katlctl kubernetes upgrade --config ./cluster.yaml
 ```
 
 The command itself authorizes the rollout; there is no additional confirmation
@@ -62,7 +71,7 @@ The default path neither cordons nor drains nodes. To prevent new pods from
 being scheduled onto the node during its upgrade, opt into temporary cordoning:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1 --config ./cluster.yaml \
+katlctl kubernetes upgrade --config ./cluster.yaml \
   --cordon --kubeconfig ./kubeconfig
 ```
 
@@ -75,6 +84,12 @@ require the conservative upstream procedure.
 
 The command stops immediately on the first failed or recovery-required node and
 does not touch the remaining nodes.
+
+To resume an interrupted rollout, check out the same configuration revision
+and rerun the same command. Nodes already at `spec.kubernetes.version` are
+skipped. Every pending node must still report the rollout's common source
+version, so Katl cannot silently resume with a different source/target pair.
+Do not change `spec.kubernetes.version` while a rollout is incomplete.
 
 After a successful rollout, check workload-level health with your normal
 Kubernetes tooling, for example `kubectl get nodes` and `kubectl get pods -A`.

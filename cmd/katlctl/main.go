@@ -214,11 +214,11 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl context rebind":              "katlctl context rebind --node cp-1 --endpoint 192.0.2.51",
 		"katlctl cluster bootstrap":           "katlctl cluster bootstrap --config cluster.yaml",
 		"katlctl cluster wipe":                "katlctl cluster wipe --config cluster.yaml --all",
-		"katlctl kubernetes":                  "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
+		"katlctl kubernetes":                  "katlctl kubernetes upgrade --config cluster.yaml",
 		"katlctl kubernetes identity":         "katlctl kubernetes identity create --cluster-name homelab --output kubernetes-identity.katlkey",
 		"katlctl kubernetes identity create":  "katlctl kubernetes identity create --cluster-name homelab --output kubernetes-identity.katlkey",
 		"katlctl kubernetes identity inspect": "katlctl kubernetes identity inspect kubernetes-identity.katlkey",
-		"katlctl kubernetes upgrade":          "katlctl kubernetes upgrade v1.36.1 --config cluster.yaml",
+		"katlctl kubernetes upgrade":          "katlctl kubernetes upgrade --config cluster.yaml",
 		"katlctl config":                      "katlctl config validate cluster.yaml",
 		"katlctl config init":                 "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
 		"katlctl config validate":             "katlctl config validate cluster.yaml",
@@ -482,7 +482,23 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		return err
 	}
 	agentStart := status.GetAgentStartId()
-	if err := requestNodeReboot(ctx, conn.Client, opts.actor, status, request.CandidateGenerationID); err != nil {
+	stagedStatus, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		report.Result = "staged"
+		_ = writeHostUpgradeReport(stdout, opts.output, report)
+		return fmt.Errorf("read staged node status before reboot: %w", err)
+	}
+	if err := verifyEnrolledStatus(target, stagedStatus); err != nil {
+		report.Result = "staged"
+		_ = writeHostUpgradeReport(stdout, opts.output, report)
+		return err
+	}
+	if stagedStatus.GetCurrentGenerationId() != request.CandidateGenerationID {
+		report.Result = "staged"
+		_ = writeHostUpgradeReport(stdout, opts.output, report)
+		return fmt.Errorf("staged host upgrade reports current generation %q, want %q before reboot", stagedStatus.GetCurrentGenerationId(), request.CandidateGenerationID)
+	}
+	if err := requestNodeReboot(ctx, conn.Client, opts.actor, stagedStatus, request.CandidateGenerationID); err != nil {
 		report.Result = "staged"
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return fmt.Errorf("reboot node %s: %w", report.Node, err)

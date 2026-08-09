@@ -700,6 +700,56 @@ func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	}
 }
 
+func TestNodeStatusReportsLivePromotedGenerationHealthy(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	previousSpec, previousStatus, err := generation.ReadGeneration(server.Root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeSpec := previousSpec
+	activeSpec.GenerationID = "generation-1"
+	activeSpec.PreviousGenerationID = "generation-0"
+	activeSpec.Boot.LoaderEntryPath = "loader/entries/katl-generation-1.conf"
+	activeStatus, err := generation.NewGenerationStatus(activeSpec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, time.Date(2026, 8, 9, 16, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(server.Root, activeSpec, activeStatus); err != nil {
+		t.Fatal(err)
+	}
+	previousStatus.CommitState = generation.CommitStateSuperseded
+	previousStatus.BootState = generation.BootStateGood
+	previousStatus.HealthState = generation.HealthStateHealthy
+	if err := generation.WriteGenerationStatus(server.Root, previousSpec, previousStatus); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.DefaultGenerationID = "generation-1"
+	selection.ActiveGenerationID = "generation-1"
+	selection.BootedGenerationID = "generation-0"
+	selection.PreviousKnownGoodGenerationID = "generation-0"
+	selection.DefaultBootEntry = "loader/entries/katl-generation-1.conf"
+	selection.BootedBootEntry = "loader/entries/katl-generation-0.conf"
+	selection.PreviousKnownGoodBootEntry = "loader/entries/katl-generation-0.conf"
+	selection.PersistentDefaultPromotion = generation.DefaultPromotionDone
+	if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+		t.Fatal(err)
+	}
+	writeProcCmdline(t, server.Root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 katl.generation=generation-0")
+
+	nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetBootTargetGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != nodeBootHealthHealthy || nodeStatus.GetBootHealthDiagnostic() != "" {
+		t.Fatalf("live-promoted node status = %#v", nodeStatus)
+	}
+}
+
 func TestRebootRefusesActiveOperationWithoutExposingID(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)

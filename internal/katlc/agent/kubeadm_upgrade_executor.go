@@ -963,7 +963,22 @@ func (e *Executor) completeKubeadmUpgrade(ctx context.Context, record operation.
 	if err := e.removeKubeletGate(ctx, record); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
-	if err := e.commitCandidateGeneration(ctx, record, now, "Kubernetes sysext activated live and passed local health checks; candidate awaits boot validation"); err != nil {
+	if _, _, _, err := e.writeCandidateLoaderEntry(ctx, record.CandidateGenerationID); err != nil {
+		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
+	}
+	if err := generation.PromoteLiveGeneration(generation.LivePromotionRequest{
+		Root:         e.Root,
+		GenerationID: record.CandidateGenerationID,
+		OperationID:  record.OperationID,
+		Reason:       "Kubernetes sysext activated live and passed local health checks",
+		Now:          now,
+		SetBootDefault: func(root, entry string) error {
+			if e.SetBootDefault == nil {
+				return fmt.Errorf("boot default updater is not configured")
+			}
+			return e.SetBootDefault(ctx, root, entry)
+		},
+	}); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
 	_, err := e.Store.Update(record.OperationID, "kubeadm-upgrade-healthy", "healthy", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -974,12 +989,12 @@ func (e *Executor) completeKubeadmUpgrade(ctx context.Context, record operation.
 		current.ActivationState = operation.ActivationStateActiveLive
 		current.GenerationCommitState = operation.GenerationCommitCommitted
 		current.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
-		current.BootHealthPending = true
+		current.BootHealthPending = false
 		current.Terminal = true
 		current.Result = operation.ResultSucceeded
 		current.CompletedAt = &now
 		current.UpdatedAt = now
-		current.NextAction = "continue the serialized online rollout; reboot this node to validate the active generation before host changes"
+		current.NextAction = "continue the serialized online rollout; the active generation is the persistent boot default"
 		return current, nil
 	})
 	return err

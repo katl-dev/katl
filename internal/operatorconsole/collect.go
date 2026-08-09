@@ -323,7 +323,10 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 		snapshot.GenerationError = "generation metadata is unavailable; inspect the KatlOS generation store"
 		return
 	}
-	id := strings.TrimSpace(selection.BootedGenerationID)
+	id := strings.TrimSpace(selection.ActiveGenerationID)
+	if id == "" {
+		id = strings.TrimSpace(selection.BootedGenerationID)
+	}
 	if id == "" {
 		id = strings.TrimSpace(selection.DefaultGenerationID)
 	}

@@ -24,6 +24,7 @@ type BootSelectionRecord struct {
 	TrialGenerationID             string    `json:"trialGenerationID,omitempty"`
 	PreviousKnownGoodGenerationID string    `json:"previousKnownGoodGenerationID,omitempty"`
 	BootedGenerationID            string    `json:"bootedGenerationID,omitempty"`
+	ActiveGenerationID            string    `json:"activeGenerationID,omitempty"`
 	Generation0FallbackID         string    `json:"generation0FallbackID,omitempty"`
 	FailedBootGenerationID        string    `json:"failedBootGenerationID,omitempty"`
 	DefaultBootEntry              string    `json:"defaultBootEntry,omitempty"`
@@ -110,6 +111,7 @@ func ValidateBootSelection(selection BootSelectionRecord) error {
 		"trialGenerationID":             selection.TrialGenerationID,
 		"previousKnownGoodGenerationID": selection.PreviousKnownGoodGenerationID,
 		"bootedGenerationID":            selection.BootedGenerationID,
+		"activeGenerationID":            selection.ActiveGenerationID,
 		"generation0FallbackID":         selection.Generation0FallbackID,
 		"failedBootGenerationID":        selection.FailedBootGenerationID,
 	} {
