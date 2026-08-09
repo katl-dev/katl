@@ -80,6 +80,89 @@ func TestPrepareKubernetesIdentityInstallsSharedPKIAndRemovesStaging(t *testing.
 	}
 }
 
+func TestExecutorRemovesStagedKubernetesIdentityAfterPreparationFailure(t *testing.T) {
+	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "identity failure kubernetes sysext")
+	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := kubernetesidentity.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := kubernetesidentity.Validate(bundle, server.clock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := server.Store.Create(operation.OperationRecord{
+		OperationID:                 "op-identity-fail",
+		OperationKind:               "bootstrap-init",
+		Scope:                       "kubeadm-state",
+		Actor:                       "test",
+		RequestDigest:               strings.Repeat("1", 64),
+		Phase:                       "accepted",
+		PhasePlan:                   []string{"accepted", "prepare-bootstrap-runtime", "bootstrap-runtime-ready", "kubeadm-init"},
+		PreviousGenerationID:        "0",
+		CandidateGenerationID:       "candidate-identity-fail",
+		ExpectedCurrentGenerationID: "0",
+		ResourceLocks:               []string{"generation:0", "kubeadm-state"},
+		ExecutorPlan: &operation.ExecutorPlan{
+			Phase:          "kubeadm-init",
+			MarkerID:       "kubeadm-init",
+			MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
+			Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
+		},
+		BootstrapRequest: &operation.BootstrapRequest{
+			InventoryNodeName:             "node-a",
+			SystemRole:                    "control-plane",
+			KubernetesPayloadVersion:      "v1.35.0",
+			KubernetesBundleSource:        source,
+			KubernetesBundleRef:           ref,
+			BootstrapProfileRef:           "default",
+			CandidateGenerationID:         "candidate-identity-fail",
+			KubernetesIdentityCluster:     info.ClusterName,
+			KubernetesIdentityFingerprint: info.Fingerprint,
+			KubernetesIdentityDigest:      "sha256:" + strings.Repeat("f", 64),
+		},
+		ClientRequestID: "client-op-identity-fail",
+	}, "accepted", server.clock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingPath := kubernetesIdentityStagingPath(server.Store.Root, record.OperationID)
+	if err := kubernetesidentity.Stage(stagingPath, data); err != nil {
+		t.Fatal(err)
+	}
+	executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("readiness ran after Kubernetes identity preparation failed")
+		return ToolResult{}
+	}
+	executor.RunTool = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("kubeadm ran after Kubernetes identity preparation failed")
+		return ToolResult{}
+	}
+
+	err = executor.Execute(context.Background(), record)
+	if err == nil || !strings.Contains(err.Error(), "does not match accepted digest") {
+		t.Fatalf("Execute() error = %v, want identity digest conflict", err)
+	}
+	if _, err := os.Stat(stagingPath); !os.IsNotExist(err) {
+		t.Fatalf("staged identity remains after terminal preparation failure: %v", err)
+	}
+	failed, err := server.Store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !failed.Terminal || !failed.RecoveryRequired || failed.Result != operation.ResultFailedNeedsRepair {
+		t.Fatalf("record = %+v, want terminal failed-needs-repair", failed)
+	}
+}
+
 func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRoot(t, server.Root)
@@ -1036,6 +1119,18 @@ func TestAuditStartupClassifiesInterruptedOperation(t *testing.T) {
 func TestAuditStartupFailsAcceptedButNotStartedOperation(t *testing.T) {
 	server := newTestServer(t)
 	record := createAgentOperation(t, server.Store, "op-not-started")
+	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := kubernetesidentity.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingPath := kubernetesIdentityStagingPath(server.Store.Root, record.OperationID)
+	if err := kubernetesidentity.Stage(stagingPath, data); err != nil {
+		t.Fatal(err)
+	}
 
 	report, err := AuditStartup(server.Store, server.Now())
 	if err != nil {
@@ -1050,6 +1145,9 @@ func TestAuditStartupFailsAcceptedButNotStartedOperation(t *testing.T) {
 	}
 	if !read.Terminal || !read.RecoveryRequired || read.NextAction != "resubmit operation request; previous accepted attempt did not start" {
 		t.Fatalf("record = %+v, want terminal not-started classification", read)
+	}
+	if _, err := os.Stat(stagingPath); !os.IsNotExist(err) {
+		t.Fatalf("staged identity remains after startup terminalized operation: %v", err)
 	}
 }
 

@@ -234,6 +234,7 @@ func rebootClusterApplyJoin(ctx context.Context, nodes []inventory.Node, nodeNam
 	if previousAgentStart == "" {
 		return "", fmt.Errorf("agent did not report its current start identity")
 	}
+	recoveryRequirement := nodeRecoveryRequirementFor(status)
 	machineID := strings.TrimSpace(status.GetMachineId())
 	var selected inventory.Node
 	for _, node := range nodes {
@@ -256,7 +257,7 @@ func rebootClusterApplyJoin(ctx context.Context, nodes []inventory.Node, nodeNam
 		return "", err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, clusterApplyJoinBootTimeout)
-	verifiedConn, verified, err := waitNodeBootHealthWithPrefix(waitCtx, nodeName, endpoint, previousAgentStart, generationID, "cluster apply phase=node-join node="+nodeName, progress)
+	verifiedConn, verified, err := waitNodeBootHealthWithPrefix(waitCtx, nodeName, endpoint, previousAgentStart, generationID, recoveryRequirement, "cluster apply phase=node-join node="+nodeName, progress)
 	cancel()
 	if err != nil {
 		return "", err

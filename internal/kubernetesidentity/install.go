@@ -53,6 +53,25 @@ func Stage(path string, data []byte) error {
 	return writeAtomic(path, data, 0o600)
 }
 
+// RemoveStaged removes an operation-scoped identity and durably records the
+// directory change. It is idempotent so interrupted cleanup can be retried.
+func RemoveStaged(path string) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "." || path == "" {
+		return fmt.Errorf("Kubernetes identity staging path is required")
+	}
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("remove staged Kubernetes identity: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync Kubernetes identity staging directory: %w", err)
+	}
+	return nil
+}
+
 // Install writes only the shared kubeadm trust and signing material. It never
 // copies node-specific leaf certificates.
 func Install(root string, bundle Bundle) error {

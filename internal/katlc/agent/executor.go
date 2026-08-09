@@ -544,8 +544,8 @@ func (e *Executor) prepareKubernetesIdentity(record operation.OperationRecord) e
 	if err := kubernetesidentity.Install(runtimeRoot(e.Root), bundle); err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove operation-scoped Kubernetes identity: %w", err)
+	if err := kubernetesidentity.RemoveStaged(path); err != nil {
+		return err
 	}
 	return nil
 }
@@ -575,7 +575,12 @@ func (e *Executor) failRecord(operationID string, eventID string, eventType stri
 
 func (e *Executor) failRecordPhase(operationID string, eventID string, eventType string, phase string, nextAction string, cause error) (operation.OperationRecord, error) {
 	now := e.clock()
-	return e.Store.Update(operationID, eventID, eventType, func(record operation.OperationRecord) (operation.OperationRecord, error) {
+	cleanupErr := removeOperationKubernetesIdentity(e.Store, operationID)
+	if cleanupErr != nil {
+		cause = errors.Join(cause, cleanupErr)
+		nextAction += "; remove the operation-scoped Kubernetes identity from node storage"
+	}
+	updated, updateErr := e.Store.Update(operationID, eventID, eventType, func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = phase
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true
@@ -586,6 +591,7 @@ func (e *Executor) failRecordPhase(operationID string, eventID string, eventType
 		record.CompletedAt = &now
 		return record, nil
 	})
+	return updated, errors.Join(cleanupErr, updateErr)
 }
 
 func (e *Executor) gateBootstrapReadiness(ctx context.Context, record operation.OperationRecord, plan toolPlan) (operation.OperationRecord, error) {
@@ -1284,6 +1290,7 @@ func failAcceptedButNotStarted(store operation.Store, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	var cleanupErrors error
 	for _, id := range ids {
 		record, err := store.Read(id)
 		if err != nil {
@@ -1292,20 +1299,35 @@ func failAcceptedButNotStarted(store operation.Store, now time.Time) error {
 		if record.Terminal || record.ExecutorPlan == nil || record.ExternalMutationStarted || record.MutatingToolRan || len(record.PreExecMutationMarkers) > 0 || len(record.Invocations) > 0 {
 			continue
 		}
+		cleanupErr := removeOperationKubernetesIdentity(store, record.OperationID)
+		failureReason := "agent stopped before executor start"
+		nextAction := "resubmit operation request; previous accepted attempt did not start"
+		if cleanupErr != nil {
+			failureReason = errors.Join(errors.New(failureReason), cleanupErr).Error()
+			nextAction += "; remove the operation-scoped Kubernetes identity from node storage"
+			cleanupErrors = errors.Join(cleanupErrors, cleanupErr)
+		}
 		_, err = store.Update(record.OperationID, "startup-audit-not-started", "startup-audit-not-started", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 			record.Phase = "startup-audit-not-started"
 			record.Terminal = true
 			record.CompletedAt = &now
 			record.RecoveryRequired = true
 			record.Result = operation.ResultFailedNeedsRepair
-			record.NextAction = "resubmit operation request; previous accepted attempt did not start"
-			record.FailureReason = "agent stopped before executor start"
+			record.NextAction = nextAction
+			record.FailureReason = inventory.Redact(failureReason)
 			record.UpdatedAt = now
 			return record, nil
 		})
 		if err != nil {
-			return err
+			return errors.Join(cleanupErrors, err)
 		}
+	}
+	return cleanupErrors
+}
+
+func removeOperationKubernetesIdentity(store operation.Store, operationID string) error {
+	if err := kubernetesidentity.RemoveStaged(kubernetesIdentityStagingPath(store.Root, operationID)); err != nil {
+		return fmt.Errorf("clean up staged Kubernetes identity: %w", err)
 	}
 	return nil
 }

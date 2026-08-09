@@ -59,6 +59,27 @@ func TestWriteUsesPrivatePermissionsAndRefusesOverwrite(t *testing.T) {
 	}
 }
 
+func TestRemoveStagedIsIdempotent(t *testing.T) {
+	bundle := generatedBundle(t)
+	data, err := Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "operation", "identity.katlkey")
+	if err := Stage(path, data); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveStaged(path); err != nil {
+		t.Fatalf("RemoveStaged() error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("staged identity remains after removal: %v", err)
+	}
+	if err := RemoveStaged(path); err != nil {
+		t.Fatalf("repeat RemoveStaged() error = %v", err)
+	}
+}
+
 func TestImportReadsOnlySharedKubeadmIdentity(t *testing.T) {
 	bundle := generatedBundle(t)
 	files, err := Files(bundle)
