@@ -3,6 +3,7 @@ package vmtest
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,8 +20,11 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agent "github.com/katl-dev/katl/internal/katlc/agent"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -127,7 +131,9 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		t.Fatalf("merged systemd-networkd configuration is missing Kubernetes route policy:\n%s", networkdConfig)
 	}
 	guestCommand(t, ctx, guest, "networkd-active", "systemctl", "is-active", "systemd-networkd.service")
+	endpoint := katlcEndpoint(t, node, plannedAddress)
 	assertDefaultNetworkdCNIOwnership(t, ctx, guest)
+	assertUnauthenticatedManagementRejected(t, ctx, endpoint)
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/install/status.json", `"finalHandoff": "waiting-for-cluster-bootstrap"`)
 	defer func() {
 		if t.Failed() {
@@ -135,7 +141,6 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		}
 	}()
 	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
-	endpoint := katlcEndpoint(t, node, plannedAddress)
 	enrollConfigApplyNode(t, ctx, result, katlctl, endpoint)
 	guest, client = runConfigApplyModeSmoke(t, ctx, &node, guest, client, result, katlctl, endpoint, currentGeneration)
 	node.Result.finish(StatusPassed, "", runner.time())
@@ -236,6 +241,48 @@ func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest 
 	}
 	after := networkdStatus(t, ctx, guest, "networkd-host-after-cni", hostLink)
 	assertNetworkdDHCPHost(t, after)
+}
+
+func assertUnauthenticatedManagementRejected(t *testing.T, ctx context.Context, endpoint string) {
+	t.Helper()
+	for _, test := range []struct {
+		name   string
+		option grpc.DialOption
+	}{
+		{name: "plaintext", option: grpc.WithTransportCredentials(insecure.NewCredentials())},
+		{name: "no-client-certificate", option: grpc.WithTransportCredentials(credentials.NewTLS(managementTLSWithoutClientCertificate(t)))},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conn, err := grpc.DialContext(ctx, endpoint, test.option)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			requestCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			if response, err := agentapi.NewKatlcAgentClient(conn).GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{}); err == nil {
+				t.Fatalf("unauthenticated management query succeeded: %+v", response)
+			}
+		})
+	}
+}
+
+func managementTLSWithoutClientCertificate(t *testing.T) *tls.Config {
+	t.Helper()
+	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := managementidentity.Client(identity, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := transport.ClientTLSConfig(client, "cp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Certificates = nil
+	return config
 }
 
 func defaultRouteLink(t *testing.T, ctx context.Context, guest *GuestControl) string {
@@ -428,7 +475,7 @@ func enrollConfigApplyNode(t *testing.T, ctx context.Context, result Result, kat
 	source := `apiVersion: config.katl.dev/v1alpha1
 kind: ClusterConfig
 metadata:
-  name: config-apply-vmtest
+  name: katl-smoke
 spec:
   controlPlaneEndpoint:
     host: ` + host + `
@@ -454,6 +501,13 @@ spec:
 	}
 	t.Setenv("KATLCTL_CONFIG", contextPath)
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := managementidentity.Write(filepath.Join(directory, "management", VMTestManagementClusterName+".katlkey"), identity); err != nil {
+		t.Fatal(err)
+	}
 	runKatlctl(t, ctx, result, katlctl, "context-save", "context", "save", "--config", configPath)
 }
 
@@ -974,9 +1028,9 @@ func mustUnmarshalProtoJSON(t *testing.T, data []byte, msg proto.Message) {
 	}
 }
 
-func waitKatlcOperationTerminal(t *testing.T, ctx context.Context, endpoint, operationID string) *agentapi.OperationStatus {
+func waitKatlcOperationTerminal(t *testing.T, ctx context.Context, endpoint, operationID string, nodeNames ...string) *agentapi.OperationStatus {
 	t.Helper()
-	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint, nodeNames...)
 	defer conn.Close()
 	deadline := time.Now().Add(2 * time.Minute)
 	var last *agentapi.OperationStatus
@@ -1097,11 +1151,27 @@ users: []
 	}
 }
 
-func dialKatlcAgentForVMTest(t *testing.T, ctx context.Context, endpoint string) (*grpc.ClientConn, agentapi.KatlcAgentClient) {
+func dialKatlcAgentForVMTest(t *testing.T, ctx context.Context, endpoint string, nodeNames ...string) (*grpc.ClientConn, agentapi.KatlcAgentClient) {
 	t.Helper()
+	nodeName := "cp-1"
+	if len(nodeNames) > 0 && strings.TrimSpace(nodeNames[0]) != "" {
+		nodeName = strings.TrimSpace(nodeNames[0])
+	}
+	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := managementidentity.Client(identity, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsConfig, err := transport.ClientTLSConfig(client, nodeName)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	conn, err := grpc.DialContext(dialCtx, endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	conn, err := grpc.DialContext(dialCtx, endpoint, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)), grpc.WithBlock())
 	if err != nil {
 		t.Fatalf("dial katlc agent %s: %v", endpoint, err)
 	}

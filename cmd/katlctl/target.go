@@ -15,6 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
 )
 
@@ -31,6 +32,7 @@ type managementTarget struct {
 	endpoint     string
 	enrollmentID string
 	machineID    string
+	credentials  *managementidentity.ClientCredentials
 }
 
 func addManagementTargetFlags(cmd *cobra.Command, opts *managementTargetOptions) {
@@ -73,6 +75,18 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 
 	useContext := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" || endpoint == ""
 	if !useContext {
+		if nodeName := strings.TrimSpace(opts.nodeName); nodeName != "" {
+			resolved, resolveErr := workstation.ResolveTopology(workstation.ResolveRequest{})
+			if resolveErr == nil {
+				target, targetErr := targetFromTopology(resolved.Topology, nodeName)
+				if targetErr == nil && target.enrollmentID != "" {
+					if endpoint != target.endpoint {
+						return managementTarget{}, fmt.Errorf("node %q is enrolled at %s; use 'katlctl context rebind --node %s --endpoint %s' to verify and save a new address", target.nodeName, target.endpoint, target.nodeName, endpoint)
+					}
+					return target, nil
+				}
+			}
+		}
 		return managementTarget{nodeName: strings.TrimSpace(opts.nodeName), endpoint: endpoint}, nil
 	}
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: strings.TrimSpace(opts.configPath), ContextName: strings.TrimSpace(opts.contextName)})
@@ -178,6 +192,10 @@ func mergeEnrolledTopology(resolved *workstation.ResolvedTopology, configPath, c
 		resolved.Nodes[index].ManagementEndpoint = enrolled.endpoint
 		resolved.Nodes[index].EnrollmentID = enrolled.enrollmentID
 		resolved.Nodes[index].MachineID = enrolled.machineID
+		if resolved.Management == nil && enrolled.credentials != nil {
+			credentials := *enrolled.credentials
+			resolved.Management = &credentials
+		}
 	}
 }
 
@@ -221,7 +239,7 @@ func targetFromTopology(topology workstation.Topology, selected string) (managem
 		if node.Name != nodeName {
 			continue
 		}
-		return managementTarget{nodeName: nodeName, endpoint: node.ManagementEndpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID}, nil
+		return managementTarget{nodeName: nodeName, endpoint: node.ManagementEndpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID, credentials: topology.Management}, nil
 	}
 	return managementTarget{}, fmt.Errorf("node %q was not found in context %q", nodeName, topology.ContextName)
 }
@@ -246,7 +264,7 @@ func enrolledTarget(configPath, contextName, clusterName, nodeName string) (mana
 		}
 		for _, node := range topology.Nodes {
 			if node.Name == nodeName && node.EnrollmentID != "" {
-				return managementTarget{nodeName: node.Name, endpoint: node.ManagementEndpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID}, true
+				return managementTarget{nodeName: node.Name, endpoint: node.ManagementEndpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID, credentials: topology.Management}, true
 			}
 		}
 		return managementTarget{}, false
@@ -257,7 +275,7 @@ func enrolledTarget(configPath, contextName, clusterName, nodeName string) (mana
 		}
 		for _, node := range cluster.Nodes {
 			if strings.TrimSpace(node.Name) == nodeName && strings.TrimSpace(node.EnrollmentID) != "" {
-				return managementTarget{nodeName: nodeName, endpoint: strings.TrimSpace(node.ManagementEndpoint), enrollmentID: strings.TrimSpace(node.EnrollmentID), machineID: strings.TrimSpace(node.MachineID)}, true
+				return managementTarget{nodeName: nodeName, endpoint: strings.TrimSpace(node.ManagementEndpoint), enrollmentID: strings.TrimSpace(node.EnrollmentID), machineID: strings.TrimSpace(node.MachineID), credentials: cluster.Management}, true
 			}
 		}
 	}

@@ -142,7 +142,11 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if err != nil {
 		return err
 	}
-	config, err := loadKatlConfig(opts.configPath, installApplyCreator, configbundle.PlanningInputs{}, stderr)
+	managementIdentities, err := managementPlanningIfSource(opts.configPath, stderr)
+	if err != nil {
+		return fmt.Errorf("prepare management access: %w", err)
+	}
+	config, err := loadKatlConfig(opts.configPath, installApplyCreator, configbundle.PlanningInputs{ManagementIdentities: managementIdentities}, stderr)
 	if err != nil {
 		return err
 	}
@@ -161,6 +165,9 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	})
 	if err != nil {
 		return fmt.Errorf("select node from compiled cluster config: %w", err)
+	}
+	if selected.InstallManifest.Node.Identity.Management.Empty() {
+		return fmt.Errorf("selected install bundle has no management identity; rebuild it with this katlctl release before installing")
 	}
 	bootstrapAddress := ""
 	if selected.InstallManifest.Node.Bootstrap != nil {

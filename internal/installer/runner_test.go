@@ -25,6 +25,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
 func TestDefaultPlanOrder(t *testing.T) {
@@ -1503,6 +1504,7 @@ func writeManifestWithNode(t *testing.T, nodeExtra string) string {
 		"node": {
 			"identity": {
 				"hostname": "lab-node-01",
+				"management": ` + testManagementIdentityJSON(t, "lab-node-01") + `,
 				"ssh": {
 					"authorizedKeys": [
 						"` + sshKey + `"
@@ -1534,11 +1536,36 @@ func writeManifestWithNode(t *testing.T, nodeExtra string) string {
 func writeCompactManifest(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "install.json")
-	data := `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest","node":{"identity":{"hostname":"lab-node-01","ssh":{"authorizedKeys":["` + sshKey + `"]}},"systemRole":"control-plane"},"install":{"wipeTarget":true,"targetDisk":{"byID":"/dev/disk/by-id/ata-root","minSizeMiB":32768}},"katlosImage":{"url":"https://example.invalid/katlos-install.squashfs","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sizeBytes":1073741824,"version":"2026.06.04","architecture":"x86_64","runtimeInterface":"katl-runtime-1","role":"install"}}`
+	data := `{"apiVersion":"install.katl.dev/v1alpha1","kind":"InstallManifest","node":{"identity":{"hostname":"lab-node-01","management":` + testManagementIdentityJSON(t, "lab-node-01") + `,"ssh":{"authorizedKeys":["` + sshKey + `"]}},"systemRole":"control-plane"},"install":{"wipeTarget":true,"targetDisk":{"byID":"/dev/disk/by-id/ata-root","minSizeMiB":32768}},"katlosImage":{"url":"https://example.invalid/katlos-install.squashfs","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sizeBytes":1073741824,"version":"2026.06.04","architecture":"x86_64","runtimeInterface":"katl-runtime-1","role":"install"}}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
 	return path
+}
+
+func testManagementIdentityJSON(t *testing.T, nodeName string) string {
+	t.Helper()
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	randomBytes := make([]byte, 4096)
+	for index := range randomBytes {
+		randomBytes[index] = byte(index)
+	}
+	random := bytes.NewReader(randomBytes)
+	bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "runner-test", Now: now, Random: random})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, _, err := managementidentity.EnsureNode(&bundle, nodeName, now, random)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(manifest.ManagementIdentity{
+		CACertificate: credentials.CACertificate, ServerCertificate: credentials.ServerCertificate, ServerPrivateKey: credentials.ServerPrivateKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func writeManifestWithoutImage(t *testing.T) string {

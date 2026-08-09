@@ -5,12 +5,14 @@ configuration, node upgrade, or wipe operations.
 
 ## Security Boundary
 
-The beta `katlc` agent listens on TCP port `9443` without authentication or
-transport encryption. This is deliberate for Katl's trusted home-lab network:
-routine management must not require credential enrollment. Do not expose it to
-the public Internet, an untrusted LAN, or a shared production network. Restrict
-port `9443` at the surrounding firewall when the network boundary is broader
-than the supported path.
+The `katlc` agent accepts mutually authenticated TLS on TCP port `9443`.
+`katlctl` creates the cluster management identity automatically while preparing
+the first config or install bundle, installs a non-CA server identity on each
+node, and retains the operator identity in the mode-0600 workstation context.
+Routine commands have no certificate flags or enrollment prompts. The API can
+remain reachable on the trusted network: callers without the cluster operator
+certificate cannot query status or invoke any operation. Do not publish `9443`
+to the Internet.
 
 The installed system keeps an operator dashboard on VGA `tty1`. It reports the
 KatlOS and Kubernetes versions from the booted generation, node addresses,
@@ -44,10 +46,10 @@ Use the same source used for installation:
 katlctl context save --config ./cluster.yaml
 ```
 
-For every node, the command verifies access to TCP port `9443`, confirms that
-the answering agent is enrolled under the requested inventory node name, and
-records its immutable enrollment identity and machine ID in `katlctl.yaml`.
-It does not use SSH, retrieve secrets, or alter the node.
+For every node, the command authenticates the node name before making an API
+request, confirms that the answering agent is enrolled under the requested
+inventory node name, and records its immutable enrollment identity and machine
+ID in `katlctl.yaml`. It does not use SSH or alter the node.
 
 `katlctl config init` and `katlctl install discover CLUSTER_CONFIG` also read
 supported public keys from the active SSH agent when creating the initial SSH
@@ -56,8 +58,33 @@ authorization. This works with agent-only keys such as 1Password. An explicit
 authorized.
 
 `ClusterConfig` remains sufficient for installation. Planning, bootstrap, and
-mutating commands additionally require this saved enrollment so a stale or
-swapped address cannot target another machine.
+mutating commands additionally require the automatically retained management
+identity and saved enrollment, so an unknown caller or stale/swapped address
+cannot target another machine.
+
+When Katl first prints `Created management identity`, back up the reported
+`.katlkey` file separately from `cluster.yaml`. The normal path discovers it
+automatically. It is needed to reinstall nodes with the same management trust
+or to add another operator workstation. Restore it before compiling or
+installing with:
+
+```sh
+katlctl management identity import ./homelab.katlkey
+```
+
+`katlctl management identity path homelab` prints the active backup location.
+`katlctl management identity inspect IDENTITY` validates a backup and reports
+its fingerprint and expiry without printing private material.
+These recovery commands are not part of routine node operation. This management
+identity is separate from the optional Kubernetes identity that preserves
+kubeadm CAs across whole-cluster reprovisioning.
+
+A compiled `.katlcfg` contains the non-CA private server key for each selected
+node, so Katl writes it mode 0600. Treat it as short-lived provisioning
+material: publish it only on the trusted installer/PXE network, and remove the
+published copy after installation. Exposure does not grant caller access to an
+installed agent, but it can let an attacker impersonate that node to an
+operator who is also redirected to the attacker.
 
 ## Connectivity Check
 
@@ -71,15 +98,29 @@ katlctl node status cp-1
 
 The save command has already performed the agent health check. Normal management
 commands now need only `--node`; `--context` selects a non-current cluster.
-Read-only inspection can use an explicit `--endpoint`. Mutations use the saved
-address. When an enrolled node's address changes, verify and save it explicitly:
+An explicit `--endpoint` still requires matching saved management access; it is
+not an authentication bypass. Mutations use the saved address. When an enrolled
+node's address changes, verify and save it explicitly:
 
 ```sh
 katlctl context rebind --node cp-1 --endpoint 192.0.2.51
 ```
 
-Rebind succeeds only when the new address reports the same inventory node,
-enrollment identity, and machine ID.
+Rebind succeeds only when TLS authenticates the expected node name and the new
+address reports the same inventory node, enrollment identity, and machine ID.
+
+A deliberate reinstall keeps the cluster management authority but creates a
+new enrollment and machine identity. The old context will authenticate the
+node but refuse planning and mutations. Verify that this is the intended
+replacement, then update only that inventory binding:
+
+```sh
+katlctl context save --config ./cluster.yaml --replace-node cp-1
+```
+
+Without `--replace-node cp-1`, the save is refused and the context is left
+unchanged. The flag cannot approve an address that presents another node's TLS
+certificate or inventory name.
 
 Use `katlctl context current` to print the selection and `katlctl context use
 NAME` to switch between saved clusters. `katlctl cluster status --config
@@ -133,6 +174,9 @@ no copy beneath immutable `/root`. An explicitly set `KUBECONFIG`, including an
 empty diagnostic value, is preserved. Workstation commands continue to use the
 mode-0600 kubeconfig written by `katlctl cluster bootstrap`.
 
-There is no node credential to rotate in the beta management path. If the
-trusted management network is exposed, isolate the node and restore the network
-boundary before resuming lifecycle operations.
+If the management identity backup is lost but the saved context remains, that
+workstation can continue routine operations but cannot issue server material
+for a reinstall. Preserve the existing nodes and restore the backup; creating a
+different identity does not grant access to them. If both copies are lost,
+recovery requires deliberately reinstalling the affected nodes under a new
+cluster management identity.

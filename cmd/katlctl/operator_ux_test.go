@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
+	"google.golang.org/grpc"
 )
 
 const uxTestSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
@@ -190,6 +192,9 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "katlctl.yaml")
 	sourcePath := writeClusterConfig(t)
+	if _, _, err := ensureManagementIdentity("lab", io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	fake := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1"}}
 	oldDial := dialKatlcAgent
 	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
@@ -215,6 +220,111 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	if len(topology.Nodes) != 1 || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" {
 		t.Fatalf("topology = %#v", topology)
 	}
+	if topology.Management == nil {
+		t.Fatal("saved context has no automatic management credentials")
+	}
+	identityPath, err := managementIdentityPath("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := readManagementIdentity(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topology.Management.ClientPrivateKey != identity.Operator.PrivateKey || topology.Management.ClientCertificate != identity.Operator.Certificate {
+		t.Fatal("saved context did not retain the issued operator identity")
+	}
+	for name, secret := range map[string]string{"CA private key": identity.CertificateAuthority.PrivateKey, "node private key": identity.Nodes["cp-1"].PrivateKey} {
+		if topology.Management.ClientPrivateKey == secret {
+			t.Fatalf("saved context uses %s as its client identity", name)
+		}
+	}
+	fake.nodeStatus = &agentapi.NodeStatus{InventoryNodeName: "cp-1", EnrollmentId: "replacement-enrollment", MachineId: "replacement-machine"}
+	err = run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "--replace-node cp-1") {
+		t.Fatalf("replacement refusal = %v", err)
+	}
+	unchanged, err := workstation.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchangedTopology, err := unchanged.SelectedTopology("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchangedTopology.Nodes[0].EnrollmentID == "replacement-enrollment" {
+		t.Fatal("unacknowledged replacement changed the saved context")
+	}
+	var replacementOutput bytes.Buffer
+	if err := run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath, "--replace-node", "cp-1"}, &replacementOutput, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(replacementOutput.String(), "replaced enrollment for cp-1") {
+		t.Fatalf("replacement output = %q", replacementOutput.String())
+	}
+	replaced, err := workstation.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacedTopology, err := replaced.SelectedTopology("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacedTopology.Nodes[0].EnrollmentID != "replacement-enrollment" || replacedTopology.Nodes[0].MachineID != "replacement-machine" {
+		t.Fatalf("replacement topology = %#v", replacedTopology.Nodes[0])
+	}
+	err = run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath, "--replace-node", "cp-1"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "saved enrollment has not changed") {
+		t.Fatalf("redundant replacement error = %v", err)
+	}
+	var shown bytes.Buffer
+	if err := run(context.Background(), []string{"context", "show", "--context-file", configPath, "--output", "json"}, &shown, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(shown.Bytes(), []byte("PRIVATE KEY")) || bytes.Contains(shown.Bytes(), []byte("clientPrivateKey")) || bytes.Contains(shown.Bytes(), []byte("clientCertificate")) {
+		t.Fatalf("context show exposed management credentials:\n%s", shown.String())
+	}
+}
+
+func TestContextSaveBoundsEachNodeVerification(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "katlctl.yaml")
+	sourcePath := writeClusterConfig(t)
+	if _, _, err := ensureManagementIdentity("lab", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(ctx context.Context, _ string) (katlcAgentConnection, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("management dial has no deadline")
+		}
+		return katlcAgentConnection{Client: &deadlineKatlcAgentClient{fakeKatlcAgentClient: &fakeKatlcAgentClient{}}, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	err := run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath, "--timeout", "10ms"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "timed out after 10ms") || !strings.Contains(err.Error(), "increase --timeout") {
+		t.Fatalf("context save error = %v, want actionable timeout", err)
+	}
+	if _, statErr := os.Stat(configPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("context file was written after timed-out verification: %v", statErr)
+	}
+}
+
+func TestContextSaveRequiresPositiveTimeout(t *testing.T) {
+	err := run(context.Background(), []string{"context", "save", "--timeout=0"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "--timeout must be positive") {
+		t.Fatalf("context save error = %v", err)
+	}
+}
+
+type deadlineKatlcAgentClient struct {
+	*fakeKatlcAgentClient
+}
+
+func (c *deadlineKatlcAgentClient) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusRequest, _ ...grpc.CallOption) (*agentapi.NodeStatus, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func TestContextListCurrentAndUse(t *testing.T) {

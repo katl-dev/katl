@@ -11,7 +11,10 @@ import (
 	"time"
 
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -297,8 +300,29 @@ func TestOperationWatchReturnsFailureAfterStatus(t *testing.T) {
 }
 
 func TestKatlcAgentDialOptionsDoNotSendAuthorization(t *testing.T) {
+	now := time.Now().UTC()
+	identity, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "test", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _, err := managementidentity.EnsureNode(&identity, "node-1", now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := managementidentity.Client(identity, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTLS, err := transport.ServerTLSConfigForNode(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTLS, err := transport.ClientTLSConfig(client, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	listener := bufconn.Listen(1 << 20)
-	server := grpc.NewServer()
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 	capture := &streamAuthorizationServer{authorization: make(chan string, 1)}
 	agentapi.RegisterKatlcAgentServer(server, capture)
 	go func() { _ = server.Serve(listener) }()
@@ -306,7 +330,7 @@ func TestKatlcAgentDialOptionsDoNotSendAuthorization(t *testing.T) {
 		server.Stop()
 		_ = listener.Close()
 	})
-	opts := append(katlcAgentDialOptions(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+	opts := append(katlcAgentDialOptions(clientTLS), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 		return listener.Dial()
 	}))
 	conn, err := grpc.DialContext(context.Background(), "passthrough:///bufnet", opts...)

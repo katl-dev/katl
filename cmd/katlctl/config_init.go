@@ -218,6 +218,9 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close ClusterConfig %s: %w", opts.outputPath, err)
 	}
+	if _, _, err := ensureManagementIdentity(source.Metadata.Name, stderr); err != nil {
+		return fmt.Errorf("prepare automatic management access: %w", err)
+	}
 	fmt.Fprintf(stdout, "created %s\n", opts.outputPath)
 	return nil
 }

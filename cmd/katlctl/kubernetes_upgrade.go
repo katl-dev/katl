@@ -464,7 +464,8 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 		}
 	}
 	for _, node := range nodes {
-		conn, err := dialKatlcAgent(ctx, node.ManagementEndpoint)
+		nodeCtx := withManagementDial(ctx, node.Name, topology.Management)
+		conn, err := dialKatlcAgent(nodeCtx, node.ManagementEndpoint)
 		if err != nil {
 			closeTargets()
 			return nil, fmt.Errorf("connect node %s: %w", node.Name, err)

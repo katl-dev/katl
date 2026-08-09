@@ -55,6 +55,12 @@ from the live installer. The bundle carries all node plans and the native
 kubeadm inputs needed later; no node-specific Ignition or Talos machine-config
 file is required.
 
+The bundle also carries a non-CA management server private key for each node.
+Katl writes it mode 0600. Publish it only on the trusted provisioning network,
+restrict the HTTP path from workload networks, and remove the published copy
+after all selected machines are installed. Keep the separately reported
+`.katlkey` backup; the bundle cannot replace that management authority backup.
+
 ## Lay Out Matchbox Data
 
 Use Matchbox's normal file store:

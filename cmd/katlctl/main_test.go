@@ -446,6 +446,10 @@ func TestManagementTargetRefusesUnverifiedEnrolledEndpointOverride(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "context rebind") {
 		t.Fatalf("unverified override error = %v", err)
 	}
+	_, err = resolveManagementTarget(managementTargetOptions{nodeName: "cp-1", endpoint: "192.0.2.44"})
+	if err == nil || !strings.Contains(err.Error(), "context rebind") {
+		t.Fatalf("implicit-context override error = %v", err)
+	}
 
 	bundlePath, _ := writeConfigBundle(t)
 	target, err = resolveManagementTarget(managementTargetOptions{clusterConfigPath: bundlePath})
@@ -574,6 +578,9 @@ func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
 
 func TestConfigBundleCommandWritesBundle(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("KATLCTL_CONFIG", "")
+	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
 	sourcePath := filepath.Join(dir, "cluster.yaml")
 	outputPath := filepath.Join(dir, "homelab.katlcfg")
 	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
@@ -584,8 +591,8 @@ func TestConfigBundleCommandWritesBundle(t *testing.T) {
 	if err := run(context.Background(), []string{"config", "bundle", sourcePath, "--output", outputPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty", stderr.String())
+	if !strings.Contains(stderr.String(), "Created management identity for cluster lab") || !strings.Contains(stderr.String(), "Back up this file") {
+		t.Fatalf("stderr = %q, want one-time management identity backup guidance", stderr.String())
 	}
 	info, err := os.Stat(outputPath)
 	if err != nil {

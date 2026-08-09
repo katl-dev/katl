@@ -66,13 +66,30 @@ func (config KernelConfig) IsZero() bool {
 }
 
 type NodeIdentity struct {
-	Hostname string      `json:"hostname" yaml:"hostname"`
-	SSH      SSHIdentity `json:"ssh" yaml:"ssh"`
+	Hostname   string             `json:"hostname" yaml:"hostname"`
+	SSH        SSHIdentity        `json:"ssh" yaml:"ssh"`
+	Management ManagementIdentity `json:"management,omitempty,omitzero" yaml:"management,omitempty"`
 }
 
 type SSHIdentity struct {
 	AuthorizedKeys []string `json:"authorizedKeys" yaml:"authorizedKeys"`
 }
+
+// ManagementIdentity is per-node install material issued by katlctl. The
+// private key is not part of operator-authored ClusterConfig desired state.
+type ManagementIdentity struct {
+	CACertificate     string `json:"caCertificate,omitempty" yaml:"caCertificate,omitempty"`
+	ServerCertificate string `json:"serverCertificate,omitempty" yaml:"serverCertificate,omitempty"`
+	ServerPrivateKey  string `json:"serverPrivateKey,omitempty" yaml:"serverPrivateKey,omitempty"`
+}
+
+func (identity ManagementIdentity) Empty() bool {
+	return strings.TrimSpace(identity.CACertificate) == "" &&
+		strings.TrimSpace(identity.ServerCertificate) == "" &&
+		strings.TrimSpace(identity.ServerPrivateKey) == ""
+}
+
+func (identity ManagementIdentity) IsZero() bool { return identity.Empty() }
 
 const (
 	HostConfigurationPresent = "present"
@@ -393,6 +410,11 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	for i, key := range manifest.Node.Identity.SSH.AuthorizedKeys {
 		if !ValidAuthorizedKey(key) {
 			return fmt.Errorf("node.identity.ssh.authorizedKeys[%d] must be an SSH public key", i)
+		}
+	}
+	if identity := manifest.Node.Identity.Management; !identity.Empty() {
+		if strings.TrimSpace(identity.CACertificate) == "" || strings.TrimSpace(identity.ServerCertificate) == "" || strings.TrimSpace(identity.ServerPrivateKey) == "" {
+			return fmt.Errorf("node.identity.management must contain caCertificate, serverCertificate, and serverPrivateKey together")
 		}
 	}
 	if err := ValidateKernelConfig(manifest.Node.Kernel); err != nil {

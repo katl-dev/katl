@@ -13,6 +13,7 @@ Kubernetes API and kubeconfig ready for your cluster-management workflow.
 | Immutable host generations and boot health | Katl | Katl stages, trial-boots, promotes, or falls back between versioned host generations. |
 | Host configuration declared in `ClusterConfig` | Katl | Katl applies the supported SSH, storage, kernel, native Linux, networking, and extension domains. |
 | kubeadm init, join, and supported upgrades | Katl | Katl performs explicit, durable operations and writes the operator kubeconfig. |
+| Katl node-management trust | Katl and operator | Katl automatically issues and uses node/operator mTLS identities; the operator backs up the reported cluster management identity for reinstall and workstation recovery. |
 | Kubernetes trust identity | Operator | Create or import, protect, and independently back up the optional Katl identity file; Katl validates and installs it only for explicit bootstrap. |
 | DHCP, TFTP, iPXE, Matchbox, firmware boot order | Operator | Katl publishes artifacts and consumes a selected `.katlcfg`; it does not operate provisioning infrastructure. |
 | Stable DNS and external routing | Operator | Katl can health-gate and advertise a configured VIP, but the surrounding DNS, routers, peers, and network policy remain yours. |
@@ -54,11 +55,11 @@ than assuming a host rollback restored the cluster.
 
 ## Trust Boundary
 
-The beta installer handoff on TCP `8080` and installed-node management API on
-TCP `9443` are intentionally unauthenticated and unencrypted. Use them only on
-a trusted provisioning or management network. SSH is key-only when configured;
-the live installer exposes `root` only after its selected node keys are handed
-off, while the installed runtime uses the `katl` account.
+The beta installer handoff on TCP `8080` is intentionally unauthenticated HTTP
+and belongs only on a trusted provisioning network. The installed-node API on
+TCP `9443` requires automatic mTLS for every connection. SSH is key-only when
+configured; the live installer exposes `root` only after its selected node keys
+are handed off, while the installed runtime uses the `katl` account.
 
 For the complete compatibility and security statement, read the
 [support boundary](../support.md).

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,14 +32,16 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -59,7 +62,7 @@ var dialVMTestAgent = vmtest.DialAgent
 var dialKatlcAgent = dialKatlcAgentTCP
 var operatorKubectlRunner cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
 var newWipeClusterConnector = func() cluster.AgentConnector {
-	return cluster.TCPAgentConnector{}
+	return managementAgentConnector("")
 }
 
 const (
@@ -124,6 +127,10 @@ Start with "katlctl install discover" for a waiting installer or
 	kubernetesCmd.AddCommand(newKubernetesIdentityCommand(stdout, stderr))
 	kubernetesCmd.AddCommand(newKubernetesUpgradeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(kubernetesCmd)
+
+	managementCmd := &cobra.Command{Use: "management", Short: "Recover Katl management access", Example: "katlctl management identity path homelab"}
+	managementCmd.AddCommand(newManagementIdentityCommand(stdout, stderr))
+	cmd.AddCommand(managementCmd)
 
 	configCmd := &cobra.Command{Use: "config", Short: "Create and compile ClusterConfig"}
 	configCmd.AddCommand(newConfigInitCommand(ctx, stdout, stderr))
@@ -219,6 +226,11 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl kubernetes identity create":  "katlctl kubernetes identity create --cluster-name homelab --output kubernetes-identity.katlkey",
 		"katlctl kubernetes identity inspect": "katlctl kubernetes identity inspect kubernetes-identity.katlkey",
 		"katlctl kubernetes upgrade":          "katlctl kubernetes upgrade --config cluster.yaml",
+		"katlctl management":                  "katlctl management identity path homelab",
+		"katlctl management identity":         "katlctl management identity path homelab",
+		"katlctl management identity path":    "katlctl management identity path homelab",
+		"katlctl management identity inspect": "katlctl management identity inspect homelab.katlkey",
+		"katlctl management identity import":  "katlctl management identity import homelab.katlkey",
 		"katlctl config":                      "katlctl config validate cluster.yaml",
 		"katlctl config init":                 "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
 		"katlctl config validate":             "katlctl config validate cluster.yaml",
@@ -376,6 +388,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
+	ctx = withManagementTarget(ctx, target)
 	conn, err := dialKatlcAgent(ctx, target.endpoint)
 	if err != nil {
 		return err
@@ -2013,12 +2026,16 @@ func runConfigBundle(opts configBundleOptions, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	managementIdentities, err := managementPlanningForSource(opts.sourcePath, stderr)
+	if err != nil {
+		return fmt.Errorf("prepare management access: %w", err)
+	}
 	result, err := configbundle.WriteArchive(opts.outputPath, configbundle.BuildRequest{
 		SourcePath:     opts.sourcePath,
 		KatlctlVersion: version,
 		KatlctlCommit:  commit,
 		CreatedBy:      configBundleCreator,
-		Planning:       configbundle.PlanningInputs{KatlosImage: katlosImage},
+		Planning:       configbundle.PlanningInputs{KatlosImage: katlosImage, ManagementIdentities: managementIdentities},
 	})
 	if err != nil {
 		return err
@@ -2269,6 +2286,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
+	ctx = withManagementTarget(ctx, target)
 	if strings.TrimSpace(opts.nodeConfig.nodeName) == "" {
 		opts.nodeConfig.nodeName = target.nodeName
 	}
@@ -2562,6 +2580,7 @@ func runConfigApplyStatus(ctx context.Context, opts configApplyStatusOptions, st
 		if err != nil {
 			return err
 		}
+		ctx = withManagementTarget(ctx, target)
 		conn, err := dialKatlcAgent(ctx, target.endpoint)
 		if err != nil {
 			return err
@@ -2850,7 +2869,7 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
 			return fmt.Errorf("--join-worker requires katlc agent transport")
 		}
-		deps := agentBootstrapDependencies()
+		deps := agentBootstrapDependencies(clusterName)
 		deps.Progress = bootstrapProgressWriter(stderr, opts.verbose)
 		result, err := runAgentWorkerJoin(ctx, request, strings.TrimSpace(opts.joinWorker), deps)
 		printBootstrapResult(stdout, result)
@@ -2860,7 +2879,7 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 	if strings.TrimSpace(opts.vmtestTranscriptDir) != "" {
 		result, err = runBootstrap(ctx, request, bootstrapDependencies(opts.vmtestTranscriptDir))
 	} else {
-		deps := agentBootstrapDependencies()
+		deps := agentBootstrapDependencies(clusterName)
 		deps.Progress = bootstrapProgressWriter(stderr, opts.verbose)
 		result, err = runAgentBootstrap(ctx, request, deps)
 	}
@@ -2951,9 +2970,26 @@ func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
 	}
 }
 
-func agentBootstrapDependencies() cluster.AgentBootstrapDependencies {
+func managementAgentConnector(clusterName string) cluster.TCPAgentConnector {
+	return cluster.TCPAgentConnector{CredentialsForNode: func(node inventory.PlannedNode) (managementidentity.ClientCredentials, error) {
+		if strings.TrimSpace(clusterName) != "" {
+			return managementClientForCluster(clusterName)
+		}
+		identity, err := managementDialForEndpoint(cluster.AgentEndpoint(node.Address, "9443"))
+		if err != nil {
+			return managementidentity.ClientCredentials{}, err
+		}
+		return *identity.credentials, nil
+	}}
+}
+
+func agentBootstrapDependencies(clusterName ...string) cluster.AgentBootstrapDependencies {
+	selectedCluster := ""
+	if len(clusterName) > 0 {
+		selectedCluster = clusterName[0]
+	}
 	return cluster.AgentBootstrapDependencies{
-		Connector:       cluster.TCPAgentConnector{},
+		Connector:       managementAgentConnector(selectedCluster),
 		Actor:           "katlctl cluster bootstrap",
 		BootstrapRunner: cluster.KubectlBootstrapRunner{},
 	}
@@ -2964,12 +3000,39 @@ type katlcAgentConnection struct {
 	Close  func() error
 }
 
+type managementDialIdentity struct {
+	nodeName    string
+	credentials *managementidentity.ClientCredentials
+}
+
+type managementDialIdentityKey struct{}
+
+func withManagementDial(ctx context.Context, nodeName string, credentials *managementidentity.ClientCredentials) context.Context {
+	return context.WithValue(ctx, managementDialIdentityKey{}, managementDialIdentity{nodeName: strings.TrimSpace(nodeName), credentials: credentials})
+}
+
+func withManagementTarget(ctx context.Context, target managementTarget) context.Context {
+	return withManagementDial(ctx, target.nodeName, target.credentials)
+}
+
 func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		return katlcAgentConnection{}, fmt.Errorf("katlc agent endpoint is required")
 	}
-	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions()...)
+	identity, ok := ctx.Value(managementDialIdentityKey{}).(managementDialIdentity)
+	if !ok || strings.TrimSpace(identity.nodeName) == "" || identity.credentials == nil {
+		resolved, err := managementDialForEndpoint(endpoint)
+		if err != nil {
+			return katlcAgentConnection{}, err
+		}
+		identity = resolved
+	}
+	tlsConfig, err := transport.ClientTLSConfig(*identity.credentials, identity.nodeName)
+	if err != nil {
+		return katlcAgentConnection{}, fmt.Errorf("management credentials for node %q: %w", identity.nodeName, err)
+	}
+	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions(tlsConfig)...)
 	if err != nil {
 		return katlcAgentConnection{}, err
 	}
@@ -2979,9 +3042,9 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 	}, nil
 }
 
-func katlcAgentDialOptions() []grpc.DialOption {
+func katlcAgentDialOptions(tlsConfig *tls.Config) []grpc.DialOption {
 	return []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(256<<20),
 			grpc.MaxCallSendMsgSize(256<<20),

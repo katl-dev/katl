@@ -84,6 +84,7 @@ type CompileRequest struct {
 	KubernetesArtifactBasePath string
 	KubernetesActivationPath   string
 	AddressOverrides           map[string]string
+	ManagementIdentities       map[string]manifest.ManagementIdentity
 }
 
 type Plan struct {

@@ -210,6 +210,7 @@ func runSystemExtensionStatus(ctx context.Context, opts systemExtensionStatusOpt
 	node := hostTargetName(target)
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
+	requestCtx = withManagementTarget(requestCtx, target)
 	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
 	if err != nil {
 		return fmt.Errorf("connect to %s at %s: %w", node, target.endpoint, err)

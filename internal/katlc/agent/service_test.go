@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
 type shutdownTestDispatcher struct {
@@ -25,8 +29,22 @@ func TestServeShutsDownDispatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dispatcher := &shutdownTestDispatcher{called: make(chan struct{})}
-	err := Serve(ctx, ServeConfig{
-		Root:       t.TempDir(),
+	root := t.TempDir()
+	identity, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "test", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _, err := managementidentity.EnsureNode(&identity, "node-a", time.Now().UTC(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteManagementIdentity(root, "node-a", manifest.ManagementIdentity{
+		CACertificate: node.CACertificate, ServerCertificate: node.ServerCertificate, ServerPrivateKey: node.ServerPrivateKey,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err = Serve(ctx, ServeConfig{
+		Root:       root,
 		Listen:     "tcp://127.0.0.1:0",
 		Dispatcher: dispatcher,
 	})

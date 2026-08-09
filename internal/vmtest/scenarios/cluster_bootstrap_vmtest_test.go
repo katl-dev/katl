@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -773,7 +772,7 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if err != nil {
 		return err
 	}
-	cpStatus, err := submitKubeadmUpgrade(ctx, cpAddress, agentapi.KubernetesSysextUpdateOperationRequest{
+	cpStatus, err := submitKubeadmUpgrade(ctx, "cp-1", cpAddress, agentapi.KubernetesSysextUpdateOperationRequest{
 		TargetPayloadVersion: targetVersion, TargetSysextPath: guestTarget, TargetSysextSha256: targetSHA, TargetSysextSizeBytes: uint64(len(target)), CandidateGenerationId: "upgrade-v1361-cp", UpgradeRole: "apply", SourcePayloadVersion: "v1.36.0",
 		SnapshotRef: snapshot.Ref, SnapshotDigest: snapshot.Digest, SnapshotRevision: snapshot.Revision, SnapshotCreatedAt: snapshot.CreatedAt, CapturedMemberListDigest: snapshot.MemberListDigest, SourceEtcdVersion: snapshot.EtcdVersion, SnapshotStorageLocation: snapshot.Location, SnapshotOperatorIdentity: "vmtest:kubeadm-upgrade",
 	})
@@ -786,7 +785,7 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-control-plane-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return err
 	}
-	workerStatus, err := submitKubeadmUpgrade(ctx, workerAddress, agentapi.KubernetesSysextUpdateOperationRequest{
+	workerStatus, err := submitKubeadmUpgrade(ctx, "worker-1", workerAddress, agentapi.KubernetesSysextUpdateOperationRequest{
 		TargetPayloadVersion: targetVersion, TargetSysextPath: guestTarget, TargetSysextSha256: targetSHA, TargetSysextSizeBytes: uint64(len(target)), CandidateGenerationId: "upgrade-v1361-worker", UpgradeRole: "worker", SourcePayloadVersion: "v1.36.0", SnapshotRef: snapshot.Ref, SnapshotDigest: snapshot.Digest,
 	})
 	if err != nil {
@@ -851,6 +850,11 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	}
 	cpStatus, workerStatus := enrollments["cp-1"], enrollments["worker-1"]
 	contextConfig := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n        enrollmentID: %s\n        machineID: %s\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n        enrollmentID: %s\n        machineID: %s\n", cpAddress, cpAddress, cpStatus.GetEnrollmentId(), cpStatus.GetMachineId(), workerAddress, workerStatus.GetEnrollmentId(), workerStatus.GetMachineId())
+	management, err := vmtestManagementContextYAML()
+	if err != nil {
+		return err
+	}
+	contextConfig = strings.Replace(contextConfig, "    nodes:\n", management+"    nodes:\n", 1)
 	if err := os.WriteFile(contextPath, []byte(contextConfig), 0o600); err != nil {
 		return fmt.Errorf("write katlctl upgrade context: %w", err)
 	}
@@ -991,9 +995,13 @@ func createUpgradeSnapshotEvidence(ctx context.Context, node vmtest.RunningInsta
 	return upgradeSnapshotEvidence{Ref: "vmtest-cp1-v1360-before-v1361", Digest: digest[0], CreatedAt: time.Now().UTC().Format(time.RFC3339), MemberListDigest: hex.EncodeToString(memberDigest[:]), Location: location}, nil
 }
 
-func submitKubeadmUpgrade(ctx context.Context, address string, request agentapi.KubernetesSysextUpdateOperationRequest) (*agentapi.OperationStatus, error) {
-	connector := cluster.TCPAgentConnector{DialTimeout: 10 * time.Second}
-	conn, err := connector.Connect(ctx, inventory.PlannedNode{Name: address, Address: address, Access: inventory.Access{Method: "agent"}})
+func submitKubeadmUpgrade(ctx context.Context, nodeName, address string, request agentapi.KubernetesSysextUpdateOperationRequest) (*agentapi.OperationStatus, error) {
+	connector, err := vmtest.VMTestAgentConnector(vmtest.VMTestManagementClusterName)
+	if err != nil {
+		return nil, err
+	}
+	connector.DialTimeout = 10 * time.Second
+	conn, err := connector.Connect(ctx, inventory.PlannedNode{Name: nodeName, Address: address, Access: inventory.Access{Method: "agent"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1114,7 +1122,13 @@ func waitForBootstrapRuntimeAfterReboot(ctx context.Context, node vmtest.Running
 			"systemctl", "is-active", "kubelet.service", "containerd.service", "katlc-agent.service", "sshd.service",
 		}, 16<<10)
 		if err == nil && result.ExitStatus == 0 {
-			connector := cluster.TCPAgentConnector{DialTimeout: 5 * time.Second}
+			connector, err := vmtest.VMTestAgentConnector(vmtest.VMTestManagementClusterName)
+			if err != nil {
+				last = err.Error()
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			connector.DialTimeout = 5 * time.Second
 			connection, connectErr := connector.Connect(ctx, inventory.PlannedNode{
 				Name: node.Name, Address: node.Result.IPAddress, Access: inventory.Access{Method: "agent"},
 			})

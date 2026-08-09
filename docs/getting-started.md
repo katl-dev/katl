@@ -7,7 +7,8 @@ network.
 
 Installation erases the selected system disk. Use disposable machines or make
 independent backups before continuing. Keep installer TCP `8080` and management
-TCP `9443` on trusted networks.
+TCP `9443` on trusted networks; installed management traffic is automatically
+authenticated and encrypted.
 
 ## 1. Download One Release
 
@@ -90,6 +91,10 @@ The [installation reference](installing.md#author-one-clusterconfig) documents
 static networking, routed API advertisement, data volumes, native kubeadm
 configuration, kernel arguments, and system extensions.
 
+The first config or install preparation prints the path of a newly created
+cluster management identity. Back up that `.katlkey` file. Katl discovers it
+automatically for routine work; it is not another command-line input.
+
 ## 4. Install Each Node
 
 Optional: enable the selected node's configured SSH keys in the live installer
@@ -145,6 +150,10 @@ This records each node's install-generated enrollment identity and machine ID.
 `ClusterConfig` remains authoritative for desired state; the context is the
 operator's durable binding between that inventory identity and its current
 management address.
+
+If this is a deliberate reinstall using the same backed-up management identity,
+the old context will refuse the replacement machine. Re-enroll only that node
+with `katlctl context save --config ./cluster.yaml --replace-node NODE`.
 
 ## 6. Bootstrap kubeadm
 

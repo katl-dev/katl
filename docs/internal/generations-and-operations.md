@@ -658,17 +658,21 @@ accepted over the agent API and stored only in root-owned operation material
 files under `/var/lib/katl/operations/<operation-id>/material/` with mode
 `0600`; it must not be echoed in normal status.
 
-Day-one security deliberately relies on the supported trusted-network boundary
-while retaining the remote-client shape:
+Day-one security retains the remote-client shape with automatic management
+trust:
 
 ```text
-the management listener is unauthenticated and unencrypted on the trusted
-  home-lab network
+the management listener requires TLS 1.3 and a client certificate issued by the
+  cluster management CA
+katlctl verifies a per-node server certificate name before sending any request
+the full management CA authority remains in the operator backup; nodes receive
+  only their non-CA server leaf and the public CA certificate
 katlctl runs off-node and connects to the katlc management endpoint advertised
   by inventory or client configuration
 katlctl does not SSH to nodes or execute remote shell commands
-operators enroll installed node identities in the workstation context; this is
-  an address-to-node safety binding, not a transport credential
+operators enroll installed node identities in the workstation context; the
+  retained client leaf provides transport access while enrollment and machine
+  identity remain independent target-safety preconditions
 any on-host debug command is secondary to the TCP gRPC contract and must not be
   required for normal operation submission or status
 no multi-tenant RBAC beyond local OS user/group permissions

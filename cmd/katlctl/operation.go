@@ -154,6 +154,7 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
+	requestCtx = withManagementTarget(requestCtx, target)
 	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
 	if err != nil {
 		return err
@@ -210,6 +211,7 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
+	requestCtx = withManagementTarget(requestCtx, target)
 	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
 	if err != nil {
 		return err

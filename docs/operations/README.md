@@ -5,10 +5,9 @@ with the task that matches the current node state; do not skip directly to a
 mutating command.
 
 KatlOS is experimental. Read the [support boundary](../support.md) before using
-these procedures. The installer handoff and installed-node management API are
-intentionally unauthenticated and unencrypted for the trusted home-lab
-network. Keep ports 8080 and 9443 off the Internet and untrusted shared
-networks.
+these procedures. The installer handoff on port 8080 is unauthenticated; the
+installed-node API on port 9443 requires automatic mTLS for every connection.
+Keep both on trusted home-lab networks and off the Internet.
 
 ## Lifecycle Map
 

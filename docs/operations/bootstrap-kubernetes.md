@@ -7,8 +7,8 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 
 - every intended node completed [generation 0 handoff](access.md);
 - the same `ClusterConfig` source used for installation is available;
-- every intended node is reachable on TCP port `9443` from the operator
-  workstation;
+- every intended node is reachable through its host management interface on
+  TCP port `9443` from the operator workstation;
 - `spec.kubernetes.version` is available in this Katl release's compatibility
   catalog;
 - the control-plane endpoint resolves or routes as designed; and
@@ -42,7 +42,8 @@ katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1
 ```
 
-No enrollment or management credential is required. Use `--node-address
+The automatically retained management identity authenticates this read-only
+planning access; there are no extra credential flags. Use `--node-address
 node=address` only for an observed address that differs from the compiled
 source.
 

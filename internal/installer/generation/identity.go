@@ -1,6 +1,7 @@
 package generation
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,9 +10,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
-const EnrollmentPath = "var/lib/katl/identity/enrollment.json"
+const (
+	EnrollmentPath                 = "var/lib/katl/identity/enrollment.json"
+	ManagementCACertificatePath    = "var/lib/katl/identity/management/ca.crt"
+	ManagementServerCertPath       = "var/lib/katl/identity/management/server.crt"
+	ManagementServerPrivateKeyPath = "var/lib/katl/identity/management/server.key"
+)
 
 type Enrollment struct {
 	APIVersion        string `json:"apiVersion"`
@@ -24,6 +34,7 @@ type Enrollment struct {
 type IdentityRequest struct {
 	AuthorizedKeys    []string
 	InventoryNodeName string
+	Management        manifest.ManagementIdentity
 	Random            io.Reader
 	EnrollmentRandom  io.Reader
 }
@@ -32,6 +43,7 @@ type IdentityAssets struct {
 	MachineID      string
 	Enrollment     Enrollment
 	AuthorizedKeys string
+	Management     manifest.ManagementIdentity
 }
 
 func RenderSSH(keys []string) (IdentityAssets, error) {
@@ -61,7 +73,62 @@ func WriteIdentity(root string, request IdentityRequest) (IdentityAssets, error)
 	if err != nil {
 		return IdentityAssets{}, err
 	}
+	if err := WriteManagementIdentity(root, request.InventoryNodeName, request.Management); err != nil {
+		return IdentityAssets{}, err
+	}
+	assets.Management = request.Management
 	return assets, nil
+}
+
+func WriteManagementIdentity(root, nodeName string, identity manifest.ManagementIdentity) error {
+	if identity.Empty() {
+		return fmt.Errorf("management identity is required")
+	}
+	credentials := managementidentity.NodeCredentials{
+		CACertificate:     identity.CACertificate,
+		ServerCertificate: identity.ServerCertificate,
+		ServerPrivateKey:  identity.ServerPrivateKey,
+	}
+	if err := managementidentity.ValidateNode(credentials, strings.TrimSpace(nodeName), time.Now().UTC()); err != nil {
+		return fmt.Errorf("validate management identity: %w", err)
+	}
+	dir := filepath.Join(filepath.Clean(strings.TrimSpace(root)), "var/lib/katl/identity/management")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create management identity directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("secure management identity directory: %w", err)
+	}
+	files := []struct {
+		path string
+		data string
+		mode os.FileMode
+	}{
+		{ManagementCACertificatePath, identity.CACertificate, 0o444},
+		{ManagementServerCertPath, identity.ServerCertificate, 0o444},
+		{ManagementServerPrivateKeyPath, identity.ServerPrivateKey, 0o600},
+	}
+	for _, file := range files {
+		path := filepath.Join(filepath.Clean(strings.TrimSpace(root)), file.path)
+		if existing, err := os.ReadFile(path); err == nil {
+			if !bytes.Equal(existing, []byte(file.data)) {
+				return fmt.Errorf("existing management identity %s differs from install material", file.path)
+			}
+			if err := os.Chmod(path, file.mode); err != nil {
+				return fmt.Errorf("protect management identity %s: %w", file.path, err)
+			}
+			continue
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("read management identity %s: %w", file.path, err)
+		}
+		if err := os.WriteFile(path, []byte(file.data), file.mode); err != nil {
+			return fmt.Errorf("write management identity %s: %w", file.path, err)
+		}
+		if err := os.Chmod(path, file.mode); err != nil {
+			return fmt.Errorf("protect management identity %s: %w", file.path, err)
+		}
+	}
+	return nil
 }
 
 func WriteEnrollment(root, nodeName, machineID string, random io.Reader) (Enrollment, error) {

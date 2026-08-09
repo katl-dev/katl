@@ -103,10 +103,10 @@ and removes its operation-scoped staging copy. Kubeadm distributes the required
 shared material to additional control planes through its normal short-lived
 join mechanism.
 
-The beta node-management API on TCP `9443` is unauthenticated and unencrypted.
-The identity therefore crosses the network only under Katl's trusted-management
-LAN threat model. Do not run this operation across the Internet or an untrusted
-shared network.
+The node-management API on TCP `9443` encrypts this transfer with automatic
+mTLS and authenticates both the operator and expected node before the transfer.
+Keep the operation on the supported trusted-management LAN; this is not a
+general production or multi-tenant security claim.
 
 If shared PKI already exists on the init node, Katl proceeds only when every
 existing file is byte-for-byte identical. A different identity, or incomplete
