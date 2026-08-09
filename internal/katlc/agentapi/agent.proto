@@ -183,6 +183,8 @@ message BootstrapOperationRequest {
   string kubernetes_bundle_source = 11;
   string kubernetes_bundle_ref = 12;
   bool existing_cluster_join = 13;
+  bytes kubernetes_identity = 14;
+  string kubernetes_identity_fingerprint = 15;
 }
 
 message WorkerJoinMaterial {

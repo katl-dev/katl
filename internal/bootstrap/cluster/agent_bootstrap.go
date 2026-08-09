@@ -165,7 +165,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	}
 	status := statuses[initNode.Name]
 	emitAgentProgress(deps, AgentBootstrapProgress{Node: initNode.Name, Kind: agentBootstrapInitKind, Phase: "submitting"})
-	initResult, err := submitAndWaitBootstrapInit(ctx, initNode, plan, status, deps)
+	initResult, err := submitAndWaitBootstrapInit(ctx, initNode, plan, status, request.ClusterName, request.KubernetesIdentity, request.KubernetesIdentityFingerprint, deps)
 	if err != nil {
 		result.addOperationPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "failed", initResult.Operation)
 		return result, fmt.Errorf("bootstrap-init operation on %s: %s", initNode.Name, inventory.Redact(err.Error()))
@@ -446,13 +446,13 @@ type workerJoinMaterial struct {
 	Material *agentapi.WorkerJoinMaterial
 }
 
-func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) (bootstrapInitResult, error) {
+func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, clusterName string, identity []byte, identityFingerprint string, deps AgentBootstrapDependencies) (bootstrapInitResult, error) {
 	conn, err := deps.Connector.Connect(ctx, node)
 	if err != nil {
 		return bootstrapInitResult{}, fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
-	req := bootstrapInitRequest(node, plan, status, deps)
+	req := bootstrapInitRequest(node, plan, status, clusterName, identity, identityFingerprint, deps)
 	accepted, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
 	if err != nil {
 		return bootstrapInitResult{}, err
@@ -776,15 +776,23 @@ func bootstrapKubernetesHealthy(node inventory.PlannedNode, status *agentapi.Nod
 	return true
 }
 
-func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies) *agentapi.SubmitOperationRequest {
-	return bootstrapOperationRequest(node, plan, status, deps, agentBootstrapInitKind)
+func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, clusterName string, identity []byte, identityFingerprint string, deps AgentBootstrapDependencies) *agentapi.SubmitOperationRequest {
+	request := bootstrapOperationRequest(node, plan, status, deps, agentBootstrapInitKind)
+	identityRef := strings.TrimSpace(identityFingerprint)
+	if identityRef != "" {
+		identityRef = strings.TrimSpace(clusterName) + "\x00" + identityRef
+	}
+	request.ClientRequestId = clientRequestID(node, plan, agentBootstrapInitKind, identityRef)
+	request.Bootstrap.KubernetesIdentity = append([]byte(nil), identity...)
+	request.Bootstrap.KubernetesIdentityFingerprint = strings.TrimSpace(identityFingerprint)
+	return request
 }
 
 func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies, kind string) *agentapi.SubmitOperationRequest {
 	return &agentapi.SubmitOperationRequest{
 		ApiVersion:                  agentAPIVersion,
 		Kind:                        agentSubmitOperationKind,
-		ClientRequestId:             clientRequestID(node, plan, kind),
+		ClientRequestId:             clientRequestID(node, plan, kind, ""),
 		OperationKind:               kind,
 		Actor:                       valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
 		ExpectedMachineId:           strings.TrimSpace(status.GetMachineId()),
@@ -919,7 +927,7 @@ func closeAgent(conn AgentConnection) error {
 	return conn.Close()
 }
 
-func clientRequestID(node inventory.PlannedNode, plan inventory.Plan, kind string) string {
+func clientRequestID(node inventory.PlannedNode, plan inventory.Plan, kind string, identityFingerprint string) string {
 	identity := strings.Join([]string{
 		node.Name,
 		kind,
@@ -930,6 +938,7 @@ func clientRequestID(node inventory.PlannedNode, plan inventory.Plan, kind strin
 		plan.ControlPlaneEndpoint,
 		plan.KubernetesBundleSource,
 		plan.KubernetesBundleRef,
+		strings.TrimSpace(identityFingerprint),
 	}, "\x00")
 	sum := sha256.Sum256([]byte(identity))
 	return "katlctl-" + node.Name + "-" + hex.EncodeToString(sum[:])[:12]

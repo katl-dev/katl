@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,7 +25,60 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/kubernetesidentity"
 )
+
+func TestPrepareKubernetesIdentityInstallsSharedPKIAndRemovesStaging(t *testing.T) {
+	server := newTestServer(t)
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Now = server.Now
+	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := kubernetesidentity.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := kubernetesidentity.Validate(bundle, server.clock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := operation.OperationRecord{
+		OperationID: "bootstrap-init-identity",
+		BootstrapRequest: &operation.BootstrapRequest{
+			KubernetesIdentityCluster:     info.ClusterName,
+			KubernetesIdentityFingerprint: info.Fingerprint,
+			KubernetesIdentityDigest:      kubernetesidentity.Digest(data),
+		},
+	}
+	stagingPath := kubernetesIdentityStagingPath(server.Store.Root, record.OperationID)
+	if err := kubernetesidentity.Stage(stagingPath, data); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.prepareKubernetesIdentity(record); err != nil {
+		t.Fatalf("prepareKubernetesIdentity() error = %v", err)
+	}
+	if _, err := os.Stat(stagingPath); !os.IsNotExist(err) {
+		t.Fatalf("staged identity remains after installation: %v", err)
+	}
+	files, err := kubernetesidentity.Files(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for relative, want := range files {
+		got, err := os.ReadFile(filepath.Join(server.Root, "etc/kubernetes/pki", filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatalf("read installed %s: %v", relative, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("installed %s differs", relative)
+		}
+	}
+	if err := executor.prepareKubernetesIdentity(record); err != nil {
+		t.Fatalf("prepareKubernetesIdentity() retry after staging removal error = %v", err)
+	}
+}
 
 func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	server := newTestServer(t)

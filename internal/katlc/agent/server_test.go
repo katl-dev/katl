@@ -26,6 +26,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/kubernetesidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -246,6 +247,71 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 	}
 	if len(record.ResourceLocks) != 2 {
 		t.Fatalf("resource locks = %v, want bootstrap locks", record.ResourceLocks)
+	}
+}
+
+func TestSubmitOperationStagesKubernetesIdentityOutsideRecord(t *testing.T) {
+	server := newTestServer(t)
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
+	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := kubernetesidentity.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := kubernetesidentity.Validate(bundle, server.clock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := submitRequest("req-identity")
+	request.Bootstrap.KubernetesIdentity = data
+	request.Bootstrap.KubernetesIdentityFingerprint = info.Fingerprint
+	accepted, err := server.SubmitOperation(context.Background(), request)
+	if err != nil {
+		t.Fatalf("SubmitOperation() error = %v", err)
+	}
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.BootstrapRequest.KubernetesIdentityCluster != "homelab" || record.BootstrapRequest.KubernetesIdentityFingerprint != info.Fingerprint || record.BootstrapRequest.KubernetesIdentityDigest != kubernetesidentity.Digest(data) {
+		t.Fatalf("identity metadata = %#v", record.BootstrapRequest)
+	}
+	staged, err := os.ReadFile(kubernetesIdentityStagingPath(server.Store.Root, accepted.OperationId))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(staged, data) {
+		t.Fatal("staged identity differs from submitted identity")
+	}
+	recordData, err := os.ReadFile(filepath.Join(server.Store.Root, accepted.OperationId, "record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(recordData, []byte("PRIVATE KEY")) || bytes.Contains(recordData, data) {
+		t.Fatal("operation record contains Kubernetes private identity material")
+	}
+}
+
+func TestSubmitOperationRejectsKubernetesIdentityFingerprintMismatch(t *testing.T) {
+	server := newTestServer(t)
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
+	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := kubernetesidentity.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := submitRequest("req-bad-identity")
+	request.Bootstrap.KubernetesIdentity = data
+	request.Bootstrap.KubernetesIdentityFingerprint = "sha256:" + strings.Repeat("0", 64)
+	_, err = server.SubmitOperation(context.Background(), request)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "must match") {
+		t.Fatalf("SubmitOperation() error = %v", err)
 	}
 }
 

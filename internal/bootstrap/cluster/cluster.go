@@ -35,17 +35,19 @@ var (
 )
 
 type Request struct {
-	Inventory            inventory.Inventory
-	InitNode             string
-	AddressOverrides     map[string]string
-	ControlPlaneEndpoint string
-	KubeconfigOut        string
-	OverwriteKubeconfig  bool
-	DryRun               bool
-	ClusterName          string
-	ContextName          string
-	UserName             string
-	Bootstrap            UserBootstrap
+	Inventory                     inventory.Inventory
+	InitNode                      string
+	AddressOverrides              map[string]string
+	ControlPlaneEndpoint          string
+	KubeconfigOut                 string
+	OverwriteKubeconfig           bool
+	DryRun                        bool
+	ClusterName                   string
+	ContextName                   string
+	UserName                      string
+	Bootstrap                     UserBootstrap
+	KubernetesIdentity            []byte
+	KubernetesIdentityFingerprint string
 }
 
 type Dependencies struct {

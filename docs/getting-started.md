@@ -146,10 +146,28 @@ convenience.
 
 ## 6. Bootstrap kubeadm
 
+For a cluster you may rebuild, first create and independently back up its
+Kubernetes trust identity. The name must match `metadata.name` in
+`cluster.yaml`:
+
+```sh
+katlctl kubernetes identity create \
+  --cluster-name homelab \
+  --output ./homelab-kubernetes-identity.katlkey
+katlctl kubernetes identity inspect \
+  ./homelab-kubernetes-identity.katlkey
+```
+
+This mode-`0600` file contains CA private keys. Do not publish it with PXE
+assets or keep its only copy on a cluster node. Read [Preserve Kubernetes
+identity](operations/kubernetes-identity.md) for its exact scope and backup
+requirements.
+
 First inspect the non-mutating plan:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
+  --identity ./homelab-kubernetes-identity.katlkey \
   --init-node cp-1 --dry-run
 ```
 
@@ -157,6 +175,7 @@ Then perform bootstrap:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
+  --identity ./homelab-kubernetes-identity.katlkey \
   --init-node cp-1
 ```
 

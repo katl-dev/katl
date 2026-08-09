@@ -35,6 +35,7 @@ above are the better place to begin.
 | Verify downloaded artifacts | [Verify release artifacts](operations/verify-release.md) |
 | Inspect generation 0 and management access | [Access installed nodes](operations/access.md) |
 | Create the kubeadm cluster | [Bootstrap Kubernetes](operations/bootstrap-kubernetes.md) |
+| Preserve trust across a whole-cluster rebuild | [Preserve Kubernetes identity](operations/kubernetes-identity.md) |
 | Install Cilium on the immutable host | [Run Cilium on KatlOS](operations/cilium.md) |
 
 ## Operate and Recover

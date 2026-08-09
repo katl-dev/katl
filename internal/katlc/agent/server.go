@@ -23,6 +23,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/kubernetesidentity"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -508,6 +509,19 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		return s.acceptEtcdMemberRemoveOperation(req, digest, id, locks, now)
 	}
 	bootstrapRequest := bootstrapRequestFromProto(req.GetBootstrap())
+	if data := req.GetBootstrap().GetKubernetesIdentity(); len(data) > 0 {
+		bundle, err := kubernetesidentity.Parse(data)
+		if err != nil {
+			return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "Kubernetes identity: %v", err)
+		}
+		info, err := kubernetesidentity.Validate(bundle, now)
+		if err != nil {
+			return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "Kubernetes identity: %v", err)
+		}
+		bootstrapRequest.KubernetesIdentityCluster = info.ClusterName
+		bootstrapRequest.KubernetesIdentityFingerprint = info.Fingerprint
+		bootstrapRequest.KubernetesIdentityDigest = kubernetesidentity.Digest(data)
+	}
 	candidateID := strings.TrimSpace(bootstrapRequest.CandidateGenerationID)
 	if candidateID == "" {
 		candidateID = id + "-candidate"
@@ -555,6 +569,15 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 	created, err := s.Store.Create(record, "accepted", now)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "create operation record: %v", err)
+	}
+	if data := req.GetBootstrap().GetKubernetesIdentity(); len(data) > 0 {
+		if err := kubernetesidentity.Stage(kubernetesIdentityStagingPath(s.Store.Root, id), data); err != nil {
+			updated, updateErr := s.markMaterializationFailed(id, fmt.Errorf("stage Kubernetes identity: %w", err))
+			if updateErr != nil {
+				return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "stage Kubernetes identity failed and status update failed: %v; %v", err, updateErr)
+			}
+			return updated, nil, nil
+		}
 	}
 	if isJoinOperation(req.OperationKind) {
 		metadata, err := s.materializeJoinConfig(req, id)
@@ -939,6 +962,8 @@ func (s *Server) markMaterializationFailed(operationID string, err error) (opera
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true
 		switch record.OperationKind {
+		case "bootstrap-init":
+			record.NextAction = "correct the Kubernetes identity or node PKI state and resubmit bootstrap"
 		case "bootstrap-join-control-plane":
 			record.NextAction = "submit a new control-plane join operation with valid join material"
 		default:
@@ -1367,6 +1392,27 @@ func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapO
 	if strings.TrimSpace(request.JoinMaterialRef) != "" && inventory.Redact(request.JoinMaterialRef) != request.JoinMaterialRef {
 		return fmt.Errorf("joinMaterialRef must be an opaque reference, not raw join material")
 	}
+	identity := request.GetKubernetesIdentity()
+	identityFingerprint := strings.TrimSpace(request.GetKubernetesIdentityFingerprint())
+	if len(identity) == 0 && identityFingerprint != "" {
+		return fmt.Errorf("kubernetesIdentityFingerprint requires kubernetesIdentity")
+	}
+	if len(identity) > 0 {
+		if operationKind != "bootstrap-init" {
+			return fmt.Errorf("kubernetesIdentity is only accepted for bootstrap-init")
+		}
+		bundle, err := kubernetesidentity.Parse(identity)
+		if err != nil {
+			return fmt.Errorf("kubernetesIdentity: %w", err)
+		}
+		info, err := kubernetesidentity.Validate(bundle, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("kubernetesIdentity: %w", err)
+		}
+		if identityFingerprint == "" || identityFingerprint != info.Fingerprint {
+			return fmt.Errorf("kubernetesIdentityFingerprint must match the supplied identity")
+		}
+	}
 	return nil
 }
 
@@ -1388,6 +1434,10 @@ func bootstrapRequestFromProto(request *agentapi.BootstrapOperationRequest) oper
 		JoinMaterialRef:          strings.TrimSpace(request.JoinMaterialRef),
 		ExistingClusterJoin:      request.GetExistingClusterJoin(),
 	}
+}
+
+func kubernetesIdentityStagingPath(storeRoot, operationID string) string {
+	return filepath.Join(filepath.Clean(storeRoot), operationID, "kubernetes-identity.katlkey")
 }
 
 func (s *Server) materializeJoinConfig(req *agentapi.SubmitOperationRequest, operationID string) (workerJoinMetadata, error) {

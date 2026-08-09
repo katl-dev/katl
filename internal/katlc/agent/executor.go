@@ -25,6 +25,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/kubernetesidentity"
 )
 
 const (
@@ -485,6 +486,12 @@ func (e *Executor) prepareBootstrapRuntime(ctx context.Context, record operation
 		updated, markErr := e.failRecordPhase(record.OperationID, "prepare-bootstrap-runtime-failed", "prepare-bootstrap-runtime", "prepare-bootstrap-runtime", "bootstrap runtime preparation failed before kubeadm mutation", errors.Join(err, artifactErr))
 		return updated, errors.Join(err, artifactErr, markErr)
 	}
+	if err := e.prepareKubernetesIdentity(record); err != nil {
+		failedAt := e.clock()
+		_, artifactErr := e.Store.AddDiagnosticArtifact(record.OperationID, "prepare-kubernetes-identity-error", []byte(inventory.Redact(err.Error())), failedAt)
+		updated, markErr := e.failRecordPhase(record.OperationID, "prepare-kubernetes-identity-failed", "prepare-kubernetes-identity", "prepare-bootstrap-runtime", "Kubernetes identity preparation failed before kubeadm mutation; correct the identity or node state and resubmit bootstrap", errors.Join(err, artifactErr))
+		return updated, errors.Join(err, artifactErr, markErr)
+	}
 	updatedAt := e.clock()
 	updated, err := e.Store.Update(record.OperationID, "prepare-bootstrap-runtime-complete", "prepare-bootstrap-runtime", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = "prepare-bootstrap-runtime"
@@ -505,6 +512,61 @@ func (e *Executor) prepareBootstrapRuntime(ctx context.Context, record operation
 		return operation.OperationRecord{}, err
 	}
 	return updated, nil
+}
+
+func (e *Executor) prepareKubernetesIdentity(record operation.OperationRecord) error {
+	request := record.BootstrapRequest
+	if request == nil || strings.TrimSpace(request.KubernetesIdentityFingerprint) == "" {
+		return nil
+	}
+	path := kubernetesIdentityStagingPath(e.Store.Root, record.OperationID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return e.verifyInstalledKubernetesIdentity(*request)
+		}
+		return fmt.Errorf("read staged Kubernetes identity: %w", err)
+	}
+	if digest := kubernetesidentity.Digest(data); digest != request.KubernetesIdentityDigest {
+		return fmt.Errorf("staged Kubernetes identity digest %s does not match accepted digest %s", digest, request.KubernetesIdentityDigest)
+	}
+	bundle, err := kubernetesidentity.Parse(data)
+	if err != nil {
+		return fmt.Errorf("parse staged Kubernetes identity: %w", err)
+	}
+	info, err := kubernetesidentity.Validate(bundle, e.clock())
+	if err != nil {
+		return fmt.Errorf("validate staged Kubernetes identity: %w", err)
+	}
+	if info.ClusterName != request.KubernetesIdentityCluster || info.Fingerprint != request.KubernetesIdentityFingerprint {
+		return fmt.Errorf("staged Kubernetes identity metadata does not match the accepted operation")
+	}
+	if err := kubernetesidentity.Install(runtimeRoot(e.Root), bundle); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove operation-scoped Kubernetes identity: %w", err)
+	}
+	return nil
+}
+
+func (e *Executor) verifyInstalledKubernetesIdentity(request operation.BootstrapRequest) error {
+	bundle, err := kubernetesidentity.Import(kubernetesidentity.ImportOptions{
+		ClusterName: request.KubernetesIdentityCluster,
+		CreatedAt:   e.clock(),
+		PKIDir:      filepath.Join(runtimeRoot(e.Root), "etc/kubernetes/pki"),
+	})
+	if err != nil {
+		return fmt.Errorf("staged Kubernetes identity is absent and installed shared PKI could not be verified: %w", err)
+	}
+	info, err := kubernetesidentity.Validate(bundle, e.clock())
+	if err != nil {
+		return fmt.Errorf("validate installed shared Kubernetes identity: %w", err)
+	}
+	if info.Fingerprint != request.KubernetesIdentityFingerprint {
+		return fmt.Errorf("installed shared Kubernetes identity fingerprint %s does not match accepted fingerprint %s", info.Fingerprint, request.KubernetesIdentityFingerprint)
+	}
+	return nil
 }
 
 func (e *Executor) failRecord(operationID string, eventID string, eventType string, nextAction string, cause error) (operation.OperationRecord, error) {

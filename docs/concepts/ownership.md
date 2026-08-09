@@ -13,6 +13,7 @@ Kubernetes API and kubeconfig ready for your cluster-management workflow.
 | Immutable host generations and boot health | Katl | Katl stages, trial-boots, promotes, or falls back between versioned host generations. |
 | Host configuration declared in `ClusterConfig` | Katl | Katl applies the supported SSH, storage, kernel, native Linux, networking, and extension domains. |
 | kubeadm init, join, and supported upgrades | Katl | Katl performs explicit, durable operations and writes the operator kubeconfig. |
+| Kubernetes trust identity | Operator | Create or import, protect, and independently back up the optional Katl identity file; Katl validates and installs it only for explicit bootstrap. |
 | DHCP, TFTP, iPXE, Matchbox, firmware boot order | Operator | Katl publishes artifacts and consumes a selected `.katlcfg`; it does not operate provisioning infrastructure. |
 | Stable DNS and external routing | Operator | Katl can health-gate and advertise a configured VIP, but the surrounding DNS, routers, peers, and network policy remain yours. |
 | CNI | Operator | Choose, install, upgrade, diagnose, and remove cluster networking yourself. |
@@ -40,6 +41,11 @@ ownership of those resources to Katl.
 Katl generations own the immutable runtime root, UKI, selected system
 extensions, and compiled host configuration. Writable identity, container,
 Kubernetes, etcd, and workload data live outside that generation.
+
+The reusable [Kubernetes identity](../operations/kubernetes-identity.md) is an
+operator secret outside both node generations and `ClusterConfig`. It preserves
+shared kubeadm CA and signing keys across whole-cluster reprovisioning. It does
+not preserve etcd contents or Kubernetes resources.
 
 Falling back to a previous host generation therefore does **not** undo kubeadm
 commands, etcd membership or data, Kubernetes API objects, CNI state, volumes,

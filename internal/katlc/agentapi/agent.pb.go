@@ -1350,22 +1350,24 @@ func (x *SubmitOperationRequest) GetEtcdMemberRemove() *EtcdMemberRemoveOperatio
 }
 
 type BootstrapOperationRequest struct {
-	state                    protoimpl.MessageState `protogen:"open.v1"`
-	InventoryNodeName        string                 `protobuf:"bytes,1,opt,name=inventory_node_name,json=inventoryNodeName,proto3" json:"inventory_node_name,omitempty"`
-	SystemRole               string                 `protobuf:"bytes,2,opt,name=system_role,json=systemRole,proto3" json:"system_role,omitempty"`
-	KubernetesPayloadVersion string                 `protobuf:"bytes,3,opt,name=kubernetes_payload_version,json=kubernetesPayloadVersion,proto3" json:"kubernetes_payload_version,omitempty"`
-	BootstrapProfileRef      string                 `protobuf:"bytes,4,opt,name=bootstrap_profile_ref,json=bootstrapProfileRef,proto3" json:"bootstrap_profile_ref,omitempty"`
-	ControlPlaneEndpoint     string                 `protobuf:"bytes,5,opt,name=control_plane_endpoint,json=controlPlaneEndpoint,proto3" json:"control_plane_endpoint,omitempty"`
-	StableEndpoint           string                 `protobuf:"bytes,6,opt,name=stable_endpoint,json=stableEndpoint,proto3" json:"stable_endpoint,omitempty"`
-	CandidateGenerationId    string                 `protobuf:"bytes,7,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
-	KubeadmInputDigest       string                 `protobuf:"bytes,8,opt,name=kubeadm_input_digest,json=kubeadmInputDigest,proto3" json:"kubeadm_input_digest,omitempty"`
-	JoinMaterialRef          string                 `protobuf:"bytes,9,opt,name=join_material_ref,json=joinMaterialRef,proto3" json:"join_material_ref,omitempty"`
-	WorkerJoinMaterial       *WorkerJoinMaterial    `protobuf:"bytes,10,opt,name=worker_join_material,json=workerJoinMaterial,proto3" json:"worker_join_material,omitempty"`
-	KubernetesBundleSource   string                 `protobuf:"bytes,11,opt,name=kubernetes_bundle_source,json=kubernetesBundleSource,proto3" json:"kubernetes_bundle_source,omitempty"`
-	KubernetesBundleRef      string                 `protobuf:"bytes,12,opt,name=kubernetes_bundle_ref,json=kubernetesBundleRef,proto3" json:"kubernetes_bundle_ref,omitempty"`
-	ExistingClusterJoin      bool                   `protobuf:"varint,13,opt,name=existing_cluster_join,json=existingClusterJoin,proto3" json:"existing_cluster_join,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	state                         protoimpl.MessageState `protogen:"open.v1"`
+	InventoryNodeName             string                 `protobuf:"bytes,1,opt,name=inventory_node_name,json=inventoryNodeName,proto3" json:"inventory_node_name,omitempty"`
+	SystemRole                    string                 `protobuf:"bytes,2,opt,name=system_role,json=systemRole,proto3" json:"system_role,omitempty"`
+	KubernetesPayloadVersion      string                 `protobuf:"bytes,3,opt,name=kubernetes_payload_version,json=kubernetesPayloadVersion,proto3" json:"kubernetes_payload_version,omitempty"`
+	BootstrapProfileRef           string                 `protobuf:"bytes,4,opt,name=bootstrap_profile_ref,json=bootstrapProfileRef,proto3" json:"bootstrap_profile_ref,omitempty"`
+	ControlPlaneEndpoint          string                 `protobuf:"bytes,5,opt,name=control_plane_endpoint,json=controlPlaneEndpoint,proto3" json:"control_plane_endpoint,omitempty"`
+	StableEndpoint                string                 `protobuf:"bytes,6,opt,name=stable_endpoint,json=stableEndpoint,proto3" json:"stable_endpoint,omitempty"`
+	CandidateGenerationId         string                 `protobuf:"bytes,7,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
+	KubeadmInputDigest            string                 `protobuf:"bytes,8,opt,name=kubeadm_input_digest,json=kubeadmInputDigest,proto3" json:"kubeadm_input_digest,omitempty"`
+	JoinMaterialRef               string                 `protobuf:"bytes,9,opt,name=join_material_ref,json=joinMaterialRef,proto3" json:"join_material_ref,omitempty"`
+	WorkerJoinMaterial            *WorkerJoinMaterial    `protobuf:"bytes,10,opt,name=worker_join_material,json=workerJoinMaterial,proto3" json:"worker_join_material,omitempty"`
+	KubernetesBundleSource        string                 `protobuf:"bytes,11,opt,name=kubernetes_bundle_source,json=kubernetesBundleSource,proto3" json:"kubernetes_bundle_source,omitempty"`
+	KubernetesBundleRef           string                 `protobuf:"bytes,12,opt,name=kubernetes_bundle_ref,json=kubernetesBundleRef,proto3" json:"kubernetes_bundle_ref,omitempty"`
+	ExistingClusterJoin           bool                   `protobuf:"varint,13,opt,name=existing_cluster_join,json=existingClusterJoin,proto3" json:"existing_cluster_join,omitempty"`
+	KubernetesIdentity            []byte                 `protobuf:"bytes,14,opt,name=kubernetes_identity,json=kubernetesIdentity,proto3" json:"kubernetes_identity,omitempty"`
+	KubernetesIdentityFingerprint string                 `protobuf:"bytes,15,opt,name=kubernetes_identity_fingerprint,json=kubernetesIdentityFingerprint,proto3" json:"kubernetes_identity_fingerprint,omitempty"`
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *BootstrapOperationRequest) Reset() {
@@ -1487,6 +1489,20 @@ func (x *BootstrapOperationRequest) GetExistingClusterJoin() bool {
 		return x.ExistingClusterJoin
 	}
 	return false
+}
+
+func (x *BootstrapOperationRequest) GetKubernetesIdentity() []byte {
+	if x != nil {
+		return x.KubernetesIdentity
+	}
+	return nil
+}
+
+func (x *BootstrapOperationRequest) GetKubernetesIdentityFingerprint() string {
+	if x != nil {
+		return x.KubernetesIdentityFingerprint
+	}
+	return ""
 }
 
 type WorkerJoinMaterial struct {
@@ -5153,7 +5169,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x11destructive_reset\x18\x0f \x01(\v2/.katl.agent.v1.DestructiveResetOperationRequestR\x10destructiveReset\x12M\n" +
 	"\fhost_upgrade\x18\x10 \x01(\v2*.katl.agent.v1.HostUpgradeOperationRequestR\vhostUpgrade\x12y\n" +
 	"\x1ckubeadm_control_plane_config\x18\x11 \x01(\v28.katl.agent.v1.KubeadmControlPlaneConfigOperationRequestR\x19kubeadmControlPlaneConfig\x12]\n" +
-	"\x12etcd_member_remove\x18\x12 \x01(\v2/.katl.agent.v1.EtcdMemberRemoveOperationRequestR\x10etcdMemberRemove\"\xca\x05\n" +
+	"\x12etcd_member_remove\x18\x12 \x01(\v2/.katl.agent.v1.EtcdMemberRemoveOperationRequestR\x10etcdMemberRemove\"\xc3\x06\n" +
 	"\x19BootstrapOperationRequest\x12.\n" +
 	"\x13inventory_node_name\x18\x01 \x01(\tR\x11inventoryNodeName\x12\x1f\n" +
 	"\vsystem_role\x18\x02 \x01(\tR\n" +
@@ -5169,7 +5185,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	" \x01(\v2!.katl.agent.v1.WorkerJoinMaterialR\x12workerJoinMaterial\x128\n" +
 	"\x18kubernetes_bundle_source\x18\v \x01(\tR\x16kubernetesBundleSource\x122\n" +
 	"\x15kubernetes_bundle_ref\x18\f \x01(\tR\x13kubernetesBundleRef\x122\n" +
-	"\x15existing_cluster_join\x18\r \x01(\bR\x13existingClusterJoin\"\x83\x01\n" +
+	"\x15existing_cluster_join\x18\r \x01(\bR\x13existingClusterJoin\x12/\n" +
+	"\x13kubernetes_identity\x18\x0e \x01(\fR\x12kubernetesIdentity\x12F\n" +
+	"\x1fkubernetes_identity_fingerprint\x18\x0f \x01(\tR\x1dkubernetesIdentityFingerprint\"\x83\x01\n" +
 	"\x12WorkerJoinMaterial\x12\x1b\n" +
 	"\tjoin_argv\x18\x01 \x03(\tR\bjoinArgv\x12\x1d\n" +
 	"\n" +
