@@ -169,6 +169,7 @@ type ConfigApplyRequest struct {
 	ConfigYAMLPath                     string   `json:"configYAMLPath,omitempty"`
 	ConfigYAMLSHA256                   string   `json:"configYAMLSHA256,omitempty"`
 	DestructiveStorageAcknowledgements []string `json:"destructiveStorageAcknowledgements,omitempty"`
+	VolumeRebinds                      []string `json:"volumeRebinds,omitempty"`
 }
 
 type KubeadmControlPlaneConfig struct {
@@ -1172,6 +1173,7 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	if record.ConfigApplyRequest != nil {
 		request := *record.ConfigApplyRequest
 		request.DestructiveStorageAcknowledgements = cloneStrings(request.DestructiveStorageAcknowledgements)
+		request.VolumeRebinds = cloneStrings(request.VolumeRebinds)
 		record.ConfigApplyRequest = &request
 	}
 	if record.KubernetesSysextUpdate != nil {
@@ -1825,6 +1827,9 @@ func validateConfigApplyRequest(request ConfigApplyRequest) error {
 		}
 	}
 	if err := disk.ValidateDestructiveVolumeAcknowledgementKeys(request.DestructiveStorageAcknowledgements); err != nil {
+		return fmt.Errorf("configApplyRequest: %w", err)
+	}
+	if err := disk.ValidateVolumeRebindKeys(request.VolumeRebinds); err != nil {
 		return fmt.Errorf("configApplyRequest: %w", err)
 	}
 	return nil

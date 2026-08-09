@@ -62,6 +62,9 @@ type volumeStatusReport struct {
 	SubState          string `json:"subState"`
 	Result            string `json:"result"`
 	FailureDiagnostic string `json:"failureDiagnostic,omitempty"`
+	PartitionUUID     string `json:"partitionUUID,omitempty"`
+	FilesystemUUID    string `json:"filesystemUUID,omitempty"`
+	MountSource       string `json:"mountSource,omitempty"`
 }
 
 type kubernetesStatusReport struct {
@@ -415,6 +418,7 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 			Name: volume.GetName(), TargetKind: volume.GetTargetKind(), MountPath: volume.GetMountPath(),
 			Filesystem: volume.GetFilesystem(), LoadState: volume.GetLoadState(), ActiveState: volume.GetActiveState(),
 			SubState: volume.GetSubState(), Result: volume.GetResult(), FailureDiagnostic: volume.GetFailureDiagnostic(),
+			PartitionUUID: volume.GetPartitionUuid(), FilesystemUUID: volume.GetFilesystemUuid(), MountSource: volume.GetMountSource(),
 		})
 	}
 	return report
@@ -512,16 +516,16 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	}
 	if len(report.Volumes) > 0 {
 		w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "\nVOLUME\tTARGET\tMOUNT\tFILESYSTEM\tSTATE"); err != nil {
+		if _, err := fmt.Fprintln(w, "\nVOLUME\tTARGET\tMOUNT\tFILESYSTEM\tSOURCE\tSTATE"); err != nil {
 			return err
 		}
 		for _, volume := range report.Volumes {
 			state := firstNonEmpty(volume.ActiveState, "unknown")
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", volume.Name, volume.TargetKind, volume.MountPath, volume.Filesystem, state); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", volume.Name, volume.TargetKind, volume.MountPath, volume.Filesystem, firstNonEmpty(volume.MountSource, "unbound"), state); err != nil {
 				return err
 			}
 			if volume.FailureDiagnostic != "" {
-				if _, err := fmt.Fprintf(w, "\t\t\t\t%s\n", volume.FailureDiagnostic); err != nil {
+				if _, err := fmt.Fprintf(w, "\t\t\t\t\t%s\n", volume.FailureDiagnostic); err != nil {
 					return err
 				}
 			}

@@ -43,6 +43,7 @@ type Record struct {
 	ConfiguredKernelCommandLine []string           `json:"configuredKernelCommandLine,omitempty"`
 	ConfigApply                 *ConfigApplyRecord `json:"configApply,omitempty"`
 	KubernetesUpgrade           *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
+	VolumeBindings              []VolumeBinding    `json:"volumeBindings,omitempty"`
 	CreatedAt                   time.Time          `json:"createdAt"`
 	BootState                   string             `json:"bootState"`
 	HealthState                 string             `json:"healthState"`
@@ -52,6 +53,12 @@ type KubernetesUpgrade struct {
 	OperationID             string `json:"operationID"`
 	TargetKubeadmAccessMode string `json:"targetKubeadmAccessMode"`
 	KubeletActivationGate   string `json:"kubeletActivationGate"`
+}
+
+type VolumeBinding struct {
+	Name           string `json:"name"`
+	PartitionUUID  string `json:"partitionUUID,omitempty"`
+	FilesystemUUID string `json:"filesystemUUID,omitempty"`
 }
 
 type RootSelection struct {
@@ -111,6 +118,7 @@ type FirstInstallRequest struct {
 	GeneratedConfext            GeneratedConfext
 	KernelCommandLine           []string
 	ConfiguredKernelCommandLine []string
+	VolumeBindings              []VolumeBinding
 	CreatedAt                   time.Time
 }
 
@@ -129,6 +137,8 @@ type RuntimeConfigRequest struct {
 	KernelCommandLine              []string
 	ConfiguredKernelCommandLine    []string
 	ConfiguredKernelCommandLineSet bool
+	VolumeBindings                 []VolumeBinding
+	VolumeBindingsSet              bool
 }
 
 type ConfigApplyRecord struct {
@@ -177,6 +187,10 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	volumeBindings, err := cleanVolumeBindings(request.VolumeBindings)
+	if err != nil {
+		return Record{}, err
+	}
 
 	createdAt := request.CreatedAt
 	if createdAt.IsZero() {
@@ -202,6 +216,7 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 		Confexts:                    []GeneratedConfext{confext},
 		KernelCommandLine:           slices.Clone(request.KernelCommandLine),
 		ConfiguredKernelCommandLine: slices.Clone(request.ConfiguredKernelCommandLine),
+		VolumeBindings:              volumeBindings,
 		CreatedAt:                   createdAt.UTC(),
 		BootState:                   "pending",
 		HealthState:                 "unknown",
@@ -265,6 +280,14 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	volumeBindings := request.Previous.VolumeBindings
+	if request.VolumeBindingsSet {
+		volumeBindings = request.VolumeBindings
+	}
+	volumeBindings, err = cleanVolumeBindings(volumeBindings)
+	if err != nil {
+		return Record{}, err
+	}
 	createdAt := request.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -286,6 +309,7 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 		Confexts:                    []GeneratedConfext{confext},
 		KernelCommandLine:           runtimeKernelCommandLine(request),
 		ConfiguredKernelCommandLine: runtimeConfiguredKernelCommandLine(request),
+		VolumeBindings:              volumeBindings,
 		ConfigApply: &ConfigApplyRecord{
 			SourceDigest:       strings.ToLower(request.SourceDigest),
 			ChangedDomains:     domains,
@@ -463,7 +487,39 @@ func ValidateRecord(record Record) error {
 			return err
 		}
 	}
+	if _, err := cleanVolumeBindings(record.VolumeBindings); err != nil {
+		return err
+	}
 	return nil
+}
+
+func cleanVolumeBindings(bindings []VolumeBinding) ([]VolumeBinding, error) {
+	cleaned := make([]VolumeBinding, 0, len(bindings))
+	seen := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		binding.Name = strings.TrimSpace(binding.Name)
+		binding.PartitionUUID = strings.TrimSpace(binding.PartitionUUID)
+		binding.FilesystemUUID = strings.TrimSpace(binding.FilesystemUUID)
+		if binding.Name == "" {
+			return nil, fmt.Errorf("volume binding name is required")
+		}
+		for i, value := range binding.Name {
+			if value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '-' && i > 0 && i < len(binding.Name)-1 {
+				continue
+			}
+			return nil, fmt.Errorf("volume binding name %q must use lowercase letters, digits, and internal dashes", binding.Name)
+		}
+		if binding.PartitionUUID == "" && binding.FilesystemUUID == "" {
+			return nil, fmt.Errorf("volume binding %q requires a partition UUID or filesystem UUID", binding.Name)
+		}
+		if _, exists := seen[binding.Name]; exists {
+			return nil, fmt.Errorf("duplicate volume binding %q", binding.Name)
+		}
+		seen[binding.Name] = struct{}{}
+		cleaned = append(cleaned, binding)
+	}
+	sort.Slice(cleaned, func(i, j int) bool { return cleaned[i].Name < cleaned[j].Name })
+	return cleaned, nil
 }
 
 func validateConfigApplyRecord(config ConfigApplyRecord) error {

@@ -82,7 +82,7 @@ func TestExecutorRebindsKubeletWatcherOnceForKubeadmInput(t *testing.T) {
 	}
 }
 
-func TestExecutorPreparesAndActivatesVolumesBeforeReportingSuccess(t *testing.T) {
+func TestExecutorActivatesPreparedVolumesBeforeReportingSuccess(t *testing.T) {
 	root := t.TempDir()
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainVolumes}})
 	current := baseManifest()
@@ -97,22 +97,14 @@ func TestExecutorPreparesAndActivatesVolumesBeforeReportingSuccess(t *testing.T)
 		t.Fatal(err)
 	}
 	runner := &fakeCommandRunner{}
-	called := false
 	status, err := Executor{
 		Root: root, Runner: runner, Activator: &fakeActivator{}, Now: fixedNow,
-		ApplyVolumes: func(_ context.Context, before, after manifest.Manifest) error {
-			called = true
-			if len(before.Install.Volumes) != 0 || len(after.Install.Volumes) != 1 {
-				t.Fatalf("volume manifests = %#v -> %#v", before.Install.Volumes, after.Install.Volumes)
-			}
-			return nil
-		},
 	}.ExecuteLive(context.Background(), plan)
 	if err != nil {
 		t.Fatalf("ExecuteLive() error = %v", err)
 	}
-	if !called || status.Phase != generation.ConfigApplyPhaseActive {
-		t.Fatalf("volume apply called=%t status=%#v", called, status)
+	if status.Phase != generation.ConfigApplyPhaseActive {
+		t.Fatalf("status=%#v", status)
 	}
 	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,volume-mount-activate"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)

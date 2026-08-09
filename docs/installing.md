@@ -288,6 +288,14 @@ target; a partition selector never repartitions its parent disk. Live apply
 refuses mounted or otherwise active destructive targets rather than disrupting
 workloads.
 
+Selectors are used only while provisioning or explicitly replacing a volume.
+Once Katl resolves a selector, the resulting PARTUUID (or filesystem UUID when
+no PARTUUID exists) is stored in that node generation and the systemd mount
+uses that exact identity. A second disk carrying the same `u-<name>` label
+therefore cannot redirect an existing mount. If no prior binding exists, an
+ambiguous label blocks planning and must be replaced with a unique `byID`,
+`partUUID`, or `filesystemUUID` selector.
+
 Katl provisions a discovered blank target automatically. If the selected disk
 or partition already has a partition-table, partition, or filesystem
 signature, planning stops before mutation and reports the exact `NODE/VOLUME`
@@ -306,6 +314,23 @@ Repeat the flag for multiple affected volumes. The acknowledgement belongs to
 that operation and is never written into ClusterConfig or a node generation;
 changing a selector or encountering existing contents in a later operation
 requires acknowledgement again.
+
+Replacing a generation-bound volume is a separate decision from overwriting
+its contents. Change the selector to the replacement's exact stable identity,
+plan the change, inspect the reported target, then authorize that transition:
+
+```console
+katlctl node apply --config ./cluster.yaml worker-1 \
+  --rebind-volume worker-1/data
+```
+
+`--rebind-volume` is one-shot operation authority and is not persisted in
+ClusterConfig. If the replacement is non-blank and `wipe: true`, the operation
+also requires the separately reported
+`--acknowledge-storage-wipe worker-1/data`. Removing a volume does not rebind
+or erase it: Katl retains an unmounted generation binding for that logical
+name, so re-adding the same exact identity preserves its data and selecting a
+different identity still requires `--rebind-volume`.
 
 For a routed endpoint advertised by Katl, add the VIP and fabric peers. Katl
 then installs and runs the endpoint advertiser only on control-plane nodes;

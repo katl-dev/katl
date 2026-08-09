@@ -2502,15 +2502,16 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 		"--candidate-generation", "generation-auto",
 		"--client-request-id", "req-auto",
 		"--acknowledge-storage-wipe", "node-a/data",
+		"--rebind-volume", "node-a/data",
 		"--output", "json",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" || fake.validateRequest.Actor != "katlctl node apply" || !slices.Equal(fake.validateRequest.DestructiveStorageAcknowledgements, []string{"node-a/data"}) {
+	if fake.validateRequest == nil || fake.validateRequest.ApplyMode != generation.ApplyModeAuto || fake.validateRequest.CandidateGenerationId != "generation-auto" || fake.validateRequest.Actor != "katlctl node apply" || !slices.Equal(fake.validateRequest.DestructiveStorageAcknowledgements, []string{"node-a/data"}) || !slices.Equal(fake.validateRequest.VolumeRebinds, []string{"node-a/data"}) {
 		t.Fatalf("validate request = %+v", fake.validateRequest)
 	}
-	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.Actor != "katlctl node apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto || !slices.Equal(fake.submitRequest.GetConfigApply().GetDestructiveStorageAcknowledgements(), []string{"node-a/data"}) {
+	if fake.submitRequest == nil || fake.submitRequest.OperationKind != "generation-apply" || fake.submitRequest.Actor != "katlctl node apply" || fake.submitRequest.GetConfigApply().GetApplyMode() != generation.ApplyModeAuto || !slices.Equal(fake.submitRequest.GetConfigApply().GetDestructiveStorageAcknowledgements(), []string{"node-a/data"}) || !slices.Equal(fake.submitRequest.GetConfigApply().GetVolumeRebinds(), []string{"node-a/data"}) {
 		t.Fatalf("submit request = %+v", fake.submitRequest)
 	}
 	if fake.stageRequest != nil || fake.applyRequest != nil {
@@ -2531,6 +2532,19 @@ func TestNormalizeDestructiveStorageAcknowledgements(t *testing.T) {
 		if _, err := normalizeDestructiveStorageAcknowledgements(values); err == nil || !strings.Contains(err.Error(), "--acknowledge-storage-wipe") {
 			t.Fatalf("normalize invalid %v error = %v", values, err)
 		}
+	}
+}
+
+func TestNormalizeVolumeRebinds(t *testing.T) {
+	got, err := normalizeVolumeRebinds([]string{"worker-1/cache", " cp-1/data "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []string{"cp-1/data", "worker-1/cache"}) {
+		t.Fatalf("normalized rebinds = %v", got)
+	}
+	if _, err := normalizeVolumeRebinds([]string{"cp-1"}); err == nil || !strings.Contains(err.Error(), "--rebind-volume") {
+		t.Fatalf("normalize invalid rebind error = %v", err)
 	}
 }
 

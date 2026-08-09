@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -20,6 +21,11 @@ func nodeVolumeStatus(ctx context.Context, root, currentGeneration string, runne
 		return nil, err
 	}
 	volumes := append([]manifest.Volume(nil), installManifest.Install.Volumes...)
+	spec, _, err := generation.ReadGeneration(root, currentGeneration)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	bindings := volumeBindingsByName(spec.VolumeBindings)
 	sort.Slice(volumes, func(i, j int) bool { return volumes[i].Name < volumes[j].Name })
 	out := make([]*agentapi.VolumeStatus, 0, len(volumes))
 	for _, volume := range volumes {
@@ -32,6 +38,8 @@ func nodeVolumeStatus(ctx context.Context, root, currentGeneration string, runne
 		if volume.Selector.Disk != nil {
 			targetKind = "disk"
 		}
+		binding := bindings[volume.Name]
+		mountSource, _ := disk.VolumeBindingMountSource(diskVolumeBinding(binding))
 		out = append(out, &agentapi.VolumeStatus{
 			Name:                 volume.Name,
 			TargetKind:           targetKind,
@@ -43,6 +51,9 @@ func nodeVolumeStatus(ctx context.Context, root, currentGeneration string, runne
 			Result:               unit.Result,
 			StateChangeTimestamp: unit.StateChangeTimestamp,
 			FailureDiagnostic:    unit.FailureDiagnostic,
+			PartitionUuid:        binding.PartitionUUID,
+			FilesystemUuid:       binding.FilesystemUUID,
+			MountSource:          mountSource,
 		})
 	}
 	return out, nil

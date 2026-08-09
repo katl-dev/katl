@@ -1268,7 +1268,7 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 		LoaderRecord: &record,
 		DiskLayout: &disk.DiskLayoutPlan{VolumeMounts: []disk.VolumePlan{{
 			Name:        "data",
-			MountSource: "/dev/disk/by-partlabel/u-data",
+			MountSource: "PARTUUID=data-partuuid",
 			Filesystem:  "ext4",
 			MountPath:   "/var/mnt/data",
 		}}},
@@ -1282,7 +1282,7 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/etc-kubernetes.mount"), "Where=/etc/kubernetes")
-	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var-mnt-data.mount"), "What=/dev/disk/by-partlabel/u-data")
+	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var-mnt-data.mount"), "What=PARTUUID=data-partuuid")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var-mnt-data.mount"), "Where=/var/mnt/data")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/katl-kubeadm-ready.target"), "Requires=systemd-sysext.service systemd-confext.service containerd.service kubelet.service etc-kubernetes.mount")
 	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"))
@@ -1292,6 +1292,32 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 	assertDir(t, filepath.Join(targetRoot, "var/mnt/data"), 0o755)
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{InstallMountUnits}) {
 		t.Fatalf("completed steps = %#v", got)
+	}
+}
+
+func TestFormatFilesystemsBindsVolumeToDiscoveredIdentity(t *testing.T) {
+	install := &Context{
+		Commands: &NoopCommandRunner{}, Store: &MemoryStateStore{},
+		Discovery: discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{{
+			Path: "/dev/vdb", Type: discovery.DeviceDisk, Partitions: []discovery.BlockDevice{{
+				Path: "/dev/vdb1", Type: discovery.DevicePartition, GPTLabel: "u-data",
+				PartitionUUID: "part-data", FilesystemUUID: "fs-data", FilesystemSignature: "xfs",
+			}},
+		}}}},
+		DiskLayout: &disk.DiskLayoutPlan{VolumeMounts: []disk.VolumePlan{{
+			Name: "data", DevicePath: "/dev/vdb1", MountSource: "/dev/disk/by-partlabel/u-data",
+			Filesystem: "xfs", MountPath: "/var/mnt/data",
+		}}},
+	}
+	if err := bindInstalledVolumes(context.Background(), install); err != nil {
+		t.Fatalf("bindInstalledVolumes() error = %v", err)
+	}
+	if got := install.DiskLayout.VolumeMounts[0].MountSource; got != "PARTUUID=part-data" {
+		t.Fatalf("bound mount source = %q", got)
+	}
+	want := []generation.VolumeBinding{{Name: "data", PartitionUUID: "part-data", FilesystemUUID: "fs-data"}}
+	if !reflect.DeepEqual(install.VolumeBindings, want) {
+		t.Fatalf("volume bindings = %#v, want %#v", install.VolumeBindings, want)
 	}
 }
 

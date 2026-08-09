@@ -99,6 +99,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		NodeName:                           req.NodeName,
 		ConfigYaml:                         req.ConfigYaml,
 		DestructiveStorageAcknowledgements: append([]string(nil), req.DestructiveStorageAcknowledgements...),
+		VolumeRebinds:                      append([]string(nil), req.VolumeRebinds...),
 	}
 	submit := generationSubmitRequest(submitBase, provisionalOperationKind, applyMode)
 	requestDigest, err := RequestDigest(submit)
@@ -140,6 +141,20 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	}
 	decoded.ApplyMode = applyMode
 	decoded.GenerationID = candidateID
+	desiredManifest, err := configapply.DesiredManifest(decoded)
+	if err != nil {
+		return rejected(err, nil), nil
+	}
+	volumePlan, err := s.validateVolumeTransition(ctx, req.NodeName, base.CurrentManifest, desiredManifest, base.CurrentRecord.VolumeBindings, req.DestructiveStorageAcknowledgements, req.VolumeRebinds)
+	if err != nil {
+		result := rejected(err, []string{inventory.Redact(err.Error())})
+		result.RequiredDestructiveStorageAcknowledgements = volumePlan.requiredWipeAcknowledgements
+		result.RequiredVolumeRebinds = volumePlan.requiredRebinds
+		return result, nil
+	}
+	decoded.VolumeBindings = append([]generation.VolumeBinding(nil), volumePlan.bindings...)
+	decoded.VolumeBindingsSet = len(desiredManifest.Install.Volumes) == 0 || len(volumePlan.prepare) == 0
+	decoded.SkipVolumeRendering = len(volumePlan.prepare) > 0
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err != nil {
 		if errors.Is(err, configapply.ErrNoChanges) {
@@ -192,11 +207,8 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		}
 		return rejected(err, configApplyDiagnostics(plan.Plan.Decision)), nil
 	}
-	requiredStorage, err := s.validateDestructiveStorageAuthority(ctx, req.NodeName, base.CurrentManifest, plan.Manifest, req.DestructiveStorageAcknowledgements)
-	if err != nil {
-		result := rejected(err, []string{inventory.Redact(err.Error())})
-		result.RequiredDestructiveStorageAcknowledgements = requiredStorage
-		return result, nil
+	if err := volumePlan.validateApplyMode(plan.Plan.Decision.AcceptedMode); err != nil {
+		return rejected(err, []string{err.Error()}), nil
 	}
 	operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)
 	if err != nil {
@@ -219,7 +231,8 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		AcceptedApplyMode:     plan.Plan.Decision.AcceptedMode,
 		CandidateGenerationId: candidateID,
 		ChangedDomains:        append([]string(nil), plan.Plan.Decision.ChangedDomains...),
-		RequiredDestructiveStorageAcknowledgements: requiredStorage,
+		RequiredDestructiveStorageAcknowledgements: volumePlan.requiredWipeAcknowledgements,
+		RequiredVolumeRebinds:                      volumePlan.requiredRebinds,
 	}, nil
 }
 
@@ -282,6 +295,7 @@ func generationSubmitRequest(req *agentapi.GenerationApplyRequest, operationKind
 			NodeName:                           req.NodeName,
 			ConfigYaml:                         req.ConfigYaml,
 			DestructiveStorageAcknowledgements: append([]string(nil), req.DestructiveStorageAcknowledgements...),
+			VolumeRebinds:                      append([]string(nil), req.VolumeRebinds...),
 		},
 	}
 }
@@ -455,10 +469,21 @@ func (s *Server) acceptConfigApplyOperation(ctx context.Context, req *agentapi.S
 	}
 	decoded.ApplyMode = configReq.ApplyMode
 	decoded.GenerationID = configReq.CandidateGenerationID
+	desiredManifest, err := configapply.DesiredManifest(decoded)
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "config validation rejected: %v", err)
+	}
+	volumePlan, err := s.validateVolumeTransition(ctx, configReq.NodeName, base.CurrentManifest, desiredManifest, base.CurrentRecord.VolumeBindings, configReq.DestructiveStorageAcknowledgements, configReq.VolumeRebinds)
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	decoded.VolumeBindings = append([]generation.VolumeBinding(nil), volumePlan.bindings...)
+	decoded.VolumeBindingsSet = len(desiredManifest.Install.Volumes) == 0 || len(volumePlan.prepare) == 0
+	decoded.SkipVolumeRendering = len(volumePlan.prepare) > 0
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err == nil {
-		if _, authorityErr := s.validateDestructiveStorageAuthority(ctx, configReq.NodeName, base.CurrentManifest, plan.Manifest, configReq.DestructiveStorageAcknowledgements); authorityErr != nil {
-			return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, authorityErr.Error())
+		if modeErr := volumePlan.validateApplyMode(plan.Plan.Decision.AcceptedMode); modeErr != nil {
+			return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, modeErr.Error())
 		}
 		operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)
 		if err != nil {
@@ -539,6 +564,23 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	}
 	decoded.ApplyMode = record.ConfigApplyRequest.ApplyMode
 	decoded.GenerationID = record.ConfigApplyRequest.CandidateGenerationID
+	desiredManifest, err := configapply.DesiredManifest(decoded)
+	if err != nil {
+		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply request failed desired-state resolution", err)
+		return errorsJoin(err, markErr)
+	}
+	run := e.RunTool
+	if run == nil {
+		run = runChildProcess
+	}
+	volumePlan, err := planVolumeTransition(ctx, run, base.CurrentManifest, desiredManifest, base.CurrentRecord.VolumeBindings, record.ConfigApplyRequest.NodeName, record.ConfigApplyRequest.DestructiveStorageAcknowledgements, record.ConfigApplyRequest.VolumeRebinds)
+	if err != nil {
+		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "volume transition preflight failed", err)
+		return errorsJoin(err, markErr)
+	}
+	decoded.VolumeBindings = append([]generation.VolumeBinding(nil), volumePlan.bindings...)
+	decoded.VolumeBindingsSet = len(desiredManifest.Install.Volumes) == 0 || len(volumePlan.prepare) == 0
+	decoded.SkipVolumeRendering = len(volumePlan.prepare) > 0
 	plan, err := configapply.PlanTrustedBundle(decoded)
 	if err != nil {
 		if errors.Is(err, configapply.ErrNoChanges) {
@@ -552,9 +594,26 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply request failed planning", cause)
 		return errorsJoin(err, markErr)
 	}
+	if err := volumePlan.validateApplyMode(plan.Plan.Decision.AcceptedMode); err != nil {
+		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "volume transition apply mode is unsafe", err)
+		return errorsJoin(err, markErr)
+	}
 	if plan.Plan.Decision.AcceptedMode == generation.ApplyModeLive {
 		if err := e.markLiveConfigApplyStarted(record.OperationID, plan, startedAt); err != nil {
 			return err
+		}
+		bindings, volumeErr := e.applyVolumes(ctx, base.CurrentManifest, desiredManifest, base.CurrentRecord.VolumeBindings, record.ConfigApplyRequest.NodeName, record.ConfigApplyRequest.DestructiveStorageAcknowledgements, record.ConfigApplyRequest.VolumeRebinds)
+		if volumeErr != nil {
+			_, markErr := e.failRecordPhase(record.OperationID, "volume-transition-failed", "render-generation", "render-generation", "volume transition failed before generation rendering", volumeErr)
+			return errorsJoin(volumeErr, markErr)
+		}
+		decoded.VolumeBindings = bindings
+		decoded.VolumeBindingsSet = true
+		decoded.SkipVolumeRendering = false
+		plan, err = configapply.PlanTrustedBundle(decoded)
+		if err != nil {
+			_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "config apply request failed exact volume rendering", err)
+			return errorsJoin(err, markErr)
 		}
 		runner := e.ConfigApplyRunner
 		if runner == nil {
@@ -568,10 +627,7 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 			Root:      e.Root,
 			Runner:    runner,
 			Activator: activator,
-			ApplyVolumes: func(ctx context.Context, current, desired manifest.Manifest) error {
-				return e.applyVolumes(ctx, current, desired, record.ConfigApplyRequest.NodeName, record.ConfigApplyRequest.DestructiveStorageAcknowledgements)
-			},
-			Now: e.clock,
+			Now:       e.clock,
 		}
 	}
 	result, err := configapply.ApplyTrustedBundle(ctx, decoded)
@@ -809,6 +865,7 @@ func configApplyRequestFromProto(req *agentapi.ConfigApplyOperationRequest) oper
 		CandidateGenerationID:              strings.TrimSpace(req.CandidateGenerationId),
 		ConfigYAML:                         strings.TrimSpace(req.ConfigYaml),
 		DestructiveStorageAcknowledgements: append([]string(nil), req.DestructiveStorageAcknowledgements...),
+		VolumeRebinds:                      append([]string(nil), req.VolumeRebinds...),
 	}
 }
 

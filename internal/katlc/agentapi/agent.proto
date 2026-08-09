@@ -57,6 +57,9 @@ message VolumeStatus {
   string result = 8;
   string state_change_timestamp = 9;
   string failure_diagnostic = 10;
+  string partition_uuid = 11;
+  string filesystem_uuid = 12;
+  string mount_source = 13;
 }
 
 message SystemExtensionStatus {
@@ -241,6 +244,7 @@ message ValidateConfigRequest {
   repeated string destructive_storage_acknowledgements = 12;
   string expected_enrollment_id = 13;
   string expected_inventory_node_name = 14;
+  repeated string volume_rebinds = 15;
 }
 
 message ConfigValidationResult {
@@ -256,6 +260,7 @@ message ConfigValidationResult {
   string failure_reason = 10;
   bool no_changes = 11;
   repeated string required_destructive_storage_acknowledgements = 12;
+  repeated string required_volume_rebinds = 13;
 }
 
 message GenerationApplyRequest {
@@ -273,6 +278,7 @@ message GenerationApplyRequest {
   repeated string destructive_storage_acknowledgements = 12;
   string expected_enrollment_id = 13;
   string expected_inventory_node_name = 14;
+  repeated string volume_rebinds = 15;
 }
 
 message ConfigApplyOperationRequest {
@@ -281,6 +287,7 @@ message ConfigApplyOperationRequest {
   string node_name = 3;
   string config_yaml = 4;
   repeated string destructive_storage_acknowledgements = 5;
+  repeated string volume_rebinds = 6;
 }
 
 message KubeadmControlPlaneConfigOperationRequest {

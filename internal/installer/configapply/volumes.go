@@ -10,10 +10,22 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
-func volumeMountNativeEtcFiles(volumes []manifest.Volume) ([]confext.NativeEtcFile, error) {
+func volumeMountNativeEtcFiles(volumes []manifest.Volume, bindings []generation.VolumeBinding) ([]confext.NativeEtcFile, error) {
+	bound := make(map[string]generation.VolumeBinding, len(bindings))
+	for _, binding := range bindings {
+		if _, exists := bound[binding.Name]; exists {
+			return nil, fmt.Errorf("duplicate volume binding %q", binding.Name)
+		}
+		bound[binding.Name] = binding
+	}
 	requests := make([]generation.ExtraMountRequest, 0, len(volumes))
 	for _, volume := range volumes {
-		source, err := configuredVolumeMountSource(volume)
+		binding, ok := bound[volume.Name]
+		if !ok {
+			return nil, fmt.Errorf("volume %q has no generation-owned device binding", volume.Name)
+		}
+		delete(bound, volume.Name)
+		source, err := volumeBindingMountSource(binding)
 		if err != nil {
 			return nil, err
 		}
@@ -50,19 +62,13 @@ func volumeMountNativeEtcFiles(volumes []manifest.Volume) ([]confext.NativeEtcFi
 	return files, nil
 }
 
-func configuredVolumeMountSource(volume manifest.Volume) (string, error) {
+func volumeBindingMountSource(binding generation.VolumeBinding) (string, error) {
 	switch {
-	case volume.Selector.Disk != nil:
-		return "/dev/disk/by-partlabel/u-" + volume.Name, nil
-	case volume.Selector.Partition == nil:
-		return "", fmt.Errorf("volume %q has no selector", volume.Name)
-	case volume.Selector.Partition.ByID != "":
-		return volume.Selector.Partition.ByID, nil
-	case volume.Selector.Partition.PartUUID != "":
-		return "PARTUUID=" + volume.Selector.Partition.PartUUID, nil
-	case volume.Selector.Partition.FilesystemUUID != "":
-		return "UUID=" + volume.Selector.Partition.FilesystemUUID, nil
+	case strings.TrimSpace(binding.PartitionUUID) != "":
+		return "PARTUUID=" + strings.TrimSpace(binding.PartitionUUID), nil
+	case strings.TrimSpace(binding.FilesystemUUID) != "":
+		return "UUID=" + strings.TrimSpace(binding.FilesystemUUID), nil
 	default:
-		return "/dev/disk/by-partlabel/u-" + volume.Name, nil
+		return "", fmt.Errorf("volume binding %q has no partition or filesystem UUID", binding.Name)
 	}
 }

@@ -145,6 +145,29 @@ func TestWriteRecordPersistsMetadataJSON(t *testing.T) {
 	}
 }
 
+func TestVolumeBindingsAreGenerationOwnedAndInherited(t *testing.T) {
+	request := validFirstInstallRequest(t.TempDir())
+	request.VolumeBindings = []VolumeBinding{{Name: "data", PartitionUUID: "part-data", FilesystemUUID: "fs-data"}}
+	first, err := NewFirstInstallRecord(request)
+	if err != nil {
+		t.Fatalf("NewFirstInstallRecord() error = %v", err)
+	}
+	if len(first.VolumeBindings) != 1 || first.VolumeBindings[0].PartitionUUID != "part-data" {
+		t.Fatalf("first install bindings = %#v", first.VolumeBindings)
+	}
+	next, err := NewRuntimeConfigRecord(RuntimeConfigRequest{
+		GenerationID: "runtime-config-2", Previous: first, SourceDigest: strings.Repeat("d", 64),
+		GeneratedConfext: runtimeConfext("runtime-config-2"),
+		ChangedDomains:   []string{"volumes"}, RequestedApplyMode: ApplyModeLive, AcceptedApplyMode: ApplyModeLive, CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntimeConfigRecord() error = %v", err)
+	}
+	if len(next.VolumeBindings) != 1 || next.VolumeBindings[0] != first.VolumeBindings[0] {
+		t.Fatalf("inherited bindings = %#v, want %#v", next.VolumeBindings, first.VolumeBindings)
+	}
+}
+
 func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
 	previous := abRecord(t, "2026.06.05-001", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC))
 	record, err := NewRuntimeConfigRecord(RuntimeConfigRequest{

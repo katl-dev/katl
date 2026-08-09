@@ -56,6 +56,9 @@ type TrustedBundleRequest struct {
 	EndpointAdvertiserSysext        *generation.ExtensionRef
 	SystemExtensionPayloads         []SystemExtensionPayload
 	Executor                        *Executor
+	VolumeBindings                  []generation.VolumeBinding
+	VolumeBindingsSet               bool
+	SkipVolumeRendering             bool
 	Chown                           func(path string, uid int, gid int) error
 	Now                             func() time.Time
 }
@@ -111,6 +114,9 @@ type ConfigRequestAudit struct {
 }
 
 func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (TrustedBundleResult, error) {
+	if request.SkipVolumeRendering {
+		return TrustedBundleResult{}, fmt.Errorf("volume rendering may only be skipped during hardware preflight")
+	}
 	if strings.TrimSpace(request.Root) == "" {
 		return TrustedBundleResult{}, fmt.Errorf("runtime root is required")
 	}
@@ -180,7 +186,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
-	volumeFiles, err := volumeMountNativeEtcFiles(merged.Install.Volumes)
+	volumeFiles, err := volumeMountNativeEtcFiles(merged.Install.Volumes, request.VolumeBindings)
 	if err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
@@ -305,6 +311,8 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		),
 		ConfiguredKernelCommandLine:    slices.Clone(merged.Node.Kernel.CommandLine),
 		ConfiguredKernelCommandLineSet: true,
+		VolumeBindings:                 append([]generation.VolumeBinding(nil), request.VolumeBindings...),
+		VolumeBindingsSet:              request.VolumeBindingsSet,
 	})
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
@@ -485,6 +493,14 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 	if err != nil {
 		return TrustedBundleResult{Manifest: merged}, err
 	}
+	var volumeFiles []confext.NativeEtcFile
+	if !request.SkipVolumeRendering {
+		volumeFiles, err = volumeMountNativeEtcFiles(merged.Install.Volumes, request.VolumeBindings)
+		if err != nil {
+			return TrustedBundleResult{Manifest: merged}, err
+		}
+	}
+	files = append(files, volumeFiles...)
 	files = append(files, unsafeFiles...)
 	status, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{
 		GenerationID:       request.GenerationID,
@@ -514,6 +530,20 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 	}, nil
 }
 
+// DesiredManifest resolves the operator overlays without rendering a
+// generation. Hardware-dependent callers use it to bind volume selectors to
+// exact device identities before the final generation is planned.
+func DesiredManifest(request TrustedBundleRequest) (manifest.Manifest, error) {
+	merged, _, _, err := mergeRuntimeConfig(request)
+	if err != nil && !errors.Is(err, ErrNoChanges) {
+		return merged, err
+	}
+	if err := manifest.Validate(merged); err != nil {
+		return merged, err
+	}
+	return merged, nil
+}
+
 func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Change, []confext.NativeEtcFile, error) {
 	merged := request.CurrentManifest
 	currentHostConfiguration := request.CurrentManifest.Node.HostConfiguration
@@ -536,6 +566,11 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		applyOverlay(&merged, nodeOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	}
 	if len(domains.domains) == 0 {
+		if request.VolumeBindingsSet && !volumeBindingsEqual(request.CurrentRecord.VolumeBindings, request.VolumeBindings) {
+			domains.add(DomainVolumes)
+		}
+	}
+	if len(domains.domains) == 0 {
 		endpointDrifted, err := endpointRenderingDrifted(request, merged)
 		if err != nil {
 			return manifest.Manifest{}, nil, nil, err
@@ -552,6 +587,13 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		domains.hostConfiguration = &hostPlan
 	}
 	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), unsafeFiles, nil
+}
+
+func volumeBindingsEqual(left, right []generation.VolumeBinding) bool {
+	if len(left) == 0 && len(right) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 func endpointRenderingDrifted(request TrustedBundleRequest, desired manifest.Manifest) (bool, error) {

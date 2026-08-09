@@ -137,6 +137,7 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		Confexts:                    confexts,
 		KernelCommandLine:           mergeKernelCommandLine(request.PreviousSpec.KernelCommandLine, p.Boot.Compatibility.KernelCommandLine),
 		ConfiguredKernelCommandLine: slices.Clone(request.PreviousSpec.ConfiguredKernelCommandLine),
+		VolumeBindings:              append([]generation.VolumeBinding(nil), request.PreviousSpec.VolumeBindings...),
 		CreatedAt:                   createdAt.UTC(),
 	}
 	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, createdAt)

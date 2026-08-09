@@ -257,6 +257,9 @@ type VolumeStatus struct {
 	Result               string                 `protobuf:"bytes,8,opt,name=result,proto3" json:"result,omitempty"`
 	StateChangeTimestamp string                 `protobuf:"bytes,9,opt,name=state_change_timestamp,json=stateChangeTimestamp,proto3" json:"state_change_timestamp,omitempty"`
 	FailureDiagnostic    string                 `protobuf:"bytes,10,opt,name=failure_diagnostic,json=failureDiagnostic,proto3" json:"failure_diagnostic,omitempty"`
+	PartitionUuid        string                 `protobuf:"bytes,11,opt,name=partition_uuid,json=partitionUuid,proto3" json:"partition_uuid,omitempty"`
+	FilesystemUuid       string                 `protobuf:"bytes,12,opt,name=filesystem_uuid,json=filesystemUuid,proto3" json:"filesystem_uuid,omitempty"`
+	MountSource          string                 `protobuf:"bytes,13,opt,name=mount_source,json=mountSource,proto3" json:"mount_source,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -357,6 +360,27 @@ func (x *VolumeStatus) GetStateChangeTimestamp() string {
 func (x *VolumeStatus) GetFailureDiagnostic() string {
 	if x != nil {
 		return x.FailureDiagnostic
+	}
+	return ""
+}
+
+func (x *VolumeStatus) GetPartitionUuid() string {
+	if x != nil {
+		return x.PartitionUuid
+	}
+	return ""
+}
+
+func (x *VolumeStatus) GetFilesystemUuid() string {
+	if x != nil {
+		return x.FilesystemUuid
+	}
+	return ""
+}
+
+func (x *VolumeStatus) GetMountSource() string {
+	if x != nil {
+		return x.MountSource
 	}
 	return ""
 }
@@ -1901,6 +1925,7 @@ type ValidateConfigRequest struct {
 	DestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=destructive_storage_acknowledgements,json=destructiveStorageAcknowledgements,proto3" json:"destructive_storage_acknowledgements,omitempty"`
 	ExpectedEnrollmentId               string                 `protobuf:"bytes,13,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
 	ExpectedInventoryNodeName          string                 `protobuf:"bytes,14,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
+	VolumeRebinds                      []string               `protobuf:"bytes,15,rep,name=volume_rebinds,json=volumeRebinds,proto3" json:"volume_rebinds,omitempty"`
 	unknownFields                      protoimpl.UnknownFields
 	sizeCache                          protoimpl.SizeCache
 }
@@ -2033,6 +2058,13 @@ func (x *ValidateConfigRequest) GetExpectedInventoryNodeName() string {
 	return ""
 }
 
+func (x *ValidateConfigRequest) GetVolumeRebinds() []string {
+	if x != nil {
+		return x.VolumeRebinds
+	}
+	return nil
+}
+
 type ConfigValidationResult struct {
 	state                                      protoimpl.MessageState `protogen:"open.v1"`
 	ApiVersion                                 string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
@@ -2047,6 +2079,7 @@ type ConfigValidationResult struct {
 	FailureReason                              string                 `protobuf:"bytes,10,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
 	NoChanges                                  bool                   `protobuf:"varint,11,opt,name=no_changes,json=noChanges,proto3" json:"no_changes,omitempty"`
 	RequiredDestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=required_destructive_storage_acknowledgements,json=requiredDestructiveStorageAcknowledgements,proto3" json:"required_destructive_storage_acknowledgements,omitempty"`
+	RequiredVolumeRebinds                      []string               `protobuf:"bytes,13,rep,name=required_volume_rebinds,json=requiredVolumeRebinds,proto3" json:"required_volume_rebinds,omitempty"`
 	unknownFields                              protoimpl.UnknownFields
 	sizeCache                                  protoimpl.SizeCache
 }
@@ -2165,6 +2198,13 @@ func (x *ConfigValidationResult) GetRequiredDestructiveStorageAcknowledgements()
 	return nil
 }
 
+func (x *ConfigValidationResult) GetRequiredVolumeRebinds() []string {
+	if x != nil {
+		return x.RequiredVolumeRebinds
+	}
+	return nil
+}
+
 type GenerationApplyRequest struct {
 	state                              protoimpl.MessageState `protogen:"open.v1"`
 	ApiVersion                         string                 `protobuf:"bytes,1,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
@@ -2181,6 +2221,7 @@ type GenerationApplyRequest struct {
 	DestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=destructive_storage_acknowledgements,json=destructiveStorageAcknowledgements,proto3" json:"destructive_storage_acknowledgements,omitempty"`
 	ExpectedEnrollmentId               string                 `protobuf:"bytes,13,opt,name=expected_enrollment_id,json=expectedEnrollmentId,proto3" json:"expected_enrollment_id,omitempty"`
 	ExpectedInventoryNodeName          string                 `protobuf:"bytes,14,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
+	VolumeRebinds                      []string               `protobuf:"bytes,15,rep,name=volume_rebinds,json=volumeRebinds,proto3" json:"volume_rebinds,omitempty"`
 	unknownFields                      protoimpl.UnknownFields
 	sizeCache                          protoimpl.SizeCache
 }
@@ -2313,6 +2354,13 @@ func (x *GenerationApplyRequest) GetExpectedInventoryNodeName() string {
 	return ""
 }
 
+func (x *GenerationApplyRequest) GetVolumeRebinds() []string {
+	if x != nil {
+		return x.VolumeRebinds
+	}
+	return nil
+}
+
 type ConfigApplyOperationRequest struct {
 	state                              protoimpl.MessageState `protogen:"open.v1"`
 	CandidateGenerationId              string                 `protobuf:"bytes,1,opt,name=candidate_generation_id,json=candidateGenerationId,proto3" json:"candidate_generation_id,omitempty"`
@@ -2320,6 +2368,7 @@ type ConfigApplyOperationRequest struct {
 	NodeName                           string                 `protobuf:"bytes,3,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
 	ConfigYaml                         string                 `protobuf:"bytes,4,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
 	DestructiveStorageAcknowledgements []string               `protobuf:"bytes,5,rep,name=destructive_storage_acknowledgements,json=destructiveStorageAcknowledgements,proto3" json:"destructive_storage_acknowledgements,omitempty"`
+	VolumeRebinds                      []string               `protobuf:"bytes,6,rep,name=volume_rebinds,json=volumeRebinds,proto3" json:"volume_rebinds,omitempty"`
 	unknownFields                      protoimpl.UnknownFields
 	sizeCache                          protoimpl.SizeCache
 }
@@ -2385,6 +2434,13 @@ func (x *ConfigApplyOperationRequest) GetConfigYaml() string {
 func (x *ConfigApplyOperationRequest) GetDestructiveStorageAcknowledgements() []string {
 	if x != nil {
 		return x.DestructiveStorageAcknowledgements
+	}
+	return nil
+}
+
+func (x *ConfigApplyOperationRequest) GetVolumeRebinds() []string {
+	if x != nil {
+		return x.VolumeRebinds
 	}
 	return nil
 }
@@ -5212,7 +5268,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x11boot_health_state\x18\x10 \x01(\tR\x0fbootHealthState\x124\n" +
 	"\x16boot_health_diagnostic\x18\x11 \x01(\tR\x14bootHealthDiagnostic\x12#\n" +
 	"\renrollment_id\x18\x12 \x01(\tR\fenrollmentId\x12.\n" +
-	"\x13inventory_node_name\x18\x13 \x01(\tR\x11inventoryNodeName\"\xde\x02\n" +
+	"\x13inventory_node_name\x18\x13 \x01(\tR\x11inventoryNodeName\"\xd1\x03\n" +
 	"\fVolumeStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vtarget_kind\x18\x02 \x01(\tR\n" +
@@ -5229,7 +5285,10 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x06result\x18\b \x01(\tR\x06result\x124\n" +
 	"\x16state_change_timestamp\x18\t \x01(\tR\x14stateChangeTimestamp\x12-\n" +
 	"\x12failure_diagnostic\x18\n" +
-	" \x01(\tR\x11failureDiagnostic\"\xf3\x06\n" +
+	" \x01(\tR\x11failureDiagnostic\x12%\n" +
+	"\x0epartition_uuid\x18\v \x01(\tR\rpartitionUuid\x12'\n" +
+	"\x0ffilesystem_uuid\x18\f \x01(\tR\x0efilesystemUuid\x12!\n" +
+	"\fmount_source\x18\r \x01(\tR\vmountSource\"\xf3\x06\n" +
 	"\x15SystemExtensionStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12#\n" +
 	"\rdesired_state\x18\x02 \x01(\tR\fdesiredState\x12/\n" +
@@ -5382,7 +5441,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x10target_member_id\x18\x02 \x01(\tR\x0etargetMemberId\x12&\n" +
 	"\x0ftarget_peer_url\x18\x03 \x01(\tR\rtargetPeerUrl\x12.\n" +
 	"\x13expected_cluster_id\x18\x04 \x01(\tR\x11expectedClusterId\x122\n" +
-	"\x15expected_member_count\x18\x05 \x01(\rR\x13expectedMemberCount\"\x8e\x05\n" +
+	"\x15expected_member_count\x18\x05 \x01(\rR\x13expectedMemberCount\"\xb5\x05\n" +
 	"\x15ValidateConfigRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5401,7 +5460,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x11operation_timeout\x18\v \x01(\tR\x10operationTimeout\x12P\n" +
 	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\x124\n" +
 	"\x16expected_enrollment_id\x18\r \x01(\tR\x14expectedEnrollmentId\x12?\n" +
-	"\x1cexpected_inventory_node_name\x18\x0e \x01(\tR\x19expectedInventoryNodeName\"\x9e\x04\n" +
+	"\x1cexpected_inventory_node_name\x18\x0e \x01(\tR\x19expectedInventoryNodeName\x12%\n" +
+	"\x0evolume_rebinds\x18\x0f \x03(\tR\rvolumeRebinds\"\xd6\x04\n" +
 	"\x16ConfigValidationResult\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5417,7 +5477,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	" \x01(\tR\rfailureReason\x12\x1d\n" +
 	"\n" +
 	"no_changes\x18\v \x01(\bR\tnoChanges\x12a\n" +
-	"-required_destructive_storage_acknowledgements\x18\f \x03(\tR*requiredDestructiveStorageAcknowledgements\"\x97\x05\n" +
+	"-required_destructive_storage_acknowledgements\x18\f \x03(\tR*requiredDestructiveStorageAcknowledgements\x126\n" +
+	"\x17required_volume_rebinds\x18\r \x03(\tR\x15requiredVolumeRebinds\"\xbe\x05\n" +
 	"\x16GenerationApplyRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -5435,7 +5496,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"configYaml\x12P\n" +
 	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\x124\n" +
 	"\x16expected_enrollment_id\x18\r \x01(\tR\x14expectedEnrollmentId\x12?\n" +
-	"\x1cexpected_inventory_node_name\x18\x0e \x01(\tR\x19expectedInventoryNodeName\"\x84\x02\n" +
+	"\x1cexpected_inventory_node_name\x18\x0e \x01(\tR\x19expectedInventoryNodeName\x12%\n" +
+	"\x0evolume_rebinds\x18\x0f \x03(\tR\rvolumeRebinds\"\xab\x02\n" +
 	"\x1bConfigApplyOperationRequest\x126\n" +
 	"\x17candidate_generation_id\x18\x01 \x01(\tR\x15candidateGenerationId\x12\x1d\n" +
 	"\n" +
@@ -5443,7 +5505,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\tnode_name\x18\x03 \x01(\tR\bnodeName\x12\x1f\n" +
 	"\vconfig_yaml\x18\x04 \x01(\tR\n" +
 	"configYaml\x12P\n" +
-	"$destructive_storage_acknowledgements\x18\x05 \x03(\tR\"destructiveStorageAcknowledgements\"\xbb\b\n" +
+	"$destructive_storage_acknowledgements\x18\x05 \x03(\tR\"destructiveStorageAcknowledgements\x12%\n" +
+	"\x0evolume_rebinds\x18\x06 \x03(\tR\rvolumeRebinds\"\xbb\b\n" +
 	")KubeadmControlPlaneConfigOperationRequest\x12\x1d\n" +
 	"\n" +
 	"rollout_id\x18\x01 \x01(\tR\trolloutId\x12#\n" +

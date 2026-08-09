@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/discovery"
 )
@@ -107,6 +108,12 @@ type VolumePlan struct {
 	Signatures  []SignatureReport
 }
 
+type VolumeBinding struct {
+	Name           string
+	PartitionUUID  string
+	FilesystemUUID string
+}
+
 type BootTargetMetadata struct {
 	RootSlot           RootSlot
 	RootPartitionLabel string
@@ -192,7 +199,7 @@ func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeReque
 				}
 				plan = VolumePlan{
 					Name: request.Name, TargetKind: "disk", DevicePath: partition.Path,
-					MountSource: "/dev/disk/by-partlabel/" + label, Filesystem: request.Filesystem,
+					MountSource: volumeIdentityMountSource(partition), Filesystem: request.Filesystem,
 					MountPath: VolumeMountRoot + "/" + request.Name, Signatures: collectVolumeSignatures(partition),
 				}
 				if err := validateReusableVolume(plan, partition.FilesystemSignature); err != nil {
@@ -210,21 +217,127 @@ func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeReque
 			if isKatlPartitionLabel(match.Device.GPTLabel) {
 				return nil, fmt.Errorf("volume %q resolves to Katl-managed partition %s", request.Name, match.Device.GPTLabel)
 			}
-			mountSource, err := persistentPartitionPath(match.Device, *request.Partition)
-			if err != nil {
-				return nil, fmt.Errorf("volume %q partition: %w", request.Name, err)
-			}
 			plan = VolumePlan{
-				Name: request.Name, TargetKind: "partition", DevicePath: match.Device.Path, MountSource: mountSource,
+				Name: request.Name, TargetKind: "partition", DevicePath: match.Device.Path, MountSource: volumeIdentityMountSource(match.Device),
 				Filesystem: request.Filesystem, MountPath: VolumeMountRoot + "/" + request.Name, Wipe: request.Wipe, Signatures: match.Signatures,
 			}
 			if err := validateReusableVolume(plan, match.Device.FilesystemSignature); err != nil {
 				return nil, err
 			}
 		}
+		if !plan.Repartition && strings.TrimSpace(plan.MountSource) == "" {
+			return nil, fmt.Errorf("volume %q partition has no discoverable PARTUUID or filesystem UUID", request.Name)
+		}
 		plans = append(plans, plan)
 	}
 	return plans, nil
+}
+
+func BindVolumePlans(facts HardwareFacts, plans []VolumePlan) ([]VolumePlan, []VolumeBinding, error) {
+	bound := append([]VolumePlan(nil), plans...)
+	bindings := make([]VolumeBinding, 0, len(plans))
+	for i := range bound {
+		device, err := volumePlanPartition(facts, bound[i])
+		if err != nil {
+			return nil, nil, fmt.Errorf("volume %q: %w", bound[i].Name, err)
+		}
+		binding := VolumeBinding{
+			Name:           bound[i].Name,
+			PartitionUUID:  strings.TrimSpace(device.PartitionUUID),
+			FilesystemUUID: strings.TrimSpace(device.FilesystemUUID),
+		}
+		source, err := VolumeBindingMountSource(binding)
+		if err != nil {
+			return nil, nil, err
+		}
+		bound[i].DevicePath = device.Path
+		bound[i].MountSource = source
+		bindings = append(bindings, binding)
+	}
+	return bound, bindings, nil
+}
+
+func VolumeBindingMountSource(binding VolumeBinding) (string, error) {
+	switch {
+	case strings.TrimSpace(binding.PartitionUUID) != "":
+		return "PARTUUID=" + strings.TrimSpace(binding.PartitionUUID), nil
+	case strings.TrimSpace(binding.FilesystemUUID) != "":
+		return "UUID=" + strings.TrimSpace(binding.FilesystemUUID), nil
+	default:
+		return "", fmt.Errorf("volume %q has no discovered partition or filesystem UUID", binding.Name)
+	}
+}
+
+func MatchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice, error) {
+	var matches []BlockDevice
+	for _, candidate := range facts.BlockDevices {
+		for _, partition := range candidate.Partitions {
+			switch {
+			case strings.TrimSpace(binding.PartitionUUID) != "":
+				if partition.PartitionUUID != strings.TrimSpace(binding.PartitionUUID) {
+					continue
+				}
+			case strings.TrimSpace(binding.FilesystemUUID) != "":
+				if partition.FilesystemUUID != strings.TrimSpace(binding.FilesystemUUID) {
+					continue
+				}
+			default:
+				return BlockDevice{}, fmt.Errorf("bound identity for volume %q is empty", binding.Name)
+			}
+			matches = append(matches, partition)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return BlockDevice{}, fmt.Errorf("bound identity for volume %q matched no partitions", binding.Name)
+	case 1:
+		return matches[0], nil
+	default:
+		return BlockDevice{}, fmt.Errorf("bound identity for volume %q matched %d partitions", binding.Name, len(matches))
+	}
+}
+
+func volumePlanPartition(facts HardwareFacts, plan VolumePlan) (BlockDevice, error) {
+	if !plan.Repartition {
+		for _, disk := range facts.BlockDevices {
+			for _, partition := range disk.Partitions {
+				if partition.Path == plan.DevicePath {
+					return partition, nil
+				}
+			}
+		}
+		return BlockDevice{}, fmt.Errorf("selected partition %s was not found after preparation", plan.DevicePath)
+	}
+	var matches []BlockDevice
+	label := volumePartitionLabel(plan.Name)
+	for _, candidate := range facts.BlockDevices {
+		if candidate.Path != plan.DevicePath && plan.Repartition {
+			continue
+		}
+		for _, partition := range candidate.Partitions {
+			if partition.GPTLabel == label {
+				matches = append(matches, partition)
+			}
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return BlockDevice{}, fmt.Errorf("discovered partition label %s matched no partitions on selected disk", label)
+	case 1:
+		return matches[0], nil
+	default:
+		return BlockDevice{}, fmt.Errorf("discovered partition label %s matched %d partitions on selected disk", label, len(matches))
+	}
+}
+
+func volumeIdentityMountSource(device BlockDevice) string {
+	if value := strings.TrimSpace(device.PartitionUUID); value != "" {
+		return "PARTUUID=" + value
+	}
+	if value := strings.TrimSpace(device.FilesystemUUID); value != "" {
+		return "UUID=" + value
+	}
+	return ""
 }
 
 func volumePartitionLabel(name string) string {
@@ -278,21 +391,6 @@ func validateReusableVolume(plan VolumePlan, existingFilesystem string) error {
 		return fmt.Errorf("volume %q has filesystem %s, not requested %s; set wipe to true to reformat it", plan.Name, existingFilesystem, plan.Filesystem)
 	default:
 		return nil
-	}
-}
-
-func persistentPartitionPath(device BlockDevice, selector PartitionSelector) (string, error) {
-	switch {
-	case selector.ByID != "":
-		return selector.ByID, nil
-	case selector.PartUUID != "":
-		return "PARTUUID=" + selector.PartUUID, nil
-	case selector.FilesystemUUID != "":
-		return "UUID=" + selector.FilesystemUUID, nil
-	case selector.PartLabel != "":
-		return "/dev/disk/by-partlabel/" + selector.PartLabel, nil
-	default:
-		return "", fmt.Errorf("stable partition identity is required")
 	}
 }
 

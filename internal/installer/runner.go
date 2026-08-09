@@ -73,6 +73,7 @@ type Context struct {
 	RootSlotInstaller                  disk.RootSlotInstaller
 	CurrentRootSlot                    disk.RootSlot
 	RootPartitionUUID                  string
+	VolumeBindings                     []generation.VolumeBinding
 	GenerationID                       string
 	KubeadmConfigs                     map[string]kubeadmconfig.Plan
 	SystemExtensionPayloads            []configapply.SystemExtensionPayload
@@ -402,6 +403,7 @@ func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.Root
 		Sysexts:                     request.Sysexts,
 		KernelCommandLine:           request.KernelCommandLine,
 		ConfiguredKernelCommandLine: request.ConfiguredKernelCommandLine,
+		VolumeBindings:              append([]generation.VolumeBinding(nil), install.VolumeBindings...),
 		CreatedAt:                   request.CreatedAt,
 		BootState:                   "pending",
 		HealthState:                 "unknown",
@@ -458,7 +460,36 @@ func (formatFilesystemsStep) Run(ctx context.Context, install *Context) error {
 	if err := executeDiskGroup(ctx, install, disk.FormatOperations); err != nil {
 		return err
 	}
+	if err := bindInstalledVolumes(ctx, install); err != nil {
+		return err
+	}
 	return recordStep(ctx, install, FormatFilesystems)
+}
+
+func bindInstalledVolumes(ctx context.Context, install *Context) error {
+	if install.DiskLayout != nil && len(install.DiskLayout.VolumeMounts) > 0 {
+		if install.Discovery == nil {
+			return fmt.Errorf("hardware discovery is required to bind installed volumes")
+		}
+		facts, err := install.Discovery.Discover(ctx)
+		if err != nil {
+			return fmt.Errorf("rediscover installed volumes: %w", err)
+		}
+		plans, diskBindings, err := disk.BindVolumePlans(facts, install.DiskLayout.VolumeMounts)
+		if err != nil {
+			return err
+		}
+		bindings := make([]generation.VolumeBinding, 0, len(diskBindings))
+		for _, binding := range diskBindings {
+			bindings = append(bindings, generation.VolumeBinding{
+				Name: binding.Name, PartitionUUID: binding.PartitionUUID, FilesystemUUID: binding.FilesystemUUID,
+			})
+		}
+		install.HardwareFacts = facts
+		install.DiskLayout.VolumeMounts = plans
+		install.VolumeBindings = bindings
+	}
+	return nil
 }
 
 type mountTargetStep struct{}
