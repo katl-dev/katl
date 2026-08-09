@@ -737,18 +737,26 @@ spec:
 	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
 		return err
 	}
-	_, err := configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{
+	management, err := vmtest.VMTestManagementPlanning(vmtest.VMTestManagementClusterName, []string{"cp-1", "cp-2", "cp-3"})
+	if err != nil {
+		return err
+	}
+	_, err = configbundle.WriteArchive(bundlePath, configbundle.BuildRequest{
 		SourcePath:     sourcePath,
 		KatlctlVersion: "vmtest",
 		KatlctlCommit:  "vmtest",
 		CreatedBy:      "three-control-plane replacement vmtest",
-		Planning:       configbundle.PlanningInputs{KubernetesBundle: kubernetesBundle},
+		Planning:       configbundle.PlanningInputs{KubernetesBundle: kubernetesBundle, ManagementIdentities: management},
 	})
 	return err
 }
 
 func readAgentNodeStatus(ctx context.Context, name, address string) (*agentapi.NodeStatus, error) {
-	connector := cluster.TCPAgentConnector{DialTimeout: 5 * time.Second}
+	connector, err := vmtest.VMTestAgentConnector(vmtest.VMTestManagementClusterName)
+	if err != nil {
+		return nil, err
+	}
+	connector.DialTimeout = 5 * time.Second
 	conn, err := connector.Connect(ctx, inventory.PlannedNode{
 		Name: name, Address: address, Access: inventory.Access{Method: "agent"},
 	})
@@ -760,7 +768,11 @@ func readAgentNodeStatus(ctx context.Context, name, address string) (*agentapi.N
 }
 
 func readLiveEtcdStatus(ctx context.Context, name, address string) (*agentapi.EtcdStatus, error) {
-	connector := cluster.TCPAgentConnector{DialTimeout: 5 * time.Second}
+	connector, err := vmtest.VMTestAgentConnector(vmtest.VMTestManagementClusterName)
+	if err != nil {
+		return nil, err
+	}
+	connector.DialTimeout = 5 * time.Second
 	conn, err := connector.Connect(ctx, inventory.PlannedNode{
 		Name: name, Address: address, Access: inventory.Access{Method: "agent"},
 	})
@@ -791,7 +803,13 @@ func waitForAgentKubernetesReady(ctx context.Context, nodes []vmtest.RunningInst
 		deadline := time.Now().Add(timeout)
 		last := "Kubernetes status was not reported"
 		for {
-			connector := cluster.TCPAgentConnector{DialTimeout: 5 * time.Second}
+			connector, err := vmtest.VMTestAgentConnector(vmtest.VMTestManagementClusterName)
+			if err != nil {
+				last = err.Error()
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			connector.DialTimeout = 5 * time.Second
 			connection, err := connector.Connect(ctx, inventory.PlannedNode{
 				Name: node.Name, Address: addresses[node.Name], Access: inventory.Access{Method: "agent"},
 			})
@@ -1003,8 +1021,28 @@ func writeThreeControlPlaneWorkstationContext(path, clusterName string, addresse
 		}
 		fmt.Fprintf(&nodes, "      - name: %s\n        managementEndpoint: %s\n        systemRole: control-plane\n        enrollmentID: %s\n        machineID: %s\n", name, net.JoinHostPort(addresses[name], "9443"), status.GetEnrollmentId(), status.GetMachineId())
 	}
-	data := "currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: " + clusterName + "\nclusters:\n  - name: " + clusterName + "\n    nodes:\n" + nodes.String()
+	management, err := vmtestManagementContextYAML()
+	if err != nil {
+		return err
+	}
+	data := "currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: " + clusterName + "\nclusters:\n  - name: " + clusterName + "\n" + management + "    nodes:\n" + nodes.String()
 	return os.WriteFile(path, []byte(data), 0o600)
+}
+
+func vmtestManagementContextYAML() (string, error) {
+	client, err := vmtest.VMTestManagementClient(vmtest.VMTestManagementClusterName)
+	if err != nil {
+		return "", err
+	}
+	data, err := yaml.Marshal(client)
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	for index := range lines {
+		lines[index] = "      " + lines[index]
+	}
+	return "    management:\n" + strings.Join(lines, "\n") + "\n", nil
 }
 
 func kubeletOperationConfig(live []byte, maxPods int) ([]byte, error) {

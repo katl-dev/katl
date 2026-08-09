@@ -55,6 +55,7 @@ type StateAssets struct {
 	KubeletDropIn      string
 	StateCheckService  string
 	RuntimeStatus      string
+	ManagementFirewall string
 	AgentService       string
 	Tmpfiles           string
 	ExtraMounts        []ExtraMountUnit
@@ -138,6 +139,7 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		KubeletDropIn:      renderKubeletDropIn(),
 		StateCheckService:  renderStateCheckService(),
 		RuntimeStatus:      renderRuntimeStatusService(),
+		ManagementFirewall: renderManagementFirewallService(),
 		AgentService:       renderAgentService(),
 		Tmpfiles:           renderTmpfiles(dirs),
 		ExtraMounts:        extraMounts,
@@ -544,9 +546,9 @@ func renderAgentService() string {
 		"[Unit]",
 		"Description=Run Katl node management agent",
 		"Documentation=man:systemd.service(5)",
-		"Requires=var.mount katl-generation-activate.service",
+		"Requires=var.mount katl-generation-activate.service katlc-management-firewall.service",
 		"Wants=network-online.target",
-		"After=local-fs.target var.mount katl-generation-activate.service network-online.target",
+		"After=local-fs.target var.mount katl-generation-activate.service network-online.target katlc-management-firewall.service",
 		"Before=katl-kubeadm-ready.target",
 		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
@@ -562,6 +564,28 @@ func renderAgentService() string {
 		"",
 		"[Install]",
 		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
+func renderManagementFirewallService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Restrict Katl management ingress to host interfaces",
+		"Documentation=man:nft(8)",
+		"Wants=network-online.target nftables.service",
+		"After=network-online.target nftables.service",
+		"PartOf=nftables.service",
+		"Before=katlc-agent.service containerd.service kubelet.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"RemainAfterExit=yes",
+		"ExecStart=/usr/bin/katlc agent firewall --port=9443",
+		"StandardOutput=journal",
+		"StandardError=journal",
+		"SyslogIdentifier=katlc-management-firewall",
+		"NoNewPrivileges=yes",
 		"",
 	}, "\n")
 }
@@ -674,6 +698,9 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		}
 	}
 	if err := writeFile(root, "etc/systemd/system/katlc-agent.service", assets.AgentService, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katlc-management-firewall.service", assets.ManagementFirewall, 0o644); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeSymlink(root, "etc/systemd/system/multi-user.target.wants/katlc-agent.service", "../katlc-agent.service"); err != nil {

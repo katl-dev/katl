@@ -209,6 +209,7 @@ func runHostStatus(ctx context.Context, opts hostStatusOptions, stdout, stderr i
 	node := hostTargetName(target)
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
+	requestCtx = withManagementTarget(requestCtx, target)
 	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
 	if err != nil {
 		return fmt.Errorf("connect to %s at %s: %w", node, target.endpoint, err)
@@ -236,6 +237,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	}
 	node := hostTargetName(target)
 	requestCtx, cancelRequest := context.WithTimeout(ctx, opts.timeout)
+	requestCtx = withManagementTarget(requestCtx, target)
 	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
 	if err != nil {
 		cancelRequest()
@@ -273,6 +275,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	}
 	_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy...\n", node)
 	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
+	waitCtx = withManagementTarget(waitCtx, target)
 	verifiedConn, verified, err := waitNodeBootHealth(waitCtx, node, target.endpoint, previousAgentStart, generationID, recoveryRequirement, io.Discard)
 	cancelWait()
 	if err != nil {
@@ -297,6 +300,7 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 	}
 	node := hostTargetName(target)
 	requestCtx, cancelRequest := context.WithTimeout(ctx, opts.timeout)
+	requestCtx = withManagementTarget(requestCtx, target)
 	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
 	if err != nil {
 		cancelRequest()

@@ -1098,6 +1098,15 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	}
 	bundlePath := filepath.Join(sourceDir, "config.katlcfg")
 	planning := configbundle.PlanningInputs{}
+	nodeNames := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		name, _ := node["name"].(string)
+		nodeNames = append(nodeNames, name)
+	}
+	planning.ManagementIdentities, err = VMTestManagementPlanning("katl-smoke", nodeNames)
+	if err != nil {
+		return "", "", err
+	}
 	if !bindInstallMedia {
 		planning.KatlosImage = installmanifest.KatlosImage{
 			LocalRef:         localRef,

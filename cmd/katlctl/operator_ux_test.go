@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -190,6 +191,9 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "katlctl.yaml")
 	sourcePath := writeClusterConfig(t)
+	if _, _, err := ensureManagementIdentity("lab", io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	fake := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1"}}
 	oldDial := dialKatlcAgent
 	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
@@ -214,6 +218,32 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	}
 	if len(topology.Nodes) != 1 || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" {
 		t.Fatalf("topology = %#v", topology)
+	}
+	if topology.Management == nil {
+		t.Fatal("saved context has no automatic management credentials")
+	}
+	identityPath, err := managementIdentityPath("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := readManagementIdentity(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topology.Management.ClientPrivateKey != identity.Operator.PrivateKey || topology.Management.ClientCertificate != identity.Operator.Certificate {
+		t.Fatal("saved context did not retain the issued operator identity")
+	}
+	for name, secret := range map[string]string{"CA private key": identity.CertificateAuthority.PrivateKey, "node private key": identity.Nodes["cp-1"].PrivateKey} {
+		if topology.Management.ClientPrivateKey == secret {
+			t.Fatalf("saved context uses %s as its client identity", name)
+		}
+	}
+	var shown bytes.Buffer
+	if err := run(context.Background(), []string{"context", "show", "--context-file", configPath, "--output", "json"}, &shown, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(shown.Bytes(), []byte("PRIVATE KEY")) || bytes.Contains(shown.Bytes(), []byte("clientPrivateKey")) || bytes.Contains(shown.Bytes(), []byte("clientCertificate")) {
+		t.Fatalf("context show exposed management credentials:\n%s", shown.String())
 	}
 }
 

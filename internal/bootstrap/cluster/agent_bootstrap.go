@@ -16,8 +16,10 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	"gopkg.in/yaml.v3"
 )
 
@@ -73,8 +75,10 @@ type AgentClient interface {
 }
 
 type TCPAgentConnector struct {
-	DefaultPort string
-	DialTimeout time.Duration
+	DefaultPort        string
+	DialTimeout        time.Duration
+	Credentials        *managementidentity.ClientCredentials
+	CredentialsForNode func(inventory.PlannedNode) (managementidentity.ClientCredentials, error)
 }
 
 func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNode) (AgentConnection, error) {
@@ -82,7 +86,22 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 		return AgentConnection{}, fmt.Errorf("node %q access method %q is not supported by katlc agent transport", node.Name, node.Access.Method)
 	}
 	endpoint := AgentEndpoint(node.Address, valueOrDefault(c.DefaultPort, defaultAgentPort))
-	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	clientCredentials := c.Credentials
+	if clientCredentials == nil && c.CredentialsForNode != nil {
+		resolved, err := c.CredentialsForNode(node)
+		if err != nil {
+			return AgentConnection{}, err
+		}
+		clientCredentials = &resolved
+	}
+	if clientCredentials == nil {
+		return AgentConnection{}, fmt.Errorf("management credentials are required to connect to node %q; use a saved Katl context", node.Name)
+	}
+	tlsConfig, err := transport.ClientTLSConfig(*clientCredentials, node.Name)
+	if err != nil {
+		return AgentConnection{}, fmt.Errorf("management credentials for node %q: %w", node.Name, err)
+	}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig))}
 	dialCtx := ctx
 	if c.DialTimeout > 0 {
 		var cancel context.CancelFunc

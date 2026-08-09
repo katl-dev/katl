@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 var timeNow = func() time.Time { return time.Now().UTC() }
@@ -20,6 +23,7 @@ type ServeConfig struct {
 	Root       string
 	Listen     string
 	Dispatcher Dispatcher
+	TLSConfig  *tls.Config
 }
 
 type dispatcherShutdown interface {
@@ -45,12 +49,20 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	if err != nil {
 		return err
 	}
+	tlsConfig := config.TLSConfig
+	if tlsConfig == nil {
+		tlsConfig, err = transport.ServerTLSConfig(root)
+		if err != nil {
+			return err
+		}
+	}
 	listener, err := net.Listen(network, address)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
 	server := grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(tlsConfig)),
 		grpc.MaxRecvMsgSize(256<<20),
 		grpc.MaxSendMsgSize(256<<20),
 	)

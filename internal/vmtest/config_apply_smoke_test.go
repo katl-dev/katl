@@ -19,9 +19,11 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agent "github.com/katl-dev/katl/internal/katlc/agent"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -428,7 +430,7 @@ func enrollConfigApplyNode(t *testing.T, ctx context.Context, result Result, kat
 	source := `apiVersion: config.katl.dev/v1alpha1
 kind: ClusterConfig
 metadata:
-  name: config-apply-vmtest
+  name: katl-smoke
 spec:
   controlPlaneEndpoint:
     host: ` + host + `
@@ -454,6 +456,13 @@ spec:
 	}
 	t.Setenv("KATLCTL_CONFIG", contextPath)
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := managementidentity.Write(filepath.Join(directory, "management", VMTestManagementClusterName+".katlkey"), identity); err != nil {
+		t.Fatal(err)
+	}
 	runKatlctl(t, ctx, result, katlctl, "context-save", "context", "save", "--config", configPath)
 }
 
@@ -974,9 +983,9 @@ func mustUnmarshalProtoJSON(t *testing.T, data []byte, msg proto.Message) {
 	}
 }
 
-func waitKatlcOperationTerminal(t *testing.T, ctx context.Context, endpoint, operationID string) *agentapi.OperationStatus {
+func waitKatlcOperationTerminal(t *testing.T, ctx context.Context, endpoint, operationID string, nodeNames ...string) *agentapi.OperationStatus {
 	t.Helper()
-	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint, nodeNames...)
 	defer conn.Close()
 	deadline := time.Now().Add(2 * time.Minute)
 	var last *agentapi.OperationStatus
@@ -1097,11 +1106,27 @@ users: []
 	}
 }
 
-func dialKatlcAgentForVMTest(t *testing.T, ctx context.Context, endpoint string) (*grpc.ClientConn, agentapi.KatlcAgentClient) {
+func dialKatlcAgentForVMTest(t *testing.T, ctx context.Context, endpoint string, nodeNames ...string) (*grpc.ClientConn, agentapi.KatlcAgentClient) {
 	t.Helper()
+	nodeName := "cp-1"
+	if len(nodeNames) > 0 && strings.TrimSpace(nodeNames[0]) != "" {
+		nodeName = strings.TrimSpace(nodeNames[0])
+	}
+	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := managementidentity.Client(identity, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsConfig, err := transport.ClientTLSConfig(client, nodeName)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	conn, err := grpc.DialContext(dialCtx, endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	conn, err := grpc.DialContext(dialCtx, endpoint, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)), grpc.WithBlock())
 	if err != nil {
 		t.Fatalf("dial katlc agent %s: %v", endpoint, err)
 	}

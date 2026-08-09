@@ -109,7 +109,10 @@ separate ADR, compatibility checks, provenance, and a concrete user story.
 `katlctl config bundle` writes a single `.katlcfg` file. The file is a tar
 archive containing an OCI Image Layout v1 directory. Implementations may also
 use the unpacked directory form internally for tests and caches, but the
-portable user artifact is the archive.
+portable user artifact is the archive. The archive is mode 0600 provisioning
+material because its per-node install manifests contain non-CA management
+server private keys; it must not contain the management CA or operator private
+key.
 
 ```text
 homelab.katlcfg

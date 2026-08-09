@@ -198,7 +198,11 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 	if contextName == "" {
 		contextName = bundle.Manifest.ClusterName
 	}
-	clusterProfile := workstation.Cluster{Name: bundle.Manifest.ClusterName, ControlPlaneEndpoint: inv.ControlPlaneEndpoint}
+	management, err := managementClientForCluster(bundle.Manifest.ClusterName)
+	if err != nil {
+		return err
+	}
+	clusterProfile := workstation.Cluster{Name: bundle.Manifest.ClusterName, ControlPlaneEndpoint: inv.ControlPlaneEndpoint, Management: &management}
 	report := contextSaveReport{APIVersion: "katl.dev/v1alpha1", Kind: "ContextSaveReport", Context: contextName, ConfigPath: configPath}
 	cfg := workstation.Config{}
 	if existing, loadErr := workstation.Load(configPath); loadErr == nil {
@@ -217,7 +221,8 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 
 	for _, node := range inv.Nodes {
 		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
-		conn, err := dialKatlcAgent(ctx, endpoint)
+		nodeCtx := withManagementDial(ctx, node.Name, &management)
+		conn, err := dialKatlcAgent(nodeCtx, endpoint)
 		if err != nil {
 			return fmt.Errorf("verify node %s management endpoint: %w", node.Name, err)
 		}
@@ -308,7 +313,7 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	if !found {
 		return fmt.Errorf("node %q was not found in context %q", opts.nodeName, topology.ContextName)
 	}
-	target := managementTarget{nodeName: expected.Name, endpoint: expected.ManagementEndpoint, enrollmentID: expected.EnrollmentID, machineID: expected.MachineID}
+	target := managementTarget{nodeName: expected.Name, endpoint: expected.ManagementEndpoint, enrollmentID: expected.EnrollmentID, machineID: expected.MachineID, credentials: topology.Management}
 	if err := requireEnrolledTarget(target); err != nil {
 		return err
 	}
@@ -316,7 +321,7 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	if err != nil {
 		return err
 	}
-	conn, err := dialKatlcAgent(ctx, endpoint)
+	conn, err := dialKatlcAgent(withManagementTarget(ctx, target), endpoint)
 	if err != nil {
 		return fmt.Errorf("connect to proposed address %s: %w", endpoint, err)
 	}

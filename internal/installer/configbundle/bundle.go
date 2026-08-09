@@ -55,9 +55,10 @@ type BuildRequest struct {
 // PlanningInputs are operation-scoped mechanisms supplied by Katl, not
 // operator-authored cluster intent.
 type PlanningInputs struct {
-	KatlosImage      manifest.KatlosImage
-	KubernetesBundle string
-	BootstrapAccess  map[string]inventory.Access
+	KatlosImage          manifest.KatlosImage
+	KubernetesBundle     string
+	BootstrapAccess      map[string]inventory.Access
+	ManagementIdentities map[string]manifest.ManagementIdentity
 }
 
 type Result struct {
@@ -381,8 +382,9 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	}
 	warnings := systemExtensionReferenceWarnings(config)
 	plan, err := clusterplan.Compile(clusterplan.CompileRequest{
-		Config:         config,
-		KubeadmConfigs: kubeadmConfigs,
+		Config:               config,
+		KubeadmConfigs:       kubeadmConfigs,
+		ManagementIdentities: planning.ManagementIdentities,
 	})
 	if err != nil {
 		return nil, Result{}, publicClusterPlanError(source, err)
@@ -452,10 +454,37 @@ func WriteArchive(path string, request BuildRequest) (Result, error) {
 	if strings.TrimSpace(path) == "" {
 		return Result{}, fmt.Errorf("output path is required")
 	}
-	if err := os.WriteFile(path, archive, 0o644); err != nil {
+	if err := writeArchiveFile(path, archive); err != nil {
 		return Result{}, fmt.Errorf("write config bundle: %w", err)
 	}
 	return result, nil
+}
+
+func writeArchiveFile(path string, archive []byte) error {
+	path = strings.TrimSpace(path)
+	dir := filepath.Dir(path)
+	temporary, err := os.CreateTemp(dir, ".katl-config-bundle-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(archive); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func DecodeSource(reader io.Reader) (SourceConfig, error) {

@@ -118,6 +118,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result := clusterNodeStatus{Node: node.Name, Role: string(node.SystemRole), Endpoint: node.ManagementEndpoint}
 			requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 			defer cancel()
+			requestCtx = withManagementDial(requestCtx, node.Name, topology.Management)
 			conn, err := dialKatlcAgent(requestCtx, node.ManagementEndpoint)
 			if err != nil {
 				result.Error = err.Error()

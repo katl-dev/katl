@@ -39,9 +39,10 @@ XDG_CONFIG_HOME
 
 ## Schema
 
-The file is a minimal client-side profile store. `katlctl context save
-SOURCE` creates or updates it on the normal path; operators do not need to
-author this YAML by hand:
+The mode-0600 file is a client-side profile and credential store. `katlctl
+context save SOURCE` creates or updates it on the normal path; operators do not
+need to author this YAML by hand. The example omits the serialized
+`management` client certificate and private key:
 
 ```yaml
 currentContext: prod
@@ -68,9 +69,14 @@ clusters:
 `clusters`. Each cluster records node-local `katlc` management endpoints,
 KatlOS system roles, the immutable install enrollment and machine identities,
 and optionally the stable control-plane endpoint used by operator workflows.
-The identities are public opaque values, not credentials.
+The enrollment and machine identities are public opaque preconditions, not
+credentials. Each cluster also carries the operator's non-CA management client
+leaf. The CA private key and node server keys are never copied into this file.
+Loading a context that contains management credentials refuses group- or
+world-readable file modes.
 
-`katlctl context show` prints the resolved context topology as JSON.
+`katlctl context show` prints the resolved context topology as JSON and always
+omits management certificates and keys.
 
 ## Precedence
 

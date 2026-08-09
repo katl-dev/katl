@@ -1,0 +1,16 @@
+[Unit]
+Description=Restrict Katl management ingress to host interfaces
+Documentation=man:nft(8)
+Wants=network-online.target nftables.service
+After=network-online.target nftables.service
+PartOf=nftables.service
+Before=katlc-agent.service containerd.service kubelet.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/katlc agent firewall --port=9443
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=katlc-management-firewall
+NoNewPrivileges=yes

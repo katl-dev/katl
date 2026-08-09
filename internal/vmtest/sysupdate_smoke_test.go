@@ -111,15 +111,15 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	upgrade := discoverBuiltUpgradeImage(t, previousSpec.RuntimeVersion)
 	endpoint := katlcEndpoint(t, node, "")
 	candidateGeneration := "host-upgrade-" + strings.ReplaceAll(upgrade.Version, ".", "-")
-	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint, spec.Name)
 	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
 		conn.Close()
 		t.Fatalf("read node status before host upgrade: %v", err)
 	}
 	conn.Close()
-	localRef := stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, nodeStatus.GetMachineId(), upgrade)
-	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade)
+	localRef := stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
+	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade)
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
 		t.Fatalf("host upgrade operation status = %+v", status)
 	}
@@ -184,8 +184,8 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("upgrade did not produce distinct version, root slot, and UKI identities: previous=%#v candidate=%#v", previousSpec, candidateSpec)
 	}
 	repeatedGeneration := candidateGeneration + "-repeat"
-	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, nodeStatus.GetMachineId(), upgrade)
-	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef, upgrade)
+	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
+	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef, upgrade)
 	if repeatedStatus.GetResult() != operation.ResultSucceeded || !repeatedStatus.GetBootHealthPending() || repeatedStatus.GetCandidateGenerationId() != repeatedGeneration {
 		t.Fatalf("repeated host upgrade operation status = %+v", repeatedStatus)
 	}
@@ -223,9 +223,9 @@ func guestFileSHA256(t *testing.T, ctx context.Context, guest *GuestControl, nam
 	return fields[0]
 }
 
-func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage) (string, *agentapi.OperationStatus) {
+func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage) (string, *agentapi.OperationStatus) {
 	t.Helper()
-	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint, nodeName)
 	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
 		conn.Close()
@@ -256,12 +256,12 @@ func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, machi
 	if err != nil {
 		t.Fatalf("submit host upgrade operation: %v", err)
 	}
-	return accepted.GetOperationId(), waitKatlcOperationTerminal(t, ctx, endpoint, accepted.GetOperationId())
+	return accepted.GetOperationId(), waitKatlcOperationTerminal(t, ctx, endpoint, accepted.GetOperationId(), nodeName)
 }
 
-func stageHostUpgradeArtifactForVMTest(t *testing.T, ctx context.Context, endpoint, machineID string, upgrade builtUpgradeImage) string {
+func stageHostUpgradeArtifactForVMTest(t *testing.T, ctx context.Context, endpoint, nodeName, machineID string, upgrade builtUpgradeImage) string {
 	t.Helper()
-	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint)
+	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint, nodeName)
 	defer conn.Close()
 	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {

@@ -14,6 +14,7 @@ installed release.
 | `katlctl kubernetes` | Create, import, and inspect reusable Kubernetes identity; plan and execute supported Kubernetes upgrades. |
 | `katlctl operations` | Inspect current and recent durable node operations. |
 | `katlctl context` | Save and select optional workstation topology shortcuts. |
+| `katlctl management` | Inspect the automatic management-identity backup path or restore it on a workstation. |
 | `katlctl system-extension` | Inspect, validate, publish, and query operator-owned system extensions. |
 
 ## Input Conventions
@@ -24,7 +25,28 @@ An optional saved `--context` can shorten repeated day-two commands, but it is
 not a second desired-state source.
 
 `--endpoint` overrides only the address used to contact one selected installer
-or node. It does not change node identity or retained configuration.
+or node. It does not change node identity, bypass mTLS, or grant access without
+the matching saved cluster identity.
+
+## Automatic management identity
+
+`katlctl config init`, `config bundle`, and `install apply` automatically create
+or reuse management trust keyed by the `ClusterConfig` name. There are no
+routine TLS flags. Back up the `.katlkey` path printed at first creation; it
+contains the authority needed to issue the same node identities during a
+reinstall.
+
+Recovery-only commands are:
+
+```sh
+katlctl management identity path homelab
+katlctl management identity inspect ./homelab.katlkey
+katlctl management identity import ./homelab.katlkey
+```
+
+Import is idempotent for the same identity and refuses to replace a different
+identity for that cluster. The saved context contains only the operator client
+leaf and never exposes it through `katlctl context show`.
 
 Text output is designed for interactive use. Commands that expose `--output
 json` provide the bounded automation surface. Progress is written separately

@@ -38,11 +38,12 @@ artifacts with GitHub provenance. These are optional tools for operators who
 want a stricter supply-chain policy; the normal home-lab path accepts readable
 release and bundle versions and performs its own internal consistency checks.
 
-The current `katlc` management API is intentionally unauthenticated and
-unencrypted on TCP port 9443. This is the low-friction trust model for Katl's
-supported home-lab path, not a production-grade remote-management boundary.
-Keep nodes on a trusted management LAN and do not expose port 9443 to the
-Internet or an untrusted shared network.
+The `katlc` management API uses automatically provisioned mTLS on TCP port
+9443. KatlOS restricts ingress to host interfaces present before workload
+networking starts, and later CNI interfaces are not adopted on service restart.
+This makes access deliberate without adding routine certificate ceremony; it
+is still a home-lab boundary, not a production-grade multi-tenant policy. Keep
+nodes on a trusted management LAN and do not expose port 9443 to the Internet.
 
 The ISO install handoff is intentionally unauthenticated HTTP for the supported
 trusted home-lab path. Restrict port 8080 to the provisioning network: the

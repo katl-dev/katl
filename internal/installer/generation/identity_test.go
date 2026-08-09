@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
 const sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
@@ -71,6 +74,7 @@ func TestWriteIdentity(t *testing.T) {
 	assets, err := WriteIdentity(root, IdentityRequest{
 		AuthorizedKeys:    []string{sshKey},
 		InventoryNodeName: "cp-1",
+		Management:        testManagementIdentity(t, "cp-1"),
 		Random:            bytes.NewReader([]byte("0123456789abcdef")),
 		EnrollmentRandom:  bytes.NewReader([]byte("fedcba9876543210")),
 	})
@@ -185,6 +189,7 @@ func TestWriteInstallIdentity(t *testing.T) {
 		Identity: IdentityRequest{
 			AuthorizedKeys:    []string{sshKey},
 			InventoryNodeName: "cp-1",
+			Management:        testManagementIdentity(t, "cp-1"),
 			Random:            bytes.NewReader([]byte("0123456789abcdef")),
 			EnrollmentRandom:  bytes.NewReader([]byte("fedcba9876543210")),
 		},
@@ -200,5 +205,21 @@ func TestWriteInstallIdentity(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "systemd.machine_id="+result.Identity.MachineID) {
 		t.Fatalf("loader entry missing generated machine id:\n%s", data)
+	}
+}
+
+func testManagementIdentity(t *testing.T, nodeName string) manifest.ManagementIdentity {
+	t.Helper()
+	now := time.Now().UTC()
+	bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "test", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := managementidentity.IssueNode(bundle, nodeName, now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest.ManagementIdentity{
+		CACertificate: credentials.CACertificate, ServerCertificate: credentials.ServerCertificate, ServerPrivateKey: credentials.ServerPrivateKey,
 	}
 }

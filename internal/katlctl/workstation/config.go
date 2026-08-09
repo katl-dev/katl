@@ -10,8 +10,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,9 +29,10 @@ type Context struct {
 }
 
 type Cluster struct {
-	Name                 string `json:"name" yaml:"name"`
-	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint"`
-	Nodes                []Node `json:"nodes" yaml:"nodes"`
+	Name                 string                                `json:"name" yaml:"name"`
+	ControlPlaneEndpoint string                                `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint"`
+	Nodes                []Node                                `json:"nodes" yaml:"nodes"`
+	Management           *managementidentity.ClientCredentials `json:"management,omitempty" yaml:"management,omitempty"`
 }
 
 type Node struct {
@@ -49,10 +52,11 @@ const (
 )
 
 type Topology struct {
-	ContextName          string         `json:"contextName,omitempty"`
-	ClusterName          string         `json:"clusterName"`
-	ControlPlaneEndpoint string         `json:"controlPlaneEndpoint,omitempty"`
-	Nodes                []TopologyNode `json:"nodes"`
+	ContextName          string                                `json:"contextName,omitempty"`
+	ClusterName          string                                `json:"clusterName"`
+	ControlPlaneEndpoint string                                `json:"controlPlaneEndpoint,omitempty"`
+	Nodes                []TopologyNode                        `json:"nodes"`
+	Management           *managementidentity.ClientCredentials `json:"-"`
 }
 
 type TopologyNode struct {
@@ -94,7 +98,8 @@ func ResolvePath(getenv func(string) string, userConfigDir func() (string, error
 }
 
 func Load(path string) (Config, error) {
-	data, err := os.ReadFile(strings.TrimSpace(path))
+	path = strings.TrimSpace(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read katlctl config: %w", err)
 	}
@@ -109,6 +114,19 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode katlctl config: multiple YAML documents are not supported")
 	} else if err != io.EOF {
 		return Config{}, fmt.Errorf("decode katlctl config: %w", err)
+	}
+	for _, cluster := range cfg.Clusters {
+		if cluster.Management == nil {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return Config{}, fmt.Errorf("inspect katlctl config: %w", err)
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+			return Config{}, fmt.Errorf("katlctl config %s contains management credentials and must be a mode-0600 regular file; run 'chmod 600 %s'", path, path)
+		}
+		break
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -307,6 +325,10 @@ func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) 
 		ControlPlaneEndpoint: strings.TrimSpace(cluster.ControlPlaneEndpoint),
 		Nodes:                make([]TopologyNode, 0, len(cluster.Nodes)),
 	}
+	if cluster.Management != nil {
+		credentials := *cluster.Management
+		topology.Management = &credentials
+	}
 	for _, node := range cluster.Nodes {
 		topology.Nodes = append(topology.Nodes, TopologyNode{
 			Name:               strings.TrimSpace(node.Name),
@@ -356,6 +378,11 @@ func topologyFromPlan(plan inventory.Plan) (Topology, error) {
 }
 
 func validateCluster(cluster Cluster) error {
+	if cluster.Management != nil {
+		if err := managementidentity.ValidateClient(*cluster.Management, time.Now().UTC()); err != nil {
+			return fmt.Errorf("cluster %q management access: %w", strings.TrimSpace(cluster.Name), err)
+		}
+	}
 	if strings.TrimSpace(cluster.ControlPlaneEndpoint) != "" {
 		if err := validateEndpoint("cluster "+strings.TrimSpace(cluster.Name)+" controlPlaneEndpoint", cluster.ControlPlaneEndpoint); err != nil {
 			return err

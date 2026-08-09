@@ -102,7 +102,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		}
 		layer.Bootstrap.Access = portableBootstrapAccess(layer.Bootstrap.Access)
 		layer = applyTargetDiskDefaults(layer)
-		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, endpointPlan)
+		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, endpointPlan, request.ManagementIdentities[name])
 		if err != nil {
 			return Plan{}, err
 		}
@@ -205,7 +205,7 @@ func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]stri
 	return &plan, nil
 }
 
-func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, endpointPlan *controlplaneendpoint.Plan) (NodeMaterial, inventory.Node, error) {
+func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, endpointPlan *controlplaneendpoint.Plan, management manifest.ManagementIdentity) (NodeMaterial, inventory.Node, error) {
 	hostname := strings.TrimSpace(layer.Hostname)
 	if hostname == "" {
 		hostname = name
@@ -236,8 +236,9 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		Kind:       manifest.Kind,
 		Node: manifest.NodeConfig{
 			Identity: manifest.NodeIdentity{
-				Hostname: hostname,
-				SSH:      layer.SSH,
+				Hostname:   hostname,
+				SSH:        layer.SSH,
+				Management: management,
 			},
 			SystemRole:           string(role),
 			Kernel:               kernelConfig(layer.Kernel),

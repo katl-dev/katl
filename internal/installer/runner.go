@@ -830,6 +830,7 @@ func (installSeedStep) Run(ctx context.Context, install *Context) error {
 	request := generation.IdentityRequest{
 		AuthorizedKeys:    install.Manifest.Node.Identity.SSH.AuthorizedKeys,
 		InventoryNodeName: inventoryNodeName(install.Manifest),
+		Management:        install.Manifest.Node.Identity.Management,
 		Random:            install.IdentityRandom,
 		EnrollmentRandom:  install.EnrollmentRandom,
 	}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"testing"
 
@@ -29,6 +30,7 @@ func TestServeShutsDownDispatcher(t *testing.T) {
 		Root:       t.TempDir(),
 		Listen:     "tcp://127.0.0.1:0",
 		Dispatcher: dispatcher,
+		TLSConfig:  &tls.Config{MinVersion: tls.VersionTLS13},
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Serve() error = %v, want context cancellation", err)
