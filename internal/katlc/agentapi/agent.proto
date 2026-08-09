@@ -57,8 +57,7 @@ message VolumeStatus {
   string result = 8;
   string state_change_timestamp = 9;
   string failure_diagnostic = 10;
-  string partition_uuid = 11;
-  string filesystem_uuid = 12;
+  reserved 11, 12;
   string mount_source = 13;
 }
 

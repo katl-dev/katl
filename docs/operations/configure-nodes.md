@@ -112,9 +112,9 @@ device, planning fails until the operator supplies the reported one-shot
 `filesystemUUID` selector for the replacement; an ambiguous `byVolumeName`
 label remains an error even with rebind authority. A destructive replacement
 may require both `--rebind-volume` and `--acknowledge-storage-wipe`.
-`katlctl node status NODE` reports the active mount source; its JSON output
-also includes both discovered UUIDs so the operator can verify the retained
-identity before and after the change.
+`katlctl node status NODE` reports the active exact mount source so the
+operator can verify the retained identity before and after the change without
+exposing the generation's internal binding metadata as a separate API.
 
 ## Configure Kernel Arguments
 

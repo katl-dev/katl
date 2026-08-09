@@ -51,8 +51,6 @@ func nodeVolumeStatus(ctx context.Context, root, currentGeneration string, runne
 			Result:               unit.Result,
 			StateChangeTimestamp: unit.StateChangeTimestamp,
 			FailureDiagnostic:    unit.FailureDiagnostic,
-			PartitionUuid:        binding.PartitionUUID,
-			FilesystemUuid:       binding.FilesystemUUID,
 			MountSource:          mountSource,
 		})
 	}

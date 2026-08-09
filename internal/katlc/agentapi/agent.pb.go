@@ -257,8 +257,6 @@ type VolumeStatus struct {
 	Result               string                 `protobuf:"bytes,8,opt,name=result,proto3" json:"result,omitempty"`
 	StateChangeTimestamp string                 `protobuf:"bytes,9,opt,name=state_change_timestamp,json=stateChangeTimestamp,proto3" json:"state_change_timestamp,omitempty"`
 	FailureDiagnostic    string                 `protobuf:"bytes,10,opt,name=failure_diagnostic,json=failureDiagnostic,proto3" json:"failure_diagnostic,omitempty"`
-	PartitionUuid        string                 `protobuf:"bytes,11,opt,name=partition_uuid,json=partitionUuid,proto3" json:"partition_uuid,omitempty"`
-	FilesystemUuid       string                 `protobuf:"bytes,12,opt,name=filesystem_uuid,json=filesystemUuid,proto3" json:"filesystem_uuid,omitempty"`
 	MountSource          string                 `protobuf:"bytes,13,opt,name=mount_source,json=mountSource,proto3" json:"mount_source,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
@@ -360,20 +358,6 @@ func (x *VolumeStatus) GetStateChangeTimestamp() string {
 func (x *VolumeStatus) GetFailureDiagnostic() string {
 	if x != nil {
 		return x.FailureDiagnostic
-	}
-	return ""
-}
-
-func (x *VolumeStatus) GetPartitionUuid() string {
-	if x != nil {
-		return x.PartitionUuid
-	}
-	return ""
-}
-
-func (x *VolumeStatus) GetFilesystemUuid() string {
-	if x != nil {
-		return x.FilesystemUuid
 	}
 	return ""
 }
@@ -5268,7 +5252,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x11boot_health_state\x18\x10 \x01(\tR\x0fbootHealthState\x124\n" +
 	"\x16boot_health_diagnostic\x18\x11 \x01(\tR\x14bootHealthDiagnostic\x12#\n" +
 	"\renrollment_id\x18\x12 \x01(\tR\fenrollmentId\x12.\n" +
-	"\x13inventory_node_name\x18\x13 \x01(\tR\x11inventoryNodeName\"\xd1\x03\n" +
+	"\x13inventory_node_name\x18\x13 \x01(\tR\x11inventoryNodeName\"\x8d\x03\n" +
 	"\fVolumeStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vtarget_kind\x18\x02 \x01(\tR\n" +
@@ -5285,10 +5269,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x06result\x18\b \x01(\tR\x06result\x124\n" +
 	"\x16state_change_timestamp\x18\t \x01(\tR\x14stateChangeTimestamp\x12-\n" +
 	"\x12failure_diagnostic\x18\n" +
-	" \x01(\tR\x11failureDiagnostic\x12%\n" +
-	"\x0epartition_uuid\x18\v \x01(\tR\rpartitionUuid\x12'\n" +
-	"\x0ffilesystem_uuid\x18\f \x01(\tR\x0efilesystemUuid\x12!\n" +
-	"\fmount_source\x18\r \x01(\tR\vmountSource\"\xf3\x06\n" +
+	" \x01(\tR\x11failureDiagnostic\x12!\n" +
+	"\fmount_source\x18\r \x01(\tR\vmountSourceJ\x04\b\v\x10\fJ\x04\b\f\x10\r\"\xf3\x06\n" +
 	"\x15SystemExtensionStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12#\n" +
 	"\rdesired_state\x18\x02 \x01(\tR\fdesiredState\x12/\n" +

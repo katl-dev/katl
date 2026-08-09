@@ -62,8 +62,6 @@ type volumeStatusReport struct {
 	SubState          string `json:"subState"`
 	Result            string `json:"result"`
 	FailureDiagnostic string `json:"failureDiagnostic,omitempty"`
-	PartitionUUID     string `json:"partitionUUID,omitempty"`
-	FilesystemUUID    string `json:"filesystemUUID,omitempty"`
 	MountSource       string `json:"mountSource,omitempty"`
 }
 
@@ -418,7 +416,7 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 			Name: volume.GetName(), TargetKind: volume.GetTargetKind(), MountPath: volume.GetMountPath(),
 			Filesystem: volume.GetFilesystem(), LoadState: volume.GetLoadState(), ActiveState: volume.GetActiveState(),
 			SubState: volume.GetSubState(), Result: volume.GetResult(), FailureDiagnostic: volume.GetFailureDiagnostic(),
-			PartitionUUID: volume.GetPartitionUuid(), FilesystemUUID: volume.GetFilesystemUuid(), MountSource: volume.GetMountSource(),
+			MountSource: volume.GetMountSource(),
 		})
 	}
 	return report
