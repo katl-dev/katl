@@ -11,6 +11,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/generation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
 func TestHostStatusUsesContextAndPrintsOperatorView(t *testing.T) {
@@ -246,6 +247,27 @@ func TestHostShutdownNoWaitJSON(t *testing.T) {
 	}
 	if report.Node != "node-a" || report.Result != "scheduled" {
 		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestWaitNodeOfflineRetainsResolvedManagementIdentity(t *testing.T) {
+	credentials := &managementidentity.ClientCredentials{}
+	target := managementTarget{nodeName: "node-a", endpoint: "override.test:9443", credentials: credentials}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint != target.endpoint {
+			t.Fatalf("dial endpoint = %q, want %q", endpoint, target.endpoint)
+		}
+		identity, ok := ctx.Value(managementDialIdentityKey{}).(managementDialIdentity)
+		if !ok || identity.nodeName != target.nodeName || identity.credentials != credentials {
+			t.Fatalf("management identity = %#v, want resolved target credentials", identity)
+		}
+		return katlcAgentConnection{}, context.Canceled
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	if err := waitNodeOffline(context.Background(), target); err != nil {
+		t.Fatalf("waitNodeOffline() error = %v", err)
 	}
 }
 
