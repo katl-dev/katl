@@ -22,11 +22,12 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 		ControlPlaneComponentsReady: true,
 	}
 	tests := []struct {
-		name   string
-		status *agentapi.NodeStatus
-		state  string
-		reason string
-		ready  bool
+		name        string
+		status      *agentapi.NodeStatus
+		requirement nodeRecoveryRequirement
+		state       string
+		reason      string
+		ready       bool
 	}{
 		{
 			name: "status unsupported", status: &agentapi.NodeStatus{},
@@ -37,9 +38,25 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 			state: "not-configured", ready: true,
 		},
 		{
-			name:   "node not ready",
-			status: &agentapi.NodeStatus{Kubernetes: &agentapi.KubernetesStatus{State: "waiting-for-node", Role: "worker", KubeletActive: true, FailureReason: "Kubernetes node worker-1 is not Ready"}},
-			state:  "waiting-for-node", reason: "Kubernetes node worker-1 is not Ready",
+			name:        "node not ready",
+			status:      &agentapi.NodeStatus{Kubernetes: &agentapi.KubernetesStatus{State: "waiting-for-node", Role: "worker", KubeletActive: true, FailureReason: "Kubernetes node worker-1 is not Ready"}},
+			requirement: nodeRecoveryRequirement{KubernetesConfigured: true, NodeReady: true},
+			state:       "waiting-for-node", reason: "Kubernetes node worker-1 is not Ready",
+		},
+		{
+			name: "pre CNI state is preserved",
+			status: &agentapi.NodeStatus{Kubernetes: &agentapi.KubernetesStatus{
+				State: "waiting-for-node", Role: "control-plane", KubeletActive: true, ControlPlaneComponentsReady: true,
+				FailureReason: "Kubernetes node cp-1 is not Ready",
+			}},
+			requirement: nodeRecoveryRequirement{KubernetesConfigured: true},
+			state:       "waiting-for-node", reason: "Kubernetes node cp-1 is not Ready", ready: true,
+		},
+		{
+			name:        "configured state is not lost",
+			status:      &agentapi.NodeStatus{Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
+			requirement: nodeRecoveryRequirement{KubernetesConfigured: true},
+			state:       "not-configured", reason: "Kubernetes was configured before the reboot but is no longer configured",
 		},
 		{
 			name: "managed endpoint not ready",
@@ -47,7 +64,8 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 				Kubernetes:           readyKubernetes,
 				ControlPlaneEndpoint: &agentapi.ControlPlaneEndpointStatus{State: "waiting-for-apiserver"},
 			},
-			state: "waiting-for-managed-endpoint", reason: "managed API endpoint is waiting-for-apiserver",
+			requirement: nodeRecoveryRequirement{ManagedEndpointReady: true},
+			state:       "waiting-for-managed-endpoint", reason: "managed API endpoint is waiting-for-apiserver",
 		},
 		{
 			name: "passive optional route exchange",
@@ -74,7 +92,7 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := nodeUpgradeRecovery(test.status)
+			got := nodeUpgradeRecovery(test.status, test.requirement)
 			if got.State != test.state || got.Reason != test.reason || got.Ready != test.ready {
 				t.Fatalf("recovery = %#v", got)
 			}
@@ -133,12 +151,13 @@ func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 	var progress bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	conn, verified, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", &progress)
+	requirement := nodeRecoveryRequirement{KubernetesConfigured: true, NodeReady: true}
+	conn, verified, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", requirement, &progress)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
-	if polls < 3 || !nodeUpgradeRecovery(verified.Status).Ready {
+	if polls < 3 || !nodeUpgradeRecovery(verified.Status, requirement).Ready {
 		t.Fatalf("polls = %d, status = %#v", polls, verified.Status)
 	}
 	if output := progress.String(); !strings.Contains(output, "waiting-for-kubernetes state=waiting-for-node") || !strings.Contains(output, "Kubernetes node cp-1 is not Ready") {
@@ -164,7 +183,7 @@ func TestWaitNodeBootHealthRequiresRollbackRebootAfterRejectedTrial(t *testing.T
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, _, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", io.Discard)
+	_, _, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", nodeRecoveryRequirement{}, io.Discard)
 	if err == nil ||
 		!strings.Contains(err.Error(), "rollback generation katlos-previous is selected for next boot") ||
 		!strings.Contains(err.Error(), "reboot the node before retrying") {
@@ -172,7 +191,7 @@ func TestWaitNodeBootHealthRequiresRollbackRebootAfterRejectedTrial(t *testing.T
 	}
 }
 
-func TestCurrentHostUpgradeWaitsForKubernetesRecovery(t *testing.T) {
+func TestCurrentHostUpgradeAcceptsPreservedPreCNIState(t *testing.T) {
 	const generationID = "katlos-2026.7.0-alpha.9"
 	fake := &fakeKatlcAgentClient{
 		nodeStatus: &agentapi.NodeStatus{
@@ -194,18 +213,8 @@ func TestCurrentHostUpgradeWaitsForKubernetesRecovery(t *testing.T) {
 		},
 	}
 	polls := 0
-	fake.onGetNodeStatus = func() {
-		polls++
-		if polls >= 3 {
-			fake.nodeStatus.Kubernetes.State = "ready"
-			fake.nodeStatus.Kubernetes.NodeReady = true
-			fake.nodeStatus.Kubernetes.FailureReason = ""
-		}
-	}
+	fake.onGetNodeStatus = func() { polls++ }
 	installKatlcDial(t, nil, fake)
-	previousPollInterval := upgradeRebootPollInterval
-	upgradeRebootPollInterval = time.Millisecond
-	t.Cleanup(func() { upgradeRebootPollInterval = previousPollInterval })
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"node", "upgrade", "2026.7.0-alpha.9", "cp-1", "--config", writeClusterConfig(t), "--timeout", "1s"}, &stdout, &stderr)
@@ -215,7 +224,7 @@ func TestCurrentHostUpgradeWaitsForKubernetesRecovery(t *testing.T) {
 	if fake.submitRequest != nil || len(fake.rebootRequests) != 0 {
 		t.Fatalf("submitted = %#v, reboots = %d", fake.submitRequest, len(fake.rebootRequests))
 	}
-	if polls < 3 || !strings.Contains(stdout.String(), "Kubernetes ready") || !strings.Contains(stderr.String(), "waiting-for-kubernetes") {
+	if polls != 1 || !strings.Contains(stdout.String(), "Kubernetes waiting-for-node") || stderr.Len() != 0 {
 		t.Fatalf("polls = %d, stdout = %q, stderr = %q", polls, stdout.String(), stderr.String())
 	}
 }
@@ -232,7 +241,7 @@ func TestWaitNodeKubernetesRecoveryTimeoutIsActionable(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	_, _, err := waitNodeKubernetesRecovery(ctx, "cp-1", "10.0.0.11:9443", &bytes.Buffer{})
+	_, _, err := waitNodeKubernetesRecovery(ctx, "cp-1", "10.0.0.11:9443", nodeRecoveryRequirement{KubernetesConfigured: true}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "local etcd component is not running") || !strings.Contains(err.Error(), "do not schedule workloads") || !strings.Contains(err.Error(), "katlctl node status") {
 		t.Fatalf("error = %v", err)
 	}

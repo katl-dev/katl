@@ -383,6 +383,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return fmt.Errorf("read node status: %w", err)
 	}
+	recoveryRequirement := nodeRecoveryRequirementFor(status)
 	current, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: status.GetCurrentGenerationId()})
 	if err != nil {
 		return fmt.Errorf("read current node generation: %w", err)
@@ -412,15 +413,15 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		if node == "" {
 			node = target.endpoint
 		}
-		recovery := nodeUpgradeRecovery(status)
+		recovery := nodeUpgradeRecovery(status, recoveryRequirement)
 		if !recovery.Ready {
 			recoveryCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-			recoveryConn, recoveredStatus, recoveryErr := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, stderr)
+			recoveryConn, recoveredStatus, recoveryErr := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, recoveryRequirement, stderr)
 			cancel()
 			if recoveryErr != nil {
 				return recoveryErr
 			}
-			recovery = nodeUpgradeRecovery(recoveredStatus)
+			recovery = nodeUpgradeRecovery(recoveredStatus, recoveryRequirement)
 			_ = recoveryConn.Close()
 		}
 		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
@@ -481,7 +482,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	}
 	_ = conn.Close()
 	bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, stderr)
+	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, recoveryRequirement, stderr)
 	cancel()
 	if err != nil {
 		report.Result = "failed"
@@ -490,7 +491,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return err
 	}
-	recovery := nodeUpgradeRecovery(verified.Status)
+	recovery := nodeUpgradeRecovery(verified.Status, recoveryRequirement)
 	_ = verifiedConn.Close()
 	report.Result = operation.ResultSucceeded
 	report.Rebooted = true

@@ -252,6 +252,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 		generationID = strings.TrimSpace(status.GetCurrentGenerationId())
 	}
 	previousAgentStart := status.GetAgentStartId()
+	recoveryRequirement := nodeRecoveryRequirementFor(status)
 	if err := requestNodeReboot(requestCtx, conn.Client, "katlctl node reboot", status.GetMachineId(), generationID); err != nil {
 		_ = conn.Close()
 		cancelRequest()
@@ -266,7 +267,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	}
 	_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy...\n", node)
 	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
-	verifiedConn, verified, err := waitNodeBootHealth(waitCtx, node, target.endpoint, previousAgentStart, generationID, io.Discard)
+	verifiedConn, verified, err := waitNodeBootHealth(waitCtx, node, target.endpoint, previousAgentStart, generationID, recoveryRequirement, io.Discard)
 	cancelWait()
 	if err != nil {
 		return err

@@ -24,6 +24,12 @@ type nodeRecovery struct {
 	Ready  bool
 }
 
+type nodeRecoveryRequirement struct {
+	KubernetesConfigured bool
+	NodeReady            bool
+	ManagedEndpointReady bool
+}
+
 func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, actor, machineID, targetGeneration string) error {
 	accepted, err := client.Reboot(ctx, &agentapi.RebootRequest{
 		ApiVersion:         generation.APIVersion,
@@ -41,11 +47,11 @@ func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, ac
 	return nil
 }
 
-func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
-	return waitNodeBootHealthWithPrefix(ctx, nodeName, endpoint, previousAgentStart, targetGeneration, "upgrade node="+nodeName, stderr)
+func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
+	return waitNodeBootHealthWithPrefix(ctx, nodeName, endpoint, previousAgentStart, targetGeneration, requirement, "upgrade node="+nodeName, stderr)
 }
 
-func waitNodeBootHealthWithPrefix(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
+func waitNodeBootHealthWithPrefix(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
 	lastState := ""
 	lastRecovery := nodeRecovery{}
 	for {
@@ -72,7 +78,7 @@ func waitNodeBootHealthWithPrefix(ctx context.Context, nodeName, endpoint, previ
 							return katlcAgentConnection{}, verifiedNodeBoot{}, fmt.Errorf("node %s reported generation %s unhealthy after reboot", nodeName, targetGeneration)
 						}
 						if status.GetCurrentGenerationId() == targetGeneration && candidate.GetCommitState() == generation.CommitStateCommitted && candidate.GetBootState() == generation.BootStateGood && candidate.GetHealthState() == generation.HealthStateHealthy {
-							recovery := nodeUpgradeRecovery(status)
+							recovery := nodeUpgradeRecovery(status, requirement)
 							if recovery != lastRecovery {
 								lastRecovery = recovery
 								if !recovery.Ready {
@@ -102,14 +108,14 @@ func waitNodeBootHealthWithPrefix(ctx context.Context, nodeName, endpoint, previ
 	}
 }
 
-func waitNodeKubernetesRecovery(ctx context.Context, nodeName, endpoint string, stderr io.Writer) (katlcAgentConnection, *agentapi.NodeStatus, error) {
+func waitNodeKubernetesRecovery(ctx context.Context, nodeName, endpoint string, requirement nodeRecoveryRequirement, stderr io.Writer) (katlcAgentConnection, *agentapi.NodeStatus, error) {
 	lastRecovery := nodeRecovery{}
 	for {
 		conn, err := dialKatlcAgent(ctx, endpoint)
 		if err == nil {
 			status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 			if statusErr == nil {
-				recovery := nodeUpgradeRecovery(status)
+				recovery := nodeUpgradeRecovery(status, requirement)
 				if recovery != lastRecovery {
 					lastRecovery = recovery
 					if !recovery.Ready {
@@ -143,7 +149,20 @@ func nodeKubernetesRecoveryTimeoutError(nodeName, generationID, reason string, e
 	return fmt.Errorf("node %s did not recover Kubernetes%s: %s: %w; do not schedule workloads on the node, and inspect it with 'katlctl node status'", nodeName, generationText, reason, err)
 }
 
-func nodeUpgradeRecovery(status *agentapi.NodeStatus) nodeRecovery {
+func nodeRecoveryRequirementFor(status *agentapi.NodeStatus) nodeRecoveryRequirement {
+	requirement := nodeRecoveryRequirement{}
+	kubernetes := status.GetKubernetes()
+	if kubernetes != nil && strings.TrimSpace(kubernetes.GetState()) != "not-configured" {
+		requirement.KubernetesConfigured = true
+		requirement.NodeReady = kubernetes.GetNodeReady()
+	}
+	if endpoint := status.GetControlPlaneEndpoint(); endpoint != nil {
+		requirement.ManagedEndpointReady = managedEndpointReady(endpoint)
+	}
+	return requirement
+}
+
+func nodeUpgradeRecovery(status *agentapi.NodeStatus, requirement nodeRecoveryRequirement) nodeRecovery {
 	kubernetes := status.GetKubernetes()
 	if kubernetes == nil {
 		return nodeRecovery{
@@ -156,6 +175,10 @@ func nodeUpgradeRecovery(status *agentapi.NodeStatus) nodeRecovery {
 		recovery.State = "unknown"
 	}
 	if recovery.State == "not-configured" {
+		if requirement.KubernetesConfigured {
+			recovery.Reason = "Kubernetes was configured before the reboot but is no longer configured"
+			return recovery
+		}
 		recovery.Ready = true
 		return recovery
 	}
@@ -171,21 +194,24 @@ func nodeUpgradeRecovery(status *agentapi.NodeStatus) nodeRecovery {
 		}
 		return recovery
 	}
-	if !kubernetes.GetNodeReady() {
+	if requirement.NodeReady && !kubernetes.GetNodeReady() {
 		if recovery.Reason == "" {
 			recovery.Reason = "Kubernetes node is not Ready"
 		}
 		return recovery
 	}
-	if endpoint := status.GetControlPlaneEndpoint(); endpoint != nil {
-		if !endpoint.GetLocalApiReady() || !endpoint.GetLocalVipOwned() || !endpoint.GetRouteOriginated() || !strings.EqualFold(endpoint.GetState(), "advertised") {
+	if requirement.ManagedEndpointReady {
+		endpoint := status.GetControlPlaneEndpoint()
+		if !managedEndpointReady(endpoint) {
 			recovery.State = "waiting-for-managed-endpoint"
 			recovery.Reason = "managed API endpoint is " + firstNonEmpty(strings.TrimSpace(endpoint.GetState()), "not ready")
 			return recovery
 		}
 	}
-	recovery.State = "ready"
-	recovery.Reason = ""
 	recovery.Ready = true
 	return recovery
+}
+
+func managedEndpointReady(endpoint *agentapi.ControlPlaneEndpointStatus) bool {
+	return endpoint != nil && endpoint.GetLocalApiReady() && endpoint.GetLocalVipOwned() && endpoint.GetRouteOriginated() && strings.EqualFold(endpoint.GetState(), "advertised")
 }
