@@ -90,3 +90,16 @@ func TestConfigBundleCreatesStableAutomaticManagementAccess(t *testing.T) {
 		}
 	}
 }
+
+func TestManagementDialMissingContextExplainsRecovery(t *testing.T) {
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+	_, err := managementDialForEndpoint("192.0.2.10:9443")
+	if err == nil {
+		t.Fatal("managementDialForEndpoint() error = nil")
+	}
+	for _, want := range []string{"katlctl management identity import IDENTITY", "katlctl context save --config CLUSTER.yaml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, missing %q", err, want)
+		}
+	}
+}

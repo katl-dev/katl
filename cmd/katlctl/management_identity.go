@@ -220,6 +220,9 @@ func managementDialForEndpoint(endpoint string) (managementDialIdentity, error) 
 	}
 	config, err := workstation.Load(configPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return managementDialIdentity{}, fmt.Errorf("no saved management access for endpoint %s; restore the cluster identity with 'katlctl management identity import IDENTITY', then run 'katlctl context save --config CLUSTER.yaml'", endpoint)
+		}
 		return managementDialIdentity{}, fmt.Errorf("load saved Katl context: %w", err)
 	}
 	endpoint = strings.TrimSpace(endpoint)
