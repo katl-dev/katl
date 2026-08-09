@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +19,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlctl/workstation"
 )
 
 func TestOrderControlPlanesChangesCoordinatorLast(t *testing.T) {
@@ -43,14 +45,14 @@ func TestKubeadmControlPlaneConfigBodyKeepsNodeLocalKubeletOffCluster(t *testing
 func TestRunKubeadmControlPlaneConfigSubmitsSerialCoordinatorLast(t *testing.T) {
 	root := t.TempDir()
 	inventoryPath := filepath.Join(root, "inventory.yaml")
-	content := "nodes:\n  - name: cp-3\n    address: 192.0.2.3\n    systemRole: control-plane\n  - name: cp-1\n    address: 192.0.2.1\n    systemRole: control-plane\n  - name: cp-2\n    address: 192.0.2.2\n    systemRole: control-plane\n"
+	content := "nodes:\n  - name: cp-3\n    address: 192.0.2.3\n    systemRole: control-plane\n    enrollmentID: enrollment-cp-3\n    machineID: machine-cp-3\n  - name: cp-1\n    address: 192.0.2.1\n    systemRole: control-plane\n    enrollmentID: enrollment-cp-1\n    machineID: machine-cp-1\n  - name: cp-2\n    address: 192.0.2.2\n    systemRole: control-plane\n    enrollmentID: enrollment-cp-2\n    machineID: machine-cp-2\n"
 	if err := os.WriteFile(inventoryPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	clients := map[string]*fakeKatlcAgentClient{}
 	for index, name := range []string{"cp-1", "cp-2", "cp-3"} {
 		payloadDigest := strings.Repeat(string(rune('a'+index)), 64)
-		clients[name] = &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine-" + name}, generation: &agentapi.Generation{GenerationId: "gen-2", CommitState: "committed", HealthState: "healthy", ConfigApply: &agentapi.ConfigApplyStatus{KubeadmActionRequired: true, SelectedKubeadmConfigName: "control-plane"}, Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1", Sha256: payloadDigest}}}, submitAccepted: &agentapi.OperationAccepted{OperationId: "op-" + name, RequestDigest: strings.Repeat("f", 64)}, operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded}}
+		clients[name] = &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine-" + name, CurrentGenerationId: "gen-2"}, generation: &agentapi.Generation{GenerationId: "gen-2", CommitState: "committed", HealthState: "healthy", ConfigApply: &agentapi.ConfigApplyStatus{KubeadmActionRequired: true, SelectedKubeadmConfigName: "control-plane"}, Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1", Sha256: payloadDigest}}}, submitAccepted: &agentapi.OperationAccepted{OperationId: "op-" + name, RequestDigest: strings.Repeat("f", 64)}, operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded}}
 	}
 	byEndpoint := map[string]*fakeKatlcAgentClient{"192.0.2.1:9443": clients["cp-1"], "192.0.2.2:9443": clients["cp-2"], "192.0.2.3:9443": clients["cp-3"]}
 	previous := dialKatlcAgent
@@ -272,8 +274,8 @@ func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T
 	previousDial := dialKatlcAgent
 	defer func() { dialKatlcAgent = previousDial }()
 	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
-		if endpoint != "10.0.0.12:9443" {
-			t.Fatalf("management target = %q, want updated address", endpoint)
+		if endpoint != "10.0.0.11:9443" {
+			t.Fatalf("management target = %q, want enrolled address until an identity-verified rebind", endpoint)
 		}
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
@@ -357,6 +359,7 @@ func TestRunClusterApplyStagesPostBootstrapHostOnlyChangeAndRepeatsWithoutKubead
 }
 
 func TestActivateClusterConfigPlansOneFreshReplacementNode(t *testing.T) {
+	writeControlPlaneEnrollmentContext(t, "cp-1", "cp-2", "cp-3")
 	root := t.TempDir()
 	configPath := filepath.Join(root, "cluster.yaml")
 	source := configBundleSource() + `    - name: cp-2
@@ -503,6 +506,7 @@ func TestClusterConfigRejectionExplainsRoleChangeRecovery(t *testing.T) {
 }
 
 func TestRunClusterApplyRefreshesReplacementGenerationAfterJoin(t *testing.T) {
+	writeControlPlaneEnrollmentContext(t, "cp-1", "cp-2")
 	root := t.TempDir()
 	configPath := filepath.Join(root, "cluster.yaml")
 	source := configBundleSource() + `    - name: cp-2
@@ -596,6 +600,7 @@ func TestRunClusterApplyRefreshesReplacementGenerationAfterJoin(t *testing.T) {
 }
 
 func TestActivateClusterConfigRecognizesPendingJoinReboot(t *testing.T) {
+	writeControlPlaneEnrollmentContext(t, "cp-1", "cp-2")
 	root := t.TempDir()
 	configPath := filepath.Join(root, "cluster.yaml")
 	source := configBundleSource() + `    - name: cp-2
@@ -645,6 +650,7 @@ func TestActivateClusterConfigRecognizesPendingJoinReboot(t *testing.T) {
 }
 
 func TestActivateClusterConfigValidatesEveryNodeBeforeMutation(t *testing.T) {
+	writeControlPlaneEnrollmentContext(t, "cp-1", "cp-2")
 	root := t.TempDir()
 	configPath := filepath.Join(root, "cluster.yaml")
 	source := configBundleSource() + `    - name: cp-2
@@ -686,6 +692,7 @@ func TestActivateClusterConfigValidatesEveryNodeBeforeMutation(t *testing.T) {
 }
 
 func TestActivateClusterConfigDiscoversKubeProxyPhase(t *testing.T) {
+	writeControlPlaneEnrollmentContext(t, "cp-1")
 	root := t.TempDir()
 	configPath := filepath.Join(root, "cluster.yaml")
 	source := strings.Replace(configBundleSource(), "    version: v1.36.1\n", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml\n", 1)
@@ -861,4 +868,19 @@ func TestOrderControlPlanesRejectsUnknownCoordinator(t *testing.T) {
 	if err == nil {
 		t.Fatal("orderControlPlanes() error = nil")
 	}
+}
+
+func writeControlPlaneEnrollmentContext(t *testing.T, names ...string) {
+	t.Helper()
+	nodes := make([]workstation.Node, 0, len(names))
+	for index, name := range names {
+		nodes = append(nodes, workstation.Node{
+			Name:               name,
+			ManagementEndpoint: fmt.Sprintf("10.0.0.%d:9443", index+11),
+			SystemRole:         inventory.RoleControlPlane,
+			EnrollmentID:       "enrollment-" + name,
+			MachineID:          "machine-" + name,
+		})
+	}
+	writeTestEnrollmentContext(t, "lab", nodes...)
 }

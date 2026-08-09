@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -218,6 +219,9 @@ func currentClusterApplyNode(ctx context.Context, nodes []inventory.Node, nodeNa
 	if err != nil {
 		return nil, "", err
 	}
+	if err := verifyEnrolledStatus(managementTarget{nodeName: selected.Name, endpoint: cluster.AgentEndpoint(selected.Address, "9443"), enrollmentID: selected.EnrollmentID, machineID: selected.MachineID}, status); err != nil {
+		return nil, "", err
+	}
 	generationID := strings.TrimSpace(status.GetCurrentGenerationId())
 	if generationID == "" {
 		return nil, "", fmt.Errorf("agent did not report a current generation")
@@ -235,7 +239,6 @@ func rebootClusterApplyJoin(ctx context.Context, nodes []inventory.Node, nodeNam
 		return "", fmt.Errorf("agent did not report its current start identity")
 	}
 	recoveryRequirement := nodeRecoveryRequirementFor(status)
-	machineID := strings.TrimSpace(status.GetMachineId())
 	var selected inventory.Node
 	for _, node := range nodes {
 		if node.Name == nodeName {
@@ -248,7 +251,7 @@ func rebootClusterApplyJoin(ctx context.Context, nodes []inventory.Node, nodeNam
 	if err != nil {
 		return "", err
 	}
-	if err := requestNodeReboot(ctx, conn.Client, "katlctl cluster apply", machineID, generationID); err != nil {
+	if err := requestNodeReboot(ctx, conn.Client, "katlctl cluster apply", status, generationID); err != nil {
 		_ = conn.Close()
 		return "", fmt.Errorf("schedule joined generation reboot: %w", err)
 	}
@@ -353,6 +356,9 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		if err != nil {
 			return nil, fmt.Errorf("status %s: %w", node.Name, err)
 		}
+		if err := verifyEnrolledStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+			return nil, err
+		}
 		generationID := strings.TrimSpace(opts.generationID)
 		if value := strings.TrimSpace(generations[node.Name]); value != "" {
 			generationID = value
@@ -390,7 +396,7 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 	var summary []map[string]string
 	for i, t := range targets {
 		body := kubeadmControlPlaneConfigBody(opts, t.node, t.generation, uint32(i+1), uint32(len(targets)))
-		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-dry-run-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl cluster apply", ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: t.generation, DryRun: true, KubeadmControlPlaneConfig: body})
+		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-dry-run-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl cluster apply", ExpectedEnrollmentId: t.node.EnrollmentID, ExpectedInventoryNodeName: t.node.Name, ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: t.generation, DryRun: true, KubeadmControlPlaneConfig: body})
 		if err != nil {
 			return nil, fmt.Errorf("dry-run %s: %w", t.node.Name, err)
 		}
@@ -406,7 +412,7 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		if err := clusterApplyProgress(opts.progress, "component=%s node=%s phase=apply status=started", opts.component, t.node.Name); err != nil {
 			return nil, err
 		}
-		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl cluster apply", ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: t.generation, KubeadmControlPlaneConfig: body})
+		accepted, err := t.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-" + t.node.Name, OperationKind: "kubeadm-control-plane-config", Actor: "katlctl cluster apply", ExpectedEnrollmentId: t.node.EnrollmentID, ExpectedInventoryNodeName: t.node.Name, ExpectedMachineId: t.machine, ExpectedCurrentGenerationId: t.generation, KubeadmControlPlaneConfig: body})
 		if err != nil {
 			return nil, fmt.Errorf("submit %s: %w", t.node.Name, err)
 		}
@@ -449,9 +455,17 @@ func kubeadmConfigInventory(opts kubeadmControlPlaneConfigOptions) (inventory.In
 		return inventory.Inventory{}, fmt.Errorf("exactly one of --config or --inventory is required")
 	}
 	if inventoryPath != "" {
-		return loadInventory(inventoryPath)
+		inv, err := loadInventory(inventoryPath)
+		if err != nil {
+			return inventory.Inventory{}, err
+		}
+		return overlayWipeContext(inv, "", "")
 	}
-	return loadWipeInventory(configPath, "", opts.progress)
+	inv, err := loadWipeInventory(configPath, "", opts.progress)
+	if err != nil {
+		return inventory.Inventory{}, err
+	}
+	return overlayWipeContext(inv, "", "")
 }
 
 type activatedClusterConfig struct {
@@ -468,6 +482,19 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	loaded, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{}, nil)
 	if err != nil {
 		return activatedClusterConfig{}, err
+	}
+	for index := range nodes {
+		target, ok := enrolledTarget("", "", loaded.Bundle.Manifest.ClusterName, nodes[index].Name)
+		if !ok {
+			continue
+		}
+		host, _, splitErr := net.SplitHostPort(target.endpoint)
+		if splitErr != nil {
+			return activatedClusterConfig{}, fmt.Errorf("node %q enrolled management endpoint: %w", nodes[index].Name, splitErr)
+		}
+		nodes[index].Address = host
+		nodes[index].EnrollmentID = target.enrollmentID
+		nodes[index].MachineID = target.machineID
 	}
 	now := kubeadmConfigNow()
 	generationID := strings.TrimSpace(opts.generationID)
@@ -535,13 +562,18 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			_ = conn.Close()
 			return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w", node.Name, err)
 		}
+		if err := verifyEnrolledStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+			_ = conn.Close()
+			return activatedClusterConfig{}, err
+		}
 		if err := validateClusterNodeLifecycle(node, status); err != nil {
 			_ = conn.Close()
 			return activatedClusterConfig{}, err
 		}
 		validation, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion: operation.APIVersion, Kind: "ValidateConfigRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
-			Actor: "katlctl cluster apply", ExpectedMachineId: status.MachineId, ApplyMode: generation.ApplyModeAuto,
+			Actor: "katlctl cluster apply", ExpectedEnrollmentId: status.EnrollmentId, ExpectedInventoryNodeName: status.InventoryNodeName,
+			ExpectedMachineId: status.MachineId, ExpectedCurrentGenerationId: status.CurrentGenerationId, ApplyMode: generation.ApplyModeAuto,
 			CandidateGenerationId: generationID, NodeName: node.Name, ConfigYaml: string(input.configYAML),
 			DestructiveStorageAcknowledgements: append([]string(nil), opts.destructiveStorageAcknowledgements...),
 		})
@@ -669,7 +701,8 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 		accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
-			OperationKind: operationKind, Actor: "katlctl cluster apply", ExpectedMachineId: input.machineID, ExpectedCurrentGenerationId: input.currentGeneration,
+			OperationKind: operationKind, Actor: "katlctl cluster apply", ExpectedEnrollmentId: node.EnrollmentID, ExpectedInventoryNodeName: node.Name,
+			ExpectedMachineId: input.machineID, ExpectedCurrentGenerationId: input.currentGeneration,
 			ConfigApply: &agentapi.ConfigApplyOperationRequest{CandidateGenerationId: generationID, ApplyMode: generation.ApplyModeAuto, NodeName: node.Name, ConfigYaml: string(input.configYAML), DestructiveStorageAcknowledgements: append([]string(nil), opts.destructiveStorageAcknowledgements...)},
 		})
 		if err != nil {

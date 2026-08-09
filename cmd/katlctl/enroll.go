@@ -29,6 +29,8 @@ type contextSaveNodeReport struct {
 	Name               string `json:"name"`
 	ManagementEndpoint string `json:"managementEndpoint"`
 	Connected          bool   `json:"connected"`
+	EnrollmentID       string `json:"enrollmentID"`
+	MachineID          string `json:"machineID"`
 }
 
 type contextSaveReport struct {
@@ -198,6 +200,20 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 	}
 	clusterProfile := workstation.Cluster{Name: bundle.Manifest.ClusterName, ControlPlaneEndpoint: inv.ControlPlaneEndpoint}
 	report := contextSaveReport{APIVersion: "katl.dev/v1alpha1", Kind: "ContextSaveReport", Context: contextName, ConfigPath: configPath}
+	cfg := workstation.Config{}
+	if existing, loadErr := workstation.Load(configPath); loadErr == nil {
+		cfg = existing
+	} else if !errors.Is(loadErr, os.ErrNotExist) {
+		return loadErr
+	}
+	known := make(map[string]workstation.Node)
+	for _, cluster := range cfg.Clusters {
+		if cluster.Name == bundle.Manifest.ClusterName {
+			for _, node := range cluster.Nodes {
+				known[node.Name] = node
+			}
+		}
+	}
 
 	for _, node := range inv.Nodes {
 		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
@@ -216,18 +232,22 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 		if strings.TrimSpace(status.GetMachineId()) == "" {
 			return fmt.Errorf("verify node %s management endpoint: agent did not report a machine identity", node.Name)
 		}
+		if strings.TrimSpace(status.GetEnrollmentId()) == "" {
+			return fmt.Errorf("verify node %s management endpoint: agent did not report an enrollment identity", node.Name)
+		}
+		if got := strings.TrimSpace(status.GetInventoryNodeName()); got != node.Name {
+			return fmt.Errorf("verify node %s management endpoint: address answered as enrolled node %q", node.Name, got)
+		}
+		if previous, ok := known[node.Name]; ok && previous.EnrollmentID != "" && (previous.EnrollmentID != status.GetEnrollmentId() || previous.MachineID != status.GetMachineId()) {
+			return fmt.Errorf("verify node %s management endpoint: enrolled identity changed; remove and deliberately recreate the context after reinstalling the node", node.Name)
+		}
 		clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{
 			Name: node.Name, ManagementEndpoint: endpoint, SystemRole: node.SystemRole,
+			EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(),
 		})
-		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint, Connected: true})
+		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint, Connected: true, EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId()})
 	}
 
-	cfg := workstation.Config{}
-	if existing, loadErr := workstation.Load(configPath); loadErr == nil {
-		cfg = existing
-	} else if !errors.Is(loadErr, os.ErrNotExist) {
-		return loadErr
-	}
 	cfg = cfg.UpsertCluster(contextName, clusterProfile)
 	if err := workstation.Save(configPath, cfg); err != nil {
 		return err
@@ -241,5 +261,89 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 		return fmt.Errorf("encode context save report: %w", err)
 	}
 	_, err = stdout.Write(append(data, '\n'))
+	return err
+}
+
+type contextRebindOptions struct {
+	contextPath string
+	contextName string
+	nodeName    string
+	endpoint    string
+}
+
+func newContextRebindCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	opts := contextRebindOptions{}
+	cmd := &cobra.Command{Use: "rebind", Short: "Verify an enrolled node and save its new management address", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
+		_ = stderr
+		return runContextRebind(ctx, opts, stdout)
+	}}
+	cmd.Flags().StringVar(&opts.contextPath, "context-file", "", "workstation context file path")
+	cmd.Flags().Lookup("context-file").Hidden = true
+	cmd.Flags().StringVar(&opts.contextName, "context", "", "saved context name")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "enrolled inventory node name")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "new node address: IP, hostname, host:port, or tcp:// URL")
+	return cmd
+}
+
+func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.Writer) error {
+	if strings.TrimSpace(opts.nodeName) == "" || strings.TrimSpace(opts.endpoint) == "" {
+		return fmt.Errorf("--node and --endpoint are required")
+	}
+	cfg, path, err := loadContexts(opts.contextPath)
+	if err != nil {
+		return err
+	}
+	topology, err := cfg.SelectedTopology(opts.contextName)
+	if err != nil {
+		return err
+	}
+	var expected workstation.TopologyNode
+	found := false
+	for _, node := range topology.Nodes {
+		if node.Name == strings.TrimSpace(opts.nodeName) {
+			expected, found = node, true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("node %q was not found in context %q", opts.nodeName, topology.ContextName)
+	}
+	target := managementTarget{nodeName: expected.Name, endpoint: expected.ManagementEndpoint, enrollmentID: expected.EnrollmentID, machineID: expected.MachineID}
+	if err := requireEnrolledTarget(target); err != nil {
+		return err
+	}
+	endpoint, err := normalizeManagementAddress(opts.endpoint)
+	if err != nil {
+		return err
+	}
+	conn, err := dialKatlcAgent(ctx, endpoint)
+	if err != nil {
+		return fmt.Errorf("connect to proposed address %s: %w", endpoint, err)
+	}
+	status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	closeErr := conn.Close()
+	if statusErr != nil {
+		return fmt.Errorf("verify proposed address %s: %w", endpoint, statusErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close proposed address %s: %w", endpoint, closeErr)
+	}
+	if err := verifyEnrolledStatus(target, status); err != nil {
+		return fmt.Errorf("verify proposed address %s: %w", endpoint, err)
+	}
+	for clusterIndex := range cfg.Clusters {
+		if cfg.Clusters[clusterIndex].Name != topology.ClusterName {
+			continue
+		}
+		for nodeIndex := range cfg.Clusters[clusterIndex].Nodes {
+			if cfg.Clusters[clusterIndex].Nodes[nodeIndex].Name == expected.Name {
+				cfg.Clusters[clusterIndex].Nodes[nodeIndex].ManagementEndpoint = endpoint
+			}
+		}
+	}
+	if err := workstation.Save(path, cfg); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "Rebound %s from %s to %s after verifying enrollment and machine identity\n", expected.Name, expected.ManagementEndpoint, endpoint)
 	return err
 }

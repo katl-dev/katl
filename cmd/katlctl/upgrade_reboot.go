@@ -30,13 +30,16 @@ type nodeRecoveryRequirement struct {
 	ManagedEndpointReady bool
 }
 
-func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, actor, machineID, targetGeneration string) error {
+func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, actor string, status *agentapi.NodeStatus, targetGeneration string) error {
 	accepted, err := client.Reboot(ctx, &agentapi.RebootRequest{
-		ApiVersion:         generation.APIVersion,
-		Kind:               "RebootRequest",
-		Actor:              strings.TrimSpace(actor),
-		ExpectedMachineId:  strings.TrimSpace(machineID),
-		TargetGenerationId: strings.TrimSpace(targetGeneration),
+		ApiVersion:                  generation.APIVersion,
+		Kind:                        "RebootRequest",
+		Actor:                       strings.TrimSpace(actor),
+		ExpectedEnrollmentId:        strings.TrimSpace(status.GetEnrollmentId()),
+		ExpectedInventoryNodeName:   strings.TrimSpace(status.GetInventoryNodeName()),
+		ExpectedMachineId:           strings.TrimSpace(status.GetMachineId()),
+		ExpectedCurrentGenerationId: strings.TrimSpace(status.GetCurrentGenerationId()),
+		TargetGenerationId:          strings.TrimSpace(targetGeneration),
 	})
 	if err != nil {
 		return err

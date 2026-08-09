@@ -55,34 +55,39 @@ clusters:
   - name: cp-1
     managementEndpoint: cp-1.prod.example:9443
     systemRole: control-plane
+    enrollmentID: 0123456789abcdef0123456789abcdef
+    machineID: fedcba9876543210fedcba9876543210
   - name: worker-1
     managementEndpoint: worker-1.prod.example:9443
     systemRole: worker
+    enrollmentID: 11111111111111112222222222222222
+    machineID: 33333333333333334444444444444444
 ```
 
 `currentContext` names a context in `contexts`. Each context names a cluster in
 `clusters`. Each cluster records node-local `katlc` management endpoints,
-KatlOS system roles, and optionally the stable control-plane endpoint used by
-operator workflows.
+KatlOS system roles, the immutable install enrollment and machine identities,
+and optionally the stable control-plane endpoint used by operator workflows.
+The identities are public opaque values, not credentials.
 
 `katlctl context show` prints the resolved context topology as JSON.
 
 ## Precedence
 
-Explicit operator input is authoritative. A compiled plan, when accepted by a
-command, wins over explicit inventory. Explicit inventory wins over workstation
-config. Workstation `currentContext` is used only when a command asks for a
-profile and no explicit inventory or plan input supplies the same topology.
+ClusterConfig and compiled plans remain authoritative for desired topology and
+configuration. The workstation record is authoritative for the observed
+enrollment binding and day-two management address. A mutation must join these
+two sources by cluster and node name and refuse a missing or mismatched binding.
 
-Invocation flags that are already explicit command overrides, such as
-`--control-plane-endpoint`, `--init-node`, or `--node-address`, remain command
-overrides after the topology source is selected. `katlctl` must not silently
-borrow missing endpoints or roles from workstation config when an
-explicit inventory or plan is present.
+Bootstrap-only flags such as `--control-plane-endpoint` and `--init-node`
+remain desired-state overrides. A mutation cannot override an enrolled
+management address with `--endpoint`; the operator must use `katlctl context
+rebind`, which verifies the saved enrollment and machine identities before
+atomically changing the address.
 
 ## Boundary
 
-`katlctl` config may help locate node-local `katlc` endpoints and select an
-operator workflow target. Node-local `katlc` remains the only writer of
+`katlctl` config binds operator inventory identities to node-local `katlc`
+endpoints. Node-local `katlc` remains the only writer of
 generation specs, generation status, boot selection, operation records, and
 durable node lifecycle state.

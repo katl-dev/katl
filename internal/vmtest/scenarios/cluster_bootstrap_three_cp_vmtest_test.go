@@ -310,7 +310,11 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, nodes, addresses); err != nil {
+	enrollments, err := readThreeControlPlaneEnrollments(ctx, addresses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, nodes, addresses, enrollments); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture, kubernetesBundle, cniFixtures, imageFixtures, nil); err != nil {
@@ -458,6 +462,16 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	if err := writeThreeControlPlaneReplacementConfig(filepath.Join(dir, "cluster.yaml"), configPath, addresses, smoke.Inputs.SSHAuthorizedKey, smoke.Inputs.KubernetesVersion, bundle.Ref); err != nil {
 		return nodes, err
 	}
+	enrollments, err := readThreeControlPlaneEnrollments(ctx, addresses)
+	if err != nil {
+		return nodes, err
+	}
+	contextPath := filepath.Join(dir, "katlctl.yaml")
+	if err := writeThreeControlPlaneWorkstationContext(contextPath, "replacement-vmtest", addresses, enrollments); err != nil {
+		return nodes, err
+	}
+	t.Setenv("KATLCTL_CONFIG", contextPath)
+	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	cp1 := nodeByName(nodes, "cp-1")
 	cp2 := nodeByName(nodes, "cp-2")
 	cp3 := nodeByName(nodes, "cp-3")
@@ -589,6 +603,10 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	}
 	if got := status.GetKubernetes().GetState(); got != "not-configured" {
 		return nodes, fmt.Errorf("reinstalled cp-3 Kubernetes state = %q, want not-configured", got)
+	}
+	enrollments["cp-3"] = status
+	if err := writeThreeControlPlaneWorkstationContext(contextPath, "replacement-vmtest", addresses, enrollments); err != nil {
+		return nodes, err
 	}
 	replacedNodes := []vmtest.RunningInstalledRuntimeNode{cp1, cp2, reinstalledCP3}
 	if err := installKubernetesBundleCA(ctx, reinstalledCP3, bundle); err != nil {
@@ -892,10 +910,18 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	if err := os.WriteFile(requestPath, request, 0o600); err != nil {
 		return err
 	}
+	enrollments, err := readThreeControlPlaneEnrollments(ctx, addresses)
+	if err != nil {
+		return err
+	}
+	contextPath := filepath.Join(proofDir, "katlctl.yaml")
+	if err := writeThreeControlPlaneWorkstationContext(contextPath, "three-control-plane", addresses, enrollments); err != nil {
+		return err
+	}
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
 	for _, node := range nodes {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "stage-"+node.Name,
-			"node", "apply", "--endpoint", net.JoinHostPort(addresses[node.Name], "9443"), "--config", requestPath, "--mode", "live", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof", "--output", "json")
+			"node", "apply", "--context-file", contextPath, "--node", node.Name, "--config", requestPath, "--mode", "live", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof", "--output", "json")
 		if err != nil {
 			return fmt.Errorf("activate desired generation on %s: %w: %s", node.Name, err, stderr)
 		}
@@ -966,6 +992,19 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		return err
 	}
 	return nil
+}
+
+func writeThreeControlPlaneWorkstationContext(path, clusterName string, addresses map[string]string, enrollments map[string]*agentapi.NodeStatus) error {
+	var nodes strings.Builder
+	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
+		status := enrollments[name]
+		if status == nil {
+			return fmt.Errorf("node %s enrollment status is required", name)
+		}
+		fmt.Fprintf(&nodes, "      - name: %s\n        managementEndpoint: %s\n        systemRole: control-plane\n        enrollmentID: %s\n        machineID: %s\n", name, net.JoinHostPort(addresses[name], "9443"), status.GetEnrollmentId(), status.GetMachineId())
+	}
+	data := "currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: " + clusterName + "\nclusters:\n  - name: " + clusterName + "\n    nodes:\n" + nodes.String()
+	return os.WriteFile(path, []byte(data), 0o600)
 }
 
 func kubeletOperationConfig(live []byte, maxPods int) ([]byte, error) {
@@ -1551,7 +1590,7 @@ func writeThreeControlPlaneInventory(path string, kubernetesVersion string, node
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
-func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string) error {
+func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, enrollments map[string]*agentapi.NodeStatus) error {
 	if len(nodes) != 3 {
 		return fmt.Errorf("three control-plane inventory requires three nodes, got %d", len(nodes))
 	}
@@ -1564,6 +1603,10 @@ func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersi
 	b.WriteString("kubernetesBundle: " + strconv.Quote(kubernetesBundle.Ref) + "\n")
 	b.WriteString("nodes:\n")
 	for _, node := range nodes {
+		enrollment := enrollments[node.Name]
+		if enrollment == nil {
+			return fmt.Errorf("node %s enrollment status is required", node.Name)
+		}
 		b.WriteString("- name: " + node.Name + "\n")
 		b.WriteString("  address: " + addresses[node.Name] + "\n")
 		b.WriteString("  systemRole: control-plane\n")
@@ -1574,8 +1617,25 @@ func writeThreeControlPlaneOperationBackedInventory(path string, kubernetesVersi
 		b.WriteString("    path: /etc/katl/kubeadm/control-plane/config.yaml\n")
 		b.WriteString("    intent: control-plane\n")
 		b.WriteString("  kubernetesVersion: " + kubernetesVersion + "\n")
+		b.WriteString("  enrollmentID: " + strconv.Quote(enrollment.GetEnrollmentId()) + "\n")
+		b.WriteString("  machineID: " + strconv.Quote(enrollment.GetMachineId()) + "\n")
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func readThreeControlPlaneEnrollments(ctx context.Context, addresses map[string]string) (map[string]*agentapi.NodeStatus, error) {
+	statuses := make(map[string]*agentapi.NodeStatus, 3)
+	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
+		status, err := readAgentNodeStatus(ctx, name, addresses[name])
+		if err != nil {
+			return nil, fmt.Errorf("read %s enrollment status: %w", name, err)
+		}
+		if status.GetInventoryNodeName() != name || status.GetEnrollmentId() == "" || status.GetMachineId() == "" || status.GetCurrentGenerationId() == "" {
+			return nil, fmt.Errorf("%s returned incomplete or mismatched enrollment status: %+v", name, status)
+		}
+		statuses[name] = status
+	}
+	return statuses, nil
 }
 
 type threeControlPlaneCNISpec struct {
@@ -2703,8 +2763,12 @@ func TestThreeControlPlaneOperationBackedInventoryCarriesKubernetesBundle(t *tes
 		Source: "https://192.0.2.1:9443",
 		Ref:    "192.0.2.1:9443/katl-vmtest/kubernetes:v1.36.1-katl.0@sha256:" + strings.Repeat("a", 64),
 	}
+	enrollments := map[string]*agentapi.NodeStatus{}
+	for _, node := range nodes {
+		enrollments[node.Name] = &agentapi.NodeStatus{EnrollmentId: "enrollment-" + node.Name, MachineId: "machine-" + node.Name}
+	}
 	path := filepath.Join(t.TempDir(), "inventory.yaml")
-	if err := writeThreeControlPlaneOperationBackedInventory(path, "v1.36.1", bundle, nodes, addresses); err != nil {
+	if err := writeThreeControlPlaneOperationBackedInventory(path, "v1.36.1", bundle, nodes, addresses, enrollments); err != nil {
 		t.Fatalf("writeThreeControlPlaneOperationBackedInventory() error = %v", err)
 	}
 	data, err := os.ReadFile(path)

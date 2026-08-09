@@ -36,6 +36,8 @@ type Node struct {
 	Name               string               `json:"name" yaml:"name"`
 	ManagementEndpoint string               `json:"managementEndpoint" yaml:"managementEndpoint"`
 	SystemRole         inventory.SystemRole `json:"systemRole" yaml:"systemRole"`
+	EnrollmentID       string               `json:"enrollmentID,omitempty" yaml:"enrollmentID,omitempty"`
+	MachineID          string               `json:"machineID,omitempty" yaml:"machineID,omitempty"`
 }
 
 type Source string
@@ -57,6 +59,8 @@ type TopologyNode struct {
 	Name               string               `json:"name"`
 	ManagementEndpoint string               `json:"managementEndpoint"`
 	SystemRole         inventory.SystemRole `json:"systemRole"`
+	EnrollmentID       string               `json:"enrollmentID,omitempty"`
+	MachineID          string               `json:"machineID,omitempty"`
 }
 
 type ResolvedTopology struct {
@@ -308,6 +312,8 @@ func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) 
 			Name:               strings.TrimSpace(node.Name),
 			ManagementEndpoint: strings.TrimSpace(node.ManagementEndpoint),
 			SystemRole:         inventory.SystemRole(strings.TrimSpace(string(node.SystemRole))),
+			EnrollmentID:       strings.TrimSpace(node.EnrollmentID),
+			MachineID:          strings.TrimSpace(node.MachineID),
 		})
 	}
 	return topology, nil
@@ -324,6 +330,8 @@ func topologyFromInventory(inv inventory.Inventory) (Topology, error) {
 			Name:               node.Name,
 			ManagementEndpoint: managementEndpoint(node.Address),
 			SystemRole:         node.SystemRole,
+			EnrollmentID:       node.EnrollmentID,
+			MachineID:          node.MachineID,
 		})
 	}
 	return topologyFromCluster("", cluster)
@@ -340,6 +348,8 @@ func topologyFromPlan(plan inventory.Plan) (Topology, error) {
 			Name:               node.Name,
 			ManagementEndpoint: managementEndpoint(node.Address),
 			SystemRole:         node.SystemRole,
+			EnrollmentID:       node.EnrollmentID,
+			MachineID:          node.MachineID,
 		})
 	}
 	return topologyFromCluster("", cluster)
@@ -379,6 +389,11 @@ func validateCluster(cluster Cluster) error {
 		case inventory.RoleWorker:
 		default:
 			return fmt.Errorf("node %q systemRole %q is unsupported", name, node.SystemRole)
+		}
+		enrollmentID := strings.TrimSpace(node.EnrollmentID)
+		machineID := strings.TrimSpace(node.MachineID)
+		if (enrollmentID == "") != (machineID == "") {
+			return fmt.Errorf("node %q enrollmentID and machineID must be set together", name)
 		}
 	}
 	if controlPlanes == 0 {

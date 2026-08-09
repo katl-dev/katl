@@ -134,6 +134,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	}()
 	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
 	endpoint := katlcEndpoint(t, node, plannedAddress)
+	enrollConfigApplyNode(t, ctx, result, katlctl, endpoint)
 	guest, client = runConfigApplyModeSmoke(t, ctx, &node, guest, client, result, katlctl, endpoint, currentGeneration)
 	node.Result.finish(StatusPassed, "", runner.time())
 	if err := runner.Write(scenario, node.Result); err != nil {
@@ -238,6 +239,50 @@ func katlcEndpoint(t *testing.T, node RunningInstalledRuntimeNode, plannedAddres
 	return net.JoinHostPort(address, "9443")
 }
 
+func enrollConfigApplyNode(t *testing.T, ctx context.Context, result Result, katlctl, endpoint string) {
+	t.Helper()
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		t.Fatalf("split config apply management endpoint %q: %v", endpoint, err)
+	}
+	directory := filepath.Join(result.RunDir, "katlctl", "enrollment")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatalf("create config apply enrollment directory: %v", err)
+	}
+	configPath := filepath.Join(directory, "cluster.yaml")
+	contextPath := filepath.Join(directory, "katlctl.yaml")
+	source := `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: config-apply-vmtest
+spec:
+  controlPlaneEndpoint:
+    host: ` + host + `
+    port: 6443
+  kubernetes:
+    version: v1.36.1
+  defaults:
+    access:
+      ssh:
+        authorizedKeys:
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+  nodes:
+    - name: cp-1
+      controlPlane: true
+      management:
+        address: ` + host + `
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/virtio-katl-root
+`
+	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {
+		t.Fatalf("write config apply enrollment ClusterConfig: %v", err)
+	}
+	t.Setenv("KATLCTL_CONFIG", contextPath)
+	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	runKatlctl(t, ctx, result, katlctl, "context-save", "context", "save", "--config", configPath)
+}
+
 func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, currentGeneration string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
@@ -248,7 +293,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 
 	rejectedArgs := []string{
 		"node", "apply", "validate",
-		"--endpoint", endpoint,
+		"--node", "cp-1",
 	}
 	rejectedArgs = append(rejectedArgs, configApplyConfigArgs(configApplyFixture(t, "rejected-live-without-preflight.yaml"))...)
 	rejectedArgs = append(rejectedArgs,
@@ -301,8 +346,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/status.json",
 		`"commitState": "committed"`,
-		`"bootState": "good"`,
-		`"healthState": "healthy"`,
+		`"bootState": "trying"`,
+		`"healthState": "unknown"`,
 		`"committedByOperationID": "`+liveAccepted.OperationId+`"`,
 	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json",
@@ -320,10 +365,11 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	)
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json",
-		`"defaultGenerationID": "`+liveGeneration+`"`,
-		`"bootedGenerationID": "`+liveGeneration+`"`,
-		`"previousKnownGoodGenerationID": "`+currentGeneration+`"`,
-		`"pendingHealthValidation": false`,
+		`"defaultGenerationID": "`+currentGeneration+`"`,
+		`"targetBootGenerationID": "`+liveGeneration+`"`,
+		`"trialGenerationID": "`+liveGeneration+`"`,
+		`"bootedGenerationID": "`+currentGeneration+`"`,
+		`"pendingHealthValidation": true`,
 	)
 	activeGeneration := runVolumeRemovalSmoke(t, ctx, guest, result, katlctl, endpoint)
 
@@ -357,7 +403,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf", "Address=198.51.100.77/32")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/containerd/conf.d/80-katl-vmtest.toml", "oom_score = 123")
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+activeGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+currentGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"previousKnownGoodGenerationID": "`+currentGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
 	assertGuestFileContains(t, ctx, guest, stagedAccepted.RecordPath, `"operationKind": "generation-stage"`, `"configApplyPhase": "next-boot"`)
@@ -368,7 +414,6 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	previousBootID := guestBootID(t, ctx, client)
 	runKatlctl(t, ctx, result, katlctl, "host-reboot-staged-generation",
 		"node", "reboot", "cp-1",
-		"--endpoint", endpoint,
 		"--timeout", "3m",
 	)
 	_ = client.Close()
@@ -488,7 +533,7 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 	t.Helper()
 	args := []string{
 		"node", "apply",
-		"--endpoint", endpoint,
+		"--node", "cp-1",
 	}
 	args = append(args, configApplyConfigArgs(fixture)...)
 	args = append(args,
@@ -634,7 +679,6 @@ func shutdownGuestThroughKatlctl(t *testing.T, ctx context.Context, result Resul
 	}
 	runKatlctl(t, ctx, result, katlctl, "host-shutdown",
 		"node", "shutdown", "cp-1",
-		"--endpoint", endpoint,
 		"--timeout", "2m",
 	)
 	if client != nil {
@@ -814,12 +858,20 @@ users: []
 
 	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint)
 	defer conn.Close()
+	nodeStatus, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("read enrolled node identity before Kubernetes sysext refusal: %v", err)
+	}
 	accepted, err := client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
-		ApiVersion:      operation.APIVersion,
-		Kind:            agent.RequestKind,
-		ClientRequestId: "vmtest-kubeadm-upgrade-refused",
-		OperationKind:   agent.OperationKindKubeadmUpgrade,
-		Actor:           "installed-runtime config apply vmtest",
+		ApiVersion:                  operation.APIVersion,
+		Kind:                        agent.RequestKind,
+		ClientRequestId:             "vmtest-kubeadm-upgrade-refused",
+		OperationKind:               agent.OperationKindKubeadmUpgrade,
+		Actor:                       "installed-runtime config apply vmtest",
+		ExpectedEnrollmentId:        nodeStatus.GetEnrollmentId(),
+		ExpectedInventoryNodeName:   nodeStatus.GetInventoryNodeName(),
+		ExpectedMachineId:           nodeStatus.GetMachineId(),
+		ExpectedCurrentGenerationId: nodeStatus.GetCurrentGenerationId(),
 		KubernetesSysextUpdate: &agentapi.KubernetesSysextUpdateOperationRequest{
 			TargetPayloadVersion: "v9.99.0",
 			TargetSysextPath:     "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw",

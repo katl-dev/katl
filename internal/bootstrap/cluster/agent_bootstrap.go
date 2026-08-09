@@ -190,7 +190,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	}
 	for _, node := range controlPlaneJoinNodes(plan) {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-control-plane", Phase: "creating-join-material"})
-		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, initResult.Credentials, plan.ControlPlaneEndpointManaged, deps)
+		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, initResult.Operation.ID, initResult.Credentials, plan.ControlPlaneEndpointManaged, deps)
 		if err != nil {
 			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
 			return result, fmt.Errorf("control-plane join material for %s: %s", node.Name, inventory.Redact(err.Error()))
@@ -205,7 +205,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	}
 	for _, node := range workerNodes(plan) {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-worker", Phase: "creating-join-material"})
-		material, err := createWorkerJoinMaterial(ctx, initNode, node, statuses[initNode.Name], initResult.Operation.ID, deps)
+		material, err := createWorkerJoinMaterial(ctx, initNode, node, initResult.Operation.ID, deps)
 		if err != nil {
 			result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "failed")
 			return result, fmt.Errorf("worker join material for %s: %s", node.Name, inventory.Redact(err.Error()))
@@ -320,7 +320,7 @@ func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, dep
 	}
 	switch target.Action {
 	case inventory.ActionControlPlaneJoin:
-		material, err := createJoinMaterial(ctx, initNode, target, statuses[initNode.Name], "existing-cluster", deps, "control-plane", joinDiscoveryOverride{
+		material, err := createJoinMaterial(ctx, initNode, target, "existing-cluster", deps, "control-plane", joinDiscoveryOverride{
 			Endpoint: endpointForNode(initNode),
 		})
 		if err != nil {
@@ -334,7 +334,7 @@ func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, dep
 		}
 		result.addOperationPhase("control-plane-join", target.Name, target.Action, "passed", operationRef)
 	case inventory.ActionWorkerJoin:
-		material, err := createJoinMaterial(ctx, initNode, target, statuses[initNode.Name], "existing-cluster", deps, "worker", joinDiscoveryOverride{
+		material, err := createJoinMaterial(ctx, initNode, target, "existing-cluster", deps, "worker", joinDiscoveryOverride{
 			Endpoint: endpointForNode(initNode),
 		})
 		if err != nil {
@@ -403,6 +403,18 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 		if status == nil {
 			nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: "node status is missing"})
 		} else {
+			if strings.TrimSpace(node.EnrollmentID) == "" || strings.TrimSpace(node.MachineID) == "" {
+				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "enrollment", Message: "node has no persisted workstation enrollment identity"})
+			}
+			if got := strings.TrimSpace(status.GetInventoryNodeName()); got != node.Name {
+				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "enrollment", Message: fmt.Sprintf("address answered as enrolled node %q", got)})
+			}
+			if got := strings.TrimSpace(status.GetEnrollmentId()); got != strings.TrimSpace(node.EnrollmentID) {
+				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "enrollment", Message: "node enrollment identity does not match inventory"})
+			}
+			if got := strings.TrimSpace(status.GetMachineId()); got != strings.TrimSpace(node.MachineID) {
+				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "machine-id", Message: "node machine identity does not match inventory"})
+			}
 			if status.GetApiVersion() != agentAPIVersion {
 				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: fmt.Sprintf("node reports API version %q", status.GetApiVersion())})
 			}
@@ -496,17 +508,17 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	return result, nil
 }
 
-func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, credentials AdminCredentials, managedEndpoint bool, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
+func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, initOperationID string, credentials AdminCredentials, managedEndpoint bool, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
 	discovery := joinDiscoveryOverride{}
 	if managedEndpoint {
 		discovery.Endpoint = endpointForNode(initNode)
 		discovery.CertificateAuthorityData = credentials.CertificateAuthorityData
 	}
-	return createJoinMaterial(ctx, initNode, controlPlane, status, initOperationID, deps, "control-plane", discovery)
+	return createJoinMaterial(ctx, initNode, controlPlane, initOperationID, deps, "control-plane", discovery)
 }
 
-func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
-	return createJoinMaterial(ctx, initNode, worker, status, initOperationID, deps, "worker", joinDiscoveryOverride{})
+func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.PlannedNode, initOperationID string, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
+	return createJoinMaterial(ctx, initNode, worker, initOperationID, deps, "worker", joinDiscoveryOverride{})
 }
 
 type joinDiscoveryOverride struct {
@@ -514,19 +526,29 @@ type joinDiscoveryOverride struct {
 	CertificateAuthorityData string
 }
 
-func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.PlannedNode, status *agentapi.NodeStatus, initOperationID string, deps AgentBootstrapDependencies, role string, discovery joinDiscoveryOverride) (workerJoinMaterial, error) {
+func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.PlannedNode, initOperationID string, deps AgentBootstrapDependencies, role string, discovery joinDiscoveryOverride) (workerJoinMaterial, error) {
 	conn, err := deps.Connector.Connect(ctx, initNode)
 	if err != nil {
 		return workerJoinMaterial{}, fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
+	status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		return workerJoinMaterial{}, fmt.Errorf("refresh init node status: %w", err)
+	}
+	if err := verifyPlannedNodeIdentity(initNode, status); err != nil {
+		return workerJoinMaterial{}, fmt.Errorf("refresh init node status: %w", err)
+	}
 	requestRef := "operation:" + strings.TrimSpace(initOperationID) + "/" + role + ":" + joinNode.Name
 	response, err := conn.Client.CreateWorkerJoinMaterial(ctx, &agentapi.CreateWorkerJoinMaterialRequest{
-		ApiVersion:        agentAPIVersion,
-		Kind:              agentJoinMaterialKind,
-		Actor:             valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
-		ExpectedMachineId: strings.TrimSpace(status.GetMachineId()),
-		RequestRef:        requestRef,
+		ApiVersion:                  agentAPIVersion,
+		Kind:                        agentJoinMaterialKind,
+		Actor:                       valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
+		ExpectedEnrollmentId:        strings.TrimSpace(status.GetEnrollmentId()),
+		ExpectedInventoryNodeName:   strings.TrimSpace(status.GetInventoryNodeName()),
+		ExpectedMachineId:           strings.TrimSpace(status.GetMachineId()),
+		ExpectedCurrentGenerationId: strings.TrimSpace(status.GetCurrentGenerationId()),
+		RequestRef:                  requestRef,
 	})
 	if err != nil {
 		return workerJoinMaterial{}, fmt.Errorf("create %s join material: %w", role, err)
@@ -552,6 +574,25 @@ func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.Planne
 		ref = requestRef
 	}
 	return workerJoinMaterial{Ref: ref, Material: material}, nil
+}
+
+func verifyPlannedNodeIdentity(node inventory.PlannedNode, status *agentapi.NodeStatus) error {
+	if status == nil {
+		return errors.New("node did not return status")
+	}
+	if got := strings.TrimSpace(status.GetInventoryNodeName()); got != node.Name {
+		return fmt.Errorf("node %q address answered as enrolled node %q", node.Name, got)
+	}
+	if got := strings.TrimSpace(status.GetEnrollmentId()); got != strings.TrimSpace(node.EnrollmentID) {
+		return fmt.Errorf("node %q enrollment identity does not match inventory", node.Name)
+	}
+	if got := strings.TrimSpace(status.GetMachineId()); got != strings.TrimSpace(node.MachineID) {
+		return fmt.Errorf("node %q machine identity does not match inventory", node.Name)
+	}
+	if strings.TrimSpace(status.GetCurrentGenerationId()) == "" {
+		return fmt.Errorf("node %q did not report its current generation", node.Name)
+	}
+	return nil
 }
 
 func joinMaterialWithDiscoveryEndpoint(material *agentapi.WorkerJoinMaterial, endpoint, certificateAuthorityData string) (*agentapi.WorkerJoinMaterial, error) {
@@ -690,6 +731,10 @@ func rebootAndWaitBootstrapGeneration(ctx context.Context, node inventory.Planne
 		_ = closeAgent(conn)
 		return fmt.Errorf("get node status before reboot: %w", err)
 	}
+	if err := verifyPlannedNodeIdentity(node, status); err != nil {
+		_ = closeAgent(conn)
+		return fmt.Errorf("verify node status before reboot: %w", err)
+	}
 	candidate, generationErr := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: generationID})
 	if generationErr == nil && bootstrapGenerationHealthy(node, status, candidate, generationID) {
 		_ = closeAgent(conn)
@@ -703,11 +748,14 @@ func rebootAndWaitBootstrapGeneration(ctx context.Context, node inventory.Planne
 	}
 	emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "boot-health", Phase: "scheduling-reboot"})
 	accepted, err := conn.Client.Reboot(ctx, &agentapi.RebootRequest{
-		ApiVersion:         agentAPIVersion,
-		Kind:               "RebootRequest",
-		Actor:              valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
-		ExpectedMachineId:  strings.TrimSpace(status.GetMachineId()),
-		TargetGenerationId: generationID,
+		ApiVersion:                  agentAPIVersion,
+		Kind:                        "RebootRequest",
+		Actor:                       valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
+		ExpectedEnrollmentId:        strings.TrimSpace(status.GetEnrollmentId()),
+		ExpectedInventoryNodeName:   strings.TrimSpace(status.GetInventoryNodeName()),
+		ExpectedMachineId:           strings.TrimSpace(status.GetMachineId()),
+		ExpectedCurrentGenerationId: strings.TrimSpace(status.GetCurrentGenerationId()),
+		TargetGenerationId:          generationID,
 	})
 	_ = closeAgent(conn)
 	if err != nil {
@@ -798,6 +846,8 @@ func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, 
 		ClientRequestId:             clientRequestID(node, plan, kind, ""),
 		OperationKind:               kind,
 		Actor:                       valueOrDefault(deps.Actor, "katlctl cluster bootstrap"),
+		ExpectedEnrollmentId:        strings.TrimSpace(status.GetEnrollmentId()),
+		ExpectedInventoryNodeName:   strings.TrimSpace(status.GetInventoryNodeName()),
 		ExpectedMachineId:           strings.TrimSpace(status.GetMachineId()),
 		ExpectedCurrentGenerationId: strings.TrimSpace(status.GetCurrentGenerationId()),
 		DryRun:                      false,

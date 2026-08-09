@@ -247,13 +247,18 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 		cancelRequest()
 		return err
 	}
+	if err := verifyEnrolledStatus(target, status); err != nil {
+		_ = conn.Close()
+		cancelRequest()
+		return err
+	}
 	generationID := strings.TrimSpace(status.GetBootTargetGenerationId())
 	if generationID == "" {
 		generationID = strings.TrimSpace(status.GetCurrentGenerationId())
 	}
 	previousAgentStart := status.GetAgentStartId()
 	recoveryRequirement := nodeRecoveryRequirementFor(status)
-	if err := requestNodeReboot(requestCtx, conn.Client, "katlctl node reboot", status.GetMachineId(), generationID); err != nil {
+	if err := requestNodeReboot(requestCtx, conn.Client, "katlctl node reboot", status, generationID); err != nil {
 		_ = conn.Close()
 		cancelRequest()
 		return fmt.Errorf("schedule reboot for %s: %w", node, err)
@@ -302,11 +307,19 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 		cancelRequest()
 		return fmt.Errorf("read status from %s: %w", node, err)
 	}
+	if err := verifyEnrolledStatus(target, status); err != nil {
+		_ = conn.Close()
+		cancelRequest()
+		return err
+	}
 	accepted, err := conn.Client.Shutdown(requestCtx, &agentapi.ShutdownRequest{
-		ApiVersion:        generation.APIVersion,
-		Kind:              "ShutdownRequest",
-		Actor:             "katlctl node shutdown",
-		ExpectedMachineId: status.GetMachineId(),
+		ApiVersion:                  generation.APIVersion,
+		Kind:                        "ShutdownRequest",
+		Actor:                       "katlctl node shutdown",
+		ExpectedEnrollmentId:        status.GetEnrollmentId(),
+		ExpectedInventoryNodeName:   status.GetInventoryNodeName(),
+		ExpectedMachineId:           status.GetMachineId(),
+		ExpectedCurrentGenerationId: status.GetCurrentGenerationId(),
 	})
 	_ = conn.Close()
 	cancelRequest()

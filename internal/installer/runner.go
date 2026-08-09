@@ -77,6 +77,7 @@ type Context struct {
 	KubeadmConfigs                     map[string]kubeadmconfig.Plan
 	SystemExtensionPayloads            []configapply.SystemExtensionPayload
 	IdentityRandom                     io.Reader
+	EnrollmentRandom                   io.Reader
 	Completed                          []StepID
 	Chown                              func(path string, uid int, gid int) error
 	InputMode                          string
@@ -796,8 +797,10 @@ func (installSeedStep) Run(ctx context.Context, install *Context) error {
 		return fmt.Errorf("target root is required")
 	}
 	request := generation.IdentityRequest{
-		AuthorizedKeys: install.Manifest.Node.Identity.SSH.AuthorizedKeys,
-		Random:         install.IdentityRandom,
+		AuthorizedKeys:    install.Manifest.Node.Identity.SSH.AuthorizedKeys,
+		InventoryNodeName: inventoryNodeName(install.Manifest),
+		Random:            install.IdentityRandom,
+		EnrollmentRandom:  install.EnrollmentRandom,
 	}
 	if install.LoaderRecord != nil {
 		bootRoot := install.BootRoot

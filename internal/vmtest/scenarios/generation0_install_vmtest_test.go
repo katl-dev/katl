@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -92,6 +93,7 @@ type threeNodeGeneration0NodeEvidence struct {
 	NodeMetadata        string `json:"nodeMetadata,omitempty"`
 	MachineIDPath       string `json:"machineIDPath"`
 	PersistentMachineID string `json:"persistentMachineID"`
+	EnrollmentIdentity  string `json:"enrollmentIdentity"`
 	LayoutProbe         string `json:"layoutProbe"`
 	RerunProof          string `json:"rerunProof,omitempty"`
 }
@@ -103,6 +105,7 @@ type generation0EvidencePaths struct {
 	Metadata            string
 	MachineID           string
 	PersistentMachineID string
+	Enrollment          string
 	LayoutProbe         string
 }
 
@@ -476,6 +479,7 @@ func collectGeneration0NodeEvidence(ctx context.Context, node vmtest.RunningInst
 		{"/var/lib/katl/generations/0/confext/etc/katl/node.json", "node-metadata.json", 64 << 10},
 		{"/etc/machine-id", "machine-id.txt", 4 << 10},
 		{"/var/lib/katl/identity/machine-id", "persistent-machine-id.txt", 4 << 10},
+		{"/var/lib/katl/identity/enrollment.json", "enrollment.json", 16 << 10},
 	}
 	paths := make([]string, 0, len(files))
 	for _, file := range files {
@@ -508,6 +512,7 @@ func collectGeneration0NodeEvidence(ctx context.Context, node vmtest.RunningInst
 		Metadata:            paths[3],
 		MachineID:           paths[4],
 		PersistentMachineID: paths[5],
+		Enrollment:          paths[6],
 		LayoutProbe:         layoutProbe,
 	}, nil
 }
@@ -639,6 +644,7 @@ func collectGeneration0LayoutProbe(ctx context.Context, node vmtest.RunningInsta
 		"/var/lib/katl/generations/0/confext/etc/katl/node.json",
 		"/var/lib/katl/boot/selection.json",
 		"/var/lib/katl/identity/machine-id",
+		"/var/lib/katl/identity/enrollment.json",
 	} {
 		if _, err := guest.RunCommand(opCtx, vmtest.GuestCommandRequest{Name: filepath.Base(path), Argv: []string{"test", "-e", path}}); err != nil {
 			return "", fmt.Errorf("%s generation 0 path %s missing: %w", node.Name, path, err)
@@ -734,6 +740,14 @@ func assertGeneration0NodeEvidence(paths generation0EvidencePaths, input threeNo
 	if strings.TrimSpace(string(machineID)) != strings.TrimSpace(string(persistentMachineID)) {
 		return generation0RuntimeMetadata{}, fmt.Errorf("/etc/machine-id does not match /var/lib/katl/identity/machine-id")
 	}
+	var enrollment generation.Enrollment
+	if err := readJSONFile(paths.Enrollment, &enrollment); err != nil {
+		return generation0RuntimeMetadata{}, err
+	}
+	decodedEnrollmentID, err := hex.DecodeString(enrollment.ID)
+	if err != nil || len(decodedEnrollmentID) != 16 || enrollment.APIVersion != "katl.dev/v1alpha1" || enrollment.Kind != "NodeEnrollment" || enrollment.InventoryNodeName != input.Name || enrollment.MachineID != strings.TrimSpace(string(persistentMachineID)) {
+		return generation0RuntimeMetadata{}, fmt.Errorf("enrollment identity is incomplete or does not bind node %q to its machine: %#v", input.Name, enrollment)
+	}
 	layoutProbe, err := os.ReadFile(paths.LayoutProbe)
 	if err != nil {
 		return generation0RuntimeMetadata{}, err
@@ -785,6 +799,7 @@ func writeThreeNodeGeneration0Proof(result vmtest.Result, inputs threeNodeGenera
 			NodeMetadata:        filepath.Join(evidenceDir, "node-metadata.json"),
 			MachineIDPath:       filepath.Join(evidenceDir, "machine-id.txt"),
 			PersistentMachineID: filepath.Join(evidenceDir, "persistent-machine-id.txt"),
+			EnrollmentIdentity:  filepath.Join(evidenceDir, "enrollment.json"),
 			LayoutProbe:         filepath.Join(evidenceDir, "layout-probe.txt"),
 			RerunProof:          rerunResults[node.Name],
 		})

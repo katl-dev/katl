@@ -54,6 +54,12 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	if strings.TrimSpace(req.Actor) == "" {
 		return nil, status.Error(codes.InvalidArgument, "actor is required")
 	}
+	if err := s.validateMutationTarget(req.ExpectedEnrollmentId, req.ExpectedInventoryNodeName, req.ExpectedMachineId, req.ExpectedCurrentGenerationId); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.NodeName) != strings.TrimSpace(req.ExpectedInventoryNodeName) {
+		return nil, status.Error(codes.FailedPrecondition, "config nodeName does not match expectedInventoryNodeName")
+	}
 	applyMode := strings.TrimSpace(req.ApplyMode)
 	if applyMode == "" {
 		applyMode = generation.ApplyModeAuto
@@ -85,6 +91,8 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		Actor:                              req.Actor,
 		ExpectedMachineId:                  req.ExpectedMachineId,
 		ExpectedCurrentGenerationId:        req.ExpectedCurrentGenerationId,
+		ExpectedEnrollmentId:               req.ExpectedEnrollmentId,
+		ExpectedInventoryNodeName:          req.ExpectedInventoryNodeName,
 		RequestDigest:                      "",
 		OperationTimeout:                   req.OperationTimeout,
 		CandidateGenerationId:              candidateID,
@@ -264,6 +272,8 @@ func generationSubmitRequest(req *agentapi.GenerationApplyRequest, operationKind
 		Actor:                       req.Actor,
 		ExpectedMachineId:           req.ExpectedMachineId,
 		ExpectedCurrentGenerationId: req.ExpectedCurrentGenerationId,
+		ExpectedEnrollmentId:        req.ExpectedEnrollmentId,
+		ExpectedInventoryNodeName:   req.ExpectedInventoryNodeName,
 		RequestDigest:               req.RequestDigest,
 		OperationTimeout:            req.OperationTimeout,
 		ConfigApply: &agentapi.ConfigApplyOperationRequest{

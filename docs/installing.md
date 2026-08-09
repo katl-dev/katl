@@ -713,9 +713,11 @@ compatibility, stages the sysext, and selects it for generation 1. Operators do
 not supply a bundle tag or digest on the normal path.
 
 After all nodes are installed and reachable through their node-local `katlc`
-management endpoints, bootstrap directly from the same source:
+management endpoints, enroll their identities and then bootstrap from the same
+source:
 
 ```text
+katlctl context save --config ./cluster.yaml
 katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1
 ```
@@ -731,10 +733,9 @@ handoff, nodes normally remain `NotReady` and CoreDNS pending until the user
 installs a CNI. Katl does not choose, install, or manage one.
 
 The management API is intentionally credential-free on Katl's supported
-trusted home-lab network. Bootstrap requires no enrollment or token exchange.
-`katlctl context save --config ./cluster.yaml` is optional shorthand that
-checks the management endpoints and saves their topology as the current
-workstation context for later node operations.
+trusted home-lab network. Enrollment is an identity binding, not an
+authentication token: it prevents operator inventory from targeting the wrong
+installed node when addresses are stale or exchanged.
 
 `katlctl` is a bounded client. Node-local `katlc` validates and records the
 authoritative bootstrap operations, creates generation 1, runs `kubeadm`, and

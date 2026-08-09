@@ -150,18 +150,24 @@ nodes:
   access: {method: agent}
   kubeadmConfig: {ref: control-plane, path: /etc/katl/kubeadm/control-plane/config.yaml, intent: control-plane}
   kubernetesVersion: v1.36.1
+  enrollmentID: enrollment-cp-1
+  machineID: machine-cp-1
 - name: cp-2
   address: 10.0.0.12
   systemRole: control-plane
   access: {method: agent}
   kubeadmConfig: {ref: control-plane, path: /etc/katl/kubeadm/control-plane/config.yaml, intent: control-plane}
   kubernetesVersion: v1.36.1
+  enrollmentID: enrollment-cp-2
+  machineID: machine-cp-2
 - name: cp-3
   address: 10.0.0.13
   systemRole: control-plane
   access: {method: agent}
   kubeadmConfig: {ref: control-plane, path: /etc/katl/kubeadm/control-plane/config.yaml, intent: control-plane}
   kubernetesVersion: v1.36.1
+  enrollmentID: enrollment-cp-3
+  machineID: machine-cp-3
 `
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)

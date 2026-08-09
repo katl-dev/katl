@@ -1397,6 +1397,8 @@ func validInventory() inventory.Inventory {
 				Access:            inventory.Access{Method: "agent"},
 				KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
 				KubernetesVersion: "v1.36.1",
+				EnrollmentID:      "enrollment-cp-1",
+				MachineID:         "machine-cp-1",
 			},
 			{
 				Name:              "worker-1",
@@ -1405,6 +1407,8 @@ func validInventory() inventory.Inventory {
 				Access:            inventory.Access{Method: "agent"},
 				KubeadmConfig:     inventory.KubeadmConfig{Ref: "worker", Path: "/etc/katl/kubeadm/worker/config.yaml", Intent: inventory.IntentWorker},
 				KubernetesVersion: "v1.36.1",
+				EnrollmentID:      "enrollment-worker-1",
+				MachineID:         "machine-worker-1",
 			},
 		},
 	}

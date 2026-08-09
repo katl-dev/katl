@@ -57,6 +57,8 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
 		KubernetesVersion: "v1.36.1",
+		EnrollmentID:      "enrollment-cp-2",
+		MachineID:         "machine-cp-2",
 	})
 	cpClient := &fakeAgentClient{
 		status: readyAgentStatusWithKinds("machine-cp-1", "bootstrap-init"),
@@ -182,6 +184,8 @@ func TestRunAgentNodeJoinAddsControlPlaneWithoutRerunningInit(t *testing.T) {
 		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
 		KubernetesVersion: "v1.36.1",
+		EnrollmentID:      "enrollment-cp-2",
+		MachineID:         "machine-cp-2",
 	})
 	cp1 := &fakeAgentClient{
 		status: readyAgentStatusWithKinds("machine-cp-1", "bootstrap-init"),
@@ -551,7 +555,7 @@ func TestRebootBootstrapGenerationSkipsAlreadyHealthyCandidate(t *testing.T) {
 			HealthState:  generation.HealthStateHealthy,
 		},
 	}
-	node := inventory.PlannedNode{Name: "cp-1", SystemRole: inventory.RoleControlPlane}
+	node := inventory.PlannedNode{Name: "cp-1", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine-cp-1"}
 	err := rebootAndWaitBootstrapGeneration(context.Background(), node, candidate, AgentBootstrapDependencies{
 		Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client}),
 	})
@@ -759,6 +763,11 @@ func TestRunAgentBootstrapMintsWorkerJoinMaterialAndSubmitsWorkerJoin(t *testing
 			},
 		},
 	}
+	cpClient.getNodeStatusFn = func(call int, status *agentapi.NodeStatus) {
+		if call > 1 {
+			status.CurrentGenerationId = "bootstrap-init-live"
+		}
+	}
 	workerClient := &fakeAgentClient{
 		status: readyAgentStatusWithKinds("machine-worker-1", "bootstrap-join-worker"),
 		accepted: &agentapi.OperationAccepted{
@@ -790,7 +799,7 @@ func TestRunAgentBootstrapMintsWorkerJoinMaterialAndSubmitsWorkerJoin(t *testing
 		t.Fatalf("CreateWorkerJoinMaterial requests = %d, want 1", len(cpClient.createMaterialRequests))
 	}
 	materialReq := cpClient.createMaterialRequests[0]
-	if materialReq.Kind != agentJoinMaterialKind || materialReq.Actor != "test-actor" || materialReq.ExpectedMachineId != "machine-cp-1" || materialReq.RequestRef != "operation:bootstrap-init-1/worker:worker-1" {
+	if materialReq.Kind != agentJoinMaterialKind || materialReq.Actor != "test-actor" || materialReq.ExpectedMachineId != "machine-cp-1" || materialReq.ExpectedCurrentGenerationId != "bootstrap-init-live" || materialReq.RequestRef != "operation:bootstrap-init-1/worker:worker-1" {
 		t.Fatalf("join material request = %#v", materialReq)
 	}
 	if len(workerClient.submitRequests) != 1 {
@@ -869,12 +878,21 @@ func (c *fakeAgentConnector) Connect(_ context.Context, node inventory.PlannedNo
 		client = &fakeAgentClient{status: readyAgentStatus("machine-" + node.Name)}
 		c.clients[node.Name] = client
 	}
+	if client.status != nil {
+		client.status.InventoryNodeName = node.Name
+		client.status.EnrollmentId = node.EnrollmentID
+		if node.MachineID == "" {
+			node.MachineID = client.status.MachineId
+		}
+	}
 	return AgentConnection{Endpoint: node.Address, Client: client}, nil
 }
 
 type fakeAgentClient struct {
 	status                 *agentapi.NodeStatus
 	statusErr              error
+	getNodeStatusCalls     int
+	getNodeStatusFn        func(int, *agentapi.NodeStatus)
 	submitRequests         []*agentapi.SubmitOperationRequest
 	submitErr              error
 	accepted               *agentapi.OperationAccepted
@@ -895,6 +913,10 @@ type fakeAgentClient struct {
 func (c *fakeAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error) {
 	if c.statusErr != nil {
 		return nil, c.statusErr
+	}
+	c.getNodeStatusCalls++
+	if c.getNodeStatusFn != nil {
+		c.getNodeStatusFn(c.getNodeStatusCalls, c.status)
 	}
 	return c.status, nil
 }

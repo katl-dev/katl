@@ -68,13 +68,28 @@ func TestRenderSSH(t *testing.T) {
 func TestWriteIdentity(t *testing.T) {
 	root := t.TempDir()
 	assets, err := WriteIdentity(root, IdentityRequest{
-		AuthorizedKeys: []string{sshKey},
-		Random:         bytes.NewReader([]byte("0123456789abcdef")),
+		AuthorizedKeys:    []string{sshKey},
+		InventoryNodeName: "cp-1",
+		Random:            bytes.NewReader([]byte("0123456789abcdef")),
+		EnrollmentRandom:  bytes.NewReader([]byte("fedcba9876543210")),
 	})
 	if err != nil {
 		t.Fatalf("WriteIdentity() error = %v", err)
 	}
 	assertFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), assets.MachineID+"\n")
+	if assets.Enrollment.InventoryNodeName != "cp-1" || assets.Enrollment.MachineID != assets.MachineID || assets.Enrollment.ID != "66656463626139383736353433323130" {
+		t.Fatalf("enrollment = %+v", assets.Enrollment)
+	}
+	reused, err := WriteEnrollment(root, "cp-1", assets.MachineID, bytes.NewReader([]byte("xxxxxxxxxxxxxxxx")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.ID != assets.Enrollment.ID {
+		t.Fatalf("reused enrollment ID = %q, want %q", reused.ID, assets.Enrollment.ID)
+	}
+	if _, err := WriteEnrollment(root, "cp-2", assets.MachineID, bytes.NewReader([]byte("xxxxxxxxxxxxxxxx"))); err == nil || !strings.Contains(err.Error(), "existing enrollment belongs") {
+		t.Fatalf("renamed enrollment error = %v", err)
+	}
 }
 
 func TestRenderSSHRejectsKey(t *testing.T) {
@@ -124,8 +139,10 @@ func TestWriteInstallIdentity(t *testing.T) {
 		TargetRoot: targetRoot,
 		BootRoot:   bootRoot,
 		Identity: IdentityRequest{
-			AuthorizedKeys: []string{sshKey},
-			Random:         bytes.NewReader([]byte("0123456789abcdef")),
+			AuthorizedKeys:    []string{sshKey},
+			InventoryNodeName: "cp-1",
+			Random:            bytes.NewReader([]byte("0123456789abcdef")),
+			EnrollmentRandom:  bytes.NewReader([]byte("fedcba9876543210")),
 		},
 		Loader: LoaderRequest{Record: record},
 	})

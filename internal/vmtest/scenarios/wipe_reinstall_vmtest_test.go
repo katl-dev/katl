@@ -13,11 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/operation"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/vmtest"
 	"gopkg.in/yaml.v3"
 )
@@ -399,8 +401,12 @@ func runWipePreBootstrapControlPlaneSmoke(t *testing.T, run operationBackedSmoke
 	if err != nil {
 		t.Fatal(err)
 	}
+	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, otherAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
 	inventoryPath := filepath.Join(result.RunDir, "pre-bootstrap-control-plane-wipe", "inventory.yaml")
-	if err := writePreBootstrapControlPlaneWipeInventory(inventoryPath, inputs.KubernetesVersion, cpAddress, otherAddress); err != nil {
+	if err := writePreBootstrapControlPlaneWipeInventory(inventoryPath, inputs.KubernetesVersion, cpAddress, otherAddress, enrollments); err != nil {
 		t.Fatal(err)
 	}
 	oldMachineID, err := readNodeFileWithRetry(ctx, cpNode, "/var/lib/katl/identity/machine-id", 4<<10, time.Minute)
@@ -452,9 +458,14 @@ func runWipePreBootstrapControlPlaneSmoke(t *testing.T, run operationBackedSmoke
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
 }
 
-func writePreBootstrapControlPlaneWipeInventory(path, kubernetesVersion, cpAddress, otherAddress string) error {
+func writePreBootstrapControlPlaneWipeInventory(path, kubernetesVersion, cpAddress, otherAddress string, enrollments map[string]*agentapi.NodeStatus) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
+	}
+	cp := enrollments["cp-1"]
+	other := enrollments["worker-1"]
+	if cp == nil || other == nil {
+		return errors.New("control-plane and survivor enrollment status are required")
 	}
 	data := `controlPlaneEndpoint: ` + cpAddress + `:6443
 kubernetesVersion: ` + kubernetesVersion + `
@@ -469,6 +480,8 @@ nodes:
     path: /etc/katl/kubeadm/control-plane/config.yaml
     intent: control-plane
   kubernetesVersion: ` + kubernetesVersion + `
+  enrollmentID: ` + strconv.Quote(cp.GetEnrollmentId()) + `
+  machineID: ` + strconv.Quote(cp.GetMachineId()) + `
 - name: cp-2
   address: ` + otherAddress + `
   systemRole: control-plane
@@ -479,6 +492,8 @@ nodes:
     path: /etc/katl/kubeadm/control-plane/config.yaml
     intent: control-plane
   kubernetesVersion: ` + kubernetesVersion + `
+  enrollmentID: ` + strconv.Quote(other.GetEnrollmentId()) + `
+  machineID: ` + strconv.Quote(other.GetMachineId()) + `
 `
 	return os.WriteFile(path, []byte(data), 0o644)
 }
@@ -549,7 +564,11 @@ func runReinstalledWorkerJoin(t *testing.T, ctx context.Context, run operationBa
 		return err
 	}
 	inventoryPath := filepath.Join(dir, "bootstrap-inventory.yaml")
-	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, bundle, cpAddress, workerAddress); err != nil {
+	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		return err
+	}
+	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, bundle, cpAddress, workerAddress, enrollments); err != nil {
 		return err
 	}
 	var stdout, stderr bytes.Buffer
@@ -830,7 +849,11 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 			return wipeReinstallBootstrapEvidence{}, fmt.Errorf("wait for %s katlc agent TCP endpoint: %w", endpoint.name, err)
 		}
 	}
-	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress); err != nil {
+	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		return wipeReinstallBootstrapEvidence{}, err
+	}
+	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments); err != nil {
 		return wipeReinstallBootstrapEvidence{}, err
 	}
 	var stdout, stderr bytes.Buffer

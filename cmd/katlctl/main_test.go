@@ -432,7 +432,7 @@ func TestHostUpgradeHelpLeadsWithClusterConfig(t *testing.T) {
 	}
 }
 
-func TestManagementTargetUsesClusterConfigAndEndpointOverride(t *testing.T) {
+func TestManagementTargetRefusesUnverifiedEnrolledEndpointOverride(t *testing.T) {
 	configPath := writeClusterConfig(t)
 	target, err := resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath})
 	if err != nil {
@@ -442,12 +442,9 @@ func TestManagementTargetUsesClusterConfigAndEndpointOverride(t *testing.T) {
 		t.Fatalf("target = %#v", target)
 	}
 
-	target, err = resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath, nodeName: "cp-1", endpoint: "192.0.2.44"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if target.nodeName != "cp-1" || target.endpoint != "192.0.2.44:9443" {
-		t.Fatalf("override target = %#v", target)
+	_, err = resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath, nodeName: "cp-1", endpoint: "192.0.2.44"})
+	if err == nil || !strings.Contains(err.Error(), "context rebind") {
+		t.Fatalf("unverified override error = %v", err)
 	}
 
 	bundlePath, _ := writeConfigBundle(t)
@@ -1632,7 +1629,7 @@ func TestWipeClusterPlanPrintsNodeLocalOperations(t *testing.T) {
 func TestWipeClusterPlanAcceptsClusterConfig(t *testing.T) {
 	sourcePath := writeClusterConfig(t)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
-		"cp-1": readyWipeClusterClient("cp-machine"),
+		"cp-1": readyWipeClusterClient("machine-cp-1"),
 	})
 	old := newWipeClusterConnector
 	newWipeClusterConnector = func() cluster.AgentConnector { return connector }
@@ -1669,9 +1666,13 @@ clusters:
   - name: cp-1
     managementEndpoint: 192.0.2.11:9443
     systemRole: control-plane
+    enrollmentID: enrollment-cp-1
+    machineID: cp-machine
   - name: worker-1
     managementEndpoint: 192.0.2.21:9443
     systemRole: worker
+    enrollmentID: enrollment-worker-1
+    machineID: worker-machine
 `)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
 		"cp-1":     readyWipeClusterClient("cp-machine"),
@@ -1920,9 +1921,13 @@ clusters:
   - name: cp-1
     managementEndpoint: 192.0.2.11:9443
     systemRole: control-plane
+    enrollmentID: enrollment-cp-1
+    machineID: cp-machine
   - name: worker-1
     managementEndpoint: 192.0.2.21:9443
     systemRole: worker
+    enrollmentID: enrollment-worker-1
+    machineID: worker-machine
 `)
 	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{
 		"worker-1": readyWipeClusterClient("worker-machine"),
@@ -2203,11 +2208,13 @@ func TestConfigApplyStatusReportsActiveAndNextBootJSON(t *testing.T) {
 }
 
 func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
+	contextPath := writeNodeAEnrollmentContext(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fake := &fakeKatlcAgentClient{
+		nodeStatus: enrolledNodeAStatus(),
 		stageAccepted: &agentapi.OperationAccepted{
 			OperationId:   "generation-stage-01",
 			OperationKind: "generation-stage",
@@ -2226,6 +2233,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "apply",
+		"--context-file", contextPath,
 		"--endpoint", "node-a.example.test:9443",
 		"--config", configPath,
 		"--mode", generation.ApplyModeNextBoot,
@@ -2244,7 +2252,7 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 
 func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	fake := &fakeKatlcAgentClient{
-		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-a", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		generation:      &agentapi.Generation{GenerationId: "generation-current", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", Architecture: "x86_64"}}},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
@@ -2308,7 +2316,7 @@ func TestHostUpgradeLocalArtifactUploadsStagesRebootsAndVerifiesHealth(t *testin
 		t.Fatalf("artifact chunks = %d, want 2", len(fake.stageArtifact))
 	}
 	first := fake.stageArtifact[0]
-	if first.ApiVersion != operation.APIVersion || first.Kind != "StageHostUpgradeArtifactRequest" || first.ExpectedMachineId != "machine-a" || first.Sha256 != digest || first.SizeBytes != uint64(len(contents)) {
+	if first.ApiVersion != operation.APIVersion || first.Kind != "StageHostUpgradeArtifactRequest" || first.ExpectedMachineId != "machine-cp-1" || first.Sha256 != digest || first.SizeBytes != uint64(len(contents)) {
 		t.Fatalf("first artifact chunk = %#v", first)
 	}
 	if next := fake.stageArtifact[1]; next.ApiVersion != "" || next.Kind != "" || next.Sha256 != "" || next.SizeBytes != 0 {
@@ -2396,7 +2404,7 @@ func TestHostUpgradeLocalArtifactRejectsRedundantVersion(t *testing.T) {
 
 func readyHostUpgradeClient() *fakeKatlcAgentClient {
 	fake := &fakeKatlcAgentClient{
-		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-a", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		generation:      &agentapi.Generation{GenerationId: "generation-current", RuntimeArchitecture: "x86_64"},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
@@ -2446,11 +2454,13 @@ func writeHostUpgradeArtifact(t *testing.T, version, architecture string, size i
 }
 
 func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
+	contextPath := writeNodeAEnrollmentContext(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fake := &fakeKatlcAgentClient{
+		nodeStatus: enrolledNodeAStatus(),
 		validateResult: &agentapi.ConfigValidationResult{
 			Accepted:              true,
 			RequestDigest:         strings.Repeat("c", 64),
@@ -2477,6 +2487,7 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "apply",
+		"--context-file", contextPath,
 		"--endpoint", "node-a.example.test:9443",
 		"--config", configPath,
 		"--candidate-generation", "generation-auto",
@@ -2515,11 +2526,13 @@ func TestNormalizeDestructiveStorageAcknowledgements(t *testing.T) {
 }
 
 func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
+	contextPath := writeNodeAEnrollmentContext(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fake := &fakeKatlcAgentClient{
+		nodeStatus: enrolledNodeAStatus(),
 		validateResult: &agentapi.ConfigValidationResult{
 			Accepted:              true,
 			RequestDigest:         strings.Repeat("c", 64),
@@ -2539,6 +2552,7 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "apply", "validate",
+		"--context-file", contextPath,
 		"--endpoint", "node-a.example.test:9443",
 		"--config", configPath,
 		"--mode", generation.ApplyModeNextBoot,
@@ -2565,13 +2579,14 @@ func TestConfigApplyPlanValidatesWithAgent(t *testing.T) {
 }
 
 func TestConfigApplyAlreadyMatchesWithoutSubmittingOperation(t *testing.T) {
+	contextPath := writeNodeAEnrollmentContext(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, plan := range []bool{false, true} {
 		t.Run(fmt.Sprintf("plan=%t", plan), func(t *testing.T) {
-			fake := &fakeKatlcAgentClient{validateResult: &agentapi.ConfigValidationResult{
+			fake := &fakeKatlcAgentClient{nodeStatus: enrolledNodeAStatus(), validateResult: &agentapi.ConfigValidationResult{
 				Accepted:  true,
 				NoChanges: true,
 			}}
@@ -2580,7 +2595,7 @@ func TestConfigApplyAlreadyMatchesWithoutSubmittingOperation(t *testing.T) {
 				return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
 			}
 			t.Cleanup(func() { dialKatlcAgent = oldDial })
-			args := []string{"node", "apply", "--endpoint", "node-a.example.test:9443", "--config", configPath}
+			args := []string{"node", "apply", "--context-file", contextPath, "--endpoint", "node-a.example.test:9443", "--config", configPath}
 			if plan {
 				args = append(args, "--plan")
 			}
@@ -2601,6 +2616,7 @@ func TestConfigApplyAlreadyMatchesWithoutSubmittingOperation(t *testing.T) {
 func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 	bundlePath, _ := writeConfigBundle(t)
 	fake := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1", EnrollmentId: "enrollment-cp-1", InventoryNodeName: "cp-1", CurrentGenerationId: "generation-0"},
 		validateResult: &agentapi.ConfigValidationResult{
 			Accepted:              true,
 			RequestDigest:         strings.Repeat("c", 64),
@@ -2616,7 +2632,7 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 	}
 	oldDial := dialKatlcAgent
 	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
-		if endpoint != "node-a.example.test:9443" {
+		if endpoint != "10.0.0.11:9443" {
 			t.Fatalf("dial endpoint=%q", endpoint)
 		}
 		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
@@ -2626,7 +2642,6 @@ func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"node", "apply",
-		"--endpoint", "node-a.example.test:9443",
 		"--config", bundlePath,
 		"--node", "cp-1",
 		"--desired-version", "2",
@@ -2888,6 +2903,14 @@ func (c *fakeWipeClusterConnector) Connect(_ context.Context, node inventory.Pla
 	if client == nil {
 		return cluster.AgentConnection{}, errors.New("missing fake katlc agent for " + node.Name)
 	}
+	if client.nodeStatus != nil {
+		if client.nodeStatus.EnrollmentId == "" {
+			client.nodeStatus.EnrollmentId = node.EnrollmentID
+		}
+		if client.nodeStatus.InventoryNodeName == "" {
+			client.nodeStatus.InventoryNodeName = node.Name
+		}
+	}
 	return cluster.AgentConnection{
 		Endpoint: node.Address + ":9443",
 		Client:   client,
@@ -2900,6 +2923,7 @@ func readyWipeClusterClient(machineID string) *fakeKatlcAgentClient {
 		nodeStatus: &agentapi.NodeStatus{
 			ApiVersion:              operation.APIVersion,
 			MachineId:               machineID,
+			CurrentGenerationId:     "generation-0",
 			SupportedOperationKinds: []string{wipeClusterOperationKind},
 		},
 		submitAccepted: &agentapi.OperationAccepted{
@@ -2914,6 +2938,14 @@ func readyWipeClusterClient(machineID string) *fakeKatlcAgentClient {
 func (c *fakeKatlcAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error) {
 	if c.onGetNodeStatus != nil {
 		c.onGetNodeStatus()
+	}
+	if c.nodeStatus != nil && c.nodeStatus.EnrollmentId == "" && c.nodeStatus.MachineId != "" {
+		name := strings.TrimPrefix(c.nodeStatus.MachineId, "machine-")
+		if name == "a" {
+			name = "cp-1"
+		}
+		c.nodeStatus.InventoryNodeName = name
+		c.nodeStatus.EnrollmentId = "enrollment-" + name
 	}
 	return c.nodeStatus, c.nodeStatusErr
 }
@@ -3321,6 +3353,8 @@ nodes:
     path: /etc/katl/kubeadm/control-plane/config.yaml
     intent: control-plane
   kubernetesVersion: v1.36.1
+  enrollmentID: enrollment-cp-1
+  machineID: cp-machine
 - name: worker-1
   address: 10.0.0.21
   systemRole: worker
@@ -3331,6 +3365,8 @@ nodes:
     path: /etc/katl/kubeadm/worker/config.yaml
     intent: worker
   kubernetesVersion: v1.36.1
+  enrollmentID: enrollment-worker-1
+  machineID: worker-machine
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -3393,6 +3429,13 @@ func writeConfigBundle(t *testing.T) (string, string) {
 
 func writeClusterConfig(t *testing.T) string {
 	t.Helper()
+	writeTestEnrollmentContext(t, "lab", workstation.Node{
+		Name:               "cp-1",
+		ManagementEndpoint: "10.0.0.11:9443",
+		SystemRole:         inventory.RoleControlPlane,
+		EnrollmentID:       "enrollment-cp-1",
+		MachineID:          "machine-cp-1",
+	})
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
 	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
 		t.Fatal(err)
@@ -3400,8 +3443,48 @@ func writeClusterConfig(t *testing.T) string {
 	return sourcePath
 }
 
+func writeTestEnrollmentContext(t *testing.T, clusterName string, nodes ...workstation.Node) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "katlctl.yaml")
+	cfg := workstation.Config{
+		CurrentContext: "test",
+		Contexts:       []workstation.Context{{Name: "test", Cluster: clusterName}},
+		Clusters:       []workstation.Cluster{{Name: clusterName, Nodes: nodes}},
+	}
+	if err := workstation.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KATLCTL_CONFIG", path)
+	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	return path
+}
+
+func writeNodeAEnrollmentContext(t *testing.T) string {
+	t.Helper()
+	return writeTestEnrollmentContext(t, "raw-config", workstation.Node{
+		Name:               "node-a",
+		ManagementEndpoint: "node-a.example.test:9443",
+		SystemRole:         inventory.RoleControlPlane,
+		EnrollmentID:       "enrollment-node-a",
+		MachineID:          "machine-node-a",
+	})
+}
+
+func enrolledNodeAStatus() *agentapi.NodeStatus {
+	return &agentapi.NodeStatus{
+		MachineId:           "machine-node-a",
+		EnrollmentId:        "enrollment-node-a",
+		InventoryNodeName:   "node-a",
+		CurrentGenerationId: "generation-0",
+	}
+}
+
 func writeMultiControlPlaneClusterConfig(t *testing.T) string {
 	t.Helper()
+	writeTestEnrollmentContext(t, "lab",
+		workstation.Node{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "cp-machine"},
+		workstation.Node{Name: "cp-2", ManagementEndpoint: "10.0.0.12:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-2", MachineID: "machine-cp-2"},
+	)
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
 	source := strings.Replace(configBundleSource(), `
       install:
