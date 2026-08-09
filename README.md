@@ -63,10 +63,11 @@ Kubernetes objects, persistent volumes, or application data.
 
 ## Quick start
 
-The complete procedure, including a working multi-node `ClusterConfig`, PXE
-arguments, disk safety rules, and troubleshooting, is in the
-[installation guide](docs/installing.md). The outline below shows the normal ISO
-path.
+The complete first-cluster procedure is in
+[Build your first KatlOS cluster](docs/getting-started.md). The
+[installation reference](docs/installing.md) covers advanced configuration,
+PXE arguments, disk safety, and troubleshooting. The outline below shows the
+normal ISO path.
 
 ### 1. Download a release
 
@@ -313,14 +314,20 @@ matching loose artifacts, one explicitly selected disk per node, the matching
 `katlctl`, and kubeadm bootstrap using a compatible published Kubernetes
 bundle. Hardware claims extend only to retained release evidence.
 
-- [Installing KatlOS](docs/installing.md) — complete ISO and PXE workflows.
+- [KatlOS documentation](docs/README.md) — website-style navigation for the
+  complete user journey.
+- [Build your first cluster](docs/getting-started.md) — focused ISO install,
+  generation 0, kubeadm bootstrap, and CNI handoff.
+- [Install with PXE and Matchbox](docs/install-pxe-matchbox.md) — automated
+  network boot using one published machine-config bundle.
+- [Installing KatlOS](docs/installing.md) — complete configuration and install
+  reference.
 - [Operating KatlOS](docs/operations/README.md) — task-oriented runbooks for
-  access, bootstrap, configuration, upgrades, wipe/reinstall, and diagnosis.
+  access, bootstrap, configuration, membership, upgrades, recovery, and
+  diagnosis.
 - [Support boundary](docs/support.md) — compatibility, trust, recovery, and
   reporting expectations.
 - [Developing Katl](docs/developing.md) — build, test, and contribution loop.
-- [North-star architecture](docs/internal/north-star.md) — durable product
-  direction and system boundaries.
 - [GitHub issues](https://github.com/katl-dev/katl/issues) — bugs and feature
   tracking; use [private vulnerability reporting](https://github.com/katl-dev/katl/security/advisories/new)
   for security-sensitive reports.

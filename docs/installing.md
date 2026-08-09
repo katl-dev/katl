@@ -1,10 +1,13 @@
 # Installing KatlOS
 
-Status: early user-facing guide. KatlOS is experimental beta software; read
-the [support boundary](support.md) before installing it.
+KatlOS is experimental beta software; read the
+[support boundary](support.md) before installing it.
 
-This document is the installation reference for ISO and PXE paths. After
-generation 0 boots, continue with the task-oriented
+This document is the complete installation and configuration reference. For a
+linear first install, start with [Build your first KatlOS
+cluster](getting-started.md). For automated network boot, use the focused
+[PXE and Matchbox journey](install-pxe-matchbox.md). After generation 0 boots,
+continue with the task-oriented
 [KatlOS Operator Guide](operations/README.md) for management access, Kubernetes
 bootstrap, configuration, upgrades, recovery, and troubleshooting.
 
@@ -470,6 +473,10 @@ before enabling automatic install. Use `byID`, WWN, or serial selectors, never
 
 ## PXE Or Matchbox
 
+The complete, copyable Matchbox machine-profile journey is in
+[Install KatlOS with PXE and Matchbox](install-pxe-matchbox.md). This section
+defines the lower-level Katl handoff contract.
+
 Publish the loose installer kernel and initrd, the KatlOS SquashFS and metadata,
 and the single `.katlcfg` archive through your own HTTP infrastructure. Keep the
 image selection out of ClusterConfig and supply the published release artifact
@@ -846,21 +853,23 @@ node boots but bootstrap fails
   kubeadm or Kubernetes partial state.
 ```
 
-## Unsupported Or Day-2
+## Outside The Install Workflow
 
-Current day-one docs intentionally do not cover:
+Installation intentionally does not own:
 
 ```text
 Katl-managed DHCP, TFTP, iPXE, or matchbox services
 automatic cluster reconciliation after bootstrap
-control-plane join through operation-backed bootstrap
-optional node application sysexts such as BIRD, gVisor, or Kata
 hardware extension catalogs or per-node installer artifact rebuilds
 secret distribution beyond protected install input or local handoff
 production signing, revocation, and private artifact distribution policy
+loss-of-quorum etcd recovery or general repair after partial kubeadm mutation
 ```
 
-Those areas need separate design and tests before they become supported
-operator workflows. The complete production, compatibility, trust, recovery,
+Adding or replacing one fresh worker or control plane in a healthy cluster is a
+supported, operation-backed `cluster apply` workflow; see
+[Change cluster membership](operations/change-cluster-nodes.md). Automatic
+reconciliation and arbitrary post-mutation repair are not implied by that
+bounded operation. The complete production, compatibility, trust, recovery,
 hardware-evidence, and issue-reporting boundary is maintained in
 [`support.md`](support.md).
