@@ -280,7 +280,7 @@ func previousGenerationForActivation(root string, record Record) (string, error)
 		}
 		return "", fmt.Errorf("read boot selection for Kubernetes sysext policy: %w", err)
 	}
-	for _, candidate := range []string{selection.BootedGenerationID, selection.DefaultGenerationID, selection.TargetBootGenerationID} {
+	for _, candidate := range []string{selection.ActiveGenerationID, selection.BootedGenerationID, selection.DefaultGenerationID, selection.TargetBootGenerationID} {
 		candidate = strings.TrimSpace(candidate)
 		if candidate != "" && candidate != record.GenerationID {
 			return candidate, nil

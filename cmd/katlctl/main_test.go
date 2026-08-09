@@ -472,7 +472,7 @@ func TestManagementTargetMissingSourceExplainsRecovery(t *testing.T) {
 
 func TestClusterCommandsMissingSourceExplainRecovery(t *testing.T) {
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "missing-katlctl.yaml"))
-	for _, args := range [][]string{{"cluster", "status"}, {"kubernetes", "upgrade", "v1.36.1", "--plan"}} {
+	for _, args := range [][]string{{"cluster", "status"}, {"kubernetes", "upgrade", "--plan"}} {
 		var stdout, stderr bytes.Buffer
 		err := run(context.Background(), args, &stdout, &stderr)
 		if err == nil || !strings.Contains(err.Error(), "use --config cluster.yaml") {

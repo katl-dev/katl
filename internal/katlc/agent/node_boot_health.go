@@ -60,7 +60,7 @@ func readNodeBootHealth(root string) nodeBootHealth {
 		return result
 	}
 	switch {
-	case generationStatus.CommitState == generation.CommitStateCommitted &&
+	case (generationStatus.CommitState == generation.CommitStateCommitted || generationStatus.CommitState == generation.CommitStateSuperseded) &&
 		generationStatus.BootState == generation.BootStateGood &&
 		generationStatus.HealthState == generation.HealthStateHealthy:
 		result.State = nodeBootHealthHealthy

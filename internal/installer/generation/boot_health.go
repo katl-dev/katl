@@ -41,6 +41,100 @@ type BootHealthResult struct {
 
 type BootDefaultSetter func(root string, bootEntry string) error
 
+type LivePromotionRequest struct {
+	Root           string
+	GenerationID   string
+	OperationID    string
+	Reason         string
+	Now            time.Time
+	SetBootDefault BootDefaultSetter
+}
+
+// PromoteLiveGeneration records a candidate as known-good when the candidate's
+// complete runtime payload was activated and passed its product-specific live
+// health checks. It is for transitions, such as a Kubernetes-only sysext
+// upgrade, whose boot payload is identical to the runtime that was just
+// validated and therefore does not require a disruptive trial reboot.
+func PromoteLiveGeneration(request LivePromotionRequest) error {
+	now := request.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
+	root := cleanRoot(request.Root)
+	generationID := strings.TrimSpace(request.GenerationID)
+	if generationID == "" {
+		return fmt.Errorf("live promotion generationID is required")
+	}
+	spec, status, err := ReadGeneration(root, generationID)
+	if err != nil {
+		return err
+	}
+	if status.CommitState != CommitStateCandidate {
+		return fmt.Errorf("generation %s commitState %s cannot be promoted live", generationID, status.CommitState)
+	}
+	entry := strings.TrimSpace(spec.Boot.LoaderEntryPath)
+	if entry == "" {
+		return fmt.Errorf("generation %s loader entry is required for live promotion", generationID)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		return err
+	}
+	previousID := strings.TrimSpace(selection.DefaultGenerationID)
+	previousEntry := strings.TrimSpace(selection.DefaultBootEntry)
+	if previousEntry != entry {
+		if request.SetBootDefault == nil {
+			return fmt.Errorf("boot default update required for %s but no updater is configured", entry)
+		}
+		if err := request.SetBootDefault(root, entry); err != nil {
+			return fmt.Errorf("set boot default %s: %w", entry, err)
+		}
+	}
+
+	status.CommitState = CommitStateCommitted
+	status.BootState = BootStateGood
+	status.HealthState = HealthStateHealthy
+	status.UpdatedAt = now
+	status.CommittedAt = &now
+	status.CommittedByOperation = strings.TrimSpace(request.OperationID)
+	status.StatusTransitions = append(status.StatusTransitions, StatusTransition{
+		At:          now,
+		OperationID: strings.TrimSpace(request.OperationID),
+		Reason:      transitionReason(request.Reason, "live activation passed health checks and was promoted as known-good"),
+		CommitState: status.CommitState,
+		BootState:   status.BootState,
+		HealthState: status.HealthState,
+	})
+	if err := WriteGenerationStatus(root, spec, status); err != nil {
+		return err
+	}
+	if previousID != "" && previousID != generationID {
+		if err := supersedePreviousGeneration(root, previousID, generationID, now); err != nil {
+			return err
+		}
+	}
+	selection.DefaultGenerationID = generationID
+	selection.TargetBootGenerationID = ""
+	selection.TrialGenerationID = ""
+	selection.ActiveGenerationID = generationID
+	selection.PendingTransactionID = ""
+	selection.PendingHealthValidation = false
+	selection.PersistentDefaultPromotion = DefaultPromotionDone
+	selection.FailedBootGenerationID = ""
+	selection.RecoveryRequired = false
+	selection.DefaultBootEntry = entry
+	selection.TargetBootEntry = ""
+	selection.TrialBootEntry = ""
+	selection.BootCountedTrialPath = ""
+	if previousID != "" && previousID != generationID {
+		selection.PreviousKnownGoodGenerationID = previousID
+		selection.PreviousKnownGoodBootEntry = previousEntry
+	}
+	selection.UpdatedAt = now
+	return WriteBootSelection(root, selection)
+}
+
 func RecordBootHealth(request BootHealthRequest) (BootHealthResult, error) {
 	now := request.Now
 	if now.IsZero() {
@@ -126,6 +220,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	selection.TargetBootGenerationID = ""
 	selection.TrialGenerationID = ""
 	selection.BootedGenerationID = generationID
+	selection.ActiveGenerationID = generationID
 	selection.PendingTransactionID = ""
 	selection.PendingHealthValidation = false
 	selection.PersistentDefaultPromotion = DefaultPromotionDone
@@ -261,6 +356,13 @@ func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, ge
 		}
 	} else {
 		if isManualKnownGoodFallback(selection, generationID) {
+			selection.BootedGenerationID = generationID
+			selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
+			return selection
+		}
+		if generationID == strings.TrimSpace(selection.ActiveGenerationID) &&
+			generationID == strings.TrimSpace(selection.DefaultGenerationID) &&
+			generationID != strings.TrimSpace(selection.BootedGenerationID) {
 			selection.BootedGenerationID = generationID
 			selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
 			return selection

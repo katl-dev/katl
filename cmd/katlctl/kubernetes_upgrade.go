@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -26,11 +28,9 @@ import (
 )
 
 type kubernetesUpgradeOptions struct {
-	version       string
 	clusterConfig string
 	configPath    string
 	contextName   string
-	inventoryPath string
 	bundle        string
 	artifact      string
 	cordon        bool
@@ -94,24 +94,20 @@ var dialKubernetesEndpoint = func(ctx context.Context, endpoint string) error {
 func newKubernetesUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := kubernetesUpgradeOptions{timeout: 25 * time.Minute, output: "text"}
 	cmd := &cobra.Command{
-		Use:   "upgrade VERSION",
+		Use:   "upgrade --config CLUSTER_CONFIG",
 		Short: "Upgrade Kubernetes control planes and workers online",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
-			if len(args) == 1 {
-				opts.version = args[0]
-			} else {
+			if strings.TrimSpace(opts.clusterConfig) == "" && command.Flags().NFlag() == 0 {
 				return command.Help()
 			}
 			return runKubernetesUpgrade(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.clusterConfig, "config", "", "ClusterConfig YAML or Katl config bundle")
+	cmd.Flags().StringVar(&opts.clusterConfig, "config", "", "ClusterConfig YAML or Katl config bundle containing the desired Kubernetes version")
 	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().Lookup("context-file").Hidden = true
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "optional saved context created by 'katlctl context save'")
-	cmd.Flags().StringVar(&opts.inventoryPath, "inventory", "", "cluster inventory instead of a workstation context")
-	cmd.Flags().Lookup("inventory").Hidden = true
 	cmd.Flags().StringVar(&opts.bundle, "bundle", "", "Kubernetes bundle image, for example ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1")
 	cmd.Flags().Lookup("bundle").Hidden = true
 	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "locally built Kubernetes upgrade image (uses PATH.json metadata)")
@@ -140,6 +136,10 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 	if !opts.cordon && strings.TrimSpace(opts.kubeconfig) != "" {
 		return fmt.Errorf("--kubeconfig is only used with --cordon")
 	}
+	topology, desiredVersion, err := resolveKubernetesUpgradeTopology(opts)
+	if err != nil {
+		return err
+	}
 	var image kubernetesbundle.ImageReference
 	var localArtifact *kubernetesUpgradeArtifact
 	if strings.TrimSpace(opts.artifact) != "" {
@@ -150,17 +150,13 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		if err != nil {
 			return fmt.Errorf("--artifact: %w", err)
 		}
-		version := strings.TrimSpace(opts.version)
-		if !strings.HasPrefix(version, "v") {
-			version = "v" + version
-		}
-		if version != artifact.PayloadVersion {
-			return fmt.Errorf("VERSION %s does not match local Kubernetes artifact payload %s", version, artifact.PayloadVersion)
+		if desiredVersion != artifact.PayloadVersion {
+			return fmt.Errorf("local Kubernetes artifact payload %s does not match spec.kubernetes.version %s", artifact.PayloadVersion, desiredVersion)
 		}
 		localArtifact = &artifact
 		image = kubernetesbundle.ImageReference{Value: artifact.Path, PayloadVersion: artifact.PayloadVersion}
 	} else {
-		bundle, err := kubernetesUpgradeBundle(opts.version, opts.bundle)
+		bundle, err := kubernetesUpgradeBundle(desiredVersion, opts.bundle)
 		if err != nil {
 			return err
 		}
@@ -168,10 +164,9 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		if err != nil {
 			return fmt.Errorf("--bundle: %w", err)
 		}
-	}
-	topology, err := resolveKubernetesUpgradeTopology(opts)
-	if err != nil {
-		return err
+		if image.PayloadVersion != desiredVersion {
+			return fmt.Errorf("--bundle payload version %s does not match spec.kubernetes.version %s", image.PayloadVersion, desiredVersion)
+		}
 	}
 	targets, err := connectKubernetesUpgradeTargets(ctx, topology, image.PayloadVersion)
 	if err != nil {
@@ -352,17 +347,11 @@ func waitKubernetesEndpoint(ctx context.Context, endpoint, nodeName string, stde
 func kubernetesUpgradeBundle(version, explicit string) (string, error) {
 	version = strings.TrimSpace(version)
 	explicit = strings.TrimSpace(explicit)
-	if version != "" && explicit != "" {
-		return "", fmt.Errorf("VERSION cannot be combined with --bundle")
-	}
 	if explicit != "" {
 		return explicit, nil
 	}
 	if version == "" {
-		return "", fmt.Errorf("VERSION is required")
-	}
-	if !strings.HasPrefix(version, "v") {
-		version = "v" + version
+		return "", fmt.Errorf("spec.kubernetes.version is required")
 	}
 	selection, err := kubernetescompat.Resolve(kubernetescompat.Request{KubernetesVersion: version})
 	if err != nil {
@@ -397,29 +386,57 @@ func waitKubernetesUpgrade(ctx context.Context, client agentapi.KatlcAgentClient
 	}
 }
 
-func resolveKubernetesUpgradeTopology(opts kubernetesUpgradeOptions) (workstation.ResolvedTopology, error) {
-	if strings.TrimSpace(opts.clusterConfig) != "" {
-		if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" || strings.TrimSpace(opts.inventoryPath) != "" {
-			return workstation.ResolvedTopology{}, fmt.Errorf("--config cannot be combined with --context, --context-file, or --inventory")
-		}
-		return resolveClusterConfigTopology(opts.clusterConfig)
+func resolveKubernetesUpgradeTopology(opts kubernetesUpgradeOptions) (workstation.ResolvedTopology, string, error) {
+	path := strings.TrimSpace(opts.clusterConfig)
+	if path == "" {
+		return workstation.ResolvedTopology{}, "", fmt.Errorf("--config is required; use --config cluster.yaml after setting spec.kubernetes.version in the Git-managed ClusterConfig")
 	}
-	request := workstation.ResolveRequest{ConfigPath: strings.TrimSpace(opts.configPath), ContextName: strings.TrimSpace(opts.contextName)}
-	if strings.TrimSpace(opts.inventoryPath) != "" {
-		if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" {
-			return workstation.ResolvedTopology{}, fmt.Errorf("--inventory cannot be combined with --context-file or --context")
-		}
-		inv, err := loadInventory(opts.inventoryPath)
-		if err != nil {
-			return workstation.ResolvedTopology{}, err
-		}
-		request.ExplicitInventory = &inv
+	resolved, err := resolveClusterConfigTopology(path)
+	if err != nil {
+		return workstation.ResolvedTopology{}, "", err
 	}
-	resolved, err := workstation.ResolveTopology(request)
-	if err != nil && errors.Is(err, os.ErrNotExist) {
-		return workstation.ResolvedTopology{}, fmt.Errorf("no cluster source: use --config cluster.yaml; for shorter repeated commands, first run 'katlctl context save --config cluster.yaml'")
+	mergeEnrolledTopology(&resolved, strings.TrimSpace(opts.configPath), strings.TrimSpace(opts.contextName))
+	version, err := kubernetesUpgradeConfigVersion(path)
+	if err != nil {
+		return workstation.ResolvedTopology{}, "", err
 	}
-	return resolved, err
+	return resolved, version, nil
+}
+
+func kubernetesUpgradeConfigVersion(path string) (string, error) {
+	data, err := os.ReadFile(strings.TrimSpace(path))
+	if err != nil {
+		return "", fmt.Errorf("read --config %s: %w", path, err)
+	}
+	if source, sourceErr := configbundle.DecodeSource(bytes.NewReader(data)); sourceErr == nil {
+		version := strings.TrimSpace(source.Spec.Kubernetes.Version)
+		if version == "" {
+			return "", fmt.Errorf("read --config %s: spec.kubernetes.version is required", path)
+		}
+		return version, nil
+	}
+	bundle, err := configbundle.ReadBundle(bytes.NewReader(data), "")
+	if err != nil {
+		return "", fmt.Errorf("read --config %s as ClusterConfig YAML or Katl config bundle: %w", path, err)
+	}
+	version := ""
+	for _, payload := range bundle.Manifest.Cluster.KubernetesPayloads {
+		candidate := strings.TrimSpace(payload.RequestedVersion)
+		if candidate == "" {
+			candidate = strings.TrimSpace(payload.ResolvedPayloadVersion)
+		}
+		if candidate == "" {
+			continue
+		}
+		if version != "" && candidate != version {
+			return "", fmt.Errorf("read --config %s: compiled bundle contains multiple desired Kubernetes versions", path)
+		}
+		version = candidate
+	}
+	if version == "" {
+		return "", fmt.Errorf("read --config %s: compiled bundle has no spec.kubernetes.version", path)
+	}
+	return version, nil
 }
 
 func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.ResolvedTopology, targetVersion string) ([]kubernetesUpgradeTarget, error) {

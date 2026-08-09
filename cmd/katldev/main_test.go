@@ -333,7 +333,7 @@ func TestBuildKubernetesUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T
 	if err := writeKubernetesBuildArtifact(&stdout, built); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Kubernetes upgrade image ready.", "Image: " + image, "katlctl kubernetes upgrade v1.36.2 --config cluster.yaml --artifact " + image} {
+	for _, want := range []string{"Kubernetes upgrade image ready.", "Image: " + image, "Set spec.kubernetes.version to v1.36.2", "katlctl kubernetes upgrade --config cluster.yaml --artifact " + image} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, stdout.String())
 		}

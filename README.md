@@ -267,7 +267,7 @@ version. Plan the whole control-plane-first rollout without supplying bundle
 digests, artifact paths, snapshot metadata, generation IDs, or operation IDs:
 
 ```sh
-katlctl kubernetes upgrade v1.36.1 --config ./cluster.yaml --plan
+katlctl kubernetes upgrade --config ./cluster.yaml --plan
 ```
 
 Remove `--plan` to run the complete control-plane-first, worker-second rollout.
