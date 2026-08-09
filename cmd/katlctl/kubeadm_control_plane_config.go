@@ -30,6 +30,8 @@ type kubeadmControlPlaneConfigOptions struct {
 
 var kubeadmConfigNow = func() time.Time { return time.Now().UTC() }
 
+const clusterApplyJoinBootTimeout = 15 * time.Minute
+
 func newClusterApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := kubeadmControlPlaneConfigOptions{}
 	cmd := &cobra.Command{
@@ -118,9 +120,23 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		}, node, deps); err != nil {
 			return fmt.Errorf("join replacement node %s: %w", node, err)
 		}
-		joinedGeneration, err := currentClusterApplyGeneration(ctx, inv.Nodes, node)
+		joinedGeneration, err := rebootClusterApplyJoin(ctx, inv.Nodes, node, opts.progress)
 		if err != nil {
-			return fmt.Errorf("refresh replacement node %s after join: %w", node, err)
+			return fmt.Errorf("validate replacement node %s after join: %w", node, err)
+		}
+		generations[node] = joinedGeneration
+		joined = append(joined, node)
+		if err := clusterApplyProgress(opts.progress, "phase=node-join node=%s status=succeeded", node); err != nil {
+			return err
+		}
+	}
+	for _, node := range activated.joinBootNodes {
+		if err := clusterApplyProgress(opts.progress, "phase=node-join node=%s status=resuming-reboot", node); err != nil {
+			return err
+		}
+		joinedGeneration, err := rebootClusterApplyJoin(ctx, inv.Nodes, node, opts.progress)
+		if err != nil {
+			return fmt.Errorf("resume replacement node %s after join: %w", node, err)
 		}
 		generations[node] = joinedGeneration
 		joined = append(joined, node)
@@ -182,7 +198,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	return json.NewEncoder(stdout).Encode(report)
 }
 
-func currentClusterApplyGeneration(ctx context.Context, nodes []inventory.Node, nodeName string) (string, error) {
+func currentClusterApplyNode(ctx context.Context, nodes []inventory.Node, nodeName string) (*agentapi.NodeStatus, string, error) {
 	var selected inventory.Node
 	for _, node := range nodes {
 		if node.Name == nodeName {
@@ -191,22 +207,65 @@ func currentClusterApplyGeneration(ctx context.Context, nodes []inventory.Node, 
 		}
 	}
 	if selected.Name == "" {
-		return "", fmt.Errorf("node is not present in cluster inventory")
+		return nil, "", fmt.Errorf("node is not present in cluster inventory")
 	}
 	conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(selected.Address, "9443"))
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	defer conn.Close()
 	status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	generationID := strings.TrimSpace(status.GetCurrentGenerationId())
 	if generationID == "" {
-		return "", fmt.Errorf("agent did not report a current generation")
+		return nil, "", fmt.Errorf("agent did not report a current generation")
 	}
-	return generationID, nil
+	return status, generationID, nil
+}
+
+func rebootClusterApplyJoin(ctx context.Context, nodes []inventory.Node, nodeName string, progress io.Writer) (string, error) {
+	status, generationID, err := currentClusterApplyNode(ctx, nodes, nodeName)
+	if err != nil {
+		return "", err
+	}
+	previousAgentStart := strings.TrimSpace(status.GetAgentStartId())
+	if previousAgentStart == "" {
+		return "", fmt.Errorf("agent did not report its current start identity")
+	}
+	machineID := strings.TrimSpace(status.GetMachineId())
+	var selected inventory.Node
+	for _, node := range nodes {
+		if node.Name == nodeName {
+			selected = node
+			break
+		}
+	}
+	endpoint := cluster.AgentEndpoint(selected.Address, "9443")
+	conn, err := dialKatlcAgent(ctx, endpoint)
+	if err != nil {
+		return "", err
+	}
+	if err := requestNodeReboot(ctx, conn.Client, "katlctl cluster apply", machineID, generationID); err != nil {
+		_ = conn.Close()
+		return "", fmt.Errorf("schedule joined generation reboot: %w", err)
+	}
+	_ = conn.Close()
+	if err := clusterApplyProgress(progress, "phase=node-join node=%s step=reboot status=scheduled", nodeName); err != nil {
+		return "", err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, clusterApplyJoinBootTimeout)
+	verifiedConn, verified, err := waitNodeBootHealthWithPrefix(waitCtx, nodeName, endpoint, previousAgentStart, generationID, "cluster apply phase=node-join node="+nodeName, progress)
+	cancel()
+	if err != nil {
+		return "", err
+	}
+	_ = verifiedConn.Close()
+	if err := clusterApplyProgress(progress, "phase=node-join node=%s step=boot-health status=succeeded", nodeName); err != nil {
+		return "", err
+	}
+	return verified.Generation.GetGenerationId(), nil
 }
 
 func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout io.Writer) error {
@@ -400,6 +459,7 @@ type activatedClusterConfig struct {
 	preBootstrap    bool
 	stagedNodes     []string
 	joinNodes       []string
+	joinBootNodes   []string
 	joinCoordinator string
 }
 
@@ -424,6 +484,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		acceptedApplyMode string
 		changedDomains    []string
 		components        []string
+		joinBootPending   bool
 	}
 	prepared := make([]preparedInput, 0, len(nodes))
 	components := map[string]bool{}
@@ -498,6 +559,14 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		input.machineID = status.MachineId
 		input.currentGeneration = status.CurrentGenerationId
 		input.kubernetesState = strings.TrimSpace(status.GetKubernetes().GetState())
+		if isClusterJoinCandidate(input.currentGeneration) {
+			candidate, generationErr := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: input.currentGeneration})
+			if generationErr != nil {
+				_ = conn.Close()
+				return activatedClusterConfig{}, fmt.Errorf("inspect replacement generation on %s: %w", node.Name, generationErr)
+			}
+			input.joinBootPending = candidate.GetCommitState() != generation.CommitStateCommitted || candidate.GetHealthState() != generation.HealthStateHealthy
+		}
 		input.noChanges = validation.NoChanges
 		input.acceptedApplyMode = validation.AcceptedApplyMode
 		input.changedDomains = append([]string(nil), validation.ChangedDomains...)
@@ -577,14 +646,6 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 				strings.Join(kubernetesStates, ", "),
 			)
 		}
-		for _, input := range prepared {
-			if input.kubernetesState != "not-configured" {
-				continue
-			}
-			for _, component := range input.components {
-				components[component] = true
-			}
-		}
 	}
 
 	for _, input := range prepared {
@@ -653,14 +714,27 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			}
 		}
 	}
+	var joinBootNodes []string
+	for _, input := range prepared {
+		if !input.joinBootPending {
+			continue
+		}
+		joinBootNodes = append(joinBootNodes, input.node.Name)
+	}
 	return activatedClusterConfig{
 		generations:     result,
 		components:      components,
 		preBootstrap:    preBootstrap,
 		stagedNodes:     stagedNodes,
 		joinNodes:       joinNodes,
+		joinBootNodes:   joinBootNodes,
 		joinCoordinator: joinCoordinator,
 	}, nil
+}
+
+func isClusterJoinCandidate(generationID string) bool {
+	generationID = strings.TrimSpace(generationID)
+	return strings.HasPrefix(generationID, "bootstrap-join-") && strings.HasSuffix(generationID, "-candidate")
 }
 
 func validateClusterNodeLifecycle(node inventory.Node, status *agentapi.NodeStatus) error {
