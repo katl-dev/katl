@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -453,11 +454,12 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	}
 	defer closeAgent(conn)
 	req := bootstrapInitRequest(node, plan, status, clusterName, identity, identityFingerprint, deps)
-	accepted, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
+	accepted, requestID, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
 	if err != nil {
 		return bootstrapInitResult{}, err
 	}
 	if !resumed {
+		req.ClientRequestId = requestID
 		accepted, err = conn.Client.SubmitOperation(ctx, req)
 	} else {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, OperationID: accepted.GetOperationId(), Kind: req.OperationKind, Phase: "resuming"})
@@ -645,11 +647,12 @@ func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inv
 	req := bootstrapOperationRequest(node, plan, status, deps, kind)
 	req.Bootstrap.JoinMaterialRef = strings.TrimSpace(material.Ref)
 	req.Bootstrap.WorkerJoinMaterial = material.Material
-	accepted, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
+	accepted, requestID, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
 	if err != nil {
 		return operationReference{}, err
 	}
 	if !resumed {
+		req.ClientRequestId = requestID
 		accepted, err = conn.Client.SubmitOperation(ctx, req)
 	} else {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, OperationID: accepted.GetOperationId(), Kind: req.OperationKind, Phase: "resuming"})
@@ -944,23 +947,48 @@ func clientRequestID(node inventory.PlannedNode, plan inventory.Plan, kind strin
 	return "katlctl-" + node.Name + "-" + hex.EncodeToString(sum[:])[:12]
 }
 
-func resumeBootstrapOperation(ctx context.Context, client AgentClient, clientRequestID, kind string) (*agentapi.OperationAccepted, bool, error) {
+func resumeBootstrapOperation(ctx context.Context, client AgentClient, clientRequestID, kind string) (*agentapi.OperationAccepted, string, bool, error) {
 	response, err := client.ListOperations(ctx, &agentapi.ListOperationsRequest{Limit: 100})
 	if err != nil {
-		return nil, false, fmt.Errorf("list operations before %s: %w", kind, err)
+		return nil, "", false, fmt.Errorf("list operations before %s: %w", kind, err)
 	}
+	latestAttempt := -1
+	var latest *agentapi.OperationStatus
 	for _, status := range response.GetOperations() {
-		if status.GetClientRequestId() != clientRequestID || status.GetOperationKind() != kind {
+		if status.GetOperationKind() != kind {
 			continue
 		}
-		return &agentapi.OperationAccepted{
-			OperationId:   status.GetOperationId(),
-			OperationKind: status.GetOperationKind(),
-			RequestDigest: status.GetRequestDigest(),
-			InitialStatus: status,
-		}, true, nil
+		attempt, ok := bootstrapRequestAttempt(status.GetClientRequestId(), clientRequestID)
+		if !ok || attempt <= latestAttempt {
+			continue
+		}
+		latestAttempt = attempt
+		latest = status
 	}
-	return nil, false, nil
+	if latest == nil {
+		return nil, clientRequestID, false, nil
+	}
+	if latest.GetTerminal() && latest.GetResult() != operation.ResultSucceeded {
+		return nil, fmt.Sprintf("%s-retry-%d", clientRequestID, latestAttempt+1), false, nil
+	}
+	return &agentapi.OperationAccepted{
+		OperationId:   latest.GetOperationId(),
+		OperationKind: latest.GetOperationKind(),
+		RequestDigest: latest.GetRequestDigest(),
+		InitialStatus: latest,
+	}, latest.GetClientRequestId(), true, nil
+}
+
+func bootstrapRequestAttempt(value, base string) (int, bool) {
+	if value == base {
+		return 0, true
+	}
+	suffix, ok := strings.CutPrefix(value, base+"-retry-")
+	if !ok {
+		return 0, false
+	}
+	attempt, err := strconv.Atoi(suffix)
+	return attempt, err == nil && attempt > 0
 }
 
 func bootstrapProfileRef(node inventory.PlannedNode) string {
