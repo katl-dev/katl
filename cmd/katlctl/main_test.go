@@ -446,6 +446,10 @@ func TestManagementTargetRefusesUnverifiedEnrolledEndpointOverride(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "context rebind") {
 		t.Fatalf("unverified override error = %v", err)
 	}
+	_, err = resolveManagementTarget(managementTargetOptions{nodeName: "cp-1", endpoint: "192.0.2.44"})
+	if err == nil || !strings.Contains(err.Error(), "context rebind") {
+		t.Fatalf("implicit-context override error = %v", err)
+	}
 
 	bundlePath, _ := writeConfigBundle(t)
 	target, err = resolveManagementTarget(managementTargetOptions{clusterConfigPath: bundlePath})

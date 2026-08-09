@@ -75,6 +75,18 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 
 	useContext := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" || endpoint == ""
 	if !useContext {
+		if nodeName := strings.TrimSpace(opts.nodeName); nodeName != "" {
+			resolved, resolveErr := workstation.ResolveTopology(workstation.ResolveRequest{})
+			if resolveErr == nil {
+				target, targetErr := targetFromTopology(resolved.Topology, nodeName)
+				if targetErr == nil && target.enrollmentID != "" {
+					if endpoint != target.endpoint {
+						return managementTarget{}, fmt.Errorf("node %q is enrolled at %s; use 'katlctl context rebind --node %s --endpoint %s' to verify and save a new address", target.nodeName, target.endpoint, target.nodeName, endpoint)
+					}
+					return target, nil
+				}
+			}
+		}
 		return managementTarget{nodeName: strings.TrimSpace(opts.nodeName), endpoint: endpoint}, nil
 	}
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: strings.TrimSpace(opts.configPath), ContextName: strings.TrimSpace(opts.contextName)})
