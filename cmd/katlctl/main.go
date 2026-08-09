@@ -482,7 +482,23 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		return err
 	}
 	agentStart := status.GetAgentStartId()
-	if err := requestNodeReboot(ctx, conn.Client, opts.actor, status, request.CandidateGenerationID); err != nil {
+	stagedStatus, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		report.Result = "staged"
+		_ = writeHostUpgradeReport(stdout, opts.output, report)
+		return fmt.Errorf("read staged node status before reboot: %w", err)
+	}
+	if err := verifyEnrolledStatus(target, stagedStatus); err != nil {
+		report.Result = "staged"
+		_ = writeHostUpgradeReport(stdout, opts.output, report)
+		return err
+	}
+	if stagedStatus.GetCurrentGenerationId() != request.CandidateGenerationID {
+		report.Result = "staged"
+		_ = writeHostUpgradeReport(stdout, opts.output, report)
+		return fmt.Errorf("staged host upgrade reports current generation %q, want %q before reboot", stagedStatus.GetCurrentGenerationId(), request.CandidateGenerationID)
+	}
+	if err := requestNodeReboot(ctx, conn.Client, opts.actor, stagedStatus, request.CandidateGenerationID); err != nil {
 		report.Result = "staged"
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return fmt.Errorf("reboot node %s: %w", report.Node, err)

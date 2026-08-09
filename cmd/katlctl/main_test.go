@@ -2257,6 +2257,9 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
 	}
+	fake.onSubmit = func(request *agentapi.SubmitOperationRequest) {
+		fake.nodeStatus.CurrentGenerationId = request.GetHostUpgrade().GetCandidateGenerationId()
+	}
 	fake.onReboot = func(req *agentapi.RebootRequest) {
 		fake.nodeStatus.AgentStartId = "after"
 		fake.nodeStatus.CurrentGenerationId = req.TargetGenerationId
@@ -2278,6 +2281,9 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	request := fake.submitRequest.GetHostUpgrade()
 	if request.GetImageUrl() != "https://github.com/katl-dev/katl/releases/download/v2026.7.0-alpha.9/katlos-upgrade-2026.7.0-alpha.9-x86_64.squashfs" || request.GetCandidateGenerationId() != "katlos-2026.7.0-alpha.9" {
 		t.Fatalf("host upgrade request = %#v", request)
+	}
+	if len(fake.rebootRequests) != 1 || fake.rebootRequests[0].GetExpectedCurrentGenerationId() != request.GetCandidateGenerationId() {
+		t.Fatalf("reboot requests = %#v, want candidate generation precondition %q", fake.rebootRequests, request.GetCandidateGenerationId())
 	}
 	var report hostUpgradeReport
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
@@ -2408,6 +2414,9 @@ func readyHostUpgradeClient() *fakeKatlcAgentClient {
 		generation:      &agentapi.Generation{GenerationId: "generation-current", RuntimeArchitecture: "x86_64"},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
+	}
+	fake.onSubmit = func(request *agentapi.SubmitOperationRequest) {
+		fake.nodeStatus.CurrentGenerationId = request.GetHostUpgrade().GetCandidateGenerationId()
 	}
 	fake.onReboot = func(request *agentapi.RebootRequest) {
 		fake.nodeStatus.AgentStartId = "after"

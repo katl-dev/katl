@@ -1,6 +1,7 @@
 package generation
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,15 +82,48 @@ func PromoteLiveGeneration(request LivePromotionRequest) error {
 	if err != nil {
 		return err
 	}
+	previousSelection := selection
 	previousID := strings.TrimSpace(selection.DefaultGenerationID)
 	previousEntry := strings.TrimSpace(selection.DefaultBootEntry)
-	if previousEntry != entry {
-		if request.SetBootDefault == nil {
-			return fmt.Errorf("boot default update required for %s but no updater is configured", entry)
+	if previousEntry != entry && request.SetBootDefault == nil {
+		return fmt.Errorf("boot default update required for %s but no updater is configured", entry)
+	}
+
+	var previousSpec GenerationSpec
+	var previousStatus GenerationStatus
+	havePrevious := previousID != "" && previousID != generationID
+	if havePrevious {
+		previousSpec, previousStatus, err = ReadGeneration(root, previousID)
+		if err != nil {
+			return err
 		}
-		if err := request.SetBootDefault(root, entry); err != nil {
-			return fmt.Errorf("set boot default %s: %w", entry, err)
+		previousStatus.StatusTransitions = append([]StatusTransition(nil), previousStatus.StatusTransitions...)
+	}
+	rollbackDurable := func(cause error) error {
+		var rollbackErr error
+		if err := WriteBootSelection(root, previousSelection); err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore boot selection: %w", err))
 		}
+		if havePrevious {
+			if err := WriteGenerationStatus(root, previousSpec, previousStatus); err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore previous generation: %w", err))
+			}
+		}
+		compensated := status
+		compensated.CommitState = CommitStateSuperseded
+		compensated.UpdatedAt = now
+		compensated.StatusTransitions = append(compensated.StatusTransitions, StatusTransition{
+			At:          now,
+			OperationID: strings.TrimSpace(request.OperationID),
+			Reason:      "live promotion was compensated before changing the persistent boot default",
+			CommitState: compensated.CommitState,
+			BootState:   compensated.BootState,
+			HealthState: compensated.HealthState,
+		})
+		if err := WriteGenerationStatus(root, spec, compensated); err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("supersede compensated candidate generation: %w", err))
+		}
+		return errors.Join(cause, rollbackErr)
 	}
 
 	status.CommitState = CommitStateCommitted
@@ -109,9 +143,9 @@ func PromoteLiveGeneration(request LivePromotionRequest) error {
 	if err := WriteGenerationStatus(root, spec, status); err != nil {
 		return err
 	}
-	if previousID != "" && previousID != generationID {
+	if havePrevious {
 		if err := supersedePreviousGeneration(root, previousID, generationID, now); err != nil {
-			return err
+			return rollbackDurable(err)
 		}
 	}
 	selection.DefaultGenerationID = generationID
@@ -132,7 +166,23 @@ func PromoteLiveGeneration(request LivePromotionRequest) error {
 		selection.PreviousKnownGoodBootEntry = previousEntry
 	}
 	selection.UpdatedAt = now
-	return WriteBootSelection(root, selection)
+	if err := WriteBootSelection(root, selection); err != nil {
+		return rollbackDurable(err)
+	}
+	if previousEntry == entry {
+		return nil
+	}
+	if err := request.SetBootDefault(root, entry); err != nil {
+		cause := fmt.Errorf("set boot default %s: %w", entry, err)
+		if previousEntry == "" {
+			return errors.Join(cause, fmt.Errorf("restore boot default: previous boot entry is unavailable"))
+		}
+		if restoreErr := request.SetBootDefault(root, previousEntry); restoreErr != nil {
+			return errors.Join(cause, fmt.Errorf("restore boot default %s: %w", previousEntry, restoreErr))
+		}
+		return rollbackDurable(cause)
+	}
+	return nil
 }
 
 func RecordBootHealth(request BootHealthRequest) (BootHealthResult, error) {
