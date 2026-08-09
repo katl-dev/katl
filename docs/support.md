@@ -39,11 +39,11 @@ want a stricter supply-chain policy; the normal home-lab path accepts readable
 release and bundle versions and performs its own internal consistency checks.
 
 The `katlc` management API uses automatically provisioned mTLS on TCP port
-9443. KatlOS restricts ingress to host interfaces present before workload
-networking starts, and later CNI interfaces are not adopted on service restart.
-This makes access deliberate without adding routine certificate ceremony; it
-is still a home-lab boundary, not a production-grade multi-tenant policy. Keep
-nodes on a trusted management LAN and do not expose port 9443 to the Internet.
+9443. Every connection must present a client certificate issued by the
+cluster's management identity. This makes access deliberate without adding
+routine certificate ceremony; it is still a home-lab boundary, not a
+production-grade multi-tenant policy. Keep nodes on a trusted management LAN
+and do not expose port 9443 to the Internet.
 
 The ISO install handoff is intentionally unauthenticated HTTP for the supported
 trusted home-lab path. Restrict port 8080 to the provisioning network: the

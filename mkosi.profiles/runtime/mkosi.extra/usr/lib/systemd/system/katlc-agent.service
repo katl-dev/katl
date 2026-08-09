@@ -1,9 +1,9 @@
 [Unit]
 Description=Run Katl node management agent
 Documentation=man:systemd.service(5)
-Requires=var.mount katl-generation-activate.service katlc-management-firewall.service
+Requires=var.mount katl-generation-activate.service
 Wants=network-online.target
-After=local-fs.target var.mount katl-generation-activate.service network-online.target katlc-management-firewall.service
+After=local-fs.target var.mount katl-generation-activate.service network-online.target
 Before=katl-kubeadm-ready.target
 RequiresMountsFor=/efi /var/lib/katl
 

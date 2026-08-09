@@ -482,7 +482,6 @@ func defaultAgentCommands() map[string]bool {
 		"modprobe":          true,
 		"mount":             true,
 		"networkctl":        true,
-		"nft":               true,
 		"partx":             true,
 		"readlink":          true,
 		"resolvectl":        true,

@@ -18,6 +18,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
+	"google.golang.org/grpc"
 )
 
 const uxTestSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
@@ -283,6 +284,47 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	if bytes.Contains(shown.Bytes(), []byte("PRIVATE KEY")) || bytes.Contains(shown.Bytes(), []byte("clientPrivateKey")) || bytes.Contains(shown.Bytes(), []byte("clientCertificate")) {
 		t.Fatalf("context show exposed management credentials:\n%s", shown.String())
 	}
+}
+
+func TestContextSaveBoundsEachNodeVerification(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "katlctl.yaml")
+	sourcePath := writeClusterConfig(t)
+	if _, _, err := ensureManagementIdentity("lab", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(ctx context.Context, _ string) (katlcAgentConnection, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("management dial has no deadline")
+		}
+		return katlcAgentConnection{Client: &deadlineKatlcAgentClient{fakeKatlcAgentClient: &fakeKatlcAgentClient{}}, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+	err := run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath, "--timeout", "10ms"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "timed out after 10ms") || !strings.Contains(err.Error(), "increase --timeout") {
+		t.Fatalf("context save error = %v, want actionable timeout", err)
+	}
+	if _, statErr := os.Stat(configPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("context file was written after timed-out verification: %v", statErr)
+	}
+}
+
+func TestContextSaveRequiresPositiveTimeout(t *testing.T) {
+	err := run(context.Background(), []string{"context", "save", "--timeout=0"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "--timeout must be positive") {
+		t.Fatalf("context save error = %v", err)
+	}
+}
+
+type deadlineKatlcAgentClient struct {
+	*fakeKatlcAgentClient
+}
+
+func (c *deadlineKatlcAgentClient) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusRequest, _ ...grpc.CallOption) (*agentapi.NodeStatus, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func TestContextListCurrentAndUse(t *testing.T) {

@@ -17,6 +17,8 @@ import (
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 type contextSaveOptions struct {
@@ -24,6 +26,7 @@ type contextSaveOptions struct {
 	contextPath     string
 	contextName     string
 	replacementNode []string
+	timeout         time.Duration
 	output          string
 }
 
@@ -45,7 +48,7 @@ type contextSaveReport struct {
 }
 
 func newContextSaveCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := contextSaveOptions{output: "text"}
+	opts := contextSaveOptions{timeout: 15 * time.Second, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "save",
 		Short: "Save installed KatlOS nodes as the current workstation context",
@@ -59,6 +62,7 @@ func newContextSaveCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd.Flags().Lookup("context-file").Hidden = true
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "context name; defaults to the cluster name")
 	cmd.Flags().StringArrayVar(&opts.replacementNode, "replace-node", nil, "replace the saved enrollment for one deliberately reinstalled or replaced node (repeatable)")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "time to verify each node")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
 }
@@ -185,6 +189,9 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
+	if opts.timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
 	config, err := loadKatlConfig(opts.configInput, "katlctl context save", configbundle.PlanningInputs{}, stderr)
 	if err != nil {
 		return err
@@ -243,14 +250,23 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 	usedReplacements := make(map[string]struct{}, len(replacements))
 	for _, node := range inv.Nodes {
 		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
-		nodeCtx := withManagementDial(ctx, node.Name, &management)
+		requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+		nodeCtx := withManagementDial(requestCtx, node.Name, &management)
 		conn, err := dialKatlcAgent(nodeCtx, endpoint)
 		if err != nil {
+			cancel()
+			if managementVerificationTimedOut(err) {
+				return fmt.Errorf("verify node %s management endpoint %s: timed out after %s; check the address and node reachability or increase --timeout", node.Name, endpoint, opts.timeout)
+			}
 			return fmt.Errorf("verify node %s management endpoint: %w", node.Name, err)
 		}
-		status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+		status, statusErr := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
 		closeErr := conn.Close()
+		cancel()
 		if statusErr != nil {
+			if managementVerificationTimedOut(statusErr) {
+				return fmt.Errorf("verify node %s management endpoint %s: timed out after %s; check the address and node reachability or increase --timeout", node.Name, endpoint, opts.timeout)
+			}
 			return fmt.Errorf("verify node %s management endpoint: %w", node.Name, statusErr)
 		}
 		if closeErr != nil {
@@ -308,6 +324,10 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 	}
 	_, err = stdout.Write(append(data, '\n'))
 	return err
+}
+
+func managementVerificationTimedOut(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || grpcstatus.Code(err) == codes.DeadlineExceeded
 }
 
 type contextRebindOptions struct {

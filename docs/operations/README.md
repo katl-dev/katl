@@ -6,9 +6,8 @@ mutating command.
 
 KatlOS is experimental. Read the [support boundary](../support.md) before using
 these procedures. The installer handoff on port 8080 is unauthenticated; the
-installed-node API on port 9443 uses automatic mTLS and excludes later-created
-workload interfaces. Keep both on trusted home-lab networks and off the
-Internet.
+installed-node API on port 9443 requires automatic mTLS for every connection.
+Keep both on trusted home-lab networks and off the Internet.
 
 ## Lifecycle Map
 

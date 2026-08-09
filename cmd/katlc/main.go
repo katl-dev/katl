@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/katlc/agent"
-	"github.com/katl-dev/katl/internal/katlc/firewall"
 )
 
 var (
@@ -60,7 +58,6 @@ func helpText() string {
 Commands:
   version                 Print build version metadata.
   agent serve             Run the KatlOS node management agent.
-  agent firewall          Restrict management ingress to boot-time host interfaces.
   kubeadm plan            Compare selected desired kubeadm input with read-only live state.
 
 `
@@ -73,31 +70,9 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	switch args[0] {
 	case "serve":
 		return runAgentServe(ctx, args[1:], stdout, stderr)
-	case "firewall":
-		return runAgentFirewall(ctx, args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unsupported agent command %q", args[0])
 	}
-}
-
-func runAgentFirewall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("katlc agent firewall", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	port := flags.Uint("port", 9443, "management TCP port")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
-	}
-	if *port == 0 || *port > 65535 {
-		return fmt.Errorf("--port must be between 1 and %s", strconv.Itoa(65535))
-	}
-	if err := firewall.Ensure(ctx, firewall.Config{Port: uint16(*port)}); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(stdout, "katlc agent firewall port=%d status=ready\n", *port)
-	return err
 }
 
 func runAgentServe(ctx context.Context, args []string, stdout, stderr io.Writer) error {

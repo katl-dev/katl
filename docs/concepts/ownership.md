@@ -57,10 +57,9 @@ than assuming a host rollback restored the cluster.
 
 The beta installer handoff on TCP `8080` is intentionally unauthenticated HTTP
 and belongs only on a trusted provisioning network. The installed-node API on
-TCP `9443` uses automatic mTLS and a host-interface ingress boundary; workload
-interfaces created after boot are excluded. SSH is key-only when configured;
-the live installer exposes `root` only after its selected node keys are handed
-off, while the installed runtime uses the `katl` account.
+TCP `9443` requires automatic mTLS for every connection. SSH is key-only when
+configured; the live installer exposes `root` only after its selected node keys
+are handed off, while the installed runtime uses the `katl` account.
 
 For the complete compatibility and security statement, read the
 [support boundary](../support.md).

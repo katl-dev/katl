@@ -667,8 +667,6 @@ the management listener requires TLS 1.3 and a client certificate issued by the
 katlctl verifies a per-node server certificate name before sending any request
 the full management CA authority remains in the operator backup; nodes receive
   only their non-CA server leaf and the public CA certificate
-the boot-time firewall admits TCP 9443 through host interfaces present before
-  containerd and kubelet start and does not adopt later CNI interfaces
 katlctl runs off-node and connects to the katlc management endpoint advertised
   by inventory or client configuration
 katlctl does not SSH to nodes or execute remote shell commands

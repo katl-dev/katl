@@ -335,9 +335,9 @@ func TestAgentRuntimeUnit(t *testing.T) {
 	want := `[Unit]
 Description=Run Katl node management agent
 Documentation=man:systemd.service(5)
-Requires=var.mount katl-generation-activate.service katlc-management-firewall.service
+Requires=var.mount katl-generation-activate.service
 Wants=network-online.target
-After=local-fs.target var.mount katl-generation-activate.service network-online.target katlc-management-firewall.service
+After=local-fs.target var.mount katl-generation-activate.service network-online.target
 Before=katl-kubeadm-ready.target
 RequiresMountsFor=/efi /var/lib/katl
 
@@ -466,7 +466,6 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "kubelet.service.d/10-katl-runtime.conf"), assets.KubeletDropIn)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-state-projection-check.service"), assets.StateCheckService)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-runtime-handoff-status.service"), assets.RuntimeStatus)
-	assertRepoFile(t, filepath.Join(systemdRoot, "katlc-management-firewall.service"), assets.ManagementFirewall)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katlc-agent.service"), assets.AgentService)
 	assertRepoFile(t, filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/usr/lib/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
 

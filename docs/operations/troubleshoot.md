@@ -16,7 +16,7 @@ at `/run/katl/console/rendered.txt` for collection over SSH.
 | Installer never becomes ready | installer console; `katlos-install.service` journal |
 | Config bundle rejected | bundle command output; selected node; validation error |
 | Installed node does not complete boot | boot console; boot-health and handoff services |
-| Agent cannot be reached | saved management identity/context; expected node name; `katlc-agent.service`; `katlc-management-firewall.service`; network path to TCP 9443 |
+| Agent cannot be reached | saved management identity/context; expected node name; `katlc-agent.service`; network path to TCP 9443 |
 | Bootstrap or join fails | `katlctl` phase output; node operation record; kubelet/containerd/kubeadm journals |
 | Config apply stalls or rolls back | `katlctl node status` and `katlctl operations list`; generation and operation records |
 | Routed API endpoint is unavailable | `katlctl cluster status`; per-node local API, route, peer, and exchange state |
@@ -103,16 +103,15 @@ Confirm the service and listener on the isolated management network:
 
 ```sh
 systemctl status katlc-agent.service --no-pager
-systemctl status katlc-management-firewall.service --no-pager
 ss -lntp | grep ':9443'
-nft list table inet katl_management
 ```
 
 An error about missing management access means this workstation does not have
 the cluster identity or a saved authenticated context. Restore the backup with
 `katlctl management identity import IDENTITY`, then repeat `katlctl context save
 --config cluster.yaml`. Do not create a new identity for already-installed
-nodes: they will correctly reject it.
+nodes: they will correctly reject it. A reachable TLS listener that reports a
+required or unknown client certificate is enforcing the intended boundary.
 
 After deliberately reinstalling or replacing a node while retaining the same
 management identity, the old enrollment must not be silently reused. Confirm
@@ -124,7 +123,7 @@ A certificate-name failure usually means the address answered as another node.
 Do not override verification. Correct the address or use `katlctl context rebind
 --node NODE --endpoint ADDRESS`, which verifies both TLS and enrollment before
 saving it. Do not solve reachability by exposing port `9443` to an untrusted
-network or disabling the firewall service.
+network or disabling TLS verification.
 
 ## Reporting
 

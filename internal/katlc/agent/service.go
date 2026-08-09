@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -23,7 +22,6 @@ type ServeConfig struct {
 	Root       string
 	Listen     string
 	Dispatcher Dispatcher
-	TLSConfig  *tls.Config
 }
 
 type dispatcherShutdown interface {
@@ -49,12 +47,9 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	if err != nil {
 		return err
 	}
-	tlsConfig := config.TLSConfig
-	if tlsConfig == nil {
-		tlsConfig, err = transport.ServerTLSConfig(root)
-		if err != nil {
-			return err
-		}
+	tlsConfig, err := transport.ServerTLSConfig(root)
+	if err != nil {
+		return err
 	}
 	listener, err := net.Listen(network, address)
 	if err != nil {

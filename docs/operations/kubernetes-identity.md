@@ -104,10 +104,9 @@ shared material to additional control planes through its normal short-lived
 join mechanism.
 
 The node-management API on TCP `9443` encrypts this transfer with automatic
-mTLS and authenticates both the operator and expected node. KatlOS also blocks
-management ingress from interfaces created later by workload networking. Keep
-the operation on the supported trusted-management LAN; this is not a general
-production or multi-tenant security claim.
+mTLS and authenticates both the operator and expected node before the transfer.
+Keep the operation on the supported trusted-management LAN; this is not a
+general production or multi-tenant security claim.
 
 If shared PKI already exists on the init node, Katl proceeds only when every
 existing file is byte-for-byte identical. A different identity, or incomplete

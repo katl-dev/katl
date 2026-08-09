@@ -9,14 +9,10 @@ The `katlc` agent accepts mutually authenticated TLS on TCP port `9443`.
 `katlctl` creates the cluster management identity automatically while preparing
 the first config or install bundle, installs a non-CA server identity on each
 node, and retains the operator identity in the mode-0600 workstation context.
-Routine commands have no certificate flags or enrollment prompts.
-
-KatlOS also admits port `9443` only through interfaces present after host
-networking comes online and before containerd or kubelet starts. Interfaces
-created later by a CNI are not added when the service restarts. This is a
-defence-in-depth boundary for a trusted home-lab management network, not a
-production or multi-tenant firewall policy. Do not publish `9443` to the
-Internet.
+Routine commands have no certificate flags or enrollment prompts. The API can
+remain reachable on the trusted network: callers without the cluster operator
+certificate cannot query status or invoke any operation. Do not publish `9443`
+to the Internet.
 
 The installed system keeps an operator dashboard on VGA `tty1`. It reports the
 KatlOS and Kubernetes versions from the booted generation, node addresses,
@@ -31,7 +27,6 @@ On each node:
 ```sh
 systemctl is-active katl-boot-complete.target
 systemctl is-active katlc-agent.service
-systemctl is-active katlc-management-firewall.service
 systemctl status katl-runtime-handoff-status.service --no-pager
 journalctl -b -u katl-runtime-handoff-status.service -u katlc-agent.service
 ```
@@ -40,7 +35,6 @@ Expected state before Kubernetes bootstrap:
 
 - `katl-boot-complete.target` is active;
 - `katlc-agent.service` is active;
-- `katlc-management-firewall.service` is active;
 - runtime handoff reports `waiting-for-cluster-bootstrap`; and
 - `katl-kubeadm-ready.target` is not active yet.
 
