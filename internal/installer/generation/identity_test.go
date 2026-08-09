@@ -2,6 +2,7 @@ package generation
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,6 +90,49 @@ func TestWriteIdentity(t *testing.T) {
 	}
 	if _, err := WriteEnrollment(root, "cp-2", assets.MachineID, bytes.NewReader([]byte("xxxxxxxxxxxxxxxx"))); err == nil || !strings.Contains(err.Error(), "existing enrollment belongs") {
 		t.Fatalf("renamed enrollment error = %v", err)
+	}
+}
+
+func TestWriteEnrollmentIgnoresInterruptedTemporaryFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, filepath.Dir(EnrollmentPath))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir enrollment identity dir: %v", err)
+	}
+	interrupted := filepath.Join(dir, ".enrollment.json.tmp-interrupted")
+	if err := os.WriteFile(interrupted, []byte(`{"apiVersion":`), 0o600); err != nil {
+		t.Fatalf("write interrupted temporary enrollment: %v", err)
+	}
+
+	enrollment, err := WriteEnrollment(root, "cp-1", "0123456789abcdef0123456789abcdef", bytes.NewReader([]byte("fedcba9876543210")))
+	if err != nil {
+		t.Fatalf("WriteEnrollment() after interrupted temporary write error = %v", err)
+	}
+	read, err := ReadEnrollment(root)
+	if err != nil {
+		t.Fatalf("ReadEnrollment() error = %v", err)
+	}
+	if read != enrollment {
+		t.Fatalf("persisted enrollment = %+v, want %+v", read, enrollment)
+	}
+	assertMode(t, filepath.Join(root, EnrollmentPath), 0o444)
+}
+
+func TestWriteEnrollmentAtomicPublishDoesNotReplaceExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "enrollment.json")
+	if err := os.WriteFile(path, []byte("existing\n"), 0o444); err != nil {
+		t.Fatalf("write existing enrollment: %v", err)
+	}
+	if err := writeEnrollmentAtomic(path, []byte("replacement\n")); err == nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("writeEnrollmentAtomic() error = %v, want file-exists refusal", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read existing enrollment: %v", err)
+	}
+	if string(data) != "existing\n" {
+		t.Fatalf("existing enrollment = %q, want unchanged", data)
 	}
 }
 

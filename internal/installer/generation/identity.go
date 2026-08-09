@@ -105,10 +105,56 @@ func WriteEnrollment(root, nodeName, machineID string, random io.Reader) (Enroll
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return Enrollment{}, fmt.Errorf("create enrollment identity directory: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o444); err != nil {
+	if err := writeEnrollmentAtomic(path, append(data, '\n')); err != nil {
 		return Enrollment{}, fmt.Errorf("write enrollment identity: %w", err)
 	}
 	return enrollment, nil
+}
+
+func writeEnrollmentAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	temporary, err := os.CreateTemp(dir, ".enrollment.json.tmp-")
+	if err != nil {
+		return fmt.Errorf("create temporary enrollment identity: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write temporary enrollment identity: %w", err)
+	}
+	if err := temporary.Chmod(0o444); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("protect temporary enrollment identity: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync temporary enrollment identity: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close temporary enrollment identity: %w", err)
+	}
+	if err := os.Link(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish enrollment identity without replacement: %w", err)
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		return fmt.Errorf("remove temporary enrollment identity: %w", err)
+	}
+	cleanup = false
+	directory, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open enrollment identity directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync enrollment identity directory: %w", err)
+	}
+	return nil
 }
 
 func ReadEnrollment(root string) (Enrollment, error) {
