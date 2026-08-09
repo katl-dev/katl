@@ -175,10 +175,10 @@ func PromoteLiveGeneration(request LivePromotionRequest) error {
 	if err := request.SetBootDefault(root, entry); err != nil {
 		cause := fmt.Errorf("set boot default %s: %w", entry, err)
 		if previousEntry == "" {
-			return errors.Join(cause, fmt.Errorf("restore boot default: previous boot entry is unavailable"))
+			return rollbackDurable(errors.Join(cause, fmt.Errorf("restore boot default: previous boot entry is unavailable")))
 		}
 		if restoreErr := request.SetBootDefault(root, previousEntry); restoreErr != nil {
-			return errors.Join(cause, fmt.Errorf("restore boot default %s: %w", previousEntry, restoreErr))
+			return rollbackDurable(errors.Join(cause, fmt.Errorf("restore boot default %s: %w", previousEntry, restoreErr)))
 		}
 		return rollbackDurable(cause)
 	}

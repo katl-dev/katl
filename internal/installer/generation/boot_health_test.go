@@ -157,6 +157,46 @@ func TestPromoteLiveGenerationRestoresDurableStateWhenBootDefaultFails(t *testin
 	}
 }
 
+func TestPromoteLiveGenerationRestoresDurableStateWhenBootDefaultRestoreFails(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCandidate, BootStatePending, HealthStateUnknown, now.Add(-time.Minute))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion: APIVersion, Kind: BootSelectionKind, DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
+		DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf", UpdatedAt: now.Add(-time.Hour),
+	})
+	calls := 0
+	err := PromoteLiveGeneration(LivePromotionRequest{
+		Root: root, GenerationID: "gen1", OperationID: "upgrade-1", Now: now,
+		SetBootDefault: func(_ string, _ string) error {
+			calls++
+			return os.ErrPermission
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "restore boot default") {
+		t.Fatalf("PromoteLiveGeneration() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("boot default calls = %d, want update and restore attempts", calls)
+	}
+	_, candidate, err := ReadGeneration(root, "gen1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, previous, err := ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.CommitState != CommitStateSuperseded || previous.CommitState != CommitStateCommitted || selection.DefaultGenerationID != "gen0" || selection.ActiveGenerationID != "" {
+		t.Fatalf("restored durable state: candidate=%#v previous=%#v selection=%#v", candidate, previous, selection)
+	}
+}
+
 func TestRecordBootHealthPromotesArmedSelection(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
