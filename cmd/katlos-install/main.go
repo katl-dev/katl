@@ -378,14 +378,24 @@ func finishAutomaticInstall(ctx context.Context, err error, stdout io.Writer) er
 	}
 	reportInstallerProgress(stdout, "installed KatlOS target detected; automatic reinstall stopped", true)
 	fmt.Fprintf(stdout, "katlos-install hold: %v\n", err)
-	<-ctx.Done()
-	return ctx.Err()
+	return holdInstaller(ctx)
 }
 
 func waitForInstallerReboot(ctx context.Context, stdout io.Writer) error {
 	reportInstallerProgress(stdout, "installation complete; waiting for scheduled reboot", false)
-	<-ctx.Done()
-	return ctx.Err()
+	return holdInstaller(ctx)
+}
+
+func holdInstaller(ctx context.Context) error {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func fetchBundleURL(ctx context.Context, bundleURL, wantSHA256, runDir string) (string, error) {
