@@ -3111,7 +3111,7 @@ func assertOperationBackedInitRecord(t *testing.T, record operation.OperationRec
 	if record.ActivationState != operation.ActivationStateActiveLive ||
 		record.GenerationCommitState != operation.GenerationCommitCommitted ||
 		record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed ||
-		record.BootHealthPending {
+		!record.BootHealthPending {
 		t.Fatalf("operation lifecycle = activation %q commit %q health %q pending %v", record.ActivationState, record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
 	if record.BootstrapRequest == nil ||
@@ -3167,7 +3167,7 @@ func assertOperationBackedWorkerRecord(t *testing.T, record operation.OperationR
 	if record.ActivationState != operation.ActivationStateActiveLive ||
 		record.GenerationCommitState != operation.GenerationCommitCommitted ||
 		record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed ||
-		record.BootHealthPending {
+		!record.BootHealthPending {
 		t.Fatalf("worker operation lifecycle = activation %q commit %q health %q pending %v", record.ActivationState, record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
 	if record.BootstrapRequest == nil ||
