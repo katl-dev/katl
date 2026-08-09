@@ -2699,6 +2699,39 @@ func TestSubmitOperationDispatchFailureIsRedactedAndTerminal(t *testing.T) {
 	}
 }
 
+func TestSubmitOperationDispatchFailureRemovesStagedKubernetesIdentity(t *testing.T) {
+	server := newTestServer(t)
+	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+		return errors.New("dispatch failed")
+	})
+	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := kubernetesidentity.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := kubernetesidentity.Validate(bundle, server.clock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := submitRequest("req-dispatch-fail-identity")
+	request.Bootstrap.KubernetesIdentity = data
+	request.Bootstrap.KubernetesIdentityFingerprint = info.Fingerprint
+
+	accepted, err := server.SubmitOperation(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !accepted.GetInitialStatus().GetTerminal() || accepted.GetInitialStatus().GetPhase() != "dispatch-failed" {
+		t.Fatalf("status = %+v", accepted.GetInitialStatus())
+	}
+	if _, err := os.Stat(kubernetesIdentityStagingPath(server.Store.Root, accepted.OperationId)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged Kubernetes identity after dispatch failure: %v", err)
+	}
+}
+
 func TestDryRunDoesNotCreateRecord(t *testing.T) {
 	server := newTestServer(t)
 	req := submitRequest("req-dry-run")

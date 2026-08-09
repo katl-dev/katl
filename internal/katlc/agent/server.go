@@ -942,22 +942,33 @@ func (s *Server) acceptedFromRecord(record operation.OperationRecord) *agentapi.
 
 func (s *Server) markDispatchFailed(operationID string, err error) (operation.OperationRecord, error) {
 	now := s.clock()
-	return s.Store.Update(operationID, "dispatch-failed", "dispatch-failed", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+	cleanupErr := removeOperationKubernetesIdentity(s.Store, operationID)
+	nextAction := "agent executor dispatch failed"
+	if cleanupErr != nil {
+		err = errors.Join(err, cleanupErr)
+		nextAction += "; remove the operation-scoped Kubernetes identity from node storage"
+	}
+	updated, updateErr := s.Store.Update(operationID, "dispatch-failed", "dispatch-failed", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = "dispatch-failed"
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true
-		record.NextAction = "agent executor dispatch failed"
+		record.NextAction = nextAction
 		record.FailureReason = inventory.Redact(err.Error())
 		record.Terminal = true
 		record.UpdatedAt = now
 		record.CompletedAt = &now
 		return record, nil
 	})
+	return updated, errors.Join(cleanupErr, updateErr)
 }
 
 func (s *Server) markMaterializationFailed(operationID string, err error) (operation.OperationRecord, error) {
 	now := s.clock()
-	return s.Store.Update(operationID, "join-material-failed", "join-material-failed", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+	cleanupErr := removeOperationKubernetesIdentity(s.Store, operationID)
+	if cleanupErr != nil {
+		err = errors.Join(err, cleanupErr)
+	}
+	updated, updateErr := s.Store.Update(operationID, "join-material-failed", "join-material-failed", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = "prepare-bootstrap-runtime"
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true
@@ -969,12 +980,16 @@ func (s *Server) markMaterializationFailed(operationID string, err error) (opera
 		default:
 			record.NextAction = "submit a new worker join operation with valid join material"
 		}
+		if cleanupErr != nil {
+			record.NextAction += "; remove the operation-scoped Kubernetes identity from node storage"
+		}
 		record.FailureReason = inventory.Redact(err.Error())
 		record.Terminal = true
 		record.UpdatedAt = now
 		record.CompletedAt = &now
 		return record, nil
 	})
+	return updated, errors.Join(cleanupErr, updateErr)
 }
 
 func (s *Server) findClientRequest(clientRequestID string) (operation.OperationRecord, bool, error) {
