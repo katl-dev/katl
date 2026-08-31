@@ -60,3 +60,7 @@ Thumbs.db
 *~
 *.swp
 *.swo
+
+cluster.yaml
+kubeconfig
+docs/internal
