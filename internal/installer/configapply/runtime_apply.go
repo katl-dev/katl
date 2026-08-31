@@ -15,7 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
@@ -74,6 +75,7 @@ type NodeOverlay struct {
 	ControlPlaneEndpoint    *controlplaneendpoint.Config
 	ControlPlaneEndpointSet bool
 	UnsafeEtcFiles          []confext.NativeEtcFile
+	APIProxy                *apiproxy.Config
 	KubeadmChanged          bool
 	LivePreflight           map[string]bool
 }
@@ -311,7 +313,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		),
 		ConfiguredKernelCommandLine:    slices.Clone(merged.Node.Kernel.CommandLine),
 		ConfiguredKernelCommandLineSet: true,
-		VolumeBindings:                 append([]generation.VolumeBinding(nil), request.VolumeBindings...),
+		VolumeBindings:                 slices.Clone(request.VolumeBindings),
 		VolumeBindingsSet:              request.VolumeBindingsSet,
 	})
 	if err != nil {
@@ -576,8 +578,16 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 			return manifest.Manifest{}, nil, nil, err
 		}
 		if endpointDrifted {
-			domains.addEndpointRouting(EndpointRoutingImpact{MayLoseAllFabricPaths: true})
+			domains.addEndpointVIP(EndpointVIPImpact{MayInterruptEndpoint: true})
 		}
+	}
+	proxyConfig := lastAPIProxy(request.ClusterDefaults, roleOverlay, nodeOverlay)
+	proxyFiles, proxyChanged, err := apiProxyFiles(request, proxyConfig)
+	if err != nil {
+		return manifest.Manifest{}, nil, nil, err
+	}
+	if proxyChanged {
+		domains.add(DomainAPIProxy)
 	}
 	if len(domains.domains) == 0 {
 		return merged, nil, nil, ErrNoChanges
@@ -586,7 +596,44 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		hostPlan := planHostConfigurationChange(currentHostConfiguration, merged.Node.HostConfiguration)
 		domains.hostConfiguration = &hostPlan
 	}
-	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), unsafeFiles, nil
+	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), slices.Concat(unsafeFiles, proxyFiles), nil
+}
+
+func lastAPIProxy(overlays ...NodeOverlay) *apiproxy.Config {
+	var config *apiproxy.Config
+	for _, overlay := range overlays {
+		if overlay.APIProxy != nil {
+			config = overlay.APIProxy
+		}
+	}
+	return config
+}
+
+func apiProxyFiles(request TrustedBundleRequest, desired *apiproxy.Config) ([]confext.NativeEtcFile, bool, error) {
+	currentRoot, rootErr := currentNodeConfextRoot(request.Root, request.CurrentRecord)
+	currentPath := ""
+	if rootErr == nil {
+		currentPath = filepath.Join(currentRoot, strings.TrimPrefix(apiproxy.ConfigPath, "/"))
+	}
+	current, readErr := os.ReadFile(currentPath)
+	if currentPath == "" {
+		readErr = os.ErrNotExist
+	}
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return nil, false, fmt.Errorf("read current API proxy config: %w", readErr)
+	}
+	if desired == nil {
+		if readErr != nil {
+			return nil, false, nil
+		}
+		return []confext.NativeEtcFile{{Path: apiproxy.ConfigPath, Content: string(current), Mode: 0o644}}, false, nil
+	}
+	content, err := apiproxy.Render(*desired)
+	if err != nil {
+		return nil, false, fmt.Errorf("render API proxy config: %w", err)
+	}
+	file := confext.NativeEtcFile{Path: apiproxy.ConfigPath, Content: content, Mode: 0o644}
+	return []confext.NativeEtcFile{file}, readErr != nil || string(current) != content, nil
 }
 
 func volumeBindingsEqual(left, right []generation.VolumeBinding) bool {
@@ -604,11 +651,11 @@ func endpointRenderingDrifted(request TrustedBundleRequest, desired manifest.Man
 	if err != nil {
 		return false, fmt.Errorf("normalize desired control-plane endpoint: %w", err)
 	}
-	config, err := bgpapivip.FromControlPlaneEndpoint(endpoint)
+	config, err := apivip.FromControlPlaneEndpoint(endpoint)
 	if err != nil {
 		return false, fmt.Errorf("lower desired control-plane endpoint: %w", err)
 	}
-	rendered, err := bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{
+	rendered, err := apivip.RenderNativeEtcFiles(apivip.RenderRequest{
 		Config:   config,
 		NodeRole: desired.Node.SystemRole,
 	})
@@ -684,6 +731,11 @@ func validateOverlay(path string, overlay NodeOverlay) error {
 			return fmt.Errorf("%s.volumes: %w", path, err)
 		}
 	}
+	if overlay.APIProxy != nil {
+		if _, err := apiproxy.Normalize(*overlay.APIProxy); err != nil {
+			return fmt.Errorf("%s.apiProxy: %w", path, err)
+		}
+	}
 	return nil
 }
 
@@ -700,7 +752,7 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 		}
 		if overlay.Identity.AuthorizedKeys != nil {
 			changed := !slices.Equal(node.Identity.SSH.AuthorizedKeys, overlay.Identity.AuthorizedKeys)
-			node.Identity.SSH.AuthorizedKeys = append([]string(nil), overlay.Identity.AuthorizedKeys...)
+			node.Identity.SSH.AuthorizedKeys = slices.Clone(overlay.Identity.AuthorizedKeys)
 			if changed {
 				domains.add(DomainSSHOperatorAccess)
 			}
@@ -733,7 +785,7 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 	if overlay.SystemExtensions != nil {
 		current := node.SystemExtensions
 		changed := !(len(current) == 0 && len(*overlay.SystemExtensions) == 0) && !reflect.DeepEqual(current, *overlay.SystemExtensions)
-		node.SystemExtensions = append([]manifest.SystemExtension(nil), (*overlay.SystemExtensions)...)
+		node.SystemExtensions = slices.Clone(*overlay.SystemExtensions)
 		if changed {
 			domains.add(DomainSystemExtensions)
 		}
@@ -741,7 +793,7 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 	if overlay.Volumes != nil {
 		current := installManifest.Install.Volumes
 		changed := !(len(current) == 0 && len(*overlay.Volumes) == 0) && !reflect.DeepEqual(current, *overlay.Volumes)
-		installManifest.Install.Volumes = append([]manifest.Volume(nil), (*overlay.Volumes)...)
+		installManifest.Install.Volumes = slices.Clone(*overlay.Volumes)
 		if changed {
 			domains.add(DomainVolumes)
 		}
@@ -806,15 +858,15 @@ func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.C
 		return
 	}
 	if !reflect.DeepEqual(currentPlan.Config, desiredPlan.Config) {
-		domains.addEndpointRouting(endpointRoutingImpact(currentPlan.Config, desiredPlan.Config))
+		domains.addEndpointVIP(endpointVIPImpact(currentPlan.Config, desiredPlan.Config))
 	}
 }
 
 type domainAccumulator struct {
-	domains               []string
-	seen                  map[string]struct{}
-	endpointRoutingImpact *EndpointRoutingImpact
-	hostConfiguration     *HostConfigurationChangePlan
+	domains           []string
+	seen              map[string]struct{}
+	endpointVIPImpact *EndpointVIPImpact
+	hostConfiguration *HostConfigurationChangePlan
 }
 
 func (a *domainAccumulator) add(domain string) {
@@ -828,9 +880,9 @@ func (a *domainAccumulator) add(domain string) {
 	a.domains = append(a.domains, domain)
 }
 
-func (a *domainAccumulator) addEndpointRouting(impact EndpointRoutingImpact) {
-	a.add(DomainControlPlaneEndpointRouting)
-	a.endpointRoutingImpact = &impact
+func (a *domainAccumulator) addEndpointVIP(impact EndpointVIPImpact) {
+	a.add(DomainControlPlaneEndpointVIP)
+	a.endpointVIPImpact = &impact
 }
 
 func (a *domainAccumulator) addHostConfiguration(plan HostConfigurationChangePlan) {
@@ -850,15 +902,15 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 	changes := make([]Change, 0, len(a.domains))
 	for _, domain := range a.domains {
 		change := Change{Domain: domain, LivePreflightOK: preflight[domain]}
-		if domain == DomainControlPlaneEndpointRouting {
-			change.EndpointRoutingImpact = a.endpointRoutingImpact
+		if domain == DomainControlPlaneEndpointVIP {
+			change.EndpointVIPImpact = a.endpointVIPImpact
 		}
 		if domain == DomainHostConfiguration && a.hostConfiguration != nil {
 			change.LivePreflightOK = a.hostConfiguration.Live
-			change.Sets = append([]string(nil), a.hostConfiguration.Sets...)
-			change.Paths = append([]string(nil), a.hostConfiguration.Paths...)
+			change.Sets = slices.Clone(a.hostConfiguration.Sets)
+			change.Paths = slices.Clone(a.hostConfiguration.Paths)
 			change.Message = a.hostConfiguration.Message
-			change.Effects = append([]generation.ConfigApplyEffect(nil), a.hostConfiguration.Effects...)
+			change.Effects = slices.Clone(a.hostConfiguration.Effects)
 		}
 		changes = append(changes, change)
 	}
@@ -874,73 +926,8 @@ func containsChangeDomain(changes []Change, domain string) bool {
 	return false
 }
 
-func endpointRoutingImpact(current, desired controlplaneendpoint.Config) EndpointRoutingImpact {
-	impact := EndpointRoutingImpact{MayLoseAllFabricPaths: true}
-	currentBGP := endpointBGP(current)
-	desiredBGP := endpointBGP(desired)
-
-	currentPeers := peerASNs(currentBGP.Peers)
-	desiredPeers := peerASNs(desiredBGP.Peers)
-	for _, address := range sortedStringUnion(currentPeers, desiredPeers) {
-		currentASN, currentOK := currentPeers[address]
-		desiredASN, desiredOK := desiredPeers[address]
-		if currentBGP.LocalASN != desiredBGP.LocalASN || currentOK != desiredOK || currentASN != desiredASN {
-			impact.FabricSessionsReset = append(impact.FabricSessionsReset, address)
-		}
-	}
-
-	currentExchanges := routeExchangesByName(currentBGP.RouteExchanges)
-	desiredExchanges := routeExchangesByName(desiredBGP.RouteExchanges)
-	for _, name := range sortedStringUnion(currentExchanges, desiredExchanges) {
-		before, beforeOK := currentExchanges[name]
-		after, afterOK := desiredExchanges[name]
-		if currentBGP.LocalASN != desiredBGP.LocalASN || beforeOK != afterOK || before.ListenPort != after.ListenPort || before.PeerASN != after.PeerASN {
-			impact.RouteExchangeSessionsReset = append(impact.RouteExchangeSessionsReset, name)
-		}
-		if beforeOK != afterOK || !reflect.DeepEqual(before.ExportToFabric, after.ExportToFabric) {
-			impact.ChangedExportUnions = append(impact.ChangedExportUnions, name)
-		}
-	}
-	return impact
-}
-
-func endpointBGP(config controlplaneendpoint.Config) controlplaneendpoint.BGP {
-	if config.Advertisement == nil || config.Advertisement.BGP == nil {
-		return controlplaneendpoint.BGP{}
-	}
-	return *config.Advertisement.BGP
-}
-
-func peerASNs(peers []controlplaneendpoint.Peer) map[string]uint32 {
-	out := make(map[string]uint32, len(peers))
-	for _, peer := range peers {
-		out[peer.Address] = peer.ASN
-	}
-	return out
-}
-
-func routeExchangesByName(exchanges []controlplaneendpoint.RouteExchange) map[string]controlplaneendpoint.RouteExchange {
-	out := make(map[string]controlplaneendpoint.RouteExchange, len(exchanges))
-	for _, exchange := range exchanges {
-		out[exchange.Name] = exchange
-	}
-	return out
-}
-
-func sortedStringUnion[A any](left, right map[string]A) []string {
-	set := make(map[string]struct{}, len(left)+len(right))
-	for value := range left {
-		set[value] = struct{}{}
-	}
-	for value := range right {
-		set[value] = struct{}{}
-	}
-	out := make([]string, 0, len(set))
-	for value := range set {
-		out = append(out, value)
-	}
-	slices.Sort(out)
-	return out
+func endpointVIPImpact(current, desired controlplaneendpoint.Config) EndpointVIPImpact {
+	return EndpointVIPImpact{MayInterruptEndpoint: true}
 }
 
 func (request TrustedBundleRequest) kubeadmActionRequired(changes []Change) generation.KubeadmActionRequired {

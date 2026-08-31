@@ -205,6 +205,7 @@ for path in \
     /usr/bin/katl-console \
     /usr/bin/mount.nfs \
     /usr/lib/katl/runtime/katl-boot-health \
+    /usr/lib/katl/runtime/katl-api-proxy \
     /usr/lib/katl/runtime/katl-ssh-host-keys \
     /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
@@ -220,6 +221,7 @@ for path in \
     /usr/lib/systemd/system/katl-kubeadm-activate.service \
     /usr/lib/systemd/system/katl-boot-complete.target \
     /usr/lib/systemd/system/katl-boot-health.service \
+    /usr/lib/systemd/system/katl-api-proxy.service \
     /usr/lib/systemd/system/katl-boot-deadman.service \
     /usr/lib/systemd/system/katl-boot-deadman.timer \
     /usr/lib/systemd/system/katl-state-projection-check.service \

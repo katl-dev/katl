@@ -16,6 +16,7 @@ func TestDomainClassificationMatrix(t *testing.T) {
 		{DomainHostConfiguration, ClassificationOnlineApplicable},
 		{DomainTmpfiles, ClassificationStagedOnly},
 		{DomainKernelCommandLine, ClassificationStagedOnly},
+		{DomainAPIProxy, ClassificationOnlineApplicable},
 		{DomainBootstrapNodeMetadata, ClassificationOnlineApplicable},
 		{DomainNodeIdentity, ClassificationStagedOnly},
 		{DomainModulesLoad, ClassificationStagedOnly},
@@ -34,7 +35,7 @@ func TestDomainClassificationMatrix(t *testing.T) {
 		{DomainSysextSelection, ClassificationOperationOnly},
 		{DomainControlPlaneEndpointBootstrap, ClassificationStagedOnly},
 		{DomainControlPlaneEndpointIdentity, ClassificationOperationOnly},
-		{DomainControlPlaneEndpointRouting, ClassificationOnlineApplicable},
+		{DomainControlPlaneEndpointVIP, ClassificationOnlineApplicable},
 		{"unknown-domain", ClassificationRejected},
 	}
 	for _, tt := range tests {
@@ -59,16 +60,13 @@ func TestPlanDefaultsOmittedModeToAutoAndAcceptsHostConfigurationLive(t *testing
 	}
 }
 
-func TestPlanExplainsLiveEndpointRoutingImpact(t *testing.T) {
-	impact := &EndpointRoutingImpact{
-		FabricSessionsReset:        []string{"10.0.0.1", "10.0.0.2"},
-		RouteExchangeSessionsReset: []string{"cilium"},
-		ChangedExportUnions:        []string{"cilium"},
-		MayLoseAllFabricPaths:      true,
+func TestPlanExplainsLiveEndpointVIPImpact(t *testing.T) {
+	impact := &EndpointVIPImpact{
+		MayInterruptEndpoint: true,
 	}
 	decision, err := Plan(generation.ApplyModeLive, []Change{{
-		Domain:                DomainControlPlaneEndpointRouting,
-		EndpointRoutingImpact: impact,
+		Domain:            DomainControlPlaneEndpointVIP,
+		EndpointVIPImpact: impact,
 	}})
 	if err != nil {
 		t.Fatalf("Plan() error = %v, diagnostics = %#v", err, decision.Diagnostics)
@@ -77,13 +75,11 @@ func TestPlanExplainsLiveEndpointRoutingImpact(t *testing.T) {
 		t.Fatalf("decision = %#v", decision)
 	}
 	diagnostic := decision.Diagnostics[0]
-	if diagnostic.Decision != DecisionAccepted || diagnostic.EndpointRouting != impact {
+	if diagnostic.Decision != DecisionAccepted || diagnostic.EndpointVIP != impact {
 		t.Fatalf("diagnostic = %#v", diagnostic)
 	}
-	for _, want := range []string{"fabric sessions reset: 10.0.0.1, 10.0.0.2", "local route-exchange sessions reset: cilium", "exported route unions change: cilium", "requires another healthy advertiser"} {
-		if !strings.Contains(diagnostic.Message, want) {
-			t.Fatalf("diagnostic message = %q, want %q", diagnostic.Message, want)
-		}
+	if !strings.Contains(diagnostic.Message, "temporarily releases its API VIP") {
+		t.Fatalf("diagnostic message = %q", diagnostic.Message)
 	}
 }
 
@@ -245,7 +241,7 @@ func TestPlanNextBootAllowsOnlyStagedAndOnlineDomains(t *testing.T) {
 		DomainKubeadmConfig,
 		DomainSelectedKubeadmConfig,
 		DomainControlPlaneEndpointBootstrap,
-		DomainControlPlaneEndpointRouting,
+		DomainControlPlaneEndpointVIP,
 	}
 	for _, domain := range allowed {
 		t.Run("allowed-"+domain, func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/confext"
@@ -77,9 +78,32 @@ func TestCompileClusterPlan(t *testing.T) {
 	if nativeFile(cp.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") != nil {
 		t.Fatal("external endpoint generated BIRD config")
 	}
+	if len(cp.APIProxy.Listeners) != 2 || cp.APIProxy.Listeners[0].Exposure != apiproxy.ExposureWorkstation || len(cp.APIProxy.Backends) != 1 || !cp.APIProxy.Backends[0].Local {
+		t.Fatalf("control-plane API proxy = %#v", cp.APIProxy)
+	}
+	if nativeFile(cp.NativeEtcFiles, apiproxy.ConfigPath) == nil {
+		t.Fatal("control-plane API proxy config is missing")
+	}
 	worker := plan.Nodes[1]
 	if worker.Name != "worker-1" || worker.KubeadmConfig.Intent != inventory.IntentWorker {
 		t.Fatalf("worker material = %#v", worker)
+	}
+	if len(worker.APIProxy.Listeners) != 1 || worker.APIProxy.Listeners[0].Exposure != apiproxy.ExposureNodeLocal || len(worker.APIProxy.Backends) != 1 || worker.APIProxy.Backends[0].Local {
+		t.Fatalf("worker API proxy = %#v", worker.APIProxy)
+	}
+
+	// The legacy full-plan golden deliberately excludes the independently
+	// asserted API proxy contract above; keeping the generated proxy JSON in the
+	// snapshot would duplicate its focused config tests in every node entry.
+	for i := range plan.Nodes {
+		plan.Nodes[i].APIProxy = apiproxy.Config{}
+		files := plan.Nodes[i].NativeEtcFiles[:0]
+		for _, file := range plan.Nodes[i].NativeEtcFiles {
+			if file.Path != apiproxy.ConfigPath {
+				files = append(files, file)
+			}
+		}
+		plan.Nodes[i].NativeEtcFiles = files
 	}
 
 	data, err := json.MarshalIndent(plan, "", "  ")
@@ -100,14 +124,8 @@ func TestCompileClusterPlan(t *testing.T) {
 func TestCompileSelectsManagedEndpointOnlyForControlPlanes(t *testing.T) {
 	config := validConfig()
 	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{
-		Host: "api.katl.test",
-		Advertisement: &controlplaneendpoint.Advertisement{
-			VIP: "10.40.0.10",
-			BGP: &controlplaneendpoint.BGP{
-				LocalASN: 64512,
-				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
-			},
-		},
+		Host:          "api.katl.test",
+		Advertisement: &controlplaneendpoint.Advertisement{VIP: "10.40.0.10"},
 	}
 	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
 	if err != nil {
@@ -121,8 +139,8 @@ func TestCompileSelectsManagedEndpointOnlyForControlPlanes(t *testing.T) {
 	if worker.InstallManifest.Node.ControlPlaneEndpoint != nil {
 		t.Fatalf("worker managed endpoint intent = %#v", worker.InstallManifest.Node.ControlPlaneEndpoint)
 	}
-	if nativeFile(cp.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") == nil {
-		t.Fatal("control-plane BIRD config is missing")
+	if nativeFile(cp.NativeEtcFiles, "/etc/katl/apps/api-vip/config.yaml") == nil {
+		t.Fatal("control-plane API VIP config is missing")
 	}
 	if nativeFile(worker.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") != nil {
 		t.Fatal("worker received BIRD config")
@@ -149,14 +167,8 @@ func TestCompileResolvesKernelCommandLinePerNode(t *testing.T) {
 func TestCompileRejectsNativeKubeadmConflictWithManagedEndpoint(t *testing.T) {
 	config := validConfig()
 	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{
-		Host: "api.katl.test",
-		Advertisement: &controlplaneendpoint.Advertisement{
-			VIP: "10.40.0.10",
-			BGP: &controlplaneendpoint.BGP{
-				LocalASN: 64512,
-				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
-			},
-		},
+		Host:          "api.katl.test",
+		Advertisement: &controlplaneendpoint.Advertisement{VIP: "10.40.0.10"},
 	}
 	configs := validKubeadmConfigs("v1.36.1")
 	controlPlane := configs["control-plane"]

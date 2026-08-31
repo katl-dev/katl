@@ -3,8 +3,10 @@ package configapply
 import (
 	"bufio"
 	"fmt"
+	"maps"
 	"path"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -26,6 +28,16 @@ type HostConfigurationChangePlan struct {
 type HostSysctlAssignment struct {
 	Key   string
 	Value string
+}
+
+func sortedStringUnion[A any](left, right map[string]A) []string {
+	union := maps.Clone(left)
+	for key, value := range right {
+		union[key] = value
+	}
+	keys := slices.Collect(maps.Keys(union))
+	slices.Sort(keys)
+	return keys
 }
 
 func planHostConfigurationChange(current, desired manifest.HostConfiguration) HostConfigurationChangePlan {

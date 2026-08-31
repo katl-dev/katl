@@ -136,12 +136,11 @@ whether the node is busy without exposing machine identity or operation IDs:
 katlctl node status cp-1
 ```
 
-On a control-plane node with Katl-managed VIP advertisement, the same command
-also reports the stable endpoint, local API readiness, route origination, BGP
-peer state, and bounded route-exchange counts. `katlctl cluster status` adds a
-connection check to the stable endpoint from the operator workstation, so a
-locally originated route is not mistaken for end-to-end reachability. Use
-`--output json` for the complete bounded status.
+On a control-plane node with a Katl-managed VIP, the same command also reports
+the stable endpoint, local API readiness, and whether that node owns the VIP.
+`katlctl cluster status` adds a connection check to the stable endpoint from
+the operator workstation, so local ownership is not mistaken for end-to-end
+reachability. Use `--output json` for the complete bounded status.
 
 Reboot a node and wait for it to return healthy:
 

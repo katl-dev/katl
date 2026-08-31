@@ -5,15 +5,11 @@ import (
 	"net"
 	"net/netip"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 )
 
-const (
-	DefaultPort              = 6443
-	DefaultRouteExchangePort = 179
-)
+const DefaultPort = 6443
 
 var dnsLabelRE = regexp.MustCompile(`(?i)^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 
@@ -27,42 +23,12 @@ type Config struct {
 
 type Advertisement struct {
 	VIP string `yaml:"vip" json:"vip"`
-	BGP *BGP   `yaml:"bgp,omitempty" json:"bgp,omitempty"`
-}
-
-type BGP struct {
-	LocalASN       uint32          `yaml:"localASN" json:"localASN"`
-	Peers          []Peer          `yaml:"peers" json:"peers"`
-	RouteExchanges []RouteExchange `yaml:"routeExchanges,omitempty" json:"routeExchanges,omitempty"`
-}
-
-type Peer struct {
-	Address string `yaml:"address" json:"address"`
-	ASN     uint32 `yaml:"asn" json:"asn"`
-}
-
-type RouteExchange struct {
-	Name           string           `yaml:"name" json:"name"`
-	ListenPort     int              `yaml:"listenPort,omitempty" json:"listenPort,omitempty"`
-	PeerASN        uint32           `yaml:"peerASN,omitempty" json:"peerASN,omitempty"`
-	ExportToFabric []PrefixEnvelope `yaml:"exportToFabric,omitempty" json:"exportToFabric,omitempty"`
-}
-
-type PrefixEnvelope struct {
-	CIDR              string `yaml:"cidr" json:"cidr"`
-	ExactPrefixLength *int   `yaml:"exactPrefixLength,omitempty" json:"exactPrefixLength,omitempty"`
-}
-
-type Warning struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
 }
 
 type Plan struct {
-	Config    Config    `json:"config"`
-	Endpoint  string    `json:"endpoint"`
-	VIPPrefix string    `json:"vipPrefix,omitempty"`
-	Warnings  []Warning `json:"warnings,omitempty"`
+	Config    Config `json:"config"`
+	Endpoint  string `json:"endpoint"`
+	VIPPrefix string `json:"vipPrefix,omitempty"`
 }
 
 func Normalize(input Config) (Plan, error) {
@@ -96,19 +62,8 @@ func Normalize(input Config) (Plan, error) {
 	if hostIP, err := netip.ParseAddr(config.Host); err == nil && hostIP != vip {
 		return Plan{}, fmt.Errorf("controlPlaneEndpoint.host IP %q must equal advertisement.vip %q", hostIP, vip)
 	}
-	if advertisement.BGP == nil {
-		config.Advertisement = &advertisement
-		plan.Config = config
-		return plan, nil
-	}
-	bgp, warnings, err := normalizeBGP(*advertisement.BGP, vip)
-	if err != nil {
-		return Plan{}, err
-	}
-	advertisement.BGP = &bgp
 	config.Advertisement = &advertisement
 	plan.Config = config
-	plan.Warnings = warnings
 	return plan, nil
 }
 
@@ -153,146 +108,4 @@ func validateVIP(value string) (netip.Addr, error) {
 		return netip.Addr{}, fmt.Errorf("controlPlaneEndpoint.advertisement.vip %q is not a usable routed address", value)
 	}
 	return addr, nil
-}
-
-func normalizeBGP(input BGP, vip netip.Addr) (BGP, []Warning, error) {
-	bgp := input
-	if err := validateASN("controlPlaneEndpoint.advertisement.bgp.localASN", bgp.LocalASN); err != nil {
-		return BGP{}, nil, err
-	}
-	if len(bgp.Peers) == 0 {
-		return BGP{}, nil, fmt.Errorf("controlPlaneEndpoint.advertisement.bgp.peers must not be empty")
-	}
-	seenPeers := map[netip.Addr]struct{}{}
-	for i := range bgp.Peers {
-		path := fmt.Sprintf("controlPlaneEndpoint.advertisement.bgp.peers[%d]", i)
-		addr, err := usableIPv4(bgp.Peers[i].Address)
-		if err != nil {
-			return BGP{}, nil, fmt.Errorf("%s.address must be a usable IPv4 address", path)
-		}
-		if _, exists := seenPeers[addr]; exists {
-			return BGP{}, nil, fmt.Errorf("%s.address %q duplicates another peer", path, addr)
-		}
-		seenPeers[addr] = struct{}{}
-		bgp.Peers[i].Address = addr.String()
-		if err := validateASN(path+".asn", bgp.Peers[i].ASN); err != nil {
-			return BGP{}, nil, err
-		}
-	}
-	sort.Slice(bgp.Peers, func(i, j int) bool {
-		return bgp.Peers[i].Address < bgp.Peers[j].Address
-	})
-
-	exchanges, warnings, err := normalizeRouteExchanges(bgp.RouteExchanges, bgp.LocalASN, vip)
-	if err != nil {
-		return BGP{}, nil, err
-	}
-	bgp.RouteExchanges = exchanges
-	return bgp, warnings, nil
-}
-
-func normalizeRouteExchanges(input []RouteExchange, localASN uint32, vip netip.Addr) ([]RouteExchange, []Warning, error) {
-	exchanges := append([]RouteExchange(nil), input...)
-	seenNames := map[string]struct{}{}
-	seenPorts := map[int]struct{}{}
-	var warnings []Warning
-	for i := range exchanges {
-		path := fmt.Sprintf("controlPlaneEndpoint.advertisement.bgp.routeExchanges[%d]", i)
-		exchange := &exchanges[i]
-		exchange.Name = strings.TrimSpace(exchange.Name)
-		if len(exchange.Name) > 63 || !dnsLabelRE.MatchString(exchange.Name) {
-			return nil, nil, fmt.Errorf("%s.name %q must be a DNS-label-style name", path, exchange.Name)
-		}
-		if _, exists := seenNames[exchange.Name]; exists {
-			return nil, nil, fmt.Errorf("%s.name %q duplicates another route exchange", path, exchange.Name)
-		}
-		seenNames[exchange.Name] = struct{}{}
-		if exchange.ListenPort == 0 {
-			if len(exchanges) != 1 {
-				return nil, nil, fmt.Errorf("%s.listenPort is required when more than one route exchange is configured", path)
-			}
-			exchange.ListenPort = DefaultRouteExchangePort
-		}
-		if exchange.ListenPort < 1 || exchange.ListenPort > 65535 {
-			return nil, nil, fmt.Errorf("%s.listenPort must be between 1 and 65535", path)
-		}
-		if _, exists := seenPorts[exchange.ListenPort]; exists {
-			return nil, nil, fmt.Errorf("%s.listenPort %d duplicates another route exchange", path, exchange.ListenPort)
-		}
-		seenPorts[exchange.ListenPort] = struct{}{}
-		if exchange.PeerASN == 0 {
-			exchange.PeerASN = localASN
-		}
-		if err := validateASN(path+".peerASN", exchange.PeerASN); err != nil {
-			return nil, nil, err
-		}
-		envelopes, includesVIP, err := normalizeEnvelopes(path+".exportToFabric", exchange.ExportToFabric, vip)
-		if err != nil {
-			return nil, nil, err
-		}
-		exchange.ExportToFabric = envelopes
-		if includesVIP {
-			warnings = append(warnings, Warning{
-				Code:    "route-exchange-includes-api-vip",
-				Message: fmt.Sprintf("route exchange %q may export the API VIP independently of Katl's health gate", exchange.Name),
-			})
-		}
-	}
-	sort.Slice(exchanges, func(i, j int) bool { return exchanges[i].Name < exchanges[j].Name })
-	return exchanges, warnings, nil
-}
-
-func normalizeEnvelopes(path string, input []PrefixEnvelope, vip netip.Addr) ([]PrefixEnvelope, bool, error) {
-	byKey := map[string]PrefixEnvelope{}
-	includesVIP := false
-	for i, envelope := range input {
-		field := fmt.Sprintf("%s[%d]", path, i)
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(envelope.CIDR))
-		if err != nil || !prefix.Addr().Is4() {
-			return nil, false, fmt.Errorf("%s.cidr must be an IPv4 CIDR", field)
-		}
-		prefix = prefix.Masked()
-		envelope.CIDR = prefix.String()
-		if envelope.ExactPrefixLength != nil {
-			length := *envelope.ExactPrefixLength
-			if length < prefix.Bits() || length > 32 {
-				return nil, false, fmt.Errorf("%s.exactPrefixLength must be between %d and 32", field, prefix.Bits())
-			}
-		}
-		if prefix.Contains(vip) && (envelope.ExactPrefixLength == nil || *envelope.ExactPrefixLength == 32) {
-			includesVIP = true
-		}
-		key := envelope.CIDR + "/any"
-		if envelope.ExactPrefixLength != nil {
-			key = envelope.CIDR + "/" + strconv.Itoa(*envelope.ExactPrefixLength)
-		}
-		byKey[key] = envelope
-	}
-	keys := make([]string, 0, len(byKey))
-	for key := range byKey {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make([]PrefixEnvelope, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, byKey[key])
-	}
-	return out, includesVIP, nil
-}
-
-func usableIPv4(value string) (netip.Addr, error) {
-	addr, err := netip.ParseAddr(strings.TrimSpace(value))
-	if err != nil || !addr.Is4() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast() || addr.IsLinkLocalUnicast() || addr == netip.MustParseAddr("255.255.255.255") {
-		return netip.Addr{}, fmt.Errorf("not usable IPv4")
-	}
-	return addr, nil
-}
-
-func validateASN(path string, asn uint32) error {
-	switch asn {
-	case 0, 23456, 65535, 4294967295:
-		return fmt.Errorf("%s %d is reserved and cannot be used", path, asn)
-	default:
-		return nil
-	}
 }

@@ -181,3 +181,18 @@ go build \
     -ldflags="-s -w" \
     -o "$DESTDIR/usr/lib/katl/runtime/katl-ssh-host-keys" \
     ./cmd/katl-ssh-host-keys
+
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="$gomodcache" \
+go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w" \
+    -o "$DESTDIR/usr/lib/katl/runtime/katl-api-proxy" \
+    ./cmd/katl-api-proxy
+
+ln -sf ../katl-api-proxy.service \
+    "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-api-proxy.service"

@@ -209,6 +209,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 
 func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneSmokeRun) {
 	t.Helper()
+	const canonicalEndpoint = "api.unpublished.katl.test:6443"
 	options := smoke.Options
 	runner := smoke.Runner
 	scenario := smoke.Scenario
@@ -223,6 +224,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
 	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
 	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
+	contextPath := filepath.Join(result.RunDir, "katlctl.yaml")
 	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
 	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
@@ -317,16 +319,26 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	if err := writeThreeControlPlaneOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, nodes, addresses, enrollments); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeThreeControlPlaneWorkstationContext(contextPath, "three-control-plane", addresses, enrollments); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KATLCTL_CONFIG", contextPath)
 	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture, kubernetesBundle, cniFixtures, imageFixtures, nil); err != nil {
 		t.Fatal(err)
 	}
 
+	waitForCNIReactivation, cancelCNIReactivation, err := reactivateCNIFixturesAfterNextBoot(ctx, nodes, cniFixtures)
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("watch for bootstrap generation reboots: %v", err)
+	}
 	var stdout, stderr bytes.Buffer
 	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
-		"--control-plane-endpoint", cp1Address + ":6443",
+		"--control-plane-endpoint", canonicalEndpoint,
 		"--kubernetes-bundle", kubernetesBundle.Ref,
 		"--node-address", "cp-1=" + cp1Address,
 		"--node-address", "cp-2=" + cp2Address,
@@ -334,6 +346,12 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
 	}, bootstrapFixture), &stdout, &stderr)
+	if err != nil {
+		cancelCNIReactivation()
+	}
+	if reactivationErr := waitForCNIReactivation(); err == nil && reactivationErr != nil {
+		err = fmt.Errorf("reactivate test CNI after bootstrap generation reboot: %w", reactivationErr)
+	}
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
@@ -368,6 +386,14 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		assertOperationKubernetesBundle(t, record, kubernetesBundle)
 		assertGenerationKubernetesBundle(t, ctx, node, filepath.Join(evidenceDir, node.Name), record, kubernetesBundle)
 	}
+	for _, node := range nodes {
+		assertNodeAPIProxyAccess(t, ctx, node, canonicalEndpoint, cp1Address+":6443", true)
+	}
+	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp2Node, cp3Node} {
+		assertDirectJoinPathCleaned(t, ctx, node)
+	}
+	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cp1Address+":7445", "api.unpublished.katl.test")
+	assertKubeProxyLocalAPIAccess(t, ctx, kubeconfigPath, "api.unpublished.katl.test")
 
 	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3")
 	if err != nil {

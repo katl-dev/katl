@@ -88,7 +88,7 @@ katlctl config validate ./cluster.yaml
 ```
 
 The [installation reference](installing.md#author-one-clusterconfig) documents
-static networking, routed API advertisement, data volumes, native kubeadm
+static networking, managed API VIP ownership, data volumes, native kubeadm
 configuration, kernel arguments, and system extensions.
 
 The first config or install preparation prints the path of a newly created

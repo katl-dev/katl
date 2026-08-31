@@ -11,11 +11,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer"
@@ -96,7 +98,7 @@ func NewServer(root string, store operation.Store) *Server {
 		Store:                    store,
 		AgentStartID:             startID,
 		StartedAt:                now,
-		SupportedOperationKinds:  append([]string(nil), bootstrapOperationKinds...),
+		SupportedOperationKinds:  slices.Clone(bootstrapOperationKinds),
 		RunJoinMaterial:          runChildProcess,
 		RunEndpointLifecycle:     runChildProcess,
 		RunKubernetesStatus:      runChildProcess,
@@ -216,6 +218,10 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read control-plane endpoint status: %v", err)
 	}
+	apiProxyStatus, err := nodeAPIProxyStatus(s.Root)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read API proxy status: %v", err)
+	}
 	kubernetesStatus, err := nodeKubernetesStatus(ctx, s.Root, s.RunKubernetesStatus)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read Kubernetes status: %v", err)
@@ -242,12 +248,13 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		AgentStartId:            s.AgentStartID,
 		AgentStartedAt:          formatTime(s.StartedAt),
 		SupportedApiVersions:    []string{APIVersion},
-		SupportedOperationKinds: append([]string(nil), s.supportedOperationKinds()...),
+		SupportedOperationKinds: slices.Clone(s.supportedOperationKinds()),
 		OperationLockHeld:       len(ids) > 0,
 		ActiveOperationIds:      ids,
 		CurrentGenerationId:     currentGenerationID,
 		BootTargetGenerationId:  bootTargetGenerationID,
 		ControlPlaneEndpoint:    endpointStatus,
+		ApiProxy:                apiProxyStatus,
 		Kubernetes:              kubernetesStatus,
 		SystemExtensions:        systemExtensions,
 		Volumes:                 volumes,
@@ -389,7 +396,7 @@ func (s *Server) CreateWorkerJoinMaterial(ctx context.Context, req *agentapi.Cre
 	response := &agentapi.CreateWorkerJoinMaterialResponse{
 		MaterialRef: workerJoinMaterialRef(req.RequestRef, material, expiresAt),
 		WorkerJoinMaterial: &agentapi.WorkerJoinMaterial{
-			JoinArgv:            append([]string(nil), material.Argv...),
+			JoinArgv:            slices.Clone(material.Argv),
 			ExpiresAt:           expiresAt.Format(time.RFC3339),
 			DiscoveryKubeconfig: discoveryKubeconfig,
 		},
@@ -1151,7 +1158,7 @@ func (s *Server) supportedOperationKinds() []string {
 	if len(s.SupportedOperationKinds) > 0 {
 		kinds = s.SupportedOperationKinds
 	}
-	return append([]string(nil), kinds...)
+	return slices.Clone(kinds)
 }
 
 func (s *Server) clock() time.Time {
@@ -1244,14 +1251,14 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 		RequestDigest:           record.RequestDigest,
 		Phase:                   record.Phase,
 		PhaseIndex:              int32(record.PhaseIndex),
-		CompletedPhases:         append([]string(nil), record.CompletedPhases...),
+		CompletedPhases:         slices.Clone(record.CompletedPhases),
 		Terminal:                record.Terminal,
 		Result:                  record.Result,
 		PreviousGenerationId:    record.PreviousGenerationID,
 		CandidateGenerationId:   record.CandidateGenerationID,
 		ExternalMutationStarted: record.ExternalMutationStarted,
-		MutationScopes:          append([]string(nil), record.MutationScopes...),
-		ResourceLocks:           append([]string(nil), record.ResourceLocks...),
+		MutationScopes:          slices.Clone(record.MutationScopes),
+		ResourceLocks:           slices.Clone(record.ResourceLocks),
 		LatestJournalSeq:        int32(record.LatestJournalSeq),
 		UpdatedAt:               formatTime(record.UpdatedAt),
 		NextAction:              record.NextAction,
@@ -1265,7 +1272,7 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 		PostKubeadmHealthState:  record.PostKubeadmHealthState,
 		BootHealthPending:       record.BootHealthPending,
 		ConfigApplyPhase:        record.ConfigApplyPhase,
-		ChangedDomains:          append([]string(nil), record.ChangedDomains...),
+		ChangedDomains:          slices.Clone(record.ChangedDomains),
 	}
 	if strings.TrimSpace(record.CandidateGenerationID) == "" {
 		return out
@@ -1434,6 +1441,15 @@ func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapO
 	if strings.TrimSpace(request.BootstrapProfileRef) == "" {
 		return fmt.Errorf("bootstrapProfileRef is required")
 	}
+	if strings.TrimSpace(request.GetApiProxyConfig()) != "" {
+		var proxy apiproxy.Config
+		if err := json.Unmarshal([]byte(request.GetApiProxyConfig()), &proxy); err != nil {
+			return fmt.Errorf("apiProxyConfig: %w", err)
+		}
+		if _, err := apiproxy.Normalize(proxy); err != nil {
+			return fmt.Errorf("apiProxyConfig: %w", err)
+		}
+	}
 	if strings.TrimSpace(request.CandidateGenerationId) != "" {
 		if err := cleanPublicID("candidateGenerationID", request.CandidateGenerationId); err != nil {
 			return err
@@ -1494,6 +1510,7 @@ func bootstrapRequestFromProto(request *agentapi.BootstrapOperationRequest) oper
 		KubeadmInputDigest:       strings.TrimSpace(request.KubeadmInputDigest),
 		JoinMaterialRef:          strings.TrimSpace(request.JoinMaterialRef),
 		ExistingClusterJoin:      request.GetExistingClusterJoin(),
+		APIProxyConfig:           strings.TrimSpace(request.GetApiProxyConfig()),
 	}
 }
 
@@ -1579,7 +1596,7 @@ func joinMaterial(material *agentapi.WorkerJoinMaterial) (cluster.JoinMaterial, 
 	if err != nil {
 		return cluster.JoinMaterial{}, err
 	}
-	parsed.DiscoveryKubeconfig = append([]byte(nil), material.GetDiscoveryKubeconfig()...)
+	parsed.DiscoveryKubeconfig = slices.Clone(material.GetDiscoveryKubeconfig())
 	return parsed, nil
 }
 
@@ -1696,7 +1713,7 @@ func workerJoinMaterialDigest(material *agentapi.WorkerJoinMaterial) string {
 		ExpiresAt             string   `json:"expiresAt"`
 		DiscoveryConfigSHA256 string   `json:"discoveryConfigSHA256,omitempty"`
 	}{
-		JoinArgv:              append([]string(nil), material.GetJoinArgv()...),
+		JoinArgv:              slices.Clone(material.GetJoinArgv()),
 		ExpiresAt:             strings.TrimSpace(material.GetExpiresAt()),
 		DiscoveryConfigSHA256: discoveryDigest,
 	}
@@ -1711,7 +1728,7 @@ func workerJoinMaterialRef(requestRef string, material cluster.JoinMaterial, exp
 		return requestRef
 	}
 	payload := agentapi.WorkerJoinMaterial{
-		JoinArgv:  append([]string(nil), material.Argv...),
+		JoinArgv:  slices.Clone(material.Argv),
 		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
 	}
 	return "worker-join:" + workerJoinMaterialDigest(&payload)[:12]

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/generation"
 )
 
@@ -79,13 +79,13 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 	if err != nil {
 		return e.failBeforeActivation(status, err)
 	}
-	if containsDomainAction(status.DomainActions, DomainControlPlaneEndpointRouting) {
-		enabled, err := e.endpointAdvertisementEnabled(plan.GenerationRecord)
+	if containsDomainAction(status.DomainActions, DomainControlPlaneEndpointVIP) {
+		enabled, err := e.endpointOwnershipEnabled(plan.GenerationRecord)
 		if err != nil {
 			return e.failBeforeActivation(status, err)
 		}
 		if !enabled {
-			return e.failBeforeActivation(status, errors.New("control-plane endpoint routing cannot be applied because VIP advertisement is not enabled"))
+			return e.failBeforeActivation(status, errors.New("control-plane endpoint VIP cannot be applied because VIP ownership is not enabled"))
 		}
 	}
 	status, err = generation.MarkConfigApplyPhase(status, generation.ConfigApplyPhaseActivating, e.now())
@@ -137,7 +137,7 @@ func containsDomainAction(actions []generation.ConfigApplyDomainAction, domain s
 	return false
 }
 
-func (e Executor) endpointAdvertisementEnabled(record generation.Record) (bool, error) {
+func (e Executor) endpointOwnershipEnabled(record generation.Record) (bool, error) {
 	for _, candidate := range record.Confexts {
 		if !generation.IsGeneratedConfextName(candidate.Name) {
 			continue
@@ -146,7 +146,7 @@ func (e Executor) endpointAdvertisementEnabled(record generation.Record) (bool, 
 		if strings.TrimSpace(e.Root) == "" {
 			root = string(filepath.Separator)
 		}
-		path := filepath.Join(root, strings.TrimPrefix(candidate.Path, "/"), strings.TrimPrefix(bgpapivip.AdvertisementEnabledPath, "/"))
+		path := filepath.Join(root, strings.TrimPrefix(candidate.Path, "/"), strings.TrimPrefix(apivip.OwnershipEnabledPath, "/"))
 		info, err := os.Stat(path)
 		switch {
 		case err == nil:
@@ -154,7 +154,7 @@ func (e Executor) endpointAdvertisementEnabled(record generation.Record) (bool, 
 		case errors.Is(err, os.ErrNotExist):
 			return false, nil
 		default:
-			return false, fmt.Errorf("inspect VIP advertisement configuration: %w", err)
+			return false, fmt.Errorf("inspect API VIP ownership configuration: %w", err)
 		}
 	}
 	return false, nil
@@ -295,13 +295,13 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		commands = append(commands, Command{Name: "node-metadata-refresh", Argv: []string{"systemctl", "try-reload-or-restart", "katl-runtime-handoff-status.service"}})
 	case DomainVolumes:
 		commands = append(commands, Command{Name: "volume-mount-activate", Argv: []string{"systemctl", "restart", "katl-volumes.target"}})
-	case DomainControlPlaneEndpointRouting:
+	case DomainAPIProxy:
+		commands = append(commands, Command{Name: "api-proxy-restart", Argv: []string{"systemctl", "restart", "katl-api-proxy.service"}})
+	case DomainControlPlaneEndpointVIP:
 		commands = append(commands,
-			Command{Name: "endpoint-routing-validate", Argv: []string{bgpapivip.BirdExecutablePath, "-p", "-c", bgpapivip.BirdConfigPath}},
-			Command{Name: "endpoint-withdraw", Argv: []string{"systemctl", "stop", "katl-app-bgp-api-vip.service"}},
+			Command{Name: "endpoint-release", Argv: []string{"systemctl", "stop", "katl-app-api-vip.service"}},
 			Command{Name: "endpoint-link-reload", Argv: []string{"networkctl", "reload"}},
-			Command{Name: "endpoint-routing-reload", Argv: []string{bgpapivip.BirdClientPath, "-s", bgpapivip.BirdControlSocketPath, "configure"}},
-			Command{Name: "endpoint-resume", Argv: []string{"systemctl", "start", "katl-app-bgp-api-vip.service"}},
+			Command{Name: "endpoint-resume", Argv: []string{"systemctl", "start", "katl-app-api-vip.service"}},
 		)
 	default:
 		return nil, fmt.Errorf("domain %q has no bounded live executor action", domain)

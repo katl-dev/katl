@@ -696,7 +696,7 @@ func runWriteEndpointAdvertiserSysext(args []string, stdout, stderr io.Writer, c
 	flags := flag.NewFlagSet("katl-mkosi-artifacts write-endpoint-advertiser-sysext", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	artifact := flags.String("artifact", filepath.Join("_build", "mkosi", "katl-endpoint-advertiser.raw"), "endpoint advertiser sysext artifact")
-	logPath := flags.String("log", "", "mkosi output log containing the resolved BIRD package")
+	flags.String("log", "", "mkosi output log")
 	runtimeArtifact := flags.String("runtime-artifact", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs"), "compatible runtime root artifact")
 	runtimeMetadata := flags.String("runtime-metadata", filepath.Join("_build", "mkosi", "katl-runtime-root.squashfs.json"), "compatible runtime root metadata")
 	if err := flags.Parse(args); err != nil {
@@ -704,13 +704,6 @@ func runWriteEndpointAdvertiserSysext(args []string, stdout, stderr io.Writer, c
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
-	}
-	if strings.TrimSpace(*logPath) == "" {
-		return fmt.Errorf("--log is required")
-	}
-	birdVersion, err := resolvedPackageVersion(*logPath, "bird")
-	if err != nil {
-		return err
 	}
 	runtimeSHA, err := resolveRuntimeSHA(cfg.RepoRoot, "", absPath(cfg.RepoRoot, *runtimeMetadata))
 	if err != nil {
@@ -734,7 +727,6 @@ func runWriteEndpointAdvertiserSysext(args []string, stdout, stderr io.Writer, c
 		Version:          cfg.Generation,
 		PayloadVersion:   firstNonEmpty(cfg.Version, cfg.Generation),
 		Architecture:     cfg.Architecture,
-		PackageVersions:  map[string]string{"bird": birdVersion},
 		RuntimeInterface: "katl-runtime-1",
 		CompatibleRuntime: &runtimeCompat{
 			Interface:      "katl-runtime-1",

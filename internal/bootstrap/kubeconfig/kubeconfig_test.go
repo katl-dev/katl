@@ -124,6 +124,31 @@ func TestEndpointSelection(t *testing.T) {
 	}
 }
 
+func TestWriteUsesVerifiedNodeProxyWithCanonicalTLSIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "operator.conf")
+	request := validRequest(path)
+	request.Endpoint = EndpointSelection{
+		ControlPlaneEndpoint: "api.home.arpa:6443",
+		ProxyEndpoint:        "10.20.0.11:7445",
+		ProxyEndpointReady:   true,
+		TLSServerName:        "api.home.arpa",
+	}
+	result, err := Write(request)
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if result.Server != "https://10.20.0.11:7445" || result.TLSServerName != "api.home.arpa" || result.Access != "node-proxy" {
+		t.Fatalf("result = %#v", result)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "tls-server-name: api.home.arpa") {
+		t.Fatalf("proxy kubeconfig does not preserve canonical TLS identity:\n%s", data)
+	}
+}
+
 func TestWriteRefusesDifferentExistingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operator.conf")
 	if err := os.WriteFile(path, []byte("different\n"), 0o600); err != nil {

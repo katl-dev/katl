@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -50,6 +51,7 @@ type BootRootMounter func(context.Context, string) error
 type BootEntrySetter func(context.Context, string, string) error
 type HostUpgradeResolver func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error)
 type ContextWaiter func(context.Context, time.Duration) error
+type LocalAPIAccessConfigurator func(context.Context, string, operation.BootstrapRequest, ToolRunner) error
 
 type Executor struct {
 	Root                 string
@@ -69,6 +71,7 @@ type Executor struct {
 	BundleClient         *http.Client
 	ResolveHostUpgrade   HostUpgradeResolver
 	WaitBeforeKubeadm    ContextWaiter
+	ConfigureLocalAPI    LocalAPIAccessConfigurator
 	Async                bool
 	workerMu             sync.Mutex
 	workerWG             sync.WaitGroup
@@ -94,6 +97,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		MountBootRoot:        mountRuntimeBootRoot,
 		BundleClient:         http.DefaultClient,
 		WaitBeforeKubeadm:    waitForContext,
+		ConfigureLocalAPI:    configureLocalAPIAccess,
 		Async:                true,
 		workerCtx:            workerCtx,
 		workerCancel:         workerCancel,
@@ -242,33 +246,23 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		_, markErr := e.failRecordPhase(record.OperationID, "join-material-expired", "bootstrap-runtime-ready", "bootstrap-runtime-ready", "submit a new worker join operation with unexpired join material", fmt.Errorf("%s", expired))
 		return markErr
 	}
-	endpointSuspended := false
 	var managedRoute *managedJoinRoute
-	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane {
+	var directJoinPath *directControlPlaneJoinPath
+	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane && record.BootstrapRequest != nil && record.BootstrapRequest.ExistingClusterJoin {
 		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if record.BootstrapRequest != nil && record.BootstrapRequest.ExistingClusterJoin {
-			managedRoute, err = pinManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
-		} else {
-			endpointSuspended, managedRoute, err = suspendManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
-		}
+		managedRoute, err = pinManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
 		lifecycleCancel()
 		if err != nil {
 			_, markErr := e.failRecordPhase(record.OperationID, "managed-endpoint-join-path-failed", "managed-endpoint-lifecycle", "prepare-managed-endpoint", "repair the managed endpoint join path before retrying the control-plane join", err)
 			return errors.Join(err, markErr)
 		}
-		if endpointSuspended {
-			updatedAt := e.clock()
-			record, err = e.Store.Update(record.OperationID, "managed-endpoint-suspended", "managed-endpoint-lifecycle", func(record operation.OperationRecord) (operation.OperationRecord, error) {
-				record.Phase = "suspend-managed-endpoint"
-				record.CompletedPhases = appendMissing(record.CompletedPhases, "suspend-managed-endpoint")
-				record.PhaseIndex = len(record.CompletedPhases)
-				record.NextAction = "run control-plane join while the managed endpoint is off the local path"
-				record.UpdatedAt = updatedAt
-				return record, nil
-			})
-			if err != nil {
-				return err
-			}
+	} else if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane && record.BootstrapRequest != nil {
+		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		directJoinPath, err = installDirectControlPlaneJoinPath(lifecycleCtx, e.Root, record.BootstrapRequest.ControlPlaneEndpoint, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
+		lifecycleCancel()
+		if err != nil {
+			_, markErr := e.failRecordPhase(record.OperationID, "direct-control-plane-join-path-failed", "bootstrap-runtime-ready", "bootstrap-runtime-ready", "repair direct access to the init control plane before retrying the control-plane join", err)
+			return errors.Join(err, markErr)
 		}
 	}
 	markerID := strings.TrimSpace(plan.MarkerID)
@@ -287,7 +281,7 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		Phase:                  plan.Phase,
 		Tool:                   filepath.Base(plan.Argv[0]),
 		ArgvDigest:             argvDigest,
-		ExpectedMutationScopes: append([]string(nil), plan.MutationScopes...),
+		ExpectedMutationScopes: slices.Clone(plan.MutationScopes),
 		MarkedAt:               startedAt,
 	}
 	if _, err := e.Store.Update(record.OperationID, markerID+"-start", "pre-exec-mutation", func(record operation.OperationRecord) (operation.OperationRecord, error) {
@@ -340,6 +334,17 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		lifecycleCancel()
 		if routeErr != nil {
 			result.Err = errors.Join(result.Err, routeErr)
+			if result.ExitStatus == 0 {
+				result.ExitStatus = -1
+			}
+		}
+	}
+	if directJoinPath != nil {
+		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		pathErr := directJoinPath.cleanup(lifecycleCtx, e.Root, e.endpointLifecycleRunner())
+		lifecycleCancel()
+		if pathErr != nil {
+			result.Err = errors.Join(result.Err, pathErr)
 			if result.ExitStatus == 0 {
 				result.ExitStatus = -1
 			}
@@ -432,20 +437,17 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if result.ExitStatus != 0 {
 		return fmt.Errorf("run %s: exit status %d", plan.Argv[0], result.ExitStatus)
 	}
-	if endpointSuspended {
-		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err := resumeManagedEndpointAfterJoin(lifecycleCtx, e.Root, e.endpointLifecycleRunner())
-		lifecycleCancel()
-		if err != nil {
-			_, markErr := e.failRecordPhase(record.OperationID, "managed-endpoint-restore-failed", "managed-endpoint-lifecycle", "restore-managed-endpoint", "repair the managed endpoint interface after kubeadm joined the control plane", err)
+	if record.BootstrapRequest != nil {
+		if err := e.localAPIAccessConfigurator()(ctx, e.Root, *record.BootstrapRequest, e.toolRunner()); err != nil {
+			_, markErr := e.failRecordPhase(record.OperationID, "local-api-access-failed", "local-api-access", "configure-local-api-access", "repair the node-local API proxy path before retrying local Kubernetes health checks", err)
 			return errors.Join(err, markErr)
 		}
 		updatedAt := e.clock()
-		if _, err := e.Store.Update(record.OperationID, "managed-endpoint-restored", "managed-endpoint-lifecycle", func(record operation.OperationRecord) (operation.OperationRecord, error) {
-			record.Phase = "restore-managed-endpoint"
-			record.CompletedPhases = appendMissing(record.CompletedPhases, "restore-managed-endpoint")
+		if _, err := e.Store.Update(record.OperationID, "local-api-access-complete", "local-api-access", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+			record.Phase = "configure-local-api-access"
+			record.CompletedPhases = appendMissing(record.CompletedPhases, "configure-local-api-access")
 			record.PhaseIndex = len(record.CompletedPhases)
-			record.NextAction = "run bounded post-kubeadm health checks"
+			record.NextAction = "run bounded post-kubeadm health checks through the node-local API proxy"
 			record.UpdatedAt = updatedAt
 			return record, nil
 		}); err != nil {
@@ -929,6 +931,13 @@ func (e *Executor) poweroffRunner() ToolRunner {
 	return runChildProcess
 }
 
+func (e *Executor) localAPIAccessConfigurator() LocalAPIAccessConfigurator {
+	if e.ConfigureLocalAPI != nil {
+		return e.ConfigureLocalAPI
+	}
+	return configureLocalAPIAccess
+}
+
 func requiresBootstrapRuntime(record operation.OperationRecord) bool {
 	if record.BootstrapRequest == nil {
 		return false
@@ -1013,6 +1022,7 @@ func bootstrapReadinessCommands(candidate, configPath string) [][]string {
 		[]string{"/usr/bin/test", "-x", "/usr/bin/kubelet"},
 		[]string{"/usr/bin/systemctl", "start", "etc-kubernetes.mount"},
 		[]string{"/usr/bin/systemctl", "start", "containerd.service"},
+		[]string{"/usr/bin/systemctl", "start", "katl-api-proxy.service"},
 		[]string{"/usr/bin/systemctl", "start", "katl-state-projection-check.service"},
 		[]string{"/usr/bin/systemctl", "start", "katl-kubeadm-ready.target"},
 		[]string{"/usr/bin/systemctl", "is-active", "--quiet", "katl-kubeadm-ready.target"},
@@ -1345,8 +1355,8 @@ func executorPlan(record operation.OperationRecord) (toolPlan, error) {
 		return toolPlan{}, fmt.Errorf("operation executor plan is required")
 	}
 	plan := *record.ExecutorPlan
-	plan.MutationScopes = append([]string(nil), plan.MutationScopes...)
-	plan.Argv = append([]string(nil), plan.Argv...)
+	plan.MutationScopes = slices.Clone(plan.MutationScopes)
+	plan.Argv = slices.Clone(plan.Argv)
 	return plan, validateToolPlan(plan)
 }
 

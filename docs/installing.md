@@ -332,9 +332,9 @@ or erase it: Katl retains an unmounted generation binding for that logical
 name, so re-adding the same exact identity preserves its data and selecting a
 different identity still requires `--rebind-volume`.
 
-For a routed endpoint advertised by Katl, add the VIP and fabric peers. Katl
-then installs and runs the endpoint advertiser only on control-plane nodes;
-external endpoints and workers do not run BIRD:
+For a Katl-managed endpoint, add the VIP. Katl owns that address only on
+healthy control-plane nodes; external endpoints and workers do not run the VIP
+controller:
 
 ```yaml
 spec:
@@ -342,19 +342,11 @@ spec:
     host: api.home.arpa
     advertisement:
       vip: 10.40.0.10
-      bgp:
-        localASN: 64512
-        peers:
-          - address: 10.0.0.1
-            asn: 64500
 ```
 
-The API port defaults to `6443`. The router must be configured to peer with
-each control-plane node. Katl starts the VIP route withdrawn and advertises it
-only after that node's kube-apiserver is ready.
-
-Advanced operators may instead let Katl own only the health-gated local VIP
-and use arbitrary native routing software:
+The API port defaults to `6443`. Katl starts with the VIP released and acquires
+it only after that node's kube-apiserver is ready. If the VIP must be routed,
+configure routing separately with native system extensions. For example:
 
 ```yaml
 spec:

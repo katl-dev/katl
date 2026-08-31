@@ -234,7 +234,6 @@ fi
 for arg in "$@"; do
   if [[ "$arg" == "endpoint-advertiser-sysext" ]]; then
     printf 'endpoint advertiser\n' >"$KATL_MKOSI_BUILD_DIR/katl-endpoint-advertiser.raw"
-    printf 'bird x 2.17.1-1.fc44 fedora\n'
     exit 0
   fi
 done

@@ -1,0 +1,26 @@
+[Unit]
+Description=Provide publication-independent Kubernetes API access
+Documentation=man:systemd.service(5)
+ConditionPathExists=/etc/katl/api-proxy/config.json
+Wants=network-online.target
+After=network-online.target etc-kubernetes.mount
+Before=kubelet.service
+RequiresMountsFor=/etc/kubernetes
+
+[Service]
+Type=simple
+RuntimeDirectory=katl/api-proxy
+ExecStart=/usr/lib/katl/runtime/katl-api-proxy
+Restart=always
+RestartSec=2s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=katl-api-proxy
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/katl/api-proxy
+
+[Install]
+WantedBy=multi-user.target

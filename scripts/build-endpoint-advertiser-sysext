@@ -17,7 +17,7 @@ fingerprint() {
         printf 'build=%s\n' "${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
         find \
             "$repo_root/cmd/katl-endpoint-advertiser" \
-            "$repo_root/internal/installer/bgpapivip" \
+            "$repo_root/internal/installer/apivip" \
             "$repo_root/mkosi.profiles/endpoint-advertiser-sysext" \
             -type f -print0 | sort -z | xargs -0 sha256sum
         sha256sum \

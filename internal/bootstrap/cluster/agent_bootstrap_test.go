@@ -2,15 +2,18 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -42,6 +45,31 @@ func TestRunAgentBootstrapDryRunContactsAgentAndPropagatesOverride(t *testing.T)
 	}
 	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "dry-run"}) {
 		t.Fatalf("phases = %#v", got)
+	}
+}
+
+func TestBootstrapAPIProxyConfigUsesDirectInventoryAddresses(t *testing.T) {
+	plan := inventory.Plan{
+		ControlPlaneEndpoint: "api.unpublished.katl.test:6443",
+		Nodes: []inventory.PlannedNode{
+			{Name: "cp-1", SystemRole: inventory.RoleControlPlane, Address: "192.0.2.11"},
+			{Name: "cp-2", SystemRole: inventory.RoleControlPlane, Address: "192.0.2.12"},
+			{Name: "worker-1", SystemRole: inventory.RoleWorker, Address: "192.0.2.21"},
+		},
+	}
+	rendered, err := bootstrapAPIProxyConfig(plan.Nodes[1], plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config apiproxy.Config
+	if err := json.Unmarshal([]byte(rendered), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.CanonicalEndpoint != plan.ControlPlaneEndpoint || config.TLSName != "api.unpublished.katl.test" {
+		t.Fatalf("proxy identity = %#v", config)
+	}
+	if len(config.Listeners) != 2 || len(config.Backends) != 2 || !config.Backends[1].Local {
+		t.Fatalf("proxy topology = %#v", config)
 	}
 }
 
@@ -119,10 +147,10 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "stable-endpoint", "control-plane-join", "kubeconfig", "user-bootstrap"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "control-plane-join", "api-proxy", "kubeconfig", "user-bootstrap"}) {
 		t.Fatalf("phases = %#v", got)
 	}
-	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[4].OperationID != "bootstrap-join-control-plane-1" {
+	if result.Phases[2].OperationID != "bootstrap-init-1" || result.Phases[3].OperationID != "bootstrap-join-control-plane-1" {
 		t.Fatalf("operation phases = %#v", result.Phases)
 	}
 	if len(cpClient.createMaterialRequests) != 1 {
@@ -160,7 +188,7 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 		t.Fatalf("source join material endpoint = %q, want unmodified agent response", got)
 	}
 	if len(bootstrapRunner.requests) != 2 {
-		t.Fatalf("bootstrap requests = %d, want stable endpoint check and node labels", len(bootstrapRunner.requests))
+		t.Fatalf("bootstrap requests = %d, want proxy check and node labels", len(bootstrapRunner.requests))
 	}
 	labelRequest := bootstrapRunner.requests[1]
 	if len(labelRequest.Manifests) != 1 {
@@ -351,14 +379,15 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 		KubernetesIdentity:            []byte("operator-secret"),
 		KubernetesIdentityFingerprint: "sha256:identity",
 	}, AgentBootstrapDependencies{
-		Connector:    connector,
-		Actor:        "test-actor",
-		WatchTimeout: time.Second,
+		Connector:       connector,
+		Actor:           "test-actor",
+		WatchTimeout:    time.Second,
+		BootstrapRunner: &fakeBootstrapRunner{},
 	})
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "kubeconfig"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "api-proxy", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
 	}
 	if len(client.submitRequests) != 1 {
@@ -377,7 +406,7 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	if string(req.Bootstrap.KubernetesIdentity) != "operator-secret" || req.Bootstrap.KubernetesIdentityFingerprint != "sha256:identity" {
 		t.Fatalf("bootstrap identity request = %#v", req.Bootstrap)
 	}
-	if result.Kubeconfig.Path != out || result.Kubeconfig.Server != "https://api.katl.test:6443" {
+	if result.Kubeconfig.Path != out || result.Kubeconfig.Server != "https://10.0.0.11:7445" || result.Kubeconfig.TLSServerName != "api.katl.test" {
 		t.Fatalf("kubeconfig result = %#v", result.Kubeconfig)
 	}
 }
@@ -416,14 +445,14 @@ func TestRunAgentBootstrapResumesInterruptedInit(t *testing.T) {
 		Inventory:           inv,
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
-	}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})})
+	}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client}), BootstrapRunner: &fakeBootstrapRunner{}})
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
 	if len(client.submitRequests) != 0 {
 		t.Fatalf("resumed bootstrap submitted %d new operations", len(client.submitRequests))
 	}
-	if result.Kubeconfig.Path != out || result.Phases[len(result.Phases)-2].OperationID != status.OperationId {
+	if result.Kubeconfig.Path != out || result.Phases[2].OperationID != status.OperationId {
 		t.Fatalf("resumed result = %+v", result)
 	}
 }
@@ -519,14 +548,15 @@ func TestRunAgentBootstrapRebootsCandidateWithoutRequiringCNI(t *testing.T) {
 		KubeconfigOut:       filepath.Join(t.TempDir(), "kubeconfig"),
 		OverwriteKubeconfig: true,
 	}, AgentBootstrapDependencies{
-		Connector:    newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client}),
-		PollInterval: time.Millisecond,
-		BootWait:     time.Second,
+		Connector:       newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client}),
+		PollInterval:    time.Millisecond,
+		BootWait:        time.Second,
+		BootstrapRunner: &fakeBootstrapRunner{},
 	})
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "boot-health", "kubeconfig"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "boot-health", "api-proxy", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
 	}
 	if len(client.rebootRequests) != 1 || client.rebootRequests[0].GetTargetGenerationId() != candidate {
@@ -621,21 +651,21 @@ func TestRunAgentBootstrapRunsUserBootstrapWithReturnedKubeconfig(t *testing.T) 
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "kubeconfig", "user-bootstrap"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "api-proxy", "kubeconfig", "user-bootstrap"}) {
 		t.Fatalf("phases = %#v", got)
 	}
-	if len(bootstrapRunner.requests) != 1 {
-		t.Fatalf("bootstrap calls = %d, want 1", len(bootstrapRunner.requests))
+	if len(bootstrapRunner.requests) != 2 {
+		t.Fatalf("bootstrap calls = %d, want proxy verification and user bootstrap", len(bootstrapRunner.requests))
 	}
-	if bootstrapRunner.requests[0].Credentials.ClientKeyData != testKey {
-		t.Fatalf("bootstrap credentials = %#v", bootstrapRunner.requests[0].Credentials)
+	if bootstrapRunner.requests[1].Credentials.ClientKeyData != testKey {
+		t.Fatalf("bootstrap credentials = %#v", bootstrapRunner.requests[1].Credentials)
 	}
 	if result.Kubeconfig.Server != "https://api.stable.test:6443" {
 		t.Fatalf("kubeconfig server = %q, want stable endpoint", result.Kubeconfig.Server)
 	}
 }
 
-func TestRunAgentBootstrapVerifiesManagedEndpointAfterInit(t *testing.T) {
+func TestRunAgentBootstrapUsesProxyWithoutWaitingForManagedEndpoint(t *testing.T) {
 	client := &fakeAgentClient{
 		status: readyAgentStatus("machine-cp-1"),
 		accepted: &agentapi.OperationAccepted{
@@ -671,11 +701,14 @@ func TestRunAgentBootstrapVerifiesManagedEndpointAfterInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "stable-endpoint", "kubeconfig"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "api-proxy", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
 	}
-	if len(bootstrapRunner.requests) != 1 || bootstrapRunner.requests[0].StableEndpoint != "api.katl.test:6443" {
+	if len(bootstrapRunner.requests) != 1 || bootstrapRunner.requests[0].Server != "10.0.0.11:7445" || bootstrapRunner.requests[0].StableEndpoint != "" || bootstrapRunner.requests[0].TLSServerName != "api.katl.test" {
 		t.Fatalf("endpoint checks = %#v", bootstrapRunner.requests)
+	}
+	if result.Kubeconfig.Server != "https://10.0.0.11:7445" || result.Kubeconfig.Access != "node-proxy" {
+		t.Fatalf("kubeconfig = %#v", result.Kubeconfig)
 	}
 }
 
@@ -702,7 +735,7 @@ func TestRunAgentBootstrapStopsAfterUserBootstrapFailure(t *testing.T) {
 	}
 	connector := newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})
 	out := filepath.Join(t.TempDir(), "operator.conf")
-	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("rollout timed out")}
+	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("rollout timed out"), errAfter: 2}
 	result, err := RunAgentBootstrap(context.Background(), Request{
 		Inventory:           validSingleNodeInventory(),
 		KubeconfigOut:       out,
@@ -716,7 +749,7 @@ func TestRunAgentBootstrapStopsAfterUserBootstrapFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "rollout timed out") {
 		t.Fatalf("RunAgentBootstrap() error = %v, want user bootstrap failure", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "kubeconfig", "user-bootstrap"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "api-proxy", "kubeconfig", "user-bootstrap"}) {
 		t.Fatalf("phases = %#v", got)
 	}
 	if result.Phases[len(result.Phases)-1].Status != "failed" {
@@ -786,13 +819,14 @@ func TestRunAgentBootstrapMintsWorkerJoinMaterialAndSubmitsWorkerJoin(t *testing
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
 	}, AgentBootstrapDependencies{
-		Connector: connector,
-		Actor:     "test-actor",
+		Connector:       connector,
+		Actor:           "test-actor",
+		BootstrapRunner: &fakeBootstrapRunner{},
 	})
 	if err != nil {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "worker-join", "kubeconfig"}) {
+	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "worker-join", "api-proxy", "kubeconfig"}) {
 		t.Fatalf("phases = %#v", got)
 	}
 	if len(cpClient.createMaterialRequests) != 1 {
@@ -815,11 +849,11 @@ func TestRunAgentBootstrapMintsWorkerJoinMaterialAndSubmitsWorkerJoin(t *testing
 	if workerReq.Bootstrap.WorkerJoinMaterial == nil || workerReq.Bootstrap.WorkerJoinMaterial.ExpiresAt != "2026-06-16T13:00:00Z" {
 		t.Fatalf("worker join material = %#v", workerReq.Bootstrap.WorkerJoinMaterial)
 	}
-	if got := workerReq.Bootstrap.WorkerJoinMaterial.GetJoinArgv()[2]; got != "api.katl.test:6443" {
-		t.Fatalf("worker join discovery endpoint = %q, want stable endpoint", got)
+	if got := workerReq.Bootstrap.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.0.0.11:6443" {
+		t.Fatalf("worker join discovery endpoint = %q, want init-node endpoint", got)
 	}
-	if len(workerReq.Bootstrap.WorkerJoinMaterial.GetDiscoveryKubeconfig()) != 0 {
-		t.Fatalf("worker join unexpectedly received file discovery material")
+	if discovery := string(workerReq.Bootstrap.WorkerJoinMaterial.GetDiscoveryKubeconfig()); !strings.Contains(discovery, "server: https://10.0.0.11:6443") || !strings.Contains(discovery, "certificate-authority-data: "+testCA) {
+		t.Fatalf("worker join discovery kubeconfig = %q", discovery)
 	}
 }
 
@@ -1000,7 +1034,7 @@ func (c *fakeAgentClient) WatchOperation(context.Context, *agentapi.WatchOperati
 	if c.watchErr != nil {
 		return nil, c.watchErr
 	}
-	return &fakeAgentWatch{events: append([]*agentapi.OperationEvent(nil), c.events...)}, nil
+	return &fakeAgentWatch{events: slices.Clone(c.events)}, nil
 }
 
 type fakeAgentWatch struct {

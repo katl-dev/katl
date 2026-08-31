@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
@@ -318,6 +319,15 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	if request.BootstrapProfileRef != intent.BootstrapProfile.Ref {
 		return fmt.Errorf("bootstrapRequest bootstrapProfileRef %q does not match stored intent %q", request.BootstrapProfileRef, intent.BootstrapProfile.Ref)
 	}
+	if strings.TrimSpace(request.APIProxyConfig) != "" {
+		var proxy apiproxy.Config
+		if err := json.Unmarshal([]byte(request.APIProxyConfig), &proxy); err != nil {
+			return fmt.Errorf("bootstrapRequest API proxy config: %w", err)
+		}
+		if _, err := apiproxy.Normalize(proxy); err != nil {
+			return fmt.Errorf("bootstrapRequest API proxy config: %w", err)
+		}
+	}
 	if strings.TrimSpace(request.KubeadmInputDigest) != "" && request.KubeadmInputDigest != intent.Kubeadm.InputDigest {
 		return fmt.Errorf("bootstrapRequest kubeadmInputDigest does not match stored intent")
 	}
@@ -501,6 +511,11 @@ func cloneBootstrapRequest(request operation.BootstrapRequest) *operation.Bootst
 		JoinMaterialDigest:             strings.TrimSpace(request.JoinMaterialDigest),
 		JoinMaterialExpiresAt:          strings.TrimSpace(request.JoinMaterialExpiresAt),
 		TemporaryJoinConfigPath:        strings.TrimSpace(request.TemporaryJoinConfigPath),
+		ExistingClusterJoin:            request.ExistingClusterJoin,
+		KubernetesIdentityCluster:      strings.TrimSpace(request.KubernetesIdentityCluster),
+		KubernetesIdentityFingerprint:  strings.TrimSpace(request.KubernetesIdentityFingerprint),
+		KubernetesIdentityDigest:       strings.TrimSpace(request.KubernetesIdentityDigest),
+		APIProxyConfig:                 strings.TrimSpace(request.APIProxyConfig),
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
@@ -76,6 +77,7 @@ type Context struct {
 	VolumeBindings                     []generation.VolumeBinding
 	GenerationID                       string
 	KubeadmConfigs                     map[string]kubeadmconfig.Plan
+	NativeEtcFiles                     []confext.NativeEtcFile
 	SystemExtensionPayloads            []configapply.SystemExtensionPayload
 	IdentityRandom                     io.Reader
 	EnrollmentRandom                   io.Reader
@@ -903,6 +905,7 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		Manifest:          install.Manifest,
 		ExtraMounts:       installedExtraMounts(install),
 		KubeadmConfigs:    install.KubeadmConfigs,
+		NativeEtcFiles:    install.NativeEtcFiles,
 		KubernetesVersion: installedKubernetesPayloadVersion(install),
 		Record:            *install.LoaderRecord,
 		Chown:             install.Chown,

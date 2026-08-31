@@ -1,14 +1,14 @@
 [Unit]
-Description=Katl routed control-plane endpoint
+Description=Katl control-plane API VIP ownership
 Documentation=https://katl.dev
 PartOf=katl-endpoint-activate.service
-ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
-ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
+ConditionPathExists=/etc/katl/apps/api-vip/config.yaml
+ConditionPathExists=/etc/katl/apps/api-vip/ownership-enabled
 ConditionPathExists=/etc/kubernetes/pki/ca.crt
 
 [Service]
 Type=simple
-RuntimeDirectory=katl/apps/bgp-api-vip
+RuntimeDirectory=katl/apps/api-vip
 RuntimeDirectoryMode=0755
 ExecStart=/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser
 ExecStopPost=/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser withdraw
@@ -25,8 +25,8 @@ ProtectKernelLogs=yes
 ProtectKernelModules=yes
 ProtectKernelTunables=yes
 ProtectSystem=strict
-ReadWritePaths=/run/katl/apps/bgp-api-vip
-RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX
+ReadWritePaths=/run/katl/apps/api-vip
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
 RestrictRealtime=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

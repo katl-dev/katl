@@ -68,23 +68,11 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 			state:       "waiting-for-managed-endpoint", reason: "managed API endpoint is waiting-for-apiserver",
 		},
 		{
-			name: "passive optional route exchange",
-			status: &agentapi.NodeStatus{
-				Kubernetes: readyKubernetes,
-				ControlPlaneEndpoint: &agentapi.ControlPlaneEndpointStatus{
-					State: "advertised", LocalApiReady: true, LocalVipOwned: true, RouteOriginated: true,
-					RouteExchange: []*agentapi.ControlPlaneEndpointRouteExchangeStatus{{Name: "cilium", State: "passive"}},
-				},
-			},
-			state: "ready", ready: true,
-		},
-		{
 			name: "ready",
 			status: &agentapi.NodeStatus{
 				Kubernetes: readyKubernetes,
 				ControlPlaneEndpoint: &agentapi.ControlPlaneEndpointStatus{
-					State: "advertised", LocalApiReady: true, LocalVipOwned: true, RouteOriginated: true,
-					RouteExchange: []*agentapi.ControlPlaneEndpointRouteExchangeStatus{{Name: "cilium", State: "established"}},
+					State: "active", LocalApiReady: true, LocalVipOwned: true,
 				},
 			},
 			state: "ready", ready: true,
@@ -135,8 +123,7 @@ func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 			ControlPlaneComponentsReady: true,
 		}
 		fake.nodeStatus.ControlPlaneEndpoint = &agentapi.ControlPlaneEndpointStatus{
-			State: "advertised", LocalApiReady: true, LocalVipOwned: true, RouteOriginated: true,
-			RouteExchange: []*agentapi.ControlPlaneEndpointRouteExchangeStatus{{Name: "cilium", State: "established"}},
+			State: "active", LocalApiReady: true, LocalVipOwned: true,
 		}
 	}
 	installKatlcDial(t, func(endpoint string) {

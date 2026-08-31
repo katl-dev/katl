@@ -229,8 +229,12 @@ func TestRunClusterApplySkipsKubernetesComponentsBeforeBootstrap(t *testing.T) {
 
 func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T) {
 	beforePath := writeClusterConfig(t)
+	baseSource := strings.Replace(configBundleSource(), "      install:\n", "      kubernetes:\n        address: 10.0.0.11\n      install:\n", 1)
+	if err := os.WriteFile(beforePath, []byte(baseSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	afterPath := filepath.Join(t.TempDir(), "cluster.yaml")
-	afterSource := strings.Replace(configBundleSource(), "address: 10.0.0.11", "address: 10.0.0.12", 1)
+	afterSource := strings.Replace(baseSource, "address: 10.0.0.11", "address: 10.0.0.12", 1)
 	if err := os.WriteFile(afterPath, []byte(afterSource), 0o600); err != nil {
 		t.Fatal(err)
 	}

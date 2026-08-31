@@ -11,7 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -36,6 +37,53 @@ func TestApplyTrustedBundleRejectsLiveNetworkdFileSetBeforeRender(t *testing.T) 
 		t.Fatalf("audit = %#v", result.Audit)
 	}
 	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestPlanTrustedBundleAppliesAPIProxyBackendChangesOnline(t *testing.T) {
+	root := t.TempDir()
+	current := testAPIProxyConfig([]apiproxy.Backend{{Name: "cp-1", Address: "192.0.2.11:6443", Local: true}})
+	desired := testAPIProxyConfig([]apiproxy.Backend{
+		{Name: "cp-1", Address: "192.0.2.11:6443", Local: true},
+		{Name: "cp-2", Address: "192.0.2.12:6443"},
+	})
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode: generation.ApplyModeAuto,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {APIProxy: &desired},
+		},
+	})
+	writeCurrentAPIProxy(t, root, request.CurrentRecord, current)
+	result, err := PlanTrustedBundle(request)
+	if err != nil {
+		t.Fatalf("PlanTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive || !containsDomain(result.Plan.Decision.ChangedDomains, DomainAPIProxy) {
+		t.Fatalf("API proxy decision = %#v", result.Plan.Decision)
+	}
+	if !nativeEtcFileContains(result.Files, apiproxy.ConfigPath, `"name": "cp-2"`) {
+		t.Fatalf("rendered files do not contain the added backend: %#v", result.Files)
+	}
+}
+
+func TestPlanTrustedBundlePreservesAPIProxyAcrossOtherChanges(t *testing.T) {
+	root := t.TempDir()
+	current := testAPIProxyConfig([]apiproxy.Backend{{Name: "cp-1", Address: "192.0.2.11:6443", Local: true}})
+	kernel := manifest.KernelConfig{CommandLine: []string{"iommu=pt"}}
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		NodeOverrides: map[string]NodeOverlay{"cp-1": {Kernel: &kernel}},
+	})
+	writeCurrentAPIProxy(t, root, request.CurrentRecord, current)
+	result, err := PlanTrustedBundle(request)
+	if err != nil {
+		t.Fatalf("PlanTrustedBundle() error = %v", err)
+	}
+	want, err := apiproxy.Render(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nativeEtcFileContains(result.Files, apiproxy.ConfigPath, strings.TrimSpace(want)) || containsDomain(result.Plan.Decision.ChangedDomains, DomainAPIProxy) {
+		t.Fatalf("API proxy preservation = domains %#v files %#v", result.Plan.Decision.ChangedDomains, result.Files)
+	}
 }
 
 func TestApplyTrustedBundleStagesKernelCommandLineReplacementForNextBoot(t *testing.T) {
@@ -119,13 +167,6 @@ func TestControlPlaneEndpointApplyClassification(t *testing.T) {
 		wantError   string
 	}{
 		{
-			name:       "routing changes apply live",
-			current:    managedEndpoint("192.0.2.1"),
-			desired:    managedEndpoint("192.0.2.2"),
-			wantDomain: DomainControlPlaneEndpointRouting,
-			wantMode:   generation.ApplyModeLive,
-		},
-		{
 			name:        "initialized host is immutable",
 			initialized: true,
 			current:     managedEndpoint("192.0.2.1"),
@@ -189,18 +230,6 @@ func TestControlPlaneEndpointApplyClassification(t *testing.T) {
 			if err != nil || decision.AcceptedMode != tt.wantMode {
 				t.Fatalf("Plan() error = %v, decision = %#v, want mode %q", err, decision, tt.wantMode)
 			}
-			if tt.wantDomain == DomainControlPlaneEndpointRouting {
-				if len(decision.Diagnostics) != 1 || decision.Diagnostics[0].EndpointRouting == nil {
-					t.Fatalf("routing decision = %#v, want bounded impact", decision)
-				}
-				impact := decision.Diagnostics[0].EndpointRouting
-				if got, want := strings.Join(impact.FabricSessionsReset, ","), "192.0.2.1,192.0.2.2"; got != want {
-					t.Fatalf("fabric session resets = %q, want %q", got, want)
-				}
-				if !impact.MayLoseAllFabricPaths {
-					t.Fatal("routing plan did not disclose temporary local API route withdrawal")
-				}
-			}
 		})
 	}
 }
@@ -229,67 +258,6 @@ func TestKubernetesAddressApplyClassification(t *testing.T) {
 	}
 }
 
-func TestEndpointRoutingImpactNamesExchangeAndExportChanges(t *testing.T) {
-	before := managedEndpoint("192.0.2.1")
-	before.Advertisement.BGP.RouteExchanges = []controlplaneendpoint.RouteExchange{{
-		Name: "cilium", ListenPort: 179, PeerASN: 64512,
-		ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{CIDR: "10.50.0.0/16"}},
-	}}
-	after := managedEndpoint("192.0.2.1")
-	after.Advertisement.BGP.RouteExchanges = []controlplaneendpoint.RouteExchange{{
-		Name: "cilium", ListenPort: 1179, PeerASN: 64513,
-		ExportToFabric: []controlplaneendpoint.PrefixEnvelope{{CIDR: "10.60.0.0/16"}},
-	}}
-	current, err := controlplaneendpoint.Normalize(*before)
-	if err != nil {
-		t.Fatal(err)
-	}
-	desired, err := controlplaneendpoint.Normalize(*after)
-	if err != nil {
-		t.Fatal(err)
-	}
-	impact := endpointRoutingImpact(current.Config, desired.Config)
-	if got, want := strings.Join(impact.RouteExchangeSessionsReset, ","), "cilium"; got != want {
-		t.Fatalf("route exchange resets = %q, want %q", got, want)
-	}
-	if got, want := strings.Join(impact.ChangedExportUnions, ","), "cilium"; got != want {
-		t.Fatalf("changed export unions = %q, want %q", got, want)
-	}
-	if len(impact.FabricSessionsReset) != 0 {
-		t.Fatalf("unchanged fabric sessions reset = %#v", impact.FabricSessionsReset)
-	}
-}
-
-func TestApplyTrustedBundleReloadsEnabledEndpointRouting(t *testing.T) {
-	root := t.TempDir()
-	current := baseManifest()
-	current.Node.ControlPlaneEndpoint = managedEndpoint("192.0.2.1")
-	currentRecord := currentRecord()
-	selectEndpointAdvertiser(t, root, &currentRecord)
-	runner := &fakeCommandRunner{}
-	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
-		ApplyMode:       generation.ApplyModeLive,
-		CurrentManifest: current,
-		CurrentRecord:   currentRecord,
-		NodeOverrides: map[string]NodeOverlay{
-			"cp-1": {ControlPlaneEndpointSet: true, ControlPlaneEndpoint: managedEndpoint("192.0.2.2")},
-		},
-		Executor: &Executor{Runner: runner, Activator: &fakeActivator{}, Now: fixedNow},
-	}))
-	if err != nil {
-		t.Fatalf("ApplyTrustedBundle() error = %v", err)
-	}
-	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive || !containsDomain(result.Plan.Decision.ChangedDomains, DomainControlPlaneEndpointRouting) {
-		t.Fatalf("decision = %#v", result.Plan.Decision)
-	}
-	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/katl/apps/bgp-api-vip/advertisement-enabled")); err != nil {
-		t.Fatalf("candidate advertisement marker: %v", err)
-	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-link-reload,endpoint-routing-reload,endpoint-resume"; got != want {
-		t.Fatalf("commands = %q, want %q", got, want)
-	}
-}
-
 func TestPlanTrustedBundleRefreshesStaleRenderedEndpoint(t *testing.T) {
 	root := t.TempDir()
 	current := baseManifest()
@@ -298,8 +266,8 @@ func TestPlanTrustedBundleRefreshesStaleRenderedEndpoint(t *testing.T) {
 	selectEndpointAdvertiser(t, root, &currentRecord)
 	writeCurrentEndpointRendering(t, root, currentRecord, current)
 
-	birdPath := currentConfextFilePath(t, root, currentRecord, bgpapivip.BirdConfigPath)
-	if err := os.WriteFile(birdPath, []byte("protocol static katl_api { disabled; }\n"), 0o644); err != nil {
+	configPath := currentConfextFilePath(t, root, currentRecord, apivip.ConfigPath)
+	if err := os.WriteFile(configPath, []byte("stale\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	request := trustedBundleRequest(root, TrustedBundleRequest{
@@ -315,11 +283,11 @@ func TestPlanTrustedBundleRefreshesStaleRenderedEndpoint(t *testing.T) {
 		t.Fatalf("PlanTrustedBundle() error = %v", err)
 	}
 	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive ||
-		!containsDomain(result.Plan.Decision.ChangedDomains, DomainControlPlaneEndpointRouting) {
+		!containsDomain(result.Plan.Decision.ChangedDomains, DomainControlPlaneEndpointVIP) {
 		t.Fatalf("decision = %#v, want live rendered endpoint refresh", result.Plan.Decision)
 	}
-	if !nativeEtcFileContains(result.Files, bgpapivip.BirdConfigPath, "protocol direct katl_api") {
-		t.Fatalf("candidate BIRD config did not replace stale rendering")
+	if !nativeEtcFileContains(result.Files, apivip.ConfigPath, "kind: APIEndpointVIP") {
+		t.Fatalf("candidate API VIP config did not replace stale rendering")
 	}
 }
 
@@ -369,8 +337,8 @@ func TestApplyTrustedBundleRemovesEndpointAdvertiserBeforeBootstrap(t *testing.T
 			t.Fatalf("candidate retained disabled endpoint advertiser: %#v", ref)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/katl/apps/bgp-api-vip/advertisement-enabled")); !os.IsNotExist(err) {
-		t.Fatalf("disabled endpoint advertisement marker = %v, want absent", err)
+	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/katl/apps/api-vip/ownership-enabled")); !os.IsNotExist(err) {
+		t.Fatalf("disabled endpoint ownership marker = %v, want absent", err)
 	}
 }
 
@@ -1243,11 +1211,11 @@ func writeCurrentEndpointRendering(t *testing.T, root string, record generation.
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := bgpapivip.FromControlPlaneEndpoint(endpoint)
+	config, err := apivip.FromControlPlaneEndpoint(endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{
+	rendered, err := apivip.RenderNativeEtcFiles(apivip.RenderRequest{
 		Config:   config,
 		NodeRole: current.Node.SystemRole,
 	})
@@ -1278,6 +1246,32 @@ func currentConfextFilePath(t *testing.T, root string, record generation.Record,
 	}
 	t.Fatal("current record has no katl-node confext")
 	return ""
+}
+
+func testAPIProxyConfig(backends []apiproxy.Backend) apiproxy.Config {
+	return apiproxy.Config{
+		TLSName: "api.katl.test",
+		Listeners: []apiproxy.Listener{
+			{Address: "127.0.0.1:7445", Exposure: apiproxy.ExposureNodeLocal},
+			{Address: "192.0.2.11:7445", Exposure: apiproxy.ExposureWorkstation},
+		},
+		Backends: backends,
+	}
+}
+
+func writeCurrentAPIProxy(t *testing.T, root string, record generation.Record, config apiproxy.Config) {
+	t.Helper()
+	content, err := apiproxy.Render(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := currentConfextFilePath(t, root, record, apiproxy.ConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func nativeEtcFileContains(files []confext.NativeEtcFile, path, substring string) bool {

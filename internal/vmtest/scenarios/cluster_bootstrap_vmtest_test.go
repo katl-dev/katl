@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -248,7 +249,7 @@ func firstInstallProvenanceFromPublished(published vmtest.PublishedFirstInstallR
 		InstallerUKI:         published.InstallerUKI,
 		InstallerKernel:      published.InstallerKernel,
 		InstallerInitrd:      published.InstallerInitrd,
-		InstallerCommandLine: append([]string(nil), published.InstallerCommandLine...),
+		InstallerCommandLine: slices.Clone(published.InstallerCommandLine),
 		RuntimeArtifact:      published.RuntimeArtifact,
 		InstallManifest:      published.InstallManifest,
 		FirstInstallMode:     published.FirstInstallMode,
@@ -257,6 +258,7 @@ func firstInstallProvenanceFromPublished(published vmtest.PublishedFirstInstallR
 
 func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRun, proveUpgrade bool) {
 	t.Helper()
+	const canonicalEndpoint = "api.unpublished.katl.test:6443"
 	options := smoke.Options
 	runner := smoke.Runner
 	scenario := smoke.Scenario
@@ -270,6 +272,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
 	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
 	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
+	contextPath := filepath.Join(result.RunDir, "katlctl.yaml")
 	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
 	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
 	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
@@ -434,6 +437,10 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	if err := writeOperationBackedInventory(inventoryPath, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeTwoNodeWorkstationContext(contextPath, map[string]string{"cp-1": cpAddress, "worker-1": workerAddress}, enrollments); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KATLCTL_CONFIG", contextPath)
 	assertSwappedEnrollmentRefused(t, ctx, result.RunDir, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments)
 	for _, node := range nodes {
 		if err := assertOperatorSSH(ctx, inputs.SSHPrivateKey, node.Result.IPAddress); err != nil {
@@ -469,7 +476,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
-		"--control-plane-endpoint", cpAddress + ":6443",
+		"--control-plane-endpoint", canonicalEndpoint,
 		"--kubernetes-bundle", kubernetesBundle.Ref,
 		"--node-address", "cp-1=" + cpAddress,
 		"--node-address", "worker-1=" + workerAddress,
@@ -527,8 +534,8 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect worker operation evidence: %v", err)
 	}
-	assertOperationBackedInitRecord(t, cpRecord, cpAddress+":6443")
-	assertOperationBackedWorkerRecord(t, workerRecord, cpAddress+":6443")
+	assertOperationBackedInitRecord(t, cpRecord, canonicalEndpoint)
+	assertOperationBackedWorkerRecord(t, workerRecord, canonicalEndpoint)
 	assertOperationJournalOrder(t, cpEvidenceDir, "bootstrap-runtime-ready-complete", "kubeadm-init-complete", "post-kubeadm-health-start", "operation-complete")
 	assertOperationJournalOrder(t, workerEvidenceDir, "bootstrap-runtime-ready-complete", "kubeadm-join-worker-complete", "post-kubeadm-health-start", "operation-complete")
 	assertOperationBackedBootstrapPhases(t, stdout.String())
@@ -570,6 +577,8 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		}
 		nodeStatus[node.Name] = path
 	}
+	assertNodeAPIProxyAccess(t, ctx, cpNode, canonicalEndpoint, cpAddress+":6443", true)
+	assertNodeAPIProxyAccess(t, ctx, workerNode, canonicalEndpoint, cpAddress+":6443", false)
 	evidenceArtifacts := operationBackedArtifacts{
 		Inventory:            inventoryPath,
 		Kubeconfig:           kubeconfigPath,
@@ -616,7 +625,8 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("control-plane dashboard: %v", err)
 	}
-	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":6443")
+	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":7445", "api.unpublished.katl.test")
+	assertKubeProxyLocalAPIAccess(t, ctx, kubeconfigPath, "api.unpublished.katl.test")
 	for _, node := range []struct {
 		running    vmtest.RunningInstalledRuntimeNode
 		generation string
@@ -1740,6 +1750,26 @@ func readTwoNodeEnrollments(ctx context.Context, cpAddress, workerAddress string
 	return statuses, nil
 }
 
+func writeTwoNodeWorkstationContext(path string, addresses map[string]string, enrollments map[string]*agentapi.NodeStatus) error {
+	var nodes strings.Builder
+	for _, node := range []struct {
+		name string
+		role string
+	}{{name: "cp-1", role: "control-plane"}, {name: "worker-1", role: "worker"}} {
+		status := enrollments[node.name]
+		if status == nil {
+			return fmt.Errorf("node %s enrollment status is required", node.name)
+		}
+		fmt.Fprintf(&nodes, "      - name: %s\n        managementEndpoint: %s\n        systemRole: %s\n        enrollmentID: %s\n        machineID: %s\n", node.name, net.JoinHostPort(addresses[node.name], "9443"), node.role, status.GetEnrollmentId(), status.GetMachineId())
+	}
+	management, err := vmtestManagementContextYAML()
+	if err != nil {
+		return err
+	}
+	data := "currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: two-node\nclusters:\n  - name: two-node\n" + management + "    nodes:\n" + nodes.String()
+	return os.WriteFile(path, []byte(data), 0o600)
+}
+
 func assertSwappedEnrollmentRefused(t *testing.T, ctx context.Context, runDir, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string, enrollments map[string]*agentapi.NodeStatus) {
 	t.Helper()
 	path := filepath.Join(runDir, "swapped-bootstrap-inventory.yaml")
@@ -1748,7 +1778,12 @@ func assertSwappedEnrollmentRefused(t *testing.T, ctx context.Context, runDir, k
 	}
 	var stdout, stderr bytes.Buffer
 	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "bootstrap", "--inventory", path, "--init-node", "cp-1", "--dry-run"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(stderr.String(), `address answered as enrolled node "worker-1"`) {
+	validRefusals := []string{
+		`address answered as enrolled node "worker-1"`,
+		"no saved management access for endpoint",
+		"certificate is valid for worker-1, not cp-1",
+	}
+	if err == nil || !slices.ContainsFunc(validRefusals, func(reason string) bool { return strings.Contains(stderr.String(), reason) }) {
 		t.Fatalf("swapped enrollment bootstrap plan error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 }
@@ -3600,7 +3635,7 @@ func hasSuccessfulInvocation(invocations []operation.InvocationRecord, argv ...s
 	return false
 }
 
-func assertKubeconfigOutput(t *testing.T, kubeconfigPath, metadataPath, server string) {
+func assertKubeconfigOutput(t *testing.T, kubeconfigPath, metadataPath, server, tlsName string) {
 	t.Helper()
 	var metadata kubeconfigMetadata
 	data, err := os.ReadFile(metadataPath)
@@ -3619,6 +3654,84 @@ func assertKubeconfigOutput(t *testing.T, kubeconfigPath, metadataPath, server s
 	}
 	if !strings.Contains(string(kubeconfig), "server: "+server) {
 		t.Fatalf("kubeconfig does not target %s", server)
+	}
+	if !strings.Contains(string(kubeconfig), "tls-server-name: "+tlsName) {
+		t.Fatalf("kubeconfig does not verify the API as %s", tlsName)
+	}
+}
+
+func assertNodeAPIProxyAccess(t *testing.T, ctx context.Context, node vmtest.RunningInstalledRuntimeNode, canonicalEndpoint, backendAddress string, admin bool) {
+	t.Helper()
+	configData, err := readNodeFileWithRetry(ctx, node, apiproxy.ConfigPath, 256<<10, time.Minute)
+	if err != nil {
+		t.Fatalf("read %s API proxy config: %v", node.Name, err)
+	}
+	var config apiproxy.Config
+	if err := json.Unmarshal(configData, &config); err != nil {
+		t.Fatalf("decode %s API proxy config: %v", node.Name, err)
+	}
+	config, err = apiproxy.Normalize(config)
+	if err != nil {
+		t.Fatalf("normalize %s API proxy config: %v", node.Name, err)
+	}
+	if config.CanonicalEndpoint != canonicalEndpoint || !slices.ContainsFunc(config.Backends, func(backend apiproxy.Backend) bool {
+		return backend.Address == backendAddress
+	}) {
+		t.Fatalf("%s API proxy config = %#v, want canonical %s and backend %s", node.Name, config, canonicalEndpoint, backendAddress)
+	}
+
+	deadline := time.Now().Add(time.Minute)
+	for {
+		statusData, readErr := readNodeFile(ctx, node, apiproxy.StatusPath, 256<<10)
+		var status apiproxy.Status
+		decodeErr := json.Unmarshal(statusData, &status)
+		eligible := slices.ContainsFunc(status.Backends, func(backend apiproxy.BackendStatus) bool { return backend.Eligible })
+		if readErr == nil && decodeErr == nil && eligible && status.Canonical.Endpoint == canonicalEndpoint && status.Canonical.State == "unreachable" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s API proxy status did not show eligible local access and unreachable canonical endpoint: read=%v decode=%v status=%#v", node.Name, readErr, decodeErr, status)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	paths := []string{"/etc/kubernetes/kubelet.conf"}
+	if admin {
+		paths = append(paths, "/etc/kubernetes/admin.conf")
+	}
+	for _, path := range paths {
+		data, err := readNodeFileWithRetry(ctx, node, path, 256<<10, time.Minute)
+		if err != nil {
+			t.Fatalf("read %s %s: %v", node.Name, path, err)
+		}
+		content := string(data)
+		if !strings.Contains(content, "server: https://127.0.0.1:7445") || !strings.Contains(content, "tls-server-name: api.unpublished.katl.test") {
+			t.Fatalf("%s %s does not use node-local API access with canonical TLS identity", node.Name, path)
+		}
+	}
+}
+
+func assertDirectJoinPathCleaned(t *testing.T, ctx context.Context, node vmtest.RunningInstalledRuntimeNode) {
+	t.Helper()
+	result, err := runNodeCommand(ctx, node, []string{"findmnt", "--noheadings", "--mountpoint", "/etc/hosts"}, 32<<10)
+	if err != nil {
+		t.Fatalf("inspect %s /etc/hosts mount: %v", node.Name, err)
+	}
+	if result.ExitStatus == 0 {
+		t.Fatalf("%s /etc/hosts remains a direct-join bind mount: %s", node.Name, strings.TrimSpace(string(result.Stdout)))
+	}
+}
+
+func assertKubeProxyLocalAPIAccess(t *testing.T, ctx context.Context, kubeconfigPath, tlsName string) {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "--namespace", "kube-system", "get", "configmap", "kube-proxy", "--output", "jsonpath={.data.kubeconfig\\.conf}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read kube-proxy kubeconfig: %v: %s", err, output)
+	}
+	content := string(output)
+	if !strings.Contains(content, "server: https://127.0.0.1:7445") || !strings.Contains(content, "tls-server-name: "+tlsName) {
+		t.Fatalf("kube-proxy does not use node-local API access with canonical TLS identity: %s", content)
 	}
 }
 

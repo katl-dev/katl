@@ -117,12 +117,7 @@ func TestValidateNodeConfigurationChangeAcceptsControlPlaneEndpointOwnership(t *
         config:
           host: 192.0.2.10
           advertisement:
-            vip: 192.0.2.10
-            bgp:
-              localASN: 64512
-              peers:
-                - address: 192.0.2.1
-                  asn: 64512`,
+            vip: 192.0.2.10`,
 	}
 	for name, overlay := range tests {
 		t.Run(name, func(t *testing.T) {

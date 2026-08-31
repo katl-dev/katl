@@ -3,11 +3,15 @@ package clusterplan
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"net"
+	"net/netip"
 	"reflect"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
@@ -73,16 +77,13 @@ func Compile(request CompileRequest) (Plan, error) {
 		}
 	}
 
-	nodes := append([]Node(nil), config.Spec.Nodes...)
+	nodes := slices.Clone(config.Spec.Nodes)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	seen := make(map[string]struct{}, len(nodes))
 	materials := make([]NodeMaterial, 0, len(nodes))
 	inventoryNodes := make([]inventory.Node, 0, len(nodes))
 	addressOverrides := make([]inventory.AddressOverride, 0, len(request.AddressOverrides))
-	unusedAddressOverrides := make(map[string]string, len(request.AddressOverrides))
-	for name, address := range request.AddressOverrides {
-		unusedAddressOverrides[name] = address
-	}
+	unusedAddressOverrides := maps.Clone(request.AddressOverrides)
 	for _, node := range nodes {
 		name := strings.TrimSpace(node.Name)
 		if name == "" {
@@ -126,6 +127,9 @@ func Compile(request CompileRequest) (Plan, error) {
 		materials = append(materials, material)
 		inventoryNodes = append(inventoryNodes, invNode)
 	}
+	if err := attachAPIProxyConfigs(materials, inventoryNodes, endpointPlan); err != nil {
+		return Plan{}, err
+	}
 	if len(unusedAddressOverrides) > 0 {
 		var names []string
 		for name := range unusedAddressOverrides {
@@ -161,6 +165,86 @@ func Compile(request CompileRequest) (Plan, error) {
 		BootstrapInventory:     bootstrapInventory,
 		AddressOverrides:       addressOverrides,
 	}, nil
+}
+
+func attachAPIProxyConfigs(materials []NodeMaterial, nodes []inventory.Node, endpoint *controlplaneendpoint.Plan) error {
+	if endpoint == nil {
+		return fmt.Errorf("control-plane endpoint is required for API proxy configuration")
+	}
+	if len(materials) != len(nodes) {
+		return fmt.Errorf("API proxy node materials do not match bootstrap inventory")
+	}
+	backends := make([]apiproxy.Backend, 0, len(nodes))
+	addresses := make(map[string]string, len(nodes))
+	for i, node := range nodes {
+		if node.SystemRole != inventory.RoleControlPlane {
+			continue
+		}
+		address, known, err := directAPIAddress(materials[i], node)
+		if err != nil {
+			return fmt.Errorf("node %q API proxy: %w", node.Name, err)
+		}
+		if !known {
+			// DHCP or discovery may supply addresses only when bootstrap runs. The
+			// bootstrap candidate generation installs the complete proxy config.
+			return nil
+		}
+		addresses[node.Name] = address
+		backends = append(backends, apiproxy.Backend{
+			Name:    node.Name,
+			Address: net.JoinHostPort(address, "6443"),
+		})
+	}
+	for i := range materials {
+		listeners := []apiproxy.Listener{{
+			Address: net.JoinHostPort("127.0.0.1", "7445"), Exposure: apiproxy.ExposureNodeLocal,
+		}}
+		if nodes[i].SystemRole == inventory.RoleControlPlane {
+			listeners = append(listeners, apiproxy.Listener{
+				Address: net.JoinHostPort(addresses[nodes[i].Name], "7445"), Exposure: apiproxy.ExposureWorkstation,
+			})
+		}
+		nodeBackends := slices.Clone(backends)
+		for j := range nodeBackends {
+			nodeBackends[j].Local = nodeBackends[j].Name == nodes[i].Name
+		}
+		config, err := apiproxy.Normalize(apiproxy.Config{
+			TLSName: endpoint.Config.Host, CanonicalEndpoint: endpoint.Endpoint, Listeners: listeners, Backends: nodeBackends,
+		})
+		if err != nil {
+			return fmt.Errorf("node %q API proxy: %w", nodes[i].Name, err)
+		}
+		content, err := apiproxy.Render(config)
+		if err != nil {
+			return fmt.Errorf("node %q API proxy: %w", nodes[i].Name, err)
+		}
+		materials[i].APIProxy = config
+		materials[i].NativeEtcFiles = append(materials[i].NativeEtcFiles, confext.NativeEtcFile{
+			Path: apiproxy.ConfigPath, Content: content, Mode: 0o644, UID: 0, GID: 0,
+		})
+		if _, err := confext.ValidateNativeEtcBundle("", materials[i].NativeEtcFiles); err != nil {
+			return fmt.Errorf("node %q native /etc files: %w", nodes[i].Name, err)
+		}
+	}
+	return nil
+}
+
+func directAPIAddress(material NodeMaterial, node inventory.Node) (string, bool, error) {
+	value := strings.TrimSpace(material.InstallManifest.Node.Kubernetes.Address)
+	if value == "" {
+		value = strings.TrimSpace(node.Address)
+		if host, _, err := net.SplitHostPort(value); err == nil {
+			value = host
+		}
+	}
+	if value == "" {
+		return "", false, nil
+	}
+	address, err := netip.ParseAddr(value)
+	if err != nil || address.Zone() != "" || !address.IsGlobalUnicast() {
+		return "", false, fmt.Errorf("direct Kubernetes address %q must be a literal unicast IP; set nodes[].kubernetes.address when the bootstrap address is not one", value)
+	}
+	return address.String(), true, nil
 }
 
 func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]string) (*controlplaneendpoint.Plan, error) {
@@ -243,7 +327,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			SystemRole:           string(role),
 			Kernel:               kernelConfig(layer.Kernel),
 			HostConfiguration:    layer.HostConfiguration,
-			SystemExtensions:     append([]manifest.SystemExtension(nil), layer.SystemExtensions...),
+			SystemExtensions:     slices.Clone(layer.SystemExtensions),
 			ControlPlaneEndpoint: managedEndpoint,
 			Kubernetes: manifest.KubernetesConfig{
 				Address: strings.TrimSpace(layer.Kubernetes.Address),
@@ -260,13 +344,13 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 				KubernetesBundle:     publicBundle,
 				Access:               manifestAccess(layer.Bootstrap.Access),
 				Labels:               copyLabels(layer.Kubernetes.NodeLabels),
-				Taints:               append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
+				Taints:               slices.Clone(layer.Kubernetes.NodeTaints),
 			},
 		},
 		Install: manifest.InstallConfig{
 			WipeTarget: config.Spec.WipeTarget,
 			TargetDisk: *layer.Install.TargetDisk,
-			Volumes:    append([]manifest.Volume(nil), layer.Install.Volumes...),
+			Volumes:    slices.Clone(layer.Install.Volumes),
 		},
 		KatlosImage: config.Spec.KatlosImage,
 	}
@@ -324,7 +408,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		NativeEtcFiles:         nativeEtcFiles,
 		KubeadmConfig:          kubeadmConfig,
 		NodeLabels:             copyLabels(layer.Kubernetes.NodeLabels),
-		NodeTaints:             append([]manifest.NodeTaint(nil), layer.Kubernetes.NodeTaints...),
+		NodeTaints:             slices.Clone(layer.Kubernetes.NodeTaints),
 		KubernetesVersion:      kubernetes.version,
 		KubernetesCatalogRef:   kubernetes.catalogRef,
 		KubernetesBundleSource: kubernetes.bundleSource,
@@ -365,11 +449,7 @@ func copyLabels(labels map[string]string) map[string]string {
 	if len(labels) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(labels))
-	for key, value := range labels {
-		out[key] = value
-	}
-	return out
+	return maps.Clone(labels)
 }
 
 func validateSharedLayer(path string, layer NodeLayer) error {
@@ -499,7 +579,7 @@ func validateWipeTarget(spec Spec) error {
 
 func validateBootstrapInventory(bootstrapInventory inventory.Inventory) error {
 	validationInventory := bootstrapInventory
-	validationInventory.Nodes = append([]inventory.Node(nil), bootstrapInventory.Nodes...)
+	validationInventory.Nodes = slices.Clone(bootstrapInventory.Nodes)
 	for i := range validationInventory.Nodes {
 		if strings.TrimSpace(validationInventory.Nodes[i].Address) == "" {
 			validationInventory.Nodes[i].Address = "127.0.0.1"

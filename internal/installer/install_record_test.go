@@ -6,9 +6,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
+
+func TestMaterializeInstallRecordUsesCompiledNativeFiles(t *testing.T) {
+	installManifest, err := manifest.Decode(strings.NewReader(validInstallManifestForRecord()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := MaterializeInstallRecord(InstallRecordRequest{
+		TargetRoot: t.TempDir(),
+		Manifest:   installManifest,
+		NativeEtcFiles: []confext.NativeEtcFile{{
+			Path:    "/etc/katl/api-proxy/config.json",
+			Content: "compiled proxy config\n",
+			Mode:    0o644,
+		}},
+		Record: *minimalRecord("2026.06.04-001"),
+		Chown:  func(string, int, int) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(result.Tree.ConfextDir, "etc/katl/api-proxy/config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "compiled proxy config\n" {
+		t.Fatalf("proxy config = %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(result.Tree.ConfextDir, "etc/hostname")); !os.IsNotExist(err) {
+		t.Fatalf("recomputed config domain unexpectedly present: %v", err)
+	}
+}
 
 func TestMaterializeInstallRecordIncludesExtraDiskMount(t *testing.T) {
 	installManifest, err := manifest.Decode(strings.NewReader(validInstallManifestForRecord()))

@@ -1,6 +1,7 @@
 package clusterplan
 
 import (
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
@@ -107,6 +108,7 @@ type NodeMaterial struct {
 	BootstrapAddress       string                   `json:"bootstrapAddress,omitempty"`
 	InstallManifest        manifest.Manifest        `json:"installManifest"`
 	NativeEtcFiles         []confext.NativeEtcFile  `json:"nativeEtcFiles,omitempty"`
+	APIProxy               apiproxy.Config          `json:"apiProxy,omitempty,omitzero"`
 	KubeadmConfig          inventory.KubeadmConfig  `json:"kubeadmConfig,omitempty"`
 	NodeLabels             map[string]string        `json:"nodeLabels,omitempty"`
 	NodeTaints             []manifest.NodeTaint     `json:"nodeTaints,omitempty"`

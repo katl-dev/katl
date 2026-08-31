@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -95,6 +96,7 @@ type BootstrapWait struct {
 
 type BootstrapRequest struct {
 	Server         string
+	TLSServerName  string
 	StableEndpoint string
 	Credentials    AdminCredentials
 	PreWaits       []BootstrapWait
@@ -279,7 +281,7 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	}
 	result.addPhase("api-ready-after-join", initNode.Name, "", "passed")
 
-	kubeconfigResult, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, credentials, stableEndpointReady, request.OverwriteKubeconfig)
+	kubeconfigResult, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, credentials, stableEndpointReady, false, request.OverwriteKubeconfig)
 	if err != nil {
 		result.addPhase("kubeconfig", "", "", "failed")
 		return result, err
@@ -294,6 +296,7 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 		}
 		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
 			Server:         bootstrapServer(initNode, plan),
+			TLSServerName:  controlPlaneEndpointHost(plan.ControlPlaneEndpoint),
 			StableEndpoint: bootstrap.StableEndpoint,
 			Credentials:    credentials,
 			PreWaits:       bootstrap.preWaits(),
@@ -309,7 +312,7 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 		stableEndpointReady = stableEndpointReady || bootstrapResult.StableEndpointReady
 		result.addPhase("user-bootstrap", "", "", "passed")
 		if !wasStableEndpointReady && stableEndpointReady {
-			refreshed, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, credentials, stableEndpointReady, true)
+			refreshed, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, credentials, stableEndpointReady, false, true)
 			if err != nil {
 				return result, fmt.Errorf("refresh kubeconfig for stable endpoint: %w", err)
 			}
@@ -320,7 +323,7 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	return result, nil
 }
 
-func writeOperatorKubeconfig(request Request, initNode inventory.PlannedNode, plan inventory.Plan, bootstrap UserBootstrap, credentials AdminCredentials, stableEndpointReady, overwrite bool) (kubeconfig.Result, error) {
+func writeOperatorKubeconfig(request Request, initNode inventory.PlannedNode, plan inventory.Plan, bootstrap UserBootstrap, credentials AdminCredentials, stableEndpointReady, proxyEndpointReady, overwrite bool) (kubeconfig.Result, error) {
 	return kubeconfig.Write(kubeconfig.Request{
 		Path:      request.KubeconfigOut,
 		Overwrite: overwrite,
@@ -329,6 +332,9 @@ func writeOperatorKubeconfig(request Request, initNode inventory.PlannedNode, pl
 			ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
 			StableEndpoint:       bootstrap.StableEndpoint,
 			StableEndpointReady:  stableEndpointReady,
+			ProxyEndpoint:        proxyEndpointForNode(initNode),
+			ProxyEndpointReady:   proxyEndpointReady,
+			TLSServerName:        controlPlaneEndpointHost(plan.ControlPlaneEndpoint),
 		},
 		ClusterName:              valueOrDefault(request.ClusterName, "katl"),
 		ContextName:              valueOrDefault(request.ContextName, "katl"),
@@ -337,6 +343,19 @@ func writeOperatorKubeconfig(request Request, initNode inventory.PlannedNode, pl
 		ClientCertificateData:    credentials.ClientCertificateData,
 		ClientKeyData:            credentials.ClientKeyData,
 	})
+}
+
+func verifyProxyAccess(ctx context.Context, runner BootstrapRunner, initNode inventory.PlannedNode, plan inventory.Plan, credentials AdminCredentials) error {
+	if runner == nil {
+		return errors.New("Kubernetes API proxy reachability checker is required")
+	}
+	_, err := runner.RunUserBootstrap(ctx, BootstrapRequest{
+		Server:        proxyEndpointForNode(initNode),
+		TLSServerName: controlPlaneEndpointHost(plan.ControlPlaneEndpoint),
+		Credentials:   credentials,
+		PreWaits:      []BootstrapWait{{Kind: BootstrapWaitAPIReady}},
+	})
+	return err
 }
 
 func verifyManagedControlPlaneEndpoint(ctx context.Context, runner BootstrapRunner, initNode inventory.PlannedNode, plan inventory.Plan, credentials AdminCredentials) (BootstrapResult, error) {
@@ -416,9 +435,9 @@ func planBootstrap(bootstrap *inventory.Bootstrap) UserBootstrap {
 
 func mergeBootstrap(plan, request UserBootstrap) UserBootstrap {
 	result := UserBootstrap{
-		Manifests:                     append([]BootstrapManifest(nil), plan.Manifests...),
-		PreWaits:                      append([]BootstrapWait(nil), plan.PreWaits...),
-		Waits:                         append([]BootstrapWait(nil), plan.Waits...),
+		Manifests:                     slices.Clone(plan.Manifests),
+		PreWaits:                      slices.Clone(plan.PreWaits),
+		Waits:                         slices.Clone(plan.Waits),
 		StableEndpointBeforeManifests: plan.StableEndpointBeforeManifests || request.StableEndpointBeforeManifests,
 	}
 	if strings.TrimSpace(request.StableEndpoint) != "" {
@@ -512,7 +531,7 @@ func (b UserBootstrap) enabled() bool {
 }
 
 func (b UserBootstrap) preWaits() []BootstrapWait {
-	waits := append([]BootstrapWait(nil), b.PreWaits...)
+	waits := slices.Clone(b.PreWaits)
 	if !b.StableEndpointBeforeManifests || strings.TrimSpace(b.StableEndpoint) == "" {
 		return waits
 	}
@@ -520,7 +539,7 @@ func (b UserBootstrap) preWaits() []BootstrapWait {
 }
 
 func (b UserBootstrap) waitsWithEndpoint() []BootstrapWait {
-	waits := append([]BootstrapWait(nil), b.Waits...)
+	waits := slices.Clone(b.Waits)
 	if strings.TrimSpace(b.StableEndpoint) != "" && !b.StableEndpointBeforeManifests {
 		waits = append(waits, b.stableEndpointWait())
 	}
@@ -676,10 +695,7 @@ func validLabelName(value string) bool {
 }
 
 func bootstrapServer(initNode inventory.PlannedNode, plan inventory.Plan) string {
-	if plan.ControlPlaneEndpoint != "" {
-		return plan.ControlPlaneEndpoint
-	}
-	return endpointForNode(initNode)
+	return proxyEndpointForNode(initNode)
 }
 
 func validateEndpointLike(endpoint string) error {
@@ -747,6 +763,22 @@ func endpointForNode(node inventory.PlannedNode) string {
 	return net.JoinHostPort(node.Address, defaultAPIPort)
 }
 
+func proxyEndpointForNode(node inventory.PlannedNode) string {
+	address := strings.TrimSpace(node.Address)
+	if host, _, err := net.SplitHostPort(address); err == nil {
+		address = host
+	}
+	return net.JoinHostPort(address, "7445")
+}
+
+func controlPlaneEndpointHost(endpoint string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
 func hasPort(value string) bool {
 	_, _, err := net.SplitHostPort(value)
 	return err == nil
@@ -778,7 +810,7 @@ func (r KubectlBootstrapRunner) RunUserBootstrap(ctx context.Context, request Bo
 	}
 	defer cleanup()
 
-	kubeconfigPath, err := r.writeKubeconfig(dir, request.Server, request.Credentials)
+	kubeconfigPath, err := r.writeKubeconfig(dir, request.Server, request.TLSServerName, request.Credentials)
 	if err != nil {
 		return BootstrapResult{}, err
 	}
@@ -817,7 +849,7 @@ func (r KubectlBootstrapRunner) runBootstrapWait(ctx context.Context, dir, kubec
 		if strings.TrimSpace(request.StableEndpoint) == "" {
 			request.StableEndpoint = wait.Name
 		}
-		stableKubeconfig, err := r.writeKubeconfig(dir, request.StableEndpoint, request.Credentials)
+		stableKubeconfig, err := r.writeKubeconfig(dir, request.StableEndpoint, "", request.Credentials)
 		if err != nil {
 			return false, err
 		}
@@ -852,13 +884,14 @@ func (r KubectlBootstrapRunner) workDir() (string, func(), error) {
 	return dir, func() { _ = os.RemoveAll(dir) }, nil
 }
 
-func (r KubectlBootstrapRunner) writeKubeconfig(dir, endpoint string, credentials AdminCredentials) (string, error) {
+func (r KubectlBootstrapRunner) writeKubeconfig(dir, endpoint, tlsServerName string, credentials AdminCredentials) (string, error) {
 	server, err := kubeconfig.SelectServer(kubeconfig.EndpointSelection{InitialEndpoint: endpoint})
 	if err != nil {
 		return "", err
 	}
 	data, err := kubeconfig.Render(kubeconfig.RenderRequest{
 		Server:                   server,
+		TLSServerName:            tlsServerName,
 		ClusterName:              "katl-bootstrap",
 		ContextName:              "katl-bootstrap",
 		UserName:                 "katl-bootstrap-admin",

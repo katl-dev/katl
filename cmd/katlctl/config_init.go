@@ -231,7 +231,7 @@ func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 		"    # controlPlaneEndpoint:\n" +
 		"    #     host: api.home.arpa\n" +
 		"    #     # port: 6443\n" +
-		"    #     # To let Katl advertise a routed endpoint, add advertisement.vip and bgp peers.\n" +
+		"    #     # To let Katl own a health-gated API VIP, add advertisement.vip.\n" +
 		"    # Set controlPlane: true on nodes that join the Kubernetes control plane.\n" +
 		"    # Omission means worker.\n" +
 		"    # Nodes use DHCP by default; add native systemd-networkd files through hostConfiguration.fileSets.\n"
