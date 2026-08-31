@@ -2,6 +2,7 @@ package configapply
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -32,6 +33,7 @@ const (
 	DomainHostConfiguration             = "host-configuration"
 	DomainSystemExtensions              = "system-extensions"
 	DomainKernelCommandLine             = "kernel-command-line"
+	DomainAPIProxy                      = "api-proxy"
 )
 
 const (
@@ -128,8 +130,8 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 			continue
 		}
 		diagnostic := diagnosticForChange(requestedMode, change, policy)
-		diagnostic.Sets = append([]string(nil), change.Sets...)
-		diagnostic.Paths = append([]string(nil), change.Paths...)
+		diagnostic.Sets = slices.Clone(change.Sets)
+		diagnostic.Paths = slices.Clone(change.Paths)
 		if change.Message != "" && diagnostic.Message == "" {
 			diagnostic.Message = change.Message
 		}
@@ -309,6 +311,10 @@ var domainPolicies = map[string]domainPolicy{
 	},
 	DomainKernelCommandLine: {
 		Classification:  ClassificationStagedOnly,
+		NextBootAllowed: true,
+	},
+	DomainAPIProxy: {
+		Classification:  ClassificationOnlineApplicable,
 		NextBootAllowed: true,
 	},
 	DomainTmpfiles: {

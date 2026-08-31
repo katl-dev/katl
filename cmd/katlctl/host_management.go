@@ -48,8 +48,35 @@ type hostStatusReport struct {
 	Activity             string                      `json:"activity"`
 	BootHealthDiagnostic string                      `json:"bootHealthDiagnostic,omitempty"`
 	Kubernetes           *kubernetesStatusReport     `json:"kubernetes,omitempty"`
+	APIProxy             *apiProxyStatusReport       `json:"apiProxy,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
 	Volumes              []volumeStatusReport        `json:"volumes,omitempty"`
+}
+
+type apiProxyStatusReport struct {
+	State                  string                   `json:"state"`
+	Listeners              []apiProxyListenerReport `json:"listeners,omitempty"`
+	Backends               []apiProxyBackendReport  `json:"backends,omitempty"`
+	LocalAPIEligible       bool                     `json:"localAPIEligible"`
+	CanonicalEndpoint      string                   `json:"canonicalEndpoint,omitempty"`
+	CanonicalState         string                   `json:"canonicalState"`
+	CanonicalFailureReason string                   `json:"canonicalFailureReason,omitempty"`
+	UpdatedAt              string                   `json:"updatedAt,omitempty"`
+	FailureReason          string                   `json:"failureReason,omitempty"`
+}
+
+type apiProxyListenerReport struct {
+	Address  string `json:"address"`
+	Exposure string `json:"exposure"`
+}
+
+type apiProxyBackendReport struct {
+	Name        string `json:"name"`
+	Address     string `json:"address"`
+	Local       bool   `json:"local"`
+	Eligible    bool   `json:"eligible"`
+	Reason      string `json:"reason,omitempty"`
+	LastChecked string `json:"lastChecked,omitempty"`
 }
 
 type volumeStatusReport struct {
@@ -411,6 +438,7 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 		Activity:             activity,
 		BootHealthDiagnostic: strings.TrimSpace(status.GetBootHealthDiagnostic()),
 		Kubernetes:           newKubernetesStatusReport(status.GetKubernetes()),
+		APIProxy:             newAPIProxyStatusReport(status.GetApiProxy()),
 		ControlPlaneEndpoint: newControlPlaneEndpointReport(status.GetControlPlaneEndpoint()),
 	}
 	if target := strings.TrimSpace(status.GetBootTargetGenerationId()); target != "" && target != current.GetGenerationId() {
@@ -422,6 +450,30 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 			Filesystem: volume.GetFilesystem(), LoadState: volume.GetLoadState(), ActiveState: volume.GetActiveState(),
 			SubState: volume.GetSubState(), Result: volume.GetResult(), FailureDiagnostic: volume.GetFailureDiagnostic(),
 			MountSource: volume.GetMountSource(),
+		})
+	}
+	return report
+}
+
+func newAPIProxyStatusReport(status *agentapi.APIProxyStatus) *apiProxyStatusReport {
+	if status == nil {
+		return nil
+	}
+	report := &apiProxyStatusReport{
+		State: status.GetState(), LocalAPIEligible: status.GetLocalApiEligible(),
+		CanonicalEndpoint: status.GetCanonicalEndpoint(), CanonicalState: status.GetCanonicalState(),
+		CanonicalFailureReason: status.GetCanonicalFailureReason(), UpdatedAt: status.GetUpdatedAt(),
+		FailureReason: status.GetFailureReason(),
+	}
+	for _, listener := range status.GetListeners() {
+		report.Listeners = append(report.Listeners, apiProxyListenerReport{
+			Address: listener.GetAddress(), Exposure: listener.GetExposure(),
+		})
+	}
+	for _, backend := range status.GetBackends() {
+		report.Backends = append(report.Backends, apiProxyBackendReport{
+			Name: backend.GetName(), Address: backend.GetAddress(), Local: backend.GetLocal(),
+			Eligible: backend.GetEligible(), Reason: backend.GetReason(), LastChecked: backend.GetLastChecked(),
 		})
 	}
 	return report
@@ -516,6 +568,35 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	}
 	if err := w.Flush(); err != nil {
 		return err
+	}
+	if report.APIProxy != nil {
+		proxy := report.APIProxy
+		eligible := 0
+		for _, backend := range proxy.Backends {
+			if backend.Eligible {
+				eligible++
+			}
+		}
+		w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(w, "\nAPI PROXY\tLOCAL API\tCANONICAL ENDPOINT\tCANONICAL\tBACKENDS"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d/%d\n", proxy.State, yesNo(proxy.LocalAPIEligible), proxy.CanonicalEndpoint, proxy.CanonicalState, eligible, len(proxy.Backends)); err != nil {
+			return err
+		}
+		if proxy.FailureReason != "" {
+			if _, err := fmt.Fprintf(w, "\t%s\n", proxy.FailureReason); err != nil {
+				return err
+			}
+		}
+		for _, listener := range proxy.Listeners {
+			if _, err := fmt.Fprintf(w, "listener\t%s\t%s\n", listener.Exposure, listener.Address); err != nil {
+				return err
+			}
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
 	}
 	if len(report.Volumes) > 0 {
 		w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)

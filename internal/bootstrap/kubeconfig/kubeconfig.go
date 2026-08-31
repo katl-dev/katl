@@ -25,6 +25,9 @@ type EndpointSelection struct {
 	ControlPlaneEndpoint string
 	StableEndpoint       string
 	StableEndpointReady  bool
+	ProxyEndpoint        string
+	ProxyEndpointReady   bool
+	TLSServerName        string
 }
 
 type Request struct {
@@ -43,11 +46,13 @@ type Request struct {
 }
 
 type Result struct {
-	Path        string
-	Server      string
-	Written     bool
-	Overwritten bool
-	Idempotent  bool
+	Path          string
+	Server        string
+	TLSServerName string
+	Access        string
+	Written       bool
+	Overwritten   bool
+	Idempotent    bool
 }
 
 func (r Result) KubectlArgs() []string {
@@ -63,12 +68,13 @@ func Write(request Request) (Result, error) {
 	if path == "" {
 		path = DefaultPath
 	}
-	server, err := SelectServer(request.Endpoint)
+	selected, err := SelectEndpoint(request.Endpoint)
 	if err != nil {
 		return Result{}, err
 	}
 	content, err := Render(RenderRequest{
-		Server:                   server,
+		Server:                   selected.Server,
+		TLSServerName:            selected.TLSServerName,
 		ClusterName:              valueOrDefault(request.ClusterName, "katl"),
 		ContextName:              valueOrDefault(request.ContextName, "katl"),
 		UserName:                 valueOrDefault(request.UserName, "katl-admin"),
@@ -79,7 +85,7 @@ func Write(request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{Path: path, Server: server}
+	result := Result{Path: path, Server: selected.Server, TLSServerName: selected.TLSServerName, Access: selected.Access}
 	if existing, err := os.ReadFile(path); err == nil {
 		if bytes.Equal(existing, content) {
 			if err := os.Chmod(path, fileMode); err != nil {
@@ -103,20 +109,38 @@ func Write(request Request) (Result, error) {
 }
 
 func SelectServer(selection EndpointSelection) (string, error) {
+	selected, err := SelectEndpoint(selection)
+	return selected.Server, err
+}
+
+type SelectedEndpoint struct {
+	Server        string
+	TLSServerName string
+	Access        string
+}
+
+func SelectEndpoint(selection EndpointSelection) (SelectedEndpoint, error) {
 	switch {
 	case strings.TrimSpace(selection.StableEndpoint) != "" && selection.StableEndpointReady:
-		return normalizeServer(selection.StableEndpoint)
+		server, err := normalizeServer(selection.StableEndpoint)
+		return SelectedEndpoint{Server: server, Access: "canonical"}, err
+	case strings.TrimSpace(selection.ProxyEndpoint) != "" && selection.ProxyEndpointReady:
+		server, err := normalizeServer(selection.ProxyEndpoint)
+		return SelectedEndpoint{Server: server, TLSServerName: strings.TrimSpace(selection.TLSServerName), Access: "node-proxy"}, err
 	case strings.TrimSpace(selection.ControlPlaneEndpoint) != "":
-		return normalizeServer(selection.ControlPlaneEndpoint)
+		server, err := normalizeServer(selection.ControlPlaneEndpoint)
+		return SelectedEndpoint{Server: server, Access: "canonical-unverified"}, err
 	case strings.TrimSpace(selection.InitialEndpoint) != "":
-		return normalizeServer(selection.InitialEndpoint)
+		server, err := normalizeServer(selection.InitialEndpoint)
+		return SelectedEndpoint{Server: server, Access: "direct"}, err
 	default:
-		return "", fmt.Errorf("kubeconfig server endpoint is required")
+		return SelectedEndpoint{}, fmt.Errorf("kubeconfig server endpoint is required")
 	}
 }
 
 type RenderRequest struct {
-	Server string
+	Server        string
+	TLSServerName string
 
 	ClusterName string
 	ContextName string
@@ -157,6 +181,7 @@ func Render(request RenderRequest) ([]byte, error) {
 			Name: request.ClusterName,
 			Cluster: cluster{
 				Server:                   request.Server,
+				TLSServerName:            strings.TrimSpace(request.TLSServerName),
 				CertificateAuthorityData: request.CertificateAuthorityData,
 			},
 		}},
@@ -198,6 +223,7 @@ type namedCluster struct {
 
 type cluster struct {
 	Server                   string `yaml:"server"`
+	TLSServerName            string `yaml:"tls-server-name,omitempty"`
 	CertificateAuthorityData string `yaml:"certificate-authority-data"`
 }
 

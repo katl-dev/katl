@@ -230,6 +230,9 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 			validateKubernetes(pair.value, pair.path, options, result)
 		case "controlPlaneEndpoint":
 			validateControlPlaneEndpoint(pair.value, pair.path, result)
+		case "apiProxy":
+			// KnownFields decoding and apiproxy validation enforce the derived
+			// listener, backend, and TLS identity contract.
 		case "livePreflight":
 			// The apply matrix validates the domain names and requested mode.
 		default:

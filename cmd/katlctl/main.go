@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -681,7 +682,7 @@ func stageLocalUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentCl
 	for {
 		n, readErr := file.Read(buffer)
 		if n > 0 {
-			request := &agentapi.StageHostUpgradeArtifactRequest{Chunk: append([]byte(nil), buffer[:n]...)}
+			request := &agentapi.StageHostUpgradeArtifactRequest{Chunk: slices.Clone(buffer[:n])}
 			if first {
 				request.ApiVersion = operation.APIVersion
 				request.Kind = upload.Kind
@@ -1330,7 +1331,7 @@ func wipeClusterTargets(plan inventory.Plan, all bool, selected []string) ([]inv
 		byName[node.Name] = node
 	}
 	if all {
-		return append([]inventory.PlannedNode(nil), plan.Nodes...), false, nil
+		return slices.Clone(plan.Nodes), false, nil
 	}
 	targets := make([]inventory.PlannedNode, 0, len(selected))
 	seen := make(map[string]struct{}, len(selected))
@@ -2154,13 +2155,14 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string, stderr io.Writer
 		DesiredVersion:          opts.desiredVersion,
 		ApplyMode:               mode,
 		SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
+		APIProxy:                selected.NodeMaterial.APIProxy,
 	})
 }
 
 func configApplySystemExtensionPayloads(payloads []configbundle.SystemExtensionPayload) []configapply.SystemExtensionPayload {
 	out := make([]configapply.SystemExtensionPayload, 0, len(payloads))
 	for _, payload := range payloads {
-		out = append(out, configapply.SystemExtensionPayload{Ref: payload.Ref, Data: append([]byte(nil), payload.Data...)})
+		out = append(out, configapply.SystemExtensionPayload{Ref: payload.Ref, Data: slices.Clone(payload.Data)})
 	}
 	return out
 }
@@ -2694,7 +2696,7 @@ func loadConfigApplyGenerationState(root, generationID string) (configApplyGener
 		state.PreviousGenerationID = record.ConfigApply.PreviousGeneration
 		state.RequestedApplyMode = record.ConfigApply.RequestedApplyMode
 		state.AcceptedApplyMode = record.ConfigApply.AcceptedApplyMode
-		state.ChangedDomains = append([]string(nil), record.ConfigApply.ChangedDomains...)
+		state.ChangedDomains = slices.Clone(record.ConfigApply.ChangedDomains)
 		state.KubeadmActionRequired = redactKubeadm(record.ConfigApply.Kubeadm)
 	}
 	statusPath, err := generation.ConfigApplyStatusPath(root, generationID)
@@ -2713,12 +2715,12 @@ func loadConfigApplyGenerationState(root, generationID string) (configApplyGener
 	state.RequestedApplyMode = firstNonEmpty(status.RequestedApplyMode, state.RequestedApplyMode)
 	state.AcceptedApplyMode = firstNonEmpty(status.AcceptedApplyMode, state.AcceptedApplyMode)
 	if len(status.ChangedDomains) > 0 {
-		state.ChangedDomains = append([]string(nil), status.ChangedDomains...)
+		state.ChangedDomains = slices.Clone(status.ChangedDomains)
 	}
 	state.Phase = status.Phase
 	state.HealthState = firstNonEmpty(status.HealthState, state.HealthState)
-	state.DomainActions = append([]generation.ConfigApplyDomainAction(nil), status.DomainActions...)
-	state.DiagnosticArtifacts = append([]generation.DiagnosticArtifact(nil), status.DiagnosticArtifacts...)
+	state.DomainActions = slices.Clone(status.DomainActions)
+	state.DiagnosticArtifacts = slices.Clone(status.DiagnosticArtifacts)
 	if status.Rollback != nil {
 		state.RollbackTarget = status.Rollback.TargetGenerationID
 		state.RollbackResult = status.Rollback.Result

@@ -6,9 +6,11 @@ import (
 	"io"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -56,6 +58,7 @@ type nodeConfigurationOverlay struct {
 	Volumes              *[]manifest.Volume           `json:"volumes,omitempty" yaml:"volumes,omitempty"`
 	Kubernetes           *manifest.KubernetesConfig   `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
+	APIProxy             *apiproxy.Config             `json:"apiProxy,omitempty" yaml:"apiProxy,omitempty"`
 	LivePreflight        map[string]bool              `json:"livePreflight,omitempty" yaml:"livePreflight,omitempty"`
 }
 
@@ -94,7 +97,7 @@ func DecodeNodeConfigurationChange(reader io.Reader, base TrustedBundleRequest) 
 		return TrustedBundleRequest{}, err
 	}
 	request.KubeadmConfigs = kubeadmConfigs
-	request.SystemExtensionPayloads = append([]SystemExtensionPayload(nil), document.Spec.SystemExtensionPayloads...)
+	request.SystemExtensionPayloads = slices.Clone(document.Spec.SystemExtensionPayloads)
 	request.ClusterDefaults = document.Spec.ClusterDefaults.nodeOverlay(changedKubeadmConfigs)
 	request.SystemRoleOverrides = nodeOverlayMap(document.Spec.SystemRoleOverrides, changedKubeadmConfigs)
 	request.NodeOverrides = nodeOverlayMap(document.Spec.NodeOverrides, changedKubeadmConfigs)
@@ -165,6 +168,7 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 		Kubernetes:        overlay.Kubernetes,
 		KubeadmChanged:    kubeadmChanged,
 		LivePreflight:     overlay.LivePreflight,
+		APIProxy:          overlay.APIProxy,
 	}
 	if overlay.ControlPlaneEndpoint != nil {
 		nodeOverlay.ControlPlaneEndpointSet = true

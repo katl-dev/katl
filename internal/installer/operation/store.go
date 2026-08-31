@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -159,6 +160,7 @@ type BootstrapRequest struct {
 	KubernetesIdentityCluster      string `json:"kubernetesIdentityCluster,omitempty"`
 	KubernetesIdentityFingerprint  string `json:"kubernetesIdentityFingerprint,omitempty"`
 	KubernetesIdentityDigest       string `json:"kubernetesIdentityDigest,omitempty"`
+	APIProxyConfig                 string `json:"apiProxyConfig,omitempty"`
 }
 
 type ConfigApplyRequest struct {
@@ -1214,7 +1216,7 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	record.PreExecMutationMarkers = cloneMarkers(record.PreExecMutationMarkers)
 	record.MutationScopes = cloneStrings(record.MutationScopes)
 	record.MutatingToolInvocations = cloneStrings(record.MutatingToolInvocations)
-	record.DiagnosticArtifacts = append([]DiagnosticArtifact(nil), record.DiagnosticArtifacts...)
+	record.DiagnosticArtifacts = slices.Clone(record.DiagnosticArtifacts)
 	if record.CompletedAt != nil {
 		completedAt := *record.CompletedAt
 		record.CompletedAt = &completedAt
@@ -1223,7 +1225,7 @@ func cloneRecord(record OperationRecord) OperationRecord {
 }
 
 func cloneInvocations(values []InvocationRecord) []InvocationRecord {
-	out := append([]InvocationRecord(nil), values...)
+	out := slices.Clone(values)
 	for i := range out {
 		out[i].ChildProcess = cloneStrings(out[i].ChildProcess)
 		if out[i].CompletedAt != nil {
@@ -1235,7 +1237,7 @@ func cloneInvocations(values []InvocationRecord) []InvocationRecord {
 }
 
 func cloneMarkers(values []PreExecMutationMarker) []PreExecMutationMarker {
-	out := append([]PreExecMutationMarker(nil), values...)
+	out := slices.Clone(values)
 	for i := range out {
 		out[i].ExpectedMutationScopes = cloneStrings(out[i].ExpectedMutationScopes)
 	}
@@ -1243,7 +1245,7 @@ func cloneMarkers(values []PreExecMutationMarker) []PreExecMutationMarker {
 }
 
 func cloneStrings(values []string) []string {
-	return append([]string(nil), values...)
+	return slices.Clone(values)
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

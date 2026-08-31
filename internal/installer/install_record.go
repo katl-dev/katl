@@ -3,6 +3,7 @@ package installer
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/confext"
@@ -22,6 +23,7 @@ type InstallRecordRequest struct {
 	Manifest          manifest.Manifest
 	ExtraMounts       []generation.ExtraMountRequest
 	KubeadmConfigs    map[string]kubeadmconfig.Plan
+	NativeEtcFiles    []confext.NativeEtcFile
 	KubernetesVersion string
 	Record            generation.Record
 	Chown             func(path string, uid int, gid int) error
@@ -42,14 +44,18 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 		return InstallRecordResult{}, err
 	}
 
-	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
-		Manifest:           request.Manifest,
-		KubeadmConfigs:     request.KubeadmConfigs,
-		KubernetesVersion:  firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.Record)),
-		DeferKubeadmInputs: true,
-	})
-	if err != nil {
-		return InstallRecordResult{}, err
+	files := slices.Clone(request.NativeEtcFiles)
+	if request.NativeEtcFiles == nil {
+		var err error
+		files, err = configdomain.NativeEtcFiles(configdomain.RenderRequest{
+			Manifest:           request.Manifest,
+			KubeadmConfigs:     request.KubeadmConfigs,
+			KubernetesVersion:  firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.Record)),
+			DeferKubeadmInputs: true,
+		})
+		if err != nil {
+			return InstallRecordResult{}, err
+		}
 	}
 	extraMountFiles, err := extraMountNativeEtcFiles(request.ExtraMounts)
 	if err != nil {

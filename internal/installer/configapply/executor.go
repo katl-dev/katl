@@ -295,6 +295,8 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		commands = append(commands, Command{Name: "node-metadata-refresh", Argv: []string{"systemctl", "try-reload-or-restart", "katl-runtime-handoff-status.service"}})
 	case DomainVolumes:
 		commands = append(commands, Command{Name: "volume-mount-activate", Argv: []string{"systemctl", "restart", "katl-volumes.target"}})
+	case DomainAPIProxy:
+		commands = append(commands, Command{Name: "api-proxy-restart", Argv: []string{"systemctl", "restart", "katl-api-proxy.service"}})
 	case DomainControlPlaneEndpointRouting:
 		commands = append(commands,
 			Command{Name: "endpoint-routing-validate", Argv: []string{bgpapivip.BirdExecutablePath, "-p", "-c", bgpapivip.BirdConfigPath}},

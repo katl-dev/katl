@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/installer/bgpapivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
@@ -36,6 +37,53 @@ func TestApplyTrustedBundleRejectsLiveNetworkdFileSetBeforeRender(t *testing.T) 
 		t.Fatalf("audit = %#v", result.Audit)
 	}
 	assertGenerationMissing(t, root, "2026.06.05-002")
+}
+
+func TestPlanTrustedBundleAppliesAPIProxyBackendChangesOnline(t *testing.T) {
+	root := t.TempDir()
+	current := testAPIProxyConfig([]apiproxy.Backend{{Name: "cp-1", Address: "192.0.2.11:6443", Local: true}})
+	desired := testAPIProxyConfig([]apiproxy.Backend{
+		{Name: "cp-1", Address: "192.0.2.11:6443", Local: true},
+		{Name: "cp-2", Address: "192.0.2.12:6443"},
+	})
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		ApplyMode: generation.ApplyModeAuto,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {APIProxy: &desired},
+		},
+	})
+	writeCurrentAPIProxy(t, root, request.CurrentRecord, current)
+	result, err := PlanTrustedBundle(request)
+	if err != nil {
+		t.Fatalf("PlanTrustedBundle() error = %v", err)
+	}
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive || !containsDomain(result.Plan.Decision.ChangedDomains, DomainAPIProxy) {
+		t.Fatalf("API proxy decision = %#v", result.Plan.Decision)
+	}
+	if !nativeEtcFileContains(result.Files, apiproxy.ConfigPath, `"name": "cp-2"`) {
+		t.Fatalf("rendered files do not contain the added backend: %#v", result.Files)
+	}
+}
+
+func TestPlanTrustedBundlePreservesAPIProxyAcrossOtherChanges(t *testing.T) {
+	root := t.TempDir()
+	current := testAPIProxyConfig([]apiproxy.Backend{{Name: "cp-1", Address: "192.0.2.11:6443", Local: true}})
+	kernel := manifest.KernelConfig{CommandLine: []string{"iommu=pt"}}
+	request := trustedBundleRequest(root, TrustedBundleRequest{
+		NodeOverrides: map[string]NodeOverlay{"cp-1": {Kernel: &kernel}},
+	})
+	writeCurrentAPIProxy(t, root, request.CurrentRecord, current)
+	result, err := PlanTrustedBundle(request)
+	if err != nil {
+		t.Fatalf("PlanTrustedBundle() error = %v", err)
+	}
+	want, err := apiproxy.Render(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nativeEtcFileContains(result.Files, apiproxy.ConfigPath, strings.TrimSpace(want)) || containsDomain(result.Plan.Decision.ChangedDomains, DomainAPIProxy) {
+		t.Fatalf("API proxy preservation = domains %#v files %#v", result.Plan.Decision.ChangedDomains, result.Files)
+	}
 }
 
 func TestApplyTrustedBundleStagesKernelCommandLineReplacementForNextBoot(t *testing.T) {
@@ -1278,6 +1326,32 @@ func currentConfextFilePath(t *testing.T, root string, record generation.Record,
 	}
 	t.Fatal("current record has no katl-node confext")
 	return ""
+}
+
+func testAPIProxyConfig(backends []apiproxy.Backend) apiproxy.Config {
+	return apiproxy.Config{
+		TLSName: "api.katl.test",
+		Listeners: []apiproxy.Listener{
+			{Address: "127.0.0.1:7445", Exposure: apiproxy.ExposureNodeLocal},
+			{Address: "192.0.2.11:7445", Exposure: apiproxy.ExposureWorkstation},
+		},
+		Backends: backends,
+	}
+}
+
+func writeCurrentAPIProxy(t *testing.T, root string, record generation.Record, config apiproxy.Config) {
+	t.Helper()
+	content, err := apiproxy.Render(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := currentConfextFilePath(t, root, record, apiproxy.ConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func nativeEtcFileContains(files []confext.NativeEtcFile, path, substring string) bool {

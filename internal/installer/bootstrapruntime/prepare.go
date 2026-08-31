@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
@@ -381,6 +382,19 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 		return nil, err
 	}
 	files = replaceNativeEtcFile(files, metadata)
+	if strings.TrimSpace(plan.Operation.BootstrapRequest.APIProxyConfig) != "" {
+		var proxy apiproxy.Config
+		if err := json.Unmarshal([]byte(plan.Operation.BootstrapRequest.APIProxyConfig), &proxy); err != nil {
+			return nil, fmt.Errorf("decode API proxy config: %w", err)
+		}
+		proxyContent, err := apiproxy.Render(proxy)
+		if err != nil {
+			return nil, fmt.Errorf("render API proxy config: %w", err)
+		}
+		files = replaceNativeEtcFile(files, confext.NativeEtcFile{
+			Path: apiproxy.ConfigPath, Content: proxyContent, Mode: 0o644,
+		})
+	}
 	return files, nil
 }
 

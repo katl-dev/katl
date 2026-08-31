@@ -364,6 +364,18 @@ func TestExecutorRunsBirdWhenVIPAdvertisementIsEnabled(t *testing.T) {
 	}
 }
 
+func TestExecutorRestartsAPIProxyAfterConfextActivation(t *testing.T) {
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainAPIProxy}})
+	runner := &fakeCommandRunner{}
+	executor := Executor{Runner: runner, Activator: &fakeActivator{}, Now: fixedNow}
+	if _, err := executor.ExecuteLive(context.Background(), plan); err != nil {
+		t.Fatalf("ExecuteLive() error = %v", err)
+	}
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,api-proxy-restart"; got != want {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
 func liveExecutorPlan(t *testing.T, changes []Change) Result {
 	t.Helper()
 	plan, err := PlanChange(currentRecord(), NodeConfigurationChange{

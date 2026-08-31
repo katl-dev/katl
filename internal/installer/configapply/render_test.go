@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
@@ -38,6 +39,11 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 		SourceID:       "lab",
 		DesiredVersion: "2",
 		ApplyMode:      "auto",
+		APIProxy: apiproxy.Config{
+			TLSName:   "api.katl.test",
+			Listeners: []apiproxy.Listener{{Address: "127.0.0.1:7445", Exposure: apiproxy.ExposureNodeLocal}},
+			Backends:  []apiproxy.Backend{{Name: "cp-1", Address: "192.0.2.10:6443", Local: true}},
+		},
 	})
 	if err != nil {
 		t.Fatalf("RenderNodeConfigurationChange() error = %v", err)
@@ -67,6 +73,9 @@ func TestRenderNodeConfigurationChange(t *testing.T) {
 	}
 	if overlay.Volumes == nil || len(*overlay.Volumes) != 1 || (*overlay.Volumes)[0].Name != "local-hostpath" {
 		t.Fatalf("rendered volumes = %#v", overlay.Volumes)
+	}
+	if overlay.APIProxy == nil || overlay.APIProxy.CanonicalEndpoint != "api.katl.test:6443" || len(overlay.APIProxy.Backends) != 1 {
+		t.Fatalf("rendered API proxy = %#v", overlay.APIProxy)
 	}
 	if strings.Contains(string(data), "install:") {
 		t.Fatalf("rendered change contains install fields:\n%s", data)

@@ -44,6 +44,33 @@ message NodeStatus {
   string boot_health_diagnostic = 17;
   string enrollment_id = 18;
   string inventory_node_name = 19;
+  APIProxyStatus api_proxy = 20;
+}
+
+message APIProxyStatus {
+  string state = 1;
+  repeated APIProxyListenerStatus listeners = 2;
+  repeated APIProxyBackendStatus backends = 3;
+  bool local_api_eligible = 4;
+  string canonical_endpoint = 5;
+  string canonical_state = 6;
+  string canonical_failure_reason = 7;
+  string updated_at = 8;
+  string failure_reason = 9;
+}
+
+message APIProxyListenerStatus {
+  string address = 1;
+  string exposure = 2;
+}
+
+message APIProxyBackendStatus {
+  string name = 1;
+  string address = 2;
+  bool local = 3;
+  bool eligible = 4;
+  string reason = 5;
+  string last_checked = 6;
 }
 
 message VolumeStatus {
@@ -191,6 +218,7 @@ message BootstrapOperationRequest {
   bool existing_cluster_join = 13;
   bytes kubernetes_identity = 14;
   string kubernetes_identity_fingerprint = 15;
+  string api_proxy_config = 16;
 }
 
 message WorkerJoinMaterial {

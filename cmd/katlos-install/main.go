@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -115,7 +116,7 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 		KubeadmConfigs:                     kubeadmConfigs,
 		InputMode:                          inputMode,
 		InputSource:                        inputSource,
-		DestructiveStorageAcknowledgements: append([]string(nil), destructiveStorageAcknowledgements...),
+		DestructiveStorageAcknowledgements: slices.Clone(destructiveStorageAcknowledgements),
 	}, nil
 }
 
@@ -204,6 +205,7 @@ func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSou
 		IdentityRandom:                     rand.Reader,
 		Chown:                              os.Lchown,
 		KubeadmConfigs:                     selected.KubeadmConfigs,
+		NativeEtcFiles:                     slices.Clone(selected.NodeMaterial.NativeEtcFiles),
 		SystemExtensionPayloads:            installSystemExtensionPayloads(selected.SystemExtensionPayloads),
 		InputMode:                          inputMode,
 		InputSource:                        inputSource,
@@ -211,14 +213,14 @@ func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSou
 		SourceDigest:                       selected.SourceDigest,
 		NodeMaterialDigest:                 selected.NodeMaterialDigest,
 		InstallMaterialDigest:              selected.InstallMaterialDigest,
-		DestructiveStorageAcknowledgements: append([]string(nil), destructiveStorageAcknowledgements...),
+		DestructiveStorageAcknowledgements: slices.Clone(destructiveStorageAcknowledgements),
 	}, nil
 }
 
 func installSystemExtensionPayloads(payloads []configbundle.SystemExtensionPayload) []configapply.SystemExtensionPayload {
 	out := make([]configapply.SystemExtensionPayload, 0, len(payloads))
 	for _, payload := range payloads {
-		out = append(out, configapply.SystemExtensionPayload{Ref: payload.Ref, Data: append([]byte(nil), payload.Data...)})
+		out = append(out, configapply.SystemExtensionPayload{Ref: payload.Ref, Data: slices.Clone(payload.Data)})
 	}
 	return out
 }

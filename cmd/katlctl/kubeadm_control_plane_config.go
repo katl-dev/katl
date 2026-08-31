@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -550,6 +551,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			NodeName: selected.Node.Name, Manifest: selected.InstallManifest, KubeadmConfigs: selected.KubeadmConfigs,
 			SourceID: selected.BundleManifest.ClusterName, DesiredVersion: desiredVersion, ApplyMode: generation.ApplyModeAuto,
 			SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
+			APIProxy:                selected.NodeMaterial.APIProxy,
 		})
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("render cluster config for %s: %w", node.Name, err)
@@ -582,8 +584,8 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			Actor: "katlctl cluster apply", ExpectedEnrollmentId: status.EnrollmentId, ExpectedInventoryNodeName: status.InventoryNodeName,
 			ExpectedMachineId: status.MachineId, ExpectedCurrentGenerationId: status.CurrentGenerationId, ApplyMode: generation.ApplyModeAuto,
 			CandidateGenerationId: generationID, NodeName: node.Name, ConfigYaml: string(input.configYAML),
-			DestructiveStorageAcknowledgements: append([]string(nil), opts.destructiveStorageAcknowledgements...),
-			VolumeRebinds:                      append([]string(nil), opts.volumeRebinds...),
+			DestructiveStorageAcknowledgements: slices.Clone(opts.destructiveStorageAcknowledgements),
+			VolumeRebinds:                      slices.Clone(opts.volumeRebinds),
 		})
 		if err != nil {
 			_ = conn.Close()
@@ -610,7 +612,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 		input.noChanges = validation.NoChanges
 		input.acceptedApplyMode = validation.AcceptedApplyMode
-		input.changedDomains = append([]string(nil), validation.ChangedDomains...)
+		input.changedDomains = slices.Clone(validation.ChangedDomains)
 		_ = conn.Close()
 		if containsKubernetesConfigDomain(validation.ChangedDomains) {
 			for _, component := range input.components {
@@ -711,7 +713,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
 			OperationKind: operationKind, Actor: "katlctl cluster apply", ExpectedEnrollmentId: node.EnrollmentID, ExpectedInventoryNodeName: node.Name,
 			ExpectedMachineId: input.machineID, ExpectedCurrentGenerationId: input.currentGeneration,
-			ConfigApply: &agentapi.ConfigApplyOperationRequest{CandidateGenerationId: generationID, ApplyMode: generation.ApplyModeAuto, NodeName: node.Name, ConfigYaml: string(input.configYAML), DestructiveStorageAcknowledgements: append([]string(nil), opts.destructiveStorageAcknowledgements...), VolumeRebinds: append([]string(nil), opts.volumeRebinds...)},
+			ConfigApply: &agentapi.ConfigApplyOperationRequest{CandidateGenerationId: generationID, ApplyMode: generation.ApplyModeAuto, NodeName: node.Name, ConfigYaml: string(input.configYAML), DestructiveStorageAcknowledgements: slices.Clone(opts.destructiveStorageAcknowledgements), VolumeRebinds: slices.Clone(opts.volumeRebinds)},
 		})
 		if err != nil {
 			_ = conn.Close()

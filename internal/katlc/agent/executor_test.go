@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -321,7 +322,7 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	executor.Now = server.Now
 	var poweroffArgv []string
 	executor.RunPoweroff = func(ctx context.Context, argv []string, started func(int)) ToolResult {
-		poweroffArgv = append([]string(nil), argv...)
+		poweroffArgv = slices.Clone(argv)
 		records, err := server.Store.List()
 		if err != nil {
 			t.Fatalf("list operations before poweroff scheduling: %v", err)
@@ -842,9 +843,10 @@ func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 	}
 }
 
-func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t *testing.T) {
+func TestControlPlaneJoinUsingDirectDiscoveryLeavesManagedEndpointAlone(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRootForRole(t, server.Root, "control-plane")
+	writeTestFile(t, filepath.Join(server.Root, "etc/hosts"), "127.0.0.1 localhost\n")
 	writeManagedEndpointTestConfig(t, server.Root)
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
 	executor.Async = false
@@ -856,28 +858,27 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 		return ToolResult{}
 	}
 	executor.RunEndpointLifecycle = func(_ context.Context, argv []string, _ func(int)) ToolResult {
-		command := strings.Join(argv, " ")
-		if len(argv) > 0 && argv[0] == managedEndpointKubectl {
-			command = managedEndpointKubectl + " probe-stable-endpoint"
-		}
-		sequence = append(sequence, command)
-		if reflect.DeepEqual(argv, []string{managedEndpointIP, "-json", "route", "get", "10.0.0.11"}) {
-			return ToolResult{Stdout: []byte(`[{"dst":"10.0.0.11","dev":"enp1s0"}]`)}
+		switch argv[0] {
+		case directJoinMount:
+			sequence = append(sequence, "direct-path-mount")
+		case directJoinUnmount:
+			sequence = append(sequence, "direct-path-unmount")
+		default:
+			t.Fatalf("managed endpoint lifecycle ran for direct discovery: %v", argv)
 		}
 		return ToolResult{}
 	}
 	executor.RunTool = func(_ context.Context, _ []string, started func(int)) ToolResult {
-		wantPrefix := []string{
-			"readiness",
-			"systemctl stop " + endpointAdvertiserPathUnit,
-			"systemctl stop " + endpointAdvertiserUnit,
-			endpointAdvertiserCommand + " withdraw",
-			managedEndpointIP + " -json route get 10.0.0.11",
-			managedEndpointIP + " route add 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
-			managedEndpointKubectl + " probe-stable-endpoint",
-		}
+		wantPrefix := []string{"readiness", "direct-path-mount"}
 		if !reflect.DeepEqual(sequence, wantPrefix) {
 			t.Fatalf("sequence before kubeadm = %#v, want %#v", sequence, wantPrefix)
+		}
+		hosts, err := os.ReadFile(filepath.Join(server.Root, "run/katl/bootstrap-join/bootstrap-join-control-plane-01/hosts"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(hosts), "10.0.0.11 node-a.example.test "+directJoinHostsMarker) {
+			t.Fatalf("direct join hosts = %s", hosts)
 		}
 		sequence = append(sequence, "kubeadm")
 		started(456)
@@ -900,29 +901,29 @@ func TestControlPlaneJoinKeepsManagedEndpointOffLocalPathUntilKubeadmCompletes(t
 	}
 	want := []string{
 		"readiness",
-		"systemctl stop " + endpointAdvertiserPathUnit,
-		"systemctl stop " + endpointAdvertiserUnit,
-		endpointAdvertiserCommand + " withdraw",
-		managedEndpointIP + " -json route get 10.0.0.11",
-		managedEndpointIP + " route add 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
-		managedEndpointKubectl + " probe-stable-endpoint",
+		"direct-path-mount",
 		"kubeadm",
-		managedEndpointIP + " route del 10.40.0.10/32 via 10.0.0.11 dev enp1s0",
-		"systemctl start " + endpointAdvertiserPathUnit,
-		"systemctl start " + endpointAdvertiserUnit,
+		"direct-path-unmount",
 		"post-health",
 	}
 	if !reflect.DeepEqual(sequence, want) {
 		t.Fatalf("control-plane join sequence = %#v, want %#v", sequence, want)
+	}
+	hosts, err := os.ReadFile(filepath.Join(server.Root, "etc/hosts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(hosts) != "127.0.0.1 localhost\n" {
+		t.Fatalf("direct join hosts after kubeadm = %q", hosts)
 	}
 	record, err := server.Store.Read(accepted.OperationId)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !record.Terminal || record.Result != operation.ResultSucceeded {
-		t.Fatalf("record = %+v, want successful managed endpoint join", record)
+		t.Fatalf("record = %+v, want successful direct endpoint join", record)
 	}
-	for _, phase := range []string{"suspend-managed-endpoint", "kubeadm-join-control-plane", "restore-managed-endpoint", "post-kubeadm-health"} {
+	for _, phase := range []string{"kubeadm-join-control-plane", "post-kubeadm-health"} {
 		if !contains(record.CompletedPhases, phase) {
 			t.Fatalf("completed phases = %v, missing %s", record.CompletedPhases, phase)
 		}
@@ -1261,6 +1262,7 @@ func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id st
 func configureExecutorBundle(t *testing.T, executor *Executor, payloadVersion string, payload string) (string, string) {
 	t.Helper()
 	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.ConfigureLocalAPI = func(context.Context, string, operation.BootstrapRequest, ToolRunner) error { return nil }
 	fixture := writeExecutorKubernetesBundleFixture(t, payloadVersion, payload)
 	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
 	t.Cleanup(server.Close)

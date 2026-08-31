@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -21,6 +22,7 @@ type RenderNodeRequest struct {
 	ApplyMode               string
 	KubeadmOnly             bool
 	SystemExtensionPayloads []SystemExtensionPayload
+	APIProxy                apiproxy.Config
 }
 
 type renderedNodeConfigurationChange struct {
@@ -51,6 +53,7 @@ type renderedNodeConfigurationOverlay struct {
 	Volumes              *[]manifest.Volume           `yaml:"volumes"`
 	Kubernetes           *manifest.KubernetesConfig   `yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint,omitempty"`
+	APIProxy             *apiproxy.Config             `yaml:"apiProxy,omitempty"`
 }
 
 type renderedNodeIdentity struct {
@@ -77,8 +80,8 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	}
 
 	node := request.Manifest.Node
-	systemExtensions := append([]manifest.SystemExtension(nil), node.SystemExtensions...)
-	volumes := append([]manifest.Volume(nil), request.Manifest.Install.Volumes...)
+	systemExtensions := slices.Clone(node.SystemExtensions)
+	volumes := slices.Clone(request.Manifest.Install.Volumes)
 	kernel := manifest.KernelConfig{CommandLine: slices.Clone(node.Kernel.CommandLine)}
 	kubeadmConfigs, err := renderKubeadmConfigs(node.Kubernetes.Kubeadm.ConfigRef, request.KubeadmConfigs)
 	if err != nil {
@@ -87,7 +90,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	overlay := renderedNodeConfigurationOverlay{
 		Identity: &renderedNodeIdentity{
 			Hostname:       node.Identity.Hostname,
-			AuthorizedKeys: append([]string{}, node.Identity.SSH.AuthorizedKeys...),
+			AuthorizedKeys: slices.Clone(node.Identity.SSH.AuthorizedKeys),
 		},
 		SystemRole:           node.SystemRole,
 		Kernel:               &kernel,
@@ -96,6 +99,13 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		Volumes:              &volumes,
 		Kubernetes:           &node.Kubernetes,
 		ControlPlaneEndpoint: renderedControlPlaneEndpoint(node.ControlPlaneEndpoint),
+	}
+	if !request.APIProxy.IsZero() {
+		config, err := apiproxy.Normalize(request.APIProxy)
+		if err != nil {
+			return nil, fmt.Errorf("API proxy: %w", err)
+		}
+		overlay.APIProxy = &config
 	}
 	if request.KubeadmOnly {
 		overlay = renderedNodeConfigurationOverlay{Kubernetes: &node.Kubernetes}
@@ -110,7 +120,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		Apply: Apply{Mode: applyMode},
 		Spec: renderedNodeConfigurationChangeSpec{
 			KubeadmConfigs:          kubeadmConfigs,
-			SystemExtensionPayloads: append([]SystemExtensionPayload(nil), request.SystemExtensionPayloads...),
+			SystemExtensionPayloads: slices.Clone(request.SystemExtensionPayloads),
 			NodeOverrides: map[string]renderedNodeConfigurationOverlay{
 				nodeName: overlay,
 			},

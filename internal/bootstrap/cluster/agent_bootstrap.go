@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/yaml.v3"
+
+	"github.com/katl-dev/katl/internal/apiproxy"
 )
 
 const (
@@ -154,9 +157,6 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	if err != nil {
 		return result, err
 	}
-	if (bootstrap.enabled() || plan.ControlPlaneEndpointManaged) && deps.BootstrapRunner == nil {
-		return result, errors.New("bootstrap handoff runner is required")
-	}
 	if err := validateAgentPlan(plan); err != nil {
 		return result, err
 	}
@@ -193,23 +193,9 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	result.addOperationPhase("bootstrap-init", initNode.Name, inventory.ActionInit, "passed", initResult.Operation)
 	boots := []bootstrapBoot{{Node: initNode, Operation: initResult.Operation}}
 	stableEndpointReady := false
-	if plan.ControlPlaneEndpointManaged {
-		emitAgentProgress(deps, AgentBootstrapProgress{Phase: "checking-stable-endpoint"})
-		endpointResult, err := verifyManagedControlPlaneEndpoint(ctx, deps.BootstrapRunner, initNode, plan, initResult.Credentials)
-		if err != nil {
-			result.addPhase("stable-endpoint", "", "", "failed")
-			return result, fmt.Errorf("wait for managed control-plane endpoint: %s", inventory.Redact(err.Error()))
-		}
-		if !endpointResult.StableEndpointReady {
-			result.addPhase("stable-endpoint", "", "", "failed")
-			return result, errors.New("managed control-plane endpoint check completed without confirming readiness")
-		}
-		stableEndpointReady = true
-		result.addPhase("stable-endpoint", "", "", "passed")
-	}
 	for _, node := range controlPlaneJoinNodes(plan) {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-control-plane", Phase: "creating-join-material"})
-		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, initResult.Operation.ID, initResult.Credentials, plan.ControlPlaneEndpointManaged, deps)
+		material, err := createControlPlaneJoinMaterial(ctx, initNode, node, initResult.Operation.ID, initResult.Credentials, deps)
 		if err != nil {
 			result.addPhase("control-plane-join", node.Name, inventory.ActionControlPlaneJoin, "failed")
 			return result, fmt.Errorf("control-plane join material for %s: %s", node.Name, inventory.Redact(err.Error()))
@@ -224,7 +210,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	}
 	for _, node := range workerNodes(plan) {
 		emitAgentProgress(deps, AgentBootstrapProgress{Node: node.Name, Kind: "bootstrap-join-worker", Phase: "creating-join-material"})
-		material, err := createWorkerJoinMaterial(ctx, initNode, node, initResult.Operation.ID, deps)
+		material, err := createWorkerJoinMaterial(ctx, initNode, node, initResult.Operation.ID, initResult.Credentials, deps)
 		if err != nil {
 			result.addPhase("worker-join", node.Name, inventory.ActionWorkerJoin, "failed")
 			return result, fmt.Errorf("worker join material for %s: %s", node.Name, inventory.Redact(err.Error()))
@@ -248,8 +234,14 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		}
 		result.addPhase("boot-health", boot.Node.Name, boot.Node.Action, "passed")
 	}
+	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "checking-api-proxy"})
+	if err := verifyProxyAccess(ctx, deps.BootstrapRunner, initNode, plan, initResult.Credentials); err != nil {
+		result.addPhase("api-proxy", initNode.Name, "", "failed")
+		return result, fmt.Errorf("verify Kubernetes API proxy on %s: %s", initNode.Name, inventory.Redact(err.Error()))
+	}
+	result.addPhase("api-proxy", initNode.Name, "", "passed")
 	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "writing-kubeconfig"})
-	kubeconfigResult, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, initResult.Credentials, stableEndpointReady, request.OverwriteKubeconfig)
+	kubeconfigResult, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, initResult.Credentials, stableEndpointReady, true, request.OverwriteKubeconfig)
 	if err != nil {
 		result.addPhase("kubeconfig", "", "", "failed")
 		return result, err
@@ -262,6 +254,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		emitAgentProgress(deps, AgentBootstrapProgress{Phase: "applying-bootstrap-manifests"})
 		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
 			Server:         bootstrapServer(initNode, plan),
+			TLSServerName:  controlPlaneEndpointHost(plan.ControlPlaneEndpoint),
 			StableEndpoint: bootstrap.StableEndpoint,
 			Credentials:    initResult.Credentials,
 			PreWaits:       bootstrap.preWaits(),
@@ -277,7 +270,7 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		stableEndpointReady = stableEndpointReady || bootstrapResult.StableEndpointReady
 		result.addPhase("user-bootstrap", "", "", "passed")
 		if !wasStableEndpointReady && stableEndpointReady {
-			refreshed, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, initResult.Credentials, stableEndpointReady, true)
+			refreshed, err := writeOperatorKubeconfig(request, initNode, plan, bootstrap, initResult.Credentials, stableEndpointReady, true, true)
 			if err != nil {
 				return result, fmt.Errorf("refresh kubeconfig for stable endpoint: %w", err)
 			}
@@ -484,7 +477,10 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 		return bootstrapInitResult{}, fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
-	req := bootstrapInitRequest(node, plan, status, clusterName, identity, identityFingerprint, deps)
+	req, err := bootstrapInitRequest(node, plan, status, clusterName, identity, identityFingerprint, deps)
+	if err != nil {
+		return bootstrapInitResult{}, err
+	}
 	accepted, requestID, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
 	if err != nil {
 		return bootstrapInitResult{}, err
@@ -527,17 +523,16 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	return result, nil
 }
 
-func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, initOperationID string, credentials AdminCredentials, managedEndpoint bool, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
-	discovery := joinDiscoveryOverride{}
-	if managedEndpoint {
-		discovery.Endpoint = endpointForNode(initNode)
-		discovery.CertificateAuthorityData = credentials.CertificateAuthorityData
-	}
-	return createJoinMaterial(ctx, initNode, controlPlane, initOperationID, deps, "control-plane", discovery)
+func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, initOperationID string, credentials AdminCredentials, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
+	return createJoinMaterial(ctx, initNode, controlPlane, initOperationID, deps, "control-plane", joinDiscoveryOverride{
+		Endpoint: endpointForNode(initNode), CertificateAuthorityData: credentials.CertificateAuthorityData,
+	})
 }
 
-func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.PlannedNode, initOperationID string, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
-	return createJoinMaterial(ctx, initNode, worker, initOperationID, deps, "worker", joinDiscoveryOverride{})
+func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.PlannedNode, initOperationID string, credentials AdminCredentials, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
+	return createJoinMaterial(ctx, initNode, worker, initOperationID, deps, "worker", joinDiscoveryOverride{
+		Endpoint: endpointForNode(initNode), CertificateAuthorityData: credentials.CertificateAuthorityData,
+	})
 }
 
 type joinDiscoveryOverride struct {
@@ -615,7 +610,7 @@ func verifyPlannedNodeIdentity(node inventory.PlannedNode, status *agentapi.Node
 }
 
 func joinMaterialWithDiscoveryEndpoint(material *agentapi.WorkerJoinMaterial, endpoint, certificateAuthorityData string) (*agentapi.WorkerJoinMaterial, error) {
-	argv := append([]string(nil), material.GetJoinArgv()...)
+	argv := slices.Clone(material.GetJoinArgv())
 	if len(argv) < 3 || argv[0] != "kubeadm" || argv[1] != "join" {
 		return nil, errors.New("join material must start with kubeadm join and an API endpoint")
 	}
@@ -704,7 +699,10 @@ func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inv
 		return operationReference{}, fmt.Errorf("connect to katlc agent: %w", err)
 	}
 	defer closeAgent(conn)
-	req := bootstrapOperationRequest(node, plan, status, deps, kind)
+	req, err := bootstrapOperationRequest(node, plan, status, deps, kind)
+	if err != nil {
+		return operationReference{}, err
+	}
 	req.Bootstrap.JoinMaterialRef = strings.TrimSpace(material.Ref)
 	req.Bootstrap.WorkerJoinMaterial = material.Material
 	accepted, requestID, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
@@ -846,19 +844,26 @@ func bootstrapKubernetesHealthy(node inventory.PlannedNode, status *agentapi.Nod
 	return true
 }
 
-func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, clusterName string, identity []byte, identityFingerprint string, deps AgentBootstrapDependencies) *agentapi.SubmitOperationRequest {
-	request := bootstrapOperationRequest(node, plan, status, deps, agentBootstrapInitKind)
+func bootstrapInitRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, clusterName string, identity []byte, identityFingerprint string, deps AgentBootstrapDependencies) (*agentapi.SubmitOperationRequest, error) {
+	request, err := bootstrapOperationRequest(node, plan, status, deps, agentBootstrapInitKind)
+	if err != nil {
+		return nil, err
+	}
 	identityRef := strings.TrimSpace(identityFingerprint)
 	if identityRef != "" {
 		identityRef = strings.TrimSpace(clusterName) + "\x00" + identityRef
 	}
 	request.ClientRequestId = clientRequestID(node, plan, agentBootstrapInitKind, identityRef)
-	request.Bootstrap.KubernetesIdentity = append([]byte(nil), identity...)
+	request.Bootstrap.KubernetesIdentity = slices.Clone(identity)
 	request.Bootstrap.KubernetesIdentityFingerprint = strings.TrimSpace(identityFingerprint)
-	return request
+	return request, nil
 }
 
-func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies, kind string) *agentapi.SubmitOperationRequest {
+func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, deps AgentBootstrapDependencies, kind string) (*agentapi.SubmitOperationRequest, error) {
+	proxyConfig, err := bootstrapAPIProxyConfig(node, plan)
+	if err != nil {
+		return nil, err
+	}
 	return &agentapi.SubmitOperationRequest{
 		ApiVersion:                  agentAPIVersion,
 		Kind:                        agentSubmitOperationKind,
@@ -879,8 +884,54 @@ func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, 
 			BootstrapProfileRef:      bootstrapProfileRef(node),
 			ControlPlaneEndpoint:     plan.ControlPlaneEndpoint,
 			ExistingClusterJoin:      deps.ExistingClusterJoin,
+			ApiProxyConfig:           proxyConfig,
 		},
+	}, nil
+}
+
+func bootstrapAPIProxyConfig(node inventory.PlannedNode, plan inventory.Plan) (string, error) {
+	canonicalEndpoint := strings.TrimSpace(plan.ControlPlaneEndpoint)
+	if canonicalEndpoint == "" {
+		for _, candidate := range plan.Nodes {
+			if candidate.SystemRole == inventory.RoleControlPlane {
+				canonicalEndpoint = net.JoinHostPort(nodeHost(candidate.Address), "6443")
+				break
+			}
+		}
 	}
+	listeners := []apiproxy.Listener{{
+		Address: net.JoinHostPort("127.0.0.1", "7445"), Exposure: apiproxy.ExposureNodeLocal,
+	}}
+	if node.SystemRole == inventory.RoleControlPlane {
+		listeners = append(listeners, apiproxy.Listener{
+			Address: net.JoinHostPort(nodeHost(node.Address), "7445"), Exposure: apiproxy.ExposureWorkstation,
+		})
+	}
+	backends := make([]apiproxy.Backend, 0, len(plan.Nodes))
+	for _, candidate := range plan.Nodes {
+		if candidate.SystemRole != inventory.RoleControlPlane {
+			continue
+		}
+		backends = append(backends, apiproxy.Backend{
+			Name: candidate.Name, Address: net.JoinHostPort(nodeHost(candidate.Address), "6443"), Local: candidate.Name == node.Name,
+		})
+	}
+	config, err := apiproxy.Normalize(apiproxy.Config{
+		TLSName: controlPlaneEndpointHost(canonicalEndpoint), CanonicalEndpoint: canonicalEndpoint,
+		Listeners: listeners, Backends: backends,
+	})
+	if err != nil {
+		return "", fmt.Errorf("node %s API proxy: %w", node.Name, err)
+	}
+	return apiproxy.Render(config)
+}
+
+func nodeHost(address string) string {
+	address = strings.TrimSpace(address)
+	if host, _, err := net.SplitHostPort(address); err == nil {
+		return host
+	}
+	return address
 }
 
 func requiredAgentOperationKind(action inventory.BootstrapAction) string {

@@ -16,6 +16,7 @@ func TestDomainClassificationMatrix(t *testing.T) {
 		{DomainHostConfiguration, ClassificationOnlineApplicable},
 		{DomainTmpfiles, ClassificationStagedOnly},
 		{DomainKernelCommandLine, ClassificationStagedOnly},
+		{DomainAPIProxy, ClassificationOnlineApplicable},
 		{DomainBootstrapNodeMetadata, ClassificationOnlineApplicable},
 		{DomainNodeIdentity, ClassificationStagedOnly},
 		{DomainModulesLoad, ClassificationStagedOnly},

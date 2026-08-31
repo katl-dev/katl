@@ -104,6 +104,12 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 				KubernetesPayloadVersion: "v1.36.1",
 				BootstrapProfileRef:      "control-plane",
 				CandidateGenerationID:    "1",
+				APIProxyConfig: `{
+					"canonicalEndpoint":"api.katl.test:6443",
+					"tlsServerName":"api.katl.test",
+					"listeners":[{"exposure":"node-local","address":"127.0.0.1:7445"}],
+					"backends":[{"name":"cp-1","address":"192.0.2.10:6443","local":true}]
+				}`,
 			},
 		},
 		Previous:      previous,
@@ -154,6 +160,8 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 		t.Fatalf("desired kubeadm input = source %q content:\n%s", sourceGeneration, desiredKubeadm.Config.Content)
 	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
+	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/api-proxy/config.json"), `"canonicalEndpoint": "api.katl.test:6443"`)
+	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/api-proxy/config.json"), `"address": "192.0.2.10:6443"`)
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/extension-release.d/extension-release."+generation.GeneratedConfextName), "ID=katlos")
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/systemd/network/80-katl-vmtest-dhcp.network"), "DHCP=yes")
 	assertSymlink(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/systemd/system/multi-user.target.wants/bird.service"), "/usr/lib/systemd/system/bird.service")

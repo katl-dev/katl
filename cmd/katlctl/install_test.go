@@ -269,7 +269,8 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source = bytes.ReplaceAll(source, []byte("10.0.0.11"), []byte(strings.TrimPrefix(ts.URL, "http://")))
+	source = bytes.Replace(source, []byte("10.0.0.11"), []byte(strings.TrimPrefix(ts.URL, "http://")), 1)
+	source = bytes.Replace(source, []byte("      install:\n"), []byte("      kubernetes:\n        address: 192.0.2.11\n      install:\n"), 1)
 	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
 		t.Fatal(err)
 	}

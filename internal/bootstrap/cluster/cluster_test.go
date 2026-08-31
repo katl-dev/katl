@@ -182,7 +182,7 @@ func TestRunAppliesUserBootstrapAfterAPIReadinessAndUsesStableEndpoint(t *testin
 		t.Fatalf("bootstrap calls = %d, want 1", len(bootstrapRunner.requests))
 	}
 	request := bootstrapRunner.requests[0]
-	if request.Server != "10.0.0.11:6443" {
+	if request.Server != "10.0.0.11:7445" {
 		t.Fatalf("bootstrap server = %q", request.Server)
 	}
 	if result.Plan.Bootstrap.Manifests[0].Path != manifestOne {
@@ -1549,6 +1549,7 @@ type fakeBootstrapRunner struct {
 	requests []BootstrapRequest
 	result   BootstrapResult
 	err      error
+	errAfter int
 }
 
 func (r *fakeBootstrapRunner) RunUserBootstrap(_ context.Context, request BootstrapRequest) (BootstrapResult, error) {
@@ -1556,7 +1557,7 @@ func (r *fakeBootstrapRunner) RunUserBootstrap(_ context.Context, request Bootst
 	if r.events != nil {
 		*r.events = append(*r.events, "bootstrap")
 	}
-	if r.err != nil {
+	if r.err != nil && (r.errAfter == 0 || len(r.requests) >= r.errAfter) {
 		return BootstrapResult{}, r.err
 	}
 	return r.result, nil
