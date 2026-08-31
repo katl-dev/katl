@@ -108,16 +108,10 @@ func TestRenderNodeConfigurationChangeCarriesExternalEndpointOwnership(t *testin
 	}
 }
 
-func managedEndpoint(peer string) *controlplaneendpoint.Config {
+func managedEndpoint(_ string) *controlplaneendpoint.Config {
 	return &controlplaneendpoint.Config{
-		Host: "192.0.2.10",
-		Advertisement: &controlplaneendpoint.Advertisement{
-			VIP: "192.0.2.10",
-			BGP: &controlplaneendpoint.BGP{
-				LocalASN: 64512,
-				Peers:    []controlplaneendpoint.Peer{{Address: peer, ASN: 64500}},
-			},
-		},
+		Host:          "192.0.2.10",
+		Advertisement: &controlplaneendpoint.Advertisement{VIP: "192.0.2.10"},
 	}
 }
 

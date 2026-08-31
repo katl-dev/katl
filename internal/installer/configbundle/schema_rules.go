@@ -177,33 +177,9 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "controlplaneendpoint.Config.port":
 		return integerDefaultRule("Kubernetes API port; zero selects the default.", 0, 65535, 6443)
 	case "controlplaneendpoint.Config.advertisement":
-		return description("Optional Katl-managed routed API endpoint advertisement.")
+		return description("Optional Katl-managed API VIP ownership.")
 	case "controlplaneendpoint.Advertisement.vip":
-		return schemaFieldRule{Description: "Bare routed IPv4 API address.", Format: "ipv4"}
-	case "controlplaneendpoint.Advertisement.bgp":
-		return description("BGP peers and optional route exchanges.")
-	case "controlplaneendpoint.BGP.localASN":
-		return integerRule("Local BGP autonomous system number.", 1, 4294967294)
-	case "controlplaneendpoint.BGP.peers":
-		return arrayRule("BGP peers receiving the API route.", 1)
-	case "controlplaneendpoint.BGP.routeExchanges":
-		return description("Optional bounded route-exchange listeners.")
-	case "controlplaneendpoint.Peer.address":
-		return schemaFieldRule{Description: "Usable peer IPv4 address.", Format: "ipv4"}
-	case "controlplaneendpoint.Peer.asn":
-		return integerRule("Peer autonomous system number.", 1, 4294967294)
-	case "controlplaneendpoint.RouteExchange.name":
-		return stringRule("DNS-label-style route exchange name.", dnsLabelPattern, 1, 63)
-	case "controlplaneendpoint.RouteExchange.listenPort":
-		return integerDefaultRule("BGP listener port; zero selects 179 when one exchange exists.", 0, 65535, 179)
-	case "controlplaneendpoint.RouteExchange.peerASN":
-		return integerRule("Expected peer autonomous system number; zero selects localASN.", 0, 4294967294)
-	case "controlplaneendpoint.RouteExchange.exportToFabric":
-		return description("IPv4 prefix envelopes eligible for export.")
-	case "controlplaneendpoint.PrefixEnvelope.cidr":
-		return schemaFieldRule{Description: "IPv4 CIDR eligible for export.", Pattern: `^[0-9.]+/[0-9]{1,2}$`}
-	case "controlplaneendpoint.PrefixEnvelope.exactPrefixLength":
-		return integerRule("Optional exact exported prefix length.", 0, 32)
+		return schemaFieldRule{Description: "Bare IPv4 address owned by healthy control-plane nodes.", Format: "ipv4"}
 	case "manifest.HostConfigurationFile.path":
 		return stringRule("Normalized file path below /etc.", `^/etc/`, 6, 0)
 	case "manifest.HostConfigurationFile.content":

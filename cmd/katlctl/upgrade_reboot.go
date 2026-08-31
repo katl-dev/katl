@@ -216,5 +216,5 @@ func nodeUpgradeRecovery(status *agentapi.NodeStatus, requirement nodeRecoveryRe
 }
 
 func managedEndpointReady(endpoint *agentapi.ControlPlaneEndpointStatus) bool {
-	return endpoint != nil && endpoint.GetLocalApiReady() && endpoint.GetLocalVipOwned() && endpoint.GetRouteOriginated() && strings.EqualFold(endpoint.GetState(), "advertised")
+	return endpoint != nil && endpoint.GetLocalApiReady() && endpoint.GetLocalVipOwned() && strings.EqualFold(endpoint.GetState(), "active")
 }

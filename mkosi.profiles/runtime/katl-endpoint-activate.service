@@ -3,16 +3,16 @@ Description=Activate the configured Katl control-plane endpoint
 Documentation=https://katl.dev
 Wants=systemd-sysext.service systemd-confext.service
 After=systemd-sysext.service systemd-confext.service
-ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
-ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
+ConditionPathExists=/etc/katl/apps/api-vip/config.yaml
+ConditionPathExists=/etc/katl/apps/api-vip/ownership-enabled
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/systemctl daemon-reload
-ExecStart=/usr/bin/systemctl start katl-app-bgp-api-vip.service
+ExecStart=/usr/bin/systemctl start katl-app-api-vip.service
 # Older endpoint extensions predate the path watcher. Starting a missing unit
 # must not reject an otherwise compatible KatlOS upgrade generation.
-ExecStart=-/usr/bin/systemctl start katl-app-bgp-api-vip.path
+ExecStart=-/usr/bin/systemctl start katl-app-api-vip.path
 RemainAfterExit=yes
 
 [Install]

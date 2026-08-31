@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 )
 
 var version = "0.0.0-dev"
@@ -31,8 +31,8 @@ func run(args []string, stderr io.Writer) error {
 	}
 	flags := flag.NewFlagSet("katl-endpoint-advertiser", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	configPath := flags.String("config", bgpapivip.ConfigPath, "generated endpoint configuration")
-	statusPath := flags.String("status", bgpapivip.LiveStatusPath, "bounded endpoint status path")
+	configPath := flags.String("config", apivip.ConfigPath, "generated endpoint configuration")
+	statusPath := flags.String("status", apivip.LiveStatusPath, "bounded endpoint status path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -51,16 +51,13 @@ func run(args []string, stderr io.Writer) error {
 	if err != nil || interval <= 0 {
 		return fmt.Errorf("invalid generated health interval %q", config.Health.Interval)
 	}
-	owner := bgpapivip.NetlinkVIPOwner{}
-	controller := bgpapivip.Controller{
+	owner := apivip.NetlinkVIPOwner{}
+	controller := apivip.Controller{
 		Config:            config,
 		AppPayloadVersion: version,
-		Interface:         bgpapivip.LinuxInterfaceChecker{},
+		Interface:         apivip.LinuxInterfaceChecker{},
 		Owner:             owner,
-		Writer:            bgpapivip.FileStatusWriter{LivePath: *statusPath},
-	}
-	if config.Routing.Mode == "bgp" {
-		controller.Bird = bgpapivip.CommandBirdClient{Config: config}
+		Writer:            apivip.FileStatusWriter{LivePath: *statusPath},
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -69,7 +66,7 @@ func run(args []string, stderr io.Writer) error {
 	lastState := ""
 	for {
 		status, runErr := controller.RunOnce(ctx)
-		state := status.AdvertisementState + "/" + status.WithdrawReason
+		state := status.OwnershipState + "/" + status.ReleaseReason
 		if state != lastState || runErr != nil {
 			if runErr != nil {
 				fmt.Fprintf(stderr, "endpoint state=%s health=%s: %v\n", state, status.HealthState, runErr)
@@ -92,27 +89,27 @@ func run(args []string, stderr io.Writer) error {
 	}
 }
 
-func loadConfig(path string) (bgpapivip.Config, error) {
+func loadConfig(path string) (apivip.Config, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return bgpapivip.Config{}, fmt.Errorf("open generated config: %w", err)
+		return apivip.Config{}, fmt.Errorf("open generated config: %w", err)
 	}
-	object, err := bgpapivip.Decode(file)
+	object, err := apivip.Decode(file)
 	closeErr := file.Close()
 	if err != nil {
-		return bgpapivip.Config{}, err
+		return apivip.Config{}, err
 	}
 	if closeErr != nil {
-		return bgpapivip.Config{}, closeErr
+		return apivip.Config{}, closeErr
 	}
-	config, err := bgpapivip.Normalize(object.Spec)
+	config, err := apivip.Normalize(object.Spec)
 	if err != nil {
-		return bgpapivip.Config{}, err
+		return apivip.Config{}, err
 	}
 	return config, nil
 }
 
-func failClosed(runErr error, owner bgpapivip.VIPOwner, config bgpapivip.Config) error {
+func failClosed(runErr error, owner apivip.VIPOwner, config apivip.Config) error {
 	if runErr == nil {
 		return nil
 	}
@@ -124,10 +121,10 @@ func withdraw(parent context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	return withdrawWith(parent, bgpapivip.NetlinkVIPOwner{}, config)
+	return withdrawWith(parent, apivip.NetlinkVIPOwner{}, config)
 }
 
-func withdrawWith(parent context.Context, owner bgpapivip.VIPOwner, config bgpapivip.Config) error {
+func withdrawWith(parent context.Context, owner apivip.VIPOwner, config apivip.Config) error {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	if err := owner.SetOwned(ctx, config, false); err != nil {

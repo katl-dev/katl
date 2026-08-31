@@ -3,7 +3,6 @@ set -euo pipefail
 
 repo="${SRCDIR:-}"
 builddir="${BUILDDIR:-/tmp}"
-buildroot="${BUILDROOT:-}"
 version="${KATL_VERSION:-0.0.0-dev}"
 
 if [[ ! -f "$repo/go.mod" && -f /work/go.mod ]]; then
@@ -16,7 +15,6 @@ fi
 
 mkdir -p \
     "$DESTDIR/usr/lib/katl/endpoint-advertiser" \
-    "$DESTDIR/usr/lib/katl/endpoint-routing" \
     "$DESTDIR/usr/lib/systemd/system"
 
 cd "$repo"
@@ -33,23 +31,6 @@ go build \
     ./cmd/katl-endpoint-advertiser
 
 install -m 0644 \
-    "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-bird.service" \
-    "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.path" \
-    "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-bgp-api-vip.service" \
+    "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-api-vip.path" \
+    "$repo/mkosi.profiles/endpoint-advertiser-sysext/katl-app-api-vip.service" \
     "$DESTDIR/usr/lib/systemd/system/"
-
-# Keep Katl's optional built-in routing implementation private. A generic BIRD
-# system extension can then own the conventional binaries and bird.service
-# without colliding with this application extension.
-for executable in bird birdc; do
-    for source in "$buildroot/usr/bin/$executable" "$buildroot/usr/sbin/$executable"; do
-        if [[ -x "$source" ]]; then
-            install -m 0755 "$source" "$DESTDIR/usr/lib/katl/endpoint-routing/$executable"
-            break
-        fi
-    done
-    if [[ ! -x "$DESTDIR/usr/lib/katl/endpoint-routing/$executable" ]]; then
-        echo "error: Fedora bird package did not provide $executable" >&2
-        exit 1
-    fi
-done

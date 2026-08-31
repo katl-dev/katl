@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -41,11 +41,11 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("node.controlPlaneEndpoint: %w", err)
 		}
-		config, err := bgpapivip.FromControlPlaneEndpoint(endpointPlan)
+		config, err := apivip.FromControlPlaneEndpoint(endpointPlan)
 		if err != nil {
 			return nil, err
 		}
-		app, err := bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{
+		app, err := apivip.RenderNativeEtcFiles(apivip.RenderRequest{
 			Config:   config,
 			NodeRole: request.Manifest.Node.SystemRole,
 		})

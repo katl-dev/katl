@@ -2,9 +2,9 @@
 Description=Watch for a bootstrapped Kubernetes control plane
 Documentation=https://katl.dev
 PartOf=katl-endpoint-activate.service
-ConditionPathExists=/etc/katl/apps/bgp-api-vip/config.yaml
-ConditionPathExists=/etc/katl/apps/bgp-api-vip/advertisement-enabled
+ConditionPathExists=/etc/katl/apps/api-vip/config.yaml
+ConditionPathExists=/etc/katl/apps/api-vip/ownership-enabled
 
 [Path]
 PathExists=/etc/kubernetes/pki/ca.crt
-Unit=katl-app-bgp-api-vip.service
+Unit=katl-app-api-vip.service

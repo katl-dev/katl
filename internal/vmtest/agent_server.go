@@ -463,7 +463,6 @@ func defaultAgentCommands() map[string]bool {
 		"crictl":            true,
 		"blkid":             true,
 		"blockdev":          true,
-		"bgp-api-vip-smoke": true,
 		"chmod":             true,
 		"configapply-smoke": true,
 		"ctr":               true,

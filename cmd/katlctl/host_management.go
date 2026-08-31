@@ -103,35 +103,13 @@ type kubernetesStatusReport struct {
 }
 
 type controlPlaneEndpointReport struct {
-	Endpoint              string                               `json:"endpoint"`
-	VIP                   string                               `json:"vip"`
-	State                 string                               `json:"state"`
-	LocalAPIReady         bool                                 `json:"localAPIReady"`
-	RouteOriginated       bool                                 `json:"routeOriginated"`
-	LocalVIPOwned         bool                                 `json:"localVIPOwned"`
-	SelectedSourceAddress string                               `json:"selectedSourceAddress,omitempty"`
-	RouterID              string                               `json:"routerID,omitempty"`
-	Peers                 []controlPlaneEndpointPeerReport     `json:"peers,omitempty"`
-	RouteExchanges        []controlPlaneEndpointExchangeReport `json:"routeExchanges,omitempty"`
-	LastTransitionTime    string                               `json:"lastTransitionTime,omitempty"`
-	FailureReason         string                               `json:"failureReason,omitempty"`
-}
-
-type controlPlaneEndpointPeerReport struct {
-	Address       string `json:"address"`
-	ASN           uint32 `json:"asn"`
-	State         string `json:"state"`
-	RouteExported bool   `json:"routeExported"`
-}
-
-type controlPlaneEndpointExchangeReport struct {
-	Name           string `json:"name"`
-	ListenAddress  string `json:"listenAddress"`
-	ListenPort     uint32 `json:"listenPort"`
-	PeerASN        uint32 `json:"peerASN"`
-	State          string `json:"state"`
-	AcceptedRoutes uint64 `json:"acceptedRoutes"`
-	ExportedRoutes uint64 `json:"exportedRoutes"`
+	Endpoint           string `json:"endpoint"`
+	VIP                string `json:"vip"`
+	State              string `json:"state"`
+	LocalAPIReady      bool   `json:"localAPIReady"`
+	LocalVIPOwned      bool   `json:"localVIPOwned"`
+	LastTransitionTime string `json:"lastTransitionTime,omitempty"`
+	FailureReason      string `json:"failureReason,omitempty"`
 }
 
 type hostRebootReport struct {
@@ -499,26 +477,13 @@ func newControlPlaneEndpointReport(status *agentapi.ControlPlaneEndpointStatus) 
 		return nil
 	}
 	report := &controlPlaneEndpointReport{
-		Endpoint:              status.GetEndpoint(),
-		VIP:                   status.GetVip(),
-		State:                 status.GetState(),
-		LocalAPIReady:         status.GetLocalApiReady(),
-		RouteOriginated:       status.GetRouteOriginated(),
-		LocalVIPOwned:         status.GetLocalVipOwned(),
-		SelectedSourceAddress: status.GetSelectedSourceAddress(),
-		RouterID:              status.GetRouterId(),
-		LastTransitionTime:    status.GetLastTransitionTime(),
-		FailureReason:         status.GetFailureReason(),
-	}
-	for _, peer := range status.GetPeers() {
-		report.Peers = append(report.Peers, controlPlaneEndpointPeerReport{
-			Address: peer.GetAddress(), ASN: peer.GetAsn(), State: peer.GetState(), RouteExported: peer.GetRouteExported(),
-		})
-	}
-	for _, exchange := range status.GetRouteExchange() {
-		report.RouteExchanges = append(report.RouteExchanges, controlPlaneEndpointExchangeReport{
-			Name: exchange.GetName(), ListenAddress: exchange.GetListenAddress(), ListenPort: exchange.GetListenPort(), PeerASN: exchange.GetPeerAsn(), State: exchange.GetState(), AcceptedRoutes: exchange.GetAcceptedRoutes(), ExportedRoutes: exchange.GetExportedRoutes(),
-		})
+		Endpoint:           status.GetEndpoint(),
+		VIP:                status.GetVip(),
+		State:              status.GetState(),
+		LocalAPIReady:      status.GetLocalApiReady(),
+		LocalVIPOwned:      status.GetLocalVipOwned(),
+		LastTransitionTime: status.GetLastTransitionTime(),
+		FailureReason:      status.GetFailureReason(),
 	}
 	return report
 }
@@ -622,17 +587,11 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 		return nil
 	}
 	endpoint := report.ControlPlaneEndpoint
-	established := 0
-	for _, peer := range endpoint.Peers {
-		if strings.EqualFold(peer.State, "established") {
-			established++
-		}
-	}
 	w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "\nCONTROL PLANE ENDPOINT\tVIP\tSTATE\tLOCAL API\tLOCAL VIP\tROUTE\tPEERS\tEXCHANGES"); err != nil {
+	if _, err := fmt.Fprintln(w, "\nCONTROL PLANE ENDPOINT\tVIP\tSTATE\tLOCAL API\tLOCAL VIP"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d/%d\t%d\n", endpoint.Endpoint, endpoint.VIP, endpoint.State, yesNo(endpoint.LocalAPIReady), yesNo(endpoint.LocalVIPOwned), yesNo(endpoint.RouteOriginated), established, len(endpoint.Peers), len(endpoint.RouteExchanges)); err != nil {
+	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", endpoint.Endpoint, endpoint.VIP, endpoint.State, yesNo(endpoint.LocalAPIReady), yesNo(endpoint.LocalVIPOwned)); err != nil {
 		return err
 	}
 	if endpoint.FailureReason != "" {

@@ -13,14 +13,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	endpointAdvertiserUnit     = "katl-app-bgp-api-vip.service"
-	endpointAdvertiserPathUnit = "katl-app-bgp-api-vip.path"
-	endpointRoutingUnit        = "katl-app-bird.service"
+	endpointAdvertiserUnit     = "katl-app-api-vip.service"
+	endpointAdvertiserPathUnit = "katl-app-api-vip.path"
 	endpointAdvertiserCommand  = "/usr/lib/katl/endpoint-advertiser/katl-endpoint-advertiser"
 	managedEndpointIP          = "/usr/bin/ip"
 	managedEndpointKubectl     = "/usr/bin/kubectl"
@@ -216,16 +215,16 @@ func managedJoinEndpointConfig(root string) (managedJoinEndpoint, bool, error) {
 	if err != nil || !configured {
 		return managedJoinEndpoint{}, false, err
 	}
-	file, err := os.Open(rootedRuntimePath(root, bgpapivip.ConfigPath))
+	file, err := os.Open(rootedRuntimePath(root, apivip.ConfigPath))
 	if err != nil {
 		return managedJoinEndpoint{}, false, fmt.Errorf("open managed control-plane endpoint configuration: %w", err)
 	}
-	object, decodeErr := bgpapivip.Decode(file)
+	object, decodeErr := apivip.Decode(file)
 	closeErr := file.Close()
 	if decodeErr != nil || closeErr != nil {
 		return managedJoinEndpoint{}, false, errors.Join(decodeErr, closeErr)
 	}
-	config, err := bgpapivip.Normalize(object.Spec)
+	config, err := apivip.Normalize(object.Spec)
 	if err != nil {
 		return managedJoinEndpoint{}, false, fmt.Errorf("normalize managed control-plane endpoint configuration: %w", err)
 	}
@@ -239,7 +238,7 @@ func managedJoinEndpointConfig(root string) (managedJoinEndpoint, bool, error) {
 }
 
 func managedEndpointConfigured(root string) (bool, error) {
-	_, err := os.Stat(rootedRuntimePath(root, bgpapivip.AdvertisementEnabledPath))
+	_, err := os.Stat(rootedRuntimePath(root, apivip.OwnershipEnabledPath))
 	switch {
 	case err == nil:
 		return true, nil

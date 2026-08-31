@@ -315,9 +315,9 @@ func TestExecutorRejectsNonLivePlans(t *testing.T) {
 	}
 }
 
-func TestExecutorDoesNotRunBirdWithoutVIPAdvertisement(t *testing.T) {
+func TestExecutorDoesNotActivateVIPWithoutOwnership(t *testing.T) {
 	root := t.TempDir()
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainControlPlaneEndpointRouting}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainControlPlaneEndpointVIP}})
 	activator := &fakeActivator{}
 	runner := &fakeCommandRunner{}
 
@@ -327,21 +327,21 @@ func TestExecutorDoesNotRunBirdWithoutVIPAdvertisement(t *testing.T) {
 		Activator: activator,
 		Now:       fixedNow,
 	}.ExecuteLive(context.Background(), plan)
-	if err == nil || !strings.Contains(err.Error(), "VIP advertisement is not enabled") {
-		t.Fatalf("ExecuteLive() error = %v, want disabled advertisement diagnostic", err)
+	if err == nil || !strings.Contains(err.Error(), "VIP ownership is not enabled") {
+		t.Fatalf("ExecuteLive() error = %v, want disabled ownership diagnostic", err)
 	}
 	if status.Phase != generation.ConfigApplyPhaseFailed {
 		t.Fatalf("status phase = %q, want failed", status.Phase)
 	}
 	if activator.activated != "" || len(runner.commands) != 0 {
-		t.Fatalf("disabled advertisement reached activation or BIRD: activator=%#v commands=%#v", activator, runner.commands)
+		t.Fatalf("disabled ownership reached activation: activator=%#v commands=%#v", activator, runner.commands)
 	}
 }
 
-func TestExecutorRunsBirdWhenVIPAdvertisementIsEnabled(t *testing.T) {
+func TestExecutorReloadsEnabledVIP(t *testing.T) {
 	root := t.TempDir()
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainControlPlaneEndpointRouting}})
-	marker := filepath.Join(root, strings.TrimPrefix(plan.GenerationRecord.Confexts[0].Path, "/"), "etc/katl/apps/bgp-api-vip/advertisement-enabled")
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainControlPlaneEndpointVIP}})
+	marker := filepath.Join(root, strings.TrimPrefix(plan.GenerationRecord.Confexts[0].Path, "/"), "etc/katl/apps/api-vip/ownership-enabled")
 	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestExecutorRunsBirdWhenVIPAdvertisementIsEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteLive() error = %v", err)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-routing-validate,endpoint-withdraw,endpoint-link-reload,endpoint-routing-reload,endpoint-resume"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,endpoint-release,endpoint-link-reload,endpoint-resume"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
 }

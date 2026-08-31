@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 )
 
-func TestWithdrawReleasesVIPWithoutStoppingBird(t *testing.T) {
+func TestWithdrawReleasesVIP(t *testing.T) {
 	owner := &fakeVIPOwner{owned: true}
-	if err := withdrawWith(context.Background(), owner, bgpapivip.Config{}); err != nil {
+	if err := withdrawWith(context.Background(), owner, apivip.Config{}); err != nil {
 		t.Fatal(err)
 	}
 	if owner.owned {
@@ -21,7 +21,7 @@ func TestWithdrawReleasesVIPWithoutStoppingBird(t *testing.T) {
 
 func TestWithdrawReportsVIPReleaseFailure(t *testing.T) {
 	owner := &fakeVIPOwner{owned: true, err: errors.New("netlink unavailable")}
-	err := withdrawWith(context.Background(), owner, bgpapivip.Config{})
+	err := withdrawWith(context.Background(), owner, apivip.Config{})
 	if err == nil || !strings.Contains(err.Error(), "netlink unavailable") {
 		t.Fatalf("withdrawWith() error = %v", err)
 	}
@@ -32,9 +32,9 @@ func TestWithdrawReportsVIPReleaseFailure(t *testing.T) {
 
 func TestControllerErrorFailsClosedBeforeSystemdRestart(t *testing.T) {
 	owner := &fakeVIPOwner{owned: true}
-	runErr := errors.New("routing status unavailable")
+	runErr := errors.New("health check unavailable")
 
-	err := failClosed(runErr, owner, bgpapivip.Config{})
+	err := failClosed(runErr, owner, apivip.Config{})
 	if !errors.Is(err, runErr) {
 		t.Fatalf("failClosed() error = %v", err)
 	}
@@ -48,11 +48,11 @@ type fakeVIPOwner struct {
 	err   error
 }
 
-func (o *fakeVIPOwner) Owned(context.Context, bgpapivip.Config) (bool, error) {
+func (o *fakeVIPOwner) Owned(context.Context, apivip.Config) (bool, error) {
 	return o.owned, o.err
 }
 
-func (o *fakeVIPOwner) SetOwned(_ context.Context, _ bgpapivip.Config, owned bool) error {
+func (o *fakeVIPOwner) SetOwned(_ context.Context, _ apivip.Config, owned bool) error {
 	if o.err != nil {
 		return o.err
 	}

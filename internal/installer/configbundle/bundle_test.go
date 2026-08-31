@@ -1232,7 +1232,7 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
 			want: "spec.defaults.hostConfiguration.fileSets.common-network.notify: field is not supported",
 		},
 		{
-			name: "route exchange singular",
+			name: "removed BGP configuration",
 			raw: strings.Replace(validSourceConfig(), "    port: 6443\n", `    port: 6443
     advertisement:
       vip: 10.40.0.10
@@ -1241,27 +1241,9 @@ func TestBuildArchiveRejectsRemovedIntentMechanisms(t *testing.T) {
         peers:
           - address: 10.0.0.1
             asn: 64500
-        routeExchange: []
+        routeExchanges: []
 `, 1),
-			want: "spec.controlPlaneEndpoint.advertisement.bgp.routeExchange: field is not supported",
-		},
-		{
-			name: "prefix length",
-			raw: strings.Replace(validSourceConfig(), "    port: 6443\n", `    port: 6443
-    advertisement:
-      vip: 10.40.0.10
-      bgp:
-        localASN: 64512
-        peers:
-          - address: 10.0.0.1
-            asn: 64500
-        routeExchanges:
-          - name: cilium
-            exportToFabric:
-              - cidr: 10.50.0.0/16
-                prefixLength: 32
-`, 1),
-			want: "spec.controlPlaneEndpoint.advertisement.bgp.routeExchanges[0].exportToFabric[0].prefixLength: field is not supported",
+			want: "spec.controlPlaneEndpoint.advertisement.bgp: field is not supported",
 		},
 		{
 			name: "Kubernetes bundle",
@@ -1388,10 +1370,8 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 	assertSchemaFields(t, document.Defs, "configbundle.SourceSystemExtension",
 		[]string{"bundle", "configuration", "name", "state", "units"},
 		[]string{"architecture", "artifactVersion", "bundleManifestDigest", "ociManifestDigest", "payloadVersion", "payloads", "supportedRuntimeInterfaces"})
-	assertSchemaFields(t, document.Defs, "controlplaneendpoint.BGP", []string{"routeExchanges"}, []string{"routeExchange"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceKubernetesLayer", []string{"address", "kubelet", "labels", "taints"}, nil)
 	assertSchemaFields(t, document.Defs, "configbundle.SourceKubeletConfig", []string{"configFile"}, nil)
-	assertSchemaFields(t, document.Defs, "controlplaneendpoint.PrefixEnvelope", []string{"exactPrefixLength"}, []string{"prefixLength"})
 	assertSchemaRequired(t, document.Defs, "configbundle.SourceSpec", "nodes")
 	assertSchemaRequired(t, document.Defs, "configbundle.SourceNode", "name")
 	assertSchemaRequired(t, document.Defs, "configbundle.SourceHostConfigurationSysfsSetting", "path", "value")

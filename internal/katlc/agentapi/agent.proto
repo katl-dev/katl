@@ -152,31 +152,10 @@ message ControlPlaneEndpointStatus {
   string vip = 2;
   string state = 3;
   bool local_api_ready = 4;
-  bool route_originated = 5;
-  string selected_source_address = 6;
-  string router_id = 7;
-  repeated ControlPlaneEndpointPeerStatus peers = 8;
-  repeated ControlPlaneEndpointRouteExchangeStatus route_exchange = 9;
+  reserved 5 to 9;
   string last_transition_time = 10;
   string failure_reason = 11;
   bool local_vip_owned = 12;
-}
-
-message ControlPlaneEndpointPeerStatus {
-  string address = 1;
-  uint32 asn = 2;
-  string state = 3;
-  bool route_exported = 4;
-}
-
-message ControlPlaneEndpointRouteExchangeStatus {
-  string name = 1;
-  string listen_address = 2;
-  uint32 listen_port = 3;
-  uint32 peer_asn = 4;
-  string state = 5;
-  uint64 accepted_routes = 6;
-  uint64 exported_routes = 7;
 }
 
 message SubmitOperationRequest {

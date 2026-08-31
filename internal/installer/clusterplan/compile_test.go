@@ -124,14 +124,8 @@ func TestCompileClusterPlan(t *testing.T) {
 func TestCompileSelectsManagedEndpointOnlyForControlPlanes(t *testing.T) {
 	config := validConfig()
 	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{
-		Host: "api.katl.test",
-		Advertisement: &controlplaneendpoint.Advertisement{
-			VIP: "10.40.0.10",
-			BGP: &controlplaneendpoint.BGP{
-				LocalASN: 64512,
-				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
-			},
-		},
+		Host:          "api.katl.test",
+		Advertisement: &controlplaneendpoint.Advertisement{VIP: "10.40.0.10"},
 	}
 	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
 	if err != nil {
@@ -145,8 +139,8 @@ func TestCompileSelectsManagedEndpointOnlyForControlPlanes(t *testing.T) {
 	if worker.InstallManifest.Node.ControlPlaneEndpoint != nil {
 		t.Fatalf("worker managed endpoint intent = %#v", worker.InstallManifest.Node.ControlPlaneEndpoint)
 	}
-	if nativeFile(cp.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") == nil {
-		t.Fatal("control-plane BIRD config is missing")
+	if nativeFile(cp.NativeEtcFiles, "/etc/katl/apps/api-vip/config.yaml") == nil {
+		t.Fatal("control-plane API VIP config is missing")
 	}
 	if nativeFile(worker.NativeEtcFiles, "/etc/katl/apps/bird/bird.conf") != nil {
 		t.Fatal("worker received BIRD config")
@@ -173,14 +167,8 @@ func TestCompileResolvesKernelCommandLinePerNode(t *testing.T) {
 func TestCompileRejectsNativeKubeadmConflictWithManagedEndpoint(t *testing.T) {
 	config := validConfig()
 	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{
-		Host: "api.katl.test",
-		Advertisement: &controlplaneendpoint.Advertisement{
-			VIP: "10.40.0.10",
-			BGP: &controlplaneendpoint.BGP{
-				LocalASN: 64512,
-				Peers:    []controlplaneendpoint.Peer{{Address: "10.0.0.1", ASN: 64500}},
-			},
-		},
+		Host:          "api.katl.test",
+		Advertisement: &controlplaneendpoint.Advertisement{VIP: "10.40.0.10"},
 	}
 	configs := validKubeadmConfigs("v1.36.1")
 	controlPlane := configs["control-plane"]

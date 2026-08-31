@@ -20,7 +20,7 @@ func TestGenerationManifestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Node.ControlPlaneEndpoint == nil || got.Node.ControlPlaneEndpoint.Advertisement == nil || got.Node.ControlPlaneEndpoint.Advertisement.BGP.Peers[0].Address != "192.0.2.1" {
+	if got.Node.ControlPlaneEndpoint == nil || got.Node.ControlPlaneEndpoint.Advertisement == nil || got.Node.ControlPlaneEndpoint.Advertisement.VIP != "192.0.2.10" {
 		t.Fatalf("generation manifest endpoint = %#v", got.Node.ControlPlaneEndpoint)
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 )
 
 func TestManagedEndpointLifecycleFollowsGeneratedEnablement(t *testing.T) {
@@ -29,7 +29,7 @@ func TestManagedEndpointLifecycleFollowsGeneratedEnablement(t *testing.T) {
 		t.Fatalf("commands without managed endpoint = %#v", calls)
 	}
 
-	writeTestFile(t, filepath.Join(root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	writeTestFile(t, filepath.Join(root, apivip.OwnershipEnabledPath), "enabled\n")
 	paused, err = pauseManagedEndpoint(context.Background(), root, run)
 	if err != nil || !paused {
 		t.Fatalf("pause managed endpoint = %v, %v", paused, err)
@@ -177,7 +177,7 @@ func writeJoinDiscoveryTestConfig(t *testing.T, root, host string) string {
 
 func TestManagedEndpointPauseFailsClosed(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, filepath.Join(root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	writeTestFile(t, filepath.Join(root, apivip.OwnershipEnabledPath), "enabled\n")
 	run := func(_ context.Context, _ []string, _ func(int)) ToolResult {
 		return ToolResult{Err: errors.New("service failed"), ExitStatus: 1}
 	}
@@ -190,26 +190,18 @@ func TestManagedEndpointPauseFailsClosed(t *testing.T) {
 
 func writeManagedEndpointTestConfig(t *testing.T, root string) {
 	t.Helper()
-	plan, err := bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{
+	plan, err := apivip.RenderNativeEtcFiles(apivip.RenderRequest{
 		NodeRole: "control-plane",
-		Config: bgpapivip.Config{
-			Endpoint:     bgpapivip.Endpoint{Host: "api.home.example", VIP: "10.40.0.10/32"},
-			VIPInterface: bgpapivip.VIPInterface{Kind: "dummy", Name: "katl-api0", MTU: 1500},
-			Routing:      bgpapivip.Routing{RouterID: "10.0.0.11", LocalASN: 64512, SourceAddress: "10.0.0.11", SourceInterface: "enp1s0"},
-			FabricPeers: []bgpapivip.Peer{{
-				Name:                  "router-a",
-				Address:               "10.0.0.1",
-				ASN:                   64500,
-				AllowedExportPrefixes: []string{"10.40.0.10/32"},
-			}},
+		Config: apivip.Config{
+			Endpoint:     apivip.Endpoint{Host: "api.home.example", VIP: "10.40.0.10/32"},
+			VIPInterface: apivip.VIPInterface{Kind: "dummy", Name: "katl-api0", MTU: 1500},
 		},
-		LocalInterfaceAddresses: map[string][]string{"enp1s0": {"10.0.0.11/24"}},
 	})
 	if err != nil {
 		t.Fatalf("render managed endpoint test config: %v", err)
 	}
 	for _, file := range plan.Files {
-		if file.Path == bgpapivip.ConfigPath || file.Path == bgpapivip.AdvertisementEnabledPath {
+		if file.Path == apivip.ConfigPath || file.Path == apivip.OwnershipEnabledPath {
 			writeTestFile(t, filepath.Join(root, file.Path), file.Content)
 		}
 	}

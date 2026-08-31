@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
@@ -578,7 +578,7 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 			return manifest.Manifest{}, nil, nil, err
 		}
 		if endpointDrifted {
-			domains.addEndpointRouting(EndpointRoutingImpact{MayLoseAllFabricPaths: true})
+			domains.addEndpointVIP(EndpointVIPImpact{MayInterruptEndpoint: true})
 		}
 	}
 	proxyConfig := lastAPIProxy(request.ClusterDefaults, roleOverlay, nodeOverlay)
@@ -651,11 +651,11 @@ func endpointRenderingDrifted(request TrustedBundleRequest, desired manifest.Man
 	if err != nil {
 		return false, fmt.Errorf("normalize desired control-plane endpoint: %w", err)
 	}
-	config, err := bgpapivip.FromControlPlaneEndpoint(endpoint)
+	config, err := apivip.FromControlPlaneEndpoint(endpoint)
 	if err != nil {
 		return false, fmt.Errorf("lower desired control-plane endpoint: %w", err)
 	}
-	rendered, err := bgpapivip.RenderNativeEtcFiles(bgpapivip.RenderRequest{
+	rendered, err := apivip.RenderNativeEtcFiles(apivip.RenderRequest{
 		Config:   config,
 		NodeRole: desired.Node.SystemRole,
 	})
@@ -858,15 +858,15 @@ func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.C
 		return
 	}
 	if !reflect.DeepEqual(currentPlan.Config, desiredPlan.Config) {
-		domains.addEndpointRouting(endpointRoutingImpact(currentPlan.Config, desiredPlan.Config))
+		domains.addEndpointVIP(endpointVIPImpact(currentPlan.Config, desiredPlan.Config))
 	}
 }
 
 type domainAccumulator struct {
-	domains               []string
-	seen                  map[string]struct{}
-	endpointRoutingImpact *EndpointRoutingImpact
-	hostConfiguration     *HostConfigurationChangePlan
+	domains           []string
+	seen              map[string]struct{}
+	endpointVIPImpact *EndpointVIPImpact
+	hostConfiguration *HostConfigurationChangePlan
 }
 
 func (a *domainAccumulator) add(domain string) {
@@ -880,9 +880,9 @@ func (a *domainAccumulator) add(domain string) {
 	a.domains = append(a.domains, domain)
 }
 
-func (a *domainAccumulator) addEndpointRouting(impact EndpointRoutingImpact) {
-	a.add(DomainControlPlaneEndpointRouting)
-	a.endpointRoutingImpact = &impact
+func (a *domainAccumulator) addEndpointVIP(impact EndpointVIPImpact) {
+	a.add(DomainControlPlaneEndpointVIP)
+	a.endpointVIPImpact = &impact
 }
 
 func (a *domainAccumulator) addHostConfiguration(plan HostConfigurationChangePlan) {
@@ -902,8 +902,8 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 	changes := make([]Change, 0, len(a.domains))
 	for _, domain := range a.domains {
 		change := Change{Domain: domain, LivePreflightOK: preflight[domain]}
-		if domain == DomainControlPlaneEndpointRouting {
-			change.EndpointRoutingImpact = a.endpointRoutingImpact
+		if domain == DomainControlPlaneEndpointVIP {
+			change.EndpointVIPImpact = a.endpointVIPImpact
 		}
 		if domain == DomainHostConfiguration && a.hostConfiguration != nil {
 			change.LivePreflightOK = a.hostConfiguration.Live
@@ -926,73 +926,8 @@ func containsChangeDomain(changes []Change, domain string) bool {
 	return false
 }
 
-func endpointRoutingImpact(current, desired controlplaneendpoint.Config) EndpointRoutingImpact {
-	impact := EndpointRoutingImpact{MayLoseAllFabricPaths: true}
-	currentBGP := endpointBGP(current)
-	desiredBGP := endpointBGP(desired)
-
-	currentPeers := peerASNs(currentBGP.Peers)
-	desiredPeers := peerASNs(desiredBGP.Peers)
-	for _, address := range sortedStringUnion(currentPeers, desiredPeers) {
-		currentASN, currentOK := currentPeers[address]
-		desiredASN, desiredOK := desiredPeers[address]
-		if currentBGP.LocalASN != desiredBGP.LocalASN || currentOK != desiredOK || currentASN != desiredASN {
-			impact.FabricSessionsReset = append(impact.FabricSessionsReset, address)
-		}
-	}
-
-	currentExchanges := routeExchangesByName(currentBGP.RouteExchanges)
-	desiredExchanges := routeExchangesByName(desiredBGP.RouteExchanges)
-	for _, name := range sortedStringUnion(currentExchanges, desiredExchanges) {
-		before, beforeOK := currentExchanges[name]
-		after, afterOK := desiredExchanges[name]
-		if currentBGP.LocalASN != desiredBGP.LocalASN || beforeOK != afterOK || before.ListenPort != after.ListenPort || before.PeerASN != after.PeerASN {
-			impact.RouteExchangeSessionsReset = append(impact.RouteExchangeSessionsReset, name)
-		}
-		if beforeOK != afterOK || !reflect.DeepEqual(before.ExportToFabric, after.ExportToFabric) {
-			impact.ChangedExportUnions = append(impact.ChangedExportUnions, name)
-		}
-	}
-	return impact
-}
-
-func endpointBGP(config controlplaneendpoint.Config) controlplaneendpoint.BGP {
-	if config.Advertisement == nil || config.Advertisement.BGP == nil {
-		return controlplaneendpoint.BGP{}
-	}
-	return *config.Advertisement.BGP
-}
-
-func peerASNs(peers []controlplaneendpoint.Peer) map[string]uint32 {
-	out := make(map[string]uint32, len(peers))
-	for _, peer := range peers {
-		out[peer.Address] = peer.ASN
-	}
-	return out
-}
-
-func routeExchangesByName(exchanges []controlplaneendpoint.RouteExchange) map[string]controlplaneendpoint.RouteExchange {
-	out := make(map[string]controlplaneendpoint.RouteExchange, len(exchanges))
-	for _, exchange := range exchanges {
-		out[exchange.Name] = exchange
-	}
-	return out
-}
-
-func sortedStringUnion[A any](left, right map[string]A) []string {
-	set := make(map[string]struct{}, len(left)+len(right))
-	for value := range left {
-		set[value] = struct{}{}
-	}
-	for value := range right {
-		set[value] = struct{}{}
-	}
-	out := make([]string, 0, len(set))
-	for value := range set {
-		out = append(out, value)
-	}
-	slices.Sort(out)
-	return out
+func endpointVIPImpact(current, desired controlplaneendpoint.Config) EndpointVIPImpact {
+	return EndpointVIPImpact{MayInterruptEndpoint: true}
 }
 
 func (request TrustedBundleRequest) kubeadmActionRequired(changes []Change) generation.KubeadmActionRequired {

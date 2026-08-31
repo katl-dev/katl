@@ -7,33 +7,30 @@ import (
 	"os"
 	"strings"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 
 func controlPlaneEndpointStatus(root string) (*agentapi.ControlPlaneEndpointStatus, error) {
-	configFile, err := os.Open(rootedRuntimePath(root, bgpapivip.ConfigPath))
+	configFile, err := os.Open(rootedRuntimePath(root, apivip.ConfigPath))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open managed endpoint configuration: %w", err)
 	}
-	object, decodeErr := bgpapivip.Decode(configFile)
+	object, decodeErr := apivip.Decode(configFile)
 	closeErr := configFile.Close()
-	if decodeErr != nil {
-		return nil, decodeErr
+	if decodeErr != nil || closeErr != nil {
+		return nil, errors.Join(decodeErr, closeErr)
 	}
-	if closeErr != nil {
-		return nil, closeErr
-	}
-	config, err := bgpapivip.Normalize(object.Spec)
+	config, err := apivip.Normalize(object.Spec)
 	if err != nil {
 		return nil, err
 	}
 
 	report := endpointStatusFrom(config, nil)
-	statusFile, err := os.Open(rootedRuntimePath(root, bgpapivip.LiveStatusPath))
+	statusFile, err := os.Open(rootedRuntimePath(root, apivip.LiveStatusPath))
 	if errors.Is(err, os.ErrNotExist) {
 		return report, nil
 	}
@@ -42,7 +39,7 @@ func controlPlaneEndpointStatus(root string) (*agentapi.ControlPlaneEndpointStat
 		report.FailureReason = "endpoint status unavailable"
 		return report, nil
 	}
-	live, decodeErr := bgpapivip.DecodeStatus(statusFile)
+	live, decodeErr := apivip.DecodeStatus(statusFile)
 	closeErr = statusFile.Close()
 	if decodeErr != nil || closeErr != nil {
 		report.State = "failed"
@@ -52,112 +49,49 @@ func controlPlaneEndpointStatus(root string) (*agentapi.ControlPlaneEndpointStat
 	return endpointStatusFrom(config, &live), nil
 }
 
-func endpointStatusFrom(config bgpapivip.Config, live *bgpapivip.Status) *agentapi.ControlPlaneEndpointStatus {
+func endpointStatusFrom(config apivip.Config, live *apivip.Status) *agentapi.ControlPlaneEndpointStatus {
 	report := &agentapi.ControlPlaneEndpointStatus{
 		Endpoint: net.JoinHostPort(config.Endpoint.Host, fmt.Sprint(config.Endpoint.Port)),
 		Vip:      config.Endpoint.VIP,
 		State:    "starting",
-		RouterId: config.Routing.RouterID,
 	}
-	if config.Advertisement.Enabled == nil || !*config.Advertisement.Enabled {
+	if config.Ownership.Enabled == nil || !*config.Ownership.Enabled {
 		report.State = "disabled"
 	}
-
-	fabric := make(map[string]bgpapivip.PeerRuntimeStatus)
-	exchanges := make(map[string]bgpapivip.PeerRuntimeStatus)
-	exports := make(map[string]bgpapivip.PeerRuntimeStatus)
-	if live != nil {
-		report.LocalApiReady = live.HealthState == bgpapivip.HealthHealthy
-		report.RouteOriginated = live.AdvertisementState == bgpapivip.AdvertisementAdvertised
-		report.LocalVipOwned = live.LocalVIPOwned
-		report.LastTransitionTime = firstNonEmpty(live.LastAdvertisementTransition, live.LastHealthTransition, live.UpdatedAt)
-		report.FailureReason = strings.TrimSpace(live.FailureReason)
-		for _, peer := range live.PeerSummary {
-			switch peer.Kind {
-			case "fabric":
-				fabric[peer.Name] = peer
-			case "route-exchange":
-				exchanges[peer.Name] = peer
-			case "route-exchange-export":
-				exports[peer.Name] = peer
-			}
-			if report.SelectedSourceAddress == "" && peer.LocalAddress != "" {
-				report.SelectedSourceAddress = peer.LocalAddress
-			}
-		}
-		report.State = endpointProductState(config, *live, fabric)
+	if live == nil {
+		return report
 	}
-	if report.SelectedSourceAddress == "" {
-		report.SelectedSourceAddress = config.Routing.SourceAddress
-	}
-	if report.RouterId == "" {
-		report.RouterId = report.SelectedSourceAddress
-	}
-
-	for _, peer := range config.FabricPeers {
-		runtime := fabric[peer.Address]
-		report.Peers = append(report.Peers, &agentapi.ControlPlaneEndpointPeerStatus{
-			Address:       peer.Address,
-			Asn:           peer.ASN,
-			State:         defaultProductState(runtime.SessionState),
-			RouteExported: runtime.ExportedRoutes > 0,
-		})
-	}
-	for _, exchange := range config.RouteExchanges {
-		runtime := exchanges[exchange.Name]
-		export := exports[exchange.Name]
-		report.RouteExchange = append(report.RouteExchange, &agentapi.ControlPlaneEndpointRouteExchangeStatus{
-			Name:           exchange.Name,
-			ListenAddress:  "127.0.0.1",
-			ListenPort:     uint32(exchange.ListenPort),
-			PeerAsn:        exchange.PeerASN,
-			State:          defaultProductState(runtime.SessionState),
-			AcceptedRoutes: runtime.AcceptedRoutes,
-			ExportedRoutes: export.ExportedRoutes,
-		})
-	}
+	report.LocalApiReady = live.HealthState == apivip.HealthHealthy
+	report.LocalVipOwned = live.LocalVIPOwned
+	report.LastTransitionTime = firstNonEmpty(live.LastOwnershipTransition, live.LastHealthTransition, live.UpdatedAt)
+	report.FailureReason = strings.TrimSpace(live.FailureReason)
+	report.State = endpointProductState(config, *live)
 	return report
 }
 
-func endpointProductState(config bgpapivip.Config, live bgpapivip.Status, peers map[string]bgpapivip.PeerRuntimeStatus) string {
-	if config.Advertisement.Enabled == nil || !*config.Advertisement.Enabled {
+func endpointProductState(config apivip.Config, live apivip.Status) string {
+	if config.Ownership.Enabled == nil || !*config.Ownership.Enabled {
 		return "disabled"
 	}
 	if live.RecoveryRequired || strings.TrimSpace(live.FailureReason) != "" {
 		return "failed"
 	}
-	if !live.VIPInterfaceReady ||
-		(config.Routing.Mode != "vip-only" && (!live.BirdProcessActive || !live.BirdControlSocketReady)) {
+	if !live.VIPInterfaceReady {
 		return "waiting-for-network"
 	}
 	if strings.Contains(strings.ToLower(live.HealthFailure), "kubeadm api ca") {
 		return "waiting-for-kubeadm-ca"
 	}
-	if live.HealthState != bgpapivip.HealthHealthy {
+	if live.HealthState != apivip.HealthHealthy {
 		return "waiting-for-apiserver"
 	}
-	if len(config.FabricPeers) > 0 {
-		established := false
-		for _, peer := range peers {
-			if strings.EqualFold(peer.SessionState, "established") {
-				established = true
-				break
-			}
-		}
-		if !established {
-			return "waiting-for-peer"
-		}
-	}
-	if live.AdvertisementState == bgpapivip.AdvertisementAdvertised && live.LocalVIPOwnedReported && !live.LocalVIPOwned {
+	if live.OwnershipState == apivip.OwnershipOwned && live.LocalVIPOwnedReported && !live.LocalVIPOwned {
 		return "failed"
 	}
-	if live.AdvertisementState == bgpapivip.AdvertisementAdvertised {
-		return "advertised"
-	}
 	if live.LocalVIPOwned {
-		return "waiting-for-route"
+		return "active"
 	}
-	return "withdrawn"
+	return "released"
 }
 
 func firstNonEmpty(values ...string) string {
@@ -167,11 +101,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func defaultProductState(value string) string {
-	if value = strings.TrimSpace(value); value != "" {
-		return value
-	}
-	return "unknown"
 }

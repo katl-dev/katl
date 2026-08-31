@@ -29,7 +29,7 @@ const (
 	DomainSysextSelection               = "sysext-selection"
 	DomainControlPlaneEndpointBootstrap = "control-plane-endpoint-bootstrap"
 	DomainControlPlaneEndpointIdentity  = "control-plane-endpoint-identity"
-	DomainControlPlaneEndpointRouting   = "control-plane-endpoint-routing"
+	DomainControlPlaneEndpointVIP       = "control-plane-endpoint-vip"
 	DomainHostConfiguration             = "host-configuration"
 	DomainSystemExtensions              = "system-extensions"
 	DomainKernelCommandLine             = "kernel-command-line"
@@ -51,24 +51,17 @@ const (
 )
 
 type Change struct {
-	Domain                string
-	LivePreflightOK       bool
-	EndpointRoutingImpact *EndpointRoutingImpact
-	Sets                  []string
-	Paths                 []string
-	Effects               []generation.ConfigApplyEffect
-	Message               string
+	Domain            string
+	LivePreflightOK   bool
+	EndpointVIPImpact *EndpointVIPImpact
+	Sets              []string
+	Paths             []string
+	Effects           []generation.ConfigApplyEffect
+	Message           string
 }
 
-// EndpointRoutingImpact is the bounded operator-facing effect of changing the
-// managed control-plane endpoint's routing attachment. It deliberately names
-// sessions and exported route unions rather than exposing generated BIRD
-// protocol identifiers or configuration paths.
-type EndpointRoutingImpact struct {
-	FabricSessionsReset        []string `json:"fabricSessionsReset,omitempty"`
-	RouteExchangeSessionsReset []string `json:"routeExchangeSessionsReset,omitempty"`
-	ChangedExportUnions        []string `json:"changedExportUnions,omitempty"`
-	MayLoseAllFabricPaths      bool     `json:"mayLoseAllFabricPaths"`
+type EndpointVIPImpact struct {
+	MayInterruptEndpoint bool `json:"mayInterruptEndpoint"`
 }
 
 type Decision struct {
@@ -79,14 +72,14 @@ type Decision struct {
 }
 
 type Diagnostic struct {
-	Domain            string                 `json:"domain"`
-	Classification    string                 `json:"classification"`
-	Decision          string                 `json:"decision"`
-	RequiredOperation string                 `json:"requiredOperation,omitempty"`
-	Message           string                 `json:"message,omitempty"`
-	EndpointRouting   *EndpointRoutingImpact `json:"endpointRouting,omitempty"`
-	Sets              []string               `json:"sets,omitempty"`
-	Paths             []string               `json:"paths,omitempty"`
+	Domain            string             `json:"domain"`
+	Classification    string             `json:"classification"`
+	Decision          string             `json:"decision"`
+	RequiredOperation string             `json:"requiredOperation,omitempty"`
+	Message           string             `json:"message,omitempty"`
+	EndpointVIP       *EndpointVIPImpact `json:"endpointVIP,omitempty"`
+	Sets              []string           `json:"sets,omitempty"`
+	Paths             []string           `json:"paths,omitempty"`
 }
 
 type domainPolicy struct {
@@ -137,9 +130,9 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 		}
 		switch diagnostic.Decision {
 		case DecisionAccepted:
-			if change.EndpointRoutingImpact != nil {
-				diagnostic.EndpointRouting = change.EndpointRoutingImpact
-				diagnostic.Message = endpointRoutingImpactMessage(*change.EndpointRoutingImpact)
+			if change.EndpointVIPImpact != nil {
+				diagnostic.EndpointVIP = change.EndpointVIPImpact
+				diagnostic.Message = endpointVIPImpactMessage(*change.EndpointVIPImpact)
 				decision.Diagnostics = append(decision.Diagnostics, diagnostic)
 			} else if change.Message != "" || len(change.Sets) != 0 || len(change.Paths) != 0 {
 				decision.Diagnostics = append(decision.Diagnostics, diagnostic)
@@ -170,21 +163,11 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 	return decision, nil
 }
 
-func endpointRoutingImpactMessage(impact EndpointRoutingImpact) string {
-	parts := make([]string, 0, 4)
-	if len(impact.FabricSessionsReset) > 0 {
-		parts = append(parts, "fabric sessions reset: "+strings.Join(impact.FabricSessionsReset, ", "))
+func endpointVIPImpactMessage(impact EndpointVIPImpact) string {
+	if impact.MayInterruptEndpoint {
+		return "this node temporarily releases its API VIP while endpoint configuration activates"
 	}
-	if len(impact.RouteExchangeSessionsReset) > 0 {
-		parts = append(parts, "local route-exchange sessions reset: "+strings.Join(impact.RouteExchangeSessionsReset, ", "))
-	}
-	if len(impact.ChangedExportUnions) > 0 {
-		parts = append(parts, "exported route unions change: "+strings.Join(impact.ChangedExportUnions, ", "))
-	}
-	if impact.MayLoseAllFabricPaths {
-		parts = append(parts, "this node temporarily withdraws its API route while routing configuration activates; cluster reachability requires another healthy advertiser")
-	}
-	return strings.Join(parts, "; ")
+	return ""
 }
 
 func DomainClassification(domain string) string {
@@ -402,7 +385,7 @@ var domainPolicies = map[string]domainPolicy{
 		LiveRejectionReason: "initialized control-plane endpoint host, port, VIP, and ownership cannot change without a dedicated endpoint migration",
 		RequiredOperation:   "control-plane-endpoint-migration (not yet supported)",
 	},
-	DomainControlPlaneEndpointRouting: {
+	DomainControlPlaneEndpointVIP: {
 		Classification:  ClassificationOnlineApplicable,
 		NextBootAllowed: true,
 	},

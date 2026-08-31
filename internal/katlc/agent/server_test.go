@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer"
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
@@ -448,7 +448,7 @@ func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
 func TestRebootLeavesManagedRouteWithdrawalToSystemdShutdown(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
-	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	writeTestFile(t, filepath.Join(server.Root, apivip.OwnershipEnabledPath), "enabled\n")
 	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
 		t.Fatal("reboot must leave service teardown to systemd")
 		return ToolResult{Err: errors.New("unexpected endpoint lifecycle call")}
@@ -478,7 +478,7 @@ func TestRebootLeavesManagedRouteWithdrawalToSystemdShutdown(t *testing.T) {
 func TestRebootSchedulingFailureDoesNotDisruptManagedRouting(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
-	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	writeTestFile(t, filepath.Join(server.Root, apivip.OwnershipEnabledPath), "enabled\n")
 	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
 		t.Fatal("a failed reboot schedule must not disrupt endpoint services")
 		return ToolResult{Err: errors.New("unexpected endpoint lifecycle call")}
@@ -534,7 +534,7 @@ func TestShutdownSchedulesPoweroff(t *testing.T) {
 
 func TestShutdownLeavesManagedRouteWithdrawalToSystemd(t *testing.T) {
 	server := newTestServer(t)
-	writeTestFile(t, filepath.Join(server.Root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	writeTestFile(t, filepath.Join(server.Root, apivip.OwnershipEnabledPath), "enabled\n")
 	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
 		t.Fatal("shutdown must leave service teardown to systemd")
 		return ToolResult{Err: errors.New("unexpected endpoint lifecycle call")}

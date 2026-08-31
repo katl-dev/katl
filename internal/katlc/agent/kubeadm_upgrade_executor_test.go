@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/bgpapivip"
+	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -20,7 +20,7 @@ import (
 
 func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "apply")
-	writeTestFile(t, filepath.Join(root, bgpapivip.AdvertisementEnabledPath), "enabled\n")
+	writeTestFile(t, filepath.Join(root, apivip.OwnershipEnabledPath), "enabled\n")
 	var commands [][]string
 	executor := NewExecutor(root, store, "agent-test")
 	executor.Async = false
