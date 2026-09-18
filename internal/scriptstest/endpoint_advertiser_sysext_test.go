@@ -42,6 +42,8 @@ func TestEndpointAdvertiserSysextOwnsOnlyTheAPIVIP(t *testing.T) {
 	}
 	activationUnit := read("mkosi.profiles/runtime/katl-endpoint-activate.service")
 	for _, want := range []string{
+		"Requires=katl-system-extensions-reload.service",
+		"After=katl-system-extensions-reload.service",
 		"ConditionPathExists=/etc/katl/apps/api-vip/config.yaml",
 		"ExecStart=/usr/bin/systemctl start katl-app-api-vip.service",
 		"ExecStart=-/usr/bin/systemctl start katl-app-api-vip.path",
