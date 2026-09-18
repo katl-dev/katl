@@ -440,6 +440,7 @@ func TestRunAgentBootstrapResumesInterruptedInit(t *testing.T) {
 			AdminKubeconfig: adminKubeconfig(),
 		},
 	}
+	client.status.Kubernetes = &agentapi.KubernetesStatus{State: "ready"}
 	out := filepath.Join(t.TempDir(), "kubeconfig")
 	result, err := RunAgentBootstrap(context.Background(), Request{
 		Inventory:           inv,
@@ -454,6 +455,25 @@ func TestRunAgentBootstrapResumesInterruptedInit(t *testing.T) {
 	}
 	if result.Kubeconfig.Path != out || result.Phases[2].OperationID != status.OperationId {
 		t.Fatalf("resumed result = %+v", result)
+	}
+}
+
+func TestBootstrapRejectsNewInitOnConfiguredNode(t *testing.T) {
+	for _, state := range []string{"ready", "waiting-for-kubelet", "waiting-for-control-plane", "waiting-for-node"} {
+		t.Run(state, func(t *testing.T) {
+			client := &fakeAgentClient{status: readyAgentStatus("machine-cp-1")}
+			client.status.Kubernetes = &agentapi.KubernetesStatus{State: state}
+
+			_, err := RunAgentBootstrap(context.Background(), Request{
+				Inventory: validSingleNodeInventory(),
+			}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})})
+			if err == nil || !strings.Contains(err.Error(), "original bootstrap configuration and identity") || !strings.Contains(err.Error(), "katlctl kubernetes upgrade") {
+				t.Fatalf("bootstrap error = %v", err)
+			}
+			if len(client.submitRequests) != 0 {
+				t.Fatal("created an operation on an already configured node")
+			}
+		})
 	}
 }
 
