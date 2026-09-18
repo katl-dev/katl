@@ -792,6 +792,9 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-worker-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return err
 	}
+	if err := verifyKubernetesVersions(ctx, kubeconfigPath, evidenceDir, targetVersion); err != nil {
+		return err
+	}
 	if err := assertNodeBootIDsUnchanged(ctx, bootIDs, cpNode, workerNode); err != nil {
 		return err
 	}
@@ -893,6 +896,9 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return err
 	}
+	if err := verifyKubernetesVersions(ctx, kubeconfigPath, evidenceDir, targetVersion); err != nil {
+		return err
+	}
 	if err := assertNodeBootIDsUnchanged(ctx, bootIDs, cpNode, workerNode); err != nil {
 		return err
 	}
@@ -923,12 +929,90 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	return nil
 }
 
+// Observe Kubernetes itself rather than trusting the upgrade operation's report.
+func verifyKubernetesVersions(ctx context.Context, kubeconfigPath, evidenceDir, targetVersion string) error {
+	for _, query := range []struct {
+		name string
+		args []string
+	}{
+		{"server", []string{"get", "--raw=/version"}},
+		{"cp-1", []string{"get", "node", "cp-1", "-o", "json"}},
+		{"worker-1", []string{"get", "node", "worker-1", "-o", "json"}},
+	} {
+		args := append([]string{"--kubeconfig", kubeconfigPath}, query.args...)
+		output, err := exec.CommandContext(ctx, selectedKubectl(), args...).CombinedOutput()
+		if writeErr := os.WriteFile(filepath.Join(evidenceDir, "kubernetes-version-"+query.name+".json"), output, 0o600); writeErr != nil {
+			return writeErr
+		}
+		if err != nil {
+			return fmt.Errorf("read %s Kubernetes version: %w: %s", query.name, err, output)
+		}
+		var observed struct {
+			GitVersion string `json:"gitVersion"`
+			Status     struct {
+				NodeInfo struct {
+					KubeletVersion string `json:"kubeletVersion"`
+				} `json:"nodeInfo"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(output, &observed); err != nil {
+			return fmt.Errorf("decode %s Kubernetes version: %w", query.name, err)
+		}
+		version := observed.GitVersion
+		if query.name != "server" {
+			version = observed.Status.NodeInfo.KubeletVersion
+		}
+		if version != targetVersion {
+			return fmt.Errorf("%s runs Kubernetes %q, want %q", query.name, version, targetVersion)
+		}
+	}
+	return nil
+}
+
 func publishedKubernetesUpgradeVersion(bundle string) (string, error) {
 	image, err := kubernetesbundle.ParseImageReference(bundle)
 	if err != nil {
 		return "", err
 	}
 	return image.PayloadVersion, nil
+}
+
+func TestKubernetesVersionObservation(t *testing.T) {
+	for _, test := range []struct {
+		name, server, controlPlane, worker string
+		wantError                          bool
+	}{
+		{name: "upgraded", server: "v1.36.2", controlPlane: "v1.36.2", worker: "v1.36.2"},
+		{name: "old API", server: "v1.36.1", controlPlane: "v1.36.2", worker: "v1.36.2", wantError: true},
+		{name: "old control plane kubelet", server: "v1.36.2", controlPlane: "v1.36.1", worker: "v1.36.2", wantError: true},
+		{name: "old worker kubelet", server: "v1.36.2", controlPlane: "v1.36.2", worker: "v1.36.1", wantError: true},
+		{name: "missing worker version", server: "v1.36.2", controlPlane: "v1.36.2", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			kubectl := filepath.Join(dir, "kubectl")
+			script := `#!/bin/sh
+case "$*" in
+  *--raw=/version*) printf '{"gitVersion":"%s"}' "$SERVER_VERSION" ;;
+  *'node cp-1'*) printf '{"status":{"nodeInfo":{"kubeletVersion":"%s"}}}' "$CP_VERSION" ;;
+  *'node worker-1'*) printf '{"status":{"nodeInfo":{"kubeletVersion":"%s"}}}' "$WORKER_VERSION" ;;
+  *) exit 1 ;;
+esac
+`
+			if err := os.WriteFile(kubectl, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("KATL_VMTEST_KUBECTL", kubectl)
+			t.Setenv("SERVER_VERSION", test.server)
+			t.Setenv("CP_VERSION", test.controlPlane)
+			t.Setenv("WORKER_VERSION", test.worker)
+
+			err := verifyKubernetesVersions(context.Background(), "kubeconfig", dir, "v1.36.2")
+			if (err != nil) != test.wantError {
+				t.Fatalf("version observation error = %v, want error %v", err, test.wantError)
+			}
+		})
+	}
 }
 
 func TestPublishedKubernetesUpgradeUsesPayloadVersion(t *testing.T) {
