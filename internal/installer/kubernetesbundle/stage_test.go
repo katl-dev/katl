@@ -237,6 +237,20 @@ func TestFetchAndStageOCIRejectsMissingLayer(t *testing.T) {
 	}
 }
 
+func TestLegacyBundleVersionMismatch(t *testing.T) {
+	_, err := FetchAndStage(context.Background(), Request{
+		Source:           "https://registry.example/v2/kubernetes",
+		Ref:              "v1.36.0@sha256:" + strings.Repeat("a", 64),
+		PayloadVersion:   "v1.37.0",
+		CacheDir:         t.TempDir(),
+		RuntimeInterface: "katl-runtime-1",
+		Architecture:     "x86_64",
+	})
+	if !errors.Is(err, ErrInvalidBundle) || !strings.Contains(err.Error(), "does not match requested") {
+		t.Fatalf("version mismatch error = %v", err)
+	}
+}
+
 func TestParseImageReference(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	image, err := ParseImageReference("ghcr.io/katl-dev/kubernetes:v1.36.0-katl.1@" + digest)

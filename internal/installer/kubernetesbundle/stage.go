@@ -173,6 +173,9 @@ func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
 	if err != nil {
 		return Staged{}, err
 	}
+	if request.PayloadVersion != "" && ref.PayloadVersion != request.PayloadVersion {
+		return Staged{}, fmt.Errorf("%w: bundle payload %s does not match requested %s", ErrInvalidBundle, ref.PayloadVersion, request.PayloadVersion)
+	}
 	if repository, ok, err := registryRepository(request.Source, client); err != nil {
 		return Staged{}, err
 	} else if ok {
