@@ -599,8 +599,6 @@ run_flags=(
     --privileged
     --volume "$repo_root:/work"
     --workdir /work
-    --env "HOST_UID=$(id -u)"
-    --env "HOST_GID=$(id -g)"
     --env "KATL_BUILD_COMMIT=$build_commit"
     --env "KATL_VERSION=${KATL_VERSION:-0.0.0-dev}"
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
@@ -610,7 +608,6 @@ run_flags=(
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
     run_flags+=(--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH")
 fi
-chown_build=1
 
 direct_tool_search_path() {
     local tool
@@ -686,6 +683,11 @@ fi
 
 prepare_build_dirs
 run_flags+=(--volume "$build_dir:/mkosi-build")
+# Artifact hooks use the repository-relative path; both views must refer to the
+# selected output directory, including when it lives outside the checkout.
+run_flags+=(--volume "$build_dir:/work/_build/mkosi")
+run_flags+=(--volume "$go_mod_cache:/work/_build/go-mod")
+run_flags+=(--volume "$go_build_cache:/work/_build/go-cache")
 run_flags+=(--volume "$cache_dir:/mkosi-cache")
 run_flags+=(--volume "$package_cache_dir:/mkosi-package-cache")
 
@@ -697,9 +699,7 @@ fi
 
 if [[ "$runtime" == podman ]]; then
     run_flags+=(--userns=keep-id --user root)
-    chown_build=0
 fi
-run_flags+=(--env "KATL_CHOWN_BUILD=$chown_build")
 if [[ -n "$mkosi_installer_package_set" ]]; then
     run_flags+=(--env "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
 else
@@ -949,18 +949,22 @@ set +e
             status=1
         fi
     fi
-    if [[ "${KATL_CHOWN_BUILD:-1}" == 1 && -d _build ]]; then
-        chown -R "$HOST_UID:$HOST_GID" _build || true
-    elif [[ -d _build/mkosi ]]; then
+    if [[ -d _build/mkosi ]]; then
         find /mkosi-cache /mkosi-package-cache _build/mkosi/builddir _build/mkosi/workspace -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
-        chown -h "$HOST_UID:$HOST_GID" \
+        # Bind-mount owners are translated into the active user namespace.
+        # Host numeric IDs cannot be used here, and unrelated _build data is not ours.
+        for output in \
             _build/mkosi/artifacts.json \
             _build/mkosi/katl-* \
             _build/mkosi/*.json \
             _build/mkosi/*.sha256 \
-            _build/mkosi/*.packages.tsv \
-            2>/dev/null || true
+            _build/mkosi/*.packages.tsv; do
+            [[ -e "$output" || -L "$output" ]] || continue
+            chown -h --reference=/mkosi-build "$output" || status=1
+        done
     fi
+    chown -R --reference=/work/_build/go-mod /work/_build/go-mod || status=1
+    chown -R --reference=/work/_build/go-cache /work/_build/go-cache || status=1
     exit "$status"
 ' bash "${container_mkosi_storage_args[@]}" "${mkosi_env[@]}" "$@"
 status=$?
