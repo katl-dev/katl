@@ -34,6 +34,9 @@ func TestKubernetesReleaseAutomation(t *testing.T) {
 	if _, ok := workflow.On["schedule"]; !ok {
 		t.Fatal("release discovery is not scheduled")
 	}
+	if _, ok := workflow.On["push"]; ok {
+		t.Fatal("Katl commits must not trigger Kubernetes publication")
+	}
 	if _, ok := workflow.On["pull_request"]; !ok {
 		t.Fatal("producer has no presubmit")
 	}
@@ -54,6 +57,7 @@ func TestKubernetesReleaseAutomation(t *testing.T) {
 		}
 	}
 	for _, pair := range [][2]string{
+		{"Inspect published upstream release", "Build package query environment"},
 		{"Resume existing candidate", "Build compatible runtime and Kubernetes sysext"},
 		{"Verify built runtime and Kubernetes sysext", "Publish immutable OCI bundle"},
 		{"Attest published OCI manifest", "Promote compatible bundle"},
@@ -104,7 +108,7 @@ func TestKubernetesReleasePlan(t *testing.T) {
 		wantPublish                        bool
 	}{
 		{name: "scheduled", event: "schedule", ref: "refs/heads/main", wantPublish: true},
-		{name: "main push", event: "push", ref: "refs/heads/main", wantPublish: true},
+		{name: "main push", event: "push", ref: "refs/heads/main"},
 		{name: "branch push", event: "push", ref: "refs/heads/topic"},
 		{name: "pull request", event: "pull_request", ref: "refs/pull/12/merge"},
 		{name: "pull request with main ref", event: "pull_request", ref: "refs/heads/main"},

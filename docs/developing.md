@@ -346,66 +346,27 @@ future node-side trust-root, revocation, and downgrade policy.
 
 ## Kubernetes Bundle Artifacts
 
-`.github/workflows/kubernetes-bundles.yml` is the independent Kubernetes
-payload producer. `internal/kubernetesrelease/supported-versions.json` declares
-every maintained payload, its exact kubeadm, kubelet, kubectl, and cri-tools RPM
-NEVRAs, and its next immutable Katl artifact revision. Merging a reviewed policy
-update to `main` builds, verifies, publishes, and attests each new or
-revision-advanced entry in parallel, then opens one compatibility-catalog pull
-request with the published digests. Earlier artifact identities and digests
-remain addressable.
+`.github/workflows/kubernetes-bundles.yml` discovers upstream Kubernetes releases
+on a schedule. Each upstream patch is published once, using a short version tag
+such as `ghcr.io/katl-dev/kubernetes:v1.37.0`. Katl releases, source changes and
+RPM rebuilds do not create new Kubernetes release identities or replace an
+existing publication. See [Kubernetes release delivery](concepts/kubernetes-releases.md)
+for discovery, interrupted-publication recovery and compatibility selection.
 
-Add a released Kubernetes patch to the supported matrix with:
+Pull requests validate affected build recipes without publishing. Manual
+workflow dispatch defaults to build-only validation; set `publish: true` on
+main to publish a missing upstream version or resume an interrupted publication.
+Published versions are checked before package resolution or image builds, and
+existing digests are retained.
 
-```sh
-go run ./cmd/katl-kubernetes-release prepare-supported \
-  --payload-version v1.36.3
-```
+The checked-in supported-version manifest and recipe fingerprint are local
+build fixtures. `prepare-supported` and `refresh-rebuilds` maintain those
+fixtures; they do not request new public versions. The fixed `-katl.1` metadata
+suffix, compatibility aliases and digest lookup tags retain support for released
+clients. Operators select upstream versions; they do not track Katl rebuild
+counters. A future runtime interface requires a separate compatibility-policy
+decision.
 
-The command resolves the exact x86_64 RPMs from the selected official
-Kubernetes repository, requires kubeadm, kubelet, and kubectl to match the
-payload patch, selects the newest compatible cri-tools patch, and starts a new
-payload at artifact revision `1`. Review the policy diff and submit it as a
-normal ready pull request.
-
-Changes to the Kubernetes sysext profile, package or base-runtime ABI inputs,
-dedicated Kubernetes metadata producer, or bundle packing and catalog format
-must rebuild every supported payload. Refresh the recipe fingerprint and
-advance all immutable artifact revisions in the same pull request:
-
-```sh
-go run ./cmd/katl-kubernetes-release refresh-rebuilds
-```
-
-The Go baseline rejects a changed bundle recipe until this command has updated
-the supported-version policy. GitHub Actions orchestration, release planning,
-compatibility-PR management, the shared KatlOS artifact controller, KatlOS
-runtime binaries, agents, installer policy, VM infrastructure, documentation,
-and other product code are outside this recipe boundary and must not advance
-Kubernetes artifact revisions. Pull requests still validate the producer
-workflow, but control-plane-only changes do not publish bundles. Changes that
-only add a supported payload do not advance existing artifact revisions.
-
-Manual dispatch remains the explicit dry-run path. Dispatch it with empty
-version inputs to build the whole supported matrix, or select one supported
-payload. Keep `publish: false` for build-only verification. Published artifact
-identities always come directly from the reviewed supported-version policy.
-
-Set `publish: true` only for a reviewed bundle identity. The workflow reuses an
-existing tag only when it resolves to the byte-identical OCI manifest produced
-from the same commit, making interrupted publication safe to retry. It
-publishes the Katl custom bundle manifest as the OCI config with the sysext and
-metadata as layers, pulls the config back for byte verification, and creates a
-GitHub build-provenance attestation. It then records the exact version,
-manifest digest, architecture, and runtime interfaces in the embedded
-compatibility catalog through one reusable ready auto-merged pull request. The
-generated branch is deleted after merge, and reconciliation deletes
-superseded legacy branches after closing their pull requests. Install and
-upgrade clients consume that mapping; they never
-construct a `katl.1` tag from an operator-supplied Kubernetes version. The
-canonical package is `ghcr.io/katl-dev/kubernetes`. Its readable tags use the
-bundle build identity directly, for example `v1.36.0-katl.1`, while a
-second `sha256-<bundle-manifest-digest>` tag supports exact Katl resolution.
 The OCI manifest carries the standard source, description, and MIT license
 annotations that GHCR renders on the package page, plus title, documentation,
 revision, and version metadata for other OCI clients.

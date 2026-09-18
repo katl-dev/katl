@@ -4,25 +4,6 @@ on:
   schedule:
     - cron: '41 * * * *'
   pull_request:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/kubernetes-bundles.yml
-      - Containerfile.mkosi
-      - go.mod
-      - go.sum
-      - internal/kubernetesrelease/**
-      - internal/installer/payloadbundle/**
-      - internal/installer/sysextcatalog/**
-      - internal/installer/kubernetescompat/**
-      - cmd/katl-kubernetes-release/**
-      - cmd/katl-kubernetes-metadata/**
-      - cmd/katl-publish-kubernetes-sysext/**
-      - mkosi.conf
-      - mkosi.profiles/kubernetes-sysext/**
-      - mkosi.profiles/runtime/**
-      - scripts/mkosi
-      - scripts/*kubernetes*
   workflow_dispatch:
     inputs:
       payload_version:
@@ -75,8 +56,8 @@ jobs:
             matrix="$(go run ./cmd/katl-kubernetes-release discover)"
           fi
           publish=false
-          if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != pull_request ]]; then
-            if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$REQUEST_PUBLISH" == true ]]; then
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == schedule || ( "$GITHUB_EVENT_NAME" == workflow_dispatch && "$REQUEST_PUBLISH" == true ) ]]; then
               publish=true
             fi
           fi
@@ -116,9 +97,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Inspect published upstream release
+        id: release
+        run: |
+          if [[ "$PUBLISH" == true ]]; then
+            go run ./cmd/katl-kubernetes-release inspect \
+              --payload-version "$PAYLOAD_VERSION" > release.json
+          else
+            echo '{"exists":false}' > release.json
+          fi
+          echo "exists=$(jq -r .exists release.json)" >> "$GITHUB_OUTPUT"
       - name: Build package query environment
+        if: steps.release.outputs.exists != 'true'
         run: docker build --tag "$KATL_MKOSI_IMAGE" --file Containerfile.mkosi .
       - name: Resolve locked candidate
+        if: steps.release.outputs.exists != 'true'
         run: |
           go run ./cmd/katl-kubernetes-release candidate \
             --payload-version "$PAYLOAD_VERSION" \
@@ -145,14 +138,20 @@ jobs:
       - name: Resume existing candidate
         id: candidate
         run: |
-          if [[ "$PUBLISH" == true ]]; then
+          if [[ "${{ steps.release.outputs.exists }}" == true ]]; then
+            cp release.json existing.json
+            echo "ARTIFACT_VERSION=$(jq -r .artifactVersion existing.json)" >> "$GITHUB_ENV"
+          elif [[ "$PUBLISH" == true ]]; then
             go run ./cmd/katl-kubernetes-release inspect \
               --payload-version "$PAYLOAD_VERSION" --artifact-version "$ARTIFACT_VERSION" > existing.json
           else
             echo '{"exists":false}' > existing.json
           fi
-          echo "exists=$(jq -r .exists existing.json)" >> "$GITHUB_OUTPUT"
-          echo "promoted=$(jq -r .promoted existing.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo "exists=$(jq -r .exists existing.json)"
+            echo "promoted=$(jq -r .promoted existing.json)"
+            echo "digest=$(jq -r '.digest // empty' existing.json)"
+          } >> "$GITHUB_OUTPUT"
       - name: Run producer tests
         run: |
           go test ./cmd/katl-kubernetes-release ./cmd/katl-kubernetes-metadata \
@@ -246,9 +245,9 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/kubernetes-bundles.yml" \
             --source-ref refs/heads/main
       - name: Promote compatible bundle
-        if: env.PUBLISH == 'true' && steps.candidate.outputs.promoted != 'true'
+        if: env.PUBLISH == 'true'
         env:
-          MANIFEST_DIGEST: ${{ steps.published.outputs.digest }}
+          MANIFEST_DIGEST: ${{ steps.published.outputs.digest || steps.candidate.outputs.digest }}
         run: |
           go run ./cmd/katl-kubernetes-release promote \
             --payload-version "$PAYLOAD_VERSION" --artifact-version "$ARTIFACT_VERSION" \

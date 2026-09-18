@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -80,11 +78,7 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 		if err != nil {
 			return fmt.Errorf("Kubernetes packages are not ready; the next scheduled run will retry: %w", err)
 		}
-		recipe, err := kubernetesrelease.RecipeDigest(*root)
-		if err != nil {
-			return err
-		}
-		entry := candidate(*version, packages, recipe)
+		entry := candidate(*version, packages)
 		return json.NewEncoder(stdout).Encode(entry)
 	case "inspect", "promote":
 		request := kubernetescompat.Request{KubernetesVersion: *version, Architecture: "x86_64", RuntimeInterface: "katl-runtime-1"}
@@ -92,7 +86,7 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 		if err != nil {
 			return err
 		}
-		if !artifactPattern.MatchString(*artifact) || !strings.HasPrefix(*artifact, *version+"-katl.") {
+		if (*artifact != "" || args[0] == "promote") && (!artifactPattern.MatchString(*artifact) || !strings.HasPrefix(*artifact, *version+"-katl.")) {
 			return fmt.Errorf("artifact version must match payload version")
 		}
 		repository, err := remote.NewRepository(*repositoryName)
@@ -105,6 +99,9 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 		}
 		repository.Client = client
 		identifier := *artifact
+		if identifier == "" {
+			identifier = *version
+		}
 		if args[0] == "promote" {
 			if digest.Digest(*manifestDigest).Validate() != nil || !strings.HasPrefix(*manifestDigest, "sha256:") {
 				return fmt.Errorf("promotion requires verified --manifest-digest")
@@ -112,16 +109,20 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 			identifier = *manifestDigest
 		}
 		entry, err := kubernetescompat.ResolveTarget(ctx, repository, *repositoryName, identifier, request)
+		if args[0] == "inspect" && *artifact == "" && errors.Is(err, errdef.ErrNotFound) {
+			entry, err = kubernetescompat.ResolveTarget(ctx, repository, *repositoryName, promotion, request)
+		}
 		if err != nil {
 			if args[0] == "inspect" && errors.Is(err, errdef.ErrNotFound) {
 				return json.NewEncoder(stdout).Encode(map[string]any{"exists": false})
 			}
 			return err
 		}
-		if !strings.HasPrefix(entry.Bundle, *repositoryName+":"+*artifact+"@") {
+		if *artifact != "" && !strings.HasPrefix(entry.Bundle, *repositoryName+":"+*artifact+"@") {
 			return fmt.Errorf("candidate artifact identity mismatch")
 		}
-		_, digest, _ := strings.Cut(entry.Bundle, "@")
+		image, digest, _ := strings.Cut(entry.Bundle, "@")
+		artifactVersion := strings.TrimPrefix(image, *repositoryName+":")
 		promoted := false
 		if args[0] == "inspect" {
 			descriptor, err := repository.Resolve(ctx, promotion)
@@ -131,39 +132,44 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 			promoted = err == nil && descriptor.Digest.String() == digest
 		}
 		if args[0] == "promote" {
-			// Only the verified digest is promoted; the mutable candidate tag is
-			// never re-resolved between validation and publication.
+			// Check every alias before writing any: retries must not replace a
+			// previously verified upstream release. The workflow serializes writers.
+			for _, tag := range []string{*version, promotion} {
+				existing, err := repository.Resolve(ctx, tag)
+				if err != nil && !errors.Is(err, errdef.ErrNotFound) {
+					return err
+				}
+				if err == nil && existing.Digest.String() != digest {
+					return fmt.Errorf("Kubernetes %s is already published with a different digest", *version)
+				}
+			}
 			descriptor, err := repository.Resolve(ctx, digest)
 			if err != nil {
 				return err
 			}
-			if err := repository.Tag(ctx, descriptor, promotion); err != nil {
-				return err
-			}
-			resolved, err := repository.Resolve(ctx, promotion)
-			if err != nil {
-				return err
-			}
-			if resolved.Digest.String() != digest {
-				return fmt.Errorf("promotion did not retain verified digest")
+			for _, tag := range []string{promotion, *version} {
+				if err := repository.Tag(ctx, descriptor, tag); err != nil {
+					return err
+				}
+				resolved, err := repository.Resolve(ctx, tag)
+				if err != nil {
+					return err
+				}
+				if resolved.Digest.String() != digest {
+					return fmt.Errorf("publication did not retain verified digest")
+				}
 			}
 			promoted = true
 		}
-		return json.NewEncoder(stdout).Encode(map[string]any{"exists": true, "promoted": promoted, "bundle": entry.Bundle, "digest": digest, "promotionTag": promotion})
+		return json.NewEncoder(stdout).Encode(map[string]any{"exists": true, "promoted": promoted, "artifactVersion": artifactVersion, "bundle": entry.Bundle, "digest": digest, "promotionTag": promotion})
 	}
 	return fmt.Errorf("unknown automation command")
 }
 
-func candidate(version string, packages kubernetesrelease.PackageVersions, recipe string) releaseMatrixEntry {
-	input, _ := json.Marshal(struct {
-		Version  string
-		Packages kubernetesrelease.PackageVersions
-		Recipe   string
-	}{version, packages, recipe})
-	digest := sha256.Sum256(input)
-	// A positive 48-bit content identity fits the existing numeric revision
-	// contract and stays stable across workflow reruns and unrelated commits.
-	revision := int(binary.BigEndian.Uint64(digest[:8])>>16) + 1
+func candidate(version string, packages kubernetesrelease.PackageVersions) releaseMatrixEntry {
+	// Released nodes require this suffix in bundle metadata. It is not an
+	// update counter: publication is immutable for each upstream version.
+	const revision = 1
 	minor := version[:strings.LastIndex(version, ".")]
 	return releaseMatrixEntry{
 		PayloadVersion: version, ArtifactRevision: revision,
