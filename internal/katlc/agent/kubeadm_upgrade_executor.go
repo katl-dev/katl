@@ -966,24 +966,10 @@ func (e *Executor) completeKubeadmUpgrade(ctx context.Context, record operation.
 	if err := e.removeKubeletGate(ctx, record); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
-	if _, _, _, err := e.writeCandidateLoaderEntry(ctx, record.CandidateGenerationID); err != nil {
+	if err := e.promoteLiveGeneration(ctx, record, now, "Kubernetes sysext activated live and passed local health checks"); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
-	if err := generation.PromoteLiveGeneration(generation.LivePromotionRequest{
-		Root:         e.Root,
-		GenerationID: record.CandidateGenerationID,
-		OperationID:  record.OperationID,
-		Reason:       "Kubernetes sysext activated live and passed local health checks",
-		Now:          now,
-		SetBootDefault: func(root, entry string) error {
-			if e.SetBootDefault == nil {
-				return fmt.Errorf("boot default updater is not configured")
-			}
-			return e.SetBootDefault(ctx, root, entry)
-		},
-	}); err != nil {
-		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
-	}
+
 	_, err := e.Store.Update(record.OperationID, "kubeadm-upgrade-healthy", "healthy", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "healthy"
 		current.CompletedPhases = appendMissing(current.CompletedPhases, "kubelet-stop-running", "sysext-refresh-running", "kubelet-restart-running", "health-check-running", "healthy")

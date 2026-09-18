@@ -645,11 +645,15 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	if err == nil {
 		switch result.Plan.Decision.AcceptedMode {
 		case generation.ApplyModeLive:
-			if commitErr := e.commitCandidateGeneration(ctx, record, completedAt, "live runtime configuration apply completed successfully; candidate awaits boot validation"); commitErr != nil {
+			if commitErr := e.promoteLiveGeneration(ctx, record, completedAt, "runtime configuration activated live and all domain actions passed"); commitErr != nil {
 				err = commitErr
+			} else {
+				result.Status.HealthState = generation.HealthStateHealthy
+				result.Status.UpdatedAt = completedAt
+				err = generation.WriteConfigApplyStatus(result.StatusPath, result.Status)
 			}
 		case generation.ApplyModeNextBoot:
-			if commitErr := e.commitCandidateGeneration(ctx, record, completedAt, "next-boot runtime configuration apply staged by katlc agent executor"); commitErr != nil {
+			if commitErr := e.commitTrialGeneration(ctx, record, completedAt, "next-boot runtime configuration apply staged by katlc agent executor"); commitErr != nil {
 				err = commitErr
 			}
 		}
@@ -668,13 +672,16 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		record.ConfigApplyPhase = result.Status.Phase
 		record.ChangedDomains = append([]string(nil), result.Status.ChangedDomains...)
 		record.GenerationCommitState = operation.GenerationCommitCommitted
-		record.BootHealthPending = true
+		record.BootHealthPending = result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot
 		record.ActivationState = configApplyActivationState(result.Status, false)
 		completeConfigApplyInvocation(record.Invocations, liveConfigApplyInvocationID(record.OperationID), completedAt, operation.ResultSucceeded)
 		record.CompletedAt = &completedAt
 		record.Terminal = true
 		record.Result = operation.ResultSucceeded
-		record.NextAction = "reboot into committed config apply generation for boot health validation"
+		record.NextAction = "live configuration is active and is the persistent boot default"
+		if record.BootHealthPending {
+			record.NextAction = "reboot into committed config apply generation for boot health validation"
+		}
 		record.UpdatedAt = completedAt
 		return record, nil
 	})

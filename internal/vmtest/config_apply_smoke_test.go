@@ -516,6 +516,7 @@ spec:
 
 func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, currentGeneration string) (*GuestControl, *AgentClient) {
 	t.Helper()
+	beforeLiveBootID := guestBootID(t, ctx, client)
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
 	beforeBootSelection := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json")
 	rejectedGeneration := "2026.06.06-vmtest-rejected"
@@ -565,10 +566,17 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 
 	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-udev.yaml"), false)
 	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, liveAccepted.OperationId)
-	if liveStatus.Result != operation.ResultSucceeded || liveStatus.ConfigApplyPhase != "active" {
+	if liveStatus.Result != operation.ResultSucceeded || liveStatus.ConfigApplyPhase != "active" || liveStatus.BootHealthPending {
 		t.Fatalf("live operation status = %+v, want succeeded active config apply", liveStatus)
 	}
 	liveGenerationStatus := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, "status-live", liveGeneration)
+	if liveGenerationStatus.GetCommitState() != "committed" || liveGenerationStatus.GetHealthState() != "healthy" {
+		t.Fatalf("live generation is not ready for dependent operations: %+v", liveGenerationStatus)
+	}
+	if got := guestBootID(t, ctx, client); got != beforeLiveBootID {
+		t.Fatalf("live apply rebooted the node: boot ID %s became %s", beforeLiveBootID, got)
+	}
+
 	if liveGenerationStatus.GetConfigApply().GetPhase() != "active" || liveGenerationStatus.GetConfigApply().GetRequestedApplyMode() != "auto" || liveGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "live" {
 		t.Fatalf("live katlctl generation status = %+v, want active auto->live config apply", liveGenerationStatus.GetConfigApply())
 	}
@@ -579,8 +587,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertGuestFileContains(
 		t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/status.json",
 		`"commitState": "committed"`,
-		`"bootState": "trying"`,
-		`"healthState": "unknown"`,
+		`"bootState": "good"`,
+		`"healthState": "healthy"`,
 		`"committedByOperationID": "`+liveAccepted.OperationId+`"`,
 	)
 	assertGuestFileContains(
@@ -601,11 +609,10 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
 	assertGuestFileContains(
 		t, ctx, guest, "/var/lib/katl/boot/selection.json",
-		`"defaultGenerationID": "`+currentGeneration+`"`,
-		`"targetBootGenerationID": "`+liveGeneration+`"`,
-		`"trialGenerationID": "`+liveGeneration+`"`,
+		`"defaultGenerationID": "`+liveGeneration+`"`,
+		`"activeGenerationID": "`+liveGeneration+`"`,
 		`"bootedGenerationID": "`+currentGeneration+`"`,
-		`"pendingHealthValidation": true`,
+		`"pendingHealthValidation": false`,
 	)
 	activeGeneration := runVolumeRemovalSmoke(t, ctx, guest, result, katlctl, endpoint)
 
@@ -641,7 +648,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf", "Address=198.51.100.77/32")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/containerd/conf.d/80-katl-vmtest.toml", "oom_score = 123")
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+currentGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"previousKnownGoodGenerationID": "`+currentGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
+	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+activeGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"previousKnownGoodGenerationID": "`+activeGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
 	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
 	assertGuestFileContains(t, ctx, guest, stagedAccepted.RecordPath, `"operationKind": "generation-stage"`, `"configApplyPhase": "next-boot"`)
