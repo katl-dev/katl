@@ -1303,6 +1303,8 @@ func RenderInitConfig(base []byte, controlPlaneEndpoint string, additionalSANs .
 			apiServer = map[string]any{}
 		}
 		apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], host)
+		// The node-local proxy forwards TLS to the API server unchanged.
+		apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], "127.0.0.1")
 		for _, san := range additionalSANs {
 			if san = strings.TrimSpace(san); san != "" {
 				apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], san)
