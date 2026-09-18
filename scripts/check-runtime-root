@@ -204,6 +204,11 @@ for path in \
     /usr/bin/katlc \
     /usr/bin/katl-console \
     /usr/bin/mount.nfs \
+    /usr/bin/tc \
+    /usr/bin/nvme \
+    /usr/bin/smartctl \
+    /usr/bin/tcpdump \
+    /usr/bin/lvm \
     /usr/lib/katl/runtime/katl-boot-health \
     /usr/lib/katl/runtime/katl-api-proxy \
     /usr/lib/katl/runtime/katl-ssh-host-keys \
@@ -250,6 +255,7 @@ for path in \
     /etc/dnf \
     /etc/dracut.conf \
     /etc/dracut.conf.d \
+    /etc/systemd/system/multi-user.target.wants/smartd.service \
     /usr/bin/dracut \
     /usr/bin/lsinitrd \
     /usr/lib/dracut \
@@ -300,6 +306,7 @@ file_has /etc/containerd/config.toml 'conf_dir = "/var/lib/katl/kubernetes/cni/n
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/bin 0755 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/net.d 0755 root root -"
 links_to /opt/cni/bin /var/lib/katl/kubernetes/cni/bin
+links_to /etc/systemd/system/smartd.service /dev/null
 links_to /etc/cni/net.d /var/lib/katl/kubernetes/cni/net.d
 check_kernel_support
 require_firmware_family intel-ucode "Intel CPU microcode"

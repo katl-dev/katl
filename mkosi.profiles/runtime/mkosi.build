@@ -87,6 +87,7 @@ mkdir -p "$DESTDIR/etc/systemd/system"
 for unit in \
     authselect-apply-changes.service \
     fips-crypto-policy-overlay.service \
+    smartd.service \
     systemd-homed-activate.service \
     systemd-homed.service \
     systemd-oomd.service \
