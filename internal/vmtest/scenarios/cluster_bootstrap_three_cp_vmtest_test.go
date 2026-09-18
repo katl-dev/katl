@@ -277,10 +277,10 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 
 	nodes := []vmtest.RunningInstalledRuntimeNode{cp1Node, cp2Node, cp3Node}
 	for _, node := range nodes {
-		if err := assertCNISysctls(ctx, node); err != nil {
+		if err := assertIPForwarding(ctx, node); err != nil {
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-			t.Fatalf("check CNI sysctls on %s: %v", node.Name, err)
+			t.Fatalf("check IP forwarding on %s: %v", node.Name, err)
 		}
 		if err := installKubernetesBundleCA(ctx, node, kubernetesBundle); err != nil {
 			collectTwoNodeDiagnostics("", nodes...)
@@ -869,41 +869,16 @@ func waitForAgentKubernetesReady(ctx context.Context, nodes []vmtest.RunningInst
 	return nil
 }
 
-func assertCNISysctls(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) error {
-	const testInterface = "lxc_katltest"
-	created, err := runNodeCommandWithRetry(ctx, node, []string{
-		"ip", "link", "add", testInterface, "type", "dummy",
-	}, 16<<10)
-	if err != nil {
-		return err
-	}
-	if created.ExitStatus != 0 {
-		return commandErrorDetail(created)
-	}
-	defer func() {
-		_, _ = runNodeCommandWithRetry(ctx, node, []string{"ip", "link", "delete", testInterface}, 16<<10)
-	}()
-	settled, err := runNodeCommandWithRetry(ctx, node, []string{"udevadm", "settle"}, 16<<10)
-	if err != nil {
-		return err
-	}
-	if settled.ExitStatus != 0 {
-		return commandErrorDetail(settled)
-	}
-	result, err := runNodeCommandWithRetry(ctx, node, []string{
-		"sysctl", "-n",
-		"net.ipv4.conf.all.rp_filter",
-		"net.ipv4.conf.default.rp_filter",
-		"net.ipv4.conf." + testInterface + ".rp_filter",
-	}, 16<<10)
+func assertIPForwarding(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) error {
+	result, err := runNodeCommandWithRetry(ctx, node, []string{"sysctl", "-n", "net.ipv4.ip_forward"}, 16<<10)
 	if err != nil {
 		return err
 	}
 	if result.ExitStatus != 0 {
 		return commandErrorDetail(result)
 	}
-	if got, want := strings.Fields(string(result.Stdout)), []string{"0", "0", "0"}; !reflect.DeepEqual(got, want) {
-		return fmt.Errorf("reverse-path filtering values = %v, want %v", got, want)
+	if got := strings.TrimSpace(string(result.Stdout)); got != "1" {
+		return fmt.Errorf("IPv4 forwarding = %q, want 1", got)
 	}
 	return nil
 }
