@@ -208,8 +208,8 @@ artifacts, provide digest-pinned source and target OCI bundles. The upgrade
 scenario fetches and verifies both bundles through the product bundle path:
 
 ```sh
-KATL_VMTEST_KUBERNETES_BUNDLE='ghcr.io/katl-dev/kubernetes:v1.36.0-katl.3@sha256:c974730cb3500dc4a82cb942138b9f32c1b2e9163469d5073dbedc83c8cd728b' \
-KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:1793f4aed888b48891e659cf286a88088f39a87311d5710c889341aff3f5c537' \
+KATL_VMTEST_KUBERNETES_BUNDLE='ghcr.io/katl-dev/kubernetes:v1.36.1-katl.35@sha256:f6060cd025aa28db3ac76c82c45f8aac858baa198d09829e36ff9c920bb1e281' \
+KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='ghcr.io/katl-dev/kubernetes:v1.36.2-katl.34@sha256:6362d1f3b79fd73323b9f77be8348ac2c76db83b95eb9f818d710eacc89493fb' \
 scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
   -run '^TestKubeadmUpgradeOperationSmoke$' \
   -count=1 -failfast -timeout 75m

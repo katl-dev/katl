@@ -380,7 +380,13 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), inputs.KubernetesVersion, nodes...)
 	if err == nil && proveUpgrade {
 		var upgradeFixtures map[string][]nodeImageFixture
-		upgradeFixtures, err = stageKubernetesImageFixtures(ctx, katlRepoRoot(t), "v1.36.1", nodes...)
+		targetVersion := "v1.36.1"
+		if bundle := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); bundle != "" {
+			targetVersion, err = publishedKubernetesUpgradeVersion(bundle)
+		}
+		if err == nil {
+			upgradeFixtures, err = stageKubernetesImageFixtures(ctx, katlRepoRoot(t), targetVersion, nodes...)
+		}
 		mergeNodeImageFixtures(imageFixtures, upgradeFixtures)
 	}
 	if err == nil {
@@ -720,9 +726,6 @@ func reactivateCNIFixtureAfterBoot(ctx context.Context, node vmtest.RunningInsta
 func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string) error {
 	t.Helper()
 	const targetVersion = "v1.36.1"
-	if smoke.Inputs.KubernetesVersion != "v1.36.0" {
-		return fmt.Errorf("upgrade proof requires base v1.36.0, got %s", smoke.Inputs.KubernetesVersion)
-	}
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-before-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
 		return fmt.Errorf("wait for cluster readiness after bootstrap generation reboot: %w", err)
 	}
@@ -731,31 +734,13 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 		return err
 	}
 	if bundle := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); bundle != "" {
-		return runPublishedKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), bundle, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir, bootIDs)
+		return runPublishedKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), bundle, smoke.Inputs.KubernetesVersion, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir, bootIDs)
+	}
+	if smoke.Inputs.KubernetesVersion != "v1.36.0" {
+		return fmt.Errorf("local artifact upgrade proof requires base v1.36.0, got %s", smoke.Inputs.KubernetesVersion)
 	}
 	targetHost := filepath.Join(katlRepoRoot(t), "_build/mkosi/katl-kubernetes-upgrade.raw")
 	metadataHost := targetHost + ".json"
-	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); value != "" {
-		image, err := kubernetesbundle.ParseImageReference(value)
-		if err != nil {
-			return fmt.Errorf("parse published target Kubernetes bundle: %w", err)
-		}
-		staged, err := kubernetesbundle.FetchAndStage(ctx, kubernetesbundle.Request{
-			Source:           image.Source,
-			Ref:              image.Value,
-			CacheDir:         filepath.Join(smoke.Result.ManifestDir, "published-kubernetes-upgrade"),
-			RuntimeInterface: "katl-runtime-1",
-			Architecture:     "x86_64",
-		})
-		if err != nil {
-			return fmt.Errorf("fetch published target Kubernetes bundle: %w", err)
-		}
-		if staged.PayloadVersion != targetVersion {
-			return fmt.Errorf("published target Kubernetes bundle payload is %s, want %s", staged.PayloadVersion, targetVersion)
-		}
-		targetHost = staged.SysextPath
-		metadataHost = staged.MetadataPath
-	}
 	target, err := os.ReadFile(targetHost)
 	if err != nil {
 		return fmt.Errorf("read target Kubernetes sysext: %w", err)
@@ -843,7 +828,7 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	return nil
 }
 
-func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
+func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceVersion string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
 	configPath := filepath.Join(evidenceDir, "cluster-upgrade.yaml")
 	contextPath := filepath.Join(evidenceDir, "katlctl-upgrade-context.yaml")
 	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
@@ -897,7 +882,7 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err := json.Unmarshal(stdout, &report); err != nil {
 		return fmt.Errorf("decode katlctl Kubernetes upgrade report: %w", err)
 	}
-	if report.SourceVersion != "v1.36.0" || report.TargetVersion != targetVersion || len(report.Nodes) != 2 {
+	if report.SourceVersion != sourceVersion || report.TargetVersion != targetVersion || len(report.Nodes) != 2 {
 		return fmt.Errorf("unexpected katlctl Kubernetes upgrade report: %+v", report)
 	}
 	for i, want := range []string{"cp-1", "worker-1"} {
@@ -2763,7 +2748,8 @@ func assertOperatorSSH(ctx context.Context, privateKey, address string) error {
 	}
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
-		command := exec.CommandContext(ctx, "ssh",
+		command := exec.CommandContext(
+			ctx, "ssh",
 			"-o", "BatchMode=yes",
 			"-o", "IdentitiesOnly=yes",
 			"-o", "StrictHostKeyChecking=no",
@@ -2800,7 +2786,8 @@ func assertControlPlaneDashboard(ctx context.Context, privateKey, address string
 	deadline := time.Now().Add(time.Minute)
 	var lastOutput []byte
 	for {
-		command := exec.CommandContext(ctx, "ssh",
+		command := exec.CommandContext(
+			ctx, "ssh",
 			"-o", "BatchMode=yes",
 			"-o", "IdentitiesOnly=yes",
 			"-o", "StrictHostKeyChecking=no",
@@ -4132,7 +4119,8 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 		}},
 	}
 	if kubeadmRef == "control-plane" {
-		plan.Files = append(plan.Files,
+		plan.Files = append(
+			plan.Files,
 			vmtest.GuestFileRequest{Name: "admin-kubeconfig", Path: "/etc/kubernetes/admin.conf"},
 			vmtest.GuestFileRequest{Name: "kube-apiserver-manifest", Path: "/etc/kubernetes/manifests/kube-apiserver.yaml"},
 			vmtest.GuestFileRequest{Name: "kube-controller-manager-manifest", Path: "/etc/kubernetes/manifests/kube-controller-manager.yaml"},
