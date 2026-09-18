@@ -650,7 +650,7 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	_ = os.WriteFile(reportPath, stdout.Bytes(), 0o644)
 	if err != nil {
-		_ = collectNodeLocalStatusFailureEvidence(ctx, evidenceDir, nodes...)
+		_ = collectNodeStatusDiagnostics(ctx, evidenceDir, nodes...)
 		return wipeClusterEvidence{}, fmt.Errorf("katlctl cluster wipe failed: %w\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 	if err := assertWipeClusterReport(stdout.Bytes()); err != nil {
@@ -883,7 +883,7 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 		_ = os.WriteFile(filepath.Join(roundDir, "katlctl-bootstrap-error.txt"), []byte(err.Error()+"\n"), 0o644)
 		collectOperationBackedFailureEvidence(ctx, cpNode, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init")
 		collectOperationBackedFailureEvidence(ctx, workerNode, filepath.Join(evidenceDir, "worker-1"), "bootstrap-join-worker")
-		_ = collectNodeLocalStatusFailureEvidence(ctx, evidenceDir, nodes...)
+		_ = collectNodeStatusDiagnostics(ctx, evidenceDir, nodes...)
 		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, roundDir)
 		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("%s katlctl cluster bootstrap failed: %w\nstdout:\n%s\nstderr:\n%s", name, err, stdout.String(), stderr.String())
 	}
@@ -899,7 +899,7 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 		_ = os.WriteFile(filepath.Join(roundDir, "katlctl-user-bootstrap-error.txt"), []byte(err.Error()+"\n"), 0o644)
 		collectOperationBackedFailureEvidence(ctx, cpNode, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init")
 		collectOperationBackedFailureEvidence(ctx, workerNode, filepath.Join(evidenceDir, "worker-1"), "bootstrap-join-worker")
-		_ = collectNodeLocalStatusFailureEvidence(ctx, evidenceDir, nodes...)
+		_ = collectNodeStatusDiagnostics(ctx, evidenceDir, nodes...)
 		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, roundDir)
 		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("%s katlctl user bootstrap handoff failed: %w\nstdout:\n%s\nstderr:\n%s", name, err, userBootstrapStdout.String(), userBootstrapStderr.String())
 	}
