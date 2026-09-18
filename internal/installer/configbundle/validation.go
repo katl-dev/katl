@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -174,7 +175,22 @@ func ValidateSourceFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("read source config: %w", err)
 	}
-	return validateSourceData(data)
+	if err := validateSourceData(data); err != nil {
+		return err
+	}
+	source, err := DecodeSource(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	source, err = resolveHostConfigurationSources(filepath.Dir(path), source)
+	if err != nil {
+		return err
+	}
+	source, err = normalizeSource(source)
+	if err != nil {
+		return err
+	}
+	return validateResolvedSourceNodes(source)
 }
 
 func validateSourceData(data []byte) error {

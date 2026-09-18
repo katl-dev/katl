@@ -146,9 +146,11 @@ type SourceHostConfigurationSysfsSetting struct {
 }
 
 type SourceHostConfigurationFileSet struct {
-	State    string                                  `yaml:"state,omitempty" json:"state,omitempty"`
-	Files    []manifest.HostConfigurationFile        `yaml:"files,omitempty" json:"files,omitempty"`
-	OnChange manifest.HostConfigurationNotifications `yaml:"onChange,omitempty" json:"onChange,omitempty"`
+	Directory   string                                  `yaml:"directory,omitempty" json:"directory,omitempty"`
+	Destination string                                  `yaml:"destination,omitempty" json:"destination,omitempty"`
+	State       string                                  `yaml:"state,omitempty" json:"state,omitempty"`
+	Files       []manifest.HostConfigurationFile        `yaml:"files,omitempty" json:"files,omitempty"`
+	OnChange    manifest.HostConfigurationNotifications `yaml:"onChange,omitempty" json:"onChange,omitempty"`
 }
 
 type SourceSystemExtension struct {
@@ -827,6 +829,14 @@ func resolveHostConfigurationSources(sourceRoot string, source SourceConfig) (So
 		sort.Strings(setNames)
 		for _, setName := range setNames {
 			set := fileSets[setName]
+			if set.Directory != "" {
+				files, err := expandHostDirectory(root, set.Directory, set.Destination)
+				if err != nil {
+					return fmt.Errorf("%s.fileSets[%q]: %w", field, setName, err)
+				}
+				set.Files = files
+				set.Directory, set.Destination = "", ""
+			}
 			for i := range set.Files {
 				file := &set.Files[i]
 				if strings.TrimSpace(file.Source) == "" {
@@ -911,9 +921,9 @@ func sourceNodePath(node SourceNode, index int) string {
 	return fmt.Sprintf("spec.nodes[%d]", index)
 }
 
-func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {
+func hostSourcePath(sourceRoot, source string) (string, error) {
 	if filepath.IsAbs(source) {
-		return nil, fmt.Errorf("%q must be relative to the ClusterConfig source root", source)
+		return "", fmt.Errorf("%q must be relative to the ClusterConfig source root", source)
 	}
 	cleaned := filepath.Clean(source)
 	normalizedSource := source
@@ -921,24 +931,33 @@ func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {
 		normalizedSource = strings.TrimPrefix(normalizedSource, "."+string(filepath.Separator))
 	}
 	if normalizedSource != cleaned || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("%q must be a normalized, non-escaping relative path", source)
+		return "", fmt.Errorf("%q must be a normalized, non-escaping relative path", source)
 	}
 	candidate := filepath.Join(sourceRoot, cleaned)
 	relative, err := filepath.Rel(sourceRoot, candidate)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("%q escapes the ClusterConfig source root", source)
+		return "", fmt.Errorf("%q escapes the ClusterConfig source root", source)
 	}
 	current := sourceRoot
 	for _, part := range strings.Split(relative, string(filepath.Separator)) {
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if err != nil {
-			return nil, fmt.Errorf("inspect %q: %w", source, err)
+			return "", fmt.Errorf("inspect %q: %w", source, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("%q must not traverse a symbolic link", source)
+			return "", fmt.Errorf("%q must not traverse a symbolic link", source)
 		}
 	}
+	return candidate, nil
+}
+
+func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {
+	candidate, err := hostSourcePath(sourceRoot, source)
+	if err != nil {
+		return nil, err
+	}
+
 	info, err := os.Stat(candidate)
 	if err != nil {
 		return nil, fmt.Errorf("inspect %q: %w", source, err)

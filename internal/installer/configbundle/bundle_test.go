@@ -1369,7 +1369,7 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 	assertSchemaFields(t, document.Defs, "configbundle.SourceStorageLayer", []string{"volumes"}, []string{"disks"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfiguration", []string{"fileSets", "sysfs"}, []string{"sets"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationSysfsSetting", []string{"path", "value"}, []string{"name"})
-	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationFileSet", []string{"files", "onChange", "state"}, []string{"notify"})
+	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationFileSet", []string{"directory", "destination", "files", "onChange", "state"}, []string{"notify"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceSystemExtension",
 		[]string{"bundle", "configuration", "name", "state", "units"},
 		[]string{"architecture", "artifactVersion", "bundleManifestDigest", "ociManifestDigest", "payloadVersion", "payloads", "supportedRuntimeInterfaces"})

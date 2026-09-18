@@ -207,6 +207,49 @@ spec:
 `source`, never both. Files default to mode `0644`; `0600` and `0640` are also
 accepted.
 
+
+For a collection of native files, include a directory instead of listing every
+source and destination:
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      fileSets:
+        network:
+          directory: files/network
+          destination: /etc/systemd/network
+  nodes:
+    - name: cp-1
+      hostConfiguration:
+        fileSets:
+          addresses:
+            directory: files/nodes/cp-1/network
+            destination: /etc/systemd/network
+```
+
+Paths inside each directory are preserved below `destination`, including nested
+drop-ins. For example, `files/network/20-bond0.network.d/50-route.conf` becomes
+`/etc/systemd/network/20-bond0.network.d/50-route.conf`. Directory paths are
+relative to the ClusterConfig directory. Katl recursively includes every regular
+file; keep only configuration inputs in the included directory. Symbolic links
+and special files are rejected, and existing destination restrictions still
+apply. Included files use mode `0644` regardless of workstation permissions; use
+explicit `files` entries when a file needs `0600` or `0640`.
+
+Use either `directory` with `destination`, or `files` in one set. Katl expands
+directories when validating and building the bundle; nodes receive the same
+self-contained files as explicit entries. `katlctl config resolve` shows the
+expanded configuration. Duplicate destination paths are errors, including
+collisions between inherited and node-specific sets. A node set with the same
+name replaces the entire default set; directories do not introduce overlay
+precedence.
+
+Removing a source file removes it from the set's desired configuration on the
+next apply. An empty directory is an error: use `state: absent` without a
+directory declaration to remove the complete set. Network files retain their
+existing next-boot apply behavior.
+
 Defaults and concrete nodes use the same named-set model. A node set replaces a
 default set with the same name. To remove an inherited set on one node:
 

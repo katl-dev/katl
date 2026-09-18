@@ -551,6 +551,17 @@ func validateResolvedSourceNodeLayerIssues(path string, layer SourceNodeLayer) [
 func validateSourceHostConfiguration(field string, config SourceHostConfiguration) error {
 	lowered := lowerHostConfiguration(config)
 	var errs []error
+	sets, _ := config.FileSets.Get()
+	for name, set := range sets {
+		if set.Directory == "" && set.Destination == "" {
+			continue
+		}
+		if err := validateHostDirectory(set); err != nil {
+			errs = append(errs, fmt.Errorf("%s.fileSets[%q]: %w", field, name, err))
+		}
+		// Directory contents are validated as ordinary files after source expansion.
+		delete(lowered.Sets, name)
+	}
 	for i, setting := range lowered.Sysfs {
 		if err := manifest.ValidateHostConfiguration(manifest.HostConfiguration{Sysfs: []manifest.HostConfigurationSysfsSetting{setting}}, true); err != nil {
 			message := strings.Replace(publicHostConfigurationMessage(err.Error()), "sysfs[0]", fmt.Sprintf("sysfs[%d]", i), 1)
