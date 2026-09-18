@@ -45,6 +45,7 @@
               erofs-utils
               git
               go
+              gofumpt
               jq
               kubectl
               libvirt
