@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +21,14 @@ KATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT=4
 `
 
 func TestRefreshRebuildsRescopesWithoutAdvancingArtifacts(t *testing.T) {
+	root := t.TempDir()
+	if output, err := exec.Command("git", "init", "--quiet", root).CombinedOutput(); err != nil {
+		t.Fatalf("initialize recipe fixture: %v: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/producer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	supported, err := kubernetesrelease.DefaultSupportedVersions()
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +49,7 @@ func TestRefreshRebuildsRescopesWithoutAdvancingArtifacts(t *testing.T) {
 	if err := run([]string{
 		"refresh-rebuilds",
 		"--supported-versions", path,
-		"--repo-root", filepath.Join("..", ".."),
+		"--repo-root", root,
 	}, &stdout, &stderr, nil); err != nil {
 		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
 	}

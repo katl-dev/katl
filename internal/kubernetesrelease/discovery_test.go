@@ -49,3 +49,20 @@ func TestDiscoverFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestDiscoverIncompleteHistory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "1" {
+			w.Header().Set("Link", `<`+"http://"+r.Host+`?page=2>; rel="next"`)
+			fmt.Fprint(w, `[{"tag_name":"v1.37.0"}]`)
+			return
+		}
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	releases, err := Discover(context.Background(), server.Client(), server.URL, "")
+	if err == nil || len(releases) != 0 {
+		t.Fatalf("incomplete history returned releases %v, error %v", releases, err)
+	}
+}
