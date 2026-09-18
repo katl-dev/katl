@@ -19,6 +19,14 @@ Nodes fetch the bundle directly. They need registry and CA access to `ghcr.io`.
 Katl resolves the version to an immutable digest compatible with this KatlOS
 release; operators do not supply the bundle identity.
 
+New stable Kubernetes versions are built and published automatically. A CLI
+with registry discovery can select newly published versions without another
+KatlOS or CLI release, provided the bundle declares the installed runtime
+compatible. Versions in the CLI's embedded snapshot remain resolvable offline;
+new versions require workstation registry access during planning. See
+[Kubernetes release delivery](../concepts/kubernetes-releases.md) for the
+publication policy and the deferred Actions VM-validation boundary.
+
 ## Plan
 
 ```sh

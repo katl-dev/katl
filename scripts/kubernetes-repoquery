@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec "${KATL_CONTAINER_RUNTIME:-docker}" run --rm \
+    "${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}" \
+    dnf5 "$@"

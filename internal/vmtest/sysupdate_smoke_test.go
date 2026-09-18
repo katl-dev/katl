@@ -356,7 +356,7 @@ func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeIma
 		if readErr != nil {
 			t.Fatalf("read KatlOS upgrade image metadata: %v", readErr)
 		}
-		var found = metadata
+		found := metadata
 		if err := json.Unmarshal(data, &found); err != nil {
 			t.Fatalf("decode KatlOS upgrade image metadata: %v", err)
 		}

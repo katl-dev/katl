@@ -170,14 +170,16 @@ func WriteDebugTargetReport(w io.Writer, reports []DebugTargetReport) error {
 		if report.Reason != "" {
 			lines = append(lines, "  reason: "+report.Reason)
 		}
-		lines = append(lines,
+		lines = append(
+			lines,
 			"  source: "+report.Source,
 			"  preserved: "+strconv.FormatBool(report.Preserved),
 		)
 		if report.SerialLog != "" {
 			lines = append(lines, "  serial tail: "+shellCommand("tail", "-f", report.SerialLog))
 		}
-		lines = append(lines,
+		lines = append(
+			lines,
 			"  domstate: "+shellCommand("virsh", "-c", report.LibvirtURI, "domstate", report.DomainName),
 			"  console (invasive): "+report.ConsoleCommand,
 		)

@@ -32,9 +32,11 @@ var runtimeConsoleOptions = []string{
 	"loglevel=6",
 }
 
-const runtimeBootSignal = "Katl runtime reached systemd userspace"
-const runtimeKernelBootSignal = "katl.generation="
-const runtimeDebugShellOption = "katl.vmtest_debug_shell=1"
+const (
+	runtimeBootSignal       = "Katl runtime reached systemd userspace"
+	runtimeKernelBootSignal = "katl.generation="
+	runtimeDebugShellOption = "katl.vmtest_debug_shell=1"
+)
 
 type installedRuntimeRecord struct {
 	APIVersion         string                         `json:"apiVersion"`

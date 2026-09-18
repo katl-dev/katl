@@ -433,6 +433,11 @@ deliberately has no VM workflow until the hosting and orchestration model is
 designed and provisioned. Do not make VM jobs required checks while no runner
 can accept them.
 
+The [Kubernetes release producer](concepts/kubernetes-releases.md) discovers
+stable upstream versions and publishes verified bundles automatically. Its
+artifact checks do not substitute for the capable-host bootstrap and upgrade
+gates below; VM validation in the unattended producer is explicitly deferred.
+
 Run the applicable gates directly on a capable development or release host.
 The installer-media gate includes a complete ISO install and observes the
 installer's autonomous reboot into generation 0; the short ISO and PXE checks

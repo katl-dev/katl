@@ -53,9 +53,11 @@ const (
 	FirstInstallWorldGuestHandoff FirstInstallWorldMode = "guest-handoff"
 )
 
-type firstInstallWorldRun = FirstInstallWorldRun
-type firstInstallWorldInput = FirstInstallWorldInput
-type firstInstallWorldMode = FirstInstallWorldMode
+type (
+	firstInstallWorldRun   = FirstInstallWorldRun
+	firstInstallWorldInput = FirstInstallWorldInput
+	firstInstallWorldMode  = FirstInstallWorldMode
+)
 
 const (
 	firstInstallWorldPreseed      = FirstInstallWorldPreseed

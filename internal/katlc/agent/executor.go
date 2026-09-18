@@ -47,11 +47,13 @@ type ToolResult struct {
 
 type ToolRunner func(context.Context, []string, func(int)) ToolResult
 
-type BootRootMounter func(context.Context, string) error
-type BootEntrySetter func(context.Context, string, string) error
-type HostUpgradeResolver func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error)
-type ContextWaiter func(context.Context, time.Duration) error
-type LocalAPIAccessConfigurator func(context.Context, string, operation.BootstrapRequest, ToolRunner) error
+type (
+	BootRootMounter            func(context.Context, string) error
+	BootEntrySetter            func(context.Context, string, string) error
+	HostUpgradeResolver        func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error)
+	ContextWaiter              func(context.Context, time.Duration) error
+	LocalAPIAccessConfigurator func(context.Context, string, operation.BootstrapRequest, ToolRunner) error
+)
 
 type Executor struct {
 	Root                 string
@@ -1006,18 +1008,21 @@ func runReadinessCommand(ctx context.Context, argv []string, started func(int)) 
 func bootstrapReadinessCommands(candidate, configPath string) [][]string {
 	var commands [][]string
 	if candidate != "" {
-		commands = append(commands,
+		commands = append(
+			commands,
 			[]string{"/usr/lib/katl/runtime/katl-generation-activate", "--root=/", "--generation", candidate},
 			[]string{"/usr/bin/systemd-sysext", "refresh"},
 			[]string{"/usr/bin/systemd-confext", "refresh"},
 		)
 	} else {
-		commands = append(commands,
+		commands = append(
+			commands,
 			[]string{"/usr/bin/systemctl", "restart", "systemd-sysext.service"},
 			[]string{"/usr/bin/systemctl", "restart", "systemd-confext.service"},
 		)
 	}
-	commands = append(commands,
+	commands = append(
+		commands,
 		[]string{"/usr/bin/systemctl", "daemon-reload"},
 		[]string{"/usr/bin/test", "-x", "/usr/bin/kubelet"},
 		[]string{"/usr/bin/systemctl", "start", "etc-kubernetes.mount"},

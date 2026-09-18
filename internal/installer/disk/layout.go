@@ -23,12 +23,14 @@ const (
 	GPTLabelEtcd     = "KATL_ETCD"
 )
 
-type TargetDiskSelector = discovery.TargetDiskSelector
-type PartitionSelector = discovery.PartitionSelector
-type HardwareFacts = discovery.HardwareFacts
-type BlockDevice = discovery.BlockDevice
-type SignatureReport = discovery.SignatureReport
-type MountFact = discovery.MountFact
+type (
+	TargetDiskSelector = discovery.TargetDiskSelector
+	PartitionSelector  = discovery.PartitionSelector
+	HardwareFacts      = discovery.HardwareFacts
+	BlockDevice        = discovery.BlockDevice
+	SignatureReport    = discovery.SignatureReport
+	MountFact          = discovery.MountFact
+)
 
 const (
 	DeviceDisk      = discovery.DeviceDisk
@@ -460,7 +462,8 @@ func planTargetPartitions(target BlockDevice, request DiskLayoutRequest) ([]Part
 		partitions = append(partitions, PartitionPlan{Name: "xbootldr", GPTLabel: GPTLabelXBOOTLDR, Type: "xbootldr", Filesystem: "vfat", MountPath: "/boot", SizeMiB: request.XBOOTLDRSizeMiB})
 	}
 
-	partitions = append(partitions,
+	partitions = append(
+		partitions,
 		PartitionPlan{Name: "root-a", GPTLabel: GPTLabelRootA, Type: "root-x86-64", Filesystem: "squashfs", MountPath: "/", SizeMiB: request.RootA.SizeMiB},
 		PartitionPlan{Name: "root-b", GPTLabel: GPTLabelRootB, Type: "root-x86-64", Filesystem: "squashfs", SizeMiB: request.RootB.SizeMiB},
 	)

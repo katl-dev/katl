@@ -427,5 +427,7 @@ func readCommandStdout(record GuestCommandArtifact) (string, error) {
 	return string(data), nil
 }
 
-var _ KubeadmSmokeAgentSession = (*AgentClient)(nil)
-var _ io.Closer = (*AgentClient)(nil)
+var (
+	_ KubeadmSmokeAgentSession = (*AgentClient)(nil)
+	_ io.Closer                = (*AgentClient)(nil)
+)

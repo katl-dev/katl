@@ -233,8 +233,10 @@ func systemExtensionUnitStatus(ctx context.Context, runner ToolRunner, unit mani
 	if runner == nil {
 		return out
 	}
-	result := runner(ctx, []string{"systemctl", "show", unit.Name, "--no-pager",
-		"--property=LoadState", "--property=ActiveState", "--property=SubState", "--property=Result", "--property=StateChangeTimestamp"}, nil)
+	result := runner(ctx, []string{
+		"systemctl", "show", unit.Name, "--no-pager",
+		"--property=LoadState", "--property=ActiveState", "--property=SubState", "--property=Result", "--property=StateChangeTimestamp",
+	}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		out.FailureDiagnostic = boundedToolDiagnostic(result)
 		return out

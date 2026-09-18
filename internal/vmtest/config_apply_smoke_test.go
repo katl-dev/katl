@@ -119,11 +119,13 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		t.Fatalf("katlc runtime smoke: %v", err)
 	}
 	assertInstalledSSHReady(t, ctx, guest)
-	networkdConfig := guestCommandOutput(t, ctx, guest, "networkd-manager-policy",
+	networkdConfig := guestCommandOutput(
+		t, ctx, guest, "networkd-manager-policy",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
 		"/usr/bin/systemd-analyze", "cat-config", "systemd/networkd.conf",
 	)
-	if !containsAll(networkdConfig,
+	if !containsAll(
+		networkdConfig,
 		"ManageForeignRoutes=no",
 		"ManageForeignRoutingPolicyRules=no",
 		"ManageForeignNextHops=no",
@@ -171,7 +173,8 @@ type networkdLinkStatus struct {
 
 func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest *GuestControl) {
 	t.Helper()
-	networkConfig := guestCommandOutput(t, ctx, guest, "networkd-default-policy",
+	networkConfig := guestCommandOutput(
+		t, ctx, guest, "networkd-default-policy",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
 		"/usr/bin/systemd-analyze", "cat-config", "systemd/network/80-katl-vmtest-dhcp.network",
 	)
@@ -524,7 +527,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		"--node", "cp-1",
 	}
 	rejectedArgs = append(rejectedArgs, configApplyConfigArgs(configApplyFixture(t, "rejected-live-without-preflight.yaml"))...)
-	rejectedArgs = append(rejectedArgs,
+	rejectedArgs = append(
+		rejectedArgs,
 		"--mode", "live",
 		"--candidate-generation", rejectedGeneration,
 		"--client-request-id", "vmtest-config-apply-rejected",
@@ -572,13 +576,15 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if beforeSysext != "" {
 		assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/spec.json", `"name": "kubernetes"`)
 	}
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/status.json",
+	assertGuestFileContains(
+		t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/status.json",
 		`"commitState": "committed"`,
 		`"bootState": "trying"`,
 		`"healthState": "unknown"`,
 		`"committedByOperationID": "`+liveAccepted.OperationId+`"`,
 	)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json",
+	assertGuestFileContains(
+		t, ctx, guest, "/var/lib/katl/generations/"+liveGeneration+"/config-apply-status.json",
 		`"phase": "active"`,
 		`"requestedApplyMode": "auto"`,
 		`"acceptedApplyMode": "live"`,
@@ -587,12 +593,14 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"vmtest-udev"`,
 		`existing devices will not be retriggered`,
 	)
-	guestCommand(t, ctx, guest, "effective-udev-rule",
+	guestCommand(
+		t, ctx, guest, "effective-udev-rule",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
 		"/usr/bin/test", "-r", "/etc/udev/rules.d/80-katl-vmtest.rules",
 	)
 	assertGuestFileContains(t, ctx, guest, liveAccepted.RecordPath, `"operationKind": "generation-apply"`, `"applyMode": "auto"`, `"configApplyPhase": "active"`)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json",
+	assertGuestFileContains(
+		t, ctx, guest, "/var/lib/katl/boot/selection.json",
 		`"defaultGenerationID": "`+currentGeneration+`"`,
 		`"targetBootGenerationID": "`+liveGeneration+`"`,
 		`"trialGenerationID": "`+liveGeneration+`"`,
@@ -614,14 +622,16 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if stagedGenerationStatus.GetConfigApply().GetPhase() != "next-boot" || stagedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
 		t.Fatalf("staged katlctl generation status = %+v, want next-boot config apply", stagedGenerationStatus.GetConfigApply())
 	}
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json",
+	assertGuestFileContains(
+		t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/spec.json",
 		`"generationID": "`+stagedGeneration+`"`,
 		`"previousGenerationID": "`+activeGeneration+`"`,
 		`"configuredKernelCommandLine": [`,
 		`"katl.vmtest.config_apply_kernel=1"`,
 	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "trying"`, `"committedByOperationID": "`+stagedAccepted.OperationId+`"`)
-	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json",
+	assertGuestFileContains(
+		t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/config-apply-status.json",
 		`"phase": "next-boot"`,
 		`"acceptedApplyMode": "next-boot"`,
 		`"domain": "host-configuration"`,
@@ -640,7 +650,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 
 	previousBootID := guestBootID(t, ctx, client)
-	runKatlctl(t, ctx, result, katlctl, "host-reboot-staged-generation",
+	runKatlctl(
+		t, ctx, result, katlctl, "host-reboot-staged-generation",
 		"node", "reboot", "cp-1",
 		"--timeout", "3m",
 	)
@@ -651,13 +662,15 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 	assertInstalledSSHReady(t, ctx, guest)
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "good"`, `"healthState": "healthy"`)
-	guestCommand(t, ctx, guest, "effective-networkd-config",
+	guestCommand(
+		t, ctx, guest, "effective-networkd-config",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
 		"/usr/bin/test", "-r", "/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf",
 	)
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "katl.vmtest.config_apply_kernel=1")
-	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "effective-sysfs",
+	if got := strings.TrimSpace(guestCommandOutput(
+		t, ctx, guest, "effective-sysfs",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
 		"/usr/bin/cat", "/sys/module/printk/parameters/time",
 	)); got != "N" {
@@ -669,7 +682,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if containerdPID == "" || containerdPID == "0" {
 		t.Fatalf("containerd MainPID = %q, want running process", containerdPID)
 	}
-	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "containerd-oom-score",
+	if got := strings.TrimSpace(guestCommandOutput(
+		t, ctx, guest, "containerd-oom-score",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
 		"/usr/bin/cat", "/proc/"+containerdPID+"/oom_score_adj",
 	)); got != "123" {
@@ -764,7 +778,8 @@ func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, 
 		"--node", "cp-1",
 	}
 	args = append(args, configApplyConfigArgs(fixture)...)
-	args = append(args,
+	args = append(
+		args,
 		"--candidate-generation", generationID,
 		"--actor", "installed-runtime config apply vmtest",
 		"--output", "json",
@@ -807,7 +822,8 @@ func configApplyConfigArgs(path string) []string {
 
 func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, name, generationID string) agentapi.Generation {
 	t.Helper()
-	output := runKatlctl(t, ctx, result, katlctl, name,
+	output := runKatlctl(
+		t, ctx, result, katlctl, name,
 		"node", "apply", "status",
 		"--endpoint", endpoint,
 		"--generation", generationID,
@@ -905,7 +921,8 @@ func shutdownGuestThroughKatlctl(t *testing.T, ctx context.Context, result Resul
 	if node == nil || node.handle == nil {
 		t.Fatal("running installed runtime node handle is required")
 	}
-	runKatlctl(t, ctx, result, katlctl, "host-shutdown",
+	runKatlctl(
+		t, ctx, result, katlctl, "host-shutdown",
 		"node", "shutdown", "cp-1",
 		"--timeout", "2m",
 	)

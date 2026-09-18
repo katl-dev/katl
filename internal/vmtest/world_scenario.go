@@ -89,7 +89,8 @@ type leaseEntry struct {
 func (world World) NewScenario(t interface {
 	Helper()
 	Fatalf(format string, args ...any)
-}, name string) *WorldScenario {
+}, name string,
+) *WorldScenario {
 	t.Helper()
 	scenario, err := world.PlanScenario(name)
 	if err != nil {
@@ -125,7 +126,8 @@ func (world World) PlanScenario(name string) (*WorldScenario, error) {
 func (scenario *WorldScenario) NewNode(t interface {
 	Helper()
 	Fatalf(format string, args ...any)
-}, spec NodeSpec) Node {
+}, spec NodeSpec,
+) Node {
 	t.Helper()
 	node, err := scenario.AddNode(spec)
 	if err != nil {

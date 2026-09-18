@@ -341,7 +341,6 @@ func TestDecodeWorldRunIndex(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "resourceManifestSHA256 must be lowercase SHA-256") {
 		t.Fatalf("DecodeWorld() error = %v, want resourceManifestSHA256 rejection", err)
 	}
-
 }
 
 func TestDecodeWorldArtifactProvenance(t *testing.T) {

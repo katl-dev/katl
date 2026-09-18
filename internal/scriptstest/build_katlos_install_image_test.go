@@ -85,7 +85,8 @@ func TestBuildKatlOSInstallImageBuildsWithStaleInstallerArtifacts(t *testing.T) 
 	root := filepath.Join(workDir, "root")
 	cmd := exec.Command(filepath.Join(repo, "scripts", "build-katlos-install-image"))
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_MKOSI_BUILD_DIR="+workDir,
 		"KATL_VERSION=0.1.0",

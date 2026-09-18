@@ -152,7 +152,8 @@ func LoadWorldFromEnv() (World, error) {
 func RequireWorld(t interface {
 	Helper()
 	Fatalf(format string, args ...any)
-}) World {
+},
+) World {
 	t.Helper()
 	world, err := LoadWorldFromEnv()
 	if err != nil {

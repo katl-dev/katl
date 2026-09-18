@@ -9,100 +9,69 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestKubernetesBundleWorkflowLinksUpstreamRelease(t *testing.T) {
-	repo := repoRoot(t)
-	contents, err := os.ReadFile(filepath.Join(repo, ".github", "workflows", "kubernetes-bundles.yml"))
+func TestKubernetesReleaseAutomation(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/kubernetes-bundles.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var workflow struct {
 		On   map[string]any `yaml:"on"`
 		Jobs map[string]struct {
-			Name  string            `yaml:"name"`
-			Needs any               `yaml:"needs"`
-			Env   map[string]string `yaml:"env"`
-			Steps []struct {
-				Name string `yaml:"name"`
-				Run  string `yaml:"run"`
-			} `yaml:"steps"`
+			Name     string `yaml:"name"`
+			Needs    any    `yaml:"needs"`
+			Strategy struct {
+				FailFast bool `yaml:"fail-fast"`
+			} `yaml:"strategy"`
+			Steps []struct{ Name, Run, If string } `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
-	if err := yaml.Unmarshal(contents, &workflow); err != nil {
-		t.Fatalf("parse Kubernetes bundle workflow: %v", err)
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
 	}
-	pullRequest, ok := workflow.On["pull_request"]
-	if !ok {
-		t.Fatal("Kubernetes bundle workflow does not validate pull requests")
+	if _, ok := workflow.On["schedule"]; !ok {
+		t.Fatal("release discovery is not scheduled")
 	}
-	if config, ok := pullRequest.(map[string]any); ok {
-		if _, restricted := config["paths"]; restricted {
-			t.Fatal("Kubernetes bundle presubmit is not available to every pull request")
+	if _, ok := workflow.On["pull_request"]; !ok {
+		t.Fatal("producer has no presubmit")
+	}
+	if _, ok := workflow.Jobs["compatibility"]; ok {
+		t.Fatal("publication still depends on a shared catalog update")
+	}
+	build := workflow.Jobs["build"]
+	if build.Strategy.FailFast {
+		t.Fatal("one release failure cancels other releases")
+	}
+	stages := map[string]int{}
+	for i, step := range build.Steps {
+		stages[step.Name] = i
+		if step.Name == "Publish immutable OCI bundle" || step.Name == "Promote compatible bundle" {
+			if !strings.Contains(step.If, "env.PUBLISH == 'true'") {
+				t.Fatalf("%s can run in presubmit", step.Name)
+			}
 		}
 	}
-
-	presubmit, ok := workflow.Jobs["presubmit"]
-	if !ok {
-		t.Fatal("Kubernetes bundle workflow has no stable presubmit result")
+	for _, pair := range [][2]string{
+		{"Resume existing candidate", "Build compatible runtime and Kubernetes sysext"},
+		{"Verify built runtime and Kubernetes sysext", "Publish immutable OCI bundle"},
+		{"Attest published OCI manifest", "Promote compatible bundle"},
+		{"Verify public bundle and provenance", "Promote compatible bundle"},
+	} {
+		before, haveBefore := stages[pair[0]]
+		after, haveAfter := stages[pair[1]]
+		if !haveBefore || !haveAfter || before >= after {
+			t.Fatalf("%s must precede %s", pair[0], pair[1])
+		}
 	}
-	if presubmit.Name != "Kubernetes Bundle Presubmit" {
-		t.Fatalf("Kubernetes bundle presubmit name = %q", presubmit.Name)
+	if workflow.Jobs["presubmit"].Name != "Kubernetes Bundle Presubmit" {
+		t.Fatal("stable required-check name changed")
 	}
 	for _, dependency := range []string{"plan", "build"} {
-		if !hasWorkflowNeed(presubmit.Needs, dependency) {
-			t.Errorf("Kubernetes bundle presubmit does not wait for %s", dependency)
+		if !hasWorkflowNeed(workflow.Jobs["presubmit"].Needs, dependency) {
+			t.Fatalf("presubmit does not wait for %s", dependency)
 		}
 	}
-
-	build, ok := workflow.Jobs["build"]
-	if !ok {
-		t.Fatal("Kubernetes bundle workflow has no build job")
-	}
-	const releaseURL = "https://github.com/kubernetes/kubernetes/releases/tag/${{ matrix.release.payloadVersion }}"
-	if got := build.Env["KUBERNETES_RELEASE_URL"]; got != releaseURL {
-		t.Fatalf("KUBERNETES_RELEASE_URL = %q, want %q", got, releaseURL)
-	}
-
-	var packStep, publishStep string
-	for _, step := range build.Steps {
-		switch step.Name {
-		case "Stage Kubernetes payload bundle":
-			packStep = step.Run
-		case "Publish immutable OCI bundle":
-			publishStep = step.Run
-		}
-	}
-	if packStep == "" {
-		t.Fatal("Kubernetes bundle workflow has no common OCI pack validation")
-	}
-	if publishStep == "" {
-		t.Fatal("Kubernetes bundle workflow has no immutable OCI publication step")
-	}
-
-	for _, contract := range []string{
-		`go run ./cmd/katl-publish-kubernetes-sysext`,
-		`oci-manifest-digest:`,
-		`oci-manifest-tag:`,
-		`manifest-sha256-`,
-		`--annotation "org.opencontainers.image.url=${KUBERNETES_RELEASE_URL}"`,
-		`--annotation "dev.katl.kubernetes.payload.version=${PAYLOAD_VERSION}"`,
-	} {
-		if !strings.Contains(packStep, contract) {
-			t.Errorf("common OCI pack step does not enforce %q", contract)
-		}
-	}
-	for _, contract := range []string{
-		`go run ./cmd/katl-publish-kubernetes-sysext`,
-		`--publish-ref "${OCI_REPOSITORY}:${VERSION_TAG}"`,
-		`--publish-ref "${OCI_REPOSITORY}:${DIGEST_TAG}"`,
-		`--annotation "org.opencontainers.image.url=${KUBERNETES_RELEASE_URL}"`,
-		`--annotation "dev.katl.kubernetes.payload.version=${PAYLOAD_VERSION}"`,
-	} {
-		if !strings.Contains(publishStep, contract) {
-			t.Errorf("OCI publication step does not enforce %q", contract)
-		}
-	}
-	if strings.Contains(string(contents), "oras push") || strings.Contains(string(contents), "oras cp") {
-		t.Fatal("Kubernetes workflow must not assemble or publish through a second OCI implementation")
+	if !strings.Contains(string(data), `"$GITHUB_REF" == refs/heads/main`) {
+		t.Fatal("publication is not restricted to main")
 	}
 }
 
@@ -121,112 +90,17 @@ func hasWorkflowNeed(value any, want string) bool {
 }
 
 func TestPublicKubernetesBundleCheckRequiresUpstreamRelease(t *testing.T) {
-	repo := repoRoot(t)
-	contents, err := os.ReadFile(filepath.Join(repo, "scripts", "check-public-kubernetes-bundle"))
+	contents, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts/check-public-kubernetes-bundle"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := string(contents)
 	for _, contract := range []string{
 		`upstream_release="https://github.com/kubernetes/kubernetes/releases/tag/${payload_version}"`,
 		`.annotations["org.opencontainers.image.url"] == $upstream_release`,
 		`.annotations["dev.katl.kubernetes.payload.version"] == $payload_version`,
 	} {
-		if !strings.Contains(check, contract) {
-			t.Errorf("public Kubernetes bundle check does not enforce %q", contract)
+		if !strings.Contains(string(contents), contract) {
+			t.Errorf("public check missing %q", contract)
 		}
-	}
-}
-
-func TestKubernetesBundleWorkflowReusesAndCleansCompatibilityBranch(t *testing.T) {
-	repo := repoRoot(t)
-	contents, err := os.ReadFile(filepath.Join(repo, ".github", "workflows", "kubernetes-bundles.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var workflow struct {
-		Jobs map[string]struct {
-			Permissions map[string]string `yaml:"permissions"`
-			Steps       []struct {
-				Name string `yaml:"name"`
-				Uses string `yaml:"uses"`
-				Run  string `yaml:"run"`
-				With struct {
-					Script string `yaml:"script"`
-				} `yaml:"with"`
-			} `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(contents, &workflow); err != nil {
-		t.Fatalf("parse Kubernetes bundle workflow: %v", err)
-	}
-
-	compatibility, ok := workflow.Jobs["compatibility"]
-	if !ok {
-		t.Fatal("Kubernetes bundle workflow has no compatibility job")
-	}
-	if got := compatibility.Permissions["actions"]; got != "write" {
-		t.Fatalf("compatibility actions permission = %q, want write", got)
-	}
-
-	var restore, branch, script string
-	for _, step := range compatibility.Steps {
-		switch step.Name {
-		case "Restore pending compatibility update":
-			restore = step.Run
-		case "Publish compatibility update branch":
-			branch = step.Run
-		case "Open compatibility pull request":
-			script = step.With.Script
-		}
-	}
-	for _, contract := range []string{
-		`branch="automation/kubernetes-compatibility"`,
-		`git fetch origin "refs/heads/${branch}:${remote_ref}"`,
-		"git restore",
-		"internal/installer/kubernetescompat/catalog.json",
-	} {
-		if !strings.Contains(restore, contract) {
-			t.Errorf("pending compatibility restore does not enforce %q", contract)
-		}
-	}
-	for _, contract := range []string{
-		`branch="automation/kubernetes-compatibility"`,
-		`git ls-remote --heads origin`,
-		`--force-with-lease="refs/heads/${branch}:${remote_sha}"`,
-	} {
-		if !strings.Contains(branch, contract) {
-			t.Errorf("compatibility branch step does not enforce %q", contract)
-		}
-	}
-	if script == "" {
-		t.Fatal("Kubernetes bundle workflow has no compatibility pull request step")
-	}
-	for _, contract := range []string{
-		"github.paginate(github.rest.pulls.list",
-		"head: `${owner}:${process.env.HEAD_BRANCH}`",
-		"Updated generated compatibility PR",
-		"Opened generated compatibility PR",
-		"github.rest.git.getMatchingRefs",
-		`const legacyPrefix = "automation/kubernetes-compatibility-"`,
-		"github.rest.issues.createComment",
-		"github.rest.pulls.update",
-		`state: "closed"`,
-		"github.rest.git.deleteRef",
-		"`heads/${branch}`",
-		"github.rest.actions.listWorkflowRuns",
-		`"fast-checks.yml"`,
-		`"kubernetes-bundles.yml"`,
-		`run.head_sha === process.env.HEAD_SHA`,
-		`validationRun.conclusion === "action_required"`,
-		`/actions/runs/{run_id}/approve`,
-		"run_id: validationRun.id",
-	} {
-		if !strings.Contains(script, contract) {
-			t.Errorf("compatibility pull request step does not enforce %q", contract)
-		}
-	}
-	if strings.Contains(script, "createWorkflowDispatch") {
-		t.Error("compatibility pull request step still dispatches a duplicate Fast Checks run")
 	}
 }

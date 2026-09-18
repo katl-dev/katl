@@ -97,7 +97,8 @@ printf '{"sha256":"%s","sizeBytes":%s}\n' "$digest" "$size" > "$artifact.json"
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "build-kubernetes-sysext"), "--output", "katl-kubernetes-upgrade", "--no-cache")
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_REPO_ROOT="+repo,
 		"KATL_MKOSI_BUILD_DIR="+buildDir,

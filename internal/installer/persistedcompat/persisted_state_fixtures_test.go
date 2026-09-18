@@ -463,7 +463,8 @@ func rollbackCompatibilityReport(selection generation.BootSelectionRecord, previ
 	if configStatus.Rollback != nil {
 		target = configStatus.Rollback.TargetGenerationID
 	}
-	return fmt.Sprintf("default=%s booted=%s failed=%s recovery=%t previous=%s/%s/%s candidate=%s/%s/%s config=%s->%s",
+	return fmt.Sprintf(
+		"default=%s booted=%s failed=%s recovery=%t previous=%s/%s/%s candidate=%s/%s/%s config=%s->%s",
 		selection.DefaultGenerationID,
 		selection.BootedGenerationID,
 		selection.FailedBootGenerationID,

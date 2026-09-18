@@ -55,16 +55,18 @@ var (
 	date    = "unknown"
 )
 
-var runBootstrap = cluster.Run
-var runAgentBootstrap = cluster.RunAgentBootstrap
-var runAgentWorkerJoin = cluster.RunAgentWorkerJoin
-var runAgentNodeJoin = cluster.RunAgentNodeJoin
-var dialVMTestAgent = vmtest.DialAgent
-var dialKatlcAgent = dialKatlcAgentTCP
-var operatorKubectlRunner cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
-var newWipeClusterConnector = func() cluster.AgentConnector {
-	return managementAgentConnector("")
-}
+var (
+	runBootstrap                                         = cluster.Run
+	runAgentBootstrap                                    = cluster.RunAgentBootstrap
+	runAgentWorkerJoin                                   = cluster.RunAgentWorkerJoin
+	runAgentNodeJoin                                     = cluster.RunAgentNodeJoin
+	dialVMTestAgent                                      = vmtest.DialAgent
+	dialKatlcAgent                                       = dialKatlcAgentTCP
+	operatorKubectlRunner   cluster.KubectlCommandRunner = execWipeNodeKubectlRunner{}
+	newWipeClusterConnector                              = func() cluster.AgentConnector {
+		return managementAgentConnector("")
+	}
+)
 
 const (
 	configBundleCreator      = "katlctl config bundle"

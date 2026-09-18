@@ -142,7 +142,8 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
-	cmd.Env = append(environmentWithout("KATL_RELEASE_TARGET"),
+	cmd.Env = append(
+		environmentWithout("KATL_RELEASE_TARGET"),
 		"GITHUB_REF_TYPE=branch",
 		"GITHUB_SHA=not-a-commit-in-the-test-repository",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
@@ -182,7 +183,8 @@ func TestKatlReleaseArtifactBuildKatlctl(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "build-katlctl", version)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
 		"KATL_ARCHITECTURE=x86_64",
 		"KATL_BUILD_COMMIT="+commit,
@@ -267,7 +269,8 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", version, output)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
 		"KATL_ARCHITECTURE=x86_64",
 	)
@@ -354,7 +357,8 @@ func TestKatlReleaseArtifactStageRejectsDigestMismatch(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", "2026.7.0-rc.0", filepath.Join(t.TempDir(), "dist"))
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
 		"KATL_ARCHITECTURE=x86_64",
 	)
@@ -384,7 +388,8 @@ func TestKatlReleaseArtifactStageRejectsMetadataMismatch(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", "2026.7.0-rc.0", filepath.Join(t.TempDir(), "dist"))
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
 		"KATL_ARCHITECTURE=x86_64",
 	)
@@ -414,7 +419,8 @@ func TestKatlReleaseArtifactStageRejectsVersionMismatch(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", "2026.7.0-rc.0", filepath.Join(t.TempDir(), "dist"))
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
 		"KATL_ARCHITECTURE=x86_64",
 	)

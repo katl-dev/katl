@@ -81,15 +81,17 @@ type kubernetesUpgradeTarget struct {
 	architecture string
 }
 
-var kubernetesUpgradeNow = func() time.Time { return time.Now().UTC() }
-var kubernetesEndpointPollInterval = 2 * time.Second
-var dialKubernetesEndpoint = func(ctx context.Context, endpoint string) error {
-	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", endpoint)
-	if err != nil {
-		return err
+var (
+	kubernetesUpgradeNow           = func() time.Time { return time.Now().UTC() }
+	kubernetesEndpointPollInterval = 2 * time.Second
+	dialKubernetesEndpoint         = func(ctx context.Context, endpoint string) error {
+		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", endpoint)
+		if err != nil {
+			return err
+		}
+		return conn.Close()
 	}
-	return conn.Close()
-}
+)
 
 func newKubernetesUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := kubernetesUpgradeOptions{timeout: 25 * time.Minute, output: "text"}
@@ -156,7 +158,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		localArtifact = &artifact
 		image = kubernetesbundle.ImageReference{Value: artifact.Path, PayloadVersion: artifact.PayloadVersion}
 	} else {
-		bundle, err := kubernetesUpgradeBundle(desiredVersion, opts.bundle)
+		bundle, err := kubernetesUpgradeBundle(ctx, desiredVersion, opts.bundle)
 		if err != nil {
 			return err
 		}
@@ -344,7 +346,7 @@ func waitKubernetesEndpoint(ctx context.Context, endpoint, nodeName string, stde
 	}
 }
 
-func kubernetesUpgradeBundle(version, explicit string) (string, error) {
+func kubernetesUpgradeBundle(ctx context.Context, version, explicit string) (string, error) {
 	version = strings.TrimSpace(version)
 	explicit = strings.TrimSpace(explicit)
 	if explicit != "" {
@@ -353,7 +355,7 @@ func kubernetesUpgradeBundle(version, explicit string) (string, error) {
 	if version == "" {
 		return "", fmt.Errorf("spec.kubernetes.version is required")
 	}
-	selection, err := kubernetescompat.Resolve(kubernetescompat.Request{KubernetesVersion: version})
+	selection, err := kubernetescompat.ResolveAvailable(ctx, kubernetescompat.Request{KubernetesVersion: version})
 	if err != nil {
 		return "", fmt.Errorf("resolve Kubernetes upgrade version: %w", err)
 	}

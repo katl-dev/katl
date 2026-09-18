@@ -38,14 +38,16 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	childArgsPath := filepath.Join(tmp, "child-args.txt")
 	childEnvPath := filepath.Join(tmp, "child-env.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"),
+	cmd := exec.Command(
+		filepath.Join(repo, "scripts", "vmtest-run"),
 		"./internal/vmtest/scenarios",
 		"-run", "^TestTwoNode$",
 		"-count=99",
 		"-timeout", "2m",
 	)
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(removeEnv(removeEnv(os.Environ(), "CI"), "KATL_VMTEST_DEBUG_ON_FAILURE"), host,
+	cmd.Env = appendHostEnv(
+		removeEnv(removeEnv(os.Environ(), "CI"), "KATL_VMTEST_DEBUG_ON_FAILURE"), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -205,7 +207,8 @@ func TestVMTestRunHonorsPackageParallelismOverride(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestWorldScenario$", "-p=3")
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -264,7 +267,8 @@ func TestVMTestRunDebugOnFailurePolicy(t *testing.T) {
 			args = append(args, "./internal/vmtest")
 			cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), args...)
 			cmd.Dir = repo
-			env := appendHostEnv(removeEnv(os.Environ(), "KATL_VMTEST_DEBUG_ON_FAILURE"), host,
+			env := appendHostEnv(
+				removeEnv(os.Environ(), "KATL_VMTEST_DEBUG_ON_FAILURE"), host,
 				"KATL_VMTEST_GO="+fakeGo,
 				"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 				"KATL_FAKE_CHILD="+fakeChild,
@@ -314,7 +318,8 @@ func TestVMTestRunRejectsStaleInstallerArtifactBypass(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -362,7 +367,8 @@ func TestVMTestRunRejectsExplicitInstallerArtifacts(t *testing.T) {
 
 			cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
 			cmd.Dir = repo
-			cmd.Env = appendHostEnv(os.Environ(), host,
+			cmd.Env = appendHostEnv(
+				os.Environ(), host,
 				"KATL_VMTEST_GO="+fakeGo,
 				"KATL_FAKE_GO_ARGS="+goArgsPath,
 				"KATL_FAKE_CHILD="+fakeChild,
@@ -423,7 +429,8 @@ exec "$@"
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
 	sysextArgsPath := filepath.Join(tmp, "sysext-args.txt")
-	env := appendHostEnv(os.Environ(), host,
+	env := appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -521,7 +528,8 @@ exec "$@"
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
 	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
-	env := appendHostEnv(os.Environ(), host,
+	env := appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -613,7 +621,8 @@ exec "$@"
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
-	env := appendHostEnv(os.Environ(), host,
+	env := appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -694,7 +703,8 @@ exec "$@"
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 	mkosiArgsPath := filepath.Join(tmp, "mkosi-args.txt")
-	env := appendHostEnv(os.Environ(), host,
+	env := appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -757,13 +767,15 @@ func TestVMTestRunForwardsJSONFlag(t *testing.T) {
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"),
+	cmd := exec.Command(
+		filepath.Join(repo, "scripts", "vmtest-run"),
 		"-json",
 		"./internal/vmtest/scenarios",
 		"-run", "^TestTwoNode$",
 	)
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -803,7 +815,8 @@ func TestVMTestRunPreservesArbitraryGoTestArgs(t *testing.T) {
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 	childArgsPath := filepath.Join(tmp, "child-args.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"),
+	cmd := exec.Command(
+		filepath.Join(repo, "scripts", "vmtest-run"),
 		"-json",
 		"-count=99",
 		"-run", "^TestTwoNode$",
@@ -813,7 +826,8 @@ func TestVMTestRunPreservesArbitraryGoTestArgs(t *testing.T) {
 		"./internal/vmtest/scenarios",
 	)
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -881,7 +895,8 @@ func TestVMTestRunHelpDoesNotCreateRunDir(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--help")
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_VMTEST_RUN_DIR="+runDir,
 		"TMPDIR="+tmp,
@@ -935,7 +950,8 @@ func TestVMTestRunRecordsLibvirtHostGapsAndExecsGo(t *testing.T) {
 			runDir := filepath.Join(tmp, "run")
 			goArgsPath := filepath.Join(tmp, "go-args.txt")
 
-			env := appendHostEnv(os.Environ(), host,
+			env := appendHostEnv(
+				os.Environ(), host,
 				"KATL_VMTEST_GO="+fakeGo,
 				"KATL_FAKE_GO_ARGS="+goArgsPath,
 				"KATL_FAKE_CHILD="+fakeChild,
@@ -1016,7 +1032,8 @@ func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "-run", "^TestDoesNotNeedLibvirt$", "-timeout", "2m")
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -1055,7 +1072,8 @@ func TestVMTestRunFailsWhenNoScenarioResultIsWritten(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestUnitOnly$")
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -1086,7 +1104,8 @@ func TestVMTestRunRemovesPassedRunDirByDefault(t *testing.T) {
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run-default-cleanup")
 
-	env := appendHostEnv(os.Environ(), host,
+	env := appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -1121,7 +1140,8 @@ func TestVMTestRunKeepNeverRemovesFailedRunDir(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -1152,7 +1172,8 @@ func TestVMTestRunKeepsFailedRunDirByDefault(t *testing.T) {
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run-failed-kept")
 
-	env := appendHostEnv(os.Environ(), host,
+	env := appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -1186,7 +1207,8 @@ func TestVMTestRunPrintsPreservedDebugTargets(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -1231,7 +1253,8 @@ func TestVMTestDebugPrintsLiveTargets(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(serial), 0o755); err != nil {
 		t.Fatalf("MkdirAll(serial dir) error = %v", err)
 	}
-	jq := exec.Command("jq", "-n",
+	jq := exec.Command(
+		"jq", "-n",
 		"--arg", "serial", serial,
 		`{
 		  status: "passed",
@@ -1350,7 +1373,8 @@ exit 0
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), result)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_VMTEST_VIRSH="+virsh,
 		"KATL_VMTEST_PS="+ps,
 		"KATL_VMTEST_KILL="+kill,
@@ -1403,7 +1427,8 @@ exit 1
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), result)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_VMTEST_VIRSH="+virsh,
 		"KATL_VMTEST_PS="+ps,
 		"KATL_VMTEST_KILL="+kill,
@@ -1455,7 +1480,8 @@ func TestVMTestRunAcceptsNestedWorldScenarioResult(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestWorldScenario$")
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -1490,7 +1516,8 @@ func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
 	cmd.Dir = repo
-	cmd.Env = appendHostEnv(os.Environ(), host,
+	cmd.Env = appendHostEnv(
+		os.Environ(), host,
 		"KATL_VMTEST_GO="+fakeGo,
 		"KATL_FAKE_GO_ARGS="+goArgsPath,
 		"KATL_FAKE_CHILD="+fakeChild,
@@ -1837,7 +1864,8 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 	} {
 		env = removeEnv(env, name)
 	}
-	env = append(env,
+	env = append(
+		env,
 		"KATL_VMTEST_IMAGE_TOOL="+tools.imageTool,
 		"KATL_VMTEST_VIRSH="+tools.virsh,
 		"KATL_VMTEST_LIBVIRT_URI=qemu:///system",

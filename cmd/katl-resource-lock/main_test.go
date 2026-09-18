@@ -764,24 +764,25 @@ func TestRunPrepareMkosiStrictRejectsDrift(t *testing.T) {
 
 func commandManifest(lockDigest string) resourcetest.Manifest {
 	manifest := commandManifestSkeleton()
-	manifest.PackageSets = []resourcetest.PackageSet{{
-		Name:         "runtime",
-		Source:       "mkosi.profiles/runtime",
-		Digest:       strings.Repeat("b", 64),
-		LockDigest:   lockDigest,
-		Distribution: "fedora",
-		Release:      "44",
-		Architecture: "x86_64",
-		Repositories: []resourcetest.PackageRepository{{
-			ID:      "fedora",
-			BaseURL: "https://example.invalid/fedora/44",
-		}},
-		Packages: []resourcetest.Package{{
-			Name:     "systemd",
-			NEVRA:    "systemd-0:259.6-1.fc44.x86_64",
-			Checksum: strings.Repeat("c", 64),
-		}},
-	},
+	manifest.PackageSets = []resourcetest.PackageSet{
+		{
+			Name:         "runtime",
+			Source:       "mkosi.profiles/runtime",
+			Digest:       strings.Repeat("b", 64),
+			LockDigest:   lockDigest,
+			Distribution: "fedora",
+			Release:      "44",
+			Architecture: "x86_64",
+			Repositories: []resourcetest.PackageRepository{{
+				ID:      "fedora",
+				BaseURL: "https://example.invalid/fedora/44",
+			}},
+			Packages: []resourcetest.Package{{
+				Name:     "systemd",
+				NEVRA:    "systemd-0:259.6-1.fc44.x86_64",
+				Checksum: strings.Repeat("c", 64),
+			}},
+		},
 	}
 	return manifest
 }

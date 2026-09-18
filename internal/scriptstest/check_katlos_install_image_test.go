@@ -48,7 +48,8 @@ func TestCheckKatlOSInstallImageKernelCommandLine(t *testing.T) {
 			artifact, fakeBin, squashfsRoot := writeKatlOSImageCheckFixture(t, tc.command)
 			cmd := exec.Command(filepath.Join(repoRoot(t), "scripts", "check-katlos-install-image"), artifact)
 			cmd.Dir = repoRoot(t)
-			cmd.Env = append(os.Environ(),
+			cmd.Env = append(
+				os.Environ(),
 				"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"KATL_FAKE_SQUASHFS_ROOT="+squashfsRoot,
 			)

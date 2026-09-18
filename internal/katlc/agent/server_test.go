@@ -1334,7 +1334,8 @@ func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 		t.Fatalf("generation read model = %+v", gen)
 	}
 	assertConfigApplyGenerationCommitted(t, server.Root, "generation-1", accepted.OperationId)
-	assertConfigApplyGenerationKernelOptions(t, server.Root, "generation-1",
+	assertConfigApplyGenerationKernelOptions(
+		t, server.Root, "generation-1",
 		"console=ttyS0,115200n8",
 		"systemd.log_target=console",
 		"loglevel=6",

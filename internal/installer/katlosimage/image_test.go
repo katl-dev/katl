@@ -247,7 +247,8 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 	if err := StagePreservedAssets(root, plan); err != nil {
 		t.Fatalf("StagePreservedAssets() error = %v", err)
 	}
-	assertSymlinkTarget(t,
+	assertSymlinkTarget(
+		t,
 		filepath.Join(root, "var/lib/katl/generations/gen1/confext/etc/systemd/system/multi-user.target.wants/bird.service"),
 		"/usr/lib/systemd/system/bird.service",
 	)
