@@ -1600,12 +1600,11 @@ func selectedKubectl() string {
 
 func katlRepoRoot(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	output, err := cmd.Output()
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
-		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+		t.Fatalf("resolve repository root: %v", err)
 	}
-	return strings.TrimSpace(string(output))
+	return root
 }
 
 func requireVMHost(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, result vmtest.Result, requirements vmtest.HostRequirements) {
@@ -2763,7 +2762,8 @@ func assertOperatorSSH(ctx context.Context, privateKey, address string) error {
 	}
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
-		command := exec.CommandContext(ctx, "ssh",
+		command := exec.CommandContext(
+			ctx, "ssh",
 			"-o", "BatchMode=yes",
 			"-o", "IdentitiesOnly=yes",
 			"-o", "StrictHostKeyChecking=no",
@@ -2800,7 +2800,8 @@ func assertControlPlaneDashboard(ctx context.Context, privateKey, address string
 	deadline := time.Now().Add(time.Minute)
 	var lastOutput []byte
 	for {
-		command := exec.CommandContext(ctx, "ssh",
+		command := exec.CommandContext(
+			ctx, "ssh",
 			"-o", "BatchMode=yes",
 			"-o", "IdentitiesOnly=yes",
 			"-o", "StrictHostKeyChecking=no",
@@ -4132,7 +4133,8 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 		}},
 	}
 	if kubeadmRef == "control-plane" {
-		plan.Files = append(plan.Files,
+		plan.Files = append(
+			plan.Files,
 			vmtest.GuestFileRequest{Name: "admin-kubeconfig", Path: "/etc/kubernetes/admin.conf"},
 			vmtest.GuestFileRequest{Name: "kube-apiserver-manifest", Path: "/etc/kubernetes/manifests/kube-apiserver.yaml"},
 			vmtest.GuestFileRequest{Name: "kube-controller-manager-manifest", Path: "/etc/kubernetes/manifests/kube-controller-manager.yaml"},
