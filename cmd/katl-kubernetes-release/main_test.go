@@ -172,7 +172,7 @@ func TestIdentity(t *testing.T) {
 	if err := run([]string{"identity", "--manifest", path}, &stdout, &stderr, nil); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	want := `{"payloadVersion":"v1.36.0","artifactVersion":"v1.36.0-katl.4","image":"ghcr.io/katl-dev/kubernetes:v1.36.0-katl.4"}`
+	want := `{"payloadVersion":"v1.36.0","artifactVersion":"v1.36.0-4","image":"ghcr.io/katl-dev/kubernetes:v1.36.0-4"}`
 	if strings.TrimSpace(stdout.String()) != want {
 		t.Fatalf("identity = %s, want %s", stdout.String(), want)
 	}
@@ -213,7 +213,7 @@ func TestMatrixSelectsSupportedPayload(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"payloadVersion":"v1.36.3"`,
-		`"artifactVersion":"v1.36.3-katl.2"`,
+		`"artifactVersion":"v1.36.3-2"`,
 		`"minor":"v1.36"`,
 		`"kubeadmVersion":"0:1.36.3-2"`,
 	} {
@@ -309,7 +309,8 @@ func TestRecordCompatibility(t *testing.T) {
 	for _, want := range []string{
 		`"kubernetesVersion": "v1.36.0"`,
 		`"kubernetesVersion": "v1.36.1"`,
-		`"bundle": "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.2@` + digest + `"`,
+		`"artifactVersion": "v1.36.1-katl.2"`,
+		`"bundle": "ghcr.io/katl-dev/kubernetes@` + digest + `"`,
 		`"katl-runtime-legacy"`,
 	} {
 		if !strings.Contains(string(data), want) {
@@ -332,7 +333,7 @@ func TestRecordCompatibilityRejectsMalformedArtifactVersion(t *testing.T) {
 		"v1x36x3-katl.2",
 		"v1.36.3-katl.0",
 		"v1.36.3-katl.one",
-		"v1.36.3-katl.2-extra",
+		"v1.36.3-2-extra",
 		"v1.36.4-katl.2",
 	} {
 		t.Run(artifact, func(t *testing.T) {

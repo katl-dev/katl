@@ -49,7 +49,7 @@ type PackageVersions struct {
 }
 
 func (version SupportedVersion) ArtifactVersion() string {
-	return fmt.Sprintf("%s-katl.%d", version.PayloadVersion, version.ArtifactRevision)
+	return fmt.Sprintf("%s-%d", version.PayloadVersion, version.ArtifactRevision)
 }
 
 func DefaultSupportedVersions() (SupportedVersions, error) {

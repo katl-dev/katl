@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2"
@@ -27,46 +28,38 @@ import (
 	"oras.land/oras-go/v2/registry/remote/credentials"
 )
 
-type Reference struct {
-	Value          string
-	Repository     string
-	Registry       string
-	Tag            string
-	ManifestDigest string
-	Source         string
+// ParseReference validates an explicitly qualified OCI bundle reference.
+func ParseReference(value string) (reference.Named, error) {
+	value = strings.TrimSpace(value)
+	named, err := reference.ParseNamed(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid OCI reference: %w", err)
+	}
+	if reference.IsNameOnly(named) {
+		return nil, fmt.Errorf("OCI reference requires a tag or manifest digest")
+	}
+	if pinned, ok := named.(reference.Digested); ok && pinned.Digest().Algorithm() != digest.SHA256 {
+		return nil, fmt.Errorf("OCI reference requires a sha256 manifest digest")
+	}
+	return named, nil
 }
 
-func ParseReference(value string) (Reference, error) {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.Contains(value, "://") {
-		return Reference{}, fmt.Errorf("OCI reference must be REGISTRY/REPOSITORY:TAG with an optional @sha256 digest")
+func Tag(ref reference.Reference) string {
+	if tagged, ok := ref.(reference.Tagged); ok {
+		return tagged.Tag()
 	}
-	nameAndTag, manifestDigest, hasDigest := strings.Cut(value, "@")
-	if hasDigest && (strings.Contains(manifestDigest, "@") || !validDigest(manifestDigest)) {
-		return Reference{}, fmt.Errorf("OCI reference manifest digest is invalid")
+	return ""
+}
+
+func ManifestDigest(ref reference.Reference) string {
+	if pinned, ok := ref.(reference.Digested); ok {
+		return pinned.Digest().String()
 	}
-	lastSlash := strings.LastIndex(nameAndTag, "/")
-	lastColon := strings.LastIndex(nameAndTag, ":")
-	if lastSlash <= 0 || lastColon <= lastSlash+1 || lastColon == len(nameAndTag)-1 {
-		return Reference{}, fmt.Errorf("OCI reference must include a registry, repository, and tag")
-	}
-	repository := nameAndTag[:lastColon]
-	tag := nameAndTag[lastColon+1:]
-	parts := strings.SplitN(repository, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, "?#") {
-		return Reference{}, fmt.Errorf("OCI reference repository is invalid")
-	}
-	if _, err := remote.NewRepository(repository); err != nil {
-		return Reference{}, fmt.Errorf("OCI reference repository is invalid: %w", err)
-	}
-	return Reference{
-		Value:          value,
-		Repository:     repository,
-		Registry:       parts[0],
-		Tag:            tag,
-		ManifestDigest: manifestDigest,
-		Source:         "https://" + parts[0] + "/v2/" + parts[1],
-	}, nil
+	return ""
+}
+
+func Source(ref reference.Named) string {
+	return "https://" + reference.Domain(ref) + "/v2/" + reference.Path(ref)
 }
 
 type FetchRequest struct {
@@ -83,7 +76,7 @@ type Target interface {
 }
 
 type Fetched struct {
-	Reference      Reference
+	Reference      reference.Reference
 	ManifestDigest string
 	Manifest       ocispec.Manifest
 	Config         []byte
@@ -132,7 +125,7 @@ type Packed struct {
 }
 
 type Published struct {
-	Reference      Reference
+	Reference      reference.Reference
 	ManifestDigest string
 	Existing       bool
 }
@@ -213,22 +206,22 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 	if err != nil {
 		return Published{}, err
 	}
-	if ref.ManifestDigest != "" {
+	if ManifestDigest(ref) != "" {
 		return Published{}, fmt.Errorf("publish reference must not include a manifest digest")
 	}
 	packRequest := PackRequest{
 		ArtifactType: request.ArtifactType, ConfigMediaType: request.ConfigMediaType,
 		Config: request.Config, Blobs: request.Blobs, Annotations: request.Annotations,
 	}
-	store, manifestDescriptor, cleanup, err := pack(ctx, packRequest, ref.Tag)
+	store, manifestDescriptor, cleanup, err := pack(ctx, packRequest, Tag(ref))
 	if err != nil {
 		return Published{}, err
 	}
 	defer cleanup()
 
-	repository, err := remote.NewRepository(ref.Repository)
+	repository, err := remote.NewRepository(ref.Name())
 	if err != nil {
-		return Published{}, fmt.Errorf("open OCI repository %s: %w", ref.Repository, err)
+		return Published{}, fmt.Errorf("open OCI repository %s: %w", ref.Name(), err)
 	}
 	client := request.Client
 	if client == nil {
@@ -242,30 +235,30 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 	}
 	repository.Client = authClient
 
-	existing, err := repository.Resolve(ctx, ref.Tag)
+	existing, err := repository.Resolve(ctx, Tag(ref))
 	switch {
 	case err == nil:
 		if existing.Digest != manifestDescriptor.Digest {
-			return Published{}, fmt.Errorf("immutable OCI tag %s already resolves to %s, refusing to replace it with %s", ref.Value, existing.Digest, manifestDescriptor.Digest)
+			return Published{}, fmt.Errorf("immutable OCI tag %s already resolves to %s, refusing to replace it with %s", ref.String(), existing.Digest, manifestDescriptor.Digest)
 		}
 		return Published{Reference: ref, ManifestDigest: manifestDescriptor.Digest.String(), Existing: true}, nil
 	case !errors.Is(err, errdef.ErrNotFound):
-		return Published{}, fmt.Errorf("resolve existing OCI tag %s: %w", ref.Value, err)
+		return Published{}, fmt.Errorf("resolve existing OCI tag %s: %w", ref.String(), err)
 	}
 
-	published, err := oras.Copy(ctx, store, ref.Tag, repository, ref.Tag, oras.DefaultCopyOptions)
+	published, err := oras.Copy(ctx, store, Tag(ref), repository, Tag(ref), oras.DefaultCopyOptions)
 	if err != nil {
-		return Published{}, fmt.Errorf("publish OCI payload bundle %s: %w", ref.Value, err)
+		return Published{}, fmt.Errorf("publish OCI payload bundle %s: %w", ref.String(), err)
 	}
 	if published.Digest != manifestDescriptor.Digest {
 		return Published{}, fmt.Errorf("published OCI manifest digest %s does not match local digest %s", published.Digest, manifestDescriptor.Digest)
 	}
-	resolved, err := repository.Resolve(ctx, ref.Tag)
+	resolved, err := repository.Resolve(ctx, Tag(ref))
 	if err != nil {
-		return Published{}, fmt.Errorf("verify published OCI tag %s: %w", ref.Value, err)
+		return Published{}, fmt.Errorf("verify published OCI tag %s: %w", ref.String(), err)
 	}
 	if resolved.Digest != manifestDescriptor.Digest {
-		return Published{}, fmt.Errorf("published OCI tag %s resolves to %s, want %s", ref.Value, resolved.Digest, manifestDescriptor.Digest)
+		return Published{}, fmt.Errorf("published OCI tag %s resolves to %s, want %s", ref.String(), resolved.Digest, manifestDescriptor.Digest)
 	}
 	return Published{Reference: ref, ManifestDigest: manifestDescriptor.Digest.String()}, nil
 }
@@ -322,7 +315,10 @@ func pack(ctx context.Context, request PackRequest, tag string) (store oras.Targ
 	if err := store.Tag(ctx, manifestDescriptor, tag); err != nil {
 		return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("tag staged OCI payload bundle: %w", err)
 	}
-	ref := Reference{Value: tag, Tag: tag}
+	ref, err := reference.Parse(manifestDescriptor.Digest.String())
+	if err != nil {
+		return nil, ocispec.Descriptor{}, cleanup, err
+	}
 	local, err := FetchTarget(ctx, store, tag, ref, request.ArtifactType, request.ConfigMediaType)
 	if err != nil {
 		return nil, ocispec.Descriptor{}, cleanup, fmt.Errorf("verify staged OCI payload bundle: %w", err)
@@ -345,9 +341,9 @@ func Fetch(ctx context.Context, request FetchRequest) (Fetched, error) {
 	if strings.TrimSpace(request.ArtifactType) == "" || strings.TrimSpace(request.ConfigMediaType) == "" {
 		return Fetched{}, fmt.Errorf("OCI artifact and config media types are required")
 	}
-	repository, err := remote.NewRepository(ref.Repository)
+	repository, err := remote.NewRepository(ref.Name())
 	if err != nil {
-		return Fetched{}, fmt.Errorf("open OCI repository %s: %w", ref.Repository, err)
+		return Fetched{}, fmt.Errorf("open OCI repository %s: %w", ref.Name(), err)
 	}
 	client := request.Client
 	if client == nil {
@@ -360,9 +356,9 @@ func Fetch(ctx context.Context, request FetchRequest) (Fetched, error) {
 		}
 	}
 	repository.Client = authClient
-	identifier := ref.Tag
-	if ref.ManifestDigest != "" {
-		identifier = ref.ManifestDigest
+	identifier := Tag(ref)
+	if ManifestDigest(ref) != "" {
+		identifier = ManifestDigest(ref)
 	}
 	return FetchTarget(ctx, repository, identifier, ref, request.ArtifactType, request.ConfigMediaType)
 }
@@ -378,7 +374,7 @@ func cloneAnnotations(values map[string]string) map[string]string {
 	return out
 }
 
-func FetchTarget(ctx context.Context, target Target, identifier string, ref Reference, artifactType, configMediaType string) (Fetched, error) {
+func FetchTarget(ctx context.Context, target Target, identifier string, ref reference.Reference, artifactType, configMediaType string) (Fetched, error) {
 	fetched, err := FetchTargetManifest(ctx, target, identifier, ref, artifactType, configMediaType)
 	if err != nil {
 		return Fetched{}, err
@@ -396,13 +392,13 @@ func FetchTarget(ctx context.Context, target Target, identifier string, ref Refe
 // FetchTargetManifest resolves and verifies the OCI manifest and custom config
 // without buffering payload layers. Consumers with large artifacts, including
 // Kubernetes, can then stream exact descriptors with CopyContent.
-func FetchTargetManifest(ctx context.Context, target Target, identifier string, ref Reference, artifactType, configMediaType string) (Fetched, error) {
+func FetchTargetManifest(ctx context.Context, target Target, identifier string, ref reference.Reference, artifactType, configMediaType string) (Fetched, error) {
 	manifestDescriptor, err := target.Resolve(ctx, identifier)
 	if err != nil {
-		return Fetched{}, fmt.Errorf("resolve OCI reference %s: %w", ref.Value, err)
+		return Fetched{}, fmt.Errorf("resolve OCI reference %s: %w", ref.String(), err)
 	}
-	if ref.ManifestDigest != "" && manifestDescriptor.Digest.String() != ref.ManifestDigest {
-		return Fetched{}, fmt.Errorf("resolved OCI manifest digest %s does not match reference %s", manifestDescriptor.Digest, ref.ManifestDigest)
+	if ManifestDigest(ref) != "" && manifestDescriptor.Digest.String() != ManifestDigest(ref) {
+		return Fetched{}, fmt.Errorf("resolved OCI manifest digest %s does not match reference %s", manifestDescriptor.Digest, ManifestDigest(ref))
 	}
 	manifestBytes, err := content.FetchAll(ctx, target, manifestDescriptor)
 	if err != nil {

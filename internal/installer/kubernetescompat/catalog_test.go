@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 )
 
@@ -20,7 +22,7 @@ func TestResolveReturnsImmutableCompatibleBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseImageReference() error = %v", err)
 	}
-	if image.PayloadVersion != "v1.36.1" || image.ArtifactVersion == "" || image.ManifestDigest == "" {
+	if entry.KubernetesVersion != "v1.36.1" || payloadbundle.Tag(image) != "" || payloadbundle.ManifestDigest(image) == "" {
 		t.Fatalf("image = %#v", image)
 	}
 }

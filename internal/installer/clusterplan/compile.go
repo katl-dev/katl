@@ -342,6 +342,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 				ProfileResolvedID:    bootstrapProfileResolvedID,
 				KubernetesCatalogRef: kubernetes.catalogRef,
 				KubernetesBundle:     publicBundle,
+				KubernetesVersion:    kubernetes.version,
 				Access:               manifestAccess(layer.Bootstrap.Access),
 				Labels:               copyLabels(layer.Kubernetes.NodeLabels),
 				Taints:               slices.Clone(layer.Kubernetes.NodeTaints),
@@ -485,10 +486,13 @@ func selectKubernetes(selection KubernetesSelection, image manifest.KatlosImage,
 		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.bundleSource and bundleRef must be set together")
 	}
 	selectors := 0
-	for _, value := range []string{version, catalogRef, bundleRef} {
+	for _, value := range []string{catalogRef, bundleRef} {
 		if value != "" {
 			selectors++
 		}
+	}
+	if version != "" && bundleRef == "" {
+		selectors++
 	}
 	if selectors == 0 {
 		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.payloadVersion, catalogRef, or bundleRef is required")
@@ -496,7 +500,7 @@ func selectKubernetes(selection KubernetesSelection, image manifest.KatlosImage,
 	if selectors > 1 {
 		return selectedKubernetes{}, fmt.Errorf("spec.kubernetes must set exactly one of payloadVersion, catalogRef, or bundleRef")
 	}
-	if version != "" {
+	if version != "" && bundleRef == "" {
 		if sysextcatalog.KubernetesMinor(version) == "" {
 			return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.payloadVersion %q must be vMAJOR.MINOR.PATCH", version)
 		}
@@ -506,9 +510,16 @@ func selectKubernetes(selection KubernetesSelection, image manifest.KatlosImage,
 		}, nil
 	}
 	if bundleRef != "" {
-		payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(bundleRef)
-		if err != nil {
-			return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.bundleRef %q: %w", bundleRef, err)
+		payloadVersion := version
+		if payloadVersion == "" {
+			var err error
+			payloadVersion, err = kubernetesbundle.PayloadVersionFromRef(bundleRef)
+			if err != nil {
+				return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.bundleRef %q: %w", bundleRef, err)
+			}
+		}
+		if sysextcatalog.KubernetesMinor(payloadVersion) == "" {
+			return selectedKubernetes{}, fmt.Errorf("spec.kubernetes.payloadVersion is required with a bundle reference")
 		}
 		return selectedKubernetes{
 			version:        payloadVersion,

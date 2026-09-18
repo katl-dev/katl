@@ -20,12 +20,12 @@ import (
 
 func TestCandidateIdentity(t *testing.T) {
 	packages := kubernetesrelease.PackageVersions{Kubeadm: "0:1.37.0-1", Kubelet: "0:1.37.0-1", Kubectl: "0:1.37.0-1", CRITools: "0:1.37.0-1"}
-	first := candidate("v1.37.0", packages, "recipe-one")
-	if repeated := candidate("v1.37.0", packages, "recipe-one"); repeated != first {
+	first := candidate("v1.37.0", packages)
+	if repeated := candidate("v1.37.0", packages); repeated != first {
 		t.Fatal("same build inputs changed identity")
 	}
-	if changed := candidate("v1.37.0", packages, "recipe-two"); changed.ArtifactVersion == first.ArtifactVersion {
-		t.Fatal("recipe change reused immutable identity")
+	if next := candidate("v1.37.1", packages); next.ArtifactVersion == first.ArtifactVersion {
+		t.Fatal("upstream patch reused release identity")
 	}
 	for _, name := range []string{"kubeadm", "kubelet", "kubectl", "cri-tools"} {
 		t.Run(name, func(t *testing.T) {
@@ -40,17 +40,17 @@ func TestCandidateIdentity(t *testing.T) {
 			case "cri-tools":
 				changed.CRITools = "0:1.37.0-2"
 			}
-			got := candidate("v1.37.0", changed, "recipe-one")
-			if got.ArtifactVersion == first.ArtifactVersion {
-				t.Fatal("package revision reused immutable identity")
+			got := candidate("v1.37.0", changed)
+			if got.ArtifactVersion != first.ArtifactVersion {
+				t.Fatal("package rebuild created another Kubernetes release")
 			}
 			if got.KubeadmVersion != changed.Kubeadm || got.KubeletVersion != changed.Kubelet || got.KubectlVersion != changed.Kubectl || got.CRIToolsVersion != changed.CRITools {
 				t.Fatalf("candidate lost package locks: %+v", got)
 			}
 		})
 	}
-	if first.ArtifactRevision < 1 || first.ArtifactRevision >= 1<<53 {
-		t.Fatal("revision is not lossless in JSON tooling")
+	if first.ArtifactVersion != "v1.37.0-1" {
+		t.Fatalf("released-node metadata identity = %s", first.ArtifactVersion)
 	}
 }
 
@@ -69,7 +69,7 @@ func TestPublicationRecovery(t *testing.T) {
 	ctx := context.Background()
 	bundle := sysextcatalog.KubernetesPayloadBundle{
 		APIVersion: "payload.katl.dev/v1alpha1", Kind: "KubernetesPayloadBundle", Name: "katl-kubernetes", ArtifactKind: "katl.kubernetes-payload.v1",
-		PayloadVersion: "v1.37.0", ArtifactVersion: "v1.37.0-katl.1", Architecture: "x86_64", SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
+		PayloadVersion: "v1.37.0", ArtifactVersion: "v1.37.0-katl.123", Architecture: "x86_64", SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
 	}
 	var blobs []payloadbundle.Blob
 	for _, role := range []string{"systemd-sysext", "sysext-metadata", "package-provenance", "catalog-fragment"} {
@@ -85,7 +85,7 @@ func TestPublicationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifests := map[string][]byte{"v1.37.0-katl.1": packed.Manifest, packed.ManifestDigest: packed.Manifest}
+	manifests := map[string][]byte{"v1.37.0-katl.123": packed.Manifest, packed.ManifestDigest: packed.Manifest}
 	var mu sync.Mutex
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -151,16 +151,16 @@ func TestPublicationRecovery(t *testing.T) {
 	if err != nil || missing["exists"] != false {
 		t.Fatalf("missing = %v, %v", missing, err)
 	}
-	existing, err := call("inspect", "v1.37.0-katl.1")
+	existing, err := call("inspect", "v1.37.0-katl.123")
 	if err != nil || existing["exists"] != true || existing["promoted"] != false {
 		t.Fatalf("partial = %v, %v", existing, err)
 	}
 	for range 2 {
-		if _, err := call("promote", "v1.37.0-katl.1", "--manifest-digest", packed.ManifestDigest); err != nil {
+		if _, err := call("promote", "v1.37.0-katl.123", "--manifest-digest", packed.ManifestDigest); err != nil {
 			t.Fatal(err)
 		}
 	}
-	complete, err := call("inspect", "v1.37.0-katl.1")
+	complete, err := call("inspect", "v1.37.0-katl.123")
 	if err != nil || complete["promoted"] != true || complete["digest"] != packed.ManifestDigest {
 		t.Fatalf("complete = %v, %v", complete, err)
 	}
@@ -170,12 +170,42 @@ func TestPublicationRecovery(t *testing.T) {
 	if actual != packed.ManifestDigest {
 		t.Fatalf("registry promotion = %s", actual)
 	}
+	for _, tag := range []string{"v1.37.0", "compatible-v1.37.0-x86_64-katl-runtime-1"} {
+		mu.Lock()
+		actual := digest.FromBytes(manifests[tag]).String()
+		mu.Unlock()
+		if actual != packed.ManifestDigest {
+			t.Fatalf("%s points to %s", tag, actual)
+		}
+	}
+	// A promoted legacy build is adopted without requiring the new fixed
+	// candidate identity or rebuilding its bytes.
+	mu.Lock()
+	delete(manifests, "v1.37.0")
+	mu.Unlock()
+	legacy, err := call("inspect", "")
+	if err != nil || legacy["exists"] != true || legacy["promoted"] != true || legacy["artifactVersion"] != "v1.37.0-katl.123" {
+		t.Fatalf("legacy release = %v, %v", legacy, err)
+	}
+	if _, err := call("promote", "v1.37.0-katl.123", "--manifest-digest", packed.ManifestDigest); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := call("promote", "v1.37.0-katl.2", "--manifest-digest", packed.ManifestDigest); err == nil {
 		t.Fatal("promoted a digest belonging to another candidate")
 	}
 	mu.Lock()
-	defer mu.Unlock()
 	if got := digest.FromBytes(manifests["compatible-v1.37.0-x86_64-katl-runtime-1"]).String(); got != packed.ManifestDigest {
+		mu.Unlock()
 		t.Fatalf("rejected promotion changed the compatibility tag to %s", got)
+	}
+	manifests["v1.37.0"] = []byte(`{"already":"published"}`)
+	mu.Unlock()
+	if _, err := call("promote", "v1.37.0-katl.123", "--manifest-digest", packed.ManifestDigest); err == nil || !strings.Contains(err.Error(), "already published") {
+		t.Fatalf("replaced existing upstream release: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if string(manifests["v1.37.0"]) != `{"already":"published"}` || digest.FromBytes(manifests["compatible-v1.37.0-x86_64-katl-runtime-1"]).String() != packed.ManifestDigest {
+		t.Fatal("conflicting promotion changed a published alias")
 	}
 }

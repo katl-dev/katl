@@ -21,6 +21,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
@@ -30,6 +32,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
+	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -2831,8 +2834,19 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		if err != nil {
 			return fmt.Errorf("--kubernetes-bundle: %w", err)
 		}
-		inv.KubernetesBundleSource = image.Source
-		inv.KubernetesBundleRef = image.Value
+		inv.KubernetesBundleSource = payloadbundle.Source(image)
+		inv.KubernetesBundleRef = image.String()
+	}
+	if image, err := kubernetesbundle.ParseImageReference(inv.KubernetesBundleRef); err == nil {
+		if payloadbundle.ManifestDigest(image) == "" {
+			selection, err := kubernetescompat.ResolveImage(ctx, image, kubernetescompat.Request{KubernetesVersion: inv.KubernetesVersion})
+			if err != nil {
+				return fmt.Errorf("resolve Kubernetes bundle: %w", err)
+			}
+			inv.KubernetesBundleRef = selection.Bundle
+		} else {
+			inv.KubernetesBundleRef = image.Name() + "@" + payloadbundle.ManifestDigest(image)
+		}
 	}
 	bootstrap, err := parseUserBootstrap(opts.bootstrapManifestPaths.values, opts.bootstrapPreWaitValues.values, opts.bootstrapWaitValues.values, opts.bootstrapStableEndpoint, opts.bootstrapStableEndpointBeforeManifests)
 	if err != nil {
@@ -3152,8 +3166,8 @@ func (d inventoryDocument) inventory() inventory.Inventory {
 		Nodes:                nodes,
 	}
 	if image, err := kubernetesbundle.ParseImageReference(d.KubernetesBundle); err == nil {
-		result.KubernetesBundleSource = image.Source
-		result.KubernetesBundleRef = image.Value
+		result.KubernetesBundleSource = payloadbundle.Source(image)
+		result.KubernetesBundleRef = image.String()
 	}
 	return result
 }

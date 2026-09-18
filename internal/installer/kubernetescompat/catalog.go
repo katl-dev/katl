@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 )
 
@@ -25,6 +27,7 @@ type Catalog struct {
 }
 
 type Entry struct {
+	ArtifactVersion   string   `json:"artifactVersion,omitempty"`
 	KubernetesVersion string   `json:"kubernetesVersion"`
 	Bundle            string   `json:"bundle"`
 	Architectures     []string `json:"architectures"`
@@ -53,6 +56,11 @@ func Resolve(request Request) (Entry, error) {
 		if runtime := strings.TrimSpace(request.RuntimeInterface); runtime != "" && !contains(entry.RuntimeInterfaces, runtime) {
 			return Entry{}, fmt.Errorf("Kubernetes %s is not compatible with KatlOS runtime interface %s", version, runtime)
 		}
+		image, err := kubernetesbundle.ParseImageReference(entry.Bundle)
+		if err != nil {
+			return Entry{}, err
+		}
+		entry.Bundle = image.Name() + "@" + payloadbundle.ManifestDigest(image)
 		return copyEntry(entry), nil
 	}
 	return Entry{}, fmt.Errorf("Kubernetes %q is not available in this Katl release; choose a version listed by the release compatibility catalog", version)
@@ -119,10 +127,10 @@ func Validate(catalog Catalog) error {
 		if err != nil {
 			return fmt.Errorf("Kubernetes compatibility entry %d bundle: %w", index, err)
 		}
-		if image.PayloadVersion != entry.KubernetesVersion {
-			return fmt.Errorf("Kubernetes compatibility entry %d bundle payload %q does not match version %q", index, image.PayloadVersion, entry.KubernetesVersion)
+		if !stableVersion.MatchString(entry.KubernetesVersion) {
+			return fmt.Errorf("Kubernetes compatibility entry %d requires a stable Kubernetes version", index)
 		}
-		if image.ManifestDigest == "" {
+		if payloadbundle.ManifestDigest(image) == "" {
 			return fmt.Errorf("Kubernetes compatibility entry %d bundle must include an immutable OCI manifest digest", index)
 		}
 		if seen[entry.KubernetesVersion] {

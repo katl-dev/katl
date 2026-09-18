@@ -26,7 +26,7 @@ const (
 
 var (
 	payloadPattern  = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
-	artifactPattern = regexp.MustCompile(`^(v[0-9]+\.[0-9]+\.[0-9]+)-katl\.([1-9][0-9]*)$`)
+	artifactPattern = regexp.MustCompile(`^(v[0-9]+\.[0-9]+\.[0-9]+)-(?:katl\.)?([1-9][0-9]*)$`)
 )
 
 type releaseIdentity struct {
@@ -262,7 +262,7 @@ func runRecordCompatibility(args []string, stdout, stderr io.Writer) error {
 	artifactVersion := strings.TrimSpace(*artifact)
 	artifactMatch := artifactPattern.FindStringSubmatch(artifactVersion)
 	if artifactMatch == nil || artifactMatch[1] != payloadVersion {
-		return fmt.Errorf("--artifact-version must look like %s-katl.1", payloadVersion)
+		return fmt.Errorf("--artifact-version must look like %s-1", payloadVersion)
 	}
 	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(strings.TrimSpace(*manifestDigest)) {
 		return fmt.Errorf("--manifest-digest must be a sha256 OCI manifest digest")
@@ -281,7 +281,8 @@ func runRecordCompatibility(args []string, stdout, stderr io.Writer) error {
 	}
 	entry := kubernetescompat.Entry{
 		KubernetesVersion: payloadVersion,
-		Bundle:            "ghcr.io/katl-dev/kubernetes:" + artifactVersion + "@" + strings.TrimSpace(*manifestDigest),
+		ArtifactVersion:   artifactVersion,
+		Bundle:            "ghcr.io/katl-dev/kubernetes@" + strings.TrimSpace(*manifestDigest),
 		Architectures:     []string{strings.TrimSpace(*architecture)},
 		RuntimeInterfaces: interfaces,
 	}
@@ -380,7 +381,7 @@ func runIdentity(args []string, stdout, stderr io.Writer) error {
 	}
 	identity := releaseIdentity{
 		PayloadVersion:  state.payload,
-		ArtifactVersion: fmt.Sprintf("%s-katl.%d", state.payload, state.revision),
+		ArtifactVersion: fmt.Sprintf("%s-%d", state.payload, state.revision),
 	}
 	identity.Image = "ghcr.io/katl-dev/kubernetes:" + identity.ArtifactVersion
 	data, err := json.Marshal(identity)
@@ -434,7 +435,7 @@ func runPrepare(args []string, stdout, stderr io.Writer, query packageQuery) err
 	if err := writeAtomic(*manifest, updated); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "prepared %s-katl.1\n", *payload)
+	fmt.Fprintf(stdout, "prepared %s-1\n", *payload)
 	for _, item := range []struct {
 		name    string
 		version string
@@ -486,7 +487,7 @@ func runPrepareSupported(args []string, stdout, stderr io.Writer, query packageQ
 		return err
 	}
 	if !changed {
-		fmt.Fprintf(stdout, "supported Kubernetes %s is current at %s-katl.%d\n", payloadVersion, payloadVersion, revision)
+		fmt.Fprintf(stdout, "supported Kubernetes %s is current at %s-%d\n", payloadVersion, payloadVersion, revision)
 		return nil
 	}
 	data, err := kubernetesrelease.MarshalSupportedVersions(updated)
@@ -496,7 +497,7 @@ func runPrepareSupported(args []string, stdout, stderr io.Writer, query packageQ
 	if err := writeAtomic(*path, data); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "prepared supported Kubernetes %s-katl.%d\n", payloadVersion, revision)
+	fmt.Fprintf(stdout, "prepared supported Kubernetes %s-%d\n", payloadVersion, revision)
 	return nil
 }
 

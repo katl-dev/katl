@@ -26,7 +26,7 @@ func TestDefaultSupportedVersions(t *testing.T) {
 
 func TestSupportedVersionArtifactVersion(t *testing.T) {
 	version := SupportedVersion{PayloadVersion: "v1.36.3", ArtifactRevision: 8}
-	if got := version.ArtifactVersion(); got != "v1.36.3-katl.8" {
+	if got := version.ArtifactVersion(); got != "v1.36.3-8" {
 		t.Fatalf("artifact version = %q", got)
 	}
 }

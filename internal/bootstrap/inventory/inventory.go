@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/distribution/reference"
 )
 
 type SystemRole string
@@ -256,6 +258,14 @@ func validateKubernetesBundleSelection(source string, ref string, kubernetesVers
 	sourceURL, err := url.Parse(source)
 	if err != nil || !sourceURL.IsAbs() || sourceURL.Scheme != "https" || sourceURL.Host == "" {
 		return fmt.Errorf("kubernetesBundleSource must be an absolute HTTPS URL")
+	}
+	if strings.Contains(ref, "/") {
+		image, err := reference.ParseNamed(ref)
+		pinned, ok := image.(reference.Digested)
+		if err != nil || !ok || !sha256DigestPattern.MatchString(pinned.Digest().String()) {
+			return fmt.Errorf("kubernetesBundleRef requires an immutable OCI manifest digest")
+		}
+		return nil
 	}
 	payloadVersion, ok := payloadVersionFromBundleRef(ref)
 	if !ok {

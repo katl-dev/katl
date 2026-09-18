@@ -3,6 +3,7 @@ module github.com/katl-dev/katl
 go 1.26.0
 
 require (
+	github.com/distribution/reference v0.6.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/rivo/uniseg v0.4.7

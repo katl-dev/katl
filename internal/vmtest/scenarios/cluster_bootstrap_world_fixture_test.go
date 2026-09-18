@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/vmtest"
 )
 
@@ -36,14 +35,9 @@ func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, spe
 		return err
 	}
 	input.SSHAuthorizedKey = authorizedKey
-	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")); value != "" {
-		image, err := kubernetesbundle.ParseImageReference(value)
-		if err != nil {
-			return fmt.Errorf("parse published Kubernetes bundle: %w", err)
-		}
-		input.KubernetesVersion = image.PayloadVersion
-	} else {
-		input.KubernetesVersion = strings.TrimSpace(os.Getenv("KATL_KUBERNETES_VERSION"))
+	input.KubernetesVersion = strings.TrimSpace(os.Getenv("KATL_KUBERNETES_VERSION"))
+	if strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")) != "" && input.KubernetesVersion == "" {
+		return fmt.Errorf("KATL_KUBERNETES_VERSION is required with a published bundle")
 	}
 	return vmtest.EnsurePublishedFirstInstallRuntimeFixtures(ctx, world, repo, specs, vmtest.FirstInstallRuntimeFixtureOptions{
 		Input:                      input,
