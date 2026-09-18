@@ -113,6 +113,7 @@ func TestDiskExecutorPartitionVolumeOnlyCreatesAndMounts(t *testing.T) {
 }
 
 func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	plan := executorPlan()
 	commands := &NoopCommandRunner{}
 	if _, err := (DiskExecutor{Commands: commands}).ExecuteGroup(context.Background(), DiskExecutionRequest{
@@ -128,8 +129,14 @@ func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
 		t.Fatalf("partition group ran later operations: %#v", commands.Calls)
 	}
 	repart := findCall(commands.Calls, "systemd-repart")
-	if got := strings.Join(repart.Args, " "); strings.Contains(got, "{definitions}") || !strings.Contains(got, "--definitions=/tmp/katl-repart-") {
-		t.Fatalf("repart definitions argument = %q", got)
+	var definitions string
+	for _, arg := range repart.Args {
+		if path, ok := strings.CutPrefix(arg, "--definitions="); ok {
+			definitions = path
+		}
+	}
+	if definitions == "" || strings.Contains(definitions, "{definitions}") {
+		t.Fatalf("repart definitions argument was not materialized: %q", repart.Args)
 	}
 
 	commands = &NoopCommandRunner{}
