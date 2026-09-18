@@ -1800,6 +1800,7 @@ func TestValidateConfigAutoLiveDigestMatchesConcreteSubmit(t *testing.T) {
 	executor.Async = false
 	executor.ConfigApplyRunner = &fakeConfigApplyRunner{}
 	executor.ConfigApplyActivator = &fakeConfigApplyActivator{}
+	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
@@ -1925,7 +1926,7 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
-	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
@@ -1952,8 +1953,15 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if record.GenerationCommitState != operation.GenerationCommitCommitted {
 		t.Fatalf("generation commit state = %q, want committed", record.GenerationCommitState)
 	}
-	if !record.BootHealthPending {
-		t.Fatal("boot health is not pending after live config activation")
+	if record.BootHealthPending {
+		t.Fatal("validated live configuration unexpectedly requires a reboot")
+	}
+	observed, err := server.GetGeneration(context.Background(), &agentapi.GetGenerationRequest{GenerationId: "generation-live", IncludeConfigApply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.CommitState != generation.CommitStateCommitted || observed.HealthState != generation.HealthStateHealthy {
+		t.Fatalf("live generation is not ready for dependent operations: %+v", observed)
 	}
 	if !contains(record.MutationScopes, "confext-activation") || !contains(record.MutationScopes, "config-domain:host-configuration") {
 		t.Fatalf("mutation scopes = %v, want confext activation and host configuration domain", record.MutationScopes)
@@ -1968,8 +1976,8 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.DefaultGenerationID != "generation-0" || selection.TargetBootGenerationID != "generation-live" || selection.TrialGenerationID != "generation-live" || !selection.PendingHealthValidation {
-		t.Fatalf("boot selection = %#v, want live generation armed as a boot trial", selection)
+	if selection.DefaultGenerationID != "generation-live" || selection.ActiveGenerationID != "generation-live" || selection.TargetBootGenerationID != "" || selection.TrialGenerationID != "" || selection.PendingHealthValidation {
+		t.Fatalf("boot selection = %#v, want live generation as persistent default without a boot trial", selection)
 	}
 	candidateManifest, err := configapply.ReadGenerationManifest(server.Root, "generation-live")
 	if err != nil {
@@ -3986,4 +3994,44 @@ func (s *watchStream) SendMsg(any) error {
 
 func (s *watchStream) RecvMsg(any) error {
 	return nil
+}
+
+func TestLiveApplyPromotionFailure(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	var pending operation.OperationRecord
+	server.Dispatcher = dispatchFunc(func(_ context.Context, record operation.OperationRecord) error {
+		pending = record
+		return nil
+	})
+	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion: APIVersion, Kind: "GenerationApplyRequest", ClientRequestId: "promotion-failure",
+		Actor: "test", CandidateGenerationId: "live-promotion-failure", ConfigYaml: configApplyLiveYAML(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.ConfigApplyRunner = &fakeConfigApplyRunner{}
+	executor.ConfigApplyActivator = &fakeConfigApplyActivator{}
+	executor.SetBootDefault = func(context.Context, string, string) error { return fmt.Errorf("boot default unavailable") }
+	if err := executor.Execute(context.Background(), pending); err == nil {
+		t.Fatal("apply succeeded without a durable boot default")
+	}
+
+	status, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{OperationId: accepted.OperationId})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Terminal || status.Result == operation.ResultSucceeded {
+		t.Fatalf("promotion failure reported success: %+v", status)
+	}
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "generation-0" || selection.PendingHealthValidation {
+		t.Fatalf("failed promotion changed boot selection: %+v", selection)
+	}
 }

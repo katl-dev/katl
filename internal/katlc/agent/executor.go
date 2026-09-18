@@ -742,7 +742,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	if err != nil {
 		return err
 	}
-	if err := e.commitCandidateGeneration(ctx, record, completedAt, "kubeadm completed and post-kubeadm health checks passed; candidate awaits boot validation"); err != nil {
+	if err := e.commitTrialGeneration(ctx, record, completedAt, "kubeadm completed and post-kubeadm health checks passed; candidate awaits boot validation"); err != nil {
 		_, markErr := e.Store.Update(operationID, "bootstrap-generation-commit-failed", "bootstrap-generation-commit", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 			record.Phase = "post-kubeadm-health"
 			record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
@@ -776,7 +776,28 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	return errors.Join(err, artifactErr)
 }
 
-func (e *Executor) commitCandidateGeneration(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
+// Both live configuration and Kubernetes transitions use the same durable
+// promotion after their operation-specific activation checks have passed.
+func (e *Executor) promoteLiveGeneration(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
+	if _, _, _, err := e.writeCandidateLoaderEntry(ctx, record.CandidateGenerationID); err != nil {
+		return err
+	}
+	return generation.PromoteLiveGeneration(generation.LivePromotionRequest{
+		Root:         e.Root,
+		GenerationID: record.CandidateGenerationID,
+		OperationID:  record.OperationID,
+		Reason:       reason,
+		Now:          now,
+		SetBootDefault: func(root, entry string) error {
+			if e.SetBootDefault == nil {
+				return fmt.Errorf("boot default updater is not configured")
+			}
+			return e.SetBootDefault(ctx, root, entry)
+		},
+	})
+}
+
+func (e *Executor) commitTrialGeneration(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
 	candidate := strings.TrimSpace(record.CandidateGenerationID)
 	if candidate == "" {
 		return fmt.Errorf("candidate generation id is required")
