@@ -217,15 +217,14 @@ After=systemd-sysext.service systemd-confext.service containerd.service kubelet.
 	wantActivate := `[Unit]
 Description=Activate the committed Katl Kubernetes runtime
 Documentation=man:systemd-confext(8) man:systemd-sysext(8)
-Requires=systemd-sysext.service systemd-confext.service
-After=systemd-sysext.service systemd-confext.service
+Requires=katl-system-extensions-reload.service
+After=katl-system-extensions-reload.service
 ConditionFileIsExecutable=/usr/bin/kubeadm
 ConditionFileIsExecutable=/usr/bin/kubelet
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/systemctl daemon-reload
 ExecStart=/usr/bin/systemctl start katl-kubeadm-ready.target
 
 [Install]
