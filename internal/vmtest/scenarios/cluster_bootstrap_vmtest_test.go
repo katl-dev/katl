@@ -2763,7 +2763,8 @@ func assertOperatorSSH(ctx context.Context, privateKey, address string) error {
 	}
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
-		command := exec.CommandContext(ctx, "ssh",
+		command := exec.CommandContext(
+			ctx, "ssh",
 			"-o", "BatchMode=yes",
 			"-o", "IdentitiesOnly=yes",
 			"-o", "StrictHostKeyChecking=no",
@@ -2800,7 +2801,8 @@ func assertControlPlaneDashboard(ctx context.Context, privateKey, address string
 	deadline := time.Now().Add(time.Minute)
 	var lastOutput []byte
 	for {
-		command := exec.CommandContext(ctx, "ssh",
+		command := exec.CommandContext(
+			ctx, "ssh",
 			"-o", "BatchMode=yes",
 			"-o", "IdentitiesOnly=yes",
 			"-o", "StrictHostKeyChecking=no",
@@ -3698,6 +3700,13 @@ func assertNodeAPIProxyAccess(t *testing.T, ctx context.Context, node vmtest.Run
 	paths := []string{"/etc/kubernetes/kubelet.conf"}
 	if admin {
 		paths = append(paths, "/etc/kubernetes/admin.conf")
+		result, err := runNodeCommand(ctx, node, []string{"kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--server", "https://127.0.0.1:7445", "--tls-server-name", "127.0.0.1", "get", "--raw=/readyz"}, 32<<10)
+		if err != nil {
+			t.Fatalf("connect to %s API through loopback: %v", node.Name, err)
+		}
+		if result.ExitStatus != 0 || strings.TrimSpace(string(result.Stdout)) != "ok" {
+			t.Fatalf("%s loopback API readiness: exit=%d stdout=%s stderr=%s", node.Name, result.ExitStatus, result.Stdout, result.Stderr)
+		}
 	}
 	for _, path := range paths {
 		data, err := readNodeFileWithRetry(ctx, node, path, 256<<10, time.Minute)
@@ -4132,7 +4141,8 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 		}},
 	}
 	if kubeadmRef == "control-plane" {
-		plan.Files = append(plan.Files,
+		plan.Files = append(
+			plan.Files,
 			vmtest.GuestFileRequest{Name: "admin-kubeconfig", Path: "/etc/kubernetes/admin.conf"},
 			vmtest.GuestFileRequest{Name: "kube-apiserver-manifest", Path: "/etc/kubernetes/manifests/kube-apiserver.yaml"},
 			vmtest.GuestFileRequest{Name: "kube-controller-manager-manifest", Path: "/etc/kubernetes/manifests/kube-controller-manager.yaml"},
