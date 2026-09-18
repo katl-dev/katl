@@ -51,7 +51,7 @@ jobs:
       contents: read
       packages: write
     env:
-      KATL_BIRD_RECIPE_PATTERN: '^(\.github/workflows/system-extensions\.yml$|Containerfile\.mkosi$|cmd/katlctl/system_extension\.go$|extensions/bird/extension\.env$|internal/installer/payloadbundle/|internal/installer/systemextensionbundle/|mkosi\.conf$|mkosi\.profiles/runtime/|mkosi\.profiles/system-extension-bird/|scripts/build-system-extension$|scripts/check-system-extension$|scripts/mkosi$)'
+      KATL_BIRD_RECIPE_PATTERN: '^(Containerfile\.mkosi$|extensions/bird/|mkosi\.conf$|mkosi\.profiles/runtime/|mkosi\.profiles/system-extension-bird/|scripts/build-system-extension$|scripts/mkosi$)'
       KATL_ARCHITECTURE: x86_64
       KATL_CONTAINER_RUNTIME: docker
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs

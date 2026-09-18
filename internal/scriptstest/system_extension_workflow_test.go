@@ -3,6 +3,7 @@ package scriptstest
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -55,18 +56,27 @@ func TestSystemExtensionWorkflowSeparatesValidationFromPublication(t *testing.T)
 	}
 
 	recipePattern := bird.Env["KATL_BIRD_RECIPE_PATTERN"]
-	for _, contract := range []string{
-		`\.github/workflows/system-extensions\.yml`,
-		`cmd/katlctl/system_extension\.go`,
-		`extensions/bird/extension\.env`,
-		`internal/installer/payloadbundle/`,
-		`internal/installer/systemextensionbundle/`,
-		`mkosi\.profiles/runtime/`,
-		`mkosi\.profiles/system-extension-bird/`,
-		`scripts/mkosi`,
+	pattern, err := regexp.Compile(recipePattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, needsRelease := range map[string]bool{
+		"extensions/bird/extension.env":                        true,
+		"extensions/bird/bird.conf":                            true,
+		"mkosi.profiles/system-extension-bird/mkosi.conf":      true,
+		"mkosi.profiles/runtime/mkosi.conf":                    true,
+		"mkosi.conf":                                           true,
+		"Containerfile.mkosi":                                  true,
+		"scripts/build-system-extension":                       true,
+		"scripts/mkosi":                                        true,
+		".github/workflows/system-extensions.yml":              false,
+		"cmd/katlctl/system_extension.go":                      false,
+		"internal/installer/payloadbundle/oci.go":              false,
+		"internal/installer/systemextensionbundle/producer.go": false,
+		"scripts/check-system-extension":                       false,
 	} {
-		if !strings.Contains(recipePattern, contract) {
-			t.Errorf("BIRD recipe boundary does not include %q", contract)
+		if got := pattern.MatchString(path); got != needsRelease {
+			t.Errorf("recipe change %s = %t, want %t", path, got, needsRelease)
 		}
 	}
 	for _, contract := range []string{
