@@ -503,7 +503,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		_ = os.WriteFile(filepath.Join(result.RunDir, "katlctl-bootstrap-error.txt"), []byte(err.Error()+"\n"), 0o644)
 		collectOperationBackedFailureEvidence(ctx, cpNode, filepath.Join(evidenceDir, "cp-1"), "bootstrap-init")
 		collectOperationBackedFailureEvidence(ctx, workerNode, filepath.Join(evidenceDir, "worker-1"), "bootstrap-join-worker")
-		nodeStatus := collectNodeLocalStatusFailureEvidence(ctx, evidenceDir, nodes...)
+		nodeStatus := collectNodeStatusDiagnostics(ctx, evidenceDir, nodes...)
 		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics("", nodes...)
 		_ = writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, nodes, operationBackedArtifacts{
@@ -573,16 +573,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatalf("collect worker boot selection evidence: %v", err)
 	}
 	assertPostBootstrapSelection(t, workerSelection, workerRecord.CandidateGenerationID)
-	nodeStatus := map[string]string{}
-	for _, node := range nodes {
-		path, err := collectNodeLocalStatusEvidence(ctx, node, filepath.Join(evidenceDir, node.Name))
-		if err != nil {
-			collectTwoNodeDiagnostics("", nodes...)
-			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-			t.Fatalf("collect %s node status evidence: %v", node.Name, err)
-		}
-		nodeStatus[node.Name] = path
-	}
+	nodeStatus := collectNodeStatusDiagnostics(ctx, evidenceDir, nodes...)
 	assertNodeAPIProxyAccess(t, ctx, cpNode, canonicalEndpoint, cpAddress+":6443", true)
 	assertNodeAPIProxyAccess(t, ctx, workerNode, canonicalEndpoint, cpAddress+":6443", false)
 	evidenceArtifacts := operationBackedArtifacts{
@@ -3557,7 +3548,7 @@ func collectNodeLocalStatusEvidence(ctx context.Context, node vmtest.RunningInst
 	return hostPath, writeTwoNodeDiagnosticJSON(hostPath, evidence)
 }
 
-func collectNodeLocalStatusFailureEvidence(ctx context.Context, evidenceDir string, nodes ...vmtest.RunningInstalledRuntimeNode) map[string]string {
+func collectNodeStatusDiagnostics(ctx context.Context, evidenceDir string, nodes ...vmtest.RunningInstalledRuntimeNode) map[string]string {
 	paths := map[string]string{}
 	for _, node := range nodes {
 		nodeEvidenceDir := filepath.Join(evidenceDir, node.Name)
