@@ -3,14 +3,16 @@ package vmtest
 import (
 	"context"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-type firstInstallFixtureContractRun = FirstInstallRuntimeFixtureContract
-type producedInstalledRuntimeFixture = ProducedInstalledRuntimeFixture
+type (
+	firstInstallFixtureContractRun  = FirstInstallRuntimeFixtureContract
+	producedInstalledRuntimeFixture = ProducedInstalledRuntimeFixture
+)
 
 func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 	contract := firstInstallFixtureContractRunFor(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
@@ -465,10 +467,9 @@ func targetDiskPath(t *testing.T, result Result) string {
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	output, err := cmd.Output()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
-		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+		t.Fatalf("resolve repository root: %v", err)
 	}
-	return strings.TrimSpace(string(output))
+	return root
 }

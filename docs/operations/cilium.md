@@ -52,6 +52,12 @@ Carry the same value in the retained Helm values or GitOps source used for
 later Cilium upgrades. Other Cilium settings remain cluster-specific and
 operator-owned.
 
+For node-local API access, set `k8sServiceHost=127.0.0.1` and
+`k8sServicePort=7445`. Katl's proxy forwards TLS to a healthy control-plane
+backend, and new clusters include `127.0.0.1` in the API serving certificate.
+Keep certificate verification enabled. These settings have also been exercised
+with Cilium 1.20.2.
+
 The setting is part of Cilium's public
 [Helm values](https://docs.cilium.io/en/stable/helm-reference/#sysctlfix-enabled).
 When disabled, the chart omits the `apply-sysctl-overwrites` init container;
@@ -119,6 +125,58 @@ Do not use a privileged workload to create persistent host configuration.
 A CNI that requires a writable `/etc` and does not provide a supported
 disable or redirect setting is not compatible with KatlOS until that behavior
 can be changed.
+
+## Repair An Existing API Certificate
+
+An older cluster may lack the loopback certificate address. On a control-plane
+node, test the actual TLS identity rather than the canonical-name override in
+the admin kubeconfig:
+
+```sh
+kubectl --kubeconfig /etc/kubernetes/admin.conf \
+  --server=https://127.0.0.1:7445 --tls-server-name=127.0.0.1 \
+  get --raw=/readyz
+```
+
+A certificate-address error requires replacing the API serving certificate;
+an OS or Cilium upgrade does not rewrite existing cluster PKI. Until repaired,
+Cilium can use a reachable node management address already in the certificate
+with port `7445`.
+
+Use kubeadm's native certificate procedure, one control-plane node at a time:
+
+1. Back up `apiserver.crt`, `apiserver.key`, and the `ClusterConfiguration` from
+   the `kube-system/kubeadm-config` ConfigMap in a root-only writable recovery
+   directory. Record every current certificate SAN and the node's advertised
+   API address. Keep the cluster CA unchanged.
+2. Add `127.0.0.1` to `apiServer.certSANs` in a copy of that configuration,
+   preserving existing SANs. Create a separate staging directory with references
+   to the existing `ca.crt` and `ca.key`. Set `certificatesDir` to that staging
+   directory and include an `InitConfiguration` with this node's existing
+   name, API advertise address, and bind port.
+3. Run `kubeadm init phase certs apiserver --config staged-config.yaml`.
+   Independently verify the generated certificate against the existing CA and
+   check that it includes every old SAN plus `127.0.0.1` before replacing
+   anything live. With an external CA, have that CA issue the replacement.
+4. Upload the updated cluster configuration using
+   `kubeadm init phase upload-config kubeadm --config cluster.yaml --kubeconfig
+   /etc/kubernetes/admin.conf`, with `certificatesDir` restored to
+   `/etc/kubernetes/pki`. This retains the SAN for future control-plane joins.
+5. Install the staged serving certificate and key into the existing PKI
+   directory, retaining root ownership and private-key mode `0600`. Restart
+   the API-server container using `crictl stop` with its running container ID;
+   kubelet recreates it. Allow for a brief API interruption on a single-node
+   control plane. If it fails to recover, restore the saved pair and restart
+   that container again before proceeding.
+6. Repeat the TLS readiness check above, then verify node readiness, Cilium,
+   cluster DNS, and service traffic. Set Cilium's retained API host to loopback
+   only after all control-plane certificates pass. Repeat verification after
+   a public `katlctl node reboot`.
+
+`kubeadm certs renew apiserver` preserves SANs from the old certificate, so it
+does not add the missing address. See Kubernetes'
+[certificate management](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/)
+and [API certificate phase](https://kubernetes.io/docs/reference/setup-tools/kubeadm/generated/kubeadm_init/kubeadm_init_phase_certs_apiserver/).
 
 ## Diagnose The Default Cilium Setting
 

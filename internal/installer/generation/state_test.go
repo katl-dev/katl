@@ -217,15 +217,14 @@ After=systemd-sysext.service systemd-confext.service containerd.service kubelet.
 	wantActivate := `[Unit]
 Description=Activate the committed Katl Kubernetes runtime
 Documentation=man:systemd-confext(8) man:systemd-sysext(8)
-Requires=systemd-sysext.service systemd-confext.service
-After=systemd-sysext.service systemd-confext.service
+Requires=katl-system-extensions-reload.service
+After=katl-system-extensions-reload.service
 ConditionFileIsExecutable=/usr/bin/kubeadm
 ConditionFileIsExecutable=/usr/bin/kubelet
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/systemctl daemon-reload
 ExecStart=/usr/bin/systemctl start katl-kubeadm-ready.target
 
 [Install]
@@ -570,12 +569,11 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	output, err := cmd.Output()
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
-		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+		t.Fatalf("resolve repository root: %v", err)
 	}
-	return strings.TrimSpace(string(output))
+	return root
 }
 
 func stateVerifyUnits() []string {
