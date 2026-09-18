@@ -27,9 +27,27 @@ func TestCandidateIdentity(t *testing.T) {
 	if changed := candidate("v1.37.0", packages, "recipe-two"); changed.ArtifactVersion == first.ArtifactVersion {
 		t.Fatal("recipe change reused immutable identity")
 	}
-	packages.Kubeadm = "0:1.37.0-2"
-	if changed := candidate("v1.37.0", packages, "recipe-one"); changed.ArtifactVersion == first.ArtifactVersion {
-		t.Fatal("package revision reused immutable identity")
+	for _, name := range []string{"kubeadm", "kubelet", "kubectl", "cri-tools"} {
+		t.Run(name, func(t *testing.T) {
+			changed := packages
+			switch name {
+			case "kubeadm":
+				changed.Kubeadm = "0:1.37.0-2"
+			case "kubelet":
+				changed.Kubelet = "0:1.37.0-2"
+			case "kubectl":
+				changed.Kubectl = "0:1.37.0-2"
+			case "cri-tools":
+				changed.CRITools = "0:1.37.0-2"
+			}
+			got := candidate("v1.37.0", changed, "recipe-one")
+			if got.ArtifactVersion == first.ArtifactVersion {
+				t.Fatal("package revision reused immutable identity")
+			}
+			if got.KubeadmVersion != changed.Kubeadm || got.KubeletVersion != changed.Kubelet || got.KubectlVersion != changed.Kubectl || got.CRIToolsVersion != changed.CRITools {
+				t.Fatalf("candidate lost package locks: %+v", got)
+			}
+		})
 	}
 	if first.ArtifactRevision < 1 || first.ArtifactRevision >= 1<<53 {
 		t.Fatal("revision is not lossless in JSON tooling")
@@ -105,7 +123,7 @@ func TestPublicationRecovery(t *testing.T) {
 			}
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/v2/katl/kubernetes/blobs/") {
+		if r.URL.Path == "/v2/katl/kubernetes/blobs/"+digest.FromBytes(config).String() {
 			w.Header().Set("Content-Length", strconv.Itoa(len(config)))
 			w.Write(config)
 			return
@@ -154,5 +172,10 @@ func TestPublicationRecovery(t *testing.T) {
 	}
 	if _, err := call("promote", "v1.37.0-katl.2", "--manifest-digest", packed.ManifestDigest); err == nil {
 		t.Fatal("promoted a digest belonging to another candidate")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := digest.FromBytes(manifests["compatible-v1.37.0-x86_64-katl-runtime-1"]).String(); got != packed.ManifestDigest {
+		t.Fatalf("rejected promotion changed the compatibility tag to %s", got)
 	}
 }
