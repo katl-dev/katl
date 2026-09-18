@@ -570,12 +570,11 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	output, err := cmd.Output()
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
-		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+		t.Fatalf("resolve repository root: %v", err)
 	}
-	return strings.TrimSpace(string(output))
+	return root
 }
 
 func stateVerifyUnits() []string {
