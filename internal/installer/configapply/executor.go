@@ -298,7 +298,8 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	case DomainAPIProxy:
 		commands = append(commands, Command{Name: "api-proxy-restart", Argv: []string{"systemctl", "restart", "katl-api-proxy.service"}})
 	case DomainControlPlaneEndpointVIP:
-		commands = append(commands,
+		commands = append(
+			commands,
 			Command{Name: "endpoint-release", Argv: []string{"systemctl", "stop", "katl-app-api-vip.service"}},
 			Command{Name: "endpoint-link-reload", Argv: []string{"networkctl", "reload"}},
 			Command{Name: "endpoint-resume", Argv: []string{"systemctl", "start", "katl-app-api-vip.service"}},

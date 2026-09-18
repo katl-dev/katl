@@ -34,8 +34,11 @@ func TestControllerStartsReleasedThenAcquiresHealthyVIP(t *testing.T) {
 
 func TestControllerReleasesVIPAfterHealthFailure(t *testing.T) {
 	health := &sequenceHealth{results: []HealthResult{
-		{Healthy: true}, {Healthy: true},
-		{Error: "readyz Bearer secret-token"}, {Error: "readyz Bearer secret-token"}, {Error: "readyz Bearer secret-token"},
+		{Healthy: true},
+		{Healthy: true},
+		{Error: "readyz Bearer secret-token"},
+		{Error: "readyz Bearer secret-token"},
+		{Error: "readyz Bearer secret-token"},
 	}}
 	controller := testController(health)
 	var status Status

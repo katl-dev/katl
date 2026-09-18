@@ -259,14 +259,16 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	model := NewDashboardModel(snapshot)
 	var hostStorage [3 + maxDisplayInterfaces + 1]paneField
 	host := hostStorage[:0]
-	host = append(host,
+	host = append(
+		host,
 		paneField{label: "State", value: model.Host.Label, style: presentationStyle(model.Host.State)},
 		paneField{label: "Node", value: fallback(snapshot.Hostname, "Unknown")},
 		paneField{label: "KatlOS", value: fallback(snapshot.CurrentSoftware.KatlOSVersion, "Unknown")},
 	)
 	host = appendNetworkPaneFields(host, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces)
 	var kubernetesStorage [2 + 1 + controlPlanePodCount]paneField
-	kubernetes := append(kubernetesStorage[:0],
+	kubernetes := append(
+		kubernetesStorage[:0],
 		paneField{label: "State", value: model.Kubernetes.Label, style: presentationStyle(model.Kubernetes.State)},
 		paneField{label: "Kubelet", value: fallback(snapshot.LiveSoftware.KubernetesVersion, "Not installed")},
 	)

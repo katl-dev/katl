@@ -2,7 +2,7 @@ name: Public Kubernetes Bundles
 
 on:
   schedule:
-    - cron: "17 6 * * 1"
+    - cron: '17 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -11,26 +11,20 @@ permissions:
 
 jobs:
   plan:
-    name: Plan Supported Bundles
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Resolve supported release matrix
-        id: plan
-        run: |
-          go run ./cmd/katl-kubernetes-release verify-recipe
-          echo "matrix=$(go run ./cmd/katl-kubernetes-release matrix)" >> "$GITHUB_OUTPUT"
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "matrix=$(go run ./cmd/katl-kubernetes-release discover)" >> "$GITHUB_OUTPUT"
 
   verify:
     name: Verify ${{ matrix.release.payloadVersion }}
@@ -41,38 +35,32 @@ jobs:
       fail-fast: false
       matrix:
         release: ${{ fromJSON(needs.plan.outputs.matrix).include }}
-    env:
-      ARTIFACT_VERSION: ${{ matrix.release.artifactVersion }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Resolve and verify bundle anonymously
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Resolve through the operator compatibility path
         id: bundle
-        shell: bash
+        env:
+          PAYLOAD_VERSION: ${{ matrix.release.payloadVersion }}
         run: |
-          image="ghcr.io/katl-dev/kubernetes:${ARTIFACT_VERSION}"
-          verification="$(scripts/check-public-kubernetes-bundle "$image")"
-          printf '%s\n' "$verification"
-          digest="${verification##*@}"
-          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "error: public bundle check returned invalid digest: $digest" >&2
-            exit 1
-          fi
+          reference=$(go run ./cmd/katl-kubernetes-release resolve --payload-version "$PAYLOAD_VERSION" | jq -r .bundle)
+          image="${reference%@*}"
+          digest="${reference##*@}"
+          scripts/check-public-kubernetes-bundle "$image" "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "image=$image" >> "$GITHUB_OUTPUT"
-
-      - name: Authenticate provenance client to GHCR
+      - name: Authenticate provenance client
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
-
-      - name: Verify GitHub provenance
+      - name: Verify provenance
         env:
           GH_TOKEN: ${{ github.token }}
+          MANIFEST_DIGEST: ${{ steps.bundle.outputs.digest }}
         run: |
-          gh attestation verify \
-            "oci://ghcr.io/katl-dev/kubernetes@${{ steps.bundle.outputs.digest }}" \
+          gh attestation verify "oci://ghcr.io/katl-dev/kubernetes@${MANIFEST_DIGEST}" \
             --repo katl-dev/katl \
             --signer-workflow katl-dev/katl/.github/workflows/kubernetes-bundles.yml \
             --source-ref refs/heads/main

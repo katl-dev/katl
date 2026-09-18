@@ -129,7 +129,8 @@ func NewPlan(options PlanOptions) Plan {
 		plan = append(plan, stubStep{id: WaitForLocalConfig})
 	}
 
-	plan = append(plan,
+	plan = append(
+		plan,
 		loadManifestStep{},
 		stubStep{id: SelectNode},
 		collectHardwareFactsStep{},

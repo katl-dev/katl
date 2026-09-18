@@ -37,10 +37,12 @@ type installDiscoveryReport struct {
 	Installers []discoveredInstaller `json:"installers"`
 }
 
-var installerInterfaceAddrs = net.InterfaceAddrs
-var installerDiscoveryProbe = func(ctx context.Context, endpoint string, timeout time.Duration) (handoff.HandoffStatus, error) {
-	return fetchInstallStatus(ctx, &http.Client{Timeout: timeout}, endpoint)
-}
+var (
+	installerInterfaceAddrs = net.InterfaceAddrs
+	installerDiscoveryProbe = func(ctx context.Context, endpoint string, timeout time.Duration) (handoff.HandoffStatus, error) {
+		return fetchInstallStatus(ctx, &http.Client{Timeout: timeout}, endpoint)
+	}
+)
 
 func newInstallDiscoverCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := installDiscoverOptions{timeout: 3 * time.Second, output: "text", configInit: defaultConfigInitOptions()}

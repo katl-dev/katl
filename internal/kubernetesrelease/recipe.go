@@ -13,6 +13,7 @@ import (
 )
 
 var recipeRoots = []string{
+	".github/workflows/kubernetes-bundles.yml",
 	"Containerfile.mkosi",
 	"cmd/katl-kubernetes-metadata",
 	"cmd/katl-publish-kubernetes-sysext",
@@ -64,6 +65,25 @@ func RecipeDigest(root string) (string, error) {
 		}
 	}
 	return fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
+}
+
+// RecipeChanged keeps unrelated pull requests from rebuilding the image while
+// retaining the producer's required presubmit result on every pull request.
+func RecipeChanged(root, revision string) (bool, error) {
+	if revision == "" || strings.HasPrefix(revision, "-") {
+		return false, fmt.Errorf("comparison revision is required")
+	}
+	args := append([]string{"-C", root, "diff", "--name-only", "-z", revision, "--"}, recipeRoots...)
+	output, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return false, fmt.Errorf("compare Kubernetes recipe: %w", err)
+	}
+	for _, path := range bytes.Split(output, []byte{0}) {
+		if len(path) > 0 && !recipePathExcluded(string(path)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func RefreshRecipe(root string, supported SupportedVersions) (SupportedVersions, bool, error) {

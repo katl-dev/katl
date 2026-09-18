@@ -363,7 +363,7 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	sourceDigest := digestSourceInputs(normalized, kubeadmSourceInputs)
 	planning := request.Planning
 	if strings.TrimSpace(planning.KubernetesBundle) == "" {
-		selection, err := kubernetescompat.Resolve(kubernetescompat.Request{
+		selection, err := kubernetescompat.ResolveAvailable(buildContext, kubernetescompat.Request{
 			KubernetesVersion: selectedKubernetesVersion(source),
 			Architecture:      planning.KatlosImage.Architecture,
 			RuntimeInterface:  planning.KatlosImage.RuntimeInterface,
@@ -1177,7 +1177,8 @@ func addSystemExtensionBundles(members *[]member, descriptors *[]Descriptor, bun
 		if got := digestBytes(resolved.BundleManifest); got != resolved.BundleManifestDigest {
 			return nil, nil, fmt.Errorf("system extension bundle %q custom manifest digest got %s want %s", ref, got, resolved.BundleManifestDigest)
 		}
-		custom := addBytes(members, descriptors,
+		custom := addBytes(
+			members, descriptors,
 			"system-extension-bundle-manifest", "",
 			systemextensionbundle.ConfigMediaType,
 			"extensions/bundles/"+strings.TrimPrefix(resolved.BundleManifestDigest, "sha256:")+".json",
@@ -1198,7 +1199,8 @@ func addSystemExtensionBundles(members *[]member, descriptors *[]Descriptor, bun
 			if existing, ok := byDigest[payload.Descriptor.Digest]; ok {
 				return existing
 			}
-			desc := addBytes(members, descriptors,
+			desc := addBytes(
+				members, descriptors,
 				role, "", payload.Descriptor.MediaType,
 				"extensions/blobs/sha256/"+strings.TrimPrefix(payload.Descriptor.Digest, "sha256:"),
 				payload.Data,

@@ -935,9 +935,11 @@ func (e *Executor) checkKubeadmUpgradeHealth(ctx context.Context, request operat
 			return fmt.Errorf("identify local Kubernetes node: %w", err)
 		}
 		localAPI := []string{"kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--server", localEndpoint.URL()}
-		commands = append(commands,
+		commands = append(
+			commands,
 			append(slices.Clone(localAPI), "get", "--raw=/readyz"),
-			append(slices.Clone(localAPI), "-n", "kube-system", "wait", "--for=condition=Ready", "--timeout=5m",
+			append(
+				slices.Clone(localAPI), "-n", "kube-system", "wait", "--for=condition=Ready", "--timeout=5m",
 				"pod/etcd-"+nodeName,
 				"pod/kube-apiserver-"+nodeName,
 				"pod/kube-controller-manager-"+nodeName,
@@ -1130,6 +1132,7 @@ func kubernetesRef(refs []generation.ExtensionRef) (generation.ExtensionRef, boo
 	}
 	return generation.ExtensionRef{}, false
 }
+
 func replaceKubernetesRef(refs []generation.ExtensionRef, next generation.ExtensionRef) []generation.ExtensionRef {
 	out := append([]generation.ExtensionRef(nil), refs...)
 	for i := range out {
@@ -1140,9 +1143,11 @@ func replaceKubernetesRef(refs []generation.ExtensionRef, next generation.Extens
 	}
 	return append(out, next)
 }
+
 func rootedRuntimePath(root, path string) string {
 	return filepath.Join(runtimeRoot(root), strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)))
 }
+
 func verifyFileDigest(path, want string, size uint64) error {
 	got, n, err := fileDigest(path)
 	if err != nil {
@@ -1156,6 +1161,7 @@ func verifyFileDigest(path, want string, size uint64) error {
 	}
 	return nil
 }
+
 func fileDigest(path string) (string, int64, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -1169,6 +1175,7 @@ func fileDigest(path string) (string, int64, error) {
 	}
 	return hex.EncodeToString(hash.Sum(nil)), n, nil
 }
+
 func copyVerifiedFile(source, target, want string) error {
 	in, err := os.Open(source)
 	if err != nil {

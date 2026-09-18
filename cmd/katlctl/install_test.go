@@ -612,7 +612,6 @@ func TestInstallApplyRejectsInvalidEndpoint(t *testing.T) {
 			t.Fatalf("endpoint %q succeeded", endpoint)
 		}
 	}
-
 }
 
 func installTestStatus(handoffState handoff.HandoffState, state, step string) handoff.HandoffStatus {

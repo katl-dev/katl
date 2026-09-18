@@ -331,7 +331,8 @@ func configSSHKeys(explicitPath string) ([]string, []string, error) {
 			if err == nil {
 				return []string{key}, append(notices, "using SSH public key "+path), nil
 			}
-			return nil, append(notices,
+			return nil, append(
+				notices,
 				"warning: "+err.Error(),
 				"warning: generated ClusterConfig has no SSH authorized keys; add one before install apply",
 			), nil

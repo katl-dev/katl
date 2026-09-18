@@ -192,7 +192,8 @@ func runRuntimeBuild(t *testing.T, repo, bin, dest, support string) {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(repo, "mkosi.profiles", "runtime", "mkosi.build"))
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BUILDDIR="+t.TempDir(),
 		"DESTDIR="+dest,

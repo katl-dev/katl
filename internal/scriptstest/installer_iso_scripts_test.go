@@ -39,7 +39,8 @@ touch "$output"
 `)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "build-installer-iso"))
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_INSTALLER_UKI="+installer,
 		"KATL_KATLOS_IMAGE="+katlosImage,
@@ -153,7 +154,8 @@ exit 1
 	writeFakeExecutable(t, bin, "mcopy", `cp "$KATL_TEST_INSTALLER" "${@: -1}"`+"\n")
 	cmd := exec.Command(filepath.Join(repo, "scripts", "check-installer-iso"), artifact)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_INSTALLER_UKI="+installer,
 		"KATL_TEST_INSTALLER="+installer,
@@ -243,7 +245,8 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 	writeFakeExecutable(t, bin, "mksquashfs", "printf 'katlos image\\n' >\"$2\"\n")
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer-iso")
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=podman",
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
@@ -329,7 +332,8 @@ exit 0
 	writeFakeExecutable(t, bin, "rpm", "printf 'systemd\\t0:259.6-1.fc44.x86_64\\n'\n")
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer")
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=podman",
 		"KATL_MKOSI_BUILD_DIR="+buildDir,

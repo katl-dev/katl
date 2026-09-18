@@ -43,7 +43,8 @@ func TestMkosiArtifactsWriteProducesValidJSON(t *testing.T) {
 	index := filepath.Join(workDir, "artifacts.json")
 	cmd := exec.Command("go", "run", "./cmd/katl-mkosi-artifacts", "write", index)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"KATL_VERSION=0.1.\"quoted\"\\version",
 		"KATL_ARCHITECTURE=x86_64",
 		"KATL_INSTALLER_INTERFACE=katl-installer-test",

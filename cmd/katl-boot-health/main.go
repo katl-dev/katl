@@ -84,7 +84,8 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	if stdout != nil {
-		fmt.Fprintf(stdout, "katl-boot-health generation=%s result=%s default=%s promoted=%t failed=%t recoveryRequired=%t rebootRequested=%t\n",
+		fmt.Fprintf(
+			stdout, "katl-boot-health generation=%s result=%s default=%s promoted=%t failed=%t recoveryRequired=%t rebootRequested=%t\n",
 			record.GenerationID,
 			record.Result,
 			record.DefaultGeneration,

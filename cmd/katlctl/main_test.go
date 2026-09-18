@@ -3511,7 +3511,8 @@ func enrolledNodeAStatus() *agentapi.NodeStatus {
 
 func writeMultiControlPlaneClusterConfig(t *testing.T) string {
 	t.Helper()
-	writeTestEnrollmentContext(t, "lab",
+	writeTestEnrollmentContext(
+		t, "lab",
 		workstation.Node{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "cp-machine"},
 		workstation.Node{Name: "cp-2", ManagementEndpoint: "10.0.0.12:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-2", MachineID: "machine-cp-2"},
 	)

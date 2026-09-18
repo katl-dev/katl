@@ -75,7 +75,8 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if completed.KubeadmUpgradeEvidence.AlternateAPIEndpoint != "10.0.0.2:6443" {
 		t.Fatalf("alternate API endpoint = %q", completed.KubeadmUpgradeEvidence.AlternateAPIEndpoint)
 	}
-	assertCommandOrder(t, commands,
+	assertCommandOrder(
+		t, commands,
 		"kubeadm upgrade plan v1.36.2",
 		"systemctl stop "+endpointAdvertiserUnit,
 		endpointAdvertiserCommand+" withdraw",
@@ -204,7 +205,8 @@ func TestActivateKubeletAPIHandoffClearsUpgradeGate(t *testing.T) {
 			t.Fatalf("kubelet API handoff missing %q:\n%s", want, data)
 		}
 	}
-	assertCommandOrder(t, commands,
+	assertCommandOrder(
+		t, commands,
 		"systemctl daemon-reload",
 		"systemctl restart kubelet.service",
 		"systemctl is-active --quiet kubelet.service",
@@ -499,7 +501,8 @@ func TestExecutorRestoresKubeletAPIHandoffWhenKubeadmFails(t *testing.T) {
 	if !failed.Terminal || !failed.RecoveryRequired || failed.Result != operation.ResultFailedNeedsRepair {
 		t.Fatalf("failed operation = %+v", failed)
 	}
-	assertCommandOrder(t, commands,
+	assertCommandOrder(
+		t, commands,
 		"systemctl restart kubelet.service",
 		"/usr/bin/killall -s SIGTERM kube-apiserver",
 		"kubeadm upgrade apply --yes v1.36.2",

@@ -37,8 +37,10 @@ type kubernetesBuildArtifact struct {
 	SizeBytes      int64
 }
 
-var katlOSBuildVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
-var katlOSBaseVersionPattern = regexp.MustCompile(`^([0-9]{4}\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
+var (
+	katlOSBuildVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
+	katlOSBaseVersionPattern  = regexp.MustCompile(`^([0-9]{4}\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
+)
 
 func newBuildCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
@@ -329,7 +331,8 @@ func buildKubernetesUpgrade(ctx context.Context, repoRoot, version string, stder
 		"KATL_ARCHITECTURE=" + architecture,
 		"KATL_BUILD_COMMIT=" + buildID,
 	}
-	environment := append(append([]string(nil), runtimeEnvironment...),
+	environment := append(
+		append([]string(nil), runtimeEnvironment...),
 		"KATL_KUBERNETES_MINOR="+minor,
 		"KATL_KUBERNETES_PAYLOAD_VERSION="+version,
 		"KATL_KUBERNETES_ARTIFACT_REVISION="+strconv.Itoa(release.ArtifactRevision),

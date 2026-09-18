@@ -20,9 +20,11 @@ import (
 	"github.com/katl-dev/katl/internal/installer/generation"
 )
 
-const sysextRole = "systemd-sysext"
-const provenanceRole = "package-provenance"
-const catalogRole = "catalog-fragment"
+const (
+	sysextRole     = "systemd-sysext"
+	provenanceRole = "package-provenance"
+	catalogRole    = "catalog-fragment"
+)
 
 var ErrInvalidBundle = errors.New("invalid node extension bundle")
 

@@ -147,7 +147,8 @@ func setKubeconfigScalar(mapping *yaml.Node, key, value string) {
 		node.Value = value
 		return
 	}
-	mapping.Content = append(mapping.Content,
+	mapping.Content = append(
+		mapping.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
 	)

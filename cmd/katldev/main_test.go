@@ -310,7 +310,8 @@ func TestBuildKubernetesUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T
 		"KATL_ARCHITECTURE=" + architecture,
 		"KATL_BUILD_COMMIT=" + selected[0].ArtifactVersion(),
 	}
-	environment := append(append([]string(nil), runtimeEnvironment...),
+	environment := append(
+		append([]string(nil), runtimeEnvironment...),
 		"KATL_KUBERNETES_MINOR=v1.36",
 		"KATL_KUBERNETES_PAYLOAD_VERSION=v1.36.2",
 		"KATL_KUBERNETES_ARTIFACT_REVISION="+revision,

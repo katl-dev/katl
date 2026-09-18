@@ -46,9 +46,11 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, query packageQuery) error {
 	if len(args) == 0 {
-		return errors.New("command is required: identity, matrix, prepare, prepare-supported, recipe-digest, record-compatibility, refresh-rebuilds, or verify-recipe")
+		return errors.New("command is required: discover, candidate, inspect, promote, resolve, presubmit, identity, matrix, prepare, prepare-supported, recipe-digest, record-compatibility, refresh-rebuilds, or verify-recipe")
 	}
 	switch args[0] {
+	case "discover", "candidate", "inspect", "promote", "resolve", "presubmit":
+		return runAutomation(args, stdout, stderr, query)
 	case "identity":
 		return runIdentity(args[1:], stdout, stderr)
 	case "matrix":
@@ -604,7 +606,8 @@ func replaceManifestValues(data []byte, replacements map[string]string) ([]byte,
 }
 
 func queryPackage(name, selector, baseURL, command string) (string, error) {
-	cmd := exec.Command(command,
+	cmd := exec.Command(
+		command,
 		"repoquery",
 		"--repofrompath=kubernetes,"+baseURL,
 		"--repo=kubernetes",

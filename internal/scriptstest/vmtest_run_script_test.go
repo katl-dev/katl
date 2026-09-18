@@ -79,7 +79,8 @@ esac
 	command := func(runID string) *exec.Cmd {
 		cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--artifact-set=none", "./internal/vmtest", "-run", "^TestDoesNotMatter$", "-count=1")
 		cmd.Dir = repo
-		cmd.Env = append(os.Environ(),
+		cmd.Env = append(
+			os.Environ(),
 			"KATL_SCRIPTTEST_LOG="+logPath,
 			"KATL_SCRIPTTEST_STORAGE="+tmp,
 			"KATL_VMTEST_GO="+filepath.Join(binDir, "fake-go"),

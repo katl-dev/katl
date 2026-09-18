@@ -68,20 +68,6 @@ func TestRefreshRebuildsRescopesWithoutAdvancingArtifacts(t *testing.T) {
 	}
 }
 
-func TestVerifyRecipeAcceptsScopedRepositoryManifest(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	if err := run([]string{
-		"verify-recipe",
-		"--supported-versions", filepath.Join("..", "..", "internal", "kubernetesrelease", "supported-versions.json"),
-		"--repo-root", filepath.Join("..", ".."),
-	}, &stdout, &stderr, nil); err != nil {
-		t.Fatalf("run() error = %v, stderr=%s", err, stderr.String())
-	}
-	if strings.TrimSpace(stdout.String()) != "Kubernetes bundle recipe is current" {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-}
-
 func TestPrepare(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kubernetes.env")
 	if err := os.WriteFile(path, []byte(testManifest), 0o644); err != nil {

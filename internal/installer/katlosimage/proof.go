@@ -164,7 +164,8 @@ func (p Payload) SingleImageProof(request SingleImageProofRequest) (SingleImageP
 			return SingleImageProofReport{}, fmt.Errorf("verify sysupdate runtime-uki transfer: %w", err)
 		}
 		report.Sysupdate = &sysupdate
-		report.Verification = append(report.Verification,
+		report.Verification = append(
+			report.Verification,
 			VerificationEvidence{Field: "sysupdate.root", Message: "runtime-root component bytes match local/offline transfer source"},
 			VerificationEvidence{Field: "sysupdate.uki", Message: "runtime-uki component bytes match local/offline transfer source"},
 		)

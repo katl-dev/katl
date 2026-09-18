@@ -7,11 +7,12 @@
 package vmtestpb
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -1214,24 +1215,27 @@ func file_internal_vmtest_proto_vmtest_proto_rawDescGZIP() []byte {
 	return file_internal_vmtest_proto_vmtest_proto_rawDescData
 }
 
-var file_internal_vmtest_proto_vmtest_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
-var file_internal_vmtest_proto_vmtest_proto_goTypes = []any{
-	(*VmtestRequest)(nil),        // 0: katl.vmtest.v1.VmtestRequest
-	(*HealthRequest)(nil),        // 1: katl.vmtest.v1.HealthRequest
-	(*HealthResponse)(nil),       // 2: katl.vmtest.v1.HealthResponse
-	(*RunCommandRequest)(nil),    // 3: katl.vmtest.v1.RunCommandRequest
-	(*EnvVar)(nil),               // 4: katl.vmtest.v1.EnvVar
-	(*CommandResult)(nil),        // 5: katl.vmtest.v1.CommandResult
-	(*ReadFileRequest)(nil),      // 6: katl.vmtest.v1.ReadFileRequest
-	(*FileResult)(nil),           // 7: katl.vmtest.v1.FileResult
-	(*WriteFileRequest)(nil),     // 8: katl.vmtest.v1.WriteFileRequest
-	(*WriteFileResult)(nil),      // 9: katl.vmtest.v1.WriteFileResult
-	(*ExportJournalRequest)(nil), // 10: katl.vmtest.v1.ExportJournalRequest
-	(*JournalResult)(nil),        // 11: katl.vmtest.v1.JournalResult
-	(*VmtestError)(nil),          // 12: katl.vmtest.v1.VmtestError
-	(*VmtestResponse)(nil),       // 13: katl.vmtest.v1.VmtestResponse
-	nil,                          // 14: katl.vmtest.v1.VmtestError.DetailsEntry
-}
+var (
+	file_internal_vmtest_proto_vmtest_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+	file_internal_vmtest_proto_vmtest_proto_goTypes  = []any{
+		(*VmtestRequest)(nil),        // 0: katl.vmtest.v1.VmtestRequest
+		(*HealthRequest)(nil),        // 1: katl.vmtest.v1.HealthRequest
+		(*HealthResponse)(nil),       // 2: katl.vmtest.v1.HealthResponse
+		(*RunCommandRequest)(nil),    // 3: katl.vmtest.v1.RunCommandRequest
+		(*EnvVar)(nil),               // 4: katl.vmtest.v1.EnvVar
+		(*CommandResult)(nil),        // 5: katl.vmtest.v1.CommandResult
+		(*ReadFileRequest)(nil),      // 6: katl.vmtest.v1.ReadFileRequest
+		(*FileResult)(nil),           // 7: katl.vmtest.v1.FileResult
+		(*WriteFileRequest)(nil),     // 8: katl.vmtest.v1.WriteFileRequest
+		(*WriteFileResult)(nil),      // 9: katl.vmtest.v1.WriteFileResult
+		(*ExportJournalRequest)(nil), // 10: katl.vmtest.v1.ExportJournalRequest
+		(*JournalResult)(nil),        // 11: katl.vmtest.v1.JournalResult
+		(*VmtestError)(nil),          // 12: katl.vmtest.v1.VmtestError
+		(*VmtestResponse)(nil),       // 13: katl.vmtest.v1.VmtestResponse
+		nil,                          // 14: katl.vmtest.v1.VmtestError.DetailsEntry
+	}
+)
+
 var file_internal_vmtest_proto_vmtest_proto_depIdxs = []int32{
 	1,  // 0: katl.vmtest.v1.VmtestRequest.health:type_name -> katl.vmtest.v1.HealthRequest
 	3,  // 1: katl.vmtest.v1.VmtestRequest.run_command:type_name -> katl.vmtest.v1.RunCommandRequest

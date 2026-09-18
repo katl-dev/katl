@@ -103,7 +103,7 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 }
 
 func TestKubernetesUpgradeBundleUsesReleaseCompatibility(t *testing.T) {
-	bundle, err := kubernetesUpgradeBundle("v1.36.1", "")
+	bundle, err := kubernetesUpgradeBundle(context.Background(), "v1.36.1", "")
 	if err != nil {
 		t.Fatalf("kubernetesUpgradeBundle() error = %v", err)
 	}
@@ -114,7 +114,7 @@ func TestKubernetesUpgradeBundleUsesReleaseCompatibility(t *testing.T) {
 	if image.PayloadVersion != "v1.36.1" || image.ArtifactVersion == "" || image.ManifestDigest == "" {
 		t.Fatalf("image = %#v", image)
 	}
-	if _, err := kubernetesUpgradeBundle("v9.99.9", ""); err == nil || !strings.Contains(err.Error(), "not available") {
+	if _, err := kubernetesUpgradeBundle(context.Background(), "v9.99.9", ""); err == nil || !strings.Contains(err.Error(), "not available") {
 		t.Fatalf("unavailable version error = %v", err)
 	}
 }
@@ -402,8 +402,10 @@ func TestKubernetesUpgradeStopsAfterNodeFailure(t *testing.T) {
 			nodeStatus:     &agentapi.NodeStatus{MachineId: node.MachineID, EnrollmentId: node.EnrollmentID, InventoryNodeName: node.Name, AgentStartId: "before-" + node.Name, CurrentGenerationId: "gen-1"},
 			generation:     &agentapi.Generation{GenerationId: "gen-1", CommitState: "committed", BootState: "good", HealthState: "healthy", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.0"}}},
 			submitAccepted: &agentapi.OperationAccepted{OperationId: "upgrade-" + node.Name},
-			operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded,
-				Phase: "healthy"},
+			operationStatus: &agentapi.OperationStatus{
+				Terminal: true, Result: operation.ResultSucceeded,
+				Phase: "healthy",
+			},
 		}
 		clients[node.ManagementEndpoint] = client
 	}

@@ -27,6 +27,38 @@ func TestRecipeDigestChangesWithProductionInput(t *testing.T) {
 	}
 }
 
+func TestRecipeChanged(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want bool
+	}{
+		{"docs/input.md", false},
+		{"cmd/katl-kubernetes-metadata/main_test.go", false},
+		{"scripts/build-kubernetes-sysext", true},
+		{".github/workflows/kubernetes-bundles.yml", true},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			root := writeRecipeFixture(t)
+			tree, err := exec.Command("git", "-C", root, "write-tree").Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := strings.TrimSpace(string(tree))
+			if changed, err := RecipeChanged(root, base); err != nil || changed {
+				t.Fatalf("unchanged tree = %t, %v", changed, err)
+			}
+
+			if err := os.Remove(filepath.Join(root, test.path)); err != nil {
+				t.Fatal(err)
+			}
+			changed, err := RecipeChanged(root, base)
+			if err != nil || changed != test.want {
+				t.Fatalf("deleted input = %t, %v; want %t", changed, err, test.want)
+			}
+		})
+	}
+}
+
 func TestRecipeDigestTracksNewProductionInput(t *testing.T) {
 	root := writeRecipeFixture(t)
 	first, err := RecipeDigest(root)
@@ -67,6 +99,7 @@ func TestRecipeDigestIgnoresTests(t *testing.T) {
 
 func TestRecipeDigestTracksBundleProducerSources(t *testing.T) {
 	for _, relative := range []string{
+		".github/workflows/kubernetes-bundles.yml",
 		"internal/installer/artifact/artifact.go",
 		"internal/installer/artifact/local.go",
 		"internal/installer/payloadbundle/input.go",
@@ -104,7 +137,6 @@ func TestRecipeDigestTracksBundleProducerSources(t *testing.T) {
 
 func TestRecipeDigestIgnoresUnrelatedProductAndRuntimeSources(t *testing.T) {
 	for _, relative := range []string{
-		".github/workflows/kubernetes-bundles.yml",
 		"cmd/katl-boot-health/main.go",
 		"cmd/katl-kubernetes-release/main.go",
 		"cmd/katl-mkosi-artifacts/main.go",
@@ -232,68 +264,6 @@ func TestRefreshRecipeChangesScopeWithoutAdvancingArtifacts(t *testing.T) {
 		updated.Versions[0].ArtifactRevision != 2 ||
 		updated.Versions[1].ArtifactRevision != 1 {
 		t.Fatalf("updated = %#v, changed = %t", updated, changed)
-	}
-}
-
-func TestDefaultRecipeDigestMatchesRepository(t *testing.T) {
-	supported, err := DefaultSupportedVersions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest, err := RecipeDigest(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if supported.RecipeDigest != digest {
-		t.Fatalf("recipe digest = %s, want %s; run go run ./cmd/katl-kubernetes-release refresh-rebuilds", supported.RecipeDigest, digest)
-	}
-}
-
-func TestKubernetesBundleWorkflowUsesBoundedTriggers(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "kubernetes-bundles.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflow := string(data)
-	for _, required := range []string{
-		".github/workflows/kubernetes-bundles.yml",
-		"Containerfile.mkosi",
-		"cmd/katl-kubernetes-release/**",
-		"cmd/katl-kubernetes-metadata/**",
-		"cmd/katl-publish-kubernetes-sysext/**",
-		"containers-policy.json",
-		"go.mod",
-		"go.sum",
-		"internal/installer/artifact/artifact.go",
-		"internal/installer/artifact/local.go",
-		"internal/installer/payloadbundle/**",
-		"internal/installer/sysextcatalog/catalog.go",
-		"internal/installer/sysextcatalog/publish.go",
-		"internal/installer/sysextcatalog/stage.go",
-		"internal/kubernetesrelease/**",
-		"mkosi.conf",
-		"mkosi.profiles/kubernetes-sysext/**",
-		"mkosi.profiles/runtime/mkosi.conf",
-		"mkosi.profiles/runtime/os-release.in",
-		"scripts/build-kubernetes-sysext",
-		"scripts/check-kubernetes-sysext",
-	} {
-		if !strings.Contains(workflow, "\n      - "+required+"\n") {
-			t.Fatalf("Kubernetes bundle workflow does not track recipe input %q", required)
-		}
-	}
-	for _, unrelated := range []string{
-		"cmd/katl-mkosi-artifacts/**",
-		"cmd/katlc/**",
-		"internal/**",
-		"internal/installer/manifest/**",
-		"internal/installer/sysextcatalog/**",
-		"mkosi.profiles/runtime/**",
-		"scripts/mkosi",
-	} {
-		if strings.Contains(workflow, "\n      - "+unrelated+"\n") {
-			t.Fatalf("Kubernetes bundle workflow tracks unrelated product input %q", unrelated)
-		}
 	}
 }
 

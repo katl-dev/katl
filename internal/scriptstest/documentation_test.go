@@ -11,9 +11,11 @@ import (
 	"testing"
 )
 
-var markdownLinkPattern = regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
-var markdownHeadingPattern = regexp.MustCompile(`(?m)^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$`)
-var markdownAnchorPunctuation = regexp.MustCompile(`[^\pL\pN _-]+`)
+var (
+	markdownLinkPattern       = regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
+	markdownHeadingPattern    = regexp.MustCompile(`(?m)^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$`)
+	markdownAnchorPunctuation = regexp.MustCompile(`[^\pL\pN _-]+`)
+)
 
 func TestPublicDocumentationLocalLinks(t *testing.T) {
 	repo := repoRoot(t)
