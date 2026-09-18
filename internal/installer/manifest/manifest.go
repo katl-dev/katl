@@ -244,6 +244,7 @@ type BootstrapIntent struct {
 	ProfileResolvedID    string            `json:"profileResolvedID,omitempty" yaml:"profileResolvedID,omitempty"`
 	KubernetesCatalogRef string            `json:"kubernetesCatalogRef,omitempty" yaml:"kubernetesCatalogRef,omitempty"`
 	KubernetesBundle     string            `json:"kubernetesBundle,omitempty" yaml:"kubernetesBundle,omitempty"`
+	KubernetesVersion    string            `json:"kubernetesVersion,omitempty" yaml:"kubernetesVersion,omitempty"`
 	Access               BootstrapAccess   `json:"access,omitempty" yaml:"access,omitempty"`
 	Labels               map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 	Taints               []NodeTaint       `json:"taints,omitempty" yaml:"taints,omitempty"`

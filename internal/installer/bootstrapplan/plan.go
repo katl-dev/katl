@@ -395,15 +395,9 @@ func selectKubernetesSysext(root string, previous generation.GenerationSpec, _ i
 }
 
 func selectFetchedBundleSysext(root string, previous generation.GenerationSpec, request operation.BootstrapRequest, client *http.Client) (SelectedKubernetesSysext, error) {
-	payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(request.KubernetesBundleRef)
-	if err != nil {
-		return SelectedKubernetesSysext{}, fmt.Errorf("bootstrapRequest kubernetesBundleRef: %w", err)
-	}
-	if payloadVersion != request.KubernetesPayloadVersion {
-		return SelectedKubernetesSysext{}, fmt.Errorf("bootstrapRequest kubernetesBundleRef payload version %q does not match kubernetesPayloadVersion %q", payloadVersion, request.KubernetesPayloadVersion)
-	}
 	cacheDir := filepath.Join(filepath.Clean(root), "var/lib/katl/artifacts/kubernetes-bundles")
 	staged, err := kubernetesbundle.FetchAndStage(context.Background(), kubernetesbundle.Request{
+		PayloadVersion:   request.KubernetesPayloadVersion,
 		Source:           request.KubernetesBundleSource,
 		Ref:              request.KubernetesBundleRef,
 		CacheDir:         cacheDir,

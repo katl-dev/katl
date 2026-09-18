@@ -6,19 +6,53 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/distribution/reference"
+
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-func TestParseReferenceUsesCommonOCIShape(t *testing.T) {
+func TestParseReference(t *testing.T) {
 	pin := "sha256:" + strings.Repeat("a", 64)
-	ref, err := ParseReference("registry.example/katl-dev/payload:v1@" + pin)
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range []struct{ value, name, tag, digest string }{
+		{"registry.example/katl/payload:v1", "registry.example/katl/payload", "v1", ""},
+		{"localhost:5000/katl/payload@" + pin, "localhost:5000/katl/payload", "", pin},
+		{"registry.example/katl/payload:v1@" + pin, "registry.example/katl/payload", "v1", pin},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			ref, err := ParseReference(test.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ref.Name() != test.name || ref.String() != test.value {
+				t.Fatalf("reference = %s", ref)
+			}
+			tagged, hasTag := ref.(reference.Tagged)
+			if hasTag != (test.tag != "") || hasTag && tagged.Tag() != test.tag {
+				t.Fatalf("tagged reference = %v", tagged)
+			}
+			pinned, hasDigest := ref.(reference.Digested)
+			if hasDigest != (test.digest != "") || hasDigest && pinned.Digest().String() != test.digest {
+				t.Fatalf("pinned reference = %v", pinned)
+			}
+		})
 	}
-	if ref.Repository != "registry.example/katl-dev/payload" || ref.Tag != "v1" ||
-		ref.ManifestDigest != pin || ref.Source != "https://registry.example/v2/katl-dev/payload" {
-		t.Fatalf("reference = %#v", ref)
+}
+
+func TestParseReferenceRejectsInvalid(t *testing.T) {
+	for _, value := range []string{
+		"", "https://registry.example/katl/payload:v1", "registry.example/katl/payload",
+		"registry.example/katl/payload:", "registry.example/katl/payload:bad tag",
+		"registry.example/katl/payload:bad/tag", "registry.example/Upper/payload:v1",
+		"registry.example/katl/payload@sha256:abc", "registry.example/katl/payload@sha256:" + strings.Repeat("z", 64),
+		"registry.example/katl/payload@sha256:" + strings.Repeat("a", 64) + "@sha256:" + strings.Repeat("b", 64),
+		"alpine:latest",
+	} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := ParseReference(value); err == nil {
+				t.Fatal("accepted invalid or unqualified reference")
+			}
+		})
 	}
 }
 

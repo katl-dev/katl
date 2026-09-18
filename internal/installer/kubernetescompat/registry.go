@@ -3,15 +3,19 @@ package kubernetescompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
+
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
+	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 )
@@ -56,18 +60,39 @@ func ResolveAvailable(ctx context.Context, request Request) (Entry, error) {
 		return Entry{}, err
 	}
 	repository.Client = &auth.Client{Client: &http.Client{Timeout: 30 * time.Second}, Cache: auth.NewCache()}
-	entry, err := ResolveTarget(ctx, repository, Repository, tag, request)
+	entry, err := ResolveTarget(ctx, repository, Repository, request.KubernetesVersion, request)
+	if errors.Is(err, errdef.ErrNotFound) {
+		entry, err = ResolveTarget(ctx, repository, Repository, tag, request)
+	}
 	if err != nil {
 		return Entry{}, fmt.Errorf("Kubernetes %s is not available for this KatlOS runtime: %w; check registry access and choose a published compatible version", request.KubernetesVersion, err)
 	}
 	return entry, nil
 }
 
+// ResolveImage resolves a user-selected reference once and validates its
+// metadata before the immutable digest is carried into an operation.
+func ResolveImage(ctx context.Context, ref reference.Named, request Request) (Entry, error) {
+	repository, err := remote.NewRepository(ref.Name())
+	if err != nil {
+		return Entry{}, err
+	}
+	repository.Client = &auth.Client{Client: &http.Client{Timeout: 30 * time.Second}, Cache: auth.NewCache()}
+	identifier := ""
+	if tagged, ok := ref.(reference.Tagged); ok {
+		identifier = tagged.Tag()
+	}
+	if pinned, ok := ref.(reference.Digested); ok {
+		identifier = pinned.Digest().String()
+	}
+	return ResolveTarget(ctx, repository, ref.Name(), identifier, request)
+}
+
 // ResolveTarget verifies small OCI metadata without downloading the sysext.
 func ResolveTarget(ctx context.Context, target payloadbundle.Target, repository, tag string, request Request) (Entry, error) {
 	reference := repository + ":" + tag
 	if strings.HasPrefix(tag, "sha256:") {
-		reference = repository + ":candidate@" + tag
+		reference = repository + "@" + tag
 	}
 	ref, err := payloadbundle.ParseReference(reference)
 	if err != nil {
@@ -114,8 +139,9 @@ func ResolveTarget(ctx context.Context, target payloadbundle.Target, repository,
 		return Entry{}, err
 	}
 	entry := Entry{
+		ArtifactVersion:   bundle.ArtifactVersion,
 		KubernetesVersion: bundle.PayloadVersion,
-		Bundle:            repository + ":" + bundle.ArtifactVersion + "@" + fetched.ManifestDigest,
+		Bundle:            repository + "@" + fetched.ManifestDigest,
 		Architectures:     []string{bundle.Architecture}, RuntimeInterfaces: bundle.SupportedRuntimeInterfaces,
 	}
 	if err := Validate(Catalog{APIVersion: APIVersion, Kind: Kind, Entries: []Entry{entry}}); err != nil {

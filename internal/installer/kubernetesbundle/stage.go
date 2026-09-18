@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
+
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -50,6 +52,7 @@ const (
 )
 
 type Request struct {
+	PayloadVersion   string
 	Source           string
 	Ref              string
 	CacheDir         string
@@ -125,34 +128,12 @@ var ErrInvalidBundle = errors.New("invalid Kubernetes payload bundle")
 
 var artifactVersionPattern = regexp.MustCompile(`^v([0-9]+\.[0-9]+\.[0-9]+)-katl\.[0-9]+$`)
 
-type ImageReference struct {
-	Value           string
-	Repository      string
-	Tag             string
-	ManifestDigest  string
-	PayloadVersion  string
-	ArtifactVersion string
-	Source          string
-}
-
-func ParseImageReference(value string) (ImageReference, error) {
+func ParseImageReference(value string) (reference.Named, error) {
 	ref, err := payloadbundle.ParseReference(value)
 	if err != nil {
-		return ImageReference{}, fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidBundle, err)
 	}
-	match := artifactVersionPattern.FindStringSubmatch(ref.Tag)
-	if match == nil {
-		return ImageReference{}, fmt.Errorf("%w: image tag %q must look like v1.36.0-katl.1", ErrInvalidBundle, ref.Tag)
-	}
-	return ImageReference{
-		Value:           ref.Value,
-		Repository:      ref.Repository,
-		Tag:             ref.Tag,
-		ManifestDigest:  ref.ManifestDigest,
-		PayloadVersion:  "v" + match[1],
-		ArtifactVersion: ref.Tag,
-		Source:          ref.Source,
-	}, nil
+	return ref, nil
 }
 
 func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
@@ -164,7 +145,7 @@ func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
 		client = &http.Client{Timeout: 10 * time.Minute}
 	}
 	if image, err := ParseImageReference(request.Ref); err == nil {
-		if strings.TrimRight(strings.TrimSpace(request.Source), "/") != image.Source {
+		if strings.TrimRight(strings.TrimSpace(request.Source), "/") != payloadbundle.Source(image) {
 			return Staged{}, fmt.Errorf("%w: image reference repository does not match source", ErrInvalidBundle)
 		}
 		repository, ok, err := registryRepository(request.Source, client)
@@ -174,11 +155,18 @@ func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
 		if !ok {
 			return Staged{}, fmt.Errorf("%w: image reference requires an OCI registry source", ErrInvalidBundle)
 		}
-		identifier := image.Tag
-		if image.ManifestDigest != "" {
-			identifier = image.ManifestDigest
+		identifier := payloadbundle.Tag(image)
+		if payloadbundle.ManifestDigest(image) != "" {
+			identifier = payloadbundle.ManifestDigest(image)
 		}
-		return fetchAndStageOCI(ctx, request, ref{PayloadVersion: image.PayloadVersion}, repository, identifier, "", image.ManifestDigest, image.ArtifactVersion)
+		version := request.PayloadVersion
+		if version == "" {
+			version, _ = PayloadVersionFromRef(image.String())
+		}
+		if sysextcatalog.KubernetesMinor(version) == "" {
+			return Staged{}, fmt.Errorf("%w: payload version is required separately from the OCI reference", ErrInvalidBundle)
+		}
+		return fetchAndStageOCI(ctx, request, ref{PayloadVersion: version}, repository, identifier, "", payloadbundle.ManifestDigest(image))
 	}
 	source := strings.TrimRight(strings.TrimSpace(request.Source), "/")
 	ref, err := parseRef(request.Ref)
@@ -189,7 +177,7 @@ func FetchAndStage(ctx context.Context, request Request) (Staged, error) {
 		return Staged{}, err
 	} else if ok {
 		tag := registryTagPrefix + strings.TrimPrefix(ref.BundleDigest, "sha256:")
-		return fetchAndStageOCI(ctx, request, ref, repository, tag, ref.BundleDigest, "", "")
+		return fetchAndStageOCI(ctx, request, ref, repository, tag, ref.BundleDigest, "")
 	}
 
 	indexURL := source + "/index.json"
@@ -312,11 +300,19 @@ func registryRepository(source string, client *http.Client) (ociRepository, bool
 	return repository, true, nil
 }
 
-func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository ociRepository, identifier, expectedBundleDigest, expectedManifestDigest, expectedArtifactVersion string) (Staged, error) {
-	fetched, err := payloadbundle.FetchTargetManifest(ctx, repository, identifier, payloadbundle.Reference{
-		Value:          request.Ref,
-		ManifestDigest: expectedManifestDigest,
-	}, bundleArtifactType, bundleMediaType)
+func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository ociRepository, identifier, expectedBundleDigest, expectedManifestDigest string) (Staged, error) {
+	// Legacy bundle refs are config digests; only an OCI manifest pin constrains resolution.
+	var image reference.Reference
+	var err error
+	if expectedManifestDigest != "" {
+		image, err = reference.Parse(expectedManifestDigest)
+	} else {
+		image, err = reference.Parse(identifier)
+	}
+	if err != nil {
+		return Staged{}, fmt.Errorf("invalid OCI identifier: %w", err)
+	}
+	fetched, err := payloadbundle.FetchTargetManifest(ctx, repository, identifier, image, bundleArtifactType, bundleMediaType)
 	if err != nil {
 		return Staged{}, fmt.Errorf("fetch Kubernetes payload OCI bundle %s: %w", inventory.Redact(request.Ref), err)
 	}
@@ -332,9 +328,6 @@ func fetchAndStageOCI(ctx context.Context, request Request, ref ref, repository 
 	var bundle Bundle
 	if err := json.Unmarshal(bundleBytes, &bundle); err != nil {
 		return Staged{}, fmt.Errorf("%w: decode bundle manifest: %v", ErrInvalidBundle, err)
-	}
-	if expectedArtifactVersion != "" && bundle.ArtifactVersion != expectedArtifactVersion {
-		return Staged{}, fmt.Errorf("%w: bundle artifact version %q does not match image tag %q", ErrInvalidBundle, bundle.ArtifactVersion, expectedArtifactVersion)
 	}
 	entry := IndexEntry{
 		PayloadVersion:             ref.PayloadVersion,
@@ -497,7 +490,11 @@ func matchingOCILayer(layers []ocispec.Descriptor, descriptor Descriptor) (ocisp
 
 func PayloadVersionFromRef(value string) (string, error) {
 	if image, err := ParseImageReference(value); err == nil {
-		return image.PayloadVersion, nil
+		match := artifactVersionPattern.FindStringSubmatch(payloadbundle.Tag(image))
+		if match == nil {
+			return "", fmt.Errorf("Kubernetes version must be provided separately from the image reference")
+		}
+		return "v" + match[1], nil
 	}
 	ref, err := parseRef(value)
 	if err != nil {

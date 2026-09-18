@@ -101,9 +101,17 @@ func TestPublishedSelection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := Repository + ":v1.37.0-katl.1@" + manifest.Digest.String()
+			want := Repository + "@" + manifest.Digest.String()
 			if entry.Bundle != want {
 				t.Fatalf("bundle = %s, want %s", entry.Bundle, want)
+			}
+			// Moving the alias after selection must not redirect the recorded digest.
+			replacement, err := oras.PackManifest(ctx, store, oras.PackManifestVersion1_1, sysextcatalog.KubernetesBundleArtifactType, oras.PackManifestOptions{ConfigDescriptor: &config, Layers: layers, ManifestAnnotations: map[string]string{"test": "replacement"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Tag(ctx, replacement, "compatible-v1.37.0-x86_64-katl-runtime-1"); err != nil {
+				t.Fatal(err)
 			}
 			pinned, err := ResolveTarget(ctx, store, Repository, manifest.Digest.String(), Request{KubernetesVersion: "v1.37.0"})
 			if err != nil || pinned.Bundle != want {

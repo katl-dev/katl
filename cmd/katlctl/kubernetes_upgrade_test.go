@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
@@ -111,7 +113,7 @@ func TestKubernetesUpgradeBundleUsesReleaseCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseImageReference() error = %v", err)
 	}
-	if image.PayloadVersion != "v1.36.1" || image.ArtifactVersion == "" || image.ManifestDigest == "" {
+	if payloadbundle.Tag(image) != "" || payloadbundle.ManifestDigest(image) == "" {
 		t.Fatalf("image = %#v", image)
 	}
 	if _, err := kubernetesUpgradeBundle(context.Background(), "v9.99.9", ""); err == nil || !strings.Contains(err.Error(), "not available") {
@@ -368,7 +370,7 @@ func TestKubernetesUpgradeCordonIsExplicitAndNonDraining(t *testing.T) {
 	}
 	report, err := runKubernetesUpgradeTarget(context.Background(), workstation.ResolvedTopology{}, kubernetesUpgradeOptions{cordon: true, kubeconfig: "/tmp/admin.conf", timeout: time.Minute}, kubernetesUpgradeTarget{
 		node: workstation.TopologyNode{Name: "worker-1", SystemRole: "worker"}, upgradeRole: "worker", conn: katlcAgentConnection{Client: client}, machineID: "machine-worker-1", generation: "gen0", source: "v1.36.0", candidate: "gen1",
-	}, image, nil, &bytes.Buffer{})
+	}, image, "v1.36.1", nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}

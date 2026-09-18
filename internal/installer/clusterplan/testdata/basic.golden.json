@@ -71,6 +71,7 @@
             "controlPlaneEndpoint": "api.katl.test:6443",
             "bootstrapProfileRef": "control-plane",
             "profileResolvedID": "kubeadm:control-plane",
+            "kubernetesVersion": "v1.36.1",
             "access": {
               "method": "agent",
               "credentialRef": "vsock:1234:10240"
@@ -207,6 +208,7 @@
             "controlPlaneEndpoint": "api.katl.test:6443",
             "bootstrapProfileRef": "worker",
             "profileResolvedID": "kubeadm:worker",
+            "kubernetesVersion": "v1.36.1",
             "access": {
               "method": "agent",
               "credentialRef": "vsock:1235:10240"

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
@@ -510,8 +512,8 @@ func assertReleaseKubernetesPayload(t *testing.T, payloads []KubernetesPayloadRe
 	if payload.RequestedVersion != version ||
 		payload.ResolvedPayloadVersion != version ||
 		payload.Ref != selection.Bundle ||
-		payload.OCIManifestDigest != image.ManifestDigest ||
-		payload.ArtifactVersion != image.ArtifactVersion ||
+		payload.OCIManifestDigest != payloadbundle.ManifestDigest(image) ||
+		payload.ArtifactVersion != "" ||
 		payload.ResolverVersion != "release-compatibility-v1" ||
 		payload.Architecture != "x86_64" ||
 		len(payload.SupportedRuntimeInterfaces) != 1 ||
@@ -1018,11 +1020,12 @@ func TestBuildArchiveRequiresControlPlaneNode(t *testing.T) {
 
 func TestBuildArchiveAccountsForOperationInputsWithoutAddingThemToIntent(t *testing.T) {
 	image := testKatlosImage()
+	bundle := "ghcr.io/katl-dev/kubernetes@sha256:" + strings.Repeat("a", 64)
 	archive, result, err := BuildArchive(BuildRequest{
 		SourcePath: writeSource(t, validSourceConfig()),
 		Planning: PlanningInputs{
 			KatlosImage:      image,
-			KubernetesBundle: "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.2",
+			KubernetesBundle: bundle,
 			BootstrapAccess: map[string]inventory.Access{
 				"cp-1": {Method: "agent", CredentialRef: "vsock:1234:10240"},
 			},
@@ -1041,12 +1044,12 @@ func TestBuildArchiveAccountsForOperationInputsWithoutAddingThemToIntent(t *test
 	if got := selected.InstallManifest.Node.Bootstrap.Access.CredentialRef; got != "vsock:1234:10240" {
 		t.Fatalf("operation bootstrap access = %q", got)
 	}
-	if got := result.Manifest.Cluster.KubernetesPayloads[0].Ref; got != "ghcr.io/katl-dev/kubernetes:v1.36.1-katl.2" {
+	if got := result.Manifest.Cluster.KubernetesPayloads[0].Ref; got != bundle {
 		t.Fatalf("operation Kubernetes bundle = %q", got)
 	}
 	files := readTarFiles(t, archive)
 	normalized := files["blobs/sha256/"+strings.TrimPrefix(result.Manifest.Source.NormalizedConfig.Digest, "sha256:")]
-	for _, internal := range []string{"katlosImage", "kubernetes:v1.36.1-katl.2", "credentialRef", "vsock:1234:10240"} {
+	for _, internal := range []string{"katlosImage", bundle, "credentialRef", "vsock:1234:10240"} {
 		if bytes.Contains(normalized, []byte(internal)) {
 			t.Fatalf("normalized ClusterConfig contains operation input %q:\n%s", internal, normalized)
 		}

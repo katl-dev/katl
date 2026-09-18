@@ -208,8 +208,10 @@ artifacts, provide digest-pinned source and target OCI bundles. The upgrade
 scenario fetches and verifies both bundles through the product bundle path:
 
 ```sh
-KATL_VMTEST_KUBERNETES_BUNDLE='ghcr.io/katl-dev/kubernetes:v1.36.1-katl.35@sha256:f6060cd025aa28db3ac76c82c45f8aac858baa198d09829e36ff9c920bb1e281' \
-KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='ghcr.io/katl-dev/kubernetes:v1.36.2-katl.34@sha256:6362d1f3b79fd73323b9f77be8348ac2c76db83b95eb9f818d710eacc89493fb' \
+KATL_KUBERNETES_VERSION=v1.36.1 \
+KATL_VMTEST_KUBERNETES_UPGRADE_VERSION=v1.36.2 \
+KATL_VMTEST_KUBERNETES_BUNDLE='ghcr.io/katl-dev/kubernetes@sha256:f6060cd025aa28db3ac76c82c45f8aac858baa198d09829e36ff9c920bb1e281' \
+KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='ghcr.io/katl-dev/kubernetes@sha256:6362d1f3b79fd73323b9f77be8348ac2c76db83b95eb9f818d710eacc89493fb' \
 scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
   -run '^TestKubeadmUpgradeOperationSmoke$' \
   -count=1 -failfast -timeout 75m
@@ -361,9 +363,9 @@ existing digests are retained.
 
 The checked-in supported-version manifest and recipe fingerprint are local
 build fixtures. `prepare-supported` and `refresh-rebuilds` maintain those
-fixtures; they do not request new public versions. The fixed `-katl.1` metadata
-suffix, compatibility aliases and digest lookup tags retain support for released
-clients. Operators select upstream versions; they do not track Katl rebuild
+fixtures; they do not request new public versions. New bundles use `vVERSION-1` build tags alongside `vVERSION` aliases.
+The updated Katl release resolves tags once and records digest-only references
+with the Kubernetes version stored separately. Operators select upstream versions; they do not track Katl rebuild
 counters. A future runtime interface requires a separate compatibility-policy
 decision.
 
@@ -423,6 +425,8 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
 scripts/vmtest-run --artifact-set=default ./internal/vmtest \
   -run '^TestInstalledRuntimeSysupdateRootUKITransfer$' \
   -count=1 -failfast -timeout 45m
+KATL_KUBERNETES_VERSION='<source-version>' \
+KATL_VMTEST_KUBERNETES_UPGRADE_VERSION='<target-version>' \
 KATL_VMTEST_KUBERNETES_BUNDLE='<digest-pinned-source-bundle>' \
 KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='<digest-pinned-target-bundle>' \
 scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \

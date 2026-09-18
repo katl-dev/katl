@@ -49,7 +49,7 @@ func TestCandidateIdentity(t *testing.T) {
 			}
 		})
 	}
-	if first.ArtifactVersion != "v1.37.0-katl.1" {
+	if first.ArtifactVersion != "v1.37.0-1" {
 		t.Fatalf("released-node metadata identity = %s", first.ArtifactVersion)
 	}
 }

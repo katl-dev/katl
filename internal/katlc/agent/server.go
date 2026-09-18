@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -1433,9 +1435,16 @@ func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapO
 		}
 	}
 	if strings.TrimSpace(request.KubernetesBundleRef) != "" {
-		payloadVersion, err := kubernetesbundle.PayloadVersionFromRef(request.KubernetesBundleRef)
-		if err != nil || payloadVersion != strings.TrimSpace(request.KubernetesPayloadVersion) {
-			return fmt.Errorf("kubernetesBundleRef must select kubernetesPayloadVersion")
+		image, err := kubernetesbundle.ParseImageReference(request.KubernetesBundleRef)
+		if err == nil {
+			if payloadbundle.ManifestDigest(image) == "" {
+				return fmt.Errorf("kubernetesBundleRef requires an immutable OCI manifest digest")
+			}
+		} else {
+			version, err := kubernetesbundle.PayloadVersionFromRef(request.KubernetesBundleRef)
+			if err != nil || version != strings.TrimSpace(request.KubernetesPayloadVersion) {
+				return fmt.Errorf("kubernetesBundleRef must select kubernetesPayloadVersion")
+			}
 		}
 	}
 	if strings.TrimSpace(request.BootstrapProfileRef) == "" {

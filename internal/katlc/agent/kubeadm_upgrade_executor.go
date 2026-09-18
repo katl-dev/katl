@@ -639,6 +639,7 @@ func (e *Executor) resolveKubernetesUpgradePayload(ctx context.Context, record o
 	request = record.KubernetesSysextUpdate
 	cacheDir := rootedRuntimePath(e.Root, filepath.ToSlash(filepath.Join("/var/lib/katl/artifacts/kubernetes-upgrades", record.OperationID)))
 	staged, err := kubernetesbundle.FetchAndStage(ctx, kubernetesbundle.Request{
+		PayloadVersion:   request.TargetPayloadVersion,
 		Source:           request.KubernetesBundleSource,
 		Ref:              request.KubernetesBundleRef,
 		CacheDir:         cacheDir,

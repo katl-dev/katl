@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/generation"
@@ -218,11 +220,11 @@ func validateKubernetesSysextUpdateRequest(operationKind string, req *agentapi.K
 		if err != nil {
 			return fmt.Errorf("kubernetesBundleRef: %w", err)
 		}
-		if strings.TrimRight(strings.TrimSpace(req.KubernetesBundleSource), "/") != image.Source {
+		if strings.TrimRight(strings.TrimSpace(req.KubernetesBundleSource), "/") != payloadbundle.Source(image) {
 			return fmt.Errorf("kubernetesBundleSource does not match kubernetesBundleRef repository")
 		}
-		if image.PayloadVersion != strings.TrimSpace(req.TargetPayloadVersion) {
-			return fmt.Errorf("kubernetesBundleRef payload %s does not match targetPayloadVersion %s", image.PayloadVersion, req.TargetPayloadVersion)
+		if payloadbundle.ManifestDigest(image) == "" {
+			return fmt.Errorf("kubernetesBundleRef requires an immutable OCI manifest digest")
 		}
 	}
 	if hasTargetDigest {

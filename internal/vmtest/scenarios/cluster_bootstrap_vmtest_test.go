@@ -21,6 +21,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
+
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
@@ -131,15 +135,11 @@ func operationBackedFreshFixtureWorld(world vmtest.World) vmtest.World {
 
 func operationBackedKubernetesVersion(t *testing.T, repo string) string {
 	t.Helper()
-	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")); value != "" {
-		image, err := kubernetesbundle.ParseImageReference(value)
-		if err != nil {
-			t.Fatalf("parse published Kubernetes bundle: %v", err)
-		}
-		return image.PayloadVersion
-	}
 	if version := firstString(os.Getenv("KATL_KUBERNETES_VERSION"), os.Getenv("KATL_KUBERNETES_PAYLOAD_VERSION")); version != "" {
 		return version
+	}
+	if strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")) != "" {
+		t.Fatal("KATL_KUBERNETES_VERSION is required with a published bundle")
 	}
 	for _, path := range []string{
 		os.Getenv("KATL_KUBERNETES_SYSEXT_METADATA"),
@@ -382,7 +382,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		var upgradeFixtures map[string][]nodeImageFixture
 		targetVersion := "v1.36.1"
 		if bundle := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); bundle != "" {
-			targetVersion, err = publishedKubernetesUpgradeVersion(bundle)
+			targetVersion, err = publishedKubernetesUpgradeVersion(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_VERSION"))
 		}
 		if err == nil {
 			upgradeFixtures, err = stageKubernetesImageFixtures(ctx, katlRepoRoot(t), targetVersion, nodes...)
@@ -833,7 +833,7 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err != nil {
 		return err
 	}
-	targetVersion, err := publishedKubernetesUpgradeVersion(bundle)
+	targetVersion, err := publishedKubernetesUpgradeVersion(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_VERSION"))
 	if err != nil {
 		return err
 	}
@@ -906,7 +906,7 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		if err != nil {
 			return err
 		}
-		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.KubernetesBundleRef != image.Value || record.KubernetesSysextUpdate.BundleManifestDigest == "" || record.KubernetesSysextUpdate.TargetSysextSHA256 == "" {
+		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.KubernetesBundleRef != image.String() || record.KubernetesSysextUpdate.BundleManifestDigest == "" || record.KubernetesSysextUpdate.TargetSysextSHA256 == "" {
 			return fmt.Errorf("%s upgrade did not resolve the published bundle internally: %+v", item.Name, record.KubernetesSysextUpdate)
 		}
 		if item.Name == cpNode.Name && (record.KubernetesSysextUpdate.SnapshotDigest == "" || record.KubernetesSysextUpdate.SnapshotStorageLocation == "") {
@@ -960,12 +960,12 @@ func verifyKubernetesVersions(ctx context.Context, kubeconfigPath, evidenceDir, 
 	return nil
 }
 
-func publishedKubernetesUpgradeVersion(bundle string) (string, error) {
-	image, err := kubernetesbundle.ParseImageReference(bundle)
-	if err != nil {
-		return "", err
+func publishedKubernetesUpgradeVersion(value string) (string, error) {
+	version := strings.TrimSpace(value)
+	if sysextcatalog.KubernetesMinor(version) == "" {
+		return "", fmt.Errorf("KATL_VMTEST_KUBERNETES_UPGRADE_VERSION must specify the target Kubernetes version separately from its bundle reference")
 	}
-	return image.PayloadVersion, nil
+	return version, nil
 }
 
 func TestKubernetesVersionObservation(t *testing.T) {
@@ -1006,13 +1006,15 @@ esac
 	}
 }
 
-func TestPublishedKubernetesUpgradeUsesPayloadVersion(t *testing.T) {
-	version, err := publishedKubernetesUpgradeVersion("ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1@sha256:" + strings.Repeat("a", 64))
-	if err != nil {
-		t.Fatalf("publishedKubernetesUpgradeVersion() error = %v", err)
+func TestPublishedKubernetesUpgradeVersion(t *testing.T) {
+	version, err := publishedKubernetesUpgradeVersion("v1.36.1")
+	if err != nil || version != "v1.36.1" {
+		t.Fatalf("version = %q, %v", version, err)
 	}
-	if version != "v1.36.1" {
-		t.Fatalf("published Kubernetes upgrade version = %q, want payload version v1.36.1", version)
+	for _, value := range []string{"", "ghcr.io/katl-dev/kubernetes:v1.36.1-1", "v1.36.1-1"} {
+		if _, err := publishedKubernetesUpgradeVersion(value); err == nil {
+			t.Fatalf("accepted version %q", value)
+		}
 	}
 }
 
@@ -1243,13 +1245,18 @@ func stageOperationBackedKubernetesPayloadBundle(repo string, result vmtest.Resu
 		if err != nil {
 			return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
 		}
-		if image.PayloadVersion != kubernetesVersion {
-			return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, fmt.Errorf("published Kubernetes bundle payload is %s, want %s", image.PayloadVersion, kubernetesVersion)
+		selection, err := kubernetescompat.ResolveImage(context.Background(), image, kubernetescompat.Request{KubernetesVersion: kubernetesVersion})
+		if err != nil {
+			return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
+		}
+		image, err = kubernetesbundle.ParseImageReference(selection.Bundle)
+		if err != nil {
+			return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
 		}
 		bundle := threeControlPlaneKubernetesPayloadBundle{
-			Source:         image.Source,
-			Ref:            image.Value,
-			PayloadVersion: image.PayloadVersion,
+			Source:         payloadbundle.Source(image),
+			Ref:            image.String(),
+			PayloadVersion: kubernetesVersion,
 			LogPath:        filepath.Join(result.RunDir, "kubernetes-payload-bundle.log"),
 		}
 		if err := writeKubernetesBundleSourceLog(bundle.LogPath, bundle); err != nil {

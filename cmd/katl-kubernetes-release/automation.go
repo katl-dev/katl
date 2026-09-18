@@ -86,7 +86,7 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 		if err != nil {
 			return err
 		}
-		if (*artifact != "" || args[0] == "promote") && (!artifactPattern.MatchString(*artifact) || !strings.HasPrefix(*artifact, *version+"-katl.")) {
+		if (*artifact != "" || args[0] == "promote") && (!artifactPattern.MatchString(*artifact) || !strings.HasPrefix(*artifact, *version+"-")) {
 			return fmt.Errorf("artifact version must match payload version")
 		}
 		repository, err := remote.NewRepository(*repositoryName)
@@ -118,11 +118,11 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 			}
 			return err
 		}
-		if *artifact != "" && !strings.HasPrefix(entry.Bundle, *repositoryName+":"+*artifact+"@") {
+		if *artifact != "" && entry.ArtifactVersion != *artifact {
 			return fmt.Errorf("candidate artifact identity mismatch")
 		}
-		image, digest, _ := strings.Cut(entry.Bundle, "@")
-		artifactVersion := strings.TrimPrefix(image, *repositoryName+":")
+		_, digest, _ := strings.Cut(entry.Bundle, "@")
+		artifactVersion := entry.ArtifactVersion
 		promoted := false
 		if args[0] == "inspect" {
 			descriptor, err := repository.Resolve(ctx, promotion)
@@ -134,7 +134,7 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 		if args[0] == "promote" {
 			// Check every alias before writing any: retries must not replace a
 			// previously verified upstream release. The workflow serializes writers.
-			for _, tag := range []string{*version, promotion} {
+			for _, tag := range []string{*version, *version + "-1", promotion} {
 				existing, err := repository.Resolve(ctx, tag)
 				if err != nil && !errors.Is(err, errdef.ErrNotFound) {
 					return err
@@ -147,7 +147,7 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 			if err != nil {
 				return err
 			}
-			for _, tag := range []string{promotion, *version} {
+			for _, tag := range []string{promotion, *version + "-1", *version} {
 				if err := repository.Tag(ctx, descriptor, tag); err != nil {
 					return err
 				}
@@ -167,13 +167,12 @@ func runAutomation(args []string, stdout, stderr io.Writer, query packageQuery) 
 }
 
 func candidate(version string, packages kubernetesrelease.PackageVersions) releaseMatrixEntry {
-	// Released nodes require this suffix in bundle metadata. It is not an
-	// update counter: publication is immutable for each upstream version.
+	// Publication is immutable for each upstream version, not a rebuild counter.
 	const revision = 1
 	minor := version[:strings.LastIndex(version, ".")]
 	return releaseMatrixEntry{
 		PayloadVersion: version, ArtifactRevision: revision,
-		ArtifactVersion: fmt.Sprintf("%s-katl.%d", version, revision), Minor: minor,
+		ArtifactVersion: fmt.Sprintf("%s-%d", version, revision), Minor: minor,
 		KubeadmVersion: packages.Kubeadm, KubeletVersion: packages.Kubelet,
 		KubectlVersion: packages.Kubectl, CRIToolsVersion: packages.CRITools,
 	}

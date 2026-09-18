@@ -31,9 +31,10 @@ to those same verified digests. A partially uploaded candidate resumes
 verification without replacing its bytes. Publication refuses to move an
 existing version or compatibility tag to a different digest.
 
-Bundle metadata retains the fixed `-katl.1` suffix required by released nodes;
-it is not a rebuild counter. Previously published metadata and digest references
-remain valid. A future runtime compatibility change needs an explicit release
+New bundles use an immutable build tag such as `v1.37.0-1`, alongside the short
+version tag `v1.37.0`. The build suffix stays at `1` under the current policy.
+Existing publications gain both aliases without changing their metadata or digest.
+The new reference format requires the updated Katl CLI and node release. A future runtime compatibility change needs an explicit release
 policy decision; ordinary recipe changes do not stand in for that decision.
 
 Publication checks the runtime and sysext, verifies the anonymous registry
@@ -45,8 +46,8 @@ lifecycle guarantee for a newly released minor.
 
 ## Compatibility selection
 
-The registry's `compatible-VERSION-ARCHITECTURE-RUNTIME` tag points directly to a
-verified Kubernetes bundle. The bundle already contains its payload version,
+The registry's `vVERSION` tag points directly to a verified Kubernetes bundle.
+The resolver also supports existing compatibility aliases during migration. The bundle already contains its payload version,
 architecture, runtime interfaces and layer descriptors; no separate catalogue
 or generated source pull request is needed for delivery. Promotion is per
 version, so another version's failure cannot withhold a successful release.
@@ -54,7 +55,9 @@ version, so another version's failure cannot withhold a successful release.
 `katlctl` keeps its embedded, digest-pinned selections for offline use. For a
 version absent from that snapshot, it reads the promoted bundle's metadata,
 checks the requested version and runtime, and carries the resolved immutable
-digest into the install bundle or upgrade operation. Nodes still verify all
+`repository@sha256:…` reference into the install bundle or upgrade operation.
+The Kubernetes version is recorded separately and checked against fetched bundle
+metadata; tags are never used to infer the payload version. Nodes still verify all
 payload bytes while staging. Subsequent discovery does not change an operation
 already holding a digest. Clients predating registry discovery need a one-time
 Katl CLI update to use this path.

@@ -8,7 +8,11 @@ if [[ ! "$image" =~ ^ghcr\.io/katl-dev/kubernetes:([A-Za-z0-9._-]+)$ ]]; then
     exit 2
 fi
 tag="${BASH_REMATCH[1]}"
-payload_version="${tag%-katl.*}"
+if [[ ! "$tag" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)(-([0-9]+|katl\.[0-9]+))?$ ]]; then
+    echo "error: expected a Kubernetes version or immutable build tag" >&2
+    exit 2
+fi
+payload_version="${BASH_REMATCH[1]}"
 upstream_release="https://github.com/kubernetes/kubernetes/releases/tag/${payload_version}"
 if [[ -n "$expected_digest" && ! "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "error: expected OCI manifest digest must be sha256 followed by 64 lowercase hex characters" >&2
@@ -37,6 +41,7 @@ fetch_manifest() {
 }
 
 fetch_manifest "$tag" "$work/tag.json"
+artifact_version="$(jq -r '.annotations["org.opencontainers.image.version"] // empty' "$work/tag.json")"
 resolved_digest="sha256:$(sha256sum "$work/tag.json" | cut -d ' ' -f 1)"
 if [[ -z "$expected_digest" ]]; then
     expected_digest="$resolved_digest"
@@ -52,14 +57,14 @@ fi
 
 if ! jq -e \
     --arg payload_version "$payload_version" \
-    --arg tag "$tag" \
+    --arg artifact_version "$artifact_version" \
     --arg upstream_release "$upstream_release" '
     .schemaVersion == 2 and
     .mediaType == "application/vnd.oci.image.manifest.v1+json" and
     .artifactType == "application/vnd.katl.kubernetes.payload.bundle.v1" and
     .config.mediaType == "application/vnd.katl.kubernetes.payload.bundle.v1+json" and
     (.layers | length) == 4 and
-    .annotations["org.opencontainers.image.version"] == $tag and
+    ($artifact_version | length > 0) and
     .annotations["org.opencontainers.image.source"] == "https://github.com/katl-dev/katl" and
     .annotations["org.opencontainers.image.url"] == $upstream_release and
     .annotations["dev.katl.kubernetes.payload.version"] == $payload_version and
@@ -83,7 +88,7 @@ while IFS=$'\t' read -r digest size media_type; do
         exit 1
     fi
     if [[ "$media_type" == "application/vnd.katl.kubernetes.payload.bundle.v1+json" ]]; then
-        if ! jq -e --arg artifact_version "$tag" --arg payload_version "$payload_version" '
+        if ! jq -e --arg artifact_version "$artifact_version" --arg payload_version "$payload_version" '
             .apiVersion == "payload.katl.dev/v1alpha1" and
             .kind == "KubernetesPayloadBundle" and
             .name == "katl-kubernetes" and

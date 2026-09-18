@@ -675,7 +675,7 @@ func TestValidateKubeadmUpgradeExecutionSafetyInputs(t *testing.T) {
 	bundle.SnapshotStorageLocation = ""
 	bundle.SnapshotOperatorIdentity = ""
 	bundle.KubernetesBundleSource = "https://ghcr.io/v2/katl-dev/kubernetes"
-	bundle.KubernetesBundleRef = "ghcr.io/katl-dev/kubernetes:v1.36.2-katl.1"
+	bundle.KubernetesBundleRef = "ghcr.io/katl-dev/kubernetes@sha256:" + strings.Repeat("d", 64)
 	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &bundle); err != nil {
 		t.Fatalf("valid bundle request: %v", err)
 	}

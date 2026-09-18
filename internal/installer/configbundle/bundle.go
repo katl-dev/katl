@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/distribution/reference"
+
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	installer "github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/clusterplan"
@@ -372,6 +374,24 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 			return nil, Result{}, fmt.Errorf("resolve spec.kubernetes.version: %w", err)
 		}
 		planning.KubernetesBundle = selection.Bundle
+	} else {
+		image, err := kubernetesbundle.ParseImageReference(planning.KubernetesBundle)
+		if err != nil {
+			return nil, Result{}, fmt.Errorf("resolve Kubernetes bundle: %w", err)
+		}
+		if payloadbundle.ManifestDigest(image) != "" {
+			planning.KubernetesBundle = image.Name() + "@" + payloadbundle.ManifestDigest(image)
+		} else {
+			selection, err := kubernetescompat.ResolveImage(buildContext, image, kubernetescompat.Request{
+				KubernetesVersion: selectedKubernetesVersion(source),
+				Architecture:      planning.KatlosImage.Architecture,
+				RuntimeInterface:  planning.KatlosImage.RuntimeInterface,
+			})
+			if err != nil {
+				return nil, Result{}, fmt.Errorf("resolve Kubernetes bundle: %w", err)
+			}
+			planning.KubernetesBundle = selection.Bundle
+		}
 	}
 	if err := validateResolvedSourceNodes(source); err != nil {
 		return nil, Result{}, err
@@ -429,10 +449,11 @@ func systemExtensionReferenceWarnings(config clusterplan.Config) []CompilationWa
 				continue
 			}
 			parsed, err := payloadbundle.ParseReference(extension.Bundle)
-			if err != nil || parsed.ManifestDigest != "" || strings.TrimSpace(extension.OCIManifestDigest) == "" {
+			_, pinnedReference := parsed.(reference.Digested)
+			if err != nil || pinnedReference || strings.TrimSpace(extension.OCIManifestDigest) == "" {
 				continue
 			}
-			pinned := parsed.Repository + ":" + parsed.Tag + "@" + extension.OCIManifestDigest
+			pinned := parsed.String() + "@" + extension.OCIManifestDigest
 			warnings = append(warnings, CompilationWarning{
 				Code:           "mutable-system-extension-reference",
 				Path:           fmt.Sprintf("spec.nodes[%q].systemExtensions[name=%q].bundle", node.Name, extension.Name),
@@ -605,12 +626,8 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 		if err != nil {
 			return clusterplan.KubernetesSelection{}, fmt.Errorf("operation Kubernetes bundle: %w", err)
 		}
-		if version != "" && version != image.PayloadVersion {
-			return clusterplan.KubernetesSelection{}, fmt.Errorf("spec.kubernetes.version %q is not available from the selected Kubernetes bundle %q", version, bundle)
-		}
-		out.PayloadVersion = ""
-		out.BundleSource = image.Source
-		out.BundleRef = image.Value
+		out.BundleSource = payloadbundle.Source(image)
+		out.BundleRef = image.String()
 	}
 	return out, nil
 }
@@ -1282,8 +1299,7 @@ func kubernetesPayloads(plan clusterplan.Plan) []KubernetesPayloadRecord {
 		}
 	}
 	if image, err := kubernetesbundle.ParseImageReference(plan.KubernetesBundleRef); err == nil {
-		record.ArtifactVersion = image.ArtifactVersion
-		record.OCIManifestDigest = image.ManifestDigest
+		record.OCIManifestDigest = payloadbundle.ManifestDigest(image)
 	} else if _, digest, ok := strings.Cut(plan.KubernetesBundleRef, "@"); ok {
 		record.BundleManifestDigest = digest
 	}
