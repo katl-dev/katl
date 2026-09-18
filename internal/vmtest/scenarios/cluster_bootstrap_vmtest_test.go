@@ -1600,12 +1600,11 @@ func selectedKubectl() string {
 
 func katlRepoRoot(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	output, err := cmd.Output()
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
-		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+		t.Fatalf("resolve repository root: %v", err)
 	}
-	return strings.TrimSpace(string(output))
+	return root
 }
 
 func requireVMHost(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, result vmtest.Result, requirements vmtest.HostRequirements) {
@@ -2017,17 +2016,15 @@ type bootstrapFixtureInputs struct {
 }
 
 type nodeCNIFixture struct {
-	Source           string `json:"source"`
-	GuestSource      string `json:"guestSource"`
-	GuestTarget      string `json:"guestTarget"`
-	PodSubnet        string `json:"podSubnet"`
-	PodGateway       string `json:"podGateway"`
-	PeerSubnet       string `json:"peerSubnet"`
-	PeerAddress      string `json:"peerAddress"`
-	PluginSource     string `json:"pluginSource"`
-	PluginTarget     string `json:"pluginTarget"`
-	ContainerdConfig string `json:"containerdConfig"`
-	ContainerdDropIn string `json:"containerdDropIn"`
+	Source       string `json:"source"`
+	GuestSource  string `json:"guestSource"`
+	GuestTarget  string `json:"guestTarget"`
+	PodSubnet    string `json:"podSubnet"`
+	PodGateway   string `json:"podGateway"`
+	PeerSubnet   string `json:"peerSubnet"`
+	PeerAddress  string `json:"peerAddress"`
+	PluginSource string `json:"pluginSource"`
+	PluginTarget string `json:"pluginTarget"`
 }
 
 type nodeImageFixture struct {
@@ -2103,17 +2100,15 @@ func stageNodeCNIFixture(ctx context.Context, node vmtest.RunningInstalledRuntim
 	text = strings.ReplaceAll(text, "__POD_GATEWAY__", podGateway)
 	data = []byte(text)
 	fixture := nodeCNIFixture{
-		Source:           source,
-		GuestSource:      "/var/lib/katl/test-artifacts/bootstrap-cni/source/10-katl-vmtest-bridge.conflist",
-		GuestTarget:      "/var/lib/katl/test-artifacts/bootstrap-cni/net.d/10-katl-vmtest-bridge.conflist",
-		PodSubnet:        podSubnet,
-		PodGateway:       podGateway,
-		PeerSubnet:       peerSubnet,
-		PeerAddress:      peerAddress,
-		PluginSource:     "/usr/libexec/cni",
-		PluginTarget:     "/var/lib/katl/test-artifacts/bootstrap-cni/bin",
-		ContainerdConfig: "/var/lib/katl/test-artifacts/bootstrap-cni/containerd-config.toml",
-		ContainerdDropIn: "/run/systemd/system/containerd.service.d/10-katl-vmtest-cni.conf",
+		Source:       source,
+		GuestSource:  "/var/lib/katl/test-artifacts/bootstrap-cni/source/10-katl-vmtest-bridge.conflist",
+		GuestTarget:  "/var/lib/katl/kubernetes/cni/net.d/10-katl-vmtest-bridge.conflist",
+		PodSubnet:    podSubnet,
+		PodGateway:   podGateway,
+		PeerSubnet:   peerSubnet,
+		PeerAddress:  peerAddress,
+		PluginSource: "/usr/libexec/cni",
+		PluginTarget: "/var/lib/katl/kubernetes/cni/bin",
 	}
 	if err := writeNodeFile(ctx, node, fixture.GuestSource, data, 0o644, false); err != nil {
 		return nodeCNIFixture{}, err
@@ -2134,13 +2129,26 @@ func stageNodeCNIFixture(ctx context.Context, node vmtest.RunningInstalledRuntim
 	if err := activateNodeCNIFixture(ctx, node, fixture); err != nil {
 		return nodeCNIFixture{}, err
 	}
+
+	// Image fixtures are imported before kubeadm starts the node runtime.
+	result, err := runNodeCommand(ctx, node, []string{"systemctl", "start", "containerd.service"}, 32<<10)
+	if err != nil {
+		return nodeCNIFixture{}, fmt.Errorf("start containerd for image fixtures: %w", err)
+	}
+	if result.ExitStatus != 0 {
+		return nodeCNIFixture{}, fmt.Errorf("start containerd for image fixtures: %s", commandErrorDetail(result))
+	}
 	return fixture, nil
 }
 
 func activateNodeCNIFixture(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fixture nodeCNIFixture) error {
-	if err := configureNodeContainerdCNI(ctx, node, fixture); err != nil {
+	// Networkd removes foreign routes while configuring the link after boot.
+	if result, err := runNodeCommand(ctx, node, []string{"systemctl", "start", "systemd-networkd-wait-online.service"}, 32<<10); err != nil {
 		return err
+	} else if result.ExitStatus != 0 {
+		return fmt.Errorf("wait for node network: %s", commandErrorDetail(result))
 	}
+
 	if result, err := runNodeCommand(ctx, node, []string{"sysctl", "-w", "net.ipv4.ip_forward=1"}, 32<<10); err != nil {
 		return err
 	} else if result.ExitStatus != 0 {
@@ -2163,73 +2171,6 @@ func activateNodeCNIFixture(ctx context.Context, node vmtest.RunningInstalledRun
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(time.Second):
-		}
-	}
-	return nil
-}
-
-func configureNodeContainerdCNI(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fixture nodeCNIFixture) error {
-	const (
-		containerdLog = "/var/lib/katl/test-artifacts/bootstrap-cni/containerd.log"
-		kubeletLog    = "/var/lib/katl/test-artifacts/bootstrap-cni/kubelet.log"
-	)
-	config := fmt.Sprintf(`version = 4
-
-[plugins.'io.containerd.cri.v1.images']
-  use_local_image_pull = true
-
-[plugins.'io.containerd.cri.v1.images'.pinned_images]
-  sandbox = "registry.k8s.io/pause:3.10.2"
-
-[plugins.'io.containerd.cri.v1.runtime'.containerd]
-  default_runtime_name = "crun"
-
-[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.crun]
-  runtime_type = "io.containerd.runc.v2"
-
-[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.crun.options]
-  BinaryName = "/usr/bin/crun"
-  SystemdCgroup = true
-
-[plugins.'io.containerd.cri.v1.runtime'.cni]
-  bin_dirs = [%q]
-  conf_dir = %q
-`, fixture.PluginTarget, filepath.Dir(fixture.GuestTarget))
-	if err := writeNodeFile(ctx, node, fixture.ContainerdConfig, []byte(config), 0o644, false); err != nil {
-		return fmt.Errorf("write containerd CNI config: %w", err)
-	}
-	dropInSource := "/var/lib/katl/test-artifacts/bootstrap-cni/containerd-service-dropin.conf"
-	dropIn := fmt.Sprintf(`[Service]
-ExecStart=
-ExecStart=/usr/bin/containerd --config %s
-StandardOutput=append:%s
-StandardError=append:%s
-`, fixture.ContainerdConfig, containerdLog, containerdLog)
-	if err := writeNodeFile(ctx, node, dropInSource, []byte(dropIn), 0o644, false); err != nil {
-		return fmt.Errorf("write containerd drop-in source: %w", err)
-	}
-	kubeletDropInSource := "/var/lib/katl/test-artifacts/bootstrap-cni/kubelet-service-dropin.conf"
-	kubeletDropIn := fmt.Sprintf(`[Service]
-StandardOutput=append:%s
-StandardError=append:%s
-`, kubeletLog, kubeletLog)
-	if err := writeNodeFile(ctx, node, kubeletDropInSource, []byte(kubeletDropIn), 0o644, false); err != nil {
-		return fmt.Errorf("write kubelet drop-in source: %w", err)
-	}
-	for _, command := range []struct {
-		name string
-		argv []string
-	}{
-		{name: "install containerd drop-in", argv: []string{"install", "-D", "-m", "0644", dropInSource, fixture.ContainerdDropIn}},
-		{name: "install kubelet drop-in", argv: []string{"install", "-D", "-m", "0644", kubeletDropInSource, "/run/systemd/system/kubelet.service.d/10-katl-vmtest-log.conf"}},
-		{name: "reload systemd", argv: []string{"systemctl", "daemon-reload"}},
-		{name: "restart containerd", argv: []string{"systemctl", "restart", "containerd.service"}},
-		{name: "check containerd", argv: []string{"systemctl", "is-active", "--quiet", "containerd.service"}},
-	} {
-		if result, err := runNodeCommand(ctx, node, command.argv, 32<<10); err != nil {
-			return fmt.Errorf("%s: %w", command.name, err)
-		} else if result.ExitStatus != 0 {
-			return fmt.Errorf("%s: %w", command.name, commandErrorDetail(result))
 		}
 	}
 	return nil
@@ -4123,8 +4064,6 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 			{Name: "node-metadata", Path: "/etc/katl/node.json"},
 			{Name: "kubeadm-config", Path: "/etc/katl/kubeadm/" + kubeadmRef + "/config.yaml"},
 			{Name: "kubelet-kubeconfig", Path: "/etc/kubernetes/kubelet.conf"},
-			{Name: "containerd-log", Path: "/var/lib/katl/test-artifacts/bootstrap-cni/containerd.log", MaxBytes: 4 << 20, StoreContent: true},
-			{Name: "kubelet-log", Path: "/var/lib/katl/test-artifacts/bootstrap-cni/kubelet.log", MaxBytes: 4 << 20, StoreContent: true},
 		},
 		Journals: []vmtest.GuestJournalRequest{{
 			Name:     "runtime-handoff",
