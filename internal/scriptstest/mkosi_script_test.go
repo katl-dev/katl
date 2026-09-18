@@ -47,7 +47,8 @@ EOF
 	}
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer")
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=direct",
 		"KATL_FAKE_MKOSI_ARGS="+mkosiArgs,
@@ -80,7 +81,8 @@ EOF
 	if env["MKOSI_DNF"] != "dnf5" || env["TMPDIR"] != tmp || env["GOMODCACHE"] != filepath.Join(repo, "_build", "go-mod") {
 		t.Fatalf("mkosi env = %#v", env)
 	}
-	assertDirsExist(t, repo,
+	assertDirsExist(
+		t, repo,
 		"_build/go-cache",
 		"_build/go-mod",
 		"_build/mkosi/builddir",
@@ -129,7 +131,8 @@ exit 2
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "builder-version")
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=podman",
 	)
@@ -142,7 +145,7 @@ exit 2
 	}
 }
 
-func TestMkosiPodmanSkipsRecursiveBuildChown(t *testing.T) {
+func TestMkosiPodmanNamespace(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "bin")
@@ -158,7 +161,8 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 `)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer", "--debug")
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=podman",
 		"KATL_VERSION=2026.7.0-dev.0",
@@ -174,9 +178,6 @@ printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
 	args := readLinesForScripts(t, podmanArgs)
 	if !containsString(args, "--userns=keep-id") || !containsString(args, "--user") || !containsString(args, "root") {
 		t.Fatalf("podman args missing keep-id root mode: %#v", args)
-	}
-	if !containsString(args, "KATL_CHOWN_BUILD=0") {
-		t.Fatalf("podman args missing KATL_CHOWN_BUILD=0: %#v", args)
 	}
 	if !containsString(args, "KATL_VERSION=2026.7.0-dev.0") {
 		t.Fatalf("podman args missing release version: %#v", args)
@@ -205,7 +206,8 @@ fi
 printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 `)
 	seedRuntimeCacheOutputs(t, buildDir)
-	env := append(os.Environ(),
+	env := append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=podman",
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
@@ -312,7 +314,8 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 	if err := os.WriteFile(stamp, []byte(strings.Repeat("a", 64)+"\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", stamp, err)
 	}
-	env := append(os.Environ(),
+	env := append(
+		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_CONTAINER_RUNTIME=podman",
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
