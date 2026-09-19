@@ -519,12 +519,19 @@ console=...
 ip=...
 ```
 
-Set `katl.halt-if-installed=1` on PXE profiles that remain first in firmware
-boot order. After resolving the selected node and target disk, the installer
-recognizes Katl's installed GPT layout before any mutation and stays in an
-SSH-accessible hold. Reinstallation remains an explicit `katlctl node wipe` or
-`katlctl cluster wipe` workflow; removing the guard alone is not a substitute
-for reviewing that destructive operation.
+An explicit install request replaces the selected system disk, including a
+previous Katl installation. No separate system-disk wipe acknowledgement is
+required. Data volumes retain their own `wipe` policy.
+
+Optionally set `katl.halt-if-installed=1` to refuse automatic installation when
+the selected disk has Katl partition labels, including an incomplete layout.
+The installer reports the refusal before mutation and keeps its API and SSH
+available. Boot the installed disk, or explicitly reinstall using
+`katlctl install apply --config cluster.yaml --node NODE`. This works directly
+from the installer even when the installed runtime agent is unavailable.
+Remove the guard to authorize automatic reinstallation on the next PXE boot.
+Remove the install profile or select disk boot after installation to avoid
+repeated automatic installation.
 
 After a PXE bundle selects a node, Katl configures the live installer's root
 SSH access from that node's `access.ssh.authorizedKeys` before image validation
@@ -543,7 +550,7 @@ Illustrative iPXE entry for `cp-1`:
 #!ipxe
 set base https://boot.example.invalid/katl/2026.7.0
 set node cp-1
-kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 systemd.getty_auto=no katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto katl.halt-if-installed=1
+kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 systemd.getty_auto=no katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto
 initrd ${base}/katl-installer.initrd
 boot
 ```

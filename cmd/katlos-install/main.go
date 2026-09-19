@@ -382,12 +382,7 @@ func finishAutomaticInstall(ctx context.Context, err error, stdout io.Writer) er
 	if err == nil {
 		return waitForInstallerReboot(ctx, stdout)
 	}
-	if !errors.Is(err, installer.ErrInstalledTarget) {
-		return err
-	}
-	reportInstallerProgress(stdout, "installed KatlOS target detected; automatic reinstall stopped", true)
-	fmt.Fprintf(stdout, "katlos-install hold: %v\n", err)
-	return holdInstaller(ctx)
+	return err
 }
 
 func waitForInstallerReboot(ctx context.Context, stdout io.Writer) error {

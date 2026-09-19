@@ -8,6 +8,24 @@ installer media or PXE. Existing on-disk Kubernetes and Katl state remain until
 the installer subsequently wipes the selected disk. Keep installer media ready
 before accepting the operation.
 
+## Reinstall From The Installer
+
+Before Kubernetes bootstrap, you can boot PXE or installer media and run:
+
+```sh
+katlctl install apply --config ./cluster.yaml --node NODE
+```
+
+This explicitly replaces the selected system disk without requiring the
+installed agent or a separate wipe operation. Data-volume `wipe` settings still
+apply. A PXE auto-install profile also authorizes system-disk replacement unless
+its optional `katl.halt-if-installed=1` guard refuses it.
+
+Firmware selects disk boot versus PXE. The systemd-boot entry `Katl 0` means
+generation 0, not node `k8s-0`; selecting it boots the installed OS, not the
+installer. For nodes already in a cluster, use the membership-aware wipe
+workflow below before reinstalling.
+
 ## Before Planning
 
 - preserve any required external backups and recovery material;

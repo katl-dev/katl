@@ -50,6 +50,7 @@ const (
 var errorURLPattern = regexp.MustCompile(`https?://[^\s]+`)
 
 type Record struct {
+	Progress              *Progress `json:"progress,omitempty"`
 	APIVersion            string    `json:"apiVersion"`
 	Kind                  string    `json:"kind"`
 	State                 string    `json:"state"`
@@ -74,6 +75,24 @@ type Record struct {
 	WipeTargetAccepted    bool      `json:"wipeTargetAccepted,omitempty"`
 	DestructiveMutation   bool      `json:"destructiveMutationStarted,omitempty"`
 	UpdatedAt             time.Time `json:"updatedAt"`
+}
+
+type Progress struct {
+	Operation string    `json:"operation"`
+	Target    string    `json:"target,omitempty"`
+	StartedAt time.Time `json:"startedAt"`
+}
+
+func (p Progress) Summary(now time.Time) string {
+	value := p.Operation
+	if p.Target != "" {
+		value += " · " + p.Target
+	}
+	if !p.StartedAt.IsZero() {
+		elapsed := max(now.Sub(p.StartedAt), 0).Truncate(time.Second)
+		value += " · " + elapsed.String() + " elapsed"
+	}
+	return value
 }
 
 type Image struct {

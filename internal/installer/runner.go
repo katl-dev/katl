@@ -97,6 +97,7 @@ type Context struct {
 	HaltIfInstalled                    bool
 	PreviousStatus                     *installstatus.Record
 	ReportStep                         func(StepID)
+	progress                           *installProgress
 }
 
 type Step interface {
@@ -192,13 +193,15 @@ func (r Runner) Run(ctx context.Context) error {
 	}
 
 	for _, step := range r.plan {
+		if err := r.ctx.startProgress(ctx, step.ID()); err != nil {
+			return err
+		}
 		if r.ctx.ReportStep != nil {
 			r.ctx.ReportStep(step.ID())
 		}
-		if err := step.Run(ctx, r.ctx); err != nil {
-			if errors.Is(err, ErrInstalledTarget) {
-				return err
-			}
+		err := step.Run(ctx, r.ctx)
+		err = errors.Join(err, r.ctx.stopProgress())
+		if err != nil {
 			if statusErr := recordFailure(ctx, r.ctx, step.ID(), err); statusErr != nil {
 				return fmt.Errorf("%s: %w", step.ID(), errors.Join(err, fmt.Errorf("record failure status: %w", statusErr)))
 			}
@@ -314,33 +317,23 @@ func (planInstallStep) Run(ctx context.Context, install *Context) error {
 			return err
 		}
 		if install.HaltIfInstalled && targetHasKatlOS(install.HardwareFacts, install.DiskLayout.TargetDiskPath) {
-			return fmt.Errorf("%w on %s; use the explicit Katl wipe/reinstall workflow before network booting it again", ErrInstalledTarget, install.DiskLayout.TargetDiskPath)
+			return fmt.Errorf("%w on %s; boot the installed disk, or explicitly reinstall with katlctl install apply", ErrInstalledTarget, install.DiskLayout.TargetDiskPath)
 		}
 	}
 	return recordStep(ctx, install, PlanInstall)
 }
 
 func targetHasKatlOS(facts discovery.HardwareFacts, targetPath string) bool {
-	required := map[string]bool{
-		disk.GPTLabelESP:   false,
-		disk.GPTLabelRootA: false,
-		disk.GPTLabelState: false,
-	}
 	for _, device := range facts.BlockDevices {
 		if device.Path != targetPath {
 			continue
 		}
 		for _, partition := range device.Partitions {
-			if _, ok := required[partition.GPTLabel]; ok {
-				required[partition.GPTLabel] = true
+			switch partition.GPTLabel {
+			case disk.GPTLabelESP, disk.GPTLabelRootA, disk.GPTLabelRootB, disk.GPTLabelState:
+				return true
 			}
 		}
-		for _, found := range required {
-			if !found {
-				return false
-			}
-		}
-		return true
 	}
 	return false
 }
@@ -549,7 +542,7 @@ func executeDiskGroupResult(ctx context.Context, install *Context, group disk.Di
 	if install.DiskLayout == nil {
 		return disk.DiskExecutionResult{}, nil
 	}
-	executor := disk.DiskExecutor{Commands: install.Commands}
+	executor := disk.DiskExecutor{Commands: install.Commands, BeforeOperation: install.reportDiskOperation}
 	result, err := executor.ExecuteGroup(ctx, diskExecutionRequest(install), group)
 	if err != nil {
 		return disk.DiskExecutionResult{}, err
@@ -1043,6 +1036,9 @@ func (s stubStep) Run(ctx context.Context, install *Context) error {
 }
 
 func recordStep(ctx context.Context, install *Context, id StepID) error {
+	if err := install.stopProgress(); err != nil {
+		return err
+	}
 	install.Completed = append(install.Completed, id)
 	if err := install.Store.SaveCheckpoint(ctx, Checkpoint{
 		CurrentStep:    id,
@@ -1079,6 +1075,7 @@ func statusFromContext(install *Context, state string, current StepID, err error
 	record.KatlosImage = installstatus.ImageFromManifest(install.Manifest)
 	record.TargetDiskStableID = targetDiskStableID(install.Manifest.Install.TargetDisk)
 	record.WipeTargetAccepted = install.Manifest.Install.WipeTarget
+	record.DestructiveMutation = mutationStarted(install.Completed, current)
 	if install.LoaderRecord != nil {
 		record.SelectedRootSlot = install.LoaderRecord.Root.Slot
 		record.InstalledGeneration = install.LoaderRecord.GenerationID
@@ -1092,6 +1089,9 @@ func statusFromContext(install *Context, state string, current StepID, err error
 		} else {
 			record.RetryHint = "inspect target state before rerun or repair"
 			record.DestructiveMutation = true
+		}
+		if errors.Is(err, ErrInstalledTarget) {
+			record.RetryHint = "boot the installed disk, run katlctl install apply to reinstall, or remove katl.halt-if-installed=1 from the PXE profile"
 		}
 	}
 	return record
@@ -1108,7 +1108,7 @@ func statusForStep(id StepID) string {
 }
 
 func failureState(install *Context, id StepID, err error) string {
-	if errors.Is(err, ErrInstallRefused) {
+	if errors.Is(err, ErrInstallRefused) || errors.Is(err, ErrInstalledTarget) {
 		return installstatus.StateInstallRefused
 	}
 	if !mutationStarted(install.Completed, id) {

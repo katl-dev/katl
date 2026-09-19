@@ -502,13 +502,22 @@ func doInstallRequest(client *http.Client, req *http.Request, action string) (ha
 func waitForInstall(ctx context.Context, client *http.Client, endpoint string, initial handoff.HandoffStatus, stderr io.Writer) (handoff.HandoffStatus, error) {
 	last := initial
 	lastProgress := ""
+	lastProgressAt := time.Time{}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		progress := last.InstallStatus.State + "/" + last.InstallStatus.CurrentStep
-		if progress != lastProgress {
-			fmt.Fprintf(stderr, "katlctl install state=%s step=%s\n", last.InstallStatus.State, last.InstallStatus.CurrentStep)
+		if p := last.InstallStatus.Progress; p != nil {
+			progress += "/" + p.Operation + "/" + p.Target
+		}
+		if progress != lastProgress || last.InstallStatus.Progress != nil && time.Since(lastProgressAt) >= 10*time.Second {
+			fmt.Fprintf(stderr, "katlctl install state=%s step=%s", last.InstallStatus.State, last.InstallStatus.CurrentStep)
+			if p := last.InstallStatus.Progress; p != nil {
+				fmt.Fprintf(stderr, " progress=%q", p.Summary(time.Now()))
+			}
+			fmt.Fprintln(stderr)
 			lastProgress = progress
+			lastProgressAt = time.Now()
 		}
 		if installTerminal(last.InstallStatus.State) {
 			return last, nil
