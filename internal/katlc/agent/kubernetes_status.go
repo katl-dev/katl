@@ -48,10 +48,16 @@ func nodeKubernetesStatus(ctx context.Context, root string, run ToolRunner) (*ag
 	report.KubeletActive = true
 
 	if report.Role == "control-plane" {
-		for _, component := range []string{"etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
-			if _, ok := kubernetesStatusCommand(ctx, run, []string{"/usr/bin/crictl", "ps", "--state", "Running", "--name", component, "-q"}, true); !ok {
+		commands, err := localControlPlaneHealthCommands(root, nodeName, kubernetesStatusProbeTimeout)
+		if err != nil {
+			report.State = "waiting-for-control-plane"
+			report.FailureReason = err.Error()
+			return report, nil
+		}
+		for _, command := range commands {
+			if _, ok := kubernetesStatusCommand(ctx, run, command, false); !ok {
 				report.State = "waiting-for-control-plane"
-				report.FailureReason = "local " + component + " component is not running"
+				report.FailureReason = "local Kubernetes API or control-plane pods are not ready"
 				return report, nil
 			}
 		}

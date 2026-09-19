@@ -417,6 +417,12 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 			t.Fatalf("collect %s Kubernetes version evidence: %v", node.Name, err)
 		}
 	}
+	if err := proveLocalControlPlaneHealth(t, ctx, nodes, addresses, kubeconfigPath, result.RunDir); err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("local control-plane health: %v", err)
+	}
 	var workloadStack *releaseWorkloadStackEvidence
 	if smoke.WorkloadProof {
 		workloadStack, err = proveReleaseWorkloadStack(ctx, katlRepoRoot(t), result.RunDir, result.ManifestDir, kubeconfigPath, cp1Address)

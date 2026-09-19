@@ -1064,7 +1064,18 @@ func bootstrapReadinessCommands(candidate, configPath string) [][]string {
 
 func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started func(int)) ToolResult {
 	commands := postKubeadmHealthCommands(argv...)
-	retryKubectl := len(argv) > 0 && retryPostKubeadmKubectl(argv[0])
+	if len(argv) > 0 && requiresLocalControlPlaneHealth(argv[0]) {
+		node, err := kubernetesNodeName("/")
+		if err != nil {
+			return ToolResult{Err: err, ExitStatus: 1}
+		}
+		health, err := localControlPlaneHealthCommands("/", node, postKubeadmHealthTimeout)
+		if err != nil {
+			return ToolResult{Err: err, ExitStatus: 1}
+		}
+		commands = append(commands, health...)
+	}
+	retryKubectl := len(argv) > 0 && requiresLocalControlPlaneHealth(argv[0])
 	var stdout, stderr bytes.Buffer
 	for _, argv := range commands {
 		result := runChildProcess(ctx, argv, started)
@@ -1089,7 +1100,7 @@ func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started fun
 	return ToolResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitStatus: 0}
 }
 
-func retryPostKubeadmKubectl(kind string) bool {
+func requiresLocalControlPlaneHealth(kind string) bool {
 	switch kind {
 	case bootstrapplan.OperationKindInit,
 		bootstrapplan.OperationKindJoinControlPlane,
@@ -1115,7 +1126,6 @@ func postKubeadmHealthCommands(args ...string) [][]string {
 			{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-controller-manager.yaml"},
 			{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-scheduler.yaml"},
 			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "wait", "--for=condition=Ready", "node/" + node, "--timeout=2m"},
-			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"},
 			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "wait", "--for=condition=Ready", "pod/etcd-" + node, "--timeout=2m"},
 			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "exec", "etcd-" + node, "--", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/etc/kubernetes/pki/etcd/ca.crt", "--cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt", "--key=/etc/kubernetes/pki/etcd/healthcheck-client.key", "endpoint", "health", "--cluster"},
 		}
@@ -1134,7 +1144,6 @@ func postKubeadmHealthCommands(args ...string) [][]string {
 		{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-apiserver.yaml"},
 		{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/etcd.yaml"},
 		{"/usr/bin/systemctl", "is-active", "--quiet", "kubelet.service"},
-		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "--raw=/readyz"},
 	}
 }
 
