@@ -17,11 +17,11 @@ const (
 	fieldWidth      = 18
 
 	styleReset Style = "\x1b[0m"
-	styleTitle Style = "\x1b[1;36m"
+	styleTitle Style = "\x1b[1;35m"
 	styleGood  Style = "\x1b[1;32m"
 	styleWarn  Style = "\x1b[1;33m"
 	styleBad   Style = "\x1b[1;31m"
-	styleDim   Style = "\x1b[2m"
+	styleDim   Style = "\x1b[90m"
 )
 
 const clearScreen = "\x1b[H\x1b[2J"
