@@ -115,7 +115,11 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		if err := clusterApplyProgress(opts.progress, "phase=node-join node=%s coordinator=%s status=started", node, activated.joinCoordinator); err != nil {
 			return err
 		}
-		deps := agentBootstrapDependencies()
+		topology, err := resolveClusterConfigTopology(opts.configPath)
+		if err != nil {
+			return err
+		}
+		deps := agentBootstrapDependencies(topology.ClusterName)
 		deps.Actor = "katlctl cluster apply"
 		deps.Progress = func(progress cluster.AgentBootstrapProgress) {
 			if progress.Node != node || strings.TrimSpace(progress.Phase) == "" {
@@ -129,7 +133,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		}, node, deps); err != nil {
 			return fmt.Errorf("join replacement node %s: %w", node, err)
 		}
-		joinedGeneration, err := rebootClusterApplyJoin(ctx, inv.Nodes, node, opts.progress)
+		joinedGeneration, err := rebootClusterApplyJoin(ctx, inv.Nodes, node, opts.configPath, opts.progress)
 		if err != nil {
 			return fmt.Errorf("validate replacement node %s after join: %w", node, err)
 		}
@@ -143,7 +147,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		if err := clusterApplyProgress(opts.progress, "phase=node-join node=%s status=resuming-reboot", node); err != nil {
 			return err
 		}
-		joinedGeneration, err := rebootClusterApplyJoin(ctx, inv.Nodes, node, opts.progress)
+		joinedGeneration, err := rebootClusterApplyJoin(ctx, inv.Nodes, node, opts.configPath, opts.progress)
 		if err != nil {
 			return fmt.Errorf("resume replacement node %s after join: %w", node, err)
 		}
@@ -237,7 +241,11 @@ func currentClusterApplyNode(ctx context.Context, nodes []inventory.Node, nodeNa
 	return status, generationID, nil
 }
 
-func rebootClusterApplyJoin(ctx context.Context, nodes []inventory.Node, nodeName string, progress io.Writer) (string, error) {
+func rebootClusterApplyJoin(ctx context.Context, nodes []inventory.Node, nodeName, configPath string, progress io.Writer) (string, error) {
+	ctx, err := managementContextForNode(ctx, configPath, nodeName)
+	if err != nil {
+		return "", err
+	}
 	status, generationID, err := currentClusterApplyNode(ctx, nodes, nodeName)
 	if err != nil {
 		return "", err
@@ -356,7 +364,11 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		}
 	}()
 	for _, node := range nodes {
-		conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(node.Address, "9443"))
+		nodeCtx, err := managementContextForNode(ctx, opts.configPath, node.Name)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := dialKatlcAgent(nodeCtx, cluster.AgentEndpoint(node.Address, "9443"))
 		if err != nil {
 			return nil, fmt.Errorf("connect %s: %w", node.Name, err)
 		}
@@ -562,7 +574,11 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	for i := range prepared {
 		input := &prepared[i]
 		node := input.node
-		conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(node.Address, "9443"))
+		nodeCtx, err := managementContextForNode(ctx, opts.configPath, node.Name)
+		if err != nil {
+			return activatedClusterConfig{}, err
+		}
+		conn, err := dialKatlcAgent(nodeCtx, cluster.AgentEndpoint(node.Address, "9443"))
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("connect %s to apply cluster config: %w", node.Name, err)
 		}
@@ -696,7 +712,11 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if input.noChanges {
 			continue
 		}
-		conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(node.Address, "9443"))
+		nodeCtx, err := managementContextForNode(ctx, opts.configPath, node.Name)
+		if err != nil {
+			return activatedClusterConfig{}, err
+		}
+		conn, err := dialKatlcAgent(nodeCtx, cluster.AgentEndpoint(node.Address, "9443"))
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("connect %s to apply cluster config: %w", node.Name, err)
 		}

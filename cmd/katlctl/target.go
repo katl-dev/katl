@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -349,4 +350,17 @@ func normalizeManagementAddress(value string) (string, error) {
 		return "", fmt.Errorf("--endpoint %q must be an IP, hostname, host:port, or tcp:// URL", value)
 	}
 	return net.JoinHostPort(value, "9443"), nil
+}
+
+// Configuration names the trust domain even when another saved cluster uses
+// the same address. Carry that choice through each node connection and reboot.
+func managementContextForNode(ctx context.Context, configPath, nodeName string) (context.Context, error) {
+	if strings.TrimSpace(configPath) == "" {
+		return ctx, nil
+	}
+	target, err := resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath, nodeName: nodeName})
+	if err != nil {
+		return nil, err
+	}
+	return withManagementTarget(ctx, target), nil
 }
