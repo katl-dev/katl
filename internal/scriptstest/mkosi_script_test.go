@@ -354,14 +354,6 @@ func writeFakeExecutable(t *testing.T, dir, name, body string) string {
 	return path
 }
 
-func seedInstallerRPMCache(t *testing.T, repo string) {
-	t.Helper()
-	path := filepath.Join(repo, "_build", "mkosi", "cache", "fedora~44~x86-64~main.cache", "usr", "lib", "sysimage", "rpm")
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%s) error = %v", path, err)
-	}
-}
-
 func preserveFile(t *testing.T, path string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
