@@ -480,7 +480,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		}
 	}
 	if smoke.ReplacementProof {
-		replacedNodes, err := runThreeControlPlaneReplacementProof(t, ctx, smoke, result, nodes, addresses, kubeconfigPath, kubernetesBundle, etcdReport)
+		replacedNodes, err := runThreeControlPlaneReplacementProof(t, ctx, smoke, result, nodes, addresses, canonicalEndpoint, kubeconfigPath, kubernetesBundle, etcdReport)
 		if err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
@@ -493,14 +493,14 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
 }
 
-func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smoke threeControlPlaneSmokeRun, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, before threeControlPlaneEtcdReport) ([]vmtest.RunningInstalledRuntimeNode, error) {
+func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smoke threeControlPlaneSmokeRun, result vmtest.Result, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, canonicalEndpoint, kubeconfigPath string, bundle threeControlPlaneKubernetesPayloadBundle, before threeControlPlaneEtcdReport) ([]vmtest.RunningInstalledRuntimeNode, error) {
 	t.Helper()
 	dir := filepath.Join(result.RunDir, "control-plane-replacement")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nodes, err
 	}
 	configPath := filepath.Join(dir, "cluster.katlcfg")
-	if err := writeThreeControlPlaneReplacementConfig(filepath.Join(dir, "cluster.yaml"), configPath, addresses, smoke.Inputs.SSHAuthorizedKey, smoke.Inputs.KubernetesVersion, bundle.Ref); err != nil {
+	if err := writeThreeControlPlaneReplacementConfig(filepath.Join(dir, "cluster.yaml"), configPath, addresses, canonicalEndpoint, smoke.Inputs.SSHAuthorizedKey, smoke.Inputs.KubernetesVersion, bundle.Ref); err != nil {
 		return nodes, err
 	}
 	enrollments, err := readThreeControlPlaneEnrollments(ctx, addresses)
@@ -729,15 +729,19 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	return replacedNodes, nil
 }
 
-func writeThreeControlPlaneReplacementConfig(sourcePath, bundlePath string, addresses map[string]string, sshAuthorizedKey, kubernetesVersion, kubernetesBundle string) error {
+func writeThreeControlPlaneReplacementConfig(sourcePath, bundlePath string, addresses map[string]string, canonicalEndpoint, sshAuthorizedKey, kubernetesVersion, kubernetesBundle string) error {
+	host, port, err := net.SplitHostPort(canonicalEndpoint)
+	if err != nil {
+		return err
+	}
 	source := `apiVersion: config.katl.dev/v1alpha1
 kind: ClusterConfig
 metadata:
   name: replacement-vmtest
 spec:
   controlPlaneEndpoint:
-    host: ` + addresses["cp-1"] + `
-    port: 6443
+    host: ` + host + `
+    port: ` + port + `
   kubernetes:
     version: ` + kubernetesVersion + `
   defaults:
