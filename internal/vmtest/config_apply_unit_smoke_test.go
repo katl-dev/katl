@@ -82,7 +82,7 @@ func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {
 		t.Fatalf("accepted status = %#v", accepted.Status)
 	}
 	assertFileContains(t, accepted.AuditPath, `"decision": "accepted"`, `"candidateGenerationID": "`+acceptedGeneration+`"`)
-	assertFileContains(t, accepted.MetadataPath, `"previousGenerationID": "`+fixture.GenerationID+`"`, `"payloadVersion": "v1.36.0"`)
+	assertFileContains(t, filepath.Join(filepath.Dir(accepted.MetadataPath), "spec.json"), `"previousGenerationID": "`+fixture.GenerationID+`"`, `"payloadVersion": "v1.36.0"`)
 	assertFileContains(t, accepted.StatusPath, `"acceptedApplyMode": "next-boot"`, `"phase": "next-boot"`, `"domain": "host-configuration"`)
 	assertFileContains(t, filepath.Join(work, "var/lib/katl/generations", acceptedGeneration, "confext/etc/systemd/network/20-unprivileged-accepted.network"), "Address=192.0.2.10/24")
 	assertFileContains(t, filepath.Join(work, "var/lib/katl/generations", acceptedGeneration, "confext/etc/extension-release.d/extension-release.katl-node"), "CONFEXT_LEVEL=1")

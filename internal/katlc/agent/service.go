@@ -62,13 +62,18 @@ func Serve(ctx context.Context, config ServeConfig) error {
 		grpc.MaxSendMsgSize(256<<20),
 	)
 	agentServer := NewServer(root, store)
+	dispatcher := config.Dispatcher
+	if dispatcher == nil {
+		executor := NewExecutor(root, store, agentServer.AgentStartID)
+		if err := executor.recoverLivePromotions(ctx, currentBootID()); err != nil {
+			return err
+		}
+		dispatcher = executor
+	}
 	if _, err := AuditStartup(store, timeNow()); err != nil {
 		return err
 	}
-	dispatcher := config.Dispatcher
-	if dispatcher == nil {
-		dispatcher = NewExecutor(root, store, agentServer.AgentStartID)
-	}
+
 	agentServer.Dispatcher = dispatcher
 	agentapi.RegisterKatlcAgentServer(server, agentServer)
 	errc := make(chan error, 1)

@@ -159,8 +159,8 @@ func TestExecutorRemovesStagedKubernetesIdentityAfterPreparationFailure(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !failed.Terminal || !failed.RecoveryRequired || failed.Result != operation.ResultFailedNeedsRepair {
-		t.Fatalf("record = %+v, want terminal failed-needs-repair", failed)
+	if !failed.Terminal || failed.RecoveryRequired || failed.Result != "failed" {
+		t.Fatalf("record = %+v, want terminal refusal without repair", failed)
 	}
 }
 
@@ -569,7 +569,7 @@ func TestExecutorMarksMissingJournalPlanTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !read.Terminal || !read.RecoveryRequired || read.Phase != "dispatch-failed" {
+	if !read.Terminal || read.RecoveryRequired || read.Result != "failed" || read.Phase != "dispatch-failed" {
 		t.Fatalf("record = %+v, want terminal dispatch failure", read)
 	}
 }
@@ -598,7 +598,7 @@ func TestExecutorRejectsMissingPlanBeforeBootstrapRuntimePrep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !read.Terminal || !read.RecoveryRequired || read.Phase != "dispatch-failed" {
+	if !read.Terminal || read.RecoveryRequired || read.Result != "failed" || read.Phase != "dispatch-failed" {
 		t.Fatalf("record = %+v, want terminal dispatch failure", read)
 	}
 	if _, _, err := generation.ReadGeneration(server.Root, "candidate-missing-plan"); err == nil {

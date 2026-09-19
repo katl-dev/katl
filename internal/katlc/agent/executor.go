@@ -586,13 +586,10 @@ func (e *Executor) failRecordPhase(operationID string, eventID string, eventType
 	}
 	updated, updateErr := e.Store.Update(operationID, eventID, eventType, func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = phase
-		record.Result = operation.ResultFailedNeedsRepair
-		record.RecoveryRequired = true
-		record.NextAction = nextAction
-		record.FailureReason = inventory.Redact(cause.Error())
-		record.Terminal = true
-		record.UpdatedAt = now
-		record.CompletedAt = &now
+		if cleanupErr != nil {
+			record.RecoveryRequired = true
+		}
+		record.Fail(now, inventory.Redact(cause.Error()), nextAction)
 		return record, nil
 	})
 	return updated, errors.Join(cleanupErr, updateErr)
@@ -761,16 +758,10 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	_, err = e.Store.Update(operationID, "operation-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = "record-operation-complete"
 		record.CompletedPhases = appendMissing(record.CompletedPhases, "post-kubeadm-health", "record-operation-complete")
-		record.PhaseIndex = len(record.CompletedPhases)
 		record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
-		record.GenerationCommitState = operation.GenerationCommitCommitted
 		record.ActivationState = operation.ActivationStateActiveLive
-		record.BootHealthPending = true
-		record.CompletedAt = &completedAt
-		record.Terminal = true
-		record.Result = operation.ResultSucceeded
 		record.NextAction = "reboot into the bounded candidate trial to validate the active generation"
-		record.UpdatedAt = completedAt
+		record.CompleteBootTrial(completedAt)
 		return record, nil
 	})
 	return errors.Join(err, artifactErr)
@@ -779,8 +770,14 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 // Both live configuration and Kubernetes transitions use the same durable
 // promotion after their operation-specific activation checks have passed.
 func (e *Executor) promoteLiveGeneration(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
-	if _, _, _, err := e.writeCandidateLoaderEntry(ctx, record.CandidateGenerationID); err != nil {
+	_, state, err := generation.ReadGeneration(e.Root, record.CandidateGenerationID)
+	if err != nil {
 		return err
+	}
+	if state.CommitState == generation.CommitStateCandidate {
+		if _, _, _, err := e.writeCandidateLoaderEntry(ctx, record.CandidateGenerationID); err != nil {
+			return err
+		}
 	}
 	return generation.PromoteLiveGeneration(generation.LivePromotionRequest{
 		Root:         e.Root,

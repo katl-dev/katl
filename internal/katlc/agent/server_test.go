@@ -1889,7 +1889,7 @@ func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !record.Terminal || record.Result != operation.ResultFailedNeedsRepair || record.ExternalMutationStarted {
+	if !record.Terminal || record.Result != "failed" || record.RecoveryRequired || record.ExternalMutationStarted {
 		t.Fatalf("record = %+v, want terminal failed before external mutation", record)
 	}
 	if !strings.Contains(record.FailureReason, "systemd-networkd configuration applies on next boot") {

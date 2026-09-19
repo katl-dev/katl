@@ -57,6 +57,10 @@ type LivePromotionRequest struct {
 // upgrade, whose boot payload is identical to the runtime that was just
 // validated and therefore does not require a disruptive trial reboot.
 func PromoteLiveGeneration(request LivePromotionRequest) error {
+	return withStateLock(filepath.Join(cleanRoot(request.Root), "var/lib/katl/boot"), func() error { return promoteLiveGeneration(request) })
+}
+
+func promoteLiveGeneration(request LivePromotionRequest) error {
 	now := request.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -71,7 +75,8 @@ func PromoteLiveGeneration(request LivePromotionRequest) error {
 	if err != nil {
 		return err
 	}
-	if status.CommitState != CommitStateCandidate {
+	resuming := status.CommitState == CommitStateCommitted && IsKnownGood(status) && request.OperationID != "" && status.CommittedByOperation == request.OperationID
+	if status.CommitState != CommitStateCandidate && !resuming {
 		return fmt.Errorf("generation %s commitState %s cannot be promoted live", generationID, status.CommitState)
 	}
 	entry := strings.TrimSpace(spec.Boot.LoaderEntryPath)
@@ -81,6 +86,21 @@ func PromoteLiveGeneration(request LivePromotionRequest) error {
 	selection, err := ReadBootSelection(root)
 	if err != nil {
 		return err
+	}
+	// A committed, healthy candidate records that live validation passed. On
+	// retry, replay the external boot-default write even if selection.json was
+	// already published: that file cannot prove the EFI update completed.
+	if resuming && selection.DefaultGenerationID == generationID {
+		if selection.ActiveGenerationID != generationID || selection.PendingHealthValidation {
+			return fmt.Errorf("live promotion %s conflicts with current boot selection", generationID)
+		}
+		if request.SetBootDefault == nil {
+			return fmt.Errorf("boot default updater is required to resume live promotion")
+		}
+		return request.SetBootDefault(root, entry)
+	}
+	if resuming && selection.DefaultGenerationID != spec.PreviousGenerationID {
+		return fmt.Errorf("live promotion %s no longer follows the default generation", generationID)
 	}
 	previousSelection := selection
 	previousID := strings.TrimSpace(selection.DefaultGenerationID)
@@ -126,23 +146,26 @@ func PromoteLiveGeneration(request LivePromotionRequest) error {
 		return errors.Join(cause, rollbackErr)
 	}
 
-	status.CommitState = CommitStateCommitted
-	status.BootState = BootStateGood
-	status.HealthState = HealthStateHealthy
-	status.UpdatedAt = now
-	status.CommittedAt = &now
-	status.CommittedByOperation = strings.TrimSpace(request.OperationID)
-	status.StatusTransitions = append(status.StatusTransitions, StatusTransition{
-		At:          now,
-		OperationID: strings.TrimSpace(request.OperationID),
-		Reason:      transitionReason(request.Reason, "live activation passed health checks and was promoted as known-good"),
-		CommitState: status.CommitState,
-		BootState:   status.BootState,
-		HealthState: status.HealthState,
-	})
-	if err := WriteGenerationStatus(root, spec, status); err != nil {
-		return err
+	if !resuming {
+		status.CommitState = CommitStateCommitted
+		status.BootState = BootStateGood
+		status.HealthState = HealthStateHealthy
+		status.UpdatedAt = now
+		status.CommittedAt = &now
+		status.CommittedByOperation = strings.TrimSpace(request.OperationID)
+		status.StatusTransitions = append(status.StatusTransitions, StatusTransition{
+			At:          now,
+			OperationID: strings.TrimSpace(request.OperationID),
+			Reason:      transitionReason(request.Reason, "live activation passed health checks and was promoted as known-good"),
+			CommitState: status.CommitState,
+			BootState:   status.BootState,
+			HealthState: status.HealthState,
+		})
+		if err := WriteGenerationStatus(root, spec, status); err != nil {
+			return err
+		}
 	}
+
 	if havePrevious {
 		if err := supersedePreviousGeneration(root, previousID, generationID, now); err != nil {
 			return rollbackDurable(err)
@@ -186,6 +209,16 @@ func PromoteLiveGeneration(request LivePromotionRequest) error {
 }
 
 func RecordBootHealth(request BootHealthRequest) (BootHealthResult, error) {
+	var result BootHealthResult
+	err := withStateLock(filepath.Join(cleanRoot(request.Root), "var/lib/katl/boot"), func() error {
+		var err error
+		result, err = recordBootHealth(request)
+		return err
+	})
+	return result, err
+}
+
+func recordBootHealth(request BootHealthRequest) (BootHealthResult, error) {
 	now := request.Now
 	if now.IsZero() {
 		now = time.Now().UTC()

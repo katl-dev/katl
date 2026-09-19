@@ -174,19 +174,13 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		current.PreviousGenerationID = previousSpec.GenerationID
 		current.CompletedPhases = appendMissing(current.CompletedPhases, "accepted", "verify-katlos-image", "stage-sysupdate-components", "write-candidate-generation", "arm-trial-boot")
 		current.Phase = "arm-trial-boot"
-		current.PhaseIndex = len(current.CompletedPhases)
 		current.ExternalMutationStarted = true
 		current.MutationScopes = appendMissing(current.MutationScopes, "runtime-root", "runtime-uki", "boot-selection", "generation-state")
 		current.ActivationState = operation.ActivationStatePending
-		current.GenerationCommitState = operation.GenerationCommitCommitted
-		current.BootHealthPending = true
 		current.HostRollback = previousSpec.GenerationID
 		current.PostMutationRollbackAllowed = true
-		current.Terminal = true
-		current.Result = operation.ResultSucceeded
-		current.CompletedAt = &now
-		current.UpdatedAt = now
 		current.NextAction = "reboot into the bounded candidate trial; promote only after boot health passes"
+		current.CompleteBootTrial(now)
 		return current, nil
 	})
 	return err

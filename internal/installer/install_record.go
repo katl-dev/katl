@@ -108,9 +108,6 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 		return InstallRecordResult{}, err
 	}
 	metadataPath := filepath.Join(generationsRoot, generationID, "metadata.json")
-	if err := generation.WriteRecord(metadataPath, record); err != nil {
-		return InstallRecordResult{}, err
-	}
 
 	return InstallRecordResult{
 		Tree:         tree,

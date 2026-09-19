@@ -962,20 +962,17 @@ func (e *Executor) completeKubeadmUpgrade(ctx context.Context, record operation.
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
 
-	_, err := e.Store.Update(record.OperationID, "kubeadm-upgrade-healthy", "healthy", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+	return e.recordHealthyKubeadmUpgrade(record.OperationID, now)
+}
+
+func (e *Executor) recordHealthyKubeadmUpgrade(operationID string, now time.Time) error {
+	_, err := e.Store.Update(operationID, "kubeadm-upgrade-healthy", "healthy", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "healthy"
 		current.CompletedPhases = appendMissing(current.CompletedPhases, "kubelet-stop-running", "sysext-refresh-running", "kubelet-restart-running", "health-check-running", "healthy")
-		current.PhaseIndex = len(current.CompletedPhases)
 		current.KubeadmUpgradeEvidence.KubeletGateState = "target-observed"
-		current.ActivationState = operation.ActivationStateActiveLive
-		current.GenerationCommitState = operation.GenerationCommitCommitted
 		current.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
-		current.BootHealthPending = false
-		current.Terminal = true
-		current.Result = operation.ResultSucceeded
-		current.CompletedAt = &now
-		current.UpdatedAt = now
 		current.NextAction = "continue the serialized online rollout; the active generation is the persistent boot default"
+		current.CompleteLiveGeneration(now)
 		return current, nil
 	})
 	return err
