@@ -856,11 +856,19 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 	if !strings.Contains(lines[splitRow], "│Kubernetes") {
 		t.Fatalf("Node and Kubernetes titles are not aligned = %q", lines[splitRow])
 	}
-	stateRow := lines[splitRow+1]
+	stateIndex := lineIndexContaining(lines, "State:")
+	if stateIndex < 0 {
+		t.Fatalf("missing state row:\n%s", got)
+	}
+	stateRow := lines[stateIndex]
 	if !containsIgnoringLayout(stateRow, "State:Healthy") || !containsIgnoringLayout(stateRow, "│State:Controlplanehealthy") {
 		t.Fatalf("split state row = %q", stateRow)
 	}
-	versionRow := lines[splitRow+2]
+	versionIndex := lineIndexContaining(lines, "Node:")
+	if versionIndex < 0 {
+		t.Fatalf("missing node/version row:\n%s", got)
+	}
+	versionRow := lines[versionIndex]
 	if !containsIgnoringLayout(versionRow, "Node:cp-1") || !containsIgnoringLayout(versionRow, "│Kubelet:v1.36.1") {
 		t.Fatalf("split version row = %q", versionRow)
 	}
@@ -1079,6 +1087,47 @@ func TestRenderDimensionsAreCapped(t *testing.T) {
 	}
 }
 
+func TestDashboardRule(t *testing.T) {
+	for _, mode := range []Mode{ModeInstaller, ModeRuntime} {
+		for _, width := range []int{40, 80, 240} {
+			t.Run(fmt.Sprintf("%s/%d", mode, width), func(t *testing.T) {
+				snapshot := Snapshot{Mode: mode}
+				plain := renderDashboard(&snapshot, nil, width, 25, false)
+				line := strings.Split(string(plain), "\n")[1]
+				if utf8.RuneCountInString(line) != width || strings.Trim(line, "─") != "" {
+					t.Fatalf("rule must fill %d columns with a thin line: %q", width, line)
+				}
+				lines := strings.Split(string(plain), "\n")
+				if lines[23] != line {
+					t.Fatalf("journal bottom rule must span the row above the footer: %q", lines[23])
+				}
+				journal := lineIndex(lines, "Journal")
+				if journal < 0 || journal+1 >= len(lines) || lines[journal+1] != line {
+					t.Fatalf("journal heading lacks a full-width rule:\n%s", plain)
+				}
+				if mode == ModeRuntime {
+					if width < 72 {
+						for _, title := range []string{"Node", "Kubernetes"} {
+							row := lineIndex(lines, title)
+							if row < 0 || lines[row+1] != line {
+								t.Fatalf("%s heading lacks a full-width rule:\n%s", title, plain)
+							}
+						}
+					} else if utf8.RuneCountInString(lines[3]) != width || strings.Count(lines[3], "┼") != 1 || strings.Trim(lines[3], "─┼") != "" {
+						t.Fatalf("pane heading rules do not meet at their divider: %q", lines[3])
+					}
+				}
+
+				colored := renderDashboard(&snapshot, nil, width, 25, true)
+				terminal := emulateTerminal(t, colored, width, 25)
+				if string(terminal.rows[1]) != line || terminal.scrolls != 0 {
+					t.Fatalf("terminal rule = %q, scrolls = %d", string(terminal.rows[1]), terminal.scrolls)
+				}
+			})
+		}
+	}
+}
+
 func TestTerminalRenderDoesNotScrollCompletedFrame(t *testing.T) {
 	snapshot := Snapshot{
 		Mode:             ModeRuntime,
@@ -1243,7 +1292,7 @@ func TestFieldsPanesAndJournalShareCellWrapping(t *testing.T) {
 		frame := newFrame(12, 24)
 		viewport := NewViewport(&frame, Rect{Width: 12, Height: 24})
 		writePane(&viewport, "", []paneField{{value: value}})
-		return frameText(&frame, Rect{Width: 12, Height: 24})
+		return frameText(&frame, Rect{Y: 2, Width: 12, Height: 22})
 	}
 	paintJournal := func() string {
 		frame := newFrame(12, 24)
@@ -1283,7 +1332,11 @@ func TestWidePaneDividerIsPaintedAfterBoundedContent(t *testing.T) {
 	renderer.writeRuntimeStatus(&content, &snapshot)
 	divider := (content.bounds.Width - 1) / 2
 	for row := 0; row < content.rowsUsed(); row++ {
-		if got := renderer.frame.Cells[row*renderer.frame.Width+divider].Glyph; got != "│" {
+		want := "│"
+		if row == 1 {
+			want = "┼"
+		}
+		if got := renderer.frame.Cells[row*renderer.frame.Width+divider].Glyph; got != want {
 			t.Fatalf("divider row %d = %q", row, got)
 		}
 	}

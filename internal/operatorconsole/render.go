@@ -112,10 +112,8 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 	if snapshot.Mode == ModeInstaller {
 		title += " Installer"
 	}
-	titleViewport := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: 1})
-	titleViewport.Write(title, WrapOptions{Style: styleTitle})
-	divider := NewViewport(&render.frame, Rect{Y: 1, Width: min(render.frame.Width, 72), Height: 1})
-	divider.Write(strings.Repeat("=", divider.bounds.Width), WrapOptions{Style: styleDim})
+	titleViewport := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: 2})
+	writeHeading(&titleViewport, title)
 
 	contentRect := Rect{Y: 2, Width: render.frame.Width, Height: render.frame.Height - 3}
 	alerts := activeAlerts(snapshot)
@@ -147,11 +145,15 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 	if content.rowsRemaining() > 0 {
 		writeHeading(&content, "Journal")
 	}
-	if journal != nil && content.rowsRemaining() > 0 {
-		journalViewport := content.sub(Rect{Y: content.y, Width: content.bounds.Width, Height: content.rowsRemaining()})
+	if content.rowsRemaining() > 0 {
+		journalRows := content.rowsRemaining() - 1
+		journalViewport := content.sub(Rect{Y: content.y, Width: content.bounds.Width, Height: journalRows})
 		writer := newJournalWriter(journalViewport)
-		journal.WriteTail(&writer)
-		content.advance(writer.RowsWritten())
+		if journal != nil {
+			journal.WriteTail(&writer)
+		}
+		content.advance(journalRows)
+		writeRule(&content)
 	}
 }
 
@@ -295,7 +297,11 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	// Decorations are painted after pane content. Even malformed input cannot
 	// move them because each pane was clipped to its own viewport.
 	for offset := range used {
-		render.frame.setGlyph(content.bounds.X+dividerX, content.bounds.Y+start+offset, "│", 1, styleDim)
+		glyph := "│"
+		if offset == 1 {
+			glyph = "┼"
+		}
+		render.frame.setGlyph(content.bounds.X+dividerX, content.bounds.Y+start+offset, glyph, 1, styleDim)
 	}
 }
 
@@ -420,6 +426,15 @@ func writeHeading(viewport *Viewport, value string) {
 	heading := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: 1})
 	heading.Write(value, WrapOptions{Style: styleTitle})
 	viewport.advance(1)
+	writeRule(viewport)
+}
+
+func writeRule(viewport *Viewport) {
+	if viewport.rowsRemaining() > 0 {
+		rule := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: 1})
+		rule.Write(strings.Repeat("─", rule.bounds.Width), WrapOptions{Style: styleDim})
+		viewport.advance(1)
+	}
 }
 
 func writeField(viewport *Viewport, label, value string, style Style) {
