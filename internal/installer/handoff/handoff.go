@@ -151,6 +151,17 @@ func (s *HandoffServer) Status() HandoffStatus {
 	return status
 }
 
+// BeginAutomatic reserves the installer before exposing the API so a caller
+// cannot submit a competing installation while boot-provided inputs run.
+func (s *HandoffServer) BeginAutomatic(nodeName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = HandoffAccepted
+	s.nodeName = nodeName
+	s.status = installstatus.New(installstatus.StateRunning, time.Now().UTC())
+	s.status.InputMode = installstatus.InputModePXEPreseed
+}
+
 // PrepareRetry returns the handoff server to its waiting state after an
 // installer attempt failed without mutating the target disk. The failure
 // remains visible through Status until another request is accepted.

@@ -115,12 +115,14 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 		}
 	}
 	if config.GuestHandoff {
-		preseed, err := writeGuestHandoffSeedMedia(ctx, result, config, manifest)
-		if err != nil {
-			return failFirst(runner, scenario, result, "guest-handoff-seed", err)
+		if !config.PreseedManifest {
+			preseed, err := writeGuestHandoffSeedMedia(ctx, result, config, manifest)
+			if err != nil {
+				return failFirst(runner, scenario, result, "guest-handoff-seed", err)
+			}
+			config.Installer.VM.PreseedImage = preseed.Image
+			config.Installer.VM.MediaRunner = config.PreseedRunner
 		}
-		config.Installer.VM.PreseedImage = preseed.Image
-		config.Installer.VM.MediaRunner = config.PreseedRunner
 		config, err = configureGuestHandoff(result, config, manifest)
 		if err != nil {
 			return failFirst(runner, scenario, result, "guest-handoff", err)
