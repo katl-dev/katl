@@ -35,3 +35,19 @@ on installer or agent packages.
 The on-disk spec/status envelopes and boot-selection schema remain unchanged.
 A host fallback changes the selected runtime; it cannot undo Kubernetes or etcd
 mutations, identity changes, or workload data.
+
+Host upgrades use systemd-sysupdate as a transfer engine, not as the owner of
+release ordering or boot retention. Under the node's upgrade lock, Katl finds
+the active root by PARTUUID, labels it `katl_0` (protected), and prepares the
+inactive root as `_empty`. The selected transfer always uses the local version
+`1`; its completed root label is `katl_1`. These labels describe one transfer,
+not a KatlOS release, and are prepared again from observed boot identity on the
+next upgrade. Full release versions remain in generation metadata.
+
+Each root slot has its own UKI match namespace. Before staging, Katl removes
+only the inactive slot's previous UKI so sysupdate cannot mistake it for the
+new candidate. Sysupdate cannot vacuum or overwrite the active slot's kernel,
+and repeated upgrades reuse the two slot-owned files. Boot records retain the
+concrete UKI paths, including paths from older installed releases.
+Explicit older-release selection and repeated staging do not depend on the
+lexical ordering or length of operator-visible release versions.
