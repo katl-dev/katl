@@ -522,9 +522,7 @@ func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkdFileSet(t *testing.T
 	if err != nil {
 		t.Fatalf("ReadRecord() error = %v", err)
 	}
-	if record.ConfigApply == nil || record.ConfigApply.RequestedApplyMode != generation.ApplyModeAuto || record.ConfigApply.AcceptedApplyMode != generation.ApplyModeNextBoot {
-		t.Fatalf("config apply metadata = %#v", record.ConfigApply)
-	}
+
 	if len(record.Confexts) != 1 || record.Confexts[0].Compatibility.ID != "katlos" || record.Confexts[0].Compatibility.VersionID != "0.1.0" || record.Confexts[0].Compatibility.ConfextLevel != 1 {
 		t.Fatalf("confext metadata = %#v", record.Confexts)
 	}
@@ -532,6 +530,13 @@ func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkdFileSet(t *testing.T
 	if err != nil {
 		t.Fatalf("ReadConfigApplyStatus() error = %v", err)
 	}
+	if persisted.RequestedApplyMode != generation.ApplyModeAuto || persisted.AcceptedApplyMode != generation.ApplyModeNextBoot {
+		t.Fatalf("persisted apply decision = %#v", persisted)
+	}
+	if _, err := os.Stat(result.MetadataPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy metadata was written: %v", err)
+	}
+
 	if persisted.RequestedApplyMode != generation.ApplyModeAuto || persisted.AcceptedApplyMode != generation.ApplyModeNextBoot || persisted.Phase != generation.ConfigApplyPhaseNextBoot {
 		t.Fatalf("persisted status = %#v", persisted)
 	}

@@ -884,8 +884,7 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/cluster/kubeadm/control-plane/config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")
 	assertDirEmpty(t, filepath.Join(targetRoot, "etc/kubernetes"))
 	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/kubelet.service"))
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/metadata.json"), `"generationID": "0"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/metadata.json"), `"loaderEntryPath": "loader/entries/katl-0.conf"`)
+	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/metadata.json"))
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/spec.json"), `"sysexts": []`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/spec.json"), `"loaderEntryPath": "loader/entries/katl-0.conf"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/manifest.json"), `"hostname": "lab-node-01"`)
@@ -1419,14 +1418,12 @@ func TestRunnerMaterializesInstallRecord(t *testing.T) {
 		t.Fatalf("DigestDirectory() error = %v", err)
 	}
 	metadataPath := filepath.Join(targetRoot, "var/lib/katl/generations/2026.06.04-001/metadata.json")
-	data, err := os.ReadFile(metadataPath)
+	assertMissing(t, metadataPath)
+	decoded, err := generation.ReadRecord(metadataPath)
 	if err != nil {
-		t.Fatalf("read metadata: %v", err)
+		t.Fatal(err)
 	}
-	var decoded generation.Record
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("decode metadata: %v", err)
-	}
+
 	if decoded.Root.Slot != "root-a" || len(decoded.Sysexts) != 0 {
 		t.Fatalf("metadata did not preserve clean generation 0 selection: %#v", decoded)
 	}

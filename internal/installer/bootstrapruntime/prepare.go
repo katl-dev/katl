@@ -142,13 +142,7 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	if err := generation.WriteGeneration(root, spec, status); err != nil {
 		return Result{}, err
 	}
-	metadataPath, err := generation.MetadataPath(root, candidate)
-	if err != nil {
-		return Result{}, err
-	}
-	if err := generation.WriteRecord(metadataPath, next); err != nil {
-		return Result{}, err
-	}
+
 	desiredFiles, _, err := readStoredKubeadmInput(root, plan.RuntimeInputs.KubeadmInput)
 	if err != nil {
 		return Result{}, err

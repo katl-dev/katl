@@ -327,7 +327,12 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 	if err != nil {
 		return TrustedBundleResult{}, err
 	}
-	if err := generation.WriteRecord(metadataPath, plan.GenerationRecord); err != nil {
+	spec := generation.SpecFromRecord(plan.GenerationRecord)
+	generationStatus, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, plan.GenerationRecord.CreatedAt)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	if err := generation.WriteGeneration(request.Root, spec, generationStatus); err != nil {
 		return TrustedBundleResult{}, err
 	}
 	statusPath, err := generation.ConfigApplyStatusPath(request.Root, plan.GenerationRecord.GenerationID)

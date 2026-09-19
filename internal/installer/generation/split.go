@@ -229,20 +229,6 @@ func ReadSplitRecords(dir string) (GenerationSpec, GenerationStatus, error) {
 	}
 	status, err := readGenerationStatusFile(statusPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			legacy, legacyErr := readRecordFile(filepath.Join(dir, "metadata.json"))
-			if legacyErr == nil {
-				digest, digestErr := CanonicalSpecDigest(spec)
-				if digestErr != nil {
-					return GenerationSpec{}, GenerationStatus{}, digestErr
-				}
-				status := StatusFromRecord(legacy, digest)
-				if validateErr := ValidateGenerationStatus(spec, status); validateErr != nil {
-					return GenerationSpec{}, GenerationStatus{}, validateErr
-				}
-				return spec, status, nil
-			}
-		}
 		return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("read generation status: %w", err)
 	}
 	if err := ValidateGenerationStatus(spec, status); err != nil {
@@ -251,41 +237,61 @@ func ReadSplitRecords(dir string) (GenerationSpec, GenerationStatus, error) {
 	return spec, status, nil
 }
 
+// WriteSplitRecords publishes the immutable spec before the initial status. A
+// generation is readable only when both exist; retry completes an interrupted
+// publication without resetting status that has already advanced.
 func WriteSplitRecords(dir string, spec GenerationSpec, status GenerationStatus) error {
-	if err := ValidateGenerationSpec(spec); err != nil {
-		return err
-	}
-	digest, err := CanonicalSpecDigest(spec)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(status.SpecDigest) == "" {
-		status.SpecDigest = digest
-	}
-	if err := ValidateGenerationStatus(spec, status); err != nil {
-		return err
-	}
-	specPath := filepath.Join(dir, "spec.json")
-	if _, err := os.Stat(specPath); err == nil {
-		return fmt.Errorf("generation spec already exists")
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read existing generation spec: %w", err)
-	}
-	specData, err := marshalRecordEnvelope(GenerationSpecRecordType, spec)
-	if err != nil {
-		return fmt.Errorf("marshal generation spec: %w", err)
-	}
-	statusData, err := marshalRecordEnvelope(GenerationStatusRecordType, status)
-	if err != nil {
-		return fmt.Errorf("marshal generation status: %w", err)
-	}
-	if err := writeFileAtomic(specPath, specData, 0o644); err != nil {
-		return fmt.Errorf("write generation spec: %w", err)
-	}
-	if err := writeFileAtomic(filepath.Join(dir, "status.json"), statusData, 0o644); err != nil {
-		return fmt.Errorf("write generation status: %w", err)
-	}
-	return nil
+	return withStateLock(dir, func() error {
+		digest, err := CanonicalSpecDigest(spec)
+		if err != nil {
+			return err
+		}
+		if status.SpecDigest == "" {
+			status.SpecDigest = digest
+		}
+		if err := ValidateGenerationStatus(spec, status); err != nil {
+			return err
+		}
+		specPath := filepath.Join(dir, "spec.json")
+		existing, err := readGenerationSpecFile(specPath)
+		if err == nil {
+			existingDigest, err := CanonicalSpecDigest(existing)
+			if err != nil {
+				return err
+			}
+			if existingDigest != digest {
+				return fmt.Errorf("generation spec selection fields are immutable")
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		} else {
+			// Refuse orphaned status: it is not evidence for this specification.
+			if _, err := os.Stat(filepath.Join(dir, "status.json")); err == nil {
+				return fmt.Errorf("generation status exists without its specification")
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			data, err := marshalRecordEnvelope(GenerationSpecRecordType, spec)
+			if err != nil {
+				return err
+			}
+			if err := writeFileAtomic(specPath, data, 0o644); err != nil {
+				return err
+			}
+		}
+		existingStatus, err := readGenerationStatusFile(filepath.Join(dir, "status.json"))
+		if err == nil {
+			return ValidateGenerationStatus(spec, existingStatus)
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		data, err := marshalRecordEnvelope(GenerationStatusRecordType, status)
+		if err != nil {
+			return err
+		}
+		return writeFileAtomic(filepath.Join(dir, "status.json"), data, 0o644)
+	})
 }
 
 func WriteGenerationStatus(root string, spec GenerationSpec, status GenerationStatus) error {
@@ -297,6 +303,10 @@ func WriteGenerationStatus(root string, spec GenerationSpec, status GenerationSt
 }
 
 func WriteStatusRecord(dir string, spec GenerationSpec, status GenerationStatus) error {
+	return withStateLock(dir, func() error { return writeStatusRecord(dir, spec, status) })
+}
+
+func writeStatusRecord(dir string, spec GenerationSpec, status GenerationStatus) error {
 	if err := ValidateGenerationStatus(spec, status); err != nil {
 		return err
 	}

@@ -632,16 +632,7 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	}
 	result, err := configapply.ApplyTrustedBundle(ctx, decoded)
 	completedAt := e.clock()
-	if result.Plan.GenerationRecord.GenerationID != "" {
-		result.Plan.GenerationRecord = inheritCurrentKernelCommandLine(
-			e.Root,
-			result.Plan.GenerationRecord,
-			base.CurrentRecord.ConfiguredKernelCommandLine,
-		)
-		if splitErr := writeSplitGeneration(e.Root, result.Plan.GenerationRecord); splitErr != nil {
-			err = errorsJoin(err, splitErr)
-		}
-	}
+
 	if err == nil {
 		switch result.Plan.Decision.AcceptedMode {
 		case generation.ApplyModeLive:
@@ -663,26 +654,28 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 		_, markErr := e.failConfigApplyRecord(record.OperationID, result, "render-generation-failed", "render-generation", "render-generation", "config apply failed before completion", errorsJoin(err, artifactErr), completedAt)
 		return errorsJoin(err, artifactErr, markErr)
 	}
-	_, updateErr := e.Store.Update(record.OperationID, "operation-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
+	return e.completeConfigApply(record.OperationID, generation.SpecFromRecord(result.Plan.GenerationRecord), result.Status, completedAt)
+}
+
+func (e *Executor) completeConfigApply(operationID string, spec generation.GenerationSpec, status generation.ConfigApplyStatus, completedAt time.Time) error {
+	_, updateErr := e.Store.Update(operationID, "operation-complete", "operation-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = operation.HostBookkeepingCompletionPhase
 		record.CompletedPhases = appendMissing(record.CompletedPhases, "render-generation", operation.HostBookkeepingCompletionPhase)
-		record.PhaseIndex = len(record.CompletedPhases)
-		record.PreviousGenerationID = result.Plan.GenerationRecord.ConfigApply.PreviousGeneration
-		record.CandidateGenerationID = result.Plan.GenerationRecord.GenerationID
-		record.ConfigApplyPhase = result.Status.Phase
-		record.ChangedDomains = append([]string(nil), result.Status.ChangedDomains...)
-		record.GenerationCommitState = operation.GenerationCommitCommitted
-		record.BootHealthPending = result.Plan.Decision.AcceptedMode == generation.ApplyModeNextBoot
-		record.ActivationState = configApplyActivationState(result.Status, false)
+		record.PreviousGenerationID = spec.PreviousGenerationID
+		record.CandidateGenerationID = spec.GenerationID
+		record.ConfigApplyPhase = status.Phase
+		record.ChangedDomains = append([]string(nil), status.ChangedDomains...)
+		record.ActivationState = configApplyActivationState(status, false)
 		completeConfigApplyInvocation(record.Invocations, liveConfigApplyInvocationID(record.OperationID), completedAt, operation.ResultSucceeded)
-		record.CompletedAt = &completedAt
-		record.Terminal = true
-		record.Result = operation.ResultSucceeded
+		if status.AcceptedApplyMode == generation.ApplyModeNextBoot {
+			record.CompleteBootTrial(completedAt)
+		} else {
+			record.CompleteLiveGeneration(completedAt)
+		}
 		record.NextAction = "live configuration is active and is the persistent boot default"
 		if record.BootHealthPending {
 			record.NextAction = "reboot into committed config apply generation for boot health validation"
 		}
-		record.UpdatedAt = completedAt
 		return record, nil
 	})
 	return updateErr
@@ -1001,6 +994,7 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 			kubernetesActivationPath = clusterIntentKubernetesActivationPath(intent)
 		}
 	}
+	current = inheritCurrentKernelCommandLine(root, current, current.ConfiguredKernelCommandLine)
 	return configapply.TrustedBundleRequest{
 		Root:                            root,
 		NodeName:                        strings.TrimSpace(nodeName),
@@ -1168,25 +1162,6 @@ func currentGenerationID(root string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("current generation is not recorded")
-}
-
-func writeSplitGeneration(root string, record generation.Record) error {
-	dir, err := generation.GenerationDir(root, record.GenerationID)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(filepath.Join(dir, "spec.json")); err == nil {
-		return fmt.Errorf("generation split spec already exists")
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read generation split spec: %w", err)
-	}
-	spec := generation.SpecFromRecord(record)
-	digest, err := generation.CanonicalSpecDigest(spec)
-	if err != nil {
-		return err
-	}
-	status := generation.StatusFromRecord(record, digest)
-	return generation.WriteGeneration(root, spec, status)
 }
 
 func inheritCurrentKernelCommandLine(root string, record generation.Record, replaced []string) generation.Record {

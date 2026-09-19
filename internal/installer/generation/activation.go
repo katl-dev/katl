@@ -34,27 +34,20 @@ type ActivationLink struct {
 }
 
 func ReadRecord(path string) (Record, error) {
-	if filepath.Base(path) == "metadata.json" {
-		dir := filepath.Dir(path)
-		if _, err := os.Stat(filepath.Join(dir, "spec.json")); err == nil {
-			spec, status, splitErr := ReadSplitRecords(dir)
-			if splitErr == nil {
-				return RecordFromSplit(spec, status), nil
-			}
-			return Record{}, splitErr
-		}
+	if filepath.Base(path) != "metadata.json" {
+		return readRecordFile(path)
 	}
-	record, err := readRecordFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && filepath.Base(path) == "metadata.json" {
-			spec, status, splitErr := ReadSplitRecords(filepath.Dir(path))
-			if splitErr == nil {
-				return RecordFromSplit(spec, status), nil
-			}
-		}
+	// Legacy activation records have a smaller contract than full boot specs.
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "spec.json")); os.IsNotExist(err) {
+		return readRecordFile(path)
+	} else if err != nil {
 		return Record{}, err
 	}
-	return record, nil
+	spec, status, err := ReadSplitRecords(filepath.Dir(path))
+	if err != nil {
+		return Record{}, err
+	}
+	return RecordFromSplit(spec, status), nil
 }
 
 func readRecordFile(path string) (Record, error) {

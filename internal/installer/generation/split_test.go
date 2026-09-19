@@ -116,7 +116,7 @@ func TestSplitGenerationRejectsUnsupportedEnvelopeVersion(t *testing.T) {
 	}
 }
 
-func TestSplitGenerationReadsPartialMigrationStatusFromLegacy(t *testing.T) {
+func TestSplitGenerationRejectsIncompletePublication(t *testing.T) {
 	record := markGood(abRecord(t, "2026.06.10-partial", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC)))
 	dir := filepath.Join(t.TempDir(), record.GenerationID)
 	spec := SpecFromRecord(record)
@@ -129,12 +129,8 @@ func TestSplitGenerationReadsPartialMigrationStatusFromLegacy(t *testing.T) {
 		t.Fatalf("WriteRecord() error = %v", err)
 	}
 
-	readSpec, status, err := ReadSplitRecords(dir)
-	if err != nil {
-		t.Fatalf("ReadSplitRecords() partial migration error = %v", err)
-	}
-	if readSpec.GenerationID != spec.GenerationID || status.BootState != BootStateGood || status.HealthState != HealthStateHealthy {
-		t.Fatalf("partial migration = %#v/%#v", readSpec, status)
+	if _, _, err := ReadSplitRecords(dir); err == nil {
+		t.Fatal("incomplete split publication accepted stale metadata status")
 	}
 }
 
@@ -180,8 +176,8 @@ func TestSplitGenerationRejectsSpecMutation(t *testing.T) {
 		t.Fatalf("WriteGeneration() error = %v", err)
 	}
 	err = WriteGeneration(root, spec, status)
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("WriteGeneration(existing) error = %v, want already exists", err)
+	if err != nil {
+		t.Fatalf("WriteGeneration(existing): %v", err)
 	}
 
 	mutated := spec
