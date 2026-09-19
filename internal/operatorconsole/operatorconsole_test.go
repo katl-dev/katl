@@ -1094,9 +1094,13 @@ func TestDashboardRule(t *testing.T) {
 				snapshot := Snapshot{Mode: mode}
 				plain := renderDashboard(&snapshot, nil, width, 25, false)
 				lines := strings.Split(string(plain), "\n")
-				line := strings.ReplaceAll(lines[0], "┬", "─")
-				if utf8.RuneCountInString(line) != width || strings.Trim(line, "─") != "" {
-					t.Fatalf("rule must fill %d columns with a thin line: %q", width, line)
+				line := strings.Repeat("─", width)
+				first := "State:"
+				if mode == ModeRuntime {
+					first = "Node"
+				}
+				if !strings.HasPrefix(lines[0], first) {
+					t.Fatalf("dashboard must start with %s: %q", first, lines[0])
 				}
 				if lines[23] != line {
 					t.Fatalf("journal bottom rule must span the row above the footer: %q", lines[23])
@@ -1113,16 +1117,16 @@ func TestDashboardRule(t *testing.T) {
 								t.Fatalf("%s heading lacks a full-width rule:\n%s", title, plain)
 							}
 						}
-					} else if utf8.RuneCountInString(lines[2]) != width || strings.Count(lines[2], "┼") != 1 || strings.Trim(lines[2], "─┼") != "" {
-						t.Fatalf("pane heading rules do not meet at their divider: %q", lines[2])
+					} else if utf8.RuneCountInString(lines[1]) != width || strings.Count(lines[1], "┼") != 1 || strings.Trim(lines[1], "─┼") != "" {
+						t.Fatalf("pane heading rules do not meet at their divider: %q", lines[1])
 					} else {
-						top := slices.Index([]rune(lines[0]), '┬')
+						top := slices.Index([]rune(lines[0]), '│')
 						bottom := lineIndexContaining(lines, "┴")
-						if top < 0 || bottom != journal+1 || slices.Index([]rune(lines[2]), '┼') != top || slices.Index([]rune(lines[bottom]), '┴') != top {
+						if top < 0 || bottom != journal+1 || slices.Index([]rune(lines[1]), '┼') != top || slices.Index([]rune(lines[bottom]), '┴') != top {
 							t.Fatalf("pane divider does not join its top and bottom rules:\n%s", plain)
 						}
-						for row := 1; row < bottom; row++ {
-							if row != 2 && slices.Index([]rune(lines[row]), '│') != top {
+						for row := 0; row < bottom; row++ {
+							if row != 1 && slices.Index([]rune(lines[row]), '│') != top {
 								t.Fatalf("pane divider is broken at row %d: %q", row, lines[row])
 							}
 						}
@@ -1131,8 +1135,8 @@ func TestDashboardRule(t *testing.T) {
 
 				colored := renderDashboard(&snapshot, nil, width, 25, true)
 				terminal := emulateTerminal(t, colored, width, 25)
-				if string(terminal.rows[0]) != lines[0] || terminal.scrolls != 0 {
-					t.Fatalf("terminal rule = %q, scrolls = %d", string(terminal.rows[0]), terminal.scrolls)
+				if strings.TrimRight(string(terminal.rows[0]), " ") != lines[0] || terminal.scrolls != 0 {
+					t.Fatalf("terminal first row = %q, scrolls = %d", string(terminal.rows[0]), terminal.scrolls)
 				}
 			})
 		}
@@ -1166,7 +1170,7 @@ func TestTerminalRenderDoesNotScrollCompletedFrame(t *testing.T) {
 	if terminal.scrolls != 0 {
 		t.Fatalf("completed frame scrolled %d times", terminal.scrolls)
 	}
-	if row := strings.TrimSpace(string(terminal.rows[0])); row != strings.Repeat("─", width) {
+	if row := strings.TrimSpace(string(terminal.rows[0])); row != "Node" {
 		t.Fatalf("first terminal row = %q", row)
 	}
 	if row := strings.TrimSpace(string(terminal.rows[height-1])); !strings.HasPrefix(row, "Ctrl+Alt+F2: console") {
@@ -1467,8 +1471,8 @@ func TestRendererStartsAtTopLeft(t *testing.T) {
 		color  bool
 		prefix []byte
 	}{
-		{name: "plain", prefix: []byte("─")},
-		{name: "terminal", color: true, prefix: []byte(clearScreen + styleDim + "─")},
+		{name: "plain", prefix: []byte("Node")},
+		{name: "terminal", color: true, prefix: []byte(clearScreen + styleTitle + "Node")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			storage := bytes.Repeat([]byte{'x'}, RenderCapacity(80, 25))
