@@ -121,6 +121,9 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 	normal := NewViewport(&render.frame, Rect{Y: contentRect.Y, Width: contentRect.Width, Height: contentRect.Height - reservedAlerts})
 	if snapshot.Mode == ModeRuntime {
 		render.writeRuntimeStatus(&normal, snapshot)
+		if normal.bounds.Width >= wideLayoutWidth {
+			render.frame.setGlyph((normal.bounds.Width-1)/2, 1, "┬", 1, styleDim)
+		}
 	} else {
 		writeInstallerStatus(&normal, snapshot)
 	}
@@ -288,8 +291,13 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 
 	start := content.y
 	dividerX := (content.bounds.Width - 1) / 2
-	left := content.sub(Rect{Y: start, Width: dividerX, Height: content.rowsRemaining()})
-	right := content.sub(Rect{X: dividerX + 1, Y: start, Width: content.bounds.Width - dividerX - 1, Height: content.rowsRemaining()})
+	paneHeight := content.rowsRemaining()
+	bottomRule := paneHeight >= 3
+	if bottomRule {
+		paneHeight--
+	}
+	left := content.sub(Rect{Y: start, Width: dividerX, Height: paneHeight})
+	right := content.sub(Rect{X: dividerX + 1, Y: start, Width: content.bounds.Width - dividerX - 1, Height: paneHeight})
 	writePane(&left, "Node", host)
 	writePane(&right, "Kubernetes", kubernetes)
 	used := max(left.rowsUsed(), right.rowsUsed())
@@ -302,6 +310,10 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 			glyph = "┼"
 		}
 		render.frame.setGlyph(content.bounds.X+dividerX, content.bounds.Y+start+offset, glyph, 1, styleDim)
+	}
+	if bottomRule {
+		writeRule(content)
+		render.frame.setGlyph(content.bounds.X+dividerX, content.bounds.Y+start+used, "┴", 1, styleDim)
 	}
 }
 

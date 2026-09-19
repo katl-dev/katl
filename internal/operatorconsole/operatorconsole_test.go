@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1093,11 +1094,11 @@ func TestDashboardRule(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%d", mode, width), func(t *testing.T) {
 				snapshot := Snapshot{Mode: mode}
 				plain := renderDashboard(&snapshot, nil, width, 25, false)
-				line := strings.Split(string(plain), "\n")[1]
+				lines := strings.Split(string(plain), "\n")
+				line := strings.ReplaceAll(lines[1], "┬", "─")
 				if utf8.RuneCountInString(line) != width || strings.Trim(line, "─") != "" {
 					t.Fatalf("rule must fill %d columns with a thin line: %q", width, line)
 				}
-				lines := strings.Split(string(plain), "\n")
 				if lines[23] != line {
 					t.Fatalf("journal bottom rule must span the row above the footer: %q", lines[23])
 				}
@@ -1115,12 +1116,23 @@ func TestDashboardRule(t *testing.T) {
 						}
 					} else if utf8.RuneCountInString(lines[3]) != width || strings.Count(lines[3], "┼") != 1 || strings.Trim(lines[3], "─┼") != "" {
 						t.Fatalf("pane heading rules do not meet at their divider: %q", lines[3])
+					} else {
+						top := slices.Index([]rune(lines[1]), '┬')
+						bottom := lineIndexContaining(lines, "┴")
+						if top < 0 || bottom < 4 || bottom >= journal || slices.Index([]rune(lines[3]), '┼') != top || slices.Index([]rune(lines[bottom]), '┴') != top {
+							t.Fatalf("pane divider does not join its top and bottom rules:\n%s", plain)
+						}
+						for row := 2; row < bottom; row++ {
+							if row != 3 && slices.Index([]rune(lines[row]), '│') != top {
+								t.Fatalf("pane divider is broken at row %d: %q", row, lines[row])
+							}
+						}
 					}
 				}
 
 				colored := renderDashboard(&snapshot, nil, width, 25, true)
 				terminal := emulateTerminal(t, colored, width, 25)
-				if string(terminal.rows[1]) != line || terminal.scrolls != 0 {
+				if string(terminal.rows[1]) != lines[1] || terminal.scrolls != 0 {
 					t.Fatalf("terminal rule = %q, scrolls = %d", string(terminal.rows[1]), terminal.scrolls)
 				}
 			})
@@ -1335,6 +1347,8 @@ func TestWidePaneDividerIsPaintedAfterBoundedContent(t *testing.T) {
 		want := "│"
 		if row == 1 {
 			want = "┼"
+		} else if row == content.rowsUsed()-1 {
+			want = "┴"
 		}
 		if got := renderer.frame.Cells[row*renderer.frame.Width+divider].Glyph; got != want {
 			t.Fatalf("divider row %d = %q", row, got)
