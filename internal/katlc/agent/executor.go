@@ -248,9 +248,17 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		_, markErr := e.failRecordPhase(record.OperationID, "join-material-expired", "bootstrap-runtime-ready", "bootstrap-runtime-ready", "submit a new worker join operation with unexpired join material", fmt.Errorf("%s", expired))
 		return markErr
 	}
+	useManagedEndpoint := false
+	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane && record.BootstrapRequest != nil && record.BootstrapRequest.ExistingClusterJoin {
+		_, useManagedEndpoint, err = managedJoinEndpointConfig(e.Root)
+		if err != nil {
+			_, markErr := e.failRecordPhase(record.OperationID, "managed-endpoint-join-path-failed", "managed-endpoint-lifecycle", "prepare-managed-endpoint", "repair the managed endpoint configuration before retrying the control-plane join", err)
+			return errors.Join(err, markErr)
+		}
+	}
 	var managedRoute *managedJoinRoute
 	var directJoinPath *directControlPlaneJoinPath
-	if record.OperationKind == bootstrapplan.OperationKindJoinControlPlane && record.BootstrapRequest != nil && record.BootstrapRequest.ExistingClusterJoin {
+	if useManagedEndpoint {
 		lifecycleCtx, lifecycleCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		managedRoute, err = pinManagedEndpointForJoin(lifecycleCtx, e.Root, joinDiscoveryConfigPath(record), e.endpointLifecycleRunner())
 		lifecycleCancel()
