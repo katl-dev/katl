@@ -85,8 +85,9 @@ const (
 )
 
 type VMNetworkConfig struct {
-	Mode VMNetworkMode
-	MAC  string
+	Mode              VMNetworkMode
+	MAC               string
+	ExtraDisconnected bool
 }
 
 type HostForward struct {
@@ -985,23 +986,24 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	domainName := "katl-" + clean(result.RunID)
 	macAddress := strings.TrimSpace(config.Network.MAC)
 	domainXML, err := libvirtDomainXML(libvirtDomain{
-		Name:             domainName,
-		Accel:            accel,
-		RAMMiB:           config.RAMMiB,
-		CPUs:             config.CPUs,
-		OVMFCode:         firstPath(!directKernel, config.OVMFCode),
-		OVMFVars:         firstPath(!directKernel, filepath.Join(result.VMDir, "OVMF_VARS.fd")),
-		Kernel:           config.Boot.Kernel,
-		Initrd:           config.Boot.Initrd,
-		CommandLine:      strings.Join(config.Boot.CommandLine, " "),
-		SerialLog:        serial,
-		Network:          libvirtNetwork,
-		MACAddress:       macAddress,
-		Disks:            disks,
-		VSock:            vsock,
-		Metadata:         first(config.DomainMetadata, "katl/vmtest"),
-		PersistentSerial: config.PersistentSerial,
-		HotplugPCISlots:  config.HotplugPCISlots,
+		Name:              domainName,
+		Accel:             accel,
+		RAMMiB:            config.RAMMiB,
+		CPUs:              config.CPUs,
+		OVMFCode:          firstPath(!directKernel, config.OVMFCode),
+		OVMFVars:          firstPath(!directKernel, filepath.Join(result.VMDir, "OVMF_VARS.fd")),
+		Kernel:            config.Boot.Kernel,
+		Initrd:            config.Boot.Initrd,
+		CommandLine:       strings.Join(config.Boot.CommandLine, " "),
+		SerialLog:         serial,
+		Network:           libvirtNetwork,
+		ExtraDisconnected: config.Network.ExtraDisconnected,
+		MACAddress:        macAddress,
+		Disks:             disks,
+		VSock:             vsock,
+		Metadata:          first(config.DomainMetadata, "katl/vmtest"),
+		PersistentSerial:  config.PersistentSerial,
+		HotplugPCISlots:   config.HotplugPCISlots,
 	})
 	if err != nil {
 		return VMPlan{}, fmt.Errorf("marshal libvirt domain XML: %w", err)
@@ -1191,23 +1193,24 @@ type libvirtDisk struct {
 }
 
 type libvirtDomain struct {
-	Name             string
-	Accel            string
-	RAMMiB           int
-	CPUs             int
-	OVMFCode         string
-	OVMFVars         string
-	Kernel           string
-	Initrd           string
-	CommandLine      string
-	SerialLog        string
-	Network          string
-	MACAddress       string
-	Disks            []libvirtDisk
-	VSock            VSockPlan
-	Metadata         string
-	PersistentSerial bool
-	HotplugPCISlots  int
+	Name              string
+	Accel             string
+	RAMMiB            int
+	CPUs              int
+	OVMFCode          string
+	OVMFVars          string
+	Kernel            string
+	Initrd            string
+	CommandLine       string
+	SerialLog         string
+	Network           string
+	ExtraDisconnected bool
+	MACAddress        string
+	Disks             []libvirtDisk
+	VSock             VSockPlan
+	Metadata          string
+	PersistentSerial  bool
+	HotplugPCISlots   int
 }
 
 type domainXML struct {
@@ -1263,7 +1266,7 @@ type domainFeatures struct {
 
 type domainDevices struct {
 	RNG         domainRNG          `xml:"rng"`
-	Interface   domainInterface    `xml:"interface"`
+	Interfaces  []domainInterface  `xml:"interface"`
 	Disks       []domainDisk       `xml:"disk"`
 	Controllers []domainController `xml:"controller,omitempty"`
 	Serial      domainSerial       `xml:"serial"`
@@ -1289,9 +1292,14 @@ type domainRNGBackend struct {
 
 type domainInterface struct {
 	Type   string                `xml:"type,attr"`
+	Link   *domainInterfaceLink  `xml:"link,omitempty"`
 	MAC    *domainInterfaceMAC   `xml:"mac,omitempty"`
 	Source domainInterfaceSource `xml:"source"`
 	Model  domainInterfaceModel  `xml:"model"`
+}
+
+type domainInterfaceLink struct {
+	State string `xml:"state,attr"`
 }
 
 type domainInterfaceMAC struct {
@@ -1516,11 +1524,11 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 				Model:   "virtio",
 				Backend: domainRNGBackend{Model: "random", Path: "/dev/urandom"},
 			},
-			Interface: domainInterface{
+			Interfaces: []domainInterface{{
 				Type:   "network",
 				Source: domainInterfaceSource{Network: domain.Network},
 				Model:  domainInterfaceModel{Type: "virtio"},
-			},
+			}},
 			Serial: domainSerial{
 				Type:   "pty",
 				Target: domainSerialTarget{Port: 0},
@@ -1540,7 +1548,15 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 		doc.OS.NVRAM = domain.OVMFVars
 	}
 	if strings.TrimSpace(domain.MACAddress) != "" {
-		doc.Devices.Interface.MAC = &domainInterfaceMAC{Address: strings.TrimSpace(domain.MACAddress)}
+		doc.Devices.Interfaces[0].MAC = &domainInterfaceMAC{Address: strings.TrimSpace(domain.MACAddress)}
+	}
+	if domain.ExtraDisconnected {
+		doc.Devices.Interfaces = append(doc.Devices.Interfaces, domainInterface{
+			Type:   "network",
+			Source: domainInterfaceSource{Network: domain.Network},
+			Model:  domainInterfaceModel{Type: "virtio"},
+			Link:   &domainInterfaceLink{State: "down"},
+		})
 	}
 	if domain.PersistentSerial {
 		doc.Devices.Serial.Log = &domainSerialLog{File: domain.SerialLog, Append: "on"}

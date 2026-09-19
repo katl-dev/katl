@@ -127,6 +127,7 @@ for path in \
     /usr/lib/systemd/system/katl-installer.target \
     /usr/lib/systemd/system/katl-input-apply.service \
     /usr/lib/systemd/system/katl-installer-smoke.service \
+    /usr/lib/systemd/system/systemd-networkd-wait-online.service.d/10-katl-installer.conf \
     /etc/systemd/system/sshd.service.d/10-katl-disabled.conf \
     /etc/systemd/journald.conf.d/10-katl-installer-console.conf \
     /usr/lib/systemd/network/80-katl-installer-dhcp.network \
