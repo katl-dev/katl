@@ -57,7 +57,12 @@ func presentHost(snapshot *Snapshot) Presentation {
 		return Presentation{State: PresentationUnknown, Label: "Health unknown"}
 	case generation.HealthStateHealthy:
 		switch snapshot.State {
-		case installstatus.StateKubeadmReady, installstatus.StateWaitingForClusterBootstrap:
+		case installstatus.StateWaitingForClusterBootstrap:
+			if !snapshot.KubernetesConfigured {
+				return Presentation{State: PresentationProgressing, Label: "Waiting for cluster bootstrap"}
+			}
+			return Presentation{State: PresentationHealthy, Label: "Healthy"}
+		case installstatus.StateKubeadmReady:
 			return Presentation{State: PresentationHealthy, Label: "Healthy"}
 		case "starting-runtime", installstatus.StateRuntimeBootedNotReady:
 			return Presentation{State: PresentationProgressing, Label: stateLabel(snapshot.State)}
@@ -82,6 +87,13 @@ func presentKubernetes(snapshot *Snapshot) Presentation {
 	}
 	if snapshot.State == installstatus.StateRuntimeFailedNeedsRepair {
 		return Presentation{State: PresentationFailed, Label: "Unavailable"}
+	}
+	if snapshot.State == installstatus.StateWaitingForClusterBootstrap && !snapshot.KubernetesConfigured {
+		return Presentation{
+			State:      PresentationProgressing,
+			Label:      "Waiting for cluster bootstrap",
+			NextAction: "From your workstation: katlctl cluster bootstrap --config <cluster.yaml>",
+		}
 	}
 	if snapshot.LiveSoftware.KubernetesVersion == "" {
 		return Presentation{State: PresentationUnknown, Label: "Not installed"}

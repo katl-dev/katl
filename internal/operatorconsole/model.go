@@ -60,8 +60,9 @@ const (
 )
 
 type Presentation struct {
-	State PresentationState
-	Label string
+	State      PresentationState
+	Label      string
+	NextAction string
 }
 
 type DashboardModel struct {
@@ -88,6 +89,7 @@ const (
 
 type NetworkInterface struct {
 	Name                string
+	VRF                 string
 	Addresses           []string
 	AdditionalAddresses int
 }

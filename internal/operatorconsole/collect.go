@@ -26,6 +26,7 @@ type Collector struct {
 	Interfaces            func() ([]net.Interface, error)
 	Addrs                 func(net.Interface) ([]net.Addr, error)
 	DefaultRouteInterface func() (string, error)
+	InterfaceVRFs         func(context.Context) (map[string]string, error)
 	ProbeControlPlanePods func(context.Context) (ControlPlanePodStatuses, error)
 	Now                   func() time.Time
 }
@@ -73,6 +74,19 @@ func (c Collector) Collect(snapshot *Snapshot) {
 		snapshot.Hostname = hostname
 	}
 	snapshot.ManagementAddress, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces = c.collectNetwork(snapshot.DisplayInterfaces)
+	if c.InterfaceVRFs == nil && c.Root == "" {
+		c.InterfaceVRFs = readInterfaceVRFs
+	}
+	if c.InterfaceVRFs != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		vrfs, err := c.InterfaceVRFs(ctx)
+		cancel()
+		if err == nil {
+			for i := range snapshot.DisplayInterfaces {
+				snapshot.DisplayInterfaces[i].VRF = vrfs[snapshot.DisplayInterfaces[i].Name]
+			}
+		}
+	}
 	snapshot.SSHEnabled = c.Mode == ModeRuntime || fileExists(rooted(c.Root, "/etc/katl/installer-ssh.enabled"))
 
 	statusPath := c.StatusPath

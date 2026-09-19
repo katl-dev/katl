@@ -60,6 +60,11 @@ serial output, lifecycle, and cleanup are consistent.
   horizontal boundary. They do not extend into the parent title row. The
   Node/Kubernetes divider joins their underline to the Journal underline;
   full-width alerts remain unobstructed.
+- Network continuation rows align with the field value column. VRF annotations
+  reflect current kernel master relationships, including bond and bridge
+  masters, rather than configured intent. Installed nodes awaiting cluster
+  bootstrap show a pending state and a workstation action even when OS health
+  checks have passed.
 - Generated build artifacts belong under `_build/`; VM-test worlds use the
   temporary path reported by `scripts/vmtest-run`.
 
