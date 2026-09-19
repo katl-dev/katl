@@ -13,11 +13,6 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 }
 
-type InputCommandRunner interface {
-	CommandRunner
-	RunInput(ctx context.Context, input string, name string, args ...string) error
-}
-
 type RootSlotInstaller func(context.Context, RootSlotInstallRequest) (RootSlotInstallResult, error)
 
 type DiskExecutor struct {
@@ -47,8 +42,8 @@ type DiskOperation struct {
 	Name        string
 	Command     string
 	Args        []string
-	Stdin       string
-	Definition  string
+	Definitions []string
+	Env         []string
 	Destructive bool
 }
 
@@ -132,15 +127,7 @@ func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecuti
 			result.Boot = &boot
 			continue
 		}
-		if operation.Stdin != "" {
-			commands, ok := e.Commands.(InputCommandRunner)
-			if !ok {
-				return DiskExecutionResult{}, fmt.Errorf("%s: command runner must support stdin", operation.Name)
-			}
-			if err := commands.RunInput(ctx, operation.Stdin, operation.Command, operation.Args...); err != nil {
-				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
-			}
-		} else if operation.Definition != "" {
+		if len(operation.Definitions) > 0 {
 			if err := runRepartOperation(ctx, e.Commands, operation); err != nil {
 				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 			}
@@ -163,12 +150,18 @@ func runRepartOperation(ctx context.Context, commands CommandRunner, operation D
 		return fmt.Errorf("create repart definition directory: %w", err)
 	}
 	defer os.RemoveAll(dir)
-	if err := os.WriteFile(filepath.Join(dir, "50-katl-volume.conf"), []byte(operation.Definition), 0o600); err != nil {
-		return fmt.Errorf("write repart definition: %w", err)
+	for i, definition := range operation.Definitions {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%02d-katl.conf", i)), []byte(definition), 0o600); err != nil {
+			return fmt.Errorf("write repart definition: %w", err)
+		}
 	}
 	args := make([]string, len(operation.Args))
 	for i, arg := range operation.Args {
 		args[i] = strings.ReplaceAll(arg, "{definitions}", dir)
+	}
+	if len(operation.Env) > 0 {
+		args = append(append(append([]string{}, operation.Env...), operation.Command), args...)
+		return commands.Run(ctx, "env", args...)
 	}
 	return commands.Run(ctx, operation.Command, args...)
 }
@@ -205,7 +198,7 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 
 	operations := []DiskOperation{
 		{Name: "wipe-target-signatures", Command: "wipefs", Args: []string{"--all", plan.TargetDiskPath}, Destructive: true},
-		{Name: "create-gpt", Command: "sfdisk", Args: []string{plan.TargetDiskPath}, Stdin: sfdiskScript(plan), Destructive: true},
+		{Name: "create-gpt", Command: "systemd-repart", Args: repartArgs(plan.TargetDiskPath), Definitions: systemDefinitions(plan), Env: []string{"SYSTEMD_REPART_MKFS_OPTIONS_EXT4=-O verity"}, Destructive: true},
 		{Name: "reread-partitions", Command: "partprobe", Args: []string{plan.TargetDiskPath}},
 		{Name: "settle-partitions", Command: "udevadm", Args: []string{"settle"}},
 	}
@@ -216,8 +209,6 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 			if RootSlot(partition.Name) == plan.Boot.RootSlot {
 				operations = append(operations, DiskOperation{Name: "write-" + partition.Name, Command: "katlos-write-root-slot", Args: []string{partition.GPTLabel}, Destructive: true})
 			}
-		default:
-			operations = append(operations, DiskOperation{Name: "format-" + partition.Name, Command: "mkfs." + partition.Filesystem, Args: formatArgs(partition), Destructive: true})
 		}
 		if partition.MountPath != "" && partition.Name != "root-a" {
 			name := "mount-" + partition.Name
@@ -234,17 +225,7 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 	}
 
 	for _, volume := range plan.VolumeMounts {
-		if volume.Repartition {
-			operations = append(operations, DiskOperation{
-				Name: "repart-volume-" + volume.Name, Command: "systemd-repart",
-				Args:       []string{"--dry-run=no", "--empty=force", "--definitions={definitions}", volume.DevicePath},
-				Definition: RepartDefinition(volume), Destructive: true,
-			})
-			operations = append(operations, DiskOperation{Name: "settle-volume-" + volume.Name, Command: "udevadm", Args: []string{"settle"}})
-		} else if volume.Wipe {
-			operations = append(operations, DiskOperation{Name: "wipe-volume-" + volume.Name, Command: "wipefs", Args: []string{"--all", volume.DevicePath}, Destructive: true})
-			operations = append(operations, DiskOperation{Name: "format-volume-" + volume.Name, Command: "mkfs." + volume.Filesystem, Args: []string{volume.DevicePath}, Destructive: true})
-		}
+		operations = append(operations, volumeOperations(volume)...)
 		operations = append(operations, DiskOperation{Name: "create-mountpoint-volume-" + volume.Name, Command: "mkdir", Args: []string{"-p", targetMountPrefix + volume.MountPath}})
 		operations = append(operations, DiskOperation{Name: "mount-volume-" + volume.Name, Command: "mount", Args: []string{volume.MountSource, targetMountPrefix + volume.MountPath}})
 	}
@@ -252,7 +233,7 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 	return operations
 }
 
-func RepartDefinition(volume VolumePlan) string {
+func volumeDefinition(volume VolumePlan) string {
 	return strings.Join([]string{
 		"[Partition]",
 		"Type=" + volume.TypeUUID,
@@ -262,18 +243,61 @@ func RepartDefinition(volume VolumePlan) string {
 	}, "\n")
 }
 
-func sfdiskScript(plan DiskLayoutPlan) string {
-	var builder strings.Builder
-	builder.WriteString("label: gpt\n")
+// Repart creates and formats Katl-owned partitions in definition order. Root
+// slots remain unformatted because their immutable images are written separately.
+func systemDefinitions(plan DiskLayoutPlan) []string {
+	var definitions []string
 	for _, partition := range plan.Partitions {
-		fields := []string{"type=" + partitionTypeGUID(partition.Type), "name=\"" + partition.GPTLabel + "\""}
+		lines := []string{"[Partition]", "Type=" + partitionTypeGUID(partition.Type), "Label=" + partition.GPTLabel}
 		if !partition.Remaining {
-			fields = append([]string{"size=" + fmt.Sprintf("%dMiB", partition.SizeMiB)}, fields...)
+			size := fmt.Sprintf("%dM", partition.SizeMiB)
+			lines = append(lines, "SizeMinBytes="+size, "SizeMaxBytes="+size)
 		}
-		builder.WriteString(strings.Join(fields, ", "))
-		builder.WriteByte('\n')
+		if partition.Name != "root-a" && partition.Name != "root-b" {
+			lines = append(lines, "Format="+partition.Filesystem)
+		}
+		definitions = append(definitions, strings.Join(lines, "\n")+"\n")
 	}
-	return builder.String()
+	return definitions
+}
+
+func repartArgs(device string) []string {
+	return []string{"--dry-run=no", "--empty=force", "--discard=no", "--definitions={definitions}", device}
+}
+
+// PrepareVolume executes the provisioning plan shared by install and live apply.
+// The caller must validate current device ownership before invoking it.
+func PrepareVolume(ctx context.Context, commands CommandRunner, plan VolumePlan) error {
+	_, err := (DiskExecutor{Commands: commands}).executeOperations(ctx, DiskExecutionRequest{AllowDestructive: true}, volumeOperations(plan))
+	return err
+}
+
+func volumeOperations(volume VolumePlan) []DiskOperation {
+	if volume.Repartition {
+		return []DiskOperation{
+			{Name: "repart-volume-" + volume.Name, Command: "systemd-repart", Args: repartArgs(volume.DevicePath), Definitions: []string{volumeDefinition(volume)}, Destructive: true},
+			{Name: "settle-volume-" + volume.Name, Command: "udevadm", Args: []string{"settle"}},
+		}
+	}
+	if !volume.Wipe {
+		return nil
+	}
+	// A selected existing partition grants no authority over its parent disk.
+	// Format it in place; repart here would create a nested partition table.
+	args := []string{}
+	switch volume.Filesystem {
+	case "xfs":
+		args = append(args, "-K")
+	case "ext4":
+		args = append(args, "-E", "nodiscard")
+	case "btrfs":
+		args = append(args, "--nodiscard")
+	}
+	args = append(args, volume.DevicePath)
+	return []DiskOperation{
+		{Name: "format-wipe-volume-" + volume.Name, Command: "wipefs", Args: []string{"--all", volume.DevicePath}, Destructive: true},
+		{Name: "format-volume-" + volume.Name, Command: "mkfs." + volume.Filesystem, Args: args, Destructive: true},
+	}
 }
 
 func partitionTypeGUID(kind string) string {
@@ -288,22 +312,6 @@ func partitionTypeGUID(kind string) string {
 		return "4d21b016-b534-45c2-a9fb-5c16e091fd2d"
 	default:
 		return "0fc63daf-8483-4772-8e79-3d69d8477de4"
-	}
-}
-
-func formatArgs(partition PartitionPlan) []string {
-	device := partLabelDevice(partition.GPTLabel)
-	switch partition.Filesystem {
-	case "vfat":
-		return []string{"-n", partition.GPTLabel, device}
-	case "ext4":
-		args := []string{"-L", partition.GPTLabel}
-		if partition.Name == "state" {
-			args = append(args, "-O", "verity")
-		}
-		return append(args, device)
-	default:
-		return []string{"-L", partition.GPTLabel, device}
 	}
 }
 

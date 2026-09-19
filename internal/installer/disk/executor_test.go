@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -28,19 +30,20 @@ func TestDiskExecutorDryRunOutput(t *testing.T) {
 		t.Fatalf("first operation = %#v", result.Operations[0])
 	}
 	createGPT := findOp(result.Operations, "create-gpt")
-	if createGPT.Command != "sfdisk" || !strings.Contains(createGPT.Stdin, `type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, name="KATL_ESP"`) {
-		t.Fatalf("create-gpt operation = %#v", createGPT)
+	if createGPT.Command != "systemd-repart" || !strings.Contains(strings.Join(createGPT.Args, " "), "--discard=no") {
+		t.Fatalf("system disk provisioning = %#v", createGPT)
 	}
-	if strings.Contains(createGPT.Stdin, "unit:") {
-		t.Fatalf("sfdisk input contains unsupported unit header: %q", createGPT.Stdin)
+	want := []string{
+		"[Partition]\nType=c12a7328-f81f-11d2-ba4b-00a0c93ec93b\nLabel=KATL_ESP\nSizeMinBytes=512M\nSizeMaxBytes=512M\nFormat=vfat\n",
+		"[Partition]\nType=4f68bce3-e8cd-4db1-96e7-fbcaf984b709\nLabel=KATL_ROOT_A\nSizeMinBytes=1024M\nSizeMaxBytes=1024M\n",
+		"[Partition]\nType=4f68bce3-e8cd-4db1-96e7-fbcaf984b709\nLabel=KATL_ROOT_B\nSizeMinBytes=1024M\nSizeMaxBytes=1024M\n",
+		"[Partition]\nType=4d21b016-b534-45c2-a9fb-5c16e091fd2d\nLabel=KATL_STATE\nFormat=ext4\n",
 	}
-	formatESP := findOp(result.Operations, "format-esp")
-	if !strings.HasSuffix(strings.Join(formatESP.Args, " "), "/dev/disk/by-partlabel/KATL_ESP") {
-		t.Fatalf("format ESP args = %#v", formatESP.Args)
+	if !reflect.DeepEqual(createGPT.Definitions, want) {
+		t.Fatalf("definitions = %#v", createGPT.Definitions)
 	}
-	formatState := findOp(result.Operations, "format-state")
-	if got := strings.Join(formatState.Args, " "); got != "-L KATL_STATE -O verity /dev/disk/by-partlabel/KATL_STATE" {
-		t.Fatalf("format state args = %q", got)
+	if !slices.Contains(createGPT.Env, "SYSTEMD_REPART_MKFS_OPTIONS_EXT4=-O verity") {
+		t.Fatal("state filesystem must support fs-verity")
 	}
 	if countOps(result.Operations, "write-root-a") != 1 || countOps(result.Operations, "write-root-b") != 0 {
 		t.Fatalf("root write operations = %#v", result.Operations)
@@ -122,7 +125,7 @@ func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
 	}, PartitionOperations); err != nil {
 		t.Fatalf("ExecuteGroup(partition) error = %v", err)
 	}
-	if got := callNames(commands.Calls); !strings.Contains(got, "sfdisk") || !strings.Contains(got, "partprobe") || !strings.Contains(got, "udevadm") {
+	if got := callNames(commands.Calls); !strings.Contains(got, "systemd-repart") || !strings.Contains(got, "partprobe") || !strings.Contains(got, "udevadm") {
 		t.Fatalf("partition calls = %s", got)
 	}
 	if strings.Contains(callNames(commands.Calls), "mkfs.") || strings.Contains(callNames(commands.Calls), "mount") {
@@ -175,9 +178,6 @@ func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	}
 	if len(commands.Calls) == 0 {
 		t.Fatalf("expected command calls")
-	}
-	if commands.Inputs["create-gpt"] == "" || !strings.Contains(commands.Inputs["create-gpt"], `name="KATL_ROOT_A"`) {
-		t.Fatalf("create-gpt input = %q", commands.Inputs["create-gpt"])
 	}
 	if recorded != 1 {
 		t.Fatalf("state mount checkpoint count = %d, want 1", recorded)
@@ -471,4 +471,28 @@ func (r *NoopCommandRunner) Output(_ context.Context, name string, args ...strin
 		}
 	}
 	return []byte(""), nil
+}
+
+func TestPartitionFormatting(t *testing.T) {
+	for _, test := range []struct {
+		filesystem string
+		args       []string
+	}{
+		{"xfs", []string{"-K", "/dev/vdb2"}},
+		{"ext4", []string{"-E", "nodiscard", "/dev/vdb2"}},
+		{"btrfs", []string{"--nodiscard", "/dev/vdb2"}},
+	} {
+		t.Run(test.filesystem, func(t *testing.T) {
+			plan := executorPlan()
+			plan.VolumeMounts = []VolumePlan{{Name: "data", TargetKind: "partition", DevicePath: "/dev/vdb2", Filesystem: test.filesystem, Wipe: true}}
+			commands := &NoopCommandRunner{}
+			_, err := (DiskExecutor{Commands: commands}).ExecuteGroup(context.Background(), DiskExecutionRequest{Plan: plan, AllowDestructive: true}, FormatOperations)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(commands.Calls) != 2 || commands.Calls[0].Name != "wipefs" || !reflect.DeepEqual(commands.Calls[0].Args, []string{"--all", "/dev/vdb2"}) || commands.Calls[1].Name != "mkfs."+test.filesystem || !reflect.DeepEqual(commands.Calls[1].Args, test.args) {
+				t.Fatalf("partition formatting must wipe only the selected partition then format without discard: %+v", commands.Calls)
+			}
+		})
+	}
 }

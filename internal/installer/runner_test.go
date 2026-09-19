@@ -784,13 +784,10 @@ func TestRunnerExecutesDiskOperationSteps(t *testing.T) {
 	}
 
 	calls := commandNames(commands.Calls)
-	for _, name := range []string{"wipefs", "sfdisk", "partprobe", "udevadm", "mkfs.vfat", "mkfs.ext4", "mkdir", "mount", "bootctl"} {
+	for _, name := range []string{"wipefs", "env", "partprobe", "udevadm", "mkdir", "mount", "bootctl"} {
 		if !strings.Contains(calls, name) {
 			t.Fatalf("command calls %q missing %s; calls = %#v", calls, name, commands.Calls)
 		}
-	}
-	if commands.Inputs["sfdisk"] == "" || !strings.Contains(commands.Inputs["sfdisk"], `name="KATL_ROOT_A"`) {
-		t.Fatalf("sfdisk input = %q", commands.Inputs["sfdisk"])
 	}
 	if install.LoaderRecord == nil || install.LoaderRecord.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" {
 		t.Fatalf("loader record = %#v", install.LoaderRecord)
@@ -902,13 +899,10 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	if installedManifest.Node.Identity.Hostname != "lab-node-01" || installedManifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" {
 		t.Fatalf("installed manifest = %#v", installedManifest.Node)
 	}
-	for _, name := range []string{"wipefs", "sfdisk", "partprobe", "udevadm", "mkfs.vfat", "mkfs.ext4", "mkdir", "mount", "bootctl"} {
+	for _, name := range []string{"wipefs", "env", "partprobe", "udevadm", "mkdir", "mount", "bootctl"} {
 		if !strings.Contains(commandNames(commands.Calls), name) {
 			t.Fatalf("command calls missing %s: %#v", name, commands.Calls)
 		}
-	}
-	if commands.Inputs["sfdisk"] == "" || !strings.Contains(commands.Inputs["sfdisk"], `name="KATL_ROOT_A"`) {
-		t.Fatalf("sfdisk input = %q", commands.Inputs["sfdisk"])
 	}
 	if got := install.Completed; !reflect.DeepEqual(got, PreseededManifestPlan().IDs()) {
 		t.Fatalf("completed steps = %#v, want %#v", got, PreseededManifestPlan().IDs())

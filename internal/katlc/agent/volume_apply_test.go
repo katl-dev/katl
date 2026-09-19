@@ -28,7 +28,11 @@ func TestPrepareLiveVolumeUsesBoundedSystemdRepartDefinition(t *testing.T) {
 					definitions = strings.TrimPrefix(arg, "--definitions=")
 				}
 			}
-			data, err := os.ReadFile(filepath.Join(definitions, "50-katl-volume.conf"))
+			files, err := filepath.Glob(filepath.Join(definitions, "*.conf"))
+			if err != nil || len(files) != 1 {
+				t.Fatalf("definitions = %v, err = %v", files, err)
+			}
+			data, err := os.ReadFile(files[0])
 			if err != nil {
 				t.Fatalf("read repart definition: %v", err)
 			}
@@ -51,7 +55,7 @@ func TestPrepareLiveVolumeUsesBoundedSystemdRepartDefinition(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "var/mnt/data")); err != nil {
 		t.Fatalf("volume mount point: %v", err)
 	}
-	if got := strings.Join(calls[0], " "); !strings.Contains(got, "systemd-repart --dry-run=no --empty=force") || !strings.HasSuffix(got, " /dev/vdb") {
+	if got := strings.Join(calls[0], " "); !strings.Contains(got, "systemd-repart --dry-run=no --empty=force") || !strings.HasSuffix(got, " /dev/vdb") || !strings.Contains(got, "--discard=no") {
 		t.Fatalf("repart argv = %q", got)
 	}
 	if got := strings.Join(calls[1], " "); got != "udevadm settle" {

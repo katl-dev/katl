@@ -379,28 +379,11 @@ func prepareLiveVolume(ctx context.Context, run ToolRunner, root string, plan di
 	if err := os.MkdirAll(mountPath, 0o755); err != nil {
 		return fmt.Errorf("create volume %q mount point: %w", plan.Name, err)
 	}
-	switch {
-	case plan.Repartition:
-		dir, err := os.MkdirTemp("", "katl-volume-repart-")
-		if err != nil {
-			return fmt.Errorf("create volume %q repart definition directory: %w", plan.Name, err)
-		}
-		defer os.RemoveAll(dir)
-		if err := os.WriteFile(filepath.Join(dir, "50-katl-volume.conf"), []byte(disk.RepartDefinition(plan)), 0o600); err != nil {
-			return fmt.Errorf("write volume %q repart definition: %w", plan.Name, err)
-		}
-		if err := runVolumeTool(ctx, run, "initialize volume "+plan.Name, "systemd-repart", "--dry-run=no", "--empty=force", "--definitions="+dir, plan.DevicePath); err != nil {
-			return err
-		}
-		return runVolumeTool(ctx, run, "settle volume "+plan.Name, "udevadm", "settle")
-	case plan.Wipe:
-		if err := runVolumeTool(ctx, run, "wipe volume "+plan.Name, "wipefs", "--all", plan.DevicePath); err != nil {
-			return err
-		}
-		return runVolumeTool(ctx, run, "format volume "+plan.Name, "mkfs."+plan.Filesystem, plan.DevicePath)
-	default:
-		return nil
-	}
+	return disk.PrepareVolume(ctx, volumeDiscoveryRunner{run: run}, plan)
+}
+
+func (r volumeDiscoveryRunner) Run(ctx context.Context, name string, args ...string) error {
+	return runVolumeTool(ctx, r.run, name, append([]string{name}, args...)...)
 }
 
 func runVolumeTool(ctx context.Context, run ToolRunner, action string, argv ...string) error {

@@ -889,3 +889,15 @@ reconciliation and arbitrary post-mutation repair are not implied by that
 bounded operation. The complete production, compatibility, trust, recovery,
 hardware-evidence, and issue-reporting boundary is maintained in
 [`support.md`](support.md).
+
+### Formatting behavior
+
+Katl uses `systemd-repart --discard=no` to partition and format the system disk
+and whole-disk data volumes. This creates fresh filesystems without waiting for
+a full-device discard. The state filesystem retains fs-verity support; immutable
+root images are written to their slots separately.
+
+For an explicitly selected existing partition, Katl formats only that partition
+in place, also with discard disabled. It preserves the parent partition table
+and sibling partitions. A filesystem format is not a secure data sanitization
+operation; unused space can be trimmed separately after installation.
