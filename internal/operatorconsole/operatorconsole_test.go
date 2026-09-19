@@ -671,7 +671,6 @@ func TestRenderInstallerDashboard(t *testing.T) {
 	journal := testJournal{[]byte("old line"), []byte("installing root\x1b[31m"), []byte("latest line")}
 	got := string(renderDashboard(&snapshot, journal, 80, 25, false))
 	for _, want := range []string{
-		"KatlOS Installer",
 		"State:Installing",
 		"Network:enp1s0:192.0.2.10/24",
 		"Media:2026.7.0-alpha.9",
@@ -850,7 +849,7 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 	got := string(renderDashboard(&snapshot, testJournal{[]byte("latest journal event")}, 80, 18, false))
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
 	splitRow := lineIndexContaining(lines, "Node")
-	journalRow := lineIndex(lines, "Journal")
+	journalRow := lineIndexContaining(lines, "Journal")
 	if splitRow < 0 || journalRow <= splitRow {
 		t.Fatalf("pane order = split %d, journal %d:\n%s", splitRow, journalRow, got)
 	}
@@ -1021,7 +1020,7 @@ func TestRenderUsesActualUndersizedTerminal(t *testing.T) {
 			t.Fatalf("line %d exceeds actual width: %q", number+1, line)
 		}
 	}
-	for _, want := range []string{"KatlOS", "Starting installer", "192.0.2.10", "F2: console"} {
+	for _, want := range []string{"Starting installer", "192.0.2.10", "F2: console"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("compact render missing %q:\n%s", want, got)
 		}
@@ -1095,15 +1094,15 @@ func TestDashboardRule(t *testing.T) {
 				snapshot := Snapshot{Mode: mode}
 				plain := renderDashboard(&snapshot, nil, width, 25, false)
 				lines := strings.Split(string(plain), "\n")
-				line := strings.ReplaceAll(lines[1], "┬", "─")
+				line := strings.ReplaceAll(lines[0], "┬", "─")
 				if utf8.RuneCountInString(line) != width || strings.Trim(line, "─") != "" {
 					t.Fatalf("rule must fill %d columns with a thin line: %q", width, line)
 				}
 				if lines[23] != line {
 					t.Fatalf("journal bottom rule must span the row above the footer: %q", lines[23])
 				}
-				journal := lineIndex(lines, "Journal")
-				if journal < 0 || journal+1 >= len(lines) || lines[journal+1] != line {
+				journal := lineIndexContaining(lines, "Journal")
+				if journal < 0 || journal+1 >= len(lines) || strings.ReplaceAll(lines[journal+1], "┴", "─") != line {
 					t.Fatalf("journal heading lacks a full-width rule:\n%s", plain)
 				}
 				if mode == ModeRuntime {
@@ -1114,16 +1113,16 @@ func TestDashboardRule(t *testing.T) {
 								t.Fatalf("%s heading lacks a full-width rule:\n%s", title, plain)
 							}
 						}
-					} else if utf8.RuneCountInString(lines[3]) != width || strings.Count(lines[3], "┼") != 1 || strings.Trim(lines[3], "─┼") != "" {
-						t.Fatalf("pane heading rules do not meet at their divider: %q", lines[3])
+					} else if utf8.RuneCountInString(lines[2]) != width || strings.Count(lines[2], "┼") != 1 || strings.Trim(lines[2], "─┼") != "" {
+						t.Fatalf("pane heading rules do not meet at their divider: %q", lines[2])
 					} else {
-						top := slices.Index([]rune(lines[1]), '┬')
+						top := slices.Index([]rune(lines[0]), '┬')
 						bottom := lineIndexContaining(lines, "┴")
-						if top < 0 || bottom < 4 || bottom >= journal || slices.Index([]rune(lines[3]), '┼') != top || slices.Index([]rune(lines[bottom]), '┴') != top {
+						if top < 0 || bottom != journal+1 || slices.Index([]rune(lines[2]), '┼') != top || slices.Index([]rune(lines[bottom]), '┴') != top {
 							t.Fatalf("pane divider does not join its top and bottom rules:\n%s", plain)
 						}
-						for row := 2; row < bottom; row++ {
-							if row != 3 && slices.Index([]rune(lines[row]), '│') != top {
+						for row := 1; row < bottom; row++ {
+							if row != 2 && slices.Index([]rune(lines[row]), '│') != top {
 								t.Fatalf("pane divider is broken at row %d: %q", row, lines[row])
 							}
 						}
@@ -1132,11 +1131,20 @@ func TestDashboardRule(t *testing.T) {
 
 				colored := renderDashboard(&snapshot, nil, width, 25, true)
 				terminal := emulateTerminal(t, colored, width, 25)
-				if string(terminal.rows[1]) != lines[1] || terminal.scrolls != 0 {
-					t.Fatalf("terminal rule = %q, scrolls = %d", string(terminal.rows[1]), terminal.scrolls)
+				if string(terminal.rows[0]) != lines[0] || terminal.scrolls != 0 {
+					t.Fatalf("terminal rule = %q, scrolls = %d", string(terminal.rows[0]), terminal.scrolls)
 				}
 			})
 		}
+	}
+}
+
+func TestDividerSkipsAlerts(t *testing.T) {
+	message := strings.Repeat("storage failure ", 10)
+	snapshot := Snapshot{Mode: ModeRuntime, LastError: message}
+	got := string(renderDashboard(&snapshot, nil, 80, 40, false))
+	if !containsIgnoringLayout(got, "Error:"+message) {
+		t.Fatalf("divider overwrote the full-width error:\n%s", got)
 	}
 }
 
@@ -1158,7 +1166,7 @@ func TestTerminalRenderDoesNotScrollCompletedFrame(t *testing.T) {
 	if terminal.scrolls != 0 {
 		t.Fatalf("completed frame scrolled %d times", terminal.scrolls)
 	}
-	if row := strings.TrimSpace(string(terminal.rows[0])); row != "KatlOS" {
+	if row := strings.TrimSpace(string(terminal.rows[0])); row != strings.Repeat("─", width) {
 		t.Fatalf("first terminal row = %q", row)
 	}
 	if row := strings.TrimSpace(string(terminal.rows[height-1])); !strings.HasPrefix(row, "Ctrl+Alt+F2: console") {
@@ -1347,8 +1355,6 @@ func TestWidePaneDividerIsPaintedAfterBoundedContent(t *testing.T) {
 		want := "│"
 		if row == 1 {
 			want = "┼"
-		} else if row == content.rowsUsed()-1 {
-			want = "┴"
 		}
 		if got := renderer.frame.Cells[row*renderer.frame.Width+divider].Glyph; got != want {
 			t.Fatalf("divider row %d = %q", row, got)
@@ -1461,8 +1467,8 @@ func TestRendererStartsAtTopLeft(t *testing.T) {
 		color  bool
 		prefix []byte
 	}{
-		{name: "plain", prefix: []byte("KatlOS")},
-		{name: "terminal", color: true, prefix: []byte(clearScreen + styleTitle + "KatlOS")},
+		{name: "plain", prefix: []byte("─")},
+		{name: "terminal", color: true, prefix: []byte(clearScreen + styleDim + "─")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			storage := bytes.Repeat([]byte{'x'}, RenderCapacity(80, 25))
