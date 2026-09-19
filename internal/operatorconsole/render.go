@@ -270,11 +270,28 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 		paneField{label: "KatlOS", value: fallback(snapshot.CurrentSoftware.KatlOSVersion, "Unknown")},
 	)
 	host = appendNetworkPaneFields(host, snapshot.DisplayInterfaces, snapshot.AdditionalInterfaces)
+	kubernetesTitle := "Kubernetes"
+	if snapshot.Cluster.Known {
+		kubernetesTitle += " · " + strconv.Itoa(snapshot.Cluster.Ready) + "/" + strconv.Itoa(snapshot.Cluster.Nodes) + " nodes ready"
+	}
+	kubelet := fallback(snapshot.Cluster.KubeletVersion, snapshot.LiveSoftware.KubernetesVersion)
+	if snapshot.KubernetesConfigured {
+		state := "Unknown"
+		if snapshot.Cluster.KubeletVersion != "" {
+			state = "Node not ready"
+			if snapshot.Cluster.KubeletReady {
+				state = "Healthy"
+			}
+		}
+		kubelet = fallback(kubelet, "Unknown version") + " (" + state + ")"
+	} else {
+		kubelet = fallback(kubelet, "Not installed")
+	}
 	var kubernetesStorage [2 + 1 + controlPlanePodCount]paneField
 	kubernetes := append(
 		kubernetesStorage[:0],
 		paneField{label: "State", value: model.Kubernetes.Label, style: presentationStyle(model.Kubernetes.State)},
-		paneField{label: "Kubelet", value: fallback(snapshot.LiveSoftware.KubernetesVersion, "Not installed")},
+		paneField{label: "Kubelet", value: kubelet},
 	)
 	if model.Kubernetes.NextAction != "" {
 		kubernetes = append(
@@ -285,12 +302,16 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	if snapshot.ControlPlane {
 		kubernetes = append(kubernetes, paneField{label: "Control plane", value: fallback(snapshot.ControlPlaneEndpoint, "Local")})
 		for _, pod := range snapshot.ControlPlanePods {
-			kubernetes = append(kubernetes, paneField{label: controlPlanePodLabel(pod.Name), value: fallback(pod.State, KubernetesPodUnknown), style: kubernetesPodStyle(pod.State)})
+			value := fallback(pod.State, KubernetesPodUnknown)
+			if pod.Version != "" {
+				value = pod.Version + " (" + value + ")"
+			}
+			kubernetes = append(kubernetes, paneField{label: controlPlanePodLabel(pod.Name), value: value, style: kubernetesPodStyle(pod.State)})
 		}
 	}
 	if content.bounds.Width < wideLayoutWidth {
 		writePane(content, "Node", host)
-		writePane(content, "Kubernetes", kubernetes)
+		writePane(content, kubernetesTitle, kubernetes)
 		return
 	}
 
@@ -300,7 +321,7 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	left := content.sub(Rect{Y: start, Width: dividerX, Height: paneHeight})
 	right := content.sub(Rect{X: dividerX + 1, Y: start, Width: content.bounds.Width - dividerX - 1, Height: paneHeight})
 	writePane(&left, "Node", host)
-	writePane(&right, "Kubernetes", kubernetes)
+	writePane(&right, kubernetesTitle, kubernetes)
 	used := max(left.rowsUsed(), right.rowsUsed())
 	content.advance(used)
 	// Decorations are painted after pane content. Even malformed input cannot
@@ -359,7 +380,7 @@ func controlPlanePodLabel(name string) string {
 
 func kubernetesPodStyle(state string) Style {
 	switch state {
-	case KubernetesPodRunning:
+	case KubernetesPodRunning, KubernetesPodHealthy:
 		return styleGood
 	case KubernetesPodNotRunning:
 		return styleBad
@@ -388,7 +409,7 @@ func writeInstallerStatus(content *Viewport, snapshot *Snapshot) {
 		writeField(content, "Media", snapshot.Version, "")
 	}
 	if snapshot.State == "running" && snapshot.CurrentStep != "" {
-		writeField(content, "Progress", snapshot.CurrentStep, "")
+		writeField(content, "Progress", fallback(snapshot.InstallProgress, snapshot.CurrentStep), "")
 	}
 	if snapshot.Generation != "" {
 		value := snapshot.Generation

@@ -17,6 +17,7 @@ type Snapshot struct {
 	Hostname             string
 	State                string
 	CurrentStep          string
+	InstallProgress      string
 	Generation           string
 	GenerationHealth     string
 	CurrentSoftware      Software
@@ -26,6 +27,7 @@ type Snapshot struct {
 	ControlPlane         bool
 	ControlPlaneEndpoint string
 	ControlPlanePods     ControlPlanePodStatuses
+	Cluster              clusterStatus
 	KubernetesStatusAt   time.Time
 	KubernetesError      string
 	DestructiveMutation  bool
@@ -71,8 +73,18 @@ type DashboardModel struct {
 }
 
 type KubernetesPodStatus struct {
-	Name  string
-	State string
+	Name    string
+	State   string
+	Version string
+}
+
+type clusterStatus struct {
+	Known          bool
+	Nodes          int
+	Ready          int
+	KubeletVersion string
+	KubeletReady   bool
+	APIReady       bool
 }
 
 const controlPlanePodCount = 4
@@ -81,6 +93,7 @@ type ControlPlanePodStatuses [controlPlanePodCount]KubernetesPodStatus
 
 const (
 	KubernetesPodRunning    = "Running"
+	KubernetesPodHealthy    = "Healthy"
 	KubernetesPodStarting   = "Starting"
 	KubernetesPodNotRunning = "Not running"
 	KubernetesPodNotStarted = "Not started"

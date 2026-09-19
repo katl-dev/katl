@@ -28,6 +28,7 @@ type Collector struct {
 	DefaultRouteInterface func() (string, error)
 	InterfaceVRFs         func(context.Context) (map[string]string, error)
 	ProbeControlPlanePods func(context.Context) (ControlPlanePodStatuses, error)
+	probeCluster          func(context.Context, string) (clusterStatus, error)
 	Now                   func() time.Time
 }
 
@@ -42,12 +43,14 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	controlPlanePods := snapshot.ControlPlanePods
 	kubernetesStatusAt := snapshot.KubernetesStatusAt
 	kubernetesError := snapshot.KubernetesError
+	cluster := snapshot.Cluster
 	*snapshot = Snapshot{
 		Mode:               c.Mode,
 		DisplayInterfaces:  interfaces[:0],
 		ControlPlanePods:   controlPlanePods,
 		KubernetesStatusAt: kubernetesStatusAt,
 		KubernetesError:    kubernetesError,
+		Cluster:            cluster,
 	}
 	if c.Mode == ModeInstaller {
 		snapshot.Version = strings.TrimSpace(c.Version)
@@ -101,6 +104,9 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	if err == nil {
 		snapshot.State = record.State
 		snapshot.CurrentStep = record.CurrentStep
+		if record.Progress != nil {
+			snapshot.InstallProgress = record.Progress.Summary(now)
+		}
 		if c.Mode == ModeInstaller {
 			snapshot.Generation = record.InstalledGeneration
 		}
@@ -261,12 +267,14 @@ func (c Collector) collectKubernetes(snapshot *Snapshot, now time.Time) {
 		snapshot.ControlPlane = true
 	}
 	if !snapshot.ControlPlane {
+		snapshot.Cluster = clusterStatus{}
 		snapshot.ControlPlanePods = ControlPlanePodStatuses{}
 		snapshot.KubernetesStatusAt = time.Time{}
 		snapshot.KubernetesError = ""
 		return
 	}
 	if !snapshot.KubernetesConfigured {
+		snapshot.Cluster = clusterStatus{}
 		snapshot.ControlPlanePods = initialControlPlanePods(KubernetesPodNotStarted)
 		snapshot.KubernetesStatusAt = now
 		snapshot.KubernetesError = ""
@@ -290,6 +298,21 @@ func (c Collector) collectKubernetes(snapshot *Snapshot, now time.Time) {
 	}
 	snapshot.ControlPlanePods = pods
 	snapshot.KubernetesStatusAt = now
+	clusterProbe := c.probeCluster
+	if clusterProbe == nil && c.Root == "" {
+		clusterProbe = probeCluster
+	}
+	if clusterProbe != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		snapshot.Cluster, err = clusterProbe(ctx, snapshot.Hostname)
+		if err != nil {
+			snapshot.Cluster = clusterStatus{}
+		}
+		if snapshot.Cluster.APIReady && snapshot.ControlPlanePods[0].State == KubernetesPodRunning {
+			snapshot.ControlPlanePods[0].State = KubernetesPodHealthy
+		}
+	}
 }
 
 func boundedKubernetesError(err error) string {
