@@ -17,6 +17,8 @@ var packageCapabilities = map[string][]PackageCapability{
 		{Name: "linux-firmware", Capability: "general redistributable device firmware"},
 		{Name: "microcode_ctl", Capability: "Intel CPU microcode"},
 		{Name: "amd-ucode-firmware", Capability: "AMD CPU microcode"},
+		{Name: "intel-gpu-firmware", Capability: "Intel i915 and xe GPU firmware"},
+		{Name: "amd-gpu-firmware", Capability: "AMD amdgpu firmware"},
 	},
 	"runtime": {
 		{Name: "linux-firmware", Capability: "general redistributable device firmware"},

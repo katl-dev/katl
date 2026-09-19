@@ -13,6 +13,10 @@ import (
 var installerFirmwareModuleFamilies = []string{
 	"drivers/ata/",
 	"drivers/block/",
+	// Other GPU families also declare optional and sideloaded firmware. Their
+	// distribution firmware packages are checked by VerifyPackageInventory.
+	"drivers/gpu/drm/i915/",
+	"drivers/gpu/drm/xe/",
 	"drivers/hv/",
 	"drivers/md/",
 	"drivers/message/",

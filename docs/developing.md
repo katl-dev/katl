@@ -43,6 +43,13 @@ serial output, lifecycle, and cleanup are consistent.
   direct console logs, separate from the dashboard on `tty1` and login on
   `tty2`. The installer journal is also mirrored to `ttyS0` for the runner's
   deterministic captured console log.
+- Installer graphics: native Intel (`i915`, `xe`) and AMD (`amdgpu`) drivers
+  and their firmware are included, along with common server and virtual GPU
+  drivers. Kernel mode setting lets the console use the display's native
+  resolution; the dashboard follows terminal size changes automatically.
+  Intel firmware references are checked individually. AMD uses Fedora's
+  packaged firmware set: its module metadata also lists optional sideloaded
+  files, so requiring every declared filename would reject usable images.
 - Generated build artifacts belong under `_build/`; VM-test worlds use the
   temporary path reported by `scripts/vmtest-run`.
 
