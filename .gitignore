@@ -5,6 +5,7 @@
 
 # Beads / Dolt local state
 .beads/
+.beads*
 .dolt/
 *.db
 .beads-credential-key
