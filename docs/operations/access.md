@@ -18,7 +18,10 @@ The installed system keeps an operator dashboard on VGA `tty1`. It reports the
 KatlOS and Kubernetes versions from the booted generation, node addresses,
 generation health, and a live journal tail. Press `Ctrl+Alt+F2` for the local
 login console. The dashboard does not replace SSH or `katlctl`; it is a
-read-only view of the same durable state.
+read-only view of the same durable state. Kernel and direct system console
+messages use `tty3` (`Ctrl+Alt+F3`) so they cannot scroll the dashboard or
+the login console. Serial output remains available on `ttyS0`. Katl owns
+the graphical console kernel argument; custom serial consoles remain configurable.
 
 ## Confirm Generation 0
 

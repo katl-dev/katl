@@ -135,7 +135,7 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		Sysexts:                     sysexts,
 		BundledConfexts:             bundledConfexts,
 		Confexts:                    confexts,
-		KernelCommandLine:           mergeKernelCommandLine(request.PreviousSpec.KernelCommandLine, p.Boot.Compatibility.KernelCommandLine),
+		KernelCommandLine:           kernelcmdline.MergeCurrent(p.Boot.Compatibility.KernelCommandLine, request.PreviousSpec.KernelCommandLine, nil),
 		ConfiguredKernelCommandLine: slices.Clone(request.PreviousSpec.ConfiguredKernelCommandLine),
 		VolumeBindings:              append([]generation.VolumeBinding(nil), request.PreviousSpec.VolumeBindings...),
 		CreatedAt:                   createdAt.UTC(),
@@ -207,22 +207,6 @@ func ValidateHostUpgradeSource(previousSpec generation.GenerationSpec, previousS
 		}
 	}
 	return nil
-}
-
-func mergeKernelCommandLine(previous, required []string) []string {
-	merged := make([]string, 0, len(previous)+len(required))
-	seen := make(map[string]bool, len(previous)+len(required))
-	for _, options := range [][]string{previous, required} {
-		for _, option := range options {
-			option = strings.TrimSpace(option)
-			if option == "" || seen[option] {
-				continue
-			}
-			seen[option] = true
-			merged = append(merged, option)
-		}
-	}
-	return merged
 }
 
 func StagePreservedAssets(root string, plan HostUpgradePlan) error {

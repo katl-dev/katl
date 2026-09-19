@@ -100,7 +100,7 @@ selection and the shared bundle:
       "rd.systemd.unit=katl-installer.target",
       "rd.neednet=1",
       "ip=dhcp",
-      "console=tty0",
+      "console=tty3",
       "console=ttyS0,115200n8",
       "katl.bundle.url=http://192.168.254.1:8080/assets/katl/2026.7.0-beta.1/cluster.katlcfg",
       "katl.bundle.sha256=REPLACE_WITH_CLUSTER_KATLCFG_SHA256",

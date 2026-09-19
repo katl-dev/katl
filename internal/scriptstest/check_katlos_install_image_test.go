@@ -19,14 +19,14 @@ func TestCheckKatlOSInstallImageKernelCommandLine(t *testing.T) {
 		"rootfstype=squashfs",
 		"ro",
 		"console=ttyS0,115200n8",
-		"console=tty0",
+		"console=tty3",
 		"systemd.getty_auto=no",
 	}
 	cases := []testCase{
 		{
 			name: "required semantics in any order with additions",
 			command: []string{
-				"console=tty0",
+				"console=tty3",
 				"quiet",
 				"ro",
 				"console=ttyS0,115200n8",
