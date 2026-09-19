@@ -853,7 +853,7 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 	if splitRow < 0 || journalRow <= splitRow {
 		t.Fatalf("pane order = split %d, journal %d:\n%s", splitRow, journalRow, got)
 	}
-	if !strings.Contains(lines[splitRow], "│Kubernetes") {
+	if !strings.Contains(lines[splitRow], " Kubernetes") {
 		t.Fatalf("Node and Kubernetes titles are not aligned = %q", lines[splitRow])
 	}
 	stateIndex := lineIndexContaining(lines, "State:")
@@ -1117,16 +1117,16 @@ func TestDashboardRule(t *testing.T) {
 								t.Fatalf("%s heading lacks a full-width rule:\n%s", title, plain)
 							}
 						}
-					} else if utf8.RuneCountInString(lines[1]) != width || strings.Count(lines[1], "┼") != 1 || strings.Trim(lines[1], "─┼") != "" {
+					} else if utf8.RuneCountInString(lines[1]) != width || strings.Count(lines[1], "┬") != 1 || strings.Trim(lines[1], "─┬") != "" {
 						t.Fatalf("pane heading rules do not meet at their divider: %q", lines[1])
 					} else {
-						top := slices.Index([]rune(lines[0]), '│')
+						top := slices.Index([]rune(lines[1]), '┬')
 						bottom := lineIndexContaining(lines, "┴")
-						if top < 0 || bottom != journal+1 || slices.Index([]rune(lines[1]), '┼') != top || slices.Index([]rune(lines[bottom]), '┴') != top {
+						if strings.ContainsAny(lines[0], "│┬┼") || top < 0 || bottom != journal+1 || slices.Index([]rune(lines[bottom]), '┴') != top {
 							t.Fatalf("pane divider does not join its top and bottom rules:\n%s", plain)
 						}
-						for row := 0; row < bottom; row++ {
-							if row != 1 && slices.Index([]rune(lines[row]), '│') != top {
+						for row := 2; row < bottom; row++ {
+							if slices.Index([]rune(lines[row]), '│') != top {
 								t.Fatalf("pane divider is broken at row %d: %q", row, lines[row])
 							}
 						}
@@ -1357,8 +1357,10 @@ func TestWidePaneDividerIsPaintedAfterBoundedContent(t *testing.T) {
 	divider := (content.bounds.Width - 1) / 2
 	for row := 0; row < content.rowsUsed(); row++ {
 		want := "│"
-		if row == 1 {
-			want = "┼"
+		if row == 0 {
+			want = ""
+		} else if row == 1 {
+			want = "┬"
 		}
 		if got := renderer.frame.Cells[row*renderer.frame.Width+divider].Glyph; got != want {
 			t.Fatalf("divider row %d = %q", row, got)

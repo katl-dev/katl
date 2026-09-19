@@ -299,10 +299,11 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	content.advance(used)
 	// Decorations are painted after pane content. Even malformed input cannot
 	// move them because each pane was clipped to its own viewport.
-	for offset := range used {
+	// Vertical rules start at the parent underline, leaving its title row open.
+	for offset := 1; offset < used; offset++ {
 		glyph := "│"
 		if offset == 1 {
-			glyph = "┼"
+			glyph = "┬"
 		}
 		render.frame.setGlyph(content.bounds.X+dividerX, content.bounds.Y+start+offset, glyph, 1, styleDim)
 	}
