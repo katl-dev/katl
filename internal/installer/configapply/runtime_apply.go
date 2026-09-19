@@ -16,15 +16,15 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
-	"github.com/katl-dev/katl/internal/installer/generation"
-	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/kernelcmdline"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (

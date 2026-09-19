@@ -5,7 +5,8 @@ automated VM-test, and release-tooling workflows. Product behavior belongs in
 the public [KatlOS documentation](README.md); this page is for contributors.
 
 Read `docs/internal/north-star.md` for the product direction that grounds the
-local development loop.
+local development loop. See [generation ownership](development/generation-ownership.md)
+for the boundary between offline installation, boot health, and node operations.
 
 ## Current VM Stance
 

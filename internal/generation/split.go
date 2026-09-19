@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
+	"github.com/katl-dev/katl/internal/kernelcmdline"
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 func TestStoreCreatesAndUpdatesJournalFirstRecord(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
-	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/nodeidentity"
+
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/managementidentity"
 )
@@ -38,7 +38,7 @@ func TestServeShutsDownDispatcher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := generation.WriteManagementIdentity(root, "node-a", manifest.ManagementIdentity{
+	if err := nodeidentity.WriteManagementIdentity(root, "node-a", managementidentity.NodeCredentials{
 		CACertificate: node.CACertificate, ServerCertificate: node.ServerCertificate, ServerPrivateKey: node.ServerPrivateKey,
 	}); err != nil {
 		t.Fatal(err)

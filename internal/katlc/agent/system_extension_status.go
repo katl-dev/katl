@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )

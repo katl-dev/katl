@@ -20,8 +20,8 @@ import (
 	"github.com/distribution/reference"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/artifact"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"

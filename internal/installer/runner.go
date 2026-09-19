@@ -14,11 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/managementidentity"
+	"github.com/katl-dev/katl/internal/nodeidentity"
+
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
@@ -830,35 +833,33 @@ func (installSeedStep) Run(ctx context.Context, install *Context) error {
 	if install.TargetRoot == "" {
 		return fmt.Errorf("target root is required")
 	}
-	request := generation.IdentityRequest{
+	request := nodeidentity.IdentityRequest{
 		AuthorizedKeys:    install.Manifest.Node.Identity.SSH.AuthorizedKeys,
 		InventoryNodeName: inventoryNodeName(install.Manifest),
-		Management:        install.Manifest.Node.Identity.Management,
+		Management:        managementidentity.NodeCredentials(install.Manifest.Node.Identity.Management),
 		Random:            install.IdentityRandom,
 		EnrollmentRandom:  install.EnrollmentRandom,
+	}
+	identity, err := nodeidentity.WriteIdentity(install.TargetRoot, request)
+	if err != nil {
+		return err
 	}
 	if install.LoaderRecord != nil {
 		bootRoot := install.BootRoot
 		if bootRoot == "" {
 			bootRoot = filepath.Join(install.TargetRoot, "efi")
 		}
-		identity, err := generation.WriteInstallIdentity(generation.InstallIdentityRequest{
-			TargetRoot: install.TargetRoot,
-			BootRoot:   bootRoot,
-			Identity:   request,
-			Loader:     generation.LoaderRequest{Record: *install.LoaderRecord},
-		})
+		path, err := generation.WriteEntry(bootRoot, generation.LoaderRequest{Record: *install.LoaderRecord, MachineID: identity.MachineID})
 		if err != nil {
 			return err
 		}
-		entryPath, err := bootRelativePath(bootRoot, identity.EntryPath)
+		entryPath, err := bootRelativePath(bootRoot, path)
 		if err != nil {
 			return err
 		}
 		install.LoaderRecord.Boot.LoaderEntryPath = entryPath
-	} else if _, err := generation.WriteIdentity(install.TargetRoot, request); err != nil {
-		return err
 	}
+
 	return recordStep(ctx, install, InstallSeed)
 }
 
@@ -901,7 +902,7 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 	if install.LoaderRecord == nil {
 		return fmt.Errorf("loader generation record is required to materialize generated confext")
 	}
-	result, err := MaterializeInstallRecord(InstallRecordRequest{
+	result, err := renderInstallGeneration(installGenerationRequest{
 		TargetRoot:        install.TargetRoot,
 		Manifest:          install.Manifest,
 		ExtraMounts:       installedExtraMounts(install),
@@ -918,9 +919,6 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 	if err := writeInstalledManifest(install.TargetRoot, result.Record.GenerationID, install.Manifest); err != nil {
 		return err
 	}
-	if err := writeInitialBootSelection(install.TargetRoot, result.Record); err != nil {
-		return err
-	}
 	if _, err := WriteClusterIntent(ClusterIntentRequest{
 		TargetRoot:         install.TargetRoot,
 		Manifest:           install.Manifest,
@@ -931,6 +929,9 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 		InstalledAt:        result.Record.CreatedAt,
 		TargetDiskStableID: targetDiskStableID(install.Manifest.Install.TargetDisk),
 	}); err != nil {
+		return err
+	}
+	if err := generation.Initialize(install.TargetRoot, generation.SpecFromRecord(result.Record)); err != nil {
 		return err
 	}
 	return recordStep(ctx, install, WriteInstallRecord)
@@ -969,27 +970,6 @@ func writeInstalledManifest(targetRoot, generationID string, installManifest man
 		}
 	}
 	return nil
-}
-
-func writeInitialBootSelection(targetRoot string, record generation.Record) error {
-	entry := strings.TrimSpace(record.Boot.LoaderEntryPath)
-	if entry == "" {
-		return fmt.Errorf("loader entry path is required for boot selection")
-	}
-	now := timeNow()
-	if !record.CreatedAt.IsZero() {
-		now = record.CreatedAt
-	}
-	return generation.WriteBootSelection(targetRoot, generation.BootSelectionRecord{
-		APIVersion:            generation.APIVersion,
-		Kind:                  generation.BootSelectionKind,
-		DefaultGenerationID:   record.GenerationID,
-		BootedGenerationID:    record.GenerationID,
-		Generation0FallbackID: record.GenerationID,
-		DefaultBootEntry:      entry,
-		BootedBootEntry:       entry,
-		UpdatedAt:             now,
-	})
 }
 
 type verifyTargetStep struct{}

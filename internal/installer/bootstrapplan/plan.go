@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"

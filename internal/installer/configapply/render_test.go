@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )

@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (

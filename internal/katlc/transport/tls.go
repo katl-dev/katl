@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/nodeidentity"
+
 	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
@@ -17,15 +18,15 @@ const minimumTLSVersion = tls.VersionTLS13
 
 func ServerTLSConfig(root string) (*tls.Config, error) {
 	root = filepath.Clean(strings.TrimSpace(root))
-	ca, err := os.ReadFile(filepath.Join(root, generation.ManagementCACertificatePath))
+	ca, err := os.ReadFile(filepath.Join(root, nodeidentity.ManagementCACertificatePath))
 	if err != nil {
 		return nil, fmt.Errorf("read management client CA: %w", err)
 	}
-	certificate, err := os.ReadFile(filepath.Join(root, generation.ManagementServerCertPath))
+	certificate, err := os.ReadFile(filepath.Join(root, nodeidentity.ManagementServerCertPath))
 	if err != nil {
 		return nil, fmt.Errorf("read management server certificate: %w", err)
 	}
-	privateKey, err := os.ReadFile(filepath.Join(root, generation.ManagementServerPrivateKeyPath))
+	privateKey, err := os.ReadFile(filepath.Join(root, nodeidentity.ManagementServerPrivateKeyPath))
 	if err != nil {
 		return nil, fmt.Errorf("read management server private key: %w", err)
 	}

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/generation"
 )
 
 const (

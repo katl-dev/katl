@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (

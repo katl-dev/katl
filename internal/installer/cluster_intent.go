@@ -14,7 +14,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configdomain"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (

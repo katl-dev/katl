@@ -10,10 +10,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/nodeidentity"
+
 	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/networkdconfig"
@@ -54,7 +55,7 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 		}
 		files = append(files, app.NativeEtcFiles()...)
 	}
-	identity, err := generation.RenderSSH(request.Manifest.Node.Identity.SSH.AuthorizedKeys)
+	identity, err := nodeidentity.RenderSSH(request.Manifest.Node.Identity.SSH.AuthorizedKeys)
 	if err != nil {
 		return nil, err
 	}

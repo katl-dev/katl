@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/nodeidentity"
+
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/vmtest"
 )
 
@@ -740,7 +742,7 @@ func assertGeneration0NodeEvidence(paths generation0EvidencePaths, input threeNo
 	if strings.TrimSpace(string(machineID)) != strings.TrimSpace(string(persistentMachineID)) {
 		return generation0RuntimeMetadata{}, fmt.Errorf("/etc/machine-id does not match /var/lib/katl/identity/machine-id")
 	}
-	var enrollment generation.Enrollment
+	var enrollment nodeidentity.Enrollment
 	if err := readJSONFile(paths.Enrollment, &enrollment); err != nil {
 		return generation0RuntimeMetadata{}, err
 	}

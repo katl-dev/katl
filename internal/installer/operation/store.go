@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/disk"
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const (

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/generation"
 )
 
 func TestGenerationManifestRoundTrip(t *testing.T) {

@@ -1,11 +1,12 @@
 package generation
 
 import (
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/nodeidentity"
 )
 
 type LoaderRequest struct {
@@ -41,7 +42,7 @@ func RenderEntry(request LoaderRequest) (LoaderEntry, error) {
 	if err != nil {
 		return LoaderEntry{}, err
 	}
-	machineID, err := cleanMachineID(request.MachineID)
+	machineID, err := nodeidentity.ParseMachineID(request.MachineID)
 	if err != nil {
 		return LoaderEntry{}, err
 	}
@@ -137,20 +138,6 @@ func entryOptions(record Record, machineID string, generationID string, rootSlot
 		}
 	}
 	return append(base, extra...), nil
-}
-
-func cleanMachineID(machineID string) (string, error) {
-	machineID = strings.TrimSpace(machineID)
-	if len(machineID) != 32 {
-		return "", fmt.Errorf("machine id must be 32 lowercase hex characters")
-	}
-	if machineID != strings.ToLower(machineID) {
-		return "", fmt.Errorf("machine id must be lowercase hex")
-	}
-	if _, err := hex.DecodeString(machineID); err != nil {
-		return "", fmt.Errorf("machine id is invalid: %w", err)
-	}
-	return machineID, nil
 }
 
 func cleanSegment(name string, value string) (string, error) {

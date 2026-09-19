@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/confext"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 

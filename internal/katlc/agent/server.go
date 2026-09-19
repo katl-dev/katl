@@ -17,13 +17,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/katl-dev/katl/internal/nodeidentity"
+
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -1096,19 +1098,19 @@ func (s *Server) machineID() (string, error) {
 	return "", fmt.Errorf("machine identity is not initialized")
 }
 
-func (s *Server) enrollment() (generation.Enrollment, error) {
+func (s *Server) enrollment() (nodeidentity.Enrollment, error) {
 	if strings.TrimSpace(s.EnrollmentID) != "" || strings.TrimSpace(s.InventoryNodeName) != "" {
 		machineID, err := s.machineID()
 		if err != nil {
-			return generation.Enrollment{}, err
+			return nodeidentity.Enrollment{}, err
 		}
-		return generation.Enrollment{ID: strings.TrimSpace(s.EnrollmentID), InventoryNodeName: strings.TrimSpace(s.InventoryNodeName), MachineID: machineID}, nil
+		return nodeidentity.Enrollment{ID: strings.TrimSpace(s.EnrollmentID), InventoryNodeName: strings.TrimSpace(s.InventoryNodeName), MachineID: machineID}, nil
 	}
 	root := strings.TrimSpace(s.Root)
 	if root == "" {
 		root = "/"
 	}
-	return generation.ReadEnrollment(root)
+	return nodeidentity.ReadEnrollment(root)
 }
 
 func (s *Server) validateMutationTarget(enrollmentID, nodeName, machineID, currentGenerationID string) error {
@@ -1278,6 +1280,15 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 	}
 	if strings.TrimSpace(record.CandidateGenerationID) == "" {
 		return out
+	}
+	// The receipt records what remained at operation completion. Generation
+	// health owns the later boot result, including after it is superseded.
+	if out.BootHealthPending && record.Terminal && record.Result == operation.ResultSucceeded {
+		_, state, err := generation.ReadGeneration(s.Root, record.CandidateGenerationID)
+		if err == nil && generation.IsKnownGood(state) && state.CommittedByOperation == record.OperationID {
+			out.BootHealthPending = false
+			out.NextAction = "boot health completed; continue managing the node through its active generation"
+		}
 	}
 	statusPath, err := generation.ConfigApplyStatusPath(s.Root, record.CandidateGenerationID)
 	if err != nil {
