@@ -55,6 +55,11 @@ serial output, lifecycle, and cleanup are consistent.
   per-cell true colour. The dashboard programs its own VT's palette with
   exact theme colours and resets it on exit; login and log VTs retain their
   own palettes. Plain-text snapshots contain no palette or colour escapes.
+- Vertical dashboard rules begin at the bottom of their parent horizontal
+  rule, or at the pane's top when there is no parent rule, and run to the next
+  horizontal boundary. They do not extend into the parent title row. The
+  Node/Kubernetes divider joins their underline to the Journal underline;
+  full-width alerts remain unobstructed.
 - Generated build artifacts belong under `_build/`; VM-test worlds use the
   temporary path reported by `scripts/vmtest-run`.
 
