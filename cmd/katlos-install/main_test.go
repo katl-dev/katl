@@ -20,9 +20,36 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/handoff"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
+
+func TestAutomaticRetryGuidance(t *testing.T) {
+	runDir := t.TempDir()
+	server := handoff.NewHandoffServer(nil)
+	server.BeginAutomatic("cp-1")
+	authority := &disk.DestructiveVolumeAuthorityError{Required: []string{"cp-1/data"}}
+	failure := installstatus.New(installstatus.StateFailedBeforeMutation, time.Now())
+	failure.LastError = authority.Error()
+	failure.CurrentStep = "PlanInstall"
+	writeConsoleInstallStatus(runDir, failure, io.Discard)
+
+	if !prepareHandoffRetry(server, runDir, "http://192.0.2.1:8080", fmt.Errorf("plan: %w", authority), io.Discard) {
+		t.Fatal("safe automatic refusal was not retryable")
+	}
+	observed, err := installstatus.ReadFile(filepath.Join(runDir, "state", "status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.LastError != failure.LastError || observed.CurrentStep != "PlanInstall" || observed.State != installstatus.StateFailedBeforeMutation {
+		t.Fatalf("retry replaced failure evidence: %+v", observed)
+	}
+	want := "katlctl install apply --config CLUSTER_CONFIG --endpoint http://192.0.2.1:8080 --node cp-1 --acknowledge-storage-wipe cp-1/data"
+	if !strings.Contains(observed.RetryHint, want) {
+		t.Fatalf("retry hint = %q, want command %q", observed.RetryHint, want)
+	}
+}
 
 func TestVersion(t *testing.T) {
 	oldVersion, oldCommit, oldDate := version, commit, date
@@ -378,7 +405,12 @@ func TestBootFetchesManifestURL(t *testing.T) {
 	writeTestFile(t, filepath.Join(runDir, "install-manifest.json"), `{"apiVersion":"stale"}`)
 
 	var stdout bytes.Buffer
-	err := runBoot(context.Background(), runDir, filepath.Join(root, "etc"), "127.0.0.1:0", &stdout)
+	err := runBootWithHandoff(context.Background(), runDir, filepath.Join(root, "etc"), "127.0.0.1:0", &stdout, func(ctx context.Context, runDir, _ string, stdout io.Writer, initial *installer.BootInput) error {
+		if initial == nil {
+			t.Fatal("automatic boot did not provide its install input")
+		}
+		return runAutomaticInstall(ctx, *initial, runDir, stdout)
+	})
 	if err == nil {
 		t.Fatal("runBoot() error = nil, want manifest validation failure")
 	}
@@ -496,7 +528,10 @@ func TestBootWait(t *testing.T) {
 	runDir := filepath.Join(t.TempDir(), "run")
 	etcDir := filepath.Join(t.TempDir(), "etc")
 	var stdout bytes.Buffer
-	err := runBootWithHandoff(ctx, runDir, etcDir, "127.0.0.1:0", &stdout, func(ctx context.Context, gotRunDir, gotAddr string, stdout io.Writer) error {
+	err := runBootWithHandoff(ctx, runDir, etcDir, "127.0.0.1:0", &stdout, func(ctx context.Context, gotRunDir, gotAddr string, stdout io.Writer, initial *installer.BootInput) error {
+		if initial != nil {
+			t.Fatal("waiting boot started an automatic install")
+		}
 		if gotRunDir != runDir {
 			t.Fatalf("run dir = %q, want %q", gotRunDir, runDir)
 		}

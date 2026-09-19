@@ -97,6 +97,7 @@ selection and the shared bundle:
     ],
     "args": [
       "initrd=katl-installer.initrd",
+      "rd.systemd.unit=katl-installer.target",
       "rd.neednet=1",
       "ip=dhcp",
       "console=tty0",
@@ -131,6 +132,27 @@ network-boot program.
 `katl.bundle.sha256` is optional because Katl validates the archive and its
 internal descriptors. Supplying it pins the external handoff to the reviewed
 bundle bytes and catches accidental replacement before extraction.
+
+## Retry a Refused Installation
+
+If automatic installation refuses a disk or volume during planning, it keeps its
+HTTP handoff available and displays the original error and a retry command.
+Use the displayed installer address, which may differ from the installed node's
+management address. Correct the configuration or environment, then submit the
+configuration again with `katlctl install apply`.
+
+For an existing data volume, inspect the selected disk first. If overwriting it
+is intended, acknowledge that specific node and volume in the retry:
+
+```sh
+katlctl install apply --config ./cluster.yaml --node cp-1 \
+  --endpoint http://192.168.254.100:8080 \
+  --acknowledge-storage-wipe cp-1/data
+```
+
+The acknowledgement is limited to that request. It is not stored in the PXE
+profile or configuration. Failures after disk mutation do not enable this safe
+retry path; preserve the diagnostics and inspect the target before recovery.
 
 ## Run Matchbox on an Isolated Lab Bridge
 

@@ -193,6 +193,56 @@ func TestHandoffServerAcceptsOneManifest(t *testing.T) {
 	}
 }
 
+func TestAutomaticRetry(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		state      string
+		mutated    bool
+		wantStatus int
+	}{
+		{"before mutation", installstatus.StateFailedBeforeMutation, false, http.StatusOK},
+		{"after mutation", installstatus.StateFailedAfterMutation, true, http.StatusConflict},
+		{"inconsistent status", installstatus.StateFailedBeforeMutation, true, http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := newTestHandoffServer(t)
+			server.BeginAutomatic("cp-1")
+			ts := httptest.NewServer(server.Handler())
+			defer ts.Close()
+
+			response := postManifest(t, ts.URL, validManifestJSON())
+			response.Body.Close()
+			if response.StatusCode != http.StatusConflict {
+				t.Fatalf("competing install status = %d", response.StatusCode)
+			}
+
+			failure := installstatus.New(test.state, time.Now())
+			failure.DestructiveMutation = test.mutated
+			failure.LastError = "automatic installation failed"
+			server.PrepareRetry(failure)
+			response, err := http.Get(ts.URL + "/v1/status")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var observed HandoffStatus
+			err = json.NewDecoder(response.Body).Decode(&observed)
+			response.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantStatus == http.StatusOK && observed.InstallStatus.LastError != failure.LastError {
+				t.Fatalf("retry lost failure evidence: %+v", observed)
+			}
+
+			response = postManifest(t, ts.URL, validManifestJSON())
+			response.Body.Close()
+			if response.StatusCode != test.wantStatus {
+				t.Fatalf("retry status = %d, want %d", response.StatusCode, test.wantStatus)
+			}
+		})
+	}
+}
+
 func TestHandoffServerAllowsRetryOnlyBeforeMutation(t *testing.T) {
 	server := newTestHandoffServer(t)
 	ts := httptest.NewServer(server.Handler())

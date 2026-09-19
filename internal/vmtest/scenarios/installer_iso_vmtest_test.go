@@ -3,6 +3,7 @@ package scenarios
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/handoff"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/vmtest"
 )
 
@@ -91,6 +95,7 @@ func TestInstallerPXEBootSmoke(t *testing.T) {
 			InstallerKernel: kernel,
 			InstallerInitrd: initrd,
 			CommandLine: []string{
+				"rd.systemd.unit=katl-installer.target",
 				"console=ttyS0,115200n8",
 				"systemd.log_target=console",
 				"loglevel=6",
@@ -145,11 +150,24 @@ func TestInstallerISOFirstInstallStorageAuthority(t *testing.T) {
 	if iso == "" {
 		iso = filepath.Join(katlRepoRoot(t), "_build", "mkosi", "katl-installer.iso")
 	}
+	identity, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "installer-storage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, _, err := managementidentity.EnsureNode(&identity, "iso-node", time.Now(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	management, err := json.Marshal(credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifest := []byte(fmt.Sprintf(`apiVersion: install.katl.dev/v1alpha1
 kind: InstallManifest
 node:
   identity:
     hostname: iso-node
+    management: %s
     ssh:
       authorizedKeys:
         - %s
@@ -165,7 +183,7 @@ install:
           byID: /dev/disk/by-id/virtio-katl-data
       filesystem: xfs
       wipe: true
-`, installerISOTestSSHKey))
+`, management, installerISOTestSSHKey))
 	vm := vmtest.VMConfig{
 		KVM:     options.KVM,
 		RAMMiB:  2048,
@@ -189,11 +207,31 @@ install:
 			VM:     vm,
 		},
 		Manifest:            manifest,
+		PreseedManifest:     true,
 		GuestHandoff:        true,
 		RebootIntoInstalled: true,
 		TargetDisk:          vmtest.TargetDisk("root", string(vmtest.DiskRaw), "32G"),
 		DiskRunner:          diskRunner,
 		HandoffPoster: func(ctx context.Context, endpoint string, payload []byte) (int, string, error) {
+			statusURL, err := url.Parse(endpoint)
+			if err != nil {
+				return 0, "", err
+			}
+			statusURL.Path = "/v1/status"
+			statusURL.RawQuery = ""
+			response, err := (&http.Client{Timeout: 10 * time.Second}).Get(statusURL.String())
+			if err != nil {
+				return 0, "", err
+			}
+			var observed handoff.HandoffStatus
+			err = json.NewDecoder(response.Body).Decode(&observed)
+			response.Body.Close()
+			if err != nil {
+				return 0, "", err
+			}
+			if observed.State != handoff.HandoffWaiting || observed.InstallStatus.State != installstatus.StateFailedBeforeMutation || observed.InstallStatus.DestructiveMutation || !strings.Contains(observed.InstallStatus.RetryHint, "--acknowledge-storage-wipe iso-node/data") {
+				return 0, "", fmt.Errorf("automatic refusal did not remain available for acknowledged retry: %+v", observed)
+			}
 			status, body, err := postInstallerManifest(ctx, endpoint, payload)
 			if err != nil {
 				return 0, "", err
