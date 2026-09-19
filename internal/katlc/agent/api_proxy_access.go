@@ -49,7 +49,28 @@ func configureLocalAPIAccess(ctx context.Context, root string, request operation
 
 func configureKubeProxyLocalAPIAccess(ctx context.Context, root, tlsName string, run ToolRunner) error {
 	base := []string{"/usr/bin/kubectl", "--kubeconfig", rootedRuntimePath(root, "/etc/kubernetes/admin.conf"), "--namespace", "kube-system"}
-	result := run(ctx, slices.Concat(base, []string{"get", "configmap", "kube-proxy", "--output", "json"}), func(int) {})
+	// Joined control planes may only have a JoinConfiguration locally. The
+	// cluster's kubeadm configuration owns whether the addon is installed.
+	result := run(ctx, slices.Concat(base, []string{"get", "configmap", "kubeadm-config", "--output", "jsonpath={.data.ClusterConfiguration}"}), func(int) {})
+	if result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("read kubeadm config for node-local API access: %s", toolFailure(result))
+	}
+	var config struct {
+		Kind  string `yaml:"kind"`
+		Proxy struct {
+			Disabled bool `yaml:"disabled"`
+		} `yaml:"proxy"`
+	}
+	if err := yaml.Unmarshal(result.Stdout, &config); err != nil {
+		return fmt.Errorf("decode kubeadm config for node-local API access: %w", err)
+	}
+	if config.Kind != "ClusterConfiguration" {
+		return fmt.Errorf("kubeadm config for node-local API access must contain ClusterConfiguration")
+	}
+	if config.Proxy.Disabled {
+		return nil
+	}
+	result = run(ctx, slices.Concat(base, []string{"get", "configmap", "kube-proxy", "--output", "json"}), func(int) {})
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("read kube-proxy config for node-local API access: %s", toolFailure(result))
 	}

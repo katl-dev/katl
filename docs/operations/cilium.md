@@ -10,6 +10,12 @@ Review Cilium's
 and release notes for the version being installed rather than treating this
 page as a complete Cilium configuration.
 
+For kube-proxy replacement, set `proxy.disabled: true` in the native kubeadm
+`ClusterConfiguration` before bootstrapping; see [native kubeadm
+configuration](../installing.md). Katl honors that setting when configuring
+node-local API access. Configure Cilium's replacement mode in your own Cilium
+values; Katl does not select it for you.
+
 ## Preserve The Immutable Host Boundary
 
 KatlOS owns `/etc` as part of the selected, versioned host generation. A

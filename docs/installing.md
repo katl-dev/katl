@@ -419,17 +419,14 @@ defaults.
 
 This bounded native file is the stable interface for cluster-wide Kubernetes
 networking choices. Set Pod and Service CIDRs in
-`ClusterConfiguration.networking`, and use `InitConfiguration.skipPhases` when
+`ClusterConfiguration.networking`, and set `ClusterConfiguration.proxy.disabled` when
 the chosen CNI replaces kube-proxy:
 
 ```yaml
 apiVersion: kubeadm.k8s.io/v1beta4
-kind: InitConfiguration
-skipPhases:
-  - addon/kube-proxy
----
-apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
+proxy:
+  disabled: true
 networking:
   podSubnet: 172.20.0.0/16
   serviceSubnet: 172.21.0.0/16
@@ -438,6 +435,9 @@ networking:
 Include a native `KubeProxyConfiguration` document when kube-proxy remains in
 use but needs non-default policy. Katl does not duplicate these upstream
 cluster-wide fields under a second typed ClusterConfig networking surface.
+Katl honors the cluster's disabled setting during bootstrap and control-plane
+joins, and leaves service routing to your chosen CNI. Disabling kube-proxy
+does not install or configure a replacement CNI.
 
 For node-specific kubelet policy, reference one native
 `kubelet.config.k8s.io/v1beta1` `KubeletConfiguration` from that node:
