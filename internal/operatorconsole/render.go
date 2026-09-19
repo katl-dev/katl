@@ -107,18 +107,12 @@ func (render *Renderer) paintCompact(snapshot *Snapshot) {
 }
 
 func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
-	top := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: 1})
-	writeRule(&top)
-
-	contentRect := Rect{Y: 1, Width: render.frame.Width, Height: render.frame.Height - 2}
+	contentRect := Rect{Width: render.frame.Width, Height: render.frame.Height - 1}
 	alerts := activeAlerts(snapshot)
 	reservedAlerts := min(measureAlertRows(contentRect.Width, alerts), max(contentRect.Height-1, 0))
 	normal := NewViewport(&render.frame, Rect{Y: contentRect.Y, Width: contentRect.Width, Height: contentRect.Height - reservedAlerts})
 	if snapshot.Mode == ModeRuntime {
 		render.writeRuntimeStatus(&normal, snapshot)
-		if normal.bounds.Width >= wideLayoutWidth {
-			render.frame.setGlyph((normal.bounds.Width-1)/2, 0, "┬", 1, styleDim)
-		}
 	} else {
 		writeInstallerStatus(&normal, snapshot)
 	}
