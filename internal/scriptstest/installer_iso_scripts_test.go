@@ -223,7 +223,6 @@ func TestMkosiInstallerISOUsesBuilder(t *testing.T) {
 		},
 	})
 	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
-	seedInstallerRPMCache(t, repo)
 	podmanArgs := filepath.Join(tmp, "podman-args.txt")
 	writeFakeExecutable(t, bin, "podman", `
 if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
@@ -315,7 +314,6 @@ func TestMkosiInstallerBuildClearsStaleISO(t *testing.T) {
 		t.Fatal(err)
 	}
 	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
-	seedInstallerRPMCache(t, repo)
 	for _, name := range []string{"katl-installer.iso", "katl-installer.iso.json", "katl-installer.iso.sha256"} {
 		writeArtifact(t, buildDir, name, "stale")
 	}
