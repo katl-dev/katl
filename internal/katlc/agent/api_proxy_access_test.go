@@ -41,6 +41,9 @@ func TestConfigureLocalAPIAccess(t *testing.T) {
 		ControlPlaneEndpoint: "api.katl.test:6443",
 	}, func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		commands = append(commands, slices.Clone(argv))
+		if slices.Contains(argv, "kubeadm-config") {
+			return ToolResult{Stdout: []byte("kind: ClusterConfiguration\n")}
+		}
 		if slices.Contains(argv, "get") {
 			return ToolResult{Stdout: kubeProxy}
 		}
@@ -49,13 +52,13 @@ func TestConfigureLocalAPIAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 5 || strings.Join(commands[len(commands)-1], " ") != "/usr/bin/systemctl restart kubelet.service" {
+	if len(commands) != 6 || strings.Join(commands[len(commands)-1], " ") != "/usr/bin/systemctl restart kubelet.service" {
 		t.Fatalf("commands = %v", commands)
 	}
-	if patch := strings.Join(commands[1], " "); !strings.Contains(patch, "https://127.0.0.1:7445") || !strings.Contains(patch, "tls-server-name") {
+	if patch := strings.Join(commands[2], " "); !strings.Contains(patch, "https://127.0.0.1:7445") || !strings.Contains(patch, "tls-server-name") {
 		t.Fatalf("kube-proxy patch = %s", patch)
 	}
-	if got := strings.Join(commands[2], " "); !strings.Contains(got, "rollout restart daemonset/kube-proxy") {
+	if got := strings.Join(commands[3], " "); !strings.Contains(got, "rollout restart daemonset/kube-proxy") {
 		t.Fatalf("kube-proxy restart = %s", got)
 	}
 	for _, path := range []string{"etc/kubernetes/kubelet.conf", "etc/kubernetes/admin.conf"} {
@@ -108,12 +111,67 @@ func TestConfigureKubeProxyLocalAPIAccessDoesNotRestartWhenConfigured(t *testing
 	var commands [][]string
 	err = configureKubeProxyLocalAPIAccess(context.Background(), t.TempDir(), "api.katl.test", func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		commands = append(commands, slices.Clone(argv))
+		if slices.Contains(argv, "kubeadm-config") {
+			return ToolResult{Stdout: []byte("kind: ClusterConfiguration\n")}
+		}
 		return ToolResult{Stdout: kubeProxy}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 1 || !slices.Contains(commands[0], "get") {
+	if len(commands) != 2 || !slices.Contains(commands[1], "get") {
 		t.Fatalf("commands = %v", commands)
+	}
+}
+
+func TestLocalAPIAccessProxyPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		config  ToolResult
+		wantErr string
+	}{
+		{name: "disabled", config: ToolResult{Stdout: []byte("kind: ClusterConfiguration\nproxy:\n  disabled: true\n")}},
+		{name: "enabled but absent", config: ToolResult{Stdout: []byte("kind: ClusterConfiguration\nproxy:\n  disabled: false\n")}, wantErr: "read kube-proxy config"},
+		{name: "default but absent", config: ToolResult{Stdout: []byte("kind: ClusterConfiguration\n")}, wantErr: "read kube-proxy config"},
+		{name: "unavailable config", config: ToolResult{ExitStatus: 1}, wantErr: "read kubeadm config"},
+		{name: "invalid config", config: ToolResult{Stdout: []byte("kind: ClusterConfiguration\nproxy: [")}, wantErr: "decode kubeadm config"},
+		{name: "empty config", wantErr: "must contain ClusterConfiguration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, path := range []string{"etc/kubernetes/kubelet.conf", "etc/kubernetes/admin.conf"} {
+				writeTestFile(t, filepath.Join(root, path), testKubeconfig)
+			}
+			restarted := false
+			for range 2 {
+				err := configureLocalAPIAccess(context.Background(), root, operation.BootstrapRequest{
+					SystemRole: "control-plane", ControlPlaneEndpoint: "api.katl.test:6443",
+				}, func(_ context.Context, argv []string, _ func(int)) ToolResult {
+					if slices.Contains(argv, "kubeadm-config") {
+						return tc.config
+					}
+					if slices.Contains(argv, "kube-proxy") {
+						if tc.wantErr == "" {
+							t.Fatal("disabled kube-proxy must not be read or mutated")
+						}
+						return ToolResult{ExitStatus: 1, Stderr: []byte("NotFound")}
+					}
+					if slices.Contains(argv, "kubelet.service") {
+						restarted = true
+					}
+					return ToolResult{}
+				})
+				if tc.wantErr != "" {
+					if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+						t.Fatalf("error = %v, want %s", err, tc.wantErr)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.wantErr == "" && !restarted {
+				t.Fatal("kubelet was not restarted")
+			}
+		})
 	}
 }
