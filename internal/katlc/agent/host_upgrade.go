@@ -74,7 +74,18 @@ func validateHostUpgradeBootEvidence(root, currentID string, current generation.
 		return fmt.Errorf("read running generation from kernel command line: %w", err)
 	}
 	if bootedID != currentID {
-		return fmt.Errorf("running kernel selected generation %q but durable state identifies %q as current; reboot into the selected known-good generation before retrying the upgrade", bootedID, currentID)
+		health := readNodeBootHealth(root)
+		if health.State != nodeBootHealthHealthy {
+			return fmt.Errorf("running kernel selected generation %q is not healthy: %s; reboot into the selected known-good generation before retrying the upgrade", bootedID, health.Diagnostic)
+		}
+		booted, _, err := generation.ReadGeneration(root, bootedID)
+		if err != nil {
+			return fmt.Errorf("read booted generation: %w", err)
+		}
+		// Live promotion changes configuration identity, not the booted OS payload.
+		if booted.Root != current.Root || booted.Boot.UKIPath != current.Boot.UKIPath {
+			return fmt.Errorf("active generation %q does not use the booted runtime from %q; reboot into the selected known-good generation before retrying the upgrade", currentID, bootedID)
+		}
 	}
 	rootPartUUID, err := generation.SelectedRootPartUUIDFromCommandLine(commandLine)
 	if err != nil {
