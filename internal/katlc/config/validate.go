@@ -1,9 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -150,43 +150,13 @@ func validateInlineKubeadmConfigs(node *yaml.Node, path string, result *Result) 
 		result.add("invalid-field", path, "kubeadmConfigs must be a mapping")
 		return
 	}
-	for _, config := range mappingPairsWithPath(node, path) {
-		if !validName(config.key) {
-			result.add("invalid-kubeadm-name", config.path, fmt.Sprintf("%q must be a DNS label", config.key))
+	for _, entry := range mappingPairsWithPath(node, path) {
+		data, err := yaml.Marshal(entry.value)
+		if err == nil {
+			err = configapply.ValidateInlineKubeadmConfig(entry.key, bytes.NewReader(data))
 		}
-		if config.value.Kind != yaml.MappingNode {
-			result.add("invalid-field", config.path, "inline kubeadm config must be a mapping")
-			continue
-		}
-		for _, field := range mappingPairsWithPath(config.value, config.path) {
-			switch field.key {
-			case "config":
-				if strings.TrimSpace(scalarValue(field.value)) == "" {
-					result.add("missing-kubeadm-config", field.path, "config must contain kubeadm YAML")
-				}
-			case "patches":
-				validateInlineKubeadmPatches(field.value, field.path, result)
-			default:
-				result.add("unsupported-field", field.path, "inline kubeadm config field is not supported")
-			}
-		}
-		if mappingValue(config.value, "config") == nil {
-			result.add("missing-field", config.path+".config", "config is required")
-		}
-	}
-}
-
-func validateInlineKubeadmPatches(node *yaml.Node, path string, result *Result) {
-	if node.Kind != yaml.MappingNode {
-		result.add("invalid-field", path, "patches must be a mapping of file names to YAML content")
-		return
-	}
-	for _, patch := range mappingPairsWithPath(node, path) {
-		if err := validateNetworkdName(patch.key); err != nil {
-			result.add("unsafe-render-path", patch.path, err.Error())
-		}
-		if strings.TrimSpace(scalarValue(patch.value)) == "" {
-			result.add("missing-kubeadm-patch", patch.path, "patch must contain kubeadm patch YAML")
+		if err != nil {
+			result.add("invalid-kubeadm-config", entry.path, err.Error())
 		}
 	}
 }
@@ -317,6 +287,9 @@ func validateSystemRole(node *yaml.Node, path string, result *Result) {
 }
 
 func validateHostConfiguration(node *yaml.Node, path string, result *Result) {
+	if node.Tag == "!!null" {
+		return
+	}
 	if node.Kind != yaml.MappingNode {
 		result.add("invalid-field", path, "hostConfiguration must be a mapping")
 		return
@@ -485,24 +458,6 @@ func unsupportedCode(key string) string {
 		return "unsupported-activation-input"
 	}
 	return "unsupported-domain"
-}
-
-func validateNetworkdName(name string) error {
-	if filepath.IsAbs(name) || name != filepath.Base(name) || name == "." || name == ".." {
-		return fmt.Errorf("%q must be a single render path segment", name)
-	}
-	switch filepath.Ext(name) {
-	case ".network", ".netdev", ".link":
-	default:
-		return fmt.Errorf("%q must end with .network, .netdev, or .link", name)
-	}
-	for _, r := range name {
-		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._@+-", r)
-		if !ok {
-			return fmt.Errorf("%q contains unsupported character %q", name, r)
-		}
-	}
-	return nil
 }
 
 func validHostname(value string) bool {

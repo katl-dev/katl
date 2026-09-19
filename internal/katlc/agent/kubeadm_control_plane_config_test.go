@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,46 +45,50 @@ func TestValidateKubeadmKubeletConfigRequestAllowsAnyRolloutSize(t *testing.T) {
 }
 
 func TestAcceptKubeadmControlPlaneConfigBindsActiveGeneration(t *testing.T) {
-	server := newTestServer(t)
-	writeConfigApplyBaseState(t, server.Root)
-	config := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\napiServer:\n  extraArgs:\n    - name: profiling\n      value: \"false\"\n"
-	path := filepath.Join(server.Root, "etc/katl/kubeadm/control-plane/config.yaml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(server.Root, "etc/katl/node.json"), []byte(`{"kubeadm":{"configRef":"control-plane"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	status, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{GenerationID: "generation-0", PreviousGeneration: "previous", RequestedApplyMode: generation.ApplyModeNextBoot, AcceptedApplyMode: generation.ApplyModeNextBoot, ChangedDomains: []string{"selected-kubeadm-config"}, HealthState: "healthy", Kubeadm: generation.KubeadmActionRequired{Required: true, SelectedConfigName: "control-plane"}, UpdatedAt: time.Now().UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	statusPath, _ := generation.ConfigApplyStatusPath(server.Root, "generation-0")
-	if err := generation.WriteConfigApplyStatus(statusPath, status); err != nil {
-		t.Fatal(err)
-	}
-	body := validControlPlaneConfigRequest()
-	body.DesiredGenerationId = "generation-0"
-	var dispatched atomic.Int32
-	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
-		dispatched.Add(1)
-		return nil
-	})
-	submit := &agentapi.SubmitOperationRequest{ApiVersion: APIVersion, Kind: RequestKind, OperationKind: OperationKindKubeadmControlPlaneConfig, ClientRequestId: "req", Actor: "test", ExpectedMachineId: "0123456789abcdef0123456789abcdef", ExpectedCurrentGenerationId: "generation-0", KubeadmControlPlaneConfig: body}
-	accepted, err := server.SubmitOperation(context.Background(), submit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := server.Store.Read(accepted.OperationId)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantDesired, _ := kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(config))
-	if dispatched.Load() != 1 || record.KubeadmControlPlaneConfig.ConfigName != "control-plane" || record.PreviousGenerationID != "generation-0" || record.KubeadmControlPlaneConfig.DesiredConfigSHA256 != wantDesired || record.KubeadmControlPlaneConfig.KubernetesPayloadVersion != "v1.35.0" {
-		t.Fatalf("dispatches=%d record=%#v accepted=%#v", dispatched.Load(), record, accepted)
+	for _, local := range []bool{false, true} {
+		t.Run(fmt.Sprint(local), func(t *testing.T) {
+			server := newTestServer(t)
+			writeConfigApplyBaseState(t, server.Root)
+			config := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\napiServer:\n  extraArgs:\n    - name: profiling\n      value: \"false\"\n"
+			path := filepath.Join(server.Root, "etc/katl/kubeadm/control-plane/config.yaml")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(server.Root, "etc/katl/node.json"), []byte(fmt.Sprintf(`{"kubeadm":{"configRef":"control-plane","nodeLocalKubelet":%t}}`, local)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			status, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{GenerationID: "generation-0", PreviousGeneration: "previous", RequestedApplyMode: generation.ApplyModeNextBoot, AcceptedApplyMode: generation.ApplyModeNextBoot, ChangedDomains: []string{"selected-kubeadm-config"}, HealthState: "healthy", Kubeadm: generation.KubeadmActionRequired{Required: true, SelectedConfigName: "control-plane"}, UpdatedAt: time.Now().UTC()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			statusPath, _ := generation.ConfigApplyStatusPath(server.Root, "generation-0")
+			if err := generation.WriteConfigApplyStatus(statusPath, status); err != nil {
+				t.Fatal(err)
+			}
+			body := validControlPlaneConfigRequest()
+			body.DesiredGenerationId = "generation-0"
+			var dispatched atomic.Int32
+			server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+				dispatched.Add(1)
+				return nil
+			})
+			submit := &agentapi.SubmitOperationRequest{ApiVersion: APIVersion, Kind: RequestKind, OperationKind: OperationKindKubeadmControlPlaneConfig, ClientRequestId: "req", Actor: "test", ExpectedMachineId: "0123456789abcdef0123456789abcdef", ExpectedCurrentGenerationId: "generation-0", KubeadmControlPlaneConfig: body}
+			accepted, err := server.SubmitOperation(context.Background(), submit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := server.Store.Read(accepted.OperationId)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantDesired, _ := kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(config))
+			if dispatched.Load() != 1 || record.KubeadmControlPlaneConfig.ConfigName != "control-plane" || record.PreviousGenerationID != "generation-0" || record.KubeadmControlPlaneConfig.DesiredConfigSHA256 != wantDesired || record.KubeadmControlPlaneConfig.KubernetesPayloadVersion != "v1.35.0" {
+				t.Fatalf("dispatches=%d record=%#v accepted=%#v", dispatched.Load(), record, accepted)
+			}
+		})
 	}
 }
 
