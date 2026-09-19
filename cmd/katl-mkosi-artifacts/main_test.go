@@ -32,6 +32,8 @@ func TestPackageInventoryDigestRejectsMissingExtraDiskFormatter(t *testing.T) {
 		"linux-firmware\t1.noarch",
 		"microcode_ctl\t2.x86_64",
 		"amd-ucode-firmware\t1.noarch",
+		"intel-gpu-firmware\t1.noarch",
+		"amd-gpu-firmware\t1.noarch",
 		"e2fsprogs\t1.x86_64",
 		"xfsprogs\t1.x86_64",
 	}, "\n") + "\n"

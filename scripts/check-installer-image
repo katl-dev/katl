@@ -97,11 +97,10 @@ mkdir -p "$initrd_root"
     cd "$initrd_root"
     cpio -id --quiet --no-absolute-filenames <"$initrd_cpio"
 ) || fail "extract installer initrd for firmware verification failed"
-if find "$initrd_root/usr/lib/modules" -type f \
-    \( -name 'i915.ko*' -o -name 'xe.ko*' -o -name 'amdgpu.ko*' \) \
-    -print -quit | grep -q .; then
-    fail "installer initrd unexpectedly contains runtime GPU drivers"
-fi
+for driver in i915 xe amdgpu virtio-gpu; do
+    find "$initrd_root/usr/lib/modules" -type f -name "$driver.ko*" -print -quit | grep -q . ||
+        fail "installer initrd is missing console graphics driver $driver"
+done
 GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
     go run "$repo_root/cmd/katl-mkosi-artifacts" verify-module-firmware \
     --root "$initrd_root" >/dev/null ||
