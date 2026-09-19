@@ -133,7 +133,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 		return threeControlPlaneSmokeRun{}, err
 	}
 	run := threeControlPlaneSmokeRun{WorldScenario: scenario}
-	_, sshAuthorizedKey, err := ensureWorldSSHKey(world)
+	sshPrivateKey, sshAuthorizedKey, err := ensureWorldSSHKey(world)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
 		return run, err
@@ -200,6 +200,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 			CP3Address:        nodes["cp-3"].Node.Address,
 			CP3MAC:            nodes["cp-3"].Node.MACAddress,
 			CP3Install:        firstInstallProvenanceFromPublished(cp3Published),
+			SSHPrivateKey:     sshPrivateKey,
 			SSHAuthorizedKey:  sshAuthorizedKey,
 			KubernetesVersion: firstString(kubernetesVersion, "v1.36.1"),
 			WorldProvenance:   multiNodeWorldProvenanceForSpecs(world, repo, threeControlPlaneWorldRuntimeSpecs()),
@@ -422,6 +423,14 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("local control-plane health: %v", err)
+	}
+	if !smoke.WorkloadProof && !smoke.ReplacementProof {
+		if err := runPublicClusterApply(t, ctx, smoke, result, nodes, addresses, kubeconfigPath, kubernetesBundle); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("public cluster apply: %v", err)
+		}
 	}
 	var workloadStack *releaseWorkloadStackEvidence
 	if smoke.WorkloadProof {
@@ -1251,6 +1260,7 @@ type threeControlPlaneSmokeInputs struct {
 	CP3Address        string
 	CP3MAC            string
 	CP3Install        firstInstallProvenance
+	SSHPrivateKey     string
 	SSHAuthorizedKey  string
 	KubernetesVersion string
 	WorldProvenance   multiNodeWorldProvenancePaths
