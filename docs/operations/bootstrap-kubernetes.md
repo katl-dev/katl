@@ -78,7 +78,20 @@ that PKI means a later fresh cluster cannot retain the same identity.
 Bootstrap waits for its submitted operations, and their node-local records
 remain queryable afterward. Rerunning the same command with the same config
 resumes observation of matching in-flight bootstrap operations instead of
-submitting duplicates. If a result is unclear, discover the affected node's
+submitting duplicates. If kubeadm succeeded but local API configuration or the
+post-kubeadm health check failed, correct the reported cause and rerun the same
+command with the original configuration and identity. Katl creates a continuation
+attempt that finishes configuration, checks health, and commits the prepared
+generation. It preserves the original failure record and does not rerun kubeadm
+or replace Kubernetes keys.
+
+This continuation requires the same node, generation, bootstrap inputs, and boot
+session, with no intervening mutating operation. If kubeadm itself failed, the
+node rebooted before recovery, or the prepared generation is unavailable, Katl
+refuses automatic continuation and explains that the existing state needs
+inspection. Preserve that state while diagnosing the failure.
+
+If a result is unclear, discover the affected node's
 current and recent operations:
 
 ```sh

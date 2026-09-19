@@ -212,6 +212,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if record.EtcdMemberRemoveRequest != nil {
 		return e.executeEtcdMemberRemove(ctx, record)
 	}
+	if record.BootstrapRequest != nil && record.BootstrapRequest.ResumeOperationID != "" {
+		return e.finishBootstrap(ctx, record)
+	}
 	plan, err := executorPlan(record)
 	if err != nil {
 		_, markErr := e.failRecord(record.OperationID, "executor-plan-refused", "executor-plan-refused", "agent executor could not read operation tool plan", err)
@@ -390,13 +393,6 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if timedOut {
 		resultText = operation.ResultTimedOut
 	}
-	if result.Err != nil || result.ExitStatus != 0 {
-		if alreadyJoined(record, result) && e.joinPostHealthPassed(ctx, record) {
-			result.Err = nil
-			result.ExitStatus = 0
-			resultText = operation.ResultSucceeded
-		}
-	}
 	_, updateErr := e.Store.Update(record.OperationID, markerID+"-complete", "child-process-complete", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		completeInvocation(record.Invocations, markerID, completedAt, resultText, result)
 		record.MutatingToolRan = true
@@ -447,9 +443,13 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	if result.ExitStatus != 0 {
 		return fmt.Errorf("run %s: exit status %d", plan.Argv[0], result.ExitStatus)
 	}
+	return e.finishBootstrap(ctx, record)
+}
+
+func (e *Executor) finishBootstrap(ctx context.Context, record operation.OperationRecord) error {
 	if record.BootstrapRequest != nil {
 		if err := e.localAPIAccessConfigurator()(ctx, e.Root, *record.BootstrapRequest, e.toolRunner()); err != nil {
-			_, markErr := e.failRecordPhase(record.OperationID, "local-api-access-failed", "local-api-access", "configure-local-api-access", "repair the node-local API proxy path before retrying local Kubernetes health checks", err)
+			_, markErr := e.failRecordPhase(record.OperationID, "local-api-access-failed", "local-api-access", "configure-local-api-access", "correct the local API access failure, then rerun the unchanged cluster bootstrap command to finish without rerunning kubeadm", err)
 			return errors.Join(err, markErr)
 		}
 		updatedAt := e.clock()
@@ -1200,21 +1200,6 @@ func expiredJoinMaterial(record operation.OperationRecord, now time.Time) string
 		return "join material is expired"
 	}
 	return ""
-}
-
-func alreadyJoined(record operation.OperationRecord, result ToolResult) bool {
-	if !bootstrapJoinOperation(record.OperationKind) {
-		return false
-	}
-	text := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr) + "\n" + toolFailure(result))
-	return strings.Contains(text, "already joined")
-}
-
-func (e *Executor) joinPostHealthPassed(ctx context.Context, record operation.OperationRecord) bool {
-	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
-	defer cancel()
-	result := e.postHealthRunner()(healthCtx, postKubeadmHealthArgs(record), func(int) {})
-	return healthCtx.Err() == nil && result.Err == nil && result.ExitStatus == 0
 }
 
 func bootstrapJoinOperation(kind string) bool {

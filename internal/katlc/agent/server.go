@@ -495,6 +495,16 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "generate operation id: %v", err)
 	}
+	if req.GetBootstrap().GetResumeOperationId() != "" {
+		return s.acceptBootstrapContinuation(req, digest, id, now)
+	}
+	if req.GetBootstrap() != nil {
+		if _, err := os.Stat(rootedRuntimePath(s.Root, "/etc/kubernetes/kubelet.conf")); err == nil {
+			return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, "node already has Kubernetes state; rerun the original bootstrap command to resume a completed kubeadm phase, or inspect the failed operation before repair")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "inspect existing Kubernetes state: %v", err)
+		}
+	}
 	if req.GetConfigApply() != nil {
 		return s.acceptConfigApplyOperation(ctx, req, digest, id, locks, now)
 	}
@@ -911,7 +921,9 @@ type workerJoinMetadata struct {
 }
 
 func (s *Server) validateJoinMaterial(operationKind string, request *agentapi.BootstrapOperationRequest) error {
-	if request == nil {
+	if request == nil || request.GetResumeOperationId() != "" {
+		// Continuations validate the stored successful kubeadm receipt instead;
+		// credentials for a completed join are no longer needed.
 		return nil
 	}
 	material := request.GetWorkerJoinMaterial()
@@ -1276,6 +1288,7 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 		PostKubeadmHealthState:  record.PostKubeadmHealthState,
 		BootHealthPending:       record.BootHealthPending,
 		ConfigApplyPhase:        record.ConfigApplyPhase,
+		ResumeSupported:         bootstrapContinuationEligible(record),
 		ChangedDomains:          slices.Clone(record.ChangedDomains),
 	}
 	if strings.TrimSpace(record.CandidateGenerationID) == "" {
@@ -1417,6 +1430,11 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 func validateBootstrapRequest(operationKind string, request *agentapi.BootstrapOperationRequest) error {
 	if request == nil {
 		return fmt.Errorf("typed bootstrap request is required")
+	}
+	if request.ResumeOperationId != "" {
+		if err := cleanPublicID("resumeOperationID", request.ResumeOperationId); err != nil {
+			return err
+		}
 	}
 	if err := cleanPublicID("inventoryNodeName", request.InventoryNodeName); err != nil {
 		return err

@@ -1049,7 +1049,7 @@ func TestSubmitOperationRejectsExpiredWorkerJoinMaterialBeforeMutation(t *testin
 	}
 }
 
-func TestSubmitOperationAcceptsAlreadyJoinedWorkerWhenHealthPasses(t *testing.T) {
+func TestSubmitOperationPreservesFailedJoin(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
 	executor := NewExecutor(server.Root, server.Store, "agent-test")
@@ -1088,11 +1088,11 @@ func TestSubmitOperationAcceptsAlreadyJoinedWorkerWhenHealthPasses(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !read.Terminal || read.Result != operation.ResultSucceeded || read.RecoveryRequired {
-		t.Fatalf("record = %+v, want already-joined worker accepted after health", read)
+	if !read.Terminal || read.Result != operation.ResultFailedNeedsRepair || !read.RecoveryRequired {
+		t.Fatalf("record = %+v, want failed join preserved for repair", read)
 	}
-	if healthChecks < 2 {
-		t.Fatalf("post-health checks = %d, want already-joined probe plus final evidence check", healthChecks)
+	if healthChecks != 0 {
+		t.Fatalf("post-health checks = %d after failed kubeadm", healthChecks)
 	}
 }
 
