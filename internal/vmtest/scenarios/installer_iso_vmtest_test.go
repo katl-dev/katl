@@ -79,6 +79,34 @@ func TestInstallerPXEBootSmoke(t *testing.T) {
 	options.StateRoot = filepath.Join(worldScenario.Dir, "vm-runs")
 	options.Keep = vmtest.KeepFailed
 	repo := katlRepoRoot(t)
+	katlctl := buildKatlctlCommand(t, context.Background(), repo)
+	privateKey, publicKey, err := ensureWorldSSHKey(world)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(worldScenario.Dir, "cluster.yaml")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf(`apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: pxe-network
+spec:
+  controlPlaneEndpoint:
+    host: api.pxe.test
+  kubernetes:
+    version: v1.36.1
+  defaults:
+    access:
+      ssh:
+        authorizedKeys: [%q]
+  nodes:
+    - name: pxe-node
+      controlPlane: true
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/virtio-katl-root
+`, publicKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	kernel := os.Getenv("KATL_INSTALLER_KERNEL")
 	if kernel == "" {
 		kernel = filepath.Join(repo, "_build", "mkosi", "katl-installer.vmlinuz")
@@ -106,10 +134,26 @@ func TestInstallerPXEBootSmoke(t *testing.T) {
 				SerialHooks: []vmtest.SerialHook{{
 					Name:   "network-online",
 					Signal: "katlos-install progress: waiting for configuration at",
-					Run: func(_ context.Context, event vmtest.SerialHookEvent) error {
+					Run: func(ctx context.Context, event vmtest.SerialHookEvent) error {
 						// Handoff can start after wait-online fails, so readiness alone is insufficient.
-						if !regexp.MustCompile(`Finished [^\r\n]* - Wait for Network to be Online\.`).MatchString(event.SerialText) {
-							return fmt.Errorf("installer reached handoff without a successful network-online check")
+						match := regexp.MustCompile(`katlos-install waiting for config at (http://\S+)/v1/config-bundle`).FindStringSubmatch(event.SerialText)
+						if len(match) != 2 {
+							return fmt.Errorf("installer did not announce its handoff endpoint")
+						}
+						endpoint, err := url.Parse(match[1])
+						if err != nil {
+							return err
+						}
+						command := exec.CommandContext(ctx, katlctl, "install", "ssh", "--config", config, "--node", "pxe-node", "--endpoint", endpoint.String())
+						if output, err := command.CombinedOutput(); err != nil {
+							return fmt.Errorf("enable installer SSH: %w: %s", err, output)
+						}
+						command = exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-i", privateKey,
+							"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no",
+							"-o", "UserKnownHostsFile=/dev/null", "root@"+endpoint.Hostname(),
+							`systemctl is-active --quiet systemd-networkd-wait-online.service && test "$(systemctl show systemd-networkd-wait-online.service -p Result --value)" = success`)
+						if output, err := command.CombinedOutput(); err != nil {
+							return fmt.Errorf("installer network-online service was not active and successful: %w: %s", err, output)
 						}
 						return nil
 					},
