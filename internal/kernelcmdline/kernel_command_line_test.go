@@ -32,10 +32,27 @@ func TestValidateConfiguredRejectsKatlOwnedArguments(t *testing.T) {
 		"katl.generation=other",
 		"systemd.unit=rescue.target",
 		"systemd.volatile=yes",
+		"console=tty0",
+		"console=tty1",
+		"console=tty3,9600",
 	} {
 		if err := ValidateConfigured([]string{option}); err == nil {
 			t.Fatalf("ValidateConfigured(%q) succeeded", option)
 		}
+	}
+}
+
+func TestMergeCurrentReplacesGraphicalConsole(t *testing.T) {
+	got := MergeCurrent(
+		[]string{"console=ttyS0,115200n8", "console=tty3"},
+		[]string{"console=tty0", "console=ttyS0,115200n8", "intel_iommu=on"}, nil,
+	)
+	want := []string{"console=ttyS0,115200n8", "console=tty3", "intel_iommu=on"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("merged arguments = %q, want %q", got, want)
+	}
+	if err := ValidateConfigured([]string{"console=ttyS1,9600"}); err != nil {
+		t.Fatalf("custom serial console: %v", err)
 	}
 }
 

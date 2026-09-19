@@ -272,6 +272,28 @@ func TestHostUpgradePlanPreservesKubernetesAndStagesTrialBoot(t *testing.T) {
 	}
 }
 
+func TestHostUpgradePlanReplacesGraphicalConsole(t *testing.T) {
+	payload := upgradePayload(t, func(index *Index) {
+		index.Components[1].Compatibility.KernelCommandLine = []string{"console=ttyS0,115200n8", "console=tty3"}
+	})
+	previous, _ := knownGoodGeneration(t, "gen0", sha256Bytes([]byte("kubernetes sysext")), "v1.35.0")
+	previous.KernelCommandLine = []string{"console=ttyS0,115200n8", "console=tty0", "intel_iommu=on"}
+	previous.ConfiguredKernelCommandLine = []string{"intel_iommu=on"}
+	status, err := generation.NewGenerationStatus(previous, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, previous.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := payload.HostUpgradePlan(validHostUpgradeRequest(previous, status))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"console=ttyS0,115200n8", "console=tty3", "intel_iommu=on"}
+	if !slices.Equal(plan.Spec.KernelCommandLine, want) {
+		t.Fatalf("upgrade command line = %q, want %q", plan.Spec.KernelCommandLine, want)
+	}
+}
+
 func TestHostUpgradePlanRejectsIncompatibleImage(t *testing.T) {
 	payload := upgradePayload(t, nil)
 	payload.Index.Architecture = "aarch64"

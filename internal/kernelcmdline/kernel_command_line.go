@@ -3,6 +3,7 @@ package kernelcmdline
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -116,8 +117,14 @@ func MergeCurrent(base, current, replaced []string) []string {
 }
 
 // Protected reports arguments owned by Katl's root selection, immutable-root,
-// generation identity, or recovery flow.
+// generation identity, graphical console, or recovery flow.
 func Protected(option string) bool {
+	if terminal, ok := strings.CutPrefix(option, "console=tty"); ok {
+		terminal, _, _ = strings.Cut(terminal, ",")
+		if _, err := strconv.ParseUint(terminal, 10, 16); err == nil {
+			return true
+		}
+	}
 	switch option {
 	case "ro", "rw":
 		return true

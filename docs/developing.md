@@ -39,9 +39,10 @@ serial output, lifecycle, and cleanup are consistent.
   and deterministic serial capture.
 - Firmware expectation: the runner is given readable OVMF/edk2 pflash images.
 - Console settings: the guest kernel command line includes both
-  `console=ttyS0,115200n8` and `console=tty0`. VGA remains the interactive
-  display console while the installer journal is mirrored to ttyS0 for the
-  runner's deterministic captured console log.
+  `console=ttyS0,115200n8` and `console=tty3`. `tty3` receives kernel and
+  direct console logs, separate from the dashboard on `tty1` and login on
+  `tty2`. The installer journal is also mirrored to `ttyS0` for the runner's
+  deterministic captured console log.
 - Generated build artifacts belong under `_build/`; VM-test worlds use the
   temporary path reported by `scripts/vmtest-run`.
 
@@ -53,6 +54,16 @@ the runner records missing `/dev/kvm` access as a host capability gap.
 Installer and lifecycle scenarios deliberately mutate only runner-created VM
 disks. Test agents and fixtures are allowed only in instrumented test artifacts
 and are rejected from production release images.
+
+Console validation must inspect the Linux virtual-terminal screen, not just
+the dashboard's saved text snapshot. `console=tty3` routes `/dev/console`;
+the dashboard also uses `TIOCL_SETKMSGREDIRECT` to keep kernel messages off
+the foreground terminal. `TestKernelLogRouting` exercises this against a real
+kernel: compile `cmd/katl-console` tests with `CGO_ENABLED=0 go test -c`, copy
+the test binary into a throwaway VM, stop `katl-console`, select `tty1`, and
+run `KATL_TEST_KERNEL_LOG_ROUTING=1 ./katl-console.test -test.run=TestKernelLogRouting`.
+Restart the dashboard afterwards. Include framebuffer resizing, log traffic,
+terminal switching, and reboot in the persistent VM journey.
 
 ## Required For The Current Loop
 

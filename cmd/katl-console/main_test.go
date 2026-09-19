@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -14,6 +15,63 @@ import (
 	"github.com/katl-dev/katl/internal/operatorconsole"
 	"golang.org/x/sys/unix"
 )
+
+// Run inside a throwaway VM with katl-console stopped and tty1 foregrounded.
+func TestKernelLogRouting(t *testing.T) {
+	if os.Getenv("KATL_TEST_KERNEL_LOG_ROUTING") != "1" {
+		t.Skip("requires a throwaway Linux VM virtual console")
+	}
+	active, err := os.ReadFile("/sys/class/tty/tty0/active")
+	if err != nil || strings.TrimSpace(string(active)) != "tty1" {
+		t.Fatalf("foreground console = %q, err=%v; select tty1 before this test", active, err)
+	}
+	tty, err := os.OpenFile("/dev/tty1", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tty.Close()
+
+	restore, err := redirectKernelLogs(tty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore()
+	before, err := os.ReadFile("/dev/vcs1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kmsg, err := os.OpenFile("/dev/kmsg", os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer kmsg.Close()
+	marker := fmt.Sprintf("katl-console-routing-%d", time.Now().UnixNano())
+	if _, err := fmt.Fprintf(kmsg, "<0>%s\n", marker); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		logs, err := os.ReadFile("/dev/vcs3")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(logs, []byte(marker)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("kernel message did not reach the log console")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	after, err := os.ReadFile("/dev/vcs1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("kernel message changed the dashboard console")
+	}
+}
 
 func TestDisplayTermiosDisablesTerminalSignals(t *testing.T) {
 	original := unix.Termios{

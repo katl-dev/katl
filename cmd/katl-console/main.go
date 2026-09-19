@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/katl-dev/katl/internal/operatorconsole"
 	"golang.org/x/sys/unix"
@@ -69,6 +70,11 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("configure dashboard tty %s: %w", *ttyPath, err)
 	}
 	defer restoreTTY()
+	restoreKernelLogs, err := redirectKernelLogs(tty)
+	if err != nil {
+		return fmt.Errorf("route kernel logs away from dashboard: %w", err)
+	}
+	defer restoreKernelLogs()
 	_, _ = io.WriteString(tty, "\x1b[?25l\x1b[2J")
 	defer io.WriteString(tty, "\x1b[?25h\n")
 
@@ -117,6 +123,36 @@ func configureDisplayTTY(tty *os.File) (func(), error) {
 func displayTermios(termios unix.Termios) unix.Termios {
 	termios.Lflag &^= unix.ISIG
 	return termios
+}
+
+func redirectKernelLogs(tty *os.File) (func(), error) {
+	// console=tty3 routes /dev/console, but printk follows the foreground VT
+	// unless explicitly redirected. Allocate the log VT before selecting it.
+	logs, err := os.OpenFile("/dev/tty3", os.O_WRONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer logs.Close()
+	ioctl := func(request *[2]byte) error {
+		_, _, errno := unix.Syscall(unix.SYS_IOCTL, tty.Fd(), unix.TIOCLINUX, uintptr(unsafe.Pointer(request)))
+		if errno != 0 {
+			return errno
+		}
+		return nil
+	}
+	request := [2]byte{17} // TIOCL_GETKMSGREDIRECT writes the current VT into byte 0.
+	if err := ioctl(&request); err != nil {
+		return nil, err
+	}
+	previous := request[0]
+	request = [2]byte{11, 3} // TIOCL_SETKMSGREDIRECT, tty3.
+	if err := ioctl(&request); err != nil {
+		return nil, err
+	}
+	return func() {
+		request[1] = previous
+		_ = ioctl(&request)
+	}, nil
 }
 
 func render(tty *os.File, snapshotPath string, snapshot *operatorconsole.Snapshot, journal operatorconsole.Journal, dashboard, plainDashboard *operatorconsole.Renderer) error {
