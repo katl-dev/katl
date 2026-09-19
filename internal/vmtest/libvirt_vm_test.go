@@ -12,6 +12,33 @@ import (
 	"time"
 )
 
+func TestDisconnectedInterface(t *testing.T) {
+	result, config := vmFixture(t)
+	config.Network.ExtraDisconnected = true
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var domain struct {
+		Interfaces []struct {
+			Link struct {
+				State string `xml:"state,attr"`
+			} `xml:"link"`
+		} `xml:"devices>interface"`
+	}
+	if err := xml.Unmarshal([]byte(plan.DomainXML), &domain); err != nil {
+		t.Fatal(err)
+	}
+	if len(domain.Interfaces) != 2 || domain.Interfaces[0].Link.State == "down" || domain.Interfaces[1].Link.State != "down" {
+		t.Fatalf("expected one connected and one disconnected interface: %+v", domain.Interfaces)
+	}
+}
+
 func TestVMPlan(t *testing.T) {
 	result, config := vmFixture(t)
 	config.Network.MAC = "52:54:ab:cd:01:02"

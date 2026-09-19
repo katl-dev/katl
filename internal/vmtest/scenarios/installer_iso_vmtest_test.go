@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -94,8 +95,20 @@ func TestInstallerPXEBootSmoke(t *testing.T) {
 				"systemd.log_target=console",
 				"loglevel=6",
 			},
-			Expect: "Katl installer ready",
+			Expect: "katlos-install progress: waiting for configuration at",
 			VM: vmtest.VMConfig{
+				Network: vmtest.VMNetworkConfig{ExtraDisconnected: true},
+				SerialHooks: []vmtest.SerialHook{{
+					Name:   "network-online",
+					Signal: "katlos-install progress: waiting for configuration at",
+					Run: func(_ context.Context, event vmtest.SerialHookEvent) error {
+						// Handoff can start after wait-online fails, so readiness alone is insufficient.
+						if !regexp.MustCompile(`Finished [^\r\n]* - Wait for Network to be Online\.`).MatchString(event.SerialText) {
+							return fmt.Errorf("installer reached handoff without a successful network-online check")
+						}
+						return nil
+					},
+				}},
 				KVM:     options.KVM,
 				RAMMiB:  2048,
 				CPUs:    2,
