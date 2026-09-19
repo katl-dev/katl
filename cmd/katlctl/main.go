@@ -2991,6 +2991,9 @@ func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
 func managementAgentConnector(clusterName string) cluster.TCPAgentConnector {
 	return cluster.TCPAgentConnector{CredentialsForNode: func(node inventory.PlannedNode) (managementidentity.ClientCredentials, error) {
 		if strings.TrimSpace(clusterName) != "" {
+			if target, ok := enrolledTarget("", "", clusterName, node.Name); ok && target.credentials != nil {
+				return *target.credentials, nil
+			}
 			return managementClientForCluster(clusterName)
 		}
 		identity, err := managementDialForEndpoint(cluster.AgentEndpoint(node.Address, "9443"))

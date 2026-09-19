@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -97,6 +98,16 @@ func TestClusterApplySelectsConfiguredTrust(t *testing.T) {
 	if err := run(ctx, []string{"cluster", "apply", "--config", configPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("apply: %v\n%s", err, stderr.String())
 	}
+	connector := managementAgentConnector("lab")
+	connection, err := connector.Connect(ctx, inventory.PlannedNode{Name: "cp-1", Address: listener.Addr().String(), Access: inventory.Access{Method: "agent"}})
+	if err != nil {
+		t.Fatalf("join connection: %v", err)
+	}
+	defer connection.Close()
+	if _, err := connection.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{}); err != nil {
+		t.Fatalf("join authentication: %v", err)
+	}
+
 	var applied []string
 	for _, request := range client.submitRequests {
 		if request.DryRun {
