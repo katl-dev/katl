@@ -90,7 +90,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		"systemctl stop kubelet.service",
 		"systemd-sysext refresh",
 		"systemctl restart kubelet.service",
-		"--server https://10.0.0.1:6443 -n kube-system wait --for=condition=Ready --timeout=5m pod/etcd-cp-1 pod/kube-apiserver-cp-1 pod/kube-controller-manager-cp-1 pod/kube-scheduler-cp-1",
+		"pod/etcd-cp-1 pod/kube-apiserver-cp-1 pod/kube-controller-manager-cp-1 pod/kube-scheduler-cp-1",
 		"--server https://10.0.0.1:6443 wait --for=condition=Ready --timeout=5m node/cp-1",
 		"systemctl start "+endpointAdvertiserUnit,
 	)

@@ -664,7 +664,7 @@ func TestBootstrapReadinessReloadsSystemdAfterExtensionRefresh(t *testing.T) {
 	)
 }
 
-func TestPostKubeadmHealthRetriesControlPlaneKubectl(t *testing.T) {
+func TestControlPlaneHealthOperations(t *testing.T) {
 	tests := map[string]bool{
 		bootstrapplan.OperationKindInit:             true,
 		bootstrapplan.OperationKindJoinControlPlane: true,
@@ -672,8 +672,8 @@ func TestPostKubeadmHealthRetriesControlPlaneKubectl(t *testing.T) {
 		bootstrapplan.OperationKindJoinWorker:       false,
 	}
 	for kind, want := range tests {
-		if got := retryPostKubeadmKubectl(kind); got != want {
-			t.Errorf("retryPostKubeadmKubectl(%q) = %t, want %t", kind, got, want)
+		if got := requiresLocalControlPlaneHealth(kind); got != want {
+			t.Errorf("requiresLocalControlPlaneHealth(%q) = %t, want %t", kind, got, want)
 		}
 	}
 }

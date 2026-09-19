@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -927,27 +926,20 @@ func (e *Executor) activateKubernetesCandidate(ctx context.Context, current, can
 func (e *Executor) checkKubeadmUpgradeHealth(ctx context.Context, request operation.KubernetesSysextUpdate) error {
 	commands := [][]string{{"systemctl", "is-active", "--quiet", "containerd.service"}, {"systemctl", "is-active", "--quiet", "kubelet.service"}, {"kubelet", "--version"}}
 	if request.UpgradeRole != "worker" {
-		localEndpoint, err := localKubeAPIServerEndpoint(e.Root)
-		if err != nil {
-			return fmt.Errorf("identify local Kubernetes API endpoint: %w", err)
-		}
 		nodeName, err := kubernetesNodeName(e.Root)
 		if err != nil {
 			return fmt.Errorf("identify local Kubernetes node: %w", err)
 		}
-		localAPI := []string{"kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--server", localEndpoint.URL()}
-		commands = append(
-			commands,
-			append(slices.Clone(localAPI), "get", "--raw=/readyz"),
-			append(
-				slices.Clone(localAPI), "-n", "kube-system", "wait", "--for=condition=Ready", "--timeout=5m",
-				"pod/etcd-"+nodeName,
-				"pod/kube-apiserver-"+nodeName,
-				"pod/kube-controller-manager-"+nodeName,
-				"pod/kube-scheduler-"+nodeName,
-			),
-			append(slices.Clone(localAPI), "wait", "--for=condition=Ready", "--timeout=5m", "node/"+nodeName),
-		)
+		health, err := localControlPlaneHealthCommands(e.Root, nodeName, 5*time.Minute)
+		if err != nil {
+			return err
+		}
+		commands = append(commands, health...)
+		endpoint, err := localKubeAPIServerEndpoint(e.Root)
+		if err != nil {
+			return err
+		}
+		commands = append(commands, []string{"/usr/bin/kubectl", "--kubeconfig", rootedRuntimePath(e.Root, "/etc/kubernetes/admin.conf"), "--server", endpoint.URL(), "wait", "--for=condition=Ready", "--timeout=5m", "node/" + nodeName})
 	}
 	for _, argv := range commands {
 		result := e.toolRunner()(ctx, argv, nil)
