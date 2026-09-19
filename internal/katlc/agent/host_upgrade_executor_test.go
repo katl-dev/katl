@@ -104,6 +104,7 @@ func TestExecutorClassifiesHostUpgradeFailureByMutationBoundary(t *testing.T) {
 }
 
 func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
+	const nextVersion = "2026.7.0-local.version-longer-than-a-gpt-partition-label"
 	root := t.TempDir()
 	for _, dir := range []string{"etc", "efi/EFI/Linux", "dev/disk/by-partlabel"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
@@ -125,11 +126,11 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		APIVersion:     generation.APIVersion,
 		Kind:           generation.SpecKind,
 		GenerationID:   "gen0",
-		RuntimeVersion: "2026.7.0-dev.0",
+		RuntimeVersion: "2026.7.0-local.previous-version-longer-than-a-gpt-partition-label",
 		Root: generation.RootSelection{
 			Slot:                  "root-a",
 			PartitionUUID:         "aaaaaaaa-1111-2222-3333-444444444444",
-			RuntimeVersion:        "2026.7.0-dev.0",
+			RuntimeVersion:        "2026.7.0-local.previous-version-longer-than-a-gpt-partition-label",
 			RuntimeInterface:      "katl-runtime-1",
 			Architecture:          "x86_64",
 			RuntimeArtifactSHA256: strings.Repeat("a", 64),
@@ -210,7 +211,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		Root:           payloadRoot,
 		ImageSHA256:    strings.Repeat("e", 64),
 		ImageSizeBytes: 4096,
-		Index:          katlosimage.Index{ImageRole: katlosimage.RoleUpgrade, Version: "2026.7.0-dev.1", Architecture: "x86_64", RuntimeInterface: "katl-runtime-1"},
+		Index:          katlosimage.Index{ImageRole: katlosimage.RoleUpgrade, Version: nextVersion, Architecture: "x86_64", RuntimeInterface: "katl-runtime-1"},
 		Runtime:        katlosimage.Component{Name: "runtime-root", Role: katlosimage.ComponentRuntimeRoot, Path: "components/runtime/root.squashfs", SizeBytes: int64(len(runtimeBytes)), SHA256: testSHA(runtimeBytes), Version: "2026.7.0-dev.1", Architecture: "x86_64"},
 		Boot:           katlosimage.Component{Name: "runtime-uki", Role: katlosimage.ComponentRuntimeUKI, Path: "components/boot/katl.efi", SizeBytes: int64(len(ukiBytes)), SHA256: testSHA(ukiBytes), Version: "2026.7.0-dev.1", Architecture: "x86_64"},
 		EndpointAdvertiser: katlosimage.Component{
@@ -255,6 +256,14 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	executor.SetBootOneshot = func(_ context.Context, _ string, entry string) error { oneshoot = entry; return nil }
 	var toolCalls []string
 	var stagedRoot []byte
+	activeUKI := filepath.Join(root, "efi/EFI/Linux/katl_gen0.efi")
+	if err := os.WriteFile(activeUKI, []byte("active rollback kernel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inactiveUKI := filepath.Join(root, "efi/EFI/Linux/katl-root-b-1.efi")
+	if err := os.WriteFile(inactiveUKI, []byte("stale inactive kernel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		toolCalls = append(toolCalls, strings.Join(argv, " "))
 		switch filepath.Base(argv[0]) {
@@ -283,11 +292,22 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 				return ToolResult{Stdout: []byte("vda 3\n")}
 			}
 			return ToolResult{Err: os.ErrNotExist, ExitStatus: 1}
-		case "sfdisk", "partx":
+		case "sfdisk":
+			if len(argv[len(argv)-1]) > 36 {
+				return ToolResult{Err: errors.New("GPT label exceeds 36 characters"), ExitStatus: 1}
+			}
+			return ToolResult{}
+		case "partx":
 			return ToolResult{}
 		case "systemd-sysupdate":
+			if _, err := os.Stat(inactiveUKI); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("inactive UKI still looks installed to sysupdate: %v", err)
+			}
 			stagedRoot = append(append([]byte(nil), runtimeBytes...), make([]byte, 32)...)
-			if err := os.WriteFile(filepath.Join(root, "efi/EFI/Linux/katl_2026.7.0-dev.1.efi"), ukiBytes, 0o600); err != nil {
+			if argv[len(argv)-1] != "1" {
+				t.Fatalf("sysupdate selected release version instead of local candidate: %v", argv)
+			}
+			if err := os.WriteFile(filepath.Join(root, "efi/EFI/Linux/katl-root-b-1.efi"), ukiBytes, 0o600); err != nil {
 				return ToolResult{Err: err, ExitStatus: -1}
 			}
 			return ToolResult{}
@@ -327,6 +347,9 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if oneshoot != "loader/entries/katl-gen1.conf" {
 		t.Fatalf("oneshot entry = %q", oneshoot)
 	}
+	if got, err := os.ReadFile(activeUKI); err != nil || string(got) != "active rollback kernel" {
+		t.Fatalf("active rollback kernel changed: %q, %v", got, err)
+	}
 	gotRoot, err := os.ReadFile(inactiveDevice)
 	if err != nil || !bytes.Equal(gotRoot[:len(runtimeBytes)], runtimeBytes) {
 		t.Fatalf("staged root = %q, err = %v", gotRoot, err)
@@ -337,6 +360,14 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	}
 	if spec.Root.Slot != "root-b" || spec.Root.PartitionUUID != "bbbbbbbb-1111-2222-3333-444444444444" || status.BootState != generation.BootStateTrying {
 		t.Fatalf("candidate generation = spec %+v status %+v", spec, status)
+	}
+	if spec.RuntimeVersion != nextVersion || spec.Root.RuntimeVersion != nextVersion {
+		t.Fatalf("full release version was not preserved: %+v", spec)
+	}
+	for _, call := range toolCalls {
+		if strings.Contains(call, "sfdisk --part-label") && (strings.Contains(call, nextVersion) || strings.Contains(call, previous.RuntimeVersion)) {
+			t.Fatalf("release version leaked into GPT label: %s", call)
+		}
 	}
 	if len(spec.Sysexts) != 1 || spec.Sysexts[0].Name != katlosimage.EndpointAdvertiserName || spec.Sysexts[0].Path != "/var/lib/katl/generations/gen1/sysext/endpoint-advertiser.raw" || spec.Sysexts[0].SHA256 != testSHA(nextEndpointAdvertiserBytes) {
 		t.Fatalf("candidate sysexts = %+v, want bundled endpoint advertiser replacement", spec.Sysexts)

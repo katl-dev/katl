@@ -79,7 +79,10 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("inspect Kubernetes node state: %w", err))
 	}
 	candidate := record.HostUpgradeRequest.CandidateGenerationID
-	ukiPath := "/efi/EFI/Linux/katl_" + payload.Index.Version + ".efi"
+	ukiPath := "/efi/EFI/Linux/katl-" + inactiveSlot + "-1.efi"
+	if ukiPath == previousSpec.Boot.UKIPath {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("inactive root slot UKI path is still used by the active generation"))
+	}
 	entry := "loader/entries/katl-" + candidate + ".conf"
 	plan, err := payload.HostUpgradePlan(katlosimage.HostUpgradeRequest{
 		GenerationID:      candidate,
@@ -113,10 +116,10 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return err
 	}
-	if err := e.prepareSysupdateSlots(ctx, slots, previousSpec.RuntimeVersion); err != nil {
+	if err := e.prepareSysupdateSlots(ctx, slots); err != nil {
 		return e.failHostUpgrade(record, "stage-sysupdate-components", err)
 	}
-	if err := e.stageHostUpgrade(ctx, record, payload, slots.InactiveDevice, ukiPath); err != nil {
+	if err := e.stageHostUpgrade(ctx, record, payload, slots.InactiveDevice, inactiveSlot, ukiPath); err != nil {
 		return e.failHostUpgrade(record, "stage-sysupdate-components", err)
 	}
 	if err := katlosimage.StagePreservedAssets(runtimeRoot(e.Root), plan); err != nil {
@@ -239,7 +242,7 @@ func (c hostUpgradeCommands) Run(ctx context.Context, name string, args ...strin
 	return nil
 }
 
-func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload, inactiveDevice, ukiPath string) error {
+func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload, inactiveDevice, inactiveSlot, ukiPath string) error {
 	root := runtimeRoot(e.Root)
 	work := filepath.Join(root, "var/lib/katl/artifacts/host-upgrade", record.OperationID)
 	source := filepath.Join(work, "source")
@@ -250,8 +253,10 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	if err := os.MkdirAll(definitions, 0o700); err != nil {
 		return err
 	}
-	rootName := "katl_" + payload.Index.Version + ".root.squashfs"
-	ukiName := "katl_" + payload.Index.Version + ".efi"
+	// Sysupdate owns this transfer, not Katl's release ordering. The active root
+	// is protected as 0 and the explicitly selected candidate is always 1.
+	rootName := "katl_1.root.squashfs"
+	ukiName := "katl_1.efi"
 	if err := copyUpgradeComponent(payload.ComponentPath(payload.Runtime), filepath.Join(source, rootName)); err != nil {
 		return err
 	}
@@ -261,14 +266,19 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	if err := os.WriteFile(filepath.Join(definitions, "50-katl-root.transfer"), []byte(rootTransferDefinition(source)), 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(definitions, "70-katl-uki.transfer"), []byte(ukiTransferDefinition(source)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(definitions, "70-katl-uki.transfer"), []byte(ukiTransferDefinition(source, inactiveSlot)), 0o600); err != nil {
 		return err
+	}
+	// A previous use of this inactive slot may have left version 1 behind.
+	// Remove only that slot's UKI so sysupdate stages the selected bytes again.
+	if err := os.Remove(filepath.Join(root, strings.TrimPrefix(ukiPath, "/"))); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear inactive slot UKI: %w", err)
 	}
 	argv := []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=" + definitions}
 	if root != "/" {
 		argv = append(argv, "--root="+root)
 	}
-	argv = append(argv, "update", payload.Index.Version)
+	argv = append(argv, "update", "1")
 	result := e.toolRunner()(ctx, argv, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("systemd-sysupdate: %s", toolFailure(result))
@@ -363,12 +373,11 @@ func (e *Executor) partitionIdentity(ctx context.Context, device string) (string
 	return filepath.Join("/dev", fields[0]), fields[1], nil
 }
 
-func (e *Executor) prepareSysupdateSlots(ctx context.Context, slots rootSlots, currentVersion string) error {
-	installedLabel := "katl_" + strings.TrimSpace(currentVersion)
+func (e *Executor) prepareSysupdateSlots(ctx context.Context, slots rootSlots) error {
 	for _, request := range []struct {
 		disk, part, label string
 	}{
-		{slots.ActiveDisk, slots.ActivePart, installedLabel},
+		{slots.ActiveDisk, slots.ActivePart, "katl_0"},
 		{slots.InactiveDisk, slots.InactivePart, "_empty"},
 	} {
 		if _, err := e.toolOutput(ctx, "sfdisk", "--part-label", request.disk, request.part, request.label); err != nil {
@@ -500,7 +509,9 @@ InstancesMax=2
 `, source)
 }
 
-func ukiTransferDefinition(source string) string {
+func ukiTransferDefinition(source, inactiveSlot string) string {
+	// Discovery and vacuum are scoped to the inactive slot, preserving the
+	// active slot's rollback kernel while keeping two slot-owned UKIs.
 	return fmt.Sprintf(`[Transfer]
 ProtectVersion=0
 
@@ -512,8 +523,8 @@ MatchPattern=katl_@v.efi
 [Target]
 Type=regular-file
 Path=/efi/EFI/Linux
-MatchPattern=katl_@v.efi
+MatchPattern=katl-%s-@v.efi
 Mode=0644
 InstancesMax=2
-`, source)
+`, source, inactiveSlot)
 }

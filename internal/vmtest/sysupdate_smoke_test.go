@@ -102,6 +102,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 
 	previousGeneration := currentGenerationFromGuest(t, ctx, guest)
 	previousSpec, _ := generationRecordsFromGuest(t, ctx, guest, previousGeneration)
+	previousUKIDigest := guestFileSHA256(t, ctx, guest, "previous-uki", previousSpec.Boot.UKIPath)
 	stateMarker := "/var/lib/katl/test-artifacts/host-upgrade-state-marker"
 	writeGuestFile(t, ctx, guest, stateMarker, []byte("state-survives-host-upgrade-and-rollback\n"), 0o600)
 	hostKeyPath := "/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key"
@@ -149,6 +150,9 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitGenerationPromotion(t, ctx, guest, candidateGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, candidateSpec)
+	if got := guestFileSHA256(t, ctx, guest, "retained-rollback-uki", previousSpec.Boot.UKIPath); got != previousUKIDigest {
+		t.Fatalf("upgrade changed the previous generation UKI: %s, want %s", got, previousUKIDigest)
+	}
 	assertInstalledSSHReady(t, ctx, guest)
 	repairedHostKeyDigest := guestFileSHA256(t, ctx, guest, "repaired-ssh-host-key", hostKeyPath)
 	if repairedHostKeyDigest == originalHostKeyDigest {
