@@ -276,6 +276,12 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 		paneField{label: "State", value: model.Kubernetes.Label, style: presentationStyle(model.Kubernetes.State)},
 		paneField{label: "Kubelet", value: fallback(snapshot.LiveSoftware.KubernetesVersion, "Not installed")},
 	)
+	if model.Kubernetes.NextAction != "" {
+		kubernetes = append(
+			kubernetes,
+			paneField{label: "Next action", value: model.Kubernetes.NextAction},
+		)
+	}
 	if snapshot.ControlPlane {
 		kubernetes = append(kubernetes, paneField{label: "Control plane", value: fallback(snapshot.ControlPlaneEndpoint, "Local")})
 		for _, pod := range snapshot.ControlPlanePods {
@@ -324,6 +330,9 @@ func appendNetworkPaneFields(fields []paneField, network []NetworkInterface, add
 		}
 		if iface.AdditionalAddresses > 0 {
 			value += "  + " + pluralCount(iface.AdditionalAddresses, "address", "addresses")
+		}
+		if iface.VRF != "" {
+			value += " (VRF: " + iface.VRF + ")"
 		}
 		fields = append(fields, paneField{label: label, value: value})
 	}
@@ -391,26 +400,8 @@ func writeInstallerStatus(content *Viewport, snapshot *Snapshot) {
 }
 
 func writeNetwork(content *Viewport, network []NetworkInterface, additional int) {
-	if len(network) == 0 {
-		writeField(content, "Network", "waiting for an active interface", "")
-		return
-	}
-	for index, iface := range network {
-		label := ""
-		if index == 0 {
-			label = "Network"
-		}
-		value := iface.Name + ": configuring"
-		if len(iface.Addresses) > 0 {
-			value = iface.Name + ": " + strings.Join(iface.Addresses, ", ")
-		}
-		if iface.AdditionalAddresses > 0 {
-			value += "  + " + pluralCount(iface.AdditionalAddresses, "address", "addresses")
-		}
-		writeField(content, label, value, "")
-	}
-	if additional > 0 {
-		writeField(content, "", "+ "+pluralCount(additional, "interface", "interfaces"), styleDim)
+	for _, field := range appendNetworkPaneFields(nil, network, additional) {
+		writeField(content, field.label, field.value, field.style)
 	}
 }
 
@@ -446,10 +437,12 @@ func writeField(viewport *Viewport, label, value string, style Style) {
 		viewport.markTruncated(style)
 		return
 	}
-	if viewport.bounds.Width < 28 && label != "" {
-		labelView := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: 1})
-		labelView.Write(label, WrapOptions{Style: styleDim})
-		viewport.advance(1)
+	if viewport.bounds.Width < 28 {
+		if label != "" {
+			labelView := viewport.sub(Rect{Y: viewport.y, Width: viewport.bounds.Width, Height: 1})
+			labelView.Write(label, WrapOptions{Style: styleDim})
+			viewport.advance(1)
+		}
 		if viewport.rowsRemaining() == 0 {
 			return
 		}
@@ -459,9 +452,8 @@ func writeField(viewport *Viewport, label, value string, style Style) {
 		return
 	}
 
-	labelWidth := 0
+	labelWidth := min(fieldWidth, max(viewport.bounds.Width-1, 0))
 	if label != "" {
-		labelWidth = min(fieldWidth, max(viewport.bounds.Width-1, 0))
 		labelView := viewport.sub(Rect{Y: viewport.y, Width: labelWidth, Height: 1})
 		labelView.Write(label+":", WrapOptions{})
 	}
