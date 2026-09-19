@@ -49,22 +49,34 @@ func TestRuntimeBootInputsArePublishedBeforeInitrdPackaging(t *testing.T) {
 	}
 }
 
-func TestRuntimeKubernetesSysctlsSupportCNIs(t *testing.T) {
-	config, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "runtime", "mkosi.extra", "usr", "lib", "sysctl.d", "50-katl-kubernetes.conf"))
+func TestRuntimeSysctlOwnership(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join(repoRoot(t), "mkosi.profiles", "runtime", "mkosi.extra", "usr", "lib", "sysctl.d", "*.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(config)
-	for _, want := range []string{
-		"net.ipv4.ip_forward=1",
-		"net.ipv4.conf.all.rp_filter=0",
-		"net.ipv4.conf.default.rp_filter=0",
-		"net.ipv4.conf.lxc*.rp_filter=0",
-		"net.ipv4.conf.cilium_*.rp_filter=0",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("runtime Kubernetes sysctls missing %q", want)
+
+	forwarding := false
+	for _, path := range paths {
+		config, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
 		}
+		for line := range strings.SplitSeq(string(config), "\n") {
+			key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if !ok || strings.HasPrefix(key, "#") {
+				continue
+			}
+			key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+			if key == "net.ipv4.ip_forward" {
+				forwarding = value == "1"
+			}
+			if strings.HasSuffix(key, ".rp_filter") {
+				t.Errorf("runtime sets CNI-owned reverse-path filtering: %s", key)
+			}
+		}
+	}
+	if !forwarding {
+		t.Fatal("runtime must enable Kubernetes IPv4 forwarding")
 	}
 }
 

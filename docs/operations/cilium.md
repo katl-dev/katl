@@ -17,14 +17,43 @@ privileged Kubernetes workload may change live kernel state through
 `/proc/sys`, but it must not persist configuration by writing directly beneath
 `/etc`.
 
-KatlOS already supplies the Kubernetes node forwarding and reverse-path-filter
-defaults needed by the Cilium datapath. Cilium nevertheless enables an
-`apply-sysctl-overwrites` init container by default. That container attempts to
-create `/etc/sysctl.d/99-zzz-override_cilium.conf`, which is redundant on
-KatlOS and cannot write to the immutable `/etc`.
+KatlOS enables Kubernetes IP forwarding. Reverse-path filtering depends on the
+CNI datapath and routing topology, so Katl does not override the distribution's
+filtering policy. Cilium-specific filtering settings belong in the cluster's
+retained host configuration.
 
-Disable that init container with Cilium's supported `sysctlfix.enabled` Helm
-value. Do not make `/etc` or `/etc/sysctl.d` writable to accommodate it.
+## Configure Cilium Host Settings
+
+Copy the [example sysctl file](../examples/cilium/90-cilium.conf) next to your
+ClusterConfig and include it in the existing defaults:
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      fileSets:
+        cilium:
+          files:
+            - path: /etc/sysctl.d/90-cilium.conf
+              source: 90-cilium.conf
+```
+
+The example disables reverse-path filtering for the supported Cilium journey,
+including explicit `lxc*` and `cilium_*` interface rules. Those interface rules
+prevent distribution wildcard defaults from being reapplied when Cilium creates
+new links. This is an opt-in Cilium configuration, not a requirement imposed on
+other CNIs.
+
+Include it before installing nodes. For existing nodes, apply the complete
+ClusterConfig with `katlctl cluster apply --config cluster.yaml` and follow the
+reported reboot requirement: wildcard interface rules are staged for next boot.
+Verify the effective settings below after the reboot and after Cilium creates
+its interfaces.
+
+Cilium's default `apply-sysctl-overwrites` init container tries to write
+`/etc/sysctl.d/99-zzz-override_cilium.conf`, but Katl owns immutable `/etc`.
+Disable that writer with `sysctlfix.enabled=false` after declaring the retained
+host settings above. Do not make `/etc` writable to accommodate it.
 
 ## Install Cilium
 
