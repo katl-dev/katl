@@ -177,6 +177,22 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 	return nodeOverlay
 }
 
+// ValidateInlineKubeadmConfig uses the same typed input and planning rules as apply.
+func ValidateInlineKubeadmConfig(name string, reader io.Reader) error {
+	decoder := yaml.NewDecoder(reader)
+	decoder.KnownFields(true)
+	var input inlineKubeadmConfig
+	if err := decoder.Decode(&input); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("inline kubeadm config must contain one YAML document")
+	}
+	_, _, err := mergeInlineKubeadmConfigs(nil, map[string]inlineKubeadmConfig{name: input})
+	return err
+}
+
 func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline map[string]inlineKubeadmConfig) (map[string]kubeadmconfig.Plan, map[string]struct{}, error) {
 	if len(inline) == 0 {
 		return installed, nil, nil
@@ -204,6 +220,13 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 		}
 		sort.Strings(patchNames)
 		for _, patchName := range patchNames {
+			// Validate before joining: cleaning could disguise a path outside patches.
+			if patchName == "." || patchName == ".." || filepath.IsAbs(patchName) || filepath.Clean(patchName) != patchName || strings.HasPrefix(patchName, "../") || strings.ContainsRune(patchName, '\x00') {
+				return nil, nil, fmt.Errorf("spec.kubeadmConfigs.%s.patches: %q must be a normalized relative path within patches", name, patchName)
+			}
+			if strings.TrimSpace(input.Patches[patchName]) == "" {
+				return nil, nil, fmt.Errorf("spec.kubeadmConfigs.%s.patches: %q must contain kubeadm patch YAML", name, patchName)
+			}
 			files = append(files, kubeadmconfig.File{
 				RenderPath: filepath.ToSlash(filepath.Join("/etc/katl/kubeadm", name, "patches", patchName)),
 				Content:    []byte(input.Patches[patchName]),

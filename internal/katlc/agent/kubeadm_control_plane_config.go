@@ -192,7 +192,7 @@ func (s *Server) validateKubeadmControlPlaneConfigState(req *agentapi.SubmitOper
 	if strings.TrimSpace(node.Kubeadm.ConfigRef) != body.ConfigName {
 		return body, fmt.Errorf("active generation does not select kubeadm config %q", body.ConfigName)
 	}
-	if node.Kubeadm.NodeLocalKubelet != body.NodeLocalKubelet {
+	if body.Component == "kubelet" && node.Kubeadm.NodeLocalKubelet != body.NodeLocalKubelet {
 		return body, fmt.Errorf("active generation node-local kubelet mode does not match the request")
 	}
 	applyStatusPath, err := generation.ConfigApplyStatusPath(s.Root, body.DesiredGenerationID)
