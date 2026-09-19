@@ -93,7 +93,6 @@ func (render *Renderer) Render(snapshot *Snapshot, journal Journal) []byte {
 
 func (render *Renderer) paintCompact(snapshot *Snapshot) {
 	content := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: max(render.frame.Height-1, 0)})
-	content.Write("KatlOS", WrapOptions{Style: styleTitle, WordWrap: true})
 	writeCompactAlerts(&content, activeAlerts(snapshot))
 	presentation := presentInstaller(snapshot)
 	if snapshot.Mode == ModeRuntime {
@@ -108,21 +107,17 @@ func (render *Renderer) paintCompact(snapshot *Snapshot) {
 }
 
 func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
-	title := "KatlOS"
-	if snapshot.Mode == ModeInstaller {
-		title += " Installer"
-	}
-	titleViewport := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: 2})
-	writeHeading(&titleViewport, title)
+	top := NewViewport(&render.frame, Rect{Width: render.frame.Width, Height: 1})
+	writeRule(&top)
 
-	contentRect := Rect{Y: 2, Width: render.frame.Width, Height: render.frame.Height - 3}
+	contentRect := Rect{Y: 1, Width: render.frame.Width, Height: render.frame.Height - 2}
 	alerts := activeAlerts(snapshot)
 	reservedAlerts := min(measureAlertRows(contentRect.Width, alerts), max(contentRect.Height-1, 0))
 	normal := NewViewport(&render.frame, Rect{Y: contentRect.Y, Width: contentRect.Width, Height: contentRect.Height - reservedAlerts})
 	if snapshot.Mode == ModeRuntime {
 		render.writeRuntimeStatus(&normal, snapshot)
 		if normal.bounds.Width >= wideLayoutWidth {
-			render.frame.setGlyph((normal.bounds.Width-1)/2, 1, "┬", 1, styleDim)
+			render.frame.setGlyph((normal.bounds.Width-1)/2, 0, "┬", 1, styleDim)
 		}
 	} else {
 		writeInstallerStatus(&normal, snapshot)
@@ -142,11 +137,21 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 	content := NewViewport(&render.frame, contentRect)
 	content.advance(normal.rowsUsed())
 	writeAlerts(&content, alerts)
+	dividerStart := content.y
 	if content.rowsRemaining() > 1 {
 		content.advance(1)
 	}
 	if content.rowsRemaining() > 0 {
+		headingStart := content.y
 		writeHeading(&content, "Journal")
+		if snapshot.Mode == ModeRuntime && content.bounds.Width >= wideLayoutWidth && content.y-headingStart == 2 {
+			dividerX := (content.bounds.Width - 1) / 2
+			// Extend through the gap and heading, never through full-width alerts.
+			for row := dividerStart; row < content.y-1; row++ {
+				render.frame.setGlyph(dividerX, content.bounds.Y+row, "│", 1, styleDim)
+			}
+			render.frame.setGlyph(dividerX, content.bounds.Y+content.y-1, "┴", 1, styleDim)
+		}
 	}
 	if content.rowsRemaining() > 0 {
 		journalRows := content.rowsRemaining() - 1
@@ -292,10 +297,6 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 	start := content.y
 	dividerX := (content.bounds.Width - 1) / 2
 	paneHeight := content.rowsRemaining()
-	bottomRule := paneHeight >= 3
-	if bottomRule {
-		paneHeight--
-	}
 	left := content.sub(Rect{Y: start, Width: dividerX, Height: paneHeight})
 	right := content.sub(Rect{X: dividerX + 1, Y: start, Width: content.bounds.Width - dividerX - 1, Height: paneHeight})
 	writePane(&left, "Node", host)
@@ -310,10 +311,6 @@ func (render *Renderer) writeRuntimeStatus(content *Viewport, snapshot *Snapshot
 			glyph = "┼"
 		}
 		render.frame.setGlyph(content.bounds.X+dividerX, content.bounds.Y+start+offset, glyph, 1, styleDim)
-	}
-	if bottomRule {
-		writeRule(content)
-		render.frame.setGlyph(content.bounds.X+dividerX, content.bounds.Y+start+used, "┴", 1, styleDim)
 	}
 }
 
