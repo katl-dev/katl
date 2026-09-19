@@ -1281,6 +1281,15 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 	if strings.TrimSpace(record.CandidateGenerationID) == "" {
 		return out
 	}
+	// The receipt records what remained at operation completion. Generation
+	// health owns the later boot result, including after it is superseded.
+	if out.BootHealthPending && record.Terminal && record.Result == operation.ResultSucceeded {
+		_, state, err := generation.ReadGeneration(s.Root, record.CandidateGenerationID)
+		if err == nil && generation.IsKnownGood(state) && state.CommittedByOperation == record.OperationID {
+			out.BootHealthPending = false
+			out.NextAction = "boot health completed; continue managing the node through its active generation"
+		}
+	}
 	statusPath, err := generation.ConfigApplyStatusPath(s.Root, record.CandidateGenerationID)
 	if err != nil {
 		return out

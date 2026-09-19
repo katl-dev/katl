@@ -23,7 +23,9 @@ Kubernetes operations own kubeadm mutation and its execution history. A
 validated generation carries its immutable upgrade selection and durable health
 record bound to the committing operation. Boot activation validates that record;
 it does not reopen the operation journal. Retaining an operation receipt is not
-a prerequisite for booting a healthy generation.
+a prerequisite for booting a healthy generation. Operation status also derives
+completed boot health from the generation, so a stale pending flag in a receipt
+cannot request another boot after a healthy generation has been superseded.
 
 Node identity lives in `internal/nodeidentity` and writable node state, outside
 generation selection. Generic kernel command-line and persisted-record helpers
