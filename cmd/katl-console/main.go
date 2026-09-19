@@ -75,6 +75,12 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("route kernel logs away from dashboard: %w", err)
 	}
 	defer restoreKernelLogs()
+	// Linux VTs use programmable RGB palette slots, not true-colour cells.
+	// Change only this dashboard VT; reset it when releasing ownership.
+	defer io.WriteString(tty, "\x1b]R\x1b[0m")
+	if _, err := io.WriteString(tty, mochaPalette); err != nil {
+		return fmt.Errorf("set dashboard palette: %w", err)
+	}
 	_, _ = io.WriteString(tty, "\x1b[?25l\x1b[2J")
 	defer io.WriteString(tty, "\x1b[?25h\n")
 
@@ -104,6 +110,25 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 }
+
+// Catppuccin Mocha: https://catppuccin.com/palette/.
+// Normal and bright status colours share the same pastel RGB values.
+const mochaPalette = "\x1b]P01e1e2e" + // base
+	"\x1b]P1f38ba8" + // red
+	"\x1b]P2a6e3a1" + // green
+	"\x1b]P3f9e2af" + // yellow
+	"\x1b]P489b4fa" + // blue
+	"\x1b]P5cba6f7" + // mauve
+	"\x1b]P694e2d5" + // teal
+	"\x1b]P7cdd6f4" + // text
+	"\x1b]P8a6adc8" + // subtext0: readable muted labels
+	"\x1b]P9f38ba8" +
+	"\x1b]PAa6e3a1" +
+	"\x1b]PBf9e2af" +
+	"\x1b]PC89b4fa" +
+	"\x1b]PDcba6f7" +
+	"\x1b]PE94e2d5" +
+	"\x1b]PFcdd6f4"
 
 func configureDisplayTTY(tty *os.File) (func(), error) {
 	fd := int(tty.Fd())
