@@ -6,17 +6,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/confext"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
-func TestMaterializeInstallRecordUsesCompiledNativeFiles(t *testing.T) {
+func TestRenderInstallGenerationUsesCompiledNativeFiles(t *testing.T) {
 	installManifest, err := manifest.Decode(strings.NewReader(validInstallManifestForRecord()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := MaterializeInstallRecord(InstallRecordRequest{
+	result, err := renderInstallGeneration(installGenerationRequest{
 		TargetRoot: t.TempDir(),
 		Manifest:   installManifest,
 		NativeEtcFiles: []confext.NativeEtcFile{{
@@ -42,12 +42,12 @@ func TestMaterializeInstallRecordUsesCompiledNativeFiles(t *testing.T) {
 	}
 }
 
-func TestMaterializeInstallRecordIncludesExtraDiskMount(t *testing.T) {
+func TestRenderInstallGenerationIncludesExtraDiskMount(t *testing.T) {
 	installManifest, err := manifest.Decode(strings.NewReader(validInstallManifestForRecord()))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	result, err := MaterializeInstallRecord(InstallRecordRequest{
+	result, err := renderInstallGeneration(installGenerationRequest{
 		TargetRoot: t.TempDir(),
 		Manifest:   installManifest,
 		ExtraMounts: []generation.ExtraMountRequest{{
@@ -59,7 +59,7 @@ func TestMaterializeInstallRecordIncludesExtraDiskMount(t *testing.T) {
 		Chown:  func(string, int, int) error { return nil },
 	})
 	if err != nil {
-		t.Fatalf("MaterializeInstallRecord() error = %v", err)
+		t.Fatalf("renderInstallGeneration() error = %v", err)
 	}
 	unitPath := filepath.Join(result.Tree.ConfextDir, "etc/systemd/system/var-lib-katl-mnt-data.mount")
 	unit, err := os.ReadFile(unitPath)
@@ -79,23 +79,23 @@ func TestMaterializeInstallRecordIncludesExtraDiskMount(t *testing.T) {
 	}
 }
 
-func TestMaterializeInstallRecordRejectsUncleanGenerationID(t *testing.T) {
+func TestRenderInstallGenerationRejectsUncleanGenerationID(t *testing.T) {
 	installManifest, err := manifest.Decode(strings.NewReader(validInstallManifestForRecord()))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	_, err = MaterializeInstallRecord(InstallRecordRequest{
+	_, err = renderInstallGeneration(installGenerationRequest{
 		TargetRoot: t.TempDir(),
 		Manifest:   installManifest,
 		Record:     *minimalRecord(" 2026.06.04-001"),
 		Chown:      func(string, int, int) error { return nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "must not contain leading or trailing whitespace") {
-		t.Fatalf("MaterializeInstallRecord() error = %v, want generation id whitespace rejection", err)
+		t.Fatalf("renderInstallGeneration() error = %v, want generation id whitespace rejection", err)
 	}
 }
 
-func TestMaterializeInstallRecordRejectsConfextSymlinkEscape(t *testing.T) {
+func TestRenderInstallGenerationRejectsConfextSymlinkEscape(t *testing.T) {
 	installManifest, err := manifest.Decode(strings.NewReader(validInstallManifestForRecord()))
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
@@ -113,14 +113,14 @@ func TestMaterializeInstallRecordRejectsConfextSymlinkEscape(t *testing.T) {
 		t.Fatalf("symlink etc: %v", err)
 	}
 
-	_, err = MaterializeInstallRecord(InstallRecordRequest{
+	_, err = renderInstallGeneration(installGenerationRequest{
 		TargetRoot: targetRoot,
 		Manifest:   installManifest,
 		Record:     *minimalRecord("2026.06.04-001"),
 		Chown:      func(string, int, int) error { return nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "refusing to follow symlink") {
-		t.Fatalf("MaterializeInstallRecord() error = %v, want symlink rejection", err)
+		t.Fatalf("renderInstallGeneration() error = %v, want symlink rejection", err)
 	}
 	if _, err := os.Stat(filepath.Join(outside, "extension-release.d/extension-release.katl-node")); !os.IsNotExist(err) {
 		t.Fatalf("outside write err = %v, want no escaped extension-release write", err)

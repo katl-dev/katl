@@ -1,4 +1,4 @@
-package generation
+package nodeidentity
 
 import (
 	"bytes"
@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
@@ -34,7 +33,7 @@ type Enrollment struct {
 type IdentityRequest struct {
 	AuthorizedKeys    []string
 	InventoryNodeName string
-	Management        manifest.ManagementIdentity
+	Management        managementidentity.NodeCredentials
 	Random            io.Reader
 	EnrollmentRandom  io.Reader
 }
@@ -43,7 +42,7 @@ type IdentityAssets struct {
 	MachineID      string
 	Enrollment     Enrollment
 	AuthorizedKeys string
-	Management     manifest.ManagementIdentity
+	Management     managementidentity.NodeCredentials
 }
 
 func RenderSSH(keys []string) (IdentityAssets, error) {
@@ -80,8 +79,8 @@ func WriteIdentity(root string, request IdentityRequest) (IdentityAssets, error)
 	return assets, nil
 }
 
-func WriteManagementIdentity(root, nodeName string, identity manifest.ManagementIdentity) error {
-	if identity.Empty() {
+func WriteManagementIdentity(root, nodeName string, identity managementidentity.NodeCredentials) error {
+	if identity == (managementidentity.NodeCredentials{}) {
 		return fmt.Errorf("management identity is required")
 	}
 	credentials := managementidentity.NodeCredentials{
@@ -140,7 +139,7 @@ func WriteEnrollment(root, nodeName, machineID string, random io.Reader) (Enroll
 	if nodeName == "" {
 		return Enrollment{}, fmt.Errorf("inventory node name is required")
 	}
-	machineID, err := cleanMachineID(machineID)
+	machineID, err := ParseMachineID(machineID)
 	if err != nil {
 		return Enrollment{}, err
 	}
@@ -251,7 +250,7 @@ func decodeEnrollment(data []byte) (Enrollment, error) {
 	if strings.TrimSpace(enrollment.InventoryNodeName) == "" {
 		return Enrollment{}, fmt.Errorf("inventory node name is required")
 	}
-	if _, err := cleanMachineID(enrollment.MachineID); err != nil {
+	if _, err := ParseMachineID(enrollment.MachineID); err != nil {
 		return Enrollment{}, err
 	}
 	return enrollment, nil
@@ -274,7 +273,7 @@ func WriteMachineID(root string, random io.Reader) (string, error) {
 	}
 	path := filepath.Join(root, "var/lib/katl/identity/machine-id")
 	if data, err := os.ReadFile(path); err == nil {
-		machineID, err := cleanMachineID(string(data))
+		machineID, err := ParseMachineID(string(data))
 		if err != nil {
 			return "", err
 		}
@@ -335,31 +334,16 @@ func cleanKeys(keys []string) ([]string, error) {
 	return cleaned, nil
 }
 
-type InstallIdentityRequest struct {
-	TargetRoot string
-	BootRoot   string
-	Identity   IdentityRequest
-	Loader     LoaderRequest
-}
-
-type InstallIdentity struct {
-	Identity  IdentityAssets
-	EntryPath string
-}
-
-func WriteInstallIdentity(request InstallIdentityRequest) (InstallIdentity, error) {
-	if strings.TrimSpace(request.BootRoot) == "" {
-		return InstallIdentity{}, fmt.Errorf("boot root is required")
+func ParseMachineID(machineID string) (string, error) {
+	machineID = strings.TrimSpace(machineID)
+	if len(machineID) != 32 {
+		return "", fmt.Errorf("machine id must be 32 lowercase hex characters")
 	}
-	identity, err := WriteIdentity(request.TargetRoot, request.Identity)
-	if err != nil {
-		return InstallIdentity{}, err
+	if machineID != strings.ToLower(machineID) {
+		return "", fmt.Errorf("machine id must be lowercase hex")
 	}
-	loader := request.Loader
-	loader.MachineID = identity.MachineID
-	entryPath, err := WriteEntry(request.BootRoot, loader)
-	if err != nil {
-		return InstallIdentity{}, err
+	if _, err := hex.DecodeString(machineID); err != nil {
+		return "", fmt.Errorf("machine id is invalid: %w", err)
 	}
-	return InstallIdentity{Identity: identity, EntryPath: entryPath}, nil
+	return machineID, nil
 }

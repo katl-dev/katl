@@ -1,4 +1,4 @@
-package generation
+package nodeidentity
 
 import (
 	"bytes"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
@@ -81,7 +80,10 @@ func TestWriteIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteIdentity() error = %v", err)
 	}
-	assertFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), assets.MachineID+"\n")
+	data, err := os.ReadFile(filepath.Join(root, "var/lib/katl/identity/machine-id"))
+	if err != nil || string(data) != assets.MachineID+"\n" {
+		t.Fatalf("machine identity = %q, error = %v", data, err)
+	}
 	if assets.Enrollment.InventoryNodeName != "cp-1" || assets.Enrollment.MachineID != assets.MachineID || assets.Enrollment.ID != "66656463626139383736353433323130" {
 		t.Fatalf("enrollment = %+v", assets.Enrollment)
 	}
@@ -178,37 +180,7 @@ func TestWriteMachineIDProtectsExisting(t *testing.T) {
 	assertMode(t, path, 0o444)
 }
 
-func TestWriteInstallIdentity(t *testing.T) {
-	targetRoot := t.TempDir()
-	bootRoot := t.TempDir()
-	record := abRecord(t, "2026.06.01-005", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.34.8", time.Time{})
-
-	result, err := WriteInstallIdentity(InstallIdentityRequest{
-		TargetRoot: targetRoot,
-		BootRoot:   bootRoot,
-		Identity: IdentityRequest{
-			AuthorizedKeys:    []string{sshKey},
-			InventoryNodeName: "cp-1",
-			Management:        testManagementIdentity(t, "cp-1"),
-			Random:            bytes.NewReader([]byte("0123456789abcdef")),
-			EnrollmentRandom:  bytes.NewReader([]byte("fedcba9876543210")),
-		},
-		Loader: LoaderRequest{Record: record},
-	})
-	if err != nil {
-		t.Fatalf("WriteInstallIdentity() error = %v", err)
-	}
-	assertFile(t, filepath.Join(targetRoot, "var/lib/katl/identity/machine-id"), result.Identity.MachineID+"\n")
-	data, err := os.ReadFile(result.EntryPath)
-	if err != nil {
-		t.Fatalf("read loader entry: %v", err)
-	}
-	if !strings.Contains(string(data), "systemd.machine_id="+result.Identity.MachineID) {
-		t.Fatalf("loader entry missing generated machine id:\n%s", data)
-	}
-}
-
-func testManagementIdentity(t *testing.T, nodeName string) manifest.ManagementIdentity {
+func testManagementIdentity(t *testing.T, nodeName string) managementidentity.NodeCredentials {
 	t.Helper()
 	now := time.Now().UTC()
 	bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "test", Now: now})
@@ -219,7 +191,7 @@ func testManagementIdentity(t *testing.T, nodeName string) manifest.ManagementId
 	if err != nil {
 		t.Fatal(err)
 	}
-	return manifest.ManagementIdentity{
+	return managementidentity.NodeCredentials{
 		CACertificate: credentials.CACertificate, ServerCertificate: credentials.ServerCertificate, ServerPrivateKey: credentials.ServerPrivateKey,
 	}
 }

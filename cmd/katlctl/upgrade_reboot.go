@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/generation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 

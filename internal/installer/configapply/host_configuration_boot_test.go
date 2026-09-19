@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/katl-dev/katl/internal/installer/generation"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 

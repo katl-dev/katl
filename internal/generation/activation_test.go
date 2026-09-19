@@ -111,8 +111,8 @@ func TestKubernetesUpgradeActivationRecognizesSelectedGate(t *testing.T) {
 		},
 	}
 	err := authorizeKubernetesUpgradeActivation(t.TempDir(), record, ExtensionRef{PayloadVersion: "v1.36.1", SHA256: strings.Repeat("a", 64)})
-	if err == nil || !strings.Contains(err.Error(), "read Kubernetes upgrade operation kubeadm-upgrade-1") {
-		t.Fatalf("authorization error = %v, want operation evidence lookup", err)
+	if err == nil || !strings.Contains(err.Error(), "read Kubernetes upgrade generation") {
+		t.Fatalf("authorization error = %v, want generation evidence lookup", err)
 	}
 }
 
@@ -235,5 +235,52 @@ func assertMissing(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("Lstat(%s) error = %v, want missing", path, err)
+	}
+}
+
+func TestUpgradeActivationUsesGenerationHealth(t *testing.T) {
+	for _, valid := range []bool{false, true} {
+		name := "unvalidated"
+		if valid {
+			name = "healthy without operation history"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			previous := activationRecord(t, root, "source", "source extension")
+			writeActivationGeneration(t, root, previous)
+			next := activationRecord(t, root, "target", "target extension")
+			next.PreviousGenerationID = previous.GenerationID
+			next.KubernetesUpgrade = &KubernetesUpgrade{OperationID: "upgrade", TargetKubeadmAccessMode: "operation-private-sysext", KubeletActivationGate: "operation-released-target-kubelet"}
+			spec := SpecFromRecord(next)
+			status, err := NewGenerationStatus(spec, CommitStateCommitted, BootStatePending, HealthStateUnknown, next.CreatedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status.CommittedByOperation = "upgrade"
+			if valid {
+				status.BootState = BootStateGood
+				status.HealthState = HealthStateHealthy
+			}
+			if err := WriteGeneration(root, spec, status); err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, filepath.Join(root, "run/extensions/existing.raw"), "existing", 0o644)
+
+			_, err = ApplyActivation(root, next)
+			if !valid {
+				if err == nil {
+					t.Fatal("unvalidated upgrade activated")
+				}
+				assertExists(t, filepath.Join(root, "run/extensions/existing.raw"))
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertSymlink(t, filepath.Join(root, "run/extensions/kubernetes.raw"), next.Sysexts[0].Path)
+			if _, err := os.Stat(filepath.Join(root, "var/lib/katl/operations")); !os.IsNotExist(err) {
+				t.Fatalf("activation created operation store: %v", err)
+			}
+		})
 	}
 }

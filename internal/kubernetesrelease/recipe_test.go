@@ -142,7 +142,7 @@ func TestRecipeDigestIgnoresUnrelatedProductAndRuntimeSources(t *testing.T) {
 		"cmd/katl-mkosi-artifacts/main.go",
 		"cmd/katlc/input.go",
 		"internal/installer/configapply/input.go",
-		"internal/installer/generation/input.go",
+		"internal/generation/input.go",
 		"internal/installer/manifest/manifest.go",
 		"internal/operatorconsole/input.go",
 		"internal/installer/sysextcatalog/select.go",

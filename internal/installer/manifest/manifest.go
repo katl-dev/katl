@@ -21,8 +21,8 @@ import (
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
-	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"github.com/katl-dev/katl/internal/installer/networkdconfig"
+	"github.com/katl-dev/katl/internal/kernelcmdline"
 	"gopkg.in/yaml.v3"
 )
 

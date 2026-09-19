@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/artifact"
-	"github.com/katl-dev/katl/internal/installer/generation"
-	"github.com/katl-dev/katl/internal/installer/kernelcmdline"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/kernelcmdline"
 )
 
 const (

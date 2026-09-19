@@ -16,16 +16,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 	"github.com/katl-dev/katl/internal/managementidentity"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 func TestDefaultPlanOrder(t *testing.T) {
@@ -888,9 +888,14 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/spec.json"), `"sysexts": []`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/spec.json"), `"loaderEntryPath": "loader/entries/katl-0.conf"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/manifest.json"), `"hostname": "lab-node-01"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"defaultGenerationID": "0"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"bootedGenerationID": "0"`)
-	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/boot/selection.json"), `"defaultBootEntry": "loader/entries/katl-0.conf"`)
+	selection, err := generation.ReadBootSelection(targetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "0" || selection.TargetBootGenerationID != "0" || selection.BootedGenerationID != "" || !selection.PendingHealthValidation {
+		t.Fatalf("offline boot selection = %+v", selection)
+	}
+
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/cluster/intent.json"), `"payloadVersion": "v1.34.8"`)
 	installedManifestFile, err := os.Open(filepath.Join(targetRoot, "var/lib/katl/install/manifest.json"))
 	if err != nil {

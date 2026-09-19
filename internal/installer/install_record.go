@@ -6,9 +6,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
@@ -18,7 +18,7 @@ const (
 	generatedConfextID   = "katlos"
 )
 
-type InstallRecordRequest struct {
+type installGenerationRequest struct {
 	TargetRoot        string
 	Manifest          manifest.Manifest
 	ExtraMounts       []generation.ExtraMountRequest
@@ -29,19 +29,18 @@ type InstallRecordRequest struct {
 	Chown             func(path string, uid int, gid int) error
 }
 
-type InstallRecordResult struct {
-	Tree         confext.GenerationTree
-	Record       generation.Record
-	MetadataPath string
+type installGenerationResult struct {
+	Tree   confext.GenerationTree
+	Record generation.Record
 }
 
-func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult, error) {
+func renderInstallGeneration(request installGenerationRequest) (installGenerationResult, error) {
 	if strings.TrimSpace(request.TargetRoot) == "" {
-		return InstallRecordResult{}, fmt.Errorf("target root is required")
+		return installGenerationResult{}, fmt.Errorf("target root is required")
 	}
 	generationID, err := cleanInstallGenerationID(request.Record.GenerationID)
 	if err != nil {
-		return InstallRecordResult{}, err
+		return installGenerationResult{}, err
 	}
 
 	files := slices.Clone(request.NativeEtcFiles)
@@ -54,18 +53,18 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 			DeferKubeadmInputs: true,
 		})
 		if err != nil {
-			return InstallRecordResult{}, err
+			return installGenerationResult{}, err
 		}
 	}
 	extraMountFiles, err := extraMountNativeEtcFiles(request.ExtraMounts)
 	if err != nil {
-		return InstallRecordResult{}, err
+		return installGenerationResult{}, err
 	}
 	files = append(files, extraMountFiles...)
 
 	release, err := confextRelease(request.Record)
 	if err != nil {
-		return InstallRecordResult{}, err
+		return installGenerationResult{}, err
 	}
 	generationsRoot := filepath.Join(filepath.Clean(request.TargetRoot), "var/lib/katl/generations")
 	tree, err := confext.RenderGenerationTree(confext.GenerationTreeRequest{
@@ -76,11 +75,11 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 		Chown:           request.Chown,
 	})
 	if err != nil {
-		return InstallRecordResult{}, err
+		return installGenerationResult{}, err
 	}
 	digest, err := generation.DigestDirectory(tree.ConfextDir)
 	if err != nil {
-		return InstallRecordResult{}, err
+		return installGenerationResult{}, err
 	}
 
 	record := request.Record
@@ -97,22 +96,12 @@ func MaterializeInstallRecord(request InstallRecordRequest) (InstallRecordResult
 		},
 	}}
 	if err := generation.ValidateRecord(record); err != nil {
-		return InstallRecordResult{}, err
+		return installGenerationResult{}, err
 	}
-	spec := generation.SpecFromRecord(record)
-	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStatePending, generation.HealthStateUnknown, record.CreatedAt)
-	if err != nil {
-		return InstallRecordResult{}, err
-	}
-	if err := generation.WriteGeneration(request.TargetRoot, spec, status); err != nil {
-		return InstallRecordResult{}, err
-	}
-	metadataPath := filepath.Join(generationsRoot, generationID, "metadata.json")
 
-	return InstallRecordResult{
-		Tree:         tree,
-		Record:       record,
-		MetadataPath: metadataPath,
+	return installGenerationResult{
+		Tree:   tree,
+		Record: record,
 	}, nil
 }
 

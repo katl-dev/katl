@@ -1,6 +1,6 @@
 package generation
 
-import "github.com/katl-dev/katl/internal/installer/kernelcmdline"
+import "github.com/katl-dev/katl/internal/kernelcmdline"
 
 // MergeKernelCommandLine preserves current boot options that are not owned by
 // generation selection while keeping the candidate's controlled values.

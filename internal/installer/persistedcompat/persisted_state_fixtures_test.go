@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/generation"
 	installer "github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/configapply"
-	"github.com/katl-dev/katl/internal/installer/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
-	"github.com/katl-dev/katl/internal/installer/persistedrecord"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 var acceptedRecords = []persistedrecord.Handler{
