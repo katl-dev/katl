@@ -791,15 +791,7 @@ func prepareHandoffRetry(server *handoff.HandoffServer, runDir, endpoint string,
 	if nodeName != "" {
 		command += " --node " + nodeName
 	}
-	var authority *disk.DestructiveVolumeAuthorityError
-	if errors.As(installErr, &authority) {
-		for _, target := range authority.Required {
-			command += " --acknowledge-storage-wipe " + target
-		}
-		status.RetryHint = "inspect the selected disks; if erasing them is intended, run " + command
-	} else {
-		status.RetryHint = "correct the failure, then run " + command
-	}
+	status.RetryHint = "correct the failure, then run " + command
 	writeConsoleInstallStatus(runDir, status, stdout)
 	reportInstallerProgress(stdout, "install failed before disk mutation; waiting for corrected configuration", false)
 	return true

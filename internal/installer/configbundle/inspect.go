@@ -333,7 +333,7 @@ func derivedVolumesAndWarnings(storage SourceStorageLayer, base string) ([]Deriv
 			}
 		}
 		if wipe, set := disk.Wipe.Get(); set && wipe {
-			warnings = append(warnings, ResolutionWarning{Path: path + ".wipe", Message: "overwriting existing data requires operation-level acknowledgement naming this node and volume"})
+			warnings = append(warnings, ResolutionWarning{Path: path + ".wipe", Message: "wipe: true authorizes erasing existing contents when provisioning this volume"})
 		}
 		volumes = append(volumes, derived)
 	}

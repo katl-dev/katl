@@ -16,11 +16,10 @@ import (
 )
 
 type volumeTransitionPlan struct {
-	stopNames                    []string
-	prepare                      []disk.VolumePlan
-	bindings                     []generation.VolumeBinding
-	requiredWipeAcknowledgements []string
-	requiredRebinds              []string
+	stopNames       []string
+	prepare         []disk.VolumePlan
+	bindings        []generation.VolumeBinding
+	requiredRebinds []string
 }
 
 func (p volumeTransitionPlan) validateApplyMode(mode string) error {
@@ -195,20 +194,12 @@ func planVolumeTransition(ctx context.Context, run ToolRunner, current, desired 
 		}
 	}
 
-	requiredWipes := disk.RequiredDestructiveVolumeAcknowledgements(nodeName, prepare)
 	result := volumeTransitionPlan{
 		stopNames: stopNames, prepare: prepare, bindings: sortedVolumeBindings(desiredBindings),
-		requiredWipeAcknowledgements: requiredWipes, requiredRebinds: uniqueSorted(requiredRebinds),
-	}
-	var authorityErrors []error
-	if err := disk.ValidateDestructiveVolumeAcknowledgements(nodeName, prepare, acknowledgements); err != nil {
-		authorityErrors = append(authorityErrors, err)
+		requiredRebinds: uniqueSorted(requiredRebinds),
 	}
 	if missing := missingAuthorities(result.requiredRebinds, rebinds); len(missing) > 0 {
-		authorityErrors = append(authorityErrors, &VolumeRebindAuthorityError{Required: missing, Transitions: rebindTransitions})
-	}
-	if len(authorityErrors) > 0 {
-		return result, errorsJoin(authorityErrors...)
+		return result, &VolumeRebindAuthorityError{Required: missing, Transitions: rebindTransitions}
 	}
 	return result, nil
 }

@@ -296,24 +296,17 @@ therefore cannot redirect an existing mount. If no prior binding exists, an
 ambiguous label blocks planning and must be replaced with a unique `byID`,
 `partUUID`, or `filesystemUUID` selector.
 
-Katl provisions a discovered blank target automatically. If the selected disk
-or partition already has a partition-table, partition, or filesystem
-signature, planning stops before mutation and reports the exact `NODE/VOLUME`
-acknowledgement required. Inspect the selected hardware, then repeat the
-operation with the reported flag, for example:
+`wipe: true` explicitly authorizes erasing the selected disk or partition,
+including existing filesystems and partition metadata, when provisioning the
+volume. No additional acknowledgement is required for installation or
+configuration apply. With `wipe: false` (the default), Katl reuses a compatible
+existing filesystem and refuses changes that require formatting.
 
-```console
-katlctl install apply --config ./cluster.yaml --node worker-1 \
-  --acknowledge-storage-wipe worker-1/data
-
-katlctl cluster apply --config ./cluster.yaml \
-  --acknowledge-storage-wipe worker-1/data
-```
-
-Repeat the flag for multiple affected volumes. The acknowledgement belongs to
-that operation and is never written into ClusterConfig or a node generation;
-changing a selector or encountering existing contents in a later operation
-requires acknowledgement again.
+Choose the target with a unique stable selector. Wipe intent does not bypass
+ambiguous selection, active-device checks, or conflicts with the system disk
+and other volumes. Once provisioned, an unchanged generation-bound volume is
+reused on repeated applies and reboot; retaining `wipe: true` does not erase
+its contents again.
 
 Replacing a generation-bound volume is a separate decision from overwriting
 its contents. Change the selector to the replacement's exact stable identity,
@@ -325,9 +318,8 @@ katlctl node apply --config ./cluster.yaml worker-1 \
 ```
 
 `--rebind-volume` is one-shot operation authority and is not persisted in
-ClusterConfig. If the replacement is non-blank and `wipe: true`, the operation
-also requires the separately reported
-`--acknowledge-storage-wipe worker-1/data`. Removing a volume does not rebind
+ClusterConfig. Set `wipe: true` to authorize formatting the replacement,
+including existing contents. Removing a volume does not rebind
 or erase it: Katl retains an unmounted generation binding for that logical
 name, so re-adding the same exact identity preserves its data and selecting a
 different identity still requires `--rebind-volume`.

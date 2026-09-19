@@ -75,9 +75,10 @@ Supply an operation ID only when selecting a particular historical record.
 Use `--diagnostics verbose` when the normal redacted status does not contain
 enough recovery evidence.
 
-Planning and dry-run flags do not authorize mutation. Destructive wipe and
-storage acknowledgements are operation-specific; they are never persisted as
-blanket consent in `ClusterConfig`.
+Planning and dry-run flags do not authorize mutation. For node volumes,
+`wipe: true` authorizes erasing existing contents during provisioning, without
+an additional acknowledgement. Replacing a generation-bound volume still
+requires the operation-specific `--rebind-volume NODE/VOLUME` flag.
 
 ## Kubernetes identity
 

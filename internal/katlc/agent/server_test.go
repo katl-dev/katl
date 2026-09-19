@@ -1485,7 +1485,7 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 	}
 }
 
-func TestValidateConfigRequiresOperationAuthorityForNonBlankStorage(t *testing.T) {
+func TestValidateConfigHonorsWipe(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
 	server.RunVolumeDiscovery = volumeAuthorityRunner("gpt", nil)
@@ -1517,16 +1517,9 @@ func TestValidateConfigRequiresOperationAuthorityForNonBlankStorage(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Accepted || !reflect.DeepEqual(result.RequiredDestructiveStorageAcknowledgements, []string{"node-a/data"}) || !strings.Contains(result.FailureReason, "--acknowledge-storage-wipe node-a/data") {
-		t.Fatalf("unacknowledged validation result = %+v", result)
-	}
-	request.DestructiveStorageAcknowledgements = []string{"node-a/data"}
-	result, err = server.ValidateConfig(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Accepted || !reflect.DeepEqual(result.RequiredDestructiveStorageAcknowledgements, []string{"node-a/data"}) || result.AcceptedApplyMode != generation.ApplyModeLive {
-		t.Fatalf("acknowledged validation result = %+v", result)
+
+	if !result.Accepted || len(result.RequiredDestructiveStorageAcknowledgements) != 0 || result.AcceptedApplyMode != generation.ApplyModeLive {
+		t.Fatalf("wipe validation result = %+v", result)
 	}
 }
 

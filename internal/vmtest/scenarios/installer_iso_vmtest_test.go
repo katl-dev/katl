@@ -182,7 +182,7 @@ install:
         disk:
           byID: /dev/disk/by-id/virtio-katl-data
       filesystem: xfs
-      wipe: true
+      wipe: false
 `, management, installerISOTestSSHKey))
 	vm := vmtest.VMConfig{
 		KVM:     options.KVM,
@@ -229,15 +229,15 @@ install:
 			if err != nil {
 				return 0, "", err
 			}
-			if observed.State != handoff.HandoffWaiting || observed.InstallStatus.State != installstatus.StateFailedBeforeMutation || observed.InstallStatus.DestructiveMutation || !strings.Contains(observed.InstallStatus.RetryHint, "--acknowledge-storage-wipe iso-node/data") {
-				return 0, "", fmt.Errorf("automatic refusal did not remain available for acknowledged retry: %+v", observed)
+			if observed.State != handoff.HandoffWaiting || observed.InstallStatus.State != installstatus.StateFailedBeforeMutation || observed.InstallStatus.DestructiveMutation || !strings.Contains(observed.InstallStatus.RetryHint, "katlctl install apply") {
+				return 0, "", fmt.Errorf("automatic refusal did not remain available for corrected configuration: %+v", observed)
 			}
 			status, body, err := postInstallerManifest(ctx, endpoint, payload)
 			if err != nil {
 				return 0, "", err
 			}
-			if status != http.StatusPreconditionRequired || !strings.Contains(body, "--acknowledge-storage-wipe iso-node/data") {
-				return 0, "", fmt.Errorf("unacknowledged handoff status=%d body=%s", status, body)
+			if status != http.StatusBadRequest || !strings.Contains(body, "set wipe to true") {
+				return 0, "", fmt.Errorf("preserve handoff status=%d body=%s", status, body)
 			}
 			if dataDisk == "" {
 				return 0, "", fmt.Errorf("non-blank data disk path was not recorded")
@@ -246,14 +246,8 @@ install:
 			if err != nil || strings.TrimSpace(string(filesystem)) != "ext4" {
 				return 0, "", fmt.Errorf("refused handoff changed existing data disk signature: type=%q err=%v", filesystem, err)
 			}
-			acknowledged, err := url.Parse(endpoint)
-			if err != nil {
-				return 0, "", err
-			}
-			query := acknowledged.Query()
-			query.Add("acknowledgeStorageWipe", "iso-node/data")
-			acknowledged.RawQuery = query.Encode()
-			return postInstallerManifest(ctx, acknowledged.String(), payload)
+			corrected := bytes.Replace(payload, []byte("wipe: false"), []byte("wipe: true"), 1)
+			return postInstallerManifest(ctx, endpoint, corrected)
 		},
 	})
 	if err != nil {

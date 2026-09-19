@@ -58,7 +58,8 @@ role change. Enrolled node renames and role changes are refused here.`,
 	f.StringVar(&opts.generationID, "generation", "", "active desired generation ID")
 	f.StringVar(&opts.configName, "config-name", "", "selected KubeadmConfig name")
 	f.StringVar(&opts.rolloutID, "rollout-id", "", "rollout identity")
-	f.StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "authorize overwriting one non-blank node volume as NODE/VOLUME (repeatable)")
+	f.StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "deprecated: wipe intent is configured by wipe: true")
+	_ = f.MarkHidden("acknowledge-storage-wipe")
 	f.StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
 	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id"} {
 		cmd.Flags().Lookup(name).Hidden = true

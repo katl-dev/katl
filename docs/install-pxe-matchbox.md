@@ -141,18 +141,19 @@ Use the displayed installer address, which may differ from the installed node's
 management address. Correct the configuration or environment, then submit the
 configuration again with `katlctl install apply`.
 
-For an existing data volume, inspect the selected disk first. If overwriting it
-is intended, acknowledge that specific node and volume in the retry:
+Set `wipe: true` on a volume when its selected disk or partition should be
+formatted, including when it contains existing data. This is sufficient for
+automatic PXE installation; no separate wipe acknowledgement is needed. With
+`wipe: false`, incompatible contents are preserved and installation refuses
+before mutation. Correct the volume configuration and retry:
 
 ```sh
 katlctl install apply --config ./cluster.yaml --node cp-1 \
-  --endpoint http://192.168.254.100:8080 \
-  --acknowledge-storage-wipe cp-1/data
+  --endpoint http://192.168.254.100:8080
 ```
 
-The acknowledgement is limited to that request. It is not stored in the PXE
-profile or configuration. Failures after disk mutation do not enable this safe
-retry path; preserve the diagnostics and inspect the target before recovery.
+Failures after disk mutation do not enable this safe retry path; preserve the
+diagnostics and inspect the target before recovery.
 
 ## Run Matchbox on an Isolated Lab Bridge
 
