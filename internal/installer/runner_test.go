@@ -660,7 +660,7 @@ func TestRunnerHaltIfInstalledRefusesBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestPlanInstallRequiresAuthorityForNonBlankStorageVolume(t *testing.T) {
+func TestPlanInstallHonorsVolumeWipe(t *testing.T) {
 	file, err := os.Open(writeManifest(t))
 	if err != nil {
 		t.Fatal(err)
@@ -682,18 +682,8 @@ func TestPlanInstallRequiresAuthorityForNonBlankStorageVolume(t *testing.T) {
 			{Path: "/dev/vdb", Type: discovery.DeviceDisk, Serial: "data", SizeBytes: 64 << 30, PartitionSignature: "gpt"},
 		}},
 	}
-	err = planInstall(install)
-	var authority *disk.DestructiveVolumeAuthorityError
-	if !errors.As(err, &authority) || !reflect.DeepEqual(authority.Required, []string{"lab-node-01/data"}) {
-		t.Fatalf("planInstall() error = %#v", err)
-	}
-	if install.DiskLayout != nil {
-		t.Fatal("refused install retained a disk layout")
-	}
-
-	install.DestructiveStorageAcknowledgements = []string{"lab-node-01/data"}
 	if err := planInstall(install); err != nil {
-		t.Fatalf("acknowledged planInstall() error = %v", err)
+		t.Fatalf("planInstall() error = %v", err)
 	}
 }
 

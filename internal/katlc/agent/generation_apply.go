@@ -148,7 +148,6 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	volumePlan, err := s.validateVolumeTransition(ctx, req.NodeName, base.CurrentManifest, desiredManifest, base.CurrentRecord.VolumeBindings, req.DestructiveStorageAcknowledgements, req.VolumeRebinds)
 	if err != nil {
 		result := rejected(err, []string{inventory.Redact(err.Error())})
-		result.RequiredDestructiveStorageAcknowledgements = volumePlan.requiredWipeAcknowledgements
 		result.RequiredVolumeRebinds = volumePlan.requiredRebinds
 		return result, nil
 	}
@@ -231,8 +230,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		AcceptedApplyMode:     plan.Plan.Decision.AcceptedMode,
 		CandidateGenerationId: candidateID,
 		ChangedDomains:        append([]string(nil), plan.Plan.Decision.ChangedDomains...),
-		RequiredDestructiveStorageAcknowledgements: volumePlan.requiredWipeAcknowledgements,
-		RequiredVolumeRebinds:                      volumePlan.requiredRebinds,
+		RequiredVolumeRebinds: volumePlan.requiredRebinds,
 	}, nil
 }
 

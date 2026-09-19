@@ -96,13 +96,11 @@ disk state is preserved, and stops before installer formatting. See
 
 ## Destructive Storage Changes
 
-`wipe: true` on a node volume requests formatting but does not authorize an
-operation to overwrite existing contents. `cluster apply` validates every node
-before mutation. When discovery finds data or disk metadata on a destructive
-target, it refuses the whole apply and reports one or more exact
-`--acknowledge-storage-wipe NODE/VOLUME` flags. Inspect those targets and repeat
-the command with only the acknowledgements you intend. Blank targets need no
-flag, and acknowledgements are not retained for later applies.
+`wipe: true` authorizes formatting a selected node volume, including erasing
+existing contents. `cluster apply` validates every node before mutation; no
+additional wipe acknowledgement is required. `wipe: false` preserves compatible
+filesystems and refuses changes requiring formatting. Reapplying unchanged
+configuration or rebooting reuses the bound volume without wiping it again.
 
 Katl records the exact PARTUUID or filesystem UUID selected for every
 provisioned volume. Later generations mount that identity directly instead of
@@ -110,8 +108,7 @@ following the logical label again. If a selector changes to a different
 device, planning fails until the operator supplies the reported one-shot
 `--rebind-volume NODE/VOLUME` authority. Use an exact `byID`, `partUUID`, or
 `filesystemUUID` selector for the replacement; an ambiguous `byVolumeName`
-label remains an error even with rebind authority. A destructive replacement
-may require both `--rebind-volume` and `--acknowledge-storage-wipe`.
+label remains an error even with rebind authority. Set `wipe: true` if the replacement should be formatted.
 `katlctl node status NODE` reports the active exact mount source so the
 operator can verify the retained identity before and after the change without
 exposing the generation's internal binding metadata as a separate API.

@@ -29,7 +29,7 @@ func TestAutomaticRetryGuidance(t *testing.T) {
 	runDir := t.TempDir()
 	server := handoff.NewHandoffServer(nil)
 	server.BeginAutomatic("cp-1")
-	authority := &disk.DestructiveVolumeAuthorityError{Required: []string{"cp-1/data"}}
+	authority := errors.New("volume data disk not found")
 	failure := installstatus.New(installstatus.StateFailedBeforeMutation, time.Now())
 	failure.LastError = authority.Error()
 	failure.CurrentStep = "PlanInstall"
@@ -45,7 +45,7 @@ func TestAutomaticRetryGuidance(t *testing.T) {
 	if observed.LastError != failure.LastError || observed.CurrentStep != "PlanInstall" || observed.State != installstatus.StateFailedBeforeMutation {
 		t.Fatalf("retry replaced failure evidence: %+v", observed)
 	}
-	want := "katlctl install apply --config CLUSTER_CONFIG --endpoint http://192.0.2.1:8080 --node cp-1 --acknowledge-storage-wipe cp-1/data"
+	want := "katlctl install apply --config CLUSTER_CONFIG --endpoint http://192.0.2.1:8080 --node cp-1"
 	if !strings.Contains(observed.RetryHint, want) {
 		t.Fatalf("retry hint = %q, want command %q", observed.RetryHint, want)
 	}

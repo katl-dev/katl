@@ -116,10 +116,10 @@ If a waiting installer has a temporary DHCP address different from its retained
 management address, add `--endpoint TEMPORARY_ADDRESS`. Katl still selects the
 logical node and disk from the config.
 
-An existing signature on a destructive data-volume target causes a refusal
-that names the exact `--acknowledge-storage-wipe NODE/VOLUME` flag. Inspect the
-hardware and contents before repeating the command. System-disk installation is
-always destructive once its validated plan proceeds.
+For data volumes, `wipe: true` authorizes formatting the selected target even
+when it contains data. No extra acknowledgement is needed. With `wipe: false`,
+Katl preserves compatible filesystems and refuses any required formatting.
+System-disk installation is always destructive once its validated plan proceeds.
 
 ## 5. Verify Generation 0
 

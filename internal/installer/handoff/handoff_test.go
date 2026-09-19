@@ -325,7 +325,7 @@ func TestHandoffServerAcceptsConfigBundleWithSelectedNode(t *testing.T) {
 	}
 }
 
-func TestHandoffServerRequiresOperationAuthorityForNonBlankStorage(t *testing.T) {
+func TestHandoffServerHonorsWipeForNonBlankStorage(t *testing.T) {
 	server := newTestHandoffServer(t)
 	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
@@ -350,24 +350,12 @@ func TestHandoffServerRequiresOperationAuthorityForNonBlankStorage(t *testing.T)
 	resp := postBundle(t, ts.URL, "cp-1", result.Digest, bundle)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusPreconditionRequired || !strings.Contains(string(body), "--acknowledge-storage-wipe cp-1/data") {
-		t.Fatalf("unacknowledged POST status=%d body=%s", resp.StatusCode, body)
-	}
-	if server.Status().State != HandoffWaiting {
-		t.Fatalf("refused handoff state = %s", server.Status().State)
-	}
-
-	resp = postBundle(t, ts.URL, "cp-1", result.Digest, bundle, "cp-1/data")
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("acknowledged POST status = %d", resp.StatusCode)
-	}
-	if got := server.Bundle().DestructiveStorageAcknowledgements; len(got) != 1 || got[0] != "cp-1/data" {
-		t.Fatalf("stored acknowledgements = %v", got)
+		t.Fatalf("wipe POST status=%d body=%s", resp.StatusCode, body)
 	}
 }
 
-func TestHandoffServerRequiresOperationAuthorityForRawManifestStorage(t *testing.T) {
+func TestHandoffServerHonorsWipeForRawManifestStorage(t *testing.T) {
 	server := newTestHandoffServer(t)
 	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
@@ -387,20 +375,8 @@ func TestHandoffServerRequiresOperationAuthorityForRawManifestStorage(t *testing
 	resp := postManifest(t, ts.URL, input)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusPreconditionRequired || !strings.Contains(string(body), "--acknowledge-storage-wipe lab-node-01/data") {
-		t.Fatalf("unacknowledged POST status=%d body=%s", resp.StatusCode, body)
-	}
-	if server.Status().State != HandoffWaiting || len(server.Manifest()) != 0 {
-		t.Fatalf("refused handoff state = %#v", server.Status())
-	}
-
-	resp = postManifest(t, ts.URL, input, "lab-node-01/data")
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("acknowledged POST status = %d", resp.StatusCode)
-	}
-	if got := server.DestructiveStorageAcknowledgements(); len(got) != 1 || got[0] != "lab-node-01/data" {
-		t.Fatalf("stored acknowledgements = %v", got)
+		t.Fatalf("wipe POST status=%d body=%s", resp.StatusCode, body)
 	}
 }
 

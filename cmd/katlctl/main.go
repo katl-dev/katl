@@ -2256,7 +2256,8 @@ func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
-	cmd.Flags().StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "authorize overwriting one non-blank node volume as NODE/VOLUME (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "deprecated: wipe intent is configured by wipe: true")
+	_ = cmd.Flags().MarkHidden("acknowledge-storage-wipe")
 	cmd.Flags().StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
 }
 

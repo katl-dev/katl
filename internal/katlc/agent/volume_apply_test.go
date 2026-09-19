@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -150,51 +149,16 @@ func TestApplyVolumesRemovalOnlyUnmountsWithoutTouchingStorage(t *testing.T) {
 	}
 }
 
-func TestDestructiveStorageAuthorityUsesDiscoveredTargetState(t *testing.T) {
+func TestApplyVolumesPreservesWithoutWipe(t *testing.T) {
 	current := manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}}}
 	desired := current
 	desired.Install.Volumes = []manifest.Volume{{
-		Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "data"}}, Filesystem: "xfs", Wipe: true,
-	}}
-
-	for _, test := range []struct {
-		name             string
-		partitionTable   string
-		acknowledgements []string
-		wantRequired     []string
-		wantError        bool
-	}{
-		{name: "blank target is automatic"},
-		{name: "non-blank target is refused", partitionTable: "gpt", wantRequired: []string{"cp-1/data"}, wantError: true},
-		{name: "named non-blank target is authorized", partitionTable: "gpt", acknowledgements: []string{"cp-1/data"}, wantRequired: []string{"cp-1/data"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			runner := volumeAuthorityRunner(test.partitionTable, nil)
-			server := newTestServer(t)
-			server.RunVolumeDiscovery = runner
-			plan, err := server.validateVolumeTransition(context.Background(), "cp-1", current, desired, nil, test.acknowledgements, nil)
-			if !slices.Equal(plan.requiredWipeAcknowledgements, test.wantRequired) {
-				t.Fatalf("required acknowledgements = %v, want %v", plan.requiredWipeAcknowledgements, test.wantRequired)
-			}
-			var authority *disk.DestructiveVolumeAuthorityError
-			if errors.As(err, &authority) != test.wantError {
-				t.Fatalf("authority error = %v, want error %t", err, test.wantError)
-			}
-		})
-	}
-}
-
-func TestApplyVolumesRefusesNonBlankTargetBeforeMutation(t *testing.T) {
-	current := manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}}}
-	desired := current
-	desired.Install.Volumes = []manifest.Volume{{
-		Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "data"}}, Filesystem: "xfs", Wipe: true,
+		Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "data"}}, Filesystem: "xfs", Wipe: false,
 	}}
 	var mutations [][]string
 	runner := volumeAuthorityRunner("gpt", &mutations)
 	_, err := (&Executor{RunTool: runner}).applyVolumes(context.Background(), current, desired, nil, "cp-1", nil, nil)
-	var authority *disk.DestructiveVolumeAuthorityError
-	if !errors.As(err, &authority) || !reflect.DeepEqual(authority.Required, []string{"cp-1/data"}) {
+	if err == nil || !strings.Contains(err.Error(), "set wipe to true") {
 		t.Fatalf("applyVolumes() error = %#v", err)
 	}
 	if len(mutations) != 0 {
@@ -202,7 +166,7 @@ func TestApplyVolumesRefusesNonBlankTargetBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestApplyVolumesMutatesNonBlankTargetOnlyWithNamedAuthority(t *testing.T) {
+func TestApplyVolumesHonorsWipe(t *testing.T) {
 	current := manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}}}
 	desired := current
 	desired.Install.Volumes = []manifest.Volume{{
@@ -210,7 +174,7 @@ func TestApplyVolumesMutatesNonBlankTargetOnlyWithNamedAuthority(t *testing.T) {
 	}}
 	var mutations [][]string
 	runner := volumeAuthorityRunner("gpt", &mutations)
-	_, err := (&Executor{Root: t.TempDir(), RunTool: runner}).applyVolumes(context.Background(), current, desired, nil, "cp-1", []string{"cp-1/data"}, nil)
+	_, err := (&Executor{Root: t.TempDir(), RunTool: runner}).applyVolumes(context.Background(), current, desired, nil, "cp-1", nil, nil)
 	if err != nil {
 		t.Fatalf("applyVolumes() error = %v", err)
 	}

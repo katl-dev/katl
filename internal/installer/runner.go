@@ -355,9 +355,6 @@ func planInstall(install *Context) error {
 	if err != nil {
 		return err
 	}
-	if err := disk.ValidateDestructiveVolumeAcknowledgements(inventoryNodeName(install.Manifest), layout.VolumeMounts, install.DestructiveStorageAcknowledgements); err != nil {
-		return err
-	}
 	rootPlan, err := disk.PlanRootSlotWrite(layout, disk.RootSlotWriteRequest{
 		RuntimeArtifact: install.KatlosImage.RuntimeArtifact(),
 		CurrentSlot:     install.CurrentRootSlot,

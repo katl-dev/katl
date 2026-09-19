@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -326,8 +325,8 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid destructive storage acknowledgement: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.validateDestructiveStorageAuthority(decoded, decoded.Node.Identity.Hostname, acknowledgements); err != nil {
-		http.Error(w, err.Error(), destructiveStorageAuthorityStatus(err))
+	if err := s.validateStorage(decoded); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	digest, err := installstatus.DigestManifest(decoded)
@@ -386,8 +385,8 @@ func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid destructive storage acknowledgement: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.validateDestructiveStorageAuthority(selected.InstallManifest, selected.Node.Name, acknowledgements); err != nil {
-		http.Error(w, err.Error(), destructiveStorageAuthorityStatus(err))
+	if err := s.validateStorage(selected.InstallManifest); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	digest, err := installstatus.DigestManifest(selected.InstallManifest)
@@ -443,7 +442,7 @@ func destructiveStorageAcknowledgements(r *http.Request) ([]string, error) {
 	return acknowledgements, nil
 }
 
-func (s *HandoffServer) validateDestructiveStorageAuthority(installManifest manifest.Manifest, nodeName string, acknowledgements []string) error {
+func (s *HandoffServer) validateStorage(installManifest manifest.Manifest) error {
 	s.mu.Lock()
 	facts := s.hardwareFacts
 	s.mu.Unlock()
@@ -457,19 +456,11 @@ func (s *HandoffServer) validateDestructiveStorageAuthority(installManifest mani
 	if err != nil {
 		return fmt.Errorf("plan storage targets: resolve install root disk: %w", err)
 	}
-	plans, err := disk.PlanVolumes(facts, rootDisk, manifest.BuildVolumeRequests(installManifest.Install.Volumes))
+	_, err = disk.PlanVolumes(facts, rootDisk, manifest.BuildVolumeRequests(installManifest.Install.Volumes))
 	if err != nil {
 		return fmt.Errorf("plan storage targets: %w", err)
 	}
-	return disk.ValidateDestructiveVolumeAcknowledgements(nodeName, plans, acknowledgements)
-}
-
-func destructiveStorageAuthorityStatus(err error) int {
-	var authorityErr *disk.DestructiveVolumeAuthorityError
-	if errors.As(err, &authorityErr) {
-		return http.StatusPreconditionRequired
-	}
-	return http.StatusBadRequest
+	return nil
 }
 
 func ValidateInstallManifestEnvelope(data []byte) error {
