@@ -174,6 +174,10 @@ printf 'fake binary\n' > "$output"
 
 func assertRuntimeServicePolicy(t *testing.T, root string) {
 	t.Helper()
+	machineID, err := os.ReadFile(filepath.Join(root, "etc", "machine-id"))
+	if err != nil || len(machineID) != 0 {
+		t.Errorf("runtime machine-id = %q, %v; want empty file to suppress first-boot presets", machineID, err)
+	}
 	for _, unit := range []string{
 		"authselect-apply-changes.service",
 		"fips-crypto-policy-overlay.service",

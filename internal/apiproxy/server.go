@@ -60,8 +60,9 @@ func (s *Server) Run(ctx context.Context) error {
 	_ = os.Remove(s.StatusPath)
 
 	listeners := make([]net.Listener, 0, len(config.Listeners))
+	listenConfig := net.ListenConfig{Control: configureListener}
 	for _, configured := range config.Listeners {
-		listener, err := net.Listen("tcp", configured.Address)
+		listener, err := listenConfig.Listen(ctx, "tcp", configured.Address)
 		if err != nil {
 			for _, opened := range listeners {
 				_ = opened.Close()

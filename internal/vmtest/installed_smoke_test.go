@@ -229,6 +229,8 @@ func TestFirstInstallTargetDiskSerialSmoke(t *testing.T) {
 	}
 	for _, refused := range []string{
 		"generation 0 is not clean",
+		"Failed to preset all unit",
+		"bind: cannot assign requested address",
 		"katl-boot-health:",
 		"katl-boot-health.service: Failed",
 		"katl-runtime-handoff-status.service: Failed",
@@ -328,6 +330,8 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 	}
 	for _, refused := range []string{
 		"generation 0 is not clean",
+		"Failed to preset all unit",
+		"bind: cannot assign requested address",
 		"katl-boot-health:",
 		"katl-boot-health.service: Failed",
 		"katl-runtime-handoff-status.service: Failed",
