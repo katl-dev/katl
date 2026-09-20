@@ -1,6 +1,6 @@
 # Add, Replace, or Remove Cluster Nodes
 
-Katl changes cluster membership only through explicit install, apply, and wipe
+Katl changes cluster membership only through explicit bootstrap, join, and wipe
 operations. Editing `spec.nodes` by itself is not authority to drain, delete,
 power off, or erase a machine.
 
@@ -32,13 +32,18 @@ generation 0. Do not rerun cluster bootstrap on an existing cluster. Join the
 one fresh node with:
 
 ```sh
-katlctl cluster apply --config ./cluster.yaml
+katlctl node join worker-1 --config ./cluster.yaml
 ```
 
 Katl selects a ready surviving control plane, creates short-lived kubeadm join
-material, joins the fresh worker or control plane, trial-boots its Kubernetes
-generation, and then reconciles supported configuration. Repeating the
-unchanged apply is a no-op.
+material, joins the named worker or control plane, and verifies its generation
+and Kubernetes services. A healthy committed join does not reboot the node.
+Repeating a completed join is a no-op; retry the same command after an
+interruption. A pending trial generation is rebooted and checked before success.
+
+Use `--coordinator cp-1` to choose a ready surviving control plane explicitly.
+Only the joining node and coordinator need to be reachable. Apply later
+configuration changes with `katlctl cluster apply --config ./cluster.yaml`.
 
 Verify the new Kubernetes Node, and for a control plane verify the new stacked
 etcd member and local static pods. Your CNI remains responsible for scheduling
@@ -65,10 +70,10 @@ Reinstall the replacement under the same node name and role, verify generation
 0, and run:
 
 ```sh
-katlctl cluster apply --config ./cluster.yaml
+katlctl node join worker-1 --config ./cluster.yaml
 ```
 
-Katl treats it as one fresh replacement and joins it without rerunning
+Katl joins the named replacement without rerunning
 `kubeadm init`. Confirm etcd membership, Node readiness after CNI convergence,
 and workload behavior before replacing another machine.
 
@@ -111,7 +116,7 @@ katlctl cluster etcd remove cp-3 --member-id MEMBER_ID \
 
 This command removes only stacked-etcd membership. Delete any remaining
 Kubernetes Node through the Kubernetes API, then reinstall and join the machine
-with `cluster apply`. Loss of etcd quorum and snapshot-based disaster recovery
+with `node join`. Loss of etcd quorum and snapshot-based disaster recovery
 remain outside the supported beta workflow.
 
 ## Refused Transitions

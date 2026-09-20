@@ -170,6 +170,7 @@ Start with "katlctl install discover" for a waiting installer or
 	nodeCmd.AddCommand(newHostRebootCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostShutdownCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostUpgradeCommand(ctx, stdout, stderr))
+	nodeCmd.AddCommand(newNodeJoinCommand(ctx, stdout, stderr))
 	nodeApplyCmd := newConfigApplyCommand(ctx, stdout, stderr)
 	nodeApplyCmd.Hidden = true
 	nodeCmd.AddCommand(nodeApplyCmd)
@@ -266,6 +267,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl node shutdown":               "katlctl node shutdown cp-1 --config cluster.yaml",
 		"katlctl node upgrade":                "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml",
 		"katlctl node apply":                  "katlctl node apply cp-1 --config cluster.yaml",
+		"katlctl node join":                   "katlctl node join worker-1 --config cluster.yaml",
 		"katlctl node apply validate":         "katlctl node apply validate --config cluster.yaml --node cp-1",
 		"katlctl node apply status":           "katlctl node apply status --node cp-1",
 		"katlctl node wipe":                   "katlctl node wipe worker-1 --config cluster.yaml --kubeconfig kubeconfig",
@@ -441,7 +443,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		recovery := nodeUpgradeRecovery(status, recoveryRequirement)
 		if !recovery.Ready {
 			recoveryCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-			recoveryConn, recoveredStatus, recoveryErr := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, recoveryRequirement, stderr)
+			recoveryConn, recoveredStatus, recoveryErr := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, recoveryRequirement, "upgrade node="+node, stderr)
 			cancel()
 			if recoveryErr != nil {
 				return recoveryErr

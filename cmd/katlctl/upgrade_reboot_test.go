@@ -231,7 +231,7 @@ func TestWaitNodeKubernetesRecoveryTimeoutIsActionable(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	_, _, err := waitNodeKubernetesRecovery(ctx, "cp-1", "10.0.0.11:9443", nodeRecoveryRequirement{KubernetesConfigured: true}, &bytes.Buffer{})
+	_, _, err := waitNodeKubernetesRecovery(ctx, "cp-1", "10.0.0.11:9443", nodeRecoveryRequirement{KubernetesConfigured: true}, "upgrade node=cp-1", &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "local etcd component is not running") || !strings.Contains(err.Error(), "do not schedule workloads") || !strings.Contains(err.Error(), "katlctl node status") {
 		t.Fatalf("error = %v", err)
 	}

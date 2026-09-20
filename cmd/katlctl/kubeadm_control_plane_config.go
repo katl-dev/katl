@@ -26,6 +26,7 @@ import (
 type kubeadmControlPlaneConfigOptions struct {
 	configPath, inventoryPath, coordinator, generationID, configName string
 	rolloutID, component                                             string
+	selectedNodes                                                    []string
 	progress                                                         io.Writer
 	destructiveStorageAcknowledgements                               []string
 	volumeRebinds                                                    []string
@@ -33,19 +34,23 @@ type kubeadmControlPlaneConfigOptions struct {
 
 var kubeadmConfigNow = func() time.Time { return time.Now().UTC() }
 
-const clusterApplyJoinBootTimeout = 15 * time.Minute
-
 func newClusterApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := kubeadmControlPlaneConfigOptions{}
 	cmd := &cobra.Command{
 		Use:   "apply",
-		Short: "Apply the complete ClusterConfig to a running cluster",
-		Long: `Apply the complete ClusterConfig to the nodes it lists.
+		Short: "Apply configuration to running cluster nodes",
+		Long: `Apply the desired ClusterConfig to running nodes. By default, apply to every
+node in the config; use --node NAME to select a node, repeating it for more nodes.
+Keep the complete ClusterConfig when selecting nodes.
 
-Omitting a node stops targeting it but never drains, deletes, powers off, or
-wipes that node. Use 'katlctl node wipe NODE --config CURRENT --plan' while the
-node is still listed before an intentional removal, rename, replacement, or
-role change. Enrolled node renames and role changes are refused here.`,
+Validates selected nodes before applying supported host and Kubernetes changes.
+Unchanged configuration is a no-op. Changes that require a reboot are staged for
+the next boot and reported. Use 'katlctl node join NODE --config cluster.yaml'
+to join an installed node to an existing cluster. Apply never joins nodes.
+Kubernetes settings shared by the cluster can still affect the whole cluster.
+
+Apply does not remove nodes omitted from the config or change an enrolled node's
+name or role. See docs/operations/configure-nodes.md for configuration workflows.`,
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			return runClusterApply(ctx, opts, stdout, stderr)
@@ -53,22 +58,27 @@ role change. Enrolled node renames and role changes are refused here.`,
 	}
 	f := cmd.Flags()
 	f.StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
+	f.StringArrayVar(&opts.selectedNodes, "node", nil, "apply to this config node only (repeatable; default: all nodes)")
 	f.StringVar(&opts.inventoryPath, "inventory", "", "advanced cluster inventory")
-	f.StringVar(&opts.coordinator, "coordinator", "", "control-plane coordinator used for joins and changed last")
+	f.StringVar(&opts.coordinator, "coordinator", "", "selected control-plane coordinator changed last")
 	f.StringVar(&opts.generationID, "generation", "", "active desired generation ID")
 	f.StringVar(&opts.configName, "config-name", "", "selected KubeadmConfig name")
 	f.StringVar(&opts.rolloutID, "rollout-id", "", "rollout identity")
 	f.StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "deprecated: wipe intent is configured by wipe: true")
 	_ = f.MarkHidden("acknowledge-storage-wipe")
 	f.StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
-	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id"} {
+	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id", "rebind-volume"} {
 		cmd.Flags().Lookup(name).Hidden = true
 	}
 	return cmd
 }
 
 func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout, stderr io.Writer) error {
-	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr); err != nil {
+	opts.coordinator = strings.TrimSpace(opts.coordinator)
+	if len(opts.selectedNodes) > 0 && opts.coordinator != "" && !slices.Contains(opts.selectedNodes, opts.coordinator) {
+		return fmt.Errorf("coordinator %q is not selected; include it with --node or omit --coordinator", opts.coordinator)
+	}
+	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, opts.selectedNodes...); err != nil {
 		return err
 	}
 	opts.progress = stderr
@@ -86,7 +96,11 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	if err != nil {
 		return err
 	}
-	if err := clusterApplyProgress(opts.progress, "phase=configuration status=started nodes=%d", len(inv.Nodes)); err != nil {
+	selected, err := selectConfigNodes(inv.Nodes, opts.selectedNodes)
+	if err != nil {
+		return err
+	}
+	if err := clusterApplyProgress(opts.progress, "phase=configuration status=started nodes=%d", len(selected)); err != nil {
 		return err
 	}
 	if strings.TrimSpace(opts.rolloutID) == "" {
@@ -99,9 +113,8 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	}
 	preBootstrap := false
 	var stagedNodes []string
-	activated := activatedClusterConfig{}
 	if strings.TrimSpace(opts.configPath) != "" {
-		activated, err = activateClusterConfig(ctx, opts, inv.Nodes)
+		activated, err := activateClusterConfig(ctx, opts, inv.Nodes)
 		if err != nil {
 			return err
 		}
@@ -114,53 +127,6 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	}
 
 	results := map[string]any{}
-	var joined []string
-	for _, node := range activated.joinNodes {
-		if err := clusterApplyProgress(opts.progress, "phase=node-join node=%s coordinator=%s status=started", node, activated.joinCoordinator); err != nil {
-			return err
-		}
-		topology, err := resolveClusterConfigTopology(opts.configPath)
-		if err != nil {
-			return err
-		}
-		deps := agentBootstrapDependencies(topology.ClusterName)
-		deps.Actor = "katlctl cluster apply"
-		deps.Progress = func(progress cluster.AgentBootstrapProgress) {
-			if progress.Node != node || strings.TrimSpace(progress.Phase) == "" {
-				return
-			}
-			_ = clusterApplyProgress(opts.progress, "phase=node-join node=%s step=%s status=running", node, progress.Phase)
-		}
-		if _, err := runAgentNodeJoin(ctx, cluster.Request{
-			Inventory: inv,
-			InitNode:  activated.joinCoordinator,
-		}, node, deps); err != nil {
-			return fmt.Errorf("join replacement node %s: %w", node, err)
-		}
-		joinedGeneration, err := rebootClusterApplyJoin(ctx, inv.Nodes, node, opts.configPath, opts.progress)
-		if err != nil {
-			return fmt.Errorf("validate replacement node %s after join: %w", node, err)
-		}
-		generations[node] = joinedGeneration
-		joined = append(joined, node)
-		if err := clusterApplyProgress(opts.progress, "phase=node-join node=%s status=succeeded", node); err != nil {
-			return err
-		}
-	}
-	for _, node := range activated.joinBootNodes {
-		if err := clusterApplyProgress(opts.progress, "phase=node-join node=%s status=resuming-reboot", node); err != nil {
-			return err
-		}
-		joinedGeneration, err := rebootClusterApplyJoin(ctx, inv.Nodes, node, opts.configPath, opts.progress)
-		if err != nil {
-			return fmt.Errorf("resume replacement node %s after join: %w", node, err)
-		}
-		generations[node] = joinedGeneration
-		joined = append(joined, node)
-		if err := clusterApplyProgress(opts.progress, "phase=node-join node=%s status=succeeded", node); err != nil {
-			return err
-		}
-	}
 	for _, component := range []string{"control-plane", "kubelet", "kube-proxy"} {
 		if !components[component] {
 			continue
@@ -203,8 +169,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		}
 	}
 	report := map[string]any{
-		"nodes":      len(inv.Nodes),
-		"joined":     joined,
+		"nodes":      len(selected),
 		"kubernetes": results,
 		"result":     "succeeded",
 	}
@@ -213,83 +178,6 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		report["stagedNodes"] = stagedNodes
 	}
 	return json.NewEncoder(stdout).Encode(report)
-}
-
-func currentClusterApplyNode(ctx context.Context, nodes []inventory.Node, nodeName string) (*agentapi.NodeStatus, string, error) {
-	var selected inventory.Node
-	for _, node := range nodes {
-		if node.Name == nodeName {
-			selected = node
-			break
-		}
-	}
-	if selected.Name == "" {
-		return nil, "", fmt.Errorf("node is not present in cluster inventory")
-	}
-	conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(selected.Address, "9443"))
-	if err != nil {
-		return nil, "", err
-	}
-	defer conn.Close()
-	status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
-	if err != nil {
-		return nil, "", err
-	}
-	if err := verifyPlannedStatus(managementTarget{nodeName: selected.Name, endpoint: cluster.AgentEndpoint(selected.Address, "9443"), enrollmentID: selected.EnrollmentID, machineID: selected.MachineID}, status); err != nil {
-		return nil, "", err
-	}
-	generationID := strings.TrimSpace(status.GetCurrentGenerationId())
-	if generationID == "" {
-		return nil, "", fmt.Errorf("agent did not report a current generation")
-	}
-	return status, generationID, nil
-}
-
-func rebootClusterApplyJoin(ctx context.Context, nodes []inventory.Node, nodeName, configPath string, progress io.Writer) (string, error) {
-	ctx, err := managementContextForNode(ctx, configPath, nodeName)
-	if err != nil {
-		return "", err
-	}
-	status, generationID, err := currentClusterApplyNode(ctx, nodes, nodeName)
-	if err != nil {
-		return "", err
-	}
-	previousAgentStart := strings.TrimSpace(status.GetAgentStartId())
-	if previousAgentStart == "" {
-		return "", fmt.Errorf("agent did not report its current start identity")
-	}
-	recoveryRequirement := nodeRecoveryRequirementFor(status)
-	var selected inventory.Node
-	for _, node := range nodes {
-		if node.Name == nodeName {
-			selected = node
-			break
-		}
-	}
-	endpoint := cluster.AgentEndpoint(selected.Address, "9443")
-	conn, err := dialKatlcAgent(ctx, endpoint)
-	if err != nil {
-		return "", err
-	}
-	if err := requestNodeReboot(ctx, conn.Client, "katlctl cluster apply", status, generationID); err != nil {
-		_ = conn.Close()
-		return "", fmt.Errorf("schedule joined generation reboot: %w", err)
-	}
-	_ = conn.Close()
-	if err := clusterApplyProgress(progress, "phase=node-join node=%s step=reboot status=scheduled", nodeName); err != nil {
-		return "", err
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, clusterApplyJoinBootTimeout)
-	verifiedConn, verified, err := waitNodeBootHealthWithPrefix(waitCtx, nodeName, endpoint, previousAgentStart, generationID, recoveryRequirement, "cluster apply phase=node-join node="+nodeName, progress)
-	cancel()
-	if err != nil {
-		return "", err
-	}
-	_ = verifiedConn.Close()
-	if err := clusterApplyProgress(progress, "phase=node-join node=%s step=boot-health status=succeeded", nodeName); err != nil {
-		return "", err
-	}
-	return verified.Generation.GetGenerationId(), nil
 }
 
 func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout io.Writer) error {
@@ -331,9 +219,17 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 	if len(controlPlanes) == 0 {
 		return nil, fmt.Errorf("at least one control-plane node is required")
 	}
+	if opts.coordinator != "" && !slices.ContainsFunc(controlPlanes, func(node inventory.Node) bool { return node.Name == opts.coordinator }) {
+		return nil, fmt.Errorf("coordinator %q is not a control-plane node", opts.coordinator)
+	}
 	if strings.TrimSpace(opts.coordinator) == "" {
 		sort.Slice(controlPlanes, func(i, j int) bool { return controlPlanes[i].Name < controlPlanes[j].Name })
 		opts.coordinator = controlPlanes[len(controlPlanes)-1].Name
+		for _, node := range controlPlanes {
+			if len(opts.selectedNodes) == 0 || slices.Contains(opts.selectedNodes, node.Name) {
+				opts.coordinator = node.Name
+			}
+		}
 	}
 	if strings.TrimSpace(opts.rolloutID) == "" {
 		opts.rolloutID = "kubeadm-config-" + strconv.FormatInt(kubeadmConfigNow().UnixNano(), 10)
@@ -353,6 +249,11 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(opts.selectedNodes) > 0 {
+		nodes = slices.DeleteFunc(nodes, func(node inventory.Node) bool {
+			return !slices.Contains(opts.selectedNodes, node.Name)
+		})
 	}
 	type target struct {
 		node           inventory.Node
@@ -492,14 +393,29 @@ func kubeadmConfigInventory(opts kubeadmControlPlaneConfigOptions) (inventory.In
 	return overlayWipeContext(inv, "", "", configPath)
 }
 
+func selectConfigNodes(nodes []inventory.Node, names []string) ([]inventory.Node, error) {
+	if len(names) == 0 {
+		return nodes, nil
+	}
+	for _, name := range names {
+		if !slices.ContainsFunc(nodes, func(node inventory.Node) bool { return node.Name == name }) {
+			return nil, fmt.Errorf("node %q is not in the config; use a node name from the complete ClusterConfig", name)
+		}
+	}
+	var selected []inventory.Node
+	for _, node := range nodes {
+		if slices.Contains(names, node.Name) {
+			selected = append(selected, node)
+		}
+	}
+	return selected, nil
+}
+
 type activatedClusterConfig struct {
-	generations     map[string]string
-	components      map[string]bool
-	preBootstrap    bool
-	stagedNodes     []string
-	joinNodes       []string
-	joinBootNodes   []string
-	joinCoordinator string
+	generations  map[string]string
+	components   map[string]bool
+	preBootstrap bool
+	stagedNodes  []string
 }
 
 func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, nodes []inventory.Node) (activatedClusterConfig, error) {
@@ -536,11 +452,14 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		acceptedApplyMode string
 		changedDomains    []string
 		components        []string
-		joinBootPending   bool
 	}
-	prepared := make([]preparedInput, 0, len(nodes))
+	selected, err := selectConfigNodes(nodes, opts.selectedNodes)
+	if err != nil {
+		return activatedClusterConfig{}, err
+	}
+	prepared := make([]preparedInput, 0, len(selected))
 	components := map[string]bool{}
-	for _, node := range nodes {
+	for _, node := range selected {
 		if err := clusterApplyProgress(opts.progress, "phase=config-validation node=%s status=started", node.Name); err != nil {
 			return activatedClusterConfig{}, err
 		}
@@ -599,6 +518,17 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			_ = conn.Close()
 			return activatedClusterConfig{}, err
 		}
+		if isClusterJoinCandidate(status.GetCurrentGenerationId()) {
+			candidate, generationErr := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: status.GetCurrentGenerationId()})
+			if generationErr != nil {
+				_ = conn.Close()
+				return activatedClusterConfig{}, fmt.Errorf("inspect replacement generation on %s: %w", node.Name, generationErr)
+			}
+			if candidate.GetCommitState() != generation.CommitStateCommitted || candidate.GetHealthState() != generation.HealthStateHealthy {
+				_ = conn.Close()
+				return activatedClusterConfig{}, fmt.Errorf("node %s has an unfinished join; run 'katlctl node join %s --config %s' before applying configuration", node.Name, node.Name, opts.configPath)
+			}
+		}
 		validation, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion: operation.APIVersion, Kind: "ValidateConfigRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
 			Actor: "katlctl cluster apply", ExpectedEnrollmentId: status.EnrollmentId, ExpectedInventoryNodeName: status.InventoryNodeName,
@@ -622,14 +552,6 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		input.machineID = status.MachineId
 		input.currentGeneration = status.CurrentGenerationId
 		input.kubernetesState = strings.TrimSpace(status.GetKubernetes().GetState())
-		if isClusterJoinCandidate(input.currentGeneration) {
-			candidate, generationErr := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: input.currentGeneration})
-			if generationErr != nil {
-				_ = conn.Close()
-				return activatedClusterConfig{}, fmt.Errorf("inspect replacement generation on %s: %w", node.Name, generationErr)
-			}
-			input.joinBootPending = candidate.GetCommitState() != generation.CommitStateCommitted || candidate.GetHealthState() != generation.HealthStateHealthy
-		}
 		input.noChanges = validation.NoChanges
 		input.acceptedApplyMode = validation.AcceptedApplyMode
 		input.changedDomains = slices.Clone(validation.ChangedDomains)
@@ -658,56 +580,24 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	}
 
 	notConfigured := 0
-	var kubernetesStates []string
 	for _, input := range prepared {
 		if input.kubernetesState == "not-configured" {
 			notConfigured++
 		}
-		kubernetesStates = append(kubernetesStates, input.node.Name+"="+firstNonEmpty(input.kubernetesState, "unknown"))
 	}
 	preBootstrap := len(prepared) > 0 && notConfigured == len(prepared)
-	joinCoordinator := ""
+	if notConfigured > 0 && !preBootstrap {
+		for _, input := range prepared {
+			if input.kubernetesState == "not-configured" {
+				return activatedClusterConfig{}, fmt.Errorf("node %s has not joined Kubernetes; run 'katlctl node join %s --config %s', or use --node to configure nodes separately", input.node.Name, input.node.Name, opts.configPath)
+			}
+		}
+	}
 	if preBootstrap {
 		for _, input := range prepared {
 			for _, component := range input.components {
 				components[component] = true
 			}
-		}
-	}
-	if notConfigured > 0 && !preBootstrap {
-		if notConfigured != 1 {
-			return activatedClusterConfig{}, fmt.Errorf(
-				"cluster apply can join one fresh replacement node at a time; found mixed Kubernetes lifecycle state (%s)",
-				strings.Join(kubernetesStates, ", "),
-			)
-		}
-		requestedCoordinator := strings.TrimSpace(opts.coordinator)
-		for _, input := range prepared {
-			if input.kubernetesState == "not-configured" {
-				continue
-			}
-			if input.node.SystemRole == inventory.RoleControlPlane && input.kubernetesState == "ready" {
-				if strings.TrimSpace(joinCoordinator) == "" {
-					joinCoordinator = input.node.Name
-				}
-				if input.node.Name == requestedCoordinator {
-					joinCoordinator = input.node.Name
-					break
-				}
-			}
-		}
-		if requestedCoordinator != "" && joinCoordinator != requestedCoordinator {
-			return activatedClusterConfig{}, fmt.Errorf(
-				"coordinator %q cannot coordinate the replacement join: it must be an existing ready control-plane node (%s)",
-				requestedCoordinator,
-				strings.Join(kubernetesStates, ", "),
-			)
-		}
-		if joinCoordinator == "" {
-			return activatedClusterConfig{}, fmt.Errorf(
-				"cluster has one fresh node but no ready control plane can coordinate its join (%s)",
-				strings.Join(kubernetesStates, ", "),
-			)
 		}
 	}
 
@@ -774,35 +664,12 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 	}
 	sort.Strings(stagedNodes)
-	var joinNodes []string
-	if notConfigured == 1 && !preBootstrap {
-		for _, input := range prepared {
-			if input.kubernetesState == "not-configured" {
-				joinNodes = append(joinNodes, input.node.Name)
-			}
-		}
-	}
-	var joinBootNodes []string
-	for _, input := range prepared {
-		if !input.joinBootPending {
-			continue
-		}
-		joinBootNodes = append(joinBootNodes, input.node.Name)
-	}
 	return activatedClusterConfig{
-		generations:     result,
-		components:      components,
-		preBootstrap:    preBootstrap,
-		stagedNodes:     stagedNodes,
-		joinNodes:       joinNodes,
-		joinBootNodes:   joinBootNodes,
-		joinCoordinator: joinCoordinator,
+		generations:  result,
+		components:   components,
+		preBootstrap: preBootstrap,
+		stagedNodes:  stagedNodes,
 	}, nil
-}
-
-func isClusterJoinCandidate(generationID string) bool {
-	generationID = strings.TrimSpace(generationID)
-	return strings.HasPrefix(generationID, "bootstrap-join-") && strings.HasSuffix(generationID, "-candidate")
 }
 
 func validateClusterNodeLifecycle(node inventory.Node, status *agentapi.NodeStatus) error {
@@ -813,14 +680,14 @@ func validateClusterNodeLifecycle(node inventory.Node, status *agentapi.NodeStat
 	observedName := strings.TrimSpace(kubernetes.GetNodeName())
 	if observedName != "" && observedName != node.Name {
 		return fmt.Errorf(
-			"refusing cluster apply for node %q at %s: the host is enrolled in Kubernetes as %q; enrolled node rename is unsupported; restore spec.nodes[].name to %q, or plan 'katlctl node wipe %s --config <previous-config> --plan' before reinstalling it with the new name; no node was wiped",
+			"refusing operation for node %q at %s: the host is enrolled in Kubernetes as %q; enrolled node rename is unsupported; restore spec.nodes[].name to %q, or plan 'katlctl node wipe %s --config <previous-config> --plan' before reinstalling it with the new name; no node was wiped",
 			node.Name, node.Address, observedName, observedName, observedName,
 		)
 	}
 	observedRole := strings.TrimSpace(kubernetes.GetRole())
 	if observedRole != "" && observedRole != string(node.SystemRole) {
 		return fmt.Errorf(
-			"refusing cluster apply for node %q: desired role is %q but the enrolled Kubernetes role is %q; role changes require 'katlctl node wipe %s --config <current-config> --plan', reinstall with the desired role, then cluster apply; no node was wiped",
+			"refusing operation for node %q: desired role is %q but the enrolled Kubernetes role is %q; role changes require 'katlctl node wipe %s --config <current-config> --plan', reinstall with the desired role, then node join; no node was wiped",
 			node.Name, node.SystemRole, observedRole, node.Name,
 		)
 	}

@@ -234,6 +234,7 @@ func TestConfigInputFlagsUseOneName(t *testing.T) {
 		"katlctl management identity create": true,
 		"katlctl management identity export": true,
 		"katlctl cluster apply":              true,
+		"katlctl node join":                  true,
 		"katlctl cluster etcd members":       true,
 		"katlctl cluster etcd remove":        true,
 		"katlctl cluster status":             true,

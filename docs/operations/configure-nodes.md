@@ -4,6 +4,37 @@ Use `katlctl cluster apply` for supported configuration changes after
 installation. The same `ClusterConfig` remains the source of truth for every
 node and for kubeadm-owned Kubernetes configuration.
 
+Apply to every node, or select nodes by name:
+
+```sh
+katlctl cluster apply --config ./cluster.yaml
+katlctl cluster apply --config ./cluster.yaml --node cp-1
+katlctl cluster apply --config ./cluster.yaml --node cp-1 --node worker-1
+```
+
+Keep the complete ClusterConfig when using `--node`. Katl validates and applies
+configuration only on selected nodes; it does not require other nodes to be
+reachable. Unknown node names are rejected, and
+repeating the same name does not apply it twice.
+
+Configuration rollouts use a selected control plane to publish shared
+configuration; an explicit `--coordinator` must be among the selected nodes.
+
+Apply never joins nodes or changes cluster membership. Use
+`katlctl node join NODE --config ./cluster.yaml` to join an installed node to an
+existing cluster. An apply that mixes fresh and joined nodes stops before
+mutation with join guidance; `--node` can configure a fresh node separately
+before joining it. Use `katlctl cluster bootstrap` for a new cluster.
+
+Selection limits node operations, not the scope of shared Kubernetes resources.
+Applying shared kubeadm or kube-proxy configuration through a selected control
+plane can affect the whole cluster. Apply shared kubelet changes to a control
+plane before workers so the shared configuration is available for them to use.
+Use per-node kubelet configuration for settings that should affect only one node.
+
+Unchanged configuration is a no-op. Host changes that need a reboot are staged
+for the next boot and reported; follow the reported reboot guidance.
+
 ## Supported Input
 
 The normal source is the same `ClusterConfig` used for installation. The current
@@ -49,7 +80,7 @@ authorization; `target-only` means workstation targeting changes without a
 node generation. Use `--output yaml` or `--output json` to retain before and
 after values in review or automation.
 
-If `spec.kubernetes.kubeadm` changes, cluster apply validates every node before
+If `spec.kubernetes.kubeadm` changes, cluster apply validates every selected node before
 mutation and then reconciles every affected Kubernetes component online. A
 Kubernetes configuration change never falls back to next-boot application or
 requires a host reboot.
@@ -74,12 +105,12 @@ or wipes KatlOS.
 | Desired change | `cluster apply` behavior | Supported operator path |
 | --- | --- | --- |
 | Reorder nodes or change ordinary supported fields | Applies by stable node name | Run `katlctl cluster apply --config ./cluster.yaml` |
-| Add one installed, unenrolled node | Joins one fresh node at a time using a ready control plane | Install the new named node, add it to the config, then run `cluster apply` |
-| Replace hardware while keeping the node name and role | Joins the fresh replacement; it never wipes the old host implicitly | While the old node is still listed, run `katlctl node wipe NAME --config ./cluster.yaml --plan`, execute the reviewed wipe with the required kubeconfig, reinstall the replacement, then run `cluster apply` |
+| Add one installed, unenrolled node | Does not join it | Install the new named node from the config, then run `katlctl node join NAME --config ./cluster.yaml` |
+| Replace hardware while keeping the node name and role | Does not join or erase a node | While the old node is still listed, run `katlctl node wipe NAME --config ./cluster.yaml --plan`, execute the reviewed wipe with the required kubeconfig, reinstall the replacement, then run `katlctl node join NAME --config ./cluster.yaml` |
 | Remove a node from the cluster | Omission only stops Katl targeting; the old node and its data are preserved | Keep the node listed while planning and executing `katlctl node wipe NAME --config ./cluster.yaml --plan`; remove the entry only after the explicit Kubernetes/etcd-aware wipe succeeds |
 | Rename an unenrolled installed node | Stages the hostname through normal next-boot configuration | Apply, reboot, verify the new hostname, and only then bootstrap Kubernetes |
 | Rename an enrolled node | Refused before any node mutation | Keep the old name, or explicitly wipe it under the old config and reinstall it as a new node |
-| Change `controlPlane` / node role | Refused as an operation-only change | Explicitly wipe the named node, reinstall it with the desired role, then join it through `cluster apply` |
+| Change `controlPlane` / node role | Refused as an operation-only change | Explicitly wipe the named node, reinstall it with the desired role, then use `katlctl node join NAME --config ./cluster.yaml` |
 | Change only `management.address` | Changes workstation targeting only | Verify the new address reaches the same node; no node generation or Kubernetes state changes |
 
 Removing one entry and adding another is never inferred to be a rename. It is a
@@ -97,7 +128,7 @@ disk state is preserved, and stops before installer formatting. See
 ## Destructive Storage Changes
 
 `wipe: true` authorizes formatting a selected node volume, including erasing
-existing contents. `cluster apply` validates every node before mutation; no
+existing contents. `cluster apply` validates every selected node before mutation; no
 additional wipe acknowledgement is required. `wipe: false` preserves compatible
 filesystems and refuses changes requiring formatting. Reapplying unchanged
 configuration or rebooting reuses the bound volume without wiping it again.
@@ -395,10 +426,10 @@ Apply the source configuration directly:
 katlctl cluster apply --config ./cluster.yaml
 ```
 
-Katl compiles every selected node configuration, validates the whole cluster,
-and starts no mutation if any node rejects the plan. It then applies node
+Katl compiles and validates every selected node configuration,
+and starts no mutation if any selected node rejects the plan. It then applies node
 configuration and all affected Kubernetes component phases in a safe serial
-order, returning only after the cluster is healthy.
+order, checking the affected nodes' health.
 
 If the source has already been compiled, pass the bundle through the same flag:
 
@@ -409,9 +440,9 @@ katlctl cluster apply --config ./katl-lab.katlcfg
 Katl derives and verifies the bundle's integrity metadata from the file.
 
 `katlctl` derives per-node generations, component phases, rollout ordering, and
-operation identities internally. A successful return means the complete
-supported configuration is active; partial or unsupported plans fail with the
-node, field, and recovery action.
+operation identities internally. A successful return means the selected nodes'
+supported configuration is active or staged with a reported reboot requirement;
+unsupported plans fail with the node, field, and recovery action.
 
 ## Check Status
 

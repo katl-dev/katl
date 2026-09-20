@@ -111,7 +111,7 @@ func waitNodeBootHealthWithPrefix(ctx context.Context, nodeName, endpoint, previ
 	}
 }
 
-func waitNodeKubernetesRecovery(ctx context.Context, nodeName, endpoint string, requirement nodeRecoveryRequirement, stderr io.Writer) (katlcAgentConnection, *agentapi.NodeStatus, error) {
+func waitNodeKubernetesRecovery(ctx context.Context, nodeName, endpoint string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, *agentapi.NodeStatus, error) {
 	lastRecovery := nodeRecovery{}
 	for {
 		conn, err := dialKatlcAgent(ctx, endpoint)
@@ -122,7 +122,7 @@ func waitNodeKubernetesRecovery(ctx context.Context, nodeName, endpoint string, 
 				if recovery != lastRecovery {
 					lastRecovery = recovery
 					if !recovery.Ready {
-						_, _ = fmt.Fprintf(stderr, "upgrade node=%s waiting-for-kubernetes state=%s reason=%s\n", nodeName, recovery.State, recovery.Reason)
+						_, _ = fmt.Fprintf(stderr, "%s waiting-for-kubernetes state=%s reason=%s\n", progressPrefix, recovery.State, recovery.Reason)
 					}
 				}
 				if recovery.Ready {

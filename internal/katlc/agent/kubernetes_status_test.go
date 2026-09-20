@@ -2,11 +2,36 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestKubeletConfigHealth(t *testing.T) {
+	for _, ready := range []bool{true, false} {
+		t.Run(fmt.Sprint(ready), func(t *testing.T) {
+			root := t.TempDir()
+			writeKubernetesStatusFile(t, root, "etc/hostname", "worker-1\n")
+			writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+			executor := &Executor{Root: root, RunTool: func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				if argv[0] == "/usr/bin/kubectl" {
+					return ToolResult{Stdout: []byte(fmt.Sprint(ready))}
+				}
+				return ToolResult{}
+			}}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			result := executor.runKubeletConfigHealth(ctx)
+			if (result.Err == nil && result.ExitStatus == 0) != ready {
+				t.Fatalf("health result = %#v, ready = %t", result, ready)
+			}
+		})
+	}
+}
 
 func TestNodeKubernetesStatusReportsNotConfiguredBeforeBootstrap(t *testing.T) {
 	called := false
