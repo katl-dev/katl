@@ -114,11 +114,7 @@ type KubectlCommandRunner interface {
 	Run(ctx context.Context, argv []string) (readiness.CommandResult, error)
 }
 
-type AdminCredentials struct {
-	CertificateAuthorityData string
-	ClientCertificateData    string
-	ClientKeyData            string
-}
+type AdminCredentials = kubeconfig.Credentials
 
 type JoinMaterial struct {
 	Argv                []string
@@ -1074,7 +1070,7 @@ func (r TransportRunner) RunKubeadmInit(ctx context.Context, node inventory.Plan
 	if err != nil {
 		return AdminCredentials{}, err
 	}
-	return parseAdminCredentials(file.Content)
+	return kubeconfig.ParseCredentials(file.Content)
 }
 
 func (r TransportRunner) initConfigPath(ctx context.Context, node inventory.PlannedNode, controlPlaneEndpoint string) (string, error) {
@@ -1869,35 +1865,4 @@ func generatedKubeadmConfigPath(node inventory.PlannedNode, action string) strin
 		name = "node"
 	}
 	return "/var/lib/katl/test-artifacts/kubeadm-" + action + "-" + name + ".yaml"
-}
-
-func parseAdminCredentials(data []byte) (AdminCredentials, error) {
-	var parsed struct {
-		Clusters []struct {
-			Cluster struct {
-				CertificateAuthorityData string `yaml:"certificate-authority-data"`
-			} `yaml:"cluster"`
-		} `yaml:"clusters"`
-		Users []struct {
-			User struct {
-				ClientCertificateData string `yaml:"client-certificate-data"`
-				ClientKeyData         string `yaml:"client-key-data"`
-			} `yaml:"user"`
-		} `yaml:"users"`
-	}
-	if err := yaml.Unmarshal(data, &parsed); err != nil {
-		return AdminCredentials{}, fmt.Errorf("parse admin kubeconfig: %w", err)
-	}
-	if len(parsed.Clusters) == 0 || len(parsed.Users) == 0 {
-		return AdminCredentials{}, errors.New("admin kubeconfig is missing cluster or user data")
-	}
-	credentials := AdminCredentials{
-		CertificateAuthorityData: strings.TrimSpace(parsed.Clusters[0].Cluster.CertificateAuthorityData),
-		ClientCertificateData:    strings.TrimSpace(parsed.Users[0].User.ClientCertificateData),
-		ClientKeyData:            strings.TrimSpace(parsed.Users[0].User.ClientKeyData),
-	}
-	if credentials.CertificateAuthorityData == "" || credentials.ClientCertificateData == "" || credentials.ClientKeyData == "" {
-		return AdminCredentials{}, errors.New("admin kubeconfig is missing embedded credential data")
-	}
-	return credentials, nil
 }

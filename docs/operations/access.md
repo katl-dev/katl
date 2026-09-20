@@ -3,6 +3,18 @@
 Use the cluster configuration for installed node access from any workstation.
 A saved workstation context is optional convenience.
 
+```sh
+katlctl node status cp-1 --config ./cluster.yaml
+katlctl node logs cp-1 --config ./cluster.yaml --unit kubelet --follow
+katlctl cluster kubeconfig ./kubeconfig --config ./cluster.yaml
+```
+
+These commands do not save or select a workstation context. Kubeconfig retrieval
+writes a private file from a bootstrapped control plane without changing
+`~/.kube/config`; use `--force` to replace an existing different file.
+Remove a shortcut with `katlctl context delete NAME`. External cluster secrets
+and nodes are untouched. Deleting the current context leaves no current selection.
+
 ## Security Boundary
 
 The `katlc` agent listens on TCP `9443`. New configurations default to

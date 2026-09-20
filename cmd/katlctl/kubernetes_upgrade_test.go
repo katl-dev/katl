@@ -336,7 +336,7 @@ func TestKubernetesUpgradeResolvesClusterConfigWithoutContext(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	topology, version, err := resolveKubernetesUpgradeTopology(kubernetesUpgradeOptions{clusterConfig: configPath})
+	topology, version, err := resolveKubernetesUpgradeTopology(context.Background(), kubernetesUpgradeOptions{clusterConfig: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1227,16 +1227,9 @@ func (s *Server) adminKubeconfigOutput(record operation.OperationRecord) (string
 	if !record.Terminal || record.Result != operation.ResultSucceeded {
 		return "", status.Error(codes.FailedPrecondition, "admin kubeconfig output requires a successful terminal bootstrap-init operation")
 	}
-	root := strings.TrimSpace(s.Root)
-	if root == "" {
-		root = "/"
-	}
-	data, err := os.ReadFile(filepath.Join(root, "etc/kubernetes/admin.conf"))
+	data, err := s.readAdminKubeconfig()
 	if err != nil {
-		return "", status.Errorf(codes.FailedPrecondition, "read admin kubeconfig output: %v", err)
-	}
-	if strings.TrimSpace(string(data)) == "" {
-		return "", status.Error(codes.FailedPrecondition, "admin kubeconfig output is empty")
+		return "", err
 	}
 	return string(data), nil
 }

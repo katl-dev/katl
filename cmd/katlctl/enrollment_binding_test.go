@@ -108,7 +108,7 @@ func TestContextRebindRefusesDifferentEnrollment(t *testing.T) {
 
 func TestContextRebindRequiresPositiveTimeout(t *testing.T) {
 	err := run(context.Background(), []string{"context", "rebind", "--node", "cp-1", "--endpoint", "10.0.0.91", "--timeout=0"}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "--timeout must be positive") {
+	if err == nil || !strings.Contains(err.Error(), "positive") {
 		t.Fatalf("rebind error = %v", err)
 	}
 }

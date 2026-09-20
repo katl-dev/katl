@@ -102,10 +102,7 @@ func newKubernetesUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) 
 		Use:   "upgrade --config CLUSTER_CONFIG",
 		Short: "Upgrade Kubernetes control planes and workers online",
 		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, args []string) error {
-			if strings.TrimSpace(opts.clusterConfig) == "" && command.Flags().NFlag() == 0 {
-				return command.Help()
-			}
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runKubernetesUpgrade(ctx, opts, stdout, stderr)
 		},
 	}
@@ -120,7 +117,7 @@ func newKubernetesUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) 
 	cmd.Flags().StringVar(&opts.kubeconfig, "kubeconfig", "", "operator kubeconfig used with --cordon")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "validate the complete rollout without accepting operations")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "per-node operation timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	_ = stderr
 	return cmd
 }
@@ -141,7 +138,7 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 	if !opts.cordon && strings.TrimSpace(opts.kubeconfig) != "" {
 		return fmt.Errorf("--kubeconfig is only used with --cordon")
 	}
-	topology, desiredVersion, err := resolveKubernetesUpgradeTopology(opts)
+	topology, desiredVersion, err := resolveKubernetesUpgradeTopology(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -395,16 +392,16 @@ func waitKubernetesUpgrade(ctx context.Context, client agentapi.KatlcAgentClient
 	}
 }
 
-func resolveKubernetesUpgradeTopology(opts kubernetesUpgradeOptions) (workstation.ResolvedTopology, string, error) {
+func resolveKubernetesUpgradeTopology(ctx context.Context, opts kubernetesUpgradeOptions) (workstation.ResolvedTopology, string, error) {
 	path := strings.TrimSpace(opts.clusterConfig)
 	if path == "" {
 		return workstation.ResolvedTopology{}, "", fmt.Errorf("--config is required; use --config cluster.yaml after setting spec.kubernetes.version in the Git-managed ClusterConfig")
 	}
-	resolved, err := resolveClusterConfigTopology(path)
+	resolved, err := resolveClusterConfigTopology(ctx, path)
 	if err != nil {
 		return workstation.ResolvedTopology{}, "", err
 	}
-	mergeEnrolledTopology(&resolved, strings.TrimSpace(opts.configPath), strings.TrimSpace(opts.contextName))
+	mergeEnrolledTopology(ctx, &resolved, strings.TrimSpace(opts.configPath), strings.TrimSpace(opts.contextName))
 	version, err := kubernetesUpgradeConfigVersion(path)
 	if err != nil {
 		return workstation.ResolvedTopology{}, "", err

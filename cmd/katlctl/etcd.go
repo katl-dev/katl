@@ -56,7 +56,7 @@ func newEtcdCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 	}
 	members.Flags().StringVar(&statusOpts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	members.Flags().StringVar(&statusOpts.coordinator, "coordinator", "", "healthy control-plane node used for inspection")
-	members.Flags().StringVarP(&statusOpts.output, "output", "o", "text", "output format: text or json")
+	addOutputFlag(members, &statusOpts.output, "text", "text", "json")
 	cmd.AddCommand(members)
 
 	removeOpts := etcdRemoveOptions{etcdOptions: etcdOptions{output: "text"}, timeout: 5 * time.Minute}
@@ -74,7 +74,7 @@ func newEtcdCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 	remove.Flags().StringVar(&removeOpts.coordinator, "coordinator", "", "healthy surviving control-plane node")
 	remove.Flags().StringVar(&removeOpts.memberID, "member-id", "", "observed hexadecimal member ID to remove")
 	remove.Flags().DurationVar(&removeOpts.timeout, "timeout", removeOpts.timeout, "operation wait timeout")
-	remove.Flags().StringVarP(&removeOpts.output, "output", "o", "text", "output format: text or json")
+	addOutputFlag(remove, &removeOpts.output, "text", "text", "json")
 	cmd.AddCommand(remove)
 	_ = stderr
 	return cmd
@@ -89,7 +89,7 @@ func runEtcdMembers(ctx context.Context, opts etcdOptions, stdout, stderr io.Wri
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
-	inv, err := loadWipeInventory(opts.configPath, "", stderr)
+	inv, err := loadWipeInventory(ctx, opts.configPath, "", stderr)
 	if err != nil {
 		return err
 	}
@@ -97,10 +97,12 @@ func runEtcdMembers(ctx context.Context, opts etcdOptions, stdout, stderr io.Wri
 	if err != nil {
 		return err
 	}
-	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, coordinator.Name); err != nil {
+	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, coordinator.Name)
+	if err != nil {
 		return err
 	}
-	inv, err = loadWipeInventory(opts.configPath, "", stderr)
+	ctx = refreshed
+	inv, err = loadWipeInventory(ctx, opts.configPath, "", stderr)
 	if err != nil {
 		return err
 	}
@@ -127,7 +129,7 @@ func runEtcdRemove(ctx context.Context, opts etcdRemoveOptions, stdout, stderr i
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	inv, err := loadWipeInventory(opts.configPath, "", stderr)
+	inv, err := loadWipeInventory(ctx, opts.configPath, "", stderr)
 	if err != nil {
 		return err
 	}
@@ -135,10 +137,12 @@ func runEtcdRemove(ctx context.Context, opts etcdRemoveOptions, stdout, stderr i
 	if err != nil {
 		return err
 	}
-	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, coordinator.Name); err != nil {
+	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, coordinator.Name)
+	if err != nil {
 		return err
 	}
-	inv, err = loadWipeInventory(opts.configPath, "", stderr)
+	ctx = refreshed
+	inv, err = loadWipeInventory(ctx, opts.configPath, "", stderr)
 	if err != nil {
 		return err
 	}

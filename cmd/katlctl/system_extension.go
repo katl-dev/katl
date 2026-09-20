@@ -94,7 +94,7 @@ func newSystemExtensionInspectCommand(ctx context.Context, stdout io.Writer, val
 	}
 	cmd.Flags().StringVar(&architecture, "architecture", "", "optional target architecture compatibility check")
 	cmd.Flags().StringVar(&runtimeInterface, "runtime-interface", "", "optional target KatlOS runtime interface compatibility check")
-	cmd.Flags().StringVarP(&output, "output", "o", "text", "output format: text or json")
+	addOutputFlag(cmd, &output, "text", "text", "json")
 	return cmd
 }
 
@@ -192,7 +192,7 @@ func newSystemExtensionStatusCommand(ctx context.Context, stdout, stderr io.Writ
 	}
 	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "management request timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -203,7 +203,7 @@ func runSystemExtensionStatus(ctx context.Context, opts systemExtensionStatusOpt
 	if err := validateHostOutput(opts.output); err != nil {
 		return err
 	}
-	target, err := resolveManagementTarget(opts.target)
+	target, err := resolveManagementTarget(ctx, opts.target)
 	if err != nil {
 		return err
 	}

@@ -665,3 +665,41 @@ func TestInstallRequestRejectsOversizedResponse(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 }
+
+func TestInstallStatusConfigSelection(t *testing.T) {
+	server := httptest.NewServer(handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{}).Handler())
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "cluster.yaml")
+	// Status only needs addresses; credentials and host configuration files can be unavailable.
+	source := strings.Replace(configBundleSource(), "address: 10.0.0.11", "address: "+strings.TrimPrefix(server.URL, "http://"), 1)
+	source = strings.Replace(source, "managementAuthentication: mtls", "managementAuthentication: mtls\n  managementIdentity: unavailable-secret.yaml", 1)
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, selection := range [][]string{{}, {"cp-1"}, {"--node", "cp-1"}} {
+		var out bytes.Buffer
+		args := append([]string{"install", "status"}, selection...)
+		args = append(args, "--config", path, "-o", "json")
+		if err := run(context.Background(), args, &out, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		var report installHandoffReport
+		if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.Endpoint != server.URL {
+			t.Fatalf("endpoint %s", report.Endpoint)
+		}
+	}
+}
+
+func TestInstallReportShowsInstallationProgress(t *testing.T) {
+	var out bytes.Buffer
+	report := newInstallHandoffReport("http://192.0.2.1:8080", "cp-1", installTestStatus(handoff.HandoffAccepted, installstatus.StateRebootRequested, "Reboot"))
+	if err := writeInstallReport(&out, "text", report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "reboot-requested") || strings.Contains(out.String(), "install-starting") || !strings.Contains(out.String(), "cluster bootstrap") {
+		t.Fatalf("misleading final report: %s", &out)
+	}
+}

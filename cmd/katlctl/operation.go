@@ -103,7 +103,7 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "follow the operation until it reaches terminal state")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall status or watch timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -127,7 +127,7 @@ func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 	cmd.Flags().Int32Var(&opts.limit, "limit", opts.limit, "maximum operations to return")
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "list request timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -145,7 +145,7 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	target, err := resolveManagementTarget(managementTargetOptions{
+	target, err := resolveManagementTarget(ctx, managementTargetOptions{
 		clusterConfigPath: opts.clusterConfig, configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
 		endpoint: opts.endpoint,
 	})
@@ -202,7 +202,7 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	target, err := resolveManagementTarget(managementTargetOptions{
+	target, err := resolveManagementTarget(ctx, managementTargetOptions{
 		clusterConfigPath: opts.clusterConfig, configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
 		endpoint: opts.endpoint,
 	})

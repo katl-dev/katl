@@ -22,6 +22,8 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	KatlcAgent_GetNodeStatus_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetNodeStatus"
 	KatlcAgent_GetEtcdStatus_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetEtcdStatus"
+	KatlcAgent_GetKubeconfig_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetKubeconfig"
+	KatlcAgent_ReadJournal_FullMethodName              = "/katl.agent.v1.KatlcAgent/ReadJournal"
 	KatlcAgent_Reboot_FullMethodName                   = "/katl.agent.v1.KatlcAgent/Reboot"
 	KatlcAgent_Shutdown_FullMethodName                 = "/katl.agent.v1.KatlcAgent/Shutdown"
 	KatlcAgent_ValidateConfig_FullMethodName           = "/katl.agent.v1.KatlcAgent/ValidateConfig"
@@ -43,6 +45,8 @@ const (
 type KatlcAgentClient interface {
 	GetNodeStatus(ctx context.Context, in *GetNodeStatusRequest, opts ...grpc.CallOption) (*NodeStatus, error)
 	GetEtcdStatus(ctx context.Context, in *GetEtcdStatusRequest, opts ...grpc.CallOption) (*EtcdStatus, error)
+	GetKubeconfig(ctx context.Context, in *GetKubeconfigRequest, opts ...grpc.CallOption) (*KubeconfigResponse, error)
+	ReadJournal(ctx context.Context, in *JournalRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[JournalEntry], error)
 	Reboot(ctx context.Context, in *RebootRequest, opts ...grpc.CallOption) (*RebootAccepted, error)
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownAccepted, error)
 	ValidateConfig(ctx context.Context, in *ValidateConfigRequest, opts ...grpc.CallOption) (*ConfigValidationResult, error)
@@ -85,6 +89,35 @@ func (c *katlcAgentClient) GetEtcdStatus(ctx context.Context, in *GetEtcdStatusR
 	}
 	return out, nil
 }
+
+func (c *katlcAgentClient) GetKubeconfig(ctx context.Context, in *GetKubeconfigRequest, opts ...grpc.CallOption) (*KubeconfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(KubeconfigResponse)
+	err := c.cc.Invoke(ctx, KatlcAgent_GetKubeconfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) ReadJournal(ctx context.Context, in *JournalRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[JournalEntry], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[0], KatlcAgent_ReadJournal_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[JournalRequest, JournalEntry]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type KatlcAgent_ReadJournalClient = grpc.ServerStreamingClient[JournalEntry]
 
 func (c *katlcAgentClient) Reboot(ctx context.Context, in *RebootRequest, opts ...grpc.CallOption) (*RebootAccepted, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -138,7 +171,7 @@ func (c *katlcAgentClient) StageGeneration(ctx context.Context, in *GenerationAp
 
 func (c *katlcAgentClient) StageHostUpgradeArtifact(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[0], KatlcAgent_StageHostUpgradeArtifact_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[1], KatlcAgent_StageHostUpgradeArtifact_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +224,7 @@ func (c *katlcAgentClient) ListOperations(ctx context.Context, in *ListOperation
 
 func (c *katlcAgentClient) WatchOperation(ctx context.Context, in *WatchOperationRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperationEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[1], KatlcAgent_WatchOperation_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &KatlcAgent_ServiceDesc.Streams[2], KatlcAgent_WatchOperation_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -234,6 +267,8 @@ func (c *katlcAgentClient) GetGeneration(ctx context.Context, in *GetGenerationR
 type KatlcAgentServer interface {
 	GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error)
 	GetEtcdStatus(context.Context, *GetEtcdStatusRequest) (*EtcdStatus, error)
+	GetKubeconfig(context.Context, *GetKubeconfigRequest) (*KubeconfigResponse, error)
+	ReadJournal(*JournalRequest, grpc.ServerStreamingServer[JournalEntry]) error
 	Reboot(context.Context, *RebootRequest) (*RebootAccepted, error)
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownAccepted, error)
 	ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error)
@@ -263,6 +298,14 @@ func (UnimplementedKatlcAgentServer) GetNodeStatus(context.Context, *GetNodeStat
 
 func (UnimplementedKatlcAgentServer) GetEtcdStatus(context.Context, *GetEtcdStatusRequest) (*EtcdStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetEtcdStatus not implemented")
+}
+
+func (UnimplementedKatlcAgentServer) GetKubeconfig(context.Context, *GetKubeconfigRequest) (*KubeconfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetKubeconfig not implemented")
+}
+
+func (UnimplementedKatlcAgentServer) ReadJournal(*JournalRequest, grpc.ServerStreamingServer[JournalEntry]) error {
+	return status.Error(codes.Unimplemented, "method ReadJournal not implemented")
 }
 
 func (UnimplementedKatlcAgentServer) Reboot(context.Context, *RebootRequest) (*RebootAccepted, error) {
@@ -372,6 +415,35 @@ func _KatlcAgent_GetEtcdStatus_Handler(srv interface{}, ctx context.Context, dec
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _KatlcAgent_GetKubeconfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetKubeconfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).GetKubeconfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_GetKubeconfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).GetKubeconfig(ctx, req.(*GetKubeconfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KatlcAgent_ReadJournal_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(JournalRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(KatlcAgentServer).ReadJournal(m, &grpc.GenericServerStream[JournalRequest, JournalEntry]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type KatlcAgent_ReadJournalServer = grpc.ServerStreamingServer[JournalEntry]
 
 func _KatlcAgent_Reboot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RebootRequest)
@@ -605,6 +677,10 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _KatlcAgent_GetEtcdStatus_Handler,
 		},
 		{
+			MethodName: "GetKubeconfig",
+			Handler:    _KatlcAgent_GetKubeconfig_Handler,
+		},
+		{
 			MethodName: "Reboot",
 			Handler:    _KatlcAgent_Reboot_Handler,
 		},
@@ -650,6 +726,11 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "ReadJournal",
+			Handler:       _KatlcAgent_ReadJournal_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "StageHostUpgradeArtifact",
 			Handler:       _KatlcAgent_StageHostUpgradeArtifact_Handler,

@@ -236,7 +236,7 @@ func (cfg Config) Validate() error {
 	}
 	currentContext := strings.TrimSpace(cfg.CurrentContext)
 	if currentContext == "" {
-		return fmt.Errorf("currentContext is required")
+		return nil
 	}
 	if _, ok := contexts[currentContext]; !ok {
 		return fmt.Errorf("currentContext %q references unknown context", currentContext)
@@ -251,6 +251,9 @@ func (cfg Config) SelectedTopology(contextName string) (Topology, error) {
 	contextName = strings.TrimSpace(contextName)
 	if contextName == "" {
 		contextName = strings.TrimSpace(cfg.CurrentContext)
+	}
+	if contextName == "" {
+		return Topology{}, fmt.Errorf("no current context; select one with 'katlctl context use NAME', or pass --config or --context")
 	}
 	contexts := make(map[string]Context, len(cfg.Contexts))
 	for _, ctx := range cfg.Contexts {

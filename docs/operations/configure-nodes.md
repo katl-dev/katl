@@ -7,6 +7,7 @@ node and for kubeadm-owned Kubernetes configuration.
 Apply to every node, or select nodes by name:
 
 ```sh
+katlctl cluster apply --config ./cluster.yaml --plan
 katlctl cluster apply --config ./cluster.yaml
 katlctl cluster apply --config ./cluster.yaml --node cp-1
 katlctl cluster apply --config ./cluster.yaml --node cp-1 --node worker-1
@@ -34,6 +35,12 @@ Use per-node kubelet configuration for settings that should affect only one node
 
 Unchanged configuration is a no-op. Host changes that need a reboot are staged
 for the next boot and reported; follow the reported reboot guidance.
+Use `--mode live` to refuse reboot-requiring changes, or `--mode next-boot` to
+stage host changes explicitly. Planning validates selected host changes without
+accepting operations; Kubernetes component readiness is checked on apply.
+`--timeout` bounds the complete operation and `--output json` emits a structured
+report separately from progress. Routine apply and planning never save or select
+a workstation context.
 
 ## Supported Input
 

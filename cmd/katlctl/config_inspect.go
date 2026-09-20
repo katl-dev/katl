@@ -37,7 +37,7 @@ func newConfigResolveCommand(stdout, stderr io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.node, "node", "", "node name to resolve (required for multi-node configs)")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: yaml or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "yaml", "json")
 	return cmd
 }
 
@@ -76,7 +76,7 @@ func newConfigDiffCommand(stdout, stderr io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.node, "node", "", "node name to compare (required for multi-node configs)")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text, yaml, or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "yaml", "json")
 	return cmd
 }
 

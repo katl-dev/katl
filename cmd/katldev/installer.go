@@ -176,6 +176,13 @@ func loadInstallerManager(stdout, stderr io.Writer) (installerManager, error) {
 }
 
 func repositoryRoot() (string, error) {
+	// jj workspaces can be nested beneath a different Git checkout.
+	// Resolve the nearest workspace before falling back to plain Git.
+	if output, err := exec.Command("jj", "root").Output(); err == nil {
+		if root := strings.TrimSpace(string(output)); root != "" {
+			return filepath.Abs(root)
+		}
+	}
 	output, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("find Katl checkout: %w: %s", err, strings.TrimSpace(string(output)))

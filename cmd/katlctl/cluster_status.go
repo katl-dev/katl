@@ -70,16 +70,16 @@ func newClusterStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 	cmd.Flags().Lookup("context-file").Hidden = true
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "optional saved context created by 'katlctl context save'")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "per-node management request timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
-func resolveClusterTopology(opts clusterStatusOptions) (workstation.ResolvedTopology, error) {
+func resolveClusterTopology(ctx context.Context, opts clusterStatusOptions) (workstation.ResolvedTopology, error) {
 	if strings.TrimSpace(opts.clusterConfig) != "" {
 		if strings.TrimSpace(opts.contextFile) != "" || strings.TrimSpace(opts.contextName) != "" {
 			return workstation.ResolvedTopology{}, fmt.Errorf("--config cannot be combined with --context or --context-file")
 		}
-		return resolveClusterConfigTopology(opts.clusterConfig)
+		return resolveClusterConfigTopology(ctx, opts.clusterConfig)
 	}
 	resolved, err := workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: opts.contextFile, ContextName: opts.contextName})
 	if err != nil && errors.Is(err, os.ErrNotExist) {
@@ -95,7 +95,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
-	topology, err := resolveClusterTopology(opts)
+	topology, err := resolveClusterTopology(ctx, opts)
 	if err != nil {
 		return err
 	}

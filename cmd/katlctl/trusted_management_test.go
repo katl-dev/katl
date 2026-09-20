@@ -122,7 +122,43 @@ func TestManagementJourney(t *testing.T) {
 					if err != nil {
 						t.Fatalf("%s using %s: %v", workstationName, input, err)
 					}
+					if _, err := os.Stat(contextPath); !os.IsNotExist(err) {
+						t.Fatalf("planning created workstation state: %v", err)
+					}
 				}
+				kubePath := filepath.Join(dir, workstationName, "kubeconfig")
+				for i := 0; i < 2; i++ {
+					if err := run(context.Background(), []string{"cluster", "kubeconfig", kubePath, "--config", config}, io.Discard, io.Discard); err != nil {
+						t.Fatal(err)
+					}
+				}
+				kubeData, err := os.ReadFile(kubePath)
+				if err != nil || !bytes.Contains(kubeData, []byte("server: https://127.0.0.1:6443")) {
+					t.Fatalf("retrieved kubeconfig endpoint: %s, %v", kubeData, err)
+				}
+				info, err := os.Stat(kubePath)
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("private kubeconfig mode: %v", err)
+				}
+				if err := os.WriteFile(kubePath, []byte("other cluster"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := run(context.Background(), []string{"cluster", "kubeconfig", kubePath, "--config", config}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "--force") {
+					t.Fatalf("overwrite error: %v", err)
+				}
+				var logs bytes.Buffer
+				if err := run(context.Background(), []string{"node", "logs", "cp-1", "--config", config, "--unit", "kubelet"}, &logs, io.Discard); err != nil {
+					t.Fatal(err)
+				}
+				if logs.String() != "kubelet ready\n" {
+					t.Fatalf("logs %q", &logs)
+				}
+				if _, err := os.Stat(contextPath); !os.IsNotExist(err) {
+					t.Fatalf("read commands created context: %v", err)
+				}
+			}
+			if err := run(context.Background(), []string{"context", "save", "--config", config}, io.Discard, io.Discard); err != nil {
+				t.Fatal(err)
 			}
 			saved, err := workstation.Load(contextPath)
 			if err != nil {
@@ -143,6 +179,17 @@ func TestManagementJourney(t *testing.T) {
 			saved = saved.UpsertCluster("old", wrong)
 			if err := workstation.Save(contextPath, saved); err != nil {
 				t.Fatal(err)
+			}
+			before, err := os.ReadFile(contextPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := run(context.Background(), []string{"cluster", "wipe", "--config", config, "--all", "--plan"}, io.Discard, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(contextPath)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("config-based planning modified saved contexts: %v", err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -175,6 +222,14 @@ func TestManagementJourney(t *testing.T) {
 
 type managementJourneyServer struct {
 	clusterApplyIdentityServer
+}
+
+func (*managementJourneyServer) GetKubeconfig(context.Context, *agentapi.GetKubeconfigRequest) (*agentapi.KubeconfigResponse, error) {
+	return &agentapi.KubeconfigResponse{Kubeconfig: []byte("clusters: [{cluster: {certificate-authority-data: Q0E=}}]\nusers: [{user: {client-certificate-data: Q0VSVA==, client-key-data: S0VZ}}]\n")}, nil
+}
+
+func (*managementJourneyServer) ReadJournal(request *agentapi.JournalRequest, stream grpc.ServerStreamingServer[agentapi.JournalEntry]) error {
+	return stream.Send(&agentapi.JournalEntry{Line: "kubelet ready"})
 }
 
 func (*managementJourneyServer) GetEtcdStatus(context.Context, *agentapi.GetEtcdStatusRequest) (*agentapi.EtcdStatus, error) {

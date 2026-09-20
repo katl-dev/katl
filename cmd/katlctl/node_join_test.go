@@ -26,7 +26,8 @@ func TestNodeJoin(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := writeClusterConfig(t)
-			writeTestEnrollmentContext(t, "lab",
+			writeTestEnrollmentContext(
+				t, "lab",
 				workstation.Node{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine-cp-1"},
 				workstation.Node{Name: "node-2", ManagementEndpoint: "10.0.0.12:9443", SystemRole: test.role, EnrollmentID: "enrollment-node-2", MachineID: "machine-node-2"},
 				workstation.Node{Name: "offline", ManagementEndpoint: "192.0.2.99:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-offline", MachineID: "machine-offline"},
@@ -46,7 +47,7 @@ func TestNodeJoin(t *testing.T) {
         systemDisk:
           byID: /dev/disk/by-id/ata-offline-root
 `, test.role == inventory.RoleControlPlane)
-			if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			coordinator := &fakeKatlcAgentClient{

@@ -83,7 +83,7 @@ func TestWipeNodeResumesAfterEtcdMemberWasRemoved(t *testing.T) {
 	}
 	wantCalls := [][]string{
 		{"kubectl", "--kubeconfig", "admin.conf", "cordon", "cp-3"},
-		{"kubectl", "--kubeconfig", "admin.conf", "drain", "cp-3", "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--timeout=25m"},
+		{"kubectl", "--kubeconfig", "admin.conf", "drain", "cp-3", "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--timeout=25m0s"},
 		{"kubectl", "--kubeconfig", "admin.conf", "--server=https://10.0.0.11:6443", "delete", "node", "cp-3", "--ignore-not-found=true"},
 	}
 	if !reflect.DeepEqual(kubectl.calls, wantCalls) {

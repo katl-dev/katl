@@ -11,12 +11,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -77,7 +79,9 @@ const (
 )
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "katlctl: %v\n", err)
 		os.Exit(1)
 	}
@@ -95,13 +99,18 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 		Short: "Install and manage KatlOS clusters",
 		Long: `katlctl installs and manages KatlOS nodes and their Kubernetes cluster.
 
-Start with "katlctl install discover" for a waiting installer or
-"katlctl context show" to inspect the current saved cluster.`,
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		CompletionOptions: cobra.CompletionOptions{
-			DisableDefaultCmd: true,
-		},
+Start with config init (prepare configuration), install discover (find installers),
+install apply (install each node), then cluster bootstrap (start Kubernetes).
+Use cluster status to inspect the cluster, cluster apply to change configuration,
+node join to add an installed node, node upgrade to upgrade KatlOS, and
+kubernetes upgrade to apply the Kubernetes version in your configuration.
+
+Pass --config ./cluster.yaml to select your cluster. A saved context is an optional
+shortcut for management commands, not a requirement. New clusters use trusted-network
+management; mTLS is opt-in. Run any command with --help for examples and flags.`,
+		SilenceUsage:      true,
+		SilenceErrors:     true,
+		PersistentPreRunE: validateCommandFlags,
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
 		},
@@ -109,6 +118,7 @@ Start with "katlctl install discover" for a waiting installer or
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 	cmd.Version = fmt.Sprintf("version=%s commit=%s date=%s", version, commit, date)
+	cmd.Flags().Bool("version", false, "print katlctl version")
 	cmd.SetVersionTemplate("katlctl {{.Version}}\n")
 	cmd.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -122,6 +132,7 @@ Start with "katlctl install discover" for a waiting installer or
 
 	clusterCmd := &cobra.Command{Use: "cluster", Short: "Cluster lifecycle operations"}
 	clusterCmd.AddCommand(newClusterStatusCommand(ctx, stdout, stderr))
+	clusterCmd.AddCommand(newClusterKubeconfigCommand(ctx, stdout))
 	clusterCmd.AddCommand(newClusterBootstrapCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newClusterApplyCommand(ctx, stdout, stderr))
 	clusterCmd.AddCommand(newEtcdCommand(ctx, stdout, stderr))
@@ -133,11 +144,11 @@ Start with "katlctl install discover" for a waiting installer or
 	kubernetesCmd.AddCommand(newKubernetesUpgradeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(kubernetesCmd)
 
-	managementCmd := &cobra.Command{Use: "management", Short: "Recover Katl management access", Example: "katlctl management identity path homelab"}
+	managementCmd := &cobra.Command{Use: "management", Short: "Manage opt-in mTLS credentials", Example: "katlctl management identity create --config cluster.yaml"}
 	managementCmd.AddCommand(newManagementIdentityCommand(stdout, stderr))
 	cmd.AddCommand(managementCmd)
 
-	configCmd := &cobra.Command{Use: "config", Short: "Create and compile ClusterConfig"}
+	configCmd := &cobra.Command{Use: "config", Short: "Prepare, validate, and compare cluster configuration"}
 	configCmd.AddCommand(newConfigInitCommand(ctx, stdout, stderr))
 	configCmd.AddCommand(newConfigValidateCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigSchemaCommand(stdout, stderr))
@@ -156,6 +167,7 @@ Start with "katlctl install discover" for a waiting installer or
 	contextCmd.AddCommand(newContextListCommand(stdout, stderr))
 	contextCmd.AddCommand(newContextCurrentCommand(stdout, stderr))
 	contextCmd.AddCommand(newContextUseCommand(stdout, stderr))
+	contextCmd.AddCommand(newContextDeleteCommand(stdout))
 	topologyCmd := newConfigTopologyCommand(stdout, stderr)
 	topologyCmd.Use = "show"
 	topologyCmd.Short = "Show the selected cluster and its nodes"
@@ -167,6 +179,7 @@ Start with "katlctl install discover" for a waiting installer or
 
 	nodeCmd := &cobra.Command{Use: "node", Short: "Manage individual KatlOS nodes"}
 	nodeCmd.AddCommand(newHostStatusCommand(ctx, stdout, stderr))
+	nodeCmd.AddCommand(newNodeLogsCommand(ctx, stdout))
 	nodeCmd.AddCommand(newHostRebootCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostShutdownCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostUpgradeCommand(ctx, stdout, stderr))
@@ -259,7 +272,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl install ssh":                 "katlctl install ssh --config cluster.yaml --node cp-1",
 		"katlctl install status":              "katlctl install status",
 		"katlctl operations":                  "katlctl operations list --config cluster.yaml --node cp-1",
-		"katlctl operations status":           "katlctl operations status OPERATION_ID --config cluster.yaml --node cp-1",
+		"katlctl operations status":           "katlctl operations status --config cluster.yaml --node cp-1 --watch",
 		"katlctl operations list":             "katlctl operations list --config cluster.yaml --node cp-1",
 		"katlctl node":                        "katlctl node status cp-1 --config cluster.yaml",
 		"katlctl node status":                 "katlctl node status cp-1 --config cluster.yaml",
@@ -279,7 +292,9 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 	}
 	var visit func(*cobra.Command)
 	visit = func(command *cobra.Command) {
-		command.Example = examples[command.CommandPath()]
+		if command.Example == "" {
+			command.Example = examples[command.CommandPath()]
+		}
 		for _, child := range command.Commands() {
 			visit(child)
 		}
@@ -321,26 +336,27 @@ var katlOSReleasePattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9
 func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := hostUpgradeOptions{actor: "katlctl node upgrade", waitTimeout: 30 * time.Minute, output: "text"}
 	cmd := &cobra.Command{
-		Use:   "upgrade [VERSION] [NODE]",
+		Use:   "upgrade [NODE]",
 		Short: "Upgrade one KatlOS node and verify its next boot",
 		Long: `Upgrade one KatlOS node to a published KatlOS release or a locally built image, reboot it, and verify that KatlOS and any existing Kubernetes role return healthy.
 
-Use the same ClusterConfig used to install the node. --artifact accepts an upgrade image and its generated .json metadata without requiring a published release. --endpoint can override the node's recorded address when DHCP or local routing changed. A saved katlctl context is optional shorthand for repeated commands.`,
-		Args: cobra.MaximumNArgs(2),
+Use --version VERSION for a published release, or --artifact for an upgrade image and its generated .json metadata. Use the same ClusterConfig used to install the node. --endpoint can override the node's recorded address when DHCP or local routing changed. A saved katlctl context is optional shorthand for repeated commands.`,
+		Example: "katlctl node upgrade cp-1 --config cluster.yaml --version 2026.9.0 --plan\nkatlctl node upgrade cp-1 --config cluster.yaml --artifact ./katlos-upgrade.squashfs",
+		Args:    cobra.MaximumNArgs(2),
 		RunE: func(command *cobra.Command, args []string) error {
-			if strings.TrimSpace(opts.artifact) != "" {
+			if strings.TrimSpace(opts.artifact) != "" || strings.TrimSpace(opts.version) != "" {
 				if len(args) > 1 {
-					return fmt.Errorf("--artifact accepts at most one positional NODE")
+					return fmt.Errorf("--version and --artifact accept at most one positional NODE")
 				}
-				if len(args) == 1 && katlOSReleasePattern.MatchString(strings.TrimPrefix(strings.TrimSpace(args[0]), "v")) {
+				if len(args) == 1 && opts.artifact != "" && katlOSReleasePattern.MatchString(strings.TrimPrefix(strings.TrimSpace(args[0]), "v")) {
 					return fmt.Errorf("VERSION cannot be combined with --artifact; pass NODE as the positional argument or with --node")
 				}
 				if err := selectHostNode(&opts.target.nodeName, args); err != nil {
 					return err
 				}
 			} else {
-				if len(args) == 0 {
-					return command.Help()
+				if len(args) == 0 || !katlOSReleasePattern.MatchString(strings.TrimPrefix(strings.TrimSpace(args[0]), "v")) {
+					return fmt.Errorf("--version VERSION or --artifact is required; for example: katlctl node upgrade NODE --version VERSION --config cluster.yaml")
 				}
 				opts.version = args[0]
 				if len(args) == 2 {
@@ -353,14 +369,16 @@ Use the same ClusterConfig used to install the node. --artifact accepts an upgra
 		},
 	}
 	addManagementTargetFlags(cmd, &opts.target)
+	cmd.Flags().StringVar(&opts.version, "version", "", "published KatlOS release to install")
 	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "locally built KatlOS upgrade image (uses PATH.json metadata)")
+	cmd.MarkFlagsMutuallyExclusive("version", "artifact")
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
 	cmd.Flags().Lookup("actor").Hidden = true
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "validate without accepting an operation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -371,6 +389,8 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if opts.waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
+	ctx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
+	defer cancel()
 	var localArtifact *hostUpgradeArtifact
 	if strings.TrimSpace(opts.artifact) != "" {
 		artifact, err := readHostUpgradeArtifact(opts.artifact)
@@ -393,7 +413,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	request := operation.HostUpgrade{
 		CandidateGenerationID: "katlos-" + opts.version,
 	}
-	target, err := resolveManagementTarget(opts.target)
+	target, err := resolveManagementTarget(ctx, opts.target)
 	if err != nil {
 		return err
 	}
@@ -766,11 +786,11 @@ type wipeClusterOptions struct {
 	clientRequestID   string
 	planOnly          bool
 	noWait            bool
-	timeout           string
+	timeout           time.Duration
 	output            string
 }
 
-const defaultWipeTimeout = "25m"
+const defaultWipeTimeout = 25 * time.Minute
 
 func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
 	opts := wipeClusterOptions{command: commandName, output: "text"}
@@ -795,8 +815,8 @@ func newWipeClusterCommand(ctx context.Context, stdout, stderr io.Writer, comman
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operations")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after nodes accept their operations")
-	cmd.Flags().StringVar(&opts.timeout, "timeout", defaultWipeTimeout, "operation and wait timeout duration")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", defaultWipeTimeout, "operation and wait timeout (maximum 25m)")
+	addOutputFlag(cmd, &opts.output, "text", "text", "json")
 	cmd.Flags().Var(&opts.selectedNodes, "node", "inventory node name to wipe; may be repeated")
 	return cmd
 }
@@ -810,8 +830,8 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	if err != nil {
 		return err
 	}
-	waitTimeout, err := time.ParseDuration(opts.timeout)
-	if err != nil || waitTimeout <= 0 {
+	waitTimeout := opts.timeout
+	if waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be a positive duration")
 	}
 	if waitTimeout > 25*time.Minute {
@@ -821,10 +841,12 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		return fmt.Errorf("--all and --node cannot be combined")
 	}
 
-	if err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, opts.selectedNodes.values...); err != nil {
+	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, opts.selectedNodes.values...)
+	if err != nil {
 		return err
 	}
-	targets, partial, err := resolveWipeClusterTargets(opts, stderr)
+	ctx = refreshed
+	targets, partial, err := resolveWipeClusterTargets(ctx, opts, stderr)
 	if err != nil {
 		return err
 	}
@@ -858,7 +880,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		report.NodeLocalOperations = plannedWipeClusterOperations(targets)
 		return printWipeClusterReport(stdout, report)
 	}
-	submitErr := submitWipeCluster(ctx, connector, &report, targets, statuses, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
+	submitErr := submitWipeCluster(ctx, connector, &report, targets, statuses, requestID, opts.timeout.String(), opts.noWait, waitTimeout, stderr)
 	if submitErr == nil {
 		report.NextAction = wipeNextAction(opts.noWait)
 	}
@@ -868,7 +890,7 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	return submitErr
 }
 
-func resolveWipeClusterTargets(opts wipeClusterOptions, stderr io.Writer) ([]inventory.PlannedNode, bool, error) {
+func resolveWipeClusterTargets(ctx context.Context, opts wipeClusterOptions, stderr io.Writer) ([]inventory.PlannedNode, bool, error) {
 	hasExplicitTopology := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != ""
 	if !hasExplicitTopology {
 		topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
@@ -896,11 +918,11 @@ func resolveWipeClusterTargets(opts wipeClusterOptions, stderr io.Writer) ([]inv
 		return wipeClusterTargets(plan, opts.all, opts.selectedNodes.values)
 	}
 
-	inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath, stderr)
+	inv, err := loadWipeInventory(ctx, opts.configPath, opts.inventoryPath, stderr)
 	if err != nil {
 		return nil, false, err
 	}
-	inv, err = overlayWipeContext(inv, opts.workstationConfig, opts.contextName, opts.configPath)
+	inv, err = overlayWipeContext(ctx, inv, opts.workstationConfig, opts.contextName, opts.configPath)
 	if err != nil {
 		return nil, false, err
 	}
@@ -922,22 +944,26 @@ type wipeNodeOptions struct {
 	clientRequestID   string
 	planOnly          bool
 	noWait            bool
-	timeout           string
+	timeout           time.Duration
 	output            string
 }
 
 func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandName string) *cobra.Command {
 	opts := wipeNodeOptions{command: commandName, output: "text"}
+	var nodeName string
 	cmd := &cobra.Command{
 		Use:   "wipe NODE",
 		Short: "Remove one node and reset it for installer-media reinstall",
 		Long:  "Remove one node from Kubernetes and erase its KatlOS boot artifacts. A control-plane node can be wiped before bootstrap; an enrolled control-plane requires etcd membership coordination. The node must boot installer media or PXE before it can be used again.",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return command.Help()
+		RunE: func(_ *cobra.Command, args []string) error {
+			if err := selectHostNode(&nodeName, args); err != nil {
+				return err
 			}
-			opts.selectedNodes.values = []string{args[0]}
+			if strings.TrimSpace(nodeName) == "" {
+				return fmt.Errorf("NODE or --node is required; use 'katlctl node wipe NODE --config cluster.yaml --plan' to review the wipe")
+			}
+			opts.selectedNodes.values = []string{nodeName}
 			return runWipeNodeOptions(ctx, opts, stdout, stderr)
 		},
 	}
@@ -948,12 +974,13 @@ func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandNa
 	cmd.Flags().Lookup("context-file").Hidden = true
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "katlctl context name")
 	cmd.Flags().StringVar(&opts.kubeconfigPath, "kubeconfig", "", "path to operator kubeconfig")
+	cmd.Flags().StringVar(&nodeName, "node", "", "node name (alternative to NODE)")
 	cmd.Flags().StringVar(&opts.clientRequestID, "client-request-id", "", "optional idempotency key for advanced retry control")
 	cmd.Flags().Lookup("client-request-id").Hidden = true
 	cmd.Flags().BoolVar(&opts.planOnly, "plan", false, "print the destructive wipe plan without accepting node-local operation")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
-	cmd.Flags().StringVar(&opts.timeout, "timeout", defaultWipeTimeout, "operation and wait timeout duration")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", defaultWipeTimeout, "operation and wait timeout (maximum 25m)")
+	addOutputFlag(cmd, &opts.output, "text", "text", "json")
 	return cmd
 }
 
@@ -969,18 +996,20 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	if err != nil {
 		return err
 	}
-	waitTimeout, err := time.ParseDuration(opts.timeout)
-	if err != nil || waitTimeout <= 0 {
+	waitTimeout := opts.timeout
+	if waitTimeout <= 0 {
 		return fmt.Errorf("--timeout must be a positive duration")
 	}
 	if waitTimeout > 25*time.Minute {
 		return fmt.Errorf("--timeout must not exceed 25m")
 	}
 
-	if err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, opts.selectedNodes.values...); err != nil {
+	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, opts.selectedNodes.values...)
+	if err != nil {
 		return err
 	}
-	target, partial, err := resolveWipeNodeTarget(opts, stderr)
+	ctx = refreshed
+	target, partial, err := resolveWipeNodeTarget(ctx, opts, stderr)
 	if err != nil {
 		return err
 	}
@@ -1006,16 +1035,18 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	notConfigured := strings.TrimSpace(statuses[target.Name].GetKubernetes().GetState()) == "not-configured"
 	var etcdPlan etcdRemovalPlan
 	if target.SystemRole == inventory.RoleControlPlane && !notConfigured {
-		fullInventory, inventoryErr := wipeNodeInventory(opts, nil)
+		fullInventory, inventoryErr := wipeNodeInventory(ctx, opts, nil)
 		if inventoryErr != nil {
 			return inventoryErr
 		}
 		if coordinator, selectErr := selectEtcdCoordinator(fullInventory, "", target.Name); selectErr == nil {
-			if err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, coordinator.Name); err != nil {
+			refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, coordinator.Name)
+			if err != nil {
 				return err
 			}
+			ctx = refreshed
 		}
-		fullInventory, err = wipeNodeInventory(opts, nil)
+		fullInventory, err = wipeNodeInventory(ctx, opts, nil)
 		if err != nil {
 			return err
 		}
@@ -1063,7 +1094,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		}
 		cleanup := wipeNodeCleanupResult{Status: "succeeded"}
 		if target.SystemRole == inventory.RoleControlPlane {
-			cleanup = prepareWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
+			cleanup = prepareWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, opts.timeout.String())
 			if !etcdPlan.AlreadyGone {
 				err = submitEtcdRemoval(ctx, etcdPlan, waitTimeout, stderr, "katlctl node wipe")
 			}
@@ -1088,7 +1119,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 				cleanup.Status = deleted.Status
 			}
 		} else {
-			cleanup = cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, strings.TrimSpace(opts.timeout))
+			cleanup = cleanupWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, opts.timeout.String())
 		}
 		report.KubernetesCleanup = cleanup.Status
 		report.KubernetesDiagnostics = cleanup.Diagnostics
@@ -1100,7 +1131,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		}
 	}
 
-	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, statuses, requestID, strings.TrimSpace(opts.timeout), opts.noWait, waitTimeout, stderr)
+	submitErr := submitWipeCluster(ctx, connector, &report.wipeClusterReport, []inventory.PlannedNode{target}, statuses, requestID, opts.timeout.String(), opts.noWait, waitTimeout, stderr)
 	if submitErr == nil {
 		report.NextAction = wipeNextAction(opts.noWait)
 	}
@@ -1110,13 +1141,13 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 	return submitErr
 }
 
-func wipeNodeInventory(opts wipeNodeOptions, stderr io.Writer) (inventory.Inventory, error) {
+func wipeNodeInventory(ctx context.Context, opts wipeNodeOptions, stderr io.Writer) (inventory.Inventory, error) {
 	if strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != "" {
-		inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath, stderr)
+		inv, err := loadWipeInventory(ctx, opts.configPath, opts.inventoryPath, stderr)
 		if err != nil {
 			return inventory.Inventory{}, err
 		}
-		return overlayWipeContext(inv, opts.workstationConfig, opts.contextName, opts.configPath)
+		return overlayWipeContext(ctx, inv, opts.workstationConfig, opts.contextName, opts.configPath)
 	}
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
 		ConfigPath:  strings.TrimSpace(opts.workstationConfig),
@@ -1139,7 +1170,7 @@ func wipeNodeInventory(opts wipeNodeOptions, stderr io.Writer) (inventory.Invent
 	return inv, nil
 }
 
-func resolveWipeNodeTarget(opts wipeNodeOptions, stderr io.Writer) (inventory.PlannedNode, bool, error) {
+func resolveWipeNodeTarget(ctx context.Context, opts wipeNodeOptions, stderr io.Writer) (inventory.PlannedNode, bool, error) {
 	hasExplicitTopology := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.inventoryPath) != ""
 	if !hasExplicitTopology {
 		topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
@@ -1169,11 +1200,11 @@ func resolveWipeNodeTarget(opts wipeNodeOptions, stderr io.Writer) (inventory.Pl
 		return inventory.PlannedNode{}, false, fmt.Errorf("node %q is not in context %q", opts.selectedNodes.values[0], topology.ContextName)
 	}
 
-	inv, err := loadWipeInventory(opts.configPath, opts.inventoryPath, stderr)
+	inv, err := loadWipeInventory(ctx, opts.configPath, opts.inventoryPath, stderr)
 	if err != nil {
 		return inventory.PlannedNode{}, false, err
 	}
-	inv, err = overlayWipeContext(inv, opts.workstationConfig, opts.contextName, opts.configPath)
+	inv, err = overlayWipeContext(ctx, inv, opts.workstationConfig, opts.contextName, opts.configPath)
 	if err != nil {
 		return inventory.PlannedNode{}, false, err
 	}
@@ -1188,7 +1219,7 @@ func resolveWipeNodeTarget(opts wipeNodeOptions, stderr io.Writer) (inventory.Pl
 	return targets[0], partial, nil
 }
 
-func loadWipeInventory(configPath, inventoryPath string, stderr io.Writer) (inventory.Inventory, error) {
+func loadWipeInventory(ctx context.Context, configPath, inventoryPath string, stderr io.Writer) (inventory.Inventory, error) {
 	inputs := 0
 	for _, value := range []string{configPath, inventoryPath} {
 		if strings.TrimSpace(value) != "" {
@@ -1207,7 +1238,7 @@ func loadWipeInventory(configPath, inventoryPath string, stderr io.Writer) (inve
 	}
 	inv := config.Bundle.Manifest.Cluster.BootstrapInventory
 	for index := range inv.Nodes {
-		enrolled, ok := enrolledTarget("", "", config.Bundle.Manifest.ClusterName, inv.Nodes[index].Name)
+		enrolled, ok := enrolledTarget(ctx, "", "", config.Bundle.Manifest.ClusterName, inv.Nodes[index].Name)
 		if !ok {
 			continue
 		}
@@ -1222,7 +1253,10 @@ func loadWipeInventory(configPath, inventoryPath string, stderr io.Writer) (inve
 	return inv, nil
 }
 
-func overlayWipeContext(inv inventory.Inventory, configPath, contextName, sourcePath string) (inventory.Inventory, error) {
+func overlayWipeContext(ctx context.Context, inv inventory.Inventory, configPath, contextName, sourcePath string) (inventory.Inventory, error) {
+	if sourcePath != "" && ctx.Value(observedManagementKey{}) != nil {
+		return inv, nil
+	}
 	if strings.TrimSpace(configPath) == "" && strings.TrimSpace(contextName) == "" {
 		complete := len(inv.Nodes) > 0
 		for _, node := range inv.Nodes {
@@ -1885,7 +1919,7 @@ func newConfigTopologyCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
 	cmd.Flags().Lookup("context-file").Hidden = true
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "context name")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
+	addOutputFlag(cmd, &opts.output, "text", "text", "json")
 	return cmd
 }
 
@@ -1971,7 +2005,7 @@ func newConfigValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 			return runConfigValidate(args[0], output, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVarP(&output, "output", "o", output, "output format: text or json")
+	addOutputFlag(cmd, &output, output, "text", "json")
 	return cmd
 }
 
@@ -2235,7 +2269,7 @@ func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	opts := configApplyOptions{mode: generation.ApplyModeAuto, actor: "katlctl node apply", output: "text"}
 	cmd := &cobra.Command{
 		Use:   "apply [NODE]",
-		Short: "Validate or apply node configuration",
+		Short: "Advanced: apply a rendered NodeConfigurationChange",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if len(args) == 1 {
@@ -2295,7 +2329,7 @@ func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 	cmd.Flags().BoolVar(&opts.plan, "plan", opts.plan, "validate and plan without accepting an operation")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the node accepts the operation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "output format: text or json")
+	addOutputFlag(cmd, &opts.output, "text", "text", "json")
 	cmd.Flags().StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "deprecated: wipe intent is configured by wipe: true")
 	_ = cmd.Flags().MarkHidden("acknowledge-storage-wipe")
 	cmd.Flags().StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
@@ -2324,10 +2358,11 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		return fmt.Errorf("--config is required")
 	}
 	targetConfig := opts.nodeConfig.configPath
-	if isRenderedNodeConfig(targetConfig) {
-		targetConfig = ""
+	if !isRenderedNodeConfig(targetConfig) {
+		return fmt.Errorf("ClusterConfig and bundles are applied with 'katlctl cluster apply --config %s --node %s'; use --plan to preview", targetConfig, opts.nodeConfig.nodeName)
 	}
-	target, err := resolveManagementTarget(managementTargetOptions{
+	targetConfig = ""
+	target, err := resolveManagementTarget(ctx, managementTargetOptions{
 		clusterConfigPath: targetConfig, configPath: opts.workstationConfig, contextName: opts.contextName,
 		nodeName: opts.nodeConfig.nodeName, endpoint: opts.endpoint,
 	})
@@ -2621,7 +2656,7 @@ func runConfigApplyStatus(ctx context.Context, opts configApplyStatusOptions, st
 	}
 	remote := strings.TrimSpace(opts.endpoint) != "" || strings.TrimSpace(opts.workstationConfig) != "" || strings.TrimSpace(opts.contextName) != "" || strings.TrimSpace(opts.nodeName) != ""
 	if remote {
-		target, err := resolveManagementTarget(managementTargetOptions{
+		target, err := resolveManagementTarget(ctx, managementTargetOptions{
 			configPath: opts.workstationConfig, contextName: opts.contextName, nodeName: opts.nodeName,
 			endpoint: opts.endpoint,
 		})
@@ -2809,6 +2844,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 type clusterBootstrapOptions struct {
+	output                                 string
+	timeout                                time.Duration
 	addresses                              addressOverrides
 	configPath                             string
 	inventoryPath                          string
@@ -2830,12 +2867,26 @@ type clusterBootstrapOptions struct {
 }
 
 func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := clusterBootstrapOptions{kubeconfigOut: "kubeconfig"}
+	opts := clusterBootstrapOptions{kubeconfigOut: "kubeconfig", output: "text", timeout: 30 * time.Minute}
 	cmd := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Bootstrap Kubernetes from a ClusterConfig or config bundle",
-		Long:  "Bootstrap Kubernetes from a ClusterConfig YAML manifest or compiled Katl config bundle. Katl detects the --config format internally.",
-		Args:  cobra.NoArgs,
+		Long: `Create Kubernetes on installed KatlOS nodes from the complete ClusterConfig.
+Katl initializes the first control plane, joins the remaining nodes, and writes
+an operator kubeconfig. Repeating the command resumes the same bootstrap.
+Use --init-node to select the first control plane; otherwise Katl selects one.
+
+Use --plan to inspect the bootstrap plan without accepting node operations.
+Katl does not install a CNI or your workloads by default. Use --manifest for
+optional ordered bootstrap manifests, or install your CNI and GitOps afterwards.
+Use node join to add a node to an existing cluster, and cluster apply to change
+configuration.
+
+Wait expressions: api-ready, nodes-ready, resource-exists[:namespace]:kind/name,
+condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name,
+or pods-ready[:namespace]:selector. --pre-wait runs before manifests and --wait
+runs afterwards. These flags can be repeated.`,
+		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runClusterBootstrap(ctx, opts, stdout, stderr)
 		},
@@ -2851,25 +2902,56 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 	cmd.Flags().StringVar(&opts.kubeconfigOut, "kubeconfig-out", opts.kubeconfigOut, "operator kubeconfig output path")
 	cmd.Flags().BoolVar(&opts.overwriteKubeconfig, "overwrite-kubeconfig", false, "overwrite different existing kubeconfig")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "validate and print the bootstrap plan without running kubeadm")
+	cmd.Flags().BoolVar(&opts.dryRun, "plan", false, "validate and print the bootstrap plan without accepting node operations")
+	_ = cmd.Flags().MarkHidden("dry-run")
+	cmd.MarkFlagsMutuallyExclusive("plan", "dry-run")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall bootstrap and readiness timeout")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	cmd.Flags().StringVar(&opts.vmtestTranscriptDir, "vmtest-transcript-dir", "", "directory for per-node vmtest agent transcript artifacts")
 	for _, name := range []string{"control-plane-endpoint", "join-worker", "kubernetes-bundle", "vmtest-transcript-dir"} {
 		cmd.Flags().Lookup(name).Hidden = true
 	}
 	cmd.Flags().Var(&opts.addresses, "node-address", "node address override in node=address form")
+	_ = cmd.Flags().MarkHidden("node-address")
 	cmd.Flags().Var(&opts.bootstrapManifestPaths, "bootstrap-manifest", "ordered Kubernetes manifest file or bundle to apply after API readiness")
 	cmd.Flags().Var(&opts.bootstrapPreWaitValues, "bootstrap-pre-wait", "pre-manifest wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
 	cmd.Flags().Var(&opts.bootstrapWaitValues, "bootstrap-wait", "post-bootstrap wait: api-ready, nodes-ready, resource-exists[:namespace]:kind/name, condition[:namespace]:kind/name:Condition, rollout-status[:namespace]:kind/name, or pods-ready[:namespace]:selector")
 	cmd.Flags().StringVar(&opts.bootstrapStableEndpoint, "bootstrap-stable-endpoint", "", "stable API endpoint host:port to wait for before writing kubeconfig")
 	cmd.Flags().BoolVar(&opts.bootstrapStableEndpointBeforeManifests, "bootstrap-stable-endpoint-before-manifests", false, "wait for stable API endpoint before applying bootstrap manifests")
+	cmd.Flags().Var(&opts.bootstrapManifestPaths, "manifest", "Kubernetes manifest file or bundle to apply after API readiness (repeatable)")
+	cmd.Flags().Var(&opts.bootstrapPreWaitValues, "pre-wait", "readiness condition before manifests; see command help (repeatable)")
+	cmd.Flags().Var(&opts.bootstrapWaitValues, "wait", "readiness condition after manifests; see command help (repeatable)")
+	for _, name := range []string{"bootstrap-manifest", "bootstrap-pre-wait", "bootstrap-wait"} {
+		_ = cmd.Flags().MarkHidden(name)
+	}
 	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "show operation IDs and recovery details with bootstrap progress")
 	return cmd
 }
 
 func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdout, stderr io.Writer) error {
-	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr); err != nil {
+	if opts.configPath != "" && len(opts.addresses.values) > 0 {
+		return fmt.Errorf("--node-address is only supported with advanced inventory input; set management.address and, when distinct, kubernetes.address in ClusterConfig so readiness and bootstrap use the same addresses")
+	}
+	if opts.output == "" {
+		opts.output = "text"
+	}
+	if err := validateHostOutput(opts.output); err != nil {
 		return err
 	}
-	inv, clusterName, err := bootstrapInventory(opts, stderr)
+	if opts.timeout == 0 {
+		opts.timeout = 30 * time.Minute
+	}
+	if opts.timeout < 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
+	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr)
+	if err != nil {
+		return err
+	}
+	ctx = refreshed
+	inv, clusterName, err := bootstrapInventory(ctx, opts, stderr)
 	if err != nil {
 		return err
 	}
@@ -2938,7 +3020,9 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		deps := agentBootstrapDependencies(clusterName)
 		deps.Progress = bootstrapProgressWriter(stderr, opts.verbose)
 		result, err := runAgentWorkerJoin(ctx, request, strings.TrimSpace(opts.joinWorker), deps)
-		printBootstrapResult(stdout, result)
+		if outputErr := writeBootstrapResult(stdout, opts.output, result); outputErr != nil && err == nil {
+			return outputErr
+		}
 		return err
 	}
 	var result cluster.Result
@@ -2949,8 +3033,28 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		deps.Progress = bootstrapProgressWriter(stderr, opts.verbose)
 		result, err = runAgentBootstrap(ctx, request, deps)
 	}
-	printBootstrapResult(stdout, result)
+	if outputErr := writeBootstrapResult(stdout, opts.output, result); outputErr != nil && err == nil {
+		return outputErr
+	}
 	return err
+}
+
+func writeBootstrapResult(stdout io.Writer, format string, result cluster.Result) error {
+	if format == "json" {
+		return writeJSON(stdout, struct {
+			Plan       bool            `json:"plan"`
+			InitNode   string          `json:"initNode,omitempty"`
+			Phases     []cluster.Phase `json:"phases"`
+			Kubeconfig string          `json:"kubeconfig,omitempty"`
+			NextAction string          `json:"nextAction,omitempty"`
+		}{result.DryRun, result.Plan.InitNode, result.Phases, result.Kubeconfig.Path, result.NextStep})
+	}
+	printBootstrapResult(stdout, result)
+	if result.Kubeconfig.Path != "" {
+		_, err := fmt.Fprintln(stdout, "Katl does not install a CNI or workloads by default; install your CNI and GitOps if you have not supplied bootstrap manifests.")
+		return err
+	}
+	return nil
 }
 
 func bootstrapProgressWriter(stderr io.Writer, verbose bool) func(cluster.AgentBootstrapProgress) {
@@ -2983,7 +3087,7 @@ func fallbackText(value, fallback string) string {
 	return value
 }
 
-func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (inventory.Inventory, string, error) {
+func bootstrapInventory(ctx context.Context, opts clusterBootstrapOptions, stderr io.Writer) (inventory.Inventory, string, error) {
 	configPath := strings.TrimSpace(opts.configPath)
 	inventoryPath := strings.TrimSpace(opts.inventoryPath)
 	inputs := 0
@@ -2993,6 +3097,9 @@ func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (invento
 		}
 	}
 	if inputs != 1 {
+		if inputs == 0 {
+			return inventory.Inventory{}, "", fmt.Errorf("--config is required; use --config ./cluster.yaml")
+		}
 		return inventory.Inventory{}, "", fmt.Errorf("exactly one of --config or --inventory is required")
 	}
 	if inventoryPath != "" {
@@ -3012,7 +3119,7 @@ func bootstrapInventory(opts clusterBootstrapOptions, stderr io.Writer) (invento
 	inv := config.Bundle.Manifest.Cluster.BootstrapInventory
 	clusterName := config.Bundle.Manifest.ClusterName
 	for index := range inv.Nodes {
-		enrolled, ok := enrolledTarget("", "", clusterName, inv.Nodes[index].Name)
+		enrolled, ok := enrolledTarget(ctx, "", "", clusterName, inv.Nodes[index].Name)
 		if !ok {
 			return inventory.Inventory{}, "", fmt.Errorf("node %q is not enrolled on this workstation; run 'katlctl context save --config %s' before bootstrap planning", inv.Nodes[index].Name, configPath)
 		}
@@ -3039,7 +3146,7 @@ func bootstrapDependencies(vmtestTranscriptDir string) cluster.Dependencies {
 func managementAgentConnector(clusterName string) cluster.TCPAgentConnector {
 	return cluster.TCPAgentConnector{CredentialsForNode: func(node inventory.PlannedNode) (managementidentity.ClientCredentials, error) {
 		if strings.TrimSpace(clusterName) != "" {
-			if target, ok := enrolledTarget("", "", clusterName, node.Name); ok && target.credentials != nil {
+			if target, ok := enrolledTarget(context.Background(), "", "", clusterName, node.Name); ok && target.credentials != nil {
 				return *target.credentials, nil
 			}
 			return managementClientForCluster(clusterName)

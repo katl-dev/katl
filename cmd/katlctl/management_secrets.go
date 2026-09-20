@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -27,26 +28,42 @@ func contextSaveInvocation(path string) string {
 	return "katlctl context save --config '" + strings.ReplaceAll(path, "'", "'\"'\"'") + "'"
 }
 
-func refreshConfiguredManagement(ctx context.Context, sourcePath, contextPath, contextName string, stderr io.Writer, selectedNodes ...string) error {
+type observedManagementKey struct{}
+
+func loadManagementContext(ctx context.Context, path string) (workstation.Config, error) {
+	if observed, ok := ctx.Value(observedManagementKey{}).(workstation.Config); ok {
+		return observed, nil
+	}
+	return workstation.Load(path)
+}
+
+func refreshConfiguredManagement(ctx context.Context, sourcePath, contextPath, contextName string, stderr io.Writer, selectedNodes ...string) (context.Context, error) {
 	if strings.TrimSpace(sourcePath) == "" {
-		return nil
+		return ctx, nil
 	}
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
-		return fmt.Errorf("read --config %s: %w", sourcePath, err)
+		return ctx, fmt.Errorf("read --config %s: %w", sourcePath, err)
 	}
 	source, err := configbundle.DecodeSource(bytes.NewReader(data))
 	if err != nil {
 		bundle, bundleErr := configbundle.ReadBundle(bytes.NewReader(data), "")
 		if bundleErr != nil || bundle.Authentication != managementidentity.TrustedNetwork {
-			return nil
+			return ctx, nil
 		}
 	} else if source.ManagementAuthentication() == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
-		return nil
+		return ctx, nil
 	}
-	// An explicit authority makes the saved context disposable. Authenticate
-	// and snapshot current instance IDs before constructing any operation plan.
-	return runContextSave(ctx, contextSaveOptions{configInput: sourcePath, contextPath: contextPath, contextName: contextName, timeout: 15 * time.Second, output: "text", selectedNodes: selectedNodes}, io.Discard, stderr)
+	// Instance IDs bind this operation to the observed installations. Only an
+	// explicit context save persists observations or changes the current cluster.
+	if ctx.Value(observedManagementKey{}) == nil {
+		ctx = context.WithValue(ctx, observedManagementKey{}, workstation.Config{})
+	}
+	observed, _, err := prepareContext(ctx, contextSaveOptions{configInput: sourcePath, contextPath: contextPath, contextName: contextName, timeout: 15 * time.Second, output: "text", selectedNodes: selectedNodes}, stderr)
+	if err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, observedManagementKey{}, observed), nil
 }
 
 func managementIdentityForSource(sourcePath string, source configbundle.SourceConfig) (managementidentity.Bundle, error) {
