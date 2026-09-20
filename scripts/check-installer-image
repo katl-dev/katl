@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 artifact="${1:-$repo_root/_build/mkosi/katl-installer.efi}"
 initrd="${KATL_INSTALLER_INITRD:-${artifact%.efi}.initrd}"
 packages="${KATL_INSTALLER_PACKAGE_SET:-$repo_root/_build/mkosi/katl-installer.packages.tsv}"

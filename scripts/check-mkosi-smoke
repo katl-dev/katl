@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 test_package="${KATL_SMOKE_PACKAGE:-./internal/vmtest}"
 test_pattern="${KATL_SMOKE_RUN:-^TestFirstInstallTargetDiskSerialSmoke$}"
 
