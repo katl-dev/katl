@@ -45,3 +45,15 @@ func TestDerivedVolumesExposeVolumeNamePartitionConvention(t *testing.T) {
 		t.Fatalf("warnings = %#v, want explicit convention without warning", warnings)
 	}
 }
+
+func TestMaskDiffIsOnline(t *testing.T) {
+	before := NodeResolution{Node: "cp-1"}
+	after := NodeResolution{Node: "cp-1", Effective: SourceNode{HostConfiguration: SourceHostConfiguration{MaskedUnits: supplied([]string{"bluetooth.service"})}}}
+	diff, err := DiffNodeResolutions(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Changes) != 1 || diff.Changes[0].Path != `spec.nodes["cp-1"].hostConfiguration.maskedUnits` || diff.Changes[0].Classification != "online-applicable" {
+		t.Fatalf("mask diff = %#v", diff)
+	}
+}

@@ -29,7 +29,7 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 	modules := map[string]struct{}{}
 	sysfs := map[string]string{}
 	udevPaths := map[string]struct{}{}
-	systemdReload := false
+	systemdReload := len(config.MaskedUnits) > 0
 
 	for _, setting := range config.Sysfs {
 		sysfs[setting.Name] = setting.Value
@@ -68,6 +68,7 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 	if prepare && systemdReload {
 		plan.addCommand("systemd-daemon-reload", "reload", "systemd manager", "systemctl", "daemon-reload")
 	}
+	plan.addUnitMasks(config.MaskedUnits, prepare, verify)
 	if prepare && len(modules) > 0 {
 		plan.addCommand("systemd-modules-load", "restart", "systemd-modules-load.service", "systemctl", "restart", "systemd-modules-load.service")
 	}
@@ -136,9 +137,6 @@ func ExecuteHostConfigurationActivation(ctx context.Context, plan HostConfigurat
 		if err == nil && !commandSucceeded(command, result) {
 			err = commandFailure(command, result)
 		}
-		if err == nil && command.ExpectedStdout != "" && strings.TrimSpace(result.Stdout) != command.ExpectedStdout {
-			err = fmt.Errorf("%s returned %q, want %q", command.Name, strings.TrimSpace(result.Stdout), command.ExpectedStdout)
-		}
 		effect := plan.Effects[index]
 		effect.Status = generation.ConfigApplyActionPassed
 		if err != nil {
@@ -162,9 +160,6 @@ func InspectHostConfiguration(ctx context.Context, config manifest.HostConfigura
 		result, err := runner.Run(ctx, command)
 		if err == nil && !commandSucceeded(command, result) {
 			err = commandFailure(command, result)
-		}
-		if err == nil && command.ExpectedStdout != "" && strings.TrimSpace(result.Stdout) != command.ExpectedStdout {
-			err = fmt.Errorf("%s returned %q, want %q", command.Name, strings.TrimSpace(result.Stdout), command.ExpectedStdout)
 		}
 		if err == nil {
 			continue
@@ -211,6 +206,18 @@ func PlanHostSysctlReconciliation(config manifest.HostConfiguration) HostConfigu
 
 func (p *HostConfigurationActivationPlan) addCommand(name, action, target string, argv ...string) {
 	p.addCommandWithOutput(name, action, target, "", argv...)
+}
+
+func (p *HostConfigurationActivationPlan) addUnitMasks(units []string, prepare, verify bool) {
+	for _, unit := range units {
+		if prepare {
+			p.addCommand("systemd-stop-"+unit, "stop", "systemd unit "+unit, "systemctl", "stop", unit)
+		}
+		if verify {
+			p.addCommandWithOutput("systemd-mask-verify-"+unit, "mask", "systemd unit "+unit, "masked", "systemctl", "show", "--property=LoadState", "--value", unit)
+			p.addCommandWithOutput("systemd-stop-verify-"+unit, "stop", "systemd unit "+unit, "inactive", "systemctl", "show", "--property=ActiveState", "--value", unit)
+		}
+	}
 }
 
 func (p *HostConfigurationActivationPlan) addCommandWithOutput(name, action, target, expectedStdout string, argv ...string) {

@@ -10,7 +10,12 @@ spec:
     kernel:
       commandLine:
         - katl.vmtest.config_apply_kernel=1
+        - module_blacklist=bluetooth,btusb,btmtk
+        - modprobe.blacklist=bluetooth,btusb,btmtk
     hostConfiguration:
+      maskedUnits:
+        - systemd-userdbd.service
+        - systemd-userdbd.socket
       sysfs:
         - name: /sys/module/printk/parameters/time
           value: N

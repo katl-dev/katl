@@ -460,3 +460,56 @@ func (r *fakeCommandRunner) commandNames() []string {
 func fixedNow() time.Time {
 	return time.Date(2026, 6, 5, 17, 0, 0, 0, time.UTC)
 }
+
+func TestMaskRollbackRestoresRunningState(t *testing.T) {
+	for _, initial := range []string{"active", "inactive"} {
+		t.Run(initial, func(t *testing.T) {
+			plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
+			host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}})
+			activator := &fakeActivator{}
+			runner := &fakeCommandRunner{results: map[string]CommandResult{
+				"systemd-state-bluetooth.service":       {Stdout: initial},
+				"systemd-mask-verify-bluetooth.service": {Stdout: "loaded"},
+			}}
+
+			status, err := (Executor{Runner: runner, Activator: activator, HostConfiguration: &host, Now: fixedNow}).ExecuteLive(t.Context(), plan)
+			if err == nil || !strings.Contains(err.Error(), "want \"masked\"") {
+				t.Fatalf("error = %v", err)
+			}
+			if status.Rollback == nil || status.Rollback.Result != generation.ConfigApplyActionPassed {
+				t.Fatalf("rollback = %#v", status.Rollback)
+			}
+			if activator.rollbackTarget != plan.GenerationRecord.ConfigApply.PreviousGeneration {
+				t.Fatalf("rollback target = %q", activator.rollbackTarget)
+			}
+			restarted := false
+			for _, command := range runner.commands {
+				if strings.Join(command.Argv, " ") == "systemctl start bluetooth.service" {
+					restarted = true
+				}
+			}
+			if restarted != (initial == "active") {
+				t.Fatalf("restarted = %t for previously %s unit", restarted, initial)
+			}
+		})
+	}
+}
+
+func TestMasksRequireInactiveState(t *testing.T) {
+	for _, observed := range []string{"inactive", "active"} {
+		t.Run(observed, func(t *testing.T) {
+			plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
+			host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}})
+			runner := &fakeCommandRunner{results: map[string]CommandResult{
+				"systemd-state-bluetooth.service":       {Stdout: "inactive"},
+				"systemd-mask-verify-bluetooth.service": {Stdout: "masked"},
+				"systemd-stop-verify-bluetooth.service": {Stdout: observed},
+			}}
+
+			_, err := (Executor{Runner: runner, Activator: &fakeActivator{}, HostConfiguration: &host, Now: fixedNow}).ExecuteLive(t.Context(), plan)
+			if (err == nil) != (observed == "inactive") {
+				t.Fatalf("observed %s: %v", observed, err)
+			}
+		})
+	}
+}

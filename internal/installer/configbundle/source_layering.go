@@ -66,6 +66,9 @@ func cloneSourceKubeletConfig(config *SourceKubeletConfig) *SourceKubeletConfig 
 
 func mergeSourceHostConfiguration(base, next SourceHostConfiguration) SourceHostConfiguration {
 	out := cloneSourceHostConfiguration(base)
+	if units, ok := next.MaskedUnits.Get(); ok {
+		out.MaskedUnits = supplied(slices.Clone(units))
+	}
 	if sysfs, ok := next.Sysfs.Get(); ok {
 		out.Sysfs = supplied(slices.Clone(sysfs))
 	}
@@ -319,7 +322,7 @@ func lowerHostConfiguration(config SourceHostConfiguration) manifest.HostConfigu
 			}
 		}
 	}
-	return manifest.HostConfiguration{Sysfs: sysfs, Sets: sets}
+	return manifest.HostConfiguration{MaskedUnits: slices.Clone(config.MaskedUnits.Value()), Sysfs: sysfs, Sets: sets}
 }
 
 func lowerDiskSelector(selector *SourceDiskSelector) *manifest.DiskSelector {
@@ -659,6 +662,7 @@ func cloneSourceKernelConfig(config *SourceKernelConfig) *SourceKernelConfig {
 
 func cloneSourceHostConfiguration(config SourceHostConfiguration) SourceHostConfiguration {
 	out := config
+	out.MaskedUnits = cloneOptionalSlice(config.MaskedUnits)
 	out.Sysfs = cloneOptionalSlice(config.Sysfs)
 	if fileSets, ok := config.FileSets.Get(); ok {
 		sets := maps.Clone(fileSets)

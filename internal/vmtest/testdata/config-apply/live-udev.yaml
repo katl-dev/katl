@@ -6,6 +6,9 @@ metadata:
 spec:
   clusterDefaults:
     hostConfiguration:
+      maskedUnits:
+        - systemd-userdbd.service
+        - systemd-userdbd.socket
       sets:
         vmtest-network:
           files:

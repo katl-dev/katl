@@ -99,16 +99,17 @@ const (
 )
 
 type HostConfiguration struct {
-	Sysfs []HostConfigurationSysfsSetting `json:"sysfs,omitempty" yaml:"sysfs,omitempty"`
-	Sets  map[string]HostConfigurationSet `json:"sets,omitempty" yaml:"sets,omitempty"`
+	MaskedUnits []string                        `json:"maskedUnits,omitempty" yaml:"maskedUnits,omitempty"`
+	Sysfs       []HostConfigurationSysfsSetting `json:"sysfs,omitempty" yaml:"sysfs,omitempty"`
+	Sets        map[string]HostConfigurationSet `json:"sets,omitempty" yaml:"sets,omitempty"`
 }
 
 func (config HostConfiguration) IsZero() bool {
-	return len(config.Sysfs) == 0 && len(config.Sets) == 0
+	return len(config.MaskedUnits) == 0 && len(config.Sysfs) == 0 && len(config.Sets) == 0
 }
 
 func NormalizeHostConfiguration(config HostConfiguration) HostConfiguration {
-	if config.Sysfs == nil && len(config.Sets) == 0 {
+	if len(config.MaskedUnits) == 0 && config.Sysfs == nil && len(config.Sets) == 0 {
 		return HostConfiguration{}
 	}
 	sysfs := slices.Clone(config.Sysfs)
@@ -144,7 +145,9 @@ func NormalizeHostConfiguration(config HostConfiguration) HostConfiguration {
 	if len(sets) == 0 {
 		sets = nil
 	}
-	return HostConfiguration{Sysfs: sysfs, Sets: sets}
+	maskedUnits := append([]string(nil), config.MaskedUnits...)
+	slices.Sort(maskedUnits)
+	return HostConfiguration{MaskedUnits: maskedUnits, Sysfs: sysfs, Sets: sets}
 }
 
 type HostConfigurationSysfsSetting struct {
@@ -437,6 +440,13 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	}
 	if err := ValidateSystemExtensions(manifest.Node.SystemExtensions, false); err != nil {
 		return fmt.Errorf("node.systemExtensions: %w", err)
+	}
+	for _, extension := range manifest.Node.SystemExtensions {
+		for _, unit := range extension.Units {
+			if unit.RequiredForBootHealth && slices.Contains(manifest.Node.HostConfiguration.MaskedUnits, unit.Name) {
+				return fmt.Errorf("node.hostConfiguration.maskedUnits: %q is required for boot health by system extension %q", unit.Name, extension.Name)
+			}
+		}
 	}
 	if _, err := NormalizeKubernetesAddress(manifest.Node.Kubernetes.Address); err != nil {
 		return fmt.Errorf("node.kubernetes.address: %w", err)
@@ -772,6 +782,22 @@ var protectedHostConfigurationExactPaths = map[string]struct{}{
 // allowSource is used only while compiling ClusterConfig; installed manifests
 // must contain embedded content and never retain authoring-time file paths.
 func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error {
+	maskedUnits := make(map[string]struct{}, len(config.MaskedUnits))
+	for i, unit := range config.MaskedUnits {
+		if len(unit) > 255 || !systemdNotificationUnitPattern.MatchString(unit) {
+			return fmt.Errorf("maskedUnits[%d] %q must be a systemd unit name", i, unit)
+		}
+		if strings.Contains(unit, "@.") {
+			return fmt.Errorf("maskedUnits[%d] %q must name a concrete unit instance", i, unit)
+		}
+		if protectedSystemdUnit(unit) {
+			return fmt.Errorf("maskedUnits[%d] %q is release-critical and cannot be masked", i, unit)
+		}
+		if _, exists := maskedUnits[unit]; exists {
+			return fmt.Errorf("maskedUnits[%d] %q duplicates another mask", i, unit)
+		}
+		maskedUnits[unit] = struct{}{}
+	}
 	sysfsNames := make(map[string]struct{}, len(config.Sysfs))
 	for i, setting := range config.Sysfs {
 		field := fmt.Sprintf("sysfs[%d]", i)
@@ -828,6 +854,9 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 			if strings.HasPrefix(cleaned, "/etc/tmpfiles.d/") {
 				return fmt.Errorf("%s.path %q is Katl-owned; configure sysfs writes through hostConfiguration.sysfs", field, cleaned)
 			}
+			if _, masked := maskedUnits[strings.TrimPrefix(cleaned, "/etc/systemd/system/")]; masked {
+				return fmt.Errorf("%s.path %q conflicts with maskedUnits", field, cleaned)
+			}
 			if owner, exists := paths[cleaned]; exists {
 				return fmt.Errorf("%s.path %q is already owned by set %q", field, cleaned, owner)
 			}
@@ -865,6 +894,9 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 			return err
 		}
 		for _, notification := range set.Notify.Systemd {
+			if _, masked := maskedUnits[notification.Unit]; masked {
+				return fmt.Errorf("sets[%q].notify.systemd unit %q conflicts with maskedUnits", name, notification.Unit)
+			}
 			if action, exists := systemdNotifications[notification.Unit]; exists && action != notification.Action {
 				return fmt.Errorf("sets[%q].notify.systemd conflicts with action %q declared by another set for %q", name, action, notification.Unit)
 			}

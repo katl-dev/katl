@@ -480,6 +480,7 @@ kind: ClusterConfig
 metadata:
   name: katl-smoke
 spec:
+  managementAuthentication: mtls
   controlPlaneEndpoint:
     host: ` + host + `
     port: 6443
@@ -551,7 +552,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	rejectedApplyGeneration := "2026.06.06-vmtest-rejected-apply"
 	rejectedAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-rejected", "live", rejectedApplyGeneration, configApplyFixture(t, "rejected-live-without-preflight.yaml"), true)
 	rejectedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, rejectedAccepted.OperationId)
-	if rejectedStatus.Result == operation.ResultSucceeded ||
+	if rejectedStatus.Result != "failed" || rejectedStatus.GetRecoveryRequired() ||
 		rejectedStatus.GetExternalMutationStarted() ||
 		len(rejectedStatus.GetMutationScopes()) != 0 ||
 		!strings.Contains(rejectedStatus.GetFailureReason(), "rejected") {
@@ -562,8 +563,12 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if got := currentGenerationFromGuest(t, ctx, guest); got != currentGeneration {
 		t.Fatalf("current generation after rejected apply = %q, want %q", got, currentGeneration)
 	}
-	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed-needs-repair"`, "systemd-networkd configuration applies on next boot")
+	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed"`, "systemd-networkd configuration applies on next boot")
 
+	guestCommand(t, ctx, guest, "start-service-before-mask", "systemctl", "start", "systemd-userdbd.service")
+	guestCommand(t, ctx, guest, "service-active-before-mask", "systemctl", "is-active", "--quiet", "systemd-userdbd.service")
+	guestCommand(t, ctx, guest, "bluetooth-load-before-policy", "modprobe", "bluetooth")
+	assertGuestExists(t, ctx, guest, "/sys/module/bluetooth")
 	liveAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-live", "", liveGeneration, configApplyFixture(t, "live-udev.yaml"), false)
 	liveStatus := waitKatlcOperationTerminal(t, ctx, endpoint, liveAccepted.OperationId)
 	if liveStatus.Result != operation.ResultSucceeded || liveStatus.ConfigApplyPhase != "active" || liveStatus.BootHealthPending {
@@ -576,6 +581,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if got := guestBootID(t, ctx, client); got != beforeLiveBootID {
 		t.Fatalf("live apply rebooted the node: boot ID %s became %s", beforeLiveBootID, got)
 	}
+	assertMaskedUnits(t, ctx, guest, "live")
 
 	if liveGenerationStatus.GetConfigApply().GetPhase() != "active" || liveGenerationStatus.GetConfigApply().GetRequestedApplyMode() != "auto" || liveGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "live" {
 		t.Fatalf("live katlctl generation status = %+v, want active auto->live config apply", liveGenerationStatus.GetConfigApply())
@@ -649,7 +655,10 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf", "Address=198.51.100.77/32")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/containerd/conf.d/80-katl-vmtest.toml", "oom_score = 123")
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/boot/selection.json", `"defaultGenerationID": "`+activeGeneration+`"`, `"targetBootGenerationID": "`+stagedGeneration+`"`, `"trialGenerationID": "`+stagedGeneration+`"`, `"previousKnownGoodGenerationID": "`+activeGeneration+`"`, `"pendingTransactionID": "`+stagedAccepted.OperationId+`"`, `"pendingHealthValidation": true`)
-	assertGuestExists(t, ctx, guest, "/var/lib/katl/generations/"+currentGeneration+"/metadata.json")
+	retained := katlctlGenerationStatus(t, ctx, result, katlctl, endpoint, "status-retained-generation", currentGeneration)
+	if retained.GetGenerationId() != currentGeneration {
+		t.Fatalf("retained generation = %q, want %q", retained.GetGenerationId(), currentGeneration)
+	}
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
 	assertGuestFileContains(t, ctx, guest, stagedAccepted.RecordPath, `"operationKind": "generation-stage"`, `"configApplyPhase": "next-boot"`)
 	if afterBootSelection := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); afterBootSelection == beforeBootSelection {
@@ -676,6 +685,14 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	)
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "katl.vmtest.config_apply_kernel=1")
+	assertMaskedUnits(t, ctx, guest, "reboot")
+	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "module_blacklist=bluetooth,btusb,btmtk", "modprobe.blacklist=bluetooth,btusb,btmtk")
+	blocked, err := guest.RunCommand(ctx, GuestCommandRequest{Name: "bluetooth-load-blocked", Argv: []string{"modprobe", "bluetooth"}, AllowFailure: true})
+	if err != nil || blocked.ExitStatus == 0 {
+		t.Fatalf("Bluetooth module load should be refused: result=%+v err=%v", blocked, err)
+	}
+	assertGuestMissing(t, ctx, guest, "/sys/module/bluetooth")
+	assertGuestMissing(t, ctx, guest, "/sys/module/btusb")
 	if got := strings.TrimSpace(guestCommandOutput(
 		t, ctx, guest, "effective-sysfs",
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
@@ -1383,5 +1400,21 @@ func assertGuestMissing(t *testing.T, ctx context.Context, guest *GuestControl, 
 	t.Helper()
 	if record, err := guest.RunCommand(ctx, GuestCommandRequest{Name: filepath.Base(path), Argv: []string{"test", "!", "-e", path}}); err != nil {
 		t.Fatalf("guest path %s exists or could not be checked: %v %#v", path, err, record)
+	}
+}
+
+func assertMaskedUnits(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
+	t.Helper()
+	for _, unit := range []string{"systemd-userdbd.service", "systemd-userdbd.socket"} {
+		for property, want := range map[string]string{"LoadState": "masked", "ActiveState": "inactive"} {
+			got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, phase+"-"+unit+"-"+property, "systemctl", "show", "--property="+property, "--value", unit))
+			if got != want {
+				t.Fatalf("%s %s %s = %q, want %q", phase, unit, property, got, want)
+			}
+		}
+		started, err := guest.RunCommand(ctx, GuestCommandRequest{Name: phase + "-start-masked-" + unit, Argv: []string{"systemctl", "start", unit}, AllowFailure: true})
+		if err != nil || started.ExitStatus == 0 {
+			t.Fatalf("masked %s started: result=%+v err=%v", unit, started, err)
+		}
 	}
 }

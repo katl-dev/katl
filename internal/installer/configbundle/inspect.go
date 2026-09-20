@@ -190,6 +190,10 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 		choose("kernel", node.Kernel != nil)
 	}
 	_, sysfsSet := node.HostConfiguration.Sysfs.Get()
+	_, maskedUnitsSet := node.HostConfiguration.MaskedUnits.Get()
+	if _, set := resolved.HostConfiguration.MaskedUnits.Get(); set {
+		choose("hostConfiguration.maskedUnits", maskedUnitsSet)
+	}
 	if _, set := resolved.HostConfiguration.Sysfs.Get(); set {
 		choose("hostConfiguration.sysfs", sysfsSet)
 	}
@@ -481,6 +485,7 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	add(base+".access.ssh.authorizedKeys", before.Effective.Access.SSH.AuthorizedKeys.Value(), after.Effective.Access.SSH.AuthorizedKeys.Value())
 	add(base+".kernel", before.Effective.Kernel, after.Effective.Kernel)
 	add(base+".hostConfiguration.sysfs", before.Effective.HostConfiguration.Sysfs.Value(), after.Effective.HostConfiguration.Sysfs.Value())
+	add(base+".hostConfiguration.maskedUnits", before.Effective.HostConfiguration.MaskedUnits.Value(), after.Effective.HostConfiguration.MaskedUnits.Value())
 	diffNamedMaps(&diff, base+".hostConfiguration.fileSets", before.Effective.HostConfiguration.FileSets.Value(), after.Effective.HostConfiguration.FileSets.Value())
 	diffNamedExtensions(&diff, base+".systemExtensions", before.Effective.SystemExtensions.Value(), after.Effective.SystemExtensions.Value())
 	add(base+".install.systemDisk", before.Effective.Install.SystemDisk, after.Effective.Install.SystemDisk)
@@ -566,6 +571,8 @@ func classifyDiffPath(path string) (string, string, string) {
 		return "target-only", "", "changes only the workstation management target; no node generation or mutation is planned"
 	case strings.Contains(path, ".storage.volumes"):
 		return "online-applicable", "", "volume changes require live target discovery; existing data is preserved unless explicitly authorized"
+	case strings.HasSuffix(path, ".hostConfiguration.maskedUnits"):
+		return "online-applicable", "", "systemd masks apply live; removing a mask does not start the unit"
 	case strings.Contains(path, ".hostConfiguration"):
 		return "online-or-next-boot", "", "the concrete file or sysfs change determines whether live preflight succeeds"
 	case strings.Contains(path, ".kernel"), strings.Contains(path, ".systemExtensions"), strings.Contains(path, ".authorizedKeys"):

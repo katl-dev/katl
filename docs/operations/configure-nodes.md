@@ -144,6 +144,73 @@ runtime mounting, generation and machine identity, and recovery targets.
 Attempts to configure those arguments fail validation with the offending list
 entry.
 
+## Keep Unwanted Services Stopped
+
+Use `hostConfiguration.maskedUnits` to stop unwanted services and prevent
+systemd from starting them again, including through dependencies or manual
+start requests:
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      maskedUnits:
+        - bluetooth.service
+```
+
+Apply with `katlctl cluster apply --config cluster.yaml`. Mask-only changes
+apply live without rebooting; the masks persist across reboot and upgrades.
+Katl refuses masks for its protected, release-critical units. Masking is
+stronger than disabling: disabling only removes enablement links and can
+still allow activation through sockets, dependencies, or D-Bus.
+
+A node's `maskedUnits` list replaces the defaults. Set `maskedUnits: []` on a
+node to clear inherited masks. Removing a mask restores the vendor unit's
+normal activation behavior without starting it as part of the apply. Mask
+triggering socket, timer, or path units too when you want to suppress those
+activation attempts. Use concrete unit names, including an instance name for
+template units.
+
+Verify through the node's SSH interface:
+
+```console
+systemctl show bluetooth.service --property=LoadState,ActiveState
+```
+
+The masked unit should report `LoadState=masked` and `ActiveState=inactive`.
+
+## Disable Bluetooth Drivers
+
+Masking `bluetooth.service` stops the userspace service. It does not prevent
+kernel drivers from loading or retrying missing firmware. For a node that
+does not use Bluetooth, add these native kernel arguments to its existing
+`kernel.commandLine` list:
+
+```yaml
+spec:
+  defaults:
+    kernel:
+      commandLine:
+        - module_blacklist=bluetooth,btusb,btmtk
+        - modprobe.blacklist=bluetooth,btusb,btmtk
+```
+
+`modprobe.blacklist` suppresses automatic loading, while `module_blacklist`
+also prevents explicit loading from early boot onward. Preserve any other
+operator kernel arguments in the list. These settings leave Wi-Fi drivers
+available on combined Wi-Fi/Bluetooth hardware.
+
+Run `katlctl cluster apply --config cluster.yaml`, then reboot affected nodes
+with `katlctl node reboot NODE`. Kernel arguments require a reboot; applying
+the configuration does not unload drivers from a running node. If service
+masks and kernel arguments change together, they activate in the same
+next-boot generation.
+
+After reboot, inspect `/proc/cmdline`, check that `/sys/module/bluetooth` and
+`/sys/module/btusb` are absent, and inspect `journalctl -k -b` for firmware
+retry messages. To restore Bluetooth, remove these arguments and the service
+mask, apply, and reboot again.
+
 ## Configure Native Linux Facilities
 
 Use `hostConfiguration.fileSets` for file-based Linux and systemd configuration.

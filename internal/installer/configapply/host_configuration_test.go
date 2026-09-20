@@ -189,3 +189,18 @@ func testHostConfiguration(setName, filePath, content string) manifest.HostConfi
 		},
 	}}
 }
+
+func TestUnmaskDoesNotStartUnit(t *testing.T) {
+	plan := planHostConfigurationChange(manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}}, manifest.HostConfiguration{})
+	if !plan.Live {
+		t.Fatalf("unmask requires reboot: %s", plan.Message)
+	}
+	for _, command := range plan.Commands {
+		if strings.Contains(strings.Join(command.Argv, " "), "start") {
+			t.Fatalf("unmask starts a unit: %v", command.Argv)
+		}
+	}
+	if len(plan.Commands) == 0 {
+		t.Fatal("unmask must refresh systemd")
+	}
+}

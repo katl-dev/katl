@@ -102,6 +102,8 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return description("Complete kernel command-line option list; an empty node list clears inherited options.")
 	case "configbundle.SourceHostConfiguration.sysfs":
 		return description("Complete ordered sysfs setting list; an empty node list clears inherited settings.")
+	case "configbundle.SourceHostConfiguration.maskedUnits":
+		return description("Systemd units to stop and prevent from starting. A node list replaces defaults; an empty list clears inherited masks.")
 	case "configbundle.SourceHostConfiguration.fileSets":
 		return mapRule("Named native /etc file sets; an empty node map clears inherited sets.", dnsLabelPattern)
 	case "configbundle.SourceHostConfigurationSysfsSetting.path":
