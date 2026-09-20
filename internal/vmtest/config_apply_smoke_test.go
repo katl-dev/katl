@@ -480,6 +480,7 @@ kind: ClusterConfig
 metadata:
   name: katl-smoke
 spec:
+  managementAuthentication: mtls
   controlPlaneEndpoint:
     host: ` + host + `
     port: 6443
