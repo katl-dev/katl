@@ -21,10 +21,17 @@ import (
 
 func newManagementIdentityCommand(stdout, stderr io.Writer) *cobra.Command {
 	command := &cobra.Command{
-		Use:     "identity",
-		Short:   "Inspect and restore Katl management access",
-		Long:    "Management identity is created automatically during normal install preparation. These commands are only for backup inspection and workstation recovery.",
-		Example: "katlctl management identity path homelab",
+		Use:   "identity",
+		Short: "Create, inspect, and recover opt-in mTLS credentials",
+		Long: `Trusted-network clusters need no management keys. For opt-in mTLS, keep
+the original management secrets beside the ClusterConfig, optionally encrypted
+with SOPS. Config init --management-authentication mtls creates this file;
+identity create prepares it for a hand-written new configuration.
+
+Use export to migrate an existing workstation-held authority. Path and import
+are legacy workstation-store recovery tools. Creating a new authority cannot
+recover access to nodes installed with a different authority.`,
+		Example: "katlctl management identity create --config cluster.yaml\nkatlctl management identity export --config cluster.yaml",
 	}
 	command.AddCommand(newManagementIdentityPathCommand(stdout))
 	command.AddCommand(newManagementIdentityInspectCommand(stdout))

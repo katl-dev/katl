@@ -46,7 +46,7 @@ Use 'katlctl cluster bootstrap' to create the first control plane, and
 	f.StringVar(&opts.node, "node", "", "node name (alternative to NODE)")
 	f.StringVar(&opts.coordinator, "coordinator", "", "ready control plane to coordinate the join (default: automatic)")
 	f.DurationVar(&opts.timeout, "timeout", opts.timeout, "time to wait for the join and node health")
-	f.StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -65,10 +65,12 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
-	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, opts.node); err != nil {
+	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, opts.node)
+	if err != nil {
 		return err
 	}
-	inv, err := kubeadmConfigInventory(kubeadmControlPlaneConfigOptions{configPath: opts.configPath})
+	ctx = refreshed
+	inv, err := kubeadmConfigInventory(ctx, kubeadmControlPlaneConfigOptions{configPath: opts.configPath})
 	if err != nil {
 		return err
 	}
@@ -105,7 +107,7 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 		if err != nil {
 			return err
 		}
-		topology, err := resolveClusterConfigTopology(opts.configPath)
+		topology, err := resolveClusterConfigTopology(ctx, opts.configPath)
 		if err != nil {
 			return err
 		}
@@ -173,11 +175,13 @@ func joinCoordinator(ctx context.Context, opts nodeJoinOptions, inv inventory.In
 		if node.Name == opts.node || node.SystemRole != inventory.RoleControlPlane || opts.coordinator != "" && node.Name != opts.coordinator {
 			continue
 		}
-		if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, node.Name); err != nil {
+		observed, err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, node.Name)
+		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", node.Name, err))
 			continue
 		}
-		refreshed, err := kubeadmConfigInventory(kubeadmControlPlaneConfigOptions{configPath: opts.configPath})
+		ctx = observed
+		refreshed, err := kubeadmConfigInventory(ctx, kubeadmControlPlaneConfigOptions{configPath: opts.configPath})
 		if err != nil {
 			return inventory.Node{}, err
 		}

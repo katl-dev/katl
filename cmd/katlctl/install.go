@@ -38,9 +38,11 @@ type installApplyOptions struct {
 }
 
 type installStatusOptions struct {
-	endpoint string
-	timeout  time.Duration
-	output   string
+	configPath string
+	nodeName   string
+	endpoint   string
+	timeout    time.Duration
+	output     string
 }
 
 type installSSHOptions struct {
@@ -91,7 +93,7 @@ func newInstallSSHCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer address or HTTP(S) base URL; overrides the selected node's bootstrap address")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name or bootstrap address; required unless the config contains one node")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "SSH access handoff timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -100,7 +102,14 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Apply a ClusterConfig YAML or config bundle to a waiting KatlOS installer",
-		Args:  cobra.NoArgs,
+		Long: `Install one node from its ClusterConfig. This replaces the selected system disk;
+data volumes follow their configured wipe policy. The node must be running the
+installer (port 8080). For an already installed node, use cluster apply to change
+configuration or cluster bootstrap to start Kubernetes.
+
+The command waits for installation to finish and request its first reboot.
+Use node status after reboot to check the installed system (port 9443).`,
+		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runInstallApply(ctx, opts, stdout, stderr)
 		},
@@ -112,23 +121,28 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	_ = cmd.Flags().MarkHidden("acknowledge-storage-wipe")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
 func newInstallStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := installStatusOptions{timeout: 15 * time.Second, output: "text"}
 	cmd := &cobra.Command{
-		Use:   "status",
+		Use:   "status [NODE]",
 		Short: "Report a waiting or running KatlOS installer",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if err := selectHostNode(&opts.nodeName, args); err != nil {
+				return err
+			}
 			return runInstallStatus(ctx, opts, stdout, stderr)
 		},
 	}
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name (alternative to NODE); optional for one node")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer IP, host, host:port, or HTTP(S) base URL; discovers a unique waiting installer when omitted")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "status request timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -355,20 +369,49 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
-	endpoint, err := resolveInstallerEndpoint(ctx, opts.endpoint, opts.timeout)
-	if err != nil {
-		return err
-	}
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
+	if opts.configPath != "" {
+		inv, err := readManagementInventory(opts.configPath)
+		if err != nil {
+			return err
+		}
+		manifest := configbundle.BundleManifest{Cluster: configbundle.ClusterRecord{BootstrapInventory: inv}}
+		for _, node := range inv.Nodes {
+			manifest.Nodes = append(manifest.Nodes, configbundle.NodeRecord{Name: node.Name})
+		}
+		name, err := selectInstallNode(manifest, opts.nodeName)
+		if err != nil {
+			return err
+		}
+		opts.nodeName = name
+		for _, node := range inv.Nodes {
+			if node.Name == name {
+				opts.endpoint, err = installEndpointHint(opts.endpoint, node.Address)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	} else if opts.nodeName != "" {
+		return fmt.Errorf("--config is required to select node %q; use --endpoint ADDRESS to query an installer directly", opts.nodeName)
+	}
+	endpoint, err := resolveInstallerEndpoint(requestCtx, opts.endpoint, opts.timeout)
+	if err != nil {
+		return err
+	}
 	status, err := fetchInstallStatus(requestCtx, &http.Client{Timeout: requestTimeout(opts.timeout)}, endpoint)
 	if err != nil {
 		return err
 	}
-	return writeInstallReport(stdout, opts.output, newInstallHandoffReport(endpoint, status.SelectedNode, status))
+	node := status.SelectedNode
+	if node == "" {
+		node = opts.nodeName
+	}
+	return writeInstallReport(stdout, opts.output, newInstallHandoffReport(endpoint, node, status))
 }
 
 func normalizeInstallerEndpoint(value string) (string, error) {
@@ -600,8 +643,19 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 		}
 		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "NODE\tENDPOINT\tSTATE\tSTEP")
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", node, report.Endpoint, report.Handoff.State, step)
-		return w.Flush()
+		state := string(report.Handoff.InstallStatus.State)
+		if state == "" {
+			state = string(report.Handoff.State)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", node, report.Endpoint, state, step)
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		if report.Handoff.InstallStatus.State == installstatus.StateRebootRequested {
+			_, err := fmt.Fprintln(stdout, "Installation finished; the node is rebooting. Check 'katlctl node status' with the same config, then run 'katlctl cluster bootstrap'.")
+			return err
+		}
+		return nil
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {

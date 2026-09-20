@@ -58,7 +58,7 @@ func newInstallDiscoverCommand(ctx context.Context, stdout, stderr io.Writer) *c
 		},
 	}
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall local-network discovery timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	addConfigInitFlags(cmd, &opts.configInit)
 	return cmd
 }

@@ -34,7 +34,8 @@ func TestClusterApplySelection(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := writeClusterConfig(t)
-			writeTestEnrollmentContext(t, "lab",
+			writeTestEnrollmentContext(
+				t, "lab",
 				workstation.Node{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine-cp-1"},
 				workstation.Node{Name: "cp-2", ManagementEndpoint: "10.0.0.12:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-2", MachineID: "machine-cp-2"},
 				workstation.Node{Name: "worker-1", ManagementEndpoint: "10.0.0.13:9443", SystemRole: inventory.RoleWorker, EnrollmentID: "enrollment-worker-1", MachineID: "machine-worker-1"},
@@ -56,10 +57,10 @@ func TestClusterApplySelection(t *testing.T) {
         kubelet:
           configFile: kubelet.yaml
 `
-			if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(filepath.Dir(path), "kubelet.yaml"), []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 111\n"), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(filepath.Dir(path), "kubelet.yaml"), []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 111\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			clients := map[string]*fakeKatlcAgentClient{}
@@ -88,7 +89,7 @@ func TestClusterApplySelection(t *testing.T) {
 			}
 
 			var stdout, stderr bytes.Buffer
-			args := append([]string{"cluster", "apply", "--config", path}, test.args...)
+			args := append([]string{"cluster", "apply", "--config", path, "--output", "json"}, test.args...)
 			err := run(context.Background(), args, &stdout, &stderr)
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
@@ -158,7 +159,7 @@ func TestClusterApplyHelp(t *testing.T) {
 			t.Fatalf("missing %q in help: %s", want, help)
 		}
 	}
-	for _, unwanted := range []string{"wipe", "--rebind-volume", "authorize"} {
+	for _, unwanted := range []string{"--acknowledge-storage-wipe"} {
 		if strings.Contains(help, unwanted) {
 			t.Fatalf("routine help includes %q", unwanted)
 		}

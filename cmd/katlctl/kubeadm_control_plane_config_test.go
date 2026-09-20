@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -137,7 +138,7 @@ func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testi
 	}
 	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
 
-	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath}, &stdout, &stderr); err != nil {
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	for _, required := range []string{`"result":"succeeded"`, `"control-plane"`, `"kubelet"`} {
@@ -199,7 +200,7 @@ func TestRunClusterApplySkipsKubernetesComponentsBeforeBootstrap(t *testing.T) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 
-	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath}, &stdout, &stderr); err != nil {
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	for _, required := range []string{
@@ -284,7 +285,7 @@ func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: afterPath}, &stdout, &stderr); err != nil {
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: afterPath}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.submitRequests) != 0 || client.generationRequest != nil {
@@ -331,10 +332,10 @@ func TestRunClusterApplyStagesPostBootstrapHostOnlyChangeAndRepeatsWithoutKubead
 	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
 
 	var stdout, stderr bytes.Buffer
-	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath}, &stdout, &stderr); err != nil {
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{`"rebootRequired":true`, `"stagedNodes":["cp-1"]`, `"kubernetes":{}`} {
+	for _, required := range []string{`"rebootRequired":true`, `"stagedNodes":["cp-1"]`} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("staged stdout = %s, missing %s", stdout.String(), required)
 		}
@@ -350,10 +351,14 @@ func TestRunClusterApplyStagesPostBootstrapHostOnlyChangeAndRepeatsWithoutKubead
 	client.validateResult = &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: generation.ApplyModeLive, NoChanges: true}
 	stdout.Reset()
 	stderr.Reset()
-	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath}, &stdout, &stderr); err != nil {
+	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), `"kubernetes":{}`) || strings.Contains(stdout.String(), `"rebootRequired"`) {
+	var report clusterApplyReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.RebootRequired || len(report.Kubernetes) != 0 {
 		t.Fatalf("repeat stdout = %s", stdout.String())
 	}
 	if len(client.submitRequests) != 1 || client.generationRequest != nil {
@@ -414,7 +419,7 @@ func TestActivateClusterConfigRequiresExplicitJoin(t *testing.T) {
 		return katlcAgentConnection{Client: clients[endpoint], Close: func() error { return nil }}, nil
 	}
 
-	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1", coordinator: "cp-3"}, []inventory.Node{
+	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1", coordinator: "cp-3"}, []inventory.Node{
 		{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 		{Name: "cp-2", Address: "10.0.0.12", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 		{Name: "cp-3", Address: "10.0.0.13", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
@@ -463,7 +468,7 @@ func TestActivateClusterConfigRefusesEnrolledNameAndRoleChangesBeforeValidation(
 				return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 			}
 
-			_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, []inventory.Node{{
+			_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1"}, []inventory.Node{{
 				Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"},
 			}})
 			if err == nil {
@@ -543,7 +548,7 @@ func TestActivateClusterConfigRequiresJoinRecovery(t *testing.T) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 
-	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-resume"}, []inventory.Node{
+	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-resume"}, []inventory.Node{
 		{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 		{Name: "cp-2", Address: "10.0.0.12", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 	})
@@ -585,7 +590,7 @@ func TestActivateClusterConfigValidatesEveryNodeBeforeMutation(t *testing.T) {
 		return katlcAgentConnection{Client: clients[endpoint], Close: func() error { return nil }}, nil
 	}
 
-	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, []inventory.Node{
+	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1"}, []inventory.Node{
 		{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 		{Name: "cp-2", Address: "10.0.0.12", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 	})
@@ -624,11 +629,11 @@ func TestActivateClusterConfigDiscoversKubeProxyPhase(t *testing.T) {
 	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
-	inv, err := kubeadmConfigInventory(kubeadmControlPlaneConfigOptions{configPath: configPath})
+	inv, err := kubeadmConfigInventory(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,11 +675,11 @@ func TestActivateClusterConfigUsesOneLiveWholeNodeGeneration(t *testing.T) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
-	inv, err := kubeadmConfigInventory(kubeadmControlPlaneConfigOptions{configPath: configPath})
+	inv, err := kubeadmConfigInventory(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1", destructiveStorageAcknowledgements: []string{"cp-1/data"}, volumeRebinds: []string{"cp-1/data"}}, inv.Nodes)
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1", destructiveStorageAcknowledgements: []string{"cp-1/data"}, volumeRebinds: []string{"cp-1/data"}}, inv.Nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,11 +730,11 @@ func TestActivateClusterConfigStagesNextBootHostConfiguration(t *testing.T) {
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
-	inv, err := kubeadmConfigInventory(kubeadmControlPlaneConfigOptions{configPath: configPath})
+	inv, err := kubeadmConfigInventory(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,11 +764,11 @@ func TestActivateClusterConfigKeepsCurrentGenerationAfterLateNoop(t *testing.T) 
 		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 	}
 	kubeadmConfigNow = func() time.Time { return time.Unix(0, 42).UTC() }
-	inv, err := kubeadmConfigInventory(kubeadmControlPlaneConfigOptions{configPath: configPath})
+	inv, err := kubeadmConfigInventory(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
+	activated, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1"}, inv.Nodes)
 	if err != nil {
 		t.Fatal(err)
 	}

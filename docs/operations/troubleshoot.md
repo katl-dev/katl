@@ -4,6 +4,19 @@ Troubleshooting starts by identifying the lifecycle boundary that failed. Do
 not retry a mutating command until its durable state and mutation boundary are
 known.
 
+When the management API is reachable, start from your workstation:
+
+```sh
+katlctl cluster status --config ./cluster.yaml
+katlctl node logs cp-1 --config ./cluster.yaml -u katlc-agent.service -u kubelet
+katlctl node logs cp-1 --config ./cluster.yaml --boot=-1 --lines 200
+katlctl operations status --config ./cluster.yaml --node cp-1 --watch
+```
+
+Use `--follow` to stream new journal entries and Ctrl+C to stop. JSON logs use
+one native journal object per line. SSH and console access remain available
+when the agent or network is unavailable.
+
 On an attached VGA or ipKVM console, `tty1` is the KatlOS status dashboard and
 includes current network addresses plus a live journal tail. Use
 `Ctrl+Alt+F2` for a local shell. The last rendered dashboard is also available

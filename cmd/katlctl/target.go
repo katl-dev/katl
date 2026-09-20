@@ -47,13 +47,13 @@ func addManagementTargetFlags(cmd *cobra.Command, opts *managementTargetOptions)
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "node address override: IP, hostname, host:port, or tcp:// URL")
 }
 
-func resolveManagementTarget(opts managementTargetOptions) (managementTarget, error) {
+func resolveManagementTarget(ctx context.Context, opts managementTargetOptions) (managementTarget, error) {
 	endpoint, err := normalizeManagementAddress(opts.endpoint)
 	if err != nil {
 		return managementTarget{}, err
 	}
 	if configPath := strings.TrimSpace(opts.clusterConfigPath); configPath != "" {
-		resolved, err := resolveClusterConfigTopology(configPath)
+		resolved, err := resolveClusterConfigTopology(ctx, configPath)
 		if err != nil {
 			return managementTarget{}, err
 		}
@@ -61,13 +61,10 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 		if err != nil {
 			return managementTarget{}, err
 		}
-		if enrolled, ok := enrolledTarget(strings.TrimSpace(opts.configPath), strings.TrimSpace(opts.contextName), resolved.ClusterName, target.nodeName); ok && target.credentials == nil {
+		if enrolled, ok := enrolledTarget(ctx, strings.TrimSpace(opts.configPath), strings.TrimSpace(opts.contextName), resolved.ClusterName, target.nodeName); ok && target.credentials == nil {
 			target = enrolled
 		}
 		if endpoint != "" {
-			if target.enrollmentID != "" && endpoint != target.endpoint {
-				return managementTarget{}, fmt.Errorf("node %q is enrolled at %s; use 'katlctl context rebind --node %s --endpoint %s' to verify and save a new address", target.nodeName, target.endpoint, target.nodeName, endpoint)
-			}
 			target.endpoint = endpoint
 		}
 		if target.endpoint == "" {
@@ -83,9 +80,7 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 			if resolveErr == nil {
 				target, targetErr := targetFromTopology(resolved.Topology, nodeName)
 				if targetErr == nil && target.enrollmentID != "" {
-					if endpoint != target.endpoint {
-						return managementTarget{}, fmt.Errorf("node %q is enrolled at %s; use 'katlctl context rebind --node %s --endpoint %s' to verify and save a new address", target.nodeName, target.endpoint, target.nodeName, endpoint)
-					}
+					target.endpoint = endpoint
 					return target, nil
 				}
 			}
@@ -104,9 +99,6 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 		return managementTarget{}, err
 	}
 	if endpoint != "" {
-		if target.enrollmentID != "" && endpoint != target.endpoint {
-			return managementTarget{}, fmt.Errorf("node %q is enrolled at %s; use 'katlctl context rebind --node %s --endpoint %s' to verify and save a new address", target.nodeName, target.endpoint, target.nodeName, endpoint)
-		}
 		target.endpoint = endpoint
 	}
 	return target, nil
@@ -156,7 +148,7 @@ func readManagementInventory(path string) (inventory.Inventory, error) {
 	return bundle.Manifest.Cluster.BootstrapInventory, nil
 }
 
-func resolveClusterConfigTopology(path string) (workstation.ResolvedTopology, error) {
+func resolveClusterConfigTopology(ctx context.Context, path string) (workstation.ResolvedTopology, error) {
 	inv, err := readManagementInventory(path)
 	if err != nil {
 		return workstation.ResolvedTopology{}, err
@@ -179,7 +171,7 @@ func resolveClusterConfigTopology(path string) (workstation.ResolvedTopology, er
 			resolved.Management = &credentials
 			return resolved, nil
 		}
-		mergeEnrolledTopology(&resolved, "", "")
+		mergeEnrolledTopology(ctx, &resolved, "", "")
 		return resolved, nil
 	}
 	bundle, err := configbundle.ReadBundle(bytes.NewReader(data), "")
@@ -191,16 +183,16 @@ func resolveClusterConfigTopology(path string) (workstation.ResolvedTopology, er
 		resolved.Management = &managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}
 		return resolved, nil
 	}
-	mergeEnrolledTopology(&resolved, "", "")
+	mergeEnrolledTopology(ctx, &resolved, "", "")
 	return resolved, nil
 }
 
-func mergeEnrolledTopology(resolved *workstation.ResolvedTopology, configPath, contextName string) {
+func mergeEnrolledTopology(ctx context.Context, resolved *workstation.ResolvedTopology, configPath, contextName string) {
 	if resolved == nil {
 		return
 	}
 	for index := range resolved.Nodes {
-		enrolled, ok := enrolledTarget(configPath, contextName, resolved.ClusterName, resolved.Nodes[index].Name)
+		enrolled, ok := enrolledTarget(ctx, configPath, contextName, resolved.ClusterName, resolved.Nodes[index].Name)
 		if !ok {
 			continue
 		}
@@ -259,7 +251,7 @@ func targetFromTopology(topology workstation.Topology, selected string) (managem
 	return managementTarget{}, fmt.Errorf("node %q was not found in context %q", nodeName, topology.ContextName)
 }
 
-func enrolledTarget(configPath, contextName, clusterName, nodeName string) (managementTarget, bool) {
+func enrolledTarget(ctx context.Context, configPath, contextName, clusterName, nodeName string) (managementTarget, bool) {
 	path := strings.TrimSpace(configPath)
 	if path == "" {
 		resolved, err := workstation.ConfigPath()
@@ -268,7 +260,7 @@ func enrolledTarget(configPath, contextName, clusterName, nodeName string) (mana
 		}
 		path = resolved
 	}
-	cfg, err := workstation.Load(path)
+	cfg, err := loadManagementContext(ctx, path)
 	if err != nil {
 		return managementTarget{}, false
 	}
@@ -386,7 +378,7 @@ func managementContextForNode(ctx context.Context, configPath, nodeName string) 
 	if strings.TrimSpace(configPath) == "" {
 		return ctx, nil
 	}
-	target, err := resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath, nodeName: nodeName})
+	target, err := resolveManagementTarget(ctx, managementTargetOptions{clusterConfigPath: configPath, nodeName: nodeName})
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +389,7 @@ func managementContextForCluster(ctx context.Context, configPath, contextPath, c
 	var resolved workstation.ResolvedTopology
 	var err error
 	if configPath != "" {
-		resolved, err = resolveClusterConfigTopology(configPath)
+		resolved, err = resolveClusterConfigTopology(ctx, configPath)
 	} else if contextPath != "" || contextName != "" {
 		resolved, err = workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: contextPath, ContextName: contextName})
 	} else {

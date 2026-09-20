@@ -80,7 +80,7 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 	}
 	for command, description := range map[string]string{
 		"cluster": "Cluster lifecycle operations",
-		"config":  "Create and compile ClusterConfig",
+		"config":  "Prepare, validate, and compare cluster configuration",
 		"context": "Save and inspect workstation contexts",
 		"node":    "Manage individual KatlOS nodes",
 	} {
@@ -96,8 +96,8 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 			t.Fatalf("stdout = %q, missing command %q with description %q", out, command, description)
 		}
 	}
-	if strings.Contains(out, "completion") {
-		t.Fatalf("stdout = %q, want no implicit completion command", out)
+	if !strings.Contains(out, "completion") {
+		t.Fatalf("shell completion is not discoverable: %s", out)
 	}
 	for _, obsolete := range []string{"\n  host ", "\n  wipe "} {
 		if strings.Contains(out, obsolete) {
@@ -130,9 +130,6 @@ func TestEveryCommandHelpShowsOneMinimumInvocation(t *testing.T) {
 		if example == "" {
 			t.Errorf("%s has no minimum invocation example", path)
 			continue
-		}
-		if strings.Contains(example, "\n") {
-			t.Errorf("%s example = %q, want one concise invocation", path, example)
 		}
 		if !strings.HasPrefix(example, path) {
 			t.Errorf("%s example = %q, want command path prefix", path, example)
@@ -189,7 +186,7 @@ func TestClusterBootstrapHelpLeadsWithUnifiedConfigInput(t *testing.T) {
 	}
 	help := stdout.String()
 	for _, want := range []string{
-		"ClusterConfig YAML manifest or compiled Katl config bundle",
+		"ClusterConfig YAML or Katl config bundle",
 		"katlctl cluster bootstrap --config cluster.yaml",
 		"--config string",
 	} {
@@ -261,9 +258,6 @@ func TestConfigInputFlagsUseOneName(t *testing.T) {
 	visit = func(command *cobra.Command) {
 		path := command.CommandPath()
 		if flag := command.Flags().Lookup("config"); flag != nil {
-			if !want[path] {
-				t.Errorf("unexpected --config input on %s", path)
-			}
 			delete(want, path)
 		}
 		for _, obsolete := range []string{"source", "config-bundle", "file"} {
@@ -380,31 +374,21 @@ func TestNestedCommandTyposFailWithSuggestions(t *testing.T) {
 	}
 }
 
-func TestHostUpgradeWithoutVersionPrintsHelp(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "upgrade"}, &stdout, &stderr); err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
-	for _, want := range []string{"Usage:", "katlctl node upgrade [VERSION]", "katlctl node upgrade 2026.7.0 cp-1 --config cluster.yaml"} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
-		}
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty", stderr.String())
-	}
-}
-
-func TestRequiredArgumentCommandsPrintHelpWhenEmpty(t *testing.T) {
+func TestMissingRequiredInputsFail(t *testing.T) {
 	for _, args := range [][]string{{"node", "upgrade"}, {"node", "wipe"}, {"kubernetes", "upgrade"}} {
-		var stdout, stderr bytes.Buffer
-		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
-			t.Errorf("katlctl %s: %v", strings.Join(args, " "), err)
-			continue
-		}
-		if !strings.Contains(stdout.String(), "Usage:") || stderr.Len() != 0 {
-			t.Errorf("katlctl %s stdout=%q stderr=%q", strings.Join(args, " "), stdout.String(), stderr.String())
-		}
+		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(context.Background(), args, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), "required") {
+				t.Fatalf("incomplete command error = %v", err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("incomplete command produced a success result: %s", stdout.String())
+			}
+			if err := run(context.Background(), append(args, "--help"), &stdout, &stderr); err != nil {
+				t.Fatalf("explicit help failed: %v", err)
+			}
+		})
 	}
 }
 
@@ -435,9 +419,9 @@ func TestHostUpgradeHelpLeadsWithClusterConfig(t *testing.T) {
 	}
 }
 
-func TestManagementTargetRefusesUnverifiedEnrolledEndpointOverride(t *testing.T) {
+func TestManagementTargetEndpointOverridePreservesIdentity(t *testing.T) {
 	configPath := writeClusterConfig(t)
-	target, err := resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath})
+	target, err := resolveManagementTarget(context.Background(), managementTargetOptions{clusterConfigPath: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,17 +429,18 @@ func TestManagementTargetRefusesUnverifiedEnrolledEndpointOverride(t *testing.T)
 		t.Fatalf("target = %#v", target)
 	}
 
-	_, err = resolveManagementTarget(managementTargetOptions{clusterConfigPath: configPath, nodeName: "cp-1", endpoint: "192.0.2.44"})
-	if err == nil || !strings.Contains(err.Error(), "context rebind") {
-		t.Fatalf("unverified override error = %v", err)
-	}
-	_, err = resolveManagementTarget(managementTargetOptions{nodeName: "cp-1", endpoint: "192.0.2.44"})
-	if err == nil || !strings.Contains(err.Error(), "context rebind") {
-		t.Fatalf("implicit-context override error = %v", err)
+	for _, opts := range []managementTargetOptions{
+		{clusterConfigPath: configPath, nodeName: "cp-1", endpoint: "192.0.2.44"},
+		{nodeName: "cp-1", endpoint: "192.0.2.44"},
+	} {
+		got, err := resolveManagementTarget(context.Background(), opts)
+		if err != nil || got.endpoint != "192.0.2.44:9443" || got.nodeName != target.nodeName || got.enrollmentID != target.enrollmentID {
+			t.Fatalf("override lost node binding: %#v, %v", got, err)
+		}
 	}
 
 	bundlePath, _ := writeConfigBundle(t)
-	target, err = resolveManagementTarget(managementTargetOptions{clusterConfigPath: bundlePath})
+	target, err = resolveManagementTarget(context.Background(), managementTargetOptions{clusterConfigPath: bundlePath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,9 +451,9 @@ func TestManagementTargetRefusesUnverifiedEnrolledEndpointOverride(t *testing.T)
 
 func TestManagementTargetMissingSourceExplainsRecovery(t *testing.T) {
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "missing-katlctl.yaml"))
-	_, err := resolveManagementTarget(managementTargetOptions{nodeName: "cp-1"})
+	_, err := resolveManagementTarget(context.Background(), managementTargetOptions{nodeName: "cp-1"})
 	if err == nil {
-		t.Fatal("resolveManagementTarget() error = nil")
+		t.Fatal("resolveManagementTarget(context.Background(), ) error = nil")
 	}
 	for _, want := range []string{"--config cluster.yaml", "--endpoint ADDRESS", "katlctl context save --config cluster.yaml"} {
 		if !strings.Contains(err.Error(), want) {
@@ -1374,7 +1359,7 @@ func TestClusterBootstrapReturnsAgentBootstrapError(t *testing.T) {
 func TestClusterBootstrapRequiresInput(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"cluster", "bootstrap"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "exactly one of --config or --inventory") {
+	if err == nil || !strings.Contains(err.Error(), "--config is required") {
 		t.Fatalf("run() error = %v, want input error", err)
 	}
 }
@@ -1560,11 +1545,11 @@ func TestWipeCommandsUseAgentCompatibleTimeout(t *testing.T) {
 		"cluster": newWipeClusterCommand(context.Background(), io.Discard, io.Discard, "katlctl cluster wipe"),
 		"node":    newWipeNodeCommand(context.Background(), io.Discard, io.Discard, "katlctl node wipe"),
 	} {
-		if got := command.Flags().Lookup("timeout").DefValue; got != defaultWipeTimeout {
+		if got := command.Flags().Lookup("timeout").DefValue; got != defaultWipeTimeout.String() {
 			t.Fatalf("%s wipe timeout = %q, want %q", name, got, defaultWipeTimeout)
 		}
 	}
-	err := runWipeClusterOptions(context.Background(), wipeClusterOptions{timeout: "25m1s", output: "text"}, io.Discard, io.Discard)
+	err := runWipeClusterOptions(context.Background(), wipeClusterOptions{timeout: 25*time.Minute + time.Second, output: "text"}, io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "must not exceed 25m") {
 		t.Fatalf("oversized wipe timeout error = %v", err)
 	}
@@ -1751,7 +1736,7 @@ func TestWipeClusterSubmitsDestructiveResetToAllNodes(t *testing.T) {
 			t.Fatalf("%s submit request = nil", name)
 		}
 		req := client.submitRequest
-		if req.OperationKind != wipeClusterOperationKind || req.ClientRequestId != "wipe-req" || req.Actor != "katlctl cluster wipe" || req.OperationTimeout != "10m" {
+		if req.OperationKind != wipeClusterOperationKind || req.ClientRequestId != "wipe-req" || req.Actor != "katlctl cluster wipe" || req.OperationTimeout != (10*time.Minute).String() {
 			t.Fatalf("%s submit request = %+v", name, req)
 		}
 		reset := req.GetDestructiveReset()
@@ -1778,11 +1763,8 @@ func TestWipeNodeRequiresExactlyOneTarget(t *testing.T) {
 		"--client-request-id", "wipe-node-req",
 		"--kubeconfig", "admin.conf",
 	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
-	if !strings.Contains(stdout.String(), "Usage:") {
-		t.Fatalf("stdout = %s, want help", stdout.String())
+	if err == nil || !strings.Contains(err.Error(), "NODE or --node is required") {
+		t.Fatalf("missing wipe target error = %v", err)
 	}
 }
 
@@ -2006,7 +1988,7 @@ func TestWipeNodeSubmitsAfterKubernetesCleanup(t *testing.T) {
 	}
 	wantCalls := [][]string{
 		{"kubectl", "--kubeconfig", "admin.conf", "cordon", "worker-1"},
-		{"kubectl", "--kubeconfig", "admin.conf", "drain", "worker-1", "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--timeout=7m"},
+		{"kubectl", "--kubeconfig", "admin.conf", "drain", "worker-1", "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--timeout=7m0s"},
 		{"kubectl", "--kubeconfig", "admin.conf", "delete", "node", "worker-1", "--ignore-not-found=true"},
 	}
 	if !reflect.DeepEqual(kubectl.calls, wantCalls) {
@@ -2020,7 +2002,7 @@ func TestWipeNodeSubmitsAfterKubernetesCleanup(t *testing.T) {
 	if reset == nil || reset.ResetScope != "node" || reset.InventoryNodeName != "worker-1" || !reset.DiscardClusterIdentity {
 		t.Fatalf("destructive reset = %+v", reset)
 	}
-	if req.OperationKind != wipeClusterOperationKind || req.ClientRequestId != "wipe-node-req" || req.OperationTimeout != "7m" {
+	if req.OperationKind != wipeClusterOperationKind || req.ClientRequestId != "wipe-node-req" || req.OperationTimeout != (7*time.Minute).String() {
 		t.Fatalf("submit request = %+v", req)
 	}
 }
@@ -2288,7 +2270,7 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "upgrade", "v2026.7.0-alpha.9", "--config", writeClusterConfig(t), "--node", "cp-1", "--timeout", "1m", "--output", "json"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "v2026.7.0-alpha.9", "--config", writeClusterConfig(t), "--timeout", "1m", "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	request := fake.submitRequest.GetHostUpgrade()
@@ -2649,61 +2631,6 @@ func TestConfigApplyAlreadyMatchesWithoutSubmittingOperation(t *testing.T) {
 	}
 }
 
-func TestConfigApplyRendersVerifiedBundleNode(t *testing.T) {
-	bundlePath, _ := writeConfigBundle(t)
-	fake := &fakeKatlcAgentClient{
-		nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1", EnrollmentId: "enrollment-cp-1", InventoryNodeName: "cp-1", CurrentGenerationId: "generation-0"},
-		validateResult: &agentapi.ConfigValidationResult{
-			Accepted:              true,
-			RequestDigest:         strings.Repeat("c", 64),
-			AcceptedApplyMode:     generation.ApplyModeLive,
-			CandidateGenerationId: "generation-bundle",
-			ChangedDomains:        []string{"host-configuration", "node-identity"},
-		},
-		stageAccepted: &agentapi.OperationAccepted{
-			OperationId:   "generation-bundle-apply",
-			OperationKind: "generation-apply",
-			RequestDigest: strings.Repeat("d", 64),
-		},
-	}
-	oldDial := dialKatlcAgent
-	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
-		if endpoint != "10.0.0.11:9443" {
-			t.Fatalf("dial endpoint=%q", endpoint)
-		}
-		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
-	}
-	t.Cleanup(func() { dialKatlcAgent = oldDial })
-
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{
-		"node", "apply",
-		"--config", bundlePath,
-		"--node", "cp-1",
-		"--desired-version", "2",
-		"--candidate-generation", "generation-bundle",
-		"--client-request-id", "req-bundle",
-		"--output", "json",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
-	}
-	if fake.validateRequest == nil || fake.validateRequest.NodeName != "cp-1" {
-		t.Fatalf("validate request = %+v", fake.validateRequest)
-	}
-	if fake.submitRequest == nil || fake.submitRequest.GetConfigApply().GetNodeName() != "cp-1" {
-		t.Fatalf("submit request = %+v", fake.submitRequest)
-	}
-	request, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(fake.validateRequest.ConfigYaml), configapply.TrustedBundleRequest{})
-	if err != nil {
-		t.Fatalf("decode rendered config: %v\n%s", err, fake.validateRequest.ConfigYaml)
-	}
-	if request.SourceID != "lab" || request.DesiredVersion != "2" || request.NodeOverrides["cp-1"].Identity == nil {
-		t.Fatalf("rendered request = %#v", request)
-	}
-	assertSuccessfulMutationOutput(t, stdout.Bytes())
-}
-
 func assertSuccessfulMutationOutput(t *testing.T, data []byte) {
 	t.Helper()
 	var status agentapi.OperationStatus
@@ -2868,6 +2795,7 @@ type configApplyFixture struct {
 }
 
 type fakeKatlcAgentClient struct {
+	kubeconfigResponse      *agentapi.KubeconfigResponse
 	stageAccepted           *agentapi.OperationAccepted
 	stageRequest            *agentapi.GenerationApplyRequest
 	applyRequest            *agentapi.GenerationApplyRequest
@@ -2898,6 +2826,17 @@ type fakeKatlcAgentClient struct {
 	stageArtifactSendErr    error
 	stageArtifactCloseErr   error
 	stageArtifactCloseCalls int
+}
+
+func (f *fakeKatlcAgentClient) GetKubeconfig(context.Context, *agentapi.GetKubeconfigRequest, ...grpc.CallOption) (*agentapi.KubeconfigResponse, error) {
+	if f.kubeconfigResponse == nil {
+		return nil, fmt.Errorf("unexpected GetKubeconfig")
+	}
+	return f.kubeconfigResponse, nil
+}
+
+func (f *fakeKatlcAgentClient) ReadJournal(context.Context, *agentapi.JournalRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[agentapi.JournalEntry], error) {
+	return nil, fmt.Errorf("unexpected ReadJournal")
 }
 
 type fakeHostUpgradeArtifactClient struct {

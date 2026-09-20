@@ -7,6 +7,8 @@ option go_package = "github.com/katl-dev/katl/internal/katlc/agentapi;agentapi";
 service KatlcAgent {
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
   rpc GetEtcdStatus(GetEtcdStatusRequest) returns (EtcdStatus);
+  rpc GetKubeconfig(GetKubeconfigRequest) returns (KubeconfigResponse);
+  rpc ReadJournal(JournalRequest) returns (stream JournalEntry);
   rpc Reboot(RebootRequest) returns (RebootAccepted);
   rpc Shutdown(ShutdownRequest) returns (ShutdownAccepted);
   rpc ValidateConfig(ValidateConfigRequest) returns (ConfigValidationResult);
@@ -23,6 +25,25 @@ service KatlcAgent {
 }
 
 message GetNodeStatusRequest {}
+
+message GetKubeconfigRequest {}
+
+message KubeconfigResponse {
+  bytes kubeconfig = 1;
+}
+
+message JournalRequest {
+  repeated string units = 1;
+  int32 lines = 2;
+  bool follow = 3;
+  string boot = 4;
+  string since = 5;
+  string format = 6;
+}
+
+message JournalEntry {
+  string line = 1;
+}
 
 message NodeStatus {
   string api_version = 1;

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/bootstrap/kubeconfig"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
@@ -499,7 +500,7 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 	if err != nil {
 		return result, fmt.Errorf("get bootstrap output for operation %s: %w", accepted.GetOperationId(), err)
 	}
-	credentials, err := parseAdminCredentials([]byte(output.GetAdminKubeconfig()))
+	credentials, err := kubeconfig.ParseCredentials([]byte(output.GetAdminKubeconfig()))
 	if err != nil {
 		return result, err
 	}

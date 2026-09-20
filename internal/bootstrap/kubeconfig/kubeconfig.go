@@ -21,6 +21,7 @@ const (
 var ErrExists = errors.New("kubeconfig already exists with different content")
 
 type EndpointSelection struct {
+	ServerOverride       string
 	InitialEndpoint      string
 	ControlPlaneEndpoint string
 	StableEndpoint       string
@@ -121,6 +122,9 @@ type SelectedEndpoint struct {
 
 func SelectEndpoint(selection EndpointSelection) (SelectedEndpoint, error) {
 	switch {
+	case strings.TrimSpace(selection.ServerOverride) != "":
+		server, err := normalizeServer(selection.ServerOverride)
+		return SelectedEndpoint{Server: server, TLSServerName: strings.TrimSpace(selection.TLSServerName), Access: "explicit"}, err
 	case strings.TrimSpace(selection.StableEndpoint) != "" && selection.StableEndpointReady:
 		server, err := normalizeServer(selection.StableEndpoint)
 		return SelectedEndpoint{Server: server, Access: "canonical"}, err

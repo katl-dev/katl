@@ -50,8 +50,14 @@ type initNodeSpec struct {
 
 type initNodeSpecs []initNodeSpec
 
-func (values *initNodeSpecs) String() string { return "name=role,address,/dev/disk/by-id/..." }
-func (values *initNodeSpecs) Type() string   { return "node" }
+func (values *initNodeSpecs) String() string {
+	var entries []string
+	for _, node := range *values {
+		entries = append(entries, node.name+"="+string(node.role)+","+node.address+","+node.disk.ByID)
+	}
+	return strings.Join(entries, "; ")
+}
+func (values *initNodeSpecs) Type() string { return "node" }
 func (values *initNodeSpecs) Set(value string) error {
 	name, fields, ok := strings.Cut(strings.TrimSpace(value), "=")
 	parts := strings.Split(fields, ",")

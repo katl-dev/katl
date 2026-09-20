@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
@@ -24,6 +25,9 @@ import (
 )
 
 type kubeadmControlPlaneConfigOptions struct {
+	plan                                                             bool
+	output, mode                                                     string
+	timeout                                                          time.Duration
 	configPath, inventoryPath, coordinator, generationID, configName string
 	rolloutID, component                                             string
 	selectedNodes                                                    []string
@@ -35,7 +39,7 @@ type kubeadmControlPlaneConfigOptions struct {
 var kubeadmConfigNow = func() time.Time { return time.Now().UTC() }
 
 func newClusterApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := kubeadmControlPlaneConfigOptions{}
+	opts := kubeadmControlPlaneConfigOptions{output: "text", mode: generation.ApplyModeAuto, timeout: 30 * time.Minute}
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Apply configuration to running cluster nodes",
@@ -49,6 +53,10 @@ the next boot and reported. Use 'katlctl node join NODE --config cluster.yaml'
 to join an installed node to an existing cluster. Apply never joins nodes.
 Kubernetes settings shared by the cluster can still affect the whole cluster.
 
+Use --plan to validate the selected nodes and preview host changes without
+accepting operations. Kubernetes component readiness is checked during apply.
+--mode live refuses changes that need reboot; --mode next-boot stages host changes.
+
 Apply does not remove nodes omitted from the config or change an enrolled node's
 name or role. See docs/operations/configure-nodes.md for configuration workflows.`,
 		Args: cobra.NoArgs,
@@ -61,26 +69,55 @@ name or role. See docs/operations/configure-nodes.md for configuration workflows
 	f.StringArrayVar(&opts.selectedNodes, "node", nil, "apply to this config node only (repeatable; default: all nodes)")
 	f.StringVar(&opts.inventoryPath, "inventory", "", "advanced cluster inventory")
 	f.StringVar(&opts.coordinator, "coordinator", "", "selected control-plane coordinator changed last")
+	f.BoolVar(&opts.plan, "plan", false, "validate and preview changes without accepting operations")
+	f.StringVar(&opts.mode, "mode", opts.mode, "apply mode: auto, live, or next-boot")
+	f.DurationVar(&opts.timeout, "timeout", opts.timeout, "overall validation and apply timeout")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	f.StringVar(&opts.generationID, "generation", "", "active desired generation ID")
 	f.StringVar(&opts.configName, "config-name", "", "selected KubeadmConfig name")
 	f.StringVar(&opts.rolloutID, "rollout-id", "", "rollout identity")
 	f.StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "deprecated: wipe intent is configured by wipe: true")
 	_ = f.MarkHidden("acknowledge-storage-wipe")
 	f.StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
-	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id", "rebind-volume"} {
+	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id"} {
 		cmd.Flags().Lookup(name).Hidden = true
 	}
 	return cmd
 }
 
 func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout, stderr io.Writer) error {
+	if opts.mode == "" {
+		opts.mode = generation.ApplyModeAuto
+	}
+	if opts.mode != generation.ApplyModeAuto && opts.mode != generation.ApplyModeLive && opts.mode != generation.ApplyModeNextBoot {
+		return fmt.Errorf("--mode must be auto, live, or next-boot")
+	}
+	if opts.output == "" {
+		opts.output = "text"
+	}
+	if err := validateHostOutput(opts.output); err != nil {
+		return err
+	}
+	if opts.timeout == 0 {
+		opts.timeout = 30 * time.Minute
+	}
+	if opts.timeout < 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
+	if opts.plan && strings.TrimSpace(opts.configPath) == "" {
+		return fmt.Errorf("--config is required for --plan")
+	}
 	opts.coordinator = strings.TrimSpace(opts.coordinator)
 	if len(opts.selectedNodes) > 0 && opts.coordinator != "" && !slices.Contains(opts.selectedNodes, opts.coordinator) {
 		return fmt.Errorf("coordinator %q is not selected; include it with --node or omit --coordinator", opts.coordinator)
 	}
-	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, opts.selectedNodes...); err != nil {
+	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, opts.selectedNodes...)
+	if err != nil {
 		return err
 	}
+	ctx = refreshed
 	opts.progress = stderr
 	acknowledgements, err := normalizeDestructiveStorageAcknowledgements(opts.destructiveStorageAcknowledgements)
 	if err != nil {
@@ -92,7 +129,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		return err
 	}
 	opts.volumeRebinds = rebinds
-	inv, err := kubeadmConfigInventory(opts)
+	inv, err := kubeadmConfigInventory(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -113,6 +150,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	}
 	preBootstrap := false
 	var stagedNodes []string
+	var nodePlans []clusterConfigNodePlan
 	if strings.TrimSpace(opts.configPath) != "" {
 		activated, err := activateClusterConfig(ctx, opts, inv.Nodes)
 		if err != nil {
@@ -122,11 +160,15 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		components = activated.components
 		preBootstrap = activated.preBootstrap
 		stagedNodes = activated.stagedNodes
+		nodePlans = activated.nodePlans
 	} else if strings.TrimSpace(opts.generationID) == "" {
 		return fmt.Errorf("--generation is required with --inventory")
 	}
 
 	results := map[string]any{}
+	if opts.plan {
+		return writeClusterApplyReport(stdout, opts.output, clusterApplyReport{Nodes: len(selected), NodePlans: nodePlans, Result: "planned", RebootRequired: len(stagedNodes) > 0, StagedNodes: stagedNodes})
+	}
 	for _, component := range []string{"control-plane", "kubelet", "kube-proxy"} {
 		if !components[component] {
 			continue
@@ -168,16 +210,54 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 			return err
 		}
 	}
-	report := map[string]any{
-		"nodes":      len(selected),
-		"kubernetes": results,
-		"result":     "succeeded",
+	return writeClusterApplyReport(stdout, opts.output, clusterApplyReport{Nodes: len(selected), NodePlans: nodePlans, Kubernetes: results, Result: "succeeded", RebootRequired: len(stagedNodes) > 0, StagedNodes: stagedNodes})
+}
+
+type clusterConfigNodePlan struct {
+	Node           string   `json:"node"`
+	ApplyMode      string   `json:"applyMode"`
+	NoChanges      bool     `json:"noChanges"`
+	ChangedDomains []string `json:"changedDomains,omitempty"`
+}
+
+type clusterApplyReport struct {
+	Nodes          int                     `json:"nodes"`
+	NodePlans      []clusterConfigNodePlan `json:"nodePlans"`
+	Kubernetes     map[string]any          `json:"kubernetes,omitempty"`
+	Result         string                  `json:"result"`
+	RebootRequired bool                    `json:"rebootRequired,omitempty"`
+	StagedNodes    []string                `json:"stagedNodes,omitempty"`
+}
+
+func writeClusterApplyReport(stdout io.Writer, format string, report clusterApplyReport) error {
+	if format == "json" {
+		return json.NewEncoder(stdout).Encode(report)
 	}
-	if len(stagedNodes) > 0 {
-		report["rebootRequired"] = true
-		report["stagedNodes"] = stagedNodes
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NODE\tCHANGE\tDOMAINS")
+	for _, node := range report.NodePlans {
+		change := node.ApplyMode
+		if node.NoChanges {
+			change = "unchanged"
+		}
+		if node.ApplyMode == generation.ApplyModeNextBoot {
+			change = "next boot (reboot required)"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", node.Node, change, strings.Join(node.ChangedDomains, ", "))
 	}
-	return json.NewEncoder(stdout).Encode(report)
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if report.Result == "planned" {
+		_, err := fmt.Fprintln(stdout, "Plan complete; no operations accepted. Run without --plan to apply.")
+		return err
+	}
+	if report.RebootRequired {
+		_, err := fmt.Fprintf(stdout, "Configuration staged. Reboot %s with 'katlctl node reboot NODE --config CONFIG', then rerun cluster apply.\n", strings.Join(report.StagedNodes, ", "))
+		return err
+	}
+	_, err := fmt.Fprintf(stdout, "Configuration applied to %d node(s).\n", report.Nodes)
+	return err
 }
 
 func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout io.Writer) error {
@@ -187,7 +267,7 @@ func runKubeadmControlPlaneConfig(ctx context.Context, opts kubeadmControlPlaneC
 	if opts.component != "control-plane" && opts.component != "kubelet" && opts.component != "kube-proxy" {
 		return fmt.Errorf("internal component = %q, want control-plane, kubelet, or kube-proxy", opts.component)
 	}
-	inv, err := kubeadmConfigInventory(opts)
+	inv, err := kubeadmConfigInventory(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -373,10 +453,13 @@ const (
 	kubeadmConfigComponentKubeProxy    = "component/kube-proxy"
 )
 
-func kubeadmConfigInventory(opts kubeadmControlPlaneConfigOptions) (inventory.Inventory, error) {
+func kubeadmConfigInventory(ctx context.Context, opts kubeadmControlPlaneConfigOptions) (inventory.Inventory, error) {
 	configPath := strings.TrimSpace(opts.configPath)
 	inventoryPath := strings.TrimSpace(opts.inventoryPath)
 	if (configPath == "") == (inventoryPath == "") {
+		if configPath == "" {
+			return inventory.Inventory{}, fmt.Errorf("--config is required; use --config ./cluster.yaml")
+		}
 		return inventory.Inventory{}, fmt.Errorf("exactly one of --config or --inventory is required")
 	}
 	if inventoryPath != "" {
@@ -384,13 +467,13 @@ func kubeadmConfigInventory(opts kubeadmControlPlaneConfigOptions) (inventory.In
 		if err != nil {
 			return inventory.Inventory{}, err
 		}
-		return overlayWipeContext(inv, "", "", configPath)
+		return overlayWipeContext(ctx, inv, "", "", configPath)
 	}
-	inv, err := loadWipeInventory(configPath, "", opts.progress)
+	inv, err := loadWipeInventory(ctx, configPath, "", opts.progress)
 	if err != nil {
 		return inventory.Inventory{}, err
 	}
-	return overlayWipeContext(inv, "", "", configPath)
+	return overlayWipeContext(ctx, inv, "", "", configPath)
 }
 
 func selectConfigNodes(nodes []inventory.Node, names []string) ([]inventory.Node, error) {
@@ -412,6 +495,7 @@ func selectConfigNodes(nodes []inventory.Node, names []string) ([]inventory.Node
 }
 
 type activatedClusterConfig struct {
+	nodePlans    []clusterConfigNodePlan
 	generations  map[string]string
 	components   map[string]bool
 	preBootstrap bool
@@ -419,12 +503,18 @@ type activatedClusterConfig struct {
 }
 
 func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOptions, nodes []inventory.Node) (activatedClusterConfig, error) {
+	if opts.mode == "" {
+		opts.mode = generation.ApplyModeAuto
+	}
+	if opts.mode != generation.ApplyModeAuto && opts.mode != generation.ApplyModeLive && opts.mode != generation.ApplyModeNextBoot {
+		return activatedClusterConfig{}, fmt.Errorf("--mode = %q, want auto, live, or next-boot", opts.mode)
+	}
 	loaded, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{}, nil)
 	if err != nil {
 		return activatedClusterConfig{}, err
 	}
 	for index := range nodes {
-		target, ok := enrolledTarget("", "", loaded.Bundle.Manifest.ClusterName, nodes[index].Name)
+		target, ok := enrolledTarget(ctx, "", "", loaded.Bundle.Manifest.ClusterName, nodes[index].Name)
 		if !ok {
 			continue
 		}
@@ -484,7 +574,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 		configYAML, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
 			NodeName: selected.Node.Name, Manifest: selected.InstallManifest, KubeadmConfigs: selected.KubeadmConfigs,
-			SourceID: selected.BundleManifest.ClusterName, DesiredVersion: desiredVersion, ApplyMode: generation.ApplyModeAuto,
+			SourceID: selected.BundleManifest.ClusterName, DesiredVersion: desiredVersion, ApplyMode: opts.mode,
 			SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
 			APIProxy:                selected.NodeMaterial.APIProxy,
 		})
@@ -532,7 +622,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		validation, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
 			ApiVersion: operation.APIVersion, Kind: "ValidateConfigRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
 			Actor: "katlctl cluster apply", ExpectedEnrollmentId: status.EnrollmentId, ExpectedInventoryNodeName: status.InventoryNodeName,
-			ExpectedMachineId: status.MachineId, ExpectedCurrentGenerationId: status.CurrentGenerationId, ApplyMode: generation.ApplyModeAuto,
+			ExpectedMachineId: status.MachineId, ExpectedCurrentGenerationId: status.CurrentGenerationId, ApplyMode: opts.mode,
 			CandidateGenerationId: generationID, NodeName: node.Name, ConfigYaml: string(input.configYAML),
 			DestructiveStorageAcknowledgements: slices.Clone(opts.destructiveStorageAcknowledgements),
 			VolumeRebinds:                      slices.Clone(opts.volumeRebinds),
@@ -603,7 +693,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 
 	for _, input := range prepared {
 		node := input.node
-		if input.noChanges {
+		if input.noChanges || opts.plan {
 			continue
 		}
 		nodeCtx, err := managementContextForNode(ctx, opts.configPath, node.Name)
@@ -627,7 +717,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: opts.rolloutID + "-stage-" + node.Name,
 			OperationKind: operationKind, Actor: "katlctl cluster apply", ExpectedEnrollmentId: node.EnrollmentID, ExpectedInventoryNodeName: node.Name,
 			ExpectedMachineId: input.machineID, ExpectedCurrentGenerationId: input.currentGeneration,
-			ConfigApply: &agentapi.ConfigApplyOperationRequest{CandidateGenerationId: generationID, ApplyMode: generation.ApplyModeAuto, NodeName: node.Name, ConfigYaml: string(input.configYAML), DestructiveStorageAcknowledgements: slices.Clone(opts.destructiveStorageAcknowledgements), VolumeRebinds: slices.Clone(opts.volumeRebinds)},
+			ConfigApply: &agentapi.ConfigApplyOperationRequest{CandidateGenerationId: generationID, ApplyMode: opts.mode, NodeName: node.Name, ConfigYaml: string(input.configYAML), DestructiveStorageAcknowledgements: slices.Clone(opts.destructiveStorageAcknowledgements), VolumeRebinds: slices.Clone(opts.volumeRebinds)},
 		})
 		if err != nil {
 			_ = conn.Close()
@@ -658,13 +748,16 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		result[node.Name] = activatedGeneration
 	}
 	var stagedNodes []string
+	var nodePlans []clusterConfigNodePlan
 	for _, input := range prepared {
+		nodePlans = append(nodePlans, clusterConfigNodePlan{Node: input.node.Name, ApplyMode: input.acceptedApplyMode, NoChanges: input.noChanges, ChangedDomains: input.changedDomains})
 		if input.acceptedApplyMode == generation.ApplyModeNextBoot {
 			stagedNodes = append(stagedNodes, input.node.Name)
 		}
 	}
 	sort.Strings(stagedNodes)
 	return activatedClusterConfig{
+		nodePlans:    nodePlans,
 		generations:  result,
 		components:   components,
 		preBootstrap: preBootstrap,

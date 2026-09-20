@@ -313,7 +313,7 @@ its contents. Change the selector to the replacement's exact stable identity,
 plan the change, inspect the reported target, then authorize that transition:
 
 ```console
-katlctl node apply --config ./cluster.yaml worker-1 \
+katlctl cluster apply --config ./cluster.yaml --node worker-1 \
   --rebind-volume worker-1/data
 ```
 

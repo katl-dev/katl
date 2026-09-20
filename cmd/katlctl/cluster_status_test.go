@@ -61,7 +61,7 @@ clusters:
 }
 
 func TestClusterStatusResolvesClusterConfigWithoutContext(t *testing.T) {
-	topology, err := resolveClusterTopology(clusterStatusOptions{clusterConfig: writeClusterConfig(t)})
+	topology, err := resolveClusterTopology(context.Background(), clusterStatusOptions{clusterConfig: writeClusterConfig(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

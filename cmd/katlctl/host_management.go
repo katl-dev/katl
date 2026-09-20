@@ -141,7 +141,7 @@ func newHostStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	}
 	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "management request timeout")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -161,7 +161,7 @@ func newHostRebootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "time to wait for the host to return healthy")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the host schedules the reboot")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -184,7 +184,7 @@ Use the same ClusterConfig used to install the node. --endpoint can override its
 	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "time to wait for the management API to stop")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the host schedules the shutdown")
-	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
+	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
@@ -207,7 +207,7 @@ func runHostStatus(ctx context.Context, opts hostStatusOptions, stdout, stderr i
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	target, err := resolveManagementTarget(opts.target)
+	target, err := resolveManagementTarget(ctx, opts.target)
 	if err != nil {
 		return err
 	}
@@ -236,7 +236,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	target, err := resolveManagementTarget(opts.target)
+	target, err := resolveManagementTarget(ctx, opts.target)
 	if err != nil {
 		return err
 	}
@@ -299,7 +299,7 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	target, err := resolveManagementTarget(opts.target)
+	target, err := resolveManagementTarget(ctx, opts.target)
 	if err != nil {
 		return err
 	}

@@ -9,11 +9,11 @@ installed release.
 | --- | --- |
 | `katlctl config` | Create, validate, inspect, compare, and compile `ClusterConfig`. |
 | `katlctl install` | Discover a waiting installer, enable installer SSH, submit config, and inspect installation. |
-| `katlctl cluster` | Inspect or apply the complete cluster, bootstrap kubeadm, inspect etcd, and perform explicit cluster wipes. |
-| `katlctl node` | Inspect, reboot, shut down, upgrade, or explicitly wipe one node. |
+| `katlctl cluster` | Inspect or apply selected nodes, bootstrap kubeadm, retrieve kubeconfig, inspect etcd, and perform explicit cluster wipes. |
+| `katlctl node` | Inspect status and logs, join, reboot, shut down, upgrade, or explicitly wipe one node. |
 | `katlctl kubernetes` | Create, import, and inspect reusable Kubernetes identity; plan and execute supported Kubernetes upgrades. |
 | `katlctl operations` | Inspect current and recent durable node operations. |
-| `katlctl context` | Save and select optional workstation topology shortcuts. |
+| `katlctl context` | Save, select, inspect, and delete optional workstation topology shortcuts. |
 | `katlctl management` | Create, export, inspect, and recover durable cluster management secrets. |
 | `katlctl system-extension` | Inspect, validate, publish, and query operator-owned system extensions. |
 
@@ -105,3 +105,95 @@ The identity is a mode-`0600` operator secret, not a config field or publishable
 install artifact. See [Preserve Kubernetes
 identity](../operations/kubernetes-identity.md) for import, rebuild, security,
 and backup semantics.
+
+## Operator journey
+
+Prefix each command below with `katlctl`.
+
+| Task | Command |
+| --- | --- |
+| Prepare and check configuration | `config init ./cluster.yaml`, then `config validate ./cluster.yaml` |
+| Find PXE-booted installers | `install discover` |
+| Install each node | `install apply --config ./cluster.yaml --node cp-1` |
+| Inspect an installer | `install status cp-1 --config ./cluster.yaml` |
+| Start Kubernetes | `cluster bootstrap --config ./cluster.yaml --init-node cp-1` |
+| Join another installed node | `node join worker-1 --config ./cluster.yaml` |
+| Preview configuration changes | `cluster apply --config ./cluster.yaml --node cp-1 --plan` |
+| Apply configuration | Repeat without `--plan` |
+| Upgrade KatlOS | `node upgrade cp-1 --config ./cluster.yaml --version VERSION --plan`, then repeat without `--plan` |
+| Upgrade Kubernetes | Change the version in config, then `kubernetes upgrade --config ./cluster.yaml --plan` |
+| Get Kubernetes access on another workstation | `cluster kubeconfig ./kubeconfig --config ./cluster.yaml` |
+| Inspect health | `cluster status --config ./cluster.yaml` |
+| Diagnose a node | `node logs cp-1 --config ./cluster.yaml -u kubelet` |
+| Reprovision | `node wipe cp-1 --config ./cluster.yaml --plan`, then follow the reviewed wipe/reinstall journey |
+
+Install commands talk to the installer on TCP 8080. Once the node boots its
+installed system, use node/cluster commands on TCP 9443. `install apply`
+replaces the system disk; it is not a day-two apply. Bootstrap prepares
+Kubernetes. Install your CNI and GitOps/workloads separately, or supply bootstrap
+`--manifest`, `--pre-wait`, and `--wait` inputs.
+
+Commands using `--config` observe the current installation in memory. They do
+not create or change a saved context. Only explicit context commands persist
+that shortcut. `context delete NAME` removes it without changing any node or
+external secrets. Deleting the current selection never selects another cluster.
+
+Installed-node commands accept `NODE` or `--node NAME`, not both. Selection is
+optional when the source has one node. `cluster apply --node NAME` is repeatable
+and defaults to all configured nodes. Bootstrap's `--init-node` selects the
+initial control plane rather than limiting cluster membership.
+
+Use `--plan` for bootstrap, apply, upgrade, and wipe previews. Bootstrap retains
+`--dry-run` as an alias. Apply plans validate host configuration on selected
+nodes without accepting operations; Kubernetes component readiness is checked
+during execution. A plan does not reserve the observed state.
+
+`cluster apply --mode auto` applies safe live changes and stages changes needing
+a reboot. `--mode live` refuses reboot-requiring changes; `--mode next-boot`
+stages host changes. Reboot staged nodes, then repeat apply to finish deferred
+Kubernetes configuration. Apply never implicitly joins nodes or upgrades
+Kubernetes. The hidden rendered-node interface is for development fixtures and
+does not accept ClusterConfig or bundles.
+
+Timeout flags use Go durations, such as `90s` or `15m`, and must be positive.
+Bootstrap and apply default to a 30-minute overall deadline; wipe is capped at
+25 minutes. Other commands describe their deadline or wait scope in `--help`.
+Ctrl+C stops the workstation wait. Accepted node operations remain durable:
+inspect `operations status --watch` and resume the original command where
+supported instead of assuming nothing happened or immediately wiping the node.
+
+## Diagnostics and access
+
+```sh
+katlctl node logs cp-1 --config ./cluster.yaml --unit kubelet --follow
+katlctl node logs cp-1 --config ./cluster.yaml --boot=-1 --lines 200
+katlctl node logs cp-1 --config ./cluster.yaml --since '1 hour ago' -o json
+katlctl cluster kubeconfig ./kubeconfig --config ./cluster.yaml
+```
+
+`node logs --output json` streams newline-delimited native journal objects.
+Other JSON commands emit a final document. Progress goes to stderr. File-producing
+commands use `--output` for a path where their help says so, such as `config bundle`.
+
+Kubeconfig retrieval tries configured control planes, or uses `--node` when
+specified. It defaults to the configured API endpoint; `--server` and optionally
+`--tls-server-name` allow an alternate route. It does not assert that the endpoint
+is reachable. Files are mode 0600; different existing content requires `--force`.
+It neither merges into `~/.kube/config` nor switches a kubectl context. Command
+output reports the path and endpoint, never credential contents.
+
+The management API must be reachable for logs and kubeconfig retrieval. Use SSH
+or the physical/serial console for failed boot, network, or agent recovery.
+`kubectl`, your CNI installer, and GitOps remain the interfaces for Kubernetes
+workloads. Katlctl does not provide an arbitrary remote shell, an automatic fleet
+rollout scheduler, or a complete etcd backup/restore system.
+
+Generate shell completion with `katlctl completion bash`, `fish`, `zsh`, or
+`powershell`, and install it using your shell's completion convention.
+
+Bootstrap reads management and Kubernetes addresses from ClusterConfig. Set
+`management.address` and, when distinct, `kubernetes.address` there so every
+readiness and bootstrap phase uses consistent targets. The legacy `--node-address`
+override is restricted to advanced inventory input. The older `node upgrade
+VERSION NODE` invocation remains accepted; new scripts should use the explicit
+`--version` form shown above.

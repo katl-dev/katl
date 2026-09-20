@@ -38,7 +38,7 @@ running kubeadm:
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
   --identity ./homelab-kubernetes-identity.katlkey \
-  --dry-run \
+  --plan \
   --init-node cp-1
 ```
 
@@ -53,7 +53,7 @@ run must not create generation 1 or invoke kubeadm.
 
 ## Execute Bootstrap
 
-Run the same command without `--dry-run`:
+Run the same command without `--plan`:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
@@ -116,8 +116,8 @@ bounded bootstrap helper to apply reviewed manifests and wait for an outcome:
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1 \
-  --bootstrap-manifest ./cni.yaml \
-  --bootstrap-wait nodes-ready
+  --manifest ./cni.yaml \
+  --wait nodes-ready
 ```
 
 Those options do not transfer ownership of the CNI to Katl and are not part of
