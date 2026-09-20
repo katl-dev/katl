@@ -106,18 +106,18 @@ systemctl status katlc-agent.service --no-pager
 ss -lntp | grep ':9443'
 ```
 
-An error about missing management access means this workstation does not have
-the cluster identity or a saved authenticated context. Restore the backup with
-`katlctl management identity import IDENTITY`, then repeat `katlctl context save
---config cluster.yaml`. Do not create a new identity for already-installed
-nodes: they will correctly reject it. A reachable TLS listener that reports a
-required or unknown client certificate is enforcing the intended boundary.
+For missing management secrets, restore the original file at
+`spec.managementIdentity` (relative to the cluster configuration), including
+access to its SOPS decryption key if encrypted. Do not generate new secrets for
+already-installed nodes: a new authority does not restore their trust.
+Deleting workstation context cannot reset the nodes and is unnecessary; rebuild
+it with `katlctl context save --config PATH_TO_YOUR_CONFIG`. See
+[durable cluster secrets](access.md#durable-cluster-secrets) for legacy migration
+and the limits of lost-key recovery.
 
-After deliberately reinstalling or replacing a node while retaining the same
-management identity, the old enrollment must not be silently reused. Confirm
-the replacement and run `katlctl context save --config cluster.yaml
---replace-node NODE`. Name each replaced node explicitly; Katl refuses the flag
-when that node's saved identity has not changed.
+A trusted reinstall using the same secrets is accepted automatically. Katl
+still refuses a node that changes installation during an operation. Inspect
+that node before retrying the command.
 
 A certificate-name failure usually means the address answered as another node.
 Do not override verification. Correct the address or use `katlctl context rebind

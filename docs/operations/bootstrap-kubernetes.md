@@ -42,7 +42,7 @@ katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1
 ```
 
-The automatically retained management identity authenticates this read-only
+The configuration-referenced management secrets authenticate this read-only
 planning access; there are no extra credential flags. Use `--node-address
 node=address` only for an observed address that differs from the compiled
 source.

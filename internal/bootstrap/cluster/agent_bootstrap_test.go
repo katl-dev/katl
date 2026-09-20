@@ -1096,3 +1096,26 @@ func TestResumeBootstrapFinalization(t *testing.T) {
 		t.Fatalf("continuation = %+v, %q, watching=%t, %v", accepted, nextID, watching, err)
 	}
 }
+
+func TestBootstrapObservesReinstalledNode(t *testing.T) {
+	inv := validSingleNodeInventory()
+	inv.Nodes[0].EnrollmentID = "previous-install"
+	inv.Nodes[0].MachineID = "previous-machine"
+	client := &fakeAgentClient{status: readyAgentStatus("fresh-machine")}
+	client.getNodeStatusFn = func(_ int, status *agentapi.NodeStatus) {
+		status.EnrollmentId = "fresh-install"
+		status.MachineId = "fresh-machine"
+	}
+	result, err := RunAgentBootstrap(context.Background(), Request{Inventory: inv, DryRun: true}, AgentBootstrapDependencies{
+		Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Plan.Nodes) != 1 || result.Plan.Nodes[0].EnrollmentID != "fresh-install" || result.Plan.Nodes[0].MachineID != "fresh-machine" {
+		t.Fatalf("plan retained cached installation: %+v", result.Plan.Nodes)
+	}
+	if len(client.submitRequests) != 0 {
+		t.Fatal("dry run submitted an operation")
+	}
+}

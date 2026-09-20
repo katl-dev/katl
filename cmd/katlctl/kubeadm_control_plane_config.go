@@ -68,6 +68,9 @@ role change. Enrolled node renames and role changes are refused here.`,
 }
 
 func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions, stdout, stderr io.Writer) error {
+	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr); err != nil {
+		return err
+	}
 	opts.progress = stderr
 	acknowledgements, err := normalizeDestructiveStorageAcknowledgements(opts.destructiveStorageAcknowledgements)
 	if err != nil {
@@ -232,7 +235,7 @@ func currentClusterApplyNode(ctx context.Context, nodes []inventory.Node, nodeNa
 	if err != nil {
 		return nil, "", err
 	}
-	if err := verifyEnrolledStatus(managementTarget{nodeName: selected.Name, endpoint: cluster.AgentEndpoint(selected.Address, "9443"), enrollmentID: selected.EnrollmentID, machineID: selected.MachineID}, status); err != nil {
+	if err := verifyPlannedStatus(managementTarget{nodeName: selected.Name, endpoint: cluster.AgentEndpoint(selected.Address, "9443"), enrollmentID: selected.EnrollmentID, machineID: selected.MachineID}, status); err != nil {
 		return nil, "", err
 	}
 	generationID := strings.TrimSpace(status.GetCurrentGenerationId())
@@ -377,7 +380,7 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		if err != nil {
 			return nil, fmt.Errorf("status %s: %w", node.Name, err)
 		}
-		if err := verifyEnrolledStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+		if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
 			return nil, err
 		}
 		generationID := strings.TrimSpace(opts.generationID)
@@ -480,13 +483,13 @@ func kubeadmConfigInventory(opts kubeadmControlPlaneConfigOptions) (inventory.In
 		if err != nil {
 			return inventory.Inventory{}, err
 		}
-		return overlayWipeContext(inv, "", "")
+		return overlayWipeContext(inv, "", "", configPath)
 	}
 	inv, err := loadWipeInventory(configPath, "", opts.progress)
 	if err != nil {
 		return inventory.Inventory{}, err
 	}
-	return overlayWipeContext(inv, "", "")
+	return overlayWipeContext(inv, "", "", configPath)
 }
 
 type activatedClusterConfig struct {
@@ -588,7 +591,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			_ = conn.Close()
 			return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w", node.Name, err)
 		}
-		if err := verifyEnrolledStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+		if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
 			_ = conn.Close()
 			return activatedClusterConfig{}, err
 		}

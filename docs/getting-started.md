@@ -91,9 +91,12 @@ The [installation reference](installing.md#author-one-clusterconfig) documents
 static networking, managed API VIP ownership, data volumes, native kubeadm
 configuration, kernel arguments, and system extensions.
 
-The first config or install preparation prints the path of a newly created
-cluster management identity. Back up that `.katlkey` file. Katl discovers it
-automatically for routine work; it is not another command-line input.
+`config init` creates `management-secrets.yaml` beside the configuration and
+references it through `spec.managementIdentity`. Keep it across reinstalls,
+back it up, and optionally encrypt it with SOPS before committing it. For a
+hand-written new cluster configuration, run `katlctl management identity create
+--config ./cluster.yaml` once. Existing clusters should export their original
+authority instead; see [management access](operations/access.md#durable-cluster-secrets).
 
 ## 4. Install Each Node
 
@@ -146,14 +149,10 @@ katlctl context save --config ./cluster.yaml
 katlctl context show
 ```
 
-This records each node's install-generated enrollment identity and machine ID.
-`ClusterConfig` remains authoritative for desired state; the context is the
-operator's durable binding between that inventory identity and its current
-management address.
-
-If this is a deliberate reinstall using the same backed-up management identity,
-the old context will refuse the replacement machine. Re-enroll only that node
-with `katlctl context save --config ./cluster.yaml --replace-node NODE`.
+This records the observed installation identities in a disposable workstation
+shortcut. The configuration and its referenced secrets remain sufficient for
+management. Reinstalling with the same secrets is recognized automatically; no
+per-node replacement acknowledgments are required.
 
 ## 6. Bootstrap kubeadm
 

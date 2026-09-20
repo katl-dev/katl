@@ -15,6 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
@@ -34,6 +35,7 @@ type managementTarget struct {
 	enrollmentID string
 	machineID    string
 	credentials  *managementidentity.ClientCredentials
+	observed     *transport.NodeIdentity
 }
 
 func addManagementTargetFlags(cmd *cobra.Command, opts *managementTargetOptions) {
@@ -59,7 +61,7 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 		if err != nil {
 			return managementTarget{}, err
 		}
-		if enrolled, ok := enrolledTarget(strings.TrimSpace(opts.configPath), strings.TrimSpace(opts.contextName), resolved.ClusterName, target.nodeName); ok {
+		if enrolled, ok := enrolledTarget(strings.TrimSpace(opts.configPath), strings.TrimSpace(opts.contextName), resolved.ClusterName, target.nodeName); ok && target.credentials == nil {
 			target = enrolled
 		}
 		if endpoint != "" {
@@ -169,6 +171,14 @@ func resolveClusterConfigTopology(path string) (workstation.ResolvedTopology, er
 	}
 	if source, sourceErr := configbundle.DecodeSource(bytes.NewReader(data)); sourceErr == nil {
 		resolved.ClusterName = strings.TrimSpace(source.Metadata.Name)
+		if source.Spec.ManagementIdentity != "" {
+			credentials, err := managementClientForConfig(path, source.Metadata.Name)
+			if err != nil {
+				return workstation.ResolvedTopology{}, err
+			}
+			resolved.Management = &credentials
+			return resolved, nil
+		}
 		mergeEnrolledTopology(&resolved, "", "")
 		return resolved, nil
 	}
@@ -284,32 +294,46 @@ func enrolledTarget(configPath, contextName, clusterName, nodeName string) (mana
 }
 
 func requireEnrolledTarget(target managementTarget) error {
+	if target.credentials != nil && target.nodeName != "" {
+		return nil
+	}
 	if strings.TrimSpace(target.enrollmentID) == "" || strings.TrimSpace(target.machineID) == "" {
 		return fmt.Errorf("node %q is not enrolled on this workstation; run 'katlctl context save --config cluster.yaml' before planning or changing it", target.nodeName)
 	}
 	return nil
 }
 
-func verifyEnrolledStatus(target managementTarget, status *agentapi.NodeStatus) error {
-	if err := requireEnrolledTarget(target); err != nil {
+func bindManagementStatus(target *managementTarget, status *agentapi.NodeStatus) error {
+	if err := requireEnrolledTarget(*target); err != nil {
 		return err
 	}
-	if status == nil {
-		return fmt.Errorf("node %q did not return status", target.nodeName)
+	observed, err := transport.ObserveNode(target.nodeName, status)
+	if err != nil {
+		return err
 	}
-	if got := strings.TrimSpace(status.GetInventoryNodeName()); got != target.nodeName {
-		return fmt.Errorf("node %q address answered as enrolled node %q; refusing before acceptance", target.nodeName, got)
-	}
-	if got := strings.TrimSpace(status.GetEnrollmentId()); got != target.enrollmentID {
-		return fmt.Errorf("node %q enrollment identity does not match the saved context; refusing before acceptance", target.nodeName)
-	}
-	if got := strings.TrimSpace(status.GetMachineId()); got != target.machineID {
-		return fmt.Errorf("node %q machine identity does not match the saved context; refusing before acceptance", target.nodeName)
+	if target.observed != nil {
+		if err := target.observed.Verify(status); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(status.GetCurrentGenerationId()) == "" {
 		return fmt.Errorf("node %q did not report its current generation", target.nodeName)
 	}
+	target.observed = &observed
+	target.enrollmentID = status.GetEnrollmentId()
+	target.machineID = status.GetMachineId()
 	return nil
+}
+
+func verifyPlannedStatus(target managementTarget, status *agentapi.NodeStatus) error {
+	expected, err := transport.ObserveNode(target.nodeName, &agentapi.NodeStatus{
+		InventoryNodeName: target.nodeName, EnrollmentId: target.enrollmentID, MachineId: target.machineID,
+	})
+	if err != nil {
+		return err
+	}
+	target.observed = &expected
+	return bindManagementStatus(&target, status)
 }
 
 func normalizeManagementAddress(value string) (string, error) {

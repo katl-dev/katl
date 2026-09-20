@@ -92,6 +92,17 @@ func runEtcdMembers(ctx context.Context, opts etcdOptions, stdout, stderr io.Wri
 	if err != nil {
 		return err
 	}
+	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, coordinator.Name); err != nil {
+		return err
+	}
+	inv, err = loadWipeInventory(opts.configPath, "", stderr)
+	if err != nil {
+		return err
+	}
+	coordinator, err = selectEtcdCoordinator(inv, coordinator.Name, "")
+	if err != nil {
+		return err
+	}
 	status, err := getEtcdStatus(ctx, coordinator)
 	if err != nil {
 		return err
@@ -107,6 +118,17 @@ func runEtcdRemove(ctx context.Context, opts etcdRemoveOptions, stdout, stderr i
 		return fmt.Errorf("--timeout must be positive")
 	}
 	inv, err := loadWipeInventory(opts.configPath, "", stderr)
+	if err != nil {
+		return err
+	}
+	coordinator, err := selectEtcdCoordinator(inv, opts.coordinator, opts.targetNode)
+	if err != nil {
+		return err
+	}
+	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, coordinator.Name); err != nil {
+		return err
+	}
+	inv, err = loadWipeInventory(opts.configPath, "", stderr)
 	if err != nil {
 		return err
 	}
@@ -235,7 +257,7 @@ func getEtcdStatus(ctx context.Context, coordinator inventory.PlannedNode) (*age
 	if err != nil {
 		return nil, fmt.Errorf("inspect node identity through %s: %w", coordinator.Name, err)
 	}
-	if err := verifyEnrolledStatus(managementTarget{nodeName: coordinator.Name, endpoint: conn.Endpoint, enrollmentID: coordinator.EnrollmentID, machineID: coordinator.MachineID}, nodeStatus); err != nil {
+	if err := verifyPlannedStatus(managementTarget{nodeName: coordinator.Name, endpoint: conn.Endpoint, enrollmentID: coordinator.EnrollmentID, machineID: coordinator.MachineID}, nodeStatus); err != nil {
 		return nil, err
 	}
 	client, ok := conn.Client.(etcdStatusClient)
@@ -263,7 +285,7 @@ func submitEtcdRemoval(ctx context.Context, plan etcdRemovalPlan, timeout time.D
 	if err != nil {
 		return fmt.Errorf("status etcd coordinator %s: %w", plan.Coordinator.Name, err)
 	}
-	if err := verifyEnrolledStatus(managementTarget{nodeName: plan.Coordinator.Name, endpoint: conn.Endpoint, enrollmentID: plan.Coordinator.EnrollmentID, machineID: plan.Coordinator.MachineID}, nodeStatus); err != nil {
+	if err := verifyPlannedStatus(managementTarget{nodeName: plan.Coordinator.Name, endpoint: conn.Endpoint, enrollmentID: plan.Coordinator.EnrollmentID, machineID: plan.Coordinator.MachineID}, nodeStatus); err != nil {
 		return err
 	}
 	requestID, err := clientRequestID("")

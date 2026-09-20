@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -152,6 +155,7 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 		Kind:       configbundle.Kind,
 		Metadata:   configbundle.Metadata{Name: strings.TrimSpace(opts.clusterName)},
 		Spec: configbundle.SourceSpec{
+			ManagementIdentity:   defaultManagementSecrets,
 			ControlPlaneEndpoint: controlPlaneEndpoint,
 			Kubernetes: configbundle.SourceKubernetesCluster{
 				Version: kubernetesVersion,
@@ -189,6 +193,22 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			Management:   configbundle.SourceManagementLayer{Address: node.address},
 		})
 	}
+	existingReference := false
+	if opts.force && strings.TrimSpace(opts.outputPath) != "" {
+		previous, readErr := os.ReadFile(opts.outputPath)
+		if readErr == nil {
+			previousSource, decodeErr := configbundle.DecodeSource(strings.NewReader(string(previous)))
+			if decodeErr != nil {
+				return fmt.Errorf("read existing cluster configuration: %w", decodeErr)
+			}
+			if reference := previousSource.Spec.ManagementIdentity; reference != "" {
+				source.Spec.ManagementIdentity = reference
+				existingReference = true
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
+		}
+	}
 	data, err := yaml.Marshal(source)
 	if err != nil {
 		return fmt.Errorf("encode starter ClusterConfig: %w", err)
@@ -200,6 +220,53 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	if strings.TrimSpace(opts.outputPath) == "" {
 		_, err = stdout.Write(data)
 		return err
+	}
+	_, outputErr := os.Stat(opts.outputPath)
+	if outputErr == nil && !opts.force {
+		return fmt.Errorf("ClusterConfig %s already exists; use --force to replace the configuration", opts.outputPath)
+	}
+	if outputErr != nil && !errors.Is(outputErr, os.ErrNotExist) {
+		return outputErr
+	}
+	secretsPath := source.Spec.ManagementIdentity
+	if !filepath.IsAbs(secretsPath) {
+		secretsPath = filepath.Join(filepath.Dir(opts.outputPath), secretsPath)
+	}
+	identity, err := readManagementIdentity(secretsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		if existingReference {
+			return missingManagementIdentity(source.Metadata.Name, secretsPath)
+		}
+		// Reuse an existing authority when moving a cluster out of the legacy
+		// workstation store. Only explicit cluster setup creates new trust.
+		legacyPath, pathErr := managementIdentityPath(source.Metadata.Name)
+		if pathErr != nil {
+			return pathErr
+		}
+		identity, err = readManagementIdentity(legacyPath)
+		if errors.Is(err, os.ErrNotExist) {
+			if outputErr == nil {
+				return missingManagementIdentity(source.Metadata.Name, secretsPath)
+			}
+			identity, err = managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: source.Metadata.Name})
+		}
+		if err == nil && identity.ClusterName != source.Metadata.Name {
+			return fmt.Errorf("management secrets belong to cluster %q, not %q", identity.ClusterName, source.Metadata.Name)
+		}
+		if err == nil {
+			for _, node := range source.Spec.Nodes {
+				if _, _, err = managementidentity.EnsureNode(&identity, node.Name, time.Now().UTC(), nil); err != nil {
+					return err
+				}
+			}
+			err = managementidentity.Write(secretsPath, identity)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("prepare cluster secrets %s: %w", secretsPath, err)
+	}
+	if identity.ClusterName != source.Metadata.Name {
+		return fmt.Errorf("management secrets %s belong to cluster %q, not %q", secretsPath, identity.ClusterName, source.Metadata.Name)
 	}
 	flags := os.O_WRONLY | os.O_CREATE
 	if opts.force {
@@ -218,9 +285,7 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close ClusterConfig %s: %w", opts.outputPath, err)
 	}
-	if _, _, err := ensureManagementIdentity(source.Metadata.Name, stderr); err != nil {
-		return fmt.Errorf("prepare automatic management access: %w", err)
-	}
+	fmt.Fprintf(stdout, "management secrets: %s (keep across reinstalls; supports SOPS encryption)\n", secretsPath)
 	fmt.Fprintf(stdout, "created %s\n", opts.outputPath)
 	return nil
 }

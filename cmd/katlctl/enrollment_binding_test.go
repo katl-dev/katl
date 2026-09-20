@@ -90,7 +90,7 @@ func TestContextRebindRefusesDifferentEnrollment(t *testing.T) {
 	wrong := &fakeKatlcAgentClient{nodeStatus: enrolledStatus("cp-1", "different-enrollment", "machine-cp-1")}
 	installKatlcDial(t, nil, wrong)
 	err := run(context.Background(), []string{"context", "rebind", "--context-file", contextPath, "--node", "cp-1", "--endpoint", "10.0.0.91"}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "enrollment identity does not match") {
+	if err == nil || !strings.Contains(err.Error(), "installation changed") {
 		t.Fatalf("rebind error = %v, want identity mismatch", err)
 	}
 	cfg, loadErr := workstation.Load(contextPath)

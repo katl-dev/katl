@@ -240,23 +240,8 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 		}
 	}
 	fake.nodeStatus = &agentapi.NodeStatus{InventoryNodeName: "cp-1", EnrollmentId: "replacement-enrollment", MachineId: "replacement-machine"}
-	err = run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "--replace-node cp-1") {
-		t.Fatalf("replacement refusal = %v", err)
-	}
-	unchanged, err := workstation.Load(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unchangedTopology, err := unchanged.SelectedTopology("lab")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unchangedTopology.Nodes[0].EnrollmentID == "replacement-enrollment" {
-		t.Fatal("unacknowledged replacement changed the saved context")
-	}
 	var replacementOutput bytes.Buffer
-	if err := run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath, "--replace-node", "cp-1"}, &replacementOutput, &bytes.Buffer{}); err != nil {
+	if err := run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath}, &replacementOutput, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(replacementOutput.String(), "replaced enrollment for cp-1") {
@@ -274,8 +259,8 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 		t.Fatalf("replacement topology = %#v", replacedTopology.Nodes[0])
 	}
 	err = run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", configPath, "--replace-node", "cp-1"}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "saved enrollment has not changed") {
-		t.Fatalf("redundant replacement error = %v", err)
+	if err != nil {
+		t.Fatalf("repeated context save = %v", err)
 	}
 	var shown bytes.Buffer
 	if err := run(context.Background(), []string{"context", "show", "--context-file", configPath, "--output", "json"}, &shown, io.Discard); err != nil {

@@ -90,6 +90,7 @@ type Metadata struct {
 }
 
 type SourceSpec struct {
+	ManagementIdentity   string                       `yaml:"managementIdentity,omitempty" json:"managementIdentity,omitempty"`
 	ControlPlaneEndpoint *controlplaneendpoint.Config `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
 	Kubernetes           SourceKubernetesCluster      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
 	Defaults             SourceNodeLayer              `yaml:"defaults,omitempty" json:"defaults,omitempty"`
@@ -351,6 +352,8 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
+	// The credential source belongs to the workstation, not installed state.
+	source.Spec.ManagementIdentity = ""
 	normalized, err := marshalCanonical(source)
 	if err != nil {
 		return nil, Result{}, err

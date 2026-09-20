@@ -20,7 +20,6 @@ import (
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"gopkg.in/yaml.v3"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
@@ -104,7 +103,7 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 	if err != nil {
 		return AgentConnection{}, fmt.Errorf("management credentials for node %q: %w", node.Name, err)
 	}
-	opts := []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig))}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(transport.NewClientCredentials(tlsConfig))}
 	dialCtx := ctx
 	if c.DialTimeout > 0 {
 		var cancel context.CancelFunc
@@ -175,6 +174,8 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 		return result, err
 	}
 	result.addPhase("readiness", "", "", "passed")
+	bindBootstrapPlan(&plan, statuses)
+	result.Plan = plan
 	if request.DryRun {
 		result.addPhase("dry-run", "", "", "passed")
 		return result, nil
@@ -312,6 +313,8 @@ func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, dep
 		return result, err
 	}
 	result.addPhase("readiness", "", "", "passed")
+	bindBootstrapPlan(&plan, statuses)
+	result.Plan = plan
 	if request.DryRun {
 		result.addPhase("dry-run", "", "", "passed")
 		return result, nil
@@ -415,17 +418,8 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 		if status == nil {
 			nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: "node status is missing"})
 		} else {
-			if strings.TrimSpace(node.EnrollmentID) == "" || strings.TrimSpace(node.MachineID) == "" {
-				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "enrollment", Message: "node has no persisted workstation enrollment identity"})
-			}
-			if got := strings.TrimSpace(status.GetInventoryNodeName()); got != node.Name {
-				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "enrollment", Message: fmt.Sprintf("address answered as enrolled node %q", got)})
-			}
-			if got := strings.TrimSpace(status.GetEnrollmentId()); got != strings.TrimSpace(node.EnrollmentID) {
-				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "enrollment", Message: "node enrollment identity does not match inventory"})
-			}
-			if got := strings.TrimSpace(status.GetMachineId()); got != strings.TrimSpace(node.MachineID) {
-				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "machine-id", Message: "node machine identity does not match inventory"})
+			if _, err := transport.ObserveNode(node.Name, status); err != nil {
+				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "identity", Message: err.Error()})
 			}
 			if status.GetApiVersion() != agentAPIVersion {
 				nodeReport.Diagnostics = append(nodeReport.Diagnostics, inventory.Diagnostic{Field: "katlc-agent", Message: fmt.Sprintf("node reports API version %q", status.GetApiVersion())})
@@ -448,6 +442,14 @@ func readinessFromStatuses(plan inventory.Plan, statuses map[string]*agentapi.No
 		report.Nodes = append(report.Nodes, nodeReport)
 	}
 	return report
+}
+
+func bindBootstrapPlan(plan *inventory.Plan, statuses map[string]*agentapi.NodeStatus) {
+	for index := range plan.Nodes {
+		status := statuses[plan.Nodes[index].Name]
+		plan.Nodes[index].EnrollmentID = status.GetEnrollmentId()
+		plan.Nodes[index].MachineID = status.GetMachineId()
+	}
 }
 
 type bootstrapInitResult struct {

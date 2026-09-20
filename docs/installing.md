@@ -502,7 +502,7 @@ Katl writes the compiled bundle mode 0600 because it includes each node's
 non-CA management server key. Serve it only on the trusted provisioning
 network, prevent workload networks from reaching the published path, and
 remove the served copy after installation. Back up the separately reported
-cluster management `.katlkey`; a `.katlcfg` is not an authority backup.
+configuration-referenced management secrets file; a `.katlcfg` is not an authority backup.
 
 Current bundle-oriented kernel arguments are:
 

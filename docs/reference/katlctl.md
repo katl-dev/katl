@@ -14,7 +14,7 @@ installed release.
 | `katlctl kubernetes` | Create, import, and inspect reusable Kubernetes identity; plan and execute supported Kubernetes upgrades. |
 | `katlctl operations` | Inspect current and recent durable node operations. |
 | `katlctl context` | Save and select optional workstation topology shortcuts. |
-| `katlctl management` | Inspect the automatic management-identity backup path or restore it on a workstation. |
+| `katlctl management` | Create, export, inspect, and recover durable cluster management secrets. |
 | `katlctl system-extension` | Inspect, validate, publish, and query operator-owned system extensions. |
 
 ## Input Conventions
@@ -28,15 +28,16 @@ not a second desired-state source.
 or node. It does not change node identity, bypass mTLS, or grant access without
 the matching saved cluster identity.
 
-## Automatic management identity
+## Cluster management secrets
 
-`katlctl config init`, `config bundle`, and `install apply` automatically create
-or reuse management trust keyed by the `ClusterConfig` name. There are no
-routine TLS flags. Back up the `.katlkey` path printed at first creation; it
-contains the authority needed to issue the same node identities during a
-reinstall.
+`katlctl config init` creates a secrets file beside the configuration and
+references it in `spec.managementIdentity`. Hand-written new cluster configs
+use `management identity create --config CONFIG`; existing clusters use
+`management identity export --config CONFIG` to preserve their original trust.
+The file supports SOPS encryption. Routine bundle and install commands read it
+and never generate a missing authority. There are no routine TLS flags.
 
-Recovery-only commands are:
+Legacy workstation-store recovery and inspection commands are:
 
 ```sh
 katlctl management identity path homelab
@@ -48,11 +49,15 @@ Import is idempotent for the same identity and refuses to replace a different
 identity for that cluster. The saved context contains only the operator client
 leaf and never exposes it through `katlctl context show`.
 
-Reinstalling a node with this retained identity preserves TLS trust but creates
-a new enrollment and machine identity. `katlctl context save` refuses that
-change by default. After confirming the named node was deliberately replaced,
-use `katlctl context save --config ./cluster.yaml --replace-node NODE`; this
-updates only the named binding after TLS and inventory-name verification.
+`config init` creates a configuration-referenced `management-secrets.yaml`;
+this may be SOPS encrypted. Existing clusters can migrate their original
+authority with `katlctl management identity export --config ./cluster.yaml`.
+Keep that file across reinstalls. Workstation context is a disposable shortcut.
+
+A reinstall under the same authority is accepted after TLS and node-name
+verification. Commands observe the current installation and reject a change
+during an operation. `context save --config ./cluster.yaml` refreshes saved
+bindings automatically; no replacement flag is required.
 
 Text output is designed for interactive use. Commands that expose `--output
 json` provide the bounded automation surface. Progress is written separately
