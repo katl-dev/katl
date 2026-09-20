@@ -255,7 +255,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 		cancelRequest()
 		return err
 	}
-	if err := verifyEnrolledStatus(target, status); err != nil {
+	if err := bindManagementStatus(&target, status); err != nil {
 		_ = conn.Close()
 		cancelRequest()
 		return err
@@ -317,7 +317,7 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 		cancelRequest()
 		return fmt.Errorf("read status from %s: %w", node, err)
 	}
-	if err := verifyEnrolledStatus(target, status); err != nil {
+	if err := bindManagementStatus(&target, status); err != nil {
 		_ = conn.Close()
 		cancelRequest()
 		return err

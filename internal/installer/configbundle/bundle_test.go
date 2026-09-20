@@ -1763,3 +1763,16 @@ func writeFile(t *testing.T, path string, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+func TestBundleExcludesWorkstationSecretsPath(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "spec:\n", "spec:\n  managementIdentity: private/project-secrets.yaml\n", 1)
+	archive, result, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := readTarFiles(t, archive)
+	normalized := files["blobs/sha256/"+strings.TrimPrefix(result.Manifest.Source.NormalizedConfig.Digest, "sha256:")]
+	if bytes.Contains(normalized, []byte("managementIdentity")) || bytes.Contains(normalized, []byte("project-secrets")) {
+		t.Fatal("bundle carried workstation credential configuration to the node")
+	}
+}

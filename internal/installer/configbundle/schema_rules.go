@@ -62,6 +62,8 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return stringRule("Stable cluster name.", "", 1, 0)
 	case "configbundle.SourceSpec.controlPlaneEndpoint":
 		return description("Stable Kubernetes API endpoint and optional Katl-managed advertisement.")
+	case "configbundle.SourceSpec.managementIdentity":
+		return description("Operator-held management secrets YAML, relative to this config; may be SOPS encrypted. Never installed on nodes.")
 	case "configbundle.SourceSpec.kubernetes":
 		return schemaFieldRule{Required: true, Description: "Cluster-wide Kubernetes version and optional native kubeadm input."}
 	case "configbundle.SourceSpec.defaults":

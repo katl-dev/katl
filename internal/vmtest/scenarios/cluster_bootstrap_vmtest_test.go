@@ -1844,12 +1844,7 @@ func assertSwappedEnrollmentRefused(t *testing.T, ctx context.Context, runDir, k
 	}
 	var stdout, stderr bytes.Buffer
 	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "bootstrap", "--inventory", path, "--init-node", "cp-1", "--dry-run"}, &stdout, &stderr)
-	validRefusals := []string{
-		`address answered as enrolled node "worker-1"`,
-		"no saved management access for endpoint",
-		"certificate is valid for worker-1, not cp-1",
-	}
-	if err == nil || !slices.ContainsFunc(validRefusals, func(reason string) bool { return strings.Contains(stderr.String(), reason) }) {
+	if err == nil || !strings.Contains(stderr.String(), "certificate for another node") {
 		t.Fatalf("swapped enrollment bootstrap plan error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 }

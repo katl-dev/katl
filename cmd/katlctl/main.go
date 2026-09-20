@@ -45,7 +45,6 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -237,6 +236,8 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl management identity path":    "katlctl management identity path homelab",
 		"katlctl management identity inspect": "katlctl management identity inspect homelab.katlkey",
 		"katlctl management identity import":  "katlctl management identity import homelab.katlkey",
+		"katlctl management identity create":  "katlctl management identity create --config cluster.yaml",
+		"katlctl management identity export":  "katlctl management identity export --config cluster.yaml",
 		"katlctl config":                      "katlctl config validate cluster.yaml",
 		"katlctl config init":                 "katlctl config init cluster.yaml --node cp-1=control-plane,192.0.2.10,/dev/disk/by-id/ata-root",
 		"katlctl config validate":             "katlctl config validate cluster.yaml",
@@ -404,7 +405,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return fmt.Errorf("read node status: %w", err)
 	}
-	if err := verifyEnrolledStatus(target, status); err != nil {
+	if err := bindManagementStatus(&target, status); err != nil {
 		return err
 	}
 	recoveryRequirement := nodeRecoveryRequirementFor(status)
@@ -507,7 +508,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return fmt.Errorf("read staged node status before reboot: %w", err)
 	}
-	if err := verifyEnrolledStatus(target, stagedStatus); err != nil {
+	if err := bindManagementStatus(&target, stagedStatus); err != nil {
 		report.Result = "staged"
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return err
@@ -818,6 +819,9 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 		return fmt.Errorf("--all and --node cannot be combined")
 	}
 
+	if err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, opts.selectedNodes.values...); err != nil {
+		return err
+	}
 	targets, partial, err := resolveWipeClusterTargets(opts, stderr)
 	if err != nil {
 		return err
@@ -890,7 +894,7 @@ func resolveWipeClusterTargets(opts wipeClusterOptions, stderr io.Writer) ([]inv
 	if err != nil {
 		return nil, false, err
 	}
-	inv, err = overlayWipeContext(inv, opts.workstationConfig, opts.contextName)
+	inv, err = overlayWipeContext(inv, opts.workstationConfig, opts.contextName, opts.configPath)
 	if err != nil {
 		return nil, false, err
 	}
@@ -967,6 +971,9 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return fmt.Errorf("--timeout must not exceed 25m")
 	}
 
+	if err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, opts.selectedNodes.values...); err != nil {
+		return err
+	}
 	target, partial, err := resolveWipeNodeTarget(opts, stderr)
 	if err != nil {
 		return err
@@ -992,6 +999,15 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		fullInventory, inventoryErr := wipeNodeInventory(opts, nil)
 		if inventoryErr != nil {
 			return inventoryErr
+		}
+		if coordinator, selectErr := selectEtcdCoordinator(fullInventory, "", target.Name); selectErr == nil {
+			if err := refreshConfiguredManagement(ctx, opts.configPath, opts.workstationConfig, opts.contextName, stderr, coordinator.Name); err != nil {
+				return err
+			}
+		}
+		fullInventory, err = wipeNodeInventory(opts, nil)
+		if err != nil {
+			return err
 		}
 		etcdPlan, err = planWipeEtcdRemoval(ctx, fullInventory, target.Name, "")
 		if err != nil {
@@ -1090,7 +1106,7 @@ func wipeNodeInventory(opts wipeNodeOptions, stderr io.Writer) (inventory.Invent
 		if err != nil {
 			return inventory.Inventory{}, err
 		}
-		return overlayWipeContext(inv, opts.workstationConfig, opts.contextName)
+		return overlayWipeContext(inv, opts.workstationConfig, opts.contextName, opts.configPath)
 	}
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{
 		ConfigPath:  strings.TrimSpace(opts.workstationConfig),
@@ -1147,7 +1163,7 @@ func resolveWipeNodeTarget(opts wipeNodeOptions, stderr io.Writer) (inventory.Pl
 	if err != nil {
 		return inventory.PlannedNode{}, false, err
 	}
-	inv, err = overlayWipeContext(inv, opts.workstationConfig, opts.contextName)
+	inv, err = overlayWipeContext(inv, opts.workstationConfig, opts.contextName, opts.configPath)
 	if err != nil {
 		return inventory.PlannedNode{}, false, err
 	}
@@ -1196,7 +1212,7 @@ func loadWipeInventory(configPath, inventoryPath string, stderr io.Writer) (inve
 	return inv, nil
 }
 
-func overlayWipeContext(inv inventory.Inventory, configPath, contextName string) (inventory.Inventory, error) {
+func overlayWipeContext(inv inventory.Inventory, configPath, contextName, sourcePath string) (inventory.Inventory, error) {
 	if strings.TrimSpace(configPath) == "" && strings.TrimSpace(contextName) == "" {
 		complete := len(inv.Nodes) > 0
 		for _, node := range inv.Nodes {
@@ -1205,7 +1221,21 @@ func overlayWipeContext(inv inventory.Inventory, configPath, contextName string)
 		if complete {
 			return inv, nil
 		}
-		return inventory.Inventory{}, fmt.Errorf("inventory nodes are not enrolled on this workstation; run 'katlctl context save --config cluster.yaml'")
+		if sourcePath == "" {
+			return inventory.Inventory{}, fmt.Errorf("inventory nodes are not enrolled on this workstation; select their saved --context or use --config with the cluster configuration")
+		}
+		data, err := os.ReadFile(sourcePath)
+		if err == nil {
+			if source, decodeErr := configbundle.DecodeSource(bytes.NewReader(data)); decodeErr == nil {
+				if _, err := managementClientForConfig(sourcePath, source.Metadata.Name); err != nil {
+					return inventory.Inventory{}, err
+				}
+				if source.Spec.ManagementIdentity != "" {
+					return inv, nil
+				}
+			}
+		}
+		return inventory.Inventory{}, fmt.Errorf("workstation context needs refreshing; run: %s", contextSaveInvocation(sourcePath))
 	}
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: strings.TrimSpace(configPath), ContextName: strings.TrimSpace(contextName)})
 	if err != nil {
@@ -1403,7 +1433,7 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
 		} else {
 			target := managementTarget{nodeName: node.Name, endpoint: conn.Endpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID}
-			if verifyErr := verifyEnrolledStatus(target, status); verifyErr != nil {
+			if verifyErr := bindManagementStatus(&target, status); verifyErr != nil {
 				result.Diagnostics = append(result.Diagnostics, inventory.Redact(verifyErr.Error()))
 			} else {
 				statuses[node.Name] = status
@@ -2319,7 +2349,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if err != nil {
 		return fmt.Errorf("read status from %s: %w", target.nodeName, err)
 	}
-	if err := verifyEnrolledStatus(target, status); err != nil {
+	if err := bindManagementStatus(&target, status); err != nil {
 		return err
 	}
 	if opts.plan {
@@ -2826,6 +2856,9 @@ func newClusterBootstrapCommand(ctx context.Context, stdout, stderr io.Writer) *
 }
 
 func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdout, stderr io.Writer) error {
+	if err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr); err != nil {
+		return err
+	}
 	inv, clusterName, err := bootstrapInventory(opts, stderr)
 	if err != nil {
 		return err
@@ -3066,7 +3099,7 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 
 func katlcAgentDialOptions(tlsConfig *tls.Config) []grpc.DialOption {
 	return []grpc.DialOption{
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		grpc.WithTransportCredentials(transport.NewClientCredentials(tlsConfig)),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(256<<20),
 			grpc.MaxCallSendMsgSize(256<<20),

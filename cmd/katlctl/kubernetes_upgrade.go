@@ -485,11 +485,14 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 			closeTargets()
 			return nil, fmt.Errorf("status node %s: %w", node.Name, err)
 		}
-		if err := verifyEnrolledStatus(managementTarget{nodeName: node.Name, endpoint: node.ManagementEndpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+		target := managementTarget{nodeName: node.Name, endpoint: node.ManagementEndpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID, credentials: topology.Management}
+		if err := bindManagementStatus(&target, status); err != nil {
 			_ = conn.Close()
 			closeTargets()
 			return nil, err
 		}
+		node.EnrollmentID = status.GetEnrollmentId()
+		node.MachineID = status.GetMachineId()
 		generationID := strings.TrimSpace(status.CurrentGenerationId)
 		if generationID == "" {
 			_ = conn.Close()

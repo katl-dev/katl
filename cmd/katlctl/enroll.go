@@ -26,6 +26,7 @@ type contextSaveOptions struct {
 	contextPath     string
 	contextName     string
 	replacementNode []string
+	selectedNodes   []string
 	timeout         time.Duration
 	output          string
 }
@@ -61,7 +62,8 @@ func newContextSaveCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 	cmd.Flags().StringVar(&opts.contextPath, "context-file", "", "workstation context file path")
 	cmd.Flags().Lookup("context-file").Hidden = true
 	cmd.Flags().StringVar(&opts.contextName, "context", "", "context name; defaults to the cluster name")
-	cmd.Flags().StringArrayVar(&opts.replacementNode, "replace-node", nil, "replace the saved enrollment for one deliberately reinstalled or replaced node (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.replacementNode, "replace-node", nil, "deprecated: trusted reinstalls are detected automatically")
+	_ = cmd.Flags().MarkHidden("replace-node")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "time to verify each node")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", opts.output, "output format: text or json")
 	return cmd
@@ -226,7 +228,7 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 	if contextName == "" {
 		contextName = bundle.Manifest.ClusterName
 	}
-	management, err := managementClientForCluster(bundle.Manifest.ClusterName)
+	management, err := managementClientForConfig(opts.configInput, bundle.Manifest.ClusterName)
 	if err != nil {
 		return err
 	}
@@ -247,9 +249,27 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 		}
 	}
 
+	for _, name := range opts.selectedNodes {
+		found := false
+		for _, node := range inv.Nodes {
+			found = found || node.Name == name
+		}
+		if !found {
+			return fmt.Errorf("node %q is not present in --config", name)
+		}
+	}
+
 	usedReplacements := make(map[string]struct{}, len(replacements))
 	for _, node := range inv.Nodes {
 		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
+		if len(opts.selectedNodes) > 0 && !containsString(opts.selectedNodes, node.Name) {
+			previous := known[node.Name]
+			clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{
+				Name: node.Name, ManagementEndpoint: endpoint, SystemRole: node.SystemRole,
+				EnrollmentID: previous.EnrollmentID, MachineID: previous.MachineID,
+			})
+			continue
+		}
 		requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 		nodeCtx := withManagementDial(requestCtx, node.Name, &management)
 		conn, err := dialKatlcAgent(nodeCtx, endpoint)
@@ -283,9 +303,8 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 		}
 		replaced := false
 		if previous, ok := known[node.Name]; ok && previous.EnrollmentID != "" && (previous.EnrollmentID != status.GetEnrollmentId() || previous.MachineID != status.GetMachineId()) {
-			if _, acknowledged := replacements[node.Name]; !acknowledged {
-				return fmt.Errorf("verify node %s management endpoint: enrolled identity changed; after confirming this node was deliberately reinstalled or replaced, rerun with '--replace-node %s'", node.Name, node.Name)
-			}
+			// TLS has authenticated the cluster authority and expected node name.
+			// Instance IDs bind operations to one installation, not cluster trust.
 			replaced = true
 			usedReplacements[node.Name] = struct{}{}
 		}
@@ -294,11 +313,6 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 			EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(),
 		})
 		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint, Connected: true, EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(), Replaced: replaced})
-	}
-	for name := range replacements {
-		if _, used := usedReplacements[name]; !used {
-			return fmt.Errorf("--replace-node %q was provided, but its saved enrollment has not changed", name)
-		}
 	}
 
 	cfg = cfg.UpsertCluster(contextName, clusterProfile)
@@ -401,7 +415,7 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	if closeErr != nil {
 		return fmt.Errorf("close proposed address %s: %w", endpoint, closeErr)
 	}
-	if err := verifyEnrolledStatus(target, status); err != nil {
+	if err := verifyPlannedStatus(target, status); err != nil {
 		return fmt.Errorf("verify proposed address %s: %w", endpoint, err)
 	}
 	for clusterIndex := range cfg.Clusters {

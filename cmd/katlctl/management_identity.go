@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func newManagementIdentityCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -27,6 +29,8 @@ func newManagementIdentityCommand(stdout, stderr io.Writer) *cobra.Command {
 	command.AddCommand(newManagementIdentityPathCommand(stdout))
 	command.AddCommand(newManagementIdentityInspectCommand(stdout))
 	command.AddCommand(newManagementIdentityImportCommand(stdout, stderr))
+	command.AddCommand(newManagementIdentityCreateCommand(stdout))
+	command.AddCommand(newManagementIdentityExportCommand(stdout))
 	return command
 }
 
@@ -121,35 +125,6 @@ func managementIdentityPath(clusterName string) (string, error) {
 	return filepath.Join(filepath.Dir(configPath), "management", clusterName+".katlkey"), nil
 }
 
-func ensureManagementIdentity(clusterName string, stderr io.Writer) (managementidentity.Bundle, string, error) {
-	path, err := managementIdentityPath(clusterName)
-	if err != nil {
-		return managementidentity.Bundle{}, "", err
-	}
-	bundle, err := readManagementIdentity(path)
-	if err == nil {
-		if bundle.ClusterName != strings.TrimSpace(clusterName) {
-			return managementidentity.Bundle{}, "", fmt.Errorf("management identity %s belongs to cluster %q, not %q", path, bundle.ClusterName, clusterName)
-		}
-		return bundle, path, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return managementidentity.Bundle{}, "", err
-	}
-	bundle, err = managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: clusterName, Now: time.Now().UTC()})
-	if err != nil {
-		return managementidentity.Bundle{}, "", err
-	}
-	if err := managementidentity.Write(path, bundle); err != nil {
-		return managementidentity.Bundle{}, "", err
-	}
-	if stderr != nil {
-		fmt.Fprintf(stderr, "Created management identity for cluster %s at %s\n", clusterName, path)
-		fmt.Fprintln(stderr, "Back up this file; Katl uses it automatically and it is required to reinstall nodes without changing management trust.")
-	}
-	return bundle, path, nil
-}
-
 func managementPlanningForSource(sourcePath string, stderr io.Writer) (map[string]manifest.ManagementIdentity, error) {
 	data, err := os.ReadFile(strings.TrimSpace(sourcePath))
 	if err != nil {
@@ -159,26 +134,19 @@ func managementPlanningForSource(sourcePath string, stderr io.Writer) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	bundle, path, err := ensureManagementIdentity(source.Metadata.Name, stderr)
+	bundle, err := managementIdentityForSource(sourcePath, source)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
 	identities := make(map[string]manifest.ManagementIdentity, len(source.Spec.Nodes))
-	changed := false
 	for _, node := range source.Spec.Nodes {
-		credentials, added, err := managementidentity.EnsureNode(&bundle, node.Name, now, nil)
+		credentials, _, err := managementidentity.EnsureNode(&bundle, node.Name, now, nil)
 		if err != nil {
 			return nil, err
 		}
-		changed = changed || added
 		identities[node.Name] = manifest.ManagementIdentity{
 			CACertificate: credentials.CACertificate, ServerCertificate: credentials.ServerCertificate, ServerPrivateKey: credentials.ServerPrivateKey,
-		}
-	}
-	if changed {
-		if err := managementidentity.SaveExisting(path, bundle); err != nil {
-			return nil, err
 		}
 	}
 	return identities, nil
@@ -202,8 +170,8 @@ func managementClientForCluster(clusterName string) (managementidentity.ClientCr
 	}
 	bundle, err := readManagementIdentity(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return managementidentity.ClientCredentials{}, fmt.Errorf("management access for cluster %q is not present on this workstation; restore its backup with 'katlctl management identity import IDENTITY'", clusterName)
+		if errors.Is(err, os.ErrNotExist) {
+			return managementidentity.ClientCredentials{}, missingManagementIdentity(clusterName, path)
 		}
 		return managementidentity.ClientCredentials{}, err
 	}
@@ -256,9 +224,26 @@ func readManagementIdentity(path string) (managementidentity.Bundle, error) {
 	if !info.Mode().IsRegular() {
 		return managementidentity.Bundle{}, fmt.Errorf("management identity %s must be a regular file", path)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return managementidentity.Bundle{}, err
+	}
+	var document struct {
+		SOPS *yaml.Node `yaml:"sops"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return managementidentity.Bundle{}, fmt.Errorf("read management secrets %s: invalid YAML", path)
+	}
+	if document.SOPS != nil {
+		// Decrypt into memory; the durable file stays encrypted and is never
+		// rewritten as a side effect of compilation or enrollment.
+		data, err = exec.Command("sops", "--decrypt", "--input-type", "yaml", "--output-type", "yaml", path).Output()
+		if err != nil {
+			return managementidentity.Bundle{}, fmt.Errorf("decrypt management secrets %s: ensure sops is installed and its decryption key is available: %w", path, err)
+		}
+	} else if info.Mode().Perm()&0o077 != 0 {
 		return managementidentity.Bundle{}, fmt.Errorf("management identity %s is readable by group or others (mode %04o); run 'chmod 600 %s'", path, info.Mode().Perm(), path)
 	}
-	bundle, _, err := managementidentity.Read(path)
+	bundle, err := managementidentity.Parse(data)
 	return bundle, err
 }

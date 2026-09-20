@@ -1,15 +1,15 @@
 # Access Installed KatlOS Nodes
 
-Complete this runbook after generation 0 boots and before bootstrap, node
-configuration, node upgrade, or wipe operations.
+Use the cluster configuration and its referenced management secrets for installed
+node access. A saved workstation context is optional convenience.
 
 ## Security Boundary
 
 The `katlc` agent accepts mutually authenticated TLS on TCP port `9443`.
-`katlctl` creates the cluster management identity automatically while preparing
-the first config or install bundle, installs a non-CA server identity on each
-node, and retains the operator identity in the mode-0600 workstation context.
-Routine commands have no certificate flags or enrollment prompts. The API can
+`katlctl config init` creates `management-secrets.yaml` beside the configuration
+and sets `spec.managementIdentity` to its relative path. Katl installs a non-CA
+server identity on each node; the secrets file retains cluster and operator
+credentials. Routine commands have no certificate flags or enrollment prompts. The API can
 remain reachable on the trusted network: callers without the cluster operator
 certificate cannot query status or invoke any operation. Do not publish `9443`
 to the Internet.
@@ -41,7 +41,7 @@ Expected state before Kubernetes bootstrap:
 - runtime handoff reports `waiting-for-cluster-bootstrap`; and
 - `katl-kubeadm-ready.target` is not active yet.
 
-## Enroll Nodes on the Workstation
+## Save a Workstation Shortcut
 
 Use the same source used for installation:
 
@@ -60,27 +60,47 @@ authorization. This works with agent-only keys such as 1Password. An explicit
 `--ssh-authorized-key PATH` remains available when only one key should be
 authorized.
 
-`ClusterConfig` remains sufficient for installation. Planning, bootstrap, and
-mutating commands additionally require the automatically retained management
-identity and saved enrollment, so an unknown caller or stale/swapped address
-cannot target another machine.
+## Durable Cluster Secrets
 
-When Katl first prints `Created management identity`, back up the reported
-`.katlkey` file separately from `cluster.yaml`. The normal path discovers it
-automatically. It is needed to reinstall nodes with the same management trust
-or to add another operator workstation. Restore it before compiling or
-installing with:
+Keep the file referenced by `spec.managementIdentity` across reinstalls. Paths
+are relative to the configuration, so the project can move between workstations.
+Plaintext secrets must have mode 0600. Never commit plaintext private keys.
+
+For an existing cluster using the older workstation key store, export its
+original authority and update the configuration in one command:
 
 ```sh
-katlctl management identity import ./homelab.katlkey
+katlctl management identity export --config ./cluster.yaml
 ```
 
-`katlctl management identity path homelab` prints the active backup location.
-`katlctl management identity inspect IDENTITY` validates a backup and reports
-its fingerprint and expiry without printing private material.
-These recovery commands are not part of routine node operation. This management
-identity is separate from the optional Kubernetes identity that preserves
-kubeadm CAs across whole-cluster reprovisioning.
+For a hand-written configuration of a **new** cluster, create its secrets explicitly:
+
+```sh
+katlctl management identity create --config ./cluster.yaml
+```
+
+These commands refuse to overwrite a secrets file. Bundle compilation, context
+refresh, and routine commands never create a missing authority. Generating a new
+authority cannot recover access to nodes installed with a different one.
+
+The file can be encrypted with SOPS and committed alongside the configuration:
+
+```sh
+sops encrypt --in-place management-secrets.yaml
+katlctl node status cp-1 --config ./cluster.yaml
+```
+
+Configure SOPS recipients first and make its decryption key available on each
+operator workstation. Katl invokes `sops` only for encrypted files and does not
+write a decrypted copy of the secrets file. A saved workstation context retains
+the operator client certificate and private key in its mode-0600 file for
+shortcut commands, but never the authority private key. Ordinary operations do
+not rewrite the project secrets file. Back up the SOPS decryption key independently. An encrypted secrets file
+without a usable decryption key is not a recoverable backup.
+
+`katlctl management identity inspect FILE` reports public identity information
+without printing private material. The management identity is separate from the
+optional Kubernetes identity used to preserve kubeadm CAs across reprovisioning.
 
 A compiled `.katlcfg` contains the non-CA private server key for each selected
 node, so Katl writes it mode 0600. Treat it as short-lived provisioning
@@ -112,18 +132,15 @@ katlctl context rebind --node cp-1 --endpoint 192.0.2.51
 Rebind succeeds only when TLS authenticates the expected node name and the new
 address reports the same inventory node, enrollment identity, and machine ID.
 
-A deliberate reinstall keeps the cluster management authority but creates a
-new enrollment and machine identity. The old context will authenticate the
-node but refuse planning and mutations. Verify that this is the intended
-replacement, then update only that inventory binding:
+A deliberate reinstall with the same secrets preserves management trust.
+Commands authenticate the expected node name and observe its current installation;
+no replacement flag is required. `context save --config ./cluster.yaml` updates
+the optional shortcut, including new enrollment and machine identities. A change
+of installation during an operation is still rejected. A different authority or
+a certificate for another node is never accepted automatically.
 
-```sh
-katlctl context save --config ./cluster.yaml --replace-node cp-1
-```
-
-Without `--replace-node cp-1`, the save is refused and the context is left
-unchanged. The flag cannot approve an address that presents another node's TLS
-certificate or inventory name.
+Deleting workstation context does not delete the referenced secrets or change
+node trust. Use `--config ./cluster.yaml` directly or save the context again.
 
 Use `katlctl context current` to print the selection and `katlctl context use
 NAME` to switch between saved clusters. `katlctl cluster status --config
@@ -176,9 +193,16 @@ no copy beneath immutable `/root`. An explicitly set `KUBECONFIG`, including an
 empty diagnostic value, is preserved. Workstation commands continue to use the
 mode-0600 kubeconfig written by `katlctl cluster bootstrap`.
 
-If the management identity backup is lost but the saved context remains, that
-workstation can continue routine operations but cannot issue server material
-for a reinstall. Preserve the existing nodes and restore the backup; creating a
-different identity does not grant access to them. If both copies are lost,
-recovery requires deliberately reinstalling the affected nodes under a new
-cluster management identity.
+If the secrets file is missing, restore it at the path referenced by the
+configuration. For legacy backups, `management identity import FILE` restores
+the old workstation key store; `management identity export --config CONFIG`
+then moves it beside the configuration.
+
+If only the saved context remains, it can still authorize routine operations,
+but cannot issue server certificates for a reinstall. Preserve it and the
+existing nodes while locating the original secrets. A provisioning bundle
+contains neither the authority private key nor the operator key and cannot
+recover them. If both secrets and context are lost, Katl cannot recover trust
+through the management API. Privileged SSH or console access is a separate
+recovery boundary; there is currently no automated trust-recovery command.
+Do not delete working state or generate another authority as a diagnostic step.

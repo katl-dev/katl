@@ -231,27 +231,29 @@ func TestPublicHelpHidesInternalOperationAndTestInputs(t *testing.T) {
 
 func TestConfigInputFlagsUseOneName(t *testing.T) {
 	want := map[string]bool{
-		"katlctl cluster apply":           true,
-		"katlctl cluster etcd members":    true,
-		"katlctl cluster etcd remove":     true,
-		"katlctl cluster status":          true,
-		"katlctl context save":            true,
-		"katlctl cluster bootstrap":       true,
-		"katlctl cluster wipe":            true,
-		"katlctl config render-node":      true,
-		"katlctl install apply":           true,
-		"katlctl install ssh":             true,
-		"katlctl kubernetes upgrade":      true,
-		"katlctl operations list":         true,
-		"katlctl operations status":       true,
-		"katlctl node apply":              true,
-		"katlctl node apply validate":     true,
-		"katlctl node reboot":             true,
-		"katlctl node shutdown":           true,
-		"katlctl node status":             true,
-		"katlctl node upgrade":            true,
-		"katlctl node wipe":               true,
-		"katlctl system-extension status": true,
+		"katlctl management identity create": true,
+		"katlctl management identity export": true,
+		"katlctl cluster apply":              true,
+		"katlctl cluster etcd members":       true,
+		"katlctl cluster etcd remove":        true,
+		"katlctl cluster status":             true,
+		"katlctl context save":               true,
+		"katlctl cluster bootstrap":          true,
+		"katlctl cluster wipe":               true,
+		"katlctl config render-node":         true,
+		"katlctl install apply":              true,
+		"katlctl install ssh":                true,
+		"katlctl kubernetes upgrade":         true,
+		"katlctl operations list":            true,
+		"katlctl operations status":          true,
+		"katlctl node apply":                 true,
+		"katlctl node apply validate":        true,
+		"katlctl node reboot":                true,
+		"katlctl node shutdown":              true,
+		"katlctl node status":                true,
+		"katlctl node upgrade":               true,
+		"katlctl node wipe":                  true,
+		"katlctl system-extension status":    true,
 	}
 	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
 	var visit func(*cobra.Command)
@@ -588,11 +590,12 @@ func TestConfigBundleCommandWritesBundle(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
+	createTestManagementSecrets(t, sourcePath)
 	if err := run(context.Background(), []string{"config", "bundle", sourcePath, "--output", outputPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Created management identity for cluster lab") || !strings.Contains(stderr.String(), "Back up this file") {
-		t.Fatalf("stderr = %q, want one-time management identity backup guidance", stderr.String())
+	if strings.Contains(stderr.String(), "Created management identity") {
+		t.Fatalf("compilation created management authority: %q", stderr.String())
 	}
 	info, err := os.Stat(outputPath)
 	if err != nil {
@@ -626,6 +629,7 @@ func TestConfigBundleCommandBindsPXEImageAsOperationInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	imageURL := "https://boot.example.test/katlos-install.squashfs"
+	createTestManagementSecrets(t, sourcePath)
 	if err := run(context.Background(), []string{
 		"config", "bundle", sourcePath,
 		"--output", outputPath,
@@ -744,6 +748,7 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 	}
 
 	stdout.Reset()
+	createTestManagementSecrets(t, sourcePath)
 	if err := run(context.Background(), []string{"config", "bundle", sourcePath, "--output", outputPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("bundle run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
@@ -3466,6 +3471,9 @@ func writeClusterConfig(t *testing.T) string {
 		EnrollmentID:       "enrollment-cp-1",
 		MachineID:          "machine-cp-1",
 	})
+	if _, _, err := ensureManagementIdentity("lab", io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
 	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
 		t.Fatal(err)
