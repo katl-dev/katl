@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
@@ -328,11 +329,11 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		t.Fatal(err)
 	}
 
-	waitForCNIReactivation, cancelCNIReactivation, err := reactivateCNIFixturesAfterNextBoot(ctx, nodes, cniFixtures)
+	bootIDs, err := captureNodeBootIDs(ctx, nodes...)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("watch for bootstrap generation reboots: %v", err)
+		t.Fatalf("read boot IDs before bootstrap: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
 	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
@@ -347,11 +348,8 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
 	}, bootstrapFixture), &stdout, &stderr)
-	if err != nil {
-		cancelCNIReactivation()
-	}
-	if reactivationErr := waitForCNIReactivation(); err == nil && reactivationErr != nil {
-		err = fmt.Errorf("reactivate test CNI after bootstrap generation reboot: %w", reactivationErr)
+	if err == nil {
+		err = assertNodeBootIDsUnchanged(ctx, bootIDs, nodes...)
 	}
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
@@ -2142,9 +2140,17 @@ func assertOperationKubernetesBundle(t *testing.T, record operation.OperationRec
 		t.Fatalf("operation %s missing bootstrap request", record.OperationID)
 	}
 	req := record.BootstrapRequest
+	actualRef, err := reference.ParseDockerRef(req.KubernetesBundleRef)
+	if err != nil {
+		t.Fatalf("operation %s Kubernetes bundle reference: %v", record.OperationID, err)
+	}
+	expectedRef, err := reference.ParseDockerRef(bundle.Ref)
+	if err != nil {
+		t.Fatalf("fixture Kubernetes bundle reference: %v", err)
+	}
 	if req.KubernetesPayloadVersion != bundle.PayloadVersion ||
 		req.KubernetesBundleSource != bundle.Source ||
-		req.KubernetesBundleRef != bundle.Ref ||
+		actualRef.String() != expectedRef.String() ||
 		!resolvedBundleDigestMatches(req.KubernetesBundleManifestDigest, bundle.BundleManifestDigest) ||
 		!resolvedBundleDigestMatches(req.KubernetesSysextPayloadDigest, bundle.SysextPayloadDigest) {
 		t.Fatalf("operation %s Kubernetes bundle request = %#v, want %#v", record.OperationID, req, bundle)

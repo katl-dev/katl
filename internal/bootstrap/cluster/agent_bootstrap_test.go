@@ -15,7 +15,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
-	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
@@ -513,110 +512,6 @@ func TestResumeBootstrapOperationResumesLatestRetry(t *testing.T) {
 	}
 }
 
-func TestRunAgentBootstrapRebootsCandidateWithoutRequiringCNI(t *testing.T) {
-	inv := validSingleNodeInventory()
-	candidate := "bootstrap-init-candidate"
-	client := &fakeAgentClient{
-		status: &agentapi.NodeStatus{
-			ApiVersion:              agentAPIVersion,
-			MachineId:               "machine-cp-1",
-			AgentStartId:            "before-reboot",
-			SupportedOperationKinds: []string{"bootstrap-init"},
-			CurrentGenerationId:     candidate,
-		},
-		accepted: &agentapi.OperationAccepted{
-			OperationId:   "bootstrap-init-1",
-			RequestDigest: "digest-init",
-			InitialStatus: &agentapi.OperationStatus{
-				OperationId:           "bootstrap-init-1",
-				Terminal:              true,
-				Result:                operation.ResultSucceeded,
-				CandidateGenerationId: candidate,
-				BootHealthPending:     true,
-			},
-		},
-		getStatus: &agentapi.OperationStatus{
-			OperationId:     "bootstrap-init-1",
-			Terminal:        true,
-			Result:          operation.ResultSucceeded,
-			AdminKubeconfig: adminKubeconfig(),
-		},
-		generation: &agentapi.Generation{
-			GenerationId: candidate,
-			CommitState:  generation.CommitStateCandidate,
-			BootState:    generation.BootStatePending,
-			HealthState:  generation.HealthStateUnknown,
-		},
-	}
-	client.rebootFn = func() {
-		client.status.AgentStartId = "after-reboot"
-		client.status.CurrentGenerationId = candidate
-		client.status.Kubernetes = &agentapi.KubernetesStatus{
-			State:                       "waiting-for-node",
-			Role:                        "control-plane",
-			KubeletActive:               true,
-			ControlPlaneComponentsReady: true,
-			NodeReady:                   false,
-			FailureReason:               "Kubernetes node cp-1 is not Ready",
-		}
-		client.generation.CommitState = generation.CommitStateCommitted
-		client.generation.BootState = generation.BootStateGood
-		client.generation.HealthState = generation.HealthStateHealthy
-	}
-	result, err := RunAgentBootstrap(context.Background(), Request{
-		Inventory:           inv,
-		KubeconfigOut:       filepath.Join(t.TempDir(), "kubeconfig"),
-		OverwriteKubeconfig: true,
-	}, AgentBootstrapDependencies{
-		Connector:       newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client}),
-		PollInterval:    time.Millisecond,
-		BootWait:        time.Second,
-		BootstrapRunner: &fakeBootstrapRunner{},
-	})
-	if err != nil {
-		t.Fatalf("RunAgentBootstrap() error = %v", err)
-	}
-	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "bootstrap-init", "boot-health", "api-proxy", "kubeconfig"}) {
-		t.Fatalf("phases = %#v", got)
-	}
-	if len(client.rebootRequests) != 1 || client.rebootRequests[0].GetTargetGenerationId() != candidate {
-		t.Fatalf("reboot requests = %#v", client.rebootRequests)
-	}
-}
-
-func TestRebootBootstrapGenerationSkipsAlreadyHealthyCandidate(t *testing.T) {
-	candidate := "bootstrap-init-candidate"
-	client := &fakeAgentClient{
-		status: &agentapi.NodeStatus{
-			MachineId:           "machine-cp-1",
-			AgentStartId:        "already-booted",
-			CurrentGenerationId: candidate,
-			Kubernetes: &agentapi.KubernetesStatus{
-				State:                       "waiting-for-node",
-				KubeletActive:               true,
-				ControlPlaneComponentsReady: true,
-				NodeReady:                   false,
-			},
-		},
-		generation: &agentapi.Generation{
-			GenerationId: candidate,
-			CommitState:  generation.CommitStateCommitted,
-			BootState:    generation.BootStateGood,
-			HealthState:  generation.HealthStateHealthy,
-		},
-	}
-	node := inventory.PlannedNode{Name: "cp-1", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine-cp-1"}
-	err := rebootAndWaitBootstrapGeneration(context.Background(), node, candidate, AgentBootstrapDependencies{
-		Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client}),
-	})
-	if err != nil {
-		t.Fatalf("rebootAndWaitBootstrapGeneration() error = %v", err)
-	}
-	if len(client.rebootRequests) != 0 {
-		t.Fatalf("reboot requests = %#v, want none", client.rebootRequests)
-	}
-}
-
 func TestBootstrapRequestIdentityIgnoresTransportAddressOverride(t *testing.T) {
 	inv := validSingleNodeInventory()
 	before, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
@@ -959,9 +854,6 @@ type fakeAgentClient struct {
 	listResponse           *agentapi.ListOperationsResponse
 	listErr                error
 	watchErr               error
-	rebootRequests         []*agentapi.RebootRequest
-	rebootFn               func()
-	generation             *agentapi.Generation
 }
 
 func (c *fakeAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest, ...grpc.CallOption) (*agentapi.NodeStatus, error) {
@@ -973,21 +865,6 @@ func (c *fakeAgentClient) GetNodeStatus(context.Context, *agentapi.GetNodeStatus
 		c.getNodeStatusFn(c.getNodeStatusCalls, c.status)
 	}
 	return c.status, nil
-}
-
-func (c *fakeAgentClient) Reboot(_ context.Context, req *agentapi.RebootRequest, _ ...grpc.CallOption) (*agentapi.RebootAccepted, error) {
-	c.rebootRequests = append(c.rebootRequests, req)
-	if c.rebootFn != nil {
-		c.rebootFn()
-	}
-	return &agentapi.RebootAccepted{Scheduled: true, TargetGenerationId: req.GetTargetGenerationId()}, nil
-}
-
-func (c *fakeAgentClient) GetGeneration(_ context.Context, req *agentapi.GetGenerationRequest, _ ...grpc.CallOption) (*agentapi.Generation, error) {
-	if c.generation != nil {
-		return c.generation, nil
-	}
-	return &agentapi.Generation{GenerationId: req.GetGenerationId()}, nil
 }
 
 func (c *fakeAgentClient) SubmitOperation(_ context.Context, req *agentapi.SubmitOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
