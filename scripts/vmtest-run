@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 go_bin="${KATL_VMTEST_GO:-go}"
 image_tool="${KATL_VMTEST_IMAGE_TOOL:-qemu-img}"
 virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"

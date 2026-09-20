@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(git rev-parse --show-toplevel)"
-git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+git_common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 shared_repo_root="$repo_root"
 if [[ "$(basename "$git_common_dir")" == .git ]]; then
     shared_repo_root="$(dirname "$git_common_dir")"

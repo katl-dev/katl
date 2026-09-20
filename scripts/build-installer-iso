@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="${KATL_REPO_ROOT:-$(git rev-parse --show-toplevel)}"
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 installer="${KATL_INSTALLER_UKI:-$build_dir/katl-installer.efi}"
 katlos_image="${KATL_KATLOS_IMAGE:-$build_dir/katlos-install-${KATL_VERSION:-0.0.0-dev}-${KATL_ARCHITECTURE:-$(uname -m)}.squashfs}"
