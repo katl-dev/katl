@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -10,7 +12,8 @@ import (
 func TestUpgradeFlavour(t *testing.T) {
 	for _, tc := range []struct{ name, installed, flag, asset, generation string }{
 		{"existing standard", "", "", "katlos-upgrade-2026.9.0-x86_64.squashfs", "katlos-2026.9.0"},
-		{"retain lts", "lts", "", "katlos-lts-upgrade-2026.9.0-x86_64.squashfs", "katlos-lts-2026.9.0"},
+		{"default from lts", "lts", "", "katlos-upgrade-2026.9.0-x86_64.squashfs", "katlos-2026.9.0"},
+		{"explicit lts", "lts", "lts", "katlos-lts-upgrade-2026.9.0-x86_64.squashfs", "katlos-lts-2026.9.0"},
 		{"switch to lts", "standard", "lts", "katlos-lts-upgrade-2026.9.0-x86_64.squashfs", "katlos-lts-2026.9.0"},
 		{"switch to standard", "lts", "standard", "katlos-upgrade-2026.9.0-x86_64.squashfs", "katlos-2026.9.0"},
 	} {
@@ -42,6 +45,32 @@ func TestUpgradeFlavourConflict(t *testing.T) {
 	var out, errs bytes.Buffer
 	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--artifact", artifact, "--flavour", "lts"}, &out, &errs)
 	if err == nil || !strings.Contains(err.Error(), "conflicts with local image flavour standard") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestUpgradeLocalLTSRequiresFlavour(t *testing.T) {
+	artifact, _, _ := writeHostUpgradeArtifact(t, "2026.9.0", "x86_64", 10)
+	data, err := os.ReadFile(artifact + ".json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	metadata["flavour"] = "lts"
+	data, err = json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact+".json", data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errs bytes.Buffer
+	err = run(context.Background(), []string{"node", "upgrade", "cp-1", "--artifact", artifact}, &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with local image flavour lts") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -91,7 +120,7 @@ func TestUpgradeAlreadyInstalledAfterConfigApply(t *testing.T) {
 	fake.generation.CommitState, fake.generation.BootState, fake.generation.HealthState = "committed", "good", "healthy"
 	installKatlcDial(t, func(string) {}, fake)
 	var out, errs bytes.Buffer
-	if err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--config", writeClusterConfig(t), "--version", "2026.9.0"}, &out, &errs); err != nil {
+	if err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--config", writeClusterConfig(t), "--version", "2026.9.0", "--flavour", "lts"}, &out, &errs); err != nil {
 		t.Fatal(err)
 	}
 	if fake.submitRequest != nil || len(fake.rebootRequests) != 0 {
