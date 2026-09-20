@@ -373,7 +373,7 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 		},
 	}
 	addManagementTargetFlags(cmd, &opts.target)
-	cmd.Flags().StringVar(&opts.flavour, "flavour", "", "kernel flavour: standard or lts (default: retain the installed flavour; local images use their own flavour)")
+	cmd.Flags().StringVar(&opts.flavour, "flavour", "", "kernel flavour: standard or lts (default: standard)")
 	cmd.Flags().StringVar(&opts.version, "version", "", "published KatlOS release to install")
 	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "locally built KatlOS upgrade image (uses PATH.json metadata)")
 	cmd.MarkFlagsMutuallyExclusive("version", "artifact")
@@ -388,11 +388,11 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 }
 
 func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr io.Writer) error {
-	if opts.flavour != "" {
-		if _, err := flavour.Normalize(opts.flavour); err != nil {
-			return err
-		}
+	selectedFlavour, err := flavour.Normalize(opts.flavour)
+	if err != nil {
+		return err
 	}
+	opts.flavour = selectedFlavour
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
@@ -409,7 +409,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		localArtifact = &artifact
 		opts.version = artifact.Version
-		if opts.flavour != "" && opts.flavour != artifact.Flavour {
+		if opts.flavour != artifact.Flavour {
 			return fmt.Errorf("--flavour %s conflicts with local image flavour %s", opts.flavour, artifact.Flavour)
 		}
 		opts.flavour = artifact.Flavour
@@ -446,12 +446,6 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	current, err := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: status.GetCurrentGenerationId()})
 	if err != nil {
 		return fmt.Errorf("read current node generation: %w", err)
-	}
-	if opts.flavour == "" {
-		opts.flavour, err = flavour.Normalize(current.GetRuntimeFlavour())
-		if err != nil {
-			return fmt.Errorf("current node: %w", err)
-		}
 	}
 	if opts.flavour == flavour.LTS && current.GetRuntimeFlavour() == "" {
 		return fmt.Errorf("this node predates kernel flavour support; first upgrade it to the standard flavour of this release, then retry with --flavour lts")

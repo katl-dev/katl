@@ -81,7 +81,7 @@ Patch updates within 6.18 enter new KatlOS builds through the package repository
 changing the LTS series is a deliberate Katl build-policy change. Nodes only
 change kernels when you upgrade KatlOS, not through background RPM updates.
 
-An upgrade with `--version` keeps the node's installed flavour. To switch tracks,
+Omitting `--flavour` selects standard, including on an LTS node. To select a track,
 including at the same KatlOS version:
 
 ```sh
@@ -90,8 +90,8 @@ katlctl node upgrade cp-1 --config cluster.yaml --version VERSION --flavour stan
 ```
 
 Both commands stage a complete OS image and reboot. Kubernetes extensions remain
-independent of the kernel flavour. `--artifact` selects the flavour declared by
-the local image; a conflicting `--flavour` is rejected.
+independent of the kernel flavour. `--artifact` must match the selected flavour.
+Pass `--flavour lts` for a local LTS image; omitting the flag selects standard.
 
 Nodes running a release from before flavour support must first upgrade to the
 standard image of a release with flavour support, then switch to LTS. The CLI
