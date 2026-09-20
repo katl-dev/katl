@@ -484,7 +484,7 @@ func TestMaskRollbackRestoresRunningState(t *testing.T) {
 			}
 			restarted := false
 			for _, command := range runner.commands {
-				if strings.Join(command.Argv, " ") == "systemctl start bluetooth.service" {
+				if strings.Join(command.Argv, " ") == "systemctl restart bluetooth.service" || strings.Join(command.Argv, " ") == "systemctl start bluetooth.service" {
 					restarted = true
 				}
 			}

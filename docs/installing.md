@@ -378,8 +378,13 @@ relative to `cluster.yaml`.
 
 Every list item has an operator-selected unique `name`. Defaults merge into
 nodes by name; a node item replaces the complete default item, and
-`state: absent` removes an inherited item. Changes and removal select a
-next-boot generation. Use `katlctl system-extension inspect` or `validate` for
+`state: absent` removes an inherited item. Payload changes and removal select a
+next-boot generation. With the payload unchanged, configuration, unit drop-ins,
+and enablement changes apply live. Katl reloads or restarts running consumers;
+unit definition changes restart them so the new definition takes effect.
+Native `[Install]` metadata controls enablement. `requiredForBootHealth` makes
+the unit an explicit boot prerequisite; ordinary enabled units may start later.
+Use `katlctl system-extension inspect` or `validate` for
 an OCI bundle and `katlctl system-extension status --node NODE [NAME]` after
 apply. Registry credentials, when needed during workstation compilation, come
 from the normal Docker credential store and are never embedded in config or

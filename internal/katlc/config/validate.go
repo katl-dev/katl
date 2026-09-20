@@ -294,15 +294,15 @@ func validateHostConfiguration(node *yaml.Node, path string, result *Result) {
 		result.add("invalid-field", path, "hostConfiguration must be a mapping")
 		return
 	}
-	for _, pair := range mappingPairsWithPath(node, path) {
-		switch pair.key {
-		case "maskedUnits", "sysfs", "sets":
-		default:
-			result.add("unsupported-field", pair.path, "hostConfiguration field is not supported")
-		}
+	data, err := yaml.Marshal(node)
+	if err != nil {
+		result.add("invalid-field", path, err.Error())
+		return
 	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
 	var config manifest.HostConfiguration
-	if err := node.Decode(&config); err != nil {
+	if err := decoder.Decode(&config); err != nil {
 		result.add("invalid-field", path, err.Error())
 		return
 	}

@@ -24,7 +24,7 @@ func TestPlanHostConfigurationActivationOrdersPrepareAndVerifyEffects(t *testing
 		},
 	}}
 	prepare := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
-	if got := commandNames(prepare.Commands); strings.Join(got, ",") != "systemd-modules-load,systemd-sysctl,udev-rules-verify,udev-rules-reload,udev-devices-trigger,udev-events-settle,systemd-notify-systemd-journald.service" {
+	if got := commandNames(prepare.Commands); strings.Join(got, ",") != "systemd-modules-load,systemd-sysctl,udev-rules-verify,udev-rules-reload,udev-devices-trigger,udev-events-settle" {
 		t.Fatalf("prepare commands = %v", got)
 	}
 	verify := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)

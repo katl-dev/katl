@@ -27,7 +27,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	root := flags.String("root", "/", "runtime root containing /var/lib/katl")
 	generationID := flags.String("generation", "", "selected generation id; defaults to katl.generation from cmdline")
 	cmdline := flags.String("cmdline", "/proc/cmdline", "kernel command line path")
-	phase := flags.String("phase", configapply.HostConfigurationPhasePrepare, "activation phase: prepare or verify")
+	phase := flags.String("phase", configapply.HostConfigurationPhasePrepare, "activation phase: prepare, verify, or units")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -46,10 +46,16 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if *phase != configapply.HostConfigurationPhasePrepare && *phase != configapply.HostConfigurationPhaseVerify {
-		return fmt.Errorf("phase = %q, want %q or %q", *phase, configapply.HostConfigurationPhasePrepare, configapply.HostConfigurationPhaseVerify)
+	if *phase != configapply.HostConfigurationPhasePrepare && *phase != configapply.HostConfigurationPhaseVerify && *phase != "units" {
+		return fmt.Errorf("phase = %q, want prepare, verify, or units", *phase)
 	}
 	plan := configapply.PlanHostConfigurationActivation(value.Node.HostConfiguration, *phase)
+	if *phase == "units" {
+		plan, err = configapply.PrepareSystemdActivation(ctx, *root, value.Node, hostConfigRunner)
+		if err != nil {
+			return err
+		}
+	}
 	statusPath, statusErr := generation.ConfigApplyStatusPath(*root, selected)
 	if statusErr != nil {
 		return statusErr
@@ -74,7 +80,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return observeErr
 	}
 	if statusErr == nil {
-		markHostConfigurationActionPassed(&status)
+		markHostConfigurationActionPassed(&status, *phase == "units")
 		status.UpdatedAt = time.Now().UTC()
 		if err := generation.WriteConfigApplyStatus(statusPath, status); err != nil {
 			return err
@@ -93,6 +99,11 @@ var hostConfigRunner configapply.CommandRunner = execCommandRunner{}
 func (execCommandRunner) Run(ctx context.Context, command configapply.Command) (configapply.CommandResult, error) {
 	if len(command.Argv) == 0 {
 		return configapply.CommandResult{}, fmt.Errorf("command argv is required")
+	}
+	if command.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, command.Timeout)
+		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx, command.Argv[0], command.Argv[1:]...)
 	stdout, err := cmd.Output()
@@ -124,7 +135,7 @@ func updateHostConfigurationEffect(status *generation.ConfigApplyStatus, observe
 	}
 }
 
-func markHostConfigurationActionPassed(status *generation.ConfigApplyStatus) {
+func markHostConfigurationActionPassed(status *generation.ConfigApplyStatus, unitsActivated bool) {
 	for index := range status.DomainActions {
 		action := &status.DomainActions[index]
 		if action.Domain != configapply.DomainHostConfiguration {
@@ -133,6 +144,9 @@ func markHostConfigurationActionPassed(status *generation.ConfigApplyStatus) {
 		for effectIndex := range action.Effects {
 			effect := &action.Effects[effectIndex]
 			if effect.Status == generation.ConfigApplyActionPlanned {
+				if !unitsActivated {
+					return
+				}
 				effect.Status = generation.ConfigApplyActionPassed
 				effect.Diagnostic = "selected configuration was visible before its boot consumer"
 			}

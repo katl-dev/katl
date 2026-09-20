@@ -182,6 +182,59 @@ runtime mounting, generation and machine identity, and recovery targets.
 Attempts to configure those arguments fail validation with the offending list
 entry.
 
+## Enable And Configure Systemd Units
+
+Declare services, timers, sockets, or instantiated template units in
+`hostConfiguration.enabledUnits`. For example, enable the shipped time service
+and provide its native configuration:
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      enabledUnits:
+        - systemd-timesyncd.service
+      fileSets:
+        time:
+          files:
+            - path: /etc/systemd/timesyncd.conf.d/80-site.conf
+              content: |
+                [Time]
+                NTP=192.0.2.123
+          onChange:
+            systemd:
+              - unit: systemd-timesyncd.service
+                action: try-restart
+```
+
+`katlctl cluster apply --config ./cluster.yaml` enables and starts newly listed
+units without a reboot. Katl honours native `[Install]` metadata, recreates its
+enablement at boot, and starts units after configuration and system extensions
+are available. Native `After=`, `Before=`, and dependency directives determine
+ordering; listing units in a particular order does not. Ordinary enabled units
+do not become prerequisites for Katl's boot health.
+
+A node's list replaces the defaults; `enabledUnits: []` clears inherited
+enablement. Removing a unit stops it and removes Katl's runtime enablement.
+Vendor enablement and activation through dependencies, sockets, or D-Bus still
+apply. Use `maskedUnits` when a unit must remain stopped. A unit cannot be both
+enabled and masked, or managed through both this list and an extension's units.
+
+Put native unit definitions and drop-ins in file sets under
+`/etc/systemd/system`. Changes to a concrete unit or its drop-ins automatically
+reload systemd's configuration and restart that unit if it was running or is
+declared enabled. Stopped, undeclared units stay stopped. Application
+configuration files, template-wide and type-wide drop-ins need explicit
+`onChange.systemd` notifications to identify their consumers. Configuration
+and unit changes in an extension also apply live when its payload is unchanged;
+changing the extension payload still requires the next boot.
+
+Live apply groups affected service stops and starts using native systemd
+dependency transactions. On failure it restores the previous configuration,
+runtime enablement, and observed service state. Unit removal stops the service
+before its old files disappear. Native unit dependencies can affect additional
+units; use them with the same care as with ordinary systemd administration.
+
 ## Keep Unwanted Services Stopped
 
 Use `hostConfiguration.maskedUnits` to stop unwanted services and prevent
@@ -416,7 +469,12 @@ onChange:
       action: try-reload-or-restart
 ```
 
-The accepted actions are `reload`, `try-reload-or-restart`, and `try-restart`.
+The accepted actions are `reload`, `try-reload-or-restart`, `try-restart`,
+`reload-or-restart`, and `restart`. The `try-` actions leave stopped units
+stopped. `restart` and `reload-or-restart` may start a stopped consumer during
+live apply; `reload` requires a running unit that supports reload. At boot,
+notifications refresh already running consumers; other units read the new
+configuration when they start. Use `enabledUnits` for persistent activation.
 Katl rejects protected paths, duplicate path ownership, executable or writable
 modes, and attempts to notify release-critical units before rendering a
 candidate generation. Each sysfs `path` must be a unique normalized `/sys/...`

@@ -953,10 +953,10 @@ func TestConfigValidateReportsOnlyPublicNodePaths(t *testing.T) {
             onChange:
               systemd:
                 - unit: example.service
-                  action: restart
+                  action: invalid
       install:
 `, 1),
-			want: `spec.nodes["cp-1"].hostConfiguration.fileSets["service"].onChange.systemd[0].action "restart" is unsupported`,
+			want: `spec.nodes["cp-1"].hostConfiguration.fileSets["service"].onChange.systemd[0].action "invalid" is unsupported`,
 		},
 		{
 			name: "Kubernetes taint",

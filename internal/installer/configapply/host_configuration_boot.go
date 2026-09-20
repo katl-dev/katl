@@ -24,7 +24,6 @@ const (
 
 func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase string) HostConfigurationActivationPlan {
 	var plan HostConfigurationActivationPlan
-	notifications := map[string]string{}
 	sysctls := map[string]string{}
 	modules := map[string]struct{}{}
 	sysfs := map[string]string{}
@@ -57,9 +56,6 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 			if strings.HasPrefix(file.Path, "/etc/systemd/system/") {
 				systemdReload = true
 			}
-		}
-		for _, notification := range set.Notify.Systemd {
-			notifications[notification.Unit] = notification.Action
 		}
 	}
 
@@ -122,10 +118,6 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 			plan.addCommand("udev-rules-reload", "reload", "udev rules", "/usr/bin/udevadm", "control", "--reload")
 			plan.addCommand("udev-devices-trigger", "trigger", "udev devices", "/usr/bin/udevadm", "trigger", "--type=devices", "--action=add")
 			plan.addCommand("udev-events-settle", "settle", "udev events", "/usr/bin/udevadm", "settle")
-		}
-		for _, unit := range sortedKeys(notifications) {
-			action := notifications[unit]
-			plan.addCommand("systemd-notify-"+unit, action, "systemd unit "+unit, "systemctl", action, unit)
 		}
 	}
 	return plan

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/nodeidentity"
+	"github.com/katl-dev/katl/internal/systemdunit"
 
 	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
@@ -121,6 +122,10 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 		return nil, err
 	}
 	files = append(files, extensionFiles...)
+	files = append(files, confext.NativeEtcFile{
+		Path:    "/etc/systemd/system/" + systemdunit.TargetName,
+		Content: request.Manifest.Node.UnitActivation().Target(), Mode: 0o644,
+	})
 	plans, err := confext.ValidateNativeEtcBundle("", files)
 	if err != nil {
 		return nil, err
@@ -150,8 +155,6 @@ func systemExtensionFiles(extensions []manifest.SystemExtension) ([]confext.Nati
 		return nil, fmt.Errorf("node.systemExtensions: %w", err)
 	}
 	var files []confext.NativeEtcFile
-	var required []string
-	unitActivation := make(map[string]bool)
 	for _, extension := range extensions {
 		for _, file := range extension.Configuration.Files {
 			if file.Content == nil {
@@ -166,20 +169,6 @@ func systemExtensionFiles(extensions []manifest.SystemExtension) ([]confext.Nati
 			})
 		}
 		for _, unit := range extension.Units {
-			if unit.Enable {
-				files = append(files, confext.NativeEtcFile{
-					Path:    filepath.ToSlash(filepath.Join("/etc/systemd/system/multi-user.target.wants", unit.Name)),
-					Content: "/usr/lib/systemd/system/" + unit.Name,
-					Type:    confext.NativeEtcSymlink,
-				})
-				if _, exists := unitActivation[unit.Name]; !exists {
-					unitActivation[unit.Name] = false
-				}
-			}
-			if unit.RequiredForBootHealth {
-				required = append(required, unit.Name)
-				unitActivation[unit.Name] = true
-			}
 			for _, dropIn := range unit.DropIns {
 				if dropIn.Content == nil {
 					return nil, fmt.Errorf("node.systemExtensions %q unit %q drop-in %q has no embedded content", extension.Name, unit.Name, dropIn.Name)
@@ -193,37 +182,6 @@ func systemExtensionFiles(extensions []manifest.SystemExtension) ([]confext.Nati
 				})
 			}
 		}
-	}
-	sort.Strings(required)
-	unitNames := make([]string, 0, len(unitActivation))
-	for name := range unitActivation {
-		unitNames = append(unitNames, name)
-	}
-	sort.Strings(unitNames)
-	if len(unitNames) > 0 {
-		var activation strings.Builder
-		activation.WriteString("[Service]\n")
-		for _, name := range unitNames {
-			activation.WriteString("ExecStart=")
-			if !unitActivation[name] {
-				activation.WriteByte('-')
-			}
-			activation.WriteString("/usr/bin/systemctl start ")
-			activation.WriteString(name)
-			activation.WriteByte('\n')
-		}
-		files = append(files, confext.NativeEtcFile{
-			Path:    "/etc/systemd/system/katl-system-extensions-activate.service.d/50-units.conf",
-			Content: activation.String(),
-			Mode:    0o644,
-		})
-	}
-	if len(required) > 0 {
-		files = append(files, confext.NativeEtcFile{
-			Path:    "/etc/systemd/system/katl-boot-health.service.d/50-system-extensions.conf",
-			Content: "[Unit]\nRequires=" + strings.Join(required, " ") + "\nAfter=" + strings.Join(required, " ") + "\n",
-			Mode:    0o644,
-		})
 	}
 	return files, nil
 }

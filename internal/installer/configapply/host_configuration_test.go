@@ -131,11 +131,8 @@ func TestPlanHostConfigurationUsesBoundedSystemdNotification(t *testing.T) {
 	if !plan.Live {
 		t.Fatalf("plan = %#v", plan)
 	}
-	if len(plan.Commands) != 1 {
-		t.Fatalf("commands = %#v", plan.Commands)
-	}
-	if got := strings.Join(plan.Commands[0].Argv, " "); got != "systemctl try-reload-or-restart systemd-journald.service" {
-		t.Fatalf("notification argv = %q", got)
+	if len(plan.Effects) != 1 || plan.Effects[0].Action != "try-reload-or-restart" || plan.Effects[0].Target != "systemd unit systemd-journald.service" {
+		t.Fatalf("effects = %#v", plan.Effects)
 	}
 }
 

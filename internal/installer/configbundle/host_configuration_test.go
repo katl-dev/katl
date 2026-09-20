@@ -176,3 +176,29 @@ func TestMaskedUnitsReachNodeMaterial(t *testing.T) {
 		})
 	}
 }
+
+func TestEnabledUnitsLayering(t *testing.T) {
+	for _, tc := range []struct{ name, overlay, want string }{
+		{"inherit", "", "systemd-timesyncd.service"},
+		{"replace", "      hostConfiguration:\n        enabledUnits: [example@one.service]\n", "example@one.service"},
+		{"clear", "      hostConfiguration:\n        enabledUnits: []\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := strings.Replace(validSourceConfig(), "    hostConfiguration:\n", "    hostConfiguration:\n      enabledUnits: [systemd-timesyncd.service]\n", 1)
+			source = strings.Replace(source, "    - name: cp-1\n", "    - name: cp-1\n"+tc.overlay, 1)
+			sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
+			writeFile(t, sourcePath, source)
+			archive, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(selected.NodeMaterial.InstallManifest.Node.HostConfiguration.EnabledUnits, " "); got != tc.want {
+				t.Fatalf("enabled units = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
