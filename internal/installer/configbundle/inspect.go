@@ -191,6 +191,10 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 	}
 	_, sysfsSet := node.HostConfiguration.Sysfs.Get()
 	_, maskedUnitsSet := node.HostConfiguration.MaskedUnits.Get()
+	_, enabledUnitsSet := node.HostConfiguration.EnabledUnits.Get()
+	if _, set := resolved.HostConfiguration.EnabledUnits.Get(); set {
+		choose("hostConfiguration.enabledUnits", enabledUnitsSet)
+	}
 	if _, set := resolved.HostConfiguration.MaskedUnits.Get(); set {
 		choose("hostConfiguration.maskedUnits", maskedUnitsSet)
 	}
@@ -486,6 +490,7 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	add(base+".kernel", before.Effective.Kernel, after.Effective.Kernel)
 	add(base+".hostConfiguration.sysfs", before.Effective.HostConfiguration.Sysfs.Value(), after.Effective.HostConfiguration.Sysfs.Value())
 	add(base+".hostConfiguration.maskedUnits", before.Effective.HostConfiguration.MaskedUnits.Value(), after.Effective.HostConfiguration.MaskedUnits.Value())
+	add(base+".hostConfiguration.enabledUnits", before.Effective.HostConfiguration.EnabledUnits.Value(), after.Effective.HostConfiguration.EnabledUnits.Value())
 	diffNamedMaps(&diff, base+".hostConfiguration.fileSets", before.Effective.HostConfiguration.FileSets.Value(), after.Effective.HostConfiguration.FileSets.Value())
 	diffNamedExtensions(&diff, base+".systemExtensions", before.Effective.SystemExtensions.Value(), after.Effective.SystemExtensions.Value())
 	add(base+".install.systemDisk", before.Effective.Install.SystemDisk, after.Effective.Install.SystemDisk)
@@ -573,9 +578,13 @@ func classifyDiffPath(path string) (string, string, string) {
 		return "online-applicable", "", "volume changes require live target discovery; existing data is preserved unless explicitly authorized"
 	case strings.HasSuffix(path, ".hostConfiguration.maskedUnits"):
 		return "online-applicable", "", "systemd masks apply live; removing a mask does not start the unit"
+	case strings.HasSuffix(path, ".hostConfiguration.enabledUnits"):
+		return "online-applicable", "", "systemd enablement and activation apply live after configuration is visible"
 	case strings.Contains(path, ".hostConfiguration"):
 		return "online-or-next-boot", "", "the concrete file or sysfs change determines whether live preflight succeeds"
-	case strings.Contains(path, ".kernel"), strings.Contains(path, ".systemExtensions"), strings.Contains(path, ".authorizedKeys"):
+	case strings.Contains(path, ".systemExtensions"):
+		return "online-or-next-boot", "", "configuration and unit changes can apply live; replacing extension payloads requires next boot"
+	case strings.Contains(path, ".kernel"), strings.Contains(path, ".authorizedKeys"):
 		return "staged-only", "", "change activates through a staged node generation"
 	default:
 		return "online-or-next-boot", "", "change is handled by normal configuration apply"

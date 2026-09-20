@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -80,27 +81,11 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 		return e.failBeforeActivation(status, err)
 	}
 	if e.HostConfiguration != nil {
-		// Snapshot before switching confexts; rollback must not start services
-		// that were inactive before this apply.
 		host := *e.HostConfiguration
 		host.rollbackCommands = append([]Command(nil), host.rollbackCommands...)
 		e.HostConfiguration = &host
-		for _, unit := range host.unitsToStop {
-			command := Command{Name: "systemd-state-" + unit, Argv: []string{"systemctl", "show", "--property=ActiveState", "--value", unit}, Timeout: e.timeout()}
-			result, err := e.Runner.Run(ctx, command)
-			if err != nil {
-				return e.failBeforeActivation(status, err)
-			}
-			if !commandSucceeded(command, result) {
-				return e.failBeforeActivation(status, commandFailure(command, result))
-			}
-			switch strings.TrimSpace(result.Stdout) {
-			case "active":
-				host.rollbackCommands = append(host.rollbackCommands, Command{Name: "systemd-restore-" + unit, Argv: []string{"systemctl", "start", unit}})
-			case "inactive", "failed":
-			default:
-				return e.failBeforeActivation(status, fmt.Errorf("systemd unit %s is transitioning (%s); retry once it settles", unit, strings.TrimSpace(result.Stdout)))
-			}
+		if err := e.prepareHostSystemd(ctx); err != nil {
+			return e.failBeforeActivation(status, err)
 		}
 	}
 	if containsDomainAction(status.DomainActions, DomainControlPlaneEndpointVIP) {
@@ -120,11 +105,23 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 		return status, err
 	}
 
+	beforeActions := e.HostConfiguration != nil && len(e.HostConfiguration.beforeCommands) > 0
+	if beforeActions {
+		for _, command := range e.HostConfiguration.beforeCommands {
+			result, err := e.Runner.Run(ctx, command)
+			if err == nil && !commandSucceeded(command, result) {
+				err = commandFailure(command, result)
+			}
+			if err != nil {
+				return e.failAndRollback(ctx, status, plan, err, true, sysctlSnapshot)
+			}
+		}
+	}
 	if err := e.Activator.Activate(ctx, plan.GenerationRecord); err != nil {
-		return e.failAndRollback(ctx, status, plan, fmt.Errorf("activate selected confext: %w", err), false, sysctlSnapshot)
+		return e.failAndRollback(ctx, status, plan, fmt.Errorf("activate selected confext: %w", err), beforeActions, sysctlSnapshot)
 	}
 	if err := e.refreshConfext(ctx); err != nil {
-		return e.failAndRollback(ctx, status, plan, err, false, sysctlSnapshot)
+		return e.failAndRollback(ctx, status, plan, err, beforeActions, sysctlSnapshot)
 	}
 
 	if err := e.runActions(ctx, &status); err != nil {
@@ -215,6 +212,9 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 			return err
 		}
 		for _, command := range commands {
+			if e.HostConfiguration != nil && command.Name == "systemd-units-enable" {
+				e.HostConfiguration.enablementStarted = true
+			}
 			result, err := e.Runner.Run(ctx, command)
 			if err != nil {
 				markHostEffect(action, command, generation.ConfigApplyActionFailed, err)
@@ -242,6 +242,22 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 			kubeletRebound = true
 		}
 		action.Status = generation.ConfigApplyActionPassed
+		if action.Domain == DomainHostConfiguration && e.HostConfiguration != nil {
+			for i := range action.Effects {
+				effect := &action.Effects[i]
+				if effect.Status != generation.ConfigApplyActionPlanned {
+					continue
+				}
+				unit := strings.TrimPrefix(effect.Target, "systemd unit ")
+				if unit != effect.Target {
+					effect.Status = generation.ConfigApplyActionPassed
+					if slices.Contains(e.HostConfiguration.inactiveNotifications, unit) {
+						effect.Status = generation.ConfigApplyActionSkipped
+						effect.Diagnostic = "unit was inactive; left stopped"
+					}
+				}
+			}
+		}
 		if action.Domain != DomainHostConfiguration {
 			action.Diagnostic = ""
 		}
@@ -464,6 +480,10 @@ func (e Executor) restoreHostSysctls(ctx context.Context, snapshot map[string]st
 }
 
 func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigApplyStatus, plan Result, cause error, replayActions bool, sysctlSnapshot map[string]string) (generation.ConfigApplyStatus, error) {
+	// A cancelled apply still needs a bounded opportunity to restore the last
+	// generation and its observed service state.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), max(e.timeout(), 2*time.Minute))
+	defer cancel()
 	status, err := generation.MarkConfigApplyFailed(status, cause, e.now())
 	if err != nil {
 		return status, err
@@ -476,6 +496,38 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 	status.UpdatedAt = e.now().UTC()
 	if writeErr := e.writeStatus(status); writeErr != nil {
 		return status, writeErr
+	}
+	if replayActions && e.HostConfiguration != nil {
+		commands := slices.Clone(e.HostConfiguration.beforeRollbackCommands)
+		if e.HostConfiguration.enablementStarted {
+			commands = append(commands, withDefaults(runtimeDisableCommands(e.HostConfiguration.unitsToEnable), e.timeout())...)
+		}
+		for _, command := range commands {
+			result, err := e.Runner.Run(ctx, command)
+			if err == nil && !commandSucceeded(command, result) {
+				err = commandFailure(command, result)
+			}
+			if err != nil {
+				return e.markRollbackFailed(status, target, cause, err)
+			}
+		}
+		for _, unit := range e.HostConfiguration.resetFailures {
+			state, err := e.systemdProperty(ctx, unit, "ActiveState")
+			if err != nil {
+				return e.markRollbackFailed(status, target, cause, err)
+			}
+			if state != "failed" {
+				continue
+			}
+			command := Command{Name: "systemd-reset-failed-" + unit, Argv: []string{"systemctl", "reset-failed", unit}, Timeout: e.timeout()}
+			result, err := e.Runner.Run(ctx, command)
+			if err == nil && !commandSucceeded(command, result) {
+				err = commandFailure(command, result)
+			}
+			if err != nil {
+				return e.markRollbackFailed(status, target, cause, err)
+			}
+		}
 	}
 	if rollbackErr := e.Activator.Rollback(ctx, target); rollbackErr != nil {
 		return e.markRollbackFailed(status, target, cause, rollbackErr)
@@ -603,6 +655,9 @@ func validateBoundedCommand(command Command) error {
 
 func commandFailure(command Command, result CommandResult) error {
 	if command.ExpectedStdout != "" && result.ExitStatus == 0 && strings.TrimSpace(result.Stdout) != command.ExpectedStdout {
+		if strings.HasPrefix(command.Name, "systemd-units-") {
+			return fmt.Errorf("%s: systemd dependency transaction did not complete; inspect 'systemctl --failed' and the affected units' journal", command.Name)
+		}
 		return fmt.Errorf("%s returned %q, want %q", command.Name, strings.TrimSpace(result.Stdout), command.ExpectedStdout)
 	}
 	output := strings.TrimSpace(result.Stderr)

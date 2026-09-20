@@ -620,6 +620,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"bootedGenerationID": "`+currentGeneration+`"`,
 		`"pendingHealthValidation": false`,
 	)
+	runSystemdUnitSmoke(t, ctx, guest, client, result, katlctl, endpoint)
 	activeGeneration := runVolumeRemovalSmoke(t, ctx, guest, result, katlctl, endpoint)
 
 	assertGuestNonLoopbackLink(t, ctx, guest)
@@ -1416,5 +1417,90 @@ func assertMaskedUnits(t *testing.T, ctx context.Context, guest *GuestControl, p
 		if err != nil || started.ExitStatus == 0 {
 			t.Fatalf("masked %s started: result=%+v err=%v", unit, started, err)
 		}
+	}
+}
+
+// The consumer sorts before its producer. Only systemd ordering, rather than
+// invocation order, can make both first activation and subsequent changes work.
+func runSystemdUnitSmoke(t *testing.T, ctx context.Context, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint string) {
+	t.Helper()
+	base, err := os.ReadFile(configApplyFixture(t, "live-udev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeBoot := guestBootID(t, ctx, client)
+	var lastConfig string
+	for version, value := range []string{"first", "second"} {
+		config := strings.Replace(string(base), "      sets:\n", `      enabledUnits: [a-consumer.service, z-producer.service, systemd-timesyncd.service]
+      sets:
+        ordered-units:
+          files:
+            - path: /etc/systemd/system/z-producer.service
+              content: |
+                [Service]
+                Type=oneshot
+                RemainAfterExit=yes
+                ExecStart=/usr/bin/sh -c 'echo `+value+` > /run/unit-order'
+                [Install]
+                WantedBy=multi-user.target
+            - path: /etc/systemd/system/a-consumer.service
+              content: |
+                [Unit]
+                After=z-producer.service
+                [Service]
+                Type=oneshot
+                RemainAfterExit=yes
+                ExecStart=/usr/bin/sh -c 'test "$(cat /run/unit-order)" = "`+value+`"'
+                [Install]
+                WantedBy=multi-user.target
+`, 1)
+		config = strings.Replace(config, "sourceID: operator", "sourceID: systemd-journey", 1)
+		config = strings.Replace(config, `desiredVersion: "21"`, fmt.Sprintf("desiredVersion: %q", strconv.Itoa(version+1)), 1)
+		path := filepath.Join(t.TempDir(), "units.yaml")
+		lastConfig = config
+		if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "systemd-"+value, "live", "systemd-"+value, path, false)
+		for _, unit := range []string{"a-consumer.service", "z-producer.service", "systemd-timesyncd.service"} {
+			guestCommand(t, ctx, guest, "active-"+value+"-"+unit, "systemctl", "is-active", "--quiet", unit)
+		}
+		if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "producer-output-"+value, "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/cat", "/run/unit-order")); got != value {
+			t.Fatalf("producer output = %q, want %q", got, value)
+		}
+		if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "native-enable-"+value, "systemctl", "show", "--property=UnitFileState", "--value", "systemd-timesyncd.service")); got != "enabled-runtime" {
+			t.Fatalf("time service enablement = %q", got)
+		}
+	}
+	rejected := strings.ReplaceAll(lastConfig, "second", "rejected")
+	rejected = strings.Replace(rejected, `desiredVersion: "2"`, `desiredVersion: "3"`, 1)
+	rejected = strings.Replace(rejected, "ExecStart=/usr/bin/sh -c 'echo rejected > /run/unit-order'", "ExecStart=/usr/bin/false", 1)
+	path := filepath.Join(t.TempDir(), "failed-units.yaml")
+	if err := os.WriteFile(path, []byte(rejected), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	accepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "systemd-failure", "live", "systemd-failure", path, true)
+	if status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.OperationId); status.Result != operation.ResultFailedRolledBack {
+		t.Fatalf("failed units result = %s, want restored configuration and services", status.Result)
+	}
+	guestCommand(t, ctx, guest, "rollback-units-active", "systemctl", "is-active", "--quiet", "a-consumer.service", "z-producer.service")
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "rollback-producer-output", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/cat", "/run/unit-order")); got != "second" {
+		t.Fatalf("rollback producer output = %q", got)
+	}
+	removed := strings.Replace(string(base), "sourceID: operator", "sourceID: systemd-journey", 1)
+	removed = strings.Replace(removed, `desiredVersion: "21"`, `desiredVersion: "4"`, 1)
+	path = filepath.Join(t.TempDir(), "removed-units.yaml")
+	if err := os.WriteFile(path, []byte(removed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "systemd-remove", "live", "systemd-remove", path, false)
+	for _, unit := range []string{"a-consumer.service", "z-producer.service", "systemd-timesyncd.service"} {
+		if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "stopped-"+unit, "systemctl", "show", "--property=ActiveState", "--value", unit)); got != "inactive" {
+			t.Fatalf("removed %s state = %q", unit, got)
+		}
+	}
+	assertGuestMissing(t, ctx, guest, "/run/systemd/system/sysinit.target.wants/systemd-timesyncd.service")
+	if afterBoot := guestBootID(t, ctx, client); afterBoot != beforeBoot {
+		t.Fatal("unit changes rebooted the node")
 	}
 }

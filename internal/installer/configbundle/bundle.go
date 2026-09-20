@@ -139,9 +139,10 @@ type SourceKernelConfig struct {
 }
 
 type SourceHostConfiguration struct {
-	MaskedUnits Optional[[]string]                                  `yaml:"maskedUnits,omitempty" json:"maskedUnits,omitzero"`
-	Sysfs       Optional[[]SourceHostConfigurationSysfsSetting]     `yaml:"sysfs,omitempty" json:"sysfs,omitzero"`
-	FileSets    Optional[map[string]SourceHostConfigurationFileSet] `yaml:"fileSets,omitempty" json:"fileSets,omitzero"`
+	EnabledUnits Optional[[]string]                                  `yaml:"enabledUnits,omitempty" json:"enabledUnits,omitzero"`
+	MaskedUnits  Optional[[]string]                                  `yaml:"maskedUnits,omitempty" json:"maskedUnits,omitzero"`
+	Sysfs        Optional[[]SourceHostConfigurationSysfsSetting]     `yaml:"sysfs,omitempty" json:"sysfs,omitzero"`
+	FileSets     Optional[map[string]SourceHostConfigurationFileSet] `yaml:"fileSets,omitempty" json:"fileSets,omitzero"`
 }
 
 type SourceHostConfigurationSysfsSetting struct {

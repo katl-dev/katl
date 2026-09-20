@@ -13,18 +13,27 @@ import (
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/networkdconfig"
+	"github.com/katl-dev/katl/internal/systemdunit"
 )
 
 type HostConfigurationChangePlan struct {
-	Live              bool
-	Sets              []string
-	Paths             []string
-	Effects           []generation.ConfigApplyEffect
-	Message           string
-	Commands          []Command
-	rollbackCommands  []Command
-	unitsToStop       []string
-	SysctlAssignments []HostSysctlAssignment
+	Live                   bool
+	Sets                   []string
+	Paths                  []string
+	Effects                []generation.ConfigApplyEffect
+	Message                string
+	Commands               []Command
+	rollbackCommands       []Command
+	unitsToStop            []string
+	unitsToEnable          []string
+	unitsToDisable         []string
+	unitNotifications      map[string]string
+	beforeCommands         []Command
+	beforeRollbackCommands []Command
+	enablementStarted      bool
+	inactiveNotifications  []string
+	resetFailures          []string
+	SysctlAssignments      []HostSysctlAssignment
 }
 
 type HostSysctlAssignment struct {
@@ -48,6 +57,12 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	names := sortedStringUnion(hostSetNames(currentSets), hostSetNames(desiredSets))
 	plan := HostConfigurationChangePlan{Live: true}
 	notifications := make(map[string]string)
+	unitFiles := make(map[string]bool)
+	plan.unitsToEnable = unitDifference(desired.EnabledUnits, current.EnabledUnits)
+	plan.unitsToDisable = unitDifference(current.EnabledUnits, desired.EnabledUnits)
+	for _, unit := range slices.Concat(plan.unitsToEnable, plan.unitsToDisable) {
+		plan.Paths = append(plan.Paths, "systemd:"+unit)
+	}
 	udevReload := false
 	systemdReload := false
 	stagedReason := ""
@@ -109,6 +124,14 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 			}
 			plan.Paths = append(plan.Paths, filePath)
 			switch {
+			case filePath == "/etc/systemd/system/"+systemdunit.TargetName:
+				systemdReload = true
+			case changedUnit(filePath) != "":
+				unit := changedUnit(filePath)
+				unitFiles[unit] = true
+				if slices.Contains(desired.EnabledUnits, unit) && !slices.Contains(plan.unitsToEnable, unit) {
+					plan.unitsToEnable = append(plan.unitsToEnable, unit)
+				}
 			case networkdconfig.IsPath(filePath):
 				if stagedReason == "" {
 					stagedReason = "systemd-networkd configuration applies on next boot"
@@ -188,6 +211,20 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 			notifications[notification.Unit] = notification.Action
 		}
 	}
+	for unit := range unitFiles {
+		switch notifications[unit] {
+		case "restart", "reload-or-restart":
+			notifications[unit] = "restart"
+		default:
+			notifications[unit] = "try-restart"
+		}
+	}
+	for unit := range notifications {
+		if slices.Contains(desired.MaskedUnits, unit) || slices.Contains(plan.unitsToDisable, unit) {
+			delete(notifications, unit)
+		}
+	}
+	plan.unitNotifications = notifications
 
 	sort.Strings(plan.Paths)
 	plan.Paths = compactStrings(plan.Paths)
@@ -215,6 +252,12 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	for _, unit := range units {
 		plan.Effects = append(plan.Effects, plannedEffect(notifications[unit], "systemd unit "+unit))
 	}
+	for _, unit := range plan.unitsToEnable {
+		plan.Effects = append(plan.Effects, plannedEffect("enable-and-start", "systemd unit "+unit))
+	}
+	for _, unit := range plan.unitsToDisable {
+		plan.Effects = append(plan.Effects, plannedEffect("disable-and-stop", "systemd unit "+unit))
+	}
 	sort.SliceStable(plan.Effects, func(i, j int) bool {
 		if plan.Effects[i].Target == plan.Effects[j].Target {
 			return plan.Effects[i].Action < plan.Effects[j].Action
@@ -240,15 +283,6 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 			EffectAction: "reload",
 			EffectTarget: "systemd manager",
 			Argv:         []string{"systemctl", "daemon-reload"},
-		})
-	}
-	for _, unit := range units {
-		action := notifications[unit]
-		plan.Commands = append(plan.Commands, Command{
-			Name:         "systemd-notify-" + unit,
-			EffectAction: action,
-			EffectTarget: "systemd unit " + unit,
-			Argv:         []string{"systemctl", action, unit},
 		})
 	}
 	// Rollback reloads the restored generation, then enforces its masks.

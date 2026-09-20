@@ -146,6 +146,11 @@
           "path": "/etc/systemd/network/20-cp.network",
           "content": "[Match]\nName=enp2s0\n",
           "mode": 420
+        },
+        {
+          "path": "/etc/systemd/system/katl-configured-units.target",
+          "content": "[Unit]\nDescription=Configured Katl systemd units\nDefaultDependencies=no\nWants=\nRequires=\nAfter=\n",
+          "mode": 420
         }
       ],
       "kubeadmConfig": {
@@ -270,6 +275,11 @@
         {
           "path": "/etc/systemd/network/10-common.network",
           "content": "[Match]\nName=enp1s0\n\n[Network]\nDHCP=yes\n",
+          "mode": 420
+        },
+        {
+          "path": "/etc/systemd/system/katl-configured-units.target",
+          "content": "[Unit]\nDescription=Configured Katl systemd units\nDefaultDependencies=no\nWants=\nRequires=\nAfter=\n",
           "mode": 420
         }
       ],

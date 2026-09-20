@@ -104,6 +104,8 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return description("Complete ordered sysfs setting list; an empty node list clears inherited settings.")
 	case "configbundle.SourceHostConfiguration.maskedUnits":
 		return description("Systemd units to stop and prevent from starting. A node list replaces defaults; an empty list clears inherited masks.")
+	case "configbundle.SourceHostConfiguration.enabledUnits":
+		return description("Native systemd units to enable and start after configuration is visible. Removing a unit stops and disables it. A node list replaces defaults; an empty list clears inherited enablement.")
 	case "configbundle.SourceHostConfiguration.fileSets":
 		return mapRule("Named native /etc file sets; an empty node map clears inherited sets.", dnsLabelPattern)
 	case "configbundle.SourceHostConfigurationSysfsSetting.path":
@@ -199,7 +201,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "manifest.HostConfigurationSystemdNotification.unit":
 		return stringRule("Single systemd unit name.", systemdUnitPattern, 1, 255)
 	case "manifest.HostConfigurationSystemdNotification.action":
-		return enumRule("Bounded non-disruptive systemd action.", nil, "reload", "try-reload-or-restart", "try-restart")
+		return enumRule("Native systemd action after files change. The try- actions leave inactive units stopped; restart and reload-or-restart may start them.", nil, "reload", "restart", "reload-or-restart", "try-reload-or-restart", "try-restart")
 	case "manifest.SystemExtensionConfiguration.files":
 		return description("Files delivered to the extension configuration namespace.")
 	case "manifest.SystemExtensionUnit.name":

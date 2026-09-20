@@ -322,7 +322,7 @@ func renderSystemExtensionReloadService() string {
 func renderSystemExtensionActivateService() string {
 	return strings.Join([]string{
 		"[Unit]",
-		"Description=Activate configured system extension units",
+		"Description=Activate configured systemd units",
 		"Documentation=man:systemd.service(5)",
 		"Requires=katl-system-extensions-reload.service katl-host-config-verify.service",
 		"After=katl-system-extensions-reload.service katl-host-config-verify.service",
@@ -333,7 +333,7 @@ func renderSystemExtensionActivateService() string {
 		"RemainAfterExit=yes",
 		"StandardOutput=journal+console",
 		"SyslogIdentifier=katl-system-extensions-activate",
-		"ExecStart=/usr/bin/true",
+		"ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=units",
 		"",
 	}, "\n")
 }

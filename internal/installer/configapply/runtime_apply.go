@@ -357,7 +357,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		}
 		executor.StatusPath = statusPath
 		if containsChangeDomain(changes, DomainHostConfiguration) {
-			hostPlan := planHostConfigurationChange(request.CurrentManifest.Node.HostConfiguration, merged.Node.HostConfiguration)
+			hostPlan := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(merged.Node))
 			executor.HostConfiguration = &hostPlan
 		}
 		status, err = executor.ExecuteLive(ctx, plan)
@@ -553,7 +553,7 @@ func DesiredManifest(request TrustedBundleRequest) (manifest.Manifest, error) {
 
 func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Change, []confext.NativeEtcFile, error) {
 	merged := request.CurrentManifest
-	currentHostConfiguration := request.CurrentManifest.Node.HostConfiguration
+	currentHostConfiguration := effectiveHostConfiguration(request.CurrentManifest.Node)
 	domains := domainAccumulator{}
 	var unsafeFiles []confext.NativeEtcFile
 	if err := validateOverlay("clusterDefaults", request.ClusterDefaults); err != nil {
@@ -598,7 +598,7 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		return merged, nil, nil, ErrNoChanges
 	}
 	if _, changed := domains.seen[DomainHostConfiguration]; changed {
-		hostPlan := planHostConfigurationChange(currentHostConfiguration, merged.Node.HostConfiguration)
+		hostPlan := planHostConfigurationChange(currentHostConfiguration, effectiveHostConfiguration(merged.Node))
 		domains.hostConfiguration = &hostPlan
 	}
 	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), slices.Concat(unsafeFiles, proxyFiles), nil
@@ -792,7 +792,11 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 		changed := !(len(current) == 0 && len(*overlay.SystemExtensions) == 0) && !reflect.DeepEqual(current, *overlay.SystemExtensions)
 		node.SystemExtensions = slices.Clone(*overlay.SystemExtensions)
 		if changed {
-			domains.add(DomainSystemExtensions)
+			if extensionPayloadsEqual(current, *overlay.SystemExtensions) {
+				domains.add(DomainHostConfiguration)
+			} else {
+				domains.add(DomainSystemExtensions)
+			}
 		}
 	}
 	if overlay.Volumes != nil {

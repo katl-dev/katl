@@ -99,17 +99,18 @@ const (
 )
 
 type HostConfiguration struct {
-	MaskedUnits []string                        `json:"maskedUnits,omitempty" yaml:"maskedUnits,omitempty"`
-	Sysfs       []HostConfigurationSysfsSetting `json:"sysfs,omitempty" yaml:"sysfs,omitempty"`
-	Sets        map[string]HostConfigurationSet `json:"sets,omitempty" yaml:"sets,omitempty"`
+	EnabledUnits []string                        `json:"enabledUnits,omitempty" yaml:"enabledUnits,omitempty"`
+	MaskedUnits  []string                        `json:"maskedUnits,omitempty" yaml:"maskedUnits,omitempty"`
+	Sysfs        []HostConfigurationSysfsSetting `json:"sysfs,omitempty" yaml:"sysfs,omitempty"`
+	Sets         map[string]HostConfigurationSet `json:"sets,omitempty" yaml:"sets,omitempty"`
 }
 
 func (config HostConfiguration) IsZero() bool {
-	return len(config.MaskedUnits) == 0 && len(config.Sysfs) == 0 && len(config.Sets) == 0
+	return len(config.EnabledUnits) == 0 && len(config.MaskedUnits) == 0 && len(config.Sysfs) == 0 && len(config.Sets) == 0
 }
 
 func NormalizeHostConfiguration(config HostConfiguration) HostConfiguration {
-	if len(config.MaskedUnits) == 0 && config.Sysfs == nil && len(config.Sets) == 0 {
+	if len(config.EnabledUnits) == 0 && len(config.MaskedUnits) == 0 && config.Sysfs == nil && len(config.Sets) == 0 {
 		return HostConfiguration{}
 	}
 	sysfs := slices.Clone(config.Sysfs)
@@ -147,7 +148,9 @@ func NormalizeHostConfiguration(config HostConfiguration) HostConfiguration {
 	}
 	maskedUnits := append([]string(nil), config.MaskedUnits...)
 	slices.Sort(maskedUnits)
-	return HostConfiguration{MaskedUnits: maskedUnits, Sysfs: sysfs, Sets: sets}
+	enabledUnits := append([]string(nil), config.EnabledUnits...)
+	slices.Sort(enabledUnits)
+	return HostConfiguration{EnabledUnits: enabledUnits, MaskedUnits: maskedUnits, Sysfs: sysfs, Sets: sets}
 }
 
 type HostConfigurationSysfsSetting struct {
@@ -443,6 +446,9 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	}
 	for _, extension := range manifest.Node.SystemExtensions {
 		for _, unit := range extension.Units {
+			if slices.Contains(manifest.Node.HostConfiguration.EnabledUnits, unit.Name) {
+				return fmt.Errorf("node.hostConfiguration.enabledUnits: %q is already managed by system extension %q", unit.Name, extension.Name)
+			}
 			if unit.RequiredForBootHealth && slices.Contains(manifest.Node.HostConfiguration.MaskedUnits, unit.Name) {
 				return fmt.Errorf("node.hostConfiguration.maskedUnits: %q is required for boot health by system extension %q", unit.Name, extension.Name)
 			}
@@ -782,8 +788,24 @@ var protectedHostConfigurationExactPaths = map[string]struct{}{
 // allowSource is used only while compiling ClusterConfig; installed manifests
 // must contain embedded content and never retain authoring-time file paths.
 func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error {
+	enabledUnits := make(map[string]struct{}, len(config.EnabledUnits))
+	for i, unit := range config.EnabledUnits {
+		if len(unit) > 255 || !systemdNotificationUnitPattern.MatchString(unit) || strings.Contains(unit, "@.") {
+			return fmt.Errorf("enabledUnits[%d] %q must name a concrete systemd unit", i, unit)
+		}
+		if protectedSystemdUnit(unit) {
+			return fmt.Errorf("enabledUnits[%d] %q is release-critical and cannot be managed", i, unit)
+		}
+		if _, exists := enabledUnits[unit]; exists {
+			return fmt.Errorf("enabledUnits[%d] %q duplicates another unit", i, unit)
+		}
+		enabledUnits[unit] = struct{}{}
+	}
 	maskedUnits := make(map[string]struct{}, len(config.MaskedUnits))
 	for i, unit := range config.MaskedUnits {
+		if _, enabled := enabledUnits[unit]; enabled {
+			return fmt.Errorf("maskedUnits[%d] %q conflicts with enabledUnits", i, unit)
+		}
 		if len(unit) > 255 || !systemdNotificationUnitPattern.MatchString(unit) {
 			return fmt.Errorf("maskedUnits[%d] %q must be a systemd unit name", i, unit)
 		}
@@ -1177,7 +1199,7 @@ func validateHostConfigurationNotifications(setName string, notifications HostCo
 			return fmt.Errorf("%s.unit %q is release-critical and cannot be notified", field, unit)
 		}
 		switch notification.Action {
-		case "reload", "try-reload-or-restart", "try-restart":
+		case "reload", "restart", "reload-or-restart", "try-reload-or-restart", "try-restart":
 		default:
 			return fmt.Errorf("%s.action %q is unsupported", field, notification.Action)
 		}

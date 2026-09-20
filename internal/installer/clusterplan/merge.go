@@ -118,7 +118,7 @@ func mergeSystemExtensions(base, next []manifest.SystemExtension) ([]manifest.Sy
 }
 
 func mergeHostConfiguration(base, next manifest.HostConfiguration) (manifest.HostConfiguration, error) {
-	if len(base.Sets) == 0 && len(next.Sets) == 0 && base.Sysfs == nil && next.Sysfs == nil && base.MaskedUnits == nil && next.MaskedUnits == nil {
+	if len(base.Sets) == 0 && len(next.Sets) == 0 && base.Sysfs == nil && next.Sysfs == nil && base.MaskedUnits == nil && next.MaskedUnits == nil && base.EnabledUnits == nil && next.EnabledUnits == nil {
 		return manifest.HostConfiguration{}, nil
 	}
 	sets := make(map[string]manifest.HostConfigurationSet, len(base.Sets)+len(next.Sets))
@@ -143,7 +143,11 @@ func mergeHostConfiguration(base, next manifest.HostConfiguration) (manifest.Hos
 	if next.MaskedUnits != nil {
 		maskedUnits = slices.Clone(next.MaskedUnits)
 	}
-	out := manifest.NormalizeHostConfiguration(manifest.HostConfiguration{MaskedUnits: maskedUnits, Sysfs: sysfs, Sets: sets})
+	enabledUnits := slices.Clone(base.EnabledUnits)
+	if next.EnabledUnits != nil {
+		enabledUnits = slices.Clone(next.EnabledUnits)
+	}
+	out := manifest.NormalizeHostConfiguration(manifest.HostConfiguration{EnabledUnits: enabledUnits, MaskedUnits: maskedUnits, Sysfs: sysfs, Sets: sets})
 	if err := manifest.ValidateHostConfiguration(out, false); err != nil {
 		return manifest.HostConfiguration{}, fmt.Errorf("hostConfiguration: %w", err)
 	}
