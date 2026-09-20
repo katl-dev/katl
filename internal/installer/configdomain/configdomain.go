@@ -238,6 +238,13 @@ func hostConfigurationFiles(config manifest.HostConfiguration) ([]confext.Native
 	}
 	sort.Strings(setNames)
 	var files []confext.NativeEtcFile
+	for _, unit := range config.MaskedUnits {
+		// systemd treats an empty unit file as a persistent mask.
+		files = append(files, confext.NativeEtcFile{
+			Path: "/etc/systemd/system/" + unit,
+			Mode: 0o644,
+		})
+	}
 	if len(config.Sysfs) > 0 {
 		settings := slices.Clone(config.Sysfs)
 		sort.Slice(settings, func(i, j int) bool { return settings[i].Name < settings[j].Name })

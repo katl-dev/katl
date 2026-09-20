@@ -22,6 +22,8 @@ type HostConfigurationChangePlan struct {
 	Effects           []generation.ConfigApplyEffect
 	Message           string
 	Commands          []Command
+	rollbackCommands  []Command
+	unitsToStop       []string
 	SysctlAssignments []HostSysctlAssignment
 }
 
@@ -49,6 +51,22 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	udevReload := false
 	systemdReload := false
 	stagedReason := ""
+	for _, unit := range desired.MaskedUnits {
+		if !slices.Contains(current.MaskedUnits, unit) {
+			plan.unitsToStop = append(plan.unitsToStop, unit)
+			plan.Paths = append(plan.Paths, "/etc/systemd/system/"+unit)
+			systemdReload = true
+		}
+	}
+	for _, unit := range current.MaskedUnits {
+		if !slices.Contains(desired.MaskedUnits, unit) {
+			plan.Paths = append(plan.Paths, "/etc/systemd/system/"+unit)
+			systemdReload = true
+		}
+	}
+	var masks HostConfigurationActivationPlan
+	masks.addUnitMasks(plan.unitsToStop, true, true)
+	plan.Effects = append(plan.Effects, masks.Effects...)
 
 	currentSysfs := hostSysfsByName(current.Sysfs)
 	desiredSysfs := hostSysfsByName(desired.Sysfs)
@@ -233,6 +251,14 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 			Argv:         []string{"systemctl", action, unit},
 		})
 	}
+	// Rollback reloads the restored generation, then enforces its masks.
+	plan.rollbackCommands = slices.Clone(plan.Commands)
+	if systemdReload && len(current.MaskedUnits) > 0 {
+		var previous HostConfigurationActivationPlan
+		previous.addUnitMasks(current.MaskedUnits, true, true)
+		plan.rollbackCommands = append(plan.rollbackCommands, previous.Commands...)
+	}
+	plan.Commands = append(plan.Commands, masks.Commands...)
 	if len(plan.Effects) == 0 {
 		plan.Live = false
 		plan.Message = "changed host configuration has no live action"

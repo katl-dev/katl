@@ -79,6 +79,30 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 	if err != nil {
 		return e.failBeforeActivation(status, err)
 	}
+	if e.HostConfiguration != nil {
+		// Snapshot before switching confexts; rollback must not start services
+		// that were inactive before this apply.
+		host := *e.HostConfiguration
+		host.rollbackCommands = append([]Command(nil), host.rollbackCommands...)
+		e.HostConfiguration = &host
+		for _, unit := range host.unitsToStop {
+			command := Command{Name: "systemd-state-" + unit, Argv: []string{"systemctl", "show", "--property=ActiveState", "--value", unit}, Timeout: e.timeout()}
+			result, err := e.Runner.Run(ctx, command)
+			if err != nil {
+				return e.failBeforeActivation(status, err)
+			}
+			if !commandSucceeded(command, result) {
+				return e.failBeforeActivation(status, commandFailure(command, result))
+			}
+			switch strings.TrimSpace(result.Stdout) {
+			case "active":
+				host.rollbackCommands = append(host.rollbackCommands, Command{Name: "systemd-restore-" + unit, Argv: []string{"systemctl", "start", unit}})
+			case "inactive", "failed":
+			default:
+				return e.failBeforeActivation(status, fmt.Errorf("systemd unit %s is transitioning (%s); retry once it settles", unit, strings.TrimSpace(result.Stdout)))
+			}
+		}
+	}
 	if containsDomainAction(status.DomainActions, DomainControlPlaneEndpointVIP) {
 		enabled, err := e.endpointOwnershipEnabled(plan.GenerationRecord)
 		if err != nil {
@@ -492,6 +516,9 @@ func (e Executor) replayRollbackActions(ctx context.Context, actions []generatio
 		if err != nil {
 			return err
 		}
+		if action.Domain == DomainHostConfiguration && e.HostConfiguration != nil && e.HostConfiguration.rollbackCommands != nil {
+			commands = withDefaults(e.HostConfiguration.rollbackCommands, e.timeout())
+		}
 		for _, command := range commands {
 			result, err := e.Runner.Run(ctx, command)
 			if err != nil {
@@ -575,6 +602,9 @@ func validateBoundedCommand(command Command) error {
 }
 
 func commandFailure(command Command, result CommandResult) error {
+	if command.ExpectedStdout != "" && result.ExitStatus == 0 && strings.TrimSpace(result.Stdout) != command.ExpectedStdout {
+		return fmt.Errorf("%s returned %q, want %q", command.Name, strings.TrimSpace(result.Stdout), command.ExpectedStdout)
+	}
 	output := strings.TrimSpace(result.Stderr)
 	if output == "" {
 		output = strings.TrimSpace(result.Stdout)
@@ -586,6 +616,9 @@ func commandFailure(command Command, result CommandResult) error {
 }
 
 func commandSucceeded(command Command, result CommandResult) bool {
+	if command.ExpectedStdout != "" && strings.TrimSpace(result.Stdout) != command.ExpectedStdout {
+		return false
+	}
 	if result.ExitStatus == 0 {
 		return true
 	}

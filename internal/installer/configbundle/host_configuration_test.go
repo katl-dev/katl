@@ -133,3 +133,46 @@ func TestReadHostConfigurationSourceAcceptsExplicitCurrentDirectory(t *testing.T
 		t.Fatalf("content = %q", data)
 	}
 }
+
+func TestMaskedUnitsReachNodeMaterial(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		nodeMask string
+		want     bool
+	}{
+		{name: "inherited", want: true},
+		{name: "cleared", nodeMask: "      hostConfiguration:\n        maskedUnits: []\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := strings.Replace(validSourceConfig(), "    hostConfiguration:\n", "    hostConfiguration:\n      maskedUnits: [bluetooth.service]\n", 1)
+			source = strings.Replace(source, "    - name: cp-1\n", "    - name: cp-1\n"+tc.nodeMask, 1)
+			root := t.TempDir()
+			sourcePath := filepath.Join(root, "cluster.yaml")
+			writeFile(t, sourcePath, source)
+			archive, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: "cp-1", AllowMissingKatlosImage: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			found := false
+			for _, file := range selected.NodeMaterial.NativeEtcFiles {
+				if file.Path == "/etc/systemd/system/bluetooth.service" {
+					found = true
+					if file.Content != "" || file.Mode != 0o644 {
+						t.Fatalf("mask = %#v", file)
+					}
+				}
+			}
+			if found != tc.want {
+				t.Fatalf("mask present = %t, want %t", found, tc.want)
+			}
+			if got := len(selected.NodeMaterial.InstallManifest.Node.HostConfiguration.MaskedUnits) > 0; got != tc.want {
+				t.Fatalf("manifest masks present = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}

@@ -192,3 +192,53 @@ func TestValidateHostConfigurationAbsentSetCannotCarryPayload(t *testing.T) {
 		t.Fatalf("ValidateHostConfiguration() error = %v, want absent payload rejection", err)
 	}
 }
+
+func TestMaskedUnitOwnership(t *testing.T) {
+	content := "[Service]\nExecStart=/usr/bin/true\n"
+	for _, tc := range []struct {
+		name      string
+		config    HostConfiguration
+		wantError bool
+	}{
+		{name: "ordinary unit", config: HostConfiguration{MaskedUnits: []string{"bluetooth.service"}}},
+		{name: "socket", config: HostConfiguration{MaskedUnits: []string{"example.socket"}}},
+		{name: "instance", config: HostConfiguration{MaskedUnits: []string{"example@one.service"}}},
+		{name: "template", config: HostConfiguration{MaskedUnits: []string{"example@.service"}}, wantError: true},
+		{name: "protected", config: HostConfiguration{MaskedUnits: []string{"kubelet.service"}}, wantError: true},
+		{name: "path", config: HostConfiguration{MaskedUnits: []string{"../bluetooth.service"}}, wantError: true},
+		{name: "duplicate", config: HostConfiguration{MaskedUnits: []string{"bluetooth.service", "bluetooth.service"}}, wantError: true},
+		{name: "file conflict", config: HostConfiguration{MaskedUnits: []string{"example.service"}, Sets: map[string]HostConfigurationSet{
+			"example": {Files: []HostConfigurationFile{{Path: "/etc/systemd/system/example.service", Content: &content}}},
+		}}, wantError: true},
+		{name: "notification conflict", config: HostConfiguration{MaskedUnits: []string{"example.service"}, Sets: map[string]HostConfigurationSet{
+			"example": {Files: []HostConfigurationFile{{Path: "/etc/example.conf", Content: &content}}, Notify: HostConfigurationNotifications{Systemd: []HostConfigurationSystemdNotification{{Unit: "example.service", Action: "try-restart"}}}},
+		}}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateHostConfiguration(tc.config, false)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("ValidateHostConfiguration() = %v", err)
+			}
+		})
+	}
+}
+
+func TestMaskCannotOverrideBootHealth(t *testing.T) {
+	config, err := Decode(strings.NewReader(validManifest()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Node.SystemExtensions = []SystemExtension{{
+		Name: "example", Bundle: "registry.example.test/example:1", Units: []SystemExtensionUnit{{Name: "example.service", RequiredForBootHealth: true}},
+		OCIManifestDigest: "sha256:" + strings.Repeat("a", 64), BundleManifestDigest: "sha256:" + strings.Repeat("b", 64),
+		ArtifactVersion: "1", PayloadVersion: "1", Architecture: "x86_64", SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
+		Payloads: []SystemExtensionPayloadRef{{Name: "example.raw", Role: "systemd-sysext", MediaType: "application/vnd.katl.sysext.raw.v1", Digest: "sha256:" + strings.Repeat("c", 64), SizeBytes: 1024}},
+	}}
+	if err := Validate(config); err != nil {
+		t.Fatalf("unmasked configuration: %v", err)
+	}
+	config.Node.HostConfiguration.MaskedUnits = []string{"example.service"}
+	if err := Validate(config); err == nil || !strings.Contains(err.Error(), "required for boot health") {
+		t.Fatalf("masked configuration: %v", err)
+	}
+}

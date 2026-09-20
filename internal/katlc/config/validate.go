@@ -296,7 +296,7 @@ func validateHostConfiguration(node *yaml.Node, path string, result *Result) {
 	}
 	for _, pair := range mappingPairsWithPath(node, path) {
 		switch pair.key {
-		case "sysfs", "sets":
+		case "maskedUnits", "sysfs", "sets":
 		default:
 			result.add("unsupported-field", pair.path, "hostConfiguration field is not supported")
 		}

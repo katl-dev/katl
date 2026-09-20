@@ -79,6 +79,8 @@ spec:
       authorizedKeys:
         - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl
     hostConfiguration:
+      maskedUnits:
+        - bluetooth.service
       sysfs:
         - name: /sys/module/printk/parameters/time
           value: N
