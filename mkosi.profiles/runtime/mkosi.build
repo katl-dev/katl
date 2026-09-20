@@ -87,6 +87,9 @@ install -m 0644 "$repo/mkosi.profiles/runtime/katl-endpoint-activate.service" "$
 ln -sf ../katl-endpoint-activate.service "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-endpoint-activate.service"
 
 mkdir -p "$DESTDIR/etc/systemd/system"
+# An empty machine-id permits the per-node ID supplied by the boot entry without
+# requesting first-boot presets against immutable /etc. Units are preset at build time.
+: > "$DESTDIR/etc/machine-id"
 for unit in \
     authselect-apply-changes.service \
     fips-crypto-policy-overlay.service \
