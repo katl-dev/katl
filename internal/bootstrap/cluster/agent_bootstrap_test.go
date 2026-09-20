@@ -1083,3 +1083,16 @@ func readyAgentStatusWithKinds(machineID string, kinds ...string) *agentapi.Node
 		CurrentGenerationId:     "0",
 	}
 }
+
+func TestResumeBootstrapFinalization(t *testing.T) {
+	const requestID = "katlctl-cp-1-123456789abc"
+	latest := &agentapi.OperationStatus{
+		OperationId: "failed-init", OperationKind: agentBootstrapInitKind, ClientRequestId: requestID,
+		Terminal: true, Result: operation.ResultFailedNeedsRepair, ResumeSupported: true,
+	}
+	client := &fakeAgentClient{listResponse: &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{latest}}}
+	accepted, nextID, watching, err := resumeBootstrapOperation(context.Background(), client, requestID, agentBootstrapInitKind)
+	if err != nil || watching || accepted.GetOperationId() != "failed-init" || nextID != requestID+"-retry-1" {
+		t.Fatalf("continuation = %+v, %q, watching=%t, %v", accepted, nextID, watching, err)
+	}
+}

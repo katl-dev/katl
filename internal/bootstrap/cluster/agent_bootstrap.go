@@ -486,8 +486,11 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 		return bootstrapInitResult{}, err
 	}
 	if !resumed {
-		if state := status.GetKubernetes().GetState(); state != "" && state != "not-configured" {
+		if state := status.GetKubernetes().GetState(); accepted == nil && state != "" && state != "not-configured" {
 			return bootstrapInitResult{}, fmt.Errorf("node %s already has Kubernetes state; resume with the original bootstrap configuration and identity, or use 'katlctl kubernetes upgrade' to change versions", node.Name)
+		}
+		if accepted != nil {
+			req.Bootstrap.ResumeOperationId = accepted.GetOperationId()
 		}
 		req.ClientRequestId = requestID
 		accepted, err = conn.Client.SubmitOperation(ctx, req)
@@ -713,6 +716,9 @@ func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inv
 		return operationReference{}, err
 	}
 	if !resumed {
+		if accepted != nil {
+			req.Bootstrap.ResumeOperationId = accepted.GetOperationId()
+		}
 		req.ClientRequestId = requestID
 		accepted, err = conn.Client.SubmitOperation(ctx, req)
 	} else {
@@ -1092,6 +1098,9 @@ func resumeBootstrapOperation(ctx context.Context, client AgentClient, clientReq
 		return nil, clientRequestID, false, nil
 	}
 	if latest.GetTerminal() && latest.GetResult() != operation.ResultSucceeded {
+		if latest.GetResumeSupported() {
+			return &agentapi.OperationAccepted{OperationId: latest.GetOperationId(), InitialStatus: latest}, fmt.Sprintf("%s-retry-%d", clientRequestID, latestAttempt+1), false, nil
+		}
 		return nil, fmt.Sprintf("%s-retry-%d", clientRequestID, latestAttempt+1), false, nil
 	}
 	return &agentapi.OperationAccepted{

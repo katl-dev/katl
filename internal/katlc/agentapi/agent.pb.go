@@ -1460,6 +1460,7 @@ type BootstrapOperationRequest struct {
 	KubernetesIdentity            []byte                 `protobuf:"bytes,14,opt,name=kubernetes_identity,json=kubernetesIdentity,proto3" json:"kubernetes_identity,omitempty"`
 	KubernetesIdentityFingerprint string                 `protobuf:"bytes,15,opt,name=kubernetes_identity_fingerprint,json=kubernetesIdentityFingerprint,proto3" json:"kubernetes_identity_fingerprint,omitempty"`
 	ApiProxyConfig                string                 `protobuf:"bytes,16,opt,name=api_proxy_config,json=apiProxyConfig,proto3" json:"api_proxy_config,omitempty"`
+	ResumeOperationId             string                 `protobuf:"bytes,17,opt,name=resume_operation_id,json=resumeOperationId,proto3" json:"resume_operation_id,omitempty"`
 	unknownFields                 protoimpl.UnknownFields
 	sizeCache                     protoimpl.SizeCache
 }
@@ -1602,6 +1603,13 @@ func (x *BootstrapOperationRequest) GetKubernetesIdentityFingerprint() string {
 func (x *BootstrapOperationRequest) GetApiProxyConfig() string {
 	if x != nil {
 		return x.ApiProxyConfig
+	}
+	return ""
+}
+
+func (x *BootstrapOperationRequest) GetResumeOperationId() string {
+	if x != nil {
+		return x.ResumeOperationId
 	}
 	return ""
 }
@@ -3666,6 +3674,7 @@ type OperationStatus struct {
 	ChangedDomains          []string               `protobuf:"bytes,28,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
 	ClientRequestId         string                 `protobuf:"bytes,29,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
 	ConfigApply             *ConfigApplyStatus     `protobuf:"bytes,30,opt,name=config_apply,json=configApply,proto3" json:"config_apply,omitempty"`
+	ResumeSupported         bool                   `protobuf:"varint,31,opt,name=resume_supported,json=resumeSupported,proto3" json:"resume_supported,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -3908,6 +3917,13 @@ func (x *OperationStatus) GetConfigApply() *ConfigApplyStatus {
 		return x.ConfigApply
 	}
 	return nil
+}
+
+func (x *OperationStatus) GetResumeSupported() bool {
+	if x != nil {
+		return x.ResumeSupported
+	}
+	return false
 }
 
 type DiagnosticArtifact struct {
@@ -5439,7 +5455,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x1ckubeadm_control_plane_config\x18\x11 \x01(\v28.katl.agent.v1.KubeadmControlPlaneConfigOperationRequestR\x19kubeadmControlPlaneConfig\x12]\n" +
 	"\x12etcd_member_remove\x18\x12 \x01(\v2/.katl.agent.v1.EtcdMemberRemoveOperationRequestR\x10etcdMemberRemove\x124\n" +
 	"\x16expected_enrollment_id\x18\x13 \x01(\tR\x14expectedEnrollmentId\x12?\n" +
-	"\x1cexpected_inventory_node_name\x18\x14 \x01(\tR\x19expectedInventoryNodeName\"\xed\x06\n" +
+	"\x1cexpected_inventory_node_name\x18\x14 \x01(\tR\x19expectedInventoryNodeName\"\x9d\a\n" +
 	"\x19BootstrapOperationRequest\x12.\n" +
 	"\x13inventory_node_name\x18\x01 \x01(\tR\x11inventoryNodeName\x12\x1f\n" +
 	"\vsystem_role\x18\x02 \x01(\tR\n" +
@@ -5458,7 +5474,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x15existing_cluster_join\x18\r \x01(\bR\x13existingClusterJoin\x12/\n" +
 	"\x13kubernetes_identity\x18\x0e \x01(\fR\x12kubernetesIdentity\x12F\n" +
 	"\x1fkubernetes_identity_fingerprint\x18\x0f \x01(\tR\x1dkubernetesIdentityFingerprint\x12(\n" +
-	"\x10api_proxy_config\x18\x10 \x01(\tR\x0eapiProxyConfig\"\x83\x01\n" +
+	"\x10api_proxy_config\x18\x10 \x01(\tR\x0eapiProxyConfig\x12.\n" +
+	"\x13resume_operation_id\x18\x11 \x01(\tR\x11resumeOperationId\"\x83\x01\n" +
 	"\x12WorkerJoinMaterial\x12\x1b\n" +
 	"\tjoin_argv\x18\x01 \x03(\tR\bjoinArgv\x12\x1d\n" +
 	"\n" +
@@ -5673,7 +5690,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x16ListOperationsResponse\x12>\n" +
 	"\n" +
 	"operations\x18\x01 \x03(\v2\x1e.katl.agent.v1.OperationStatusR\n" +
-	"operations\"\xc9\n" +
+	"operations\"\xf4\n" +
 	"\n" +
 	"\x0fOperationStatus\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12%\n" +
@@ -5709,7 +5726,8 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x12config_apply_phase\x18\x1b \x01(\tR\x10configApplyPhase\x12'\n" +
 	"\x0fchanged_domains\x18\x1c \x03(\tR\x0echangedDomains\x12*\n" +
 	"\x11client_request_id\x18\x1d \x01(\tR\x0fclientRequestId\x12C\n" +
-	"\fconfig_apply\x18\x1e \x01(\v2 .katl.agent.v1.ConfigApplyStatusR\vconfigApply\"\x9c\x01\n" +
+	"\fconfig_apply\x18\x1e \x01(\v2 .katl.agent.v1.ConfigApplyStatusR\vconfigApply\x12)\n" +
+	"\x10resume_supported\x18\x1f \x01(\bR\x0fresumeSupported\"\x9c\x01\n" +
 	"\x12DiagnosticArtifact\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12\x12\n" +

@@ -198,6 +198,7 @@ message BootstrapOperationRequest {
   bytes kubernetes_identity = 14;
   string kubernetes_identity_fingerprint = 15;
   string api_proxy_config = 16;
+  string resume_operation_id = 17;
 }
 
 message WorkerJoinMaterial {
@@ -452,6 +453,7 @@ message OperationStatus {
   repeated string changed_domains = 28;
   string client_request_id = 29;
   ConfigApplyStatus config_apply = 30;
+  bool resume_supported = 31;
 }
 
 message DiagnosticArtifact {

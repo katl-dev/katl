@@ -140,6 +140,7 @@ type ExecutorPlan struct {
 }
 
 type BootstrapRequest struct {
+	ResumeOperationID              string `json:"resumeOperationID,omitempty"`
 	InventoryNodeName              string `json:"inventoryNodeName"`
 	SystemRole                     string `json:"systemRole"`
 	KubernetesPayloadVersion       string `json:"kubernetesPayloadVersion"`
