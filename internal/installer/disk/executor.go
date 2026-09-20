@@ -21,6 +21,7 @@ type DiskExecutor struct {
 	InstallBoot        BootInstaller
 	RootSlotState      SlotStore
 	RecordStateMounted func(context.Context) error
+	BeforeOperation    func(DiskOperation) error
 }
 
 type DiskExecutionRequest struct {
@@ -94,6 +95,11 @@ func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecuti
 		}
 	}
 	for _, operation := range operations {
+		if e.BeforeOperation != nil {
+			if err := e.BeforeOperation(operation); err != nil {
+				return DiskExecutionResult{}, err
+			}
+		}
 		if isRootWrite(operation) {
 			if request.RootSlotInstall == nil {
 				return DiskExecutionResult{}, fmt.Errorf("%s: root slot install request is required", operation.Name)

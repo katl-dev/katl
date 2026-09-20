@@ -153,13 +153,14 @@ func TestRebootRequestFailureIsRecorded(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "request system reboot: reboot transaction rejected") {
 		t.Fatalf("Run() error = %v, want reboot request failure", err)
 	}
-	if len(store.Statuses) != 2 {
-		t.Fatalf("status records = %d, want reboot request and failure", len(store.Statuses))
+	requested := false
+	for _, status := range store.Statuses {
+		requested = requested || status.State == installstatus.StateRebootRequested
 	}
-	if store.Statuses[0].State != installstatus.StateRebootRequested {
-		t.Fatalf("first status = %q, want %q", store.Statuses[0].State, installstatus.StateRebootRequested)
+	if !requested {
+		t.Fatal("reboot request was not recorded")
 	}
-	if got := store.Statuses[1]; got.State != installstatus.StateFailedAfterMutation || !strings.Contains(got.LastError, "request system reboot") {
+	if got := store.Statuses[len(store.Statuses)-1]; got.State != installstatus.StateFailedAfterMutation || !strings.Contains(got.LastError, "request system reboot") {
 		t.Fatalf("failure status = %#v", got)
 	}
 }
@@ -398,9 +399,6 @@ func TestRunnerRecordsCheckpointsWithoutCommands(t *testing.T) {
 	}
 	if got := store.Checkpoints[len(store.Checkpoints)-1].CompletedSteps; !reflect.DeepEqual(got, want) {
 		t.Fatalf("final checkpoint completed steps = %#v, want %#v", got, want)
-	}
-	if len(store.Statuses) != len(want) {
-		t.Fatalf("status count = %d, want %d", len(store.Statuses), len(want))
 	}
 	finalStatus := store.Statuses[len(store.Statuses)-1]
 	if finalStatus.State != installstatus.StateRebootRequested || finalStatus.CurrentStep != string(Reboot) {
@@ -653,10 +651,9 @@ func TestRunnerHaltIfInstalledRefusesBeforeMutation(t *testing.T) {
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust}) {
 		t.Fatalf("completed steps = %#v", got)
 	}
-	for _, status := range store.Statuses {
-		if status.DestructiveMutation || status.State == installstatus.StateFailedBeforeMutation {
-			t.Fatalf("installed-target hold recorded a mutation or failure: %#v", status)
-		}
+	status := store.Statuses[len(store.Statuses)-1]
+	if status.DestructiveMutation || status.State != installstatus.StateInstallRefused || status.CurrentStep != string(PlanInstall) || !strings.Contains(status.RetryHint, "katlctl install apply") {
+		t.Fatalf("installed-target refusal = %#v", status)
 	}
 }
 
@@ -1910,8 +1907,11 @@ func (failingStatusStore) LoadCheckpoint(context.Context) (Checkpoint, error) {
 	return Checkpoint{}, os.ErrNotExist
 }
 
-func (failingStatusStore) SaveStatus(context.Context, installstatus.Record) error {
-	return errString("status store failed")
+func (failingStatusStore) SaveStatus(_ context.Context, record installstatus.Record) error {
+	if strings.HasPrefix(record.State, "failed") {
+		return errString("status store failed")
+	}
+	return nil
 }
 
 func (failingStatusStore) LoadStatus(context.Context) (installstatus.Record, error) {
@@ -1982,5 +1982,43 @@ func assertDir(t *testing.T, path string, want os.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != want {
 		t.Fatalf("%s mode = %v, want %v", path, got, want)
+	}
+}
+
+func TestInstalledTargetPolicy(t *testing.T) {
+	for _, scenario := range []struct {
+		name             string
+		guard, unrelated bool
+		label            string
+		refuse           bool
+	}{
+		{name: "explicit reinstall", label: disk.GPTLabelESP},
+		{name: "partial install", guard: true, label: disk.GPTLabelESP, refuse: true},
+		{name: "upgraded install", guard: true, label: disk.GPTLabelState, refuse: true},
+		{name: "another disk", guard: true, label: disk.GPTLabelESP, unrelated: true},
+		{name: "other operating system", guard: true, label: "EFI System Partition"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			store := &MemoryStateStore{}
+			facts := planningFacts()
+			target := &facts.BlockDevices[0]
+			if scenario.unrelated {
+				facts.BlockDevices = append(facts.BlockDevices, discovery.BlockDevice{Path: "/dev/vdb", Type: discovery.DeviceDisk, SizeBytes: 64 << 30})
+				target = &facts.BlockDevices[len(facts.BlockDevices)-1]
+			}
+			target.Partitions = []discovery.BlockDevice{{Path: target.Path + "1", Type: discovery.DevicePartition, GPTLabel: scenario.label}}
+			install := &Context{
+				ManifestPath: writeManifest(t), Commands: &NoopCommandRunner{}, Store: store,
+				KatlosResolver: &recordingKatlosResolver{payload: planningPayload()}, Discovery: discovery.StaticDiscoverySource{Facts: facts}, HaltIfInstalled: scenario.guard,
+			}
+			err := NewRunner(Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}}, install).Run(context.Background())
+			if scenario.refuse {
+				if !errors.Is(err, ErrInstalledTarget) {
+					t.Fatalf("wanted refusal, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

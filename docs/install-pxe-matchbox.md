@@ -105,8 +105,7 @@ selection and the shared bundle:
       "katl.bundle.url=http://192.168.254.1:8080/assets/katl/2026.7.0-beta.1/cluster.katlcfg",
       "katl.bundle.sha256=REPLACE_WITH_CLUSTER_KATLCFG_SHA256",
       "katl.node=cp-1",
-      "katl.install.mode=auto",
-      "katl.halt-if-installed=1"
+      "katl.install.mode=auto"
     ]
   }
 }
@@ -228,14 +227,15 @@ you to install a CNI.
 
 ## Keep PXE First Safely
 
-Keep `katl.halt-if-installed=1` on any profile whose machine may continue to
-network boot first. On an already-installed Katl disk, the live installer
-resolves the selected node and disk, recognizes Katl's GPT layout, and enters an
-SSH-accessible hold before mutation.
+Automatic install profiles authorize replacement of the selected system disk,
+including an existing Katl installation. Remove the install profile or switch
+firmware to disk boot after installation.
 
-This guard prevents an automatic reinstall loop. It does not authorize or
-perform recovery. Use the explicit [wipe and reinstall](operations/wipe-reinstall.md)
-workflow when replacement is intended, then boot the guarded profile again.
+If you want repeated PXE boots to refuse an existing Katl target instead, add
+`katl.halt-if-installed=1`. The installer reports a fatal refusal before
+mutation and retains API and SSH access. Run `katlctl install apply --config
+cluster.yaml --node NODE` to explicitly reinstall from that installer, or remove
+the guard for automatic reinstallation. Runtime-agent access is not required.
 
 ## Diagnose the Handoff
 

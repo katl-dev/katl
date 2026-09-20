@@ -681,18 +681,11 @@ func TestWaitForInstallerRebootBlocksUntilShutdown(t *testing.T) {
 	}
 }
 
-func TestFinishAutomaticInstallHoldsInstalledTarget(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+func TestFinishAutomaticInstallReportsRefusal(t *testing.T) {
 	var stdout bytes.Buffer
-	err := finishAutomaticInstall(ctx, fmt.Errorf("%w on /dev/vda; use the explicit Katl wipe/reinstall workflow", installer.ErrInstalledTarget), &stdout)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("finishAutomaticInstall() error = %v, want context canceled", err)
-	}
-	for _, want := range []string{"installed KatlOS target detected", "automatic reinstall stopped", "explicit Katl wipe/reinstall workflow"} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
-		}
+	err := finishAutomaticInstall(context.Background(), fmt.Errorf("%w on /dev/vda", installer.ErrInstalledTarget), &stdout)
+	if !errors.Is(err, installer.ErrInstalledTarget) {
+		t.Fatalf("finishAutomaticInstall() error = %v, want installed-target refusal", err)
 	}
 }
 
