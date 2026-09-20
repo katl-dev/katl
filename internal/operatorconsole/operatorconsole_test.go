@@ -861,7 +861,7 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 		t.Fatalf("missing state row:\n%s", got)
 	}
 	stateRow := lines[stateIndex]
-	if !containsIgnoringLayout(stateRow, "State:Healthy") || !containsIgnoringLayout(stateRow, "│State:Controlplanehealthy") {
+	if !containsIgnoringLayout(stateRow, "State:Healthy") || !containsIgnoringLayout(stateRow, "│State:Controlplanerunning") {
 		t.Fatalf("split state row = %q", stateRow)
 	}
 	versionIndex := lineIndexContaining(lines, "Node:")

@@ -617,7 +617,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("Kubernetes node OS identity: %v", err)
 	}
-	if err := assertControlPlaneDashboard(ctx, inputs.SSHPrivateKey, cpAddress); err != nil {
+	if err := assertControlPlaneDashboard(ctx, inputs.SSHPrivateKey, cpAddress, inputs.KubernetesVersion); err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("control-plane dashboard: %v", err)
@@ -2800,7 +2800,7 @@ func assertOperatorSSH(ctx context.Context, privateKey, address string) error {
 	}
 }
 
-func assertControlPlaneDashboard(ctx context.Context, privateKey, address string) error {
+func assertControlPlaneDashboard(ctx context.Context, privateKey, address, version string) error {
 	privateKey = strings.TrimSpace(privateKey)
 	address = strings.TrimSpace(address)
 	if privateKey == "" || address == "" {
@@ -2808,6 +2808,7 @@ func assertControlPlaneDashboard(ctx context.Context, privateKey, address string
 	}
 	deadline := time.Now().Add(time.Minute)
 	var lastOutput []byte
+	want := []string{"State:Controlplanehealthy", "/2nodesready", "APIserver:" + version + "(Healthy)", "Controller:" + version + "(Running)", "Scheduler:" + version + "(Running)"}
 	for {
 		command := exec.CommandContext(
 			ctx, "ssh",
@@ -2818,14 +2819,21 @@ func assertControlPlaneDashboard(ctx context.Context, privateKey, address string
 			"-o", "ConnectTimeout=5",
 			"-i", privateKey,
 			"root@"+address,
-			"crictl ps --all --namespace '^kube-system$' --output json >/dev/null && "+
-				"dashboard=$(tr -d ' \\r' </run/katl/console/rendered.txt) && "+
-				"case \"$dashboard\" in *'State:Controlplanehealthy'*'APIserver:Running'*'Controller:Running'*'Scheduler:Running'*'etcd:Running'*) exit 0;; *) printf '%s\\n' \"$dashboard\"; exit 1;; esac",
+			"cat /run/katl/console/rendered.txt",
 		)
 		output, err := command.CombinedOutput()
 		lastOutput = output
 		if err == nil {
-			return nil
+			compact := strings.Join(strings.Fields(string(output)), "")
+			for _, text := range want {
+				if !strings.Contains(compact, text) {
+					err = fmt.Errorf("missing dashboard observation %q", text)
+					break
+				}
+			}
+			if err == nil {
+				return nil
+			}
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

@@ -95,7 +95,7 @@ func presentKubernetes(snapshot *Snapshot) Presentation {
 			NextAction: "From your workstation: katlctl cluster bootstrap --config <cluster.yaml>",
 		}
 	}
-	if snapshot.LiveSoftware.KubernetesVersion == "" {
+	if snapshot.LiveSoftware.KubernetesVersion == "" && !snapshot.KubernetesConfigured {
 		return Presentation{State: PresentationUnknown, Label: "Not installed"}
 	}
 	if snapshot.KubernetesConfigured {
@@ -120,7 +120,7 @@ func presentControlPlane(pods ControlPlanePodStatuses) Presentation {
 	failed := false
 	for _, pod := range pods {
 		switch pod.State {
-		case KubernetesPodRunning:
+		case KubernetesPodRunning, KubernetesPodHealthy:
 			running++
 		case KubernetesPodNotRunning:
 			failed = true
@@ -129,7 +129,10 @@ func presentControlPlane(pods ControlPlanePodStatuses) Presentation {
 		}
 	}
 	if running == len(pods) {
-		return Presentation{State: PresentationHealthy, Label: "Control plane healthy"}
+		if pods[0].State == KubernetesPodHealthy {
+			return Presentation{State: PresentationHealthy, Label: "Control plane healthy"}
+		}
+		return Presentation{State: PresentationProgressing, Label: "Control plane running"}
 	}
 	if failed {
 		return Presentation{State: PresentationDegraded, Label: "Control plane degraded"}
