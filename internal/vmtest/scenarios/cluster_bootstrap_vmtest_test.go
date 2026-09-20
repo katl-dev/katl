@@ -471,11 +471,11 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatal(err)
 	}
 
-	waitForCNIReactivation, cancelCNIReactivation, err := reactivateCNIFixturesAfterNextBoot(ctx, nodes, cniFixtures)
+	bootIDs, err := captureNodeBootIDs(ctx, nodes...)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("watch for bootstrap generation reboots: %v", err)
+		t.Fatalf("read boot IDs before bootstrap: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
 	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
@@ -489,11 +489,8 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
 	}, bootstrapFixture), &stdout, &stderr)
-	if err != nil {
-		cancelCNIReactivation()
-	}
-	if reactivationErr := waitForCNIReactivation(); err == nil && reactivationErr != nil {
-		err = fmt.Errorf("reactivate test CNI after bootstrap generation reboot: %w", reactivationErr)
+	if err == nil {
+		err = assertNodeBootIDsUnchanged(ctx, bootIDs, nodes...)
 	}
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
@@ -662,56 +659,6 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatal(err)
 	}
 	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
-}
-
-func reactivateCNIFixturesAfterNextBoot(ctx context.Context, nodes []vmtest.RunningInstalledRuntimeNode, fixtures map[string]nodeCNIFixture) (func() error, context.CancelFunc, error) {
-	watchCtx, cancel := context.WithCancel(ctx)
-	results := make(chan error, len(nodes))
-	for _, node := range nodes {
-		fixture, ok := fixtures[node.Name]
-		if !ok {
-			cancel()
-			return nil, nil, fmt.Errorf("CNI fixture for node %s is missing", node.Name)
-		}
-		bootID, err := nodeBootID(ctx, node)
-		if err != nil {
-			cancel()
-			return nil, nil, fmt.Errorf("read %s boot ID before bootstrap: %w", node.Name, err)
-		}
-		go func(node vmtest.RunningInstalledRuntimeNode, fixture nodeCNIFixture, previousBootID string) {
-			results <- reactivateCNIFixtureAfterBoot(watchCtx, node, fixture, previousBootID)
-		}(node, fixture, bootID)
-	}
-	wait := func() error {
-		var errs []error
-		for range nodes {
-			if err := <-results; err != nil {
-				errs = append(errs, err)
-			}
-		}
-		cancel()
-		return errors.Join(errs...)
-	}
-	return wait, cancel, nil
-}
-
-func reactivateCNIFixtureAfterBoot(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fixture nodeCNIFixture, previousBootID string) error {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		bootID, err := nodeBootID(ctx, node)
-		if err == nil && bootID != previousBootID {
-			if err := activateNodeCNIFixture(ctx, node, fixture); err != nil {
-				return fmt.Errorf("%s: %w", node.Name, err)
-			}
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%s: wait for bootstrap generation reboot: %w", node.Name, ctx.Err())
-		case <-ticker.C:
-		}
-	}
 }
 
 func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string) error {
@@ -1118,7 +1065,7 @@ func captureNodeBootIDs(ctx context.Context, nodes ...vmtest.RunningInstalledRun
 	for _, node := range nodes {
 		bootID, err := nodeBootID(ctx, node)
 		if err != nil {
-			return nil, fmt.Errorf("read %s boot id before Kubernetes upgrade: %w", node.Name, err)
+			return nil, fmt.Errorf("read %s boot id before operation: %w", node.Name, err)
 		}
 		result[node.Name] = bootID
 	}
@@ -1129,10 +1076,10 @@ func assertNodeBootIDsUnchanged(ctx context.Context, before map[string]string, n
 	for _, node := range nodes {
 		after, err := nodeBootID(ctx, node)
 		if err != nil {
-			return fmt.Errorf("read %s boot id after Kubernetes upgrade: %w", node.Name, err)
+			return fmt.Errorf("read %s boot id after operation: %w", node.Name, err)
 		}
 		if after == "" || after != before[node.Name] {
-			return fmt.Errorf("node %s rebooted during online Kubernetes upgrade: boot id %q -> %q", node.Name, before[node.Name], after)
+			return fmt.Errorf("node %s rebooted during online operation: boot id %q -> %q", node.Name, before[node.Name], after)
 		}
 	}
 	return nil
@@ -3238,7 +3185,7 @@ func assertOperationBackedInitRecord(t *testing.T, record operation.OperationRec
 	if record.ActivationState != operation.ActivationStateActiveLive ||
 		record.GenerationCommitState != operation.GenerationCommitCommitted ||
 		record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed ||
-		!record.BootHealthPending {
+		record.BootHealthPending {
 		t.Fatalf("operation lifecycle = activation %q commit %q health %q pending %v", record.ActivationState, record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
 	if record.BootstrapRequest == nil ||
@@ -3294,7 +3241,7 @@ func assertOperationBackedWorkerRecord(t *testing.T, record operation.OperationR
 	if record.ActivationState != operation.ActivationStateActiveLive ||
 		record.GenerationCommitState != operation.GenerationCommitCommitted ||
 		record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed ||
-		!record.BootHealthPending {
+		record.BootHealthPending {
 		t.Fatalf("worker operation lifecycle = activation %q commit %q health %q pending %v", record.ActivationState, record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
 	if record.BootstrapRequest == nil ||
@@ -3585,7 +3532,8 @@ func assertPostBootstrapSelection(t *testing.T, selection generation.BootSelecti
 		selection.TrialGenerationID != "" ||
 		selection.PreviousKnownGoodGenerationID != "0" ||
 		selection.Generation0FallbackID != "0" ||
-		selection.BootedGenerationID != candidate ||
+		selection.ActiveGenerationID != candidate ||
+		selection.BootedGenerationID != "0" ||
 		selection.PendingHealthValidation ||
 		selection.PersistentDefaultPromotion != generation.DefaultPromotionDone {
 		t.Fatalf("post-bootstrap selection = %#v, want generation %s active and persistent with gen0 fallback", selection, candidate)
@@ -3593,7 +3541,7 @@ func assertPostBootstrapSelection(t *testing.T, selection generation.BootSelecti
 	entry := "loader/entries/katl-" + candidate + ".conf"
 	if selection.PendingTransactionID != "" ||
 		selection.DefaultBootEntry != entry ||
-		selection.BootedBootEntry != entry {
+		selection.BootedBootEntry == entry {
 		t.Fatalf("post-bootstrap boot selection = %#v", selection)
 	}
 }

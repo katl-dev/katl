@@ -71,6 +71,10 @@ existing file is intentionally being replaced.
 The command prints each node and operation phase as it changes. Add `--verbose`
 to include operation IDs and the agent's current recovery guidance.
 
+Bootstrap activates each node's generation live. After local Kubernetes health
+checks pass, that generation becomes the persistent boot default without
+rebooting the node. A later reboot uses the same generation.
+
 The identity file is optional for disposable evaluations. Without it, kubeadm
 generates the cluster CA and signing keys on the init node; losing all copies of
 that PKI means a later fresh cluster cannot retain the same identity.

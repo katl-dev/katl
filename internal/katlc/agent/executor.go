@@ -747,7 +747,7 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 	if err != nil {
 		return err
 	}
-	if err := e.commitTrialGeneration(ctx, record, completedAt, "kubeadm completed and post-kubeadm health checks passed; candidate awaits boot validation"); err != nil {
+	if err := e.promoteLiveGeneration(ctx, record, completedAt, "bootstrap runtime activated live and post-kubeadm health checks passed"); err != nil {
 		_, markErr := e.Store.Update(operationID, "bootstrap-generation-commit-failed", "bootstrap-generation-commit", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 			record.Phase = "post-kubeadm-health"
 			record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
@@ -768,8 +768,8 @@ func (e *Executor) finalizeSuccessfulOperation(ctx context.Context, operationID 
 		record.CompletedPhases = appendMissing(record.CompletedPhases, "post-kubeadm-health", "record-operation-complete")
 		record.PostKubeadmHealthState = operation.PostKubeadmHealthPassed
 		record.ActivationState = operation.ActivationStateActiveLive
-		record.NextAction = "reboot into the bounded candidate trial to validate the active generation"
-		record.CompleteBootTrial(completedAt)
+		record.NextAction = "bootstrap generation is active and is the persistent boot default"
+		record.CompleteLiveGeneration(completedAt)
 		return record, nil
 	})
 	return errors.Join(err, artifactErr)

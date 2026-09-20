@@ -10,10 +10,8 @@ Restart=on-failure
 RestartSec=1s
 TimeoutStopSec=5s
 NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectHome=yes
-ProtectSystem=strict
-ReadWritePaths=/run /efi /etc/kubernetes /var/lib/containerd /var/lib/etcd /var/lib/katl /var/lib/kubelet /var/log/journal
+# Observe and mutate the host mount namespace, including live extension refreshes.
+# A private mount namespace retains stale /etc and /usr overlays.
 StandardOutput=journal+console
 StandardError=journal+console
 SyslogIdentifier=katl-vmtest-agent
