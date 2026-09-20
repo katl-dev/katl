@@ -60,7 +60,7 @@ func RenderEntry(request LoaderRequest) (LoaderEntry, error) {
 		return LoaderEntry{}, err
 	}
 	if title == "" {
-		title = "KatlOS " + runtimeVersion + " (generation " + generationID + ")"
+		title = "KatlOS " + runtimeVersion + " (" + record.CreatedAt.UTC().Format("Jan 02 15:04:05") + ")"
 	}
 	content := strings.Join([]string{
 		"title " + title,

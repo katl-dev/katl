@@ -22,8 +22,11 @@ apply. A PXE auto-install profile also authorizes system-disk replacement unless
 its optional `katl.halt-if-installed=1` guard refuses it.
 
 Firmware selects disk boot versus PXE. Installed entries are named
-`KatlOS VERSION (generation N)`; generation 0 is the initial installation.
-Older releases show `Katl 0` for that entry. Selecting a generation boots the
+`KatlOS VERSION (Sep 20 10:41:11)`, with the configuration creation time in UTC
+to distinguish configurations of the same OS version. Internal generation IDs
+remain in entry filenames and kernel arguments, not menu labels. Existing entries
+keep the names written by their original release, such as `Katl 0` or a generation
+ID. Selecting a configuration boots the
 installed OS. For nodes already in a cluster, use the membership-aware wipe
 workflow below before reinstalling.
 
@@ -31,7 +34,7 @@ New installations and upgrades keep their runtime images outside automatic
 UKI discovery, so each generated entry includes its required root and generation
 arguments. Existing generations retain their original image paths for rollback;
 an older installation can therefore still show its legacy raw-runtime entry
-until it is reinstalled. Select the explicitly named generation entry.
+until it is reinstalled. Select the explicitly named configuration entry.
 
 ## Before Planning
 
