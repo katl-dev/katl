@@ -106,7 +106,7 @@ func TestExecutorClassifiesHostUpgradeFailureByMutationBoundary(t *testing.T) {
 func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	const nextVersion = "2026.7.0-local.version-longer-than-a-gpt-partition-label"
 	root := t.TempDir()
-	for _, dir := range []string{"etc", "efi/EFI/Linux", "dev/disk/by-partlabel"} {
+	for _, dir := range []string{"etc", "efi/EFI/Linux", "efi/EFI/katl", "dev/disk/by-partlabel"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -260,7 +260,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if err := os.WriteFile(activeUKI, []byte("active rollback kernel"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	inactiveUKI := filepath.Join(root, "efi/EFI/Linux/katl-root-b-1.efi")
+	inactiveUKI := filepath.Join(root, "efi/EFI/katl/katl-root-b-1.efi")
 	if err := os.WriteFile(inactiveUKI, []byte("stale inactive kernel"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 			if argv[len(argv)-1] != "1" {
 				t.Fatalf("sysupdate selected release version instead of local candidate: %v", argv)
 			}
-			if err := os.WriteFile(filepath.Join(root, "efi/EFI/Linux/katl-root-b-1.efi"), ukiBytes, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "efi/EFI/katl/katl-root-b-1.efi"), ukiBytes, 0o600); err != nil {
 				return ToolResult{Err: err, ExitStatus: -1}
 			}
 			return ToolResult{}

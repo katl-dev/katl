@@ -615,7 +615,7 @@ func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
 	if record.GenerationID != "0" || record.Root.RuntimeArtifactSHA256 != payload.Runtime.SHA256 {
 		t.Fatalf("record root fields = %#v", record.Root)
 	}
-	if record.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" || record.Boot.UKIPath != "/efi/EFI/Linux/katl-0.efi" {
+	if record.Root.PartitionUUID != "11111111-2222-3333-4444-555555555555" || record.Boot.UKIPath != "/efi/EFI/katl/katl-0.efi" {
 		t.Fatalf("record boot/root target = %#v %#v", record.Root, record.Boot)
 	}
 	if record.GenerationID != "0" {
@@ -848,7 +848,7 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	if len(install.LoaderRecord.Confexts) != 1 || install.LoaderRecord.Confexts[0].Name != generation.GeneratedConfextName {
 		t.Fatalf("confext metadata = %#v", install.LoaderRecord.Confexts)
 	}
-	assertText(t, filepath.Join(targetRoot, "efi/EFI/Linux/katl-0.efi"), string(contents.boot))
+	assertText(t, filepath.Join(targetRoot, "efi/EFI/katl/katl-0.efi"), string(contents.boot))
 	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/sysext/katl-kubernetes.raw"))
 	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw"))
 	assertText(t, filepath.Join(targetRoot, strings.TrimPrefix(EndpointAdvertiserArtifactPath, "/")), string(contents.endpoint))

@@ -79,7 +79,7 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("inspect Kubernetes node state: %w", err))
 	}
 	candidate := record.HostUpgradeRequest.CandidateGenerationID
-	ukiPath := "/efi/EFI/Linux/katl-" + inactiveSlot + "-1.efi"
+	ukiPath := generation.UKIDirectory + "/katl-" + inactiveSlot + "-1.efi"
 	if ukiPath == previousSpec.Boot.UKIPath {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("inactive root slot UKI path is still used by the active generation"))
 	}
@@ -522,9 +522,9 @@ MatchPattern=katl_@v.efi
 
 [Target]
 Type=regular-file
-Path=/efi/EFI/Linux
+Path=%s
 MatchPattern=katl-%s-@v.efi
 Mode=0644
 InstancesMax=2
-`, source, inactiveSlot)
+`, source, generation.UKIDirectory, inactiveSlot)
 }
