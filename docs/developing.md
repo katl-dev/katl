@@ -338,12 +338,23 @@ with an explicit version for build verification. Release-branch and manual runs
 retain one GitHub Actions artifact; tag runs additionally publish those exact
 files as assets on the matching GitHub Release.
 
+Pushes to `main` build and verify the runtime and installer to warm the caches
+that subsequent release tags can restore. These runs skip release packaging,
+artifact uploads, attestations, and publication. GitHub isolates caches between
+tags, so warming them only during a release does not help the next release.
+New main pushes cancel superseded warm builds; release runs are not cancelled.
+
 Release production uses a dependency-aware job graph. Runtime, installer, and
 `katlctl` builds start concurrently. The install and upgrade images are then
 packaged concurrently from the one verified runtime build, and a final job
 assembles the installer ISO from those verified intermediates before staging
-and attesting the complete release set. Mkosi package and Go build caches remain
-scoped independently. Published-asset provenance checks use bounded concurrency
+and attesting the complete release set. Runtime and installer jobs each own
+separate Go, mkosi package, and Docker builder-layer caches, avoiding competing
+writes. Go and package caches save a fresh snapshot per source commit and restore
+the latest compatible snapshot. The builder is loaded through Docker Buildx;
+it checks for an updated Fedora base and reuses unchanged tool-install layers.
+Mkosi incremental filesystem caches and finished release images are not reused
+between runs. Published-asset provenance checks use bounded concurrency
 because every release asset has an independent attestation.
 
 KatlOS release versions use `YYYY.M.PATCH` calendar versions with `-dev.N`,

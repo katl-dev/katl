@@ -3,6 +3,7 @@ name: Katl Release Artifacts
 on:
   push:
     branches:
+      - main
       - "release/**"
     tags:
       - "v*"
@@ -18,7 +19,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
 
 jobs:
   identity:
@@ -41,8 +42,14 @@ jobs:
         env:
           MANUAL_VERSION: ${{ inputs.version }}
         run: |
+          event="$GITHUB_EVENT_NAME"
+          # Main builds warm caches visible to subsequent release tags.
+          if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == push ]]; then
+            MANUAL_VERSION="$(date -u +%Y.%-m).0-dev.0"
+            event=workflow_dispatch
+          fi
           version="$(scripts/katl-release-artifacts version \
-            "$GITHUB_EVENT_NAME" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
+            "$event" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
             "$MANUAL_VERSION")"
           short_sha="${GITHUB_SHA:0:12}"
           artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
@@ -82,9 +89,10 @@ jobs:
           path: |
             _build/go-mod
             _build/go-cache
-          key: katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum') }}
+          key: katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-${{ github.sha }}
           restore-keys: |
-            katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
+            katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-
+            katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
 
       - name: Resolve mkosi cache identity
         id: mkosi-cache
@@ -105,9 +113,16 @@ jobs:
         uses: actions/cache@v6
         with:
           path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}
+          key: katl-mkosi-packages-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
           restore-keys: |
-            katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+            katl-mkosi-packages-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-
+            katl-mkosi-packages-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+
+      - name: Prepare cached builder
+        uses: ./.github/actions/mkosi-builder
+        with:
+          profile: runtime
+          image: ${{ env.KATL_MKOSI_IMAGE }}
 
       - name: Build runtime
         shell: bash
@@ -138,10 +153,12 @@ jobs:
             '
 
       - name: Build endpoint advertiser sysext
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         shell: bash
         run: scripts/build-endpoint-advertiser-sysext
 
       - name: Package install and upgrade images concurrently
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         shell: bash
         run: |
           install_status=0
@@ -155,12 +172,14 @@ jobs:
           ((install_status == 0 && upgrade_status == 0))
 
       - name: Verify KatlOS images
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         shell: bash
         run: |
           scripts/check-katlos-install-image
           KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
 
       - name: Upload runtime and KatlOS image intermediates
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         uses: actions/upload-artifact@v7
         with:
           name: katl-runtime-images-${{ github.sha }}
@@ -213,9 +232,10 @@ jobs:
           path: |
             _build/go-mod
             _build/go-cache
-          key: katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum') }}
+          key: katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-${{ github.sha }}
           restore-keys: |
-            katl-go-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
+            katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-
+            katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
 
       - name: Resolve mkosi cache identity
         id: mkosi-cache
@@ -236,9 +256,16 @@ jobs:
         uses: actions/cache@v6
         with:
           path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}
+          key: katl-mkosi-packages-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
           restore-keys: |
-            katl-mkosi-packages-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+            katl-mkosi-packages-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-
+            katl-mkosi-packages-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+
+      - name: Prepare cached builder
+        uses: ./.github/actions/mkosi-builder
+        with:
+          profile: installer
+          image: ${{ env.KATL_MKOSI_IMAGE }}
 
       - name: Build installer
         shell: bash
@@ -254,6 +281,7 @@ jobs:
             scripts/check-installer-image
 
       - name: Upload installer intermediates
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         uses: actions/upload-artifact@v7
         with:
           name: katl-installer-${{ github.sha }}
@@ -274,6 +302,7 @@ jobs:
 
   katlctl:
     name: Build And Verify katlctl
+    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
     needs: identity
     runs-on: ubuntu-24.04
 
@@ -307,6 +336,7 @@ jobs:
 
   assemble:
     name: Assemble And Verify Katl Release
+    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
     needs:
       - identity
       - runtime
