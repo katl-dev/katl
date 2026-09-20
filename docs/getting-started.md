@@ -7,8 +7,8 @@ network.
 
 Installation erases the selected system disk. Use disposable machines or make
 independent backups before continuing. Keep installer TCP `8080` and management
-TCP `9443` on trusted networks; installed management traffic is automatically
-authenticated and encrypted.
+TCP `9443` on trusted networks; new configurations use unauthenticated management
+access by default. mTLS is available as an explicit configuration choice.
 
 ## 1. Download One Release
 
@@ -91,12 +91,10 @@ The [installation reference](installing.md#author-one-clusterconfig) documents
 static networking, managed API VIP ownership, data volumes, native kubeadm
 configuration, kernel arguments, and system extensions.
 
-`config init` creates `management-secrets.yaml` beside the configuration and
-references it through `spec.managementIdentity`. Keep it across reinstalls,
-back it up, and optionally encrypt it with SOPS before committing it. For a
-hand-written new cluster configuration, run `katlctl management identity create
---config ./cluster.yaml` once. Existing clusters should export their original
-authority instead; see [management access](operations/access.md#durable-cluster-secrets).
+`config init` selects trusted-network management and creates no management
+secrets. Use the same configuration from any workstation, including after a
+reinstall. For authenticated and encrypted management, choose
+`--management-authentication mtls`; see [management access](operations/access.md).
 
 ## 4. Install Each Node
 

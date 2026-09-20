@@ -9,6 +9,10 @@ import (
 	"github.com/katl-dev/katl/internal/nodeidentity"
 )
 
+// UKIDirectory keeps generation-parameterized images outside systemd-boot's
+// standalone UKI discovery directory. Loader entries supply their root and generation.
+const UKIDirectory = "/efi/EFI/katl"
+
 type LoaderRequest struct {
 	Record    Record
 	MachineID string
@@ -56,7 +60,7 @@ func RenderEntry(request LoaderRequest) (LoaderEntry, error) {
 		return LoaderEntry{}, err
 	}
 	if title == "" {
-		title = "Katl " + generationID
+		title = "KatlOS " + runtimeVersion + " (generation " + generationID + ")"
 	}
 	content := strings.Join([]string{
 		"title " + title,
@@ -189,8 +193,9 @@ func cleanUKIPath(path string) (string, error) {
 	if strings.ContainsAny(path, " \t\n\r") {
 		return "", fmt.Errorf("UKI path must not contain whitespace")
 	}
-	if !strings.HasPrefix(path, "/efi/EFI/Linux/") && !strings.HasPrefix(path, "/EFI/Linux/") {
-		return "", fmt.Errorf("UKI path %q must be under /efi/EFI/Linux or /EFI/Linux", path)
+	// Existing generation records retain their original paths for rollback.
+	if !strings.HasPrefix(path, UKIDirectory+"/") && !strings.HasPrefix(path, "/EFI/katl/") && !strings.HasPrefix(path, "/efi/EFI/Linux/") && !strings.HasPrefix(path, "/EFI/Linux/") {
+		return "", fmt.Errorf("UKI path %q must be under /EFI/katl or legacy /EFI/Linux on the ESP", path)
 	}
 	if strings.Contains(path, "/../") || strings.HasSuffix(path, "/..") || filepath.Clean(path) != path {
 		return "", fmt.Errorf("UKI path %q must be clean", path)

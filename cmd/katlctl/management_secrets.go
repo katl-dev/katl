@@ -36,7 +36,12 @@ func refreshConfiguredManagement(ctx context.Context, sourcePath, contextPath, c
 		return fmt.Errorf("read --config %s: %w", sourcePath, err)
 	}
 	source, err := configbundle.DecodeSource(bytes.NewReader(data))
-	if err != nil || source.Spec.ManagementIdentity == "" {
+	if err != nil {
+		bundle, bundleErr := configbundle.ReadBundle(bytes.NewReader(data), "")
+		if bundleErr != nil || bundle.Authentication != managementidentity.TrustedNetwork {
+			return nil
+		}
+	} else if source.ManagementAuthentication() == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
 		return nil
 	}
 	// An explicit authority makes the saved context disposable. Authenticate
@@ -75,7 +80,17 @@ func managementClientForConfig(path, clusterName string) (managementidentity.Cli
 	}
 	source, err := configbundle.DecodeSource(bytes.NewReader(data))
 	if err != nil {
+		bundle, bundleErr := configbundle.ReadBundle(bytes.NewReader(data), "")
+		if bundleErr != nil {
+			return managementidentity.ClientCredentials{}, bundleErr
+		}
+		if bundle.Authentication == managementidentity.TrustedNetwork {
+			return managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}, nil
+		}
 		return managementClientForCluster(clusterName)
+	}
+	if source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+		return managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}, nil
 	}
 	bundle, err := managementIdentityForSource(path, source)
 	if err != nil {
@@ -185,6 +200,18 @@ func referenceManagementSecrets(configPath, secretsPath string, original []byte)
 		reference = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str"}
 		spec.Content = append(spec.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "managementIdentity"}, reference)
 	}
+	var authentication *yaml.Node
+	for index := 0; index < len(spec.Content); index += 2 {
+		if spec.Content[index].Value == "managementAuthentication" {
+			authentication = spec.Content[index+1]
+			break
+		}
+	}
+	if authentication == nil {
+		authentication = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str"}
+		spec.Content = append(spec.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "managementAuthentication"}, authentication)
+	}
+	authentication.Value = string(managementidentity.MutualTLS)
 	reference.Value = filepath.ToSlash(relative)
 	data, err := yaml.Marshal(&document)
 	if err != nil {

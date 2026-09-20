@@ -25,12 +25,18 @@ An optional saved `--context` can shorten repeated day-two commands, but it is
 not a second desired-state source.
 
 `--endpoint` overrides only the address used to contact one selected installer
-or node. It does not change node identity, bypass mTLS, or grant access without
-the matching saved cluster identity.
+or node. It does not change node identity or bypass the selected authentication
+mode. An address-only connection without a selected context uses trusted-network
+mode and cannot access an mTLS node.
 
 ## Cluster management secrets
 
-`katlctl config init` creates a secrets file beside the configuration and
+New configurations default to `managementAuthentication: trusted-network` and
+need no management keys. The following credential commands apply to opt-in
+`managementAuthentication: mtls`. See [management access](../operations/access.md)
+for mode selection and existing-installation behavior.
+
+`katlctl config init --management-authentication mtls` creates a secrets file beside the configuration and
 references it in `spec.managementIdentity`. Hand-written new cluster configs
 use `management identity create --config CONFIG`; existing clusters use
 `management identity export --config CONFIG` to preserve their original trust.
@@ -49,7 +55,7 @@ Import is idempotent for the same identity and refuses to replace a different
 identity for that cluster. The saved context contains only the operator client
 leaf and never exposes it through `katlctl context show`.
 
-`config init` creates a configuration-referenced `management-secrets.yaml`;
+`config init --management-authentication mtls` creates a configuration-referenced `management-secrets.yaml`;
 this may be SOPS encrypted. Existing clusters can migrate their original
 authority with `katlctl management identity export --config ./cluster.yaml`.
 Keep that file across reinstalls. Workstation context is a disposable shortcut.

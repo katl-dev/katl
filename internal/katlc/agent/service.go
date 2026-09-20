@@ -56,11 +56,11 @@ func Serve(ctx context.Context, config ServeConfig) error {
 		return err
 	}
 	defer listener.Close()
-	server := grpc.NewServer(
-		grpc.Creds(credentials.NewTLS(tlsConfig)),
-		grpc.MaxRecvMsgSize(256<<20),
-		grpc.MaxSendMsgSize(256<<20),
-	)
+	opts := []grpc.ServerOption{grpc.MaxRecvMsgSize(256 << 20), grpc.MaxSendMsgSize(256 << 20)}
+	if tlsConfig != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+	}
+	server := grpc.NewServer(opts...)
 	agentServer := NewServer(root, store)
 	dispatcher := config.Dispatcher
 	if dispatcher == nil {

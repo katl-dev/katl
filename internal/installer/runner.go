@@ -374,7 +374,7 @@ func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.Root
 		GenerationID:             generationID,
 		RootSlot:                 string(rootPlan.Slot),
 		RootPartitionUUID:        install.RootPartitionUUID,
-		UKIPath:                  "/efi/EFI/Linux/katl-" + generationID + ".efi",
+		UKIPath:                  generation.UKIDirectory + "/katl-" + generationID + ".efi",
 		CreatedAt:                timeNow(),
 		EnableEndpointAdvertiser: install.Manifest.Node.ControlPlaneEndpoint != nil,
 		KernelCommandLine:        install.Manifest.Node.Kernel.CommandLine,

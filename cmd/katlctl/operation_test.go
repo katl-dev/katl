@@ -330,7 +330,7 @@ func TestKatlcAgentDialOptionsDoNotSendAuthorization(t *testing.T) {
 		server.Stop()
 		_ = listener.Close()
 	})
-	opts := append(katlcAgentDialOptions(clientTLS), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+	opts := append(katlcAgentDialOptions(transport.NewClientCredentials(clientTLS)), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 		return listener.Dial()
 	}))
 	conn, err := grpc.DialContext(context.Background(), "passthrough:///bufnet", opts...)

@@ -106,7 +106,7 @@ systemctl status katlc-agent.service --no-pager
 ss -lntp | grep ':9443'
 ```
 
-For missing management secrets, restore the original file at
+For missing mTLS management secrets, restore the original file at
 `spec.managementIdentity` (relative to the cluster configuration), including
 access to its SOPS decryption key if encrypted. Do not generate new secrets for
 already-installed nodes: a new authority does not restore their trust.

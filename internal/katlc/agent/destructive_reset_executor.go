@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
@@ -18,6 +19,8 @@ var destructiveResetMutationScopes = []string{
 
 var destructiveResetBootArtifactGlobs = []string{
 	"loader/entries/katl-*.conf",
+	strings.TrimPrefix(generation.UKIDirectory, "/efi/") + "/katl*.efi",
+	strings.TrimPrefix(generation.UKIDirectory, "/efi/") + "/katl*.EFI",
 	"EFI/Linux/katl*.efi",
 	"EFI/Linux/katl*.EFI",
 }

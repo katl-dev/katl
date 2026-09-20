@@ -31,6 +31,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -90,11 +91,12 @@ type Metadata struct {
 }
 
 type SourceSpec struct {
-	ManagementIdentity   string                       `yaml:"managementIdentity,omitempty" json:"managementIdentity,omitempty"`
-	ControlPlaneEndpoint *controlplaneendpoint.Config `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
-	Kubernetes           SourceKubernetesCluster      `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Defaults             SourceNodeLayer              `yaml:"defaults,omitempty" json:"defaults,omitempty"`
-	Nodes                []SourceNode                 `yaml:"nodes" json:"nodes"`
+	ManagementAuthentication managementidentity.Authentication `yaml:"managementAuthentication,omitempty" json:"managementAuthentication,omitempty"`
+	ManagementIdentity       string                            `yaml:"managementIdentity,omitempty" json:"managementIdentity,omitempty"`
+	ControlPlaneEndpoint     *controlplaneendpoint.Config      `yaml:"controlPlaneEndpoint,omitempty" json:"controlPlaneEndpoint,omitempty"`
+	Kubernetes               SourceKubernetesCluster           `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Defaults                 SourceNodeLayer                   `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Nodes                    []SourceNode                      `yaml:"nodes" json:"nodes"`
 }
 
 type SourceNode struct {
@@ -354,6 +356,7 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 		return nil, Result{}, err
 	}
 	// The credential source belongs to the workstation, not installed state.
+	source.Spec.ManagementAuthentication = source.ManagementAuthentication()
 	source.Spec.ManagementIdentity = ""
 	normalized, err := marshalCanonical(source)
 	if err != nil {
@@ -370,6 +373,12 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	kubeadmSourceInputs = append(kubeadmSourceInputs, nodeKubeletInputs...)
 	sourceDigest := digestSourceInputs(normalized, kubeadmSourceInputs)
 	planning := request.Planning
+	if source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+		planning.ManagementIdentities = make(map[string]manifest.ManagementIdentity, len(source.Spec.Nodes))
+		for _, node := range source.Spec.Nodes {
+			planning.ManagementIdentities[node.Name] = manifest.ManagementIdentity{Authentication: managementidentity.TrustedNetwork}
+		}
+	}
 	if strings.TrimSpace(planning.KubernetesBundle) == "" {
 		selection, err := kubernetescompat.ResolveAvailable(buildContext, kubernetescompat.Request{
 			KubernetesVersion: selectedKubernetesVersion(source),
@@ -708,6 +717,9 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 
 func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
 	var errs []error
+	if err := source.Spec.ManagementAuthentication.Validate(); err != nil {
+		errs = append(errs, err)
+	}
 	if strings.TrimSpace(source.Metadata.Name) == "" {
 		errs = append(errs, fmt.Errorf("metadata.name is required"))
 	}
@@ -1483,4 +1495,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ManagementAuthentication resolves authoring defaults without consulting workstation state.
+func (source SourceConfig) ManagementAuthentication() managementidentity.Authentication {
+	if source.Spec.ManagementAuthentication != "" {
+		return source.Spec.ManagementAuthentication
+	}
+	if source.Spec.ManagementIdentity != "" {
+		return managementidentity.MutualTLS
+	}
+	return managementidentity.TrustedNetwork
 }
