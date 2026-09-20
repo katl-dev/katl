@@ -11,21 +11,22 @@ import (
 const testMachineID = "0123456789abcdef0123456789abcdef"
 
 func TestRenderEntryA(t *testing.T) {
-	record := abRecord(t, "2026.06.01-001", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.34.8", time.Time{})
+	record := abRecord(t, "0", "root-a", "11111111-2222-3333-4444-555555555555", "2026.9.0-beta.11", "v1.34.8", time.Time{})
+	record.Boot.UKIPath = "/efi/EFI/katl/katl-0.efi"
 	record.KernelCommandLine = []string{"console=ttyS0,115200n8", "root=PARTUUID=" + record.Root.PartitionUUID, "ro"}
 
 	entry, err := RenderEntry(LoaderRequest{Record: record, MachineID: testMachineID})
 	if err != nil {
 		t.Fatalf("RenderEntry() error = %v", err)
 	}
-	want := `title Katl 2026.06.01-001
-version 0.1.0
+	want := `title KatlOS 2026.9.0-beta.11 (generation 0)
+version 2026.9.0-beta.11
 sort-key katl
 machine-id 0123456789abcdef0123456789abcdef
-efi /EFI/Linux/katl-2026.06.01-001.efi
-options root=PARTUUID=11111111-2222-3333-4444-555555555555 rootfstype=squashfs ro systemd.gpt_auto=no systemd.machine_id=0123456789abcdef0123456789abcdef katl.generation=2026.06.01-001 katl.root-slot=root-a console=ttyS0,115200n8
+efi /EFI/katl/katl-0.efi
+options root=PARTUUID=11111111-2222-3333-4444-555555555555 rootfstype=squashfs ro systemd.gpt_auto=no systemd.machine_id=0123456789abcdef0123456789abcdef katl.generation=0 katl.root-slot=root-a console=ttyS0,115200n8
 `
-	if entry.Name != "katl-2026.06.01-001.conf" || entry.Content != want {
+	if entry.Name != "katl-0.conf" || entry.Content != want {
 		t.Fatalf("entry = %#v\nwant content:\n%s", entry, want)
 	}
 }

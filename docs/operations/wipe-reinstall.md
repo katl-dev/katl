@@ -21,10 +21,17 @@ installed agent or a separate wipe operation. Data-volume `wipe` settings still
 apply. A PXE auto-install profile also authorizes system-disk replacement unless
 its optional `katl.halt-if-installed=1` guard refuses it.
 
-Firmware selects disk boot versus PXE. The systemd-boot entry `Katl 0` means
-generation 0, not node `k8s-0`; selecting it boots the installed OS, not the
-installer. For nodes already in a cluster, use the membership-aware wipe
+Firmware selects disk boot versus PXE. Installed entries are named
+`KatlOS VERSION (generation N)`; generation 0 is the initial installation.
+Older releases show `Katl 0` for that entry. Selecting a generation boots the
+installed OS. For nodes already in a cluster, use the membership-aware wipe
 workflow below before reinstalling.
+
+New installations and upgrades keep their runtime images outside automatic
+UKI discovery, so each generated entry includes its required root and generation
+arguments. Existing generations retain their original image paths for rollback;
+an older installation can therefore still show its legacy raw-runtime entry
+until it is reinstalled. Select the explicitly named generation entry.
 
 ## Before Planning
 

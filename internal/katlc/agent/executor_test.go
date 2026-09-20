@@ -291,6 +291,8 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	writeTestFile(t, filepath.Join(server.Root, "efi/loader/entries/rescue.conf"), "title Rescue")
 	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/Linux/katl-0.efi"), "uki 0")
 	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/Linux/katl-1.EFI"), "uki 1")
+	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/katl/katl-root-a-1.efi"), "slot a uki")
+	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/katl/katl-root-b-1.EFI"), "slot b uki")
 	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/Linux/rescue.efi"), "rescue")
 	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/BOOT/BOOTX64.EFI"), "katl fallback")
 	writeTestFile(t, filepath.Join(server.Root, "efi/EFI/systemd/systemd-bootx64.efi"), "systemd-boot")
@@ -375,6 +377,8 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 		"efi/loader/entries/katl-1.conf",
 		"efi/EFI/Linux/katl-0.efi",
 		"efi/EFI/Linux/katl-1.EFI",
+		"efi/EFI/katl/katl-root-a-1.efi",
+		"efi/EFI/katl/katl-root-b-1.EFI",
 		"efi/EFI/BOOT/BOOTX64.EFI",
 		"efi/EFI/systemd/systemd-bootx64.efi",
 	} {
