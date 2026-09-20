@@ -172,7 +172,7 @@ func TestConfigInitForcePreservesMissingAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := filepath.Join(dir, "cluster.yaml")
-	args := []string{"config", "init", config, "--name", "lab", "--ssh-authorized-key", key, "--node", "cp-1=control-plane,192.0.2.1,/dev/disk/by-id/test"}
+	args := []string{"config", "init", config, "--management-authentication", "mtls", "--name", "lab", "--ssh-authorized-key", key, "--node", "cp-1=control-plane,192.0.2.1,/dev/disk/by-id/test"}
 	if err := run(context.Background(), args, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestConfigInitRetainsSecretsReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "cluster.yaml")
-	args := []string{"config", "init", path, "--name", "lab", "--ssh-authorized-key", key, "--node", "cp-1=control-plane,192.0.2.1,/dev/disk/by-id/test"}
+	args := []string{"config", "init", path, "--management-authentication", "mtls", "--name", "lab", "--ssh-authorized-key", key, "--node", "cp-1=control-plane,192.0.2.1,/dev/disk/by-id/test"}
 	if err := run(context.Background(), args, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}

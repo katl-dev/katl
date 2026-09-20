@@ -38,12 +38,12 @@ artifacts with GitHub provenance. These are optional tools for operators who
 want a stricter supply-chain policy; the normal home-lab path accepts readable
 release and bundle versions and performs its own internal consistency checks.
 
-The `katlc` management API uses automatically provisioned mTLS on TCP port
-9443. Every connection must present a client certificate issued by the
-cluster's management identity. This makes access deliberate without adding
-routine certificate ceremony; it is still a home-lab boundary, not a
-production-grade multi-tenant policy. Keep nodes on a trusted management LAN
-and do not expose port 9443 to the Internet.
+The `katlc` management API on TCP `9443` defaults to trusted-network access for
+new configurations. Anyone who can reach that API can manage the node; the
+connection is not encrypted. Opt-in mTLS authenticates and encrypts management
+connections. Keep nodes on a trusted management LAN. See
+[management access](operations/access.md) for mode selection and existing-node
+upgrade behavior.
 
 The ISO install handoff is intentionally unauthenticated HTTP for the supported
 trusted home-lab path. Restrict port 8080 to the provisioning network: the

@@ -48,16 +48,18 @@ type Bundle struct {
 // NodeCredentials are the only management secrets installed on one node.
 // The server leaf is not a CA and cannot mint callers or other node identities.
 type NodeCredentials struct {
-	CACertificate     string `json:"caCertificate" yaml:"caCertificate"`
-	ServerCertificate string `json:"serverCertificate" yaml:"serverCertificate"`
-	ServerPrivateKey  string `json:"serverPrivateKey" yaml:"serverPrivateKey"`
+	Authentication    Authentication `json:"authentication,omitempty" yaml:"authentication,omitempty"`
+	CACertificate     string         `json:"caCertificate" yaml:"caCertificate"`
+	ServerCertificate string         `json:"serverCertificate" yaml:"serverCertificate"`
+	ServerPrivateKey  string         `json:"serverPrivateKey" yaml:"serverPrivateKey"`
 }
 
 // ClientCredentials are copied to the mode-0600 katlctl workstation context.
 type ClientCredentials struct {
-	CACertificate     string `json:"caCertificate" yaml:"caCertificate"`
-	ClientCertificate string `json:"clientCertificate" yaml:"clientCertificate"`
-	ClientPrivateKey  string `json:"clientPrivateKey" yaml:"clientPrivateKey"`
+	Authentication    Authentication `json:"authentication,omitempty" yaml:"authentication,omitempty"`
+	CACertificate     string         `json:"caCertificate" yaml:"caCertificate"`
+	ClientCertificate string         `json:"clientCertificate" yaml:"clientCertificate"`
+	ClientPrivateKey  string         `json:"clientPrivateKey" yaml:"clientPrivateKey"`
 }
 
 type Info struct {
@@ -227,6 +229,15 @@ func Validate(bundle Bundle, now time.Time) (Info, error) {
 }
 
 func ValidateNode(credentials NodeCredentials, nodeName string, now time.Time) error {
+	if err := credentials.Authentication.Validate(); err != nil {
+		return err
+	}
+	if credentials.Authentication == TrustedNetwork {
+		if credentials.CACertificate != "" || credentials.ServerCertificate != "" || credentials.ServerPrivateKey != "" {
+			return fmt.Errorf("trusted-network management must not include TLS credentials")
+		}
+		return nil
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -243,6 +254,15 @@ func ValidateNode(credentials NodeCredentials, nodeName string, now time.Time) e
 }
 
 func ValidateClient(credentials ClientCredentials, now time.Time) error {
+	if err := credentials.Authentication.Validate(); err != nil {
+		return err
+	}
+	if credentials.Authentication == TrustedNetwork {
+		if credentials.CACertificate != "" || credentials.ClientCertificate != "" || credentials.ClientPrivateKey != "" {
+			return fmt.Errorf("trusted-network management must not include TLS credentials")
+		}
+		return nil
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}

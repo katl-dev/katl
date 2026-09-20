@@ -17,6 +17,13 @@ import (
 const minimumTLSVersion = tls.VersionTLS13
 
 func ServerTLSConfig(root string) (*tls.Config, error) {
+	mode, err := nodeidentity.ManagementAuthentication(root)
+	if err != nil {
+		return nil, err
+	}
+	if mode == managementidentity.TrustedNetwork {
+		return nil, nil
+	}
 	root = filepath.Clean(strings.TrimSpace(root))
 	ca, err := os.ReadFile(filepath.Join(root, nodeidentity.ManagementCACertificatePath))
 	if err != nil {

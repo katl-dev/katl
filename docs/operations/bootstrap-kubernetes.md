@@ -42,8 +42,8 @@ katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1
 ```
 
-The configuration-referenced management secrets authenticate this read-only
-planning access; there are no extra credential flags. Use `--node-address
+Planning uses the configured management mode without extra credential flags.
+Trusted-network mode needs no secrets; mTLS uses the referenced secrets file. Use `--node-address
 node=address` only for an observed address that differs from the compiled
 source.
 

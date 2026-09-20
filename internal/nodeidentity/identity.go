@@ -17,6 +17,7 @@ import (
 
 const (
 	EnrollmentPath                 = "var/lib/katl/identity/enrollment.json"
+	ManagementAuthenticationPath   = "var/lib/katl/identity/management/authentication"
 	ManagementCACertificatePath    = "var/lib/katl/identity/management/ca.crt"
 	ManagementServerCertPath       = "var/lib/katl/identity/management/server.crt"
 	ManagementServerPrivateKeyPath = "var/lib/katl/identity/management/server.key"
@@ -84,12 +85,30 @@ func WriteManagementIdentity(root, nodeName string, identity managementidentity.
 		return fmt.Errorf("management identity is required")
 	}
 	credentials := managementidentity.NodeCredentials{
+		Authentication:    identity.Authentication,
 		CACertificate:     identity.CACertificate,
 		ServerCertificate: identity.ServerCertificate,
 		ServerPrivateKey:  identity.ServerPrivateKey,
 	}
 	if err := managementidentity.ValidateNode(credentials, strings.TrimSpace(nodeName), time.Now().UTC()); err != nil {
 		return fmt.Errorf("validate management identity: %w", err)
+	}
+	mode := identity.Authentication
+	if mode == "" {
+		mode = managementidentity.MutualTLS
+	}
+	if existing, err := os.ReadFile(filepath.Join(root, ManagementAuthenticationPath)); err == nil {
+		if strings.TrimSpace(string(existing)) != string(mode) {
+			return fmt.Errorf("existing management authentication differs from install intent")
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	} else if mode == managementidentity.TrustedNetwork {
+		if _, err := os.Stat(filepath.Join(root, ManagementCACertificatePath)); err == nil {
+			return fmt.Errorf("existing mTLS identity must not be replaced implicitly")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
 	}
 	dir := filepath.Join(filepath.Clean(strings.TrimSpace(root)), "var/lib/katl/identity/management")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -98,15 +117,21 @@ func WriteManagementIdentity(root, nodeName string, identity managementidentity.
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return fmt.Errorf("secure management identity directory: %w", err)
 	}
-	files := []struct {
+	type identityFile struct {
 		path string
 		data string
 		mode os.FileMode
-	}{
+	}
+	files := []identityFile{
 		{ManagementCACertificatePath, identity.CACertificate, 0o444},
 		{ManagementServerCertPath, identity.ServerCertificate, 0o444},
 		{ManagementServerPrivateKeyPath, identity.ServerPrivateKey, 0o600},
 	}
+	if mode == managementidentity.TrustedNetwork {
+		files = nil
+	}
+	// Publish mode last so incomplete mTLS provisioning never opens an unauthenticated listener.
+	files = append(files, identityFile{ManagementAuthenticationPath, string(mode) + "\n", 0o600})
 	for _, file := range files {
 		path := filepath.Join(filepath.Clean(strings.TrimSpace(root)), file.path)
 		if existing, err := os.ReadFile(path); err == nil {
@@ -346,4 +371,19 @@ func ParseMachineID(machineID string) (string, error) {
 		return "", fmt.Errorf("machine id is invalid: %w", err)
 	}
 	return machineID, nil
+}
+
+func ManagementAuthentication(root string) (managementidentity.Authentication, error) {
+	data, err := os.ReadFile(filepath.Join(root, ManagementAuthenticationPath))
+	if os.IsNotExist(err) {
+		return managementidentity.MutualTLS, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	mode := managementidentity.Authentication(strings.TrimSpace(string(data)))
+	if mode == "" {
+		return "", fmt.Errorf("installed management authentication is empty")
+	}
+	return mode, mode.Validate()
 }

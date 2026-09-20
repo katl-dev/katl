@@ -303,8 +303,8 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 		}
 		replaced := false
 		if previous, ok := known[node.Name]; ok && previous.EnrollmentID != "" && (previous.EnrollmentID != status.GetEnrollmentId() || previous.MachineID != status.GetMachineId()) {
-			// TLS has authenticated the cluster authority and expected node name.
-			// Instance IDs bind operations to one installation, not cluster trust.
+			// Authentication follows the selected mode. Instance IDs bind an
+			// operation to one installation without preventing later reinstalls.
 			replaced = true
 			usedReplacements[node.Name] = struct{}{}
 		}

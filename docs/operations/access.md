@@ -1,18 +1,29 @@
 # Access Installed KatlOS Nodes
 
-Use the cluster configuration and its referenced management secrets for installed
-node access. A saved workstation context is optional convenience.
+Use the cluster configuration for installed node access from any workstation.
+A saved workstation context is optional convenience.
 
 ## Security Boundary
 
-The `katlc` agent accepts mutually authenticated TLS on TCP port `9443`.
-`katlctl config init` creates `management-secrets.yaml` beside the configuration
-and sets `spec.managementIdentity` to its relative path. Katl installs a non-CA
-server identity on each node; the secrets file retains cluster and operator
-credentials. Routine commands have no certificate flags or enrollment prompts. The API can
-remain reachable on the trusted network: callers without the cluster operator
-certificate cannot query status or invoke any operation. Do not publish `9443`
-to the Internet.
+The `katlc` agent listens on TCP `9443`. New configurations default to
+`spec.managementAuthentication: trusted-network`: the API uses plaintext,
+unauthenticated connections, and network access grants node-management access,
+including destructive operations. Keep it on your trusted management network.
+There are no management keys to create, copy, encrypt, or recover in this mode.
+Kubernetes kubeconfigs and SSH keys remain separate.
+
+Choose `spec.managementAuthentication: mtls` when the management connection needs
+authentication and encryption. `katlctl config init --management-authentication
+mtls` creates `management-secrets.yaml` beside the configuration and references
+it through `spec.managementIdentity`. See [durable cluster secrets](#durable-cluster-secrets).
+
+An existing configuration with a secrets reference and no explicit mode uses
+mTLS. Existing installed nodes without a mode record also keep mTLS after an OS
+upgrade. A failed TLS handshake never falls back to trusted-network access.
+Changing this installation setting requires deliberate reprovisioning with the
+chosen mode; editing the source or applying a generation does not change a
+running node's authentication. A new trusted-network installation requires a
+release supporting this setting on both the installer and installed runtime.
 
 The installed system keeps an operator dashboard on VGA `tty1`. It reports the
 KatlOS and Kubernetes versions from the booted generation, node addresses,
@@ -49,8 +60,8 @@ Use the same source used for installation:
 katlctl context save --config ./cluster.yaml
 ```
 
-For every node, the command authenticates the node name before making an API
-request, confirms that the answering agent is enrolled under the requested
+For every node, the command connects using the selected authentication mode,
+confirms that the answering agent is enrolled under the requested
 inventory node name, and records its immutable enrollment identity and machine
 ID in `katlctl.yaml`. It does not use SSH or alter the node.
 
@@ -61,6 +72,11 @@ authorization. This works with agent-only keys such as 1Password. An explicit
 authorized.
 
 ## Durable Cluster Secrets
+
+This section applies only to opt-in mTLS. Trusted-network clusters need only
+their configuration on each workstation. Reinstalling a node refreshes the
+observed installation identity automatically; an identity change during an
+operation is still rejected.
 
 Keep the file referenced by `spec.managementIdentity` across reinstalls. Paths
 are relative to the configuration, so the project can move between workstations.
@@ -102,7 +118,7 @@ without a usable decryption key is not a recoverable backup.
 without printing private material. The management identity is separate from the
 optional Kubernetes identity used to preserve kubeadm CAs across reprovisioning.
 
-A compiled `.katlcfg` contains the non-CA private server key for each selected
+A compiled mTLS `.katlcfg` contains the non-CA private server key for each selected
 node, so Katl writes it mode 0600. Treat it as short-lived provisioning
 material: publish it only on the trusted installer/PXE network, and remove the
 published copy after installation. Exposure does not grant caller access to an
@@ -121,8 +137,10 @@ katlctl node status cp-1
 
 The save command has already performed the agent health check. Normal management
 commands now need only `--node`; `--context` selects a non-current cluster.
-An explicit `--endpoint` still requires matching saved management access; it is
-not an authentication bypass. Mutations use the saved address. When an enrolled
+An explicit `--endpoint` uses the selected configuration or context's mode.
+Without either, it uses trusted-network access and cannot connect to mTLS nodes.
+Mutations verify the answering node name and bind to its observed installation.
+When a saved
 node's address changes, verify and save it explicitly:
 
 ```sh

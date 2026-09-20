@@ -23,6 +23,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 	"github.com/katl-dev/katl/internal/kernelcmdline"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -78,13 +79,14 @@ type SSHIdentity struct {
 // ManagementIdentity is per-node install material issued by katlctl. The
 // private key is not part of operator-authored ClusterConfig desired state.
 type ManagementIdentity struct {
-	CACertificate     string `json:"caCertificate,omitempty" yaml:"caCertificate,omitempty"`
-	ServerCertificate string `json:"serverCertificate,omitempty" yaml:"serverCertificate,omitempty"`
-	ServerPrivateKey  string `json:"serverPrivateKey,omitempty" yaml:"serverPrivateKey,omitempty"`
+	Authentication    managementidentity.Authentication `json:"authentication,omitempty" yaml:"authentication,omitempty"`
+	CACertificate     string                            `json:"caCertificate,omitempty" yaml:"caCertificate,omitempty"`
+	ServerCertificate string                            `json:"serverCertificate,omitempty" yaml:"serverCertificate,omitempty"`
+	ServerPrivateKey  string                            `json:"serverPrivateKey,omitempty" yaml:"serverPrivateKey,omitempty"`
 }
 
 func (identity ManagementIdentity) Empty() bool {
-	return strings.TrimSpace(identity.CACertificate) == "" &&
+	return identity.Authentication == "" && strings.TrimSpace(identity.CACertificate) == "" &&
 		strings.TrimSpace(identity.ServerCertificate) == "" &&
 		strings.TrimSpace(identity.ServerPrivateKey) == ""
 }
@@ -414,8 +416,17 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 		}
 	}
 	if identity := manifest.Node.Identity.Management; !identity.Empty() {
-		if strings.TrimSpace(identity.CACertificate) == "" || strings.TrimSpace(identity.ServerCertificate) == "" || strings.TrimSpace(identity.ServerPrivateKey) == "" {
-			return fmt.Errorf("node.identity.management must contain caCertificate, serverCertificate, and serverPrivateKey together")
+		if err := identity.Authentication.Validate(); err != nil {
+			return err
+		}
+		if identity.Authentication == managementidentity.TrustedNetwork {
+			if identity.CACertificate != "" || identity.ServerCertificate != "" || identity.ServerPrivateKey != "" {
+				return fmt.Errorf("trusted-network management must not include TLS credentials")
+			}
+		} else {
+			if strings.TrimSpace(identity.CACertificate) == "" || strings.TrimSpace(identity.ServerCertificate) == "" || strings.TrimSpace(identity.ServerPrivateKey) == "" {
+				return fmt.Errorf("node.identity.management must contain caCertificate, serverCertificate, and serverPrivateKey together")
+			}
 		}
 	}
 	if err := ValidateKernelConfig(manifest.Node.Kernel); err != nil {

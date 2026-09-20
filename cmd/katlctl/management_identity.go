@@ -134,6 +134,13 @@ func managementPlanningForSource(sourcePath string, stderr io.Writer) (map[strin
 	if err != nil {
 		return nil, err
 	}
+	if source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+		identities := make(map[string]manifest.ManagementIdentity, len(source.Spec.Nodes))
+		for _, node := range source.Spec.Nodes {
+			identities[node.Name] = manifest.ManagementIdentity{Authentication: managementidentity.TrustedNetwork}
+		}
+		return identities, nil
+	}
 	bundle, err := managementIdentityForSource(sourcePath, source)
 	if err != nil {
 		return nil, err

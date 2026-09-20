@@ -90,7 +90,7 @@ func resolveManagementTarget(opts managementTargetOptions) (managementTarget, er
 				}
 			}
 		}
-		return managementTarget{nodeName: strings.TrimSpace(opts.nodeName), endpoint: endpoint}, nil
+		return managementTarget{nodeName: strings.TrimSpace(opts.nodeName), endpoint: endpoint, credentials: &managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}}, nil
 	}
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: strings.TrimSpace(opts.configPath), ContextName: strings.TrimSpace(opts.contextName)})
 	if err != nil {
@@ -171,7 +171,7 @@ func resolveClusterConfigTopology(path string) (workstation.ResolvedTopology, er
 	}
 	if source, sourceErr := configbundle.DecodeSource(bytes.NewReader(data)); sourceErr == nil {
 		resolved.ClusterName = strings.TrimSpace(source.Metadata.Name)
-		if source.Spec.ManagementIdentity != "" {
+		if source.Spec.ManagementIdentity != "" || source.ManagementAuthentication() == managementidentity.TrustedNetwork {
 			credentials, err := managementClientForConfig(path, source.Metadata.Name)
 			if err != nil {
 				return workstation.ResolvedTopology{}, err
@@ -187,6 +187,10 @@ func resolveClusterConfigTopology(path string) (workstation.ResolvedTopology, er
 		return workstation.ResolvedTopology{}, fmt.Errorf("read --config %s: %w", path, err)
 	}
 	resolved.ClusterName = strings.TrimSpace(bundle.Manifest.ClusterName)
+	if bundle.Authentication == managementidentity.TrustedNetwork {
+		resolved.Management = &managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}
+		return resolved, nil
+	}
 	mergeEnrolledTopology(&resolved, "", "")
 	return resolved, nil
 }
@@ -387,4 +391,27 @@ func managementContextForNode(ctx context.Context, configPath, nodeName string) 
 		return nil, err
 	}
 	return withManagementTarget(ctx, target), nil
+}
+
+func managementContextForCluster(ctx context.Context, configPath, contextPath, contextName string) (context.Context, error) {
+	var resolved workstation.ResolvedTopology
+	var err error
+	if configPath != "" {
+		resolved, err = resolveClusterConfigTopology(configPath)
+	} else if contextPath != "" || contextName != "" {
+		resolved, err = workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: contextPath, ContextName: contextName})
+	} else {
+		resolved, err = workstation.ResolveTopology(workstation.ResolveRequest{})
+		if err != nil {
+			// Inventory-only callers can supply their own connector policy.
+			return ctx, nil
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if resolved.Management != nil {
+		ctx = transport.WithClientCredentials(ctx, *resolved.Management)
+	}
+	return ctx, nil
 }

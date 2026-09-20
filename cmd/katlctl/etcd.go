@@ -81,6 +81,11 @@ func newEtcdCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 }
 
 func runEtcdMembers(ctx context.Context, opts etcdOptions, stdout, stderr io.Writer) error {
+	var err error
+	ctx, err = managementContextForCluster(ctx, opts.configPath, "", "")
+	if err != nil {
+		return err
+	}
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
@@ -111,6 +116,11 @@ func runEtcdMembers(ctx context.Context, opts etcdOptions, stdout, stderr io.Wri
 }
 
 func runEtcdRemove(ctx context.Context, opts etcdRemoveOptions, stdout, stderr io.Writer) error {
+	var err error
+	ctx, err = managementContextForCluster(ctx, opts.configPath, "", "")
+	if err != nil {
+		return err
+	}
 	if strings.TrimSpace(opts.memberID) == "" {
 		return fmt.Errorf("--member-id is required; run 'katlctl cluster etcd members' and confirm the stale member identity")
 	}
