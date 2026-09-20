@@ -29,15 +29,16 @@ var sshAgentPublicKeys = func() ([]byte, error) {
 }
 
 type configInitOptions struct {
-	outputPath        string
-	clusterName       string
-	controlPlane      string
-	kubernetesVersion string
-	sshKeyPath        string
-	nodes             initNodeSpecs
-	installers        stringList
-	installerTimeout  time.Duration
-	force             bool
+	managementAuthentication string
+	outputPath               string
+	clusterName              string
+	controlPlane             string
+	kubernetesVersion        string
+	sshKeyPath               string
+	nodes                    initNodeSpecs
+	installers               stringList
+	installerTimeout         time.Duration
+	force                    bool
 }
 
 type initNodeSpec struct {
@@ -102,6 +103,7 @@ func defaultConfigInitOptions() configInitOptions {
 }
 
 func addConfigInitFlags(cmd *cobra.Command, opts *configInitOptions) {
+	cmd.Flags().StringVar(&opts.managementAuthentication, "management-authentication", "", "trusted-network (default) or mtls; --force preserves the existing mode unless specified")
 	cmd.Flags().StringVar(&opts.clusterName, "name", opts.clusterName, "cluster name")
 	cmd.Flags().StringVar(&opts.controlPlane, "control-plane-endpoint", "", "stable Kubernetes API endpoint host:port; defaults to the first control-plane address")
 	cmd.Flags().StringVar(&opts.kubernetesVersion, "kubernetes-version", opts.kubernetesVersion, "override the default Kubernetes payload version")
@@ -155,8 +157,8 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 		Kind:       configbundle.Kind,
 		Metadata:   configbundle.Metadata{Name: strings.TrimSpace(opts.clusterName)},
 		Spec: configbundle.SourceSpec{
-			ManagementIdentity:   defaultManagementSecrets,
-			ControlPlaneEndpoint: controlPlaneEndpoint,
+			ManagementAuthentication: managementidentity.Authentication(opts.managementAuthentication),
+			ControlPlaneEndpoint:     controlPlaneEndpoint,
 			Kubernetes: configbundle.SourceKubernetesCluster{
 				Version: kubernetesVersion,
 			},
@@ -193,7 +195,11 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			Management:   configbundle.SourceManagementLayer{Address: node.address},
 		})
 	}
+	if source.Spec.ManagementAuthentication == "" {
+		source.Spec.ManagementAuthentication = managementidentity.TrustedNetwork
+	}
 	existingReference := false
+	existingTLS := false
 	if opts.force && strings.TrimSpace(opts.outputPath) != "" {
 		previous, readErr := os.ReadFile(opts.outputPath)
 		if readErr == nil {
@@ -201,13 +207,20 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			if decodeErr != nil {
 				return fmt.Errorf("read existing cluster configuration: %w", decodeErr)
 			}
-			if reference := previousSource.Spec.ManagementIdentity; reference != "" {
+			if opts.managementAuthentication == "" {
+				source.Spec.ManagementAuthentication = previousSource.ManagementAuthentication()
+			}
+			existingTLS = previousSource.ManagementAuthentication() == managementidentity.MutualTLS
+			if reference := previousSource.Spec.ManagementIdentity; reference != "" && source.ManagementAuthentication() == managementidentity.MutualTLS {
 				source.Spec.ManagementIdentity = reference
 				existingReference = true
 			}
 		} else if !errors.Is(readErr, os.ErrNotExist) {
 			return readErr
 		}
+	}
+	if source.ManagementAuthentication() == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
+		source.Spec.ManagementIdentity = defaultManagementSecrets
 	}
 	data, err := yaml.Marshal(source)
 	if err != nil {
@@ -228,45 +241,48 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	if outputErr != nil && !errors.Is(outputErr, os.ErrNotExist) {
 		return outputErr
 	}
-	secretsPath := source.Spec.ManagementIdentity
-	if !filepath.IsAbs(secretsPath) {
-		secretsPath = filepath.Join(filepath.Dir(opts.outputPath), secretsPath)
-	}
-	identity, err := readManagementIdentity(secretsPath)
-	if errors.Is(err, os.ErrNotExist) {
-		if existingReference {
-			return missingManagementIdentity(source.Metadata.Name, secretsPath)
+	if source.ManagementAuthentication() != managementidentity.TrustedNetwork {
+		secretsPath := source.Spec.ManagementIdentity
+		if !filepath.IsAbs(secretsPath) {
+			secretsPath = filepath.Join(filepath.Dir(opts.outputPath), secretsPath)
 		}
-		// Reuse an existing authority when moving a cluster out of the legacy
-		// workstation store. Only explicit cluster setup creates new trust.
-		legacyPath, pathErr := managementIdentityPath(source.Metadata.Name)
-		if pathErr != nil {
-			return pathErr
-		}
-		identity, err = readManagementIdentity(legacyPath)
+		identity, err := readManagementIdentity(secretsPath)
 		if errors.Is(err, os.ErrNotExist) {
-			if outputErr == nil {
+			if existingReference {
 				return missingManagementIdentity(source.Metadata.Name, secretsPath)
 			}
-			identity, err = managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: source.Metadata.Name})
-		}
-		if err == nil && identity.ClusterName != source.Metadata.Name {
-			return fmt.Errorf("management secrets belong to cluster %q, not %q", identity.ClusterName, source.Metadata.Name)
-		}
-		if err == nil {
-			for _, node := range source.Spec.Nodes {
-				if _, _, err = managementidentity.EnsureNode(&identity, node.Name, time.Now().UTC(), nil); err != nil {
-					return err
-				}
+			// Reuse an existing authority when moving a cluster out of the legacy
+			// workstation store. Only explicit cluster setup creates new trust.
+			legacyPath, pathErr := managementIdentityPath(source.Metadata.Name)
+			if pathErr != nil {
+				return pathErr
 			}
-			err = managementidentity.Write(secretsPath, identity)
+			identity, err = readManagementIdentity(legacyPath)
+			if errors.Is(err, os.ErrNotExist) {
+				if existingTLS {
+					return missingManagementIdentity(source.Metadata.Name, secretsPath)
+				}
+				identity, err = managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: source.Metadata.Name})
+			}
+			if err == nil && identity.ClusterName != source.Metadata.Name {
+				return fmt.Errorf("management secrets belong to cluster %q, not %q", identity.ClusterName, source.Metadata.Name)
+			}
+			if err == nil {
+				for _, node := range source.Spec.Nodes {
+					if _, _, err = managementidentity.EnsureNode(&identity, node.Name, time.Now().UTC(), nil); err != nil {
+						return err
+					}
+				}
+				err = managementidentity.Write(secretsPath, identity)
+			}
 		}
-	}
-	if err != nil {
-		return fmt.Errorf("prepare cluster secrets %s: %w", secretsPath, err)
-	}
-	if identity.ClusterName != source.Metadata.Name {
-		return fmt.Errorf("management secrets %s belong to cluster %q, not %q", secretsPath, identity.ClusterName, source.Metadata.Name)
+		if err != nil {
+			return fmt.Errorf("prepare cluster secrets %s: %w", secretsPath, err)
+		}
+		if identity.ClusterName != source.Metadata.Name {
+			return fmt.Errorf("management secrets %s belong to cluster %q, not %q", secretsPath, identity.ClusterName, source.Metadata.Name)
+		}
+		fmt.Fprintf(stdout, "management secrets: %s (keep across reinstalls; supports SOPS encryption)\n", secretsPath)
 	}
 	flags := os.O_WRONLY | os.O_CREATE
 	if opts.force {
@@ -285,7 +301,6 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close ClusterConfig %s: %w", opts.outputPath, err)
 	}
-	fmt.Fprintf(stdout, "management secrets: %s (keep across reinstalls; supports SOPS encryption)\n", secretsPath)
 	fmt.Fprintf(stdout, "created %s\n", opts.outputPath)
 	return nil
 }

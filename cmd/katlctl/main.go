@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +44,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -826,6 +826,10 @@ func runWipeClusterOptions(ctx context.Context, opts wipeClusterOptions, stdout,
 	if err != nil {
 		return err
 	}
+	ctx, err = managementContextForCluster(ctx, opts.configPath, opts.workstationConfig, opts.contextName)
+	if err != nil {
+		return err
+	}
 	report := newWipeClusterReport(opts.planOnly, partial, targets)
 	report.Output = opts.output
 	report.Command = opts.command
@@ -975,6 +979,10 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return err
 	}
 	target, partial, err := resolveWipeNodeTarget(opts, stderr)
+	if err != nil {
+		return err
+	}
+	ctx, err = managementContextForCluster(ctx, opts.configPath, opts.workstationConfig, opts.contextName)
 	if err != nil {
 		return err
 	}
@@ -1230,7 +1238,7 @@ func overlayWipeContext(inv inventory.Inventory, configPath, contextName, source
 				if _, err := managementClientForConfig(sourcePath, source.Metadata.Name); err != nil {
 					return inventory.Inventory{}, err
 				}
-				if source.Spec.ManagementIdentity != "" {
+				if source.Spec.ManagementIdentity != "" || source.ManagementAuthentication() == managementidentity.TrustedNetwork {
 					return inv, nil
 				}
 			}
@@ -2863,6 +2871,10 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 	if err != nil {
 		return err
 	}
+	ctx, err = managementContextForCluster(ctx, opts.configPath, "", "")
+	if err != nil {
+		return err
+	}
 	if strings.TrimSpace(opts.kubernetesBundle) != "" {
 		image, err := kubernetesbundle.ParseImageReference(opts.kubernetesBundle)
 		if err != nil {
@@ -3063,6 +3075,9 @@ type managementDialIdentity struct {
 type managementDialIdentityKey struct{}
 
 func withManagementDial(ctx context.Context, nodeName string, credentials *managementidentity.ClientCredentials) context.Context {
+	if credentials != nil {
+		ctx = transport.WithClientCredentials(ctx, *credentials)
+	}
 	return context.WithValue(ctx, managementDialIdentityKey{}, managementDialIdentity{nodeName: strings.TrimSpace(nodeName), credentials: credentials})
 }
 
@@ -3083,11 +3098,11 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 		}
 		identity = resolved
 	}
-	tlsConfig, err := transport.ClientTLSConfig(*identity.credentials, identity.nodeName)
+	transportCredentials, err := transport.ClientCredentialsForNode(*identity.credentials, identity.nodeName)
 	if err != nil {
 		return katlcAgentConnection{}, fmt.Errorf("management credentials for node %q: %w", identity.nodeName, err)
 	}
-	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions(tlsConfig)...)
+	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions(transportCredentials)...)
 	if err != nil {
 		return katlcAgentConnection{}, err
 	}
@@ -3097,9 +3112,9 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 	}, nil
 }
 
-func katlcAgentDialOptions(tlsConfig *tls.Config) []grpc.DialOption {
+func katlcAgentDialOptions(transportCredentials credentials.TransportCredentials) []grpc.DialOption {
 	return []grpc.DialOption{
-		grpc.WithTransportCredentials(transport.NewClientCredentials(tlsConfig)),
+		grpc.WithTransportCredentials(transportCredentials),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(256<<20),
 			grpc.MaxCallSendMsgSize(256<<20),

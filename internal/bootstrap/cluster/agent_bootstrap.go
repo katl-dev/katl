@@ -85,6 +85,9 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 	}
 	endpoint := AgentEndpoint(node.Address, valueOrDefault(c.DefaultPort, defaultAgentPort))
 	clientCredentials := c.Credentials
+	if clientCredentials == nil {
+		clientCredentials = transport.ClientCredentialsFromContext(ctx)
+	}
 	if clientCredentials == nil && c.CredentialsForNode != nil {
 		resolved, err := c.CredentialsForNode(node)
 		if err != nil {
@@ -95,11 +98,11 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 	if clientCredentials == nil {
 		return AgentConnection{}, fmt.Errorf("management credentials are required to connect to node %q; use a saved Katl context", node.Name)
 	}
-	tlsConfig, err := transport.ClientTLSConfig(*clientCredentials, node.Name)
+	transportCredentials, err := transport.ClientCredentialsForNode(*clientCredentials, node.Name)
 	if err != nil {
 		return AgentConnection{}, fmt.Errorf("management credentials for node %q: %w", node.Name, err)
 	}
-	opts := []grpc.DialOption{grpc.WithTransportCredentials(transport.NewClientCredentials(tlsConfig))}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(transportCredentials)}
 	dialCtx := ctx
 	if c.DialTimeout > 0 {
 		var cancel context.CancelFunc

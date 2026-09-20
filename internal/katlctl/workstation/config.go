@@ -116,7 +116,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode katlctl config: %w", err)
 	}
 	for _, cluster := range cfg.Clusters {
-		if cluster.Management == nil {
+		if cluster.Management == nil || cluster.Management.Authentication == managementidentity.TrustedNetwork {
 			continue
 		}
 		info, err := os.Stat(path)

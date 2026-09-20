@@ -1082,6 +1082,7 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 		},
 		"nodes": nodes,
 	}
+	sourceSpec["managementAuthentication"] = "mtls"
 	source := jsonObject{
 		"apiVersion": configbundle.APIVersion,
 		"kind":       configbundle.Kind,

@@ -16,6 +16,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/clusterplan"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
 type ReadOptions struct {
@@ -46,8 +47,9 @@ type SystemExtensionPayload struct {
 }
 
 type Bundle struct {
-	Manifest BundleManifest
-	Digest   string
+	Manifest       BundleManifest
+	Digest         string
+	Authentication managementidentity.Authentication
 }
 
 func ReadBundleFile(path, expectedDigest string) (Bundle, error) {
@@ -78,7 +80,20 @@ func ReadBundle(reader io.Reader, expectedDigest string) (Bundle, error) {
 	if err := validateBundleManifest(bundle); err != nil {
 		return Bundle{}, err
 	}
-	return Bundle{Manifest: bundle, Digest: bundleDigest}, nil
+	normalized, err := archive.descriptorData(bundle.Source.NormalizedConfig)
+	if err != nil {
+		return Bundle{}, err
+	}
+	source, err := DecodeSource(bytes.NewReader(normalized))
+	if err != nil {
+		return Bundle{}, err
+	}
+	mode := source.Spec.ManagementAuthentication
+	if mode == "" {
+		// Bundles published before explicit modes always provisioned mTLS.
+		mode = managementidentity.MutualTLS
+	}
+	return Bundle{Manifest: bundle, Digest: bundleDigest, Authentication: mode}, nil
 }
 
 func ReadSelectedNodeFile(path string, options ReadOptions) (SelectedNodeMaterial, error) {

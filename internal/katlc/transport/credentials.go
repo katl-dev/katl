@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type clientCredentials struct {
@@ -37,4 +40,19 @@ func (c *clientCredentials) ClientHandshake(ctx context.Context, authority strin
 
 func (c *clientCredentials) Clone() credentials.TransportCredentials {
 	return &clientCredentials{TransportCredentials: c.TransportCredentials.Clone()}
+}
+
+// ClientCredentialsForNode selects exactly one configured transport; it never retries without TLS.
+func ClientCredentialsForNode(identity managementidentity.ClientCredentials, node string) (*clientCredentials, error) {
+	if err := managementidentity.ValidateClient(identity, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	if identity.Authentication == managementidentity.TrustedNetwork {
+		return &clientCredentials{TransportCredentials: insecure.NewCredentials()}, nil
+	}
+	config, err := ClientTLSConfig(identity, node)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientCredentials(config), nil
 }
