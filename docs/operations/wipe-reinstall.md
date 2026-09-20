@@ -128,11 +128,13 @@ After every selected wipe operation succeeds and powers off its node:
 2. apply the intended `ClusterConfig` source and node selection;
 3. inspect the target disk again before authorizing installer wipe;
 4. wait for generation 0 handoff; and
-5. run `katlctl cluster apply --config ./cluster.yaml`.
+5. run `katlctl node join NODE --config ./cluster.yaml` for a replacement in an
+   existing cluster, or `katlctl cluster bootstrap --config ./cluster.yaml` for a
+   newly installed cluster.
 
-For a single replacement in a healthy existing cluster, `cluster apply`
-recognizes the one fresh node, uses a ready surviving control plane to mint
-short-lived join material, joins the replacement without rerunning `kubeadm
-init`, and then reconciles the complete cluster config online. Repeating the
-unchanged apply after success is a no-op. Do not run `cluster bootstrap` again
+For a replacement in a healthy existing cluster, `node join` uses a ready
+surviving control plane to mint short-lived join material and joins the named
+replacement without rerunning `kubeadm init`. Repeating the join after success
+is a no-op. Use `cluster apply` for subsequent configuration changes; it never
+joins nodes. Do not run `cluster bootstrap` again
 on the provisioned cluster.

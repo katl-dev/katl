@@ -268,6 +268,10 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 
 func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 	root := t.TempDir()
+	writeKubernetesStatusFile(t, root, "etc/hostname", "cp-1\n")
+	writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+	writeKubernetesStatusFile(t, root, "etc/kubernetes/admin.conf", "admin\n")
+	writeKubernetesStatusFile(t, root, "etc/kubernetes/manifests/kube-apiserver.yaml", "spec:\n  containers:\n    - name: kube-apiserver\n      command:\n        - kube-apiserver\n        - --advertise-address=192.0.2.10\n")
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
 	if err != nil {
 		t.Fatal(err)
@@ -307,6 +311,12 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if argv[0] == "/usr/bin/kubectl" && slices.Contains(argv, filepath.Join(root, "etc/kubernetes/admin.conf")) {
+			return ToolResult{Stdout: []byte("True")}
+		}
+		if reflect.DeepEqual(argv, []string{"/usr/bin/systemctl", "is-active", "--quiet", "kubelet.service"}) {
+			return ToolResult{}
+		}
 		commands = append(commands, append([]string(nil), argv...))
 		if slices.Contains(argv, "jsonpath={.data.kubelet}") {
 			return ToolResult{Stdout: []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 110\n")}
@@ -319,7 +329,6 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 		}
 		return ToolResult{}
 	}
-	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
 	if err := executor.Execute(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
@@ -400,6 +409,8 @@ func TestExecuteKubeletConfigNoChangeDoesNotRestart(t *testing.T) {
 
 func TestExecuteNodeLocalKubeletConfigUsesPatchesWithoutUpload(t *testing.T) {
 	root := t.TempDir()
+	writeKubernetesStatusFile(t, root, "etc/hostname", "worker-1\n")
+	writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
 	if err != nil {
 		t.Fatal(err)
@@ -436,6 +447,12 @@ func TestExecuteNodeLocalKubeletConfigUsesPatchesWithoutUpload(t *testing.T) {
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if argv[0] == "/usr/bin/kubectl" && slices.Contains(argv, "node") {
+			return ToolResult{Stdout: []byte("True")}
+		}
+		if reflect.DeepEqual(argv, []string{"/usr/bin/systemctl", "is-active", "--quiet", "kubelet.service"}) {
+			return ToolResult{}
+		}
 		commands = append(commands, append([]string(nil), argv...))
 		if reflect.DeepEqual(argv, []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--patches", "/etc/katl/kubeadm/node-worker-1/patches"}) {
 			updated := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\ntopologyManagerPolicy: restricted\ncgroupDriver: systemd\n"
@@ -445,7 +462,6 @@ func TestExecuteNodeLocalKubeletConfigUsesPatchesWithoutUpload(t *testing.T) {
 		}
 		return ToolResult{}
 	}
-	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
 	if err := executor.Execute(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}

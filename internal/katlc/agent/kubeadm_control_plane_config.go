@@ -651,7 +651,7 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 			return err
 		}
 	}
-	if result := e.runControlPlaneConfigHealth(ctx, request.NodeName); result.Err != nil || result.ExitStatus != 0 {
+	if result := e.runKubeletConfigHealth(ctx); result.Err != nil || result.ExitStatus != 0 {
 		return e.failControlPlaneConfig(record, "post-kubelet-health", fmt.Errorf("post-kubelet health failed: %s", toolFailure(result)))
 	}
 	if _, err := e.Store.Update(record.OperationID, "post-kubelet-health-complete", "post-kubelet-health-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -697,6 +697,25 @@ func (e *Executor) runControlPlaneConfigHealth(ctx context.Context, nodeName str
 	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
 	defer cancel()
 	return e.postHealthRunner()(healthCtx, []string{OperationKindKubeadmControlPlaneConfig, nodeName}, nil)
+}
+
+func (e *Executor) runKubeletConfigHealth(ctx context.Context) ToolResult {
+	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
+	defer cancel()
+	for {
+		status, err := nodeKubernetesStatus(healthCtx, e.Root, e.toolRunner())
+		if err != nil {
+			return ToolResult{Err: err, ExitStatus: 1}
+		}
+		if status.State == "ready" {
+			return ToolResult{}
+		}
+		select {
+		case <-healthCtx.Done():
+			return ToolResult{Err: fmt.Errorf("%s: %w", status.FailureReason, healthCtx.Err()), ExitStatus: 1}
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 var controlPlaneManifestNames = []string{"kube-apiserver.yaml", "kube-controller-manager.yaml", "kube-scheduler.yaml"}

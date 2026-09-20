@@ -409,7 +409,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	}
 	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 	for _, node := range nodes {
-		if _, err := collectKubernetesVersionEvidence(ctx, node, filepath.Join(versionEvidenceDir, node.Name), kubernetesBundle.PayloadVersion); err != nil {
+		if _, err := collectKubernetesVersionEvidence(ctx, node.Name, addresses[node.Name], smoke.Inputs.SSHPrivateKey, filepath.Join(versionEvidenceDir, node.Name), kubernetesBundle.PayloadVersion); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -658,22 +658,35 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 		return nodes, fmt.Errorf("stage replacement Kubernetes images: %w", err)
 	}
 
-	var applyStdout, applyStderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "apply", "--config", configPath}, &applyStdout, &applyStderr)
-	_ = os.WriteFile(filepath.Join(dir, "katlctl-cluster-apply.stdout"), applyStdout.Bytes(), 0o600)
-	_ = os.WriteFile(filepath.Join(dir, "katlctl-cluster-apply.stderr"), applyStderr.Bytes(), 0o600)
+	var refusedStdout, refusedStderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "apply", "--config", configPath}, &refusedStdout, &refusedStderr)
+	if err == nil || !strings.Contains(refusedStderr.String(), "node join cp-3") {
+		return nodes, fmt.Errorf("apply with a fresh replacement must require explicit join: %v: %s", err, refusedStderr.String())
+	}
+	afterApply, err := readLiveEtcdStatus(ctx, "cp-1", addresses["cp-1"])
 	if err != nil {
-		return nodes, fmt.Errorf("apply cluster config to replacement: %w: %s", err, applyStderr.String())
+		return nodes, err
 	}
-	var applyReport struct {
-		Joined []string `json:"joined"`
-		Result string   `json:"result"`
+	if len(afterApply.GetMembers()) != 2 || etcdStatusMember(afterApply, "cp-3") != nil {
+		return nodes, fmt.Errorf("apply changed replacement membership: %s", afterApply.String())
 	}
-	if err := json.Unmarshal(applyStdout.Bytes(), &applyReport); err != nil {
-		return nodes, fmt.Errorf("decode replacement apply report: %w", err)
+
+	var joinStdout, joinStderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "join", "cp-3", "--config", configPath, "--output", "json"}, &joinStdout, &joinStderr)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-join.stdout"), joinStdout.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-join.stderr"), joinStderr.Bytes(), 0o600)
+	if err != nil {
+		return nodes, fmt.Errorf("join replacement node: %w: %s", err, joinStderr.String())
 	}
-	if applyReport.Result != operation.ResultSucceeded || !reflect.DeepEqual(applyReport.Joined, []string{"cp-3"}) {
-		return nodes, fmt.Errorf("replacement apply report = %#v", applyReport)
+	var joinReport struct {
+		Node   string `json:"node"`
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal(joinStdout.Bytes(), &joinReport); err != nil {
+		return nodes, fmt.Errorf("decode replacement join report: %w", err)
+	}
+	if joinReport.Result != "joined" || joinReport.Node != "cp-3" {
+		return nodes, fmt.Errorf("replacement join report = %#v", joinReport)
 	}
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(dir, "kubectl-after-replacement.txt"), 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3"); err != nil {
 		return nodes, fmt.Errorf("wait for replacement Kubernetes node: %w", err)
@@ -707,21 +720,21 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	}
 
 	var repeatStdout, repeatStderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "apply", "--config", configPath}, &repeatStdout, &repeatStderr)
-	_ = os.WriteFile(filepath.Join(dir, "katlctl-cluster-apply-repeat.stdout"), repeatStdout.Bytes(), 0o600)
-	_ = os.WriteFile(filepath.Join(dir, "katlctl-cluster-apply-repeat.stderr"), repeatStderr.Bytes(), 0o600)
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "join", "cp-3", "--config", configPath, "--output", "json"}, &repeatStdout, &repeatStderr)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-join-repeat.stdout"), repeatStdout.Bytes(), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-join-repeat.stderr"), repeatStderr.Bytes(), 0o600)
 	if err != nil {
-		return nodes, fmt.Errorf("repeat cluster apply after replacement: %w: %s", err, repeatStderr.String())
+		return nodes, fmt.Errorf("repeat node join after replacement: %w: %s", err, repeatStderr.String())
 	}
-	applyReport = struct {
-		Joined []string `json:"joined"`
-		Result string   `json:"result"`
+	joinReport = struct {
+		Node   string `json:"node"`
+		Result string `json:"result"`
 	}{}
-	if err := json.Unmarshal(repeatStdout.Bytes(), &applyReport); err != nil {
-		return nodes, fmt.Errorf("decode repeated apply report: %w", err)
+	if err := json.Unmarshal(repeatStdout.Bytes(), &joinReport); err != nil {
+		return nodes, fmt.Errorf("decode repeated join report: %w", err)
 	}
-	if applyReport.Result != operation.ResultSucceeded || len(applyReport.Joined) != 0 {
-		return nodes, fmt.Errorf("repeated apply report = %#v", applyReport)
+	if joinReport.Result != "unchanged" || joinReport.Node != "cp-3" {
+		return nodes, fmt.Errorf("repeated join report = %#v", joinReport)
 	}
 	keepReinstalled = true
 	return replacedNodes, nil
@@ -737,6 +750,7 @@ kind: ClusterConfig
 metadata:
   name: replacement-vmtest
 spec:
+  managementAuthentication: mtls
   controlPlaneEndpoint:
     host: ` + host + `
     port: ` + port + `
@@ -2097,7 +2111,7 @@ func safeEvidenceName(value string) string {
 	return out
 }
 
-func collectKubernetesVersionEvidence(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string, payloadVersion string) (string, error) {
+func collectKubernetesVersionEvidence(ctx context.Context, nodeName, address, sshKey, evidenceDir, payloadVersion string) (string, error) {
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		return "", err
 	}
@@ -2107,25 +2121,28 @@ func collectKubernetesVersionEvidence(ctx context.Context, node vmtest.RunningIn
 		"kubectl": {"kubectl", "version", "--client=true", "--output=yaml"},
 	}
 	evidence := nodeLocalStatusEvidence{
-		Node:    node.Name,
+		Node:    nodeName,
 		Results: make(map[string]nodeCommandEvidence, len(commands)),
 	}
 	for name, argv := range commands {
-		result, err := runNodeCommand(ctx, node, argv, 256<<10)
+		// Observe installed tools through operator SSH independently of the test agent.
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		args := append([]string{"-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-i", sshKey, "root@" + address}, argv...)
+		command := exec.CommandContext(probeCtx, "ssh", args...)
+		var stdoutBuffer, stderrBuffer bytes.Buffer
+		command.Stdout, command.Stderr = &stdoutBuffer, &stderrBuffer
+		err := command.Run()
+		cancel()
+		stdout, stderr := stdoutBuffer.String(), stderrBuffer.String()
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", name, err)
-		}
-		stdout := string(result.Stdout)
-		stderr := string(result.Stderr)
-		if result.ExitStatus != 0 {
-			return "", fmt.Errorf("%s exited %d: %s%s", name, result.ExitStatus, stdout, stderr)
+			return "", fmt.Errorf("%s: %w: %s%s", name, err, stdout, stderr)
 		}
 		if !strings.Contains(stdout, payloadVersion) && !strings.Contains(stderr, payloadVersion) {
 			return "", fmt.Errorf("%s output does not contain selected payload version %s: stdout=%q stderr=%q", name, payloadVersion, stdout, stderr)
 		}
 		evidence.Results[name] = nodeCommandEvidence{
 			Argv:       argv,
-			ExitStatus: result.ExitStatus,
+			ExitStatus: 0,
 			Stdout:     stdout,
 			Stderr:     stderr,
 		}
