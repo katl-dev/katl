@@ -542,6 +542,7 @@ message Generation {
   repeated GeneratedConfext confexts = 11;
   ConfigApplyStatus config_apply = 12;
   string runtime_architecture = 13;
+  string runtime_flavour = 14;
 }
 
 message ExtensionRef {

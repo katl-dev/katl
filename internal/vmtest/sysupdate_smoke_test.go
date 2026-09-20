@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/flavour"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -102,6 +103,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 
 	previousGeneration := currentGenerationFromGuest(t, ctx, guest)
 	previousSpec, _ := generationRecordsFromGuest(t, ctx, guest, previousGeneration)
+	assertBootedGenerationIdentity(t, ctx, guest, previousSpec)
 	previousUKIDigest := guestFileSHA256(t, ctx, guest, "previous-uki", previousSpec.Boot.UKIPath)
 	stateMarker := "/var/lib/katl/test-artifacts/host-upgrade-state-marker"
 	writeGuestFile(t, ctx, guest, stateMarker, []byte("state-survives-host-upgrade-and-rollback\n"), 0o600)
@@ -397,6 +399,14 @@ func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeIma
 
 func assertBootedGenerationIdentity(t *testing.T, ctx context.Context, guest *GuestControl, spec generation.GenerationSpec) {
 	t.Helper()
+	kernelFlavour, err := flavour.Normalize(spec.Root.Flavour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	osRelease := readGuestFile(t, ctx, guest, "/usr/lib/os-release")
+	if !strings.Contains(osRelease, "\nKATL_FLAVOUR="+kernelFlavour+"\n") {
+		t.Fatalf("generation flavour %q disagrees with booted OS: %s", kernelFlavour, osRelease)
+	}
 	if got := currentGenerationFromGuest(t, ctx, guest); got != spec.GenerationID {
 		t.Fatalf("booted generation = %q, want %q", got, spec.GenerationID)
 	}

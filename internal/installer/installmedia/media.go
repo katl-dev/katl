@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/flavour"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
@@ -18,22 +20,7 @@ const (
 	Kind       = "KatlOSImageArtifact"
 )
 
-type Metadata struct {
-	APIVersion        string `json:"apiVersion"`
-	Kind              string `json:"kind"`
-	ImageRole         string `json:"imageRole"`
-	Format            string `json:"format"`
-	Version           string `json:"version"`
-	BuildID           string `json:"buildID"`
-	Architecture      string `json:"architecture"`
-	RuntimeInterface  string `json:"runtimeInterface"`
-	Path              string `json:"path"`
-	SizeBytes         int64  `json:"sizeBytes"`
-	SHA256            string `json:"sha256"`
-	ChecksumPath      string `json:"checksumPath"`
-	EmbeddedIndexPath string `json:"embeddedIndexPath"`
-	CreatedAt         string `json:"createdAt"`
-}
+type Metadata = katlosimage.ArtifactMetadata
 
 type Media struct {
 	Root     string
@@ -81,6 +68,7 @@ func Load(root string) (Media, bool, error) {
 			SHA256:           metadata.SHA256,
 			SizeBytes:        uint64(metadata.SizeBytes),
 			Version:          metadata.Version,
+			Flavour:          metadata.Flavour,
 			Architecture:     metadata.Architecture,
 			RuntimeInterface: metadata.RuntimeInterface,
 			Role:             metadata.ImageRole,
@@ -89,6 +77,9 @@ func Load(root string) (Media, bool, error) {
 }
 
 func validateMetadata(metadata Metadata) error {
+	if _, err := flavour.Normalize(metadata.Flavour); err != nil {
+		return err
+	}
 	if metadata.APIVersion != APIVersion {
 		return fmt.Errorf("install media apiVersion must be %s", APIVersion)
 	}

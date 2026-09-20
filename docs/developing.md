@@ -562,3 +562,25 @@ group or polkit rule that can access `qemu:///system`.
 If `qemu:///session` fails under Codex or another sandbox, prefer
 `qemu:///system` for manual libvirt checks. The vmtest runner defaults to
 `qemu:///system`.
+
+### Kernel flavours
+
+Use `KATL_FLAVOUR=standard` (the default) or `KATL_FLAVOUR=lts` with
+`scripts/mkosi`. Both runtime and installer profiles use the selected track:
+
+```sh
+KATL_FLAVOUR=lts KATL_VERSION=2026.9.0-dev.1 scripts/mkosi build-katlos-install-image
+KATL_FLAVOUR=lts KATL_VERSION=2026.9.0-dev.1 scripts/mkosi build-installer
+```
+
+Builds use `_build/mkosi` by default; switching flavours invalidates artifact
+stamps and uses a separate incremental cache. `KATL_MKOSI_BUILD_DIR` overrides
+the output directory; use separate directories for concurrent builds. Internal
+filenames are identical inside these isolated directories. Release staging adds `-lts` to published LTS
+assets and rewrites their adjacent metadata and checksum filenames.
+
+The LTS repository is configured in `mkosi.kernel-lts`. Only `kernel-longterm*`
+packages are admitted from it, with RPM signature verification enabled. Its
+6.18 series is pinned; patches follow the maintained repository. A Fedora release
+bump requires confirming that this repository publishes matching LTS RPMs and
+running both flavours' installer and upgrade journeys.

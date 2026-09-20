@@ -197,6 +197,7 @@ func TestCurrentHostUpgradeAcceptsPreservedPreCNIState(t *testing.T) {
 		generation: &agentapi.Generation{
 			GenerationId:        generationID,
 			RuntimeArchitecture: "x86_64",
+			RuntimeVersion:      "2026.7.0-alpha.9",
 			CommitState:         generation.CommitStateCommitted,
 			BootState:           generation.BootStateGood,
 			HealthState:         generation.HealthStateHealthy,

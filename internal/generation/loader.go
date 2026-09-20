@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/flavour"
+
 	"github.com/katl-dev/katl/internal/nodeidentity"
 )
 
@@ -60,7 +62,7 @@ func RenderEntry(request LoaderRequest) (LoaderEntry, error) {
 		return LoaderEntry{}, err
 	}
 	if title == "" {
-		title = "KatlOS " + runtimeVersion + " (" + record.CreatedAt.UTC().Format("Jan 02 15:04:05") + ")"
+		title = "KatlOS" + flavour.Suffix(record.Root.Flavour) + " " + runtimeVersion + " (" + record.CreatedAt.UTC().Format("Jan 02 15:04:05") + ")"
 	}
 	content := strings.Join([]string{
 		"title " + title,

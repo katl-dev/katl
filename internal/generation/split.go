@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/flavour"
+
 	"github.com/katl-dev/katl/internal/kernelcmdline"
 )
 
@@ -408,6 +410,9 @@ func CanonicalSpecDigest(spec GenerationSpec) (string, error) {
 }
 
 func ValidateGenerationSpec(spec GenerationSpec) error {
+	if _, err := flavour.Normalize(spec.Root.Flavour); err != nil {
+		return err
+	}
 	if spec.APIVersion != APIVersion {
 		return fmt.Errorf("generation spec apiVersion must be %q", APIVersion)
 	}

@@ -121,6 +121,7 @@ Prefix each command below with `katlctl`.
 | Preview configuration changes | `cluster apply --config ./cluster.yaml --node cp-1 --plan` |
 | Apply configuration | Repeat without `--plan` |
 | Upgrade KatlOS | `node upgrade cp-1 --config ./cluster.yaml --version VERSION --plan`, then repeat without `--plan` |
+| Switch kernel flavour | `node upgrade cp-1 --config ./cluster.yaml --version VERSION --flavour lts` (or `standard`) |
 | Upgrade Kubernetes | Change the version in config, then `kubernetes upgrade --config ./cluster.yaml --plan` |
 | Get Kubernetes access on another workstation | `cluster kubeconfig ./kubeconfig --config ./cluster.yaml` |
 | Inspect health | `cluster status --config ./cluster.yaml` |

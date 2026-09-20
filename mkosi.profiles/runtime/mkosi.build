@@ -30,7 +30,10 @@ if [[ ! -f "$os_release_template" ]]; then
     exit 1
 fi
 mkdir -p "$DESTDIR/usr/lib"
-awk -v version="$version" '{gsub(/@KATL_VERSION@/, version); print}' \
+flavour="${KATL_FLAVOUR:-standard}"
+flavour_suffix=""
+[[ "$flavour" == standard ]] || flavour_suffix="-$flavour"
+awk -v version="$version" -v flavour="$flavour" -v suffix="$flavour_suffix" '{gsub(/@KATL_FLAVOUR@/, flavour); gsub(/@KATL_FLAVOUR_SUFFIX@/, suffix); gsub(/@KATL_VERSION@/, version); print}' \
     "$os_release_template" >"$DESTDIR/usr/lib/os-release"
 
 case "$vmtest_image_support" in

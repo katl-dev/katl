@@ -134,14 +134,16 @@ func runtimeUserspaceFixture(t *testing.T) runtimeFixture {
 	}
 	sysextSHA := sha256.Sum256(sysextContent)
 	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
-		GenerationID:          generationID,
-		RuntimeVersion:        "0.1.0",
-		RuntimeInterface:      "katl-runtime-1",
-		RuntimeArchitecture:   "x86_64",
-		RootSlot:              "root-a",
-		RootPartitionUUID:     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-		RuntimeArtifactSHA256: strings.Repeat("a", 64),
-		UKIPath:               "/EFI/Linux/katl.efi",
+		Root: generation.RootSelection{
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			Slot:                  "root-a",
+			PartitionUUID:         "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		GenerationID: generationID,
+		UKIPath:      "/EFI/Linux/katl.efi",
 		Sysexts: []generation.ExtensionRef{{
 			Name:            "kubernetes",
 			Path:            "/var/lib/katl/generations/" + generationID + "/sysext/kubernetes.raw",

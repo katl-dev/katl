@@ -39,6 +39,8 @@ jq -e \
      .version == $version and .architecture == $architecture' \
     "$katlos_image.json" >/dev/null || fail "KatlOS install image metadata does not match the requested installer release"
 
+(cd "$repo_root" && go run ./cmd/katl-mkosi-artifacts verify-installer-pair "$installer.json" "$katlos_image.json")
+
 mkdir -p "$(dirname "$output")"
 work="$(mktemp -d "${TMPDIR:-/tmp}/katl-installer-iso.XXXXXX")"
 trap 'rm -rf "$work"' EXIT

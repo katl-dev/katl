@@ -2274,7 +2274,7 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
 	request := fake.submitRequest.GetHostUpgrade()
-	if request.GetImageUrl() != "https://github.com/katl-dev/katl/releases/download/v2026.7.0-alpha.9/katlos-upgrade-2026.7.0-alpha.9-x86_64.squashfs" || request.GetCandidateGenerationId() != "katlos-2026.7.0-alpha.9" {
+	if request.GetImageUrl() != "https://github.com/katl-dev/katl/releases/download/v2026.7.0-alpha.9/katlos-upgrade-2026.7.0-alpha.9-x86_64.squashfs" || !strings.HasPrefix(request.GetCandidateGenerationId(), "katlos-2026.7.0-alpha.9-") {
 		t.Fatalf("host upgrade request = %#v", request)
 	}
 	if len(fake.rebootRequests) != 1 || fake.rebootRequests[0].GetExpectedCurrentGenerationId() != request.GetCandidateGenerationId() {
@@ -2331,7 +2331,7 @@ func TestHostUpgradeLocalArtifactUploadsStagesRebootsAndVerifiesHealth(t *testin
 		t.Fatal("uploaded artifact differs from local file")
 	}
 	request := fake.submitRequest.GetHostUpgrade()
-	if request.GetImageUrl() != "" || request.GetImageLocalRef() != hostUpgradeArtifactLocalRef(digest) || request.GetImageSha256() != digest || request.GetImageSizeBytes() != uint64(len(contents)) || request.GetCandidateGenerationId() != "katlos-2026.7.0-dev.12" {
+	if request.GetImageUrl() != "" || request.GetImageLocalRef() != hostUpgradeArtifactLocalRef(digest) || request.GetImageSha256() != digest || request.GetImageSizeBytes() != uint64(len(contents)) || !strings.HasPrefix(request.GetCandidateGenerationId(), "katlos-2026.7.0-dev.12-") {
 		t.Fatalf("host upgrade request = %#v", request)
 	}
 	if !strings.Contains(stderr.String(), "uploading local KatlOS 2026.7.0-dev.12 image") || !strings.Contains(stderr.String(), "local KatlOS image uploaded; staging the upgrade") {
@@ -2406,7 +2406,7 @@ func TestHostUpgradeLocalArtifactRejectsRedundantVersion(t *testing.T) {
 func readyHostUpgradeClient() *fakeKatlcAgentClient {
 	fake := &fakeKatlcAgentClient{
 		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
-		generation:      &agentapi.Generation{GenerationId: "generation-current", RuntimeArchitecture: "x86_64"},
+		generation:      &agentapi.Generation{GenerationId: "generation-current", RuntimeArchitecture: "x86_64", RuntimeFlavour: "standard"},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
 	}

@@ -1,0 +1,7 @@
+[katl-kernel-longterm]
+name=Katl LTS kernel (kwizart kernel-longterm-6.18)
+baseurl=https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-$releasever-$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/pubkey.gpg
+includepkgs=kernel-longterm*

@@ -3491,14 +3491,16 @@ func writeProcCmdline(t *testing.T, root string, cmdline string) {
 func writeCleanGenerationZeroState(t *testing.T, root string) {
 	t.Helper()
 	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
-		GenerationID:          "generation-0",
-		RuntimeVersion:        "0.1.0",
-		RuntimeInterface:      "katl-runtime-1",
-		RuntimeArchitecture:   "x86_64",
-		RootSlot:              "root-a",
-		RootPartitionUUID:     "11111111-1111-1111-1111-111111111111",
-		RuntimeArtifactSHA256: strings.Repeat("a", 64),
-		UKIPath:               "/efi/EFI/Linux/katl-generation-0.efi",
+		Root: generation.RootSelection{
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-1111-1111-1111-111111111111",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		GenerationID: "generation-0",
+		UKIPath:      "/efi/EFI/Linux/katl-generation-0.efi",
 		GeneratedConfext: generation.GeneratedConfext{
 			Name:           "katl-node",
 			Path:           "/var/lib/katl/generations/generation-0/confext",
@@ -3533,14 +3535,16 @@ func writeConfigApplyBaseState(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
-		GenerationID:          "generation-0",
-		RuntimeVersion:        "0.1.0",
-		RuntimeInterface:      "katl-runtime-1",
-		RuntimeArchitecture:   "x86_64",
-		RootSlot:              "root-a",
-		RootPartitionUUID:     "11111111-1111-1111-1111-111111111111",
-		RuntimeArtifactSHA256: strings.Repeat("a", 64),
-		UKIPath:               "/efi/EFI/Linux/katl-generation-0.efi",
+		Root: generation.RootSelection{
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-1111-1111-1111-111111111111",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		GenerationID: "generation-0",
+		UKIPath:      "/efi/EFI/Linux/katl-generation-0.efi",
 		Sysexts: []generation.ExtensionRef{{
 			Name:            "kubernetes",
 			Path:            "/var/lib/katl/generations/generation-0/sysext/kubernetes.raw",

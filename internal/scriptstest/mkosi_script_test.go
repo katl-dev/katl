@@ -488,3 +488,48 @@ func activeGoCacheEnv(t *testing.T) []string {
 	}
 	return values
 }
+
+func TestMkosiFlavourInvalidatesArtifacts(t *testing.T) {
+	repo, tmp := repoRoot(t), t.TempDir()
+	buildDir, bin := filepath.Join(tmp, "build"), filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(tmp, "calls")
+	writeFakeExecutable(t, bin, "podman", `if [[ "$1" == image ]]; then
+  [[ "$2" != inspect ]] || echo fake-image
+  exit 0
+fi
+printf 'CALL\n' >> "$KATL_FAKE_PODMAN_ARGS"
+printf '%s\n' "$@" >> "$KATL_FAKE_PODMAN_ARGS.detail"
+`)
+	seedRuntimeCacheOutputs(t, buildDir)
+	env := append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_BUILD_DIR="+buildDir, "KATL_FAKE_PODMAN_ARGS="+calls, "KATL_BUILD_COMMIT=flavour-test", "KATL_VERSION=2026.9.0-dev.1")
+	env = append(env, activeGoCacheEnv(t)...)
+	for _, step := range []struct {
+		flavour string
+		builds  int
+	}{{"standard", 1}, {"standard", 1}, {"lts", 2}, {"lts", 2}, {"standard", 3}} {
+		cmd := exec.Command(filepath.Join(repo, "scripts/mkosi"), "build-runtime")
+		cmd.Dir, cmd.Env = repo, append(append([]string(nil), env...), "KATL_FLAVOUR="+step.flavour)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", step.flavour, err, out)
+		}
+		if got := len(readLinesForScripts(t, calls)); got != step.builds {
+			t.Fatalf("%s: builder runs=%d, want %d", step.flavour, got, step.builds)
+		}
+	}
+	writeTemporaryFile(t, filepath.Join(repo, "mkosi.conf.d", "cache-probe.conf"), "[Build]\nEnvironment=CACHE_PROBE=changed\n")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+	cmd.Dir, cmd.Env = repo, append(append([]string(nil), env...), "KATL_FLAVOUR=standard")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("changed mkosi input: %v\n%s", err, out)
+	}
+	if got := len(readLinesForScripts(t, calls)); got != 4 {
+		t.Fatalf("workspace configuration change did not rebuild: calls=%d", got)
+	}
+	invocations := string(mustReadFile(t, calls+".detail"))
+	if !strings.Contains(invocations, "KATL_FLAVOUR=lts") || !strings.Contains(invocations, "cache-lts:/mkosi-cache") {
+		t.Fatalf("LTS kernel selection/cache was not passed to builder: %s", invocations)
+	}
+}

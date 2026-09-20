@@ -11,14 +11,16 @@ import (
 
 func TestNewFirstInstallRecordSerializesConfextSelection(t *testing.T) {
 	record, err := NewFirstInstallRecord(FirstInstallRequest{
-		GenerationID:          "2026.05.31-001",
-		RuntimeVersion:        "0.1.0",
-		RuntimeInterface:      "katl-runtime-1",
-		RuntimeArchitecture:   "x86_64",
-		RootSlot:              "root-a",
-		RootPartitionUUID:     "11111111-2222-3333-4444-555555555555",
-		RuntimeArtifactSHA256: strings.Repeat("a", 64),
-		UKIPath:               "/efi/EFI/Linux/katl-2026.05.31-001.efi",
+		Root: RootSelection{
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		GenerationID: "2026.05.31-001",
+		UKIPath:      "/efi/EFI/Linux/katl-2026.05.31-001.efi",
 		Sysexts: []ExtensionRef{
 			{
 				Name:            "kubernetes",
@@ -422,8 +424,8 @@ func TestCompatOK(t *testing.T) {
 
 func TestCompatReject(t *testing.T) {
 	request := validFirstInstallRequest(t.TempDir())
-	request.RuntimeVersion = "0.2.0"
-	request.RuntimeInterface = "katl-runtime-2"
+	request.Root.RuntimeVersion = "0.2.0"
+	request.Root.RuntimeInterface = "katl-runtime-2"
 	request.Sysexts = []ExtensionRef{{
 		Name:            "kubernetes",
 		Path:            filepath.Join("/var/lib/katl/generations", request.GenerationID, "sysext", "kubernetes.raw"),
@@ -483,9 +485,9 @@ func abRecord(t *testing.T, id string, slot string, uuid string, version string,
 	t.Helper()
 	request := validFirstInstallRequest(t.TempDir())
 	request.GenerationID = id
-	request.RuntimeVersion = version
-	request.RootSlot = slot
-	request.RootPartitionUUID = uuid
+	request.Root.RuntimeVersion = version
+	request.Root.Slot = slot
+	request.Root.PartitionUUID = uuid
 	request.UKIPath = "/efi/EFI/Linux/katl-" + id + ".efi"
 	request.KernelCommandLine = []string{"root=PARTUUID=" + uuid, "rootfstype=squashfs", "ro"}
 	request.GeneratedConfext.Path = filepath.Join("/var/lib/katl/generations", id, "confext")
@@ -532,14 +534,16 @@ func selectRollback(records []Record, failedID string) (Record, bool) {
 
 func validFirstInstallRequest(root string) FirstInstallRequest {
 	return FirstInstallRequest{
-		GenerationID:          "2026.05.31-001",
-		RuntimeVersion:        "0.1.0",
-		RuntimeInterface:      "katl-runtime-1",
-		RuntimeArchitecture:   "x86_64",
-		RootSlot:              "root-a",
-		RootPartitionUUID:     "11111111-2222-3333-4444-555555555555",
-		RuntimeArtifactSHA256: strings.Repeat("a", 64),
-		UKIPath:               "/efi/EFI/Linux/katl-2026.05.31-001.efi",
+		Root: RootSelection{
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		GenerationID: "2026.05.31-001",
+		UKIPath:      "/efi/EFI/Linux/katl-2026.05.31-001.efi",
 		GeneratedConfext: GeneratedConfext{
 			Name:           "katl-node",
 			Path:           filepath.Join(root, "generations", "2026.05.31-001", "confext"),
@@ -558,8 +562,8 @@ func validFirstInstallRequest(root string) FirstInstallRequest {
 func validRecord(t *testing.T, runtimeVersion string, runtimeInterface string, kubeVersion string) Record {
 	t.Helper()
 	request := validFirstInstallRequest(t.TempDir())
-	request.RuntimeVersion = runtimeVersion
-	request.RuntimeInterface = runtimeInterface
+	request.Root.RuntimeVersion = runtimeVersion
+	request.Root.RuntimeInterface = runtimeInterface
 	request.Sysexts = []ExtensionRef{{
 		Name:            "kubernetes",
 		Path:            filepath.Join("/var/lib/katl/generations", request.GenerationID, "sysext", "kubernetes.raw"),

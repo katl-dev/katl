@@ -496,3 +496,53 @@ func setReleaseArtifactArchitecture(t *testing.T, dir, name, architecture string
 		t.Fatal(err)
 	}
 }
+
+func TestKatlReleaseLTSStage(t *testing.T) {
+	repo, buildDir := repoRoot(t), t.TempDir()
+	names := writeRequiredReleaseArtifacts(t, buildDir)
+	for _, name := range names {
+		if strings.HasPrefix(name, "katlctl-") {
+			continue
+		}
+		path := filepath.Join(buildDir, name+".json")
+		var metadata map[string]any
+		if err := json.Unmarshal(mustReadFile(t, path), &metadata); err != nil {
+			t.Fatal(err)
+		}
+		metadata["flavour"], metadata["path"], metadata["checksumPath"] = "lts", name, name+".sha256"
+		data, err := json.Marshal(metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"katl-installer.packages.tsv", "katl-runtime.packages.tsv", "katl-release-build-inputs.json"} {
+		if err := os.WriteFile(filepath.Join(buildDir, name), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output := filepath.Join(t.TempDir(), "dist")
+	cmd := exec.Command(filepath.Join(repo, "scripts/katl-release-artifacts"), "stage", "2026.7.0-rc.0", output)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "KATL_FLAVOUR=lts", "KATL_MKOSI_BUILD_DIR="+buildDir, "KATL_ARCHITECTURE=x86_64")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stage: %v\n%s", err, out)
+	}
+	for _, name := range []string{"katl-installer-lts.iso", "katl-installer-lts.vmlinuz", "katlos-lts-install-2026.7.0-rc.0-x86_64.squashfs", "katlos-lts-upgrade-2026.7.0-rc.0-x86_64.squashfs", "katlctl-2026.7.0-rc.0-linux-amd64"} {
+		if _, err := os.Stat(filepath.Join(output, name)); err != nil {
+			t.Fatal(err)
+		}
+		check := exec.Command("sha256sum", "-c", name+".sha256")
+		check.Dir = output
+		if out, err := check.CombinedOutput(); err != nil {
+			t.Fatalf("%s checksum: %v\n%s", name, err, out)
+		}
+	}
+	check := exec.Command("sha256sum", "-c", "SHA256SUMS")
+	check.Dir = output
+	if out, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("manifest: %v\n%s", err, out)
+	}
+}

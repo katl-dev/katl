@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/flavour"
+
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -186,6 +188,7 @@ func componentArtifact(component Component, kind artifact.ArtifactKind) artifact
 }
 
 type Index struct {
+	Flavour          string      `json:"flavour,omitempty"`
 	APIVersion       string      `json:"apiVersion"`
 	Kind             string      `json:"kind"`
 	ImageRole        string      `json:"imageRole"`
@@ -405,13 +408,16 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 		sysexts = append(sysexts, ref)
 	}
 	return generation.FirstInstallRequest{
+		Root: generation.RootSelection{
+			RuntimeVersion:        first(p.Runtime.Version, p.Index.Version),
+			RuntimeInterface:      p.Index.RuntimeInterface,
+			Architecture:          p.Index.Architecture,
+			Flavour:               p.Index.Flavour,
+			Slot:                  request.RootSlot,
+			PartitionUUID:         request.RootPartitionUUID,
+			RuntimeArtifactSHA256: p.Runtime.SHA256,
+		},
 		GenerationID:                request.GenerationID,
-		RuntimeVersion:              first(p.Runtime.Version, p.Index.Version),
-		RuntimeInterface:            p.Index.RuntimeInterface,
-		RuntimeArchitecture:         p.Index.Architecture,
-		RootSlot:                    request.RootSlot,
-		RootPartitionUUID:           request.RootPartitionUUID,
-		RuntimeArtifactSHA256:       p.Runtime.SHA256,
 		UKIPath:                     request.UKIPath,
 		KernelCommandLine:           kernelcmdline.ReplaceConfigured(p.Boot.Compatibility.KernelCommandLine, nil, request.KernelCommandLine),
 		ConfiguredKernelCommandLine: slices.Clone(request.KernelCommandLine),
@@ -516,6 +522,15 @@ func validate(ctx context.Context, root string, index Index, expected manifest.K
 }
 
 func validateIndex(index Index, expected manifest.KatlosImage) error {
+	if _, err := flavour.Normalize(index.Flavour); err != nil {
+		return err
+	}
+	if expected.Flavour != "" {
+		actual, _ := flavour.Normalize(index.Flavour)
+		if actual != expected.Flavour {
+			return fmt.Errorf("KatlOS image flavour %q does not match manifest %q", actual, expected.Flavour)
+		}
+	}
 	if index.APIVersion != APIVersion {
 		return fmt.Errorf("KatlOS image apiVersion must be %s", APIVersion)
 	}

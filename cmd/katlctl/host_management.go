@@ -44,6 +44,7 @@ type hostStatusReport struct {
 	Health               string                      `json:"health"`
 	Generation           string                      `json:"generation"`
 	KatlOSVersion        string                      `json:"katlosVersion,omitempty"`
+	KatlOSFlavour        string                      `json:"katlosFlavour,omitempty"`
 	NextBoot             string                      `json:"nextBoot,omitempty"`
 	Activity             string                      `json:"activity"`
 	BootHealthDiagnostic string                      `json:"bootHealthDiagnostic,omitempty"`
@@ -413,6 +414,7 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 		Health:               health,
 		Generation:           current.GetGenerationId(),
 		KatlOSVersion:        strings.TrimSpace(current.GetRuntimeVersion()),
+		KatlOSFlavour:        current.GetRuntimeFlavour(),
 		Activity:             activity,
 		BootHealthDiagnostic: strings.TrimSpace(status.GetBootHealthDiagnostic()),
 		Kubernetes:           newKubernetesStatusReport(status.GetKubernetes()),
@@ -507,6 +509,9 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 		return err
 	}
 	version := report.KatlOSVersion
+	if report.KatlOSFlavour == "lts" {
+		version += " (lts)"
+	}
 	if version == "" {
 		version = "unknown"
 	}

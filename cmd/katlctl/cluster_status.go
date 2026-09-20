@@ -33,6 +33,7 @@ type clusterNodeStatus struct {
 	Reachable            bool                           `json:"reachable"`
 	Health               string                         `json:"health,omitempty"`
 	KatlOSVersion        string                         `json:"katlosVersion,omitempty"`
+	KatlOSFlavour        string                         `json:"katlosFlavour,omitempty"`
 	Generation           string                         `json:"generation,omitempty"`
 	Activity             string                         `json:"activity,omitempty"`
 	Error                string                         `json:"error,omitempty"`
@@ -136,6 +137,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result.Reachable = true
 			result.Health = host.Health
 			result.KatlOSVersion = host.KatlOSVersion
+			result.KatlOSFlavour = host.KatlOSFlavour
 			result.Generation = host.Generation
 			result.Activity = host.Activity
 			result.Kubernetes = host.Kubernetes
@@ -171,6 +173,9 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		if node.Reachable {
 			reachable = "yes"
 			health, version, generation, activity = node.Health, node.KatlOSVersion, node.Generation, node.Activity
+			if node.KatlOSFlavour == "lts" {
+				version += " (lts)"
+			}
 			if node.Kubernetes != nil {
 				kubernetes = firstNonEmpty(strings.TrimSpace(node.Kubernetes.State), "unknown")
 			}

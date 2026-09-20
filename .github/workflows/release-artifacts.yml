@@ -60,11 +60,17 @@ jobs:
     name: Build And Verify Runtime
     needs: identity
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
     timeout-minutes: 90
     outputs:
       mkosi-version: ${{ steps.mkosi-version.outputs.version }}
 
     env:
+      KATL_FLAVOUR: ${{ matrix.flavour }}
+      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
       GOTOOLCHAIN: auto
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
@@ -102,6 +108,10 @@ jobs:
             sha256sum \
               Containerfile.mkosi \
               mkosi.conf \
+              mkosi.conf.d/*.conf \
+              mkosi.kernel-lts/etc/yum.repos.d/*.repo \
+              mkosi.profiles/runtime/mkosi.conf.d/*.conf \
+              mkosi.profiles/installer-image/mkosi.conf.d/*.conf \
               mkosi.profiles/installer-image/mkosi.conf \
               mkosi.profiles/kubernetes-sysext/kubernetes.env \
               mkosi.profiles/kubernetes-sysext/mkosi.conf \
@@ -113,10 +123,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
+          key: katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
           restore-keys: |
-            katl-mkosi-packages-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-
-            katl-mkosi-packages-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+            katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-
+            katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
 
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder
@@ -182,7 +192,7 @@ jobs:
         if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         uses: actions/upload-artifact@v7
         with:
-          name: katl-runtime-images-${{ github.sha }}
+          name: katl-runtime-images-${{ matrix.flavour }}-${{ github.sha }}
           path: |
             _build/mkosi/katl-runtime-root.squashfs
             _build/mkosi/katl-runtime-root.squashfs.json
@@ -205,9 +215,15 @@ jobs:
     name: Build And Verify Installer
     needs: identity
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
     timeout-minutes: 90
 
     env:
+      KATL_FLAVOUR: ${{ matrix.flavour }}
+      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
       GOTOOLCHAIN: auto
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
@@ -245,6 +261,10 @@ jobs:
             sha256sum \
               Containerfile.mkosi \
               mkosi.conf \
+              mkosi.conf.d/*.conf \
+              mkosi.kernel-lts/etc/yum.repos.d/*.repo \
+              mkosi.profiles/runtime/mkosi.conf.d/*.conf \
+              mkosi.profiles/installer-image/mkosi.conf.d/*.conf \
               mkosi.profiles/installer-image/mkosi.conf \
               mkosi.profiles/kubernetes-sysext/kubernetes.env \
               mkosi.profiles/kubernetes-sysext/mkosi.conf \
@@ -256,10 +276,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
+          key: katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
           restore-keys: |
-            katl-mkosi-packages-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-
-            katl-mkosi-packages-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+            katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-
+            katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
 
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder
@@ -284,7 +304,7 @@ jobs:
         if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         uses: actions/upload-artifact@v7
         with:
-          name: katl-installer-${{ github.sha }}
+          name: katl-installer-${{ matrix.flavour }}-${{ github.sha }}
           path: |
             _build/mkosi/katl-installer.efi
             _build/mkosi/katl-installer.efi.json
@@ -343,6 +363,10 @@ jobs:
       - installer
       - katlctl
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
     timeout-minutes: 30
     permissions:
       attestations: write
@@ -350,6 +374,8 @@ jobs:
       id-token: write
 
     env:
+      KATL_FLAVOUR: ${{ matrix.flavour }}
+      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
       GOTOOLCHAIN: auto
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
@@ -370,13 +396,13 @@ jobs:
       - name: Download runtime and KatlOS image intermediates
         uses: actions/download-artifact@v8
         with:
-          name: katl-runtime-images-${{ github.sha }}
+          name: katl-runtime-images-${{ matrix.flavour }}-${{ github.sha }}
           path: _build/mkosi
 
       - name: Download installer intermediates
         uses: actions/download-artifact@v8
         with:
-          name: katl-installer-${{ github.sha }}
+          name: katl-installer-${{ matrix.flavour }}-${{ github.sha }}
           path: _build/mkosi
 
       - name: Download katlctl intermediate
@@ -417,14 +443,42 @@ jobs:
         shell: bash
         run: scripts/katl-release-artifacts stage "$KATL_VERSION" dist
 
+      - name: Upload GitHub Actions artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: katl-assembled-${{ matrix.flavour }}-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  bundle:
+    name: Bundle Kernel Flavours
+    needs: [identity, assemble]
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: katl-assembled-*-${{ github.sha }}
+          path: flavours
+      - name: Combine flavours
+        shell: bash
+        run: |
+          mkdir dist
+          for flavour in standard lts; do
+            cp flavours/katl-assembled-${flavour}-${GITHUB_SHA}/* dist/
+          done
+          (cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum -c SHA256SUMS)
       - name: Attest staged release artifacts
         if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: actions/attest@v4
         with:
           subject-path: dist/*
-
-      - name: Upload GitHub Actions artifact
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ needs.identity.outputs.artifact-name }}
           path: dist/
@@ -437,7 +491,7 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     needs:
       - identity
-      - assemble
+      - bundle
     runs-on: ubuntu-24.04
     permissions:
       attestations: read

@@ -46,7 +46,7 @@ func TestResolveDirectoryAcceptsInstallImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FirstInstallRequest() error = %v", err)
 	}
-	if request.RuntimeArtifactSHA256 != payload.Runtime.SHA256 {
+	if request.Root.RuntimeArtifactSHA256 != payload.Runtime.SHA256 {
 		t.Fatalf("generation request digests = %#v, payload = %#v", request, payload)
 	}
 	if len(request.Sysexts) != 0 {
@@ -65,7 +65,7 @@ func TestResolveDirectoryAcceptsInstallImage(t *testing.T) {
 	if len(managed.Sysexts) != 1 || managed.Sysexts[0].Name != EndpointAdvertiserName {
 		t.Fatalf("managed endpoint sysexts = %#v", managed.Sysexts)
 	}
-	if request.RuntimeInterface != "katl-runtime-1" || request.RuntimeArchitecture != "x86_64" {
+	if request.Root.RuntimeInterface != "katl-runtime-1" || request.Root.Architecture != "x86_64" {
 		t.Fatalf("generation runtime fields = %#v", request)
 	}
 	if !request.CreatedAt.Equal(createdAt) {
@@ -1079,4 +1079,48 @@ type fixtureHTTPClient struct {
 func (c *fixtureHTTPClient) Do(request *http.Request) (*http.Response, error) {
 	c.requestURL = request.URL.String()
 	return c.response, c.err
+}
+
+func TestFlavourSurvivesInstallAndUpgrade(t *testing.T) {
+	root, _ := writeImagePayload(t, func(index *Index) { index.Flavour = "lts" })
+	payload, err := ResolveDirectory(context.Background(), root, expectedImage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := payload.FirstInstallRequest(FirstInstallRequest{
+		GenerationID: "0", RootSlot: "root-a",
+		RootPartitionUUID: "11111111-2222-3333-4444-555555555555",
+		UKIPath:           "/efi/EFI/Linux/katl-0.efi",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.GeneratedConfext = generation.GeneratedConfext{
+		Name: "katl-node", Path: "/var/lib/katl/generations/0/confext", ActivationPath: "/run/confexts/katl-node", SHA256: strings.Repeat("c", 64),
+		Compatibility: generation.ConfextCompatibility{ID: "katlos", VersionID: request.Root.RuntimeVersion, ConfextLevel: 1},
+	}
+	record, err := generation.NewFirstInstallRecord(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Root.Flavour != "lts" {
+		t.Fatalf("installed flavour = %q", record.Root.Flavour)
+	}
+
+	previous, status := knownGoodGeneration(t, "gen0", strings.Repeat("b", 64), "v1.36.0")
+	upgraded := upgradePayload(t, func(index *Index) { index.Flavour = "lts" })
+	plan, err := upgraded.HostUpgradePlan(validHostUpgradeRequest(previous, status))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Spec.Root.Flavour != "lts" {
+		t.Fatalf("upgraded flavour = %q", plan.Spec.Root.Flavour)
+	}
+}
+
+func TestImageRejectsUnknownFlavour(t *testing.T) {
+	root, _ := writeImagePayload(t, func(index *Index) { index.Flavour = "other" })
+	if _, err := ResolveDirectory(context.Background(), root, expectedImage()); err == nil || !strings.Contains(err.Error(), "unknown KatlOS flavour") {
+		t.Fatalf("error = %v", err)
+	}
 }

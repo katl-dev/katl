@@ -18,8 +18,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/flavour"
+
 	"github.com/katl-dev/katl/internal/firmware"
 	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -53,6 +56,16 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	}
 
 	switch command {
+	case "verify-installer-pair":
+		if len(args) != 2 {
+			return fmt.Errorf("verify-installer-pair requires INSTALLER_METADATA IMAGE_METADATA")
+		}
+		return verifyInstallerPair(args[0], args[1])
+	case "publish-flavour":
+		if len(args) != 1 {
+			return fmt.Errorf("publish-flavour requires OUTPUT_DIR")
+		}
+		return publishFlavour(args[0], cfg.Flavour)
 	case "write":
 		indexPath := cfg.DefaultIndex
 		if len(args) > 1 {
@@ -140,6 +153,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
+       katl-mkosi-artifacts publish-flavour OUTPUT_DIR
+       katl-mkosi-artifacts verify-installer-pair INSTALLER_METADATA IMAGE_METADATA
 	   katl-mkosi-artifacts write-installer-artifacts
 	   katl-mkosi-artifacts write-runtime-index [INDEX]
        katl-mkosi-artifacts path KIND [INDEX]
@@ -170,6 +185,7 @@ Kinds:
 `
 
 type config struct {
+	Flavour              string
 	RepoRoot             string
 	DefaultIndex         string
 	InstallerUKI         string
@@ -199,6 +215,14 @@ type config struct {
 
 func configFromEnv(env map[string]string, repo string) (config, error) {
 	buildDir := filepath.Join(repo, "_build", "mkosi")
+	flavourValue, err := flavour.Normalize(env["KATL_FLAVOUR"])
+	if err != nil {
+		return config{}, err
+	}
+	// Omit the standard flavour so existing nodes can upgrade to this release.
+	if flavourValue == flavour.Standard {
+		flavourValue = ""
+	}
 	version := envDefault(env, "KATL_VERSION", defaultVersion)
 	architecture := envDefaultFunc(env, "KATL_ARCHITECTURE", hostArchitecture)
 	createdAt, err := buildTimestamp(env)
@@ -212,6 +236,7 @@ func configFromEnv(env map[string]string, repo string) (config, error) {
 	katlosImage, katlosExplicit := envPathExplicit(env, repo, "KATL_KATLOS_IMAGE", katlosDefault)
 
 	return config{
+		Flavour:              flavourValue,
 		RepoRoot:             repo,
 		DefaultIndex:         filepath.Join(buildDir, "artifacts.json"),
 		InstallerUKI:         envPath(env, repo, "KATL_INSTALLER_UKI", filepath.Join(buildDir, "katl-installer.efi")),
@@ -270,6 +295,7 @@ type artifactEntry struct {
 }
 
 type bootMetadata struct {
+	Flavour                  string   `json:"flavour,omitempty"`
 	APIVersion               string   `json:"apiVersion"`
 	Kind                     string   `json:"kind"`
 	ArtifactRole             string   `json:"artifactRole"`
@@ -290,6 +316,7 @@ type bootMetadata struct {
 }
 
 type localMetadata struct {
+	Flavour                string            `json:"flavour,omitempty"`
 	Name                   string            `json:"name"`
 	Kind                   string            `json:"kind"`
 	Format                 string            `json:"format"`
@@ -332,6 +359,7 @@ type sourceRepo struct {
 }
 
 type katlosIndex struct {
+	Flavour          string            `json:"flavour,omitempty"`
 	APIVersion       string            `json:"apiVersion"`
 	Kind             string            `json:"kind"`
 	ImageRole        string            `json:"imageRole"`
@@ -375,22 +403,7 @@ type installTarget struct {
 	Name         string `json:"name,omitempty"`
 }
 
-type katlosArtifactMetadata struct {
-	APIVersion        string `json:"apiVersion"`
-	Kind              string `json:"kind"`
-	ImageRole         string `json:"imageRole"`
-	Format            string `json:"format"`
-	Version           string `json:"version"`
-	BuildID           string `json:"buildID"`
-	Architecture      string `json:"architecture"`
-	RuntimeInterface  string `json:"runtimeInterface"`
-	Path              string `json:"path"`
-	SizeBytes         int64  `json:"sizeBytes"`
-	SHA256            string `json:"sha256"`
-	ChecksumPath      string `json:"checksumPath"`
-	EmbeddedIndexPath string `json:"embeddedIndexPath"`
-	CreatedAt         string `json:"createdAt"`
-}
+type katlosArtifactMetadata = katlosimage.ArtifactMetadata
 
 func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) error {
 	flags := flag.NewFlagSet("katl-mkosi-artifacts write-runtime-root", flag.ContinueOnError)
@@ -418,6 +431,7 @@ func runWriteRuntimeRoot(args []string, stdout, stderr io.Writer, cfg config) er
 	metadata := localMetadata{
 		Name:             "runtime-root",
 		Kind:             "runtime-root",
+		Flavour:          cfg.Flavour,
 		Format:           "squashfs",
 		Path:             filepath.Base(artifactPath),
 		SizeBytes:        size,
@@ -489,6 +503,7 @@ func runWriteRuntimeUKI(args []string, stdout, stderr io.Writer, cfg config) err
 	metadata := localMetadata{
 		Name:             "runtime-uki",
 		Kind:             "runtime-uki",
+		Flavour:          cfg.Flavour,
 		Format:           "uki",
 		Path:             filepath.Base(artifactPath),
 		SizeBytes:        size,
@@ -807,6 +822,11 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	if err := validateKatlOSComponents(rootMeta, ukiMeta, *architecture, *runtimeInterface); err != nil {
 		return err
 	}
+	rootFlavour, _ := flavour.Normalize(rootMeta.Flavour)
+	buildFlavour, _ := flavour.Normalize(cfg.Flavour)
+	if rootFlavour != buildFlavour {
+		return fmt.Errorf("runtime root flavour %q does not match build flavour %q", rootFlavour, buildFlavour)
+	}
 	var endpointMeta localMetadata
 	if *endpointAdvertiser != "" {
 		endpointMeta, err = readAndValidateLocalMetadata("endpoint advertiser", absPath(cfg.RepoRoot, *endpointAdvertiserMetadata), absPath(cfg.RepoRoot, *endpointAdvertiser))
@@ -827,6 +847,7 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 
 	index := katlosIndex{
 		APIVersion:       "katl.dev/v1alpha1",
+		Flavour:          cfg.Flavour,
 		Kind:             "KatlOSImage",
 		ImageRole:        *imageRole,
 		Format:           "squashfs",
@@ -933,6 +954,7 @@ func runWriteKatlOSArtifact(args []string, stdout, stderr io.Writer, cfg config)
 	}
 	metadata := katlosArtifactMetadata{
 		APIVersion:        "katl.dev/v1alpha1",
+		Flavour:           cfg.Flavour,
 		Kind:              "KatlOSImageArtifact",
 		ImageRole:         *imageRole,
 		Format:            "squashfs",
@@ -1009,6 +1031,7 @@ func runBindInstallManifestImage(args []string, stdout, stderr io.Writer, cfg co
 		SHA256:           metadata.SHA256,
 		SizeBytes:        uint64(metadata.SizeBytes),
 		Version:          metadata.Version,
+		Flavour:          metadata.Flavour,
 		Architecture:     metadata.Architecture,
 		RuntimeInterface: metadata.RuntimeInterface,
 		Role:             metadata.ImageRole,
@@ -1281,6 +1304,7 @@ func writeBootMetadata(role, format, artifactPath, created string, cfg config) e
 	}
 	metadata := bootMetadata{
 		APIVersion:               "katl.dev/v1alpha1",
+		Flavour:                  cfg.Flavour,
 		Kind:                     "InstallerBootArtifact",
 		ArtifactRole:             role,
 		Format:                   format,
@@ -1498,6 +1522,17 @@ func validateLocalRef(value string) error {
 }
 
 func validateKatlOSComponents(root, uki localMetadata, architecture, runtimeInterface string) error {
+	rootFlavour, err := flavour.Normalize(root.Flavour)
+	if err != nil {
+		return err
+	}
+	ukiFlavour, err := flavour.Normalize(uki.Flavour)
+	if err != nil {
+		return err
+	}
+	if rootFlavour != ukiFlavour {
+		return fmt.Errorf("runtime root flavour %q does not match UKI flavour %q", rootFlavour, ukiFlavour)
+	}
 	if root.Architecture != architecture {
 		return fmt.Errorf("runtime root architecture %s does not match image architecture %s", root.Architecture, architecture)
 	}

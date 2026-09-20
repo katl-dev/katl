@@ -10,13 +10,21 @@ fi
 image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
+flavour="${KATL_FLAVOUR:-standard}"
+case "$flavour" in
+    standard|lts) ;;
+    *) echo "error: KATL_FLAVOUR must be standard or lts" >&2; exit 2 ;;
+esac
+export KATL_FLAVOUR="$flavour"
+flavour_suffix=""
+[[ "$flavour" == standard ]] || flavour_suffix="-$flavour"
 build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 if [[ -n "${KATL_MKOSI_CACHE_DIR:-}" ]]; then
-    cache_dir="$KATL_MKOSI_CACHE_DIR"
+    cache_dir="$KATL_MKOSI_CACHE_DIR$flavour_suffix"
 elif [[ -n "${KATL_MKOSI_BUILD_DIR:-}" ]]; then
-    cache_dir="$build_dir/cache"
+    cache_dir="$build_dir/cache$flavour_suffix"
 else
-    cache_dir="$shared_repo_root/_build/mkosi/cache"
+    cache_dir="$shared_repo_root/_build/mkosi/cache$flavour_suffix"
 fi
 if [[ -n "${KATL_MKOSI_PACKAGE_CACHE_DIR:-}" ]]; then
     package_cache_dir="$KATL_MKOSI_PACKAGE_CACHE_DIR"
@@ -28,7 +36,7 @@ fi
 stamp_dir="$build_dir/.katl-stamps"
 go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"
 go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"
-mkosi_env=(--environment "KATL_BUILD_COMMIT=$build_commit")
+mkosi_env=(--environment "KATL_FLAVOUR=$flavour" --environment "KATL_BUILD_COMMIT=$build_commit")
 if [[ -n "${KATL_VERSION:-}" ]]; then
     mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
 fi
@@ -58,7 +66,7 @@ container_mkosi_storage_args=(
 )
 
 prepare_build_dirs() {
-    mkdir -p \
+    mkdir -p "$repo_root/_build/mkosi" \
         "$cache_dir" \
         "$package_cache_dir" \
         "$build_dir/builddir" \
@@ -70,17 +78,9 @@ prepare_build_dirs() {
 }
 
 list_repo_inputs() {
-    {
-        git -C "$repo_root" ls-files -z
-        git -C "$repo_root" ls-files --others --exclude-standard -z
-    } | while IFS= read -r -d "" path; do
-        case "$path" in
-            .beads/* | _build/* | */_build/* | build/* | */build/*)
-                continue
-                ;;
-        esac
-        printf '%s\0' "$path"
-    done | sort -z
+    # Enumerate the workspace itself: a nested jj workspace is not Git's worktree.
+    find "$repo_root" \( -name .git -o -name .jj -o -name _build -o -name build -o -name .beads \) -prune -o \
+        \( -type f -o -type l \) -printf '%P\0' | sort -z
 }
 
 cache_input_matches_target() {
@@ -93,7 +93,7 @@ cache_input_matches_target() {
         *_test.go | docs/*)
             return 1
             ;;
-        Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi)
+        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi)
             return 0
             ;;
         *.go)
@@ -236,13 +236,16 @@ cache_fingerprint() {
             printf 'builder-image-identity=%s\n' "$(builder_image_identity)"
             printf 'KATL_BUILD_COMMIT=%s\n' "$build_commit"
             printf 'SOURCE_DATE_EPOCH=%s\n' "${SOURCE_DATE_EPOCH:-}"
+            printf 'KATL_FLAVOUR=%s\n' "$flavour"
             printf 'KATL_VERSION=%s\n' "${KATL_VERSION:-}"
             printf 'KATL_ARCHITECTURE=%s\n' "${KATL_ARCHITECTURE:-$(uname -m)}"
             printf 'KATL_KATLOS_IMAGE_ROLE=%s\n' "${KATL_KATLOS_IMAGE_ROLE:-install}"
             printf 'KATL_RUNTIME_INTERFACE=%s\n' "${KATL_RUNTIME_INTERFACE:-katl-runtime-1}"
             printf 'KATL_VMTEST_IMAGE_SUPPORT=%s\n' "$vmtest_image_support"
             while IFS= read -r -d "" path; do
-                if [[ -f "$repo_root/$path" ]]; then
+                if [[ -L "$repo_root/$path" ]]; then
+                    printf 'symlink %s %s\n' "$path" "$(readlink "$repo_root/$path")"
+                elif [[ -f "$repo_root/$path" ]]; then
                     read -r file_digest _ < <(sha256sum "$repo_root/$path")
                     printf 'file %s %s\n' "$path" "$file_digest"
                 else
@@ -599,6 +602,7 @@ run_flags=(
     --privileged
     --volume "$repo_root:/work"
     --workdir /work
+    --env "KATL_FLAVOUR=$flavour"
     --env "KATL_BUILD_COMMIT=$build_commit"
     --env "KATL_VERSION=${KATL_VERSION:-0.0.0-dev}"
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
@@ -934,7 +938,10 @@ set +e
     if [[ "$status" -eq 0 && "${KATL_EMIT_INSTALLER_ISO:-0}" == 1 ]]; then
         iso=_build/mkosi/katl-installer.iso
         rm -f "$iso" "$iso.sha256" "$iso.json"
-        if ! KATL_REPO_ROOT=/work KATL_INSTALLER_ISO="$iso" scripts/build-installer-iso >/dev/null; then
+        # Pair verification must read metadata for the boot artifacts just built.
+        if ! mkosi_artifacts write-installer-artifacts >/dev/null; then
+            status=1
+        elif ! KATL_REPO_ROOT=/work KATL_INSTALLER_ISO="$iso" scripts/build-installer-iso >/dev/null; then
             status=1
         else
             export KATL_INSTALLER_ISO="$iso"
