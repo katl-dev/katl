@@ -15,6 +15,7 @@ func TestLoad(t *testing.T) {
 		APIVersion:       APIVersion,
 		Kind:             Kind,
 		ImageRole:        "install",
+		Flavour:          "lts",
 		Format:           "squashfs",
 		Version:          "2026.7.0",
 		Architecture:     "x86_64",
@@ -31,6 +32,9 @@ func TestLoad(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("Load() found = false")
+	}
+	if media.Image.Flavour != "lts" {
+		t.Fatalf("image lost LTS flavour: %#v", media.Image)
 	}
 	if media.Image.LocalRef != "images/katlos-install.squashfs" || media.Image.Version != metadata.Version || media.Image.SHA256 != metadata.SHA256 {
 		t.Fatalf("Load() image = %#v", media.Image)

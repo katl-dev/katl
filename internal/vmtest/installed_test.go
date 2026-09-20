@@ -559,14 +559,16 @@ func espFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	record, err := generation.NewFirstInstallRecord(generation.FirstInstallRequest{
-		GenerationID:          "2026.06.03-001",
-		RuntimeVersion:        "0.1.0",
-		RuntimeInterface:      "katl-runtime-1",
-		RuntimeArchitecture:   "x86_64",
-		RootSlot:              "root-a",
-		RootPartitionUUID:     "11111111-2222-3333-4444-555555555555",
-		RuntimeArtifactSHA256: strings.Repeat("a", 64),
-		UKIPath:               "/efi/EFI/Linux/katl-2026.06.03-001.efi",
+		Root: generation.RootSelection{
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		GenerationID: "2026.06.03-001",
+		UKIPath:      "/efi/EFI/Linux/katl-2026.06.03-001.efi",
 		GeneratedConfext: generation.GeneratedConfext{
 			Name:           "katl-node",
 			Path:           "/var/lib/katl/generations/2026.06.03-001/confext/katl-node.raw",

@@ -51,3 +51,29 @@ func TestReleaseWorkflowBuildsKatlOSImageDependencies(t *testing.T) {
 		t.Fatal("release runtime job must build the endpoint advertiser sysext before packaging KatlOS images")
 	}
 }
+
+func TestReleaseBuildsBothKernelFlavours(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/release-artifacts.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Strategy struct {
+				Matrix struct {
+					Flavour []string `yaml:"flavour"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
+			Env map[string]string `yaml:"env"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []string{"runtime", "installer", "assemble"} {
+		build := workflow.Jobs[job]
+		if strings.Join(build.Strategy.Matrix.Flavour, ",") != "standard,lts" || build.Env["KATL_FLAVOUR"] != "${{ matrix.flavour }}" {
+			t.Fatalf("%s does not build and propagate both kernel flavours", job)
+		}
+	}
+}

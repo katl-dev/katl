@@ -107,6 +107,7 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		RuntimeVersion:        p.Index.Version,
 		RuntimeInterface:      p.Index.RuntimeInterface,
 		Architecture:          p.Index.Architecture,
+		Flavour:               p.Index.Flavour,
 		RuntimeArtifactSHA256: p.Runtime.SHA256,
 	}
 	sysexts, sysextAssets, bundledAssets, err := upgradeSysexts(p, request.PreviousSpec, generationID, root, request.Bootstrapped)

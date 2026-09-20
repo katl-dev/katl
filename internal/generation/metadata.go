@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/flavour"
+
 	"github.com/katl-dev/katl/internal/kernelcmdline"
 )
 
@@ -62,6 +64,7 @@ type VolumeBinding struct {
 }
 
 type RootSelection struct {
+	Flavour               string `json:"flavour,omitempty"`
 	Slot                  string `json:"slot"`
 	PartitionUUID         string `json:"partitionUUID"`
 	RuntimeVersion        string `json:"runtimeVersion"`
@@ -105,13 +108,8 @@ type ConfextCompatibility struct {
 }
 
 type FirstInstallRequest struct {
+	Root                        RootSelection
 	GenerationID                string
-	RuntimeVersion              string
-	RuntimeInterface            string
-	RuntimeArchitecture         string
-	RootSlot                    string
-	RootPartitionUUID           string
-	RuntimeArtifactSHA256       string
 	UKIPath                     string
 	Sysexts                     []ExtensionRef
 	BundledConfexts             []ExtensionRef
@@ -154,22 +152,22 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 	if strings.TrimSpace(request.GenerationID) == "" {
 		return Record{}, fmt.Errorf("generation id is required")
 	}
-	if strings.TrimSpace(request.RuntimeVersion) == "" {
+	if strings.TrimSpace(request.Root.RuntimeVersion) == "" {
 		return Record{}, fmt.Errorf("runtime version is required")
 	}
-	if strings.TrimSpace(request.RuntimeInterface) == "" {
+	if strings.TrimSpace(request.Root.RuntimeInterface) == "" {
 		return Record{}, fmt.Errorf("runtime interface is required")
 	}
-	if strings.TrimSpace(request.RuntimeArchitecture) == "" {
+	if strings.TrimSpace(request.Root.Architecture) == "" {
 		return Record{}, fmt.Errorf("runtime architecture is required")
 	}
-	if strings.TrimSpace(request.RootSlot) == "" {
+	if strings.TrimSpace(request.Root.Slot) == "" {
 		return Record{}, fmt.Errorf("root slot is required")
 	}
-	if strings.TrimSpace(request.RootPartitionUUID) == "" {
+	if strings.TrimSpace(request.Root.PartitionUUID) == "" {
 		return Record{}, fmt.Errorf("root partition UUID is required")
 	}
-	if err := validateSHA256("runtime artifact", request.RuntimeArtifactSHA256); err != nil {
+	if err := validateSHA256("runtime artifact", request.Root.RuntimeArtifactSHA256); err != nil {
 		return Record{}, err
 	}
 	if strings.TrimSpace(request.UKIPath) == "" {
@@ -198,18 +196,11 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 	}
 
 	record := Record{
-		APIVersion:     APIVersion,
-		Kind:           Kind,
-		GenerationID:   request.GenerationID,
-		RuntimeVersion: request.RuntimeVersion,
-		Root: RootSelection{
-			Slot:                  request.RootSlot,
-			PartitionUUID:         request.RootPartitionUUID,
-			RuntimeVersion:        request.RuntimeVersion,
-			RuntimeInterface:      request.RuntimeInterface,
-			Architecture:          request.RuntimeArchitecture,
-			RuntimeArtifactSHA256: strings.ToLower(request.RuntimeArtifactSHA256),
-		},
+		APIVersion:                  APIVersion,
+		Kind:                        Kind,
+		GenerationID:                request.GenerationID,
+		RuntimeVersion:              request.Root.RuntimeVersion,
+		Root:                        request.Root,
 		Boot:                        BootSelection{UKIPath: request.UKIPath},
 		Sysexts:                     sysexts,
 		BundledConfexts:             bundledConfexts,
@@ -469,6 +460,9 @@ func ValidatePair(root RootSelection, sysext ExtensionRef) error {
 }
 
 func ValidateRecord(record Record) error {
+	if _, err := flavour.Normalize(record.Root.Flavour); err != nil {
+		return err
+	}
 	if err := kernelcmdline.ValidateEffective(record.ConfiguredKernelCommandLine, record.KernelCommandLine); err != nil {
 		return fmt.Errorf("configured kernel command line: %w", err)
 	}

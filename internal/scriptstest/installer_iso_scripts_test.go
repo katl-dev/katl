@@ -19,6 +19,9 @@ func TestBuildInstallerISO(t *testing.T) {
 		t.Fatal(err)
 	}
 	installer := writeArtifact(t, tmp, "katl-installer.efi", "installer")
+	if err := os.WriteFile(installer+".json", []byte(`{"version":"2026.7.0-dev.1","architecture":"x86_64"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	katlosImage := writeArtifact(t, tmp, "katlos-install-2026.7.0-dev.1-x86_64.squashfs", "katlos")
 	writeKatlosImageSidecars(t, katlosImage, "2026.7.0-dev.1")
 	output := filepath.Join(tmp, "katl-installer.iso")

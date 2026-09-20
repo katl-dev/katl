@@ -30,6 +30,12 @@ does not provide a Kubernetes distribution. Users own DHCP/PXE infrastructure,
 DNS, CNI, GitOps, storage, ingress, workload policy, monitoring, backup, and
 application lifecycle.
 
+KatlOS standard follows Fedora's stable kernel packages. KatlOS-lts uses the
+maintained kwizart 6.18 LTS kernel RPMs for the same Fedora release. Both have
+the same beta support boundary; LTS does not extend Fedora userspace support.
+See [kernel flavours](operations/upgrade-host.md#kernel-flavours) for selection
+and upgrade behaviour.
+
 ## Artifact Trust
 
 KatlOS release assets provide SHA-256 checksums and keyless GitHub build-

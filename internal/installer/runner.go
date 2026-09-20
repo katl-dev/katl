@@ -383,18 +383,11 @@ func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.Root
 		return generation.Record{}, err
 	}
 	record := generation.Record{
-		APIVersion:     generation.APIVersion,
-		Kind:           generation.Kind,
-		GenerationID:   request.GenerationID,
-		RuntimeVersion: request.RuntimeVersion,
-		Root: generation.RootSelection{
-			Slot:                  request.RootSlot,
-			PartitionUUID:         request.RootPartitionUUID,
-			RuntimeVersion:        request.RuntimeVersion,
-			RuntimeInterface:      request.RuntimeInterface,
-			Architecture:          request.RuntimeArchitecture,
-			RuntimeArtifactSHA256: request.RuntimeArtifactSHA256,
-		},
+		APIVersion:                  generation.APIVersion,
+		Kind:                        generation.Kind,
+		GenerationID:                request.GenerationID,
+		RuntimeVersion:              request.Root.RuntimeVersion,
+		Root:                        request.Root,
 		Boot:                        generation.BootSelection{UKIPath: request.UKIPath},
 		Sysexts:                     request.Sysexts,
 		KernelCommandLine:           request.KernelCommandLine,

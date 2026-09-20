@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/flavour"
+
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
@@ -355,10 +357,15 @@ func (s *Server) generationReadModel(id string, includeConfigApply bool) (*agent
 	if err != nil {
 		return nil, err
 	}
+	kernelFlavour, err := flavour.Normalize(spec.Root.Flavour)
+	if err != nil {
+		return nil, err
+	}
 	out := &agentapi.Generation{
 		GenerationId:         spec.GenerationID,
 		RuntimeVersion:       spec.RuntimeVersion,
 		RuntimeArchitecture:  spec.Root.Architecture,
+		RuntimeFlavour:       kernelFlavour,
 		PreviousGenerationId: spec.PreviousGenerationID,
 		CommitState:          genStatus.CommitState,
 		BootState:            genStatus.BootState,

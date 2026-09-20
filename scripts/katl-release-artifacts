@@ -112,6 +112,7 @@ verify_artifact() {
     local name="$1"
     local version="$2"
     local expected_architecture="${3:-$architecture}"
+    local expected_flavour="${4:-${KATL_FLAVOUR:-standard}}"
     local digest size
 
     (cd "$build_dir" && sha256sum -c "$name.sha256")
@@ -119,8 +120,10 @@ verify_artifact() {
     size="$(stat -c %s "$build_dir/$name")"
     jq -e --arg digest "$digest" --argjson size "$size" \
         --arg version "$version" --arg architecture "$expected_architecture" \
+        --arg flavour "$expected_flavour" \
         '.sha256 == $digest and .sizeBytes == $size and
-         .version == $version and .architecture == $architecture' \
+         .version == $version and .architecture == $architecture and
+         (.flavour // "standard") == $flavour' \
         "$build_dir/$name.json" >/dev/null ||
         fail "release metadata does not match artifact or release identity: $name.json"
 }
@@ -171,7 +174,7 @@ build_katlctl() {
             sha256: $sha256,
             sizeBytes: $sizeBytes
         }' >"$path.json"
-    verify_artifact "$name" "$version" amd64
+    verify_artifact "$name" "$version" amd64 standard
 }
 
 version_for_ref() {
@@ -252,7 +255,7 @@ stage_artifacts() {
         path="$build_dir/$operator_name$suffix"
         [[ -f "$path" ]] || fail "release artifact is missing: $path"
     done
-    verify_artifact "$operator_name" "$version" amd64
+    verify_artifact "$operator_name" "$version" amd64 standard
     names+=("$operator_name")
     for name in "${package_inventories[@]}"; do
         [[ -f "$build_dir/$name" ]] || fail "release package inventory is missing: $build_dir/$name"
@@ -290,6 +293,7 @@ bytes; it does not assert that an artifact is vulnerability-free, provide a
 Secure Boot signature, or replace Katl's future node-side trust policy.
 EOF
     generate_release_notes "$version" >"$output/RELEASE_NOTES.md"
+    (cd "$repo_root" && "$go_command" run ./cmd/katl-mkosi-artifacts publish-flavour "$(realpath "$output")")
     (
         cd "$output"
         mapfile -d '' checksum_files < <(

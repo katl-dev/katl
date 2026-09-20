@@ -68,3 +68,37 @@ stop the rollout and collect the evidence in [Troubleshoot KatlOS](troubleshoot.
 If KatlOS returns but Kubernetes does not recover before the timeout, do not
 schedule workloads on that node. `katlctl node status` reports whether kubelet,
 Node Ready, local control-plane components, or managed routing is still waiting.
+
+## Kernel flavours
+
+KatlOS has two kernel tracks, released together with the same KatlOS version:
+
+- **standard** uses Fedora's current stable kernel packages.
+- **lts** uses the maintained [kwizart 6.18 LTS kernel RPMs](https://copr.fedorainfracloud.org/coprs/kwizart/kernel-longterm-6.18/) for the same Fedora release.
+
+LTS refers to the kernel series, not extended support for Fedora userspace.
+Patch updates within 6.18 enter new KatlOS builds through the package repository;
+changing the LTS series is a deliberate Katl build-policy change. Nodes only
+change kernels when you upgrade KatlOS, not through background RPM updates.
+
+An upgrade with `--version` keeps the node's installed flavour. To switch tracks,
+including at the same KatlOS version:
+
+```sh
+katlctl node upgrade cp-1 --config cluster.yaml --version VERSION --flavour lts
+katlctl node upgrade cp-1 --config cluster.yaml --version VERSION --flavour standard
+```
+
+Both commands stage a complete OS image and reboot. Kubernetes extensions remain
+independent of the kernel flavour. `--artifact` selects the flavour declared by
+the local image; a conflicting `--flavour` is rejected.
+
+Nodes running a release from before flavour support must first upgrade to the
+standard image of a release with flavour support, then switch to LTS. The CLI
+reports this before uploading or staging an LTS image.
+
+For a fresh LTS installation, use the `katl-installer-lts` boot assets and
+`katlos-lts-install-VERSION-x86_64.squashfs` from the same release. The LTS ISO
+includes the matching install image. Standard assets retain their existing
+names. LTS upgrade images are named
+`katlos-lts-upgrade-VERSION-x86_64.squashfs`; `katlctl` chooses that name for you.

@@ -292,9 +292,11 @@ file_has_line /usr/lib/os-release 'ID=katlos'
 file_has_line /usr/lib/os-release 'ID_LIKE=fedora'
 file_has_line /usr/lib/os-release "VERSION=\"$runtime_version\""
 file_has_line /usr/lib/os-release "VERSION_ID=\"$runtime_version\""
-file_has_line /usr/lib/os-release "PRETTY_NAME=\"KatlOS $runtime_version\""
+flavour_suffix=""
+[[ "$(jq -r '.flavour // "standard"' "$metadata")" != lts ]] || flavour_suffix="-lts"
+file_has_line /usr/lib/os-release "PRETTY_NAME=\"KatlOS$flavour_suffix $runtime_version\""
 file_has_line /usr/lib/os-release 'VARIANT="Kubernetes Node OS"'
-file_has_line /usr/lib/os-release 'VARIANT_ID=katlos'
+file_has_line /usr/lib/os-release "VARIANT_ID=katlos$flavour_suffix"
 file_has_line /usr/lib/os-release 'KATL_BASE_ID=fedora'
 file_has_line /usr/lib/os-release 'KATL_BASE_VERSION_ID=44'
 file_has_line /usr/lib/os-release "SYSEXT_LEVEL=katl-runtime-1"

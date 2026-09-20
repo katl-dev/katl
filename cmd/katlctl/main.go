@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,11 +23,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/payloadbundle"
-
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
+	"github.com/katl-dev/katl/internal/flavour"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
@@ -36,6 +36,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
@@ -303,6 +304,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 }
 
 type hostUpgradeOptions struct {
+	flavour         string
 	version         string
 	artifact        string
 	target          managementTargetOptions
@@ -314,6 +316,7 @@ type hostUpgradeOptions struct {
 }
 
 type hostUpgradeReport struct {
+	Flavour    string `json:"flavour"`
 	Node       string `json:"node"`
 	Version    string `json:"version"`
 	Image      string `json:"image"`
@@ -324,6 +327,7 @@ type hostUpgradeReport struct {
 }
 
 type hostUpgradeArtifact struct {
+	Flavour      string
 	Path         string
 	Version      string
 	Architecture string
@@ -369,6 +373,7 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 		},
 	}
 	addManagementTargetFlags(cmd, &opts.target)
+	cmd.Flags().StringVar(&opts.flavour, "flavour", "", "kernel flavour: standard or lts (default: retain the installed flavour; local images use their own flavour)")
 	cmd.Flags().StringVar(&opts.version, "version", "", "published KatlOS release to install")
 	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "locally built KatlOS upgrade image (uses PATH.json metadata)")
 	cmd.MarkFlagsMutuallyExclusive("version", "artifact")
@@ -383,6 +388,11 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 }
 
 func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr io.Writer) error {
+	if opts.flavour != "" {
+		if _, err := flavour.Normalize(opts.flavour); err != nil {
+			return err
+		}
+	}
 	if opts.output != "text" && opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
@@ -399,6 +409,10 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		localArtifact = &artifact
 		opts.version = artifact.Version
+		if opts.flavour != "" && opts.flavour != artifact.Flavour {
+			return fmt.Errorf("--flavour %s conflicts with local image flavour %s", opts.flavour, artifact.Flavour)
+		}
+		opts.flavour = artifact.Flavour
 	} else {
 		version, err := katlOSVersion(opts.version)
 		if err != nil {
@@ -410,9 +424,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	request := operation.HostUpgrade{
-		CandidateGenerationID: "katlos-" + opts.version,
-	}
+	request := operation.HostUpgrade{}
 	target, err := resolveManagementTarget(ctx, opts.target)
 	if err != nil {
 		return err
@@ -435,6 +447,17 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return fmt.Errorf("read current node generation: %w", err)
 	}
+	if opts.flavour == "" {
+		opts.flavour, err = flavour.Normalize(current.GetRuntimeFlavour())
+		if err != nil {
+			return fmt.Errorf("current node: %w", err)
+		}
+	}
+	if opts.flavour == flavour.LTS && current.GetRuntimeFlavour() == "" {
+		return fmt.Errorf("this node predates kernel flavour support; first upgrade it to the standard flavour of this release, then retry with --flavour lts")
+	}
+	sourceDigest := sha256.Sum256([]byte(current.GetGenerationId()))
+	request.CandidateGenerationID = fmt.Sprintf("katlos%s-%s-%x", flavour.Suffix(opts.flavour), opts.version, sourceDigest[:6])
 	architecture, err := nodeArtifactArchitecture(current)
 	if err != nil {
 		return err
@@ -449,13 +472,17 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		request.ImageSizeBytes = localArtifact.SizeBytes
 		image = localArtifact.Path
 	} else {
-		request.ImageURL = katlOSReleaseURL(opts.version, architecture)
+		request.ImageURL = katlOSReleaseURL(opts.version, architecture, opts.flavour)
 		image = request.ImageURL
 	}
 	if err := operation.ValidateHostUpgrade(request); err != nil {
 		return err
 	}
-	if current.GetGenerationId() == request.CandidateGenerationID && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
+	installedFlavour, flavourErr := flavour.Normalize(current.GetRuntimeFlavour())
+	if flavourErr != nil {
+		return flavourErr
+	}
+	if current.GetRuntimeVersion() == opts.version && installedFlavour == opts.flavour && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
 		node := target.nodeName
 		if node == "" {
 			node = target.endpoint
@@ -471,7 +498,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 			recovery = nodeUpgradeRecovery(recoveredStatus, recoveryRequirement)
 			_ = recoveryConn.Close()
 		}
-		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
+		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Flavour: opts.flavour, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
 	}
 	if localArtifact != nil && !opts.plan {
 		localRef, err := stageHostUpgradeArtifact(ctx, conn.Client, strings.TrimSpace(opts.actor), status, *localArtifact, target.nodeName, stderr)
@@ -505,7 +532,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	report := hostUpgradeReport{Node: target.nodeName, Version: opts.version, Image: image, Result: "planned", BootHealth: "not-run"}
+	report := hostUpgradeReport{Node: target.nodeName, Version: opts.version, Flavour: opts.flavour, Image: image, Result: "planned", BootHealth: "not-run"}
 	if report.Node == "" {
 		report.Node = target.endpoint
 	}
@@ -566,11 +593,12 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 }
 
 func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeReport) error {
+	label := "KatlOS" + flavour.Suffix(report.Flavour)
 	if output == "json" {
 		return writeJSON(stdout, report)
 	}
 	if report.Result == "planned" {
-		_, err := fmt.Fprintf(stdout, "%s can upgrade to KatlOS %s\n", report.Node, report.Version)
+		_, err := fmt.Fprintf(stdout, "%s can upgrade to %s %s\n", report.Node, label, report.Version)
 		return err
 	}
 	if report.Result == operation.ResultSucceeded {
@@ -578,10 +606,10 @@ func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeR
 		if report.Kubernetes != "" {
 			kubernetes = "; Kubernetes " + report.Kubernetes
 		}
-		_, err := fmt.Fprintf(stdout, "%s runs KatlOS %s; health %s%s\n", report.Node, report.Version, report.BootHealth, kubernetes)
+		_, err := fmt.Fprintf(stdout, "%s runs %s %s; health %s%s\n", report.Node, label, report.Version, report.BootHealth, kubernetes)
 		return err
 	}
-	_, err := fmt.Fprintf(stdout, "%s KatlOS %s upgrade result: %s\n", report.Node, report.Version, report.Result)
+	_, err := fmt.Fprintf(stdout, "%s %s %s upgrade result: %s\n", report.Node, label, report.Version, report.Result)
 	return err
 }
 
@@ -620,9 +648,9 @@ func supportedArtifactArchitecture(value string) (string, bool) {
 	}
 }
 
-func katlOSReleaseURL(version, architecture string) string {
+func katlOSReleaseURL(version, architecture, kernelFlavour string) string {
 	tag := "v" + version
-	name := "katlos-upgrade-" + version + "-" + architecture + ".squashfs"
+	name := "katlos" + flavour.Suffix(kernelFlavour) + "-upgrade-" + version + "-" + architecture + ".squashfs"
 	return "https://github.com/katl-dev/katl/releases/download/" + tag + "/" + name
 }
 
@@ -646,12 +674,17 @@ func readHostUpgradeArtifact(path string) (hostUpgradeArtifact, error) {
 	if err != nil {
 		return hostUpgradeArtifact{}, fmt.Errorf("metadata version: %w", err)
 	}
+	kernelFlavour, err := flavour.Normalize(metadata.Flavour)
+	if err != nil {
+		return hostUpgradeArtifact{}, err
+	}
 	architecture, ok := supportedArtifactArchitecture(metadata.Architecture)
 	if !ok {
 		return hostUpgradeArtifact{}, fmt.Errorf("metadata architecture %q is unsupported", metadata.Architecture)
 	}
 	return hostUpgradeArtifact{
 		Path:         absolute,
+		Flavour:      kernelFlavour,
 		Version:      version,
 		Architecture: architecture,
 		SHA256:       metadata.SHA256,

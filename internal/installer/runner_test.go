@@ -587,6 +587,7 @@ func TestRunnerRejectsKatlosImageBeforeMutation(t *testing.T) {
 func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
 	store := &MemoryStateStore{}
 	payload := planningPayload()
+	payload.Index.Flavour = "lts"
 	install := &Context{
 		ManifestPath:      writeManifest(t),
 		Commands:          &NoopCommandRunner{},
@@ -612,6 +613,9 @@ func TestRunnerPlansInstallFromKatlosImagePayload(t *testing.T) {
 		t.Fatal("loader record is nil")
 	}
 	record := install.LoaderRecord
+	if record.Root.Flavour != "lts" {
+		t.Fatalf("planned root lost image flavour: %#v", record.Root)
+	}
 	if record.GenerationID != "0" || record.Root.RuntimeArtifactSHA256 != payload.Runtime.SHA256 {
 		t.Fatalf("record root fields = %#v", record.Root)
 	}

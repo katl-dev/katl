@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/flavour"
 )
 
 const ArtifactMetadataKind = "KatlOSImageArtifact"
@@ -17,6 +19,7 @@ const ArtifactMetadataKind = "KatlOSImageArtifact"
 // supported image build pipeline. It is the workstation-side contract used
 // before an image is offered to an installer or running node.
 type ArtifactMetadata struct {
+	Flavour           string `json:"flavour,omitempty"`
 	APIVersion        string `json:"apiVersion"`
 	Kind              string `json:"kind"`
 	ImageRole         string `json:"imageRole"`
@@ -55,6 +58,9 @@ func ReadArtifactMetadata(path string, expectedRole string) (ArtifactMetadata, e
 }
 
 func (m ArtifactMetadata) Validate(expectedRole string) error {
+	if _, err := flavour.Normalize(m.Flavour); err != nil {
+		return err
+	}
 	if m.APIVersion != APIVersion {
 		return fmt.Errorf("KatlOS image metadata apiVersion must be %s", APIVersion)
 	}

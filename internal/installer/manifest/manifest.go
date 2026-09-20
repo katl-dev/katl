@@ -302,6 +302,7 @@ type Volume struct {
 }
 
 type KatlosImage struct {
+	Flavour          string `json:"flavour,omitempty" yaml:"flavour,omitempty"`
 	URL              string `json:"url,omitempty" yaml:"url,omitempty"`
 	LocalRef         string `json:"localRef,omitempty" yaml:"localRef,omitempty"`
 	SHA256           string `json:"sha256" yaml:"sha256"`
