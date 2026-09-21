@@ -311,7 +311,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		}
 	}
 	releaseNotes := string(mustReadFile(t, filepath.Join(output, "RELEASE_NOTES.md")))
-	for _, value := range []string{"## Included components", "| standard | runtime | `0:6.19.1-1.fc44.x86_64` | `0:259.9-1.fc44.x86_64` | `0:2.2.0-1.fc44.x86_64` | `0:1.26-1.fc44.x86_64` |", "## Support boundary", "SUPPORT.md", "## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
+	for _, value := range []string{"## Included components", "| standard | runtime | `6.19.1-1.fc44.x86_64` | `259.9-1.fc44.x86_64` | `2.2.0-1.fc44.x86_64` | `1.26-1.fc44.x86_64` |", "## Support boundary", "SUPPORT.md", "## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
 		if !strings.Contains(releaseNotes, value) {
 			t.Fatalf("release notes missing %q: %q", value, releaseNotes)
 		}
