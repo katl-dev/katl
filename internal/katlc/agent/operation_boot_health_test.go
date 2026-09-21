@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -57,6 +58,49 @@ func TestOperationBootHealthFollowsGeneration(t *testing.T) {
 			}
 			if !receipt.BootHealthPending {
 				t.Fatal("reading status rewrote the operation receipt")
+			}
+		})
+	}
+}
+
+func TestRetiredGenerationReceiptDoesNotRequestBoot(t *testing.T) {
+	for _, removed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "invalidated", true: "removed"}[removed], func(t *testing.T) {
+			server := newTestServer(t)
+			writeCleanGenerationZeroState(t, server.Root)
+			spec, state, err := generation.ReadGeneration(server.Root, "generation-0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.UnavailableReason = "OS slot has been replaced"
+			if err := generation.WriteGenerationStatus(server.Root, spec, state); err != nil {
+				t.Fatal(err)
+			}
+			if removed {
+				// A new selection no longer refers to this historical receipt's generation.
+				selection, _ := generation.ReadBootSelection(server.Root)
+				selection.DefaultGenerationID = "new"
+				selection.BootedGenerationID = "new"
+				selection.Generation0FallbackID = ""
+				if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+					t.Fatal(err)
+				}
+				dir, _ := generation.GenerationDir(server.Root, "generation-0")
+				if err := os.RemoveAll(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := server.Now()
+			_, err = server.Store.Create(operation.OperationRecord{OperationID: "old-upgrade", OperationKind: "bootstrap-init", Scope: "kubeadm-state", RequestDigest: strings.Repeat("a", 64), Phase: "complete", PhasePlan: []string{"complete"}, CompletedPhases: []string{"complete"}, PhaseIndex: 1, CandidateGenerationID: "generation-0", BootHealthPending: true, Terminal: true, Result: operation.ResultSucceeded, CreatedAt: now, UpdatedAt: now, CompletedAt: &now}, "complete", now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{OperationId: "old-upgrade"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.BootHealthPending || !strings.Contains(result.NextAction, "no longer bootable") {
+				t.Fatalf("stale boot instruction: %+v", result)
 			}
 		})
 	}

@@ -525,3 +525,63 @@ On-node evidence remains available under:
 
 If status reports rollback failure or `failed-needs-repair`, stop and follow the
 reported recovery action before submitting another cluster apply.
+
+## Boot generations and retention
+
+KatlOS retains two OS root slots. An OS upgrade writes the non-running slot;
+configuration generations share the OS image in their slot. Overwriting that
+slot removes its old boot entries before replacing the image. It does not keep
+additional OS versions, and selecting an older generation does not restore
+Kubernetes, etcd, or workload data.
+
+Inspect and manage generations through the node management API:
+
+```sh
+katlctl node generations list cp-1 --config cluster.yaml
+katlctl node generations select GENERATION cp-1 --config cluster.yaml
+katlctl node generations select GENERATION cp-1 --one-shot --config cluster.yaml
+katlctl node reboot cp-1 --config cluster.yaml
+katlctl node generations remove GENERATION cp-1 --config cluster.yaml
+```
+
+Selection does not reboot the node. By default it changes the persistent boot
+default. `--one-shot` preserves that default, including after boot health passes;
+the following reboot returns to it. Selection accepts available generations
+that have previously passed health checks. Newly staged configuration and OS
+updates use their existing boot-health validation workflow.
+
+Listing shows each generation's OS version, slot, availability, and protection
+reasons. All commands support `--output json`. Removing an already absent
+generation succeeds. Removal refuses running, selected, rollback, and referenced
+generations; select another default or finish the pending boot first where
+applicable. The newest available healthy generation in each slot is retained
+as a rollback option.
+
+Configure automatic cleanup in ClusterConfig defaults or on an individual node:
+
+```yaml
+spec:
+  defaults:
+    generationRetention:
+      keepLast: 5
+      maxAge: 30d
+```
+
+These are also the defaults when the policy is omitted. A node's
+`generationRetention` replaces the complete defaults policy. `keepLast` must be
+at least one. `maxAge` accepts whole days (`30d`) or a duration (`720h`); `0d`
+disables the age floor.
+
+For each installed OS version, katlc keeps its newest `keepLast` generations
+**and** all generations younger than `maxAge`. A generation is eligible for
+cleanup only when it is outside both groups. Protected generations survive
+regardless of age or count, so these settings are retention floors, not a hard
+space limit. Records invalidated by slot replacement are eligible immediately,
+subject to shared-artifact protection.
+
+Apply policy changes with `katlctl cluster apply --config cluster.yaml`.
+They can apply online. Katlc evaluates the active generation's policy at startup
+and hourly, skipping cleanup during active operations or unsettled boot health.
+Booting an older generation also restores its retention configuration. Cleanup
+removes generation-owned files and boot entries; shared slot kernels and root
+partitions are managed by OS upgrades.

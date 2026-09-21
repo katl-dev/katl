@@ -65,6 +65,7 @@ type TrustedBundleRequest struct {
 }
 
 type NodeOverlay struct {
+	GenerationRetention     *generation.Retention `json:"generationRetention,omitempty" yaml:"generationRetention,omitempty"`
 	Identity                *IdentityOverlay
 	SystemRole              string
 	Kernel                  *manifest.KernelConfig
@@ -716,6 +717,11 @@ func currentNodeConfextRoot(root string, record generation.Record) (string, erro
 }
 
 func validateOverlay(path string, overlay NodeOverlay) error {
+	if overlay.GenerationRetention != nil {
+		if _, _, err := overlay.GenerationRetention.Limits(); err != nil {
+			return fmt.Errorf("%s.generationRetention: %w", path, err)
+		}
+	}
 	if overlay.Kernel != nil {
 		if err := manifest.ValidateKernelConfig(*overlay.Kernel); err != nil {
 			return fmt.Errorf("%s.kernel: %w", path, err)
@@ -770,6 +776,19 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 			domains.add(DomainSystemRole)
 			domains.add(DomainBootstrapNodeMetadata)
 		}
+	}
+	if overlay.GenerationRetention != nil {
+		currentPolicy := generation.Retention{}
+		if node.GenerationRetention != nil {
+			currentPolicy = *node.GenerationRetention
+		}
+		currentCount, currentAge, _ := currentPolicy.Limits()
+		nextCount, nextAge, _ := overlay.GenerationRetention.Limits()
+		if currentCount != nextCount || currentAge != nextAge {
+			domains.add(DomainGenerationRetention)
+		}
+		policy := *overlay.GenerationRetention
+		node.GenerationRetention = &policy
 	}
 	if overlay.Kernel != nil {
 		changed := !slices.Equal(node.Kernel.CommandLine, overlay.Kernel.CommandLine)

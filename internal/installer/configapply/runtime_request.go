@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -50,6 +51,7 @@ type inlineKubeadmConfig struct {
 }
 
 type nodeConfigurationOverlay struct {
+	GenerationRetention  *generation.Retention        `json:"generationRetention,omitempty" yaml:"generationRetention,omitempty"`
 	Identity             *IdentityOverlay             `json:"identity,omitempty" yaml:"identity,omitempty"`
 	SystemRole           string                       `json:"systemRole,omitempty" yaml:"systemRole,omitempty"`
 	Kernel               *manifest.KernelConfig       `json:"kernel,omitempty" yaml:"kernel,omitempty"`
@@ -159,16 +161,17 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 		_, kubeadmChanged = changedConfigs[strings.TrimSpace(overlay.Kubernetes.Kubeadm.ConfigRef)]
 	}
 	nodeOverlay := NodeOverlay{
-		Identity:          overlay.Identity,
-		SystemRole:        overlay.SystemRole,
-		Kernel:            overlay.Kernel,
-		HostConfiguration: overlay.HostConfiguration,
-		SystemExtensions:  overlay.SystemExtensions,
-		Volumes:           overlay.Volumes,
-		Kubernetes:        overlay.Kubernetes,
-		KubeadmChanged:    kubeadmChanged,
-		LivePreflight:     overlay.LivePreflight,
-		APIProxy:          overlay.APIProxy,
+		Identity:            overlay.Identity,
+		SystemRole:          overlay.SystemRole,
+		Kernel:              overlay.Kernel,
+		GenerationRetention: overlay.GenerationRetention,
+		HostConfiguration:   overlay.HostConfiguration,
+		SystemExtensions:    overlay.SystemExtensions,
+		Volumes:             overlay.Volumes,
+		Kubernetes:          overlay.Kubernetes,
+		KubeadmChanged:      kubeadmChanged,
+		LivePreflight:       overlay.LivePreflight,
+		APIProxy:            overlay.APIProxy,
 	}
 	if overlay.ControlPlaneEndpoint != nil {
 		nodeOverlay.ControlPlaneEndpointSet = true

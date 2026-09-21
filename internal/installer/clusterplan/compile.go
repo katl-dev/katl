@@ -327,6 +327,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			SystemRole:           string(role),
 			Kernel:               kernelConfig(layer.Kernel),
 			HostConfiguration:    layer.HostConfiguration,
+			GenerationRetention:  layer.GenerationRetention,
 			SystemExtensions:     slices.Clone(layer.SystemExtensions),
 			ControlPlaneEndpoint: managedEndpoint,
 			Kubernetes: manifest.KubernetesConfig{

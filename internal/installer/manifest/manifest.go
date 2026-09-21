@@ -18,6 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
@@ -48,6 +49,7 @@ type Manifest struct {
 }
 
 type NodeConfig struct {
+	GenerationRetention  *generation.Retention        `json:"generationRetention,omitempty" yaml:"generationRetention,omitempty"`
 	Identity             NodeIdentity                 `json:"identity" yaml:"identity"`
 	SystemRole           string                       `json:"systemRole" yaml:"systemRole"`
 	Kernel               KernelConfig                 `json:"kernel,omitempty,omitzero" yaml:"kernel,omitempty"`
@@ -434,6 +436,11 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 			if strings.TrimSpace(identity.CACertificate) == "" || strings.TrimSpace(identity.ServerCertificate) == "" || strings.TrimSpace(identity.ServerPrivateKey) == "" {
 				return fmt.Errorf("node.identity.management must contain caCertificate, serverCertificate, and serverPrivateKey together")
 			}
+		}
+	}
+	if manifest.Node.GenerationRetention != nil {
+		if _, _, err := manifest.Node.GenerationRetention.Limits(); err != nil {
+			return fmt.Errorf("node.generationRetention: %w", err)
 		}
 	}
 	if err := ValidateKernelConfig(manifest.Node.Kernel); err != nil {

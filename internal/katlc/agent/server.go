@@ -70,6 +70,9 @@ type Dispatcher interface {
 }
 
 type Server struct {
+	MountBootRoot  func(context.Context, string) error
+	SetBootDefault func(context.Context, string, string) error
+	SetBootOneshot func(context.Context, string, string) error
 	agentapi.UnimplementedKatlcAgentServer
 
 	Root                     string
@@ -98,6 +101,9 @@ func NewServer(root string, store operation.Store) *Server {
 	now := time.Now().UTC()
 	startID, _ := randomID("agent")
 	return &Server{
+		MountBootRoot:            mountRuntimeBootRoot,
+		SetBootDefault:           setBootDefault,
+		SetBootOneshot:           setBootOneshot,
 		Root:                     strings.TrimSpace(root),
 		Store:                    store,
 		AgentStartID:             startID,
@@ -140,7 +146,7 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "read target generation: %v", err)
 	}
-	if generationStatus.CommitState != generation.CommitStateCommitted {
+	if generationStatus.UnavailableReason != "" || (generationStatus.CommitState != generation.CommitStateCommitted && !generation.IsKnownGood(generationStatus)) {
 		return nil, status.Errorf(codes.FailedPrecondition, "target generation %q is not committed", target)
 	}
 	selection, err := generation.ReadBootSelection(s.Root)
@@ -1291,6 +1297,17 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 	// health owns the later boot result, including after it is superseded.
 	if out.BootHealthPending && record.Terminal && record.Result == operation.ResultSucceeded {
 		_, state, err := generation.ReadGeneration(s.Root, record.CandidateGenerationID)
+		retired := err == nil && state.UnavailableReason != ""
+		if errors.Is(err, os.ErrNotExist) {
+			if selection, selectionErr := generation.ReadBootSelection(s.Root); selectionErr == nil {
+				id := record.CandidateGenerationID
+				retired = selection.ActiveGenerationID != id && selection.BootedGenerationID != id && selection.DefaultGenerationID != id && selection.TargetBootGenerationID != id && selection.TrialGenerationID != id
+			}
+		}
+		if retired {
+			out.BootHealthPending = false
+			out.NextAction = "generation is no longer bootable; list generations to choose an available boot target"
+		}
 		if err == nil && generation.IsKnownGood(state) && state.CommittedByOperation == record.OperationID {
 			out.BootHealthPending = false
 			out.NextAction = "boot health completed; continue managing the node through its active generation"

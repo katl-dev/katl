@@ -2795,6 +2795,7 @@ type configApplyFixture struct {
 }
 
 type fakeKatlcAgentClient struct {
+	agentapi.KatlcAgentClient
 	kubeconfigResponse      *agentapi.KubeconfigResponse
 	stageAccepted           *agentapi.OperationAccepted
 	stageRequest            *agentapi.GenerationApplyRequest

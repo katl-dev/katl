@@ -821,6 +821,7 @@ func (e *Executor) commitTrialGeneration(ctx context.Context, record operation.O
 	if fallback == "" {
 		fallback = selection.DefaultGenerationID
 	}
+	selection.OneShot = false
 	selection.TargetBootGenerationID = candidate
 	selection.TrialGenerationID = candidate
 	selection.PreviousKnownGoodGenerationID = selection.DefaultGenerationID
@@ -1266,8 +1267,10 @@ func setBootDefault(ctx context.Context, root string, bootEntry string) error {
 }
 
 func setBootEntry(ctx context.Context, root, verb, bootEntry string) error {
-	bootEntry = filepath.Base(strings.TrimSpace(bootEntry))
-	if bootEntry == "." || bootEntry == "" {
+	if strings.TrimSpace(bootEntry) != "" {
+		bootEntry = filepath.Base(strings.TrimSpace(bootEntry))
+	}
+	if bootEntry == "." || (bootEntry == "" && verb != "set-oneshot") {
 		return fmt.Errorf("boot entry is required")
 	}
 	args := []string{"bootctl"}

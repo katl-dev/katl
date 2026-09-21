@@ -17,6 +17,7 @@ const (
 )
 
 type BootSelectionRecord struct {
+	OneShot                       bool      `json:"oneShot,omitempty"`
 	APIVersion                    string    `json:"apiVersion"`
 	Kind                          string    `json:"kind"`
 	DefaultGenerationID           string    `json:"defaultGenerationID"`
@@ -121,6 +122,9 @@ func ValidateBootSelection(selection BootSelectionRecord) error {
 		if _, err := cleanSegment(name, value); err != nil {
 			return err
 		}
+	}
+	if selection.OneShot && selection.PendingHealthValidation {
+		return fmt.Errorf("one-shot selection cannot request persistent boot promotion")
 	}
 	if selection.PendingHealthValidation && strings.TrimSpace(selection.BootedGenerationID) == "" && strings.TrimSpace(selection.TargetBootGenerationID) == "" && strings.TrimSpace(selection.TrialGenerationID) == "" {
 		return fmt.Errorf("pending health validation requires a booted, target, or trial generation")

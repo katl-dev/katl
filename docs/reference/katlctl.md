@@ -198,3 +198,18 @@ readiness and bootstrap phase uses consistent targets. The legacy `--node-addres
 override is restricted to advanced inventory input. The older `node upgrade
 VERSION NODE` invocation remains accepted; new scripts should use the explicit
 `--version` form shown above.
+
+### Boot generation management
+
+```sh
+katlctl node generations list cp-1 --config cluster.yaml
+katlctl node generations select GENERATION cp-1 --config cluster.yaml
+katlctl node generations select GENERATION cp-1 --one-shot --config cluster.yaml
+katlctl node generations remove GENERATION cp-1 --config cluster.yaml
+```
+
+Selection changes the next boot without rebooting immediately. Permanent
+selection is the default; `--one-shot` returns to the persistent default on the
+following boot. Removal refuses protected generations. Use `--output json` for
+automation. See [boot generations and retention](../operations/configure-nodes.md#boot-generations-and-retention)
+for the two-slot model and `generationRetention` configuration.

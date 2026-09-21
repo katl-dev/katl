@@ -166,17 +166,19 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("promoted host upgrade selection = %#v", promoted)
 	}
 
-	rollback := promoted
-	rollback.TrialGenerationID = previousGeneration
-	rollback.PreviousKnownGoodGenerationID = candidateGeneration
-	rollback.TrialBootEntry = previousSpec.Boot.LoaderEntryPath
-	rollback.PreviousKnownGoodBootEntry = candidateSpec.Boot.LoaderEntryPath
-	rollback.PendingTransactionID = "vmtest-host-rollback-" + previousGeneration
-	rollback.PendingHealthValidation = true
-	rollback.PersistentDefaultPromotion = generation.DefaultPromotionPending
-	rollback.UpdatedAt = time.Now().UTC()
-	writeGuestJSON(t, ctx, guest, "/var/lib/katl/boot/selection.json", rollback)
-	guestCommand(t, ctx, guest, "select-previous-known-good", "bootctl", "set-oneshot", filepath.Base(previousSpec.Boot.LoaderEntryPath))
+	selectBootGeneration(t, ctx, endpoint, spec.Name, previousGeneration, true)
+	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
+	waitActiveGeneration(t, ctx, guest, previousGeneration)
+	assertBootedGenerationIdentity(t, ctx, guest, previousSpec)
+	temporary := bootSelectionFromGuest(t, ctx, guest)
+	if temporary.DefaultGenerationID != candidateGeneration {
+		t.Fatalf("one-shot boot changed default: %+v", temporary)
+	}
+
+	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
+	waitActiveGeneration(t, ctx, guest, candidateGeneration)
+	assertBootedGenerationIdentity(t, ctx, guest, candidateSpec)
+	selectBootGeneration(t, ctx, endpoint, spec.Name, previousGeneration, false)
 
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitGenerationPromotion(t, ctx, guest, previousGeneration)
@@ -202,6 +204,11 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	repeatedTrial := bootSelectionFromGuest(t, ctx, guest)
 	if repeatedTrial.TrialGenerationID != repeatedGeneration || repeatedTrial.PreviousKnownGoodGenerationID != previousGeneration || !repeatedTrial.PendingHealthValidation {
 		t.Fatalf("repeated host upgrade trial selection = %#v", repeatedTrial)
+	}
+	assertGuestMissing(t, ctx, guest, "/efi/"+candidateSpec.Boot.LoaderEntryPath)
+	_, obsolete := generationRecordsFromGuest(t, ctx, guest, candidateGeneration)
+	if obsolete.UnavailableReason == "" {
+		t.Fatal("replaced OS generation remains available")
 	}
 	guestCommand(t, ctx, guest, "boot-health-evidence", "systemctl", "show", "katl-boot-health.service", "--property=Result,ExecMainStatus")
 	guestCommand(t, ctx, guest, "boot-complete-evidence", "systemctl", "is-active", "katl-boot-complete.target")
@@ -879,4 +886,31 @@ func readOptionalFile(t *testing.T, path string) string {
 		return ""
 	}
 	return readFile(t, path)
+}
+
+func selectBootGeneration(t *testing.T, ctx context.Context, endpoint, node, id string, oneShot bool) {
+	t.Helper()
+	conn, client := dialKatlcAgentForVMTest(t, ctx, endpoint, node)
+	defer conn.Close()
+	state, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.SelectGeneration(ctx, &agentapi.GenerationMutationRequest{GenerationId: id, OneShot: oneShot, ExpectedMachineId: state.MachineId, ExpectedCurrentGenerationId: state.CurrentGenerationId, ExpectedEnrollmentId: state.EnrollmentId, ExpectedInventoryNodeName: state.InventoryNodeName})
+	if err != nil {
+		t.Fatalf("select generation: %v", err)
+	}
+}
+
+func waitActiveGeneration(t *testing.T, ctx context.Context, guest *GuestControl, id string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		selection := bootSelectionFromGuest(t, ctx, guest)
+		if selection.ActiveGenerationID == id && selection.BootedGenerationID == id && selection.TargetBootGenerationID == "" && !selection.PendingHealthValidation {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("generation %s did not become active", id)
 }

@@ -60,6 +60,9 @@ func readNodeBootHealth(root string) nodeBootHealth {
 		return result
 	}
 	switch {
+	case generationStatus.UnavailableReason != "":
+		result.State = nodeBootHealthFailed
+		result.Diagnostic = generationStatus.UnavailableReason
 	case (generationStatus.CommitState == generation.CommitStateCommitted || generationStatus.CommitState == generation.CommitStateSuperseded) &&
 		generationStatus.BootState == generation.BootStateGood &&
 		generationStatus.HealthState == generation.HealthStateHealthy:

@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -304,32 +303,32 @@ func (s *Server) ListGenerations(ctx context.Context, req *agentapi.ListGenerati
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	includeConfigApply := req != nil && req.IncludeConfigApply
-	root := strings.TrimSpace(s.Root)
-	if root == "" {
-		root = "/"
-	}
-	dir := filepath.Join(filepath.Clean(root), strings.TrimPrefix(generation.GenerationRecordsDir, "/"))
-	entries, err := os.ReadDir(dir)
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
+	items, selection, err := generation.Inspect(s.Root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &agentapi.ListGenerationsResponse{}, nil
-		}
-		return nil, status.Errorf(codes.Internal, "list generations: %v", err)
+		return nil, status.Errorf(codes.FailedPrecondition, "inspect generations: %v", err)
 	}
-	var ids []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			ids = append(ids, entry.Name())
-		}
+	out := &agentapi.ListGenerationsResponse{DefaultGenerationId: selection.DefaultGenerationID, NextBootGenerationId: selection.TargetBootGenerationID, OneShot: selection.OneShot && selection.TargetBootGenerationID != ""}
+	if out.NextBootGenerationId == "" {
+		out.NextBootGenerationId = out.DefaultGenerationId
 	}
-	sort.Strings(ids)
-	out := &agentapi.ListGenerationsResponse{Generations: make([]*agentapi.Generation, 0, len(ids))}
-	for _, id := range ids {
-		gen, err := s.generationReadModel(id, includeConfigApply)
+	if policy, err := s.generationRetention(); err == nil {
+		count, age, err := policy.Limits()
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "read generation %s: %v", id, err)
+			return nil, status.Errorf(codes.FailedPrecondition, "generation retention: %v", err)
 		}
+		out.KeepLast = int32(count)
+		out.MaxAge = age.String()
+	}
+	for _, item := range items {
+		gen, err := s.generationReadModel(item.Spec.GenerationID, req != nil && req.IncludeConfigApply)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "read generation: %v", err)
+		}
+		gen.RootSlot = item.Spec.Root.Slot
+		gen.UnavailableReason = item.UnavailableReason
+		gen.ProtectedBy = item.ProtectedBy
 		out.Generations = append(out.Generations, gen)
 	}
 	return out, nil
@@ -363,6 +362,8 @@ func (s *Server) generationReadModel(id string, includeConfigApply bool) (*agent
 	}
 	out := &agentapi.Generation{
 		GenerationId:         spec.GenerationID,
+		RootSlot:             spec.Root.Slot,
+		UnavailableReason:    genStatus.UnavailableReason,
 		RuntimeVersion:       spec.RuntimeVersion,
 		RuntimeArchitecture:  spec.Root.Architecture,
 		RuntimeFlavour:       kernelFlavour,

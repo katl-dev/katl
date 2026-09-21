@@ -22,6 +22,8 @@ service KatlcAgent {
   rpc WatchOperation(WatchOperationRequest) returns (stream OperationEvent);
   rpc ListGenerations(ListGenerationsRequest) returns (ListGenerationsResponse);
   rpc GetGeneration(GetGenerationRequest) returns (Generation);
+  rpc SelectGeneration(GenerationMutationRequest) returns (GenerationMutationResult);
+  rpc RemoveGeneration(GenerationMutationRequest) returns (GenerationMutationResult);
 }
 
 message GetNodeStatusRequest {}
@@ -521,6 +523,11 @@ message ListGenerationsRequest {
 
 message ListGenerationsResponse {
   repeated Generation generations = 1;
+  string default_generation_id = 2;
+  string next_boot_generation_id = 3;
+  bool one_shot = 4;
+  int32 keep_last = 5;
+  string max_age = 6;
 }
 
 message GetGenerationRequest {
@@ -543,6 +550,9 @@ message Generation {
   ConfigApplyStatus config_apply = 12;
   string runtime_architecture = 13;
   string runtime_flavour = 14;
+  string root_slot = 15;
+  string unavailable_reason = 16;
+  repeated string protected_by = 17;
 }
 
 message ExtensionRef {
@@ -622,4 +632,18 @@ message ShutdownRequest {
 
 message ShutdownAccepted {
   bool scheduled = 1;
+}
+
+message GenerationMutationRequest {
+  string generation_id = 1;
+  bool one_shot = 2;
+  string expected_enrollment_id = 3;
+  string expected_inventory_node_name = 4;
+  string expected_machine_id = 5;
+  string expected_current_generation_id = 6;
+}
+
+message GenerationMutationResult {
+  string generation_id = 1;
+  bool one_shot = 2;
 }

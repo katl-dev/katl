@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	DomainGenerationRetention           = "generation-retention"
 	DomainNodeIdentity                  = "node-identity"
 	DomainResolved                      = "resolved"
 	DomainModulesLoad                   = "modules-load"
@@ -283,6 +284,7 @@ var domainPolicies = map[string]domainPolicy{
 		Classification:  ClassificationStagedOnly,
 		NextBootAllowed: true,
 	},
+	DomainGenerationRetention: {Classification: ClassificationOnlineApplicable, NextBootAllowed: true},
 	DomainHostConfiguration: {
 		Classification:  ClassificationOnlineApplicable,
 		LivePreflight:   true,

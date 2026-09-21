@@ -185,7 +185,7 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 			validateIdentity(pair.value, pair.path, result)
 		case "systemRole":
 			validateSystemRole(pair.value, pair.path, result)
-		case "kernel":
+		case "kernel", "generationRetention":
 			// KnownFields decoding and manifest validation enforce the typed
 			// kernel command-line contract after the safety envelope accepts it.
 		case "hostConfiguration":

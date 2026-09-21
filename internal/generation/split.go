@@ -55,6 +55,7 @@ type GenerationSpec struct {
 }
 
 type GenerationStatus struct {
+	UnavailableReason    string             `json:"unavailableReason,omitempty"`
 	APIVersion           string             `json:"apiVersion"`
 	Kind                 string             `json:"kind"`
 	GenerationID         string             `json:"generationID"`
@@ -561,7 +562,7 @@ func ValidateBootTransition(from string, to string) error {
 }
 
 func IsKnownGood(status GenerationStatus) bool {
-	return (status.CommitState == CommitStateCommitted || status.CommitState == CommitStateSuperseded) &&
+	return status.UnavailableReason == "" && (status.CommitState == CommitStateCommitted || status.CommitState == CommitStateSuperseded) &&
 		status.BootState == BootStateGood &&
 		status.HealthState == HealthStateHealthy
 }

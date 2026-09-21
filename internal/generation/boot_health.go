@@ -171,6 +171,7 @@ func promoteLiveGeneration(request LivePromotionRequest) error {
 			return rollbackDurable(err)
 		}
 	}
+	selection.OneShot = false
 	selection.DefaultGenerationID = generationID
 	selection.TargetBootGenerationID = ""
 	selection.TrialGenerationID = ""
@@ -254,6 +255,18 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	if err != nil {
 		return BootHealthResult{}, err
 	}
+	if status.UnavailableReason != "" {
+		return BootHealthResult{}, fmt.Errorf("generation %s cannot boot: %s", generationID, status.UnavailableReason)
+	}
+	// Replaying health for the running boot must not consume a later manual
+	// selection. Its target takes effect only when that generation actually boots.
+	if !selection.PendingHealthValidation && selection.TargetBootGenerationID != "" && selection.TargetBootGenerationID != generationID && generationID == selection.BootedGenerationID && IsKnownGood(status) {
+		if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
+			return BootHealthResult{}, err
+		}
+		return BootHealthResult{GenerationID: generationID, Result: BootHealthSuccess, DefaultGeneration: selection.DefaultGenerationID, BootDefaultEntry: selection.DefaultBootEntry}, nil
+	}
+	temporary := selection.OneShot && generationID != selection.DefaultGenerationID
 	fallbackRecovery := isFallbackRecovery(selection, generationID)
 	selection = inferBootedSelection(selection, spec, generationID, request.CommandLine)
 	if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
@@ -271,6 +284,9 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 		nextDefaultBootEntry = strings.TrimSpace(selection.TrialBootEntry)
 	} else if fallbackRecovery {
 		nextDefaultBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
+	}
+	if temporary {
+		nextDefaultBootEntry = previousBootEntry
 	}
 	bootDefaultSet := false
 	if nextDefaultBootEntry != "" && previousBootEntry != nextDefaultBootEntry {
@@ -299,7 +315,10 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 			return BootHealthResult{}, err
 		}
 	}
-	selection.DefaultGenerationID = generationID
+	if !temporary {
+		selection.DefaultGenerationID = generationID
+		selection.OneShot = false
+	}
 	selection.TargetBootGenerationID = ""
 	selection.TrialGenerationID = ""
 	selection.BootedGenerationID = generationID
@@ -313,7 +332,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	selection.TargetBootEntry = ""
 	selection.TrialBootEntry = ""
 	selection.BootCountedTrialPath = ""
-	if previousID != "" && previousID != generationID {
+	if !temporary && previousID != "" && previousID != generationID {
 		if err := supersedePreviousGeneration(root, previousID, generationID, now); err != nil {
 			return BootHealthResult{}, err
 		}
@@ -332,7 +351,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	return BootHealthResult{
 		GenerationID:      generationID,
 		Result:            BootHealthSuccess,
-		Promoted:          true,
+		Promoted:          !temporary,
 		DefaultGeneration: selection.DefaultGenerationID,
 		BootDefaultEntry:  selection.DefaultBootEntry,
 		BootDefaultSet:    bootDefaultSet,
@@ -353,7 +372,7 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
 		return BootHealthResult{}, err
 	}
-	if status.BootState == BootStateGood && status.HealthState == HealthStateHealthy && !request.ForceFailure {
+	if status.BootState == BootStateGood && status.HealthState == HealthStateHealthy && !request.ForceFailure && selection.TargetBootGenerationID != generationID {
 		return BootHealthResult{
 			GenerationID:      generationID,
 			Result:            request.Result,
@@ -377,7 +396,14 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 			return BootHealthResult{}, err
 		}
 	}
+	originalDefaultEntry := selection.DefaultBootEntry
 	previousID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
+	if selection.OneShot && selection.DefaultGenerationID != generationID {
+		previousID = selection.DefaultGenerationID
+		selection.PreviousKnownGoodGenerationID = previousID
+		selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
+	}
+	selection.OneShot = false
 	if previousID == "" && selection.DefaultGenerationID != generationID {
 		previousID = strings.TrimSpace(selection.DefaultGenerationID)
 	}
@@ -405,6 +431,14 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		selection.RecoveryRequired = true
 	}
 	selection.UpdatedAt = now.UTC()
+	if !selection.RecoveryRequired && selection.DefaultBootEntry != originalDefaultEntry {
+		if request.SetBootDefault == nil {
+			return BootHealthResult{}, fmt.Errorf("boot default updater required for recovery")
+		}
+		if err := request.SetBootDefault(root, selection.DefaultBootEntry); err != nil {
+			return BootHealthResult{}, err
+		}
+	}
 	if err := WriteBootSelection(root, selection); err != nil {
 		return BootHealthResult{}, err
 	}
@@ -438,6 +472,11 @@ func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, ge
 			return selection
 		}
 	} else {
+		if generationID == selection.TargetBootGenerationID || (generationID == selection.DefaultGenerationID && selection.OneShot) {
+			selection.BootedGenerationID = generationID
+			selection.BootedBootEntry = spec.Boot.LoaderEntryPath
+			return selection
+		}
 		if isManualKnownGoodFallback(selection, generationID) {
 			selection.BootedGenerationID = generationID
 			selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)

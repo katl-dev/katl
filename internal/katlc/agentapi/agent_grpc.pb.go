@@ -8,7 +8,6 @@ package agentapi
 
 import (
 	context "context"
-
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -37,6 +36,8 @@ const (
 	KatlcAgent_WatchOperation_FullMethodName           = "/katl.agent.v1.KatlcAgent/WatchOperation"
 	KatlcAgent_ListGenerations_FullMethodName          = "/katl.agent.v1.KatlcAgent/ListGenerations"
 	KatlcAgent_GetGeneration_FullMethodName            = "/katl.agent.v1.KatlcAgent/GetGeneration"
+	KatlcAgent_SelectGeneration_FullMethodName         = "/katl.agent.v1.KatlcAgent/SelectGeneration"
+	KatlcAgent_RemoveGeneration_FullMethodName         = "/katl.agent.v1.KatlcAgent/RemoveGeneration"
 )
 
 // KatlcAgentClient is the client API for KatlcAgent service.
@@ -60,6 +61,8 @@ type KatlcAgentClient interface {
 	WatchOperation(ctx context.Context, in *WatchOperationRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperationEvent], error)
 	ListGenerations(ctx context.Context, in *ListGenerationsRequest, opts ...grpc.CallOption) (*ListGenerationsResponse, error)
 	GetGeneration(ctx context.Context, in *GetGenerationRequest, opts ...grpc.CallOption) (*Generation, error)
+	SelectGeneration(ctx context.Context, in *GenerationMutationRequest, opts ...grpc.CallOption) (*GenerationMutationResult, error)
+	RemoveGeneration(ctx context.Context, in *GenerationMutationRequest, opts ...grpc.CallOption) (*GenerationMutationResult, error)
 }
 
 type katlcAgentClient struct {
@@ -261,6 +264,26 @@ func (c *katlcAgentClient) GetGeneration(ctx context.Context, in *GetGenerationR
 	return out, nil
 }
 
+func (c *katlcAgentClient) SelectGeneration(ctx context.Context, in *GenerationMutationRequest, opts ...grpc.CallOption) (*GenerationMutationResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerationMutationResult)
+	err := c.cc.Invoke(ctx, KatlcAgent_SelectGeneration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *katlcAgentClient) RemoveGeneration(ctx context.Context, in *GenerationMutationRequest, opts ...grpc.CallOption) (*GenerationMutationResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerationMutationResult)
+	err := c.cc.Invoke(ctx, KatlcAgent_RemoveGeneration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // KatlcAgentServer is the server API for KatlcAgent service.
 // All implementations must embed UnimplementedKatlcAgentServer
 // for forward compatibility.
@@ -282,6 +305,8 @@ type KatlcAgentServer interface {
 	WatchOperation(*WatchOperationRequest, grpc.ServerStreamingServer[OperationEvent]) error
 	ListGenerations(context.Context, *ListGenerationsRequest) (*ListGenerationsResponse, error)
 	GetGeneration(context.Context, *GetGenerationRequest) (*Generation, error)
+	SelectGeneration(context.Context, *GenerationMutationRequest) (*GenerationMutationResult, error)
+	RemoveGeneration(context.Context, *GenerationMutationRequest) (*GenerationMutationResult, error)
 	mustEmbedUnimplementedKatlcAgentServer()
 }
 
@@ -295,69 +320,59 @@ type UnimplementedKatlcAgentServer struct{}
 func (UnimplementedKatlcAgentServer) GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetNodeStatus not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) GetEtcdStatus(context.Context, *GetEtcdStatusRequest) (*EtcdStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetEtcdStatus not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) GetKubeconfig(context.Context, *GetKubeconfigRequest) (*KubeconfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetKubeconfig not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) ReadJournal(*JournalRequest, grpc.ServerStreamingServer[JournalEntry]) error {
 	return status.Error(codes.Unimplemented, "method ReadJournal not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) Reboot(context.Context, *RebootRequest) (*RebootAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method Reboot not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method Shutdown not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method ValidateConfig not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) ApplyGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApplyGeneration not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) StageGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method StageGeneration not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) StageHostUpgradeArtifact(grpc.ClientStreamingServer[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged]) error {
 	return status.Error(codes.Unimplemented, "method StageHostUpgradeArtifact not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitOperation not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) CreateWorkerJoinMaterial(context.Context, *CreateWorkerJoinMaterialRequest) (*CreateWorkerJoinMaterialResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateWorkerJoinMaterial not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) GetOperation(context.Context, *GetOperationRequest) (*OperationStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetOperation not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) ListOperations(context.Context, *ListOperationsRequest) (*ListOperationsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListOperations not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) WatchOperation(*WatchOperationRequest, grpc.ServerStreamingServer[OperationEvent]) error {
 	return status.Error(codes.Unimplemented, "method WatchOperation not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) ListGenerations(context.Context, *ListGenerationsRequest) (*ListGenerationsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListGenerations not implemented")
 }
-
 func (UnimplementedKatlcAgentServer) GetGeneration(context.Context, *GetGenerationRequest) (*Generation, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGeneration not implemented")
+}
+func (UnimplementedKatlcAgentServer) SelectGeneration(context.Context, *GenerationMutationRequest) (*GenerationMutationResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method SelectGeneration not implemented")
+}
+func (UnimplementedKatlcAgentServer) RemoveGeneration(context.Context, *GenerationMutationRequest) (*GenerationMutationResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveGeneration not implemented")
 }
 func (UnimplementedKatlcAgentServer) mustEmbedUnimplementedKatlcAgentServer() {}
 func (UnimplementedKatlcAgentServer) testEmbeddedByValue()                    {}
@@ -661,6 +676,42 @@ func _KatlcAgent_GetGeneration_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KatlcAgent_SelectGeneration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerationMutationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).SelectGeneration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_SelectGeneration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).SelectGeneration(ctx, req.(*GenerationMutationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KatlcAgent_RemoveGeneration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerationMutationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KatlcAgentServer).RemoveGeneration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KatlcAgent_RemoveGeneration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KatlcAgentServer).RemoveGeneration(ctx, req.(*GenerationMutationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // KatlcAgent_ServiceDesc is the grpc.ServiceDesc for KatlcAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -723,6 +774,14 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetGeneration",
 			Handler:    _KatlcAgent_GetGeneration_Handler,
+		},
+		{
+			MethodName: "SelectGeneration",
+			Handler:    _KatlcAgent_SelectGeneration_Handler,
+		},
+		{
+			MethodName: "RemoveGeneration",
+			Handler:    _KatlcAgent_RemoveGeneration_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
