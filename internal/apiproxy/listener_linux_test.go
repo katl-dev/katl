@@ -26,7 +26,19 @@ func TestListenBeforeAddressAssignment(t *testing.T) {
 				StatusPath: filepath.Join(t.TempDir(), "status.json"),
 			}
 			result := make(chan error, 1)
-			go func() { result <- server.Run(ctx) }()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				result <- server.Run(ctx)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("proxy did not stop during cleanup")
+				}
+			})
 
 			deadline := time.After(5 * time.Second)
 			ticker := time.NewTicker(10 * time.Millisecond)
