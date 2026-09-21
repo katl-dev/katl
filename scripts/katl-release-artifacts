@@ -294,6 +294,7 @@ Secure Boot signature, or replace Katl's future node-side trust policy.
 EOF
     generate_release_notes "$version" >"$output/RELEASE_NOTES.md"
     (cd "$repo_root" && "$go_command" run ./cmd/katl-mkosi-artifacts publish-flavour "$(realpath "$output")")
+    (cd "$repo_root" && "$go_command" run ./cmd/katl-mkosi-artifacts release-components "$(realpath "$output")" "${KATL_FLAVOUR:-standard}")
     (
         cd "$output"
         mapfile -d '' checksum_files < <(

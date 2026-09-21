@@ -255,7 +255,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	version := "2026.7.0-rc.0"
 	names := writeRequiredReleaseArtifacts(t, buildDir)
 	for _, name := range []string{"katl-installer.packages.tsv", "katl-runtime.packages.tsv"} {
-		if err := os.WriteFile(filepath.Join(buildDir, name), []byte("bash\t0:5.3.0-1.fc44.x86_64\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(buildDir, name), []byte("kernel-core\t0:6.19.1-1.fc44.x86_64\nsystemd\t0:259.9-1.fc44.x86_64\ncontainerd\t0:2.2.0-1.fc44.x86_64\ncrun\t0:1.26-1.fc44.x86_64\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -311,7 +311,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		}
 	}
 	releaseNotes := string(mustReadFile(t, filepath.Join(output, "RELEASE_NOTES.md")))
-	for _, value := range []string{"## Support boundary", "SUPPORT.md", "## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
+	for _, value := range []string{"## Included components", "| standard | runtime | `0:6.19.1-1.fc44.x86_64` | `0:259.9-1.fc44.x86_64` | `0:2.2.0-1.fc44.x86_64` | `0:1.26-1.fc44.x86_64` |", "## Support boundary", "SUPPORT.md", "## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
 		if !strings.Contains(releaseNotes, value) {
 			t.Fatalf("release notes missing %q: %q", value, releaseNotes)
 		}
@@ -518,8 +518,11 @@ func TestKatlReleaseLTSStage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"katl-installer.packages.tsv", "katl-runtime.packages.tsv", "katl-release-build-inputs.json"} {
-		if err := os.WriteFile(filepath.Join(buildDir, name), []byte("{}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(buildDir, "katl-release-build-inputs.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"katl-installer.packages.tsv", "katl-runtime.packages.tsv"} {
+		if err := os.WriteFile(filepath.Join(buildDir, name), []byte("kernel-longterm-core\t0:6.18.1-1.fc44.x86_64\nsystemd\t0:259.9-1.fc44.x86_64\ncontainerd\t0:2.2.0-1.fc44.x86_64\ncrun\t0:1.26-1.fc44.x86_64\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

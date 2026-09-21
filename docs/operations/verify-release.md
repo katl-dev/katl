@@ -91,3 +91,9 @@ tag and immutable manifest digest:
 ```text
 ghcr.io/katl-dev/kubernetes:<version>@sha256:<oci-manifest-digest>
 ```
+
+Release notes list the kernel and systemd versions installed in each standard
+and LTS installer and runtime image, plus containerd and crun in the runtime.
+These versions come from the published `katl-*.packages.tsv` inventories,
+including RPM release and architecture (and epoch where recorded). Kubernetes
+extensions are distributed separately.

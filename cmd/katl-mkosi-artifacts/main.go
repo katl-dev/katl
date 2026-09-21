@@ -56,6 +56,11 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	}
 
 	switch command {
+	case "release-components":
+		if len(args) < 2 {
+			return fmt.Errorf("release-components requires OUTPUT_DIR FLAVOUR...")
+		}
+		return writeReleaseComponents(args[0], args[1:])
 	case "verify-installer-pair":
 		if len(args) != 2 {
 			return fmt.Errorf("verify-installer-pair requires INSTALLER_METADATA IMAGE_METADATA")
@@ -153,6 +158,7 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
+       katl-mkosi-artifacts release-components OUTPUT_DIR FLAVOUR...
        katl-mkosi-artifacts publish-flavour OUTPUT_DIR
        katl-mkosi-artifacts verify-installer-pair INSTALLER_METADATA IMAGE_METADATA
 	   katl-mkosi-artifacts write-installer-artifacts
