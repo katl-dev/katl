@@ -25,6 +25,10 @@ func mergedLayer(layers ...NodeLayer) (NodeLayer, error) {
 
 func mergeLayer(base, next NodeLayer) (NodeLayer, error) {
 	out := base
+	if next.GenerationRetention != nil {
+		policy := *next.GenerationRetention
+		out.GenerationRetention = &policy
+	}
 	if strings.TrimSpace(next.Hostname) != "" {
 		out.Hostname = strings.TrimSpace(next.Hostname)
 	}

@@ -180,6 +180,7 @@ management; mTLS is opt-in. Run any command with --help for examples and flags.`
 
 	nodeCmd := &cobra.Command{Use: "node", Short: "Manage individual KatlOS nodes"}
 	nodeCmd.AddCommand(newHostStatusCommand(ctx, stdout, stderr))
+	nodeCmd.AddCommand(newGenerationsCommand(ctx, stdout))
 	nodeCmd.AddCommand(newNodeLogsCommand(ctx, stdout))
 	nodeCmd.AddCommand(newHostRebootCommand(ctx, stdout, stderr))
 	nodeCmd.AddCommand(newHostShutdownCommand(ctx, stdout, stderr))

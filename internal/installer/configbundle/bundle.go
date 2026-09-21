@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
+	"github.com/katl-dev/katl/internal/generation"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	installer "github.com/katl-dev/katl/internal/installer"
@@ -100,26 +101,28 @@ type SourceSpec struct {
 }
 
 type SourceNode struct {
-	Name              string                            `yaml:"name" json:"name"`
-	ControlPlane      bool                              `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
-	Access            SourceAccess                      `yaml:"access,omitempty" json:"access,omitempty"`
-	Kernel            *SourceKernelConfig               `yaml:"kernel,omitempty" json:"kernel,omitempty"`
-	HostConfiguration SourceHostConfiguration           `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
-	SystemExtensions  Optional[[]SourceSystemExtension] `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitzero"`
-	Install           SourceInstallLayer                `yaml:"install,omitempty" json:"install,omitempty"`
-	Storage           SourceStorageLayer                `yaml:"storage,omitempty" json:"storage,omitempty"`
-	Kubernetes        SourceKubernetesLayer             `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Management        SourceManagementLayer             `yaml:"management,omitempty" json:"management,omitempty"`
+	GenerationRetention *generation.Retention             `json:"generationRetention,omitempty" yaml:"generationRetention,omitempty"`
+	Name                string                            `yaml:"name" json:"name"`
+	ControlPlane        bool                              `yaml:"controlPlane,omitempty" json:"controlPlane,omitempty"`
+	Access              SourceAccess                      `yaml:"access,omitempty" json:"access,omitempty"`
+	Kernel              *SourceKernelConfig               `yaml:"kernel,omitempty" json:"kernel,omitempty"`
+	HostConfiguration   SourceHostConfiguration           `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	SystemExtensions    Optional[[]SourceSystemExtension] `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitzero"`
+	Install             SourceInstallLayer                `yaml:"install,omitempty" json:"install,omitempty"`
+	Storage             SourceStorageLayer                `yaml:"storage,omitempty" json:"storage,omitempty"`
+	Kubernetes          SourceKubernetesLayer             `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Management          SourceManagementLayer             `yaml:"management,omitempty" json:"management,omitempty"`
 }
 
 type SourceNodeLayer struct {
-	Access            SourceAccess                      `yaml:"access,omitempty" json:"access,omitempty"`
-	Kernel            *SourceKernelConfig               `yaml:"kernel,omitempty" json:"kernel,omitempty"`
-	HostConfiguration SourceHostConfiguration           `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
-	SystemExtensions  Optional[[]SourceSystemExtension] `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitzero"`
-	Install           SourceInstallLayer                `yaml:"install,omitempty" json:"install,omitempty"`
-	Storage           SourceStorageLayer                `yaml:"storage,omitempty" json:"storage,omitempty"`
-	Kubernetes        SourceKubernetesLayer             `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	GenerationRetention *generation.Retention             `json:"generationRetention,omitempty" yaml:"generationRetention,omitempty"`
+	Access              SourceAccess                      `yaml:"access,omitempty" json:"access,omitempty"`
+	Kernel              *SourceKernelConfig               `yaml:"kernel,omitempty" json:"kernel,omitempty"`
+	HostConfiguration   SourceHostConfiguration           `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	SystemExtensions    Optional[[]SourceSystemExtension] `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitzero"`
+	Install             SourceInstallLayer                `yaml:"install,omitempty" json:"install,omitempty"`
+	Storage             SourceStorageLayer                `yaml:"storage,omitempty" json:"storage,omitempty"`
+	Kubernetes          SourceKubernetesLayer             `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
 }
 
 type SourceManagementLayer struct {
@@ -650,10 +653,11 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 
 func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 	return clusterplan.NodeLayer{
-		SSH:               lowerSSHAccess(layer.Access.SSH),
-		Kernel:            lowerKernelConfig(layer.Kernel),
-		HostConfiguration: lowerHostConfiguration(layer.HostConfiguration),
-		SystemExtensions:  lowerSystemExtensions(layer.SystemExtensions),
+		SSH:                 lowerSSHAccess(layer.Access.SSH),
+		Kernel:              lowerKernelConfig(layer.Kernel),
+		GenerationRetention: layer.GenerationRetention,
+		HostConfiguration:   lowerHostConfiguration(layer.HostConfiguration),
+		SystemExtensions:    lowerSystemExtensions(layer.SystemExtensions),
 		Install: clusterplan.InstallLayer{
 			TargetDisk: lowerDiskSelector(layer.Install.SystemDisk),
 			Volumes:    lowerStorageVolumes(layer.Storage.Volumes),
@@ -668,13 +672,14 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 
 func sourceNodeLayer(node SourceNode) SourceNodeLayer {
 	return SourceNodeLayer{
-		Access:            node.Access,
-		Kernel:            cloneSourceKernelConfig(node.Kernel),
-		HostConfiguration: node.HostConfiguration,
-		SystemExtensions:  cloneOptionalSourceSystemExtensions(node.SystemExtensions),
-		Install:           node.Install,
-		Storage:           node.Storage,
-		Kubernetes:        node.Kubernetes,
+		Access:              node.Access,
+		Kernel:              cloneSourceKernelConfig(node.Kernel),
+		GenerationRetention: node.GenerationRetention,
+		HostConfiguration:   node.HostConfiguration,
+		SystemExtensions:    cloneOptionalSourceSystemExtensions(node.SystemExtensions),
+		Install:             node.Install,
+		Storage:             node.Storage,
+		Kubernetes:          node.Kubernetes,
 	}
 }
 

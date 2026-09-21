@@ -2,10 +2,12 @@ package configbundle
 
 import (
 	"bytes"
+	"github.com/katl-dev/katl/internal/generation"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
@@ -200,5 +202,31 @@ func TestEnabledUnitsLayering(t *testing.T) {
 				t.Fatalf("enabled units = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestGenerationRetentionLayering(t *testing.T) {
+	source, err := DecodeSource(strings.NewReader(validSourceConfig()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 3
+	source.Spec.Defaults.GenerationRetention = &generation.Retention{KeepLast: &count, MaxAge: "14d"}
+	layer, err := ResolveNodeLayer(source.Spec.Defaults, source.Spec.Nodes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep, age, err := layer.GenerationRetention.Limits()
+	if err != nil || keep != 3 || age != 14*24*time.Hour {
+		t.Fatalf("inherited retention %d %s %v", keep, age, err)
+	}
+	source.Spec.Nodes[0].GenerationRetention = &generation.Retention{MaxAge: "7d"}
+	layer, err = ResolveNodeLayer(source.Spec.Defaults, source.Spec.Nodes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep, age, err = layer.GenerationRetention.Limits()
+	if err != nil || keep != 5 || age != 7*24*time.Hour {
+		t.Fatalf("replacement retention %d %s %v", keep, age, err)
 	}
 }

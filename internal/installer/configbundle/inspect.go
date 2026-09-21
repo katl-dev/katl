@@ -92,16 +92,17 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 		return NodeResolution{}, fmt.Errorf("resolve node %q: %w", node.Name, err)
 	}
 	effective := SourceNode{
-		Name:              node.Name,
-		ControlPlane:      node.ControlPlane,
-		Access:            resolved.Access,
-		Kernel:            resolved.Kernel,
-		HostConfiguration: resolved.HostConfiguration,
-		SystemExtensions:  resolved.SystemExtensions,
-		Install:           resolved.Install,
-		Storage:           resolved.Storage,
-		Kubernetes:        resolved.Kubernetes,
-		Management:        node.Management,
+		Name:                node.Name,
+		ControlPlane:        node.ControlPlane,
+		Access:              resolved.Access,
+		Kernel:              resolved.Kernel,
+		GenerationRetention: resolved.GenerationRetention,
+		HostConfiguration:   resolved.HostConfiguration,
+		SystemExtensions:    resolved.SystemExtensions,
+		Install:             resolved.Install,
+		Storage:             resolved.Storage,
+		Kubernetes:          resolved.Kubernetes,
+		Management:          node.Management,
 	}
 	base := sourceNodePath(node, nodeIndex)
 	report := NodeResolution{
@@ -185,6 +186,9 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 	_, keysSet := node.Access.SSH.AuthorizedKeys.Get()
 	if _, set := resolved.Access.SSH.AuthorizedKeys.Get(); set {
 		choose("access.ssh.authorizedKeys", keysSet)
+	}
+	if resolved.GenerationRetention != nil {
+		choose("generationRetention", node.GenerationRetention != nil)
 	}
 	if resolved.Kernel != nil {
 		choose("kernel", node.Kernel != nil)
@@ -487,6 +491,7 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	add("spec.kubernetes.version", before.Cluster.KubernetesVersion, after.Cluster.KubernetesVersion)
 	add(base+".controlPlane", before.Effective.ControlPlane, after.Effective.ControlPlane)
 	add(base+".access.ssh.authorizedKeys", before.Effective.Access.SSH.AuthorizedKeys.Value(), after.Effective.Access.SSH.AuthorizedKeys.Value())
+	add(base+".generationRetention", before.Effective.GenerationRetention, after.Effective.GenerationRetention)
 	add(base+".kernel", before.Effective.Kernel, after.Effective.Kernel)
 	add(base+".hostConfiguration.sysfs", before.Effective.HostConfiguration.Sysfs.Value(), after.Effective.HostConfiguration.Sysfs.Value())
 	add(base+".hostConfiguration.maskedUnits", before.Effective.HostConfiguration.MaskedUnits.Value(), after.Effective.HostConfiguration.MaskedUnits.Value())

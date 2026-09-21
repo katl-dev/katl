@@ -45,6 +45,9 @@ func ReadRecord(path string) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	if status.UnavailableReason != "" {
+		return Record{}, fmt.Errorf("generation %s cannot activate: %s", spec.GenerationID, status.UnavailableReason)
+	}
 	return RecordFromSplit(spec, status), nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
@@ -45,6 +46,7 @@ type renderedNodeConfigurationChangeSpec struct {
 }
 
 type renderedNodeConfigurationOverlay struct {
+	GenerationRetention  *generation.Retention        `yaml:"generationRetention"`
 	Identity             *renderedNodeIdentity        `yaml:"identity,omitempty"`
 	SystemRole           string                       `yaml:"systemRole,omitempty"`
 	Kernel               *manifest.KernelConfig       `yaml:"kernel"`
@@ -80,6 +82,9 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	}
 
 	node := request.Manifest.Node
+	if node.GenerationRetention == nil {
+		node.GenerationRetention = &generation.Retention{}
+	}
 	systemExtensions := slices.Clone(node.SystemExtensions)
 	volumes := slices.Clone(request.Manifest.Install.Volumes)
 	kernel := manifest.KernelConfig{CommandLine: slices.Clone(node.Kernel.CommandLine)}
@@ -95,6 +100,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		SystemRole:           node.SystemRole,
 		Kernel:               &kernel,
 		HostConfiguration:    &node.HostConfiguration,
+		GenerationRetention:  node.GenerationRetention,
 		SystemExtensions:     &systemExtensions,
 		Volumes:              &volumes,
 		Kubernetes:           &node.Kubernetes,

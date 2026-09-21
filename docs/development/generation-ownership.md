@@ -32,7 +32,7 @@ generation selection. Generic kernel command-line and persisted-record helpers
 also live outside the installer. The shared generation package does not depend
 on installer or agent packages.
 
-The on-disk spec/status envelopes and boot-selection schema remain unchanged.
+Generation records retain their existing envelope types.
 A host fallback changes the selected runtime; it cannot undo Kubernetes or etcd
 mutations, identity changes, or workload data.
 
@@ -51,3 +51,23 @@ and repeated upgrades reuse the two slot-owned files. Boot records retain the
 concrete UKI paths, including paths from older installed releases.
 Explicit older-release selection and repeated staging do not depend on the
 lexical ordering or length of operator-visible release versions.
+
+Generation management and garbage collection also belong to `internal/generation`.
+They share the boot-state lock with boot health. Katlc serializes these operations
+with operation acceptance and refuses mutation while an operation holds resource
+locks. Cleanup runs only after boot health settles. Retention is read from the
+active generation's effective manifest, so it follows configuration activation
+and rollback rather than introducing a separate mutable policy store.
+
+Manual one-shot selection carries durable intent through health validation without
+promoting the booted generation to the persistent default. The intent survives
+health replay until the default boots again. EFI updates follow intent publication;
+failed updates compensate firmware before restoring the previous intent.
+
+Before an OS transfer overwrites the inactive slot, generation management removes
+its loader entries and records their unavailable status. Replacing a staged target
+first restores firmware selection to the healthy running generation. A partial or
+failed transfer cannot leave an old generation selectable against replacement root
+bytes. Garbage collection can then remove invalidated records, but never artifacts
+still referenced by another generation. Root partitions and slot-owned UKIs remain
+owned by the OS transfer workflow.

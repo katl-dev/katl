@@ -12,6 +12,10 @@ import (
 
 func mergeSourceNodeLayer(base, next SourceNodeLayer) (SourceNodeLayer, error) {
 	out := cloneSourceNodeLayer(base)
+	if next.GenerationRetention != nil {
+		policy := *next.GenerationRetention
+		out.GenerationRetention = &policy
+	}
 	if keys, ok := next.Access.SSH.AuthorizedKeys.Get(); ok {
 		out.Access.SSH.AuthorizedKeys = supplied(slices.Clone(keys))
 	}
@@ -526,6 +530,11 @@ func validateResolvedSourceNodeLayerIssues(path string, layer SourceNodeLayer) [
 	}
 	if err := validateSourceStorageVolumes(path+".storage.volumes", layer.Storage.Volumes, true); err != nil {
 		errs = append(errs, err)
+	}
+	if layer.GenerationRetention != nil {
+		if _, _, err := layer.GenerationRetention.Limits(); err != nil {
+			errs = append(errs, fmt.Errorf("%s.generationRetention: %w", path, err))
+		}
 	}
 	if err := validateSourceHostConfiguration(path+".hostConfiguration", layer.HostConfiguration); err != nil {
 		errs = append(errs, err)

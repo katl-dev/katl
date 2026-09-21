@@ -78,6 +78,13 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return schemaFieldRule{Description: "Whether this node is a Kubernetes control-plane member.", Default: false}
 	case "configbundle.SourceNode.access", "configbundle.SourceNodeLayer.access":
 		return description("Operator SSH access installed on the node.")
+	case "configbundle.SourceNode.generationRetention", "configbundle.SourceNodeLayer.generationRetention":
+		return description("Generation retention per installed OS version. Node settings replace the defaults policy. Selected and referenced generations are always protected.")
+	case "generation.Retention.keepLast":
+		minimum := int64(1)
+		return schemaFieldRule{Description: "Minimum number of newest generations to retain per OS version.", Default: 5, Minimum: &minimum}
+	case "generation.Retention.maxAge":
+		return schemaFieldRule{Description: "Also retain generations younger than this age; accepts whole days such as 30d or Go durations such as 720h. 0d disables the age floor.", Default: "30d"}
 	case "configbundle.SourceNode.kernel", "configbundle.SourceNodeLayer.kernel":
 		return description("Kernel command-line options owned by the operator.")
 	case "configbundle.SourceNode.hostConfiguration", "configbundle.SourceNodeLayer.hostConfiguration":

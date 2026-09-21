@@ -321,6 +321,8 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		Argv: []string{"systemctl", "daemon-reload"},
 	}}
 	switch domain {
+	case DomainGenerationRetention:
+		return nil, nil
 	case DomainKubeadmConfig, DomainSelectedKubeadmConfig:
 		commands = []Command{{
 			Name:                "kubelet-config-watcher-rebind",

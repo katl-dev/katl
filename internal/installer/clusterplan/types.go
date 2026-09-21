@@ -50,14 +50,15 @@ type Node struct {
 }
 
 type NodeLayer struct {
-	Hostname          string                     `yaml:"hostname,omitempty" json:"hostname,omitempty"`
-	SSH               manifest.SSHIdentity       `yaml:"ssh,omitempty" json:"ssh,omitempty"`
-	Kernel            *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
-	HostConfiguration manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
-	SystemExtensions  []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
-	Install           InstallLayer               `yaml:"install,omitempty" json:"install,omitempty"`
-	Kubernetes        KubernetesLayer            `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
-	Bootstrap         BootstrapLayer             `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
+	GenerationRetention *generation.Retention      `json:"generationRetention,omitempty" yaml:"generationRetention,omitempty"`
+	Hostname            string                     `yaml:"hostname,omitempty" json:"hostname,omitempty"`
+	SSH                 manifest.SSHIdentity       `yaml:"ssh,omitempty" json:"ssh,omitempty"`
+	Kernel              *manifest.KernelConfig     `yaml:"kernel,omitempty" json:"kernel,omitempty"`
+	HostConfiguration   manifest.HostConfiguration `yaml:"hostConfiguration,omitempty" json:"hostConfiguration,omitempty"`
+	SystemExtensions    []manifest.SystemExtension `yaml:"systemExtensions,omitempty" json:"systemExtensions,omitempty"`
+	Install             InstallLayer               `yaml:"install,omitempty" json:"install,omitempty"`
+	Kubernetes          KubernetesLayer            `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	Bootstrap           BootstrapLayer             `yaml:"bootstrap,omitempty" json:"bootstrap,omitempty"`
 }
 
 type InstallLayer struct {

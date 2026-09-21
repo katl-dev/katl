@@ -116,6 +116,21 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return err
 	}
+	if err := generation.InvalidateSlot(e.Root, slots.InactivePartUUID, e.clock(),
+		func(root, entry string) error {
+			if e.SetBootDefault == nil {
+				return fmt.Errorf("boot default setter is required")
+			}
+			return e.SetBootDefault(ctx, root, entry)
+		},
+		func(root, entry string) error {
+			if e.SetBootOneshot == nil {
+				return fmt.Errorf("boot one-shot setter is required")
+			}
+			return e.SetBootOneshot(ctx, root, entry)
+		}); err != nil {
+		return e.failHostUpgrade(record, "stage-sysupdate-components", err)
+	}
 	if err := e.prepareSysupdateSlots(ctx, slots); err != nil {
 		return e.failHostUpgrade(record, "stage-sysupdate-components", err)
 	}

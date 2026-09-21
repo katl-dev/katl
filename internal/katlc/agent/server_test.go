@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1346,7 +1347,7 @@ func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Generations) != 2 || list.Generations[1].GenerationId != "generation-1" {
+	if len(list.Generations) != 2 || !slices.ContainsFunc(list.Generations, func(item *agentapi.Generation) bool { return item.GenerationId == "generation-1" }) {
 		t.Fatalf("generation list = %+v", list.Generations)
 	}
 }
