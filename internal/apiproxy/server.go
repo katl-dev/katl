@@ -47,6 +47,9 @@ type Server struct {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var workers sync.WaitGroup
 	config, err := Normalize(s.Config)
 	if err != nil {
 		return err
@@ -72,9 +75,12 @@ func (s *Server) Run(ctx context.Context) error {
 		listeners = append(listeners, listener)
 	}
 	defer func() {
+		// Stop all users of listeners and status storage before returning ownership.
+		cancel()
 		for _, listener := range listeners {
 			_ = listener.Close()
 		}
+		workers.Wait()
 	}()
 	if err := s.writeStatus(); err != nil {
 		return err
@@ -82,18 +88,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 	errCh := make(chan error, len(listeners))
 	for _, listener := range listeners {
-		go s.accept(ctx, listener, errCh)
+		workers.Go(func() { s.accept(ctx, listener, errCh, &workers) })
 	}
 	for _, backend := range config.Backends {
-		go s.monitor(ctx, backend)
+		workers.Go(func() { s.monitor(ctx, backend) })
 	}
-	go s.monitorCanonical(ctx)
-	go func() {
-		<-ctx.Done()
-		for _, listener := range listeners {
-			_ = listener.Close()
-		}
-	}()
+	workers.Go(func() { s.monitorCanonical(ctx) })
 
 	select {
 	case <-ctx.Done():
@@ -106,7 +106,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Server) accept(ctx context.Context, listener net.Listener, errCh chan<- error) {
+func (s *Server) accept(ctx context.Context, listener net.Listener, errCh chan<- error, workers *sync.WaitGroup) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -116,7 +116,7 @@ func (s *Server) accept(ctx context.Context, listener net.Listener, errCh chan<-
 			}
 			return
 		}
-		go s.serveConnection(ctx, conn)
+		workers.Go(func() { s.serveConnection(ctx, conn) })
 	}
 }
 
@@ -136,12 +136,17 @@ func (s *Server) serveConnection(ctx context.Context, client net.Conn) {
 			excluded[backend.Name] = struct{}{}
 			continue
 		}
-		s.forward(client, upstream)
+		s.forward(ctx, client, upstream)
 		return
 	}
 }
 
-func (s *Server) forward(client, upstream net.Conn) {
+func (s *Server) forward(ctx context.Context, client, upstream net.Conn) {
+	stop := context.AfterFunc(ctx, func() {
+		_ = client.Close()
+		_ = upstream.Close()
+	})
+	defer stop()
 	defer upstream.Close()
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -199,6 +204,9 @@ func (s *Server) checkReadyAddress(ctx context.Context, address string) error {
 		return err
 	}
 	defer raw.Close()
+	// Raw HTTP reads and writes do not observe the request context.
+	stop := context.AfterFunc(checkCtx, func() { _ = raw.Close() })
+	defer stop()
 	tlsConn := tls.Client(raw, &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		RootCAs:    roots,
