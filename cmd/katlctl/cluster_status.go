@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
@@ -157,16 +156,16 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 	if opts.output == "json" {
 		return json.NewEncoder(stdout).Encode(report)
 	}
-	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	w := newTable(stdout)
 	if report.ControlPlaneEndpoint != "" {
-		fmt.Fprintln(w, "CONTROL PLANE ENDPOINT\tREACHABLE")
-		fmt.Fprintf(w, "%s\t%s\n", report.ControlPlaneEndpoint, yesNo(report.StableEndpointReachable))
+		w.row("CONTROL PLANE ENDPOINT", "REACHABLE")
+		w.row(report.ControlPlaneEndpoint, yesNo(report.StableEndpointReachable))
 		if report.StableEndpointFailureReason != "" {
-			fmt.Fprintf(w, "\t%s\n", report.StableEndpointFailureReason)
+			w.row("", report.StableEndpointFailureReason)
 		}
-		fmt.Fprintln(w)
+		w.row()
 	}
-	fmt.Fprintln(w, "NODE\tROLE\tREACHABLE\tHEALTH\tKUBERNETES\tKATLOS\tGENERATION\tACTIVITY")
+	w.row("NODE", "ROLE", "REACHABLE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "ACTIVITY")
 	for _, node := range report.Nodes {
 		reachable := "no"
 		health, kubernetes, version, generation, activity := "-", "-", "-", "-", "-"
@@ -180,29 +179,27 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 				kubernetes = firstNonEmpty(strings.TrimSpace(node.Kubernetes.State), "unknown")
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", node.Node, node.Role, reachable, health, kubernetes, version, generation, activity)
+		w.row(node.Node, node.Role, reachable, health, kubernetes, version, generation, activity)
 		if node.Error != "" {
-			fmt.Fprintf(w, "\t\t\t%s\n", node.Error)
+			w.row("", "", "", node.Error)
 		}
 		if node.Kubernetes != nil && node.Kubernetes.FailureReason != "" {
-			fmt.Fprintf(w, "\t\t\t\t%s\n", node.Kubernetes.FailureReason)
+			w.row("", "", "", "", node.Kubernetes.FailureReason)
 		}
 		if node.ControlPlaneEndpoint != nil && node.ControlPlaneEndpoint.FailureReason != "" {
-			fmt.Fprintf(w, "\t\t\tcontrol-plane endpoint: %s\n", node.ControlPlaneEndpoint.FailureReason)
+			w.row("", "", "", fmt.Sprintf("control-plane endpoint: %s", node.ControlPlaneEndpoint.FailureReason))
 		}
 		for _, extension := range node.SystemExtensions {
-			fmt.Fprintf(w, "\t\t\textension %s: desired=%s staged=%s active=%s generation=%s reboot=%s\n",
-				extension.Name, extension.Desired, extension.Staging, extension.Activation, extension.Generation, yesNo(extension.Reboot))
+			w.row("", "", "", fmt.Sprintf("extension %s: desired=%s staged=%s active=%s generation=%s reboot=%s", extension.Name, extension.Desired, extension.Staging, extension.Activation, extension.Generation, yesNo(extension.Reboot)))
 		}
 		for _, volume := range node.Volumes {
-			fmt.Fprintf(w, "\t\t\tvolume %s: target=%s mount=%s filesystem=%s state=%s\n",
-				volume.Name, volume.TargetKind, volume.MountPath, volume.Filesystem, firstNonEmpty(volume.ActiveState, "unknown"))
+			w.row("", "", "", fmt.Sprintf("volume %s: target=%s mount=%s filesystem=%s state=%s", volume.Name, volume.TargetKind, volume.MountPath, volume.Filesystem, firstNonEmpty(volume.ActiveState, "unknown")))
 			if volume.FailureDiagnostic != "" {
-				fmt.Fprintf(w, "\t\t\t%s\n", volume.FailureDiagnostic)
+				w.row("", "", "", volume.FailureDiagnostic)
 			}
 		}
 	}
-	return w.Flush()
+	return w.flush()
 }
 
 func stableEndpointFailure(ctx context.Context, endpoint string) string {

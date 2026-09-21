@@ -7,7 +7,6 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
@@ -197,26 +196,16 @@ func newSystemExtensionStatusCommand(ctx context.Context, stdout, stderr io.Writ
 }
 
 func runSystemExtensionStatus(ctx context.Context, opts systemExtensionStatusOptions, selectedName string, stdout io.Writer) error {
-	if opts.timeout <= 0 {
-		return fmt.Errorf("--timeout must be positive")
-	}
 	if err := validateHostOutput(opts.output); err != nil {
 		return err
 	}
-	target, err := resolveManagementTarget(ctx, opts.target)
+	session, err := openManagementSession(ctx, opts.target, opts.timeout)
 	if err != nil {
 		return err
 	}
-	node := hostTargetName(target)
-	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-	defer cancel()
-	requestCtx = withManagementTarget(requestCtx, target)
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
-	if err != nil {
-		return fmt.Errorf("connect to %s at %s: %w", node, target.endpoint, err)
-	}
-	defer conn.Close()
-	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
+	defer session.close()
+	node := hostTargetName(session.target)
+	status, err := session.client.GetNodeStatus(session.ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
 		return fmt.Errorf("read status from %s: %w", node, err)
 	}
@@ -241,35 +230,30 @@ func runSystemExtensionStatus(ctx context.Context, opts systemExtensionStatusOpt
 }
 
 func writeSystemExtensionStatus(stdout io.Writer, report systemExtensionStatusReport) error {
-	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESIRED\tSTAGED\tACTIVE\tCOMPATIBILITY\tGENERATION\tREBOOT")
+	w := newTable(stdout)
+	w.row("NAME", "DESIRED", "STAGED", "ACTIVE", "COMPATIBILITY", "GENERATION", "REBOOT")
 	for _, extension := range report.Extensions {
 		generationID := extension.GetObservedGenerationId()
 		if extension.GetRebootRequired() {
 			generationID = extension.GetObservedGenerationId() + " -> " + extension.GetDesiredGenerationId()
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			extension.GetName(), extension.GetDesiredState(), extension.GetStagingState(), extension.GetActivationState(),
-			extension.GetCompatibility(), generationID, yesNo(extension.GetRebootRequired()))
+		w.row(extension.GetName(), extension.GetDesiredState(), extension.GetStagingState(), extension.GetActivationState(), extension.GetCompatibility(), generationID, yesNo(extension.GetRebootRequired()))
 		if extension.GetSubmittedReference() != "" {
-			fmt.Fprintf(w, "\tbundle\t%s\n", extension.GetSubmittedReference())
-			fmt.Fprintf(w, "\tdigests\toci=%s bundle=%s\n", extension.GetOciManifestDigest(), extension.GetBundleManifestDigest())
+			w.row("", "bundle", extension.GetSubmittedReference())
+			w.row("", "digests", fmt.Sprintf("oci=%s bundle=%s", extension.GetOciManifestDigest(), extension.GetBundleManifestDigest()))
 		}
 		for _, payload := range extension.GetPayloads() {
-			fmt.Fprintf(w, "\tpayload\t%s %s selected=%s active=%s digest=%s\n",
-				payload.GetRole(), payload.GetName(), yesNo(payload.GetSelected()), yesNo(payload.GetActive()), payload.GetDigest())
+			w.row("", "payload", fmt.Sprintf("%s %s selected=%s active=%s digest=%s", payload.GetRole(), payload.GetName(), yesNo(payload.GetSelected()), yesNo(payload.GetActive()), payload.GetDigest()))
 		}
 		for _, file := range extension.GetFiles() {
-			fmt.Fprintf(w, "\tfile\t%s mode=%#o sha256=%s\n", file.GetPath(), file.GetMode(), file.GetSha256())
+			w.row("", "file", fmt.Sprintf("%s mode=%#o sha256=%s", file.GetPath(), file.GetMode(), file.GetSha256()))
 		}
 		for _, unit := range extension.GetUnits() {
-			fmt.Fprintf(w, "\tunit\t%s enabled=%s boot-health=%s %s/%s result=%s\n",
-				unit.GetName(), yesNo(unit.GetEnable()), yesNo(unit.GetRequiredForBootHealth()),
-				unit.GetActiveState(), unit.GetSubState(), unit.GetResult())
+			w.row("", "unit", fmt.Sprintf("%s enabled=%s boot-health=%s %s/%s result=%s", unit.GetName(), yesNo(unit.GetEnable()), yesNo(unit.GetRequiredForBootHealth()), unit.GetActiveState(), unit.GetSubState(), unit.GetResult()))
 			if unit.GetFailureDiagnostic() != "" {
-				fmt.Fprintf(w, "\t\t%s\n", strings.ReplaceAll(unit.GetFailureDiagnostic(), "\n", "\n\t\t"))
+				w.row("", "", strings.ReplaceAll(unit.GetFailureDiagnostic(), "\n", "\n\t\t"))
 			}
 		}
 	}
-	return w.Flush()
+	return w.flush()
 }

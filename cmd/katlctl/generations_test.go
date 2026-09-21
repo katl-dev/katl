@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -58,6 +60,38 @@ func TestGenerationCommands(t *testing.T) {
 				if fake.action != test.action || fake.request.GenerationId != "previous" || fake.request.OneShot != test.oneShot || fake.request.ExpectedMachineId != "machine-a" || fake.request.ExpectedCurrentGenerationId != "current" {
 					t.Fatalf("request %+v", fake.request)
 				}
+			}
+		})
+	}
+}
+
+func TestGenerationFailureReleasesSession(t *testing.T) {
+	for _, mode := range []string{"status", "identity"} {
+		t.Run(mode, func(t *testing.T) {
+			client := &generationClient{fakeKatlcAgentClient: healthyHostClient("machine-a", "agent-a", "current")}
+			if mode == "status" {
+				client.nodeStatusErr = errors.New("status unavailable")
+			} else {
+				client.nodeStatus.InventoryNodeName = "another-node"
+			}
+			oldDial := dialKatlcAgent
+			t.Cleanup(func() { dialKatlcAgent = oldDial })
+			var requestCtx context.Context
+			closed := 0
+			dialKatlcAgent = func(ctx context.Context, _ string) (katlcAgentConnection, error) {
+				requestCtx = ctx
+				return katlcAgentConnection{Client: client, Close: func() error { closed++; return nil }}, nil
+			}
+
+			err := run(context.Background(), []string{"node", "generations", "select", "previous", "--node", "node-a", "--endpoint", "node.test"}, io.Discard, io.Discard)
+			if err == nil {
+				t.Fatal("failed preflight accepted a selection")
+			}
+			if client.request != nil {
+				t.Fatalf("failed preflight sent mutation: %+v", client.request)
+			}
+			if closed != 1 || requestCtx == nil || !errors.Is(requestCtx.Err(), context.Canceled) {
+				t.Fatalf("session not released: closes=%d, context=%v", closed, requestCtx)
 			}
 		})
 	}

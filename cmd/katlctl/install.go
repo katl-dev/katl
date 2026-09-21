@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
@@ -641,14 +640,14 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 		if node == "" {
 			node = "-"
 		}
-		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NODE\tENDPOINT\tSTATE\tSTEP")
+		w := newTable(stdout)
+		w.row("NODE", "ENDPOINT", "STATE", "STEP")
 		state := string(report.Handoff.InstallStatus.State)
 		if state == "" {
 			state = string(report.Handoff.State)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", node, report.Endpoint, state, step)
-		if err := w.Flush(); err != nil {
+		w.row(node, report.Endpoint, state, step)
+		if err := w.flush(); err != nil {
 			return err
 		}
 		if report.Handoff.InstallStatus.State == installstatus.StateRebootRequested {

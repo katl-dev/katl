@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
@@ -233,8 +232,8 @@ func writeClusterApplyReport(stdout io.Writer, format string, report clusterAppl
 	if format == "json" {
 		return json.NewEncoder(stdout).Encode(report)
 	}
-	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NODE\tCHANGE\tDOMAINS")
+	w := newTable(stdout)
+	w.row("NODE", "CHANGE", "DOMAINS")
 	for _, node := range report.NodePlans {
 		change := node.ApplyMode
 		if node.NoChanges {
@@ -243,9 +242,9 @@ func writeClusterApplyReport(stdout io.Writer, format string, report clusterAppl
 		if node.ApplyMode == generation.ApplyModeNextBoot {
 			change = "next boot (reboot required)"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", node.Node, change, strings.Join(node.ChangedDomains, ", "))
+		w.row(node.Node, change, strings.Join(node.ChangedDomains, ", "))
 	}
-	if err := w.Flush(); err != nil {
+	if err := w.flush(); err != nil {
 		return err
 	}
 	if report.Result == "planned" {

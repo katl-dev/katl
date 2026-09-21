@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/spf13/cobra"
@@ -133,16 +132,12 @@ func writeConfigDiffText(stdout io.Writer, report configbundle.ConfigDiff) error
 		_, err := fmt.Fprintf(stdout, "%s has no effective changes for node %s\n", report.AfterCluster, report.Node)
 		return err
 	}
-	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintf(w, "PATH\tCLASSIFICATION\tREQUIRED OPERATION\n"); err != nil {
-		return err
-	}
+	w := newTable(stdout)
+	w.row("PATH", "CLASSIFICATION", "REQUIRED OPERATION")
 	for _, change := range report.Changes {
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", change.Path, change.Classification, change.RequiredOperation); err != nil {
-			return err
-		}
+		w.row(change.Path, change.Classification, change.RequiredOperation)
 	}
-	if err := w.Flush(); err != nil {
+	if err := w.flush(); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintf(stdout, "Overall: %s\n", report.Classification.Overall)

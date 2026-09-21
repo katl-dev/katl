@@ -11,7 +11,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
@@ -119,16 +118,16 @@ func newContextListCommand(stdout, stderr io.Writer) *cobra.Command {
 		}
 		contexts := append([]workstation.Context(nil), cfg.Contexts...)
 		sort.Slice(contexts, func(i, j int) bool { return contexts[i].Name < contexts[j].Name })
-		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "CURRENT\tCONTEXT\tCLUSTER")
+		w := newTable(stdout)
+		w.row("CURRENT", "CONTEXT", "CLUSTER")
 		for _, ctx := range contexts {
 			current := ""
 			if ctx.Name == cfg.CurrentContext {
 				current = "*"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", current, ctx.Name, ctx.Cluster)
+			w.row(current, ctx.Name, ctx.Cluster)
 		}
-		return w.Flush()
+		return w.flush()
 	}}
 	addContextFileFlags(cmd, &opts)
 	return cmd

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
@@ -205,24 +204,15 @@ func runHostStatus(ctx context.Context, opts hostStatusOptions, stdout, stderr i
 	if err := validateHostOutput(opts.output); err != nil {
 		return err
 	}
-	if opts.timeout <= 0 {
-		return fmt.Errorf("--timeout must be positive")
-	}
-	target, err := resolveManagementTarget(ctx, opts.target)
+	session, err := openManagementSession(ctx, opts.target, opts.timeout)
 	if err != nil {
 		return err
 	}
+	defer session.close()
+	target := session.target
 	node := hostTargetName(target)
-	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-	defer cancel()
-	requestCtx = withManagementTarget(requestCtx, target)
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
-	if err != nil {
-		return fmt.Errorf("connect to %s at %s: %w", node, target.endpoint, err)
-	}
-	defer conn.Close()
 
-	status, current, err := readHostState(requestCtx, conn.Client, node)
+	status, current, err := readHostState(session.ctx, session.client, node)
 	if err != nil {
 		return err
 	}
@@ -234,31 +224,19 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	if err := validateHostOutput(opts.output); err != nil {
 		return err
 	}
-	if opts.timeout <= 0 {
-		return fmt.Errorf("--timeout must be positive")
-	}
-	target, err := resolveManagementTarget(ctx, opts.target)
+	session, err := openManagementSession(ctx, opts.target, opts.timeout)
 	if err != nil {
 		return err
 	}
+	defer session.close()
+	target := session.target
 	node := hostTargetName(target)
-	requestCtx, cancelRequest := context.WithTimeout(ctx, opts.timeout)
-	requestCtx = withManagementTarget(requestCtx, target)
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
-	if err != nil {
-		cancelRequest()
-		return fmt.Errorf("connect to %s at %s: %w", node, target.endpoint, err)
-	}
 
-	status, _, err := readHostState(requestCtx, conn.Client, node)
+	status, _, err := readHostState(session.ctx, session.client, node)
 	if err != nil {
-		_ = conn.Close()
-		cancelRequest()
 		return err
 	}
 	if err := bindManagementStatus(&target, status); err != nil {
-		_ = conn.Close()
-		cancelRequest()
 		return err
 	}
 	generationID := strings.TrimSpace(status.GetBootTargetGenerationId())
@@ -267,13 +245,10 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	}
 	previousAgentStart := status.GetAgentStartId()
 	recoveryRequirement := nodeRecoveryRequirementFor(status)
-	if err := requestNodeReboot(requestCtx, conn.Client, "katlctl node reboot", status, generationID); err != nil {
-		_ = conn.Close()
-		cancelRequest()
+	if err := requestNodeReboot(session.ctx, session.client, "katlctl node reboot", status, generationID); err != nil {
 		return fmt.Errorf("schedule reboot for %s: %w", node, err)
 	}
-	_ = conn.Close()
-	cancelRequest()
+	session.close()
 
 	report := hostRebootReport{Node: node, Result: "scheduled", Generation: generationID}
 	if opts.noWait {
@@ -297,33 +272,22 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 	if err := validateHostOutput(opts.output); err != nil {
 		return err
 	}
-	if opts.timeout <= 0 {
-		return fmt.Errorf("--timeout must be positive")
-	}
-	target, err := resolveManagementTarget(ctx, opts.target)
+	session, err := openManagementSession(ctx, opts.target, opts.timeout)
 	if err != nil {
 		return err
 	}
+	defer session.close()
+	target := session.target
 	node := hostTargetName(target)
-	requestCtx, cancelRequest := context.WithTimeout(ctx, opts.timeout)
-	requestCtx = withManagementTarget(requestCtx, target)
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
+
+	status, err := session.client.GetNodeStatus(session.ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
-		cancelRequest()
-		return fmt.Errorf("connect to %s at %s: %w", node, target.endpoint, err)
-	}
-	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
-	if err != nil {
-		_ = conn.Close()
-		cancelRequest()
 		return fmt.Errorf("read status from %s: %w", node, err)
 	}
 	if err := bindManagementStatus(&target, status); err != nil {
-		_ = conn.Close()
-		cancelRequest()
 		return err
 	}
-	accepted, err := conn.Client.Shutdown(requestCtx, &agentapi.ShutdownRequest{
+	accepted, err := session.client.Shutdown(session.ctx, &agentapi.ShutdownRequest{
 		ApiVersion:                  generation.APIVersion,
 		Kind:                        "ShutdownRequest",
 		Actor:                       "katlctl node shutdown",
@@ -332,8 +296,7 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 		ExpectedMachineId:           status.GetMachineId(),
 		ExpectedCurrentGenerationId: status.GetCurrentGenerationId(),
 	})
-	_ = conn.Close()
-	cancelRequest()
+	session.close()
 	if err != nil {
 		return fmt.Errorf("schedule shutdown for %s: %w", node, err)
 	}
@@ -504,10 +467,8 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	if output == hostOutputJSON {
 		return writeJSON(stdout, report)
 	}
-	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NODE\tHEALTH\tKUBERNETES\tKATLOS\tGENERATION\tNEXT BOOT\tACTIVITY"); err != nil {
-		return err
-	}
+	w := newTable(stdout)
+	w.row("NODE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "NEXT BOOT", "ACTIVITY")
 	version := report.KatlOSVersion
 	if report.KatlOSFlavour == "lts" {
 		version += " (lts)"
@@ -523,20 +484,14 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	if report.Kubernetes != nil {
 		kubernetes = firstNonEmpty(strings.TrimSpace(report.Kubernetes.State), "unknown")
 	}
-	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", report.Node, report.Health, kubernetes, version, report.Generation, nextBoot, report.Activity); err != nil {
-		return err
-	}
+	w.row(report.Node, report.Health, kubernetes, version, report.Generation, nextBoot, report.Activity)
 	if report.BootHealthDiagnostic != "" {
-		if _, err := fmt.Fprintf(w, "\t%s\n", report.BootHealthDiagnostic); err != nil {
-			return err
-		}
+		w.row("", report.BootHealthDiagnostic)
 	}
 	if report.Kubernetes != nil && report.Kubernetes.FailureReason != "" {
-		if _, err := fmt.Fprintf(w, "\t\t%s\n", report.Kubernetes.FailureReason); err != nil {
-			return err
-		}
+		w.row("", "", report.Kubernetes.FailureReason)
 	}
-	if err := w.Flush(); err != nil {
+	if err := w.flush(); err != nil {
 		return err
 	}
 	if report.APIProxy != nil {
@@ -547,44 +502,32 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 				eligible++
 			}
 		}
-		w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "\nAPI PROXY\tLOCAL API\tCANONICAL ENDPOINT\tCANONICAL\tBACKENDS"); err != nil {
-			return err
-		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d/%d\n", proxy.State, yesNo(proxy.LocalAPIEligible), proxy.CanonicalEndpoint, proxy.CanonicalState, eligible, len(proxy.Backends)); err != nil {
-			return err
-		}
+		w = newTable(stdout)
+		w.row()
+		w.row("API PROXY", "LOCAL API", "CANONICAL ENDPOINT", "CANONICAL", "BACKENDS")
+		w.row(proxy.State, yesNo(proxy.LocalAPIEligible), proxy.CanonicalEndpoint, proxy.CanonicalState, fmt.Sprintf("%d/%d", eligible, len(proxy.Backends)))
 		if proxy.FailureReason != "" {
-			if _, err := fmt.Fprintf(w, "\t%s\n", proxy.FailureReason); err != nil {
-				return err
-			}
+			w.row("", proxy.FailureReason)
 		}
 		for _, listener := range proxy.Listeners {
-			if _, err := fmt.Fprintf(w, "listener\t%s\t%s\n", listener.Exposure, listener.Address); err != nil {
-				return err
-			}
+			w.row("listener", listener.Exposure, listener.Address)
 		}
-		if err := w.Flush(); err != nil {
+		if err := w.flush(); err != nil {
 			return err
 		}
 	}
 	if len(report.Volumes) > 0 {
-		w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "\nVOLUME\tTARGET\tMOUNT\tFILESYSTEM\tSOURCE\tSTATE"); err != nil {
-			return err
-		}
+		w = newTable(stdout)
+		w.row()
+		w.row("VOLUME", "TARGET", "MOUNT", "FILESYSTEM", "SOURCE", "STATE")
 		for _, volume := range report.Volumes {
 			state := firstNonEmpty(volume.ActiveState, "unknown")
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", volume.Name, volume.TargetKind, volume.MountPath, volume.Filesystem, firstNonEmpty(volume.MountSource, "unbound"), state); err != nil {
-				return err
-			}
+			w.row(volume.Name, volume.TargetKind, volume.MountPath, volume.Filesystem, firstNonEmpty(volume.MountSource, "unbound"), state)
 			if volume.FailureDiagnostic != "" {
-				if _, err := fmt.Fprintf(w, "\t\t\t\t\t%s\n", volume.FailureDiagnostic); err != nil {
-					return err
-				}
+				w.row("", "", "", "", "", volume.FailureDiagnostic)
 			}
 		}
-		if err := w.Flush(); err != nil {
+		if err := w.flush(); err != nil {
 			return err
 		}
 	}
@@ -592,19 +535,14 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 		return nil
 	}
 	endpoint := report.ControlPlaneEndpoint
-	w = tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "\nCONTROL PLANE ENDPOINT\tVIP\tSTATE\tLOCAL API\tLOCAL VIP"); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", endpoint.Endpoint, endpoint.VIP, endpoint.State, yesNo(endpoint.LocalAPIReady), yesNo(endpoint.LocalVIPOwned)); err != nil {
-		return err
-	}
+	w = newTable(stdout)
+	w.row()
+	w.row("CONTROL PLANE ENDPOINT", "VIP", "STATE", "LOCAL API", "LOCAL VIP")
+	w.row(endpoint.Endpoint, endpoint.VIP, endpoint.State, yesNo(endpoint.LocalAPIReady), yesNo(endpoint.LocalVIPOwned))
 	if endpoint.FailureReason != "" {
-		if _, err := fmt.Fprintf(w, "\t%s\n", endpoint.FailureReason); err != nil {
-			return err
-		}
+		w.row("", endpoint.FailureReason)
 	}
-	return w.Flush()
+	return w.flush()
 }
 
 func yesNo(value bool) string {

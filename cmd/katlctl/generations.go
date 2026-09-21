@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func newGenerationsCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
@@ -46,39 +44,28 @@ func newGenerationsCommand(ctx context.Context, stdout io.Writer) *cobra.Command
 			if err := selectHostNode(&targetOptions.nodeName, args); err != nil {
 				return err
 			}
-			target, err := resolveManagementTarget(ctx, targetOptions)
+			session, err := openManagementSession(ctx, targetOptions, timeout)
 			if err != nil {
 				return err
 			}
-			requestCtx, cancel := context.WithTimeout(withManagementTarget(ctx, target), timeout)
-			defer cancel()
-			conn, err := dialKatlcAgent(requestCtx, target.endpoint)
-			if err != nil {
-				return fmt.Errorf("connect to %s: %w", hostTargetName(target), err)
-			}
-			defer conn.Close()
-			state, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
+			defer session.close()
+			state, err := session.client.GetNodeStatus(session.ctx, &agentapi.GetNodeStatusRequest{})
 			if err != nil {
 				return err
 			}
-			if err := bindManagementStatus(&target, state); err != nil {
+			if err := bindManagementStatus(&session.target, state); err != nil {
 				return err
 			}
 			if action == "list" {
-				result, err := conn.Client.ListGenerations(requestCtx, &agentapi.ListGenerationsRequest{})
+				result, err := session.client.ListGenerations(session.ctx, &agentapi.ListGenerationsRequest{})
 				if err != nil {
 					return fmt.Errorf("list generations: %w", err)
 				}
 				if output == hostOutputJSON {
-					data, err := (protojson.MarshalOptions{Multiline: true, Indent: "  "}).Marshal(result)
-					if err != nil {
-						return err
-					}
-					_, err = fmt.Fprintln(stdout, string(data))
-					return err
+					return writeProtoJSON(stdout, "generation list", result)
 				}
-				w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(w, "GENERATION\tKATLOS\tSLOT\tCREATED\tBOOT\tPROTECTED BY")
+				w := newTable(stdout)
+				w.row("GENERATION", "KATLOS", "SLOT", "CREATED", "BOOT", "PROTECTED BY")
 				for _, gen := range result.Generations {
 					boot := "available"
 					if gen.UnavailableReason != "" {
@@ -90,9 +77,9 @@ func newGenerationsCommand(ctx context.Context, stdout io.Writer) *cobra.Command
 							boot += " (one-shot)"
 						}
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", gen.GenerationId, gen.RuntimeVersion, gen.RootSlot, gen.CreatedAt, boot, strings.Join(gen.ProtectedBy, ", "))
+					w.row(gen.GenerationId, gen.RuntimeVersion, gen.RootSlot, gen.CreatedAt, boot, strings.Join(gen.ProtectedBy, ", "))
 				}
-				if err := w.Flush(); err != nil {
+				if err := w.flush(); err != nil {
 					return err
 				}
 				if result.KeepLast > 0 {
@@ -103,20 +90,15 @@ func newGenerationsCommand(ctx context.Context, stdout io.Writer) *cobra.Command
 			req := &agentapi.GenerationMutationRequest{GenerationId: id, OneShot: oneShot, ExpectedEnrollmentId: state.EnrollmentId, ExpectedInventoryNodeName: state.InventoryNodeName, ExpectedMachineId: state.MachineId, ExpectedCurrentGenerationId: state.CurrentGenerationId}
 			var result *agentapi.GenerationMutationResult
 			if action == "select" {
-				result, err = conn.Client.SelectGeneration(requestCtx, req)
+				result, err = session.client.SelectGeneration(session.ctx, req)
 			} else {
-				result, err = conn.Client.RemoveGeneration(requestCtx, req)
+				result, err = session.client.RemoveGeneration(session.ctx, req)
 			}
 			if err != nil {
 				return fmt.Errorf("%s generation %s: %w", action, id, err)
 			}
 			if output == hostOutputJSON {
-				data, e := (protojson.MarshalOptions{Multiline: true, Indent: "  "}).Marshal(result)
-				if e != nil {
-					return e
-				}
-				_, err = fmt.Fprintln(stdout, string(data))
-				return err
+				return writeProtoJSON(stdout, "generation "+action, result)
 			}
 			if action == "remove" {
 				_, err = fmt.Fprintf(stdout, "Generation %s removed.\n", id)

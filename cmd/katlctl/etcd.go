@@ -8,7 +8,6 @@ import (
 	"net"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -370,8 +369,8 @@ func printEtcdStatus(w io.Writer, coordinator string, status *agentapi.EtcdStatu
 		return json.NewEncoder(w).Encode(map[string]any{"coordinator": coordinator, "etcd": status})
 	}
 	fmt.Fprintf(w, "etcd cluster=%s coordinator=%s healthy=%d/%d quorum=%d\n", status.GetClusterId(), coordinator, status.GetHealthyMembers(), len(status.GetMembers()), status.GetQuorum())
-	table := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "NODE\tMEMBER\tPEER\tHEALTH\tLEADER")
+	table := newTable(w)
+	table.row("NODE", "MEMBER", "PEER", "HEALTH", "LEADER")
 	for _, member := range status.GetMembers() {
 		health := "unhealthy"
 		if member.GetHealthy() {
@@ -381,7 +380,7 @@ func printEtcdStatus(w io.Writer, coordinator string, status *agentapi.EtcdStatu
 		if len(member.GetPeerUrls()) > 0 {
 			peer = member.GetPeerUrls()[0]
 		}
-		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%t\n", member.GetName(), member.GetId(), peer, health, member.GetLeader())
+		table.row(member.GetName(), member.GetId(), peer, health, fmt.Sprintf("%t", member.GetLeader()))
 	}
-	return table.Flush()
+	return table.flush()
 }

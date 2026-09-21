@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/distribution/reference"
@@ -647,16 +646,16 @@ func writeKubernetesUpgradeReport(stdout io.Writer, output string, report kubern
 			action = "Kubernetes upgrade plan"
 		}
 		fmt.Fprintf(stdout, "%s: %s -> %s\n", action, report.SourceVersion, report.TargetVersion)
-		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NODE\tROLE\tRESULT\tPHASE")
+		w := newTable(stdout)
+		w.row("NODE", "ROLE", "RESULT", "PHASE")
 		for _, node := range report.Nodes {
 			phase := node.Phase
 			if phase == "" {
 				phase = "-"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", node.Name, node.Role, node.Result, phase)
+			w.row(node.Name, node.Role, node.Result, phase)
 		}
-		if err := w.Flush(); err != nil {
+		if err := w.flush(); err != nil {
 			return err
 		}
 		if report.NextAction != "" {

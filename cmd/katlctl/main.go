@@ -20,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
@@ -49,7 +48,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	grpcstatus "google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 )
@@ -1732,8 +1730,8 @@ func printWipeText(stdout io.Writer, report wipeClusterReport) error {
 		action = "wipe plan"
 	}
 	fmt.Fprintf(stdout, "%s:\n", action)
-	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NODE\tROLE\tADDRESS\tRESULT")
+	w := newTable(stdout)
+	w.row("NODE", "ROLE", "ADDRESS", "RESULT")
 	results := make(map[string]string, len(report.Nodes))
 	for _, node := range report.Nodes {
 		result := node.Result
@@ -1758,9 +1756,9 @@ func printWipeText(stdout io.Writer, report wipeClusterReport) error {
 				result = "failed"
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", target.Name, target.SystemRole, target.Address, result)
+		w.row(target.Name, target.SystemRole, target.Address, result)
 	}
-	if err := w.Flush(); err != nil {
+	if err := w.flush(); err != nil {
 		return err
 	}
 	for _, refusal := range report.Refusals {
@@ -1967,13 +1965,14 @@ func runConfigTopology(opts configTopologyOptions, stdout, stderr io.Writer) err
 		return err
 	}
 	if opts.output == "text" {
-		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintf(w, "Context:\t%s\nCluster:\t%s\n", resolved.ContextName, resolved.ClusterName)
-		fmt.Fprintln(w, "NODE\tROLE\tENDPOINT")
+		w := newTable(stdout)
+		w.row("Context:", resolved.ContextName)
+		w.row("Cluster:", resolved.ClusterName)
+		w.row("NODE", "ROLE", "ENDPOINT")
 		for _, node := range resolved.Nodes {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", node.Name, node.SystemRole, node.ManagementEndpoint)
+			w.row(node.Name, string(node.SystemRole), node.ManagementEndpoint)
 		}
-		return w.Flush()
+		return w.flush()
 	}
 	data, err := json.MarshalIndent(resolved, "", "  ")
 	if err != nil {
@@ -2461,12 +2460,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		}
 		publicResult := proto.Clone(result).(*agentapi.ConfigValidationResult)
 		publicResult.RequestDigest = ""
-		data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicResult)
-		if err != nil {
-			return fmt.Errorf("marshal validation result: %w", err)
-		}
-		_, err = stdout.Write(append(data, '\n'))
-		return err
+		return writeProtoJSON(stdout, "validation result", publicResult)
 	}
 	requestedMode := strings.TrimSpace(opts.mode)
 	req := &agentapi.GenerationApplyRequest{
@@ -2523,12 +2517,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			if opts.output == "json" {
 				publicResult := proto.Clone(result).(*agentapi.ConfigValidationResult)
 				publicResult.RequestDigest = ""
-				data, marshalErr := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicResult)
-				if marshalErr != nil {
-					return fmt.Errorf("marshal validation result: %w", marshalErr)
-				}
-				_, err = stdout.Write(append(data, '\n'))
-				return err
+				return writeProtoJSON(stdout, "validation result", publicResult)
 			}
 			fmt.Fprintf(stdout, "%s configuration already matches\n", opts.nodeConfig.nodeName)
 			return nil
@@ -2715,12 +2704,7 @@ func runConfigApplyStatus(ctx context.Context, opts configApplyStatusOptions, st
 		if err != nil {
 			return err
 		}
-		data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(generation)
-		if err != nil {
-			return fmt.Errorf("marshal generation status: %w", err)
-		}
-		_, err = stdout.Write(append(data, '\n'))
-		return err
+		return writeProtoJSON(stdout, "generation status", generation)
 	}
 	report, err := loadConfigApplyReport(opts.root, opts.activeGeneration, opts.nextBootGeneration)
 	if err != nil {
