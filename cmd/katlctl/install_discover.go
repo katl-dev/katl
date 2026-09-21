@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"text/tabwriter"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -77,12 +76,12 @@ func runInstallDiscover(ctx context.Context, opts installDiscoverOptions, stdout
 	}
 	report := installDiscoveryReport{APIVersion: "katl.dev/v1alpha1", Kind: "InstallerDiscovery", Installers: installers}
 	if opts.output == "text" {
-		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "ENDPOINT\tSTATE\tNODE")
+		w := newTable(stdout)
+		w.row("ENDPOINT", "STATE", "NODE")
 		for _, installer := range installers {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", installer.Endpoint, installer.Status.State, installer.Status.SelectedNode)
+			w.row(installer.Endpoint, string(installer.Status.State), installer.Status.SelectedNode)
 		}
-		return w.Flush()
+		return w.flush()
 	}
 	if opts.output != "json" {
 		return fmt.Errorf("--output = %q, want text or json", opts.output)

@@ -8,13 +8,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -142,25 +140,15 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	if opts.diagnostics != "normal" && opts.diagnostics != "verbose" {
 		return fmt.Errorf("--diagnostics must be %q or %q", "normal", "verbose")
 	}
-	if opts.timeout <= 0 {
-		return fmt.Errorf("--timeout must be positive")
-	}
-	target, err := resolveManagementTarget(ctx, managementTargetOptions{
+	session, err := openManagementSession(ctx, managementTargetOptions{
 		clusterConfigPath: opts.clusterConfig, configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
 		endpoint: opts.endpoint,
-	})
+	}, opts.timeout)
 	if err != nil {
 		return err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-	defer cancel()
-	requestCtx = withManagementTarget(requestCtx, target)
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	response, err := conn.Client.ListOperations(requestCtx, &agentapi.ListOperationsRequest{
+	defer session.close()
+	response, err := session.client.ListOperations(session.ctx, &agentapi.ListOperationsRequest{
 		ActiveOnly:         opts.activeOnly,
 		Limit:              opts.limit,
 		IncludeDiagnostics: opts.diagnostics,
@@ -173,23 +161,18 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 		status.RequestDigest = ""
 	}
 	if opts.output == "text" {
-		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tKIND\tPHASE\tRESULT\tUPDATED")
+		w := newTable(stdout)
+		w.row("ID", "KIND", "PHASE", "RESULT", "UPDATED")
 		for _, status := range response.GetOperations() {
 			result := status.GetResult()
 			if result == "" {
 				result = "running"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", status.GetOperationId(), status.GetOperationKind(), status.GetPhase(), result, status.GetUpdatedAt())
+			w.row(status.GetOperationId(), status.GetOperationKind(), status.GetPhase(), result, status.GetUpdatedAt())
 		}
-		return w.Flush()
+		return w.flush()
 	}
-	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(response)
-	if err != nil {
-		return fmt.Errorf("marshal operations: %w", err)
-	}
-	_, err = stdout.Write(append(data, '\n'))
-	return err
+	return writeProtoJSON(stdout, "operations", response)
 }
 
 func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout, stderr io.Writer) error {
@@ -199,27 +182,17 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	if opts.diagnostics != "normal" && opts.diagnostics != "verbose" {
 		return fmt.Errorf("--diagnostics must be %q or %q", "normal", "verbose")
 	}
-	if opts.timeout <= 0 {
-		return fmt.Errorf("--timeout must be positive")
-	}
-	target, err := resolveManagementTarget(ctx, managementTargetOptions{
+	session, err := openManagementSession(ctx, managementTargetOptions{
 		clusterConfigPath: opts.clusterConfig, configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
 		endpoint: opts.endpoint,
-	})
+	}, opts.timeout)
 	if err != nil {
 		return err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-	defer cancel()
-	requestCtx = withManagementTarget(requestCtx, target)
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
+	defer session.close()
 	operationID := strings.TrimSpace(opts.operationID)
 	if operationID == "" {
-		operationID, err = selectOperationID(requestCtx, conn.Client)
+		operationID, err = selectOperationID(session.ctx, session.client)
 		if err != nil {
 			return err
 		}
@@ -229,7 +202,7 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 		OperationId:        operationID,
 		IncludeDiagnostics: opts.diagnostics,
 	}
-	status, err := conn.Client.GetOperation(requestCtx, request)
+	status, err := session.client.GetOperation(session.ctx, request)
 	if err != nil {
 		return fmt.Errorf("get operation %s: %w", request.OperationId, err)
 	}
@@ -246,7 +219,7 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 		return operationResultError(status)
 	}
 
-	status, err = followOperation(requestCtx, conn.Client, request, status, stderr)
+	status, err = followOperation(session.ctx, session.client, request, status, stderr)
 	if writeErr := writeOperationStatus(stdout, opts.output, status); writeErr != nil {
 		return writeErr
 	}
@@ -390,12 +363,7 @@ func writeOperationStatus(stdout io.Writer, output string, status *agentapi.Oper
 		}
 		return nil
 	}
-	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicStatus)
-	if err != nil {
-		return fmt.Errorf("marshal operation status: %w", err)
-	}
-	_, err = stdout.Write(append(data, '\n'))
-	return err
+	return writeProtoJSON(stdout, "operation status", publicStatus)
 }
 
 func writeMutationOperationStatus(stdout io.Writer, status *agentapi.OperationStatus) error {
@@ -406,12 +374,7 @@ func writeMutationOperationStatus(stdout io.Writer, status *agentapi.OperationSt
 	publicStatus.OperationId = ""
 	publicStatus.ClientRequestId = ""
 	publicStatus.RequestDigest = ""
-	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicStatus)
-	if err != nil {
-		return fmt.Errorf("marshal operation result: %w", err)
-	}
-	_, err = stdout.Write(append(data, '\n'))
-	return err
+	return writeProtoJSON(stdout, "operation result", publicStatus)
 }
 
 func waitAcceptedOperation(ctx context.Context, client operationClient, accepted *agentapi.OperationAccepted, timeout time.Duration, stdout, stderr io.Writer) error {
@@ -467,12 +430,7 @@ func writeOperationAccepted(stdout io.Writer, accepted *agentapi.OperationAccept
 	if publicAccepted.InitialStatus != nil {
 		publicAccepted.InitialStatus.RequestDigest = ""
 	}
-	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(publicAccepted)
-	if err != nil {
-		return fmt.Errorf("marshal operation accepted: %w", err)
-	}
-	_, err = stdout.Write(append(data, '\n'))
-	return err
+	return writeProtoJSON(stdout, "operation accepted", publicAccepted)
 }
 
 func operationResultError(status *agentapi.OperationStatus) error {
