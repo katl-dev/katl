@@ -8,6 +8,7 @@ package agentapi
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -320,57 +321,75 @@ type UnimplementedKatlcAgentServer struct{}
 func (UnimplementedKatlcAgentServer) GetNodeStatus(context.Context, *GetNodeStatusRequest) (*NodeStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetNodeStatus not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) GetEtcdStatus(context.Context, *GetEtcdStatusRequest) (*EtcdStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetEtcdStatus not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) GetKubeconfig(context.Context, *GetKubeconfigRequest) (*KubeconfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetKubeconfig not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) ReadJournal(*JournalRequest, grpc.ServerStreamingServer[JournalEntry]) error {
 	return status.Error(codes.Unimplemented, "method ReadJournal not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) Reboot(context.Context, *RebootRequest) (*RebootAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method Reboot not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method Shutdown not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) ValidateConfig(context.Context, *ValidateConfigRequest) (*ConfigValidationResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method ValidateConfig not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) ApplyGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApplyGeneration not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) StageGeneration(context.Context, *GenerationApplyRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method StageGeneration not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) StageHostUpgradeArtifact(grpc.ClientStreamingServer[StageHostUpgradeArtifactRequest, HostUpgradeArtifactStaged]) error {
 	return status.Error(codes.Unimplemented, "method StageHostUpgradeArtifact not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) SubmitOperation(context.Context, *SubmitOperationRequest) (*OperationAccepted, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitOperation not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) CreateWorkerJoinMaterial(context.Context, *CreateWorkerJoinMaterialRequest) (*CreateWorkerJoinMaterialResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateWorkerJoinMaterial not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) GetOperation(context.Context, *GetOperationRequest) (*OperationStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetOperation not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) ListOperations(context.Context, *ListOperationsRequest) (*ListOperationsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListOperations not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) WatchOperation(*WatchOperationRequest, grpc.ServerStreamingServer[OperationEvent]) error {
 	return status.Error(codes.Unimplemented, "method WatchOperation not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) ListGenerations(context.Context, *ListGenerationsRequest) (*ListGenerationsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListGenerations not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) GetGeneration(context.Context, *GetGenerationRequest) (*Generation, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGeneration not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) SelectGeneration(context.Context, *GenerationMutationRequest) (*GenerationMutationResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method SelectGeneration not implemented")
 }
+
 func (UnimplementedKatlcAgentServer) RemoveGeneration(context.Context, *GenerationMutationRequest) (*GenerationMutationResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveGeneration not implemented")
 }

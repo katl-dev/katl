@@ -2,12 +2,13 @@ package configbundle
 
 import (
 	"bytes"
-	"github.com/katl-dev/katl/internal/generation"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/generation"
 
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )

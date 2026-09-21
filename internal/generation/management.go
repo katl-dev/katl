@@ -97,9 +97,12 @@ func inspect(root string, selection BootSelectionRecord) ([]ManagedGeneration, e
 			}
 		}
 		for _, p := range []struct{ id, reason string }{
-			{selection.ActiveGenerationID, "active"}, {selection.BootedGenerationID, "booted"},
-			{selection.DefaultGenerationID, "default"}, {selection.TargetBootGenerationID, "next boot"},
-			{selection.TrialGenerationID, "trial"}, {selection.PreviousKnownGoodGenerationID, "rollback"},
+			{selection.ActiveGenerationID, "active"},
+			{selection.BootedGenerationID, "booted"},
+			{selection.DefaultGenerationID, "default"},
+			{selection.TargetBootGenerationID, "next boot"},
+			{selection.TrialGenerationID, "trial"},
+			{selection.PreviousKnownGoodGenerationID, "rollback"},
 		} {
 			if id == p.id {
 				item.ProtectedBy = append(item.ProtectedBy, p.reason)

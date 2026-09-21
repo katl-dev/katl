@@ -16,7 +16,8 @@ func TestSelectionBoots(t *testing.T) {
 			root, now := managementFixture(t)
 			managedFixture(t, root, "old", "root-a", "1", now.Add(-time.Hour))
 			firmwareDefault, firmwareNext := "loader/entries/katl-current.conf", ""
-			req := SelectRequest{Root: root, GenerationID: "old", OneShot: oneShot, Now: now,
+			req := SelectRequest{
+				Root: root, GenerationID: "old", OneShot: oneShot, Now: now,
 				SetDefault: func(_, entry string) error { firmwareDefault = entry; return nil },
 				SetOneshot: func(_, entry string) error { firmwareNext = entry; return nil },
 			}
@@ -96,9 +97,12 @@ func TestRetentionFloors(t *testing.T) {
 		id, slot, version string
 		age               time.Duration
 	}{
-		{"a-old", "root-a", "1", 90 * 24 * time.Hour}, {"z-recent", "root-a", "1", time.Hour},
-		{"b-old", "root-b", "0", 90 * 24 * time.Hour}, {"b-newest", "root-b", "0", 80 * 24 * time.Hour},
-		{"b-middle", "root-b", "0", 85 * 24 * time.Hour}, {"a-middle", "root-a", "1", 85 * 24 * time.Hour},
+		{"a-old", "root-a", "1", 90 * 24 * time.Hour},
+		{"z-recent", "root-a", "1", time.Hour},
+		{"b-old", "root-b", "0", 90 * 24 * time.Hour},
+		{"b-newest", "root-b", "0", 80 * 24 * time.Hour},
+		{"b-middle", "root-b", "0", 85 * 24 * time.Hour},
+		{"a-middle", "root-a", "1", 85 * 24 * time.Hour},
 	} {
 		managedFixture(t, root, f.id, f.slot, f.version, now.Add(-f.age))
 	}
@@ -247,10 +251,10 @@ func managedFixture(t *testing.T, root, id, slot, version string, created time.T
 	}
 	for _, path := range paths {
 		full := rootedPathUnchecked(root, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte("artifact"), 0644); err != nil {
+		if err := os.WriteFile(full, []byte("artifact"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

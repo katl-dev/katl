@@ -23,11 +23,13 @@ func (c *generationClient) SelectGeneration(_ context.Context, r *agentapi.Gener
 	c.action = "select"
 	return &agentapi.GenerationMutationResult{GenerationId: r.GenerationId, OneShot: r.OneShot}, nil
 }
+
 func (c *generationClient) RemoveGeneration(_ context.Context, r *agentapi.GenerationMutationRequest, _ ...grpc.CallOption) (*agentapi.GenerationMutationResult, error) {
 	c.request = r
 	c.action = "remove"
 	return &agentapi.GenerationMutationResult{GenerationId: r.GenerationId}, nil
 }
+
 func (c *generationClient) ListGenerations(context.Context, *agentapi.ListGenerationsRequest, ...grpc.CallOption) (*agentapi.ListGenerationsResponse, error) {
 	return &agentapi.ListGenerationsResponse{DefaultGenerationId: "current", NextBootGenerationId: "previous", OneShot: true, KeepLast: 5, MaxAge: "720h", Generations: []*agentapi.Generation{{GenerationId: "previous", RuntimeVersion: "1", RootSlot: "root-b", ProtectedBy: []string{"slot rollback"}}, {GenerationId: "current", RuntimeVersion: "2", RootSlot: "root-a", ProtectedBy: []string{"active", "default"}}}}, nil
 }

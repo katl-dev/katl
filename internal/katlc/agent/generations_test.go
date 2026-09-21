@@ -48,10 +48,10 @@ func TestGenerationManagementAPI(t *testing.T) {
 	// Initial generation's fixture has not passed health yet. Removal still
 	// protects it because it is the selected default, independently of health.
 	path := filepath.Join(server.Root, "efi/loader/entries/katl-old.conf")
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("old entry"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("old entry"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	server.MountBootRoot = func(context.Context, string) error { return nil }
