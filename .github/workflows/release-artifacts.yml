@@ -461,6 +461,11 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - uses: actions/download-artifact@v8
         with:
           pattern: katl-assembled-*-${{ github.sha }}
@@ -472,6 +477,7 @@ jobs:
           for flavour in standard lts; do
             cp flavours/katl-assembled-${flavour}-${GITHUB_SHA}/* dist/
           done
+          go run ./cmd/katl-mkosi-artifacts release-components dist standard lts
           (cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum -c SHA256SUMS)
       - name: Attest staged release artifacts
         if: github.event_name == 'push' && github.ref_type == 'tag'
