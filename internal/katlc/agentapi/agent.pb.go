@@ -7,11 +7,12 @@
 package agentapi
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -6341,68 +6342,71 @@ func file_internal_katlc_agentapi_agent_proto_rawDescGZIP() []byte {
 	return file_internal_katlc_agentapi_agent_proto_rawDescData
 }
 
-var file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
-var file_internal_katlc_agentapi_agent_proto_goTypes = []any{
-	(*GetNodeStatusRequest)(nil),                      // 0: katl.agent.v1.GetNodeStatusRequest
-	(*GetKubeconfigRequest)(nil),                      // 1: katl.agent.v1.GetKubeconfigRequest
-	(*KubeconfigResponse)(nil),                        // 2: katl.agent.v1.KubeconfigResponse
-	(*JournalRequest)(nil),                            // 3: katl.agent.v1.JournalRequest
-	(*JournalEntry)(nil),                              // 4: katl.agent.v1.JournalEntry
-	(*NodeStatus)(nil),                                // 5: katl.agent.v1.NodeStatus
-	(*APIProxyStatus)(nil),                            // 6: katl.agent.v1.APIProxyStatus
-	(*APIProxyListenerStatus)(nil),                    // 7: katl.agent.v1.APIProxyListenerStatus
-	(*APIProxyBackendStatus)(nil),                     // 8: katl.agent.v1.APIProxyBackendStatus
-	(*VolumeStatus)(nil),                              // 9: katl.agent.v1.VolumeStatus
-	(*SystemExtensionStatus)(nil),                     // 10: katl.agent.v1.SystemExtensionStatus
-	(*SystemExtensionPayloadStatus)(nil),              // 11: katl.agent.v1.SystemExtensionPayloadStatus
-	(*SystemExtensionFileStatus)(nil),                 // 12: katl.agent.v1.SystemExtensionFileStatus
-	(*SystemExtensionUnitStatus)(nil),                 // 13: katl.agent.v1.SystemExtensionUnitStatus
-	(*KubernetesStatus)(nil),                          // 14: katl.agent.v1.KubernetesStatus
-	(*ControlPlaneEndpointStatus)(nil),                // 15: katl.agent.v1.ControlPlaneEndpointStatus
-	(*SubmitOperationRequest)(nil),                    // 16: katl.agent.v1.SubmitOperationRequest
-	(*BootstrapOperationRequest)(nil),                 // 17: katl.agent.v1.BootstrapOperationRequest
-	(*WorkerJoinMaterial)(nil),                        // 18: katl.agent.v1.WorkerJoinMaterial
-	(*GetEtcdStatusRequest)(nil),                      // 19: katl.agent.v1.GetEtcdStatusRequest
-	(*EtcdStatus)(nil),                                // 20: katl.agent.v1.EtcdStatus
-	(*EtcdMember)(nil),                                // 21: katl.agent.v1.EtcdMember
-	(*EtcdMemberRemoveOperationRequest)(nil),          // 22: katl.agent.v1.EtcdMemberRemoveOperationRequest
-	(*ValidateConfigRequest)(nil),                     // 23: katl.agent.v1.ValidateConfigRequest
-	(*ConfigValidationResult)(nil),                    // 24: katl.agent.v1.ConfigValidationResult
-	(*GenerationApplyRequest)(nil),                    // 25: katl.agent.v1.GenerationApplyRequest
-	(*ConfigApplyOperationRequest)(nil),               // 26: katl.agent.v1.ConfigApplyOperationRequest
-	(*KubeadmControlPlaneConfigOperationRequest)(nil), // 27: katl.agent.v1.KubeadmControlPlaneConfigOperationRequest
-	(*KubernetesSysextUpdateOperationRequest)(nil),    // 28: katl.agent.v1.KubernetesSysextUpdateOperationRequest
-	(*DestructiveResetOperationRequest)(nil),          // 29: katl.agent.v1.DestructiveResetOperationRequest
-	(*HostUpgradeOperationRequest)(nil),               // 30: katl.agent.v1.HostUpgradeOperationRequest
-	(*StageHostUpgradeArtifactRequest)(nil),           // 31: katl.agent.v1.StageHostUpgradeArtifactRequest
-	(*HostUpgradeArtifactStaged)(nil),                 // 32: katl.agent.v1.HostUpgradeArtifactStaged
-	(*CreateWorkerJoinMaterialRequest)(nil),           // 33: katl.agent.v1.CreateWorkerJoinMaterialRequest
-	(*CreateWorkerJoinMaterialResponse)(nil),          // 34: katl.agent.v1.CreateWorkerJoinMaterialResponse
-	(*OperationAccepted)(nil),                         // 35: katl.agent.v1.OperationAccepted
-	(*GetOperationRequest)(nil),                       // 36: katl.agent.v1.GetOperationRequest
-	(*ListOperationsRequest)(nil),                     // 37: katl.agent.v1.ListOperationsRequest
-	(*ListOperationsResponse)(nil),                    // 38: katl.agent.v1.ListOperationsResponse
-	(*OperationStatus)(nil),                           // 39: katl.agent.v1.OperationStatus
-	(*DiagnosticArtifact)(nil),                        // 40: katl.agent.v1.DiagnosticArtifact
-	(*OperationInvocation)(nil),                       // 41: katl.agent.v1.OperationInvocation
-	(*WatchOperationRequest)(nil),                     // 42: katl.agent.v1.WatchOperationRequest
-	(*OperationEvent)(nil),                            // 43: katl.agent.v1.OperationEvent
-	(*ListGenerationsRequest)(nil),                    // 44: katl.agent.v1.ListGenerationsRequest
-	(*ListGenerationsResponse)(nil),                   // 45: katl.agent.v1.ListGenerationsResponse
-	(*GetGenerationRequest)(nil),                      // 46: katl.agent.v1.GetGenerationRequest
-	(*Generation)(nil),                                // 47: katl.agent.v1.Generation
-	(*ExtensionRef)(nil),                              // 48: katl.agent.v1.ExtensionRef
-	(*GeneratedConfext)(nil),                          // 49: katl.agent.v1.GeneratedConfext
-	(*ConfigApplyStatus)(nil),                         // 50: katl.agent.v1.ConfigApplyStatus
-	(*ConfigApplyDomainAction)(nil),                   // 51: katl.agent.v1.ConfigApplyDomainAction
-	(*ConfigApplyEffect)(nil),                         // 52: katl.agent.v1.ConfigApplyEffect
-	(*RebootRequest)(nil),                             // 53: katl.agent.v1.RebootRequest
-	(*RebootAccepted)(nil),                            // 54: katl.agent.v1.RebootAccepted
-	(*ShutdownRequest)(nil),                           // 55: katl.agent.v1.ShutdownRequest
-	(*ShutdownAccepted)(nil),                          // 56: katl.agent.v1.ShutdownAccepted
-	(*GenerationMutationRequest)(nil),                 // 57: katl.agent.v1.GenerationMutationRequest
-	(*GenerationMutationResult)(nil),                  // 58: katl.agent.v1.GenerationMutationResult
-}
+var (
+	file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
+	file_internal_katlc_agentapi_agent_proto_goTypes  = []any{
+		(*GetNodeStatusRequest)(nil),                      // 0: katl.agent.v1.GetNodeStatusRequest
+		(*GetKubeconfigRequest)(nil),                      // 1: katl.agent.v1.GetKubeconfigRequest
+		(*KubeconfigResponse)(nil),                        // 2: katl.agent.v1.KubeconfigResponse
+		(*JournalRequest)(nil),                            // 3: katl.agent.v1.JournalRequest
+		(*JournalEntry)(nil),                              // 4: katl.agent.v1.JournalEntry
+		(*NodeStatus)(nil),                                // 5: katl.agent.v1.NodeStatus
+		(*APIProxyStatus)(nil),                            // 6: katl.agent.v1.APIProxyStatus
+		(*APIProxyListenerStatus)(nil),                    // 7: katl.agent.v1.APIProxyListenerStatus
+		(*APIProxyBackendStatus)(nil),                     // 8: katl.agent.v1.APIProxyBackendStatus
+		(*VolumeStatus)(nil),                              // 9: katl.agent.v1.VolumeStatus
+		(*SystemExtensionStatus)(nil),                     // 10: katl.agent.v1.SystemExtensionStatus
+		(*SystemExtensionPayloadStatus)(nil),              // 11: katl.agent.v1.SystemExtensionPayloadStatus
+		(*SystemExtensionFileStatus)(nil),                 // 12: katl.agent.v1.SystemExtensionFileStatus
+		(*SystemExtensionUnitStatus)(nil),                 // 13: katl.agent.v1.SystemExtensionUnitStatus
+		(*KubernetesStatus)(nil),                          // 14: katl.agent.v1.KubernetesStatus
+		(*ControlPlaneEndpointStatus)(nil),                // 15: katl.agent.v1.ControlPlaneEndpointStatus
+		(*SubmitOperationRequest)(nil),                    // 16: katl.agent.v1.SubmitOperationRequest
+		(*BootstrapOperationRequest)(nil),                 // 17: katl.agent.v1.BootstrapOperationRequest
+		(*WorkerJoinMaterial)(nil),                        // 18: katl.agent.v1.WorkerJoinMaterial
+		(*GetEtcdStatusRequest)(nil),                      // 19: katl.agent.v1.GetEtcdStatusRequest
+		(*EtcdStatus)(nil),                                // 20: katl.agent.v1.EtcdStatus
+		(*EtcdMember)(nil),                                // 21: katl.agent.v1.EtcdMember
+		(*EtcdMemberRemoveOperationRequest)(nil),          // 22: katl.agent.v1.EtcdMemberRemoveOperationRequest
+		(*ValidateConfigRequest)(nil),                     // 23: katl.agent.v1.ValidateConfigRequest
+		(*ConfigValidationResult)(nil),                    // 24: katl.agent.v1.ConfigValidationResult
+		(*GenerationApplyRequest)(nil),                    // 25: katl.agent.v1.GenerationApplyRequest
+		(*ConfigApplyOperationRequest)(nil),               // 26: katl.agent.v1.ConfigApplyOperationRequest
+		(*KubeadmControlPlaneConfigOperationRequest)(nil), // 27: katl.agent.v1.KubeadmControlPlaneConfigOperationRequest
+		(*KubernetesSysextUpdateOperationRequest)(nil),    // 28: katl.agent.v1.KubernetesSysextUpdateOperationRequest
+		(*DestructiveResetOperationRequest)(nil),          // 29: katl.agent.v1.DestructiveResetOperationRequest
+		(*HostUpgradeOperationRequest)(nil),               // 30: katl.agent.v1.HostUpgradeOperationRequest
+		(*StageHostUpgradeArtifactRequest)(nil),           // 31: katl.agent.v1.StageHostUpgradeArtifactRequest
+		(*HostUpgradeArtifactStaged)(nil),                 // 32: katl.agent.v1.HostUpgradeArtifactStaged
+		(*CreateWorkerJoinMaterialRequest)(nil),           // 33: katl.agent.v1.CreateWorkerJoinMaterialRequest
+		(*CreateWorkerJoinMaterialResponse)(nil),          // 34: katl.agent.v1.CreateWorkerJoinMaterialResponse
+		(*OperationAccepted)(nil),                         // 35: katl.agent.v1.OperationAccepted
+		(*GetOperationRequest)(nil),                       // 36: katl.agent.v1.GetOperationRequest
+		(*ListOperationsRequest)(nil),                     // 37: katl.agent.v1.ListOperationsRequest
+		(*ListOperationsResponse)(nil),                    // 38: katl.agent.v1.ListOperationsResponse
+		(*OperationStatus)(nil),                           // 39: katl.agent.v1.OperationStatus
+		(*DiagnosticArtifact)(nil),                        // 40: katl.agent.v1.DiagnosticArtifact
+		(*OperationInvocation)(nil),                       // 41: katl.agent.v1.OperationInvocation
+		(*WatchOperationRequest)(nil),                     // 42: katl.agent.v1.WatchOperationRequest
+		(*OperationEvent)(nil),                            // 43: katl.agent.v1.OperationEvent
+		(*ListGenerationsRequest)(nil),                    // 44: katl.agent.v1.ListGenerationsRequest
+		(*ListGenerationsResponse)(nil),                   // 45: katl.agent.v1.ListGenerationsResponse
+		(*GetGenerationRequest)(nil),                      // 46: katl.agent.v1.GetGenerationRequest
+		(*Generation)(nil),                                // 47: katl.agent.v1.Generation
+		(*ExtensionRef)(nil),                              // 48: katl.agent.v1.ExtensionRef
+		(*GeneratedConfext)(nil),                          // 49: katl.agent.v1.GeneratedConfext
+		(*ConfigApplyStatus)(nil),                         // 50: katl.agent.v1.ConfigApplyStatus
+		(*ConfigApplyDomainAction)(nil),                   // 51: katl.agent.v1.ConfigApplyDomainAction
+		(*ConfigApplyEffect)(nil),                         // 52: katl.agent.v1.ConfigApplyEffect
+		(*RebootRequest)(nil),                             // 53: katl.agent.v1.RebootRequest
+		(*RebootAccepted)(nil),                            // 54: katl.agent.v1.RebootAccepted
+		(*ShutdownRequest)(nil),                           // 55: katl.agent.v1.ShutdownRequest
+		(*ShutdownAccepted)(nil),                          // 56: katl.agent.v1.ShutdownAccepted
+		(*GenerationMutationRequest)(nil),                 // 57: katl.agent.v1.GenerationMutationRequest
+		(*GenerationMutationResult)(nil),                  // 58: katl.agent.v1.GenerationMutationResult
+	}
+)
+
 var file_internal_katlc_agentapi_agent_proto_depIdxs = []int32{
 	15, // 0: katl.agent.v1.NodeStatus.control_plane_endpoint:type_name -> katl.agent.v1.ControlPlaneEndpointStatus
 	14, // 1: katl.agent.v1.NodeStatus.kubernetes:type_name -> katl.agent.v1.KubernetesStatus
