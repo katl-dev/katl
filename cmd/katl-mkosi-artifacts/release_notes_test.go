@@ -16,10 +16,10 @@ func TestReleaseComponents(t *testing.T) {
 		}
 	}
 	put("RELEASE_NOTES.md", "## Changes\n\nKeep these changes.\n")
-	put("katl-installer.packages.tsv", "kernel-core\t0:6.19-1.x86_64\nsystemd\t0:259-1.x86_64\n")
+	put("katl-installer.packages.tsv", "kernel-core\t6.19-2.x86_64\nsystemd\t259-2.x86_64\n")
 	put("katl-runtime.packages.tsv", "kernel-core\t0:6.19-2.x86_64\nsystemd\t0:259-2.x86_64\ncontainerd\t0:2.2-1.x86_64\ncrun\t0:1.26-1.x86_64\n")
 	put("katl-installer-lts.packages.tsv", "kernel-longterm-core\t0:6.18-1.x86_64\nsystemd\t0:259-3.x86_64\n")
-	put("katl-runtime-lts.packages.tsv", "kernel-longterm-core\t0:6.18-2.x86_64\nsystemd\t0:259-4.x86_64\ncontainerd\t0:2.2-2.x86_64\ncrun\t0:1.26-2.x86_64\n")
+	put("katl-runtime-lts.packages.tsv", "kernel-longterm-core\t0:6.18-2.x86_64\nsystemd\t0:259-4.x86_64\ncontainerd\t0:2.2-2.x86_64\ncrun\t2:1.26-2.x86_64\n")
 	if err := writeReleaseComponents(dir, []string{"lts"}); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestReleaseComponents(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "## Included components\n\nExact installed RPM versions from the shipped package inventories (version-release.architecture, with RPM epoch where recorded). Kubernetes extensions are distributed separately.\n\n| Flavour | Image | Kernel | systemd | containerd | crun |\n| --- | --- | --- | --- | --- | --- |\n| standard | installer | `0:6.19-1.x86_64` | `0:259-1.x86_64` | — | — |\n| standard | runtime | `0:6.19-2.x86_64` | `0:259-2.x86_64` | `0:2.2-1.x86_64` | `0:1.26-1.x86_64` |\n| lts | installer | `0:6.18-1.x86_64` | `0:259-3.x86_64` | — | — |\n| lts | runtime | `0:6.18-2.x86_64` | `0:259-4.x86_64` | `0:2.2-2.x86_64` | `0:1.26-2.x86_64` |\n\n## Changes\n\nKeep these changes.\n"
+		want := "## Included components\n\nExact installed RPM versions from the shipped package inventories (version-release.architecture, nonzero RPM epochs retained). Kubernetes extensions are distributed separately.\n\n| Flavour | Image | Kernel | systemd | containerd | crun |\n| --- | --- | --- | --- | --- | --- |\n| standard | installer | `6.19-2.x86_64` | `259-2.x86_64` | — | — |\n| standard | runtime | `6.19-2.x86_64` | `259-2.x86_64` | `2.2-1.x86_64` | `1.26-1.x86_64` |\n| lts | installer | `6.18-1.x86_64` | `259-3.x86_64` | — | — |\n| lts | runtime | `6.18-2.x86_64` | `259-4.x86_64` | `2.2-2.x86_64` | `2:1.26-2.x86_64` |\n\n## Changes\n\nKeep these changes.\n"
 		if string(data) != want {
 			t.Fatalf("notes = %s, want %s", data, want)
 		}

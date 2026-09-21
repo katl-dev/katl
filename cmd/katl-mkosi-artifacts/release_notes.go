@@ -14,7 +14,7 @@ const componentsHeading = "## Included components\n"
 
 func writeReleaseComponents(dir string, flavours []string) error {
 	var section strings.Builder
-	section.WriteString(componentsHeading + "\nExact installed RPM versions from the shipped package inventories (version-release.architecture, with RPM epoch where recorded). Kubernetes extensions are distributed separately.\n\n| Flavour | Image | Kernel | systemd | containerd | crun |\n| --- | --- | --- | --- | --- | --- |\n")
+	section.WriteString(componentsHeading + "\nExact installed RPM versions from the shipped package inventories (version-release.architecture, nonzero RPM epochs retained). Kubernetes extensions are distributed separately.\n\n| Flavour | Image | Kernel | systemd | containerd | crun |\n| --- | --- | --- | --- | --- | --- |\n")
 	seen := make(map[string]bool)
 	for _, value := range flavours {
 		value, err := flavour.Normalize(value)
@@ -57,7 +57,7 @@ func writeReleaseComponents(dir string, flavours []string) error {
 				if strings.ContainsAny(matches[0], "|`\r\n") {
 					return fmt.Errorf("%s: invalid version for %s", name, component)
 				}
-				versions = append(versions, "`"+matches[0]+"`")
+				versions = append(versions, "`"+strings.TrimPrefix(matches[0], "0:")+"`")
 			}
 			if image == "installer" {
 				versions = append(versions, "—", "—")
