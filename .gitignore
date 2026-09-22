@@ -64,4 +64,6 @@ Thumbs.db
 
 cluster.yaml
 kubeconfig
-docs/internal
+
+# Local documentation and plans
+/docs/private/
