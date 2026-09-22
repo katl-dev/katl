@@ -17,6 +17,7 @@ import (
 	"github.com/katl-dev/katl/internal/flavour"
 
 	"github.com/katl-dev/katl/internal/kernelcmdline"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 )
 
 const (
@@ -90,7 +91,8 @@ type ExtensionRef struct {
 }
 
 type ExtensionCompatibility struct {
-	RuntimeInterfaces []string `json:"runtimeInterfaces"`
+	Kernel            *kernelmodule.Contract `json:"kernel,omitempty"`
+	RuntimeInterfaces []string               `json:"runtimeInterfaces"`
 }
 
 type GeneratedConfext struct {
@@ -439,6 +441,11 @@ func normalizeGeneratedConfext(confext GeneratedConfext) (GeneratedConfext, erro
 }
 
 func ValidatePair(root RootSelection, sysext ExtensionRef) error {
+	if sysext.Compatibility.Kernel != nil {
+		if err := sysext.Compatibility.Kernel.ValidateRuntime(root.RuntimeArtifactSHA256); err != nil {
+			return fmt.Errorf("sysext %q: %w", sysext.Name, err)
+		}
+	}
 	if strings.TrimSpace(root.RuntimeInterface) == "" {
 		return fmt.Errorf("runtime interface is required")
 	}

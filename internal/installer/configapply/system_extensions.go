@@ -33,6 +33,11 @@ func ValidateSystemExtensionMaterials(root generation.RootSelection, desired []m
 	wanted := make(map[string]struct{})
 	activationNames := make(map[string]string)
 	for _, extension := range desired {
+		if extension.Kernel != nil {
+			if err := extension.Kernel.ValidateRuntime(root.RuntimeArtifactSHA256); err != nil {
+				return fmt.Errorf("system extension %q: %w", extension.Name, err)
+			}
+		}
 		if extension.Architecture != root.Architecture {
 			return fmt.Errorf("system extension %q architecture %q is incompatible with runtime architecture %q", extension.Name, extension.Architecture, root.Architecture)
 		}
@@ -105,6 +110,7 @@ func MaterializeSystemExtensions(root, generationID string, runtime generation.R
 				PayloadVersion:  extension.PayloadVersion,
 				Architecture:    extension.Architecture,
 				Compatibility: generation.ExtensionCompatibility{
+					Kernel:            extension.Kernel,
 					RuntimeInterfaces: append([]string(nil), extension.SupportedRuntimeInterfaces...),
 				},
 			}
