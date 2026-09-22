@@ -61,6 +61,10 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	}
 
 	switch command {
+	case "build-kernel-extension":
+		return runBuildKernelExtension(args, stdout, stderr, cfg)
+	case "compile-drbd":
+		return runCompileDRBD(args, stdout, stderr, cfg)
 	case "release-components":
 		if len(args) < 2 {
 			return fmt.Errorf("release-components requires OUTPUT_DIR FLAVOUR...")
@@ -163,6 +167,7 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
+       katl-mkosi-artifacts build-kernel-extension drbd9
        katl-mkosi-artifacts release-components OUTPUT_DIR FLAVOUR...
        katl-mkosi-artifacts publish-flavour OUTPUT_DIR
        katl-mkosi-artifacts verify-installer-pair INSTALLER_METADATA IMAGE_METADATA
@@ -225,7 +230,7 @@ type config struct {
 }
 
 func configFromEnv(env map[string]string, repo string) (config, error) {
-	buildDir := filepath.Join(repo, "_build", "mkosi")
+	buildDir := envPath(env, repo, "KATL_MKOSI_BUILD_DIR", filepath.Join(repo, "_build", "mkosi"))
 	flavourValue, err := flavour.Normalize(env["KATL_FLAVOUR"])
 	if err != nil {
 		return config{}, err
