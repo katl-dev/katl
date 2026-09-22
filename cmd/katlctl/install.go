@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -62,6 +63,8 @@ type installSSHReport struct {
 }
 
 type installHandoffReport struct {
+	Skipped      bool                  `json:"skipped,omitempty"`
+	SkipReason   string                `json:"skipReason,omitempty"`
 	APIVersion   string                `json:"apiVersion"`
 	Kind         string                `json:"kind"`
 	Endpoint     string                `json:"endpoint"`
@@ -100,13 +103,19 @@ func newInstallApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 	opts := installApplyOptions{timeout: 30 * time.Minute, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "apply",
-		Short: "Apply a ClusterConfig YAML or config bundle to a waiting KatlOS installer",
-		Long: `Install one node from its ClusterConfig. This replaces the selected system disk;
+		Short: "Apply a ClusterConfig YAML or config bundle to waiting KatlOS installers",
+		Long: `Install nodes from their ClusterConfig. This replaces each selected system disk;
 data volumes follow their configured wipe policy. The node must be running the
 installer (port 8080). For an already installed node, use cluster apply to change
 configuration or cluster bootstrap to start Kubernetes.
 
-The command waits for installation to finish and request its first reboot.
+Without --node, visit every configured node and skip installers that are not
+waiting for configuration or have no reachable handoff service. Only nodes that
+report a waiting state receive configuration. With multiple nodes, JSON output
+is an array of reports, including skipped nodes and their reasons.
+Use --node to select one node before overriding its address with --endpoint.
+
+The command waits for each installation to finish and request its first reboot.
 Use node status after reboot to check the installed system (port 9443).`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -115,11 +124,11 @@ Use node status after reboot to check the installed system (port 9443).`,
 	}
 	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer address or HTTP(S) base URL; overrides the selected node's bootstrap address")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name or bootstrap address; required unless the config contains one node")
+	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name or bootstrap address; defaults to all configured nodes")
 	cmd.Flags().StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "deprecated: wipe intent is configured by wipe: true")
 	_ = cmd.Flags().MarkHidden("acknowledge-storage-wipe")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
-	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "overall handoff and install wait timeout")
+	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "per-node handoff and install wait timeout")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
@@ -168,6 +177,38 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if len(archive) > maxInstallBundleSize {
 		return fmt.Errorf("compiled config bundle size %d exceeds %d bytes", len(archive), maxInstallBundleSize)
 	}
+	nodes := config.Bundle.Manifest.Nodes
+	allNodes := strings.TrimSpace(opts.nodeName) == "" && strings.TrimSpace(opts.endpoint) == ""
+	if !allNodes || len(nodes) == 1 {
+		return applyInstallNode(ctx, opts, config, acknowledgements, allNodes, stdout, stderr)
+	}
+	var failures []error
+	reports := []json.RawMessage{}
+	for _, node := range nodes {
+		nodeOpts := opts
+		nodeOpts.nodeName = node.Name
+		var output bytes.Buffer
+		writer := stdout
+		if opts.output == "json" {
+			writer = &output
+		}
+		if err := applyInstallNode(ctx, nodeOpts, config, acknowledgements, true, writer, stderr); err != nil {
+			failures = append(failures, fmt.Errorf("node %s: %w", node.Name, err))
+		}
+		if output.Len() > 0 {
+			reports = append(reports, json.RawMessage(output.Bytes()))
+		}
+	}
+	if opts.output == "json" {
+		if err := json.NewEncoder(stdout).Encode(reports); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func applyInstallNode(ctx context.Context, opts installApplyOptions, config katlConfigInput, acknowledgements []string, skipUnavailable bool, stdout, stderr io.Writer) error {
+	archive := config.Archive
 	nodeName, err := resolveInstallNode(archive, config.Bundle.Digest, opts.nodeName)
 	if err != nil {
 		return err
@@ -187,6 +228,9 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	if selected.InstallManifest.Node.Bootstrap != nil {
 		bootstrapAddress = selected.InstallManifest.Node.Bootstrap.NodeAddress
 	}
+	if skipUnavailable && len(config.Bundle.Manifest.Nodes) > 1 && strings.TrimSpace(bootstrapAddress) == "" {
+		return fmt.Errorf("node %s has no bootstrap address; configure its management address before cluster-wide installation", nodeName)
+	}
 	endpointHint, err := installEndpointHint(opts.endpoint, bootstrapAddress)
 	if err != nil {
 		return err
@@ -201,12 +245,26 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	client := &http.Client{Timeout: requestTimeout(opts.timeout)}
 	before, err := fetchInstallStatus(waitCtx, client, endpoint)
 	if err != nil {
+		// Installed nodes stop serving handoff after reboot. Bulk installation
+		// selects only nodes positively observed waiting for configuration.
+		if skipUnavailable && ctx.Err() == nil {
+			report := newInstallHandoffReport(endpoint, nodeName, before)
+			report.Skipped = true
+			report.SkipReason = fmt.Sprintf("handoff unavailable: %v", err)
+			fmt.Fprintf(stderr, "skipping node %s: %s\n", nodeName, report.SkipReason)
+			return writeInstallReport(stdout, opts.output, report)
+		}
 		return err
 	}
 	if before.State != handoff.HandoffWaiting {
-		return fmt.Errorf("installer is not accepting config: state=%s selectedNode=%s", before.State, before.SelectedNode)
+		report := newInstallHandoffReport(endpoint, nodeName, before)
+		report.Skipped = true
+		report.SkipReason = fmt.Sprintf("installer state=%s", before.State)
+		fmt.Fprintf(stderr, "skipping node %s: %s\n", nodeName, report.SkipReason)
+		return writeInstallReport(stdout, opts.output, report)
 	}
 
+	fmt.Fprintf(stderr, "installing node %s via %s\n", nodeName, endpoint)
 	accepted, err := submitInstallBundle(waitCtx, client, endpoint, archive, selected.BundleDigest, selected.Node.Name, acknowledgements)
 	if err != nil {
 		return err
@@ -645,6 +703,9 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 		state := string(report.Handoff.InstallStatus.State)
 		if state == "" {
 			state = string(report.Handoff.State)
+		}
+		if report.Skipped {
+			state = "skipped"
 		}
 		w.row(node, report.Endpoint, state, step)
 		if err := w.flush(); err != nil {
