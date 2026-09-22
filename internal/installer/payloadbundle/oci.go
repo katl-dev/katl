@@ -63,6 +63,8 @@ func Source(ref reference.Named) string {
 }
 
 type FetchRequest struct {
+	LayoutDir            string
+	LayoutURL            string
 	Reference            string
 	ArtifactType         string
 	ConfigMediaType      string
@@ -153,7 +155,78 @@ func Pack(ctx context.Context, request PackRequest) (Packed, error) {
 	if err != nil {
 		return Packed{}, fmt.Errorf("read packed OCI manifest: %w", err)
 	}
-	return Packed{ManifestDigest: manifestDescriptor.Digest.String(), Manifest: manifest}, nil
+	return Packed{
+		ManifestDigest: manifestDescriptor.Digest.String(),
+		Manifest:       manifest,
+	}, nil
+}
+
+// Export writes a complete OCI image layout for qualification, local handoff,
+// and later publication. The bundle's identity is independent of its transport.
+func Export(ctx context.Context, directory string, request PackRequest) (Packed, error) {
+	if strings.TrimSpace(directory) == "" {
+		return Packed{}, fmt.Errorf("destination OCI layout is required")
+	}
+	store, descriptor, cleanup, err := pack(ctx, request, "bundle")
+	if err != nil {
+		return Packed{}, err
+	}
+	defer cleanup()
+	destination, err := oci.NewWithContext(ctx, directory)
+	if err != nil {
+		return Packed{}, err
+	}
+	if _, err := oras.Copy(ctx, store, "bundle", destination, "bundle", oras.DefaultCopyOptions); err != nil {
+		return Packed{}, fmt.Errorf("export OCI bundle: %w", err)
+	}
+	data, err := ReadContent(ctx, destination, descriptor)
+	if err != nil {
+		return Packed{}, err
+	}
+	return Packed{
+		ManifestDigest: descriptor.Digest.String(),
+		Manifest:       data,
+	}, nil
+}
+
+// CopyLayout carries only the requested, verified artifact closure into another
+// layout. Local artifacts always require a digest pin and never fall back to a
+// registry if a blob is missing or corrupt.
+func CopyLayout(ctx context.Context, directory string, request FetchRequest) error {
+	if request.LayoutDir == "" || strings.TrimSpace(directory) == "" {
+		return fmt.Errorf("source and destination OCI layouts are required")
+	}
+	if _, err := Fetch(ctx, request); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(request.LayoutDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	source, err := oci.NewFromFS(ctx, root.FS())
+	if err != nil {
+		return err
+	}
+	destination, err := oci.NewWithContext(ctx, directory)
+	if err != nil {
+		return err
+	}
+	ref, err := ParseReference(request.Reference)
+	if err != nil {
+		return err
+	}
+	pin := ManifestDigest(ref)
+	_, err = oras.Copy(ctx, source, pin, destination, pin, oras.DefaultCopyOptions)
+	if err != nil {
+		return err
+	}
+	// Copy skips existing blobs, so verify the resulting layout before accepting
+	// it as a complete artifact closure.
+	request.LayoutDir = directory
+	request.LayoutURL = ""
+	_, err = Fetch(ctx, request)
+	return err
 }
 
 // DescribeFile calculates the descriptor used by every Katl payload bundle.
@@ -210,25 +283,72 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 		return Published{}, fmt.Errorf("publish reference must not include a manifest digest")
 	}
 	packRequest := PackRequest{
-		ArtifactType: request.ArtifactType, ConfigMediaType: request.ConfigMediaType,
-		Config: request.Config, Blobs: request.Blobs, Annotations: request.Annotations,
+		ArtifactType:    request.ArtifactType,
+		ConfigMediaType: request.ConfigMediaType,
+		Config:          request.Config,
+		Blobs:           request.Blobs,
+		Annotations:     request.Annotations,
 	}
 	store, manifestDescriptor, cleanup, err := pack(ctx, packRequest, Tag(ref))
 	if err != nil {
 		return Published{}, err
 	}
 	defer cleanup()
+	return publishTarget(ctx, store, manifestDescriptor, ref, request.Client, request.UseDockerCredentials)
+}
 
+// PublishLayout publishes the verified digest-pinned closure without repacking
+// it. A digest-derived tag keeps the manifest reachable in registries that
+// collect untagged artifacts, without adding mutable release aliases.
+func PublishLayout(ctx context.Context, request FetchRequest) (Published, error) {
+	if request.LayoutDir == "" || request.LayoutURL != "" {
+		return Published{}, fmt.Errorf("publication requires a local OCI layout")
+	}
+	if _, err := Fetch(ctx, request); err != nil {
+		return Published{}, err
+	}
+	ref, err := ParseReference(request.Reference)
+	if err != nil {
+		return Published{}, err
+	}
+	pin := ManifestDigest(ref)
+	tag, err := ManifestDigestTag(pin)
+	if err != nil {
+		return Published{}, err
+	}
+	destination, err := reference.WithTag(reference.TrimNamed(ref), tag)
+	if err != nil {
+		return Published{}, err
+	}
+	root, err := os.OpenRoot(request.LayoutDir)
+	if err != nil {
+		return Published{}, err
+	}
+	defer root.Close()
+	source, err := oci.NewFromFS(ctx, root.FS())
+	if err != nil {
+		return Published{}, err
+	}
+	descriptor, err := source.Resolve(ctx, pin)
+	if err != nil {
+		return Published{}, err
+	}
+	return publishTarget(ctx, source, descriptor, destination, request.Client, request.UseDockerCredentials)
+}
+
+func publishTarget(ctx context.Context, source oras.ReadOnlyTarget, descriptor ocispec.Descriptor, ref reference.Named, client *http.Client, useCredentials bool) (Published, error) {
 	repository, err := remote.NewRepository(ref.Name())
 	if err != nil {
 		return Published{}, fmt.Errorf("open OCI repository %s: %w", ref.Name(), err)
 	}
-	client := request.Client
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Minute}
 	}
-	authClient := &auth.Client{Client: client, Cache: auth.NewCache()}
-	if request.UseDockerCredentials {
+	authClient := &auth.Client{
+		Client: client,
+		Cache:  auth.NewCache(),
+	}
+	if useCredentials {
 		if credentialStore, storeErr := credentials.NewStoreFromDocker(credentials.StoreOptions{}); storeErr == nil {
 			authClient.Credential = credentialStore.Get
 		}
@@ -238,29 +358,36 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 	existing, err := repository.Resolve(ctx, Tag(ref))
 	switch {
 	case err == nil:
-		if existing.Digest != manifestDescriptor.Digest {
-			return Published{}, fmt.Errorf("immutable OCI tag %s already resolves to %s, refusing to replace it with %s", ref.String(), existing.Digest, manifestDescriptor.Digest)
+		if existing.Digest != descriptor.Digest {
+			return Published{}, fmt.Errorf("immutable OCI tag %s already resolves to %s, refusing to replace it with %s", ref.String(), existing.Digest, descriptor.Digest)
 		}
-		return Published{Reference: ref, ManifestDigest: manifestDescriptor.Digest.String(), Existing: true}, nil
+		return Published{
+			Reference:      ref,
+			ManifestDigest: descriptor.Digest.String(),
+			Existing:       true,
+		}, nil
 	case !errors.Is(err, errdef.ErrNotFound):
 		return Published{}, fmt.Errorf("resolve existing OCI tag %s: %w", ref.String(), err)
 	}
 
-	published, err := oras.Copy(ctx, store, Tag(ref), repository, Tag(ref), oras.DefaultCopyOptions)
+	published, err := oras.Copy(ctx, source, descriptor.Digest.String(), repository, Tag(ref), oras.DefaultCopyOptions)
 	if err != nil {
 		return Published{}, fmt.Errorf("publish OCI payload bundle %s: %w", ref.String(), err)
 	}
-	if published.Digest != manifestDescriptor.Digest {
-		return Published{}, fmt.Errorf("published OCI manifest digest %s does not match local digest %s", published.Digest, manifestDescriptor.Digest)
+	if published.Digest != descriptor.Digest {
+		return Published{}, fmt.Errorf("published OCI manifest digest %s does not match local digest %s", published.Digest, descriptor.Digest)
 	}
 	resolved, err := repository.Resolve(ctx, Tag(ref))
 	if err != nil {
 		return Published{}, fmt.Errorf("verify published OCI tag %s: %w", ref.String(), err)
 	}
-	if resolved.Digest != manifestDescriptor.Digest {
-		return Published{}, fmt.Errorf("published OCI tag %s resolves to %s, want %s", ref.String(), resolved.Digest, manifestDescriptor.Digest)
+	if resolved.Digest != descriptor.Digest {
+		return Published{}, fmt.Errorf("published OCI tag %s resolves to %s, want %s", ref.String(), resolved.Digest, descriptor.Digest)
 	}
-	return Published{Reference: ref, ManifestDigest: manifestDescriptor.Digest.String()}, nil
+	return Published{
+		Reference:      ref,
+		ManifestDigest: descriptor.Digest.String(),
+	}, nil
 }
 
 func pack(ctx context.Context, request PackRequest, tag string) (store oras.Target, manifestDescriptor ocispec.Descriptor, cleanup func(), err error) {
@@ -340,6 +467,36 @@ func Fetch(ctx context.Context, request FetchRequest) (Fetched, error) {
 	}
 	if strings.TrimSpace(request.ArtifactType) == "" || strings.TrimSpace(request.ConfigMediaType) == "" {
 		return Fetched{}, fmt.Errorf("OCI artifact and config media types are required")
+	}
+	if request.LayoutDir != "" && request.LayoutURL != "" {
+		return Fetched{}, fmt.Errorf("select one OCI layout source")
+	}
+	if request.LayoutURL != "" {
+		pin := ManifestDigest(ref)
+		if pin == "" {
+			return Fetched{}, fmt.Errorf("HTTP OCI layouts require a manifest digest pin")
+		}
+		target, err := newHTTPLayout(request.LayoutURL, request.Client)
+		if err != nil {
+			return Fetched{}, err
+		}
+		return FetchTarget(ctx, target, pin, ref, request.ArtifactType, request.ConfigMediaType)
+	}
+	if request.LayoutDir != "" {
+		pin := ManifestDigest(ref)
+		if pin == "" {
+			return Fetched{}, fmt.Errorf("local OCI artifacts require a manifest digest pin")
+		}
+		root, err := os.OpenRoot(request.LayoutDir)
+		if err != nil {
+			return Fetched{}, fmt.Errorf("open local OCI layout: %w", err)
+		}
+		defer root.Close()
+		store, err := oci.NewFromFS(ctx, root.FS())
+		if err != nil {
+			return Fetched{}, fmt.Errorf("read local OCI layout: %w", err)
+		}
+		return FetchTarget(ctx, store, pin, ref, request.ArtifactType, request.ConfigMediaType)
 	}
 	repository, err := remote.NewRepository(ref.Name())
 	if err != nil {
@@ -484,7 +641,8 @@ type fetcher interface {
 
 func ReadContent(ctx context.Context, source fetcher, descriptor ocispec.Descriptor) ([]byte, error) {
 	var out strings.Builder
-	out.Grow(int(descriptor.Size))
+	// Descriptor sizes are untrusted, including in local media. Allocate only
+	// for bytes received rather than reserving the advertised payload size.
 	if _, err := CopyContent(ctx, source, descriptor, &out); err != nil {
 		return nil, err
 	}
@@ -492,6 +650,9 @@ func ReadContent(ctx context.Context, source fetcher, descriptor ocispec.Descrip
 }
 
 func CopyContent(ctx context.Context, source fetcher, descriptor ocispec.Descriptor, destination io.Writer) (int64, error) {
+	if descriptor.Size < 0 {
+		return 0, fmt.Errorf("invalid OCI content size %d", descriptor.Size)
+	}
 	reader, err := source.Fetch(ctx, descriptor)
 	if err != nil {
 		return 0, err
