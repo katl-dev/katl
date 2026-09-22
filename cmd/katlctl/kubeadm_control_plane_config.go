@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -378,6 +377,9 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		if configName == "" {
 			configName = strings.TrimSpace(node.KubeadmConfig.Ref)
 		}
+		if configName == "" && gen.ConfigApply != nil {
+			configName = gen.ConfigApply.SelectedKubeadmConfigName
+		}
 		if gen.ConfigApply != nil && strings.TrimSpace(gen.ConfigApply.SelectedKubeadmConfigName) != "" && gen.ConfigApply.SelectedKubeadmConfigName != configName {
 			return nil, fmt.Errorf("node %s generation %s selects kubeadm config %q instead of %q", node.Name, generationID, gen.ConfigApply.SelectedKubeadmConfigName, configName)
 		}
@@ -508,12 +510,19 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	if opts.mode != generation.ApplyModeAuto && opts.mode != generation.ApplyModeLive && opts.mode != generation.ApplyModeNextBoot {
 		return activatedClusterConfig{}, fmt.Errorf("--mode = %q, want auto, live, or next-boot", opts.mode)
 	}
-	loaded, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{}, nil)
+	loaded, err := loadNodeConfiguration(ctx, opts.configPath, configbundle.PlanningInputs{Nodes: opts.selectedNodes})
 	if err != nil {
 		return activatedClusterConfig{}, err
 	}
 	for index := range nodes {
-		target, ok := enrolledTarget(ctx, "", "", loaded.Bundle.Manifest.ClusterName, nodes[index].Name)
+		for _, compiled := range loaded.Inventory.Nodes {
+			if compiled.Name == nodes[index].Name {
+				nodes[index].KubeadmConfig = compiled.KubeadmConfig
+				nodes[index].KubernetesVersion = compiled.KubernetesVersion
+				break
+			}
+		}
+		target, ok := enrolledTarget(ctx, "", "", loaded.ClusterName, nodes[index].Name)
 		if !ok {
 			continue
 		}
@@ -552,11 +561,11 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if err := clusterApplyProgress(opts.progress, "phase=config-validation node=%s status=started", node.Name); err != nil {
 			return activatedClusterConfig{}, err
 		}
-		selected, err := configbundle.ReadSelectedNode(bytes.NewReader(loaded.Archive), configbundle.ReadOptions{NodeName: node.Name, AllowMissingKatlosImage: true})
-		if err != nil {
-			return activatedClusterConfig{}, fmt.Errorf("select cluster config for %s: %w", node.Name, err)
+		render, ok := loaded.Nodes[node.Name]
+		if !ok {
+			return activatedClusterConfig{}, fmt.Errorf("node %q is not in the selected configuration", node.Name)
 		}
-		plan, ok := selected.KubeadmConfigs[node.KubeadmConfig.Ref]
+		plan, ok := render.KubeadmConfigs[render.Manifest.Node.Kubernetes.Kubeadm.ConfigRef]
 		if !ok {
 			return activatedClusterConfig{}, fmt.Errorf("selected kubeadm input %q for %s is missing", node.KubeadmConfig.Ref, node.Name)
 		}
@@ -571,12 +580,9 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 				nodeComponents = append(nodeComponents, "kube-proxy")
 			}
 		}
-		configYAML, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
-			NodeName: selected.Node.Name, Manifest: selected.InstallManifest, KubeadmConfigs: selected.KubeadmConfigs,
-			SourceID: selected.BundleManifest.ClusterName, DesiredVersion: desiredVersion, ApplyMode: opts.mode,
-			SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
-			APIProxy:                selected.NodeMaterial.APIProxy,
-		})
+		render.DesiredVersion = desiredVersion
+		render.ApplyMode = opts.mode
+		configYAML, err := configapply.RenderNodeConfigurationChange(render)
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("render cluster config for %s: %w", node.Name, err)
 		}

@@ -253,6 +253,7 @@ type DestructiveReset struct {
 }
 
 type HostUpgrade struct {
+	ConfigYAML            string `json:"configYAML,omitempty"`
 	ImageURL              string `json:"imageURL,omitempty"`
 	ImageLocalRef         string `json:"imageLocalRef,omitempty"`
 	ImageSHA256           string `json:"imageSHA256"`

@@ -596,6 +596,7 @@ func TestMutationPreconditionAcceptsCurrentLiveGenerationReportedByStatus(t *tes
 		t.Fatal(err)
 	}
 	spec.GenerationID = generationID
+	spec.Confexts[0].Path = generation.GenerationRecordsDir + "/" + generationID + "/confext"
 	spec.PreviousGenerationID = "generation-0"
 	spec.Boot.LoaderEntryPath = "loader/entries/katl-generation-live.conf"
 	generationStatus, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateTrying, generation.HealthStateUnknown, server.Now())
@@ -665,6 +666,7 @@ func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec.GenerationID = "generation-1"
+	spec.Confexts[0].Path = "/var/lib/katl/generations/generation-1/confext"
 	spec.PreviousGenerationID = "generation-0"
 	spec.Boot.LoaderEntryPath = "loader/entries/katl-generation-1.conf"
 	statusRecord, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, time.Date(2026, 8, 8, 16, 0, 0, 0, time.UTC))
@@ -710,6 +712,8 @@ func TestNodeStatusReportsLivePromotedGenerationHealthy(t *testing.T) {
 	}
 	activeSpec := previousSpec
 	activeSpec.GenerationID = "generation-1"
+	activeSpec.Confexts = append([]generation.GeneratedConfext(nil), previousSpec.Confexts...)
+	activeSpec.Confexts[0].Path = "/var/lib/katl/generations/generation-1/confext"
 	activeSpec.PreviousGenerationID = "generation-0"
 	activeSpec.Boot.LoaderEntryPath = "loader/entries/katl-generation-1.conf"
 	activeStatus, err := generation.NewGenerationStatus(activeSpec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, time.Date(2026, 8, 9, 16, 0, 0, 0, time.UTC))

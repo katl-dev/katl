@@ -51,14 +51,31 @@ func Pack(ctx context.Context, request BuildRequest, annotations map[string]stri
 		return payloadbundle.Packed{}, Built{}, err
 	}
 	packed, err := payloadbundle.Pack(ctx, payloadbundle.PackRequest{
-		ArtifactType: ArtifactType, ConfigMediaType: ConfigMediaType,
-		Config: built.Manifest, Blobs: built.Blobs,
-		Annotations: bundleAnnotations(built, annotations),
+		ArtifactType:    ArtifactType,
+		ConfigMediaType: ConfigMediaType,
+		Config:          built.Manifest,
+		Blobs:           built.Blobs,
+		Annotations:     bundleAnnotations(built, annotations),
 	})
 	if err != nil {
 		return payloadbundle.Packed{}, Built{}, err
 	}
 	return packed, built, nil
+}
+
+func Export(ctx context.Context, directory string, request BuildRequest, annotations map[string]string) (payloadbundle.Packed, Built, error) {
+	built, err := Build(request)
+	if err != nil {
+		return payloadbundle.Packed{}, Built{}, err
+	}
+	packed, err := payloadbundle.Export(ctx, directory, payloadbundle.PackRequest{
+		ArtifactType:    ArtifactType,
+		ConfigMediaType: ConfigMediaType,
+		Config:          built.Manifest,
+		Blobs:           built.Blobs,
+		Annotations:     bundleAnnotations(built, annotations),
+	})
+	return packed, built, err
 }
 
 func Build(request BuildRequest) (Built, error) {

@@ -303,6 +303,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 }
 
 type hostUpgradeOptions struct {
+	applyConfig     bool
 	flavour         string
 	version         string
 	artifact        string
@@ -315,14 +316,15 @@ type hostUpgradeOptions struct {
 }
 
 type hostUpgradeReport struct {
-	Flavour    string `json:"flavour"`
-	Node       string `json:"node"`
-	Version    string `json:"version"`
-	Image      string `json:"image"`
-	Result     string `json:"result"`
-	Rebooted   bool   `json:"rebooted"`
-	BootHealth string `json:"bootHealth"`
-	Kubernetes string `json:"kubernetes,omitempty"`
+	Plan       *agentapi.HostUpgradePreview `json:"plan,omitempty"`
+	Flavour    string                       `json:"flavour"`
+	Node       string                       `json:"node"`
+	Version    string                       `json:"version"`
+	Image      string                       `json:"image"`
+	Result     string                       `json:"result"`
+	Rebooted   bool                         `json:"rebooted"`
+	BootHealth string                       `json:"bootHealth"`
+	Kubernetes string                       `json:"kubernetes,omitempty"`
 }
 
 type hostUpgradeArtifact struct {
@@ -381,12 +383,16 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 	cmd.Flags().StringVar(&opts.actor, "actor", opts.actor, "operation actor")
 	cmd.Flags().Lookup("actor").Hidden = true
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "validate without accepting an operation")
+	cmd.Flags().BoolVar(&opts.applyConfig, "apply-config", false, "stage supported host configuration from --config with the OS upgrade")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "timeout", opts.waitTimeout, "overall operation wait timeout")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
 
 func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr io.Writer) error {
+	if opts.applyConfig && strings.TrimSpace(opts.target.clusterConfigPath) == "" {
+		return fmt.Errorf("--apply-config requires --config cluster.yaml")
+	}
 	selectedFlavour, err := flavour.Normalize(opts.flavour)
 	if err != nil {
 		return err
@@ -449,8 +455,11 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if opts.flavour == flavour.LTS && current.GetRuntimeFlavour() == "" {
 		return fmt.Errorf("this node predates kernel flavour support; first upgrade it to the standard flavour of this release, then retry with --flavour lts")
 	}
-	sourceDigest := sha256.Sum256([]byte(current.GetGenerationId()))
-	request.CandidateGenerationID = fmt.Sprintf("katlos%s-%s-%x", flavour.Suffix(opts.flavour), opts.version, sourceDigest[:6])
+
+	// A retained candidate from an earlier operation must not prevent another
+	// upgrade from the same base after rollback. Retries share the request ID.
+	candidateDigest := sha256.Sum256([]byte(current.GetGenerationId() + "\x00" + requestID))
+	request.CandidateGenerationID = fmt.Sprintf("katlos%s-%s-%x", flavour.Suffix(opts.flavour), opts.version, candidateDigest[:6])
 	architecture, err := nodeArtifactArchitecture(current)
 	if err != nil {
 		return err
@@ -475,7 +484,10 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if flavourErr != nil {
 		return flavourErr
 	}
-	if current.GetRuntimeVersion() == opts.version && installedFlavour == opts.flavour && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
+
+	// Published releases are immutable; local builds may reuse a version label
+	// with different runtime or extension content and must undergo preflight.
+	if localArtifact == nil && !opts.applyConfig && current.GetRuntimeVersion() == opts.version && installedFlavour == opts.flavour && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
 		node := target.nodeName
 		if node == "" {
 			node = target.endpoint
@@ -493,7 +505,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Flavour: opts.flavour, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
 	}
-	if localArtifact != nil && !opts.plan {
+	if localArtifact != nil {
 		localRef, err := stageHostUpgradeArtifact(ctx, conn.Client, strings.TrimSpace(opts.actor), status, *localArtifact, target.nodeName, stderr)
 		if err != nil {
 			return err
@@ -503,9 +515,9 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 			return fmt.Errorf("validate staged KatlOS image: %w", err)
 		}
 	}
-	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
+	submit := &agentapi.SubmitOperationRequest{
 		ApiVersion:                  operation.APIVersion,
-		Kind:                        "SubmitOperationRequest",
+		Kind:                        "HostUpgradeRequestV2",
 		ClientRequestId:             requestID,
 		OperationKind:               "host-upgrade",
 		Actor:                       strings.TrimSpace(opts.actor),
@@ -513,7 +525,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		ExpectedInventoryNodeName:   status.GetInventoryNodeName(),
 		ExpectedMachineId:           status.GetMachineId(),
 		ExpectedCurrentGenerationId: status.GetCurrentGenerationId(),
-		DryRun:                      opts.plan,
+		DryRun:                      true,
 		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
 			ImageUrl:              request.ImageURL,
 			ImageLocalRef:         request.ImageLocalRef,
@@ -521,16 +533,45 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 			ImageSizeBytes:        request.ImageSizeBytes,
 			CandidateGenerationId: request.CandidateGenerationID,
 		},
-	})
+	}
+	if opts.applyConfig {
+		document, err := renderUpgradeConfig(ctx, opts.target.clusterConfigPath, status.GetInventoryNodeName())
+		if err != nil {
+			return err
+		}
+		submit.HostUpgrade.ConfigYaml = string(document)
+	}
+	prepared, err := conn.Client.SubmitOperation(ctx, submit)
 	if err != nil {
 		return err
 	}
-	report := hostUpgradeReport{Node: target.nodeName, Version: opts.version, Flavour: opts.flavour, Image: image, Result: "planned", BootHealth: "not-run"}
+	if prepared.GetHostUpgradePreview() == nil {
+		return fmt.Errorf("source agent does not provide target-generation upgrade planning; upgrade the source agent before retrying")
+	}
+	submit.HostUpgrade.ImageSha256 = prepared.HostUpgradePreview.ImageSha256
+	submit.HostUpgrade.ImageSizeBytes = prepared.HostUpgradePreview.ImageSizeBytes
+	report := hostUpgradeReport{
+		Node:       target.nodeName,
+		Version:    opts.version,
+		Flavour:    opts.flavour,
+		Image:      image,
+		Result:     "planned",
+		BootHealth: "not-run",
+	}
+	report.Plan = prepared.HostUpgradePreview
 	if report.Node == "" {
 		report.Node = target.endpoint
 	}
 	if opts.plan {
 		return writeHostUpgradeReport(stdout, opts.output, report)
+	}
+	if err := writeHostUpgradeReport(stderr, "text", report); err != nil {
+		return err
+	}
+	submit.DryRun = false
+	accepted, err := conn.Client.SubmitOperation(ctx, submit)
+	if err != nil {
+		return err
 	}
 	terminal, err := waitAcceptedOperationStatus(ctx, conn.Client, accepted, opts.waitTimeout, stderr)
 	if err != nil {
@@ -591,8 +632,29 @@ func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeR
 		return writeJSON(stdout, report)
 	}
 	if report.Result == "planned" {
-		_, err := fmt.Fprintf(stdout, "%s can upgrade to %s %s\n", report.Node, label, report.Version)
-		return err
+		if _, err := fmt.Fprintf(stdout, "%s can upgrade to %s %s\n", report.Node, label, report.Version); err != nil {
+			return err
+		}
+		if report.Plan == nil {
+			return nil
+		}
+		w := newTable(stdout)
+		w.row("COMPONENT", "CURRENT", "TARGET")
+		w.row("KatlOS", report.Plan.PreviousVersion, report.Plan.Version)
+		w.row("Kernel", report.Plan.PreviousKernel, report.Plan.GetExtensionRelease().GetKernelRelease())
+		for _, change := range report.Plan.Extensions {
+			next := change.Digest
+			if next == change.PreviousDigest {
+				next = "unchanged"
+			}
+			w.row(change.Name, change.PreviousDigest, next)
+		}
+		w.row("Kubernetes", "selected payload", "unchanged")
+		if len(report.Plan.ChangedDomains) > 0 {
+			w.row("Host configuration", "effective", strings.Join(report.Plan.ChangedDomains, ", "))
+		}
+		w.row("Activation", "", "one reboot")
+		return w.flush()
 	}
 	if report.Result == operation.ResultSucceeded {
 		kubernetes := ""
@@ -777,7 +839,7 @@ func stageLocalUpgradeArtifact(ctx context.Context, client agentapi.KatlcAgentCl
 	if staged.GetLocalRef() != upload.LocalRef || staged.GetSha256() != upload.SHA256 || staged.GetSizeBytes() != upload.SizeBytes {
 		return "", fmt.Errorf("node returned an inconsistent staged %s image identity", upload.Label)
 	}
-	fmt.Fprintf(stderr, "%s: local %s image uploaded; staging the upgrade\n", upload.Node, upload.Label)
+	fmt.Fprintf(stderr, "%s: local %s image uploaded\n", upload.Node, upload.Label)
 	return staged.GetLocalRef(), nil
 }
 
@@ -1258,13 +1320,16 @@ func loadWipeInventory(ctx context.Context, configPath, inventoryPath string, st
 	if strings.TrimSpace(inventoryPath) != "" {
 		return loadInventory(inventoryPath)
 	}
-	config, err := loadKatlConfig(configPath, "katlctl cluster wipe", configbundle.PlanningInputs{}, stderr)
+	inv, err := readManagementInventory(configPath)
 	if err != nil {
 		return inventory.Inventory{}, err
 	}
-	inv := config.Bundle.Manifest.Cluster.BootstrapInventory
+	topology, err := resolveClusterConfigTopology(ctx, configPath)
+	if err != nil {
+		return inventory.Inventory{}, err
+	}
 	for index := range inv.Nodes {
-		enrolled, ok := enrolledTarget(ctx, "", "", config.Bundle.Manifest.ClusterName, inv.Nodes[index].Name)
+		enrolled, ok := enrolledTarget(ctx, "", "", topology.ClusterName, inv.Nodes[index].Name)
 		if !ok {
 			continue
 		}
@@ -1459,14 +1524,28 @@ func wipeClusterTargets(plan inventory.Plan, all bool, selected []string) ([]inv
 }
 
 func planWipeInventory(inv inventory.Inventory) (inventory.Plan, error) {
-	initNode := ""
+	// Wiping targets existing nodes; it must not compile desired software or
+	// require a valid Kubernetes bootstrap configuration.
+	plan := inventory.Plan{}
+	seen := map[string]bool{}
 	for _, node := range inv.Nodes {
-		if node.SystemRole == inventory.RoleControlPlane {
-			initNode = node.Name
-			break
+		if node.Name == "" || seen[node.Name] {
+			return inventory.Plan{}, fmt.Errorf("wipe inventory requires unique, nonempty node names")
 		}
+		seen[node.Name] = true
+		if node.SystemRole != inventory.RoleControlPlane && node.SystemRole != inventory.RoleWorker {
+			return inventory.Plan{}, fmt.Errorf("node %q has unsupported role %q", node.Name, node.SystemRole)
+		}
+		plan.Nodes = append(plan.Nodes, inventory.PlannedNode{
+			Name:         node.Name,
+			Address:      node.Address,
+			SystemRole:   node.SystemRole,
+			Access:       inventory.Access{Method: "agent"},
+			EnrollmentID: node.EnrollmentID,
+			MachineID:    node.MachineID,
+		})
 	}
-	return inventory.PlanInventory(inventory.PlanRequest{Inventory: inv, InitNode: initNode})
+	return plan, nil
 }
 
 func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector, report *wipeClusterReport, targets []inventory.PlannedNode) (map[string]*agentapi.NodeStatus, error) {
@@ -1989,17 +2068,7 @@ type configBundleOptions struct {
 	katlosImageMetadata string
 }
 
-type katlosImageArtifactMetadata struct {
-	APIVersion       string `json:"apiVersion"`
-	Kind             string `json:"kind"`
-	ImageRole        string `json:"imageRole"`
-	Format           string `json:"format"`
-	Version          string `json:"version"`
-	Architecture     string `json:"architecture"`
-	RuntimeInterface string `json:"runtimeInterface"`
-	SizeBytes        int64  `json:"sizeBytes"`
-	SHA256           string `json:"sha256"`
-}
+type katlosImageArtifactMetadata = katlosimage.ArtifactMetadata
 
 type nodeConfigInputOptions struct {
 	configPath     string
@@ -2014,19 +2083,20 @@ type configValidationNode struct {
 }
 
 type configValidationReport struct {
-	APIVersion  string                            `json:"apiVersion"`
-	Kind        string                            `json:"kind"`
-	Source      string                            `json:"source"`
-	ClusterName string                            `json:"clusterName"`
-	Nodes       []configValidationNode            `json:"nodes"`
-	Warnings    []configbundle.CompilationWarning `json:"warnings,omitempty"`
+	ExtensionResolution string                            `json:"extensionResolution,omitempty"`
+	APIVersion          string                            `json:"apiVersion"`
+	Kind                string                            `json:"kind"`
+	Source              string                            `json:"source"`
+	ClusterName         string                            `json:"clusterName"`
+	Nodes               []configValidationNode            `json:"nodes"`
+	Warnings            []configbundle.CompilationWarning `json:"warnings,omitempty"`
 }
 
 func newConfigValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 	output := "text"
 	cmd := &cobra.Command{
 		Use:   "validate SOURCE",
-		Short: "Validate and resolve a cluster config without writing a bundle",
+		Short: "Validate cluster intent and local inputs without acquiring extensions",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runConfigValidate(args[0], output, stdout, stderr)
@@ -2043,7 +2113,7 @@ func runConfigValidate(sourcePath, output string, stdout, stderr io.Writer) erro
 	if err := configbundle.ValidateSourceFile(sourcePath); err != nil {
 		return err
 	}
-	_, result, err := configbundle.BuildArchive(configbundle.BuildRequest{
+	result, err := configbundle.PlanConfiguration(configbundle.BuildRequest{
 		SourcePath:     sourcePath,
 		KatlctlVersion: version,
 		KatlctlCommit:  commit,
@@ -2052,23 +2122,35 @@ func runConfigValidate(sourcePath, output string, stdout, stderr io.Writer) erro
 	if err != nil {
 		return err
 	}
-	nodes := make([]configValidationNode, 0, len(result.Manifest.Nodes))
-	for _, node := range result.Manifest.Nodes {
-		nodes = append(nodes, configValidationNode{Name: node.Name, ControlPlane: node.SystemRole == string(inventory.RoleControlPlane)})
+	nodes := make([]configValidationNode, 0, len(result.Plan.Nodes))
+	for _, node := range result.Plan.Nodes {
+		nodes = append(nodes, configValidationNode{
+			Name:         node.Name,
+			ControlPlane: node.InstallManifest.Node.SystemRole == string(inventory.RoleControlPlane),
+		})
 	}
 	report := configValidationReport{
 		APIVersion:  configbundle.APIVersion,
 		Kind:        "ClusterConfigValidation",
 		Source:      sourcePath,
-		ClusterName: result.Manifest.ClusterName,
+		ClusterName: result.ClusterName,
 		Nodes:       nodes,
-		Warnings:    result.Warnings,
+	}
+	for _, selections := range result.SystemExtensionSelections {
+		if len(selections) > 0 {
+			report.ExtensionResolution = "requires-target-runtime"
+			break
+		}
 	}
 	if output == "text" {
 		if _, err := fmt.Fprintf(stdout, "%s is valid for cluster %s (%d node(s))\n", sourcePath, report.ClusterName, len(report.Nodes)); err != nil {
 			return err
 		}
-		return writeCompilationWarnings(stderr, result.Warnings)
+		if report.ExtensionResolution != "" {
+			_, err := fmt.Fprintln(stdout, "Extension artifacts and compatibility are checked against the target runtime during installation or apply.")
+			return err
+		}
+		return nil
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -2192,6 +2274,8 @@ func loadKatlosImagePlanningInput(imageURL, metadataPath string) (manifest.Katlo
 		return manifest.KatlosImage{}, fmt.Errorf("KatlOS image metadata sizeBytes must be positive")
 	}
 	return manifest.KatlosImage{
+		ExtensionRelease: metadata.ExtensionRelease,
+		Flavour:          metadata.Flavour,
 		URL:              imageURL,
 		SHA256:           metadata.SHA256,
 		SizeBytes:        uint64(metadata.SizeBytes),
@@ -2237,32 +2321,20 @@ func renderNodeConfig(opts nodeConfigInputOptions, mode string, stderr io.Writer
 	if strings.TrimSpace(opts.desiredVersion) == "" {
 		return nil, fmt.Errorf("--desired-version is required")
 	}
-	readOptions := configbundle.ReadOptions{
-		NodeName:                opts.nodeName,
-		AllowMissingKatlosImage: true,
-	}
-	config, err := loadKatlConfig(opts.configPath, configBundleCreator, configbundle.PlanningInputs{}, stderr)
+	config, err := loadNodeConfiguration(context.Background(), opts.configPath, configbundle.PlanningInputs{Nodes: []string{opts.nodeName}})
 	if err != nil {
 		return nil, err
 	}
-	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(config.Archive), readOptions)
-	if err != nil {
-		return nil, err
+	render, ok := config.Nodes[opts.nodeName]
+	if !ok {
+		return nil, fmt.Errorf("node %q is not in the selected configuration", opts.nodeName)
 	}
-	sourceID := strings.TrimSpace(opts.sourceID)
-	if sourceID == "" {
-		sourceID = selected.BundleManifest.ClusterName
+	if sourceID := strings.TrimSpace(opts.sourceID); sourceID != "" {
+		render.SourceID = sourceID
 	}
-	return configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
-		NodeName:                selected.Node.Name,
-		Manifest:                selected.InstallManifest,
-		KubeadmConfigs:          selected.KubeadmConfigs,
-		SourceID:                sourceID,
-		DesiredVersion:          opts.desiredVersion,
-		ApplyMode:               mode,
-		SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
-		APIProxy:                selected.NodeMaterial.APIProxy,
-	})
+	render.DesiredVersion = opts.desiredVersion
+	render.ApplyMode = mode
+	return configapply.RenderNodeConfigurationChange(render)
 }
 
 func configApplySystemExtensionPayloads(payloads []configbundle.SystemExtensionPayload) []configapply.SystemExtensionPayload {
@@ -3121,15 +3193,15 @@ func bootstrapInventory(ctx context.Context, opts clusterBootstrapOptions, stder
 	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
 		return inventory.Inventory{}, "", fmt.Errorf("--control-plane-endpoint conflicts with the endpoint embedded in the cluster config")
 	}
-	config, err := loadKatlConfig(configPath, clusterBootstrapCreator, configbundle.PlanningInputs{KubernetesBundle: opts.kubernetesBundle}, stderr)
+	config, err := loadNodeConfiguration(ctx, configPath, configbundle.PlanningInputs{KubernetesBundle: opts.kubernetesBundle})
 	if err != nil {
 		return inventory.Inventory{}, "", err
 	}
 	if !config.Source && strings.TrimSpace(opts.kubernetesBundle) != "" {
 		return inventory.Inventory{}, "", fmt.Errorf("--kubernetes-bundle conflicts with the selection embedded in the compiled config bundle")
 	}
-	inv := config.Bundle.Manifest.Cluster.BootstrapInventory
-	clusterName := config.Bundle.Manifest.ClusterName
+	inv := config.Inventory
+	clusterName := config.ClusterName
 	for index := range inv.Nodes {
 		enrolled, ok := enrolledTarget(ctx, "", "", clusterName, inv.Nodes[index].Name)
 		if !ok {

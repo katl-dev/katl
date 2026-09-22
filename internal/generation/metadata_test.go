@@ -130,6 +130,7 @@ func TestWriteRecordPersistsMetadataJSON(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "metadata.json")
+	record.Confexts[0].Path = GenerationRecordsDir + "/" + record.GenerationID + "/confext"
 	if err := WriteRecord(path, record); err != nil {
 		t.Fatalf("WriteRecord() error = %v", err)
 	}
@@ -170,11 +171,50 @@ func TestVolumeBindingsAreGenerationOwnedAndInherited(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigClearsExtensions(t *testing.T) {
+	previous := abRecord(t, "previous", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Now().UTC())
+	previous.BundledConfexts = append([]ExtensionRef(nil), previous.Sysexts...)
+	previous.BundledConfexts[0].Name = "settings"
+	previous.BundledConfexts[0].Path = GenerationRecordsDir + "/previous/bundled-confext/settings.raw"
+	previous.BundledConfexts[0].ActivationPath = "/run/confexts/settings.raw"
+
+	for _, name := range []string{"nil", "empty"} {
+		t.Run(name, func(t *testing.T) {
+			request := RuntimeConfigRequest{
+				GenerationID:       "next",
+				Previous:           previous,
+				SourceDigest:       strings.Repeat("d", 64),
+				GeneratedConfext:   runtimeConfext("next"),
+				ChangedDomains:     []string{"system-extensions"},
+				RequestedApplyMode: ApplyModeNextBoot,
+			}
+			if name == "empty" {
+				request.Sysexts = []ExtensionRef{}
+				request.BundledConfexts = []ExtensionRef{}
+			}
+
+			record, err := NewRuntimeConfigRecord(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(record.Sysexts) != 0 || len(record.BundledConfexts) != 0 {
+				t.Fatalf("removed extensions inherited: %+v, %+v", record.Sysexts, record.BundledConfexts)
+			}
+			if _, err := PlanActivation(record); err != nil {
+				t.Fatalf("removed extension generation cannot activate: %v", err)
+			}
+		})
+	}
+}
+
 func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
 	previous := abRecord(t, "2026.06.05-001", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC))
+	sysexts := append([]ExtensionRef(nil), previous.Sysexts...)
+	sysexts[0].Path = "/var/lib/katl/generations/2026.06.05-002/sysext/kubernetes.raw"
 	record, err := NewRuntimeConfigRecord(RuntimeConfigRequest{
 		GenerationID:       "2026.06.05-002",
 		Previous:           previous,
+		Sysexts:            sysexts,
 		SourceDigest:       strings.Repeat("d", 64),
 		GeneratedConfext:   runtimeConfext("2026.06.05-002"),
 		ChangedDomains:     []string{"host-configuration", "tmpfiles", "host-configuration"},
@@ -215,7 +255,7 @@ func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
   "sysexts": [
     {
       "name": "kubernetes",
-      "path": "/var/lib/katl/generations/2026.06.05-001/sysext/kubernetes.raw",
+      "path": "/var/lib/katl/generations/2026.06.05-002/sysext/kubernetes.raw",
       "activationPath": "/run/extensions/kubernetes.raw",
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "artifactVersion": "k8s-v1.36.1",
@@ -268,8 +308,51 @@ func TestRuntimeConfigRecordSerializesApplyMetadata(t *testing.T) {
 	if string(data) != want {
 		t.Fatalf("runtime record json:\n%s\nwant:\n%s", data, want)
 	}
-	if record.Root != previous.Root || record.Boot.UKIPath != previous.Boot.UKIPath || record.Boot.LoaderEntryPath == previous.Boot.LoaderEntryPath || record.Sysexts[0].Path != previous.Sysexts[0].Path {
-		t.Fatalf("runtime config record did not reuse root/UKI/sysext and select a new loader entry: %#v", record)
+	if record.Root != previous.Root || record.Boot.UKIPath != previous.Boot.UKIPath || record.Boot.LoaderEntryPath == previous.Boot.LoaderEntryPath || record.Sysexts[0].SHA256 != previous.Sysexts[0].SHA256 {
+		t.Fatalf("runtime config record changed selected artifacts or reused the loader entry: %#v", record)
+	}
+}
+
+func TestPublicationRejectsForeignGenerationPaths(t *testing.T) {
+	for _, kind := range []string{"sysext", "bundled-confext", "confext"} {
+		t.Run(kind, func(t *testing.T) {
+			record := abRecord(t, "next", "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", time.Now().UTC())
+			switch kind {
+			case "sysext":
+				record.Sysexts[0].Path = GenerationRecordsDir + "/previous/sysext/kubernetes.raw"
+			case "bundled-confext":
+				ref := record.Sysexts[0]
+				ref.Name = "settings"
+				ref.Path = GenerationRecordsDir + "/previous/bundled-confext/settings.raw"
+				ref.ActivationPath = "/run/confexts/settings.raw"
+				record.BundledConfexts = []ExtensionRef{ref}
+			case "confext":
+				record.Confexts[0].Path = GenerationRecordsDir + "/previous/confext"
+			}
+			spec := SpecFromRecord(record)
+			status, err := NewGenerationStatus(spec, CommitStateCandidate, BootStatePending, HealthStateUnknown, time.Now().UTC())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, format := range []string{"split", "metadata"} {
+				t.Run(format, func(t *testing.T) {
+					root := t.TempDir()
+					if format == "split" {
+						err = WriteGeneration(root, spec, status)
+					} else {
+						err = WriteRecord(filepath.Join(root, "metadata.json"), record)
+					}
+					if err == nil || !strings.Contains(err.Error(), "must be under") {
+						t.Fatalf("foreign generation path published: %v", err)
+					}
+					entries, err := os.ReadDir(root)
+					if err != nil || len(entries) != 0 {
+						t.Fatalf("rejected generation wrote files: %v, %v", entries, err)
+					}
+				})
+			}
+		})
 	}
 }
 

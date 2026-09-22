@@ -26,6 +26,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
 )
 
@@ -56,30 +57,31 @@ type (
 )
 
 type Executor struct {
-	Root                 string
-	Store                operation.Store
-	AgentStartID         string
-	Now                  func() time.Time
-	RunTool              ToolRunner
-	RunReadiness         ToolRunner
-	RunPostHealth        ToolRunner
-	RunEndpointLifecycle ToolRunner
-	RunPoweroff          ToolRunner
-	MountBootRoot        BootRootMounter
-	SetBootOneshot       BootEntrySetter
-	SetBootDefault       BootEntrySetter
-	ConfigApplyRunner    configapply.CommandRunner
-	ConfigApplyActivator configapply.ConfextActivator
-	BundleClient         *http.Client
-	ResolveHostUpgrade   HostUpgradeResolver
-	WaitBeforeKubeadm    ContextWaiter
-	ConfigureLocalAPI    LocalAPIAccessConfigurator
-	Async                bool
-	workerMu             sync.Mutex
-	workerWG             sync.WaitGroup
-	workerCtx            context.Context
-	workerCancel         context.CancelFunc
-	stopped              bool
+	Root                   string
+	Store                  operation.Store
+	AgentStartID           string
+	Now                    func() time.Time
+	RunTool                ToolRunner
+	RunReadiness           ToolRunner
+	RunPostHealth          ToolRunner
+	RunEndpointLifecycle   ToolRunner
+	RunPoweroff            ToolRunner
+	MountBootRoot          BootRootMounter
+	SetBootOneshot         BootEntrySetter
+	SetBootDefault         BootEntrySetter
+	ConfigApplyRunner      configapply.CommandRunner
+	ConfigApplyActivator   configapply.ConfextActivator
+	BundleClient           *http.Client
+	ResolveHostUpgrade     HostUpgradeResolver
+	ResolveSystemExtension func(context.Context, systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error)
+	WaitBeforeKubeadm      ContextWaiter
+	ConfigureLocalAPI      LocalAPIAccessConfigurator
+	Async                  bool
+	workerMu               sync.Mutex
+	workerWG               sync.WaitGroup
+	workerCtx              context.Context
+	workerCancel           context.CancelFunc
+	stopped                bool
 }
 
 type toolPlan = operation.ExecutorPlan
@@ -194,6 +196,20 @@ func (e *Executor) recordUnhandledExecutionFailure(operationID string, cause err
 }
 
 func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord) error {
+	// The durable operation record excludes new submissions; this process lock
+	// also excludes overlapping executors across agent restarts.
+	lock, err := os.OpenFile(filepath.Join(e.Store.Root, ".mutation.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		cause := fmt.Errorf("another node mutation is executing; wait for it before retrying: %w", err)
+		e.recordUnhandledExecutionFailure(record.OperationID, cause)
+		return cause
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
 	if record.KubeadmControlPlaneConfig != nil {
 		return e.executeKubeadmControlPlaneConfig(ctx, record)
 	}

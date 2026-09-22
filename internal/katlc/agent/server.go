@@ -457,7 +457,22 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 	} else if conflict != "" {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "operation locks conflict with active operation %s", conflict)
 	}
+	if req.GetHostUpgrade() != nil || req.GetConfigApply() != nil {
+		if err := generation.ValidateMutationBase(s.Root, req.ExpectedCurrentGenerationId); err != nil {
+			return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
 	now := s.clock()
+	var preview *agentapi.HostUpgradePreview
+	if req.Kind == hostUpgradeRequestKind {
+		var err error
+		preview, err = s.previewHostUpgrade(ctx, req)
+		if err != nil {
+			return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "host upgrade preflight: %v", err)
+		}
+		req.HostUpgrade.ImageSha256 = preview.ImageSha256
+		req.HostUpgrade.ImageSizeBytes = preview.ImageSizeBytes
+	}
 	if req.DryRun {
 		if req.GetKubeadmControlPlaneConfig() != nil {
 			if _, err := s.validateKubeadmControlPlaneConfigState(req); err != nil {
@@ -479,9 +494,10 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		}
 		candidateID := requestCandidateGenerationID(req)
 		return operation.OperationRecord{}, &agentapi.OperationAccepted{
-			OperationKind: req.OperationKind,
-			RequestDigest: digest,
-			AcceptedAt:    formatTime(now),
+			HostUpgradePreview: preview,
+			OperationKind:      req.OperationKind,
+			RequestDigest:      digest,
+			AcceptedAt:         formatTime(now),
 			InitialStatus: &agentapi.OperationStatus{
 				OperationKind:          req.OperationKind,
 				RequestDigest:          digest,
@@ -799,8 +815,14 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if req.ApiVersion != APIVersion {
 		return status.Errorf(codes.InvalidArgument, "apiVersion must be %q", APIVersion)
 	}
-	if req.Kind != RequestKind {
+	if req.Kind != RequestKind && !(req.Kind == hostUpgradeRequestKind && req.OperationKind == OperationKindHostUpgrade && req.GetHostUpgrade() != nil) {
 		return status.Errorf(codes.InvalidArgument, "kind must be %q", RequestKind)
+	}
+	if req.GetHostUpgrade().GetConfigYaml() != "" && req.Kind != hostUpgradeRequestKind {
+		return status.Error(codes.InvalidArgument, "combined upgrade requires HostUpgradeRequestV2")
+	}
+	if req.GetHostUpgrade().GetResolveTargetOnly() && (!req.DryRun || req.Kind != hostUpgradeRequestKind) {
+		return status.Error(codes.InvalidArgument, "target discovery is only valid for a versioned upgrade dry-run")
 	}
 	if strings.TrimSpace(req.ClientRequestId) == "" {
 		return status.Error(codes.InvalidArgument, "clientRequestID is required")
@@ -1360,7 +1382,7 @@ func resourceLocks(kind string) []string {
 	case "kubeadm-upgrade":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
 	case OperationKindKubeadmControlPlaneConfig:
-		return []string{"kubeadm-state.lock"}
+		return []string{"generation-state.lock", "kubeadm-state.lock"}
 	case "generation-apply", "generation-stage":
 		return []string{"generation-state.lock", "config-apply.lock"}
 	case OperationKindDestructiveReset:
@@ -1368,7 +1390,7 @@ func resourceLocks(kind string) []string {
 	case OperationKindHostUpgrade:
 		return []string{"generation-state.lock", "sysupdate.lock"}
 	case OperationKindEtcdMemberRemove:
-		return []string{"etcd-state.lock"}
+		return []string{"generation-state.lock", "etcd-state.lock"}
 	default:
 		return nil
 	}

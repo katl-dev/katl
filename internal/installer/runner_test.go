@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/discovery"
@@ -24,6 +25,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
@@ -551,6 +553,57 @@ func TestRunnerUsesInstallMediaImage(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesExplicitMediaRelease(t *testing.T) {
+	path := writeManifest(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := manifest.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded.KatlosImage.ExtensionRelease = &extensionrelease.Manifest{
+		Target: extensionrelease.Target{
+			Version:          decoded.KatlosImage.Version,
+			Architecture:     decoded.KatlosImage.Architecture,
+			Flavour:          "standard",
+			RuntimeInterface: decoded.KatlosImage.RuntimeInterface,
+			Kernel: kernelmodule.Target{
+				Release:       "6.12.0",
+				RuntimeSHA256: strings.Repeat("b", 64),
+			},
+		},
+		Extensions: map[string]string{
+			"registry.invalid/drbd9": "registry.invalid/drbd9@sha256:" + strings.Repeat("c", 64),
+		},
+	}
+	data, err = json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	external := &recordingKatlosResolver{err: errString("media image resolved outside installer media")}
+	media := &recordingKatlosResolver{}
+	install := &Context{
+		ManifestPath:        path,
+		Commands:            &NoopCommandRunner{},
+		Store:               &MemoryStateStore{},
+		KatlosResolver:      external,
+		MediaKatlosResolver: media,
+		DefaultKatlosImage:  decoded.KatlosImage,
+	}
+
+	if err := NewRunner(Plan{loadManifestStep{}, verifyKatlosImageStep{}}, install).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if media.image.SHA256 != decoded.KatlosImage.SHA256 || !manifest.KatlosImageEmpty(external.image) {
+		t.Fatal("explicit media image did not retain its installer media resolver")
+	}
+}
+
 func TestRunnerRejectsKatlosImageBeforeMutation(t *testing.T) {
 	store := &MemoryStateStore{}
 	install := &Context{
@@ -800,6 +853,19 @@ func TestRunnerExecutesDiskOperationSteps(t *testing.T) {
 
 func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) {
 	payload, contents := writeInstallPayload(t)
+	payload.Index.ExtensionRelease = &extensionrelease.Manifest{
+		Target: extensionrelease.Target{
+			Version:          payload.Index.Version,
+			Architecture:     payload.Index.Architecture,
+			Flavour:          "standard",
+			RuntimeInterface: payload.Index.RuntimeInterface,
+			Kernel: kernelmodule.Target{
+				Release:       "6.12.1",
+				RuntimeSHA256: payload.Runtime.SHA256,
+			},
+		},
+		Extensions: map[string]string{"registry.example/drbd9": "registry.example/drbd9@sha256:" + strings.Repeat("d", 64)},
+	}
 	store := &MemoryStateStore{}
 	targetRoot := t.TempDir()
 	rootTarget := newRunnerRootSlot(len(contents.runtime) + 4096)
@@ -874,6 +940,10 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/multi-user.target.wants/kubelet.service"))
 	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/metadata.json"))
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/spec.json"), `"sysexts": []`)
+	installed, _, err := generation.ReadGeneration(targetRoot, "0")
+	if err != nil || !reflect.DeepEqual(installed.ExtensionRelease, payload.Index.ExtensionRelease) {
+		t.Fatalf("installed release selection metadata = %#v, %v", installed.ExtensionRelease, err)
+	}
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/spec.json"), `"loaderEntryPath": "loader/entries/katl-0.conf"`)
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/manifest.json"), `"hostname": "lab-node-01"`)
 	selection, err := generation.ReadBootSelection(targetRoot)

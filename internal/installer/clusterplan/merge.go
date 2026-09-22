@@ -91,20 +91,20 @@ func mergeSystemExtensions(base, next []manifest.SystemExtension) ([]manifest.Sy
 			continue
 		}
 		extension.State = manifest.SystemExtensionPresent
-		entries[extension.Name] = extension
+		entries[extension.Repository()] = extension
 	}
 	seenNext := make(map[string]struct{}, len(next))
 	for _, extension := range next {
-		if _, ok := seenNext[extension.Name]; ok {
-			return nil, fmt.Errorf("systemExtensions contains duplicate name %q", extension.Name)
+		if _, ok := seenNext[extension.Repository()]; ok {
+			return nil, fmt.Errorf("systemExtensions contains duplicate repository %q", extension.Repository())
 		}
-		seenNext[extension.Name] = struct{}{}
+		seenNext[extension.Repository()] = struct{}{}
 		if strings.TrimSpace(extension.State) == manifest.SystemExtensionAbsent {
-			delete(entries, extension.Name)
+			delete(entries, extension.Repository())
 			continue
 		}
 		extension.State = manifest.SystemExtensionPresent
-		entries[extension.Name] = extension
+		entries[extension.Repository()] = extension
 	}
 	names := make([]string, 0, len(entries))
 	for name := range entries {

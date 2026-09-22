@@ -25,6 +25,9 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if record.HostUpgradeRequest == nil {
 		return fmt.Errorf("host upgrade request is required")
 	}
+	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", err)
+	}
 	resolve := e.ResolveHostUpgrade
 	if resolve == nil {
 		resolve = e.resolveHostUpgrade
@@ -51,54 +54,14 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return err
 	}
-	currentID, err := currentGenerationID(e.Root)
+	prepared, err := e.planHostUpgrade(ctx, record, payload)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
-	previousSpec, previousStatus, err := generation.ReadGeneration(e.Root, currentID)
-	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("read current generation: %w", err))
-	}
-	previousManifest, _, err := configapply.ReadEffectiveGenerationManifest(e.Root, currentID)
-	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("read current generation configuration: %w", err))
-	}
-	if err := validateHostUpgradeBootEvidence(e.Root, currentID, previousSpec); err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
-	}
-	inactiveSlot, err := inactiveRoot(previousSpec.Root.Slot)
-	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
-	}
-	slots, err := e.inspectRootSlots(ctx, previousSpec.Root.PartitionUUID)
-	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
-	}
-	kubernetesState, err := inspectKubernetesNodeState(e.Root, e.Store)
-	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("inspect Kubernetes node state: %w", err))
-	}
-	candidate := record.HostUpgradeRequest.CandidateGenerationID
-	ukiPath := generation.UKIDirectory + "/katl-" + inactiveSlot + "-1.efi"
-	if ukiPath == previousSpec.Boot.UKIPath {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("inactive root slot UKI path is still used by the active generation"))
-	}
-	entry := "loader/entries/katl-" + candidate + ".conf"
-	plan, err := payload.HostUpgradePlan(katlosimage.HostUpgradeRequest{
-		GenerationID:      candidate,
-		PreviousSpec:      previousSpec,
-		PreviousStatus:    previousStatus,
-		RootSlot:          inactiveSlot,
-		RootPartitionUUID: slots.InactivePartUUID,
-		UKIPath:           ukiPath,
-		LoaderEntryPath:   entry,
-		OperationID:       record.OperationID,
-		Bootstrapped:      kubernetesState.bootstrapped,
-		CreatedAt:         e.clock(),
-	})
-	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
-	}
+	plan, extensions, slots := prepared.plan, prepared.extensions, prepared.slots
+	defer prepared.close()
+	candidate := plan.Spec.GenerationID
+	inactiveSlot, ukiPath, entry := plan.Spec.Root.Slot, plan.Spec.Boot.UKIPath, plan.Spec.Boot.LoaderEntryPath
 	bootRoot := filepath.Join(runtimeRoot(e.Root), "efi")
 	if e.MountBootRoot != nil {
 		if err := e.MountBootRoot(ctx, bootRoot); err != nil {
@@ -143,10 +106,13 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err := katlosimage.StageBundledAssets(runtimeRoot(e.Root), plan); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", err)
 	}
+	if _, _, err := configapply.MaterializeSystemExtensions(e.Root, candidate, plan.Spec.Root, plan.Spec.ExtensionRelease, extensions.desired, extensions.materials); err != nil {
+		return e.failHostUpgrade(record, "write-candidate-generation", err)
+	}
 	if err := generation.WriteGeneration(e.Root, plan.Spec, plan.Status); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", err)
 	}
-	if err := configapply.WriteGenerationManifest(e.Root, candidate, previousManifest); err != nil {
+	if err := configapply.WriteGenerationManifest(e.Root, candidate, extensions.manifest); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", fmt.Errorf("preserve current generation configuration: %w", err))
 	}
 	machineID, err := os.ReadFile(filepath.Join(runtimeRoot(e.Root), "etc/machine-id"))
@@ -189,13 +155,13 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		return e.failHostUpgrade(record, "arm-trial-boot", err)
 	}
 	_, err = e.Store.Update(record.OperationID, "host-upgrade-staged", "arm-trial-boot", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.PreviousGenerationID = previousSpec.GenerationID
+		current.PreviousGenerationID = prepared.previous.GenerationID
 		current.CompletedPhases = appendMissing(current.CompletedPhases, "accepted", "verify-katlos-image", "stage-sysupdate-components", "write-candidate-generation", "arm-trial-boot")
 		current.Phase = "arm-trial-boot"
 		current.ExternalMutationStarted = true
 		current.MutationScopes = appendMissing(current.MutationScopes, "runtime-root", "runtime-uki", "boot-selection", "generation-state")
 		current.ActivationState = operation.ActivationStatePending
-		current.HostRollback = previousSpec.GenerationID
+		current.HostRollback = prepared.previous.GenerationID
 		current.PostMutationRollbackAllowed = true
 		current.NextAction = "reboot into the bounded candidate trial; promote only after boot health passes"
 		current.CompleteBootTrial(now)

@@ -64,6 +64,7 @@ func Load(root string) (Media, bool, error) {
 		Root:     root,
 		Metadata: metadata,
 		Image: manifest.KatlosImage{
+			ExtensionRelease: metadata.ExtensionRelease,
 			LocalRef:         filepath.ToSlash(filepath.Join("images", metadata.Path)),
 			SHA256:           metadata.SHA256,
 			SizeBytes:        uint64(metadata.SizeBytes),

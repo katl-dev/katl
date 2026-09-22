@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/flavour"
 )
 
@@ -19,21 +20,22 @@ const ArtifactMetadataKind = "KatlOSImageArtifact"
 // supported image build pipeline. It is the workstation-side contract used
 // before an image is offered to an installer or running node.
 type ArtifactMetadata struct {
-	Flavour           string `json:"flavour,omitempty"`
-	APIVersion        string `json:"apiVersion"`
-	Kind              string `json:"kind"`
-	ImageRole         string `json:"imageRole"`
-	Format            string `json:"format"`
-	Version           string `json:"version"`
-	BuildID           string `json:"buildID"`
-	Architecture      string `json:"architecture"`
-	RuntimeInterface  string `json:"runtimeInterface"`
-	Path              string `json:"path"`
-	SizeBytes         int64  `json:"sizeBytes"`
-	SHA256            string `json:"sha256"`
-	ChecksumPath      string `json:"checksumPath"`
-	EmbeddedIndexPath string `json:"embeddedIndexPath"`
-	CreatedAt         string `json:"createdAt"`
+	ExtensionRelease  *extensionrelease.Manifest `json:"extensionRelease,omitempty"`
+	Flavour           string                     `json:"flavour,omitempty"`
+	APIVersion        string                     `json:"apiVersion"`
+	Kind              string                     `json:"kind"`
+	ImageRole         string                     `json:"imageRole"`
+	Format            string                     `json:"format"`
+	Version           string                     `json:"version"`
+	BuildID           string                     `json:"buildID"`
+	Architecture      string                     `json:"architecture"`
+	RuntimeInterface  string                     `json:"runtimeInterface"`
+	Path              string                     `json:"path"`
+	SizeBytes         int64                      `json:"sizeBytes"`
+	SHA256            string                     `json:"sha256"`
+	ChecksumPath      string                     `json:"checksumPath"`
+	EmbeddedIndexPath string                     `json:"embeddedIndexPath"`
+	CreatedAt         string                     `json:"createdAt"`
 }
 
 func ReadArtifactMetadata(path string, expectedRole string) (ArtifactMetadata, error) {
@@ -58,6 +60,14 @@ func ReadArtifactMetadata(path string, expectedRole string) (ArtifactMetadata, e
 }
 
 func (m ArtifactMetadata) Validate(expectedRole string) error {
+	if m.ExtensionRelease != nil {
+		if err := m.ExtensionRelease.Validate(); err != nil {
+			return err
+		}
+		if err := m.ExtensionRelease.Target.ValidateRuntime(m.Version, m.Architecture, m.Flavour, m.RuntimeInterface, m.ExtensionRelease.Target.Kernel.RuntimeSHA256); err != nil {
+			return err
+		}
+	}
 	if _, err := flavour.Normalize(m.Flavour); err != nil {
 		return err
 	}

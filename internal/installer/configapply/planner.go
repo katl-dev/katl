@@ -120,9 +120,6 @@ func PlanChange(current generation.Record, request NodeConfigurationChange) (Res
 }
 
 func selectedKubernetesSysextChange(current []generation.ExtensionRef, candidate []generation.ExtensionRef) (Diagnostic, bool) {
-	if len(candidate) == 0 {
-		return Diagnostic{}, false
-	}
 	currentRef, currentOK := kubernetesSysext(current)
 	candidateRef, candidateOK := kubernetesSysext(candidate)
 	if !currentOK && !candidateOK {

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/generation"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -59,6 +60,9 @@ type BuildRequest struct {
 // PlanningInputs are operation-scoped mechanisms supplied by Katl, not
 // operator-authored cluster intent.
 type PlanningInputs struct {
+	ExtensionLayoutURLs  map[string]string
+	Nodes                []string
+	ExtensionReleases    map[string]extensionrelease.Manifest
 	KatlosImage          manifest.KatlosImage
 	KubernetesBundle     string
 	BootstrapAccess      map[string]inventory.Access
@@ -162,7 +166,7 @@ type SourceHostConfigurationFileSet struct {
 }
 
 type SourceSystemExtension struct {
-	Name          string                                `yaml:"name" json:"name"`
+	Release       string                                `yaml:"release,omitempty" json:"release,omitempty"`
 	State         string                                `yaml:"state,omitempty" json:"state,omitempty"`
 	Bundle        string                                `yaml:"bundle,omitempty" json:"bundle,omitempty"`
 	Configuration manifest.SystemExtensionConfiguration `yaml:"configuration,omitempty" json:"configuration,omitempty"`
@@ -326,53 +330,60 @@ type member struct {
 	data       []byte
 }
 
-func BuildArchive(request BuildRequest) ([]byte, Result, error) {
+func compileSource(request BuildRequest, deferExtensions bool) (compiledSource, error) {
 	sourcePath := strings.TrimSpace(request.SourcePath)
 	if sourcePath == "" {
-		return nil, Result{}, fmt.Errorf("source path is required")
+		return compiledSource{}, fmt.Errorf("source path is required")
 	}
 	sourcePath, err := filepath.Abs(sourcePath)
 	if err != nil {
-		return nil, Result{}, fmt.Errorf("resolve source path: %w", err)
+		return compiledSource{}, fmt.Errorf("resolve source path: %w", err)
 	}
 	sourceData, err := os.ReadFile(sourcePath)
 	if err != nil {
-		return nil, Result{}, fmt.Errorf("read source config: %w", err)
+		return compiledSource{}, fmt.Errorf("read source config: %w", err)
 	}
 	source, err := DecodeSource(bytes.NewReader(sourceData))
 	if err != nil {
-		return nil, Result{}, err
+		return compiledSource{}, err
 	}
 	source, err = normalizeSource(source)
 	if err != nil {
-		return nil, Result{}, err
+		return compiledSource{}, err
 	}
 	source, err = resolveHostConfigurationSources(filepath.Dir(sourcePath), source)
 	if err != nil {
-		return nil, Result{}, err
+		return compiledSource{}, err
+	}
+	// Preserve complete operator intent even when only selected nodes acquire
+	// payloads. Resolution metadata belongs to node material, not source YAML.
+	source.Spec.ManagementAuthentication = source.ManagementAuthentication()
+	source.Spec.ManagementIdentity = ""
+	normalized, err := marshalCanonical(source)
+	if err != nil {
+		return compiledSource{}, err
 	}
 	buildContext := request.Context
 	if buildContext == nil {
 		buildContext = context.Background()
 	}
-	source, extensionBundles, err := resolveSystemExtensionBundles(buildContext, source, request.Planning.KatlosImage, request.ResolveSystemExtension)
-	if err != nil {
-		return nil, Result{}, err
+	var extensionBundles map[string]systemextensionbundle.Resolved
+	var selections map[string][]systemextensionbundle.Selection
+	if deferExtensions {
+		source, selections, err = configurationSelections(source)
+	} else {
+		source, extensionBundles, err = resolveSystemExtensionBundles(buildContext, source, request.Planning, request.ResolveSystemExtension)
 	}
-	// The credential source belongs to the workstation, not installed state.
-	source.Spec.ManagementAuthentication = source.ManagementAuthentication()
-	source.Spec.ManagementIdentity = ""
-	normalized, err := marshalCanonical(source)
 	if err != nil {
-		return nil, Result{}, err
+		return compiledSource{}, err
 	}
 	kubeadmConfigs, kubeadmSourceInputs, err := resolveKubeadmConfigs(filepath.Dir(sourcePath), source.Spec.Kubernetes.Kubeadm, selectedKubernetesVersion(source))
 	if err != nil {
-		return nil, Result{}, err
+		return compiledSource{}, err
 	}
 	kubeadmConfigs, nodeKubeletInputs, err := resolveNodeKubeletConfigs(filepath.Dir(sourcePath), source, kubeadmConfigs)
 	if err != nil {
-		return nil, Result{}, err
+		return compiledSource{}, err
 	}
 	kubeadmSourceInputs = append(kubeadmSourceInputs, nodeKubeletInputs...)
 	sourceDigest := digestSourceInputs(normalized, kubeadmSourceInputs)
@@ -390,13 +401,13 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 			RuntimeInterface:  planning.KatlosImage.RuntimeInterface,
 		})
 		if err != nil {
-			return nil, Result{}, fmt.Errorf("resolve spec.kubernetes.version: %w", err)
+			return compiledSource{}, fmt.Errorf("resolve spec.kubernetes.version: %w", err)
 		}
 		planning.KubernetesBundle = selection.Bundle
 	} else {
 		image, err := kubernetesbundle.ParseImageReference(planning.KubernetesBundle)
 		if err != nil {
-			return nil, Result{}, fmt.Errorf("resolve Kubernetes bundle: %w", err)
+			return compiledSource{}, fmt.Errorf("resolve Kubernetes bundle: %w", err)
 		}
 		if payloadbundle.ManifestDigest(image) != "" {
 			planning.KubernetesBundle = image.Name() + "@" + payloadbundle.ManifestDigest(image)
@@ -407,17 +418,17 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 				RuntimeInterface:  planning.KatlosImage.RuntimeInterface,
 			})
 			if err != nil {
-				return nil, Result{}, fmt.Errorf("resolve Kubernetes bundle: %w", err)
+				return compiledSource{}, fmt.Errorf("resolve Kubernetes bundle: %w", err)
 			}
 			planning.KubernetesBundle = selection.Bundle
 		}
 	}
 	if err := validateResolvedSourceNodes(source); err != nil {
-		return nil, Result{}, err
+		return compiledSource{}, err
 	}
 	config, err := LowerSource(source, planning)
 	if err != nil {
-		return nil, Result{}, err
+		return compiledSource{}, err
 	}
 	warnings := systemExtensionReferenceWarnings(config)
 	plan, err := clusterplan.Compile(clusterplan.CompileRequest{
@@ -426,9 +437,45 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 		ManagementIdentities: planning.ManagementIdentities,
 	})
 	if err != nil {
-		return nil, Result{}, publicClusterPlanError(source, err)
+		return compiledSource{}, publicClusterPlanError(source, err)
 	}
-	members, manifest, err := buildMembers(source, normalized, sourceDigest, plan, kubeadmConfigs, extensionBundles, request)
+	if len(planning.Nodes) > 0 {
+		for _, name := range planning.Nodes {
+			if !slices.ContainsFunc(plan.Nodes, func(node clusterplan.NodeMaterial) bool { return node.Name == name }) {
+				return compiledSource{}, fmt.Errorf("selected node %q is not in ClusterConfig", name)
+			}
+		}
+		plan.Nodes = slices.DeleteFunc(plan.Nodes, func(node clusterplan.NodeMaterial) bool { return !slices.Contains(planning.Nodes, node.Name) })
+	}
+	return compiledSource{
+		source:           source,
+		normalized:       normalized,
+		sourceDigest:     sourceDigest,
+		plan:             plan,
+		kubeadmConfigs:   kubeadmConfigs,
+		extensionBundles: extensionBundles,
+		selections:       selections,
+		warnings:         warnings,
+	}, nil
+}
+
+type compiledSource struct {
+	source           SourceConfig
+	normalized       []byte
+	sourceDigest     string
+	plan             clusterplan.Plan
+	kubeadmConfigs   map[string]kubeadmconfig.Plan
+	extensionBundles map[string]systemextensionbundle.Resolved
+	selections       map[string][]systemextensionbundle.Selection
+	warnings         []CompilationWarning
+}
+
+func BuildArchive(request BuildRequest) ([]byte, Result, error) {
+	compiled, err := compileSource(request, false)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	members, manifest, err := buildMembers(compiled.source, compiled.normalized, compiled.sourceDigest, compiled.plan, compiled.kubeadmConfigs, compiled.extensionBundles, request)
 	if err != nil {
 		return nil, Result{}, err
 	}
@@ -457,7 +504,7 @@ func BuildArchive(request BuildRequest) ([]byte, Result, error) {
 	if err != nil {
 		return nil, Result{}, err
 	}
-	return archive, Result{Digest: manifestDigest, Manifest: manifest, ArchiveSize: int64(len(archive)), Warnings: warnings}, nil
+	return archive, Result{Digest: manifestDigest, Manifest: manifest, ArchiveSize: int64(len(archive)), Warnings: compiled.warnings}, nil
 }
 
 func systemExtensionReferenceWarnings(config clusterplan.Config) []CompilationWarning {
@@ -475,7 +522,7 @@ func systemExtensionReferenceWarnings(config clusterplan.Config) []CompilationWa
 			pinned := parsed.String() + "@" + extension.OCIManifestDigest
 			warnings = append(warnings, CompilationWarning{
 				Code:           "mutable-system-extension-reference",
-				Path:           fmt.Sprintf("spec.nodes[%q].systemExtensions[name=%q].bundle", node.Name, extension.Name),
+				Path:           fmt.Sprintf("spec.nodes[%q].systemExtensions[repository=%q].bundle", node.Name, extension.Repository()),
 				Node:           node.Name,
 				Message:        fmt.Sprintf("mutable system-extension reference %q resolved to %s; use the suggested digest-pinned value to make later compilations select the same payload", extension.Bundle, extension.OCIManifestDigest),
 				SuggestedValue: pinned,
@@ -1297,7 +1344,7 @@ func selectedSystemExtensionDescriptors(extensions []manifest.SystemExtension, b
 			}
 			desc, ok := byDigest[payload.Digest]
 			if !ok {
-				return nil, fmt.Errorf("system extension %q payload %s was not embedded", extension.Name, payload.Digest)
+				return nil, fmt.Errorf("system extension %q payload %s was not embedded", extension.Repository(), payload.Digest)
 			}
 			seen[payload.Digest] = struct{}{}
 			out = append(out, desc)

@@ -161,10 +161,8 @@ spec:
             - path: /etc/systemd/network/20-common.network
               content: common
     systemExtensions:
-      - name: bird
-        bundle: registry.example/bird:v1
-      - name: tools
-        bundle: registry.example/tools:v1
+      - bundle: registry.example/bird:v1
+      - bundle: registry.example/tools:v1
     install:
       systemDisk:
         minSizeMiB: 65536
@@ -222,9 +220,8 @@ spec:
               - path: /etc/hostname-note
                 content: overridden
       systemExtensions:
-        - name: bird
-          bundle: registry.example/bird:v2
-        - name: tools
+        - bundle: registry.example/bird:v2
+        - release: registry.example/tools
           state: absent
       install:
         systemDisk:
@@ -280,8 +277,8 @@ spec:
 	if len(overridden.HostConfiguration.Sets) != 1 || overridden.HostConfiguration.Sets["host"].Files[0].Path != "/etc/hostname-note" {
 		t.Fatalf("named file sets did not replace or remove by name: %#v", overridden.HostConfiguration.Sets)
 	}
-	if len(overridden.SystemExtensions) != 1 || overridden.SystemExtensions[0].Name != "bird" || overridden.SystemExtensions[0].Bundle != "registry.example/bird:v2" {
-		t.Fatalf("named system extensions did not replace or remove by name: %#v", overridden.SystemExtensions)
+	if len(overridden.SystemExtensions) != 1 || overridden.SystemExtensions[0].Repository() != "registry.example/bird" || overridden.SystemExtensions[0].Bundle != "registry.example/bird:v2" {
+		t.Fatalf("system extensions did not replace or remove by repository: %#v", overridden.SystemExtensions)
 	}
 	if len(overridden.Install.Volumes) != 1 {
 		t.Fatalf("named storage volumes did not compose or remove by name: %#v", overridden.Install.Volumes)
@@ -380,8 +377,7 @@ func TestDecodeSourceRejectsKatlOwnedKernelArgument(t *testing.T) {
 func TestBuildArchiveResolvesAndVendorsSystemExtensionOnce(t *testing.T) {
 	source := strings.Replace(validSourceConfig(), "  defaults:\n", `  defaults:
     systemExtensions:
-      - name: bird
-        bundle: registry.example/katl-dev/bird:v3.1.2-katl.1
+      - bundle: registry.example/katl-dev/bird:v3.1.2-katl.1
         configuration:
           files:
             - path: /etc/bird.conf
@@ -439,7 +435,7 @@ func TestBuildArchiveResolvesAndVendorsSystemExtensionOnce(t *testing.T) {
 	}
 	wantPinned := "registry.example/katl-dev/bird:v3.1.2-katl.1@sha256:" + strings.Repeat("a", 64)
 	if len(result.Warnings) != 2 || result.Warnings[0].Node != "cp-1" || result.Warnings[1].Node != "worker-1" ||
-		result.Warnings[0].Path != `spec.nodes["cp-1"].systemExtensions[name="bird"].bundle` ||
+		result.Warnings[0].Path != `spec.nodes["cp-1"].systemExtensions[repository="registry.example/katl-dev/bird"].bundle` ||
 		result.Warnings[0].SuggestedValue != wantPinned || result.Warnings[1].SuggestedValue != wantPinned {
 		t.Fatalf("compilation warnings = %#v", result.Warnings)
 	}
@@ -469,7 +465,7 @@ func TestBuildArchiveResolvesAndVendorsSystemExtensionOnce(t *testing.T) {
 	}
 	foundMutableWarning := false
 	for _, warning := range inspection.Warnings {
-		if warning.Path == `spec.nodes["cp-1"].systemExtensions[name="bird"].bundle` && strings.Contains(warning.Message, wantPinned) {
+		if warning.Path == `spec.nodes["cp-1"].systemExtensions[repository="registry.example/katl-dev/bird"].bundle` && strings.Contains(warning.Message, wantPinned) {
 			foundMutableWarning = true
 		}
 	}
@@ -1371,8 +1367,8 @@ func TestSourceSchemaExposesAuthoringContract(t *testing.T) {
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationSysfsSetting", []string{"path", "value"}, []string{"name"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceHostConfigurationFileSet", []string{"directory", "destination", "files", "onChange", "state"}, []string{"notify"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceSystemExtension",
-		[]string{"bundle", "configuration", "name", "state", "units"},
-		[]string{"architecture", "artifactVersion", "bundleManifestDigest", "ociManifestDigest", "payloadVersion", "payloads", "supportedRuntimeInterfaces"})
+		[]string{"bundle", "configuration", "release", "state", "units"},
+		[]string{"name", "architecture", "artifactVersion", "bundleManifestDigest", "ociManifestDigest", "payloadVersion", "payloads", "supportedRuntimeInterfaces"})
 	assertSchemaFields(t, document.Defs, "configbundle.SourceKubernetesLayer", []string{"address", "kubelet", "labels", "taints"}, nil)
 	assertSchemaFields(t, document.Defs, "configbundle.SourceKubeletConfig", []string{"configFile"}, nil)
 	assertSchemaRequired(t, document.Defs, "configbundle.SourceSpec", "nodes")

@@ -186,7 +186,8 @@ RequiredBy=systemd-confext.service
 	if assets.GenerationActivate != want {
 		t.Fatalf("katl-generation-activate.service:\n%s\nwant:\n%s", assets.GenerationActivate, want)
 	}
-	if !strings.Contains(assets.HostConfigPrepare, "After=systemd-confext.service") ||
+	if !strings.Contains(assets.HostConfigPrepare, "After=systemd-sysext.service systemd-confext.service") ||
+		!strings.Contains(assets.HostConfigPrepare, "Requires=systemd-sysext.service systemd-confext.service") ||
 		strings.Contains(assets.HostConfigPrepare, "systemd-udev-trigger.service") {
 		t.Fatalf("katl-host-config-prepare.service:\n%s", assets.HostConfigPrepare)
 	}

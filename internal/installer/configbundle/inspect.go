@@ -137,18 +137,18 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 	}
 	report.Derived.StorageVolumes, report.Warnings = derivedVolumesAndWarnings(resolved.Storage, base)
 	if extensions, ok := resolved.SystemExtensions.Get(); ok {
-		installedByName := make(map[string]string, len(selected.InstallManifest.Node.SystemExtensions))
+		installedByRepository := make(map[string]string, len(selected.InstallManifest.Node.SystemExtensions))
 		for _, extension := range selected.InstallManifest.Node.SystemExtensions {
-			installedByName[extension.Name] = extension.OCIManifestDigest
+			installedByRepository[extension.Repository()] = extension.OCIManifestDigest
 		}
 		for _, extension := range extensions {
-			digest := installedByName[extension.Name]
-			if digest == "" || strings.Contains(extension.Bundle, "@") {
+			digest := installedByRepository[extension.repository()]
+			if extension.Bundle == "" || digest == "" || strings.Contains(extension.Bundle, "@") {
 				continue
 			}
 			pinned := strings.SplitN(extension.Bundle, "@", 2)[0] + "@" + digest
 			report.Warnings = append(report.Warnings, ResolutionWarning{
-				Path:    fmt.Sprintf("%s.systemExtensions[name=%q].bundle", base, extension.Name),
+				Path:    fmt.Sprintf("%s.systemExtensions[repository=%q].bundle", base, extension.repository()),
 				Message: fmt.Sprintf("mutable reference %q resolved to %s; pin it as %s for reproducible compilation", extension.Bundle, digest, pinned),
 			})
 		}
@@ -214,7 +214,7 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 	resolvedExtensions, _ := resolved.SystemExtensions.Get()
 	nodeExtensions, nodeExtensionsSet := node.SystemExtensions.Get()
 	for _, extension := range resolvedExtensions {
-		choose(fmt.Sprintf("systemExtensions[name=%q]", extension.Name), nodeExtensionsSet && hasExtension(nodeExtensions, extension.Name))
+		choose(fmt.Sprintf("systemExtensions[repository=%q]", extension.repository()), nodeExtensionsSet && hasExtension(nodeExtensions, extension.repository()))
 	}
 	resolvedSystemDisk := resolved.Install.SystemDisk
 	diskFields := []struct {
@@ -376,9 +376,9 @@ func ownedFiles(files []confext.NativeEtcFile) []OwnedFile {
 
 func formatMode(mode fs.FileMode) string { return fmt.Sprintf("%04o", mode.Perm()) }
 
-func hasExtension(values []SourceSystemExtension, name string) bool {
+func hasExtension(values []SourceSystemExtension, repository string) bool {
 	for _, value := range values {
-		if value.Name == name {
+		if value.repository() == repository {
 			return true
 		}
 	}
@@ -497,7 +497,7 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	add(base+".hostConfiguration.maskedUnits", before.Effective.HostConfiguration.MaskedUnits.Value(), after.Effective.HostConfiguration.MaskedUnits.Value())
 	add(base+".hostConfiguration.enabledUnits", before.Effective.HostConfiguration.EnabledUnits.Value(), after.Effective.HostConfiguration.EnabledUnits.Value())
 	diffNamedMaps(&diff, base+".hostConfiguration.fileSets", before.Effective.HostConfiguration.FileSets.Value(), after.Effective.HostConfiguration.FileSets.Value())
-	diffNamedExtensions(&diff, base+".systemExtensions", before.Effective.SystemExtensions.Value(), after.Effective.SystemExtensions.Value())
+	diffRepositoryExtensions(&diff, base+".systemExtensions", before.Effective.SystemExtensions.Value(), after.Effective.SystemExtensions.Value())
 	add(base+".install.systemDisk", before.Effective.Install.SystemDisk, after.Effective.Install.SystemDisk)
 	diffNamedVolumes(&diff, base+".storage.volumes", before.Effective.Storage.Volumes.Value(), after.Effective.Storage.Volumes.Value())
 	add(base+".kubernetes.address", before.Effective.Kubernetes.Address, after.Effective.Kubernetes.Address)
@@ -529,14 +529,14 @@ func diffNamedMaps[V any](diff *ConfigDiff, prefix string, before, after map[str
 	}
 }
 
-func diffNamedExtensions(diff *ConfigDiff, prefix string, before, after []SourceSystemExtension) {
+func diffRepositoryExtensions(diff *ConfigDiff, prefix string, before, after []SourceSystemExtension) {
 	left := make(map[string]SourceSystemExtension, len(before))
 	right := make(map[string]SourceSystemExtension, len(after))
 	for _, value := range before {
-		left[value.Name] = value
+		left[value.repository()] = value
 	}
 	for _, value := range after {
-		right[value.Name] = value
+		right[value.repository()] = value
 	}
 	diffNamedMaps(diff, prefix, left, right)
 }

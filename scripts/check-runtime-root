@@ -203,6 +203,12 @@ for path in \
     /usr/bin/mkfs.xfs \
     /usr/bin/katlc \
     /usr/bin/katl-console \
+    /usr/bin/systemd-dissect \
+    /usr/bin/mksquashfs \
+    /usr/bin/kmod \
+    /usr/bin/depmod \
+    /usr/bin/modinfo \
+    /usr/bin/modprobe \
     /usr/bin/mount.nfs \
     /usr/bin/tc \
     /usr/bin/nvme \

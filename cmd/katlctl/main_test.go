@@ -36,6 +36,7 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestVersion(t *testing.T) {
@@ -750,7 +751,7 @@ func TestConfigValidateResolvesWithoutWriting(t *testing.T) {
 func TestWriteCompilationWarningsShowsPublicPathNodeAndPinnedValue(t *testing.T) {
 	var stderr bytes.Buffer
 	warning := configbundle.CompilationWarning{
-		Path:           `spec.nodes["worker-1"].systemExtensions[name="bird"].bundle`,
+		Path:           `spec.nodes["worker-1"].systemExtensions[repository="registry.example/katl-dev/bird"].bundle`,
 		Node:           "worker-1",
 		Message:        "mutable system-extension reference resolved to sha256:abc",
 		SuggestedValue: "registry.example/extensions/bird:v1@sha256:abc",
@@ -971,8 +972,7 @@ func TestConfigValidateReportsOnlyPublicNodePaths(t *testing.T) {
 		{
 			name: "system extension configuration file",
 			source: strings.Replace(base, "      install:\n", `      systemExtensions:
-        - name: tools
-          bundle: registry.example/tools:v1
+        - bundle: registry.example/tools:v1
           configuration:
             files:
               - path: relative.conf
@@ -2247,13 +2247,19 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 
 func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	fake := &fakeKatlcAgentClient{
+		upgradePreview: &agentapi.HostUpgradePreview{
+			ImageSha256:    strings.Repeat("b", 64),
+			ImageSizeBytes: 4096,
+		},
 		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		generation:      &agentapi.Generation{GenerationId: "generation-current", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", Architecture: "x86_64"}}},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
 	}
 	fake.onSubmit = func(request *agentapi.SubmitOperationRequest) {
-		fake.nodeStatus.CurrentGenerationId = request.GetHostUpgrade().GetCandidateGenerationId()
+		if !request.DryRun {
+			fake.nodeStatus.CurrentGenerationId = request.GetHostUpgrade().GetCandidateGenerationId()
+		}
 	}
 	fake.onReboot = func(req *agentapi.RebootRequest) {
 		fake.nodeStatus.AgentStartId = "after"
@@ -2334,7 +2340,7 @@ func TestHostUpgradeLocalArtifactUploadsStagesRebootsAndVerifiesHealth(t *testin
 	if request.GetImageUrl() != "" || request.GetImageLocalRef() != hostUpgradeArtifactLocalRef(digest) || request.GetImageSha256() != digest || request.GetImageSizeBytes() != uint64(len(contents)) || !strings.HasPrefix(request.GetCandidateGenerationId(), "katlos-2026.7.0-dev.12-") {
 		t.Fatalf("host upgrade request = %#v", request)
 	}
-	if !strings.Contains(stderr.String(), "uploading local KatlOS 2026.7.0-dev.12 image") || !strings.Contains(stderr.String(), "local KatlOS image uploaded; staging the upgrade") {
+	if !strings.Contains(stderr.String(), "uploading local KatlOS 2026.7.0-dev.12 image") || !strings.Contains(stderr.String(), "local KatlOS image uploaded") {
 		t.Fatalf("progress = %q", stderr.String())
 	}
 	var report hostUpgradeReport
@@ -2347,7 +2353,7 @@ func TestHostUpgradeLocalArtifactUploadsStagesRebootsAndVerifiesHealth(t *testin
 	}
 }
 
-func TestHostUpgradeLocalArtifactPlanValidatesWithoutUploading(t *testing.T) {
+func TestHostUpgradeLocalPlanAcquiresWithoutActivation(t *testing.T) {
 	artifact, contents, digest := writeHostUpgradeArtifact(t, "2026.7.0-dev.13", "x86_64", 1024)
 	fake := readyHostUpgradeClient()
 	installKatlcDial(t, func(endpoint string) {
@@ -2361,8 +2367,11 @@ func TestHostUpgradeLocalArtifactPlanValidatesWithoutUploading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if len(fake.stageArtifact) != 0 {
-		t.Fatalf("plan uploaded %d chunks", len(fake.stageArtifact))
+	if len(fake.stageArtifact) == 0 {
+		t.Fatal("plan did not acquire the image for node-side compatibility validation")
+	}
+	if strings.Contains(stderr.String(), "staging the upgrade") {
+		t.Fatalf("preview reports upgrade mutation: %s", stderr.String())
 	}
 	if !fake.submitRequest.GetDryRun() {
 		t.Fatalf("plan request = %#v", fake.submitRequest)
@@ -2405,13 +2414,19 @@ func TestHostUpgradeLocalArtifactRejectsRedundantVersion(t *testing.T) {
 
 func readyHostUpgradeClient() *fakeKatlcAgentClient {
 	fake := &fakeKatlcAgentClient{
+		upgradePreview: &agentapi.HostUpgradePreview{
+			ImageSha256:    strings.Repeat("b", 64),
+			ImageSizeBytes: 4096,
+		},
 		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		generation:      &agentapi.Generation{GenerationId: "generation-current", RuntimeArchitecture: "x86_64", RuntimeFlavour: "standard"},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
 	}
 	fake.onSubmit = func(request *agentapi.SubmitOperationRequest) {
-		fake.nodeStatus.CurrentGenerationId = request.GetHostUpgrade().GetCandidateGenerationId()
+		if !request.DryRun {
+			fake.nodeStatus.CurrentGenerationId = request.GetHostUpgrade().GetCandidateGenerationId()
+		}
 	}
 	fake.onReboot = func(request *agentapi.RebootRequest) {
 		fake.nodeStatus.AgentStartId = "after"
@@ -2805,6 +2820,7 @@ type fakeKatlcAgentClient struct {
 	submitRequest           *agentapi.SubmitOperationRequest
 	submitRequests          []*agentapi.SubmitOperationRequest
 	submitAccepted          *agentapi.OperationAccepted
+	upgradePreview          *agentapi.HostUpgradePreview
 	nodeStatus              *agentapi.NodeStatus
 	nodeStatusErr           error
 	etcdStatus              *agentapi.EtcdStatus
@@ -2996,16 +3012,26 @@ func (s *fakeHostUpgradeArtifactClient) CloseAndRecv() (*agentapi.HostUpgradeArt
 }
 
 func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.SubmitOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
+	req = proto.Clone(req).(*agentapi.SubmitOperationRequest)
 	if c.onSubmit != nil {
 		c.onSubmit(req)
 	}
 	c.submitRequest = req
 	c.submitRequests = append(c.submitRequests, req)
 	if req.DryRun {
+		var preview *agentapi.HostUpgradePreview
+		if req.HostUpgrade != nil && c.upgradePreview != nil {
+			preview = proto.Clone(c.upgradePreview).(*agentapi.HostUpgradePreview)
+			if req.HostUpgrade.ImageSha256 != "" {
+				preview.ImageSha256 = req.HostUpgrade.ImageSha256
+				preview.ImageSizeBytes = req.HostUpgrade.ImageSizeBytes
+			}
+		}
 		return &agentapi.OperationAccepted{
-			OperationKind: req.OperationKind,
-			RequestDigest: strings.Repeat("d", 64),
-			InitialStatus: &agentapi.OperationStatus{Phase: "dry-run"},
+			HostUpgradePreview: preview,
+			OperationKind:      req.OperationKind,
+			RequestDigest:      strings.Repeat("d", 64),
+			InitialStatus:      &agentapi.OperationStatus{Phase: "dry-run"},
 		}, nil
 	}
 	if c.submitAccepted != nil {

@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/spf13/cobra"
@@ -236,12 +235,16 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 	if opts.timeout <= 0 {
 		return workstation.Config{}, contextSaveReport{}, fmt.Errorf("--timeout must be positive")
 	}
-	config, err := loadKatlConfig(opts.configInput, "katlctl context save", configbundle.PlanningInputs{}, stderr)
+	topology, err := resolveClusterConfigTopology(ctx, opts.configInput)
 	if err != nil {
 		return workstation.Config{}, contextSaveReport{}, err
 	}
-	bundle := config.Bundle
-	inv := bundle.Manifest.Cluster.BootstrapInventory
+	// Observe the configured endpoints without compiling host payloads or
+	// acquiring artifacts. Their target release is not known until this probe.
+	inv, err := readManagementInventory(opts.configInput)
+	if err != nil {
+		return workstation.Config{}, contextSaveReport{}, err
+	}
 	replacements := make(map[string]struct{}, len(opts.replacementNode))
 	for _, value := range opts.replacementNode {
 		name := strings.TrimSpace(value)
@@ -268,13 +271,17 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 	}
 	contextName := strings.TrimSpace(opts.contextName)
 	if contextName == "" {
-		contextName = bundle.Manifest.ClusterName
+		contextName = topology.ClusterName
 	}
-	management, err := managementClientForConfig(opts.configInput, bundle.Manifest.ClusterName)
+	management, err := managementClientForConfig(opts.configInput, topology.ClusterName)
 	if err != nil {
 		return workstation.Config{}, contextSaveReport{}, err
 	}
-	clusterProfile := workstation.Cluster{Name: bundle.Manifest.ClusterName, ControlPlaneEndpoint: inv.ControlPlaneEndpoint, Management: &management}
+	clusterProfile := workstation.Cluster{
+		Name:                 topology.ClusterName,
+		ControlPlaneEndpoint: inv.ControlPlaneEndpoint,
+		Management:           &management,
+	}
 	report := contextSaveReport{APIVersion: "katl.dev/v1alpha1", Kind: "ContextSaveReport", Context: contextName, ConfigPath: configPath}
 	cfg := workstation.Config{}
 	if existing, loadErr := loadManagementContext(ctx, configPath); loadErr == nil {
@@ -284,7 +291,7 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 	}
 	known := make(map[string]workstation.Node)
 	for _, cluster := range cfg.Clusters {
-		if cluster.Name == bundle.Manifest.ClusterName {
+		if cluster.Name == topology.ClusterName {
 			for _, node := range cluster.Nodes {
 				known[node.Name] = node
 			}

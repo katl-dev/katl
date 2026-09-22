@@ -17,10 +17,12 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 )
 
 func TestInstallDiscoverFindsWaitingInstallerAndDisks(t *testing.T) {
@@ -297,7 +299,60 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	}
 }
 
+func TestInstallUsesMediaExtensionTarget(t *testing.T) {
+	server := handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
+		LocalRef:         "images/katlos.squashfs",
+		SHA256:           strings.Repeat("a", 64),
+		SizeBytes:        1,
+		Version:          "2026.9.2",
+		Architecture:     "x86_64",
+		RuntimeInterface: "katl-runtime-1",
+		Role:             "install",
+		ExtensionRelease: &extensionrelease.Manifest{
+			Target: extensionrelease.Target{
+				Version:          "2026.9.2",
+				Architecture:     "x86_64",
+				Flavour:          "standard",
+				RuntimeInterface: "katl-runtime-1",
+				Kernel: kernelmodule.Target{
+					Release:       "6.12.0",
+					RuntimeSHA256: strings.Repeat("b", 64),
+				},
+			},
+			Extensions: map[string]string{},
+		},
+	})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	sourcePath := writeClusterConfig(t)
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source = bytes.Replace(source, []byte("  defaults:\n"), []byte("  defaults:\n    systemExtensions:\n      - release: registry.example/unavailable\n"), 1)
+	if err := os.WriteFile(sourcePath, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = run(context.Background(), []string{"install", "apply", "--config", sourcePath, "--endpoint", ts.URL, "--no-wait"}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "unavailable for KatlOS 2026.9.2") {
+		t.Fatalf("install did not use media's release mapping: %v", err)
+	}
+	if server.Status().State != handoff.HandoffWaiting {
+		t.Fatal("submitted installation with an unavailable extension")
+	}
+}
+
 func TestInstallSSHEnablesAccessWithoutStartingInstall(t *testing.T) {
+	path := writeClusterConfig(t)
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source = bytes.Replace(source, []byte("  defaults:\n"), []byte("  defaults:\n    systemExtensions:\n      - release: registry.example/drbd9\n"), 1)
+	if err := os.WriteFile(path, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	server := handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
 		LocalRef:         "images/katlos-install-test-x86_64.squashfs",
 		SHA256:           strings.Repeat("a", 64),
@@ -315,18 +370,21 @@ func TestInstallSSHEnablesAccessWithoutStartingInstall(t *testing.T) {
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{
-		"install", "ssh",
-		"--config", writeClusterConfig(t),
-		"--endpoint", ts.URL,
-		"--node", "cp-1",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("install ssh error = %v, stderr=%s", err, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "installer SSH enabled for cp-1 with 1 authorized key(s)") || !strings.Contains(stdout.String(), "Next: ssh root@127.0.0.1") {
-		t.Fatalf("stdout = %q", stdout.String())
+	bundlePath, _ := writeConfigBundle(t)
+	for _, configPath := range []string{path, bundlePath, path} {
+		var stdout, stderr bytes.Buffer
+		err = run(context.Background(), []string{
+			"install", "ssh",
+			"--config", configPath,
+			"--endpoint", ts.URL,
+			"--node", "cp-1",
+		}, &stdout, &stderr)
+		if err != nil {
+			t.Fatalf("install ssh error = %v, stderr=%s", err, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "installer SSH enabled for cp-1 with 1 authorized key(s)") || !strings.Contains(stdout.String(), "Next: ssh root@127.0.0.1") {
+			t.Fatalf("stdout = %q", stdout.String())
+		}
 	}
 	if len(configured) != 1 || !strings.Contains(configured[0], "katl@example") {
 		t.Fatalf("configured keys = %#v", configured)

@@ -344,6 +344,81 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 	}
 }
 
+func TestMkosiImageCacheWithExternalExtensions(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	fixture := filepath.Join(tmp, "repo")
+	bin := filepath.Join(tmp, "bin")
+	scripts := filepath.Join(fixture, "scripts")
+	buildDir := filepath.Join(fixture, "_build", "mkosi")
+	for _, dir := range []string{bin, scripts} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedRuntimeCacheOutputs(t, buildDir)
+	writeReleaseArtifact(t, buildDir, "katlos-install-0.0.0-dev-x86_64.squashfs")
+	writeReleaseArtifact(t, buildDir, "katl-endpoint-advertiser.raw")
+	writeFakeExecutable(t, scripts, "mkosi", "exit 0\n")
+	writeFakeExecutable(t, scripts, "build-endpoint-advertiser-sysext", "exit 0\n")
+	writeFakeExecutable(t, scripts, "build-katlos-install-image", `printf 'assembled\n' >> "$KATL_ASSEMBLY_LOG"
+`)
+	writeFakeExecutable(t, bin, "podman", `if [[ "${2:-}" == inspect ]]; then printf 'builder-id\n'; fi
+`)
+	writeFakeExecutable(t, bin, "go", `while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -o ]]; then printf 'binary\n' > "$2"; exit 0; fi
+  shift
+done
+exit 1
+`)
+	log := filepath.Join(tmp, "assembly.log")
+	env := append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"KATL_REPO_ROOT="+fixture,
+		"KATL_MKOSI_BUILD_DIR="+buildDir,
+		"KATL_CONTAINER_RUNTIME=podman",
+		"KATL_VERSION=0.0.0-dev",
+		"KATL_ARCHITECTURE=x86_64",
+		"KATL_ASSEMBLY_LOG="+log,
+	)
+	// A repeated ordinary build is cached. An external selection must always
+	// reach assembly, including when only its blob contents have changed.
+	for _, step := range []struct {
+		selection string
+		builds    int
+	}{
+		{
+			builds: 1,
+		},
+		{
+			builds: 1,
+		},
+		{
+			selection: filepath.Join(tmp, "release.json"),
+			builds:    2,
+		},
+		{
+			selection: filepath.Join(tmp, "release.json"),
+			builds:    3,
+		},
+		{
+			builds: 4,
+		},
+		{
+			builds: 4,
+		},
+	} {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-katlos-install-image")
+		cmd.Env = append(env, "KATL_EXTENSION_RELEASE="+step.selection)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build: %v\n%s", err, output)
+		}
+		if got := len(readLinesForScripts(t, log)); got != step.builds {
+			t.Fatalf("selection %q: assembly count = %d, want %d", step.selection, got, step.builds)
+		}
+	}
+}
+
 func writeFakeExecutable(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)

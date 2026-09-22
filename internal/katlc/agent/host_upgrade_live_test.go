@@ -22,6 +22,7 @@ func TestHostUpgradeAfterLivePromotion(t *testing.T) {
 				t.Fatal(err)
 			}
 			spec.GenerationID = "live-config"
+			spec.Confexts[0].Path = "/var/lib/katl/generations/live-config/confext"
 			spec.PreviousGenerationID = "generation-0"
 			spec.Boot.LoaderEntryPath = "loader/entries/katl-live-config.conf"
 			if tc.changedRoot {

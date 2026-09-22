@@ -262,6 +262,9 @@ cache_fingerprint() {
                 fi
             done < <(target_go_binaries "$target")
             case "$target" in
+                katlos-install-image)
+                    printf 'KATL_EXTENSION_RELEASE=%s\n' "${KATL_EXTENSION_RELEASE:-}"
+                    ;;
                 installer-iso)
                     path="$(katlos_image_output).json"
                     if [[ -f "$path" ]]; then
@@ -367,6 +370,11 @@ target_sidecars_match() {
 
 target_cache_hit() {
     local target="$1"
+    # External layouts are mutable build inputs. Reassemble to verify every
+    # selected blob rather than trusting a previously assembled image.
+    if [[ "$target" == katlos-install-image && -n "${KATL_EXTENSION_RELEASE:-}" ]]; then
+        return 1
+    fi
     local stamp="$stamp_dir/$target.sha256"
     local current recorded
     [[ "$runtime" != direct ]] || return 1

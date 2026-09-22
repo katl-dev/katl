@@ -17,13 +17,26 @@ func TestKernelBundleContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	built, err := Build(BuildRequest{
-		Name: "drbd9", ArtifactVersion: "2026.9.1", PayloadVersion: "9.3.0",
-		Architecture: "x86_64", SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
-		CreatedAt: time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC),
-		Payloads:  []Input{{Path: file, Role: SysextRole}},
+		Name:                       "drbd9",
+		ArtifactVersion:            "2026.9.1",
+		PayloadVersion:             "9.3.0",
+		Architecture:               "x86_64",
+		SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
+		CreatedAt:                  time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC),
+		Payloads: []Input{{
+			Path: file,
+			Role: SysextRole,
+		}},
 		Kernel: &kernelmodule.Contract{
-			Target:  kernelmodule.Target{Release: "6.12", RuntimeSHA256: strings.Repeat("a", 64)},
-			Modules: []kernelmodule.Module{{Name: "drbd", Path: "usr/lib/modules/6.12/extra/drbd.ko", SHA256: strings.Repeat("b", 64)}},
+			Target: kernelmodule.Target{
+				Release:       "6.12",
+				RuntimeSHA256: strings.Repeat("a", 64),
+			},
+			Modules: []kernelmodule.Module{{
+				Name:   "drbd",
+				Path:   "usr/lib/modules/6.12/extra/drbd.ko",
+				SHA256: strings.Repeat("b", 64),
+			}},
 		},
 	})
 	if err != nil {

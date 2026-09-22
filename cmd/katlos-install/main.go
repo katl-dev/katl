@@ -632,6 +632,22 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, init
 		return err
 	}
 	server := handoff.NewHandoffServerWithDefaultImage(nil, media.Image)
+	if media.Image.ExtensionRelease != nil && len(media.Image.ExtensionRelease.Extensions) > 0 {
+		payload, err := (katlosimage.LocalResolver{
+			MediaRoot: media.Root,
+			WorkDir:   filepath.Join(runDir, "image"),
+			Commands:  installer.NewExecCommandRunner(),
+		}).ResolveKatlosImage(ctx, media.Image)
+		if err != nil {
+			return fmt.Errorf("prepare installer extension artifacts: %w", err)
+		}
+		root, err := os.OpenRoot(filepath.Join(payload.Root, katlosimage.ExtensionLayoutPath))
+		if err != nil {
+			return err
+		}
+		defer root.Close()
+		server.SetExtensionLayout(root.FS())
+	}
 	if initial != nil {
 		server.BeginAutomatic(initial.NodeName)
 	}

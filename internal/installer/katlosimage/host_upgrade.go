@@ -16,6 +16,9 @@ import (
 )
 
 type HostUpgradeRequest struct {
+	ReplaceExtensions    []string
+	Sysexts              []generation.ExtensionRef
+	BundledConfexts      []generation.ExtensionRef
 	GenerationID         string
 	PreviousSpec         generation.GenerationSpec
 	PreviousStatus       generation.GenerationStatus
@@ -110,7 +113,14 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		Flavour:               p.Index.Flavour,
 		RuntimeArtifactSHA256: p.Runtime.SHA256,
 	}
-	sysexts, sysextAssets, bundledAssets, err := upgradeSysexts(p, request.PreviousSpec, generationID, root, request.Bootstrapped)
+	previousExtensions := request.PreviousSpec
+	previousExtensions.Sysexts = slices.DeleteFunc(slices.Clone(previousExtensions.Sysexts), func(ref generation.ExtensionRef) bool {
+		return ref.Compatibility.ModuleIndexes != nil || slices.Contains(request.ReplaceExtensions, ref.Name)
+	})
+	previousExtensions.BundledConfexts = slices.DeleteFunc(slices.Clone(previousExtensions.BundledConfexts), func(ref generation.ExtensionRef) bool {
+		return slices.Contains(request.ReplaceExtensions, ref.Name)
+	})
+	sysexts, sysextAssets, bundledAssets, err := upgradeSysexts(p, previousExtensions, generationID, root, request.Bootstrapped)
 	if err != nil {
 		return HostUpgradePlan{}, err
 	}
@@ -118,11 +128,14 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 	if err != nil {
 		return HostUpgradePlan{}, err
 	}
-	bundledConfexts, bundledConfextAssets, err := rehomeBundledConfexts(request.PreviousSpec, generationID, root)
+	bundledConfexts, bundledConfextAssets, err := rehomeBundledConfexts(previousExtensions, generationID, root)
 	if err != nil {
 		return HostUpgradePlan{}, err
 	}
+	sysexts = append(sysexts, request.Sysexts...)
+	bundledConfexts = append(bundledConfexts, request.BundledConfexts...)
 	spec := generation.GenerationSpec{
+		ExtensionRelease:     p.Index.ExtensionRelease,
 		APIVersion:           generation.APIVersion,
 		Kind:                 generation.SpecKind,
 		GenerationID:         generationID,
@@ -205,6 +218,37 @@ func ValidateHostUpgradeSource(previousSpec generation.GenerationSpec, previousS
 	if bootstrapped {
 		if _, ok := selectedKubernetes(previousSpec.Sysexts); !ok {
 			return fmt.Errorf("bootstrapped node current generation has no Kubernetes sysext to preserve")
+		}
+	}
+	return nil
+}
+
+// ValidateUpgradeAssets checks the complete retained and image-owned selection
+// before the caller writes the inactive root. Staging verifies the copies again.
+func ValidateUpgradeAssets(root string, plan HostUpgradePlan) error {
+	for _, asset := range plan.PreservedAssets {
+		source, err := rootedPath(root, asset.SourcePath)
+		if err != nil {
+			return err
+		}
+		if asset.Directory {
+			digest, err := generation.DigestDirectory(source)
+			if err != nil {
+				return fmt.Errorf("verify preserved %s %q: %w", asset.Kind, asset.Name, err)
+			}
+			if digest != asset.SHA256 {
+				return fmt.Errorf("preserved %s %q SHA-256 mismatch", asset.Kind, asset.Name)
+			}
+		} else if err := verifyFileSHA256(source, asset.SHA256); err != nil {
+			return fmt.Errorf("verify preserved %s %q: %w", asset.Kind, asset.Name, err)
+		}
+	}
+	for _, asset := range plan.BundledAssets {
+		if !filepath.IsAbs(asset.SourcePath) {
+			return fmt.Errorf("bundled %s %q source path must be absolute", asset.Kind, asset.Name)
+		}
+		if err := verifyFileSHA256(asset.SourcePath, asset.SHA256); err != nil {
+			return fmt.Errorf("verify bundled %s %q: %w", asset.Kind, asset.Name, err)
 		}
 	}
 	return nil

@@ -13,6 +13,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 )
 
 func main() {
@@ -48,6 +49,26 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	if *phase != configapply.HostConfigurationPhasePrepare && *phase != configapply.HostConfigurationPhaseVerify && *phase != "units" {
 		return fmt.Errorf("phase = %q, want prepare, verify, or units", *phase)
+	}
+	var contracts []kernelmodule.Contract
+	spec, _, err := generation.ReadGeneration(*root, selected)
+	if err != nil {
+		return err
+	}
+	for _, extension := range spec.Sysexts {
+		if extension.Compatibility.Kernel != nil {
+			contracts = append(contracts, *extension.Compatibility.Kernel)
+		}
+	}
+	if *phase == configapply.HostConfigurationPhasePrepare {
+		if err := kernelmodule.LoadRequired(ctx, *root, contracts); err != nil {
+			return err
+		}
+	}
+	if *phase == configapply.HostConfigurationPhaseVerify {
+		if err := kernelmodule.VerifyRequired(ctx, *root, contracts); err != nil {
+			return err
+		}
 	}
 	plan := configapply.PlanHostConfigurationActivation(value.Node.HostConfiguration, *phase)
 	if *phase == "units" {

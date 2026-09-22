@@ -229,10 +229,24 @@ func TestMaskCannotOverrideBootHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	config.Node.SystemExtensions = []SystemExtension{{
-		Name: "example", Bundle: "registry.example.test/example:1", Units: []SystemExtensionUnit{{Name: "example.service", RequiredForBootHealth: true}},
-		OCIManifestDigest: "sha256:" + strings.Repeat("a", 64), BundleManifestDigest: "sha256:" + strings.Repeat("b", 64),
-		ArtifactVersion: "1", PayloadVersion: "1", Architecture: "x86_64", SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
-		Payloads: []SystemExtensionPayloadRef{{Name: "example.raw", Role: "systemd-sysext", MediaType: "application/vnd.katl.sysext.raw.v1", Digest: "sha256:" + strings.Repeat("c", 64), SizeBytes: 1024}},
+		Bundle: "registry.example.test/example:1",
+		Units: []SystemExtensionUnit{{
+			Name:                  "example.service",
+			RequiredForBootHealth: true,
+		}},
+		OCIManifestDigest:          "sha256:" + strings.Repeat("a", 64),
+		BundleManifestDigest:       "sha256:" + strings.Repeat("b", 64),
+		ArtifactVersion:            "1",
+		PayloadVersion:             "1",
+		Architecture:               "x86_64",
+		SupportedRuntimeInterfaces: []string{"katl-runtime-1"},
+		Payloads: []SystemExtensionPayloadRef{{
+			Name:      "example.raw",
+			Role:      "systemd-sysext",
+			MediaType: "application/vnd.katl.sysext.raw.v1",
+			Digest:    "sha256:" + strings.Repeat("c", 64),
+			SizeBytes: 1024,
+		}},
 	}}
 	if err := Validate(config); err != nil {
 		t.Fatalf("unmasked configuration: %v", err)

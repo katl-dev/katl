@@ -158,7 +158,7 @@ func systemExtensionFiles(extensions []manifest.SystemExtension) ([]confext.Nati
 	for _, extension := range extensions {
 		for _, file := range extension.Configuration.Files {
 			if file.Content == nil {
-				return nil, fmt.Errorf("node.systemExtensions %q path %q has no embedded content", extension.Name, file.Path)
+				return nil, fmt.Errorf("node.systemExtensions %q path %q has no embedded content", extension.Repository(), file.Path)
 			}
 			mode := file.Mode
 			if mode == 0 {
@@ -171,7 +171,7 @@ func systemExtensionFiles(extensions []manifest.SystemExtension) ([]confext.Nati
 		for _, unit := range extension.Units {
 			for _, dropIn := range unit.DropIns {
 				if dropIn.Content == nil {
-					return nil, fmt.Errorf("node.systemExtensions %q unit %q drop-in %q has no embedded content", extension.Name, unit.Name, dropIn.Name)
+					return nil, fmt.Errorf("node.systemExtensions %q unit %q drop-in %q has no embedded content", extension.Repository(), unit.Name, dropIn.Name)
 				}
 				files = append(files, confext.NativeEtcFile{
 					Path:    filepath.ToSlash(filepath.Join("/etc/systemd/system", unit.Name+".d", dropIn.Name)),

@@ -11,19 +11,21 @@ import (
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 	"gopkg.in/yaml.v3"
 )
 
 type RenderNodeRequest struct {
-	NodeName                string
-	Manifest                manifest.Manifest
-	KubeadmConfigs          map[string]kubeadmconfig.Plan
-	SourceID                string
-	DesiredVersion          string
-	ApplyMode               string
-	KubeadmOnly             bool
-	SystemExtensionPayloads []SystemExtensionPayload
-	APIProxy                apiproxy.Config
+	SystemExtensionSelections *[]systemextensionbundle.Selection
+	NodeName                  string
+	Manifest                  manifest.Manifest
+	KubeadmConfigs            map[string]kubeadmconfig.Plan
+	SourceID                  string
+	DesiredVersion            string
+	ApplyMode                 string
+	KubeadmOnly               bool
+	SystemExtensionPayloads   []SystemExtensionPayload
+	APIProxy                  apiproxy.Config
 }
 
 type renderedNodeConfigurationChange struct {
@@ -40,9 +42,10 @@ type renderedNodeConfigurationMetadata struct {
 }
 
 type renderedNodeConfigurationChangeSpec struct {
-	NodeOverrides           map[string]renderedNodeConfigurationOverlay `yaml:"nodeOverrides"`
-	KubeadmConfigs          map[string]inlineKubeadmConfig              `yaml:"kubeadmConfigs,omitempty"`
-	SystemExtensionPayloads []SystemExtensionPayload                    `yaml:"systemExtensionPayloads,omitempty"`
+	SystemExtensionSelections *[]systemextensionbundle.Selection          `yaml:"systemExtensionSelections,omitempty"`
+	NodeOverrides             map[string]renderedNodeConfigurationOverlay `yaml:"nodeOverrides"`
+	KubeadmConfigs            map[string]inlineKubeadmConfig              `yaml:"kubeadmConfigs,omitempty"`
+	SystemExtensionPayloads   []SystemExtensionPayload                    `yaml:"systemExtensionPayloads,omitempty"`
 }
 
 type renderedNodeConfigurationOverlay struct {
@@ -51,7 +54,7 @@ type renderedNodeConfigurationOverlay struct {
 	SystemRole           string                       `yaml:"systemRole,omitempty"`
 	Kernel               *manifest.KernelConfig       `yaml:"kernel"`
 	HostConfiguration    *manifest.HostConfiguration  `yaml:"hostConfiguration"`
-	SystemExtensions     *[]manifest.SystemExtension  `yaml:"systemExtensions"`
+	SystemExtensions     *[]manifest.SystemExtension  `yaml:"systemExtensions,omitempty"`
 	Volumes              *[]manifest.Volume           `yaml:"volumes"`
 	Kubernetes           *manifest.KubernetesConfig   `yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint,omitempty"`
@@ -116,6 +119,18 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	if request.KubeadmOnly {
 		overlay = renderedNodeConfigurationOverlay{Kubernetes: &node.Kubernetes}
 	}
+	if request.SystemExtensionSelections != nil {
+		if len(node.SystemExtensions) != 0 || len(request.SystemExtensionPayloads) != 0 {
+			return nil, fmt.Errorf("extension selections cannot be rendered with resolved artifacts")
+		}
+		if len(*request.SystemExtensionSelections) == 0 {
+			empty := []manifest.SystemExtension{}
+			overlay.SystemExtensions = &empty
+			request.SystemExtensionSelections = nil
+		} else {
+			overlay.SystemExtensions = nil
+		}
+	}
 	document := renderedNodeConfigurationChange{
 		APIVersion: NodeConfigurationChangeAPIVersion,
 		Kind:       NodeConfigurationChangeKind,
@@ -125,8 +140,9 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 		},
 		Apply: Apply{Mode: applyMode},
 		Spec: renderedNodeConfigurationChangeSpec{
-			KubeadmConfigs:          kubeadmConfigs,
-			SystemExtensionPayloads: slices.Clone(request.SystemExtensionPayloads),
+			SystemExtensionSelections: request.SystemExtensionSelections,
+			KubeadmConfigs:            kubeadmConfigs,
+			SystemExtensionPayloads:   slices.Clone(request.SystemExtensionPayloads),
 			NodeOverrides: map[string]renderedNodeConfigurationOverlay{
 				nodeName: overlay,
 			},

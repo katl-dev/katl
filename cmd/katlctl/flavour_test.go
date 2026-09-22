@@ -99,14 +99,14 @@ func TestUpgradeGenerationDistinguishesReturnTransition(t *testing.T) {
 		fake.generation.RuntimeFlavour = "lts"
 		fake.nodeStatus.CurrentGenerationId = from
 		var out, errs bytes.Buffer
-		if err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--config", config, "--version", "2026.9.0", "--flavour", "standard", "--plan"}, &out, &errs); err != nil {
+		if err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--config", config, "--version", "2026.9.0", "--flavour", "standard", "--client-request-id", "return-transition", "--plan"}, &out, &errs); err != nil {
 			t.Fatal(err)
 		}
 		return fake.submitRequest.GetHostUpgrade().GetCandidateGenerationId()
 	}
 	first := plan("install-0")
 	if again := plan("install-0"); again != first {
-		t.Fatal("repeating the same plan changed generation identity")
+		t.Fatal("retrying the same request changed generation identity")
 	}
 	if returning := plan("lts-after-config"); returning == first {
 		t.Fatal("returning to a previously used version reuses its old generation")

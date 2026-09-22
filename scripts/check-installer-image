@@ -101,6 +101,12 @@ for driver in i915 xe amdgpu virtio-gpu; do
     find "$initrd_root/usr/lib/modules" -type f -name "$driver.ko*" -print -quit | grep -q . ||
         fail "installer initrd is missing console graphics driver $driver"
 done
+for module_dir in "$initrd_root"/usr/lib/modules/*; do
+    for driver in loop squashfs erofs; do
+        modinfo -b "$initrd_root" -k "${module_dir##*/}" "$driver" >/dev/null ||
+            fail "installer cannot inspect extension filesystem: missing $driver support"
+    done
+done
 GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
     go run "$repo_root/cmd/katl-mkosi-artifacts" verify-module-firmware \
     --root "$initrd_root" >/dev/null ||
@@ -121,6 +127,11 @@ misses_path() {
 for path in \
     /usr/bin/katlos-install \
     /usr/bin/katl-console \
+    /usr/bin/systemd-dissect \
+    /usr/bin/mksquashfs \
+    /usr/bin/kmod \
+    /usr/bin/depmod \
+    /usr/bin/modinfo \
     /usr/lib/systemd/system/katlos-install.service \
     /usr/lib/systemd/system/katl-console.service \
     /usr/lib/systemd/system/katl-installer.target \

@@ -136,10 +136,11 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		diagnostics := configDiagnostics.Strings()
 		return rejected(configValidationError(diagnostics), diagnostics), nil
 	}
-	decoded, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(req.ConfigYaml), base)
+	prepared, err := configapply.PrepareNodeConfigurationChange(ctx, req.ConfigYaml, base, nil)
 	if err != nil {
 		return rejected(err, nil), nil
 	}
+	decoded := prepared.Request
 	decoded.ApplyMode = applyMode
 	decoded.GenerationID = candidateID
 	desiredManifest, err := configapply.DesiredManifest(decoded)
@@ -361,6 +362,7 @@ func (s *Server) generationReadModel(id string, includeConfigApply bool) (*agent
 		return nil, err
 	}
 	out := &agentapi.Generation{
+		ExtensionRelease:     agentapi.ExtensionReleaseFromManifest(spec.ExtensionRelease),
 		GenerationId:         spec.GenerationID,
 		RootSlot:             spec.Root.Slot,
 		UnavailableReason:    genStatus.UnavailableReason,
@@ -469,10 +471,11 @@ func (s *Server) acceptConfigApplyOperation(ctx context.Context, req *agentapi.S
 	if diagnostics := validateConfigApplyDocument(configReq.ConfigYAML, base.KubeadmConfigs); !diagnostics.Accepted() {
 		return operation.OperationRecord{}, nil, status.Error(codes.InvalidArgument, configValidationError(diagnostics.Strings()).Error())
 	}
-	decoded, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(configReq.ConfigYAML), base)
+	prepared, err := configapply.PrepareNodeConfigurationChange(ctx, configReq.ConfigYAML, base, nil)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "config validation rejected: %v", err)
 	}
+	decoded := prepared.Request
 	decoded.ApplyMode = configReq.ApplyMode
 	decoded.GenerationID = configReq.CandidateGenerationID
 	desiredManifest, err := configapply.DesiredManifest(decoded)
@@ -499,7 +502,9 @@ func (s *Server) acceptConfigApplyOperation(ctx context.Context, req *agentapi.S
 			return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operationKind %q does not match accepted applyMode %q", req.OperationKind, plan.Plan.Decision.AcceptedMode)
 		}
 	}
-	configPath, configSHA256, err := persistConfigApplyRequest(s.Root, []byte(configReq.ConfigYAML))
+	// Freeze acquired selections before enqueueing; execution must not resolve
+	// a mutable reference differently from the accepted operation.
+	configPath, configSHA256, err := persistConfigApplyRequest(s.Root, prepared.Document)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "persist config apply input: %v", err)
 	}
@@ -543,6 +548,10 @@ func validateConfigApplyDocument(configYAML string, configs map[string]kubeadmco
 func (e *Executor) executeConfigApply(ctx context.Context, record operation.OperationRecord) error {
 	if record.ConfigApplyRequest == nil {
 		return fmt.Errorf("configApplyRequest is required")
+	}
+	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
+		_, markErr := e.failRecordPhase(record.OperationID, "base-changed", "render-generation", "render-generation", "complete the pending generation or replan the operation", err)
+		return errorsJoin(err, markErr)
 	}
 	startedAt := e.clock()
 	if _, err := e.Store.Update(record.OperationID, "render-generation-start", "render-generation", func(record operation.OperationRecord) (operation.OperationRecord, error) {
@@ -1141,7 +1150,7 @@ func (s *Server) validateCandidateGenerationAvailable(generationID string) error
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read candidate generation directory: %w", err)
 	}
-	return nil
+	return generation.ValidateMutationBase(s.Root, "")
 }
 
 func currentGenerationID(root string) (string, error) {
