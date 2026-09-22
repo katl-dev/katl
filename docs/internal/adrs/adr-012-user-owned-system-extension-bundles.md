@@ -2,6 +2,12 @@
 
 Status: accepted.
 
+[ADR-015](adr-015-release-owned-kernel-extensions-and-external-userspace-builds.md)
+supersedes the selection identity and build ownership described here. Config
+entries use the full OCI repository as their identity and have no `name` field.
+Use ADR-015 for release-owned selection and the
+[installation guide](../../installing.md) for configuration examples.
+
 Date: 2026-07-25.
 
 ## Context

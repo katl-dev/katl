@@ -348,8 +348,7 @@ spec:
       vip: 10.40.0.10
   defaults:
     systemExtensions:
-      - name: bird
-        bundle: registry.example/katl/extensions/bird:v3.3.1-katl.4
+      - bundle: registry.example/katl/extensions/bird:v3.3.1-katl.4
         configuration:
           files:
             - path: /etc/bird.conf
@@ -376,10 +375,23 @@ its sysext and optional confext in the selected generation, and applies native
 files and unit drop-ins from that same entry. Configuration source paths are
 relative to `cluster.yaml`.
 
-Every list item has an operator-selected unique `name`. Defaults merge into
-nodes by name; a node item replaces the complete default item, and
-`state: absent` removes an inherited item. Payload changes and removal select a
-next-boot generation. With the payload unchanged, configuration, unit drop-ins,
+The full OCI repository identifies each list item; there is no separate `name`.
+Defaults merge into nodes by repository, excluding the tag or digest. A node
+item replaces the complete default item for that repository. To remove an
+inherited item, repeat its selector with `state: absent`; Katl does not download
+the artifact for removal.
+
+For a release-owned extension, use `release` instead of `bundle` and provide
+the full repository without a tag or digest. The target KatlOS release selects
+the qualified digest. Katl does not infer a registry or organization, or select
+the newest published artifact. For example:
+
+```yaml
+systemExtensions:
+  - release: ghcr.io/katl-dev/katl/extensions/drbd9
+```
+
+Payload changes and removal select a next-boot generation. With the payload unchanged, configuration, unit drop-ins,
 and enablement changes apply live. Katl reloads or restarts running consumers;
 unit definition changes restart them so the new definition takes effect.
 Native `[Install]` metadata controls enablement. `requiredForBootHealth` makes
