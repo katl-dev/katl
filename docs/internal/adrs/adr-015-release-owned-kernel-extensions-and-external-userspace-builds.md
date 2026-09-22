@@ -21,8 +21,8 @@ consumer. DRBD9 is the first release-owned kernel extension, followed by NVIDIA.
 Both build paths produce optional bundles that use the same Katl configuration
 and generation model.
 
-Operators select release-owned extensions by a release-relative identifier.
-Katl resolves that identifier against the runtime selected for the target
+Operators select release-owned extensions by their full OCI repository reference.
+Katl resolves that repository against the runtime selected for the target
 generation. A host upgrade stages the target runtime, unified kernel image
 (UKI), and matching selected extensions together, then activates them in one
 reboot. Compatibility validation must prevent activation of an incompatible
@@ -103,7 +103,7 @@ The release manifest provides an authoritative mapping:
 Katl release identity
     -> architecture and kernel flavor
         -> exact kernel target
-            -> extension identifier
+            -> full OCI repository reference
                 -> bundle reference pinned by digest
 ```
 
@@ -176,21 +176,36 @@ Add `release` as an alternative to `bundle` for a present extension:
 spec:
   defaults:
     systemExtensions:
-      - name: drbd9
-        release: drbd9
+      - release: ghcr.io/katl-dev/katl/extensions/drbd9
 
-      - name: bird
-        bundle: ghcr.io/katl-dev/extensions/bird@sha256:<digest>
+      - bundle: ghcr.io/katl-dev/extensions/bird@sha256:<digest>
 ```
 
-The digest is illustrative. `name` remains the configuration entry identity;
-`release` names the extension entry in the target Katl release manifest.
-Existing configuration and unit fields remain available.
+The digest is illustrative. There is no separate `name` field. `release` is a
+full OCI repository reference, including its registry and namespace, without a
+tag or digest. The target KatlOS release manifest maps that exact repository to
+a digest-pinned artifact in the same repository. Katl does not infer a registry,
+organization, or repository prefix. The registry and organization in these
+examples are not resolver restrictions. Existing configuration and unit fields
+remain available.
 
-For a present entry, exactly one of `release` or `bundle` is required. Existing
-explicit removal semantics remain unchanged and do not resolve an artifact.
+Each entry requires exactly one of `release` or `bundle`. The full repository
+identifies the entry for duplicate detection and configuration layering; a
+bundle's tag or digest is not part of that identity. A node entry for the same
+repository overrides its default, including when changing between `release`
+and `bundle`. Repositories with the same basename in different namespaces remain
+distinct.
 
-`release: drbd9` selects the DRBD9 artifact from the release used by that
+To remove an inherited entry, use its selector with `state: absent`. Removal
+uses the repository identity and does not fetch or resolve an artifact:
+
+```yaml
+systemExtensions:
+  - release: ghcr.io/katl-dev/katl/extensions/drbd9
+    state: absent
+```
+
+`release: ghcr.io/katl-dev/katl/extensions/drbd9` selects the DRBD9 artifact from the release used by that
 generation. It does not select the newest published driver or newest Katl
 release. The user pins the supported kernel/driver combination by choosing the
 Katl release, without maintaining a second matching version in configuration.
@@ -210,8 +225,7 @@ identity in the node's effective configuration and generation records:
 
 ```text
 Intent
-    name: drbd9
-    release: drbd9
+    release: ghcr.io/katl-dev/katl/extensions/drbd9
 
 Resolved selection
     immutable Katl release identity
@@ -227,11 +241,24 @@ observe the same identities as the booted generation.
 
 ## Target-generation resolution
 
-Install, configuration apply, and host upgrade share a resolver that takes the
-target runtime identity and effective node configuration. The resolver checks
-compatibility against the target runtime and kernel. Workstation install
-defaults and the running kernel are insufficient when preparing a different
-generation.
+The node owns extension resolution and acquisition. For configuration apply and
+host upgrade, `katlc` prepares the generation from operator intent and the
+operation's target runtime. Installation uses the same selection and compatibility
+rules with the selected installation image. Workstation install defaults and the
+running kernel are insufficient when preparing a different generation.
+
+`ClusterConfig` does not declare a KatlOS version. Ordinary apply uses the node's
+current release. The explicit upgrade command selects a published release or
+local image; the image's verified release manifest identifies the target runtime
+and qualified extension digests. Selecting that target does not change the scope
+of ordinary apply.
+
+The workstation expands local configuration files and sends extension selectors,
+configuration, and unit settings. It does not need to resolve extension tags,
+download extension payloads, or receive artifact bytes from the node. Configuration
+building and operation preparation may use the network; neither requires an
+air-gapped workflow. A self-contained installation bundle can also supply verified
+payloads.
 
 Each operation supplies the following inputs:
 
@@ -243,13 +270,29 @@ Each operation supplies the following inputs:
 | `node upgrade --apply-config` | Requested upgrade release | Proposed supported host configuration |
 | Rollback | Recorded generation; no new resolution | Recorded generation configuration |
 
-Resolution is per node. During a rolling upgrade, the same `release: drbd9`
-entry can resolve to different digests on nodes running different releases or
-kernel flavors. Resolution caches must include the target identity.
+Resolution is per node. During a rolling upgrade, the same `release` repository
+can resolve to different digests on nodes running different releases or kernel
+flavors. `katlc` selects the digest from the target release manifest or resolves
+an explicit bundle tag during operation preparation. An explicit digest remains
+fixed.
 
-Execution freezes the resolved artifact identities and verifies that its base
-generation still matches the plan before mutation. A changed base or target
-requires replanning. Boot and rollback never re-resolve selectors.
+Preparation reuses matching verified generation payloads or fetches the selected
+artifact. An upgrade image can supply its advertised artifacts directly. Reuse
+must enforce the same target-compatibility checks as acquisition. Missing or
+corrupt retained payloads fail verification; retained metadata alone does not
+prove that a payload is available.
+
+Before accepting a mutating operation, `katlc` freezes the resolved identities and
+verified payloads in its operation inputs. Execution verifies that the base
+generation and target still match before mutation, without resolving mutable tags
+again. A changed base or target requires replanning. A preview does not authorize
+mutation; acceptance prepares and freezes the operation's inputs.
+
+The node does not need a separate persistent OCI graph cache. Generations retain
+the verified native payloads and resolved identities needed for activation and
+rollback. Release images retain their self-contained artifact closure for
+installation and upgrade acquisition. Boot and rollback never fetch artifacts or
+re-resolve selectors.
 
 ### Ordinary configuration apply
 

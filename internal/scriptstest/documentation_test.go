@@ -134,7 +134,7 @@ func publicMarkdownFiles(t *testing.T, repo string) map[string]bool {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() && path == filepath.Join(root, "internal") {
+		if entry.IsDir() && (path == filepath.Join(root, "internal") || path == filepath.Join(root, "private")) {
 			return filepath.SkipDir
 		}
 		if !entry.IsDir() && strings.EqualFold(filepath.Ext(path), ".md") {
