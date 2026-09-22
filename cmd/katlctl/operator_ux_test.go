@@ -188,6 +188,15 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "katlctl.yaml")
 	sourcePath := writeClusterConfig(t)
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Management discovery must work before a release can resolve this driver.
+	source = bytes.Replace(source, []byte("  defaults:\n"), []byte("  defaults:\n    systemExtensions:\n      - release: registry.example/drbd9\n"), 1)
+	if err := os.WriteFile(sourcePath, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := ensureManagementIdentity("lab", io.Discard); err != nil {
 		t.Fatal(err)
 	}

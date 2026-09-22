@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
@@ -30,6 +31,7 @@ type HandoffServer struct {
 	validate           func([]byte) error
 	defaultKatlosImage manifest.KatlosImage
 	statusReader       func() (installstatus.Record, error)
+	extensionLayout    fs.FS
 
 	mu                                 sync.Mutex
 	state                              HandoffState
@@ -45,6 +47,7 @@ type HandoffServer struct {
 }
 
 type HandoffStatus struct {
+	Image            manifest.KatlosImage `json:"image,omitzero"`
 	State            HandoffState         `json:"state"`
 	ManifestAccepted bool                 `json:"manifestAccepted"`
 	BundleAccepted   bool                 `json:"bundleAccepted,omitempty"`
@@ -58,6 +61,10 @@ type SSHAccessStatus struct {
 	Enabled            bool   `json:"enabled"`
 	Account            string `json:"account,omitempty"`
 	AuthorizedKeyCount int    `json:"authorizedKeyCount,omitempty"`
+}
+
+type SSHAccessRequest struct {
+	AuthorizedKeys []string `json:"authorizedKeys"`
 }
 
 type HandoffDisk struct {
@@ -129,6 +136,7 @@ func (s *HandoffServer) Bundle() BundlePayload {
 func (s *HandoffServer) Status() HandoffStatus {
 	s.mu.Lock()
 	status := HandoffStatus{
+		Image:            s.defaultKatlosImage,
 		State:            s.state,
 		ManifestAccepted: len(s.manifest) > 0,
 		BundleAccepted:   len(s.bundle) > 0,
@@ -241,6 +249,9 @@ func (s *HandoffServer) Announcement(baseURL string) string {
 
 func (s *HandoffServer) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if s.extensionLayout != nil {
+		mux.Handle("GET /v1/extension-layout/", http.StripPrefix("/v1/extension-layout/", http.FileServerFS(s.extensionLayout)))
+	}
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/install", s.handleInstall)
@@ -250,29 +261,28 @@ func (s *HandoffServer) Handler() http.Handler {
 }
 
 func (s *HandoffServer) handleSSHAccess(w http.ResponseWriter, r *http.Request) {
-	nodeName := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("node"), r.Header.Get("X-Katl-Node-Name")))
-	expectedDigest := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("digest"), r.Header.Get("X-Katl-Bundle-Digest")))
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
 	if err != nil {
-		http.Error(w, "read config bundle", http.StatusBadRequest)
+		http.Error(w, "read SSH access request", http.StatusBadRequest)
 		return
 	}
-	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(body), configbundle.ReadOptions{
-		ExpectedDigest:          expectedDigest,
-		NodeName:                nodeName,
-		DefaultKatlosImage:      s.defaultKatlosImage,
-		AllowMissingKatlosImage: true,
-	})
-	if err != nil {
-		http.Error(w, "invalid config bundle: "+err.Error(), http.StatusBadRequest)
+	var request SSHAccessRequest
+	if err := json.Unmarshal(body, &request); err != nil {
+		http.Error(w, "invalid SSH access request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	keys := selected.InstallManifest.Node.Identity.SSH.AuthorizedKeys
+	keys := request.AuthorizedKeys
 	if len(keys) == 0 {
 		http.Error(w, "selected node has no SSH authorized keys", http.StatusBadRequest)
 		return
 	}
 
+	for _, key := range keys {
+		if strings.ContainsAny(key, "\r\n\x00") || !manifest.ValidAuthorizedKey(key) {
+			http.Error(w, "SSH access requires valid public keys", http.StatusBadRequest)
+			return
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != HandoffWaiting {
@@ -287,7 +297,11 @@ func (s *HandoffServer) handleSSHAccess(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "configure installer SSH: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.sshAccess = SSHAccessStatus{Enabled: true, Account: "root", AuthorizedKeyCount: len(keys)}
+	s.sshAccess = SSHAccessStatus{
+		Enabled:            true,
+		Account:            "root",
+		AuthorizedKeyCount: len(keys),
+	}
 	writeJSON(w, HandoffStatus{
 		State:         s.state,
 		InstallStatus: s.status,

@@ -291,6 +291,7 @@ func TestExecutorRefusesForbiddenLiveActionsBeforeActivation(t *testing.T) {
 
 func TestExecutorRejectsNonLivePlans(t *testing.T) {
 	plan, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		Sysexts:          currentRecord().Sysexts,
 		APIVersion:       generation.APIVersion,
 		Kind:             NodeConfigurationChangeKind,
 		GenerationID:     "2026.06.05-002",
@@ -379,6 +380,7 @@ func TestExecutorRestartsAPIProxyAfterConfextActivation(t *testing.T) {
 func liveExecutorPlan(t *testing.T, changes []Change) Result {
 	t.Helper()
 	plan, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		Sysexts:          currentRecord().Sysexts,
 		APIVersion:       generation.APIVersion,
 		Kind:             NodeConfigurationChangeKind,
 		GenerationID:     "2026.06.05-002",

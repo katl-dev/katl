@@ -90,7 +90,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceNode.hostConfiguration", "configbundle.SourceNodeLayer.hostConfiguration":
 		return description("Native host sysfs settings and named file sets.")
 	case "configbundle.SourceNode.systemExtensions", "configbundle.SourceNodeLayer.systemExtensions":
-		return description("Named system-extension bundles and their bounded configuration.")
+		return description("System-extension selections keyed by OCI repository and their bounded configuration.")
 	case "configbundle.SourceNode.install", "configbundle.SourceNodeLayer.install":
 		return description("System disk selection constraints.")
 	case "configbundle.SourceNode.storage", "configbundle.SourceNodeLayer.storage":
@@ -125,12 +125,12 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return description("Files owned by this set when present.")
 	case "configbundle.SourceHostConfigurationFileSet.onChange":
 		return description("Bounded systemd notifications after this set changes.")
-	case "configbundle.SourceSystemExtension.name":
-		return stringRule("Stable extension name used for layering and status.", dnsLabelPattern, 1, 63)
 	case "configbundle.SourceSystemExtension.state":
 		return enumRule("Whether the extension is present or removed.", "present", "", "present", "absent")
 	case "configbundle.SourceSystemExtension.bundle":
-		return stringRule("OCI bundle reference including registry, repository, and tag. Add @sha256:<OCI-manifest-digest> to pin an immutable payload; Katl warns when compiling a tag-only reference.", "", 1, 0)
+		return stringRule("Explicit OCI bundle reference with a tag or SHA-256 digest. Mutually exclusive with release.", "", 1, 0)
+	case "configbundle.SourceSystemExtension.release":
+		return stringRule("Full OCI repository without a tag or digest; the target KatlOS release selects its qualified artifact. Mutually exclusive with bundle.", "", 1, 0)
 	case "configbundle.SourceSystemExtension.configuration":
 		return description("Files consumed by the selected extension.")
 	case "configbundle.SourceSystemExtension.units":

@@ -247,7 +247,7 @@ func TestRenderedNodeConfigurationClearsDesiredDomains(t *testing.T) {
 		},
 		Kernel:            manifest.KernelConfig{CommandLine: []string{"intel_iommu=on"}},
 		HostConfiguration: testHostConfiguration("lan", "/etc/systemd/network/10-lan.network", "[Network]\nDHCP=yes\n"),
-		SystemExtensions:  []manifest.SystemExtension{{Name: "tools"}},
+		SystemExtensions:  []manifest.SystemExtension{{Bundle: "registry.example/tools:v1"}},
 	}, Install: manifest.InstallConfig{Volumes: []manifest.Volume{{
 		Name:       "data",
 		Selector:   manifest.VolumeSelector{Partition: &manifest.PartitionSelector{}},

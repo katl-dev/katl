@@ -211,6 +211,7 @@ func TestMkosiInstallerISOUsesBuilder(t *testing.T) {
 	runtimeUKI := writeArtifact(t, buildDir, "katl-runtime.efi", "runtime uki")
 	writeJSONFile(t, runtimeUKI+".json", map[string]any{
 		"name":             "runtime-uki",
+		"kernelVersion":    "6.12.0",
 		"kind":             "runtime-uki",
 		"format":           "uki",
 		"path":             filepath.Base(runtimeUKI),

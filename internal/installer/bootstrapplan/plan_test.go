@@ -96,6 +96,7 @@ func TestCreateInheritsUpgradedPreBootstrapGeneration(t *testing.T) {
 		t.Fatalf("ReadGeneration(0) error = %v", err)
 	}
 	base.GenerationID = currentGeneration
+	base.Confexts[0].Path = generation.GenerationRecordsDir + "/" + currentGeneration + "/confext"
 	base.PreviousGenerationID = "0"
 	base.RuntimeVersion = "2026.7.0-dev.25"
 	base.Root.RuntimeVersion = base.RuntimeVersion

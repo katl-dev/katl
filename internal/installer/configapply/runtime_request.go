@@ -2,6 +2,7 @@ package configapply
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 	"gopkg.in/yaml.v3"
 )
 
@@ -32,16 +34,37 @@ type nodeConfigurationChangeMetadata struct {
 }
 
 type nodeConfigurationChangeSpec struct {
-	ClusterDefaults         nodeConfigurationOverlay            `json:"clusterDefaults,omitempty" yaml:"clusterDefaults,omitempty"`
-	SystemRoleOverrides     map[string]nodeConfigurationOverlay `json:"systemRoleOverrides,omitempty" yaml:"systemRoleOverrides,omitempty"`
-	NodeOverrides           map[string]nodeConfigurationOverlay `json:"nodeOverrides,omitempty" yaml:"nodeOverrides,omitempty"`
-	KubeadmConfigs          map[string]inlineKubeadmConfig      `json:"kubeadmConfigs,omitempty" yaml:"kubeadmConfigs,omitempty"`
-	SystemExtensionPayloads []SystemExtensionPayload            `json:"systemExtensionPayloads,omitempty" yaml:"systemExtensionPayloads,omitempty"`
+	SystemExtensionSelections *[]systemextensionbundle.Selection  `json:"systemExtensionSelections,omitempty" yaml:"systemExtensionSelections,omitempty"`
+	ClusterDefaults           nodeConfigurationOverlay            `json:"clusterDefaults,omitempty" yaml:"clusterDefaults,omitempty"`
+	SystemRoleOverrides       map[string]nodeConfigurationOverlay `json:"systemRoleOverrides,omitempty" yaml:"systemRoleOverrides,omitempty"`
+	NodeOverrides             map[string]nodeConfigurationOverlay `json:"nodeOverrides,omitempty" yaml:"nodeOverrides,omitempty"`
+	KubeadmConfigs            map[string]inlineKubeadmConfig      `json:"kubeadmConfigs,omitempty" yaml:"kubeadmConfigs,omitempty"`
+	SystemExtensionPayloads   []SystemExtensionPayload            `json:"systemExtensionPayloads,omitempty" yaml:"systemExtensionPayloads,omitempty"`
 }
 
 type SystemExtensionPayload struct {
 	Ref  manifest.SystemExtensionPayloadRef `json:"ref" yaml:"ref"`
-	Data []byte                             `json:"data" yaml:"data"`
+	Data payloadData                        `json:"data" yaml:"data"`
+}
+
+// Encode native images as one scalar, not one YAML node per byte. The latter
+// consumes memory proportional to millions of parser nodes during preparation.
+type payloadData []byte
+
+func (data payloadData) MarshalYAML() (any, error) {
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+func (data *payloadData) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return fmt.Errorf("system extension payload data must be a base64 string")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(node.Value)
+	if err != nil {
+		return fmt.Errorf("decode system extension payload data: %w", err)
+	}
+	*data = decoded
+	return nil
 }
 
 type inlineKubeadmConfig struct {
@@ -70,26 +93,40 @@ type controlPlaneEndpointOverlay struct {
 }
 
 func DecodeNodeConfigurationChange(reader io.Reader, base TrustedBundleRequest) (TrustedBundleRequest, error) {
+	document, err := decodeNodeConfigurationChange(reader)
+	if err != nil {
+		return TrustedBundleRequest{}, err
+	}
+	if document.Spec.SystemExtensionSelections != nil {
+		return TrustedBundleRequest{}, fmt.Errorf("system extension selections must be resolved before planning")
+	}
+	return document.request(base)
+}
+
+func decodeNodeConfigurationChange(reader io.Reader) (nodeConfigurationChangeDocument, error) {
 	decoder := yaml.NewDecoder(reader)
 	decoder.KnownFields(true)
 	var document nodeConfigurationChangeDocument
 	if err := decoder.Decode(&document); err != nil {
-		return TrustedBundleRequest{}, fmt.Errorf("decode node configuration change: %w", err)
+		return document, fmt.Errorf("decode node configuration change: %w", err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return TrustedBundleRequest{}, fmt.Errorf("decode node configuration change: multiple YAML documents")
+		return document, fmt.Errorf("decode node configuration change: multiple YAML documents")
 	}
 	if document.APIVersion != NodeConfigurationChangeAPIVersion {
-		return TrustedBundleRequest{}, fmt.Errorf("apiVersion must be %s", NodeConfigurationChangeAPIVersion)
+		return document, fmt.Errorf("apiVersion must be %s", NodeConfigurationChangeAPIVersion)
 	}
 	if document.Kind != NodeConfigurationChangeKind {
-		return TrustedBundleRequest{}, fmt.Errorf("kind must be %s", NodeConfigurationChangeKind)
+		return document, fmt.Errorf("kind must be %s", NodeConfigurationChangeKind)
 	}
 	if err := validateEndpointOverlays(document.Spec); err != nil {
-		return TrustedBundleRequest{}, err
+		return document, err
 	}
+	return document, nil
+}
 
+func (document nodeConfigurationChangeDocument) request(base TrustedBundleRequest) (TrustedBundleRequest, error) {
 	request := base
 	request.SourceID = document.Metadata.SourceID
 	request.DesiredVersion = document.Metadata.DesiredVersion

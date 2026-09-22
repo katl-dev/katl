@@ -167,7 +167,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
-	if err := ValidateSystemExtensionMaterials(request.CurrentRecord.Root, merged.Node.SystemExtensions, request.SystemExtensionPayloads); err != nil {
+	if err := ValidateSystemExtensionMaterials(request.CurrentRecord.Root, request.CurrentRecord.ExtensionRelease, merged.Node.SystemExtensions, request.SystemExtensionPayloads); err != nil {
 		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
@@ -178,6 +178,28 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
+	plannedSysexts, _, err := PlanSystemExtensions(request.GenerationID, request.CurrentRecord.Root, request.CurrentRecord.ExtensionRelease, merged.Node.SystemExtensions, request.SystemExtensionPayloads)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	retainedSysexts, err := endpointAdvertiserSysexts(request, merged)
+	if err != nil {
+		return TrustedBundleResult{}, err
+	}
+	indexes, err := PrepareModuleIndexes(ctx, ModuleIndexRequest{
+		Root:         request.Root,
+		GenerationID: request.GenerationID,
+		Runtime:      request.CurrentRecord.Root,
+		Release:      request.CurrentRecord.ExtensionRelease,
+		Extensions:   merged.Node.SystemExtensions,
+		Sysexts:      append(slices.Clone(retainedSysexts), plannedSysexts...),
+		Materials:    request.SystemExtensionPayloads,
+		WorkDir:      filepath.Join(request.Root, "var/lib/katl/artifacts/module-indexes"),
+	})
+	if err != nil {
+		return TrustedBundleResult{}, fmt.Errorf("prepare selected module indexes: %w", err)
+	}
+	defer indexes.Close()
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
 		Manifest:                 merged,
 		KubeadmConfigs:           request.KubeadmConfigs,
@@ -260,7 +282,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 			return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 		}
 	}
-	userSysexts, bundledConfexts, err := MaterializeSystemExtensions(request.Root, request.GenerationID, request.CurrentRecord.Root, merged.Node.SystemExtensions, request.SystemExtensionPayloads)
+	userSysexts, bundledConfexts, err := MaterializeSystemExtensions(request.Root, request.GenerationID, request.CurrentRecord.Root, request.CurrentRecord.ExtensionRelease, merged.Node.SystemExtensions, request.SystemExtensionPayloads)
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
 		audit.CandidateGeneration = request.GenerationID
@@ -268,15 +290,13 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
 		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
-	desiredSysexts, err := endpointAdvertiserSysexts(request, merged)
-	if err != nil {
-		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
-		audit.CandidateGeneration = request.GenerationID
-		audit.AcceptedApplyMode = matrixDecision.AcceptedMode
-		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
-		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	if err := indexes.Materialize(request.Root); err != nil {
+		return TrustedBundleResult{}, err
 	}
-	desiredSysexts = append(desiredSysexts, userSysexts...)
+	desiredSysexts := append(retainedSysexts, userSysexts...)
+	if indexes.Path != "" {
+		desiredSysexts = append(desiredSysexts, indexes.Ref)
+	}
 	sysexts, err := materializeSysexts(request.Root, request.GenerationID, desiredSysexts)
 	if err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
@@ -397,6 +417,9 @@ func endpointAdvertiserSysexts(request TrustedBundleRequest, desired manifest.Ma
 	refs := make([]generation.ExtensionRef, 0, len(request.CurrentRecord.Sysexts)+1)
 	var current *generation.ExtensionRef
 	for _, ref := range request.CurrentRecord.Sysexts {
+		if ref.Compatibility.ModuleIndexes != nil {
+			continue
+		}
 		if userSystemExtensionRef(request.CurrentManifest.Node.SystemExtensions, ref) {
 			continue
 		}
@@ -482,7 +505,7 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 	if err := manifest.Validate(merged); err != nil {
 		return TrustedBundleResult{Manifest: merged}, err
 	}
-	if err := ValidateSystemExtensionMaterials(request.CurrentRecord.Root, merged.Node.SystemExtensions, request.SystemExtensionPayloads); err != nil {
+	if err := ValidateSystemExtensionMaterials(request.CurrentRecord.Root, request.CurrentRecord.ExtensionRelease, merged.Node.SystemExtensions, request.SystemExtensionPayloads); err != nil {
 		return TrustedBundleResult{Manifest: merged}, err
 	}
 	matrixDecision, err := Plan(request.ApplyMode, changes)

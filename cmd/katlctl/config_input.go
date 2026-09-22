@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 )
 
@@ -14,6 +17,70 @@ type katlConfigInput struct {
 	Archive []byte
 	Bundle  configbundle.Bundle
 	Source  bool
+}
+
+type nodeConfigurationInput struct {
+	Source      bool
+	ClusterName string
+	Inventory   inventory.Inventory
+	Nodes       map[string]configapply.RenderNodeRequest
+}
+
+func loadNodeConfiguration(ctx context.Context, path string, planning configbundle.PlanningInputs) (nodeConfigurationInput, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nodeConfigurationInput{}, err
+	}
+	result := nodeConfigurationInput{Nodes: make(map[string]configapply.RenderNodeRequest)}
+	if _, err := configbundle.DecodeSource(bytes.NewReader(data)); err == nil {
+		compiled, err := configbundle.PlanConfiguration(configbundle.BuildRequest{
+			Context:    ctx,
+			SourcePath: path,
+			Planning:   planning,
+		})
+		if err != nil {
+			return nodeConfigurationInput{}, err
+		}
+		result.ClusterName = compiled.ClusterName
+		result.Source = true
+		result.Inventory = compiled.Plan.BootstrapInventory
+		for _, node := range compiled.Plan.Nodes {
+			selections := compiled.SystemExtensionSelections[node.Name]
+			result.Nodes[node.Name] = configapply.RenderNodeRequest{
+				NodeName:                  node.Name,
+				Manifest:                  node.InstallManifest,
+				KubeadmConfigs:            compiled.KubeadmConfigs,
+				SourceID:                  compiled.ClusterName,
+				SystemExtensionSelections: &selections,
+				APIProxy:                  node.APIProxy,
+			}
+		}
+		return result, nil
+	}
+	loaded, err := loadKatlConfig(path, configBundleCreator, configbundle.PlanningInputs{}, nil)
+	if err != nil {
+		return nodeConfigurationInput{}, err
+	}
+	result.ClusterName = loaded.Bundle.Manifest.ClusterName
+	result.Inventory = loaded.Bundle.Manifest.Cluster.BootstrapInventory
+	for _, node := range result.Inventory.Nodes {
+		selected, err := configbundle.ReadSelectedNode(bytes.NewReader(loaded.Archive), configbundle.ReadOptions{
+			NodeName:                node.Name,
+			AllowMissingKatlosImage: true,
+		})
+		if err != nil {
+			return nodeConfigurationInput{}, err
+		}
+		result.Nodes[node.Name] = configapply.RenderNodeRequest{
+			NodeName:                node.Name,
+			Manifest:                selected.InstallManifest,
+			KubeadmConfigs:          selected.KubeadmConfigs,
+			SourceID:                result.ClusterName,
+			SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
+			APIProxy:                selected.NodeMaterial.APIProxy,
+		}
+	}
+	return result, nil
 }
 
 func loadKatlConfig(path, createdBy string, planning configbundle.PlanningInputs, stderr io.Writer) (katlConfigInput, error) {

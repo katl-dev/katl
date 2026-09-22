@@ -118,21 +118,21 @@ func mergeSourceSystemExtensions(base, next Optional[[]SourceSystemExtension]) (
 	if baseExtensions, present := base.Get(); present {
 		for _, extension := range baseExtensions {
 			if strings.TrimSpace(extension.State) != manifest.SystemExtensionAbsent {
-				entries[extension.Name] = cloneSourceSystemExtension(extension)
+				entries[extension.repository()] = cloneSourceSystemExtension(extension)
 			}
 		}
 	}
 	seen := map[string]struct{}{}
 	for _, extension := range nextExtensions {
-		if _, exists := seen[extension.Name]; exists {
-			return Optional[[]SourceSystemExtension]{}, fmt.Errorf("systemExtensions contains duplicate name %q", extension.Name)
+		if _, exists := seen[extension.repository()]; exists {
+			return Optional[[]SourceSystemExtension]{}, fmt.Errorf("systemExtensions contains duplicate repository %q", extension.repository())
 		}
-		seen[extension.Name] = struct{}{}
+		seen[extension.repository()] = struct{}{}
 		if strings.TrimSpace(extension.State) == manifest.SystemExtensionAbsent {
-			delete(entries, extension.Name)
+			delete(entries, extension.repository())
 			continue
 		}
-		entries[extension.Name] = cloneSourceSystemExtension(extension)
+		entries[extension.repository()] = cloneSourceSystemExtension(extension)
 	}
 	names := make([]string, 0, len(entries))
 	for name := range entries {
@@ -655,12 +655,19 @@ func lowerSystemExtension(extension SourceSystemExtension) manifest.SystemExtens
 		return *extension.resolved
 	}
 	return manifest.SystemExtension{
-		Name:          extension.Name,
+		Release:       extension.Release,
 		State:         extension.State,
 		Bundle:        extension.Bundle,
 		Configuration: extension.Configuration,
 		Units:         slices.Clone(extension.Units),
 	}
+}
+
+func (extension SourceSystemExtension) repository() string {
+	return (manifest.SystemExtension{
+		Release: extension.Release,
+		Bundle:  extension.Bundle,
+	}).Repository()
 }
 
 func cloneSourceKernelConfig(config *SourceKernelConfig) *SourceKernelConfig {

@@ -183,7 +183,7 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 		SourceDigest:            bundle.Source.SourceDigest,
 		NodeMaterialDigest:      node.NodeMaterial.Digest,
 		InstallMaterialDigest:   node.InstallMaterial.Digest,
-		KatlosImageFromMedia:    defaulted || (!manifest.KatlosImageEmpty(options.DefaultKatlosImage) && installManifest.KatlosImage == options.DefaultKatlosImage),
+		KatlosImageFromMedia:    defaulted || (!manifest.KatlosImageEmpty(options.DefaultKatlosImage) && installManifest.KatlosImage.Equal(options.DefaultKatlosImage)),
 	}, nil
 }
 

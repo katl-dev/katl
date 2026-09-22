@@ -17,11 +17,16 @@ import (
 
 const OperationKindHostUpgrade = "host-upgrade"
 
+// A distinct request kind makes older source agents reject required planning
+// and combined-configuration semantics instead of ignoring new protobuf fields.
+const hostUpgradeRequestKind = "HostUpgradeRequestV2"
+
 func hostUpgradeFromProto(req *agentapi.HostUpgradeOperationRequest) operation.HostUpgrade {
 	if req == nil {
 		return operation.HostUpgrade{}
 	}
 	return operation.HostUpgrade{
+		ConfigYAML:            strings.TrimSpace(req.ConfigYaml),
 		ImageURL:              strings.TrimSpace(req.ImageUrl),
 		ImageLocalRef:         strings.TrimSpace(req.ImageLocalRef),
 		ImageSHA256:           strings.TrimSpace(req.ImageSha256),

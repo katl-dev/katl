@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/flavour"
 
 	"github.com/katl-dev/katl/internal/generation"
@@ -188,17 +189,18 @@ func componentArtifact(component Component, kind artifact.ArtifactKind) artifact
 }
 
 type Index struct {
-	Flavour          string      `json:"flavour,omitempty"`
-	APIVersion       string      `json:"apiVersion"`
-	Kind             string      `json:"kind"`
-	ImageRole        string      `json:"imageRole"`
-	Format           string      `json:"format"`
-	Version          string      `json:"version"`
-	BuildID          string      `json:"buildID"`
-	Architecture     string      `json:"architecture"`
-	RuntimeInterface string      `json:"runtimeInterface"`
-	CreatedAt        string      `json:"createdAt"`
-	Components       []Component `json:"components"`
+	ExtensionRelease *extensionrelease.Manifest `json:"extensionRelease,omitempty"`
+	Flavour          string                     `json:"flavour,omitempty"`
+	APIVersion       string                     `json:"apiVersion"`
+	Kind             string                     `json:"kind"`
+	ImageRole        string                     `json:"imageRole"`
+	Format           string                     `json:"format"`
+	Version          string                     `json:"version"`
+	BuildID          string                     `json:"buildID"`
+	Architecture     string                     `json:"architecture"`
+	RuntimeInterface string                     `json:"runtimeInterface"`
+	CreatedAt        string                     `json:"createdAt"`
+	Components       []Component                `json:"components"`
 }
 
 type Component struct {
@@ -408,6 +410,7 @@ func (p Payload) FirstInstallRequest(request FirstInstallRequest) (generation.Fi
 		sysexts = append(sysexts, ref)
 	}
 	return generation.FirstInstallRequest{
+		ExtensionRelease: p.Index.ExtensionRelease,
 		Root: generation.RootSelection{
 			RuntimeVersion:        first(p.Runtime.Version, p.Index.Version),
 			RuntimeInterface:      p.Index.RuntimeInterface,
@@ -498,6 +501,14 @@ func validate(ctx context.Context, root string, index Index, expected manifest.K
 	if err != nil {
 		return Payload{}, err
 	}
+	if index.ExtensionRelease != nil {
+		if err := index.ExtensionRelease.Validate(); err != nil {
+			return Payload{}, err
+		}
+		if err := index.ExtensionRelease.Target.ValidateRuntime(index.Version, index.Architecture, index.Flavour, index.RuntimeInterface, runtime.SHA256); err != nil {
+			return Payload{}, err
+		}
+	}
 	boot, err := required(byRole, ComponentRuntimeUKI)
 	if err != nil {
 		return Payload{}, err
@@ -512,13 +523,17 @@ func validate(ctx context.Context, root string, index Index, expected manifest.K
 	if len(boot.Compatibility.KernelCommandLine) == 0 {
 		return Payload{}, fmt.Errorf("runtime UKI kernel command line is required")
 	}
-	return Payload{
+	payload := Payload{
 		Root:               root,
 		Index:              index,
 		Runtime:            runtime,
 		Boot:               boot,
 		EndpointAdvertiser: endpointAdvertiser,
-	}, nil
+	}
+	if err := payload.validateExtensionClosure(ctx); err != nil {
+		return Payload{}, err
+	}
+	return payload, nil
 }
 
 func validateIndex(index Index, expected manifest.KatlosImage) error {

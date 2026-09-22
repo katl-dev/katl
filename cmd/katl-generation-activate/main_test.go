@@ -47,8 +47,12 @@ func TestGenerationActivateRejectsMismatchedMetadata(t *testing.T) {
 		t.Fatalf("MetadataPath() error = %v", err)
 	}
 	record.GenerationID = "2026.06.05-002"
-	if err := generation.WriteRecord(metadataPath, record); err != nil {
-		t.Fatalf("WriteRecord() error = %v", err)
+	data, err := generation.MarshalRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metadataPath, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	err = run(t.Context(), []string{"--root", root, "--generation", "2026.06.05-001"}, nil)

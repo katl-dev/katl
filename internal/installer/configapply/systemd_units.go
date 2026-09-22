@@ -303,7 +303,7 @@ func effectiveHostConfiguration(node manifest.NodeConfig) manifest.HostConfigura
 				set.Notify.Systemd = append(set.Notify.Systemd, manifest.HostConfigurationSystemdNotification{Unit: unit.Name, Action: "try-reload-or-restart"})
 			}
 		}
-		config.Sets["systemExtensions["+extension.Name+"]"] = set
+		config.Sets["systemExtensions["+extension.Repository()+"]"] = set
 	}
 	return config
 }

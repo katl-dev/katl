@@ -14,6 +14,7 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 		APIVersion:   generation.APIVersion,
 		Kind:         NodeConfigurationChangeKind,
 		GenerationID: "2026.06.05-002",
+		Sysexts:      current.Sysexts,
 		SourceDigest: strings.Repeat("d", 64),
 		Apply:        Apply{},
 		Changes: []Change{
@@ -54,6 +55,7 @@ func TestPlanChangeProducesLiveRecordAndStatus(t *testing.T) {
 
 func TestPlanChangeProducesNextBootRecordAndStatus(t *testing.T) {
 	result, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		Sysexts:          currentRecord().Sysexts,
 		APIVersion:       generation.APIVersion,
 		Kind:             NodeConfigurationChangeKind,
 		GenerationID:     "2026.06.05-002",
@@ -79,6 +81,7 @@ func TestPlanChangeProducesNextBootRecordAndStatus(t *testing.T) {
 
 func TestPlanChangeRejectsUnsupportedLiveChangeBeforeCandidateRecord(t *testing.T) {
 	result, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		Sysexts:      currentRecord().Sysexts,
 		APIVersion:   generation.APIVersion,
 		Kind:         NodeConfigurationChangeKind,
 		GenerationID: "2026.06.05-002",
@@ -107,6 +110,7 @@ func TestPlanChangeRejectsUnsupportedLiveChangeBeforeCandidateRecord(t *testing.
 
 func TestPlanChangeActivatesKubeadmInputAndRebindsKubeletWatcher(t *testing.T) {
 	live, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		Sysexts:          currentRecord().Sysexts,
 		APIVersion:       generation.APIVersion,
 		Kind:             NodeConfigurationChangeKind,
 		GenerationID:     "2026.06.05-002",
@@ -123,6 +127,7 @@ func TestPlanChangeActivatesKubeadmInputAndRebindsKubeletWatcher(t *testing.T) {
 	}
 
 	next, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		Sysexts:          currentRecord().Sysexts,
 		APIVersion:       generation.APIVersion,
 		Kind:             NodeConfigurationChangeKind,
 		GenerationID:     "2026.06.05-002",
@@ -207,6 +212,25 @@ func TestPlanChangeRejectsKubernetesSysextChangeBeforeCandidateRecord(t *testing
 	}
 	if !strings.Contains(diagnostic.Message, "target kubeadm access") || !strings.Contains(diagnostic.Message, "kubelet activation gate") {
 		t.Fatalf("diagnostic message = %q, want missing upgrade gates", diagnostic.Message)
+	}
+}
+
+func TestPlanChangeRejectsKubernetesRemoval(t *testing.T) {
+	result, err := PlanChange(currentRecord(), NodeConfigurationChange{
+		APIVersion:   generation.APIVersion,
+		Kind:         NodeConfigurationChangeKind,
+		GenerationID: "next",
+		SourceDigest: strings.Repeat("d", 64),
+		Apply: Apply{
+			Mode: generation.ApplyModeNextBoot,
+		},
+		GeneratedConfext: candidateConfext("next"),
+	})
+	if err == nil || len(result.Decision.Diagnostics) != 1 || result.Decision.Diagnostics[0].RequiredOperation != "kubernetes-upgrade" {
+		t.Fatalf("Kubernetes removal = %+v, %v; want operation-required rejection", result, err)
+	}
+	if result.GenerationRecord.GenerationID != "" {
+		t.Fatal("rejected removal produced a generation")
 	}
 }
 

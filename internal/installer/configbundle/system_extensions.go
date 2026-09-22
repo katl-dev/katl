@@ -3,61 +3,63 @@ package configbundle
 import (
 	"context"
 	"fmt"
-	"strings"
+	"slices"
 
-	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 )
 
-func resolveSystemExtensionBundles(
-	ctx context.Context,
-	source SourceConfig,
-	image manifest.KatlosImage,
-	resolver func(context.Context, systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error),
-) (SourceConfig, map[string]systemextensionbundle.Resolved, error) {
-	if resolver == nil {
-		resolver = systemextensionbundle.Resolve
+func resolveSystemExtensionBundles(ctx context.Context, source SourceConfig, planning PlanningInputs, fetch func(context.Context, systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error)) (SourceConfig, map[string]systemextensionbundle.Resolved, error) {
+	if fetch == nil {
+		fetch = systemextensionbundle.Resolve
 	}
-	resolved := make(map[string]systemextensionbundle.Resolved)
-	resolveEntries := func(field string, extensions *Optional[[]SourceSystemExtension]) error {
-		values, ok := extensions.Get()
-		if !ok {
-			return nil
+	// Merge before acquisition: removed or overridden defaults must not require
+	// artifacts, and each node resolves against its own runtime identity.
+	bundles := make(map[string]systemextensionbundle.Resolved)
+	cache := make(map[systemextensionbundle.ResolveRequest]systemextensionbundle.Resolved)
+	resolve := func(ctx context.Context, request systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error) {
+		request.LayoutURL = planning.ExtensionLayoutURLs[request.Reference]
+		if bundle, ok := cache[request]; ok {
+			return bundle, nil
 		}
-		values = cloneSourceSystemExtensions(values)
-		for i := range values {
-			extension := &values[i]
-			state := strings.TrimSpace(extension.State)
-			if state == manifest.SystemExtensionAbsent {
-				continue
-			}
-			ref := strings.TrimSpace(extension.Bundle)
-			bundle, ok := resolved[ref]
-			if !ok {
-				var err error
-				bundle, err = resolver(ctx, systemextensionbundle.ResolveRequest{
-					Reference:        ref,
-					Architecture:     strings.TrimSpace(image.Architecture),
-					RuntimeInterface: strings.TrimSpace(image.RuntimeInterface),
-				})
-				if err != nil {
-					return fmt.Errorf("%s[%d] %q: %w", field, i, extension.Name, err)
-				}
-				resolved[ref] = bundle
-			}
-			desired := bundle.Desired(lowerSystemExtension(*extension))
-			extension.resolved = &desired
+		bundle, err := fetch(ctx, request)
+		if err == nil {
+			cache[request] = bundle
+			bundles[request.Reference] = bundle
 		}
-		*extensions = supplied(values)
-		return nil
-	}
-	if err := resolveEntries("spec.defaults.systemExtensions", &source.Spec.Defaults.SystemExtensions); err != nil {
-		return SourceConfig{}, nil, err
+		return bundle, err
 	}
 	for i := range source.Spec.Nodes {
-		if err := resolveEntries(sourceNodePath(source.Spec.Nodes[i], i)+".systemExtensions", &source.Spec.Nodes[i].SystemExtensions); err != nil {
+		node := &source.Spec.Nodes[i]
+		if len(planning.Nodes) > 0 && !slices.Contains(planning.Nodes, node.Name) {
+			node.SystemExtensions = supplied([]SourceSystemExtension{})
+			continue
+		}
+		entries, err := mergeSourceSystemExtensions(source.Spec.Defaults.SystemExtensions, node.SystemExtensions)
+		if err != nil {
 			return SourceConfig{}, nil, err
 		}
+		values, _ := entries.Get()
+		release := planning.KatlosImage.ExtensionRelease
+		if perNode, ok := planning.ExtensionReleases[node.Name]; ok {
+			release = &perNode
+		}
+		target := extensionrelease.Target{
+			Architecture:     planning.KatlosImage.Architecture,
+			RuntimeInterface: planning.KatlosImage.RuntimeInterface,
+		}
+		if release != nil {
+			target = release.Target
+		}
+		for j := range values {
+			desired, _, err := systemextensionbundle.ResolveSelection(ctx, target, release, lowerSystemExtension(values[j]), resolve)
+			if err != nil {
+				return SourceConfig{}, nil, fmt.Errorf("node %q system extension %q: %w", node.Name, values[j].repository(), err)
+			}
+			values[j].resolved = &desired
+		}
+		node.SystemExtensions = supplied(values)
 	}
-	return source, resolved, nil
+	source.Spec.Defaults.SystemExtensions = Optional[[]SourceSystemExtension]{}
+	return source, bundles, nil
 }

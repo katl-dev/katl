@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/flavour"
 
 	"github.com/katl-dev/katl/internal/kernelcmdline"
@@ -32,24 +33,25 @@ func IsGeneratedConfextName(name string) bool {
 }
 
 type Record struct {
-	APIVersion                  string             `json:"apiVersion"`
-	Kind                        string             `json:"kind"`
-	GenerationID                string             `json:"generationID"`
-	RuntimeVersion              string             `json:"runtimeVersion"`
-	PreviousGenerationID        string             `json:"previousGenerationID,omitempty"`
-	Root                        RootSelection      `json:"root"`
-	Boot                        BootSelection      `json:"boot"`
-	Sysexts                     []ExtensionRef     `json:"sysexts"`
-	BundledConfexts             []ExtensionRef     `json:"bundledConfexts,omitempty"`
-	Confexts                    []GeneratedConfext `json:"confexts"`
-	KernelCommandLine           []string           `json:"kernelCommandLine"`
-	ConfiguredKernelCommandLine []string           `json:"configuredKernelCommandLine,omitempty"`
-	ConfigApply                 *ConfigApplyRecord `json:"configApply,omitempty"`
-	KubernetesUpgrade           *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
-	VolumeBindings              []VolumeBinding    `json:"volumeBindings,omitempty"`
-	CreatedAt                   time.Time          `json:"createdAt"`
-	BootState                   string             `json:"bootState"`
-	HealthState                 string             `json:"healthState"`
+	ExtensionRelease            *extensionrelease.Manifest `json:"extensionRelease,omitempty"`
+	APIVersion                  string                     `json:"apiVersion"`
+	Kind                        string                     `json:"kind"`
+	GenerationID                string                     `json:"generationID"`
+	RuntimeVersion              string                     `json:"runtimeVersion"`
+	PreviousGenerationID        string                     `json:"previousGenerationID,omitempty"`
+	Root                        RootSelection              `json:"root"`
+	Boot                        BootSelection              `json:"boot"`
+	Sysexts                     []ExtensionRef             `json:"sysexts"`
+	BundledConfexts             []ExtensionRef             `json:"bundledConfexts,omitempty"`
+	Confexts                    []GeneratedConfext         `json:"confexts"`
+	KernelCommandLine           []string                   `json:"kernelCommandLine"`
+	ConfiguredKernelCommandLine []string                   `json:"configuredKernelCommandLine,omitempty"`
+	ConfigApply                 *ConfigApplyRecord         `json:"configApply,omitempty"`
+	KubernetesUpgrade           *KubernetesUpgrade         `json:"kubernetesUpgrade,omitempty"`
+	VolumeBindings              []VolumeBinding            `json:"volumeBindings,omitempty"`
+	CreatedAt                   time.Time                  `json:"createdAt"`
+	BootState                   string                     `json:"bootState"`
+	HealthState                 string                     `json:"healthState"`
 }
 
 type KubernetesUpgrade struct {
@@ -91,8 +93,9 @@ type ExtensionRef struct {
 }
 
 type ExtensionCompatibility struct {
-	Kernel            *kernelmodule.Contract `json:"kernel,omitempty"`
-	RuntimeInterfaces []string               `json:"runtimeInterfaces"`
+	Kernel            *kernelmodule.Contract       `json:"kernel,omitempty"`
+	ModuleIndexes     *kernelmodule.IndexSelection `json:"moduleIndexes,omitempty"`
+	RuntimeInterfaces []string                     `json:"runtimeInterfaces"`
 }
 
 type GeneratedConfext struct {
@@ -110,6 +113,7 @@ type ConfextCompatibility struct {
 }
 
 type FirstInstallRequest struct {
+	ExtensionRelease            *extensionrelease.Manifest
 	Root                        RootSelection
 	GenerationID                string
 	UKIPath                     string
@@ -198,6 +202,7 @@ func NewFirstInstallRecord(request FirstInstallRequest) (Record, error) {
 	}
 
 	record := Record{
+		ExtensionRelease:            request.ExtensionRelease,
 		APIVersion:                  APIVersion,
 		Kind:                        Kind,
 		GenerationID:                request.GenerationID,
@@ -253,19 +258,13 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
-	sysexts := request.Sysexts
-	if len(sysexts) == 0 {
-		sysexts = request.Previous.Sysexts
-	}
-	sysexts, err = cleanExts(sysexts)
+	// Extension selections are complete desired state, including removal of the
+	// last payload. Callers materialize retained payloads in the new generation.
+	sysexts, err := cleanExts(request.Sysexts)
 	if err != nil {
 		return Record{}, err
 	}
-	bundledConfexts := request.BundledConfexts
-	if len(bundledConfexts) == 0 {
-		bundledConfexts = request.Previous.BundledConfexts
-	}
-	bundledConfexts, err = cleanExtsNamed("bundled confext", bundledConfexts)
+	bundledConfexts, err := cleanExtsNamed("bundled confext", request.BundledConfexts)
 	if err != nil {
 		return Record{}, err
 	}
@@ -287,6 +286,7 @@ func NewRuntimeConfigRecord(request RuntimeConfigRequest) (Record, error) {
 	}
 
 	record := Record{
+		ExtensionRelease:     request.Previous.ExtensionRelease,
 		APIVersion:           APIVersion,
 		Kind:                 Kind,
 		GenerationID:         generationID,
@@ -344,6 +344,9 @@ func MarshalRecord(record Record) ([]byte, error) {
 }
 
 func WriteRecord(path string, record Record) error {
+	if _, err := PlanActivation(record); err != nil {
+		return err
+	}
 	data, err := MarshalRecord(record)
 	if err != nil {
 		return err
@@ -441,6 +444,17 @@ func normalizeGeneratedConfext(confext GeneratedConfext) (GeneratedConfext, erro
 }
 
 func ValidatePair(root RootSelection, sysext ExtensionRef) error {
+	if target := sysext.Compatibility.ModuleIndexes; target != nil {
+		if err := target.Validate(); err != nil {
+			return err
+		}
+		if target.Target.RuntimeSHA256 != root.RuntimeArtifactSHA256 {
+			return fmt.Errorf("module indexes %q target a different runtime build", sysext.Name)
+		}
+		if sysext.Compatibility.Kernel != nil {
+			return fmt.Errorf("module indexes cannot declare module payloads")
+		}
+	}
 	if sysext.Compatibility.Kernel != nil {
 		if err := sysext.Compatibility.Kernel.ValidateRuntime(root.RuntimeArtifactSHA256); err != nil {
 			return fmt.Errorf("sysext %q: %w", sysext.Name, err)
@@ -467,6 +481,9 @@ func ValidatePair(root RootSelection, sysext ExtensionRef) error {
 }
 
 func ValidateRecord(record Record) error {
+	if err := validateExtensionRelease(record.Root, record.ExtensionRelease); err != nil {
+		return err
+	}
 	if _, err := flavour.Normalize(record.Root.Flavour); err != nil {
 		return err
 	}
@@ -492,6 +509,16 @@ func ValidateRecord(record Record) error {
 		return err
 	}
 	return nil
+}
+
+func validateExtensionRelease(root RootSelection, release *extensionrelease.Manifest) error {
+	if release == nil {
+		return nil
+	}
+	if err := release.Validate(); err != nil {
+		return fmt.Errorf("extension release: %w", err)
+	}
+	return release.Target.ValidateRuntime(root.RuntimeVersion, root.Architecture, root.Flavour, root.RuntimeInterface, root.RuntimeArtifactSHA256)
 }
 
 func cleanVolumeBindings(bindings []VolumeBinding) ([]VolumeBinding, error) {
@@ -549,6 +576,7 @@ func cleanExts(refs []ExtensionRef) ([]ExtensionRef, error) {
 func cleanExtsNamed(kind string, refs []ExtensionRef) ([]ExtensionRef, error) {
 	cleaned := make([]ExtensionRef, 0, len(refs))
 	seen := make(map[string]struct{}, len(refs))
+	activationPaths := make(map[string]string, len(refs))
 	for _, ref := range refs {
 		if strings.TrimSpace(ref.Name) == "" || strings.TrimSpace(ref.Path) == "" || strings.TrimSpace(ref.ActivationPath) == "" {
 			return nil, fmt.Errorf("%s name, path, and activation path are required", kind)
@@ -557,6 +585,11 @@ func cleanExtsNamed(kind string, refs []ExtensionRef) ([]ExtensionRef, error) {
 			return nil, fmt.Errorf("duplicate %s %q", kind, ref.Name)
 		}
 		seen[ref.Name] = struct{}{}
+		activation := filepath.Clean(ref.ActivationPath)
+		if owner, exists := activationPaths[activation]; exists {
+			return nil, fmt.Errorf("%s %q and %q share activation path %q", kind, owner, ref.Name, activation)
+		}
+		activationPaths[activation] = ref.Name
 		if err := validateSHA256(kind+" "+ref.Name, ref.SHA256); err != nil {
 			return nil, err
 		}

@@ -89,6 +89,9 @@ func PlanActivation(record Record) (ActivationPlan, error) {
 	if err := ValidateRecord(record); err != nil {
 		return ActivationPlan{}, err
 	}
+	if err := validateModuleIndexes(record.Sysexts); err != nil {
+		return ActivationPlan{}, err
+	}
 	generationID, err := cleanSegment("generation id", record.GenerationID)
 	if err != nil {
 		return ActivationPlan{}, err

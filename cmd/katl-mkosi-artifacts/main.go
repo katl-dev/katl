@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,12 +19,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/flavour"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 
 	"github.com/katl-dev/katl/internal/firmware"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 	"gopkg.in/yaml.v3"
 )
 
@@ -365,17 +370,18 @@ type sourceRepo struct {
 }
 
 type katlosIndex struct {
-	Flavour          string            `json:"flavour,omitempty"`
-	APIVersion       string            `json:"apiVersion"`
-	Kind             string            `json:"kind"`
-	ImageRole        string            `json:"imageRole"`
-	Format           string            `json:"format"`
-	Version          string            `json:"version"`
-	BuildID          string            `json:"buildID"`
-	Architecture     string            `json:"architecture"`
-	RuntimeInterface string            `json:"runtimeInterface"`
-	CreatedAt        string            `json:"createdAt"`
-	Components       []katlosComponent `json:"components"`
+	ExtensionRelease *extensionrelease.Manifest `json:"extensionRelease"`
+	Flavour          string                     `json:"flavour,omitempty"`
+	APIVersion       string                     `json:"apiVersion"`
+	Kind             string                     `json:"kind"`
+	ImageRole        string                     `json:"imageRole"`
+	Format           string                     `json:"format"`
+	Version          string                     `json:"version"`
+	BuildID          string                     `json:"buildID"`
+	Architecture     string                     `json:"architecture"`
+	RuntimeInterface string                     `json:"runtimeInterface"`
+	CreatedAt        string                     `json:"createdAt"`
+	Components       []katlosComponent          `json:"components"`
 }
 
 type katlosComponent struct {
@@ -799,6 +805,8 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	endpointAdvertiserMetadata := flags.String("endpoint-advertiser-metadata", "", "optional endpoint advertiser sysext metadata")
 	rootPath := flags.String("root-path", "components/runtime/root.squashfs", "embedded runtime root component path")
 	ukiPath := flags.String("uki-path", "components/boot/katl.efi", "embedded runtime UKI component path")
+	extensionManifest := flags.String("extension-release", "", "qualified extension release manifest for this exact runtime")
+	extensionLayout := flags.String("extension-layout", "", "OCI layout supplying every advertised extension")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -833,6 +841,62 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	if rootFlavour != buildFlavour {
 		return fmt.Errorf("runtime root flavour %q does not match build flavour %q", rootFlavour, buildFlavour)
 	}
+	release := extensionrelease.Manifest{
+		Target: extensionrelease.Target{
+			Version:          *version,
+			Architecture:     *architecture,
+			Flavour:          rootFlavour,
+			RuntimeInterface: *runtimeInterface,
+			Kernel: kernelmodule.Target{
+				Release:       ukiMeta.KernelVersion,
+				RuntimeSHA256: rootMeta.SHA256,
+			},
+		},
+		Extensions: map[string]string{},
+	}
+	if *extensionManifest != "" {
+		data, err := os.ReadFile(absPath(cfg.RepoRoot, *extensionManifest))
+		if err != nil {
+			return err
+		}
+		var supplied extensionrelease.Manifest
+		if err := json.Unmarshal(data, &supplied); err != nil {
+			return err
+		}
+		if supplied.Target != release.Target {
+			return fmt.Errorf("extension release manifest does not match the candidate runtime and kernel")
+		}
+		release = supplied
+	}
+	if err := release.Validate(); err != nil {
+		return fmt.Errorf("extension release: %w", err)
+	}
+	if len(release.Extensions) > 0 {
+		if *extensionLayout == "" {
+			return fmt.Errorf("advertised release extensions require --extension-layout")
+		}
+		layout := absPath(cfg.RepoRoot, *extensionLayout)
+		destination := filepath.Join(filepath.Dir(filepath.Dir(absPath(cfg.RepoRoot, *output))), katlosimage.ExtensionLayoutPath)
+		for name, ref := range release.Extensions {
+			_, _, err := systemextensionbundle.ResolveSelection(context.Background(), release.Target, &release, manifest.SystemExtension{
+				Release: name,
+			}, func(ctx context.Context, request systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error) {
+				request.LayoutDir = layout
+				return systemextensionbundle.Resolve(ctx, request)
+			})
+			if err != nil {
+				return fmt.Errorf("release extension %s: %w", name, err)
+			}
+			if err := payloadbundle.CopyLayout(context.Background(), destination, payloadbundle.FetchRequest{
+				LayoutDir:       layout,
+				Reference:       ref,
+				ArtifactType:    systemextensionbundle.ArtifactType,
+				ConfigMediaType: systemextensionbundle.ConfigMediaType,
+			}); err != nil {
+				return fmt.Errorf("embed release extension %s: %w", name, err)
+			}
+		}
+	}
 	var endpointMeta localMetadata
 	if *endpointAdvertiser != "" {
 		endpointMeta, err = readAndValidateLocalMetadata("endpoint advertiser", absPath(cfg.RepoRoot, *endpointAdvertiserMetadata), absPath(cfg.RepoRoot, *endpointAdvertiser))
@@ -852,6 +916,7 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	}
 
 	index := katlosIndex{
+		ExtensionRelease: &release,
 		APIVersion:       "katl.dev/v1alpha1",
 		Flavour:          cfg.Flavour,
 		Kind:             "KatlOSImage",
@@ -941,6 +1006,7 @@ func runWriteKatlOSArtifact(args []string, stdout, stderr io.Writer, cfg config)
 	architecture := flags.String("architecture", cfg.Architecture, "KatlOS image architecture")
 	runtimeInterface := flags.String("runtime-interface", "katl-runtime-1", "KatlOS runtime interface")
 	embeddedIndexPath := flags.String("embedded-index-path", "katlos/image.json", "embedded KatlOS image index path")
+	indexPath := flags.String("index", "", "source index embedded in the image")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -975,6 +1041,24 @@ func runWriteKatlOSArtifact(args []string, stdout, stderr io.Writer, cfg config)
 		EmbeddedIndexPath: *embeddedIndexPath,
 		CreatedAt:         cfg.CreatedAt,
 	}
+	if *indexPath == "" {
+		return fmt.Errorf("--index is required to carry the embedded runtime target into artifact metadata")
+	}
+	data, err := os.ReadFile(absPath(cfg.RepoRoot, *indexPath))
+	if err != nil {
+		return err
+	}
+	var index katlosIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return err
+	}
+	if index.ExtensionRelease == nil || index.Version != metadata.Version || index.Architecture != metadata.Architecture || index.Flavour != metadata.Flavour || index.RuntimeInterface != metadata.RuntimeInterface || index.ImageRole != metadata.ImageRole || index.BuildID != metadata.BuildID {
+		return fmt.Errorf("embedded index does not match artifact metadata")
+	}
+	if err := index.ExtensionRelease.Validate(); err != nil {
+		return err
+	}
+	metadata.ExtensionRelease = index.ExtensionRelease
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,29 @@ func TestRunVerifiesHostConfigurationAndPersistsEffects(t *testing.T) {
 		},
 	}
 	if err := configapply.WriteGenerationManifest(root, "generation-1", config); err != nil {
+		t.Fatal(err)
+	}
+	spec := generation.GenerationSpec{
+		APIVersion:     generation.APIVersion,
+		Kind:           generation.SpecKind,
+		GenerationID:   "generation-1",
+		RuntimeVersion: "1",
+		Root: generation.RootSelection{
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeVersion:        "1",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		Boot:      generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl-test.efi"},
+		CreatedAt: time.Now().UTC(),
+	}
+	generationStatus, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(root, spec, generationStatus); err != nil {
 		t.Fatal(err)
 	}
 	status, err := generation.NewConfigApplyStatus(generation.ConfigApplyStatusRequest{

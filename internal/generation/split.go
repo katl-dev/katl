@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/flavour"
 
 	"github.com/katl-dev/katl/internal/kernelcmdline"
@@ -37,21 +38,22 @@ const (
 )
 
 type GenerationSpec struct {
-	APIVersion                  string             `json:"apiVersion"`
-	Kind                        string             `json:"kind"`
-	GenerationID                string             `json:"generationID"`
-	RuntimeVersion              string             `json:"runtimeVersion"`
-	PreviousGenerationID        string             `json:"previousGenerationID,omitempty"`
-	Root                        RootSelection      `json:"root"`
-	Boot                        BootSelection      `json:"boot"`
-	Sysexts                     []ExtensionRef     `json:"sysexts"`
-	BundledConfexts             []ExtensionRef     `json:"bundledConfexts,omitempty"`
-	Confexts                    []GeneratedConfext `json:"confexts"`
-	KernelCommandLine           []string           `json:"kernelCommandLine"`
-	ConfiguredKernelCommandLine []string           `json:"configuredKernelCommandLine,omitempty"`
-	KubernetesUpgrade           *KubernetesUpgrade `json:"kubernetesUpgrade,omitempty"`
-	VolumeBindings              []VolumeBinding    `json:"volumeBindings,omitempty"`
-	CreatedAt                   time.Time          `json:"createdAt"`
+	ExtensionRelease            *extensionrelease.Manifest `json:"extensionRelease,omitempty"`
+	APIVersion                  string                     `json:"apiVersion"`
+	Kind                        string                     `json:"kind"`
+	GenerationID                string                     `json:"generationID"`
+	RuntimeVersion              string                     `json:"runtimeVersion"`
+	PreviousGenerationID        string                     `json:"previousGenerationID,omitempty"`
+	Root                        RootSelection              `json:"root"`
+	Boot                        BootSelection              `json:"boot"`
+	Sysexts                     []ExtensionRef             `json:"sysexts"`
+	BundledConfexts             []ExtensionRef             `json:"bundledConfexts,omitempty"`
+	Confexts                    []GeneratedConfext         `json:"confexts"`
+	KernelCommandLine           []string                   `json:"kernelCommandLine"`
+	ConfiguredKernelCommandLine []string                   `json:"configuredKernelCommandLine,omitempty"`
+	KubernetesUpgrade           *KubernetesUpgrade         `json:"kubernetesUpgrade,omitempty"`
+	VolumeBindings              []VolumeBinding            `json:"volumeBindings,omitempty"`
+	CreatedAt                   time.Time                  `json:"createdAt"`
 }
 
 type GenerationStatus struct {
@@ -87,6 +89,7 @@ func SpecFromRecord(record Record) GenerationSpec {
 		previous = strings.TrimSpace(record.PreviousGenerationID)
 	}
 	return GenerationSpec{
+		ExtensionRelease:            record.ExtensionRelease,
 		APIVersion:                  APIVersion,
 		Kind:                        SpecKind,
 		GenerationID:                strings.TrimSpace(record.GenerationID),
@@ -136,6 +139,7 @@ func StatusFromRecord(record Record, specDigest string) GenerationStatus {
 
 func RecordFromSplit(spec GenerationSpec, status GenerationStatus) Record {
 	return Record{
+		ExtensionRelease:            spec.ExtensionRelease,
 		APIVersion:                  APIVersion,
 		Kind:                        Kind,
 		GenerationID:                spec.GenerationID,
@@ -244,6 +248,9 @@ func ReadSplitRecords(dir string) (GenerationSpec, GenerationStatus, error) {
 // generation is readable only when both exist; retry completes an interrupted
 // publication without resetting status that has already advanced.
 func WriteSplitRecords(dir string, spec GenerationSpec, status GenerationStatus) error {
+	if _, err := PlanActivation(RecordFromSplit(spec, status)); err != nil {
+		return err
+	}
 	return withStateLock(dir, func() error {
 		digest, err := CanonicalSpecDigest(spec)
 		if err != nil {
@@ -439,6 +446,9 @@ func ValidateGenerationSpec(spec GenerationSpec) error {
 		return fmt.Errorf("runtime architecture is required")
 	}
 	if err := validateSHA256("runtime artifact", spec.Root.RuntimeArtifactSHA256); err != nil {
+		return err
+	}
+	if err := validateExtensionRelease(spec.Root, spec.ExtensionRelease); err != nil {
 		return err
 	}
 	if strings.TrimSpace(spec.Boot.UKIPath) == "" {

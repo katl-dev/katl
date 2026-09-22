@@ -40,8 +40,8 @@ func nodeSystemExtensionStatus(ctx context.Context, root, currentGeneration, des
 		}
 		desiredSpec = currentSpec
 	}
-	current := extensionsByName(currentManifest.Node.SystemExtensions)
-	desired := extensionsByName(desiredManifest.Node.SystemExtensions)
+	current := extensionsByRepository(currentManifest.Node.SystemExtensions)
+	desired := extensionsByRepository(desiredManifest.Node.SystemExtensions)
 	names := make([]string, 0, len(current)+len(desired))
 	seen := make(map[string]struct{}, len(current)+len(desired))
 	for name := range current {
@@ -71,6 +71,9 @@ func nodeSystemExtensionStatus(ctx context.Context, root, currentGeneration, des
 		if wanted {
 			status.DesiredState = manifest.SystemExtensionPresent
 			status.SubmittedReference = want.Bundle
+			if want.Release != "" {
+				status.SubmittedReference = want.Release
+			}
 			status.OciManifestDigest = want.OCIManifestDigest
 			status.BundleManifestDigest = want.BundleManifestDigest
 			status.ArtifactVersion = want.ArtifactVersion
@@ -113,10 +116,10 @@ func generationManifest(root, generationID string) (manifest.Manifest, error) {
 	return value, nil
 }
 
-func extensionsByName(extensions []manifest.SystemExtension) map[string]manifest.SystemExtension {
+func extensionsByRepository(extensions []manifest.SystemExtension) map[string]manifest.SystemExtension {
 	out := make(map[string]manifest.SystemExtension, len(extensions))
 	for _, extension := range extensions {
-		out[extension.Name] = extension
+		out[extension.Repository()] = extension
 	}
 	return out
 }

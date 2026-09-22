@@ -16,12 +16,17 @@ work_root="${KATL_KATLOS_IMAGE_ROOT:-$build_dir/katlos-${image_role}-root}"
 
 runtime_root="${KATL_RUNTIME_ARTIFACT:-$build_dir/katl-runtime-root.squashfs}"
 runtime_root_metadata="${KATL_RUNTIME_METADATA:-$runtime_root.json}"
-runtime_root_checksum="${KATL_RUNTIME_CHECKSUM:-$runtime_root.sha256}"
 runtime_uki="${KATL_RUNTIME_UKI:-$build_dir/katl-runtime.efi}"
 runtime_uki_metadata="${KATL_RUNTIME_UKI_METADATA:-$runtime_uki.json}"
-runtime_uki_checksum="${KATL_RUNTIME_UKI_CHECKSUM:-$runtime_uki.sha256}"
 endpoint_advertiser="${KATL_ENDPOINT_ADVERTISER_SYSEXT:-$build_dir/katl-endpoint-advertiser.raw}"
 endpoint_advertiser_metadata="${KATL_ENDPOINT_ADVERTISER_METADATA:-$endpoint_advertiser.json}"
+extension_args=()
+if [[ -n "${KATL_EXTENSION_RELEASE:-}" ]]; then
+    extension_args=(
+        --extension-release "$KATL_EXTENSION_RELEASE"
+        --extension-layout "${KATL_EXTENSION_LAYOUT:-$build_dir/extension-bundles}"
+    )
+fi
 fail() {
     echo "error: $*" >&2
     exit 1
@@ -75,6 +80,7 @@ cp "$runtime_uki_metadata" "$work_root/components/metadata/runtime-uki.json"
 cp "$endpoint_advertiser" "$work_root/components/sysext/endpoint-advertiser.raw"
 cp "$endpoint_advertiser_metadata" "$work_root/components/metadata/endpoint-advertiser.json"
 mkosi_artifacts write-katlos-index \
+    "${extension_args[@]}" \
     --output "$work_root/katlos/image.json" \
     --image-role "$image_role" \
     --version "$version" \
@@ -99,6 +105,7 @@ mksquashfs "$work_root" "$output" \
     >/dev/null
 mkosi_artifacts write-katlos-artifact \
     --artifact "$output" \
+    --index "$work_root/katlos/image.json" \
     --image-role "$image_role" \
     --version "$version" \
     --build-id "$build_id" \

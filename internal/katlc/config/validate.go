@@ -123,7 +123,7 @@ func validateDocument(root *yaml.Node, options Options, result *Result) {
 			validateOverlayMap(pair.value, pair.path, options, result)
 		case "kubeadmConfigs":
 			validateInlineKubeadmConfigs(pair.value, pair.path, result)
-		case "systemExtensionPayloads":
+		case "systemExtensionPayloads", "systemExtensionSelections":
 			// The compiler embeds verified payload bytes here. KnownFields
 			// decoding and the typed bundle validator enforce its structure.
 		default:

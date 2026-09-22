@@ -185,9 +185,16 @@ func TestBootNotificationsWaitForExtensions(t *testing.T) {
 func TestExtensionConfigurationSharesUnitLifecycle(t *testing.T) {
 	oldConfig, newConfig := "old", "new"
 	before := manifest.NodeConfig{SystemExtensions: []manifest.SystemExtension{{
-		Name: "tools", Bundle: "registry.example/tools:v1", State: manifest.SystemExtensionPresent,
-		Units:         []manifest.SystemExtensionUnit{{Name: "tools.service", Enable: true}},
-		Configuration: manifest.SystemExtensionConfiguration{Files: []manifest.HostConfigurationFile{{Path: "/etc/tools.conf", Content: &oldConfig}}},
+		Bundle: "registry.example/tools:v1",
+		State:  manifest.SystemExtensionPresent,
+		Units: []manifest.SystemExtensionUnit{{
+			Name:   "tools.service",
+			Enable: true,
+		}},
+		Configuration: manifest.SystemExtensionConfiguration{Files: []manifest.HostConfigurationFile{{
+			Path:    "/etc/tools.conf",
+			Content: &oldConfig,
+		}}},
 	}}}
 	after := before
 	after.SystemExtensions = slices.Clone(before.SystemExtensions)

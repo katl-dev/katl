@@ -98,6 +98,7 @@ type Context struct {
 	PreviousStatus                     *installstatus.Record
 	ReportStep                         func(StepID)
 	progress                           *installProgress
+	moduleIndexes                      configapply.PreparedModuleIndexes
 }
 
 type Step interface {
@@ -182,6 +183,7 @@ func (r Runner) Run(ctx context.Context) error {
 	if r.ctx == nil {
 		return fmt.Errorf("installer context is required")
 	}
+	defer func() { _ = r.ctx.moduleIndexes.Close() }()
 	if r.ctx.Commands == nil {
 		return fmt.Errorf("command runner is required")
 	}
@@ -240,7 +242,7 @@ func (loadManifestStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	install.Manifest = decoded
-	install.KatlosImageFromMedia = defaulted || (!manifest.KatlosImageEmpty(install.DefaultKatlosImage) && decoded.KatlosImage == install.DefaultKatlosImage)
+	install.KatlosImageFromMedia = defaulted || (!manifest.KatlosImageEmpty(install.DefaultKatlosImage) && decoded.KatlosImage.Equal(install.DefaultKatlosImage))
 	digest, err := installstatus.DigestManifest(decoded)
 	if err != nil {
 		return err
@@ -296,6 +298,47 @@ func (verifyKatlosImageStep) Run(ctx context.Context, install *Context) error {
 			return err
 		}
 		install.KatlosImage = &payload
+	}
+	if install.KatlosImage != nil {
+		payload := install.KatlosImage
+		target := generation.RootSelection{
+			RuntimeVersion:        payload.Index.Version,
+			Architecture:          payload.Index.Architecture,
+			Flavour:               payload.Index.Flavour,
+			RuntimeInterface:      payload.Index.RuntimeInterface,
+			RuntimeArtifactSHA256: payload.Runtime.SHA256,
+		}
+		if err := configapply.ValidateSystemExtensionMaterials(target, payload.Index.ExtensionRelease, install.Manifest.Node.SystemExtensions, install.SystemExtensionPayloads); err != nil {
+			return fmt.Errorf("verify selected extensions before disk preparation: %w", err)
+		}
+		sysexts, _, err := configapply.PlanSystemExtensions("0", target, payload.Index.ExtensionRelease, install.Manifest.Node.SystemExtensions, install.SystemExtensionPayloads)
+		if err != nil {
+			return err
+		}
+		sources := map[string]string{}
+		if install.Manifest.Node.ControlPlaneEndpoint != nil {
+			ref, err := payload.EndpointAdvertiserExtensionRef("/var/lib/katl/generations/0/sysext/endpoint-advertiser.raw")
+			if err != nil {
+				return err
+			}
+			sysexts = append(sysexts, ref)
+			sources[ref.Path] = payload.ComponentPath(payload.EndpointAdvertiser)
+		}
+		install.moduleIndexes, err = configapply.PrepareModuleIndexes(ctx, configapply.ModuleIndexRequest{
+			Root:             install.TargetRoot,
+			GenerationID:     "0",
+			Runtime:          target,
+			Release:          payload.Index.ExtensionRelease,
+			RuntimeImagePath: payload.ComponentPath(payload.Runtime),
+			Extensions:       install.Manifest.Node.SystemExtensions,
+			Sysexts:          sysexts,
+			Sources:          sources,
+			Materials:        install.SystemExtensionPayloads,
+			WorkDir:          install.StateDir,
+		})
+		if err != nil {
+			return fmt.Errorf("prepare selected modules before disk preparation: %w", err)
+		}
 	}
 	return recordStep(ctx, install, VerifyTrust)
 }
@@ -383,6 +426,7 @@ func firstInstallRecordFromImage(payload katlosimage.Payload, rootPlan disk.Root
 		return generation.Record{}, err
 	}
 	record := generation.Record{
+		ExtensionRelease:            request.ExtensionRelease,
 		APIVersion:                  generation.APIVersion,
 		Kind:                        generation.Kind,
 		GenerationID:                request.GenerationID,
@@ -693,6 +737,7 @@ func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
 		install.TargetRoot,
 		install.LoaderRecord.GenerationID,
 		install.LoaderRecord.Root,
+		install.LoaderRecord.ExtensionRelease,
 		install.Manifest.Node.SystemExtensions,
 		install.SystemExtensionPayloads,
 	)
@@ -700,6 +745,12 @@ func (installExtensionsStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	install.LoaderRecord.Sysexts = append(install.LoaderRecord.Sysexts, userSysexts...)
+	if err := install.moduleIndexes.Materialize(install.TargetRoot); err != nil {
+		return err
+	}
+	if install.moduleIndexes.Path != "" {
+		install.LoaderRecord.Sysexts = append(install.LoaderRecord.Sysexts, install.moduleIndexes.Ref)
+	}
 	install.LoaderRecord.BundledConfexts = bundledConfexts
 	if err := generation.ValidateRecord(*install.LoaderRecord); err != nil {
 		return err

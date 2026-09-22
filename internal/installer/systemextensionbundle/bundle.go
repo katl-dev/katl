@@ -61,6 +61,8 @@ type Signature struct {
 }
 
 type ResolveRequest struct {
+	LayoutDir        string
+	LayoutURL        string
 	RuntimeSHA256    string
 	Reference        string
 	Architecture     string
@@ -84,6 +86,8 @@ type Payload struct {
 
 func Resolve(ctx context.Context, request ResolveRequest) (Resolved, error) {
 	fetched, err := payloadbundle.Fetch(ctx, payloadbundle.FetchRequest{
+		LayoutDir:            request.LayoutDir,
+		LayoutURL:            request.LayoutURL,
 		Reference:            request.Reference,
 		ArtifactType:         ArtifactType,
 		ConfigMediaType:      ConfigMediaType,

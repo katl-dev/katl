@@ -381,6 +381,25 @@ message HostUpgradeOperationRequest {
   string image_sha256 = 3;
   uint64 image_size_bytes = 4;
   string candidate_generation_id = 5;
+  string config_yaml = 6;
+  bool resolve_target_only = 7;
+}
+
+message HostUpgradePreview {
+  string image_sha256 = 1;
+  uint64 image_size_bytes = 2;
+  string previous_version = 3;
+  string version = 4;
+  string previous_kernel = 5;
+  ExtensionRelease extension_release = 6;
+  repeated HostUpgradeExtensionChange extensions = 7;
+  repeated string changed_domains = 8;
+}
+
+message HostUpgradeExtensionChange {
+  string name = 1;
+  string previous_digest = 2;
+  string digest = 3;
 }
 
 message StageHostUpgradeArtifactRequest {
@@ -427,6 +446,7 @@ message OperationAccepted {
   string record_path = 4;
   string accepted_at = 5;
   OperationStatus initial_status = 6;
+  HostUpgradePreview host_upgrade_preview = 7;
 }
 
 message GetOperationRequest {
@@ -553,6 +573,17 @@ message Generation {
   string root_slot = 15;
   string unavailable_reason = 16;
   repeated string protected_by = 17;
+  ExtensionRelease extension_release = 18;
+}
+
+message ExtensionRelease {
+  string version = 1;
+  string architecture = 2;
+  string flavour = 3;
+  string runtime_interface = 4;
+  string runtime_sha256 = 5;
+  string kernel_release = 6;
+  map<string, string> extensions = 7;
 }
 
 message ExtensionRef {

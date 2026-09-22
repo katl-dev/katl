@@ -80,8 +80,7 @@ func TestHandoffServerConfiguresSSHWithoutStartingInstall(t *testing.T) {
 		configured = append([]string(nil), keys...)
 		return nil
 	})
-	bundle, result := validConfigBundle(t)
-	request := httptest.NewRequest(http.MethodPost, "/v1/ssh-access?node=cp-1&digest="+url.QueryEscape(result.Digest), bytes.NewReader(bundle))
+	request := httptest.NewRequest(http.MethodPost, "/v1/ssh-access", strings.NewReader(`{"authorizedKeys":["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"]}`))
 	response := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(response, request)
@@ -109,14 +108,36 @@ func TestHandoffServerConfiguresSSHWithoutStartingInstall(t *testing.T) {
 
 func TestHandoffServerRefusesUnavailableSSHConfiguration(t *testing.T) {
 	server := newTestHandoffServer(t)
-	bundle, result := validConfigBundle(t)
-	request := httptest.NewRequest(http.MethodPost, "/v1/ssh-access?node=cp-1&digest="+url.QueryEscape(result.Digest), bytes.NewReader(bundle))
+	request := httptest.NewRequest(http.MethodPost, "/v1/ssh-access", strings.NewReader(`{"authorizedKeys":["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"]}`))
 	response := httptest.NewRecorder()
 
 	server.Handler().ServeHTTP(response, request)
 
 	if response.Code != http.StatusNotImplemented || !strings.Contains(response.Body.String(), "unavailable") {
 		t.Fatalf("POST /v1/ssh-access status = %d, body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestSSHAccessRejectsInvalidKeys(t *testing.T) {
+	for _, body := range []string{
+		`{"authorizedKeys":[]}`,
+		`{"authorizedKeys":["not a key"]}`,
+		`{"authorizedKeys":["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm comment\nsecond line"]}`,
+		strings.Repeat(" ", 64<<10) + `{}`,
+	} {
+		server := newTestHandoffServer(t)
+		server.SetSSHConfigurer(func(context.Context, []string) error {
+			t.Error("invalid request changed SSH access")
+			return nil
+		})
+		request := httptest.NewRequest(http.MethodPost, "/v1/ssh-access", strings.NewReader(body))
+		response := httptest.NewRecorder()
+
+		server.Handler().ServeHTTP(response, request)
+
+		if response.Code != http.StatusBadRequest || server.Status().SSHAccess.Enabled {
+			t.Fatalf("invalid request: status=%d enabled=%v", response.Code, server.Status().SSHAccess.Enabled)
+		}
 	}
 }
 

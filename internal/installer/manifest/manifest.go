@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -18,11 +19,13 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/networkdconfig"
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/kernelcmdline"
 	"github.com/katl-dev/katl/internal/kernelmodule"
 	"github.com/katl-dev/katl/internal/managementidentity"
@@ -194,12 +197,14 @@ const (
 )
 
 // SystemExtension is the resolved, generation-scoped desired state for an
-// opaque user-owned system extension. Payload bytes are carried separately in
+// opaque system extension selected by repository. Payload bytes are carried separately in
 // the self-contained config bundle and never persisted in the install
 // manifest.
 type SystemExtension struct {
+	Release                    string                       `json:"release,omitempty" yaml:"release,omitempty"`
+	ResolvedBundle             string                       `json:"resolvedBundle,omitempty" yaml:"resolvedBundle,omitempty"`
+	ReleaseTarget              *extensionrelease.Target     `json:"releaseTarget,omitempty" yaml:"releaseTarget,omitempty"`
 	Kernel                     *kernelmodule.Contract       `json:"kernel,omitempty" yaml:"kernel,omitempty"`
-	Name                       string                       `json:"name" yaml:"name"`
 	State                      string                       `json:"state,omitempty" yaml:"state,omitempty"`
 	Bundle                     string                       `json:"bundle,omitempty" yaml:"bundle,omitempty"`
 	OCIManifestDigest          string                       `json:"ociManifestDigest,omitempty" yaml:"ociManifestDigest,omitempty"`
@@ -215,6 +220,25 @@ type SystemExtension struct {
 
 type SystemExtensionConfiguration struct {
 	Files []HostConfigurationFile `json:"files,omitempty" yaml:"files,omitempty"`
+}
+
+// Repository is the stable selection identity across artifact and OS upgrades.
+// Validation rejects malformed selectors before this identity is used for execution.
+func (extension SystemExtension) Repository() string {
+	if extension.Release != "" {
+		return extension.Release
+	}
+	ref, err := payloadbundle.ParseReference(extension.Bundle)
+	if err != nil {
+		return extension.Bundle
+	}
+	return ref.Name()
+}
+
+// PayloadID identifies a repository-owned image in a generation, not a filesystem
+// path. OCI repositories cannot contain the separator.
+func (extension SystemExtension) PayloadID(name string) string {
+	return extension.Repository() + "#" + name
 }
 
 type SystemExtensionUnit struct {
@@ -306,15 +330,22 @@ type Volume struct {
 }
 
 type KatlosImage struct {
-	Flavour          string `json:"flavour,omitempty" yaml:"flavour,omitempty"`
-	URL              string `json:"url,omitempty" yaml:"url,omitempty"`
-	LocalRef         string `json:"localRef,omitempty" yaml:"localRef,omitempty"`
-	SHA256           string `json:"sha256" yaml:"sha256"`
-	SizeBytes        uint64 `json:"sizeBytes" yaml:"sizeBytes"`
-	Version          string `json:"version" yaml:"version"`
-	Architecture     string `json:"architecture" yaml:"architecture"`
-	RuntimeInterface string `json:"runtimeInterface,omitempty" yaml:"runtimeInterface,omitempty"`
-	Role             string `json:"role" yaml:"role"`
+	ExtensionRelease *extensionrelease.Manifest `json:"extensionRelease,omitempty" yaml:"extensionRelease,omitempty"`
+	Flavour          string                     `json:"flavour,omitempty" yaml:"flavour,omitempty"`
+	URL              string                     `json:"url,omitempty" yaml:"url,omitempty"`
+	LocalRef         string                     `json:"localRef,omitempty" yaml:"localRef,omitempty"`
+	SHA256           string                     `json:"sha256" yaml:"sha256"`
+	SizeBytes        uint64                     `json:"sizeBytes" yaml:"sizeBytes"`
+	Version          string                     `json:"version" yaml:"version"`
+	Architecture     string                     `json:"architecture" yaml:"architecture"`
+	RuntimeInterface string                     `json:"runtimeInterface,omitempty" yaml:"runtimeInterface,omitempty"`
+	Role             string                     `json:"role" yaml:"role"`
+}
+
+// Equal compares image selection values, including decoded release metadata.
+// It must not depend on whether callers share the same metadata allocation.
+func (image KatlosImage) Equal(other KatlosImage) bool {
+	return reflect.DeepEqual(image, other)
 }
 
 type RootDiskProfile struct {
@@ -457,10 +488,10 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	for _, extension := range manifest.Node.SystemExtensions {
 		for _, unit := range extension.Units {
 			if slices.Contains(manifest.Node.HostConfiguration.EnabledUnits, unit.Name) {
-				return fmt.Errorf("node.hostConfiguration.enabledUnits: %q is already managed by system extension %q", unit.Name, extension.Name)
+				return fmt.Errorf("node.hostConfiguration.enabledUnits: %q is already managed by system extension %q", unit.Name, extension.Repository())
 			}
 			if unit.RequiredForBootHealth && slices.Contains(manifest.Node.HostConfiguration.MaskedUnits, unit.Name) {
-				return fmt.Errorf("node.hostConfiguration.maskedUnits: %q is required for boot health by system extension %q", unit.Name, extension.Name)
+				return fmt.Errorf("node.hostConfiguration.maskedUnits: %q is required for boot health by system extension %q", unit.Name, extension.Repository())
 			}
 		}
 	}
@@ -948,34 +979,39 @@ func ValidateSystemExtensions(extensions []SystemExtension, allowSource bool) er
 	seen := make(map[string]struct{}, len(extensions))
 	for i, extension := range extensions {
 		field := fmt.Sprintf("[%d]", i)
-		if err := validateHostConfigurationSetName(extension.Name); err != nil {
-			return fmt.Errorf("%s.name: %w", field, err)
+		if (extension.Bundle == "") == (extension.Release == "") {
+			return fmt.Errorf("%s must declare exactly one of release or bundle", field)
 		}
-		if _, ok := seen[extension.Name]; ok {
-			return fmt.Errorf("%s.name %q duplicates another system extension", field, extension.Name)
+		if extension.Release != "" {
+			if err := extensionrelease.ValidateRepository(extension.Release); err != nil {
+				return fmt.Errorf("%s.release: %w", field, err)
+			}
+		} else if err := validateSystemExtensionOCIReference(extension.Bundle); err != nil {
+			return fmt.Errorf("%s.bundle: %w", field, err)
 		}
-		seen[extension.Name] = struct{}{}
+		repository := extension.Repository()
+		if _, ok := seen[repository]; ok {
+			return fmt.Errorf("%s repository %q duplicates another system extension", field, repository)
+		}
+		seen[repository] = struct{}{}
 		state := strings.TrimSpace(extension.State)
 		if state == "" {
 			state = SystemExtensionPresent
 		}
 		switch state {
 		case SystemExtensionAbsent:
-			if strings.TrimSpace(extension.Bundle) != "" || len(extension.Configuration.Files) != 0 || len(extension.Units) != 0 || len(extension.Payloads) != 0 {
-				return fmt.Errorf("%s with state absent must not declare a bundle, configuration, units, or payloads", field)
+			if extension.ResolvedBundle != "" || extension.ReleaseTarget != nil || extension.Kernel != nil || len(extension.Configuration.Files) != 0 || len(extension.Units) != 0 || len(extension.Payloads) != 0 {
+				return fmt.Errorf("%s with state absent must not declare resolved metadata, configuration, units, or payloads", field)
 			}
 			continue
 		case SystemExtensionPresent:
 		default:
 			return fmt.Errorf("%s.state %q is unsupported", field, extension.State)
 		}
-		if err := validateSystemExtensionOCIReference(extension.Bundle); err != nil {
-			return fmt.Errorf("%s.bundle: %w", field, err)
-		}
-		if err := validateSystemExtensionFiles(extension.Name, extension.Configuration.Files, allowSource); err != nil {
+		if err := validateSystemExtensionFiles(extension.Configuration.Files, allowSource); err != nil {
 			return fmt.Errorf("%s.configuration: %w", field, err)
 		}
-		if err := validateSystemExtensionUnits(extension.Name, extension.Units, allowSource); err != nil {
+		if err := validateSystemExtensionUnits(extension.Repository(), extension.Units, allowSource); err != nil {
 			return fmt.Errorf("%s.units: %w", field, err)
 		}
 		if !allowSource {
@@ -988,36 +1024,16 @@ func ValidateSystemExtensions(extensions []SystemExtension, allowSource bool) er
 }
 
 func validateSystemExtensionOCIReference(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fmt.Errorf("OCI reference is required")
-	}
-	if strings.Contains(value, "://") || strings.HasPrefix(value, "/") {
-		return fmt.Errorf("%q must be REGISTRY/REPOSITORY:TAG with an optional @sha256 digest", value)
-	}
-	name, digestValue, hasDigest := strings.Cut(value, "@")
-	if hasDigest {
-		if strings.Contains(digestValue, "@") || !validSHA256Digest(digestValue) {
-			return fmt.Errorf("%q has an invalid OCI manifest digest", value)
-		}
-	}
-	lastSlash := strings.LastIndex(name, "/")
-	lastColon := strings.LastIndex(name, ":")
-	if lastSlash <= 0 || lastColon <= lastSlash+1 || lastColon == len(name)-1 {
-		return fmt.Errorf("%q must include a registry, repository, and tag", value)
-	}
-	if strings.ContainsAny(name, "?#") {
-		return fmt.Errorf("%q is not an OCI image reference", value)
-	}
-	return nil
+	_, err := payloadbundle.ParseReference(value)
+	return err
 }
 
-func validateSystemExtensionFiles(name string, files []HostConfigurationFile, allowSource bool) error {
+func validateSystemExtensionFiles(files []HostConfigurationFile, allowSource bool) error {
 	if len(files) == 0 {
 		return nil
 	}
 	config := HostConfiguration{Sets: map[string]HostConfigurationSet{
-		"extension-" + name: {Files: files},
+		"extension": {Files: files},
 	}}
 	return ValidateHostConfiguration(config, allowSource)
 }
@@ -1069,6 +1085,23 @@ func validateSystemExtensionUnits(extensionName string, units []SystemExtensionU
 }
 
 func validateResolvedSystemExtension(field string, extension SystemExtension) error {
+	if extension.Release != "" {
+		if extension.ReleaseTarget == nil {
+			return fmt.Errorf("%s.releaseTarget is required for a release selection", field)
+		}
+		if err := extension.ReleaseTarget.Validate(); err != nil {
+			return fmt.Errorf("%s.releaseTarget: %w", field, err)
+		}
+		ref, err := payloadbundle.ParseReference(extension.ResolvedBundle)
+		if err != nil || payloadbundle.ManifestDigest(ref) != extension.OCIManifestDigest || extension.OCIManifestDigest == "" {
+			return fmt.Errorf("%s.resolvedBundle must pin the resolved OCI manifest digest", field)
+		}
+		if ref.Name() != extension.Release {
+			return fmt.Errorf("%s.resolvedBundle must belong to the selected release repository", field)
+		}
+	} else if extension.ReleaseTarget != nil {
+		return fmt.Errorf("%s explicit bundle must not carry a release selection", field)
+	}
 	if extension.Kernel != nil {
 		if err := extension.Kernel.Validate(); err != nil {
 			return fmt.Errorf("%s.kernel: %w", field, err)
@@ -1097,6 +1130,9 @@ func validateResolvedSystemExtension(field string, extension SystemExtension) er
 		payloadField := fmt.Sprintf("%s.payloads[%d]", field, i)
 		if payload.Name == "" || filepath.Base(payload.Name) != payload.Name {
 			return fmt.Errorf("%s.name %q must be a safe extension image name", payloadField, payload.Name)
+		}
+		if payload.Name == kernelmodule.IndexExtensionName+".raw" {
+			return fmt.Errorf("%s.name %q is reserved for generation-owned module indexes", payloadField, payload.Name)
 		}
 		if _, ok := seen[payload.Name]; ok {
 			return fmt.Errorf("%s.name %q duplicates another payload", payloadField, payload.Name)
