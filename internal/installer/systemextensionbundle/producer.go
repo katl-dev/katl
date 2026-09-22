@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -20,6 +21,7 @@ type Input struct {
 }
 
 type BuildRequest struct {
+	Kernel                     *kernelmodule.Contract
 	Name                       string
 	ArtifactVersion            string
 	PayloadVersion             string
@@ -66,6 +68,7 @@ func Build(request BuildRequest) (Built, error) {
 	}
 	runtimeInterfaces := normalizeStrings(request.SupportedRuntimeInterfaces)
 	bundle := Bundle{
+		Kernel:                     request.Kernel,
 		APIVersion:                 APIVersion,
 		Kind:                       Kind,
 		Name:                       strings.TrimSpace(request.Name),
@@ -75,6 +78,9 @@ func Build(request BuildRequest) (Built, error) {
 		Architecture:               strings.TrimSpace(request.Architecture),
 		SupportedRuntimeInterfaces: runtimeInterfaces,
 		CreatedAt:                  createdAt.Format(time.RFC3339),
+	}
+	if request.Kernel != nil {
+		bundle.ArtifactKind = KernelArtifactKind
 	}
 	blobs := make([]payloadbundle.Blob, 0, len(request.Payloads)+len(request.Metadata))
 	layers := make([]ocispec.Descriptor, 0, cap(blobs))

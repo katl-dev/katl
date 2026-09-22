@@ -24,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 	"github.com/katl-dev/katl/internal/kernelcmdline"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"gopkg.in/yaml.v3"
 )
@@ -197,6 +198,7 @@ const (
 // the self-contained config bundle and never persisted in the install
 // manifest.
 type SystemExtension struct {
+	Kernel                     *kernelmodule.Contract       `json:"kernel,omitempty" yaml:"kernel,omitempty"`
 	Name                       string                       `json:"name" yaml:"name"`
 	State                      string                       `json:"state,omitempty" yaml:"state,omitempty"`
 	Bundle                     string                       `json:"bundle,omitempty" yaml:"bundle,omitempty"`
@@ -1067,6 +1069,11 @@ func validateSystemExtensionUnits(extensionName string, units []SystemExtensionU
 }
 
 func validateResolvedSystemExtension(field string, extension SystemExtension) error {
+	if extension.Kernel != nil {
+		if err := extension.Kernel.Validate(); err != nil {
+			return fmt.Errorf("%s.kernel: %w", field, err)
+		}
+	}
 	for name, digestValue := range map[string]string{
 		"ociManifestDigest":    extension.OCIManifestDigest,
 		"bundleManifestDigest": extension.BundleManifestDigest,

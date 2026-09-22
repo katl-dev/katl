@@ -14,6 +14,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -23,6 +24,7 @@ const (
 	Kind       = "SystemExtensionBundle"
 
 	ArtifactKind        = "katl.system-extension.v1"
+	KernelArtifactKind  = "katl.system-extension.v2"
 	ArtifactType        = "application/vnd.katl.system-extension.bundle.v1"
 	ConfigMediaType     = "application/vnd.katl.system-extension.bundle.v1+json"
 	SysextMediaType     = "application/vnd.katl.sysext.raw.v1"
@@ -36,18 +38,19 @@ const (
 var ErrInvalidBundle = errors.New("invalid system extension bundle")
 
 type Bundle struct {
-	APIVersion                 string       `json:"apiVersion"`
-	Kind                       string       `json:"kind"`
-	Name                       string       `json:"name"`
-	ArtifactKind               string       `json:"artifactKind"`
-	ArtifactVersion            string       `json:"artifactVersion"`
-	PayloadVersion             string       `json:"payloadVersion"`
-	Architecture               string       `json:"architecture"`
-	Payloads                   []Descriptor `json:"payloads"`
-	Metadata                   []Descriptor `json:"metadata,omitempty"`
-	SupportedRuntimeInterfaces []string     `json:"supportedRuntimeInterfaces"`
-	CreatedAt                  string       `json:"createdAt"`
-	Signatures                 []Signature  `json:"signatures,omitempty"`
+	Kernel                     *kernelmodule.Contract `json:"kernel,omitempty"`
+	APIVersion                 string                 `json:"apiVersion"`
+	Kind                       string                 `json:"kind"`
+	Name                       string                 `json:"name"`
+	ArtifactKind               string                 `json:"artifactKind"`
+	ArtifactVersion            string                 `json:"artifactVersion"`
+	PayloadVersion             string                 `json:"payloadVersion"`
+	Architecture               string                 `json:"architecture"`
+	Payloads                   []Descriptor           `json:"payloads"`
+	Metadata                   []Descriptor           `json:"metadata,omitempty"`
+	SupportedRuntimeInterfaces []string               `json:"supportedRuntimeInterfaces"`
+	CreatedAt                  string                 `json:"createdAt"`
+	Signatures                 []Signature            `json:"signatures,omitempty"`
 }
 
 type Descriptor = payloadbundle.Descriptor
@@ -58,6 +61,7 @@ type Signature struct {
 }
 
 type ResolveRequest struct {
+	RuntimeSHA256    string
 	Reference        string
 	Architecture     string
 	RuntimeInterface string
@@ -139,12 +143,27 @@ func (resolved Resolved) Desired(source manifest.SystemExtension) manifest.Syste
 	source.Architecture = resolved.Bundle.Architecture
 	source.SupportedRuntimeInterfaces = append([]string(nil), resolved.Bundle.SupportedRuntimeInterfaces...)
 	source.Payloads = payloads
+	source.Kernel = resolved.Bundle.Kernel
 	return source
 }
 
 func validateBundle(bundle Bundle, ociManifest ocispec.Manifest, request ResolveRequest) error {
-	if bundle.APIVersion != APIVersion || bundle.Kind != Kind || bundle.ArtifactKind != ArtifactKind {
+	if bundle.APIVersion != APIVersion || bundle.Kind != Kind || (bundle.ArtifactKind != ArtifactKind && bundle.ArtifactKind != KernelArtifactKind) {
 		return fmt.Errorf("%w: unexpected custom manifest identity", ErrInvalidBundle)
+	}
+	// Older consumers reject v2 before ignoring its required kernel constraint.
+	if (bundle.ArtifactKind == KernelArtifactKind) != (bundle.Kernel != nil) {
+		return fmt.Errorf("%w: kernel constraints require the v2 artifact contract", ErrInvalidBundle)
+	}
+	if bundle.Kernel != nil {
+		if err := bundle.Kernel.Validate(); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+		}
+		if request.RuntimeSHA256 != "" {
+			if err := bundle.Kernel.ValidateRuntime(request.RuntimeSHA256); err != nil {
+				return fmt.Errorf("%w: %v", ErrInvalidBundle, err)
+			}
+		}
 	}
 	if strings.TrimSpace(bundle.Name) == "" || strings.TrimSpace(bundle.ArtifactVersion) == "" || strings.TrimSpace(bundle.PayloadVersion) == "" {
 		return fmt.Errorf("%w: name, artifactVersion, and payloadVersion are required", ErrInvalidBundle)
