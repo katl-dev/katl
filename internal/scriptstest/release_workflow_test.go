@@ -77,3 +77,112 @@ func TestReleaseBuildsBothKernelFlavours(t *testing.T) {
 		}
 	}
 }
+
+func TestReleasePublishesKernelExtensions(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/release-artifacts.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			If              string    `yaml:"if"`
+			Needs           yaml.Node `yaml:"needs"`
+			ContinueOnError bool      `yaml:"continue-on-error"`
+			Steps           []struct {
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, edge := range [][2]string{
+		{"publish-tag", "publish-extensions"},
+		{"publish-extensions", "runtime"},
+	} {
+		found := false
+		needs := workflow.Jobs[edge[0]].Needs
+		dependencies := needs.Content
+		if needs.Kind == yaml.ScalarNode {
+			dependencies = []*yaml.Node{&needs}
+		}
+		for _, dependency := range dependencies {
+			found = found || dependency.Value == edge[1]
+		}
+		if !found {
+			t.Fatalf("%s can publish before %s succeeds", edge[0], edge[1])
+		}
+	}
+	publication := workflow.Jobs["publish-extensions"]
+	if publication.If != "github.event_name == 'push' && github.ref_type == 'tag'" || publication.ContinueOnError {
+		t.Fatal("extension publication must run automatically on tags and block release assets on failure")
+	}
+	found := false
+	for _, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, "scripts/vmtest-run") {
+				t.Fatal("VM tests are not supported in CI")
+			}
+		}
+	}
+	for _, step := range publication.Steps {
+		found = found || strings.Contains(step.Run, "publish-release-extensions")
+	}
+	if !found {
+		t.Fatal("release does not publish its extension closures")
+	}
+}
+
+func TestReleaseEmbedsKernelExtensions(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/release-artifacts.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run             string            `yaml:"run"`
+				ContinueOnError bool              `yaml:"continue-on-error"`
+				Env             map[string]string `yaml:"env"`
+				With            map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	runtime, driver, composition, packaging := -1, -1, -1, -1
+	carried := false
+	for i, step := range workflow.Jobs["runtime"].Steps {
+		switch {
+		case strings.Contains(step.Run, "scripts/mkosi build-runtime"):
+			runtime = i
+		case strings.Contains(step.Run, "scripts/build-kernel-extension drbd9"):
+			driver = i
+			if step.ContinueOnError {
+				t.Fatal("failed promised driver coverage must fail the release")
+			}
+		case strings.Contains(step.Run, "TestDRBDImageComposition"):
+			composition = i
+			if step.ContinueOnError {
+				t.Fatal("invalid driver composition must fail the release")
+			}
+		case strings.Contains(step.Run, "scripts/build-katlos-install-image"):
+			packaging = i
+			if step.Env["KATL_EXTENSION_RELEASE"] != "_build/mkosi/katl-drbd9.release.json" {
+				t.Fatal("image packaging must consume the exact driver release mapping")
+			}
+		}
+		paths := step.With["path"]
+		if strings.Contains(paths, "_build/mkosi/extension-bundles/") && strings.Contains(paths, "_build/mkosi/katl-drbd9.release.json") {
+			carried = true
+		}
+	}
+	if runtime < 0 || driver <= runtime || composition <= driver || packaging <= composition {
+		t.Fatalf("release must build runtime, matching driver and module indexes before packaging: %d %d %d %d", runtime, driver, composition, packaging)
+	}
+	if !carried {
+		t.Fatal("release pipeline loses the verified extension closure or its mapping")
+	}
+}

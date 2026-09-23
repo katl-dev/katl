@@ -232,6 +232,18 @@ func TestAgentCommandAllowlist(t *testing.T) {
 	}
 }
 
+func TestAgentModuleInspection(t *testing.T) {
+	for _, command := range []string{"chroot", "modinfo"} {
+		if !commandAllowed(command, defaultAgentCommands()) {
+			t.Fatalf("qualification command %s is not allowed", command)
+		}
+	}
+	path := "/sys/module/drbd/srcversion"
+	if !pathAllowed(path, defaultAgentFilePaths()) || pathAllowed(path, defaultAgentWritePaths()) {
+		t.Fatal("kernel module state must be readable but not writable through the file API")
+	}
+}
+
 func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
 	for _, command := range []string{"blkid", "chmod", "crictl", "ctr", "dd", "find", "findmnt", "install", "katlc", "kubeadm", "kubectl", "kubelet", "lsmod", "modprobe", "mount", "partx", "sfdisk", "sha256sum", "sshd", "systemd-sysupdate", "test", "udevadm"} {
 		if !commandAllowed(command, defaultAgentCommands()) {

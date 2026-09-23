@@ -63,6 +63,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	switch command {
 	case "build-kernel-extension":
 		return runBuildKernelExtension(args, stdout, stderr, cfg)
+	case "publish-release-extensions":
+		return runPublishReleaseExtensions(args, stdout)
 	case "compile-drbd":
 		return runCompileDRBD(args, stdout, stderr, cfg)
 	case "release-components":
@@ -168,6 +170,7 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts build-kernel-extension drbd9
+       katl-mkosi-artifacts publish-release-extensions MANIFEST OCI_LAYOUT
        katl-mkosi-artifacts release-components OUTPUT_DIR FLAVOUR...
        katl-mkosi-artifacts publish-flavour OUTPUT_DIR
        katl-mkosi-artifacts verify-installer-pair INSTALLER_METADATA IMAGE_METADATA

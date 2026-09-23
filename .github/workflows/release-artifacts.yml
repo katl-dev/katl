@@ -162,6 +162,20 @@ jobs:
               scripts/check-runtime-boot-asset
             '
 
+      - name: Build release-owned DRBD
+        shell: bash
+        run: scripts/build-kernel-extension drbd9
+
+      - name: Verify DRBD module composition
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes systemd-container kmod squashfs-tools
+          CGO_ENABLED=0 go test -c -o _build/drbd-composition.test ./internal/kernelmodule
+          sudo env KATL_TEST_DRBD_BUILD="$GITHUB_WORKSPACE/_build/mkosi" \
+            ./_build/drbd-composition.test \
+              -test.run '^TestDRBDImageComposition$' -test.count=1 -test.v
+
       - name: Build endpoint advertiser sysext
         if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         shell: bash
@@ -170,6 +184,8 @@ jobs:
       - name: Package install and upgrade images concurrently
         if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         shell: bash
+        env:
+          KATL_EXTENSION_RELEASE: _build/mkosi/katl-drbd9.release.json
         run: |
           install_status=0
           upgrade_status=0
@@ -187,6 +203,16 @@ jobs:
         run: |
           scripts/check-katlos-install-image
           KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
+          CGO_ENABLED=0 go test -c -o _build/extension-closure.test ./internal/installer/katlosimage
+          for role in install upgrade; do
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE:/work" \
+              --workdir /work \
+              --env "KATL_TEST_KATLOS_IMAGE=/work/_build/mkosi/katlos-${role}-${KATL_VERSION}-${KATL_ARCHITECTURE}.squashfs" \
+              "$KATL_MKOSI_IMAGE" \
+              /work/_build/extension-closure.test \
+                -test.run '^TestBuiltImageExtensionClosure$' -test.count=1 -test.v
+          done
 
       - name: Upload runtime and KatlOS image intermediates
         if: github.ref != 'refs/heads/main' || github.event_name != 'push'
@@ -201,6 +227,11 @@ jobs:
             _build/mkosi/katl-runtime.efi.json
             _build/mkosi/katl-runtime.efi.sha256
             _build/mkosi/katl-runtime.packages.tsv
+            _build/mkosi/katl-drbd9.raw
+            _build/mkosi/katl-drbd9.bundle.json
+            _build/mkosi/katl-drbd9.build.json
+            _build/mkosi/katl-drbd9.release.json
+            _build/mkosi/extension-bundles/
             _build/mkosi/katlos-install-*.squashfs
             _build/mkosi/katlos-install-*.squashfs.json
             _build/mkosi/katlos-install-*.squashfs.sha256
@@ -492,12 +523,45 @@ jobs:
           retention-days: 30
           compression-level: 0
 
+
+  publish-extensions:
+    name: Publish Kernel Extensions
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [runtime]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: katl-runtime-images-*-${{ github.sha }}
+          path: artifacts
+      - name: Authenticate publication
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Publish the verified OCI bytes without rebuilding
+        shell: bash
+        run: |
+          for flavour in standard lts; do
+            directory="artifacts/katl-runtime-images-${flavour}-${GITHUB_SHA}"
+            go run ./cmd/katl-mkosi-artifacts publish-release-extensions \
+              "$directory/katl-drbd9.release.json" "$directory/extension-bundles"
+          done
+
   publish-tag:
     name: Publish GitHub Release Assets
     if: github.event_name == 'push' && github.ref_type == 'tag'
     needs:
       - identity
       - bundle
+      - publish-extensions
     runs-on: ubuntu-24.04
     permissions:
       attestations: read
