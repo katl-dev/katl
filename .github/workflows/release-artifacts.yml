@@ -224,6 +224,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Resolve mkosi extension cache week
+        id: mkosi-cache-week
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore mkosi extension cache
+        uses: actions/cache@v6
+        with:
+          path: _build/mkosi/cache${{ matrix.flavour == 'lts' && '-lts' || '' }}
+          key: katl-mkosi-extension-${{ matrix.extension }}-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ hashFiles('Containerfile.mkosi', 'mkosi.conf', 'mkosi.conf.d/*.conf', 'mkosi.profiles/kernel-extension-*/**', 'mkosi.kernel-lts/etc/yum.repos.d/*.repo') }}-${{ steps.mkosi-cache-week.outputs.week }}
       - uses: ./.github/actions/mkosi-builder
         with:
           profile: runtime
