@@ -60,6 +60,20 @@ this may be SOPS encrypted. Existing clusters can migrate their original
 authority with `katlctl management identity export --config ./cluster.yaml`.
 Keep that file across reinstalls. Workstation context is a disposable shortcut.
 
+To replace an installed mTLS authority, first upgrade the nodes to a release
+with `katlc agent rotate-management`, then use
+`katlctl management identity rotate --config ./cluster.yaml --output
+./management-secrets-next.sops.yaml`. The output path must differ from the old
+secrets path. The command uses host-key-verified root SSH, stores or reuses the
+replacement file, checks all nodes, rotates them serially, and changes the
+configuration reference only after verifying new access and old-authority
+rejection. Repeat the same command and output path after a partial failure.
+Use `--ssh-key` and `--ssh-known-hosts` when the trusted root SSH identity and
+host keys are outside your default SSH configuration.
+Refresh a saved context with `katlctl context save --config ./cluster.yaml`.
+See [management authority rotation](../operations/access.md#rotate-a-management-authority)
+for prerequisites and recovery.
+
 A reinstall under the same authority is accepted after TLS and node-name
 verification. Commands observe the current installation and reject a change
 during an operation. `context save --config ./cluster.yaml` refreshes saved

@@ -253,6 +253,19 @@ func ValidateNode(credentials NodeCredentials, nodeName string, now time.Time) e
 	return err
 }
 
+// CAFingerprint identifies the authority trusted by a management endpoint.
+func CAFingerprint(certificate string) (string, error) {
+	ca, err := parseCertificate("caCertificate", certificate)
+	if err != nil {
+		return "", err
+	}
+	if !ca.IsCA || ca.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return "", fmt.Errorf("caCertificate is not a certificate-signing CA")
+	}
+	sum := sha256.Sum256(ca.Raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func ValidateClient(credentials ClientCredentials, now time.Time) error {
 	if err := credentials.Authentication.Validate(); err != nil {
 		return err

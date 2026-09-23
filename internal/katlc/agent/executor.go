@@ -198,17 +198,12 @@ func (e *Executor) recordUnhandledExecutionFailure(operationID string, cause err
 func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord) error {
 	// The durable operation record excludes new submissions; this process lock
 	// also excludes overlapping executors across agent restarts.
-	lock, err := os.OpenFile(filepath.Join(e.Store.Root, ".mutation.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := e.Store.AcquireMutationLock()
 	if err != nil {
+		e.recordUnhandledExecutionFailure(record.OperationID, err)
 		return err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		cause := fmt.Errorf("another node mutation is executing; wait for it before retrying: %w", err)
-		e.recordUnhandledExecutionFailure(record.OperationID, cause)
-		return cause
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
 	if record.KubeadmControlPlaneConfig != nil {
 		return e.executeKubeadmControlPlaneConfig(ctx, record)

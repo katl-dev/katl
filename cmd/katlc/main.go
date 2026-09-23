@@ -58,6 +58,7 @@ func helpText() string {
 Commands:
   version                 Print build version metadata.
   agent serve             Run the KatlOS node management agent.
+  agent rotate-management Replace installed mTLS credentials through root SSH.
   kubeadm plan            Compare selected desired kubeadm input with read-only live state.
 
 `
@@ -70,6 +71,8 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	switch args[0] {
 	case "serve":
 		return runAgentServe(ctx, args[1:], stdout, stderr)
+	case "rotate-management":
+		return runAgentRotateManagement(ctx, args[1:], os.Stdin, stdout, stderr)
 	default:
 		return fmt.Errorf("unsupported agent command %q", args[0])
 	}
