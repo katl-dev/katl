@@ -25,6 +25,7 @@ const (
 func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase string) HostConfigurationActivationPlan {
 	var plan HostConfigurationActivationPlan
 	sysctls := map[string]string{}
+	hasSysctlFiles := false
 	modules := map[string]struct{}{}
 	sysfs := map[string]string{}
 	udevPaths := map[string]struct{}{}
@@ -41,6 +42,7 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 		for _, file := range set.Files {
 			switch {
 			case strings.HasPrefix(file.Path, "/etc/sysctl.d/") && strings.HasSuffix(file.Path, ".conf") && file.Content != nil:
+				hasSysctlFiles = true
 				if values, ok := parseConcreteSysctl(*file.Content); ok {
 					for key, value := range values {
 						sysctls[key] = value
@@ -80,7 +82,7 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 			)
 		}
 	}
-	if prepare && len(sysctls) > 0 {
+	if prepare && hasSysctlFiles {
 		plan.addCommand("systemd-sysctl", "restart", "systemd-sysctl.service", "systemctl", "restart", "systemd-sysctl.service")
 	}
 	if verify {

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
@@ -80,6 +83,7 @@ func newBuildKubernetesCommand(ctx context.Context, stdout, stderr io.Writer) *c
 
 func newBuildUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	var version string
+	var releaseExtensions bool
 	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Build and verify a KatlOS upgrade image from the current checkout",
@@ -93,7 +97,7 @@ func newBuildUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 			if err != nil {
 				return err
 			}
-			artifact, err := buildKatlOSUpgrade(ctx, repoRoot, version, stderr, runBuildCommand)
+			artifact, err := buildKatlOSUpgrade(ctx, repoRoot, version, releaseExtensions, stderr, runBuildCommand)
 			if err != nil {
 				return err
 			}
@@ -101,11 +105,13 @@ func newBuildUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 		},
 	}
 	cmd.Flags().StringVar(&version, "version", "", "KatlOS version to embed (default local.<checkout commit>)")
+	cmd.Flags().BoolVar(&releaseExtensions, "release-extensions", false, "build and include every release-owned system extension")
 	return cmd
 }
 
 func newBuildISOCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	var version string
+	var releaseExtensions bool
 	cmd := &cobra.Command{
 		Use:   "iso",
 		Short: "Build and verify the current checkout's installer ISO",
@@ -119,7 +125,7 @@ func newBuildISOCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Co
 			if err != nil {
 				return err
 			}
-			artifact, err := buildInstallerISO(ctx, repoRoot, version, stderr, runBuildCommand)
+			artifact, err := buildInstallerISO(ctx, repoRoot, version, releaseExtensions, stderr, runBuildCommand)
 			if err != nil {
 				return err
 			}
@@ -127,10 +133,11 @@ func newBuildISOCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Co
 		},
 	}
 	cmd.Flags().StringVar(&version, "version", "", "KatlOS version to embed (default local.<checkout commit>)")
+	cmd.Flags().BoolVar(&releaseExtensions, "release-extensions", false, "build and include every release-owned system extension")
 	return cmd
 }
 
-func buildInstallerISO(ctx context.Context, repoRoot, version string, stderr io.Writer, run buildCommandRunner) (installerISOArtifact, error) {
+func buildInstallerISO(ctx context.Context, repoRoot, version string, releaseExtensions bool, stderr io.Writer, run buildCommandRunner) (installerISOArtifact, error) {
 	if run == nil {
 		return installerISOArtifact{}, fmt.Errorf("build command runner is required")
 	}
@@ -150,6 +157,13 @@ func buildInstallerISO(ctx context.Context, repoRoot, version string, stderr io.
 		}
 	}
 	environment := []string{"KATL_VERSION=" + version, "KATL_ARCHITECTURE=" + architecture, "KATL_BUILD_COMMIT=" + buildID}
+	extensionManifest := ""
+	if releaseExtensions {
+		extensionManifest, environment, err = prepareReleaseExtensions(ctx, repoRoot, environment, stderr, run)
+		if err != nil {
+			return installerISOArtifact{}, err
+		}
+	}
 	iso := filepath.Join(repoRoot, "_build", "mkosi", "katl-installer.iso")
 	fmt.Fprintf(stderr, "katldev build: building KatlOS %s installer ISO from the current checkout\n", version)
 	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "mkosi"), []string{"build-installer-iso"}, environment, stderr, stderr); err != nil {
@@ -158,6 +172,12 @@ func buildInstallerISO(ctx context.Context, repoRoot, version string, stderr io.
 	fmt.Fprintln(stderr, "katldev build: verifying the completed installer ISO")
 	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "check-installer-iso"), []string{iso}, environment, stderr, stderr); err != nil {
 		return installerISOArtifact{}, fmt.Errorf("verify installer ISO: %w", err)
+	}
+	if releaseExtensions {
+		imageMetadata := filepath.Join(repoRoot, "_build", "mkosi", "katlos-install-"+version+"-"+architecture+".squashfs.json")
+		if err := verifyReleaseExtensions(imageMetadata, katlosimage.RoleInstall, extensionManifest); err != nil {
+			return installerISOArtifact{}, fmt.Errorf("verify installer ISO release extensions: %w", err)
+		}
 	}
 	digest, err := sha256File(iso)
 	if err != nil {
@@ -231,7 +251,7 @@ func runBuildCommand(ctx context.Context, dir, name string, args, environment []
 	return command.Run()
 }
 
-func buildKatlOSUpgrade(ctx context.Context, repoRoot, version string, stderr io.Writer, run buildCommandRunner) (hostUpgradeBuildArtifact, error) {
+func buildKatlOSUpgrade(ctx context.Context, repoRoot, version string, releaseExtensions bool, stderr io.Writer, run buildCommandRunner) (hostUpgradeBuildArtifact, error) {
 	if run == nil {
 		return hostUpgradeBuildArtifact{}, fmt.Errorf("build command runner is required")
 	}
@@ -256,6 +276,13 @@ func buildKatlOSUpgrade(ctx context.Context, repoRoot, version string, stderr io
 	image := filepath.Join(repoRoot, "_build", "mkosi", "katlos-upgrade-"+version+"-"+architecture+".squashfs")
 	fmt.Fprintf(stderr, "katldev build: building KatlOS %s upgrade image from the current checkout\n", version)
 	environment := []string{"KATL_VERSION=" + version, "KATL_UPGRADE_VERSION=" + version, "KATL_ARCHITECTURE=" + architecture, "KATL_BUILD_COMMIT=" + buildID}
+	extensionManifest := ""
+	if releaseExtensions {
+		extensionManifest, environment, err = prepareReleaseExtensions(ctx, repoRoot, environment, stderr, run)
+		if err != nil {
+			return hostUpgradeBuildArtifact{}, err
+		}
+	}
 	if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", "mkosi"), []string{"build-katlos-upgrade-image"}, environment, stderr, stderr); err != nil {
 		return hostUpgradeBuildArtifact{}, fmt.Errorf("build KatlOS upgrade image: %w", err)
 	}
@@ -272,6 +299,11 @@ func buildKatlOSUpgrade(ctx context.Context, repoRoot, version string, stderr io
 	}
 	if metadata.BuildID != buildID {
 		return hostUpgradeBuildArtifact{}, fmt.Errorf("KatlOS upgrade metadata buildID %q does not match current checkout %q", metadata.BuildID, buildID)
+	}
+	if releaseExtensions {
+		if err := verifyReleaseExtensions(image+".json", katlosimage.RoleUpgrade, extensionManifest); err != nil {
+			return hostUpgradeBuildArtifact{}, fmt.Errorf("verify KatlOS upgrade release extensions: %w", err)
+		}
 	}
 	if err := metadata.VerifyFile(image); err != nil {
 		return hostUpgradeBuildArtifact{}, fmt.Errorf("verify KatlOS upgrade image: %w", err)
@@ -291,6 +323,56 @@ func buildKatlOSUpgrade(ctx context.Context, repoRoot, version string, stderr io
 		SHA256:       metadata.SHA256,
 		SizeBytes:    metadata.SizeBytes,
 	}, nil
+}
+
+func prepareReleaseExtensions(ctx context.Context, repoRoot string, environment []string, stderr io.Writer, run buildCommandRunner) (string, []string, error) {
+	steps := []struct {
+		name string
+		args []string
+	}{
+		{name: "mkosi", args: []string{"build-runtime"}},
+		{name: "build-release-extensions"},
+		{name: "assemble-release-extensions"},
+	}
+	fmt.Fprintln(stderr, "katldev build: building and verifying release-owned system extensions")
+	for _, step := range steps {
+		if err := run(ctx, repoRoot, filepath.Join(repoRoot, "scripts", step.name), step.args, environment, stderr, stderr); err != nil {
+			return "", nil, fmt.Errorf("prepare release extensions: %w", err)
+		}
+	}
+
+	buildDir := filepath.Join(repoRoot, "_build", "mkosi")
+	manifest := filepath.Join(buildDir, "release-extensions.json")
+	environment = append(append([]string(nil), environment...),
+		"KATL_EXTENSION_RELEASE="+manifest,
+		"KATL_EXTENSION_LAYOUT="+filepath.Join(buildDir, "extension-bundles"),
+	)
+	return manifest, environment, nil
+}
+
+func verifyReleaseExtensions(metadataPath, role, manifestPath string) error {
+	metadata, err := katlosimage.ReadArtifactMetadata(metadataPath, role)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read release extension manifest: %w", err)
+	}
+	var expected extensionrelease.Manifest
+	if err := json.Unmarshal(data, &expected); err != nil {
+		return fmt.Errorf("decode release extension manifest: %w", err)
+	}
+	if err := expected.Validate(); err != nil {
+		return fmt.Errorf("validate release extension manifest: %w", err)
+	}
+	if len(expected.Extensions) == 0 {
+		return fmt.Errorf("release extension manifest contains no extensions")
+	}
+	if metadata.ExtensionRelease == nil || metadata.ExtensionRelease.Target != expected.Target || !maps.Equal(metadata.ExtensionRelease.Extensions, expected.Extensions) {
+		return fmt.Errorf("KatlOS image does not contain the prepared release extension manifest")
+	}
+	return nil
 }
 
 func buildKubernetesUpgrade(ctx context.Context, repoRoot, version string, stderr io.Writer, run buildCommandRunner) (kubernetesBuildArtifact, error) {
