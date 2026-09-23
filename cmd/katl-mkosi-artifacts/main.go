@@ -61,6 +61,10 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	}
 
 	switch command {
+	case "export-kernel-inputs":
+		return runExportKernelInputs(args, stdout, stderr)
+	case "bind-kernel-inputs":
+		return runBindKernelInputs(args, cfg)
 	case "inventory-release-extensions":
 		return runExtensionInventory(args, stdout, cfg)
 	case "build-release-extensions":
@@ -177,6 +181,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
+       katl-mkosi-artifacts export-kernel-inputs BUILDROOT OUTPUT_DIR
+       katl-mkosi-artifacts bind-kernel-inputs
        katl-mkosi-artifacts inventory-release-extensions
        katl-mkosi-artifacts build-release-extensions [NAME...]
        katl-mkosi-artifacts assemble-release-extensions
@@ -1633,6 +1639,9 @@ func validateLocalRef(value string) error {
 }
 
 func validateKatlOSComponents(root, uki localMetadata, architecture, runtimeInterface string) error {
+	if uki.Version != root.Version {
+		return fmt.Errorf("runtime UKI version %q does not match root version %q; rebuild the runtime inputs together", uki.Version, root.Version)
+	}
 	rootFlavour, err := flavour.Normalize(root.Flavour)
 	if err != nil {
 		return err

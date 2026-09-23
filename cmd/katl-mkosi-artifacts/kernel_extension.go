@@ -89,9 +89,6 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	if err := validateKatlOSComponents(root, uki, cfg.Architecture, root.RuntimeInterface); err != nil {
 		return err
 	}
-	if uki.Version != root.Version {
-		return fmt.Errorf("runtime UKI version %q does not match root version %q; rebuild the runtime inputs together", uki.Version, root.Version)
-	}
 	rootFlavour, err := flavour.Normalize(root.Flavour)
 	buildFlavour, buildErr := flavour.Normalize(cfg.Flavour)
 	if err != nil || buildErr != nil || rootFlavour != buildFlavour {
@@ -115,6 +112,14 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	}
 	if absPath(cfg.RepoRoot, selectedBuildDir) != buildDir {
 		return fmt.Errorf("runtime artifact must be in the selected KATL_MKOSI_BUILD_DIR")
+	}
+	inputArchive := filepath.Join(buildDir, kernelInputsFile)
+	inputs, err := readKernelInputs(inputArchive)
+	if err != nil {
+		return err
+	}
+	if inputs.Target != target {
+		return fmt.Errorf("prepared kernel inputs do not belong to the selected runtime; rebuild the runtime")
 	}
 	sources := filepath.Join(buildDir, "kernel-sources")
 	if err := os.MkdirAll(sources, 0o755); err != nil {
@@ -143,6 +148,12 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	if err := os.Link(cfg.RuntimeRoot, filepath.Join(baseDir, "runtime.raw")); err != nil {
 		return err
 	}
+	if err := os.Link(inputArchive, filepath.Join(baseDir, kernelInputsFile)); err != nil {
+		return err
+	}
+	if _, digest, err := fileInfo(filepath.Join(baseDir, kernelInputsFile)); err != nil || digest != inputs.SHA256 {
+		return fmt.Errorf("kernel inputs changed while preparing the extension build")
+	}
 	if _, digest, err := fileInfo(filepath.Join(baseDir, "runtime.raw")); err != nil || digest != target.RuntimeSHA256 {
 		return fmt.Errorf("runtime changed while preparing the kernel extension build")
 	}
@@ -153,21 +164,26 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	extract.Stdout = stdout
 	extract.Stderr = stderr
 	if err := extract.Run(); err != nil {
-		return fmt.Errorf("extract exact runtime build base: %w", err)
+		return fmt.Errorf("extract runtime build base: %w", err)
+	}
+	unpack := exec.Command(filepath.Join(cfg.RepoRoot, "scripts/mkosi"), "box", "--",
+		"tar", "--extract", "--file", filepath.Join(basePath, kernelInputsFile),
+		"--directory", filepath.Join(basePath, "root"), "--no-same-owner", "--no-same-permissions")
+	unpack.Dir = cfg.RepoRoot
+	unpack.Stdout = stdout
+	unpack.Stderr = stderr
+	if err := unpack.Run(); err != nil {
+		return fmt.Errorf("extract prepared kernel inputs: %w", err)
 	}
 	for _, source := range recipe.Sources {
 		if err := acquireKernelSource(source, filepath.Join(sources, source.SHA256+".tar.gz")); err != nil {
 			return err
 		}
 	}
-	devel := "kernel-devel-" + target.Release
-	if cfg.Flavour == "lts" {
-		devel = "kernel-longterm-devel-" + target.Release
-	}
 	// The exact extracted runtime is mkosi's read-only base; build packages are
 	// confined to its build overlay, never copied into the driver payload.
 	command := exec.Command(filepath.Join(cfg.RepoRoot, "scripts/mkosi"),
-		"--profile", "kernel-extension-"+name, "--build-package", devel,
+		"--profile", "kernel-extension-"+name,
 		"--base-tree", filepath.Join(basePath, "root"),
 		"--environment", "KATL_KERNEL_RELEASE="+target.Release,
 		"--environment", "KATL_RUNTIME_SHA256="+target.RuntimeSHA256,
@@ -189,6 +205,9 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	}
 	if record.Kernel.Target != target || !reflect.DeepEqual(record.Recipe, recipe) {
 		return fmt.Errorf("kernel extension build record does not match the requested inputs")
+	}
+	if record.SymversSHA256 != inputs.SymversSHA256 || record.ConfigSHA256 != inputs.ConfigSHA256 {
+		return fmt.Errorf("extension did not use the runtime's prepared kernel inputs")
 	}
 	created, err := time.Parse(time.RFC3339, root.Created)
 	if err != nil {

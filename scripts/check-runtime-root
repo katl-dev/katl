@@ -279,6 +279,9 @@ done
 if grep -Eq 'squashfs-root/usr/lib/modules/[^/[:space:]]+/(System[.]map|vmlinuz)([[:space:]]|$)' <<<"$runtime_inventory"; then
     fail "runtime image contains duplicate kernel build artifacts"
 fi
+if grep -Eq 'squashfs-root/usr/src/kernels/[^[:space:]]' <<<"$runtime_inventory"; then
+    fail "runtime image contains kernel build inputs"
+fi
 
 root_locked
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "Katl runtime reached systemd userspace"

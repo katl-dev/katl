@@ -217,3 +217,39 @@ func TestReleaseUsesRecipeMatrix(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseCarriesKernelInputs(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/release-artifacts.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Uses string            `yaml:"uses"`
+				With map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	carried := false
+	for _, step := range workflow.Jobs["runtime"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") {
+			carried = carried || strings.Contains(step.With["path"], "_build/mkosi/katl-kernel-inputs.tar*")
+		}
+	}
+	if !carried {
+		t.Fatal("runtime handoff omits prepared kernel inputs and their integrity metadata")
+	}
+	received := false
+	for _, step := range workflow.Jobs["extensions"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/download-artifact@") {
+			received = received || step.With["name"] == "katl-runtime-${{ matrix.flavour }}-${{ github.sha }}"
+		}
+	}
+	if !received {
+		t.Fatal("extension jobs must consume their runtime's build inputs")
+	}
+}

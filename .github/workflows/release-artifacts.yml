@@ -162,12 +162,13 @@ jobs:
               scripts/check-runtime-boot-asset
             '
 
-      - name: Upload exact runtime inputs
+      - name: Upload runtime build inputs
         uses: actions/upload-artifact@v7
         with:
           name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
           path: |
             _build/mkosi/katl-runtime-root.squashfs*
+            _build/mkosi/katl-kernel-inputs.tar*
             _build/mkosi/katl-runtime.efi*
             _build/mkosi/katl-runtime.packages.tsv
           if-no-files-found: error
@@ -222,7 +223,7 @@ jobs:
         with:
           profile: runtime
           image: ${{ env.KATL_MKOSI_IMAGE }}
-      - name: Download exact runtime inputs
+      - name: Download runtime build inputs
         uses: actions/download-artifact@v8
         with:
           name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
@@ -274,7 +275,7 @@ jobs:
         with:
           profile: runtime
           image: ${{ env.KATL_MKOSI_IMAGE }}
-      - name: Download exact runtime inputs
+      - name: Download runtime build inputs
         uses: actions/download-artifact@v8
         with:
           name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+install -m 0644 "$BUILDDIR/katl-kernel-inputs.tar" "$OUTPUTDIR/katl-kernel-inputs.tar"
+install -m 0644 "$BUILDDIR/katl-kernel-inputs.tar.json" "$OUTPUTDIR/katl-kernel-inputs.tar.json"
+install -m 0644 "$BUILDDIR/katl-kernel-inputs.tar.sha256" "$OUTPUTDIR/katl-kernel-inputs.tar.sha256"

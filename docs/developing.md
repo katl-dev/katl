@@ -41,7 +41,18 @@ separate metadata contracts.
 `scripts/build-release-extensions` builds every discovered recipe. To reproduce
 one CI matrix entry, pass its recipe name, for example
 `scripts/build-release-extensions drbd9`. Both forms use the same builder,
-source checksums, exact runtime inputs, and module-composition verifier.
+source checksums, runtime-owned kernel inputs, and module-composition verifier.
+
+The runtime build exports `katl-kernel-inputs.tar` and its JSON metadata beside
+the root image and UKI. The archive contains the prepared kernel tree, including
+headers, configuration, and symbol-version information. Its metadata binds it
+to the runtime root digest. CI transfers these files with the runtime; local
+builds consume the same files from the build directory.
+
+Extension jobs do not resolve or install a kernel development package. Missing,
+corrupt, or mismatched inputs fail the build with no package-lookup fallback.
+Rebuild the runtime to regenerate them. Build packages and exported headers
+are excluded from the shipped runtime image.
 
 Assembly requires an output for every inventoried recipe, verifies that all
 outputs target the same runtime, checks their combined module composition, and
@@ -57,8 +68,8 @@ Add `extensions/NAME/recipe.json` with a payload `version`, a full OCI
 and a pinned `sha256`. Add the matching
 `mkosi.profiles/kernel-extension-NAME` profile and its build hook.
 
-The common builder acquires the pinned sources, supplies the exact runtime
-base and matching prepared kernel development package, and invokes the profile.
+The common builder acquires the pinned sources, supplies the runtime base
+and its prepared kernel tree, and invokes the profile.
 The hook owns driver-specific compilation. It must produce `katl-NAME.raw`
 and `katl-NAME.build.json`, containing the recipe, kernel contract, and prepared
 input digests. The common builder validates and packages these outputs.
