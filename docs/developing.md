@@ -265,6 +265,19 @@ installed development image needs a particular KatlOS identity:
 nix develop --command katldev build iso --version 2026.7.0-dev.12
 ```
 
+The default command omits release-owned system extensions to keep the routine
+development build focused. To build a release-shaped ISO, build and include
+every discovered release-owned extension:
+
+```sh
+nix develop --command katldev build iso --release-extensions
+```
+
+This option builds the runtime, builds and verifies each extension recipe,
+assembles their aggregate manifest, and embeds the verified closure in the
+KatlOS install image. The command fails if the final image metadata does not
+contain that exact manifest.
+
 Copy the reported ISO to a hypervisor under a versioned name and independently
 compare the reported digest after transfer. Published images should continue
 through `katlctl node upgrade` where possible; use the ISO path for clean
@@ -275,6 +288,13 @@ Build the matching local upgrade image without repeating the derived version:
 
 ```sh
 nix develop --command katldev build upgrade
+```
+
+Use `--release-extensions` when the upgrade must carry the release-owned
+extensions for its target runtime:
+
+```sh
+nix develop --command katldev build upgrade --release-extensions
 ```
 
 The development shell includes the complete supported VM test toolchain. It

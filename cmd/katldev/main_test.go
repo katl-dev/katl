@@ -17,8 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/kernelmodule"
 	"github.com/katl-dev/katl/internal/kubernetesrelease"
 )
 
@@ -75,7 +77,7 @@ func TestBuildInstallerISOComposesSupportedPipeline(t *testing.T) {
 		return nil
 	}
 	var stdout, stderr bytes.Buffer
-	artifact, err := buildInstallerISO(context.Background(), repo, version, &stderr, runner)
+	artifact, err := buildInstallerISO(context.Background(), repo, version, false, &stderr, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,12 +114,113 @@ func TestBuildInstallerISOStopsAfterBuildFailure(t *testing.T) {
 		calls++
 		return wantErr
 	}
-	_, err := buildInstallerISO(context.Background(), t.TempDir(), "2026.7.0-local.1a2b3c4", io.Discard, runner)
+	_, err := buildInstallerISO(context.Background(), t.TempDir(), "2026.7.0-local.1a2b3c4", false, io.Discard, runner)
 	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "build installer ISO") {
 		t.Fatalf("buildInstallerISO() error = %v", err)
 	}
 	if calls != 1 {
 		t.Fatalf("runner calls = %d, want 1", calls)
+	}
+}
+
+func TestPrepareReleaseExtensionsComposesSupportedPipeline(t *testing.T) {
+	repo := t.TempDir()
+	environment := []string{"KATL_VERSION=2026.9.23-dev.5", "KATL_BUILD_COMMIT=abc123"}
+	type call struct {
+		name string
+		args []string
+		env  []string
+	}
+	var calls []call
+	runner := func(_ context.Context, _ string, name string, args, environment []string, _, _ io.Writer) error {
+		calls = append(calls, call{filepath.Base(name), append([]string(nil), args...), append([]string(nil), environment...)})
+		return nil
+	}
+
+	manifest, gotEnvironment, err := prepareReleaseExtensions(context.Background(), repo, environment, io.Discard, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []call{
+		{name: "mkosi", args: []string{"build-runtime"}, env: environment},
+		{name: "build-release-extensions", env: environment},
+		{name: "assemble-release-extensions", env: environment},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("build calls = %#v, want %#v", calls, wantCalls)
+	}
+	buildDir := filepath.Join(repo, "_build", "mkosi")
+	if manifest != filepath.Join(buildDir, "release-extensions.json") {
+		t.Fatalf("manifest = %q", manifest)
+	}
+	wantEnvironment := append(append([]string(nil), environment...),
+		"KATL_EXTENSION_RELEASE="+manifest,
+		"KATL_EXTENSION_LAYOUT="+filepath.Join(buildDir, "extension-bundles"),
+	)
+	if !reflect.DeepEqual(gotEnvironment, wantEnvironment) {
+		t.Fatalf("environment = %#v, want %#v", gotEnvironment, wantEnvironment)
+	}
+}
+
+func TestVerifyReleaseExtensionsRequiresPreparedManifestInImage(t *testing.T) {
+	dir := t.TempDir()
+	target := extensionrelease.Target{
+		Version:          "2026.9.23-dev.5",
+		Architecture:     "x86_64",
+		Flavour:          "standard",
+		RuntimeInterface: "katl-runtime-1",
+		Kernel: kernelmodule.Target{
+			Release:       "7.2.6-200.fc44.x86_64",
+			RuntimeSHA256: strings.Repeat("a", 64),
+		},
+	}
+	release := extensionrelease.Manifest{
+		Target: target,
+		Extensions: map[string]string{
+			"registry.example/driver": "registry.example/driver@sha256:" + strings.Repeat("b", 64),
+		},
+	}
+	metadata := katlosimage.ArtifactMetadata{
+		ExtensionRelease:  &release,
+		Flavour:           "standard",
+		APIVersion:        katlosimage.APIVersion,
+		Kind:              katlosimage.ArtifactMetadataKind,
+		ImageRole:         katlosimage.RoleInstall,
+		Format:            katlosimage.FormatSquashFS,
+		Version:           target.Version,
+		BuildID:           "abc123",
+		Architecture:      target.Architecture,
+		RuntimeInterface:  target.RuntimeInterface,
+		Path:              "katlos-install.squashfs",
+		SizeBytes:         1,
+		SHA256:            strings.Repeat("c", 64),
+		ChecksumPath:      "katlos-install.squashfs.sha256",
+		EmbeddedIndexPath: "katlos/image.json",
+		CreatedAt:         "2026-09-23T12:00:00Z",
+	}
+	metadataPath := filepath.Join(dir, "image.json")
+	manifestPath := filepath.Join(dir, "release-extensions.json")
+	writeJSON := func(path string, value any) {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON(manifestPath, release)
+	writeJSON(metadataPath, metadata)
+	if err := verifyReleaseExtensions(metadataPath, katlosimage.RoleInstall, manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata.ExtensionRelease = nil
+	writeJSON(metadataPath, metadata)
+	err := verifyReleaseExtensions(metadataPath, katlosimage.RoleInstall, manifestPath)
+	if err == nil || !strings.Contains(err.Error(), "does not contain the prepared") {
+		t.Fatalf("verifyReleaseExtensions() error = %v", err)
 	}
 }
 
@@ -199,7 +302,7 @@ func TestBuildKatlOSUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T) {
 		return nil
 	}
 	var stdout, stderr bytes.Buffer
-	artifact, err := buildKatlOSUpgrade(context.Background(), repo, version, &stderr, runner)
+	artifact, err := buildKatlOSUpgrade(context.Background(), repo, version, false, &stderr, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +339,7 @@ func TestBuildKatlOSUpgradeComposesAndVerifiesSupportedPipeline(t *testing.T) {
 }
 
 func TestBuildKatlOSUpgradeRequiresVersion(t *testing.T) {
-	_, err := buildKatlOSUpgrade(context.Background(), t.TempDir(), "", io.Discard, func(context.Context, string, string, []string, []string, io.Writer, io.Writer) error {
+	_, err := buildKatlOSUpgrade(context.Background(), t.TempDir(), "", false, io.Discard, func(context.Context, string, string, []string, []string, io.Writer, io.Writer) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "--version is required") {

@@ -36,6 +36,18 @@ func TestPlanHostConfigurationActivationOrdersPrepareAndVerifyEffects(t *testing
 	}
 }
 
+func TestPlanHostConfigurationActivationReplaysWildcardSysctls(t *testing.T) {
+	sysctl := "net.ipv4.conf.default.rp_filter = 0\nnet.ipv4.conf.cilium_*.rp_filter = 0\n"
+	config := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"sysctl": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/90-cilium.conf", Content: &sysctl}}},
+	}}
+
+	prepare := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
+	if got := commandNames(prepare.Commands); strings.Join(got, ",") != "systemd-sysctl" {
+		t.Fatalf("prepare commands = %v", got)
+	}
+}
+
 func TestInspectHostConfigurationClassifiesLiveSysctlDrift(t *testing.T) {
 	sysctl := "net.ipv4.ip_forward = 1\n"
 	config := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
