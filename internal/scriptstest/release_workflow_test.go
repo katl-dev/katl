@@ -27,7 +27,7 @@ func TestReleaseWorkflowBuildsKatlOSImageDependencies(t *testing.T) {
 		t.Fatalf("parse release workflow: %v", err)
 	}
 
-	runtime, ok := workflow.Jobs["runtime"]
+	runtime, ok := workflow.Jobs["images"]
 	if !ok {
 		t.Fatal("release workflow has no runtime job")
 	}
@@ -70,7 +70,7 @@ func TestReleaseBuildsBothKernelFlavours(t *testing.T) {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		t.Fatal(err)
 	}
-	for _, job := range []string{"runtime", "installer", "assemble"} {
+	for _, job := range []string{"runtime", "extensions", "images", "installer", "assemble"} {
 		build := workflow.Jobs[job]
 		if strings.Join(build.Strategy.Matrix.Flavour, ",") != "standard,lts" || build.Env["KATL_FLAVOUR"] != "${{ matrix.flavour }}" {
 			t.Fatalf("%s does not build and propagate both kernel flavours", job)
@@ -99,7 +99,10 @@ func TestReleasePublishesKernelExtensions(t *testing.T) {
 
 	for _, edge := range [][2]string{
 		{"publish-tag", "publish-extensions"},
-		{"publish-extensions", "runtime"},
+		{"publish-extensions", "images"},
+		{"images", "extensions"},
+		{"extensions", "runtime"},
+		{"extensions", "extension-inventory"},
 	} {
 		found := false
 		needs := workflow.Jobs[edge[0]].Needs
@@ -152,37 +155,65 @@ func TestReleaseEmbedsKernelExtensions(t *testing.T) {
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		t.Fatal(err)
 	}
-	runtime, driver, composition, packaging := -1, -1, -1, -1
+	composition, packaging := -1, -1
 	carried := false
-	for i, step := range workflow.Jobs["runtime"].Steps {
-		switch {
-		case strings.Contains(step.Run, "scripts/mkosi build-runtime"):
-			runtime = i
-		case strings.Contains(step.Run, "scripts/build-kernel-extension drbd9"):
-			driver = i
-			if step.ContinueOnError {
-				t.Fatal("failed promised driver coverage must fail the release")
-			}
-		case strings.Contains(step.Run, "TestDRBDImageComposition"):
+	for i, step := range workflow.Jobs["images"].Steps {
+		if strings.Contains(step.Run, "scripts/assemble-release-extensions") {
 			composition = i
 			if step.ContinueOnError {
-				t.Fatal("invalid driver composition must fail the release")
+				t.Fatal("composition failure must block packaging")
 			}
-		case strings.Contains(step.Run, "scripts/build-katlos-install-image"):
+		}
+		if strings.Contains(step.Run, "scripts/build-katlos-install-image") {
 			packaging = i
-			if step.Env["KATL_EXTENSION_RELEASE"] != "_build/mkosi/katl-drbd9.release.json" {
-				t.Fatal("image packaging must consume the exact driver release mapping")
+			if step.Env["KATL_EXTENSION_RELEASE"] != "_build/mkosi/release-extensions.json" {
+				t.Fatal("packaging must consume the aggregate release mapping")
 			}
 		}
 		paths := step.With["path"]
-		if strings.Contains(paths, "_build/mkosi/extension-bundles/") && strings.Contains(paths, "_build/mkosi/katl-drbd9.release.json") {
-			carried = true
-		}
+		carried = carried || (strings.Contains(paths, "_build/mkosi/extension-bundles/") && strings.Contains(paths, "_build/mkosi/release-extensions.json"))
 	}
-	if runtime < 0 || driver <= runtime || composition <= driver || packaging <= composition {
-		t.Fatalf("release must build runtime, matching driver and module indexes before packaging: %d %d %d %d", runtime, driver, composition, packaging)
+	if composition < 0 || packaging <= composition {
+		t.Fatal("complete composition must be verified before packaging")
 	}
 	if !carried {
-		t.Fatal("release pipeline loses the verified extension closure or its mapping")
+		t.Fatal("image pipeline loses release mapping or closure")
+	}
+}
+
+func TestReleaseUsesRecipeMatrix(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/release-artifacts.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Strategy struct {
+				Matrix struct {
+					Extension string `yaml:"extension"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
+			Steps []struct {
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if workflow.Jobs["extensions"].Strategy.Matrix.Extension != "${{ fromJSON(needs.extension-inventory.outputs.extensions) }}" {
+		t.Fatal("extension matrix must come from recipe inventory")
+	}
+	found := false
+	for _, step := range workflow.Jobs["extensions"].Steps {
+		found = found || step.Run == "scripts/build-release-extensions \"${{ matrix.extension }}\""
+	}
+	if !found {
+		t.Fatal("CI must invoke the shared local build command")
+	}
+	for _, name := range []string{"drbd", "nvidia"} {
+		if strings.Contains(strings.ToLower(string(data)), name) {
+			t.Fatalf("workflow hardcodes extension %s", name)
+		}
 	}
 }

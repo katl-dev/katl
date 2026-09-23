@@ -162,30 +162,145 @@ jobs:
               scripts/check-runtime-boot-asset
             '
 
-      - name: Build release-owned DRBD
-        shell: bash
-        run: scripts/build-kernel-extension drbd9
+      - name: Upload exact runtime inputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
+          path: |
+            _build/mkosi/katl-runtime-root.squashfs*
+            _build/mkosi/katl-runtime.efi*
+            _build/mkosi/katl-runtime.packages.tsv
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
-      - name: Verify DRBD module composition
-        shell: bash
+  extension-inventory:
+    name: Inventory Release Extensions
+    runs-on: ubuntu-24.04
+    outputs:
+      extensions: ${{ steps.inventory.outputs.extensions }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Discover release recipes
+        id: inventory
+        run: |
+          inventory="$(go run ./cmd/katl-mkosi-artifacts inventory-release-extensions)"
+          echo "extensions=$(jq -c .extension <<<"$inventory")" >> "$GITHUB_OUTPUT"
+
+  extensions:
+    name: Build Extension (${{ matrix.extension }}, ${{ matrix.flavour }})
+    needs: [identity, runtime, extension-inventory]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
+        extension: ${{ fromJSON(needs.extension-inventory.outputs.extensions) }}
+    env:
+      KATL_FLAVOUR: ${{ matrix.flavour }}
+      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
+      GOTOOLCHAIN: auto
+      KATL_ARCHITECTURE: x86_64
+      KATL_BUILD_COMMIT: ${{ github.sha }}
+      KATL_CONTAINER_RUNTIME: docker
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_VERSION: ${{ needs.identity.outputs.version }}
+      KATL_VMTEST_IMAGE_SUPPORT: "0"
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/mkosi-builder
+        with:
+          profile: runtime
+          image: ${{ env.KATL_MKOSI_IMAGE }}
+      - name: Download exact runtime inputs
+        uses: actions/download-artifact@v8
+        with:
+          name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
+          path: _build/mkosi
+      - name: Install module inspection tools
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes systemd-container kmod squashfs-tools
-          CGO_ENABLED=0 go test -c -o _build/drbd-composition.test ./internal/kernelmodule
-          sudo env KATL_TEST_DRBD_BUILD="$GITHUB_WORKSPACE/_build/mkosi" \
-            ./_build/drbd-composition.test \
-              -test.run '^TestDRBDImageComposition$' -test.count=1 -test.v
+
+      - name: Build and verify release recipe
+        run: scripts/build-release-extensions "${{ matrix.extension }}"
+      - name: Upload verified extension closure
+        uses: actions/upload-artifact@v7
+        with:
+          name: katl-extension-${{ matrix.flavour }}-${{ matrix.extension }}-${{ github.sha }}
+          path: _build/mkosi/release-extensions/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  images:
+    name: Package KatlOS Images (${{ matrix.flavour }})
+    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
+    needs: [identity, runtime, extensions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
+    env:
+      KATL_FLAVOUR: ${{ matrix.flavour }}
+      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
+      GOTOOLCHAIN: auto
+      KATL_ARCHITECTURE: x86_64
+      KATL_BUILD_COMMIT: ${{ github.sha }}
+      KATL_CONTAINER_RUNTIME: docker
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_VERSION: ${{ needs.identity.outputs.version }}
+      KATL_VMTEST_IMAGE_SUPPORT: "0"
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/mkosi-builder
+        with:
+          profile: runtime
+          image: ${{ env.KATL_MKOSI_IMAGE }}
+      - name: Download exact runtime inputs
+        uses: actions/download-artifact@v8
+        with:
+          name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
+          path: _build/mkosi
+      - name: Install module inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes systemd-container kmod squashfs-tools
+
+      - name: Download release extension closures
+        uses: actions/download-artifact@v8
+        with:
+          pattern: katl-extension-${{ matrix.flavour }}-*-${{ github.sha }}
+          path: _build/mkosi/release-extensions
+          merge-multiple: true
+      - name: Assemble and verify complete extension selection
+        run: scripts/assemble-release-extensions
 
       - name: Build endpoint advertiser sysext
-        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         shell: bash
         run: scripts/build-endpoint-advertiser-sysext
 
       - name: Package install and upgrade images concurrently
-        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         shell: bash
         env:
-          KATL_EXTENSION_RELEASE: _build/mkosi/katl-drbd9.release.json
+          KATL_EXTENSION_RELEASE: _build/mkosi/release-extensions.json
         run: |
           install_status=0
           upgrade_status=0
@@ -198,7 +313,6 @@ jobs:
           ((install_status == 0 && upgrade_status == 0))
 
       - name: Verify KatlOS images
-        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         shell: bash
         run: |
           scripts/check-katlos-install-image
@@ -215,7 +329,6 @@ jobs:
           done
 
       - name: Upload runtime and KatlOS image intermediates
-        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         uses: actions/upload-artifact@v7
         with:
           name: katl-runtime-images-${{ matrix.flavour }}-${{ github.sha }}
@@ -227,10 +340,7 @@ jobs:
             _build/mkosi/katl-runtime.efi.json
             _build/mkosi/katl-runtime.efi.sha256
             _build/mkosi/katl-runtime.packages.tsv
-            _build/mkosi/katl-drbd9.raw
-            _build/mkosi/katl-drbd9.bundle.json
-            _build/mkosi/katl-drbd9.build.json
-            _build/mkosi/katl-drbd9.release.json
+            _build/mkosi/release-extensions.json
             _build/mkosi/extension-bundles/
             _build/mkosi/katlos-install-*.squashfs
             _build/mkosi/katlos-install-*.squashfs.json
@@ -391,6 +501,7 @@ jobs:
     needs:
       - identity
       - runtime
+      - images
       - installer
       - katlctl
     runs-on: ubuntu-24.04
@@ -527,7 +638,7 @@ jobs:
   publish-extensions:
     name: Publish Kernel Extensions
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [runtime]
+    needs: [images]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -552,7 +663,7 @@ jobs:
           for flavour in standard lts; do
             directory="artifacts/katl-runtime-images-${flavour}-${GITHUB_SHA}"
             go run ./cmd/katl-mkosi-artifacts publish-release-extensions \
-              "$directory/katl-drbd9.release.json" "$directory/extension-bundles"
+              "$directory/release-extensions.json" "$directory/extension-bundles"
           done
 
   publish-tag:

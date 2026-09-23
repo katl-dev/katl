@@ -1,11 +1,14 @@
 {
   "version": "9.3.4",
-  "source": {
-    "url": "https://codeload.github.com/LINBIT/drbd/tar.gz/e59b287b199f7224468af85b68a10e83c68213f5",
-    "sha256": "b8dd7187235c5f718962db38782661625c806b10e0a14b9ea7982cbd3f71c3f7"
-  },
-  "headers": {
-    "url": "https://codeload.github.com/LINBIT/drbd-headers/tar.gz/778d527bdb01eb2d4fe86aea143b73c3294f119b",
-    "sha256": "2cd76a0d4a7f2919aef578489f3fc000262265a2c81826a98fa3dfb2e7cde305"
+  "repository": "ghcr.io/katl-dev/katl/extensions/drbd9",
+  "sources": {
+    "source": {
+      "url": "https://codeload.github.com/LINBIT/drbd/tar.gz/e59b287b199f7224468af85b68a10e83c68213f5",
+      "sha256": "b8dd7187235c5f718962db38782661625c806b10e0a14b9ea7982cbd3f71c3f7"
+    },
+    "headers": {
+      "url": "https://codeload.github.com/LINBIT/drbd-headers/tar.gz/778d527bdb01eb2d4fe86aea143b73c3294f119b",
+      "sha256": "2cd76a0d4a7f2919aef578489f3fc000262265a2c81826a98fa3dfb2e7cde305"
+    }
   }
 }
