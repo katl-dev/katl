@@ -25,6 +25,7 @@ func TestBuildKatlOSInstallImageBuildsWithStaleInstallerArtifacts(t *testing.T) 
 		"sha256":           runtimeRootSHA,
 		"compression":      "zstd",
 		"generation":       "test-build",
+		"version":          "0.1.0",
 		"architecture":     "x86_64",
 		"runtimeInterface": "katl-runtime-1",
 		"compatibleBoot": map[string]any{
@@ -43,7 +44,8 @@ func TestBuildKatlOSInstallImageBuildsWithStaleInstallerArtifacts(t *testing.T) 
 		"path":             filepath.Base(runtimeUKI),
 		"sizeBytes":        int64(len("runtime uki")),
 		"sha256":           fileSHA256(t, runtimeUKI),
-		"version":          "test-build",
+		"version":          "0.1.0",
+		"generation":       "test-build",
 		"architecture":     "x86_64",
 		"runtimeInterface": "katl-runtime-1",
 		"compatibleRuntime": map[string]any{

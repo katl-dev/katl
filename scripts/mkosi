@@ -321,6 +321,9 @@ target_outputs() {
                 "$build_dir/katl-runtime-root.squashfs.json" \
                 "$build_dir/katl-runtime-root.squashfs.sha256" \
                 "$build_dir/katl-runtime.packages.tsv" \
+                "$build_dir/katl-kernel-inputs.tar" \
+                "$build_dir/katl-kernel-inputs.tar.json" \
+                "$build_dir/katl-kernel-inputs.tar.sha256" \
                 "$build_dir/katl-runtime-root.initrd" \
                 "$build_dir/katl-runtime-root.vmlinuz" \
                 "$build_dir/katl-runtime.efi" \
@@ -933,6 +936,8 @@ set +e
                     --runtime-artifact "$artifact" \
                     --runtime-sha256 "$sha256" \
                     --kernel-version "$kernel_version" >/dev/null; then
+                    status=1
+                elif ! mkosi_artifacts bind-kernel-inputs; then
                     status=1
                 fi
             fi

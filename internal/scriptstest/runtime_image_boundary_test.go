@@ -141,6 +141,9 @@ func TestRuntimeBuildExcludesVMTestSupportByDefault(t *testing.T) {
 		t.Fatalf("mkdir fake bin: %v", err)
 	}
 	writeFakeExecutable(t, bin, "go", `
+if [[ "${1:-}" == run && "${3:-}" == export-kernel-inputs ]]; then
+  exit 0
+fi
 output=""
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == "-o" ]]; then
@@ -212,6 +215,7 @@ func runRuntimeBuild(t *testing.T, repo, bin, dest, support string) {
 		os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BUILDDIR="+t.TempDir(),
+		"BUILDROOT="+t.TempDir(),
 		"DESTDIR="+dest,
 		"SRCDIR="+repo,
 		"KATL_BUILD_COMMIT=test",

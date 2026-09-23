@@ -133,20 +133,6 @@ func runCompileDRBD(args []string, stdout, stderr io.Writer, cfg config) error {
 	}, cfg.RepoRoot)
 }
 
-func validateKernelInputs(directory, release string) error {
-	actual, err := os.ReadFile(filepath.Join(directory, "include/config/kernel.release"))
-	if err != nil || strings.TrimSpace(string(actual)) != release {
-		return fmt.Errorf("prepared kernel inputs do not match %s", release)
-	}
-	for _, name := range []string{"Module.symvers", ".config", "include/generated/autoconf.h"} {
-		info, err := os.Stat(filepath.Join(directory, name))
-		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
-			return fmt.Errorf("prepared kernel inputs require nonempty %s", name)
-		}
-	}
-	return nil
-}
-
 func installDRBDModules(source, destination string, target kernelmodule.Target, version string) (kernelmodule.Contract, error) {
 	contract := kernelmodule.Contract{Target: target}
 	found := map[string]bool{}

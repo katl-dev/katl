@@ -47,6 +47,9 @@ esac
 cd "$repo"
 gomodcache="${KATL_GOMODCACHE:-$repo/_build/go-mod}"
 mkdir -p "$gomodcache"
+GOCACHE="$builddir/go-build" GOMODCACHE="$gomodcache" \
+    go run ./cmd/katl-mkosi-artifacts export-kernel-inputs "$BUILDROOT" "$BUILDDIR"
+
 commit="${KATL_BUILD_COMMIT:-}"
 if [[ -z "$commit" ]]; then
     commit="$(git rev-parse --short=12 HEAD 2>/dev/null || printf unknown)"
