@@ -82,3 +82,39 @@ func TestPublicationValidatesCompleteRelease(t *testing.T) {
 		t.Fatalf("publication did not reject the complete combination before writes: %v", err)
 	}
 }
+
+func TestTaggedReleaseReference(t *testing.T) {
+	ref := "ghcr.io/katl-dev/katl/extensions/drbd9@sha256:" + strings.Repeat("a", 64)
+	target := extensionrelease.Target{Version: "2026.9.0-beta.15", Flavour: "standard", Architecture: "x86_64"}
+	bundle := systemextensionbundle.Bundle{Name: "drbd9", ArtifactVersion: target.Version, PayloadVersion: "9.3.4"}
+
+	for _, test := range []struct {
+		flavour      string
+		architecture string
+		wantTag      string
+	}{
+		{"standard", "x86_64", "v2026.9.0-beta.15-standard-x86_64-drbd9-9.3.4"},
+		{"lts", "x86_64", "v2026.9.0-beta.15-lts-x86_64-drbd9-9.3.4"},
+		{"standard", "aarch64", "v2026.9.0-beta.15-standard-aarch64-drbd9-9.3.4"},
+	} {
+		t.Run(test.flavour+"-"+test.architecture, func(t *testing.T) {
+			target.Flavour = test.flavour
+			target.Architecture = test.architecture
+			got, err := taggedReleaseReference(ref, target, bundle)
+			want := "ghcr.io/katl-dev/katl/extensions/drbd9:" + test.wantTag + "@sha256:" + strings.Repeat("a", 64)
+			if err != nil || got != want {
+				t.Fatalf("tagged release reference = %q, %v; want %q", got, err, want)
+			}
+		})
+	}
+
+	bundle.ArtifactVersion = "2026.9.0-beta.14"
+	if _, err := taggedReleaseReference(ref, target, bundle); err == nil || !strings.Contains(err.Error(), "does not match release") {
+		t.Fatalf("mismatched artifact version error = %v", err)
+	}
+	bundle.ArtifactVersion = target.Version
+	bundle.PayloadVersion = "9.3.4+custom"
+	if _, err := taggedReleaseReference(ref, target, bundle); err == nil || !strings.Contains(err.Error(), "invalid release extension tag") {
+		t.Fatalf("invalid OCI tag error = %v", err)
+	}
+}

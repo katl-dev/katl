@@ -35,29 +35,49 @@ func runPublishReleaseExtensions(args []string, stdout io.Writer) error {
 	}
 	sort.Strings(names)
 	ctx := context.Background()
+	publications := make(map[string]string, len(names))
 	// Validate the entire advertised selection before the first registry write.
 	// Publication copies qualified bytes; it must never rebuild the bundle.
 	for _, name := range names {
-		_, _, err := systemextensionbundle.ResolveSelection(ctx, release.Target, &release, manifest.SystemExtension{Release: name}, func(ctx context.Context, request systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error) {
+		_, resolved, err := systemextensionbundle.ResolveSelection(ctx, release.Target, &release, manifest.SystemExtension{Release: name}, func(ctx context.Context, request systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error) {
 			request.LayoutDir = args[1]
 			return systemextensionbundle.Resolve(ctx, request)
 		})
 		if err != nil {
 			return fmt.Errorf("verify release extension %s: %w", name, err)
 		}
+		publications[name], err = taggedReleaseReference(release.Extensions[name], release.Target, resolved.Bundle)
+		if err != nil {
+			return fmt.Errorf("tag release extension %s: %w", name, err)
+		}
 	}
 	for _, name := range names {
-		ref := release.Extensions[name]
 		if _, err := payloadbundle.PublishLayout(ctx, payloadbundle.FetchRequest{
 			LayoutDir:            args[1],
-			Reference:            ref,
+			Reference:            publications[name],
 			ArtifactType:         systemextensionbundle.ArtifactType,
 			ConfigMediaType:      systemextensionbundle.ConfigMediaType,
 			UseDockerCredentials: true,
 		}); err != nil {
 			return fmt.Errorf("publish release extension %s: %w", name, err)
 		}
-		fmt.Fprintln(stdout, ref)
+		fmt.Fprintln(stdout, publications[name])
 	}
 	return nil
+}
+
+func taggedReleaseReference(ref string, target extensionrelease.Target, bundle systemextensionbundle.Bundle) (string, error) {
+	if bundle.ArtifactVersion != target.Version {
+		return "", fmt.Errorf("artifact version %q does not match release %q", bundle.ArtifactVersion, target.Version)
+	}
+	parsed, err := payloadbundle.ParseReference(ref)
+	if err != nil {
+		return "", err
+	}
+	tag := fmt.Sprintf("v%s-%s-%s-%s-%s", target.Version, target.Flavour, target.Architecture, bundle.Name, bundle.PayloadVersion)
+	qualified := fmt.Sprintf("%s:%s@%s", parsed.Name(), tag, payloadbundle.ManifestDigest(parsed))
+	if _, err := payloadbundle.ParseReference(qualified); err != nil {
+		return "", fmt.Errorf("invalid release extension tag %q: %w", tag, err)
+	}
+	return qualified, nil
 }

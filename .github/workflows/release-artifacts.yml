@@ -252,7 +252,7 @@ jobs:
   images:
     name: Package KatlOS Images (${{ matrix.flavour }})
     if: github.ref != 'refs/heads/main' || github.event_name != 'push'
-    needs: [identity, runtime, extensions]
+    needs: [identity, extensions]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:

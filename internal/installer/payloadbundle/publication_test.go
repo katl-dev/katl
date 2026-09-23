@@ -121,6 +121,26 @@ func TestPublishLayout(t *testing.T) {
 		}
 		mu.Unlock()
 	}
+	alias := "v2026.9.0-beta.15-standard-x86_64-driver-1.0.0"
+	aliased := request
+	aliased.Reference = strings.TrimSuffix(request.Reference, "@"+packed.ManifestDigest) + ":" + alias + "@" + packed.ManifestDigest
+	for attempt := 0; attempt < 2; attempt++ {
+		published, err := PublishLayout(ctx, aliased)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if published.ManifestDigest != packed.ManifestDigest || published.Existing != (attempt == 1) {
+			t.Fatalf("alias publication identity or idempotence: %+v", published)
+		}
+		mu.Lock()
+		if attempt == 0 {
+			initialWrites = writes
+		}
+		if tags[alias] != packed.ManifestDigest || !bytes.Equal(objects[packed.ManifestDigest], packed.Manifest) || writes != initialWrites {
+			t.Error("alias does not point to the qualified manifest without repacking")
+		}
+		mu.Unlock()
+	}
 	// The build-and-publish interface uses the same transport contract.
 	published, err := Publish(ctx, PublishRequest{
 		Reference:       strings.TrimPrefix(server.URL, "https://") + "/extensions/driver:release-v1",
@@ -154,7 +174,18 @@ func TestPublishLayout(t *testing.T) {
 		t.Error("publication changed a conflicting immutable tag")
 	}
 	tags[tag] = packed.ManifestDigest
+	tags[alias] = conflict
 	beforeCorruption := requests
+	mu.Unlock()
+	if _, err := PublishLayout(ctx, aliased); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+		t.Fatalf("conflicting alias error = %v", err)
+	}
+	mu.Lock()
+	if writes != initialWrites || tags[alias] != conflict {
+		t.Error("publication changed a conflicting readable tag")
+	}
+	tags[alias] = packed.ManifestDigest
+	beforeCorruption = requests
 	mu.Unlock()
 
 	// Existing remote content cannot excuse corrupt local qualification inputs.
