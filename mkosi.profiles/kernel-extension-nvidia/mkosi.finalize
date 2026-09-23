@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+install -m 0644 "$BUILDDIR/katl-nvidia.build.json" "$OUTPUTDIR/katl-nvidia.build.json"

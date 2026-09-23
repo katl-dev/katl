@@ -384,13 +384,29 @@ the artifact for removal.
 
 For a release-owned extension, use `release` instead of `bundle` and provide
 the full repository without a tag or digest. The target KatlOS release selects
-the qualified digest. Katl does not infer a registry or organization, or select
-the newest published artifact. For example:
+the release-advertised digest. Katl does not infer a registry or organization,
+or select the newest published artifact. For example:
 
 ```yaml
 systemExtensions:
   - release: ghcr.io/katl-dev/katl/extensions/drbd9
 ```
+
+To select the beta NVIDIA driver on an x86-64 node, use its release repository:
+
+```yaml
+systemExtensions:
+  - release: ghcr.io/katl-dev/katl/extensions/nvidia
+```
+
+The NVIDIA extension contains open kernel modules, matching host compute
+libraries, and GPU System Processor firmware. It is intended for Turing and
+newer GPUs; the initial hardware validation target is an NVIDIA T4. It does not
+include the NVIDIA Container Toolkit or a Kubernetes device plugin. The node
+must permit unsigned kernel modules; Katl does not disable signature
+enforcement. This beta artifact has not yet been validated with a physical GPU,
+a Kubernetes GPU workload, or a host upgrade and rollback. Verify `nvidia-smi`
+on the node after reboot before placing GPU workloads on it.
 
 Payload changes and removal select a next-boot generation. With the payload unchanged, configuration, unit drop-ins,
 and enablement changes apply live. Katl reloads or restarts running consumers;
