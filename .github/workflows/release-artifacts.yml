@@ -138,6 +138,10 @@ jobs:
         shell: bash
         run: scripts/mkosi build-runtime
 
+      - name: Build endpoint advertiser sysext
+        shell: bash
+        run: scripts/build-endpoint-advertiser-sysext
+
       - name: Resolve mkosi version
         id: mkosi-version
         shell: bash
@@ -169,6 +173,7 @@ jobs:
           path: |
             _build/mkosi/katl-runtime-root.squashfs*
             _build/mkosi/katl-kernel-inputs.tar*
+            _build/mkosi/katl-endpoint-advertiser.raw*
             _build/mkosi/katl-runtime.efi*
             _build/mkosi/katl-runtime.packages.tsv
           if-no-files-found: error
@@ -293,10 +298,6 @@ jobs:
           merge-multiple: true
       - name: Assemble and verify complete extension selection
         run: scripts/assemble-release-extensions
-
-      - name: Build endpoint advertiser sysext
-        shell: bash
-        run: scripts/build-endpoint-advertiser-sysext
 
       - name: Package install and upgrade images concurrently
         shell: bash

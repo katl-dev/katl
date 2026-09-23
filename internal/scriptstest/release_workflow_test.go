@@ -18,8 +18,9 @@ func TestReleaseWorkflowBuildsKatlOSImageDependencies(t *testing.T) {
 	var workflow struct {
 		Jobs map[string]struct {
 			Steps []struct {
-				Name string `yaml:"name"`
-				Run  string `yaml:"run"`
+				Run  string            `yaml:"run"`
+				Uses string            `yaml:"uses"`
+				With map[string]string `yaml:"with"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
@@ -27,28 +28,40 @@ func TestReleaseWorkflowBuildsKatlOSImageDependencies(t *testing.T) {
 		t.Fatalf("parse release workflow: %v", err)
 	}
 
-	runtime, ok := workflow.Jobs["images"]
+	runtime, ok := workflow.Jobs["runtime"]
 	if !ok {
 		t.Fatal("release workflow has no runtime job")
 	}
-	dependencyStep := -1
-	packageStep := -1
+	runtimeStep, dependencyStep, uploadStep := -1, -1, -1
 	for index, step := range runtime.Steps {
+		if strings.Contains(step.Run, "scripts/mkosi build-runtime") {
+			runtimeStep = index
+		}
 		if strings.Contains(step.Run, "scripts/build-endpoint-advertiser-sysext") {
 			dependencyStep = index
+		}
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && step.With["name"] == "katl-runtime-${{ matrix.flavour }}-${{ github.sha }}" && strings.Contains(step.With["path"], "_build/mkosi/katl-endpoint-advertiser.raw*") {
+			uploadStep = index
+		}
+	}
+	if runtimeStep < 0 || dependencyStep <= runtimeStep || uploadStep <= dependencyStep {
+		t.Fatal("runtime job must build and transport the endpoint advertiser while its runtime base tree is available")
+	}
+
+	downloadStep, packageStep := -1, -1
+	for index, step := range workflow.Jobs["images"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/download-artifact@") && step.With["name"] == "katl-runtime-${{ matrix.flavour }}-${{ github.sha }}" && step.With["path"] == "_build/mkosi" {
+			downloadStep = index
 		}
 		if strings.Contains(step.Run, "scripts/build-katlos-install-image") {
 			packageStep = index
 		}
+		if strings.Contains(step.Run, "scripts/build-endpoint-advertiser-sysext") {
+			t.Fatal("packaging must not require the runtime builder's private base tree")
+		}
 	}
-	if dependencyStep < 0 {
-		t.Fatal("release runtime job does not build the endpoint advertiser sysext")
-	}
-	if packageStep < 0 {
-		t.Fatal("release runtime job does not package KatlOS images")
-	}
-	if dependencyStep >= packageStep {
-		t.Fatal("release runtime job must build the endpoint advertiser sysext before packaging KatlOS images")
+	if downloadStep < 0 || packageStep <= downloadStep {
+		t.Fatal("packaging must download its built runtime components before assembling images")
 	}
 }
 
