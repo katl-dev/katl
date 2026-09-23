@@ -18,7 +18,7 @@ type installedRuntimeWorldRun struct {
 	Config   InstalledRuntimeConfig
 }
 
-func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec) (installedRuntimeWorldRun, bool) {
+func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec, sshAuthorizedKey ...string) (installedRuntimeWorldRun, bool) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv(WorldManifestEnv)) == "" {
 		return installedRuntimeWorldRun{}, false
@@ -30,6 +30,7 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec) (inst
 	repo := repoRoot(t)
 	options := DefaultOptions()
 	input := DefaultFirstInstallWorldInputFromEnv(FirstInstallWorldPreseed, envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"))
+	input.SSHAuthorizedKey = first(sshAuthorizedKey...)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	inputDigest, err := ensurePublishedFirstInstallRuntimeFixture(ctx, world, repo, spec, FirstInstallRuntimeFixtureOptions{

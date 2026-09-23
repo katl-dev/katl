@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,16 +23,19 @@ func ServerTLSConfig(root string) (*tls.Config, error) {
 	if mode == managementidentity.TrustedNetwork {
 		return nil, nil
 	}
-	root = filepath.Clean(strings.TrimSpace(root))
-	ca, err := os.ReadFile(filepath.Join(root, nodeidentity.ManagementCACertificatePath))
+	caPath, certPath, keyPath, err := nodeidentity.ManagementCredentialsPaths(root)
+	if err != nil {
+		return nil, err
+	}
+	ca, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, fmt.Errorf("read management client CA: %w", err)
 	}
-	certificate, err := os.ReadFile(filepath.Join(root, nodeidentity.ManagementServerCertPath))
+	certificate, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, fmt.Errorf("read management server certificate: %w", err)
 	}
-	privateKey, err := os.ReadFile(filepath.Join(root, nodeidentity.ManagementServerPrivateKeyPath))
+	privateKey, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read management server private key: %w", err)
 	}

@@ -129,6 +129,20 @@ func WriteManagementIdentity(root, nodeName string, identity managementidentity.
 	}
 	if mode == managementidentity.TrustedNetwork {
 		files = nil
+	} else if _, err := os.Lstat(filepath.Join(dir, "active")); err == nil {
+		caPath, certPath, keyPath, err := ManagementCredentialsPaths(root)
+		if err != nil {
+			return err
+		}
+		for _, file := range []struct{ path, data string }{{caPath, identity.CACertificate}, {certPath, identity.ServerCertificate}, {keyPath, identity.ServerPrivateKey}} {
+			got, err := os.ReadFile(file.path)
+			if err != nil || !bytes.Equal(got, []byte(file.data)) {
+				return fmt.Errorf("active management identity differs from install material")
+			}
+		}
+		files = nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect active management identity: %w", err)
 	}
 	// Publish mode last so incomplete mTLS provisioning never opens an unauthenticated listener.
 	files = append(files, identityFile{ManagementAuthenticationPath, string(mode) + "\n", 0o600})

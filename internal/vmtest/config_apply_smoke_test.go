@@ -463,7 +463,7 @@ func katlcEndpoint(t *testing.T, node RunningInstalledRuntimeNode, plannedAddres
 	return net.JoinHostPort(address, "9443")
 }
 
-func enrollConfigApplyNode(t *testing.T, ctx context.Context, result Result, katlctl, endpoint string) {
+func enrollConfigApplyNode(t *testing.T, ctx context.Context, result Result, katlctl, endpoint string, sshAuthorizedKey ...string) {
 	t.Helper()
 	host, _, err := net.SplitHostPort(endpoint)
 	if err != nil {
@@ -475,6 +475,10 @@ func enrollConfigApplyNode(t *testing.T, ctx context.Context, result Result, kat
 	}
 	configPath := filepath.Join(directory, "cluster.yaml")
 	contextPath := filepath.Join(directory, "katlctl.yaml")
+	key := first(sshAuthorizedKey...)
+	if key == "" {
+		key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
+	}
 	source := `apiVersion: config.katl.dev/v1alpha1
 kind: ClusterConfig
 metadata:
@@ -490,7 +494,7 @@ spec:
     access:
       ssh:
         authorizedKeys:
-          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
+          - ` + key + `
   nodes:
     - name: cp-1
       controlPlane: true

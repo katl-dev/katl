@@ -30,7 +30,8 @@ identity create prepares it for a hand-written new configuration.
 
 Use export to migrate an existing workstation-held authority. Path and import
 are legacy workstation-store recovery tools. Creating a new authority cannot
-recover access to nodes installed with a different authority.`,
+recover access to nodes installed with a different authority. Rotate replaces
+an installed mTLS authority through host-key-verified root SSH.`,
 		Example: "katlctl management identity create --config cluster.yaml\nkatlctl management identity export --config cluster.yaml",
 	}
 	command.AddCommand(newManagementIdentityPathCommand(stdout))
@@ -38,6 +39,7 @@ recover access to nodes installed with a different authority.`,
 	command.AddCommand(newManagementIdentityImportCommand(stdout, stderr))
 	command.AddCommand(newManagementIdentityCreateCommand(stdout))
 	command.AddCommand(newManagementIdentityExportCommand(stdout))
+	command.AddCommand(newManagementIdentityRotateCommand(stdout, stderr))
 	return command
 }
 

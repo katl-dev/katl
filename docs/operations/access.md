@@ -169,6 +169,55 @@ the optional shortcut, including new enrollment and machine identities. A change
 of installation during an operation is still rejected. A different authority or
 a certificate for another node is never accepted automatically.
 
+## Rotate a management authority
+
+If an mTLS authority or operator key was exposed, create a replacement authority
+and switch every installed node through `katlctl`. Encrypting the exposed file
+does not revoke certificates signed by it. This workflow changes only Katl
+management mTLS credentials; Kubernetes CA and service-account keys are separate.
+
+Before rotation, upgrade every node to a KatlOS release that supports
+`katlc agent rotate-management`. Keep the original secrets file and working
+`ClusterConfig`. From the operator workstation, verify root SSH access to each
+management address with a trusted, recorded SSH host key. The rotation command
+requires strict host-key checking and refuses an unknown key. Finish or recover
+any active node operation before starting.
+
+Choose a new path that is not the original secrets path. To keep the replacement
+in the repository, configure a matching SOPS creation rule and an available age
+decryption key, then use a `.sops.yaml` filename. Katl encrypts the replacement
+before contacting any node and refuses SOPS output that leaves a management
+private key in plaintext.
+
+```sh
+katlctl management identity rotate \
+  --config ./cluster.yaml \
+  --output ./management-secrets-next.sops.yaml
+```
+
+The command preflights all nodes over root SSH, switches them one at a time,
+and verifies that the new mTLS authority works and the old one is rejected.
+Only after every node passes does it change `spec.managementIdentity` to the new
+file. A saved workstation context still has the old client certificate; refresh
+it after the command succeeds:
+
+```sh
+katlctl context save --config ./cluster.yaml
+katlctl cluster status --config ./cluster.yaml
+```
+
+If rotation stops partway through, keep the new secrets file and rerun the exact
+same command. Nodes already switched accept the same replacement again. The
+source configuration continues to reference the original authority until all
+nodes pass. If an agent fails to restart, use root SSH to inspect
+`katlc-agent.service` and its journal, repair that failure, and rerun. Do not
+generate another replacement during recovery.
+
+After verification, remove exposed plaintext secrets from the tracked tree and
+keep only protected recovery copies. Published Git history remains a separate
+exposure even after the current tree is cleaned. Back up the new SOPS decryption
+key outside the cluster.
+
 Deleting workstation context does not delete the referenced secrets or change
 node trust. Use `--config ./cluster.yaml` directly or save the context again.
 

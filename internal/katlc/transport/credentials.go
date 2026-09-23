@@ -30,7 +30,7 @@ func (c *clientCredentials) ClientHandshake(ctx context.Context, authority strin
 	var wrongName x509.HostnameError
 	switch {
 	case errors.As(err, &unknownCA):
-		return nil, nil, fmt.Errorf("node uses a different management authority; restore the original cluster secrets file or explicitly recover node trust using SSH or console access; generating new workstation keys does not restore access")
+		return nil, nil, fmt.Errorf("node uses a different management authority; after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or recover node trust through SSH or console access")
 	case errors.As(err, &wrongName):
 		return nil, nil, fmt.Errorf("management address answered with a certificate for another node; check the node name and management.address in the cluster configuration")
 	default:
