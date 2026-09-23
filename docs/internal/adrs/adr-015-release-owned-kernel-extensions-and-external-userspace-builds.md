@@ -97,6 +97,12 @@ Every advertised extension must pass qualification for its supported
 architecture and kernel flavor before promotion. A failed build must not
 silently remove promised coverage from a candidate.
 
+Temporary DRBD publication policy: VM tests are not supported in CI. Tag builds
+automatically publish DRBD artifacts after the runtime, extension build, module
+composition, and artifact validation checks pass. Two-VM lifecycle qualification
+runs locally; CI does not require evidence of that run before publication.
+Enforcing VM qualification in the release pipeline is deferred.
+
 The release manifest provides an authoritative mapping:
 
 ```text
@@ -496,7 +502,8 @@ stopped must leave no stale module indexes.
 
 Keep the DRBD software version fixed for the first kernel-upgrade test. Qualify
 DRBD-version transitions separately; software rollback is not data rollback.
-A release advertising this target cannot promote without its qualification.
+The temporary publication policy above permits automatic DRBD publication
+without a CI VM qualification gate.
 
 ### NVIDIA follow-on
 
