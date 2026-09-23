@@ -299,7 +299,8 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 
 // PublishLayout publishes the verified digest-pinned closure without repacking
 // it. A digest-derived tag keeps the manifest reachable in registries that
-// collect untagged artifacts, without adding mutable release aliases.
+// collect untagged artifacts. An optional tag on the pinned reference becomes
+// an immutable alias for the same manifest.
 func PublishLayout(ctx context.Context, request FetchRequest) (Published, error) {
 	if request.LayoutDir == "" || request.LayoutURL != "" {
 		return Published{}, fmt.Errorf("publication requires a local OCI layout")
@@ -316,9 +317,17 @@ func PublishLayout(ctx context.Context, request FetchRequest) (Published, error)
 	if err != nil {
 		return Published{}, err
 	}
-	destination, err := reference.WithTag(reference.TrimNamed(ref), tag)
-	if err != nil {
-		return Published{}, err
+	tags := []string{tag}
+	if alias := Tag(ref); alias != "" && alias != tag {
+		tags = append(tags, alias)
+	}
+	destinations := make([]reference.Named, 0, len(tags))
+	for _, tag := range tags {
+		destination, err := reference.WithTag(reference.TrimNamed(ref), tag)
+		if err != nil {
+			return Published{}, err
+		}
+		destinations = append(destinations, destination)
 	}
 	root, err := os.OpenRoot(request.LayoutDir)
 	if err != nil {
@@ -333,7 +342,17 @@ func PublishLayout(ctx context.Context, request FetchRequest) (Published, error)
 	if err != nil {
 		return Published{}, err
 	}
-	return publishTarget(ctx, source, descriptor, destination, request.Client, request.UseDockerCredentials)
+	existing := true
+	var published Published
+	for _, destination := range destinations {
+		published, err = publishTarget(ctx, source, descriptor, destination, request.Client, request.UseDockerCredentials)
+		if err != nil {
+			return Published{}, err
+		}
+		existing = existing && published.Existing
+	}
+	published.Existing = existing
+	return published, nil
 }
 
 func publishTarget(ctx context.Context, source oras.ReadOnlyTarget, descriptor ocispec.Descriptor, ref reference.Named, client *http.Client, useCredentials bool) (Published, error) {
