@@ -259,6 +259,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	writeReleaseExtensionInventory(t, buildDir, "standard")
 	if err := os.WriteFile(filepath.Join(buildDir, "katl-release-build-inputs.json"), []byte("{\"kind\":\"ResourceTestManifest\"}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +288,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		got = append(got, entry.Name())
 	}
 	sort.Strings(got)
-	evidence := []string{"katl-installer.packages.tsv", "katl-runtime.packages.tsv", "katl-release-build-inputs.json"}
+	evidence := []string{"katl-installer.packages.tsv", "katl-runtime.packages.tsv", "katl-runtime.extensions.json", "katl-release-build-inputs.json"}
 	want := append([]string{"PROVENANCE.md", "RELEASE_NOTES.md", "SHA256SUMS", "SUPPORT.md"}, evidence...)
 	for _, name := range names {
 		want = append(want, name, name+".json", name+".sha256")
@@ -311,7 +312,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		}
 	}
 	releaseNotes := string(mustReadFile(t, filepath.Join(output, "RELEASE_NOTES.md")))
-	for _, value := range []string{"## Included components", "| standard | runtime | `6.19.1-1.fc44.x86_64` | `259.9-1.fc44.x86_64` | `2.2.0-1.fc44.x86_64` | `1.26-1.fc44.x86_64` |", "## Support boundary", "SUPPORT.md", "## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
+	for _, value := range []string{"## Included components", "| standard | runtime | `6.19.1-1.fc44.x86_64` | `259.9-1.fc44.x86_64` | `2.2.0-1.fc44.x86_64` | `1.26-1.fc44.x86_64` |", "| standard | drbd9 | `9.3.4` |", "## Support boundary", "SUPPORT.md", "## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
 		if !strings.Contains(releaseNotes, value) {
 			t.Fatalf("release notes missing %q: %q", value, releaseNotes)
 		}
@@ -480,6 +481,18 @@ func writeRequiredReleaseArtifacts(t *testing.T, dir string) []string {
 	return names
 }
 
+func writeReleaseExtensionInventory(t *testing.T, dir, flavour string) {
+	t.Helper()
+	kernelRelease := "6.19.1-1.fc44.x86_64"
+	if flavour == "lts" {
+		kernelRelease = "6.18.1-1.fc44.x86_64"
+	}
+	data := fmt.Sprintf(`{"schemaVersion":1,"artifactKind":"katl.release-extension-inventory.v1","version":"2026.7.0-rc.0","architecture":"x86_64","flavour":%q,"runtimeInterface":"katl-runtime-1","kernelRelease":%q,"runtimeSHA256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","extensions":[{"name":"drbd9","payloadVersion":"9.3.4","repository":"ghcr.io/katl-dev/katl/extensions/drbd9","reference":"ghcr.io/katl-dev/katl/extensions/drbd9@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`, flavour, kernelRelease)
+	if err := os.WriteFile(filepath.Join(dir, "katl-runtime.extensions.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func setReleaseArtifactArchitecture(t *testing.T, dir, name, architecture string) {
 	t.Helper()
 	path := filepath.Join(dir, name+".json")
@@ -526,6 +539,7 @@ func TestKatlReleaseLTSStage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	writeReleaseExtensionInventory(t, buildDir, "lts")
 	output := filepath.Join(t.TempDir(), "dist")
 	cmd := exec.Command(filepath.Join(repo, "scripts/katl-release-artifacts"), "stage", "2026.7.0-rc.0", output)
 	cmd.Dir = repo
@@ -533,9 +547,12 @@ func TestKatlReleaseLTSStage(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("stage: %v\n%s", err, out)
 	}
-	for _, name := range []string{"katl-installer-lts.iso", "katl-installer-lts.vmlinuz", "katlos-lts-install-2026.7.0-rc.0-x86_64.squashfs", "katlos-lts-upgrade-2026.7.0-rc.0-x86_64.squashfs", "katlctl-2026.7.0-rc.0-linux-amd64"} {
+	for _, name := range []string{"katl-installer-lts.iso", "katl-installer-lts.vmlinuz", "katl-runtime-lts.extensions.json", "katlos-lts-install-2026.7.0-rc.0-x86_64.squashfs", "katlos-lts-upgrade-2026.7.0-rc.0-x86_64.squashfs", "katlctl-2026.7.0-rc.0-linux-amd64"} {
 		if _, err := os.Stat(filepath.Join(output, name)); err != nil {
 			t.Fatal(err)
+		}
+		if name == "katl-runtime-lts.extensions.json" {
+			continue
 		}
 		check := exec.Command("sha256sum", "-c", name+".sha256")
 		check.Dir = output

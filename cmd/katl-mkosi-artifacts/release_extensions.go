@@ -164,6 +164,14 @@ func runAssembleReleaseExtensions(args []string, stdout, stderr io.Writer, cfg c
 	if err := verifyReleaseImages(candidate, cfg.RuntimeRoot, filepath.Join(buildDir, "extension-bundles"), stdout, stderr); err != nil {
 		return err
 	}
+	inventoryCandidate := filepath.Join(buildDir, "katl-runtime.extensions.candidate.json")
+	if err := writeReleaseExtensionInventory(inventoryCandidate, release, filepath.Join(buildDir, "extension-bundles"), cfg.RepoRoot); err != nil {
+		return err
+	}
+	defer os.Remove(inventoryCandidate)
+	if err := os.Rename(inventoryCandidate, filepath.Join(buildDir, "katl-runtime.extensions.json")); err != nil {
+		return err
+	}
 	return os.Rename(candidate, filepath.Join(buildDir, "release-extensions.json"))
 }
 

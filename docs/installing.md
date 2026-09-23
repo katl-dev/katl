@@ -105,9 +105,10 @@ then compile one bundle for all nodes.
 
 The ISO and matching `katlctl` binary are sufficient for the normal trusted
 home-lab path. Each KatlOS tag also includes `SHA256SUMS`, adjacent checksum
-files, `PROVENANCE.md`, and a resolved package inventory for operators who want
-to authenticate the downloaded bytes. Those checks are optional and do not
-change how KatlOS operates.
+files, `PROVENANCE.md`, resolved package inventories, and a release extension
+inventory for operators who want to authenticate the downloaded bytes. The
+release notes summarize the corresponding package and extension versions.
+Those checks are optional and do not change how KatlOS operates.
 
 To check transport integrity, download the checksum manifest alongside the
 artifacts and run:
