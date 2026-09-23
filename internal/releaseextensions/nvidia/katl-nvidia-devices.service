@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare NVIDIA GPU device nodes
+Requires=katl-system-extensions-activate.service
+After=katl-system-extensions-activate.service
+Before=katl-boot-health.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nvidia-modprobe -c 0
+ExecStart=/usr/bin/nvidia-modprobe -u
+
+[Install]
+RequiredBy=katl-boot-health.service

@@ -1,0 +1,14 @@
+{
+  "version": "615.71.09",
+  "repository": "ghcr.io/katl-dev/katl/extensions/nvidia",
+  "sources": {
+    "source": {
+      "url": "https://codeload.github.com/NVIDIA/open-gpu-kernel-modules/tar.gz/61dcc93722ecb418bb5f2e00923f05b4b8051dd1",
+      "sha256": "7c6346ba45bef0ab2b7553735e93cfa758d74c55d94fc339139c9473457bffa3"
+    },
+    "driver": {
+      "url": "https://download.nvidia.com/XFree86/Linux-x86_64/615.71.09/NVIDIA-Linux-x86_64-615.71.09-no-compat32.run",
+      "sha256": "e5545862c291f3991a91ee40dd9c7a71cccc69247a193d5e5b891bfd964ac104"
+    }
+  }
+}

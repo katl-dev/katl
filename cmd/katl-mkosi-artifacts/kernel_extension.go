@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +65,9 @@ func readKernelRecipe(repo, name string) (kernelRecipe, error) {
 	for _, source := range recipe.Sources {
 		if !strings.HasPrefix(source.URL, "https://") {
 			return recipe, fmt.Errorf("kernel source requires HTTPS")
+		}
+		if _, err := kernelSourceFile(source); err != nil {
+			return recipe, err
 		}
 		digest, err := hex.DecodeString(source.SHA256)
 		if err != nil || len(digest) != 32 || strings.ToLower(source.SHA256) != source.SHA256 {
@@ -176,7 +180,11 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 		return fmt.Errorf("extract prepared kernel inputs: %w", err)
 	}
 	for _, source := range recipe.Sources {
-		if err := acquireKernelSource(source, filepath.Join(sources, source.SHA256+".tar.gz")); err != nil {
+		file, err := kernelSourceFile(source)
+		if err != nil {
+			return err
+		}
+		if err := acquireKernelSource(source, filepath.Join(sources, file)); err != nil {
 			return err
 		}
 	}
@@ -280,7 +288,11 @@ func acquireKernelSource(source kernelSource, destination string) error {
 		return err
 	}
 	defer os.Remove(file.Name())
-	_, copyErr := io.Copy(file, io.LimitReader(response.Body, 64<<20))
+	limit := int64(64 << 20)
+	if strings.HasSuffix(destination, ".run") {
+		limit = 512 << 20
+	}
+	size, copyErr := io.Copy(file, io.LimitReader(response.Body, limit+1))
 	closeErr := file.Close()
 	if copyErr != nil {
 		return copyErr
@@ -288,8 +300,23 @@ func acquireKernelSource(source kernelSource, destination string) error {
 	if closeErr != nil {
 		return closeErr
 	}
+	if size > limit {
+		return fmt.Errorf("kernel source %s exceeds %d bytes", source.URL, limit)
+	}
 	if _, digest, err := fileInfo(file.Name()); err != nil || digest != source.SHA256 {
 		return fmt.Errorf("kernel source %s failed SHA-256 verification", source.URL)
 	}
 	return os.Rename(file.Name(), destination)
+}
+
+func kernelSourceFile(source kernelSource) (string, error) {
+	parsed, err := url.Parse(source.URL)
+	if err != nil {
+		return "", err
+	}
+	suffix := ".tar.gz"
+	if strings.HasSuffix(parsed.Path, ".run") {
+		suffix = ".run"
+	}
+	return source.SHA256 + suffix, nil
 }

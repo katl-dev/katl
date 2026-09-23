@@ -66,11 +66,14 @@ incompatible outputs fail the command. To embed the verified closures, set
 Add `extensions/NAME/recipe.json` with a payload `version`, a full OCI
 `repository`, and a `sources` map. Each source must declare an HTTPS `url`
 and a pinned `sha256`. Add the matching
-`mkosi.profiles/kernel-extension-NAME` profile and its build hook.
+`mkosi.profiles/kernel-extension-NAME` profile and its build hook. Keep the
+extension-specific compiler and payload layout in
+`internal/releaseextensions/NAME`; the shared command handles source integrity,
+runtime binding, and the build record.
 
 The common builder acquires the pinned sources, supplies the runtime base
 and its prepared kernel tree, and invokes the profile.
-The hook owns driver-specific compilation. It must produce `katl-NAME.raw`
+The hook invokes that compiler. It must produce `katl-NAME.raw`
 and `katl-NAME.build.json`, containing the recipe, kernel contract, and prepared
 input digests. The common builder validates and packages these outputs.
 No workflow change is required to add a recipe.

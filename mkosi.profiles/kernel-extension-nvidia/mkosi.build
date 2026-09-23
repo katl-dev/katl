@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${container:-}" != mkosi ]]; then
+    exec mkosi-chroot "$CHROOT_SCRIPT" "$@"
+fi
+
+cd "$SRCDIR"
+GOCACHE="$BUILDDIR/go-build" \
+GOMODCACHE="$SRCDIR/_build/go-mod" \
+go run ./cmd/katl-mkosi-artifacts compile-nvidia \
+    --sources "$SRCDIR/_build/mkosi/kernel-sources" \
+    --destination "$DESTDIR" \
+    --output "$BUILDDIR" \
+    --work "$BUILDDIR"
