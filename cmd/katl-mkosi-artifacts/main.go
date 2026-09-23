@@ -177,6 +177,10 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
+       katl-mkosi-artifacts inventory-release-extensions
+       katl-mkosi-artifacts build-release-extensions [NAME...]
+       katl-mkosi-artifacts assemble-release-extensions
+       katl-mkosi-artifacts verify-release-extensions MANIFEST RUNTIME OCI_LAYOUT
        katl-mkosi-artifacts build-kernel-extension NAME
        katl-mkosi-artifacts publish-release-extensions MANIFEST OCI_LAYOUT
        katl-mkosi-artifacts release-components OUTPUT_DIR FLAVOUR...
