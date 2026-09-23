@@ -336,6 +336,9 @@ func TestMetadataWriters(t *testing.T) {
 	}
 	var ukiMetadata localMetadata
 	readTestJSON(t, runtimeUKI+".json", &ukiMetadata)
+	if ukiMetadata.Version != "0.1.0" || ukiMetadata.Generation != "test-build" {
+		t.Fatalf("runtime UKI identity = version %q generation %q", ukiMetadata.Version, ukiMetadata.Generation)
+	}
 	if ukiMetadata.Name != "runtime-uki" || ukiMetadata.CompatibleRuntime == nil {
 		t.Fatalf("runtime UKI metadata = %#v", ukiMetadata)
 	}

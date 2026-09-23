@@ -8,6 +8,71 @@ Read `docs/internal/north-star.md` for the product direction that grounds the
 local development loop. See [generation ownership](development/generation-ownership.md)
 for the boundary between offline installation, boot health, and node operations.
 
+## Build release-owned extensions
+
+Local builds and CI use the same commands and verification. CI discovers
+`extensions/*/recipe.json`, builds each recipe for the standard and LTS runtime
+targets, and transfers the resulting immutable closures to image assembly.
+The workflow does not list individual drivers.
+
+Use the container builder required by `scripts/mkosi`. The host also needs Go,
+`sudo`, `systemd-dissect`, `depmod`, and SquashFS tools. Image inspection uses
+`sudo` for read-only mounts and module-index composition; it does not load
+drivers into the host.
+
+Run the same build stages as CI for one target:
+
+```bash
+export KATL_FLAVOUR=lts
+export KATL_VERSION=2026.9.0-dev.16
+export KATL_BUILD_COMMIT=local-extension-test
+export KATL_MKOSI_BUILD_DIR="$PWD/_build/release-lts"
+export KATL_VMTEST_IMAGE_SUPPORT=0
+
+scripts/mkosi build-runtime
+scripts/build-release-extensions
+scripts/assemble-release-extensions
+```
+
+Use `KATL_FLAVOUR=standard` and a separate build directory to test the other
+target. Keep the release version and build ID distinct to exercise their
+separate metadata contracts.
+
+`scripts/build-release-extensions` builds every discovered recipe. To reproduce
+one CI matrix entry, pass its recipe name, for example
+`scripts/build-release-extensions drbd9`. Both forms use the same builder,
+source checksums, exact runtime inputs, and module-composition verifier.
+
+Assembly requires an output for every inventoried recipe, verifies that all
+outputs target the same runtime, checks their combined module composition, and
+writes `$KATL_MKOSI_BUILD_DIR/release-extensions.json`. Missing, corrupt, or
+incompatible outputs fail the command. To embed the verified closures, set
+`KATL_EXTENSION_RELEASE` to that manifest when running
+`scripts/build-katlos-install-image`. These commands do not publish artifacts.
+
+### Add a release-owned recipe
+
+Add `extensions/NAME/recipe.json` with a payload `version`, a full OCI
+`repository`, and a `sources` map. Each source must declare an HTTPS `url`
+and a pinned `sha256`. Add the matching
+`mkosi.profiles/kernel-extension-NAME` profile and its build hook.
+
+The common builder acquires the pinned sources, supplies the exact runtime
+base and matching prepared kernel development package, and invokes the profile.
+The hook owns driver-specific compilation. It must produce `katl-NAME.raw`
+and `katl-NAME.build.json`, containing the recipe, kernel contract, and prepared
+input digests. The common builder validates and packages these outputs.
+No workflow change is required to add a recipe.
+
+Inspect the inventory with:
+
+```bash
+go run ./cmd/katl-mkosi-artifacts inventory-release-extensions
+```
+
+VM lifecycle qualification is separate from build verification and runs locally;
+VM tests are not supported in CI.
+
 ## Current VM Stance
 
 Use the libvirt-backed vmtest world as the supported automated VM layer:
