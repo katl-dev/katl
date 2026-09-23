@@ -343,6 +343,7 @@ jobs:
             _build/mkosi/katl-runtime.efi.sha256
             _build/mkosi/katl-runtime.packages.tsv
             _build/mkosi/release-extensions.json
+            _build/mkosi/katl-runtime.extensions.json
             _build/mkosi/extension-bundles/
             _build/mkosi/katlos-install-*.squashfs
             _build/mkosi/katlos-install-*.squashfs.json

@@ -234,6 +234,7 @@ stage_artifacts() {
         "katl-installer.packages.tsv"
         "katl-runtime.packages.tsv"
     )
+    local extension_inventory="katl-runtime.extensions.json"
 
     validate_version "$version"
     [[ -n "$output" && "$output" != / && "$output" != . ]] ||
@@ -260,6 +261,7 @@ stage_artifacts() {
     for name in "${package_inventories[@]}"; do
         [[ -f "$build_dir/$name" ]] || fail "release package inventory is missing: $build_dir/$name"
     done
+    [[ -f "$build_dir/$extension_inventory" ]] || fail "release extension inventory is missing: $build_dir/$extension_inventory"
     [[ -f "$build_dir/$build_inputs" ]] || fail "release build-input record is missing: $build_dir/$build_inputs"
 
     mkdir -p "$output"
@@ -271,6 +273,7 @@ stage_artifacts() {
     for name in "${package_inventories[@]}"; do
         cp -- "$build_dir/$name" "$output/$name"
     done
+    cp -- "$build_dir/$extension_inventory" "$output/$extension_inventory"
     cp -- "$build_dir/$build_inputs" "$output/$build_inputs"
     [[ -f "$repo_root/docs/support.md" ]] || fail "release support boundary is missing: $repo_root/docs/support.md"
     cp -- "$repo_root/docs/support.md" "$output/SUPPORT.md"

@@ -17,6 +17,7 @@ func TestPublishFlavour(t *testing.T) {
 		"katl-installer.vmlinuz":                         "kernel",
 		"katlctl-2026.9.0-linux-amd64":                   "cli",
 		"katl-runtime.packages.tsv":                      "kernel-longterm-core\t6.18\n",
+		"katl-runtime.extensions.json":                   `{"flavour":"lts","version":"2026.9.0"}`,
 	}
 	for name, data := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
@@ -32,6 +33,7 @@ func TestPublishFlavour(t *testing.T) {
 		"katl-installer-lts.vmlinuz":                         "kernel",
 		"katlctl-2026.9.0-linux-amd64":                       "cli",
 		"katl-runtime-lts.packages.tsv":                      "kernel-longterm-core\t6.18\n",
+		"katl-runtime-lts.extensions.json":                   "{\n  \"flavour\": \"lts\",\n  \"version\": \"2026.9.0\"\n}\n",
 	} {
 		got, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || string(got) != want {

@@ -170,6 +170,7 @@ func TestReleaseEmbedsKernelExtensions(t *testing.T) {
 	}
 	composition, packaging := -1, -1
 	carried := false
+	carriedInventory := false
 	for i, step := range workflow.Jobs["images"].Steps {
 		if strings.Contains(step.Run, "scripts/assemble-release-extensions") {
 			composition = i
@@ -185,12 +186,16 @@ func TestReleaseEmbedsKernelExtensions(t *testing.T) {
 		}
 		paths := step.With["path"]
 		carried = carried || (strings.Contains(paths, "_build/mkosi/extension-bundles/") && strings.Contains(paths, "_build/mkosi/release-extensions.json"))
+		carriedInventory = carriedInventory || strings.Contains(paths, "_build/mkosi/katl-runtime.extensions.json")
 	}
 	if composition < 0 || packaging <= composition {
 		t.Fatal("complete composition must be verified before packaging")
 	}
 	if !carried {
 		t.Fatal("image pipeline loses release mapping or closure")
+	}
+	if !carriedInventory {
+		t.Fatal("image pipeline loses the verified extension version inventory")
 	}
 }
 
