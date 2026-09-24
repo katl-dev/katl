@@ -451,6 +451,25 @@ and injects bootstrap tokens and certificate material only when the explicit
 bootstrap operation runs. Omit the entire `kubeadm` block for Katl's complete
 defaults.
 
+Katl reserves `1Gi` of node memory for the operating system by default through
+`KubeletConfiguration.systemReserved.memory`. Kubelet subtracts this reservation
+from node allocatable memory, so the scheduler leaves room for node services.
+To change it for every node, add a native `KubeletConfiguration` document to
+`spec.kubernetes.kubeadm.configFile`:
+
+```yaml
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+systemReserved:
+  memory: 3Gi
+```
+
+Katl retains the `1Gi` default when that native document omits
+`systemReserved.memory`. For one node, set the same field in
+`nodes[].kubernetes.kubelet.configFile` as shown below. The node-specific value
+overrides the cluster-wide value. This reservation changes scheduling capacity;
+it does not impose a hard memory limit on pods or system services.
+
 This bounded native file is the stable interface for cluster-wide Kubernetes
 networking choices. Set Pod and Service CIDRs in
 `ClusterConfiguration.networking`, and set `ClusterConfiguration.proxy.disabled` when
@@ -490,7 +509,7 @@ apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
 systemReserved:
   cpu: 500m
-  memory: 1Gi
+  memory: 3Gi
 topologyManagerPolicy: restricted
 ```
 

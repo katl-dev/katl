@@ -85,6 +85,9 @@ Operator-authored kubeadm YAML omits values already owned by Katl:
   belong in ClusterConfig.
 - `KubeletConfiguration.volumePluginDir` is enforced as
   `/var/lib/kubelet/plugins/volume/exec`.
+- `KubeletConfiguration.systemReserved.memory` defaults to `1Gi` when omitted
+  and remains operator-overridable in the common or per-node native kubelet
+  input.
 
 The rendered path is stable for node-local `katlc` operation wrappers:
 
