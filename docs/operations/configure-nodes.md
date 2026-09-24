@@ -101,6 +101,13 @@ Use `config resolve` to see the selected native input and owned patch path, and
 `config diff` to review its `kubeadm-aware operation` classification before
 applying.
 
+Katl's default `systemReserved.memory` is `1Gi`. Set that field in a native
+`KubeletConfiguration` under `spec.kubernetes.kubeadm.configFile` for a
+cluster-wide value, or under `nodes[].kubernetes.kubelet.configFile` for one
+node. After applying, inspect `/var/lib/kubelet/config.yaml` on the node and
+check its `status.allocatable.memory` through `kubectl get node NODE -o yaml`.
+The allocatable value excludes the reservation and kubelet's eviction threshold.
+
 ## Node Lifecycle Matrix
 
 `spec.nodes` is both the install inventory and the set of nodes targeted by

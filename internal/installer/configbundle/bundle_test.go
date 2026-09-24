@@ -557,6 +557,13 @@ shutdownGracePeriod: 45s
 			t.Fatalf("control-plane kubeadm input missing %q:\n%s", want, cpConfig)
 		}
 	}
+	cpDocuments, err := decodeKubeadmDocuments(cp.Config.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nestedString(kubeadmDocument(cpDocuments, "KubeletConfiguration"), "systemReserved", "memory"); got != "1Gi" {
+		t.Fatalf("native kubelet config without memory reservation = %q, want 1Gi", got)
+	}
 	if len(cp.Patches) != 2 || cp.Patches[0].RenderPath != "/etc/katl/kubeadm/control-plane/patches/kube-apiserver0+merge.yaml" {
 		t.Fatalf("control-plane patches = %#v", cp.Patches)
 	}
@@ -925,6 +932,72 @@ spec:
 	}
 	if config := string(selected.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(config, "volumePluginDir: /var/lib/kubelet/plugins/volume/exec") || !strings.Contains(config, "taints: []") || !strings.Contains(config, "podSubnet: 10.244.0.0/16") || !strings.Contains(config, "serviceSubnet: 10.96.0.0/12") {
 		t.Fatalf("defaulted kubeadm does not keep plugins on writable state, allow control-plane scheduling, and declare the Pod and Service networks:\n%s", config)
+	}
+}
+
+func TestBuildArchiveReservesSystemMemoryByDefault(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	writeFile(t, sourcePath, validSourceConfig())
+
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	for _, node := range []struct{ name, ref string }{{"cp-1", "control-plane"}, {"worker-1", "worker"}} {
+		selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: node.name, AllowMissingKatlosImage: true})
+		if err != nil {
+			t.Fatalf("ReadSelectedNode(%s) error = %v", node.name, err)
+		}
+		config := selected.KubeadmConfigs[node.ref].Config.Content
+		documents, err := decodeKubeadmDocuments(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := nestedString(kubeadmDocument(documents, "KubeletConfiguration"), "systemReserved", "memory"); got != "1Gi" {
+			t.Fatalf("%s system memory reservation = %q, want 1Gi", node.name, got)
+		}
+	}
+}
+
+func TestBuildArchiveOverridesSystemMemoryReservation(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "kubeadm.yaml"), `apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+systemReserved:
+  memory: 3Gi
+`)
+	writeFile(t, filepath.Join(dir, "worker-kubelet.yaml"), `apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+systemReserved:
+  memory: 4Gi
+`)
+	source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml", 1)
+	source = strings.Replace(source, "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        kubelet:\n          configFile: ./worker-kubelet.yaml\n        labels:\n          katl.dev/pool: workers", 1)
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	writeFile(t, sourcePath, source)
+
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	for _, node := range []struct {
+		name, ref, want string
+	}{
+		{name: "cp-1", ref: "control-plane", want: "3Gi"},
+		{name: "worker-1", ref: "node-worker-1", want: "4Gi"},
+	} {
+		selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: node.name, AllowMissingKatlosImage: true})
+		if err != nil {
+			t.Fatalf("ReadSelectedNode(%s) error = %v", node.name, err)
+		}
+		documents, err := decodeKubeadmDocuments(selected.KubeadmConfigs[node.ref].Config.Content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := nestedString(kubeadmDocument(documents, "KubeletConfiguration"), "systemReserved", "memory"); got != node.want {
+			t.Fatalf("%s system memory reservation = %q, want %q", node.name, got, node.want)
+		}
 	}
 }
 

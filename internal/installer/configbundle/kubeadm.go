@@ -369,6 +369,11 @@ func provideKubeadmDefaults(documents map[string]map[string]any, kubernetesVersi
 		document["nodeRegistration"] = nodeRegistration
 	}
 	kubelet := documents["KubeletConfiguration"]
+	systemReserved := childMapping(kubelet, "systemReserved")
+	if _, set := systemReserved["memory"]; !set {
+		systemReserved["memory"] = "1Gi"
+	}
+	kubelet["systemReserved"] = systemReserved
 	if value, _ := kubelet["volumePluginDir"].(string); strings.TrimSpace(value) != "" && value != kubeadmconfig.KubeletVolumePluginDir {
 		return fmt.Errorf("spec.kubernetes.kubeadm.configFile KubeletConfiguration volumePluginDir must be %q on KatlOS", kubeadmconfig.KubeletVolumePluginDir)
 	}
