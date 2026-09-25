@@ -194,6 +194,16 @@ func TestMkosiImageCacheWithExternalExtensions(t *testing.T) {
 		}
 	}
 	seedRuntimeCacheOutputs(t, buildDir)
+	if err := os.WriteFile(filepath.Join(fixture, "mkosi.conf"), []byte("[Distribution]\nRelease=99\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseRelease, err := os.ReadFile(filepath.Join(repo, "scripts", "fedora-release"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scripts, "fedora-release"), baseRelease, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeReleaseArtifact(t, buildDir, "katlos-install-0.0.0-dev-x86_64.squashfs")
 	writeReleaseArtifact(t, buildDir, "katl-endpoint-advertiser.raw")
 	writeFakeExecutable(t, scripts, "mkosi", "exit 0\n")

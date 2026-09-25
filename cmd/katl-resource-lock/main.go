@@ -265,13 +265,17 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	baseRelease, err := fedoraRelease()
+	if err != nil {
+		return err
+	}
 	if includePackageSet("installer-image") {
-		if err := addInstallerPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-installer.packages.tsv"), repo, ""); err != nil {
+		if err := addInstallerPackageSet(&manifest, filepath.Join(*mkosiDir, "katl-installer.packages.tsv"), repo, baseRelease, ""); err != nil {
 			return err
 		}
 	}
 	if includePackageSet("runtime") {
-		if err := addRuntimePackageSet(&manifest, *runtimeRoot, repo, ""); err != nil {
+		if err := addRuntimePackageSet(&manifest, *runtimeRoot, repo, baseRelease, ""); err != nil {
 			return err
 		}
 	}
@@ -578,7 +582,7 @@ func addMkosiArtifacts(manifest *resourcetest.Manifest, mkosiDir string) error {
 	return nil
 }
 
-func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, repo resourcetest.PackageRepository, lockDigest string) error {
+func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, repo resourcetest.PackageRepository, release, lockDigest string) error {
 	packagePath := filepath.Join(filepath.Dir(runtimeRoot), "katl-runtime.packages.tsv")
 	packages, ok, err := readRPMPackageFile(packagePath)
 	if err != nil {
@@ -599,7 +603,7 @@ func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, r
 		Source:       "mkosi.profiles/runtime",
 		LockDigest:   lockDigest,
 		Distribution: "fedora",
-		Release:      "44",
+		Release:      release,
 		Architecture: "x86_64",
 		Repositories: []resourcetest.PackageRepository{repo},
 		Packages:     packages,
@@ -613,7 +617,7 @@ func addRuntimePackageSet(manifest *resourcetest.Manifest, runtimeRoot string, r
 	return nil
 }
 
-func addInstallerPackageSet(manifest *resourcetest.Manifest, packagePath string, repo resourcetest.PackageRepository, lockDigest string) error {
+func addInstallerPackageSet(manifest *resourcetest.Manifest, packagePath string, repo resourcetest.PackageRepository, release, lockDigest string) error {
 	packages, ok, err := readRPMPackageFile(packagePath)
 	if err != nil {
 		return err
@@ -630,7 +634,7 @@ func addInstallerPackageSet(manifest *resourcetest.Manifest, packagePath string,
 		Source:       "mkosi.profiles/installer-image",
 		LockDigest:   lockDigest,
 		Distribution: "fedora",
-		Release:      "44",
+		Release:      release,
 		Architecture: "x86_64",
 		Repositories: []resourcetest.PackageRepository{repo},
 		Packages:     packages,
@@ -883,6 +887,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func fedoraRelease() (string, error) {
+	script := resolveExistingPath("scripts/fedora-release")
+	output, err := exec.Command(script).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("read Fedora release: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func profileConfigDigest(profilePath string) (string, error) {

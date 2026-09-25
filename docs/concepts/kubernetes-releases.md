@@ -85,8 +85,8 @@ go run ./cmd/katl-kubernetes-release inspect \
   --payload-version v1.37.0
 ```
 
-For local candidate preparation, build `Containerfile.mkosi` into the configured
-`KATL_MKOSI_IMAGE`, then use `candidate --payload-version VERSION --repoquery
+For local candidate preparation, run `scripts/mkosi builder-version` to prepare
+the Fedora builder, then use `candidate --payload-version VERSION --repoquery
 scripts/kubernetes-repoquery`. Candidate JSON supplies the exact build inputs.
 The checked-in supported-version manifest remains a development fixture and
 legacy release snapshot; adding a version there is not required for discovery

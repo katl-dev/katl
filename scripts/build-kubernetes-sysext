@@ -70,7 +70,7 @@ fi
 
 builder_image_identity() {
     local runtime="${KATL_CONTAINER_RUNTIME:-}"
-    local image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
+    local image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-$(scripts/fedora-release)-go-squashfs}"
     if [[ -z "$runtime" ]]; then
         if command -v podman >/dev/null 2>&1; then
             runtime=podman
@@ -98,6 +98,7 @@ list_cache_inputs() {
             go.mod \
             go.sum \
             scripts/build-kubernetes-sysext \
+            scripts/fedora-release \
             scripts/mkosi
         git -C "$repo_root" ls-files -z \
             cmd/katl-kubernetes-metadata \
@@ -116,7 +117,7 @@ cache_fingerprint() {
     local path digest
     digest="$({
         printf 'output=%s\n' "$output_name"
-        printf 'builder-image=%s\n' "${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
+        printf 'builder-image=%s\n' "${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-$(scripts/fedora-release)-go-squashfs}"
         printf 'builder-image-identity=%s\n' "$(builder_image_identity)"
         printf 'KATL_BUILD_COMMIT=%s\n' "$build_commit"
         printf 'SOURCE_DATE_EPOCH=%s\n' "${SOURCE_DATE_EPOCH:-}"

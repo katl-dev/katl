@@ -86,7 +86,7 @@ jobs:
     env:
       KATL_ARCHITECTURE: x86_64
       KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
       OCI_REPOSITORY: ghcr.io/katl-dev/kubernetes
       PAYLOAD_VERSION: ${{ matrix.release.payloadVersion }}
       KUBERNETES_RELEASE_URL: https://github.com/kubernetes/kubernetes/releases/tag/${{ matrix.release.payloadVersion }}
@@ -109,7 +109,7 @@ jobs:
           echo "exists=$(jq -r .exists release.json)" >> "$GITHUB_OUTPUT"
       - name: Build package query environment
         if: steps.release.outputs.exists != 'true'
-        run: docker build --tag "$KATL_MKOSI_IMAGE" --file Containerfile.mkosi .
+        run: docker build --build-arg "FEDORA_RELEASE=$(scripts/fedora-release)" --tag "$KATL_MKOSI_IMAGE" --file Containerfile.mkosi .
       - name: Resolve locked candidate
         if: steps.release.outputs.exists != 'true'
         run: |
