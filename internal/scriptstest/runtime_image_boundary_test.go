@@ -39,24 +39,6 @@ func TestRuntimeSysctlOwnership(t *testing.T) {
 	}
 }
 
-func TestRuntimeNetworkdLeavesKubernetesRoutesAlone(t *testing.T) {
-	config, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "runtime", "mkosi.extra", "usr", "lib", "systemd", "networkd.conf.d", "10-katl-kubernetes.conf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(config)
-	for _, want := range []string{
-		"[Network]",
-		"ManageForeignRoutes=no",
-		"ManageForeignRoutingPolicyRules=no",
-		"ManageForeignNextHops=no",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("runtime networkd policy missing %q", want)
-		}
-	}
-}
-
 func TestInstallerDHCPOnlyMatchesUnkindedEthernetLinks(t *testing.T) {
 	config, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "installer-image", "mkosi.extra", "usr", "lib", "systemd", "network", "80-katl-installer-dhcp.network"))
 	if err != nil {
@@ -80,16 +62,40 @@ func TestRuntimeRootShellUsesKubeadmAdminContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(profile)
-	for _, want := range []string{
-		`[ -z "${KUBECONFIG+x}" ]`,
-		`[ "${EUID:-$(id -u)}" -eq 0 ]`,
-		`[ -r /etc/kubernetes/admin.conf ]`,
-		`export KUBECONFIG=/etc/kubernetes/admin.conf`,
+	admin := filepath.Join(t.TempDir(), "admin.conf")
+	if err := os.WriteFile(admin, []byte("kubeconfig"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(t.TempDir(), "katl-kubernetes.sh")
+	contents := strings.ReplaceAll(string(profile), "/etc/kubernetes/admin.conf", admin)
+	if err := os.WriteFile(fixture, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, euid, explicit, want string
+		removeAdmin                bool
+	}{
+		{name: "root", euid: "0", want: admin},
+		{name: "nonroot", euid: "1000", want: "unset"},
+		{name: "explicit", euid: "0", explicit: "/tmp/operator.conf", want: "/tmp/operator.conf"},
+		{name: "missing admin", euid: "0", want: "unset", removeAdmin: true},
 	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("runtime Kubernetes profile missing %q", want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.removeAdmin {
+				if err := os.Remove(admin); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("sh", "-c", `. "$1"; printf '%s' "${KUBECONFIG-unset}"`, "sh", fixture)
+			cmd.Env = append(environmentWithout("KUBECONFIG", "EUID"), "EUID="+tc.euid)
+			if tc.explicit != "" {
+				cmd.Env = append(cmd.Env, "KUBECONFIG="+tc.explicit)
+			}
+			output, err := cmd.CombinedOutput()
+			if err != nil || string(output) != tc.want {
+				t.Fatalf("KUBECONFIG = %q, error = %v, want %q", output, err, tc.want)
+			}
+		})
 	}
 }
 

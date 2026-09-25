@@ -64,6 +64,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Require an immutable revision for recipe changes
+        id: revision
         if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         env:

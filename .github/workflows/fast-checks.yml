@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends mtools
+          sudo apt-get install --yes --no-install-recommends dosfstools mtools xorriso
 
       - name: Show Go version
         run: go version

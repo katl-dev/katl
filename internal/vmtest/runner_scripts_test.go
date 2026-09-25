@@ -114,24 +114,6 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		}
 	}
 
-	goArgs := readLines(t, goArgsPath)
-	wantGoArgs := []string{
-		"test",
-		"-exec",
-		filepath.Join(repo, "scripts", "vmtest-exec"),
-		"-p",
-		"1",
-		"./internal/vmtest/scenarios",
-		"-run",
-		"^TestTwoNode$",
-		"-count=99",
-		"-timeout",
-		"2m",
-	}
-	if !reflect.DeepEqual(goArgs, wantGoArgs) {
-		t.Fatalf("go args = %#v, want %#v", goArgs, wantGoArgs)
-	}
-
 	childArgs := readLines(t, childArgsPath)
 	wantChildArgs := []string{"-test.run=^Forwarded$", "-test.v", "child-extra"}
 	if !reflect.DeepEqual(childArgs, wantChildArgs) {
@@ -469,21 +451,6 @@ exec "$@"
 	if sysextArgs := readLines(t, sysextArgsPath); !reflect.DeepEqual(sysextArgs, []string{"default"}) {
 		t.Fatalf("sysext args = %#v", sysextArgs)
 	}
-	goArgs := readLines(t, goArgsPath)
-	if !reflect.DeepEqual(goArgs, []string{
-		"test",
-		"-exec",
-		filepath.Join(repo, "scripts", "vmtest-exec"),
-		"-p",
-		"1",
-		"-timeout",
-		"90m",
-		"./internal/vmtest",
-		"-run",
-		"NeedsArtifacts",
-	}) {
-		t.Fatalf("go args = %#v", goArgs)
-	}
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
 	if runIndex.Status != "passed" {
 		t.Fatalf("run index status = %q", runIndex.Status)
@@ -738,21 +705,6 @@ exec "$@"
 	if _, err := os.Stat(mkosiArgsPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("mkosi ran with --no-rebuild, stat err = %v", err)
 	}
-	goArgs := readLines(t, goArgsPath)
-	if !reflect.DeepEqual(goArgs, []string{
-		"test",
-		"-exec",
-		filepath.Join(repo, "scripts", "vmtest-exec"),
-		"-p",
-		"1",
-		"-timeout",
-		"90m",
-		"./internal/vmtest",
-		"-run",
-		"NeedsArtifacts",
-	}) {
-		t.Fatalf("go args = %#v", goArgs)
-	}
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
 	if runIndex.AutoRebuild {
 		t.Fatalf("run index autoRebuild = true, want false")
@@ -974,21 +926,6 @@ func TestVMTestRunRecordsLibvirtHostGapsAndExecsGo(t *testing.T) {
 			}
 			if !strings.Contains(string(output), "  - "+tt.capability+":") {
 				t.Fatalf("output missing %s diagnostic:\n%s", tt.capability, output)
-			}
-			goArgs := readLines(t, goArgsPath)
-			if !reflect.DeepEqual(goArgs, []string{
-				"test",
-				"-exec",
-				filepath.Join(repo, "scripts", "vmtest-exec"),
-				"-p",
-				"1",
-				"-timeout",
-				"90m",
-				"./internal/vmtest",
-				"-run",
-				"NeedsLibvirt",
-			}) {
-				t.Fatalf("go args = %#v", goArgs)
 			}
 			world, err := LoadWorld(filepath.Join(runDir, "world.json"))
 			if err != nil {

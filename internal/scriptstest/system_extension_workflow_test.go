@@ -2,6 +2,7 @@ package scriptstest
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -10,98 +11,135 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestSystemExtensionWorkflowSeparatesValidationFromPublication(t *testing.T) {
-	repo := repoRoot(t)
-	contents, err := os.ReadFile(filepath.Join(repo, ".github", "workflows", "system-extensions.yml"))
+func TestSystemExtensionPublication(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/system-extensions.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var workflow struct {
 		Jobs map[string]struct {
-			Env   map[string]string `yaml:"env"`
-			Steps []struct {
-				Name string `yaml:"name"`
-				ID   string `yaml:"id"`
-				If   string `yaml:"if"`
-				Run  string `yaml:"run"`
-			} `yaml:"steps"`
+			Env   map[string]string                    `yaml:"env"`
+			Steps []struct{ ID, If, Run, Uses string } `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
 	if err := yaml.Unmarshal(contents, &workflow); err != nil {
-		t.Fatalf("parse system extension workflow: %v", err)
+		t.Fatal(err)
 	}
-
-	bird, ok := workflow.Jobs["bird"]
-	if !ok {
-		t.Fatal("system extension workflow has no bird job")
-	}
-	var revision, decision, build string
-	var loginIf, publishIf string
-	for _, step := range bird.Steps {
-		switch step.Name {
-		case "Require an immutable revision for recipe changes":
-			revision = step.Run
-		case "Determine immutable publication intent":
-			if step.ID != "publication" {
-				t.Fatalf("publication decision id = %q, want publication", step.ID)
-			}
-			decision = step.Run
-		case "Build and verify generic BIRD extension":
-			build = step.Run
-		case "Log in to GHCR":
-			loginIf = step.If
-		case "Publish through the common payload-bundle publisher":
-			publishIf = step.If
-		}
-	}
-
-	recipePattern := bird.Env["KATL_BIRD_RECIPE_PATTERN"]
-	pattern, err := regexp.Compile(recipePattern)
+	bird := workflow.Jobs["bird"]
+	pattern, err := regexp.Compile(bird.Env["KATL_BIRD_RECIPE_PATTERN"])
 	if err != nil {
 		t.Fatal(err)
 	}
 	for path, needsRelease := range map[string]bool{
-		"extensions/bird/extension.env":                        true,
-		"extensions/bird/bird.conf":                            true,
-		"mkosi.profiles/system-extension-bird/mkosi.conf":      true,
-		"mkosi.profiles/runtime/mkosi.conf":                    true,
-		"mkosi.conf":                                           true,
-		"Containerfile.mkosi":                                  true,
-		"scripts/build-system-extension":                       true,
-		"scripts/mkosi":                                        true,
-		".github/workflows/system-extensions.yml":              false,
-		"cmd/katlctl/system_extension.go":                      false,
-		"internal/installer/payloadbundle/oci.go":              false,
-		"internal/installer/systemextensionbundle/producer.go": false,
-		"scripts/check-system-extension":                       false,
+		"extensions/bird/extension.env":                   true,
+		"extensions/bird/bird.conf":                       true,
+		"mkosi.profiles/system-extension-bird/mkosi.conf": true,
+		"mkosi.profiles/runtime/mkosi.conf":               true,
+		"Containerfile.mkosi":                             true,
+		"scripts/build-system-extension":                  true,
+		".github/workflows/system-extensions.yml":         false,
+		"cmd/katlctl/system_extension.go":                 false,
 	} {
 		if got := pattern.MatchString(path); got != needsRelease {
-			t.Errorf("recipe change %s = %t, want %t", path, got, needsRelease)
+			t.Errorf("recipe classification of %s = %t, want %t", path, got, needsRelease)
 		}
 	}
-	for _, contract := range []string{
-		`git diff --name-only "$BASE_SHA"...HEAD`,
-		`git show "$BASE_SHA:extensions/bird/extension.env"`,
-		`KATL_EXTENSION_ARTIFACT_VERSION`,
+	var revision, publication string
+	var loginGuard, publishGuard string
+	for _, step := range bird.Steps {
+		switch step.ID {
+		case "revision":
+			revision = step.Run
+		case "publication":
+			publication = step.Run
+		}
+		if strings.HasPrefix(step.Uses, "docker/login-action@") {
+			loginGuard = step.If
+		}
+		if strings.Contains(step.Run, "system-extension publish") && strings.Contains(step.Run, "--ref ") {
+			publishGuard = step.If
+		}
+	}
+	if revision == "" || publication == "" || loginGuard != "${{ steps.publication.outputs.publish == 'true' }}" || publishGuard != loginGuard {
+		t.Fatal("revision, decision, or publication guards missing")
+	}
+
+	for _, tc := range []struct {
+		name, changed, previous, current, event, manual string
+		wantError, wantPublish                          bool
+	}{
+		{name: "unchanged recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v1", event: "pull_request", wantError: true},
+		{name: "advanced recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v2", event: "pull_request"},
+		{name: "unrelated change", changed: "docs/README.md", previous: "v1", current: "v1", event: "push"},
+		{name: "test change", changed: "extensions/bird/bird_test.go", previous: "v1", current: "v1", event: "push"},
+		{name: "push recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v2", event: "push", wantPublish: true},
+		{name: "manual publish", event: "workflow_dispatch", manual: "true", wantPublish: true},
+		{name: "manual dry run", event: "workflow_dispatch", manual: "false"},
 	} {
-		if !strings.Contains(revision, contract) {
-			t.Errorf("pre-merge revision check does not enforce %q", contract)
-		}
-	}
-	for _, contract := range []string{
-		`git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA"`,
-		`KATL_BIRD_RECIPE_PATTERN`,
-		`echo "publish=$publish" >> "$GITHUB_OUTPUT"`,
-	} {
-		if !strings.Contains(decision, contract) {
-			t.Errorf("publication decision does not enforce %q", contract)
-		}
-	}
-	if !strings.Contains(build, "--pack-only") {
-		t.Fatal("system extension workflow must pack-validate on every triggered run")
-	}
-	const publishCondition = "${{ steps.publication.outputs.publish == 'true' }}"
-	if loginIf != publishCondition || publishIf != publishCondition {
-		t.Fatalf("publication conditions = login %q publish %q, want %q", loginIf, publishIf, publishCondition)
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			runGit(t, dir, "init", "--quiet")
+			runGit(t, dir, "config", "user.name", "Katl Test")
+			runGit(t, dir, "config", "user.email", "test@katl.dev")
+			if err := os.MkdirAll(filepath.Join(dir, "extensions/bird"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			previous := tc.previous
+			if previous == "" {
+				previous = "v1"
+			}
+			versionPath := filepath.Join(dir, "extensions/bird/extension.env")
+			if err := os.WriteFile(versionPath, []byte("KATL_EXTENSION_ARTIFACT_VERSION="+previous+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, dir, "add", ".")
+			runGit(t, dir, "commit", "--quiet", "-m", "initial recipe")
+			base := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			if tc.changed != "" {
+				changedPath := filepath.Join(dir, tc.changed)
+				if err := os.MkdirAll(filepath.Dir(changedPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(changedPath, []byte("changed\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if tc.current != tc.previous {
+					if err := os.WriteFile(versionPath, []byte("KATL_EXTENSION_ARTIFACT_VERSION="+tc.current+"\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runGit(t, dir, "add", ".")
+				runGit(t, dir, "commit", "--quiet", "-m", "change recipe")
+			}
+			head := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			outputPath := filepath.Join(dir, "output")
+			env := append(os.Environ(),
+				"KATL_BIRD_RECIPE_PATTERN="+bird.Env["KATL_BIRD_RECIPE_PATTERN"],
+				"BASE_SHA="+base, "GITHUB_SHA="+head, "GITHUB_OUTPUT="+outputPath,
+				"EVENT_NAME="+tc.event, "MANUAL_PUBLISH="+tc.manual,
+			)
+			if tc.event == "pull_request" {
+				cmd := exec.Command("bash", "-euo", "pipefail", "-c", revision)
+				cmd.Dir, cmd.Env = dir, env
+				output, err := cmd.CombinedOutput()
+				if (err != nil) != tc.wantError {
+					t.Fatalf("revision exit = %v, want error=%t:\n%s", err, tc.wantError, output)
+				}
+			}
+			cmd := exec.Command("bash", "-euo", "pipefail", "-c", publication)
+			cmd.Dir, cmd.Env = dir, env
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("publication decision: %v\n%s", err, output)
+			}
+			got := string(mustReadFile(t, outputPath))
+			want := "publish=false\n"
+			if tc.wantPublish {
+				want = "publish=true\n"
+			}
+			if got != want {
+				t.Fatalf("publication = %q, want %q", got, want)
+			}
+		})
 	}
 }
