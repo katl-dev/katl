@@ -193,6 +193,7 @@ management; mTLS is opt-in. Run any command with --help for examples and flags.`
 
 	configureCommandGroups(cmd)
 	setMinimumInvocationExamples(cmd)
+	applyOptionEnv(cmd)
 	return cmd
 }
 
