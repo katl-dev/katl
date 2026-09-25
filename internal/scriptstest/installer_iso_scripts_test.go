@@ -14,9 +14,10 @@ import (
 func TestBuildInstallerISO(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
+	for _, tool := range []string{"mkfs.vfat", "mcopy", "mmd", "xorriso"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("real ISO test requires %s: %v", tool, err)
+		}
 	}
 	installer := writeArtifact(t, tmp, "katl-installer.efi", "installer")
 	if err := os.WriteFile(installer+".json", []byte(`{"version":"2026.7.0-dev.1","architecture":"x86_64"}`), 0o644); err != nil {
@@ -25,26 +26,10 @@ func TestBuildInstallerISO(t *testing.T) {
 	katlosImage := writeArtifact(t, tmp, "katlos-install-2026.7.0-dev.1-x86_64.squashfs", "katlos")
 	writeKatlosImageSidecars(t, katlosImage, "2026.7.0-dev.1")
 	output := filepath.Join(tmp, "katl-installer.iso")
-	for _, tool := range []string{"mkfs.vfat", "mcopy", "mmd"} {
-		writeFakeExecutable(t, bin, tool, "exit 0\n")
-	}
-	writeFakeExecutable(t, bin, "xorriso", `
-output=""
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == "-output" ]]; then
-    output="$2"
-    break
-  fi
-  shift
-done
-[[ -n "$output" ]]
-touch "$output"
-`)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "build-installer-iso"))
 	cmd.Dir = repo
 	cmd.Env = append(
 		os.Environ(),
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"KATL_INSTALLER_UKI="+installer,
 		"KATL_KATLOS_IMAGE="+katlosImage,
 		"KATL_VERSION=2026.7.0-dev.1",
@@ -55,8 +40,49 @@ touch "$output"
 	if result, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build installer ISO failed: %v\n%s", err, result)
 	}
-	if _, err := os.Stat(output); err != nil {
-		t.Fatalf("installer ISO output missing: %v", err)
+	for _, path := range []string{"/efiboot.img", "/katl/media.json", "/katl/images/" + filepath.Base(katlosImage)} {
+		extracted := filepath.Join(tmp, filepath.Base(path))
+		cmd := exec.Command("xorriso", "-osirrox", "on", "-indev", output, "-extract", path, extracted)
+		if result, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("extract %s: %v\n%s", path, err, result)
+		}
+	}
+	if result, err := exec.Command("mcopy", "-i", filepath.Join(tmp, "efiboot.img"), "::/EFI/BOOT/BOOTX64.EFI", filepath.Join(tmp, "extracted-installer.efi")).CombinedOutput(); err != nil {
+		t.Fatalf("extract EFI executable: %v\n%s", err, result)
+	}
+	for _, pair := range [][2]string{
+		{installer, filepath.Join(tmp, "extracted-installer.efi")},
+		{katlosImage, filepath.Join(tmp, filepath.Base(katlosImage))},
+		{katlosImage + ".json", filepath.Join(tmp, "media.json")},
+	} {
+		if string(mustReadFile(t, pair[0])) != string(mustReadFile(t, pair[1])) {
+			t.Errorf("ISO payload differs from %s", pair[0])
+		}
+	}
+	digest := sha256.Sum256(mustReadFile(t, output))
+	info, err := os.Stat(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksum := hex.EncodeToString(digest[:])
+	metadata, err := json.Marshal(map[string]any{
+		"kind": "InstallerBootArtifact", "artifactRole": "installer-iso", "format": "iso",
+		"sha256": checksum, "sizeBytes": info.Size(), "version": "2026.7.0-dev.1", "architecture": "x86_64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(output+".json", append(metadata, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(output+".sha256", []byte(checksum+"  "+filepath.Base(output)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check := exec.Command(filepath.Join(repo, "scripts", "check-installer-iso"), output)
+	check.Dir = repo
+	check.Env = cmd.Env
+	if result, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("verify built installer ISO: %v\n%s", err, result)
 	}
 }
 
@@ -83,96 +109,6 @@ func TestInstallerWaitsForNetworkBeforeURLHandoff(t *testing.T) {
 		if !strings.Contains(" "+line+" ", " network-online.target ") {
 			t.Fatalf("installer unit %s does not include network-online.target", directive)
 		}
-	}
-}
-
-func TestCheckInstallerISO(t *testing.T) {
-	repo := repoRoot(t)
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	installer := writeArtifact(t, tmp, "katl-installer.efi", "installer")
-	katlosImage := writeArtifact(t, tmp, "katlos-install-2026.7.0-dev.1-x86_64.squashfs", "katlos")
-	katlosDigest := sha256.Sum256(mustReadFile(t, katlosImage))
-	katlosMetadata, err := json.Marshal(map[string]any{
-		"apiVersion":       "katl.dev/v1alpha1",
-		"kind":             "KatlOSImageArtifact",
-		"imageRole":        "install",
-		"format":           "squashfs",
-		"path":             filepath.Base(katlosImage),
-		"sha256":           hex.EncodeToString(katlosDigest[:]),
-		"sizeBytes":        len("katlos"),
-		"version":          "2026.7.0-dev.1",
-		"architecture":     "x86_64",
-		"runtimeInterface": "katl-runtime-1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(katlosImage+".json", append(katlosMetadata, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	artifact := writeArtifact(t, tmp, "katl-installer.iso", "iso")
-	digest := sha256.Sum256(mustReadFile(t, artifact))
-	digestText := hex.EncodeToString(digest[:])
-	metadata, err := json.Marshal(map[string]any{
-		"kind":         "InstallerBootArtifact",
-		"artifactRole": "installer-iso",
-		"format":       "iso",
-		"sha256":       digestText,
-		"sizeBytes":    len("iso"),
-		"version":      "2026.7.0-dev.1",
-		"architecture": "x86_64",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(artifact+".json", append(metadata, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(artifact+".sha256", []byte(digestText+"  "+filepath.Base(artifact)+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	writeFakeExecutable(t, bin, "xorriso", `
-if [[ " $* " == *" -report_el_torito plain "* ]]; then
-  echo "El Torito boot img : 1 EFI"
-  exit 0
-fi
-if [[ " $* " == *" -extract /efiboot.img "* ]]; then
-  touch "${@: -1}"
-  exit 0
-fi
-if [[ " $* " == *" -extract /katl/media.json "* ]]; then
-  cp "$KATL_TEST_MEDIA_METADATA" "${@: -1}"
-  exit 0
-fi
-if [[ " $* " == *" -extract /katl/images/"* ]]; then
-  cp "$KATL_TEST_KATLOS_IMAGE" "${@: -1}"
-  exit 0
-fi
-exit 1
-`)
-	writeFakeExecutable(t, bin, "mcopy", `cp "$KATL_TEST_INSTALLER" "${@: -1}"`+"\n")
-	cmd := exec.Command(filepath.Join(repo, "scripts", "check-installer-iso"), artifact)
-	cmd.Dir = repo
-	cmd.Env = append(
-		os.Environ(),
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"KATL_INSTALLER_UKI="+installer,
-		"KATL_TEST_INSTALLER="+installer,
-		"KATL_KATLOS_IMAGE="+katlosImage,
-		"KATL_TEST_KATLOS_IMAGE="+katlosImage,
-		"KATL_TEST_MEDIA_METADATA="+katlosImage+".json",
-		"KATL_VERSION=2026.7.0-dev.1",
-		"KATL_ARCHITECTURE=x86_64",
-		"TMPDIR="+tmp,
-	)
-	if result, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("check installer ISO failed: %v\n%s", err, result)
-	} else if !strings.Contains(string(result), "ok: "+artifact) {
-		t.Fatalf("check output = %q", result)
 	}
 }
 

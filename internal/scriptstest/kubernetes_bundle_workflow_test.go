@@ -1,7 +1,10 @@
 package scriptstest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,17 +208,83 @@ func hasWorkflowNeed(value any, want string) bool {
 }
 
 func TestPublicKubernetesBundleCheckRequiresUpstreamRelease(t *testing.T) {
-	contents, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts/check-public-kubernetes-bundle"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, contract := range []string{
-		`upstream_release="https://github.com/kubernetes/kubernetes/releases/tag/${payload_version}"`,
-		`.annotations["org.opencontainers.image.url"] == $upstream_release`,
-		`.annotations["dev.katl.kubernetes.payload.version"] == $payload_version`,
+	for _, tc := range []struct {
+		name, url, payload string
+		valid              bool
+	}{
+		{name: "upstream release", url: "https://github.com/kubernetes/kubernetes/releases/tag/v1.37.0", payload: "v1.37.0", valid: true},
+		{name: "wrong upstream", url: "https://github.com/katl-dev/katl/releases/tag/v1.37.0", payload: "v1.37.0"},
+		{name: "wrong payload", url: "https://github.com/kubernetes/kubernetes/releases/tag/v1.37.0", payload: "v1.36.0"},
 	} {
-		if !strings.Contains(string(contents), contract) {
-			t.Errorf("public check missing %q", contract)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			blobs := filepath.Join(dir, "blobs")
+			if err := os.Mkdir(blobs, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			blob := func(content []byte, mediaType string) map[string]any {
+				t.Helper()
+				digest := sha256.Sum256(content)
+				name := hex.EncodeToString(digest[:])
+				if err := os.WriteFile(filepath.Join(blobs, name), content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return map[string]any{"digest": "sha256:" + name, "size": len(content), "mediaType": mediaType}
+			}
+			config, err := json.Marshal(map[string]any{
+				"apiVersion": "payload.katl.dev/v1alpha1", "kind": "KubernetesPayloadBundle", "name": "katl-kubernetes",
+				"artifactVersion": "v1.37.0-katl.1", "payloadVersion": "v1.37.0",
+				"supportedRuntimeInterfaces":        []string{"katl-runtime-1"},
+				"supportedKubeadmConfigAPIFamilies": []string{"kubeadm.k8s.io/v1beta4"},
+				"packageVersions":                   map[string]string{"kubeadm": "1.37.0"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			layers := make([]map[string]any, 4)
+			for i := range layers {
+				layers[i] = blob([]byte(fmt.Sprintf("layer %d", i)), "application/octet-stream")
+			}
+			manifest, err := json.Marshal(map[string]any{
+				"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+				"artifactType": "application/vnd.katl.kubernetes.payload.bundle.v1",
+				"config":       blob(config, "application/vnd.katl.kubernetes.payload.bundle.v1+json"), "layers": layers,
+				"annotations": map[string]string{
+					"org.opencontainers.image.version":    "v1.37.0-katl.1",
+					"org.opencontainers.image.source":     "https://github.com/katl-dev/katl",
+					"org.opencontainers.image.url":        tc.url,
+					"org.opencontainers.image.licenses":   "MIT",
+					"dev.katl.kubernetes.payload.version": tc.payload,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifestPath := filepath.Join(dir, "manifest.json")
+			if err := os.WriteFile(manifestPath, manifest, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			writeFakeExecutable(t, dir, "curl", `
+url=""
+output=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == https://* ]]; then url="$1"; fi
+  if [[ "$1" == --output ]]; then output="$2"; break; fi
+  shift
+done
+case "$url" in
+  *'/token?'*) printf '{"token":"test"}\n' ;;
+  *'/manifests/'*) cp "$KATL_TEST_MANIFEST" "$output" ;;
+  *'/blobs/'*) cp "$KATL_TEST_BLOBS/${url##*sha256:}" "$output" ;;
+  *) exit 2 ;;
+esac
+`)
+			cmd := exec.Command(filepath.Join(repoRoot(t), "scripts/check-public-kubernetes-bundle"), "ghcr.io/katl-dev/kubernetes:v1.37.0-katl.1")
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "KATL_TEST_MANIFEST="+manifestPath, "KATL_TEST_BLOBS="+blobs)
+			output, err := cmd.CombinedOutput()
+			if (err == nil) != tc.valid {
+				t.Fatalf("check exit = %v, want valid=%t:\n%s", err, tc.valid, output)
+			}
+		})
 	}
 }

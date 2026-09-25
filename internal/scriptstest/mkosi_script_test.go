@@ -23,7 +23,7 @@ func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
 }
 
 func TestMkosiRuntimeCacheUsesIncludedBinaryIdentity(t *testing.T) {
-	repo := repoRoot(t)
+	repo := scriptRepoFixture(t)
 	tmp := t.TempDir()
 	buildDir := filepath.Join(tmp, "mkosi-build")
 	bin := filepath.Join(tmp, "bin")
@@ -313,6 +313,16 @@ func seedRuntimeCacheOutputs(t *testing.T, buildDir string) {
 	}
 }
 
+func scriptRepoFixture(t *testing.T) string {
+	t.Helper()
+	repo, fixture := repoRoot(t), t.TempDir()
+	cmd := exec.Command("bash", "-euo", "pipefail", "-c", `tar -C "$1" --exclude=./.git --exclude=./.jj --exclude=./.beads --exclude=./_build --exclude=./build -cf - . | tar -C "$2" -xf -`, "bash", repo, fixture)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("copy script test repository: %v\n%s", err, output)
+	}
+	return fixture
+}
+
 func writeTemporaryFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if _, err := os.Stat(path); err == nil {
@@ -355,7 +365,7 @@ func activeGoCacheEnv(t *testing.T) []string {
 }
 
 func TestMkosiFlavourInvalidatesArtifacts(t *testing.T) {
-	repo, tmp := repoRoot(t), t.TempDir()
+	repo, tmp := scriptRepoFixture(t), t.TempDir()
 	buildDir, bin := filepath.Join(tmp, "build"), filepath.Join(tmp, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
