@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -11,6 +12,33 @@ import (
 )
 
 const outputFormatsAnnotation = "katl-output-formats"
+
+var optionEnv = map[string]string{
+	"config":   "KATLCTL_CLUSTER_CONFIG",
+	"context":  "KATLCTL_CONTEXT",
+	"node":     "KATLCTL_NODE",
+	"endpoint": "KATLCTL_ENDPOINT",
+}
+
+// Bind defaults before parsing so explicit flags win and required flags see them.
+func applyOptionEnv(command *cobra.Command) {
+	for name, env := range optionEnv {
+		flag := command.Flags().Lookup(name)
+		if flag == nil {
+			continue
+		}
+		// A repeated --node appends values, so an environment default cannot be overridden.
+		if _, repeated := flag.Value.(*stringList); repeated {
+			continue
+		}
+		if value := os.Getenv(env); value != "" {
+			_ = command.Flags().Set(name, value)
+		}
+	}
+	for _, child := range command.Commands() {
+		applyOptionEnv(child)
+	}
+}
 
 func addOutputFlag(command *cobra.Command, value *string, fallback string, formats ...string) {
 	command.Flags().StringVarP(value, "output", "o", fallback, "output format: "+strings.Join(formats, ", "))

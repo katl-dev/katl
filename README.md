@@ -248,6 +248,21 @@ katlctl node shutdown cp-1 --config ./cluster.yaml
 An optional workstation context created with `katlctl context save --config
 ./cluster.yaml` shortens repeated commands; it is not a prerequisite.
 
+For repeated commands in one shell, set common options as environment variables:
+
+```sh
+export KATLCTL_CLUSTER_CONFIG=./cluster.yaml
+export KATLCTL_NODE=cp-1
+katlctl node status
+```
+
+`KATLCTL_CONTEXT` supplies `--context`, and `KATLCTL_ENDPOINT` supplies
+`--endpoint` on commands that accept those flags. An explicit flag overrides
+its environment variable. `KATLCTL_NODE` applies to single-value `--node`
+flags; repeated `--node` selections use explicit flags. `KATLCTL_CONFIG`
+still selects the workstation context file, while `KATLCTL_CLUSTER_CONFIG`
+supplies `--config`.
+
 Results are concise text by default. Add `--output json` for automation. Reboot
 honors any generation already staged for the next boot and waits for a new
 agent instance to report healthy. Shutdown waits for the management API to go

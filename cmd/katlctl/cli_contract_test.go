@@ -36,6 +36,92 @@ func TestFlagsRejectBeforeEffects(t *testing.T) {
 	}
 }
 
+func TestOptionEnvironmentDefaults(t *testing.T) {
+	config := writeClusterConfig(t)
+	t.Setenv("KATLCTL_CLUSTER_CONFIG", config)
+	t.Setenv("KATLCTL_NODE", "cp-1")
+
+	var out bytes.Buffer
+	err := run(context.Background(), []string{"config", "render-node", "--desired-version", "1"}, &out, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "cp-1") {
+		t.Fatalf("rendered configuration did not select cp-1: %s", &out)
+	}
+}
+
+func TestExplicitOptionOverridesEnvironment(t *testing.T) {
+	t.Setenv("KATLCTL_CLUSTER_CONFIG", "missing-from-env.yaml")
+	t.Setenv("KATLCTL_NODE", "missing-from-env")
+	config := writeClusterConfig(t)
+
+	var out bytes.Buffer
+	err := run(context.Background(), []string{"config", "render-node", "--config", config, "--node", "cp-1", "--desired-version", "1"}, &out, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "cp-1") {
+		t.Fatalf("rendered configuration did not select cp-1: %s", &out)
+	}
+}
+
+func TestContextEnvironmentSelectsSavedContext(t *testing.T) {
+	path := writeKatlctlConfig(t, `currentContext: first
+contexts:
+- name: first
+  cluster: first
+- name: second
+  cluster: second
+clusters:
+- name: first
+  nodes:
+  - name: first-node
+    managementEndpoint: 192.0.2.1:9443
+    systemRole: control-plane
+- name: second
+  nodes:
+  - name: second-node
+    managementEndpoint: 192.0.2.2:9443
+    systemRole: control-plane
+`)
+	t.Setenv("KATLCTL_CONFIG", path)
+	t.Setenv("KATLCTL_CONTEXT", "second")
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{args: nil, want: "second"},
+		{args: []string{"--context", "first"}, want: "first"},
+	} {
+		var out bytes.Buffer
+		args := append([]string{"context", "show", "--output", "json"}, tc.args...)
+		if err := run(context.Background(), args, &out, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		var topology workstation.ResolvedTopology
+		if err := json.Unmarshal(out.Bytes(), &topology); err != nil {
+			t.Fatal(err)
+		}
+		if topology.ContextName != tc.want {
+			t.Fatalf("context = %q, want %q", topology.ContextName, tc.want)
+		}
+	}
+}
+
+func TestRepeatedNodeFlagDoesNotInheritEnvironment(t *testing.T) {
+	t.Setenv("KATLCTL_NODE", "cp-1")
+	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
+	wipe, _, err := root.Find([]string{"cluster", "wipe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := wipe.Flags().Lookup("node").Value.String(); got != "" {
+		t.Fatalf("repeated --node inherited %q", got)
+	}
+}
+
 func TestConfigApplyHasOneOperatorPath(t *testing.T) {
 	bundle, _ := writeConfigBundle(t)
 	for _, path := range []string{writeClusterConfig(t), bundle} {
