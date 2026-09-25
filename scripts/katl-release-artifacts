@@ -126,6 +126,7 @@ verify_artifact() {
     local version="$2"
     local expected_architecture="${3:-$architecture}"
     local expected_flavour="${4:-${KATL_FLAVOUR:-standard}}"
+    local expected_os="${5:-}"
     local digest size
 
     (cd "$build_dir" && sha256sum -c "$name.sha256")
@@ -133,9 +134,11 @@ verify_artifact() {
     size="$(stat -c %s "$build_dir/$name")"
     jq -e --arg digest "$digest" --argjson size "$size" \
         --arg version "$version" --arg architecture "$expected_architecture" \
+        --arg os "$expected_os" \
         --arg flavour "$expected_flavour" \
         '.sha256 == $digest and .sizeBytes == $size and
          .version == $version and .architecture == $architecture and
+         ($os == "" or .os == $os) and
          (.flavour // "standard") == $flavour' \
         "$build_dir/$name.json" >/dev/null ||
         fail "release metadata does not match artifact or release identity: $name.json"
@@ -143,51 +146,54 @@ verify_artifact() {
 
 build_katlctl() {
     local version="$1"
-    local goarch name path digest size build_commit build_date
+    local target goos goarch name path digest size build_commit build_date
 
     validate_version "$version"
     case "$architecture" in
-        x86_64 | amd64)
-            goarch=amd64
-            ;;
+        x86_64 | amd64) ;;
         *)
             fail "katlctl release architecture is unsupported: $architecture"
             ;;
     esac
-    name="katlctl-${version}-linux-${goarch}"
-    path="$build_dir/$name"
     build_commit="${KATL_BUILD_COMMIT:-$(git -C "$repo_root" rev-parse HEAD)}"
     build_date="${KATL_BUILD_DATE:-1970-01-01T00:00:00Z}"
     mkdir -p "$build_dir"
-    (
-        cd "$repo_root"
-        CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" "$go_command" build \
-            -trimpath \
-            -ldflags="-s -w -X main.version=$version -X main.commit=$build_commit -X main.date=$build_date" \
-            -o "$path" ./cmd/katlctl
-    )
-    digest="$(sha256sum "$path" | awk '{print $1}')"
-    size="$(stat -c %s "$path")"
-    printf '%s  %s\n' "$digest" "$name" >"$path.sha256"
-    jq -n \
-        --arg version "$version" \
-        --arg commit "$build_commit" \
-        --arg buildDate "$build_date" \
-        --arg sha256 "$digest" \
-        --argjson sizeBytes "$size" \
-        '{
-            schemaVersion: 1,
-            artifactKind: "katl.operator-cli.v1",
-            name: "katlctl",
-            version: $version,
-            commit: $commit,
-            buildDate: $buildDate,
-            os: "linux",
-            architecture: "amd64",
-            sha256: $sha256,
-            sizeBytes: $sizeBytes
-        }' >"$path.json"
-    verify_artifact "$name" "$version" amd64 standard
+    for target in linux:amd64 darwin:arm64; do
+        IFS=: read -r goos goarch <<<"$target"
+        name="katlctl-${version}-${goos}-${goarch}"
+        path="$build_dir/$name"
+        (
+            cd "$repo_root"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" "$go_command" build \
+                -trimpath \
+                -ldflags="-s -w -X main.version=$version -X main.commit=$build_commit -X main.date=$build_date" \
+                -o "$path" ./cmd/katlctl
+        )
+        digest="$(sha256sum "$path" | awk '{print $1}')"
+        size="$(stat -c %s "$path")"
+        printf '%s  %s\n' "$digest" "$name" >"$path.sha256"
+        jq -n \
+            --arg version "$version" \
+            --arg commit "$build_commit" \
+            --arg buildDate "$build_date" \
+            --arg os "$goos" \
+            --arg architecture "$goarch" \
+            --arg sha256 "$digest" \
+            --argjson sizeBytes "$size" \
+            '{
+                schemaVersion: 1,
+                artifactKind: "katl.operator-cli.v1",
+                name: "katlctl",
+                version: $version,
+                commit: $commit,
+                buildDate: $buildDate,
+                os: $os,
+                architecture: $architecture,
+                sha256: $sha256,
+                sizeBytes: $sizeBytes
+            }' >"$path.json"
+        verify_artifact "$name" "$version" "$goarch" standard "$goos"
+    done
 }
 
 version_for_ref() {
@@ -241,7 +247,10 @@ stage_artifacts() {
         "katlos-install-${version}-${architecture}.squashfs"
         "katlos-upgrade-${version}-${architecture}.squashfs"
     )
-    local operator_name="katlctl-${version}-linux-amd64"
+    local -a operator_names=(
+        "katlctl-${version}-linux-amd64"
+        "katlctl-${version}-darwin-arm64"
+    )
     local build_inputs="katl-release-build-inputs.json"
     local -a package_inventories=(
         "katl-installer.packages.tsv"
@@ -265,12 +274,15 @@ stage_artifacts() {
         done
         verify_artifact "$name" "$version"
     done
-    for suffix in "" .json .sha256; do
-        path="$build_dir/$operator_name$suffix"
-        [[ -f "$path" ]] || fail "release artifact is missing: $path"
+    for name in "${operator_names[@]}"; do
+        for suffix in "" .json .sha256; do
+            path="$build_dir/$name$suffix"
+            [[ -f "$path" ]] || fail "release artifact is missing: $path"
+        done
     done
-    verify_artifact "$operator_name" "$version" amd64 standard
-    names+=("$operator_name")
+    verify_artifact "${operator_names[0]}" "$version" amd64 standard linux
+    verify_artifact "${operator_names[1]}" "$version" arm64 standard darwin
+    names+=("${operator_names[@]}")
     for name in "${package_inventories[@]}"; do
         [[ -f "$build_dir/$name" ]] || fail "release package inventory is missing: $build_dir/$name"
     done

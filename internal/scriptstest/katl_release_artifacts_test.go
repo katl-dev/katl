@@ -2,6 +2,7 @@ package scriptstest
 
 import (
 	"crypto/sha256"
+	"debug/macho"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -204,9 +205,8 @@ func TestKatlReleaseArtifactBuildKatlctl(t *testing.T) {
 		t.Fatalf("build katlctl failed: %v\n%s", err, output)
 	}
 
-	name := "katlctl-" + version + "-linux-amd64"
-	path := filepath.Join(buildDir, name)
-	output, err := exec.Command(path, "version").CombinedOutput()
+	linuxPath := filepath.Join(buildDir, "katlctl-"+version+"-linux-amd64")
+	output, err := exec.Command(linuxPath, "version").CombinedOutput()
 	if err != nil {
 		t.Fatalf("run released katlctl: %v\n%s", err, output)
 	}
@@ -215,30 +215,45 @@ func TestKatlReleaseArtifactBuildKatlctl(t *testing.T) {
 			t.Fatalf("katlctl version output missing %q: %q", value, output)
 		}
 	}
-	var metadata struct {
-		ArtifactKind string `json:"artifactKind"`
-		Version      string `json:"version"`
-		Architecture string `json:"architecture"`
-		SHA256       string `json:"sha256"`
-		SizeBytes    int64  `json:"sizeBytes"`
-	}
-	if err := json.Unmarshal(mustReadFile(t, path+".json"), &metadata); err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256(mustReadFile(t, path))
-	if metadata.ArtifactKind != "katl.operator-cli.v1" || metadata.Version != version || metadata.Architecture != "amd64" || metadata.SHA256 != hex.EncodeToString(digest[:]) {
-		t.Fatalf("katlctl metadata = %#v", metadata)
-	}
-	info, err := os.Stat(path)
+	macPath := filepath.Join(buildDir, "katlctl-"+version+"-darwin-arm64")
+	macBinary, err := macho.Open(macPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read macOS katlctl: %v", err)
 	}
-	if metadata.SizeBytes != info.Size() {
-		t.Fatalf("katlctl size = %d, metadata = %d", info.Size(), metadata.SizeBytes)
+	defer macBinary.Close()
+	if macBinary.Cpu != macho.CpuArm64 {
+		t.Fatalf("macOS katlctl CPU = %v, want arm64", macBinary.Cpu)
 	}
-	checksum := string(mustReadFile(t, path+".sha256"))
-	if !strings.Contains(checksum, metadata.SHA256+"  "+name) {
-		t.Fatalf("katlctl checksum = %q", checksum)
+
+	for _, target := range []struct{ os, arch string }{{"linux", "amd64"}, {"darwin", "arm64"}} {
+		name := fmt.Sprintf("katlctl-%s-%s-%s", version, target.os, target.arch)
+		path := filepath.Join(buildDir, name)
+		var metadata struct {
+			ArtifactKind string `json:"artifactKind"`
+			Version      string `json:"version"`
+			OS           string `json:"os"`
+			Architecture string `json:"architecture"`
+			SHA256       string `json:"sha256"`
+			SizeBytes    int64  `json:"sizeBytes"`
+		}
+		if err := json.Unmarshal(mustReadFile(t, path+".json"), &metadata); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(mustReadFile(t, path))
+		if metadata.ArtifactKind != "katl.operator-cli.v1" || metadata.Version != version || metadata.OS != target.os || metadata.Architecture != target.arch || metadata.SHA256 != hex.EncodeToString(digest[:]) {
+			t.Fatalf("%s metadata = %#v", name, metadata)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if metadata.SizeBytes != info.Size() {
+			t.Fatalf("%s size = %d, metadata = %d", name, info.Size(), metadata.SizeBytes)
+		}
+		checksum := string(mustReadFile(t, path+".sha256"))
+		if !strings.Contains(checksum, metadata.SHA256+"  "+name) {
+			t.Fatalf("%s checksum = %q", name, checksum)
+		}
 	}
 }
 
@@ -483,11 +498,13 @@ func writeRequiredReleaseArtifacts(t *testing.T, dir string) []string {
 		"katlos-install-2026.7.0-rc.0-x86_64.squashfs",
 		"katlos-upgrade-2026.7.0-rc.0-x86_64.squashfs",
 		"katlctl-2026.7.0-rc.0-linux-amd64",
+		"katlctl-2026.7.0-rc.0-darwin-arm64",
 	}
 	for _, name := range names {
 		writeReleaseArtifact(t, dir, name)
 	}
-	setReleaseArtifactArchitecture(t, dir, "katlctl-2026.7.0-rc.0-linux-amd64", "amd64")
+	setReleaseArtifactTarget(t, dir, "katlctl-2026.7.0-rc.0-linux-amd64", "linux", "amd64")
+	setReleaseArtifactTarget(t, dir, "katlctl-2026.7.0-rc.0-darwin-arm64", "darwin", "arm64")
 	return names
 }
 
@@ -503,7 +520,7 @@ func writeReleaseExtensionInventory(t *testing.T, dir, flavour string) {
 	}
 }
 
-func setReleaseArtifactArchitecture(t *testing.T, dir, name, architecture string) {
+func setReleaseArtifactTarget(t *testing.T, dir, name, osName, architecture string) {
 	t.Helper()
 	path := filepath.Join(dir, name+".json")
 	var metadata map[string]any
@@ -511,6 +528,7 @@ func setReleaseArtifactArchitecture(t *testing.T, dir, name, architecture string
 		t.Fatal(err)
 	}
 	metadata["architecture"] = architecture
+	metadata["os"] = osName
 	data, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatal(err)
@@ -557,7 +575,7 @@ func TestKatlReleaseLTSStage(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("stage: %v\n%s", err, out)
 	}
-	for _, name := range []string{"katl-installer-lts.iso", "katl-installer-lts.vmlinuz", "katl-runtime-lts.extensions.json", "katlos-lts-install-2026.7.0-rc.0-x86_64.squashfs", "katlos-lts-upgrade-2026.7.0-rc.0-x86_64.squashfs", "katlctl-2026.7.0-rc.0-linux-amd64"} {
+	for _, name := range []string{"katl-installer-lts.iso", "katl-installer-lts.vmlinuz", "katl-runtime-lts.extensions.json", "katlos-lts-install-2026.7.0-rc.0-x86_64.squashfs", "katlos-lts-upgrade-2026.7.0-rc.0-x86_64.squashfs", "katlctl-2026.7.0-rc.0-linux-amd64", "katlctl-2026.7.0-rc.0-darwin-arm64"} {
 		if _, err := os.Stat(filepath.Join(output, name)); err != nil {
 			t.Fatal(err)
 		}

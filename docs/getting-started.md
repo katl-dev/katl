@@ -13,19 +13,24 @@ access by default. mTLS is available as an explicit configuration choice.
 ## 1. Download One Release
 
 Download the matching CLI and installer ISO from a single
-[Katl release](https://github.com/katl-dev/katl/releases). This example uses a
-placeholder beta version; substitute the release you selected:
+[Katl release](https://github.com/katl-dev/katl/releases). Replace
+`RELEASE_VERSION` with the release you selected:
 
 ```sh
-VERSION=2026.7.0-beta.1
+VERSION=RELEASE_VERSION
 TAG="v$VERSION"
+PLATFORM=linux-amd64 # Use darwin-arm64 on an Apple Silicon Mac.
 gh release download "$TAG" --repo katl-dev/katl \
-  --pattern "katlctl-$VERSION-linux-amd64" \
+  --pattern "katlctl-$VERSION-$PLATFORM" \
   --pattern 'katl-installer.iso' \
   --pattern 'katl-installer.iso.sha256'
-install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
+install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
 katlctl version
-sha256sum --check katl-installer.iso.sha256
+if command -v sha256sum >/dev/null; then
+  sha256sum --check katl-installer.iso.sha256
+else
+  shasum -a 256 --check katl-installer.iso.sha256
+fi
 ```
 
 The CLI and KatlOS artifacts must come from the same release. Checksums are a

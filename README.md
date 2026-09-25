@@ -77,17 +77,20 @@ download these files from the same release:
 ```text
 katl-installer.iso
 katlctl-<version>-linux-amd64
+katlctl-<version>-darwin-arm64
 ```
 
 Checksums and GitHub build attestations are also published for operators who
 want to authenticate downloaded artifacts. They are optional on the normal
 trusted-home-network path; see [Verify release artifacts](docs/operations/verify-release.md).
 
-Install the matching operator CLI and confirm its embedded identity:
+Install the matching operator CLI and confirm its embedded identity. Replace
+`RELEASE_VERSION` with the selected release:
 
 ```sh
-VERSION=2026.7.0-beta.1
-install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
+VERSION=RELEASE_VERSION
+PLATFORM=linux-amd64 # Use darwin-arm64 on an Apple Silicon Mac.
+install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
 katlctl version
 ```
 
@@ -299,7 +302,7 @@ katlctl operations list \
 | `katl-installer.vmlinuz` + `.initrd` | Loose kernel and initrd for PXE |
 | `katlos-install-<version>-<arch>.squashfs` | KatlOS payload for loose/PXE installation |
 | `katlos-upgrade-<version>-<arch>.squashfs` | KatlOS host-upgrade payload |
-| `katlctl-<version>-linux-amd64` | Matching workstation operator CLI |
+| `katlctl-<version>-linux-amd64`, `katlctl-<version>-darwin-arm64` | Matching workstation operator CLI |
 | `SHA256SUMS` and `PROVENANCE.md` | Integrity manifest and trust instructions |
 
 Every release image is a production image. VM-test agents, test services, and

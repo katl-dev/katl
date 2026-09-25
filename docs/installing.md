@@ -47,14 +47,19 @@ and bootstrap the cluster:
 katlctl-<version>-linux-amd64
 katlctl-<version>-linux-amd64.sha256
 katlctl-<version>-linux-amd64.json
+katlctl-<version>-darwin-arm64
+katlctl-<version>-darwin-arm64.sha256
+katlctl-<version>-darwin-arm64.json
 ```
 
 Install it under the stable command name and confirm that its embedded release
-identity matches the KatlOS release:
+identity matches the KatlOS release. Replace `RELEASE_VERSION` with the selected
+release:
 
 ```sh
-VERSION=2026.7.0-beta.1
-install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
+VERSION=RELEASE_VERSION
+PLATFORM=linux-amd64 # Use darwin-arm64 on an Apple Silicon Mac.
+install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
 katlctl version
 ```
 

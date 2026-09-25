@@ -6,14 +6,38 @@
   };
 
   outputs =
-    { nixpkgs, ... }:
+    { self, nixpkgs, ... }:
     let
-      systems = [
+      devSystems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
-      forAllSystems = nixpkgs.lib.genAttrs systems;
+      packageSystems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
+      forDevSystems = nixpkgs.lib.genAttrs devSystems;
+      forPackageSystems = nixpkgs.lib.genAttrs packageSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      revision = self.rev or self.dirtyRev or "unknown";
+      katlctlPackageFor =
+        pkgs:
+        pkgs.buildGoModule {
+          pname = "katlctl";
+          version = "git-${builtins.substring 0 8 revision}";
+          src = self;
+          vendorHash = "sha256-e2EZlawAo8JWsrRl6cbKM+IY2ipbjzDfiRROrfjZgpI=";
+          subPackages = [ "cmd/katlctl" ];
+          env.CGO_ENABLED = "0";
+          ldflags = [
+            "-s"
+            "-w"
+            "-X main.version=git-${builtins.substring 0 8 revision}"
+            "-X main.commit=${revision}"
+            "-X main.date=${self.lastModifiedDate or "unknown"}"
+          ];
+          meta.mainProgram = "katlctl";
+        };
       katlctlFor =
         pkgs:
         pkgs.writeShellScriptBin "katlctl" ''
@@ -82,7 +106,17 @@
         };
     in
     {
-      devShells = forAllSystems (
+      packages = forPackageSystems (
+        system:
+        let
+          katlctl = katlctlPackageFor (pkgsFor system);
+        in
+        {
+          inherit katlctl;
+          default = katlctl;
+        }
+      );
+      devShells = forDevSystems (
         system:
         let
           pkgs = pkgsFor system;
